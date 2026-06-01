@@ -1,0 +1,869 @@
+{
+  "$schema": "../../../schemas/xpos-screens.schema.json",
+  "version": 1,
+  "source": "authored-xpos-screen-seed",
+  "screen": {
+    "slug": "danh-muc-san-pham-product-categories",
+    "name": "Danh Mục Sản Phẩm (Product Categories)",
+    "category": "mobile",
+    "viewport": "mobile",
+    "roots": [
+      {
+        "id": "m05-shell",
+        "componentSlug": "div",
+        "props": {
+          "className": "flex h-full flex-col bg-background"
+        },
+        "children": [
+          {
+            "id": "m05-top",
+            "componentSlug": "div",
+            "props": {
+              "className": "sticky top-0 z-10 flex items-center gap-2 px-8 py-3 border-b border-border bg-card"
+            },
+            "children": [
+              {
+                "id": "m05-top-l",
+                "componentSlug": "div",
+                "props": {
+                  "className": "flex items-center gap-2 min-w-0 flex-1"
+                },
+                "children": [
+                  {
+                    "id": "m05-top-titles",
+                    "componentSlug": "div",
+                    "props": {
+                      "className": "flex flex-col leading-tight min-w-0 flex-1"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-top-t",
+                        "componentSlug": "span",
+                        "props": {
+                          "className": "type-title-medium text-foreground truncate"
+                        },
+                        "text": "Sản phẩm"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "m05-top-a",
+                "componentSlug": "div",
+                "props": {
+                  "className": "shrink-0"
+                },
+                "children": [
+                  {
+                    "id": "m05-add",
+                    "componentSlug": "Button",
+                    "props": {
+                      "variant": "default",
+                      "size": "icon",
+                      "aria-label": "Thêm sản phẩm"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-add-icon",
+                        "componentSlug": "Asset",
+                        "props": {
+                          "token": "asset.icon.add",
+                          "className": ""
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "m05-main",
+            "componentSlug": "div",
+            "props": {
+              "className": "flex-1 overflow-y-auto flex flex-col px-8 py-6 gap-6"
+            },
+            "children": [
+              {
+                "id": "m05-search",
+                "componentSlug": "InputGroup",
+                "props": {
+                  "className": "bg-card"
+                },
+                "children": [
+                  {
+                    "id": "m05-search-addon",
+                    "componentSlug": "InputGroupAddon",
+                    "props": {},
+                    "children": [
+                      {
+                        "id": "m05-search-icon",
+                        "componentSlug": "Asset",
+                        "props": {
+                          "token": "asset.icon.search",
+                          "className": "size-5"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-search-input",
+                    "componentSlug": "InputGroupInput",
+                    "props": {
+                      "placeholder": "Tìm sản phẩm"
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "m05-icon-demo",
+                "componentSlug": "div",
+                "props": {
+                  "className": "grid grid-cols-3 gap-4"
+                },
+                "children": [
+                  {
+                    "id": "m05-demo-products",
+                    "componentSlug": "Card",
+                    "props": {
+                      "className": "rounded-input p-4 gap-3 min-w-0 border border-border bg-card shadow-none"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-demo-products-ic",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "flex size-11 items-center justify-center rounded-input bg-muted text-muted-foreground"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-demo-products-icon",
+                            "componentSlug": "Asset",
+                            "props": {
+                              "token": "asset.icon.products",
+                              "className": "size-6"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "id": "m05-demo-products-t",
+                        "componentSlug": "span",
+                        "props": {
+                          "className": "type-label-small text-foreground truncate"
+                        },
+                        "text": "Danh mục"
+                      },
+                      {
+                        "id": "m05-demo-products-c",
+                        "componentSlug": "span",
+                        "props": {
+                          "className": "type-body-xs text-muted-foreground truncate"
+                        },
+                        "text": "47 món"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-demo-orders",
+                    "componentSlug": "Card",
+                    "props": {
+                      "className": "rounded-input p-4 gap-3 min-w-0 border border-border bg-card shadow-none"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-demo-orders-ic",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "flex size-11 items-center justify-center rounded-input bg-info-soft text-info-soft-foreground"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-demo-orders-icon",
+                            "componentSlug": "Asset",
+                            "props": {
+                              "token": "asset.icon.orders",
+                              "className": "size-6"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "id": "m05-demo-orders-t",
+                        "componentSlug": "span",
+                        "props": {
+                          "className": "type-label-small text-foreground truncate"
+                        },
+                        "text": "Đang bán"
+                      },
+                      {
+                        "id": "m05-demo-orders-c",
+                        "componentSlug": "span",
+                        "props": {
+                          "className": "type-body-xs text-muted-foreground truncate"
+                        },
+                        "text": "32 món"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-demo-cash",
+                    "componentSlug": "Card",
+                    "props": {
+                      "className": "rounded-input p-4 gap-3 min-w-0 border border-border bg-card shadow-none"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-demo-cash-ic",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "flex size-11 items-center justify-center rounded-input bg-success-soft text-success-soft-foreground"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-demo-cash-icon",
+                            "componentSlug": "Asset",
+                            "props": {
+                              "token": "asset.icon.cash",
+                              "className": "size-6"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "id": "m05-demo-cash-t",
+                        "componentSlug": "span",
+                        "props": {
+                          "className": "type-label-small text-foreground truncate"
+                        },
+                        "text": "Doanh thu"
+                      },
+                      {
+                        "id": "m05-demo-cash-c",
+                        "componentSlug": "span",
+                        "props": {
+                          "className": "type-body-xs text-muted-foreground truncate"
+                        },
+                        "text": "Hôm nay"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "m05-tabs",
+                "componentSlug": "Tabs",
+                "props": {
+                  "defaultValue": "all"
+                },
+                "children": [
+                  {
+                    "id": "m05-tabs-list",
+                    "componentSlug": "TabsList",
+                    "props": {
+                      "className": "w-full"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-tab-all",
+                        "componentSlug": "TabsTrigger",
+                        "props": {
+                          "value": "all",
+                          "className": "flex-1"
+                        },
+                        "text": "Tất cả · 47"
+                      },
+                      {
+                        "id": "m05-tab-drink",
+                        "componentSlug": "TabsTrigger",
+                        "props": {
+                          "value": "drink",
+                          "className": "flex-1"
+                        },
+                        "text": "Đồ uống"
+                      },
+                      {
+                        "id": "m05-tab-food",
+                        "componentSlug": "TabsTrigger",
+                        "props": {
+                          "value": "food",
+                          "className": "flex-1"
+                        },
+                        "text": "Đồ ăn"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "m05-grid",
+                "componentSlug": "div",
+                "props": {
+                  "className": "grid grid-cols-2 gap-3"
+                },
+                "children": [
+                  {
+                    "id": "m05-p1",
+                    "componentSlug": "Card",
+                    "props": {
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-p1-img",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "aspect-square bg-muted flex flex-col gap-2 items-center justify-center text-muted-foreground"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p1-icon",
+                            "componentSlug": "Asset",
+                            "props": {
+                              "token": "asset.icon.products",
+                              "className": "size-9"
+                            }
+                          },
+                          {
+                            "id": "m05-p1-pl",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground"
+                            },
+                            "text": "P001"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "m05-p1-info",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "flex flex-col gap-1 px-6 py-3 min-w-0"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p1-n",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground truncate"
+                            },
+                            "text": "Cà phê đen"
+                          },
+                          {
+                            "id": "m05-p1-c",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground truncate"
+                            },
+                            "text": "Đồ uống"
+                          },
+                          {
+                            "id": "m05-p1-p",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground tabular-nums"
+                            },
+                            "text": "25,000 ₫"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-p2",
+                    "componentSlug": "Card",
+                    "props": {
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-p2-img",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "aspect-square bg-muted flex flex-col gap-2 items-center justify-center text-muted-foreground"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p2-icon",
+                            "componentSlug": "Asset",
+                            "props": {
+                              "token": "asset.icon.products",
+                              "className": "size-9"
+                            }
+                          },
+                          {
+                            "id": "m05-p2-pl",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground"
+                            },
+                            "text": "P002"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "m05-p2-info",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "flex flex-col gap-1 px-6 py-3 min-w-0"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p2-n",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground truncate"
+                            },
+                            "text": "Trà sữa trân châu"
+                          },
+                          {
+                            "id": "m05-p2-c",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground truncate"
+                            },
+                            "text": "Đồ uống"
+                          },
+                          {
+                            "id": "m05-p2-p",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground tabular-nums"
+                            },
+                            "text": "35,000 ₫"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-p3",
+                    "componentSlug": "Card",
+                    "props": {
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-p3-img",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "aspect-square bg-muted flex flex-col gap-2 items-center justify-center text-muted-foreground"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p3-icon",
+                            "componentSlug": "Asset",
+                            "props": {
+                              "token": "asset.icon.products",
+                              "className": "size-9"
+                            }
+                          },
+                          {
+                            "id": "m05-p3-pl",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground"
+                            },
+                            "text": "P003"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "m05-p3-info",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "flex flex-col gap-1 px-6 py-3 min-w-0"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p3-n",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground truncate"
+                            },
+                            "text": "Sinh tố bơ"
+                          },
+                          {
+                            "id": "m05-p3-c",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground truncate"
+                            },
+                            "text": "Đồ uống"
+                          },
+                          {
+                            "id": "m05-p3-p",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground tabular-nums"
+                            },
+                            "text": "40,000 ₫"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-p4",
+                    "componentSlug": "Card",
+                    "props": {
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-p4-img",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "aspect-square bg-muted flex flex-col gap-2 items-center justify-center text-muted-foreground"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p4-icon",
+                            "componentSlug": "Asset",
+                            "props": {
+                              "token": "asset.icon.products",
+                              "className": "size-9"
+                            }
+                          },
+                          {
+                            "id": "m05-p4-pl",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground"
+                            },
+                            "text": "P004"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "m05-p4-info",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "flex flex-col gap-1 px-6 py-3 min-w-0"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p4-n",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground truncate"
+                            },
+                            "text": "Bánh mì đặc biệt"
+                          },
+                          {
+                            "id": "m05-p4-c",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground truncate"
+                            },
+                            "text": "Đồ ăn"
+                          },
+                          {
+                            "id": "m05-p4-p",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground tabular-nums"
+                            },
+                            "text": "30,000 ₫"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-p5",
+                    "componentSlug": "Card",
+                    "props": {
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-p5-img",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "aspect-square bg-muted flex flex-col gap-2 items-center justify-center text-muted-foreground"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p5-icon",
+                            "componentSlug": "Asset",
+                            "props": {
+                              "token": "asset.icon.products",
+                              "className": "size-9"
+                            }
+                          },
+                          {
+                            "id": "m05-p5-pl",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground"
+                            },
+                            "text": "P005"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "m05-p5-info",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "flex flex-col gap-1 px-6 py-3 min-w-0"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p5-n",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground truncate"
+                            },
+                            "text": "Nước ép cam"
+                          },
+                          {
+                            "id": "m05-p5-c",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground truncate"
+                            },
+                            "text": "Đồ uống"
+                          },
+                          {
+                            "id": "m05-p5-p",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground tabular-nums"
+                            },
+                            "text": "28,000 ₫"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-p6",
+                    "componentSlug": "Card",
+                    "props": {
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-p6-img",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "aspect-square bg-muted flex flex-col gap-2 items-center justify-center text-muted-foreground"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p6-icon",
+                            "componentSlug": "Asset",
+                            "props": {
+                              "token": "asset.icon.products",
+                              "className": "size-9"
+                            }
+                          },
+                          {
+                            "id": "m05-p6-pl",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground"
+                            },
+                            "text": "P006"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "m05-p6-info",
+                        "componentSlug": "div",
+                        "props": {
+                          "className": "flex flex-col gap-1 px-6 py-3 min-w-0"
+                        },
+                        "children": [
+                          {
+                            "id": "m05-p6-n",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground truncate"
+                            },
+                            "text": "Cà phê sữa đá"
+                          },
+                          {
+                            "id": "m05-p6-c",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-xs text-muted-foreground truncate"
+                            },
+                            "text": "Đồ uống"
+                          },
+                          {
+                            "id": "m05-p6-p",
+                            "componentSlug": "span",
+                            "props": {
+                              "className": "type-body-small text-foreground tabular-nums"
+                            },
+                            "text": "27,000 ₫"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "m05-nav",
+            "componentSlug": "div",
+            "props": {
+              "className": "flex items-stretch px-8 py-3 border-t border-border bg-card"
+            },
+            "children": [
+              {
+                "id": "m05-nav-1",
+                "componentSlug": "div",
+                "props": {
+                  "className": "flex flex-1 flex-col items-center gap-1 min-w-0"
+                },
+                "children": [
+                  {
+                    "id": "m05-nav-1-ic",
+                    "componentSlug": "div",
+                    "props": {
+                      "className": "flex size-10 items-center justify-center rounded-input text-muted-foreground"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-nav-1-i",
+                        "componentSlug": "Asset",
+                        "props": {
+                          "token": "asset.icon.home",
+                          "className": "size-5"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-nav-1-l",
+                    "componentSlug": "span",
+                    "props": {
+                      "className": "type-label-small text-muted-foreground truncate"
+                    },
+                    "text": "Tổng quan"
+                  }
+                ]
+              },
+              {
+                "id": "m05-nav-2",
+                "componentSlug": "div",
+                "props": {
+                  "className": "flex flex-1 flex-col items-center gap-1 min-w-0"
+                },
+                "children": [
+                  {
+                    "id": "m05-nav-2-ic",
+                    "componentSlug": "div",
+                    "props": {
+                      "className": "flex size-10 items-center justify-center rounded-input text-accent"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-nav-2-i",
+                        "componentSlug": "Asset",
+                        "props": {
+                          "token": "asset.icon.products",
+                          "className": "size-5"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-nav-2-l",
+                    "componentSlug": "span",
+                    "props": {
+                      "className": "type-label-small text-accent truncate"
+                    },
+                    "text": "Sản phẩm"
+                  }
+                ]
+              },
+              {
+                "id": "m05-nav-3",
+                "componentSlug": "div",
+                "props": {
+                  "className": "flex flex-1 flex-col items-center gap-1 min-w-0"
+                },
+                "children": [
+                  {
+                    "id": "m05-nav-3-ic",
+                    "componentSlug": "div",
+                    "props": {
+                      "className": "flex size-10 items-center justify-center rounded-input text-muted-foreground"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-nav-3-i",
+                        "componentSlug": "Asset",
+                        "props": {
+                          "token": "asset.icon.orders",
+                          "className": "size-5"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-nav-3-l",
+                    "componentSlug": "span",
+                    "props": {
+                      "className": "type-label-small text-muted-foreground truncate"
+                    },
+                    "text": "Đơn hàng"
+                  }
+                ]
+              },
+              {
+                "id": "m05-nav-4",
+                "componentSlug": "div",
+                "props": {
+                  "className": "flex flex-1 flex-col items-center gap-1 min-w-0"
+                },
+                "children": [
+                  {
+                    "id": "m05-nav-4-ic",
+                    "componentSlug": "div",
+                    "props": {
+                      "className": "flex size-10 items-center justify-center rounded-input text-muted-foreground"
+                    },
+                    "children": [
+                      {
+                        "id": "m05-nav-4-i",
+                        "componentSlug": "Asset",
+                        "props": {
+                          "token": "asset.icon.history",
+                          "className": "size-5"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "m05-nav-4-l",
+                    "componentSlug": "span",
+                    "props": {
+                      "className": "type-label-small text-muted-foreground truncate"
+                    },
+                    "text": "Lịch sử"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "flow": [
+      {
+        "from": "m05-add",
+        "to": "them-san-pham-add-product",
+        "type": "navigate",
+        "label": "Thêm sản phẩm"
+      }
+    ]
+  }
+}

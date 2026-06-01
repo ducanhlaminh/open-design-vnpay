@@ -1,0 +1,33 @@
+{
+  "name": "react-shadcn-builder",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Build-once harness: bundles the verbatim VNPAY components/ui set into a single self-contained IIFE that the react-shadcn skill inlines into its runtime template. Not shipped at runtime; only its dist output is.",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.4.1",
+    "@hookform/resolvers": "^5.2.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
+    "embla-carousel-react": "^8.6.0",
+    "input-otp": "^1.4.2",
+    "lucide-react": "^1.7.0",
+    "radix-ui": "^1.4.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-hook-form": "^7.72.0",
+    "tailwind-merge": "^3.5.0",
+    "vaul": "^1.1.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.5.3"
+  }
+}

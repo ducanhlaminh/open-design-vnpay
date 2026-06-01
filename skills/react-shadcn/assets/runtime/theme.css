@@ -1,0 +1,680 @@
+@import "tailwindcss";
+
+/* ---- inlined shadcn-tailwind.css ---- */
+@theme inline {
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(
+        --radix-accordion-content-height,
+        var(--accordion-panel-height, auto)
+      );
+    }
+  }
+
+  @keyframes accordion-up {
+    from {
+      height: var(
+        --radix-accordion-content-height,
+        var(--accordion-panel-height, auto)
+      );
+    }
+    to {
+      height: 0;
+    }
+  }
+}
+
+@custom-variant data-open {
+  &:where([data-state="open"]),
+  &:where([data-open]:not([data-open="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-closed {
+  &:where([data-state="closed"]),
+  &:where([data-closed]:not([data-closed="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-checked {
+  &:where([data-state="checked"]),
+  &:where([data-checked]:not([data-checked="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-unchecked {
+  &:where([data-state="unchecked"]),
+  &:where([data-unchecked]:not([data-unchecked="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-selected {
+  &:where([data-selected="true"]) {
+    @slot;
+  }
+}
+
+@custom-variant data-disabled {
+  &:where([data-disabled="true"]),
+  &:where([data-disabled]:not([data-disabled="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-active {
+  &:where([data-state="active"]),
+  &:where([data-active]:not([data-active="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-horizontal {
+  &:where([data-orientation="horizontal"]) {
+    @slot;
+  }
+}
+
+@custom-variant data-vertical {
+  &:where([data-orientation="vertical"]) {
+    @slot;
+  }
+}
+
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* ---- end shadcn-tailwind.css ---- */
+
+/* Scan the backend seed file so any Tailwind class string emitted into KG
+   (gradient stops, color/30 alpha, emerald-* etc.) gets compiled into the
+   frontend bundle. Without this, classes that only appear in seed data
+   render as no-ops at runtime. */
+/* Path recomputed: from ui/preview/preview-runtime-v3/src → ui/design-v3/apps/backend/... */
+
+@theme inline {
+  /* V10c/V11: each slot has TWO theme keys:
+       --color-X       = full CSS background value (gradient/multi-layer/mesh
+                         for paint/material slots, plain colour for colour
+                         slots). Consumed by `bg-X` (background shorthand).
+       --color-X-solid = dominant solid colour. For paint/material slots: the
+                         designer-provided or auto-extracted dominant colour.
+                         For colour slots: falls back to --color-X itself.
+                         Consumed by `text-X-solid` / `border-X-solid` /
+                         `ring-X-solid` — guaranteed-valid colour for CSS
+                         properties that don't accept gradient values. */
+  --color-background: var(--background);
+  --color-background-solid: var(--background-solid, var(--background));
+  --color-foreground: var(--foreground);
+  --color-foreground-solid: var(--foreground-solid, var(--foreground));
+  --color-card: var(--card);
+  --color-card-solid: var(--card-solid, var(--card));
+  --color-card-foreground: var(--card-foreground);
+
+  /* V12 — card surface variants. Token name IS the role; theme decides full
+     visual treatment per variant slot. The colour aliases below back the
+     plain `bg-card-{variant}` Tailwind utility — the resolver extracts the
+     first `bg-[oklch(...)]` colour from each variant's class-string token
+     and emits it as `--<X>` so `bg-card-{variant}` paints the dominant
+     background colour even before the composition CSS rule kicks in. The
+     full visual (backdrop / ring / shadow) flows through the resolver-
+     generated `.bg-card-{variant} { ... }` rules carried in cssText. */
+  --color-card-elevated: var(--card-elevated);
+  --color-card-elevated-foreground: var(--card-elevated-foreground);
+  --color-card-emphasis: var(--card-emphasis);
+  --color-card-emphasis-foreground: var(--card-emphasis-foreground);
+  --color-card-destructive: var(--card-destructive);
+  --color-card-destructive-foreground: var(--card-destructive-foreground);
+  --color-card-destructive-inverse: var(--card-destructive-inverse);
+  --color-card-destructive-inverse-foreground: var(--card-destructive-inverse-foreground);
+  --color-card-decoration-1: var(--card-decoration-1);
+  --color-card-decoration-1-foreground: var(--card-decoration-1-foreground);
+  --color-card-decoration-2: var(--card-decoration-2);
+  --color-card-decoration-2-foreground: var(--card-decoration-2-foreground);
+  --color-card-decoration-3: var(--card-decoration-3);
+  --color-card-decoration-3-foreground: var(--card-decoration-3-foreground);
+  --color-card-decoration-4: var(--card-decoration-4);
+  --color-card-decoration-4-foreground: var(--card-decoration-4-foreground);
+  --color-card-decoration-5: var(--card-decoration-5);
+  --color-card-decoration-5-foreground: var(--card-decoration-5-foreground);
+  --color-popover: var(--popover);
+  --color-popover-solid: var(--popover-solid, var(--popover));
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-solid: var(--primary-solid, var(--primary));
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-solid: var(--secondary-solid, var(--secondary));
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-solid: var(--muted-solid, var(--muted));
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-solid: var(--accent-solid, var(--accent));
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-solid: var(--destructive-solid, var(--destructive));
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-destructive-soft-solid: var(--destructive-soft-solid, var(--destructive-soft));
+  --color-destructive-soft-foreground: var(--destructive-soft-foreground);
+
+  /* Semantic intents — uniform 3-tier scale per intent. Aliases follow the
+     same pattern as destructive: `<intent>` (full emphasis), `<intent>-soft`
+     (low emphasis wash), `<intent>-foreground` (text on full emphasis). The
+     `*-solid` companions back text-X-solid / border-X-solid / ring-X-solid
+     when consumers need a guaranteed-valid colour value. */
+  --color-success: var(--success);
+  --color-success-solid: var(--success-solid, var(--success));
+  --color-success-soft: var(--success-soft);
+  --color-success-soft-solid: var(--success-soft-solid, var(--success-soft));
+  --color-success-foreground: var(--success-foreground);
+  --color-success-soft-foreground: var(--success-soft-foreground);
+
+  --color-warning: var(--warning);
+  --color-warning-solid: var(--warning-solid, var(--warning));
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-soft-solid: var(--warning-soft-solid, var(--warning-soft));
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-soft-foreground: var(--warning-soft-foreground);
+
+  --color-info: var(--info);
+  --color-info-solid: var(--info-solid, var(--info));
+  --color-info-soft: var(--info-soft);
+  --color-info-soft-solid: var(--info-soft-solid, var(--info-soft));
+  --color-info-foreground: var(--info-foreground);
+  --color-info-soft-foreground: var(--info-soft-foreground);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-border: var(--input-border, var(--border));
+  --color-ring: var(--ring);
+  --radius: var(--radius);
+
+  /* Spacing density emits primitive vars (`--space-0` through `--space-96`)
+     at resolve time. Do not alias them into Tailwind's global `--spacing-*`
+     namespace here: cockpit chrome and preview share the same bundle, so
+     global spacing theme overrides leak into the editor UI. Preview-only
+     spacing utilities are injected by PreviewRoot under `[data-theme-frame]`. */
+
+  /* V14: same idea for radius — register the named tokens so `rounded-card`,
+     `rounded-panel`, `rounded-pill`, `rounded-input` work as first-class
+     Tailwind utilities. */
+  --radius-card:    var(--radius-card);
+  --radius-panel:   var(--radius-panel);
+  --radius-pill:    var(--radius-pill);
+  --radius-input:   var(--radius-input);
+  --radius-control: var(--radius-control);
+
+  /* V13: material composite + companion theme keys retired. Surface slots
+     (card / popover / muted / background / V12 card-{variant}) are now
+     `string`-type tokens whose value is a Tailwind class composition. The
+     resolver still emits a plain `--<X>` colour var for each (extracted
+     from the first `bg-[oklch(...)]` class in the composition) so vanilla
+     `bg-card` / `bg-popover` Tailwind utilities keep working as a colour
+     fallback. The remainder of the composition (backdrop / shadow / ring)
+     is delivered via dynamic `.bg-<X> { ... }` rules generated from the
+     class string at resolve time and injected with the cssText. */
+}
+
+/* ─── V12 paint-aware @utility overrides ─────────────────────────────────────
+   Resolver emits ONE var per slot:
+     --<X> = full CSS background value (gradient/multi-layer/mesh for
+             paint/material slots, plain colour for colour slots).
+   For material slots additionally:
+     --<X>-backdrop / --<X>-border / --<X>-shadow / --<X>-border-gradient
+
+   `bg-X` works for every type (colour + paint + material bg layer). For full
+   material expansion (backdrop + border + shadow + optional gradient ring)
+   use `material-X` — generic, matches every material-typed token name.
+   ────────────────────────────────────────────────────────────────────────── */
+@utility bg-* {
+  /* ONE `background:` shorthand — accepts both color (oklch) and paint
+     (gradient/multi-layer/mesh with position/size/repeat baked into token
+     value). Slash modifier alpha-mixes the color sub-property only — for
+     paint slots the gradient layer keeps full opacity (CSS limit). */
+  background: --value(--color-*);
+  background-color: --alpha(--value(--color-*) / --modifier(integer, [percentage]));
+}
+
+/* V13: @utility material-* removed. Composition is now seeded as a Tailwind
+   class string per surface token; the resolver generates per-slot CSS rules
+   (`.bg-card { ... }`) at resolve time and ships them in cssText so vanilla
+   `bg-card` (no `material-card`) on the primitive picks up the active
+   theme's full visual treatment. */
+
+/* V10c: NO border-* @utility override — Tailwind canonical handles slash
+   alpha for color tokens automatically. For paint slots `border-X` resolves
+   to invalid `border-color: linear-gradient(...)` → fallback to currentColor.
+   Components needing gradient border opt in via the `.gradient-border`
+   utility below (mask-trick scoped to one element, no global selector
+   leaking position: relative onto every border-* class). */
+
+/* Opt-in gradient border — mask-trick preserves border-radius. Use when
+   element needs a gradient ring instead of solid border-color. Element must
+   already have `border-{N}` for width and a position-establishing parent (or
+   set `position: relative` directly).
+     <div class="border-2 gradient-border" style="--gradient-border: var(--color-primary)">
+   The `--gradient-border` var defaults to `none` so the pseudo is invisible
+   when not set. */
+.gradient-border {
+  position: relative;
+}
+.gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: var(--gradient-border-width, 1px);
+  background: var(--gradient-border, none);
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+@layer base {
+  :root {
+    --background: #0a0d14;
+    --foreground: #e8edf5;
+    --card: #10151f;
+    --card-foreground: #edf2f8;
+    --popover: #151b26;
+    --popover-foreground: #edf2f8;
+    --primary: #1fb6d4;
+    --primary-foreground: #021015;
+    --secondary: #17202c;
+    --secondary-foreground: #dbe5ef;
+    --muted: #1a2230;
+    --muted-foreground: #8795a8;
+    --accent: #e34d5f;
+    --accent-foreground: #fff4f5;
+    --destructive: #e5484d;
+    --destructive-foreground: #fff7f7;
+    --border: #253142;
+    --input: #253142;
+    --ring: #6ee7f8;
+    --radius: 8px;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    overflow: hidden;
+    background:
+      linear-gradient(135deg, rgba(31, 182, 212, 0.08), transparent 32%),
+      linear-gradient(315deg, rgba(227, 77, 95, 0.07), transparent 30%),
+      #080a0f;
+    color: var(--foreground);
+    /* Body opts in to the active theme's body family via --font-sans
+       (set by theme-lab resolver). Inter remains the ultimate fallback. */
+    font-family: var(
+      --font-sans,
+      "Inter",
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif
+    );
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+}
+
+@layer utilities {
+  /* Font-family utilities that read the active theme's CSS vars emitted by
+     the theme-lab resolver (font.family.display/body/mono → --font-family-*).
+     Apply .font-display to headlines and big metrics so seeded display faces
+     (Fraunces, Bricolage Grotesque, …) actually take effect. */
+  .font-display {
+    font-family: var(
+      --font-display,
+      var(
+        --font-sans,
+        "Inter",
+        ui-sans-serif,
+        system-ui,
+        sans-serif
+      )
+    );
+  }
+  .font-body {
+    font-family: var(
+      --font-sans,
+      "Inter",
+      ui-sans-serif,
+      system-ui,
+      sans-serif
+    );
+  }
+  .font-mono {
+    font-family: var(
+      --font-mono,
+      "JetBrains Mono",
+      ui-monospace,
+      "SF Mono",
+      Menlo,
+      Consolas,
+      monospace
+    );
+  }
+
+  /* Typography utilities — read the active font collection's text-* tokens
+     emitted by the theme-lab resolver (font.dashboard, font.editorial, …).
+     Each typography token also materializes companion vars
+     (`--text-X-{family,size,line-height,weight}`) via the resolver's
+     typographyFieldVars expansion. We bind individual properties (NOT the
+     `font:` shorthand) because the shorthand fails as a single unit if any
+     sub-var is unset on a composition that didn't seed every variant —
+     individual props with sane fallbacks degrade gracefully. Prefix is
+     `type-` to avoid collision with Tailwind's `text-{size}` utility. */
+  .type-display-large {
+    font-family: var(--text-display-large-family, var(--font-display, var(--font-sans)));
+    font-size: var(--text-display-large-size, 96px);
+    line-height: var(--text-display-large-line-height, 104px);
+    font-weight: var(--text-display-large-weight, 700);
+    letter-spacing: var(--text-display-large-tracking, -0.01em);
+  }
+  .type-display-medium {
+    font-family: var(--text-display-medium-family, var(--font-display, var(--font-sans)));
+    font-size: var(--text-display-medium-size, 72px);
+    line-height: var(--text-display-medium-line-height, 80px);
+    font-weight: var(--text-display-medium-weight, 700);
+    letter-spacing: var(--text-display-medium-tracking, -0.005em);
+  }
+  .type-display-small {
+    font-family: var(--text-display-small-family, var(--font-display, var(--font-sans)));
+    font-size: var(--text-display-small-size, 56px);
+    line-height: var(--text-display-small-line-height, 64px);
+    font-weight: var(--text-display-small-weight, 700);
+    letter-spacing: var(--text-display-small-tracking, 0em);
+  }
+  .type-heading-large,
+  .type-headline-large {
+    font-family: var(--text-heading-large-family, var(--text-headline-large-family, var(--font-display, var(--font-sans))));
+    font-size: var(--text-heading-large-size, var(--text-headline-large-size, 40px));
+    line-height: var(--text-heading-large-line-height, var(--text-headline-large-line-height, 48px));
+    font-weight: var(--text-heading-large-weight, var(--text-headline-large-weight, 650));
+    letter-spacing: var(--text-heading-large-tracking, var(--text-headline-large-tracking, 0em));
+  }
+  .type-heading-medium,
+  .type-headline-medium {
+    font-family: var(--text-heading-medium-family, var(--text-headline-medium-family, var(--font-display, var(--font-sans))));
+    font-size: var(--text-heading-medium-size, var(--text-headline-medium-size, 32px));
+    line-height: var(--text-heading-medium-line-height, var(--text-headline-medium-line-height, 40px));
+    font-weight: var(--text-heading-medium-weight, var(--text-headline-medium-weight, 650));
+    letter-spacing: var(--text-heading-medium-tracking, var(--text-headline-medium-tracking, 0em));
+  }
+  .type-heading-small,
+  .type-headline-small {
+    font-family: var(--text-heading-small-family, var(--text-headline-small-family, var(--font-display, var(--font-sans))));
+    font-size: var(--text-heading-small-size, var(--text-headline-small-size, 24px));
+    line-height: var(--text-heading-small-line-height, var(--text-headline-small-line-height, 32px));
+    font-weight: var(--text-heading-small-weight, var(--text-headline-small-weight, 650));
+    letter-spacing: var(--text-heading-small-tracking, var(--text-headline-small-tracking, 0em));
+  }
+  .type-title-large {
+    font-family: var(--text-title-large-family, var(--font-sans));
+    font-size: var(--text-title-large-size, 22px);
+    line-height: var(--text-title-large-line-height, 30px);
+    font-weight: var(--text-title-large-weight, 600);
+    letter-spacing: var(--text-title-large-tracking, 0em);
+  }
+  .type-title-medium {
+    font-family: var(--text-title-medium-family, var(--font-sans));
+    font-size: var(--text-title-medium-size, 18px);
+    line-height: var(--text-title-medium-line-height, 26px);
+    font-weight: var(--text-title-medium-weight, 600);
+    letter-spacing: var(--text-title-medium-tracking, 0em);
+  }
+  .type-title-small {
+    font-family: var(--text-title-small-family, var(--font-sans));
+    font-size: var(--text-title-small-size, 16px);
+    line-height: var(--text-title-small-line-height, 24px);
+    font-weight: var(--text-title-small-weight, 600);
+    letter-spacing: var(--text-title-small-tracking, 0em);
+  }
+  .type-body-xl {
+    font-family: var(--text-body-xl-family, var(--font-sans));
+    font-size: var(--text-body-xl-size, 20px);
+    line-height: var(--text-body-xl-line-height, 32px);
+    font-weight: var(--text-body-xl-weight, 400);
+    letter-spacing: var(--text-body-xl-tracking, 0em);
+  }
+  .type-body-large {
+    font-family: var(--text-body-large-family, var(--font-sans));
+    font-size: var(--text-body-large-size, 18px);
+    line-height: var(--text-body-large-line-height, 28px);
+    font-weight: var(--text-body-large-weight, 400);
+    letter-spacing: var(--text-body-large-tracking, 0em);
+  }
+  .type-body {
+    font-family: var(--text-body-family, var(--font-sans));
+    font-size: var(--text-body-size, 16px);
+    line-height: var(--text-body-line-height, 24px);
+    font-weight: var(--text-body-weight, 400);
+    letter-spacing: var(--text-body-tracking, 0em);
+  }
+  .type-body-small {
+    font-family: var(--text-body-small-family, var(--font-sans));
+    font-size: var(--text-body-small-size, 14px);
+    line-height: var(--text-body-small-line-height, 20px);
+    font-weight: var(--text-body-small-weight, 400);
+    letter-spacing: var(--text-body-small-tracking, 0em);
+  }
+  .type-body-xs,
+  .type-caption {
+    font-family: var(--text-body-xs-family, var(--text-caption-family, var(--font-sans)));
+    font-size: var(--text-body-xs-size, var(--text-caption-size, 12px));
+    line-height: var(--text-body-xs-line-height, var(--text-caption-line-height, 18px));
+    font-weight: var(--text-body-xs-weight, var(--text-caption-weight, 400));
+    letter-spacing: var(--text-body-xs-tracking, var(--text-caption-tracking, 0em));
+  }
+  .type-body-emphasis-xl {
+    font-family: var(--text-body-emphasis-xl-family, var(--font-sans));
+    font-size: var(--text-body-emphasis-xl-size, 20px);
+    line-height: var(--text-body-emphasis-xl-line-height, 32px);
+    font-weight: var(--text-body-emphasis-xl-weight, 600);
+  }
+  .type-body-emphasis-large {
+    font-family: var(--text-body-emphasis-large-family, var(--font-sans));
+    font-size: var(--text-body-emphasis-large-size, 18px);
+    line-height: var(--text-body-emphasis-large-line-height, 28px);
+    font-weight: var(--text-body-emphasis-large-weight, 600);
+  }
+  .type-body-emphasis {
+    font-family: var(--text-body-emphasis-family, var(--font-sans));
+    font-size: var(--text-body-emphasis-size, 16px);
+    line-height: var(--text-body-emphasis-line-height, 24px);
+    font-weight: var(--text-body-emphasis-weight, 600);
+  }
+  .type-body-emphasis-small {
+    font-family: var(--text-body-emphasis-small-family, var(--font-sans));
+    font-size: var(--text-body-emphasis-small-size, 14px);
+    line-height: var(--text-body-emphasis-small-line-height, 20px);
+    font-weight: var(--text-body-emphasis-small-weight, 600);
+  }
+  .type-body-emphasis-xs {
+    font-family: var(--text-body-emphasis-xs-family, var(--font-sans));
+    font-size: var(--text-body-emphasis-xs-size, 12px);
+    line-height: var(--text-body-emphasis-xs-line-height, 18px);
+    font-weight: var(--text-body-emphasis-xs-weight, 600);
+  }
+  .type-label-large {
+    font-family: var(--text-label-large-family, var(--font-sans));
+    font-size: var(--text-label-large-size, 16px);
+    line-height: var(--text-label-large-line-height, 24px);
+    font-weight: var(--text-label-large-weight, 500);
+    letter-spacing: var(--text-label-large-tracking, 0em);
+  }
+  .type-label {
+    font-family: var(--text-label-family, var(--font-sans));
+    font-size: var(--text-label-size, 14px);
+    line-height: var(--text-label-line-height, 20px);
+    font-weight: var(--text-label-weight, 500);
+    letter-spacing: var(--text-label-tracking, 0em);
+  }
+  .type-label-small {
+    font-family: var(--text-label-small-family, var(--font-sans));
+    font-size: var(--text-label-small-size, 12px);
+    line-height: var(--text-label-small-line-height, 16px);
+    font-weight: var(--text-label-small-weight, 500);
+    letter-spacing: var(--text-label-small-tracking, 0em);
+  }
+  .type-label-xs {
+    font-family: var(--text-label-xs-family, var(--font-sans));
+    font-size: var(--text-label-xs-size, 11px);
+    line-height: var(--text-label-xs-line-height, 14px);
+    font-weight: var(--text-label-xs-weight, 500);
+    letter-spacing: var(--text-label-xs-tracking, 0em);
+  }
+  .type-label-2xs {
+    font-family: var(--text-label-2xs-family, var(--font-sans));
+    font-size: var(--text-label-2xs-size, 10px);
+    line-height: var(--text-label-2xs-line-height, 12px);
+    font-weight: var(--text-label-2xs-weight, 500);
+    letter-spacing: var(--text-label-2xs-tracking, 0.01em);
+  }
+  .type-code {
+    font-family: var(--text-code-family, var(--font-mono));
+    font-size: var(--text-code-size, 13px);
+    line-height: var(--text-code-line-height, 20px);
+    font-weight: var(--text-code-weight, 500);
+  }
+  .type-code-small {
+    font-family: var(--text-code-small-family, var(--font-mono));
+    font-size: var(--text-code-small-size, 12px);
+    line-height: var(--text-code-small-line-height, 18px);
+    font-weight: var(--text-code-small-weight, 500);
+  }
+
+  /* V12 — material composite utilities are now generic (`material-*`,
+     defined as @utility above). The hardcoded `.card-material` /
+     `.popover-material` / `.muted-material` / `.background-material` rules
+     are removed: each one only served a single token name and didn't
+     extend to V12 variants (card-elevated / card-emphasis / card-
+     destructive[-inverse] / card-decoration-{1..5}). Components now write
+     `material-card`, `material-popover`, `material-card-decoration-1`, …
+     and Tailwind v4 expands `*` against the registered theme keys. */
+}
+
+@layer components {
+  .v4-header {
+    @apply flex min-h-[76px] flex-none items-center justify-between gap-4 border-b border-white/10 bg-[#0b0f17]/95 px-5 py-3 backdrop-blur;
+  }
+
+  .v4-kicker {
+    @apply text-xs font-semibold uppercase tracking-[0.18em] text-cyan-200/75;
+  }
+
+  .v4-title {
+    @apply truncate text-xl font-semibold tracking-normal text-white;
+  }
+
+  .v4-panel {
+    @apply rounded-lg border border-white/10 bg-[#0f141e]/90 shadow-[0_24px_80px_rgba(0,0,0,0.28)];
+  }
+
+  .v4-button {
+    @apply inline-flex h-9 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-white/10 bg-white/[0.04] px-3 text-sm font-semibold text-slate-200 transition hover:border-cyan-200/35 hover:bg-cyan-200/10 hover:text-white;
+  }
+
+  .v4-button-primary {
+    @apply border-cyan-200/45 bg-cyan-200 text-slate-950 hover:bg-cyan-100 hover:text-slate-950;
+  }
+
+  .v4-icon-action {
+    @apply inline-flex h-10 items-center justify-center gap-2 rounded-md border border-white/10 bg-white/[0.04] px-3 text-sm font-semibold text-slate-200 hover:border-cyan-200/35 hover:text-white;
+  }
+
+  .v4-square-button {
+    @apply inline-flex size-9 flex-none items-center justify-center rounded-md border border-white/10 bg-white/[0.04] text-slate-200 hover:border-cyan-200/35 hover:bg-cyan-200/10 hover:text-white;
+  }
+
+  .v4-pill {
+    @apply inline-flex h-6 items-center rounded-md border border-white/10 bg-white/[0.05] px-2 text-xs font-semibold text-slate-400;
+  }
+
+  .v4-pill-green {
+    @apply border-emerald-300/25 bg-emerald-300/10 text-emerald-200;
+  }
+
+  .v4-mark {
+    @apply flex size-11 flex-none items-center justify-center rounded-lg border border-cyan-300/25 bg-cyan-300/10 text-cyan-100;
+  }
+
+  .v4-search {
+    @apply flex h-10 items-center gap-2 rounded-md border border-white/10 bg-black/20 px-3;
+  }
+
+  .v4-search input,
+  .v4-input {
+    @apply min-w-0 flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-600;
+  }
+
+  .v4-select {
+    @apply h-10 w-full rounded-md border border-white/10 bg-[#121924] px-3 text-sm text-slate-100 outline-none;
+  }
+
+  .v4-nav-item {
+    @apply flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm font-medium text-slate-400 hover:bg-white/[0.04] hover:text-slate-100;
+  }
+
+  .v4-nav-item.is-active,
+  .v4-tab.is-active,
+  .v4-list-button.is-active {
+    @apply border-cyan-300/35 bg-cyan-300/10 text-cyan-100;
+  }
+
+  .v4-tab {
+    @apply inline-flex h-9 items-center justify-center gap-2 rounded-md border border-transparent px-3 text-sm font-semibold text-slate-400 hover:bg-white/[0.04] hover:text-slate-100;
+  }
+
+  .v4-list-button {
+    @apply flex min-h-9 w-full items-center justify-between gap-2 rounded-md border border-transparent px-3 py-2 text-left text-sm text-slate-400 hover:bg-white/[0.04] hover:text-slate-100;
+  }
+
+  .v4-link {
+    @apply text-sm font-semibold text-cyan-200 hover:text-cyan-100;
+  }
+}
+
+@utility scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
