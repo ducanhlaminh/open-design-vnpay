@@ -3,6 +3,7 @@ packages:
   - apps/*
   - tools/*
   - e2e
+  - ui
 
 overrides:
   brace-expansion: 5.0.6
