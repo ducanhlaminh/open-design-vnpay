@@ -1,0 +1,30 @@
+# Project-local Neo4j for the Open Design UI knowledge graph.
+# Lifecycle is owned by `pnpm tools-kg neo4j up|down|status` — it injects
+# OD_KG_PASSWORD / port env vars and runs `docker compose -p od-kg -f this-file ...`.
+# Data persists in named Docker volumes (od-kg_data / od-kg_logs): bind mounts
+# into the repo are not used because macOS blocks Docker from mounting under
+# ~/Downloads and the repo's .od/ is runtime-only anyway. `neo4j down` keeps
+# the volumes; `docker volume rm od-kg_data od-kg_logs` is the explicit reset.
+name: od-kg
+services:
+  neo4j:
+    image: neo4j:5.26.4-community
+    container_name: od-kg-neo4j
+    ports:
+      - "${OD_KG_BOLT_PORT:-27787}:7687"
+      - "${OD_KG_HTTP_PORT:-27475}:7474"
+    environment:
+      NEO4J_AUTH: "neo4j/${OD_KG_PASSWORD:-od_local_password}"
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512M
+    volumes:
+      - data:/data
+      - logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 24
+volumes:
+  data:
+  logs:

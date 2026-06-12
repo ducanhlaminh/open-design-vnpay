@@ -1,10 +1,27 @@
 {
   "servers": [
     {
-      "id": "sm-mcp",
+      "id": "kg-local",
       "transport": "stdio",
       "enabled": true,
-      "label": "Knowledge Graph (sm-mcp)",
+      "label": "Local UI Knowledge Graph (od-kg)",
+      "command": "/Users/anhnd13/.nvm/versions/node/v24.14.1/bin/node",
+      "args": [
+        "/Users/anhnd13/Downloads/open-design-vnpay/tools/kg/bin/tools-kg.mjs",
+        "mcp"
+      ],
+      "env": {
+        "OD_KG_BOLT_URI": "bolt://localhost:27787",
+        "OD_KG_USER": "neo4j",
+        "OD_KG_PASSWORD": "od_local_password",
+        "OD_KG_WORKSPACE": "ws-od-prototypes"
+      }
+    },
+    {
+      "id": "sm-mcp",
+      "transport": "stdio",
+      "enabled": false,
+      "label": "Knowledge Graph (sm-mcp — retired, replaced by kg-local)",
       "command": "/Users/anhnd13/.local/bin/sm-mcp",
       "args": [
         "-transport=stdio"
@@ -20,15 +37,35 @@
       }
     },
     {
+      "id": "ba-agent",
+      "transport": "http",
+      "enabled": true,
+      "label": "BA Agent",
+      "url": "https://a2.openledger.vn/api/mcp/",
+      "authMode": "none",
+      "headers": {
+        "Authorization": "Bearer mcp_8fa6c06e_M4UvTXvDVT_abi-P15Dgsd7KuxEua6nrt1lY--kMdlg"
+      }
+    },
+    {
       "id": "bas-mcp",
       "transport": "http",
       "enabled": false,
-      "authMode": "none",
       "label": "BAS MCP Gateway",
       "url": "http://localhost:8090/mcp/",
+      "authMode": "none",
       "headers": {
         "Authorization": "Bearer CHANGE_ME_BAS_ACCESS_TOKEN"
       }
+    },
+    {
+      "id": "figma-use",
+      "transport": "http",
+      "enabled": true,
+      "label": "figma-use (write designs from chat)",
+      "templateId": "figma-use",
+      "url": "http://localhost:38451/mcp",
+      "authMode": "none"
     }
   ]
 }

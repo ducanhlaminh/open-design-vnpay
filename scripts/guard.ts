@@ -66,6 +66,7 @@ const residualAllowedExactPaths = new Set([
   "packages/registry-protocol/esbuild.config.mjs",
   "packages/sidecar/esbuild.config.mjs",
   "packages/sidecar-proto/esbuild.config.mjs",
+  "packages/figma-clip/esbuild.config.mjs",
   // Maintainer utility scripts ported from the media branch. They are
   // executed directly by Node and are not loaded by the app runtime.
   "scripts/import-prompt-templates.mjs",
@@ -81,6 +82,8 @@ const residualAllowedExactPaths = new Set([
   "scripts/verify-media-models.mjs",
   "tools/dev/bin/tools-dev.mjs",
   "tools/dev/esbuild.config.mjs",
+  "tools/kg/bin/tools-kg.mjs",
+  "tools/kg/esbuild.config.mjs",
   "tools/pack/bin/tools-pack.mjs",
   "tools/pack/esbuild.config.mjs",
   "tools/serve/bin/tools-serve.mjs",
@@ -88,6 +91,9 @@ const residualAllowedExactPaths = new Set([
   "tools/pack/resources/mac/notarize.cjs",
   // electron-builder hook path; CJS compatibility entry used by tools-pack desktop builds.
   "tools/pack/resources/web-standalone-after-pack.cjs",
+  // Generated runtime bundle for the react-shadcn skill (emitted by builder/build.mjs,
+  // loaded verbatim inside the preview iframe; never hand-edited TypeScript source).
+  "skills/react-shadcn/assets/runtime/components.bundle.js",
 ]);
 
 const residualAllowedPathPrefixes = [
@@ -126,6 +132,10 @@ const residualAllowedPathPatterns: RegExp[] = [
   // assets are vendored runtime, never project-owned code, and must
   // not be retypecasted to TypeScript.
   /^plugins\/_official\/examples\/[^/]+\/(assets|references)\/.+$/,
+  // Functional skills ship node-run build/orchestration scripts and vendored runtime
+  // assets (executed directly by Node, never bundled into the app). e.g. react-shadcn's
+  // builder/*.mjs and html-to-figma's copy-figma.mjs + vendored extract.cjs extractor.
+  /^skills\/[^/]+\/(builder|scripts|assets)\/.+\.(mjs|cjs)$/,
 ];
 
 function isResidualAllowedPath(repositoryPath: string): boolean {
@@ -588,6 +598,9 @@ const toolsRootAllowlist = new Map<string, "directory" | "file">([
   // Windows shim experiment from PR #683 and is not an active repo boundary.
   ["AGENTS.md", "file"],
   ["dev", "directory"],
+  // Local UI knowledge-graph control plane: project-local Neo4j lifecycle,
+  // upstream UI-subgraph clone, screen lint/export, and the od-kg MCP server.
+  ["kg", "directory"],
   ["pack", "directory"],
   ["serve", "directory"],
 ]);

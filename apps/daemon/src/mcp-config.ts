@@ -398,6 +398,11 @@ export interface AcpMcpServer {
  * stdio servers are enabled — caller should delete any stale profile
  * file and SKIP the `--profile-v2` flag in that case so Codex doesn't
  * try to load an empty layer.
+ *
+ * Open Design runs Codex headlessly, so there is no interactive approval
+ * surface for MCP calls. Enabled servers are already an explicit user choice
+ * in Settings; mark their tools approved or Codex reports every call as
+ * "user cancelled MCP tool call".
  */
 export function buildCodexMcpToml(servers: McpServerConfig[]): string | null {
   const enabled = servers.filter((s) => s.enabled && s.transport === 'stdio');

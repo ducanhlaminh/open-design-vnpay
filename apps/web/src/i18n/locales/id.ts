@@ -1087,6 +1087,10 @@ export const id: Dict = {
   'sketch.tooltipClean': 'Tersimpan',
 
   'fileViewer.empty': 'Pilih file untuk dilihat.',
+  'fileViewer.copyToFigma': "Copy to Figma",
+  'fileViewer.copyToFigmaBusy': "Extracting…",
+  'fileViewer.copyToFigmaDone': "Copied — paste into Figma",
+  'fileViewer.copyToFigmaError': "Copy failed",
   'fileViewer.loading': 'Memuat file...',
   'fileViewer.exportPptx': 'Ekspor PPTX',
   'fileViewer.openInNewTab': 'Buka di tab baru',

@@ -1886,6 +1886,10 @@ export interface Dict {
   'sketch.tooltipDirty': string;
   'sketch.tooltipClean': string;
   'fileViewer.empty': string;
+  'fileViewer.copyToFigma': string;
+  'fileViewer.copyToFigmaBusy': string;
+  'fileViewer.copyToFigmaDone': string;
+  'fileViewer.copyToFigmaError': string;
   'fileViewer.loading': string;
   'fileViewer.exportPptx': string;
   'fileViewer.openInNewTab': string;

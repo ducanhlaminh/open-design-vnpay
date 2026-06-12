@@ -1,0 +1,30 @@
+{
+  "name": "@open-design/tools-kg",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local UI knowledge-graph control plane: project-local Neo4j lifecycle (Docker), one-way clone of the UI subgraph from the upstream design KG, screen lint/export, and the od-kg stdio MCP server agents use to author prototype screens as graph nodes/edges.",
+  "bin": {
+    "tools-kg": "./bin/tools-kg.mjs"
+  },
+  "scripts": {
+    "build": "node ./esbuild.config.mjs && tsc -p tsconfig.json --emitDeclarationOnly",
+    "dev": "tsx ./src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "cac": "6.7.14",
+    "neo4j-driver": "5.28.3",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.2",
+    "esbuild": "0.28.0",
+    "tsx": "4.22.3",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": "~24"
+  }
+}

@@ -86,6 +86,7 @@ import type {
 } from '../types';
 import { Icon } from './Icon';
 import { RemixIcon } from './RemixIcon';
+import { submitFigmaClipboard } from '../providers/daemon';
 import { Toast } from './Toast';
 import { PreviewDrawOverlay } from './PreviewDrawOverlay';
 import {
@@ -6074,6 +6075,66 @@ function HtmlViewer({
   };
   const boardAvailable = mode === 'preview' && source !== null;
   const showPreviewToolbarControls = mode === 'preview';
+
+  // Copy to Figma — extract the rendered artifact (iframe DOM) to IR client-side, POST it to the
+  // daemon for the IR→.fig transform, then write the clipboard payload. Paste straight into Figma.
+  const [figmaCopyState, setFigmaCopyState] = useState<'idle' | 'busy' | 'ok' | 'err'>('idle');
+  const [figmaCopyErr, setFigmaCopyErr] = useState<string | null>(null);
+  const figmaCopyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyToFigma = useCallback(() => {
+    if (figmaCopyState === 'busy') return;
+    if (figmaCopyResetRef.current) clearTimeout(figmaCopyResetRef.current);
+    const html = typeof source === 'string' && source.trim() ? source : null;
+    if (!html) {
+      setFigmaCopyErr('Chưa có nội dung artifact để trích xuất (source rỗng)');
+      setFigmaCopyState('err');
+      figmaCopyResetRef.current = setTimeout(() => setFigmaCopyState('idle'), 3200);
+      return;
+    }
+    const previewWidth = Math.round(iframeRef.current?.getBoundingClientRect().width || 430);
+    setFigmaCopyErr(null);
+    setFigmaCopyState('busy');
+    // Build the payload Blob lazily; clipboard.write is invoked synchronously inside the click
+    // gesture with a Promise-valued ClipboardItem, so the browser doesn't reject with "document
+    // not focused" / expired-gesture after the async extract + daemon round-trip. Extraction runs
+    // on a private same-origin srcdoc iframe (the live preview iframe is cross-origin/unreadable).
+    const payload = (async () => {
+      const { extractIRFromHTML } = await import('../lib/html-to-ir');
+      const { ir } = await extractIRFromHTML(html, previewWidth);
+      const res = await submitFigmaClipboard(ir);
+      if (!res || typeof res.html !== 'string') {
+        throw new Error('Daemon không trả payload (endpoint /api/artifacts/figma-clipboard?)');
+      }
+      return new Blob([res.html], { type: 'text/html' });
+    })();
+    const done = (state: 'ok' | 'err', err?: unknown) => {
+      if (err) {
+        // eslint-disable-next-line no-console
+        console.error('[Copy to Figma]', err);
+        setFigmaCopyErr(err instanceof Error ? err.message : String(err));
+      }
+      setFigmaCopyState(state);
+      figmaCopyResetRef.current = setTimeout(() => setFigmaCopyState('idle'), 3200);
+    };
+    try {
+      window.focus();
+      navigator.clipboard
+        .write([new ClipboardItem({ 'text/html': payload })])
+        .then(() => done('ok'))
+        .catch((err) => {
+          // Fallback for browsers that reject a Promise-valued ClipboardItem: await then write.
+          payload
+            .then((blob) => navigator.clipboard.write([new ClipboardItem({ 'text/html': blob })]))
+            .then(() => done('ok'))
+            .catch((err2) => done('err', err2 || err));
+        });
+    } catch (err) {
+      // surface extract/clipboard-unsupported errors
+      payload.catch(() => {}); // avoid unhandled rejection
+      done('err', err);
+    }
+  }, [figmaCopyState]);
+  useEffect(() => () => { if (figmaCopyResetRef.current) clearTimeout(figmaCopyResetRef.current); }, []);
   const manualEditPanel = manualEditMode ? (
     <ManualEditPanel
       targets={manualEditTargets}
@@ -6360,6 +6421,35 @@ function HtmlViewer({
                 onClick={activateScreenshotTool}
               >
                 <RemixIcon name="screenshot-2-line" size={15} />
+              </button>
+              <button
+                type="button"
+                className={`viewer-action viewer-action-icon${figmaCopyState === 'ok' ? ' active' : ''}`}
+                data-testid="copy-to-figma"
+                data-tooltip={
+                  figmaCopyState === 'ok'
+                    ? t('fileViewer.copyToFigmaDone')
+                    : figmaCopyState === 'err'
+                      ? figmaCopyErr || t('fileViewer.copyToFigmaError')
+                      : figmaCopyState === 'busy'
+                        ? t('fileViewer.copyToFigmaBusy')
+                        : t('fileViewer.copyToFigma')
+                }
+                title={t('fileViewer.copyToFigma')}
+                aria-label={t('fileViewer.copyToFigma')}
+                disabled={figmaCopyState === 'busy'}
+                onClick={copyToFigma}
+              >
+                <RemixIcon
+                  name={
+                    figmaCopyState === 'ok'
+                      ? 'check-line'
+                      : figmaCopyState === 'err'
+                        ? 'error-warning-line'
+                        : 'clipboard-line'
+                  }
+                  size={15}
+                />
               </button>
               {source !== null && mode === 'preview' ? (
                 <div className="zoom-menu viewer-toolbar-zoom" ref={zoomMenuRef}>

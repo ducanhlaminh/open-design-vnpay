@@ -203,8 +203,144 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
   'bundled', 'no-bundled',
 ]);
 
+const FIGMA_STRING_FLAGS = new Set(['daemon-url', 'selector', 'out']);
+const FIGMA_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
+
+function resolveCopyFigmaScript(req) {
+  const path = req('node:path');
+  const fs = req('node:fs');
+  const { fileURLToPath } = req('node:url');
+  const rel = 'skills/html-to-figma/scripts/copy-figma.mjs';
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    // apps/daemon/{dist|src} → repo root
+    path.resolve(here, '../../..', rel),
+    path.resolve(here, '../../../..', rel),
+    path.resolve(process.cwd(), rel),
+  ];
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return c; } catch { /* keep trying */ }
+  }
+  return null;
+}
+
+function figmaCopyPageHtml(payload, name) {
+  const b64 = Buffer.from(payload, 'utf8').toString('base64');
+  return `<!DOCTYPE html><meta charset="utf-8"><title>Copy to Figma — ${name}</title>
+<body style="font:15px/1.5 system-ui;max-width:640px;margin:48px auto;padding:0 16px">
+<h1 style="font-size:20px">Copy to Figma — ${name}</h1>
+<p>Bấm nút, rồi sang Figma <b>Cmd/Ctrl+V</b>. Ra node Auto Layout editable, không cần plugin.</p>
+<button onclick="cp()" style="font:600 16px system-ui;padding:14px 28px;border:0;border-radius:10px;background:#0d99ff;color:#fff;cursor:pointer">⧉ Copy to Figma</button>
+<div id="s" style="margin-top:16px;font-family:monospace;color:#0c7a35"></div>
+<script>const p=atob("${b64}");async function cp(){try{await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([p],{type:'text/html'})})]);s.textContent='\\u2713 copied '+p.length+' bytes';}catch(e){s.textContent='\\u2717 '+e.message}}</script>`;
+}
+
+// `od figma copy <artifact.html>` — extract the HTML to IR (Playwright, via the html-to-figma
+// skill) then POST it to the daemon's /api/artifacts/figma-clipboard (same endpoint the web
+// "Copy to Figma" button uses) to get a paste-ready payload. Writes <name>.figma.html + a
+// one-click <name>.copy.html beside the input.
+async function runFigma(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(
+      'od figma copy <artifact.html> [--selector <css>] [--out <path>] [--json] [--daemon-url <url>]\n' +
+        '  HTML (Contract-clean) -> Figma clipboard payload. Paste into Figma, no plugin.',
+    );
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  if (sub !== 'copy') {
+    console.error(`unknown figma subcommand: ${sub} (expected: copy)`);
+    process.exit(2);
+  }
+  const rest = args.slice(1);
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: FIGMA_STRING_FLAGS, boolean: FIGMA_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const input = rest.find((a) => a && !a.startsWith('-'));
+  if (!input) {
+    console.error('usage: od figma copy <artifact.html>');
+    process.exit(2);
+  }
+  const { createRequire } = await import('node:module');
+  const req = createRequire(import.meta.url);
+  const path = req('node:path');
+  const fs = req('node:fs');
+  const { spawnSync } = req('node:child_process');
+  const absInput = path.resolve(input);
+  if (!fs.existsSync(absInput)) {
+    console.error(`file not found: ${absInput}`);
+    process.exit(2);
+  }
+  const script = resolveCopyFigmaScript(req);
+  if (!script) {
+    console.error('không tìm thấy skills/html-to-figma/scripts/copy-figma.mjs (chạy từ trong repo)');
+    process.exit(1);
+  }
+  // extract HTML -> IR (Playwright runs inside copy-figma.mjs --ir-only)
+  const exArgs = [script, absInput, '--ir-only'];
+  if (typeof flags.selector === 'string') exArgs.push('--selector', flags.selector);
+  const ex = spawnSync(process.execPath, exArgs, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  if (ex.stderr) process.stderr.write(ex.stderr);
+  if (ex.status !== 0) {
+    console.error(
+      `extract thất bại (mã ${ex.status}). Thiếu Playwright? cd skills/html-to-figma && npm i playwright && npx playwright install chromium`,
+    );
+    process.exit(1);
+  }
+  let ir;
+  try {
+    ir = JSON.parse(ex.stdout);
+  } catch {
+    console.error('IR JSON không hợp lệ từ extractor');
+    process.exit(1);
+  }
+  // daemon owns the IR -> .fig transform (single source of truth, same as the web button)
+  const base = await cliDaemonBaseUrl(flags);
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/artifacts/figma-clipboard`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ir }),
+    });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(1);
+  }
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || typeof data.html !== 'string') {
+    console.error(`POST /api/artifacts/figma-clipboard failed: ${resp.status} ${JSON.stringify(data)}`);
+    process.exit(1);
+  }
+  const name = path.basename(absInput, path.extname(absInput));
+  const payloadPath =
+    typeof flags.out === 'string' ? path.resolve(flags.out) : path.join(path.dirname(absInput), `${name}.figma.html`);
+  const outDir = path.dirname(payloadPath);
+  const copyPath = path.join(outDir, `${name}.copy.html`);
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(payloadPath, data.html, 'utf8');
+  fs.writeFileSync(copyPath, figmaCopyPageHtml(data.html, name), 'utf8');
+  if (flags.json) {
+    process.stdout.write(
+      JSON.stringify({ payloadPath, copyPath, warnings: data.warnings || [], stats: data.stats }, null, 2) + '\n',
+    );
+    return;
+  }
+  console.log(`[figma] payload: ${payloadPath} (${data.stats?.bytes} bytes)`);
+  console.log(`[figma] paste page: ${copyPath} — mở browser, bấm "Copy to Figma"`);
+  if (Array.isArray(data.warnings) && data.warnings.length) {
+    console.log(`[figma] ${data.warnings.length} cảnh báo:`);
+    data.warnings.forEach((w) => console.log('  - ' + w));
+  }
+}
+
 const SUBCOMMAND_MAP = {
   artifacts: runArtifacts,
+  figma: runFigma,
   media: runMedia,
   mcp: runMcp,
   research: runResearch,
