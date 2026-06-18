@@ -207,6 +207,7 @@ const SUBCOMMAND_MAP = {
   artifacts: runArtifacts,
   media: runMedia,
   mcp: runMcp,
+  kg: runKg,
   research: runResearch,
   plugin: runPlugin,
   ui: runUi,
@@ -897,6 +898,97 @@ async function structuredHttpFailure(resp, fallbackCode = 'daemon-not-running') 
     message: parsed?.error?.message ?? `HTTP ${resp.status}: ${await resp.text().catch(() => '')}`,
     data:    parsed?.error?.data,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: od kg
+// ---------------------------------------------------------------------------
+
+async function runKg(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od kg push <file.json> --project-id <id>   Push a Customer Journey / UX Spec
+                                             JSON into the Knowledge Graph
+                                             (open-design app), scoped to <id>.
+  od kg projects                             List SimStudio projects you can
+                                             target (id + name).
+
+Options:
+  --project-id <id>   KGS/SimStudio project scope key (e.g. xpos). Falls back to
+                      the file's top-level "project_id" field.
+  --daemon-url <url>  Open Design daemon HTTP base.
+  --json              Emit raw JSON.
+
+The daemon reads KGS_URL / KGS_API_KEY / KGS_APP_ID (and SIMSTUDIO_PROJECT_URL
+for project listing) from its environment. After pushing, open SimStudio, select
+the project, and click "Pull All" to view on /customer-journey and /ux-spec.`);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  if (sub !== 'push' && sub !== 'projects') {
+    console.error(`Unknown kg subcommand: ${sub}. Try: od kg push <file.json> --project-id <id> | od kg projects`);
+    process.exit(2);
+  }
+  const flags = parseFlags(rest, { string: ['project-id', 'daemon-url'], boolean: ['json'] });
+
+  if (sub === 'projects') {
+    const base = await cliDaemonBaseUrl(flags);
+    const resp = await fetch(`${base}/api/kg/projects`);
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    const projects = Array.isArray(data?.projects) ? data.projects : [];
+    if (flags.json) {
+      process.stdout.write(JSON.stringify(data) + '\n');
+    } else if (projects.length === 0) {
+      console.log('(no projects)');
+    } else {
+      for (const p of projects) console.log(`${p.id}\t${p.name}`);
+    }
+    return;
+  }
+  const file = rest.find((a) => !a.startsWith('-'));
+  if (!file) {
+    console.error('Usage: od kg push <file.json> --project-id <id>');
+    process.exit(2);
+  }
+  const { readFile } = await import('node:fs/promises');
+  let doc;
+  try {
+    doc = JSON.parse(await readFile(file, 'utf8'));
+  } catch (err) {
+    console.error(`Could not read/parse ${file}: ${err?.message ?? err}`);
+    process.exit(2);
+  }
+  const projectId =
+    typeof flags['project-id'] === 'string' && flags['project-id'].trim()
+      ? flags['project-id'].trim()
+      : typeof doc?.project_id === 'string'
+        ? doc.project_id
+        : '';
+  if (!projectId) {
+    console.error('projectId required: pass --project-id <id> or set "project_id" in the file.');
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  const resp = await fetch(`${base}/api/kg/push`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ projectId, json: doc }),
+  });
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data) + '\n');
+  } else {
+    console.log(
+      `✔ pushed ${data.pushed} nodes (${data.personas} personas, ${data.journeys} journeys, ${data.stages} stages) to project ${projectId}`,
+    );
+    if (Array.isArray(data.warnings) && data.warnings.length) {
+      for (const w of data.warnings) console.log(`  ⚠ ${w}`);
+    }
+    console.log('→ In SimStudio, select the project and click "Pull All" to view.');
+  }
 }
 
 async function runPlugin(args) {

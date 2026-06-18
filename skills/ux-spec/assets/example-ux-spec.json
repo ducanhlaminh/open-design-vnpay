@@ -1,0 +1,45 @@
+{
+  "$comment": "Example UX Spec (screens + personas, content only). Do NOT include project_id — it is filled at PUSH time from the conversation's bound KGS project (or the Push to KG dropdown / --project-id). The agent generates a file like this; the open-design-vnpay 'Push to KG' button or scripts/push_to_kgs.py then materialises it into the KGS open-design app and it shows on /ux-spec after Pull All.",
+  "personas": [
+    {
+      "name": "Chủ cửa hàng",
+      "tech_savviness": "medium",
+      "device_primary": "mobile",
+      "market": "VN",
+      "prefers_guidance": true,
+      "error_tolerance": "low"
+    }
+  ],
+  "screens": [
+    {
+      "id": "SCR-REFUND-LIST",
+      "name": "Danh sách đơn cần hoàn",
+      "screen_type": "list",
+      "screen_intent": "Tìm và chọn đúng đơn hàng để hoàn tiền",
+      "layout": "mobile",
+      "primary_actor": "actor-owner",
+      "permissions": ["owner"],
+      "navigation_group": "Refund",
+      "components": [
+        { "id": "SCR-REFUND-LIST-search", "component_type": "input", "label": "Tìm theo mã đơn / SĐT khách", "order": 1, "data_type": "string", "semantic_type": "search" },
+        { "id": "SCR-REFUND-LIST-rows", "component_type": "list", "label": "Danh sách đơn hàng", "order": 2 },
+        { "id": "SCR-REFUND-LIST-cta", "component_type": "button", "label": "Chọn đơn để hoàn", "order": 3 }
+      ]
+    },
+    {
+      "id": "SCR-REFUND-CONFIRM",
+      "name": "Xác nhận hoàn tiền",
+      "screen_type": "confirmation",
+      "screen_intent": "Nhập số tiền + lý do và xác nhận hoàn an toàn",
+      "layout": "mobile",
+      "primary_actor": "actor-owner",
+      "permissions": ["owner"],
+      "navigation_group": "Refund",
+      "components": [
+        { "id": "SCR-REFUND-CONFIRM-reason", "component_type": "select", "label": "Lý do hoàn", "order": 1, "required": true },
+        { "id": "SCR-REFUND-CONFIRM-amount", "component_type": "input", "label": "Số tiền hoàn", "order": 2, "required": true, "data_type": "number" },
+        { "id": "SCR-REFUND-CONFIRM-submit", "component_type": "button", "label": "Xác nhận hoàn", "order": 3 }
+      ]
+    }
+  ]
+}

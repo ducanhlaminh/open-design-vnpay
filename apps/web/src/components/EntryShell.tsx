@@ -68,6 +68,7 @@ import { EntryNavRail, type EntryView as EntryViewKind } from './EntryNavRail';
 import { UpdaterPopup } from './UpdaterPopup';
 import { GithubStarBadge } from './GithubStarBadge';
 import { HomeView } from './HomeView';
+import { KgProjectPicker } from './KgProjectPicker';
 import {
   createPluginAuthoringHandoff,
   createPluginUseHandoff,
@@ -603,29 +604,34 @@ export function EntryShell({
             }`}
           >
             {view === 'home' ? (
-              <HomeView
-                projects={projects}
-                projectsLoading={projectsLoading}
-                designSystems={designSystems}
-                defaultDesignSystemId={defaultDesignSystemId}
-                onSubmit={handlePluginLoopSubmit}
-                onOpenProject={onOpenProject}
-                onViewAllProjects={() => changeView('projects')}
-                onBrowseRegistry={() => changeView('plugins')}
-                onOpenNewProject={(tab) => {
-                  // Stage B of plugin-driven-flow-plan: the rail's
-                  // "From template" chip wires through here so the
-                  // existing modal-based create flow still owns the
-                  // template picker UI. Future tabs (e.g. live-artifact
-                  // import) can reuse the same callback.
-                  openNewProject(tab);
-                }}
-                promptHandoff={homePromptHandoff}
-                skills={skills}
-                skillsLoading={skillsLoading}
-                connectors={connectors}
-                promptTemplates={promptTemplates}
-              />
+              <>
+                <div className="home-kg-scope-bar" style={{ display: 'flex', justifyContent: 'flex-end', paddingBottom: 8 }}>
+                  <KgProjectPicker />
+                </div>
+                <HomeView
+                  projects={projects}
+                  projectsLoading={projectsLoading}
+                  designSystems={designSystems}
+                  defaultDesignSystemId={defaultDesignSystemId}
+                  onSubmit={handlePluginLoopSubmit}
+                  onOpenProject={onOpenProject}
+                  onViewAllProjects={() => changeView('projects')}
+                  onBrowseRegistry={() => changeView('plugins')}
+                  onOpenNewProject={(tab) => {
+                    // Stage B of plugin-driven-flow-plan: the rail's
+                    // "From template" chip wires through here so the
+                    // existing modal-based create flow still owns the
+                    // template picker UI. Future tabs (e.g. live-artifact
+                    // import) can reuse the same callback.
+                    openNewProject(tab);
+                  }}
+                  promptHandoff={homePromptHandoff}
+                  skills={skills}
+                  skillsLoading={skillsLoading}
+                  connectors={connectors}
+                  promptTemplates={promptTemplates}
+                />
+              </>
             ) : null}
             {view === 'projects' ? (
               projectsLoading || skillsLoading || designSystemsLoading ? (

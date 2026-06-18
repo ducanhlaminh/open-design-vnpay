@@ -106,6 +106,21 @@
   --color-input: var(--input);
   --color-input-border: var(--input-border, var(--border));
   --color-ring: var(--ring);
+
+  /* KG brand-layer extras: registered so the semantic utilities (bg-data-1,
+     text-primary-soft, border-focus rings, …) exist as creative vocabulary —
+     values arrive per composition via brand.css / <style id="brand">. */
+  --color-primary-soft: var(--primary-soft, var(--primary));
+  --color-primary-softer: var(--primary-softer, var(--primary));
+  --color-accent-muted: var(--accent-muted, var(--accent));
+  --color-border-focus: var(--border-focus, var(--ring));
+  --color-data-1: var(--data-1, var(--primary));
+  --color-data-2: var(--data-2, var(--info));
+  --color-data-3: var(--data-3, var(--success));
+  --color-data-4: var(--data-4, var(--warning));
+  --color-data-revenue: var(--data-revenue, var(--success));
+  --color-data-volume: var(--data-volume, var(--info));
+
   --radius: var(--radius);
 
   /* Spacing density emits primitive vars (`--space-0` through `--space-96`)
