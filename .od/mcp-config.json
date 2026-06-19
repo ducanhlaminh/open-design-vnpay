@@ -66,6 +66,39 @@
       "templateId": "figma-use",
       "url": "http://localhost:38451/mcp",
       "authMode": "none"
+    },
+    {
+      "id": "jira-dc",
+      "transport": "stdio",
+      "enabled": true,
+      "label": "JIRA Data Center",
+      "command": "/Users/anhnd13/.nvm/versions/node/v24.14.1/bin/npx",
+      "args": [
+        "-y",
+        "@rokealvo/jira-mcp"
+      ],
+      "env": {
+        "JIRA_TYPE": "server",
+        "JIRA_AUTH_TYPE": "bearer",
+        "JIRA_BASE_URL": "https://jr.servicehub.vn",
+        "JIRA_API_TOKEN": "NjQ0NDM0ODcxMjEwOibuH7Z0oLyeYwYeZgOKYUmF5/lA",
+        "JIRA_USER_EMAIL": "anhnd13@vnpay.vn"
+      }
+    },
+    {
+      "id": "google-sheets",
+      "transport": "stdio",
+      "enabled": true,
+      "label": "Google Sheets",
+      "command": "/Users/anhnd13/.nvm/versions/node/v24.14.1/bin/npx",
+      "args": [
+        "-y",
+        "mcp-gsheets"
+      ],
+      "env": {
+        "GOOGLE_APPLICATION_CREDENTIALS": "/Users/anhnd13/.od-secrets/google-service-account.json",
+        "GOOGLE_PROJECT_ID": "CHANGE_ME_PROJECT_ID"
+      }
     }
   ]
 }
