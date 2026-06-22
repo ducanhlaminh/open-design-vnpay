@@ -720,6 +720,7 @@ export interface Dict {
   'entry.navHome': string;
   'entry.navProjects': string;
   'entry.navTasks': string;
+  'entry.navPipelines': string;
   'entry.navPlugins': string;
   'entry.navDesignSystems': string;
   'entry.navIntegrations': string;

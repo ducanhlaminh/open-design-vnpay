@@ -1,8 +1,15 @@
 # Reskin brand từ Knowledge Graph (kg-local) — bind VERBATIM, đủ 7 layer
 
+> 🚦 **Cập nhật OUTPUT POLICY:** artifact KHÔNG còn ghi `brand.css`. Theme do **host
+> `preview-runtime-v3` resolve** lúc render (ThemeLab đọc composition của màn từ KG).
+> Doc này giờ dùng để **author/đảm bảo GIÁ TRỊ token đủ 7 layer trong KG** + gắn đúng
+> composition cho màn — KHÔNG phải để fill css ra file cạnh `screen.json`. Mọi bước
+> "ghi `<artifact>/brand.css`" bên dưới là LỊCH SỬ (standalone shell), bỏ qua khi output
+> chỉ `screen.json`.
+
 > Tài liệu nguồn-sự-thật khi muốn đổi tông màu/brand của artifact sang **một
 > design system thật trong KG** (vd "VNPAY Glass"). Token KG là source of truth —
-> **không bao giờ chế giá trị**. Pull rồi bind nguyên văn vào `:root`/`html.dark`.
+> **không bao giờ chế giá trị**. Giá trị token bind ở host (`:root`/`html.dark`).
 
 ## ⚠️ Lỗi kinh điển: chỉ lấy layer màu → style SAI so với KG
 

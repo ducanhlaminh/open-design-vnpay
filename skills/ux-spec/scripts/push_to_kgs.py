@@ -25,8 +25,8 @@ Labels + props are chosen to match preview-content's node_mapper exactly:
 
 Usage:
   KGS_URL=http://localhost:28001 \
-  KGS_API_KEY=<open-design app key> \
-  KGS_APP_ID=open-design-app \
+  KGS_API_KEY=<design-v3 app key> \
+  KGS_APP_ID=design-v3 \
   python3 push_to_kgs.py <journeys.json> [--project-id xpos] [--dry-run]
 
 `project_id` falls back to the JSON's top-level "project_id" field, then the
@@ -40,7 +40,7 @@ import urllib.error
 
 KGS_URL = os.environ.get("KGS_URL", "http://localhost:28001")
 API_KEY = os.environ.get("KGS_API_KEY", "")
-APP_ID = os.environ.get("KGS_APP_ID", "open-design-app")
+APP_ID = os.environ.get("KGS_APP_ID", "design-v3")
 TENANT = os.environ.get("KGS_TENANT", "default")
 TIMEOUT = 15
 

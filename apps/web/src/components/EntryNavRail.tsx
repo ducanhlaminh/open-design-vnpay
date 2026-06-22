@@ -18,6 +18,7 @@ export type EntryView =
   | 'onboarding'
   | 'projects'
   | 'tasks'
+  | 'pipelines'
   | 'plugins'
   | 'design-systems'
   | 'integrations';
@@ -112,6 +113,15 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
           testId="entry-nav-tasks"
         >
           <Icon name="kanban" size={18} />
+        </NavButton>
+        <NavButton
+          active={view === 'pipelines'}
+          ariaLabel={t('entry.navPipelines')}
+          tooltip={t('entry.navPipelines')}
+          onClick={() => onViewChange('pipelines')}
+          testId="entry-nav-pipelines"
+        >
+          <Icon name="pipeline" size={18} />
         </NavButton>
         <NavButton
           active={view === 'design-systems'}

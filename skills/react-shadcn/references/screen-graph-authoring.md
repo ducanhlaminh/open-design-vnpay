@@ -53,7 +53,7 @@ Quy ước:
 | `ui_screen_lint` | check whitelist slug, order trùng, cycle, props JSON, flow target |
 | `ui_screen_export` | graph → `screen.json` (ghi `.od/kg-exports/<slug>/screen.json`) |
 | `ui_screen_delete` | xóa screen/subtree agent-owned |
-| **`ui_tokens_get`** | **creative grounding**: palette resolved (dark/light + utilities) + `cssVars` payload để fill vào artifact (cửa 1 `brand.css` / cửa 2 slot `<style id="brand">`) |
+| **`ui_tokens_get`** | **creative grounding (CHỈ đọc palette để chọn màu)**: palette resolved (dark/light + utilities). KHÔNG fill `cssVars` vào artifact nữa — theme do host preview-runtime-v3 resolve lúc render. |
 
 CLI tương đương (ngoài session MCP): `pnpm tools-kg lint|export <slug>`.
 
@@ -80,8 +80,9 @@ CLI tương đương (ngoài session MCP): `pnpm tools-kg lint|export <slug>`.
 5. ui_screen_lint → sửa đến khi 0 error.
 6. ui_screen_export {slug} → .od/kg-exports/<slug>/screen.json
 7. node skills/react-shadcn/builder/validate.mjs <file> (double-check offline)
-8. Copy assets/shell.html + screen.json cạnh nhau vào thư mục artifact → render.
-   Verify: node skills/react-shadcn/builder/verify.mjs <artifact-dir>
+8. OUTPUT: chỉ đặt **screen.json** vào thư mục artifact (KHÔNG shell.html/brand.css/index.html).
+   Host preview-runtime-v3 render + tự theme. Verify (tuỳ chọn) qua harness trong thư mục TẠM:
+   copy screen.json + assets/shell.html vào /tmp/verify-<slug>/ → verify.mjs → xoá thư mục tạm.
 ```
 
 ## Style authoring — tạo style mới theo Compositional Pattern
@@ -108,24 +109,24 @@ CLI tương đương: `pnpm tools-kg style-lint <comp>` · `pnpm tools-kg css <c
 > ⚠️ Thứ tự tổng thể theo **`pipeline.md`** (canonical), KHÔNG theo đánh số dưới đây.
 > Mục này chỉ minh hoạ thao tác theme cho ca "user chọn composition có sẵn"; lưu ý
 > theme là mối bận **chéo**: `ui_tokens_get` GROUNDING (đọc palette) xảy ra *trước/khi
-> author*, còn BINDING (fill brand.css) xảy ra *lúc build* — không phải một bước tuần
-> tự đứng đầu. Author **luôn theo graph mode** (Stage ①), không phải "file mode hoặc graph mode".
+> author*; còn BINDING (giá trị token thực) do **host preview-runtime-v3 resolve lúc render**,
+> KHÔNG còn ghi brand.css vào artifact. Author **luôn theo graph mode** (Stage ①), không phải "file mode hoặc graph mode".
 
 ```
 1. USER: "dựng prototype theo composition <X>"   (Stage 0 preflight HITL trước — xem SKILL.md)
 2. THEME grounding: ui_tokens_get {compositionId: X}
      → palette: ĐỌC giá trị thật để phán đoán phối màu (hue primary/accent, có data-* không…)
-     → cssVars: GIỮ lại để FILL vào artifact ở bước build (Stage ④), KHÔNG fill ngay
+     → KHÔNG fill css vào artifact; chỉ cần gắn composition X cho màn trong KG/ThemeLab
 3. Author screen TRONG GRAPH (Stage ①) → ui_screen_lint → ui_screen_export (Stage ②)
 4. SÁNG TÁC theo khế ước mức A: component nguyên trạng; decorative tự do bằng
    utility token (bg-primary/12, from-info…) — pattern: references/creative-with-tokens.md
-5. BINDING (Stage ④): ghi <artifact>/brand.css (cửa 1) hoặc slot <style id="brand"> (cửa 2)
-6. node builder/validate.mjs <file> (cổng __provenance + foreign-color + component-paint)
-7. Serve shell.html + screen.json + brand.css cạnh nhau → render → verify.mjs
+5. node builder/validate.mjs <file> (cổng __provenance + foreign-color + component-paint)
+6. OUTPUT: chỉ screen.json vào thư mục artifact → host render + tự theme. Verify (tuỳ chọn)
+   qua harness trong thư mục TẠM rồi xoá.
 ```
 
-Shell KHÔNG cần rebuild khi đổi style: vocabulary + structure nằm sẵn trong shell,
-brand.css chỉ chở GIÁ TRỊ — không có brand.css thì artifact mang default VNPAY Glass.
+Host preview-runtime-v3 KHÔNG cần rebuild khi đổi style: vocabulary + structure nằm sẵn trong
+runtime, theme do host resolve từ composition KG — KHÔNG ghi brand.css. Vắng composition = default VNPAY Glass.
 
 Workflow mẫu (đã verify e2e — reskin brand sang emerald):
 ```

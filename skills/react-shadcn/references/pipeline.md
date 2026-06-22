@@ -11,10 +11,15 @@
 Stage 0  PREFLIGHT HITL   KG có màn chưa? → AskUserQuestion (tạo ở đâu)     [SKILL.md §"Step 0"]
 Stage ①  AUTHOR (KG)      ui_screen_upsert + ui_instance_upsert cây node    [screen-graph-authoring.md]
 Stage ②  EXPORT           ui_screen_export → screen.json (+ __provenance)   [screen-graph-authoring.md]
-Stage ④  BUILD + VERIFY   shell + brand.css → validate (cổng) → verify      [SKILL.md §"Quy trình bắt buộc" b7–9]
+Stage ④  OUTPUT + VERIFY  CHỈ screen.json → validate (cổng) → verify (harness) [SKILL.md §"Quy trình bắt buộc" b7–9]
 ```
 
-Chỉ 4 hộp tuyến tính: **Preflight → ① Author → ② Export → ④ Build/Verify**. Theme
+> Stage ④ **KHÔNG materialize html/css**: output per màn = DUY NHẤT `screen.json`
+> (KHÔNG shell.html/shell-light.html/brand.css/index.html). Host `preview-runtime-v3`
+> render cây + tự resolve theme. Verify dùng harness `assets/shell.html` trong thư mục
+> TẠM rồi xoá (xem SKILL.md "OUTPUT POLICY" + Hard rule 7).
+
+Chỉ 4 hộp tuyến tính: **Preflight → ① Author → ② Export → ④ Output/Verify**. Theme
 (Stage ③) **không** phải một hộp đứng giữa ② và ④ — xem mục kế.
 
 ## Theme (Stage ③) = MỐI BẬN CHÉO, có 2 thời điểm — KHÔNG tuần tự
@@ -25,13 +30,13 @@ Chỉ 4 hộp tuyến tính: **Preflight → ① Author → ② Export → ④ B
   (giá trị dark/light + utilities mỗi token) để phối màu **decorative** đúng token
   (Hard rule 5–6). Phải BIẾT palette **trước khi** viết className decorative, nếu không
   chọn màu mù.
-- **Binding MUỘN** — *tại* Stage ④ build: fill `cssVars` → `<artifact>/brand.css`
-  (cửa 1) hoặc slot `<style id="brand">` (cửa 2). Đây là lúc GIÁ TRỊ token thực sự
-  vào artifact. Không có brand.css → artifact mang default VNPAY Glass.
+- **Binding do HOST** — KHÔNG còn fill `brand.css` ở Stage ④. Theme (giá trị token thực)
+  do host `preview-runtime-v3` resolve khi render (ThemeLab đọc composition của màn từ KG).
+  Agent chỉ cần gắn đúng composition cho màn trong KG; KHÔNG ghi css vào artifact.
 
-→ Thứ tự thật: **grounding theme xen vào TRƯỚC ①**, **binding theme xảy ra Ở ④**.
-Đừng coi "chọn theme" là một bước đứng giữa export và build. Một câu để nhớ:
-*biết palette để vẽ (sớm), nạp giá trị để render (muộn).*
+→ Thứ tự thật: **grounding theme xen vào TRƯỚC ①** (để chọn màu decorative đúng), **binding
+do host lúc render** (không phải một bước ghi file ở ④). Một câu để nhớ:
+*biết palette để vẽ (sớm), host nạp giá trị để render (lúc preview).*
 
 ## Fork: "chọn theme" = DÙNG CÓ SẴN hay TẠO MỚI?
 

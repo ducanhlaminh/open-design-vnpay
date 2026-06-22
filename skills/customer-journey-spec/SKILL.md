@@ -46,6 +46,14 @@ on `/customer-journey`, scoped to the project.
 
 ## Workflow (do these in order)
 
+### 0. Read the feature input (from the `feature-analysis` pipeline, P2)
+If `./features/_index.json` exists (the docs→UI pipeline produced it), that is
+your input: read the manifest, then each `./features/<Feature Name>.md`. Use each
+feature's `actors` and `user_stories` (in the body) to build the USER_FLOW +
+STAGE journey — stories become stages with emotion / pain points. Keep
+traceability (a journey comes from a feature). If there is no `./features/`
+folder (ad-hoc use), take the journey from the user's request instead.
+
 ### 1. Generate the JSON (content only — no project_id)
 Author a journey file following `references/schema.md`. **Do NOT put a
 `project_id` in the file** — you are authoring CONTENT only. The target KGS

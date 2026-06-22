@@ -364,6 +364,7 @@ import {
   updateConversation,
   updatePreviewCommentStatus,
   updateProject,
+  setProjectPipelineStatus,
   updateRoutine,
   updateRoutineRun,
   upsertDeployment,
@@ -396,12 +397,16 @@ import { registerDeployRoutes, registerDeploymentCheckRoutes } from './deploy-ro
 import { registerMediaRoutes } from './media-routes.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes } from './project-routes.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
+import { registerKgSyncRoutes } from './kg-sync-routes.js';
 import { registerHandoffRoutes } from './handoff-routes.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './handoff-design.js';
 import { TranscriptExportLockedError } from './transcript-export.js';
 import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
+import { registerPipelineRoutes } from './pipeline-routes.js';
+import { getPipelineDef, stageForOutput } from './pipelines.js';
+import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
 import { configureConnectorCredentialStore, connectorService, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
 import { composioConnectorProvider } from './connectors/composio.js';
@@ -5298,6 +5303,14 @@ export async function startServer({
     conversations: conversationDeps,
     projectFiles: projectFileDeps,
     validation: validationDeps,
+  });
+
+  // design-v3 KG sync (pull/push/status)
+  registerKgSyncRoutes(app, {
+    db,
+    http: httpDeps,
+    ids: idDeps,
+    projectStore: projectStoreDeps,
   });
 
   // Resource catalog
@@ -12685,6 +12698,251 @@ export async function startServer({
     db,
     paths: { RUNTIME_DATA_DIR },
     routines: { routineService },
+  });
+
+  // Pipelines: per-project, dependency-gated skill runs (the docs→UI flow).
+  // Each run seeds a fresh conversation in the EXISTING project with the
+  // pipeline's skill active (interactive — the user watches/intervenes), then
+  // reflects the run's terminal status back into the gate (metadata_json) so a
+  // downstream pipeline only unlocks once its prerequisites have succeeded.
+  // Mirrors the Orbit run handler but reuses the project and drives the prompt
+  // through `skillId` (composeDaemonSystemPrompt injects the SKILL.md body).
+  // B1 helpers: snapshot the project cwd before a pipeline run and upload the
+  // files it produced/changed to the KGS file store afterwards (cross-device
+  // handoff + tracking). Pure file-diff, so no per-stage output globs needed.
+  const pipelineFileMime = (p: string): string => {
+    if (p.endsWith('.md')) return 'text/markdown';
+    if (p.endsWith('.json')) return 'application/json';
+    if (p.endsWith('.txt')) return 'text/plain';
+    if (p.endsWith('.html')) return 'text/html';
+    if (p.endsWith('.css')) return 'text/css';
+    if (p.endsWith('.csv')) return 'text/csv';
+    return 'application/octet-stream';
+  };
+  const snapshotPipelineCwd = async (root: string): Promise<Map<string, { mtimeMs: number; size: number }>> => {
+    const out = new Map<string, { mtimeMs: number; size: number }>();
+    const walk = async (dir: string, rel: string): Promise<void> => {
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [] as Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>);
+      for (const e of entries) {
+        if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+        const abs = path.join(dir, e.name);
+        const relPath = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) { await walk(abs, relPath); continue; }
+        if (!e.isFile()) continue;
+        const st = await fs.promises.stat(abs).catch(() => null);
+        if (!st || st.size > 16 * 1024 * 1024) continue;
+        out.set(relPath, { mtimeMs: st.mtimeMs, size: st.size });
+      }
+    };
+    await walk(root, '');
+    return out;
+  };
+  // MANUAL upload (button-triggered): push the project's CURRENT output files to
+  // the KGS file store. Each file is attributed to its stage via the registry's
+  // `outputs` patterns (unmatched files → stage 'misc'); for a convertToGraph
+  // stage it also runs B2 (file → graph) right after. Returns counts.
+  const uploadProjectFiles = async (projectId: string): Promise<{ uploaded: number; converted: number }> => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const files = await snapshotPipelineCwd(cwd);
+    const kgs = new KgsClient(kgsConfigFromEnv());
+    let uploaded = 0;
+    let converted = 0;
+    for (const rel of files.keys()) {
+      const def = stageForOutput(rel);
+      const content = await fs.promises.readFile(path.join(cwd, rel)).catch(() => null);
+      if (!content) continue;
+      await kgs.uploadFile(projectId, def?.id ?? 'misc', rel, pipelineFileMime(rel), content);
+      uploaded += 1;
+      if (def?.convertToGraph) {
+        converted += await convertStageToGraph(projectId, def.id, def.skillId, cwd, [rel]);
+      }
+    }
+    return { uploaded, converted };
+  };
+
+  // B2: for a convertToGraph stage, run its skill's converter
+  // (skills/<skillId>/scripts/push_to_kgs.py, stdlib-only) on each produced JSON
+  // to push it into the KGS graph, then mark those files CONVERTED. Best-effort:
+  // missing converter / python failure is logged and skipped, never fails the
+  // run. KGS env (KGS_URL/KGS_APP_ID/KGS_API_KEY) is inherited from process.env
+  // (loaded by load-local-env). Idempotent vs the skill's own in-run push (409).
+  const convertStageToGraph = async (
+    projectId: string,
+    pipelineId: string,
+    skillId: string,
+    cwd: string,
+    uploadedPaths: string[],
+  ): Promise<number> => {
+    const converter = path.join(SKILLS_DIR, skillId, 'scripts', 'push_to_kgs.py');
+    try {
+      await fs.promises.access(converter);
+    } catch {
+      return 0; // this stage has no graph converter — stays file-only
+    }
+    const jsons = uploadedPaths.filter((p) => p.toLowerCase().endsWith('.json'));
+    if (jsons.length === 0) return 0;
+    const kgs = new KgsClient(kgsConfigFromEnv());
+    let converted = 0;
+    for (const rel of jsons) {
+      try {
+        await execFileBuffered('python3', [converter, path.join(cwd, rel), '--project-id', projectId], {
+          cwd,
+          timeout: 120_000,
+        });
+        await kgs.setFileStatus(projectId, pipelineId, rel, 'CONVERTED').catch(() => {});
+        converted += 1;
+      } catch (error) {
+        console.warn(`[pipelines] B2 convert failed for ${rel}:`, error);
+      }
+    }
+    return converted;
+  };
+
+  // Regenerate a project's pipeline files from the KGS file store into its local
+  // cwd (cross-device "pull to continue"). Path-traversal guarded to cwd.
+  const pullPipelineFiles = async (projectId: string, cwd: string): Promise<number> => {
+    const kgs = new KgsClient(kgsConfigFromEnv());
+    const files = await kgs.listFiles(projectId);
+    const cwdReal = path.resolve(cwd);
+    let pulled = 0;
+    for (const f of files) {
+      const rel = typeof f.path === 'string' ? f.path : '';
+      if (!rel) continue;
+      const dest = path.resolve(cwd, rel);
+      if (dest !== cwdReal && !dest.startsWith(cwdReal + path.sep)) continue;
+      const content = await kgs.downloadFile(projectId, rel).catch(() => null);
+      if (!content) continue;
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.writeFile(dest, content);
+      pulled += 1;
+    }
+    return pulled;
+  };
+
+  const runPipeline = async (projectId: string, pipelineId: string, input?: string) => {
+    const def = getPipelineDef(pipelineId);
+    if (!def) throw new Error(`Unknown pipeline ${pipelineId}`);
+    const project = getProject(db, projectId);
+    if (!project) throw new Error(`Project ${projectId} not found`);
+
+    const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+    let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId
+      ? appConfig.agentId
+      : null;
+    if (!agentId) {
+      const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+      agentId = agents.find((agent) => agent.available)?.id ?? null;
+    }
+    if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
+
+    const now = Date.now();
+    const conversationId = `pipeline-conv-${randomUUID()}`;
+    const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
+    // projectId here is the KGS project_id (the kg-pull project's id == KGS
+    // project_id). Name it explicitly so the skill pushes to the right KGS app.
+    const trimmedInput = typeof input === 'string' ? input.trim() : '';
+    // A combined pipeline (extraSkillIds) activates several skills in one run; tell
+    // the agent to complete EACH skill's workflow and produce ALL their outputs.
+    const skillDirective = def.extraSkillIds?.length
+      ? 'This pipeline runs multiple skills in one go — follow EACH active skill\'s workflow and produce ALL of their outputs.'
+      : "Follow the active skill's workflow exactly.";
+    const kickoff = `Run the "${def.name}" pipeline for KGS project "${projectId}". ${skillDirective}${trimmedInput ? ` Input/source for this run: ${trimmedInput}` : ''} When the skill pushes results to KGS, target project_id "${projectId}".`;
+
+    insertConversation(db, {
+      id: conversationId,
+      projectId,
+      title: def.name,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const run = design.runs.create({
+      projectId,
+      conversationId,
+      assistantMessageId,
+      clientRequestId: `pipeline-${pipelineId}-${randomUUID()}`,
+      agentId,
+    });
+    upsertMessage(db, conversationId, {
+      id: `pipeline-user-${run.id}`,
+      role: 'user',
+      content: kickoff,
+    });
+    upsertMessage(db, conversationId, {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      agentId,
+      agentName: getAgentDef(agentId)?.name ?? agentId,
+      runId: run.id,
+      runStatus: 'queued',
+      startedAt: now,
+    });
+
+    setProjectPipelineStatus(db, projectId, pipelineId, {
+      status: 'running',
+      lastRunId: run.id,
+      lastConversationId: conversationId,
+    });
+
+    const pipelineCwd = await ensureProject(PROJECTS_DIR, projectId).catch(() => null);
+    // Cross-device: pull upstream stage outputs from KGS into the cwd first, so
+    // this stage's inputs are present even on a device that never ran them.
+    if (pipelineCwd) {
+      try {
+        const n = await pullPipelineFiles(projectId, pipelineCwd);
+        if (n) console.log(`[pipelines] pulled ${n} KGS file(s) into cwd for ${projectId}`);
+      } catch (error) {
+        console.warn('[pipelines] pull KGS files failed (continuing):', error);
+      }
+    }
+    const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+    design.runs.start(run, () => startChatRun({
+      agentId,
+      projectId,
+      conversationId: run.conversationId,
+      assistantMessageId: run.assistantMessageId,
+      clientRequestId: run.clientRequestId,
+      skillId: def.skillId,
+      ...(def.extraSkillIds?.length ? { skillIds: def.extraSkillIds } : {}),
+      designSystemId: appConfig.designSystemId ?? null,
+      model: modelPrefs.model ?? null,
+      reasoning: modelPrefs.reasoning ?? null,
+      message: kickoff,
+    }, run));
+
+    // Reflect terminal status back into the gate so downstream pipelines unlock.
+    void (async () => {
+      try {
+        const finalStatus = await design.runs.wait(run);
+        db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`)
+          .run(finalStatus.status, Date.now(), assistantMessageId);
+        const next = finalStatus.status === 'succeeded'
+          ? 'succeeded'
+          : finalStatus.status === 'canceled'
+            ? 'idle'
+            : 'failed';
+        // Upload to KGS is now MANUAL (the "Upload to KGS" button /
+        // POST /api/pipelines/upload). The run only produces files locally and
+        // updates the gate; the user uploads when ready.
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: next });
+      } catch (error) {
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        console.warn('[pipelines] run failed:', error);
+      }
+    })();
+
+    return { projectId, conversationId, agentRunId: run.id };
+  };
+
+  const pullFilesForProject = async (projectId: string) => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const pulled = await pullPipelineFiles(projectId, cwd);
+    return { pulled };
+  };
+  registerPipelineRoutes(app, {
+    db,
+    pipelines: { runPipeline, pullFiles: pullFilesForProject, uploadFiles: uploadProjectFiles },
   });
 
   // proxy routes (anthropic / openai / azure / google / ollama) live

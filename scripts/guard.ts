@@ -117,6 +117,10 @@ const residualAllowedPathPrefixes = [
   "design-templates/html-ppt/assets/",
   "test-results/",
   "vendor/",
+  // Embedded design-v3 preview runtime (preview-runtime-v3) — a built Vite
+  // bundle copied into public/ and loaded verbatim inside the pipeline UI
+  // preview iframe; never hand-edited TypeScript source.
+  "apps/web/public/preview-runtime-v3/",
 ];
 
 const residualAllowedPathPatterns: RegExp[] = [

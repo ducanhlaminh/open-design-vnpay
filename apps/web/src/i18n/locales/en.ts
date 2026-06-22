@@ -412,6 +412,7 @@ export const en: Dict = {
   'entry.navHome': 'Home',
   'entry.navProjects': 'Projects',
   'entry.navTasks': 'Automations',
+  'entry.navPipelines': 'Pipelines',
   'entry.navPlugins': 'Plugins',
   'entry.navDesignSystems': 'Design systems',
   'entry.navIntegrations': 'Integrations',

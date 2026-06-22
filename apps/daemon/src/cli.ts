@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // @ts-nocheck
+import './load-local-env.js'; // fill missing env (KGS creds) from .env.local before anything reads it
 import { runDaemonCliStartup } from './daemon-startup.js';
 import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
 import { runArtifactsCli } from './artifacts-cli.js';
@@ -165,6 +166,12 @@ const AUTOMATION_STRING_FLAGS = new Set([
 ]);
 const AUTOMATION_BOOLEAN_FLAGS = new Set([
   'help', 'h', 'json', 'disabled', 'enabled',
+]);
+const PIPELINE_STRING_FLAGS = new Set([
+  'daemon-url', 'project', 'name', 'input',
+]);
+const PIPELINE_BOOLEAN_FLAGS = new Set([
+  'help', 'h', 'json',
 ]);
 const MEMORY_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'description', 'type', 'body', 'body-file',
@@ -338,7 +345,102 @@ async function runFigma(args) {
   }
 }
 
+// `od kg …` — design-v3 KG sync (pull/push/status). Mirrors the daemon
+// /api/projects/:id/kg-* endpoints; see kg-sync-routes.ts.
+async function runKg(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od kg pull [project-id]     Pull from KGS. No id = pull ALL apps; with id = one project.
+  od kg push [project-id]     Push to KGS. No id = push ALL mirrored apps; with id = one.
+  od kg pull-all             Pull every KGS app into the local mirror.
+  od kg push-all             Push every locally-mirrored KGS app back.
+  od kg status <project-id>   Show local mirror counts.
+
+Common options:
+  --daemon-url <url>   Open Design daemon HTTP base.
+  --json               Emit raw JSON.`);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  const flags = parseFlags(rest, { string: ['daemon-url'], boolean: ['json'] });
+  const id = rest.find((a) => !a.startsWith('-'));
+  const base = await cliDaemonBaseUrl(flags);
+
+  // Pull/push ALL: bare `od kg pull`/`push` (no id) or explicit *-all.
+  if (sub === 'pull-all' || (sub === 'pull' && !id)) {
+    const resp = await fetch(`${base}/api/kg/pull-all`, { method: 'POST' });
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    const d = data?.data ?? {};
+    console.log(`pulled ${d.pulled ?? 0} project(s) from KGS`);
+    for (const r of d.results ?? []) {
+      console.log(`  • ${r.projectId}: ${r.status} (${r.nodes ?? 0} nodes, ${r.edges ?? 0} edges)${r.error ? ` — ${r.error}` : ''}`);
+    }
+    return;
+  }
+  if (sub === 'push-all' || (sub === 'push' && !id)) {
+    const resp = await fetch(`${base}/api/kg/push-all`, { method: 'POST' });
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    const d = data?.data ?? {};
+    console.log(`pushed ${d.pushed ?? 0} project(s) to KGS`);
+    for (const r of d.results ?? []) {
+      console.log(`  • ${r.projectId}: ${r.status} (${r.nodesPushed ?? 0} nodes, ${r.edgesPushed ?? 0} edges)${r.error ? ` — ${r.error}` : ''}`);
+    }
+    return;
+  }
+
+  if (!id) {
+    console.error(`Usage: od kg ${sub} <project-id>`);
+    process.exit(2);
+  }
+  switch (sub) {
+    case 'pull': {
+      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/kg-pull`, { method: 'POST' });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const d = data?.data ?? {};
+      console.log(
+        `pulled ${d.nodes} nodes, ${d.edges} edges (${d.status})` +
+          (d.errors?.length ? ` — ${d.errors.length} errors` : ''),
+      );
+      return;
+    }
+    case 'push': {
+      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/kg-push`, { method: 'POST' });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const d = data?.data ?? {};
+      console.log(
+        `pushed ${d.nodesPushed} nodes, ${d.edgesPushed} edges (${d.status})` +
+          (d.errors?.length ? ` — ${d.errors.length} errors` : '') +
+          (d.caveats?.length ? ` — ${d.caveats.length} caveats` : ''),
+      );
+      if (!flags.json && d.caveats?.length) for (const c of d.caveats) console.log(`  ⚠ ${c}`);
+      return;
+    }
+    case 'status': {
+      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/kg-status`);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const d = data?.data ?? {};
+      console.log(`${d.nodes} nodes (${d.localNodes} local), ${d.edges} edges (${d.localEdges} local)`);
+      return;
+    }
+    default:
+      console.error(`unknown subcommand: od kg ${sub} (expected: pull, push, status)`);
+      process.exit(2);
+  }
+}
+
 const SUBCOMMAND_MAP = {
+  kg: runKg,
   artifacts: runArtifacts,
   figma: runFigma,
   media: runMedia,
@@ -350,6 +452,8 @@ const SUBCOMMAND_MAP = {
   project: runProject,
   automation: runAutomation,
   automations: runAutomation,
+  pipeline: runPipeline,
+  pipelines: runPipeline,
   memory: runMemory,
   run: runRun,
   files: runFiles,
@@ -454,6 +558,12 @@ function printRootHelp() {
       Automations tab, so an external agent (hermes, openclaw, ...) can
       schedule, trigger, or harvest results from a routine without
       opening the web UI.
+
+  od pipeline <projects|list|run> --project <kgsProjectId> [--json]
+      Drive the docs->UI pipelines for a KGS app (pulled via od kg pull).
+      "projects" lists eligible KGS apps; "run <pipelineId>" seeds a
+      conversation with that pipeline's skill active; pipelines are gated so
+      one only runs once its prerequisites have succeeded.
 
   od memory tree <list|view|edit|move> [args]
       Inspect and edit the memory tree that is injected into agent prompts.
@@ -6122,6 +6232,212 @@ Output:
 
 Common options:
   --daemon-url <url>   Open Design daemon HTTP base.`);
+}
+
+function printPipelineHelp() {
+  console.log(`Usage: od pipeline <new|projects|list|run|upload|pull> [options]
+
+Commands:
+  new <projectId>      Create a NEW pipeline project (projectId IS the KGS project_id). [--name "<name>"]
+  projects             List the KGS apps available for pipelines (created here or pulled via od kg pull).
+  list                 List the docs→UI pipelines for a KGS project (status + gating).
+  run <pipelineId>     Run one pipeline — seeds a conversation with its skill active. [--input "<source>"]
+  upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
+  pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
+
+Options:
+  --project <id>       KGS project id (required for list/run/pull). This is a KGS app
+                       pulled with 'od kg pull <id>', NOT a chat workspace.
+                       Auto-resolved from OD_PROJECT_ID when invoked by the daemon.
+  --json               Machine-readable output.
+
+Pipelines: jira-ingest → feature-analysis → (ux-spec ∥ customer-journey) → ui.
+A pipeline is only runnable once its prerequisite pipelines have succeeded.`);
+}
+
+async function runPipeline(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    printPipelineHelp();
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  let flags;
+  try {
+    flags = parseFlags(rest, {
+      string: PIPELINE_STRING_FLAGS,
+      boolean: PIPELINE_BOOLEAN_FLAGS,
+    });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  const writeJson = (data) =>
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+
+  // Positional args, skipping --flag values so `run <id> --project x` and
+  // `run --project x <id>` both resolve the id correctly.
+  const positional = [];
+  for (let i = 0; i < rest.length; i++) {
+    const value = rest[i];
+    if (!value) continue;
+    if (value.startsWith('--')) {
+      const eq = value.indexOf('=');
+      const key = eq >= 0 ? value.slice(2, eq) : value.slice(2);
+      if (eq < 0 && PIPELINE_STRING_FLAGS.has(key)) i++;
+      continue;
+    }
+    positional.push(value);
+  }
+
+  if (sub === 'projects') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/projects`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    const list = data.projects ?? [];
+    if (list.length === 0) {
+      console.log('No KGS project pulled yet. Pull one with: od kg pull <project-id>');
+      return;
+    }
+    console.log('# id\tname');
+    for (const p of list) console.log([p.id, p.name].join('\t'));
+    return;
+  }
+
+  if (sub === 'new' || sub === 'create') {
+    const id = positional[0];
+    if (!id) {
+      console.error('Usage: od pipeline new <projectId> [--name "<name>"]   (projectId IS the KGS project_id)');
+      process.exit(2);
+    }
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/projects`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId: id, name: flags.name || id }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Created pipeline project "${data.id ?? id}".`);
+    return;
+  }
+
+  const projectId = flags.project || process.env.OD_PROJECT_ID;
+  if (!projectId) {
+    console.error('Missing --project <id> (or set OD_PROJECT_ID). It must be a KGS project pulled with `od kg pull <id>` — see `od pipeline projects`.');
+    process.exit(2);
+  }
+
+  if (sub === 'list') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines?projectId=${encodeURIComponent(projectId)}`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    const pipelines = data.pipelines ?? [];
+    console.log('# id\tname\tstatus\tactive\tdependsOn');
+    for (const p of pipelines) {
+      console.log([
+        p.id,
+        p.name,
+        p.status,
+        p.active ? 'yes' : 'no',
+        (p.dependsOn ?? []).join(',') || '-',
+      ].join('\t'));
+    }
+    return;
+  }
+
+  if (sub === 'run') {
+    const pipelineId = positional[0];
+    if (!pipelineId) {
+      console.error('Usage: od pipeline run <pipelineId> --project <id>');
+      process.exit(2);
+    }
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/${encodeURIComponent(pipelineId)}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, ...(flags.input ? { input: flags.input } : {}) }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Started pipeline "${pipelineId}".`);
+    console.log(`  project:      ${data.projectId}`);
+    console.log(`  conversation: ${data.conversationId}`);
+    console.log(`  run:          ${data.agentRunId}`);
+    return;
+  }
+
+  if (sub === 'pull') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/pull-files`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Pulled ${data.pulled ?? 0} pipeline file(s) from KGS into the project workspace.`);
+    return;
+  }
+
+  if (sub === 'upload') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/upload`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(
+      `Uploaded ${data.uploaded ?? 0} file(s) to KGS` +
+        (data.converted ? `, converted ${data.converted} to graph` : '') + '.',
+    );
+    return;
+  }
+
+  console.error(`unknown subcommand: od pipeline ${sub}`);
+  printPipelineHelp();
+  process.exit(2);
 }
 
 async function runAutomation(args) {

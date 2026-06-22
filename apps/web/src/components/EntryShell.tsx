@@ -87,6 +87,7 @@ import type {
   PluginShareProjectOutcome,
 } from '../state/projects';
 import { TasksView } from './TasksView';
+import { PipelinesView } from './PipelinesView';
 import {
   API_KEY_PLACEHOLDERS,
   API_PROTOCOL_TABS,
@@ -655,6 +656,7 @@ export function EntryShell({
                 connectorsLoading={connectorsLoading}
               />
             ) : null}
+            {view === 'pipelines' ? <PipelinesView /> : null}
             {view === 'plugins' ? (
               <PluginsView
                 onCreatePlugin={startPluginAuthoring}

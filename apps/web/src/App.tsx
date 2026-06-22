@@ -47,6 +47,7 @@ import {
 } from './providers/registry';
 import { RUNS_CHANGED_EVENT, listProjectRuns } from './providers/daemon';
 import { navigate, useRoute } from './router';
+import { useUiPreviewAutoOpen } from './components/pipeline-preview/ui-preview-watch';
 import {
   fetchDaemonConfig,
   DEFAULT_PET,
@@ -251,6 +252,11 @@ export function App() {
   const [composioConfigLoading, setComposioConfigLoading] = useState(true);
   const route = useRoute();
   const analytics = useAnalytics();
+
+  // Survivor watcher: after the UI pipeline runs, auto-open its screen.json
+  // preview once the agent produces it (PipelinesView unmounts on the
+  // navigate-into-conversation, so the watch lives here at the app shell).
+  useUiPreviewAutoOpen();
 
   // v2 schema removed the standalone `app_launch` event; the initial
   // page_view fires from each top-level page surface (home / projects /

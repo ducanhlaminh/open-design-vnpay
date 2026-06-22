@@ -48,6 +48,27 @@ it and shows it on `/ux-spec`, scoped to the project.
 
 ## Workflow (do these in order)
 
+### 0. Read the inputs (features, plus the customer journey when present)
+**Features (primary input, from the `feature-analysis` pipeline, P2):** If
+`./features/_index.json` exists (the docs→UI pipeline produced it), that is your
+input: read the manifest, then each `./features/<Feature Name>.md`. Use each
+feature's frontmatter — `actors` → the screen's `primary_actor`,
+`suggested_screens` → the screens to spec, plus the user stories / acceptance
+criteria in the body — to author the S_SCREEN_SPEC screens. Keep traceability
+(a screen comes from a feature). If there is no `./features/` folder (ad-hoc use),
+take the screens from the user's request instead.
+
+**Customer journey (additional input, when it already exists):** If a customer
+journey produced by the `customer-journey-spec` pipeline is present on disk —
+`./*-customer-journey.json` / `./*-cj.json` or under `./customer-journey/` —
+read it too and let it shape the screens: every USER_FLOW **STAGE** should be
+served by at least one screen, the screen ordering should follow the journey, and
+each screen's spec should support that stage's intent / pain points. Keep the
+traceability both ways (a screen comes from a feature **and** serves a journey
+stage). If no journey file is present (e.g. when this pipeline runs in parallel
+with Customer Journey and that one hasn't finished yet), just proceed with the
+features — do not block or fabricate a journey.
+
 ### 1. Generate the JSON (content only — no project_id)
 Author a UX Spec file following `references/schema.md`. **Do NOT put a
 `project_id` in the file** — you are authoring CONTENT only. The target KGS

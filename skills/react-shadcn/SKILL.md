@@ -3,11 +3,12 @@ name: react-shadcn
 description: |
   Sinh artifact UI từ một CÂY CONTENT JSON (cấu trúc nested của màn hình), render
   bằng React 19 + Tailwind v4 với bộ component VNPAY thật (Base UI + radix-ui),
-  VERBATIM — KHÔNG port tay, KHÔNG HTML thuần. Output là 2 file: `shell.html`
-  (khung cố định: bundle component + renderer đệ quy) + `screen.json` (agent biên
-  tập). Shell fetch screen.json rồi đi đệ quy cây node, mount component theo slug —
-  đúng cơ chế ScreenRenderer của design-v3. Chạy trong iframe preview của Open
-  Design. Compose tốt với taste-skill / gpt-taste để có creative direction.
+  VERBATIM — KHÔNG port tay, KHÔNG HTML thuần. Output per màn = **DUY NHẤT `screen.json`**
+  (cây content agent biên tập); KHÔNG ghi shell.html / shell-light.html / brand.css / index.html
+  cạnh artifact. Host `preview-runtime-v3` (canvas Open Design) fetch screen.json, đệ quy cây
+  node, mount component theo slug — đúng cơ chế ScreenRenderer của design-v3 — và tự resolve theme
+  (dark/light). `assets/shell.html` chỉ là harness dev/verify TRONG skill, KHÔNG ship per-artifact.
+  Compose tốt với taste-skill / gpt-taste để có creative direction.
 triggers:
   - "react shadcn"
   - "shadcn html"
@@ -28,12 +29,24 @@ od:
 # react-shadcn-html
 
 > Output discipline: UI được mô tả bằng **một cây JSON** (`screen.json`) và render
-> bởi **shell.html** — khung chạy **React 19 + Tailwind v4** với **bộ component
-> VNPAY thật** (Base UI + radix-ui, verbatim). Agent **không viết JSX**; agent
-> **biên tập cây content JSON**. Cơ chế render mô phỏng nguyên `ScreenRenderer` của
-> design-v3 (`apps/frontend/src/components/preview/screen-renderer.tsx`).
+> bởi **host runtime `preview-runtime-v3`** (canvas Open Design) — chạy **React 19 +
+> Tailwind v4** với **bộ component VNPAY thật** (Base UI + radix-ui, verbatim). Agent
+> **không viết JSX**; agent **biên tập cây content JSON**. Cơ chế render mô phỏng nguyên
+> `ScreenRenderer` của design-v3 (`apps/frontend/src/components/preview/screen-renderer.tsx`).
+> `assets/shell.html` chỉ tái hiện cơ chế đó để verify cục bộ, KHÔNG phải file ship.
+
+> 🚦 **OUTPUT POLICY (BẤT KHẢ XÂM PHẠM) — output per màn = CHỈ `screen.json`.**
+> KHÔNG sinh / KHÔNG copy `shell.html`, `shell-light.html`, `brand.css`, `index.html`
+> (hay bất kỳ `.html`/`.css` nào) cạnh artifact. Host `preview-runtime-v3` đóng vai shell
+> (render cây) và tự resolve theme dark/light (ThemeLab) — nên artifact KHÔNG cần shell
+> tự chứa, KHÔNG cần brand.css, KHÔNG cần launcher. Mọi mô tả "shell/brand" bên dưới là
+> kiến trúc của HARNESS dev (`assets/`), không phải thứ phải ghi ra cho mỗi màn.
 
 ## Kiến trúc (đọc kỹ)
+
+> ⚠️ Sơ đồ dưới mô tả **HARNESS** `assets/shell.html` (để hiểu cơ chế render + verify
+> cục bộ). Ở runtime thật, **host `preview-runtime-v3` đóng đúng vai shell này** và tự
+> resolve theme — nên PER-ARTIFACT bạn **chỉ xuất `screen.json`**, không ghi shell/brand.
 
 ```
 KIẾN TRÚC 3 TẦNG:  shell = TỪ VỰNG + CẤU TRÚC · brand = GIÁ TRỊ (data) · screen.json = NỘI DUNG (data)
@@ -69,11 +82,12 @@ component, gắn `props`, đệ quy `children`/`text`. Slug không tra được 
 giới hạn 480px, căn giữa trên màn rộng; nền mesh brand xuyên qua). Muốn full-bleed cho
 dashboard → đặt `"viewport": "desktop"`.
 
-**Light/dark = 2 FILE RIÊNG, KHÔNG toggle.** `shell.html` = dark (`<html class="dark">`),
-`shell-light.html` = light (`<html class="">`). Hai file **giống hệt nhau**, chỉ khác
-class trên `<html>`; token cả 2 scheme nằm trong `vnpay-glass.css` inline (`:root`=light,
-`html.dark`=dark). Cả hai cùng fetch `./screen.json` → serve file nào ra mode đó. Muốn
-xuất artifact 2 mode → copy cả `shell.html` + `shell-light.html` (+ `screen.json`).
+**Light/dark = HOST tự toggle, KHÔNG xuất 2 file.** Trên canvas Open Design, host
+`preview-runtime-v3` resolve theme qua ThemeLab và bật dark/light ngay trên cùng một
+`screen.json` (nút Dark/Light của canvas). Agent **KHÔNG** xuất `shell.html` (dark) +
+`shell-light.html` (light) per-artifact nữa — chỉ một `screen.json`, host lo cả 2 mode.
+*(Trong HARNESS dev, `assets/shell.html`=dark và `assets/shell-light.html`=light chỉ
+để verify mắt cục bộ; token 2 scheme nằm trong `vnpay-glass.css` inline.)*
 
 ## Khi nào dùng
 
@@ -193,10 +207,11 @@ menu, more, settings, user, cart, check, edit, delete, filter, chevron-right, be
      Tailwind, không phải token KG.
    Phái sinh hợp lệ duy nhất: **modifier `/N`** (`bg-primary/12`) — Tailwind tự
    color-mix từ token, vẫn đổi theo dark/light.
-7. **Các file artifact phải đi cùng nhau** khi serve (shell.html + screen.json
-   [+ brand.css nếu khác Glass] cùng thư mục). Nếu môi trường chặn fetch (iframe
-   `srcDoc` null-origin), dùng fallback inline: cây → `<script id="screen">`,
-   giá trị token → `<style id="brand">`.
+7. **OUTPUT PER MÀN = CHỈ `screen.json`.** KHÔNG ghi/copy `shell.html`,
+   `shell-light.html`, `brand.css`, `index.html` (hay `.html`/`.css` nào) cạnh artifact.
+   Host `preview-runtime-v3` render cây + tự resolve theme (dark/light) → artifact không
+   cần shell tự chứa, không cần brand.css, không cần launcher. (Harness verify cục bộ
+   dùng `assets/shell.html` trong thư mục TẠM, KHÔNG để lại file cạnh `screen.json`.)
 8. **(File mode) `screen.json` là SOURCE OF TRUTH, author TRỰC TIẾP dưới dạng JSON khai báo.**
    *(Graph mode đảo lại: graph là nguồn, screen.json export ra là build artifact cấm sửa
    tay — xem `references/screen-graph-authoring.md`. Phần còn lại của rule này áp dụng
@@ -211,15 +226,13 @@ menu, more, settings, user, cart, check, edit, delete, filter, chevron-right, be
      ghép nhiều màn), script đó CHỈ ĐƯỢC **đọc/import/fetch** file `.screen.json` đã author
      (`JSON.parse(readFileSync('*.screen.json'))` / `import data from './x.screen.json'`)
      rồi nhúng — TUYỆT ĐỐI không tự dựng/chỉnh cây trong code. `.mjs` là *consumer*, json là *source*.
-9. **ĐỔI TÔNG/BRAND = ĐỔI GIÁ TRỊ TOKEN, KHÔNG inject CSS đè.** Muốn artifact mang
-   composition khác (hoặc style mới tạo trong KG): lấy `cssVars` từ `ui_tokens_get`
-   (hoặc `ui_composition_export_css {varsOnly:true}`) rồi nạp qua **1 trong 2 cửa**:
-   - **Cửa 1 (mặc định)**: ghi thành `<artifact>/brand.css` cạnh shell.html — link có
-     sẵn trong shell tự load và đè default Glass;
-   - **Cửa 2 (môi trường srcDoc/null-origin không fetch được file cạnh)**: dán nguyên
-     khối vào slot `<style id="brand">` trong shell.html.
-   CẤM tự viết `<style>` chứa class màu, CẤM sửa giá trị token bằng tay (mọi giá trị
-   phải resolve từ KG — "không bao giờ chế giá trị").
+9. **ĐỔI TÔNG/BRAND = ĐỔI GIÁ TRỊ TOKEN trong KG, KHÔNG ghi brand.css, KHÔNG inject CSS đè.**
+   Theme do **host `preview-runtime-v3` resolve** (ThemeLab đọc composition từ KG) — agent
+   KHÔNG ghi `<artifact>/brand.css` nữa. Vai trò của token với agent **chỉ còn là GROUNDING**:
+   đọc `palette` qua `ui_tokens_get` để chọn className **decorative** đúng tông (Hard rule 5–6)
+   NGAY KHI author. Muốn artifact mang composition khác → set composition đó trong KG/ThemeLab
+   của màn, KHÔNG fill CSS vào file. CẤM tự viết `<style>` chứa class màu, CẤM sửa/chế giá trị
+   token bằng tay (mọi giá trị resolve từ KG — "không bao giờ chế giá trị").
 10. **Reskin sang brand THẬT trong KG → pull ĐỦ 7 layer của composition, bind VERBATIM.**
    Một composition (vd "VNPAY Glass") KHÔNG chỉ là màu — nó chồng nhiều layer
    (spacing · radius · typography · control-density · color · icon · brand). **CẤM chỉ
@@ -286,12 +299,11 @@ menu, more, settings, user, cart, check, edit, delete, filter, chevron-right, be
 2. GROUNDING TRONG KG (đừng chế slug/pattern từ trí nhớ): kg_find / kg_cypher_read
    catalog UI_COMPONENT + variant + screen mẫu XPOS. Chi tiết:
    references/screen-graph-authoring.md.
-3. CHỌN THEME — token grounding: `ui_tokens_get {compositionId}` →
-   a) ĐỌC `palette` (giá trị dark/light + utilities mỗi token) để phối màu decorative
-      ĐÚNG (Hard rule 5–6) NGAY KHI author — primary tông gì, accent ấm/lạnh, có
-      data-1..4 không… (đây là phần "grounding" SỚM của theme);
-   b) GIỮ `cssVars` để FILL vào artifact ở bước 7 (phần "binding" MUỘN — tách khỏi
-      grounding). Bỏ qua = artifact mang default VNPAY Glass.
+3. CHỌN THEME — token grounding (CHỈ để chọn màu, KHÔNG fill file): `ui_tokens_get {compositionId}`
+   → ĐỌC `palette` (giá trị dark/light + utilities mỗi token) để phối màu decorative ĐÚNG
+   (Hard rule 5–6) NGAY KHI author — primary tông gì, accent ấm/lạnh, có data-1..4 không…
+   Đây là "grounding" SỚM. **KHÔNG còn bước "binding"/fill brand.css** — theme do host
+   `preview-runtime-v3` resolve khi render (đặt composition cho màn trong KG/ThemeLab).
    (Muốn TẠO composition mới thay vì dùng cái có sẵn → skill kg-theme-composition.)
 4. AUTHOR SCREEN TRONG GRAPH: `ui_screen_upsert {slug,name,viewport}` →
    `ui_instance_upsert` root (componentSlug "div", props `bg-background`) rồi đệ quy
@@ -302,17 +314,19 @@ menu, more, settings, user, cart, check, edit, delete, filter, chevron-right, be
 6. `ui_screen_export {slug}` → `.od/kg-exports/<slug>/screen.json` — tự đóng dấu
    `__provenance`. ĐÂY là source of truth; CẤM sửa tay file export (sửa thì về graph
    rồi re-export).
-7. Copy assets/shell.html (+ shell-light.html nếu cần) cạnh screen.json vào thư mục
-   artifact. FILL brand: ghi `<artifact>/brand.css` (cửa 1) hoặc dán cssVars vào slot
-   `<style id="brand">` (cửa 2 — srcDoc). Môi trường chặn fetch → inline cả cây vào
-   `<script id="screen">`. Script `.mjs` chỉ ĐỌC file, không tự dựng/sửa cây.
+7. ĐẶT OUTPUT: chỉ copy/ghi **`screen.json`** vào thư mục artifact. **KHÔNG** copy
+   shell.html/shell-light.html, **KHÔNG** ghi brand.css, **KHÔNG** tạo index.html. Theme
+   do host resolve (bước 3 grounding đã chọn màu; composition gắn cho màn trong KG/ThemeLab).
+   Script `.mjs` (nếu có) chỉ ĐỌC file, không tự dựng/sửa cây, không materialize HTML/CSS.
 8. VALIDATE: `node builder/validate.mjs <artifact>/screen.json` (cổng xuất xứ + cấu
    trúc + slug + icon + foreign-color + component-paint, ~100ms, không Chrome). File
    export có `__provenance` → qua cổng tự động.
-9. VERIFY render: `node builder/verify.mjs <artifact-dir>` (0 badge `?slug`, 0 console
-   error) hoặc `node builder/shot.mjs <file>.html /tmp/x.png`. Không tham số =
-   self-test shell với sample. Icon thiếu? thêm cặp vào ICON_TOKEN_TO_LUCIDE
-   (builder/app-shell-block.jsx) rồi `node builder/make-shell.mjs` để regenerate shell.
+9. VERIFY render qua HARNESS (không để lại file cạnh artifact): copy `screen.json` vào
+   thư mục TẠM cùng `assets/shell.html`+`shell-light.html` (vd `/tmp/verify-<slug>/`) rồi
+   `node builder/verify.mjs /tmp/verify-<slug>` (0 badge `?slug`, 0 console error) hoặc
+   `node builder/shot.mjs /tmp/verify-<slug>/shell.html /tmp/x.png`. Xong **xoá thư mục tạm**.
+   (Hoặc tin vào render thật trên canvas Open Design.) Icon thiếu? thêm cặp vào
+   ICON_TOKEN_TO_LUCIDE (builder/app-shell-block.jsx) rồi `node builder/make-shell.mjs`.
 
 THOÁT HIỂM — file mode (màn nháp vứt đi, KHÔNG khuyến cho prototype thật):
 - Bỏ bước 2 (grounding KG) và 4–6. Author tay `<name>.screen.json` (Hard rule 8:
@@ -375,8 +389,8 @@ Khi user muốn artifact mang **một design system thật trong Knowledge Graph
 
 - `taste-skill` / `gpt-taste` = **creative brain** (layout, typography, spacing, palette).
 - `react-shadcn-html` = **output discipline** (cây JSON, component VNPAY verbatim, token-driven).
-- Xung đột: **creative direction thắng** về thẩm mỹ, nhưng **format output (shell.html
-  + screen.json + slug + token) của skill này thắng**.
+- Xung đột: **creative direction thắng** về thẩm mỹ, nhưng **format output (CHỈ
+  `screen.json` + slug + token, KHÔNG html/css) của skill này thắng**.
 
 ## Cờ điều chỉnh (mặc định nếu user không nói)
 
@@ -433,6 +447,8 @@ PW_CHROME=<chrome> node builder/verify.mjs  → render check headless
 ## Anti-patterns (phát hiện = sai)
 
 - Viết JSX `function App()` / `import { Button }` ❌ → tất cả ở `screen.json`.
+- **Ghi `shell.html`/`shell-light.html`/`brand.css`/`index.html` cạnh `screen.json` ❌**
+  (Output policy + Hard rule 7) → output per màn CHỈ `screen.json`; host render + tự theme.
 - Sửa trực tiếp `shell.html` để chèn UI ❌ → sửa `screen.json`.
 - `componentSlug` sai tên (vd `"InputBox"`, `"btn"`) ❌ → badge đỏ `?slug`.
 - Dán lại source `.tsx` của Base UI vào file ❌ (đã có trong bundle).
