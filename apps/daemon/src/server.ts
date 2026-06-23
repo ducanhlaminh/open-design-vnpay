@@ -5306,13 +5306,6 @@ export async function startServer({
   });
 
   // design-v3 KG sync (pull/push/status)
-  registerKgSyncRoutes(app, {
-    db,
-    http: httpDeps,
-    ids: idDeps,
-    projectStore: projectStoreDeps,
-  });
-
   // Resource catalog
   registerStaticResourceRoutes(app, {
     http: httpDeps,
@@ -12942,6 +12935,18 @@ export async function startServer({
   };
   registerPipelineRoutes(app, {
     db,
+    pipelines: { runPipeline, pullFiles: pullFilesForProject, uploadFiles: uploadProjectFiles },
+  });
+
+  // KG sync (pull-all/push-all) is registered here — after the pipeline file
+  // helpers exist — so push-all can also upload output files and pull-all can
+  // also restore them (full graph + files round-trip). Paths are distinct from
+  // other routes, so the later registration order is harmless.
+  registerKgSyncRoutes(app, {
+    db,
+    http: httpDeps,
+    ids: idDeps,
+    projectStore: projectStoreDeps,
     pipelines: { runPipeline, pullFiles: pullFilesForProject, uploadFiles: uploadProjectFiles },
   });
 

@@ -194,7 +194,20 @@ export function PipelinesView() {
         await loadProjects();
         if (projectId) void load(projectId);
       }
-      pushToast({ message: kind === 'pull' ? 'Pulled all apps from KGS' : 'Pushed all apps to KGS' });
+      // push-all/pull-all now round-trip output files too (graph + files); show
+      // the file count so the user can see the artifacts moved, not just nodes.
+      const results = (j?.data?.results ?? []) as Array<Record<string, number>>;
+      const projectCount = results.length;
+      const fileCount = results.reduce(
+        (sum, r) => sum + (kind === 'pull' ? r.files ?? 0 : r.filesUploaded ?? 0),
+        0,
+      );
+      pushToast({
+        message:
+          kind === 'pull'
+            ? `Pulled ${projectCount} project(s) from KGS — ${fileCount} file(s)`
+            : `Pushed ${projectCount} project(s) to KGS — ${fileCount} file(s)`,
+      });
     } catch (err) {
       pushToast({
         message: kind === 'pull' ? "Couldn't pull from KGS" : "Couldn't push to KGS",

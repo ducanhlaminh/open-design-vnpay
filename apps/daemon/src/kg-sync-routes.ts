@@ -16,7 +16,8 @@ import { pushProject } from './kg-sync/push.js';
 import { KgSyncRepo } from './kg-sync/persistence.js';
 import { listProjects } from './db.js';
 
-export interface RegisterKgSyncRoutesDeps extends RouteDeps<'db' | 'http' | 'ids' | 'projectStore'> {}
+export interface RegisterKgSyncRoutesDeps
+  extends RouteDeps<'db' | 'http' | 'ids' | 'projectStore' | 'pipelines'> {}
 
 // Derive a pull-able project id from a DP_UI_WORKSPACE entity: prefer the
 // explicit projectId property, else the conventional `ws-project-<ID>` entity
@@ -38,7 +39,7 @@ function isKgPullProject(p: { metadata?: unknown }): boolean {
 }
 
 export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps) {
-  const { db } = ctx;
+  const { db, pipelines } = ctx;
   const { sendApiError } = ctx.http;
   const { randomId } = ctx.ids;
   const { getProject, insertProject } = ctx.projectStore;
@@ -116,7 +117,24 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
         ensureProject(projectId, now);
         try {
           const r = await pullProject(db, projectId, cfg, Date.now(), randomId());
-          results.push({ projectId, nodes: r.nodes, edges: r.edges, status: r.status });
+          // Also restore the project's pipeline output files from the KGS file
+          // store, so pull-all is a full graph + files round-trip. Best-effort:
+          // a file-pull failure must not fail the already-succeeded graph pull.
+          let files = 0;
+          let filesError: string | undefined;
+          try {
+            files = (await pipelines.pullFiles(projectId)).pulled;
+          } catch (err) {
+            filesError = (err as Error).message;
+          }
+          results.push({
+            projectId,
+            nodes: r.nodes,
+            edges: r.edges,
+            files,
+            status: r.status,
+            ...(filesError ? { filesError } : {}),
+          });
         } catch (err) {
           results.push({ projectId, status: 'error', error: (err as Error).message });
         }
@@ -136,7 +154,29 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       for (const p of projects as Array<{ id: string }>) {
         try {
           const r = await pushProject(db, p.id, cfg, Date.now(), randomId());
-          results.push({ projectId: p.id, nodesPushed: r.nodesPushed, edgesPushed: r.edgesPushed, status: r.status });
+          // Also upload the project's current output files to the KGS file store
+          // (and B2-convert convertToGraph stages), so push-all sends graph +
+          // files. Best-effort: a file-upload failure must not fail the
+          // already-succeeded graph push.
+          let filesUploaded = 0;
+          let filesConverted = 0;
+          let filesError: string | undefined;
+          try {
+            const u = await pipelines.uploadFiles(p.id);
+            filesUploaded = u.uploaded;
+            filesConverted = u.converted;
+          } catch (err) {
+            filesError = (err as Error).message;
+          }
+          results.push({
+            projectId: p.id,
+            nodesPushed: r.nodesPushed,
+            edgesPushed: r.edgesPushed,
+            filesUploaded,
+            filesConverted,
+            status: r.status,
+            ...(filesError ? { filesError } : {}),
+          });
         } catch (err) {
           results.push({ projectId: p.id, status: 'error', error: (err as Error).message });
         }
