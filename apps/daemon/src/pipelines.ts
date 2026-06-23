@@ -145,6 +145,21 @@ export function deriveStateFromKgsFiles(files: Array<Record<string, unknown>>): 
   return state;
 }
 
+// Local equivalent of deriveStateFromKgsFiles: a stage whose declared output
+// file(s) exist in the project cwd is treated as succeeded. This makes the
+// stepper reflect on-disk outputs directly — offline-safe (no KGS round-trip)
+// and covering outputs produced/pulled locally but not yet on KGS. Paths are
+// cwd-relative; `stageForOutput` maps each to its owning stage (unmatched →
+// ignored, so stray files don't mark a stage done).
+export function deriveStateFromLocalFiles(relPaths: string[]): ProjectPipelineState {
+  const state: ProjectPipelineState = {};
+  for (const rel of relPaths) {
+    const def = stageForOutput(rel);
+    if (def) state[def.id] = { status: 'succeeded' };
+  }
+  return state;
+}
+
 // Merge cross-device KGS "done" state with this device's local run metadata.
 // KGS (has files) is authoritative for the durable done-signal; local fills in
 // transient states (running/failed/idle) for stages KGS doesn't have yet. A

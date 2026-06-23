@@ -67,6 +67,9 @@ export interface PipelineDeps {
   // Manual upload: push the project's current output files to the KGS file
   // store (+ B2 convert for convertToGraph stages). Wired in server.ts.
   uploadFiles(projectId: string): Promise<{ uploaded: number; converted: number }>;
+  // List the project cwd's output file paths (cwd-relative). Used to derive
+  // "done" stage state from on-disk outputs, offline-safe. Wired in server.ts.
+  localOutputs(projectId: string): Promise<string[]>;
 }
 
 export interface TelemetryDeps {

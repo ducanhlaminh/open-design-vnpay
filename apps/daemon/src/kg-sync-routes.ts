@@ -29,13 +29,16 @@ function projectIdFromWorkspace(ws: { entityId?: string; properties?: Record<str
   return m && m[1] ? m[1] : null;
 }
 
-// A locally-mirrored KGS app — an open-design project pulled from KGS.
-function isKgPullProject(p: { metadata?: unknown }): boolean {
+// A pipeline-eligible KGS app: either pulled from KGS (`source: 'kg-pull'`) OR
+// created fresh for pipelines (`kind: 'pipeline'`). push-all must cover BOTH —
+// a locally-created project is `kind: 'pipeline'` and would otherwise never be
+// pushed (and so never become discoverable on another device). Mirrors
+// pipeline-routes' isKgsProject.
+function isKgsProject(p: { metadata?: unknown }): boolean {
   const m = p?.metadata;
-  return Boolean(
-    m && typeof m === 'object' && !Array.isArray(m) &&
-    (m as Record<string, unknown>).source === 'kg-pull',
-  );
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return false;
+  const meta = m as Record<string, unknown>;
+  return meta.source === 'kg-pull' || meta.kind === 'pipeline';
 }
 
 export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps) {
@@ -145,14 +148,25 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     }
   });
 
-  // POST /api/kg/push-all — push EVERY locally-mirrored KGS app back at once.
+  // POST /api/kg/push-all — push EVERY pipeline-eligible KGS app back at once.
+  // Covers both pulled mirrors and locally-created (`kind: 'pipeline'`) projects.
   app.post('/api/kg/push-all', async (_req, res) => {
     try {
       const cfg = kgsConfigFromEnv();
-      const projects = listProjects(db).filter((p: { metadata?: unknown }) => isKgPullProject(p));
+      const client = new KgsClient(cfg);
+      const projects = listProjects(db).filter((p: { metadata?: unknown }) => isKgsProject(p));
       const results = [];
-      for (const p of projects as Array<{ id: string }>) {
+      for (const p of projects as Array<{ id: string; name?: string }>) {
         try {
+          // Ensure the project's DP_UI_WORKSPACE node exists so another device's
+          // pull-all (which discovers projects by enumerating DP_UI_WORKSPACE) can
+          // find it. A locally-created project has no workspace node until now.
+          let workspace: 'created' | 'exists' | 'error' = 'exists';
+          try {
+            workspace = await client.ensureWorkspace(p.id, p.name ?? p.id);
+          } catch {
+            workspace = 'error';
+          }
           const r = await pushProject(db, p.id, cfg, Date.now(), randomId());
           // Also upload the project's current output files to the KGS file store
           // (and B2-convert convertToGraph stages), so push-all sends graph +
@@ -170,6 +184,7 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
           }
           results.push({
             projectId: p.id,
+            workspace,
             nodesPushed: r.nodesPushed,
             edgesPushed: r.edgesPushed,
             filesUploaded,

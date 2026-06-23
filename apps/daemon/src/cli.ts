@@ -388,7 +388,7 @@ Common options:
     const d = data?.data ?? {};
     console.log(`pushed ${d.pushed ?? 0} project(s) to KGS`);
     for (const r of d.results ?? []) {
-      console.log(`  • ${r.projectId}: ${r.status} (${r.nodesPushed ?? 0} nodes, ${r.edgesPushed ?? 0} edges, ${r.filesUploaded ?? 0} files)${r.error ? ` — ${r.error}` : ''}`);
+      console.log(`  • ${r.projectId}: ${r.status} (${r.nodesPushed ?? 0} nodes, ${r.edgesPushed ?? 0} edges, ${r.filesUploaded ?? 0} files, ws:${r.workspace ?? '?'})${r.error ? ` — ${r.error}` : ''}`);
     }
     return;
   }

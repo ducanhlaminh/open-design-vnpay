@@ -166,6 +166,18 @@ export class KgsClient {
     return ents.length > 0;
   }
 
+  // Ensure a DP_UI_WORKSPACE node exists for this project. pull-all discovers
+  // projects by enumerating DP_UI_WORKSPACE, so a locally-created ("New project")
+  // app is invisible cross-device until it has one. Idempotent: queries by
+  // projectId first and only creates when absent (createNode has no upsert, so
+  // skipping the existence check would mint a duplicate workspace on every push).
+  async ensureWorkspace(projectId: string, name: string): Promise<'created' | 'exists'> {
+    const existing = await this.queryEntities(['DP_UI_WORKSPACE'], { projectId }, 1);
+    if (existing.length > 0) return 'exists';
+    await this.createNode('DP_UI_WORKSPACE', { projectId, kind: 'project', name });
+    return 'created';
+  }
+
   // ── pipeline file store (non-graph artifact tracking) ────────────────────────
   // Raw stage-output files stored in KGS Postgres (NOT projected to Neo4j),
   // scoped by app/tenant/project. This is the B1 (upload) + cross-device handoff.

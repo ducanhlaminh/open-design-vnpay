@@ -12738,6 +12738,12 @@ export async function startServer({
     const cwd = await ensureProject(PROJECTS_DIR, projectId);
     const files = await snapshotPipelineCwd(cwd);
     const kgs = new KgsClient(kgsConfigFromEnv());
+    // Ensure the project's DP_UI_WORKSPACE node exists so a manual single-project
+    // upload also makes it discoverable by another device's pull-all. Best-effort
+    // (idempotent) — a workspace-ensure failure must not block the file upload.
+    await kgs
+      .ensureWorkspace(projectId, getProject(db, projectId)?.name ?? projectId)
+      .catch(() => {});
     let uploaded = 0;
     let converted = 0;
     for (const rel of files.keys()) {
@@ -12933,9 +12939,21 @@ export async function startServer({
     const pulled = await pullPipelineFiles(projectId, cwd);
     return { pulled };
   };
+  // List the project cwd's output files (cwd-relative) without creating the dir:
+  // snapshotPipelineCwd tolerates a missing root (→ empty), so this is a safe
+  // read-path probe for deriving "done" stage state from on-disk outputs.
+  const localOutputsForProject = async (projectId: string): Promise<string[]> => {
+    const files = await snapshotPipelineCwd(path.join(PROJECTS_DIR, projectId));
+    return [...files.keys()];
+  };
   registerPipelineRoutes(app, {
     db,
-    pipelines: { runPipeline, pullFiles: pullFilesForProject, uploadFiles: uploadProjectFiles },
+    pipelines: {
+      runPipeline,
+      pullFiles: pullFilesForProject,
+      uploadFiles: uploadProjectFiles,
+      localOutputs: localOutputsForProject,
+    },
   });
 
   // KG sync (pull-all/push-all) is registered here — after the pipeline file
@@ -12947,7 +12965,12 @@ export async function startServer({
     http: httpDeps,
     ids: idDeps,
     projectStore: projectStoreDeps,
-    pipelines: { runPipeline, pullFiles: pullFilesForProject, uploadFiles: uploadProjectFiles },
+    pipelines: {
+      runPipeline,
+      pullFiles: pullFilesForProject,
+      uploadFiles: uploadProjectFiles,
+      localOutputs: localOutputsForProject,
+    },
   });
 
   // proxy routes (anthropic / openai / azure / google / ollama) live

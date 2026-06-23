@@ -7,6 +7,7 @@ import {
   WORKFLOWS,
   computeActive,
   deriveStateFromKgsFiles,
+  deriveStateFromLocalFiles,
   getPipelineDef,
   getWorkflow,
   listPipelineStatus,
@@ -40,12 +41,19 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // device sees after a pull). KGS unreachable → fall back to local only.
   const loadMergedState = async (projectId: string): Promise<ProjectPipelineState> => {
     const local = getProjectPipelineState(db, projectId) as ProjectPipelineState;
+    // "Done" = the stage's output files exist — on local disk (offline-safe,
+    // covers outputs produced/pulled locally) OR in the KGS file store
+    // (cross-device). Both feed one file-derived state; mergePipelineState still
+    // preserves a local in-flight 'running' (it never overrides a running stage).
+    const localPaths = await ctx.pipelines.localOutputs(projectId).catch(() => [] as string[]);
+    const fileState: ProjectPipelineState = deriveStateFromLocalFiles(localPaths);
     try {
       const files = await new KgsClient(kgsConfigFromEnv()).listFiles(projectId);
-      return mergePipelineState(local, deriveStateFromKgsFiles(files));
+      Object.assign(fileState, deriveStateFromKgsFiles(files));
     } catch {
-      return local;
+      // KGS unreachable — local file-derived done-state still applies.
     }
+    return mergePipelineState(local, fileState);
   };
 
   // GET /api/pipelines/projects — the KGS apps available for pipelines (projects
