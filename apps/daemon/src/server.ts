@@ -13,8 +13,12 @@ import os from 'node:os';
 import net from 'node:net';
 import {
   defaultScenarioPluginIdForProjectMetadata,
+  ERR_PLAN_EXPIRED,
   type OpenDesignGithubLatestReleaseResponse,
   type OpenDesignGithubRepoResponse,
+  type PullApplyResult,
+  type PullPlan,
+  type PullResolution,
   PLUGIN_SHARE_ACTION_PLUGIN_IDS,
 } from '@open-design/contracts';
 import {
@@ -407,6 +411,8 @@ import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.
 import { registerPipelineRoutes } from './pipeline-routes.js';
 import { getPipelineDef, stageForOutput } from './pipelines.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
+import { MediaClient, mediaConfigFromEnv, type LocalSyncFile } from './kg-sync/media-client.js';
+import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
 import { configureConnectorCredentialStore, connectorService, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
 import { composioConnectorProvider } from './connectors/composio.js';
@@ -12731,43 +12737,53 @@ export async function startServer({
     return out;
   };
   // MANUAL upload (button-triggered): push the project's CURRENT output files to
-  // the KGS file store. Each file is attributed to its stage via the registry's
-  // `outputs` patterns (unmatched files → stage 'misc'); for a convertToGraph
-  // stage it also runs B2 (file → graph) right after. Returns counts.
+  // the media-service file store (graph stays in KGS — see
+  // docs/guides/media-file-sync-design.md). Each file is attributed to its stage
+  // via the registry's `outputs` patterns (unmatched files → stage 'misc'); for
+  // a convertToGraph stage it also runs B2 (file → graph) right after. A single
+  // content-hash `syncProjectFiles` replaces the per-file upload loop (idempotent
+  // re-push is a no-op). Returns counts (`uploaded` = files present after sync).
   const uploadProjectFiles = async (projectId: string): Promise<{ uploaded: number; converted: number }> => {
     const cwd = await ensureProject(PROJECTS_DIR, projectId);
     const files = await snapshotPipelineCwd(cwd);
     const kgs = new KgsClient(kgsConfigFromEnv());
+    const media = new MediaClient(mediaConfigFromEnv());
     // Ensure the project's DP_UI_WORKSPACE node exists so a manual single-project
     // upload also makes it discoverable by another device's pull-all. Best-effort
     // (idempotent) — a workspace-ensure failure must not block the file upload.
     await kgs
       .ensureWorkspace(projectId, getProject(db, projectId)?.name ?? projectId)
       .catch(() => {});
-    let uploaded = 0;
-    let converted = 0;
+    const syncFiles: LocalSyncFile[] = [];
+    const toConvert: Array<{ pipelineId: string; skillId: string; rel: string }> = [];
     for (const rel of files.keys()) {
       const def = stageForOutput(rel);
+      // localOnly stages (e.g. ui-html → prototype/) stay on this device — never
+      // pushed to the KGS file store nor graph-converted.
+      if (def?.localOnly) continue;
       const content = await fs.promises.readFile(path.join(cwd, rel)).catch(() => null);
       if (!content) continue;
-      await kgs.uploadFile(projectId, def?.id ?? 'misc', rel, pipelineFileMime(rel), content);
-      uploaded += 1;
-      if (def?.convertToGraph) {
-        converted += await convertStageToGraph(projectId, def.id, def.skillId, cwd, [rel]);
-      }
+      syncFiles.push({ path: rel, stage: def?.id ?? 'misc', mime: pipelineFileMime(rel), content });
+      if (def?.convertToGraph) toConvert.push({ skillId: def.skillId, rel });
     }
-    return { uploaded, converted };
+    const synced = await media.syncProjectFiles(projectId, syncFiles);
+    let converted = 0;
+    for (const { skillId, rel } of toConvert) {
+      converted += await convertStageToGraph(projectId, skillId, cwd, [rel]);
+    }
+    // `uploaded` reports files present in the store after sync (uploaded + already
+    // up-to-date), preserving the "N files" button feedback across re-pushes.
+    return { uploaded: synced.uploaded + synced.skipped, converted };
   };
 
   // B2: for a convertToGraph stage, run its skill's converter
   // (skills/<skillId>/scripts/push_to_kgs.py, stdlib-only) on each produced JSON
-  // to push it into the KGS graph, then mark those files CONVERTED. Best-effort:
-  // missing converter / python failure is logged and skipped, never fails the
-  // run. KGS env (KGS_URL/KGS_APP_ID/KGS_API_KEY) is inherited from process.env
-  // (loaded by load-local-env). Idempotent vs the skill's own in-run push (409).
+  // to push it into the KGS graph. Best-effort: missing converter / python
+  // failure is logged and skipped, never fails the run. KGS env
+  // (KGS_URL/KGS_APP_ID/KGS_API_KEY) is inherited from process.env (loaded by
+  // load-local-env). Idempotent vs the skill's own in-run push (409).
   const convertStageToGraph = async (
     projectId: string,
-    pipelineId: string,
     skillId: string,
     cwd: string,
     uploadedPaths: string[],
@@ -12780,7 +12796,6 @@ export async function startServer({
     }
     const jsons = uploadedPaths.filter((p) => p.toLowerCase().endsWith('.json'));
     if (jsons.length === 0) return 0;
-    const kgs = new KgsClient(kgsConfigFromEnv());
     let converted = 0;
     for (const rel of jsons) {
       try {
@@ -12788,7 +12803,6 @@ export async function startServer({
           cwd,
           timeout: 120_000,
         });
-        await kgs.setFileStatus(projectId, pipelineId, rel, 'CONVERTED').catch(() => {});
         converted += 1;
       } catch (error) {
         console.warn(`[pipelines] B2 convert failed for ${rel}:`, error);
@@ -12797,11 +12811,13 @@ export async function startServer({
     return converted;
   };
 
-  // Regenerate a project's pipeline files from the KGS file store into its local
-  // cwd (cross-device "pull to continue"). Path-traversal guarded to cwd.
+  // Regenerate a project's pipeline files from the media-service file store into
+  // its local cwd (cross-device "pull to continue"). Unconditional overwrite —
+  // the conflict-aware variant lives in planPull/applyPull. Path-traversal
+  // guarded to cwd.
   const pullPipelineFiles = async (projectId: string, cwd: string): Promise<number> => {
-    const kgs = new KgsClient(kgsConfigFromEnv());
-    const files = await kgs.listFiles(projectId);
+    const media = new MediaClient(mediaConfigFromEnv());
+    const files = await media.listFiles(projectId);
     const cwdReal = path.resolve(cwd);
     let pulled = 0;
     for (const f of files) {
@@ -12809,13 +12825,49 @@ export async function startServer({
       if (!rel) continue;
       const dest = path.resolve(cwd, rel);
       if (dest !== cwdReal && !dest.startsWith(cwdReal + path.sep)) continue;
-      const content = await kgs.downloadFile(projectId, rel).catch(() => null);
+      const content = await media.downloadFile(projectId, rel).catch(() => null);
       if (!content) continue;
       await fs.promises.mkdir(path.dirname(dest), { recursive: true });
       await fs.promises.writeFile(dest, content);
       pulled += 1;
     }
     return pulled;
+  };
+
+  // Conflict-aware pull (PLAN → RESOLVE → APPLY). Unlike pullPipelineFiles (which
+  // overwrites blindly), this classifies remote files against the local cwd and
+  // hands conflicts back to the caller. planStore holds the per-plan snapshot
+  // (path→remoteChecksum at plan time) so APPLY can detect remote drift (TOCTOU).
+  // See docs/guides/pull-conflict-resolution-spec.md.
+  const planStore = new PullPlanStore();
+
+  // PLAN: classify the project's media-service files against the local cwd (no
+  // writes), snapshot the result, and return it. Core logic in pull-conflict.ts.
+  const planPull = async (projectId: string): Promise<PullPlan> => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const media = new MediaClient(mediaConfigFromEnv());
+    const { plan, remoteByPath } = await planPullFiles(projectId, cwd, media);
+    planStore.put(plan, remoteByPath);
+    return plan;
+  };
+
+  // APPLY: act on a prior plan's resolutions (TOCTOU-guarded). Unknown/expired
+  // planId → throws ERR_PLAN_EXPIRED (route maps to 409).
+  const applyPull = async (
+    projectId: string,
+    planId: string,
+    resolutions: Record<string, PullResolution>,
+    onConflictDefault: PullResolution = 'local',
+  ): Promise<PullApplyResult> => {
+    const stored = planStore.get(planId);
+    if (!stored) {
+      const err = new Error(`plan ${planId} expired or unknown`) as Error & { code?: string };
+      err.code = ERR_PLAN_EXPIRED;
+      throw err;
+    }
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const media = new MediaClient(mediaConfigFromEnv());
+    return applyPullFiles(projectId, cwd, media, stored, resolutions, onConflictDefault);
   };
 
   const runPipeline = async (projectId: string, pipelineId: string, input?: string) => {
@@ -12953,6 +13005,7 @@ export async function startServer({
       pullFiles: pullFilesForProject,
       uploadFiles: uploadProjectFiles,
       localOutputs: localOutputsForProject,
+      pullConflict: { plan: planPull, apply: applyPull },
     },
   });
 
@@ -12970,6 +13023,7 @@ export async function startServer({
       pullFiles: pullFilesForProject,
       uploadFiles: uploadProjectFiles,
       localOutputs: localOutputsForProject,
+      pullConflict: { plan: planPull, apply: applyPull },
     },
   });
 

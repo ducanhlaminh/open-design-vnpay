@@ -355,7 +355,11 @@ function walkInPage(selector) {
   }
 
   function sizing(cs, parentCtx, rect, ownContent, isLeaf) {
-    if (!parentCtx) return { w: "fixed", h: "hug" }; // root width pinned so text wraps
+    // Root pinned to its measured box: width so text wraps at the same point; height so a
+    // fixed-shell screen (e.g. a 812px device frame whose flex:1 content fills the rest) is
+    // NOT hugged down to its collapsed minimum — hug + a fill child makes the whole frame
+    // shrink to ~appbar height and the content spills out of the device surface in Figma.
+    if (!parentCtx) return { w: "fixed", h: "fixed" };
 
     const grow = parseFloat(cs.flexGrow) || 0;
     const self = cs.alignSelf;
@@ -633,6 +637,37 @@ function walkInPage(selector) {
         if (tg.length) node.text.gradient = tg[0];
       }
       if (multiline) node.width = Math.ceil(rect.width) + 3;
+      // A text-only leaf that ALSO carries box styling (button / badge / chip / pill:
+      // background, border, radius, or padding) must not collapse to a bare text node — that
+      // drops its fill/padding/radius, and white-on-colored labels then vanish (a primary
+      // button rendered as invisible white text on no background). Wrap it: frame(box style)
+      // > the text as a single centered child. Plain labels (no box) stay bare text.
+      var boxStyle = styleOf(el, cs);
+      var lpad = [px(cs.paddingTop), px(cs.paddingRight), px(cs.paddingBottom), px(cs.paddingLeft)];
+      var hasBox =
+        (boxStyle.fills && boxStyle.fills.length > 0) ||
+        !!boxStyle.stroke ||
+        (boxStyle.radius && boxStyle.radius.some(function (v) { return v > 0; })) ||
+        (boxStyle.effects && boxStyle.effects.length > 0) ||
+        lpad.some(function (v) { return v > 0; });
+      if (hasBox) {
+        var boxLayout = frameLayout(el, cs, parentCtx);
+        // A styled single-label box (button/badge/chip) reads centered.
+        boxLayout.justify = "center";
+        boxLayout.align = "center";
+        delete boxLayout._flex;
+        delete boxLayout._contentW;
+        delete boxLayout._contentH;
+        delete boxLayout._crossHug;
+        return withAbs({
+          type: "frame",
+          name: nameOf(el),
+          layout: boxLayout,
+          style: boxStyle,
+          component: el.getAttribute("data-figma-component") || null,
+          children: [node],
+        });
+      }
       return withAbs(node);
     }
 

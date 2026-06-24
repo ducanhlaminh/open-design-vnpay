@@ -5,7 +5,8 @@ html, body, #root { height: 100%; margin: 0; }
 body {
   font-family: var(--sans);
   color: var(--text);
-  background: var(--bg-app);
+  background: var(--app-bg-gradient, var(--bg-app));
+  background-attachment: fixed;
   font-size: 13.5px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -17,7 +18,8 @@ body {
   display: grid;
   place-items: center;
   color: var(--text-muted);
-  background: var(--bg-app);
+  background: var(--app-bg-gradient, var(--bg-app));
+  background-attachment: fixed;
   font: 500 13px/1.4 var(--sans);
 }
 

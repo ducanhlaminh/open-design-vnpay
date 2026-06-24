@@ -416,6 +416,7 @@ export const zhCN: Dict = {
   'entry.navPlugins': '插件',
   'entry.navDesignSystems': '设计体系',
   'entry.navIntegrations': '集成',
+  'entry.navRemoteRegistry': '远程注册表',
   'workspaceTabs.project': '项目',
   'workspaceTabs.pluginDetails': '插件详情',
   'workspaceTabs.marketplace': '插件市场',

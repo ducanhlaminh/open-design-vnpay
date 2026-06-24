@@ -87,9 +87,80 @@ export interface PipelineProjectsResponse {
 export interface RunPipelineRequest {
   projectId: string;
   /** Optional free-text input for pipelines that declare `inputPlaceholder`
-   * (e.g. the Confluence page URL/id for jira-ingest). Folded into the run's
-   * kickoff message so the skill uses it as the source. */
+   * (e.g. a JIRA project key / JQL for jira-ingest's advanced path). Folded into
+   * the run's kickoff message so the skill uses it as the source. Mutually
+   * exclusive with `source` — prefer `source` for the Confluence/BAS pickers. */
   input?: string;
+  /**
+   * Structured source selection for pipeline 1 (jira-ingest). When set, the
+   * daemon fetches the referenced document(s) from the BAS MCP gateway BEFORE the
+   * agent run and writes them into the project cwd (`docs/source/…`); the skill
+   * then normalizes those local files. The agent never calls BAS itself.
+   */
+  source?: PipelineRunSource;
+}
+
+// ── BAS-sourced inputs for pipeline 1 (jira-ingest) ─────────────────────────
+// Both branches resolve their content through the BAS MCP gateway (the daemon's
+// BasClient): `confluence` → `confluence_fetch_page`; `bas` → the workspace/KG
+// document tools. The UI's source-selection modal builds one of these and sends
+// it as `RunPipelineRequest.source`.
+export type PipelineRunSource =
+  | { kind: 'confluence'; /** Confluence page URL or id. */ ref: string }
+  | {
+      kind: 'bas';
+      /** BAS workspace/project id the documents belong to. */
+      projectId: string;
+      /** Chosen feature ids (from `kg_search_features`), if any. */
+      featureIds?: string[];
+      /** Chosen document ids (from `workspace_list_documents`), if any. */
+      documentIds?: string[];
+    };
+
+// A project/workspace in BAS (from `workspace_list_projects`). Pipeline-1's BAS
+// branch lists these so the user can pick which BAS workspace to ingest from.
+export interface BasProject {
+  id: string;
+  name: string;
+  /** Optional short description shown under the project name in the picker. */
+  description?: string;
+}
+
+export interface BasProjectsResponse {
+  projects: BasProject[];
+}
+
+// A selectable BAS document or feature (from `kg_search_features` /
+// `workspace_list_documents`) used as pipeline-1 input.
+export interface BasFeature {
+  id: string;
+  title: string;
+  /** 'feature' (KG feature node) or 'document' (workspace document). */
+  kind: 'feature' | 'document';
+  /** Optional one-line summary for the row. */
+  summary?: string;
+}
+
+export interface BasFeaturesResponse {
+  projectId: string;
+  features: BasFeature[];
+}
+
+// Lightweight Confluence page metadata for the link-preview panel (from
+// `confluence_fetch_page`, trimmed to header fields — the full body is only
+// fetched at run time when the pipeline actually ingests).
+export interface ConfluencePageMeta {
+  id: string;
+  title: string;
+  /** Space key / name, if the gateway returns one. */
+  space?: string;
+  url: string;
+  /** First ~280 chars of the page body, plain text, for the preview card. */
+  excerpt?: string;
+}
+
+export interface ConfluencePageMetaResponse {
+  page: ConfluencePageMeta;
 }
 
 export interface RunPipelineResponse {

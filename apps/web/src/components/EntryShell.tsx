@@ -88,6 +88,7 @@ import type {
 } from '../state/projects';
 import { TasksView } from './TasksView';
 import { PipelinesView } from './PipelinesView';
+import { RemoteRegistryView } from './RemoteRegistryView';
 import {
   API_KEY_PLACEHOLDERS,
   API_PROTOCOL_TABS,
@@ -657,6 +658,7 @@ export function EntryShell({
               />
             ) : null}
             {view === 'pipelines' ? <PipelinesView /> : null}
+            {view === 'remote-registry' ? <RemoteRegistryView /> : null}
             {view === 'plugins' ? (
               <PluginsView
                 onCreatePlugin={startPluginAuthoring}

@@ -46,9 +46,21 @@ Mapped props: `id, name, title, actor (=actor_id), actor_id, journey_mode, goal,
   "system_responses": ["…"],          // what the system does
   "touchpoints":      ["…"],          // screens / channels
   "pain_points":      ["…"],          // surfaced as pain markers
-  "thoughts":         ["…"]           // optional inner monologue
+  "thoughts":         ["…"],          // optional inner monologue
+  "sources": [                        // key source-text excerpts (from docs MD)
+    {
+      "file":    "docs/confluence/Đăng nhập SSO.md",  // cwd-relative source file
+      "heading": "Onboarding",                         // optional section heading
+      "quote":   "…short verbatim snippet from the MD…" // copied, not paraphrased
+    }
+  ]
 }
 ```
+- **`sources[]`** carries the verbatim doc text that justifies the stage. The
+  open-design-vnpay Customer Journey preview reads it straight from the JSON and
+  renders a "key text from MD" panel under each stage card. Keep quotes short
+  (1–3 sentences) and `file` cwd-relative. Optional but strongly recommended for
+  every stage — it is what makes the journey traceable to its source docs.
 - **Link to the journey is by the `user_flow_id` PROP** (the script sets it from
   the parent journey id) — NOT by a graph edge. This avoids KGS's edge-projection
   quirks and is exactly what SimStudio's node_mapper reads.

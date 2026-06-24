@@ -366,6 +366,13 @@
   cursor: not-allowed;
 }
 
+.pl-btn--xs {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 540;
+}
+
 .pl-btn--primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -791,6 +798,10 @@
 
 .pl-modal--md {
   max-width: 580px;
+}
+
+.pl-modal--lg {
+  max-width: 900px;
 }
 
 .pl-modal__head {

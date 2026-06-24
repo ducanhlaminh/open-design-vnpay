@@ -19,7 +19,13 @@ import {
 } from '../utils/notifications';
 
 const STORAGE_KEY = 'open-design:config';
-const CONFIG_MIGRATION_VERSION = 1;
+const CONFIG_MIGRATION_VERSION = 2;
+
+// The pre-VNPAY default accent ("Open Design" burnt orange). Migration v2
+// rebrands any config still carrying this exact value to the VNPAY brand
+// blue (DEFAULT_ACCENT_COLOR) so returning users pick up the new identity
+// without having to reset their appearance manually.
+const LEGACY_BRAND_ACCENT = '#c96442';
 
 // Hatched out of the box, but tucked away — the user has to go through
 // either the entry-view "adopt a pet" callout or Settings → Pets to
@@ -400,6 +406,10 @@ export function loadConfig(): AppConfig {
           (p) => p.baseUrl === merged.baseUrl,
         );
         merged.apiProviderBaseUrl = knownProvider?.baseUrl ?? null;
+      }
+      // Migration v2: rebrand the legacy default accent to VNPAY blue.
+      if (normalizeAccentColor(parsed.accentColor) === LEGACY_BRAND_ACCENT) {
+        merged.accentColor = DEFAULT_ACCENT_COLOR;
       }
       merged.configMigrationVersion = CONFIG_MIGRATION_VERSION;
     }

@@ -416,6 +416,7 @@ export const en: Dict = {
   'entry.navPlugins': 'Plugins',
   'entry.navDesignSystems': 'Design systems',
   'entry.navIntegrations': 'Integrations',
+  'entry.navRemoteRegistry': 'Remote registry',
   'workspaceTabs.project': 'Project',
   'workspaceTabs.pluginDetails': 'Plugin details',
   'workspaceTabs.marketplace': 'Marketplace',

@@ -30,6 +30,13 @@ interface SpecScreen {
   components?: SpecComponent[];
 }
 type PainPoint = string | { text?: string; description?: string; severity?: string };
+// Key source-text excerpt for a stage — verbatim snippet from the docs MD that
+// justifies the stage (authored by customer-journey-spec). Surfaced per-stage.
+interface SpecSource {
+  file?: string;
+  heading?: string;
+  quote?: string;
+}
 interface SpecStage {
   id: string;
   name?: string;
@@ -43,6 +50,7 @@ interface SpecStage {
   touchpoints?: string[];
   pain_points?: PainPoint[];
   thoughts?: string[];
+  sources?: SpecSource[];
 }
 interface SpecJourney {
   id: string;
@@ -75,10 +83,10 @@ const T = {
   text: 'var(--text, #1a1a1a)',
   textSoft: 'var(--text-soft, #4b5563)',
   textMuted: 'var(--text-muted, #6b7280)',
-  accent: 'var(--accent, #c96442)',
-  accentSoft: 'var(--accent-soft, #f5d8cb)',
-  accentTint: 'var(--accent-tint, #fbeee5)',
-  selected: 'var(--selected, var(--accent-tint, #fbeee5))',
+  accent: 'var(--accent, #0066b3)',
+  accentSoft: 'var(--accent-soft, #d6e7f4)',
+  accentTint: 'var(--accent-tint, #e6f0f8)',
+  selected: 'var(--selected, var(--accent-tint, #e6f0f8))',
   amber: 'var(--amber, #b45309)',
   red: 'var(--red, #dc2626)',
   green: 'var(--green, #16a34a)',
@@ -303,6 +311,7 @@ function StageCard({ stage, index }: { stage: SpecStage; index: number }) {
   const e = emo(stage.emotion);
   const pains = (stage.pain_points ?? []).map(painText).filter(Boolean);
   const score = typeof stage.emotion_score === 'number' ? stage.emotion_score : e.score;
+  const sources = (stage.sources ?? []).filter((s) => (s.quote ?? '').trim());
   return (
     <li style={{ listStyle: 'none', border: `1px solid ${T.border}`, borderRadius: T.radius, background: T.subtle, padding: 12 }}>
       <div style={{ display: 'flex', gap: 12 }}>
@@ -374,6 +383,35 @@ function StageCard({ stage, index }: { stage: SpecStage; index: number }) {
                   }}
                 >
                   {p}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {sources.length ? (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', color: T.textMuted, marginBottom: 4 }}>
+                📄 Key text from docs ({sources.length})
+              </div>
+              {sources.map((s, i) => (
+                <div
+                  key={i}
+                  style={{
+                    fontSize: 11,
+                    borderRadius: T.radiusSm,
+                    background: T.muted,
+                    borderLeft: `2px solid ${T.accent}`,
+                    color: T.text,
+                    padding: '5px 8px',
+                    marginBottom: 4,
+                  }}
+                >
+                  <div style={{ fontStyle: 'italic' }}>&ldquo;{s.quote}&rdquo;</div>
+                  {s.file || s.heading ? (
+                    <div style={{ fontSize: 10, color: T.textMuted, marginTop: 3 }}>
+                      {(s.file ?? '').split('/').pop()}
+                      {s.heading ? ` · ${s.heading}` : ''}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>

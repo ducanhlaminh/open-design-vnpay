@@ -16,6 +16,7 @@ import type {
   PipelineProjectsResponse,
   PipelineView,
   PipelinesResponse,
+  PullPlan,
   RunPipelineResponse,
   Workflow,
   WorkflowsResponse,
@@ -30,6 +31,8 @@ import {
   PipelineStatusModal,
   RunInputModal,
 } from './pipelines/PipelineModals';
+import { PullConflictModal } from './pipelines/PullConflictModal';
+import { pullApply, pullPlan } from '../providers/pullConflict';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: 'Not started',
@@ -47,12 +50,8 @@ const PIPELINE_META: Record<string, { icon: IconName; blurb: string }> = {
   'jira-ingest': { icon: 'import', blurb: 'Pull Confluence / JIRA sources into clean Markdown docs.' },
   'feature-analysis': { icon: 'search', blurb: 'Extract the feature set and requirements from the ingested docs.' },
   'ux-spec': { icon: 'draw', blurb: 'Generate UX specifications from the features and customer journey.' },
-  'customer-journey': { icon: 'orbit', blurb: 'Map the end-to-end customer journey across the features.' },
+  'customer-journey': { icon: 'orbit', blurb: 'Map the end-to-end customer journey from the docs, with key source text per stage.' },
   ui: { icon: 'blocks', blurb: 'Generate the static + interactive UI screens, then preview them.' },
-  'html-feature-cj': {
-    icon: 'search',
-    blurb: 'Generate the feature set AND the customer journey together in one run.',
-  },
   'ui-html': {
     icon: 'file-code',
     blurb: 'Build the interactive HTML/CSS prototype — one self-contained file per screen.',
@@ -63,6 +62,7 @@ const PIPELINE_META: Record<string, { icon: IconName; blurb: string }> = {
 // canonical meta so its steps get the right icon + blurb.
 const META_ALIAS: Record<string, string> = {
   'html-docs': 'jira-ingest',
+  'html-cj': 'customer-journey',
   'html-ux': 'ux-spec',
 };
 
@@ -89,6 +89,8 @@ export function PipelinesView() {
 
   const [syncBusy, setSyncBusy] = useState<null | 'pull' | 'push'>(null);
   const [uploading, setUploading] = useState(false);
+  const [pullBusy, setPullBusy] = useState(false);
+  const [pullPlanState, setPullPlanState] = useState<PullPlan | null>(null);
 
   const [toast, setToast] = useState<ToastState | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -268,6 +270,40 @@ export function PipelinesView() {
     }
   };
 
+  // Conflict-aware pull of the selected project's files (PLAN → RESOLVE → APPLY).
+  // 0 conflicts → apply straight through (keep-local default, no modal); else open
+  // PullConflictModal so the user resolves each differing file.
+  const pullProject = async () => {
+    if (!projectId) return;
+    setPullBusy(true);
+    try {
+      const plan = await pullPlan(projectId);
+      if (plan.conflicts.length === 0) {
+        const result = await pullApply({
+          projectId,
+          planId: plan.planId,
+          resolutions: {},
+          onConflictDefault: 'local',
+        });
+        void load(projectId);
+        pushToast({
+          message: `Pulled “${projectId}” — ${result.downloaded} new file(s)`,
+          ...(result.stale.length ? { details: `${result.stale.length} skipped (remote changed)`, code: 'warn' } : {}),
+        });
+      } else {
+        setPullPlanState(plan);
+      }
+    } catch (err) {
+      pushToast({
+        message: "Couldn't pull from KGS",
+        details: err instanceof Error ? err.message : String(err),
+        code: 'error',
+      });
+    } finally {
+      setPullBusy(false);
+    }
+  };
+
   // Start a pipeline run in the BACKGROUND: POST the run, optimistically flip the
   // row to "running" (the poller takes over), and DON'T navigate away. Throws on
   // failure so callers (incl. the input modal) can surface it.
@@ -403,6 +439,18 @@ export function PipelinesView() {
             <Icon name={syncBusy === 'push' ? 'spinner' : 'upload'} size={14} />
             <span>{syncBusy === 'push' ? 'Pushing…' : 'Push all'}</span>
           </button>
+          {hasProjects ? (
+            <button
+              type="button"
+              className="pl-btn"
+              onClick={() => void pullProject()}
+              disabled={pullBusy || !projectId}
+              title="Pull this project's files from KGS, resolving conflicts with local edits"
+            >
+              <Icon name={pullBusy ? 'spinner' : 'download'} size={14} />
+              <span>{pullBusy ? 'Pulling…' : 'Pull project'}</span>
+            </button>
+          ) : null}
           {hasProjects ? (
             <button
               type="button"
@@ -684,6 +732,22 @@ export function PipelinesView() {
           pipeline={resultFor}
           onClose={() => setResultFor(null)}
           onViewFile={viewFile}
+        />
+      ) : null}
+      {pullPlanState ? (
+        <PullConflictModal
+          projectId={projectId}
+          plan={pullPlanState}
+          onClose={() => setPullPlanState(null)}
+          onApplied={(result) => {
+            void load(projectId);
+            pushToast({
+              message: `Pulled “${projectId}” — ${result.downloaded} downloaded, ${result.keptLocal} kept local`,
+              ...(result.stale.length
+                ? { details: `${result.stale.length} skipped (remote changed)`, code: 'warn' }
+                : {}),
+            });
+          }}
         />
       ) : null}
 

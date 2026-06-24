@@ -350,11 +350,22 @@ async function runFigma(args) {
 async function runKg(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
-  od kg pull [project-id]     Pull from KGS. No id = pull ALL apps; with id = one project.
+  od kg pull [project-id]     Pull from KGS. No id = pull ALL apps; with id = one project (graph + files).
   od kg push [project-id]     Push to KGS. No id = push ALL mirrored apps; with id = one.
   od kg pull-all             Pull every KGS app into the local mirror.
   od kg push-all             Push every locally-mirrored KGS app back.
   od kg status <project-id>   Show local mirror counts.
+  od kg remote list           List projects on the remote stores (KGS graph + media files).
+  od kg remote delete <id>    Delete a project's remote data. Requires --yes.
+
+Pull options (od kg pull <project-id>):
+  --on-conflict <mode>   How to resolve files that differ between local and remote:
+                         local (default, keep local), remote (overwrite local),
+                         or ask (list conflicts and stop without writing).
+
+Remote delete options (od kg remote delete <id>):
+  --scope <scope>      What to remove: files (default; media folder). graph/all reserved.
+  --yes                Required confirmation — remote deletion is irreversible.
 
 Common options:
   --daemon-url <url>   Open Design daemon HTTP base.
@@ -363,7 +374,10 @@ Common options:
   }
   const sub = args[0];
   const rest = args.slice(1);
-  const flags = parseFlags(rest, { string: ['daemon-url'], boolean: ['json'] });
+  const flags = parseFlags(rest, {
+    string: ['daemon-url', 'on-conflict', 'scope'],
+    boolean: ['json', 'yes'],
+  });
   const id = rest.find((a) => !a.startsWith('-'));
   const base = await cliDaemonBaseUrl(flags);
 
@@ -393,21 +407,113 @@ Common options:
     return;
   }
 
+  // `od kg remote list|delete` — the remote registry (KGS + media). Handled
+  // before the per-project id guard since `remote list` takes no id.
+  if (sub === 'remote') {
+    const nonFlags = rest.filter((a) => !a.startsWith('-'));
+    const action = nonFlags[0];
+    const targetId = nonFlags[1];
+    if (action === 'list') {
+      const resp = await fetch(`${base}/api/kg/remote-projects`);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const rows = data?.data ?? [];
+      if (!rows.length) {
+        console.log('no remote projects');
+        return;
+      }
+      console.log(`${rows.length} remote project(s):`);
+      for (const r of rows) {
+        const where = [r.inKgs ? 'KGS' : null, r.inMedia ? `media:${r.files}f` : null]
+          .filter(Boolean)
+          .join(' + ');
+        const label = r.name && r.name !== r.projectId ? `${r.projectId} (${r.name})` : r.projectId;
+        console.log(`  • ${label} — ${where || 'none'}`);
+      }
+      return;
+    }
+    if (action === 'delete') {
+      if (!targetId) {
+        console.error('Usage: od kg remote delete <project-id> [--scope=files] --yes');
+        process.exit(2);
+      }
+      const scope = typeof flags.scope === 'string' ? flags.scope : 'files';
+      if (!flags.yes) {
+        console.error(`refusing to delete remote "${targetId}" (scope=${scope}) without --yes`);
+        process.exit(2);
+      }
+      const url = `${base}/api/kg/remote-projects/${encodeURIComponent(targetId)}?scope=${encodeURIComponent(scope)}`;
+      const resp = await fetch(url, { method: 'DELETE' });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const d = data?.data ?? {};
+      console.log(
+        `deleted ${d.filesDeleted ?? 0} file(s) from "${targetId}"` +
+          (d.folderRemoved ? ' (folder removed)' : ' (no media folder)'),
+      );
+      return;
+    }
+    console.error(`unknown subcommand: od kg remote ${action ?? ''} (expected: list, delete)`);
+    process.exit(2);
+  }
+
   if (!id) {
     console.error(`Usage: od kg ${sub} <project-id>`);
     process.exit(2);
   }
   switch (sub) {
     case 'pull': {
+      const onConflict = typeof flags['on-conflict'] === 'string' ? flags['on-conflict'] : 'local';
+      if (!['local', 'remote', 'ask'].includes(onConflict)) {
+        console.error(`invalid --on-conflict "${onConflict}" (expected: local, remote, ask)`);
+        process.exit(2);
+      }
+      // 1) Graph pull (nodes/edges into the local SQLite mirror) — unchanged.
       const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/kg-pull`, { method: 'POST' });
       if (!resp.ok) return structuredHttpFailure(resp);
       const data = await resp.json();
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       const d = data?.data ?? {};
+      if (!flags.json) {
+        console.log(
+          `pulled ${d.nodes} nodes, ${d.edges} edges (${d.status})` +
+            (d.errors?.length ? ` — ${d.errors.length} errors` : ''),
+        );
+      }
+      // 2) Conflict-aware file pull (PLAN → APPLY). `ask` lists conflicts and
+      // stops; `local`/`remote` apply immediately with that default.
+      const planResp = await fetch(`${base}/api/kg/pull-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: id }),
+      });
+      if (!planResp.ok) return structuredHttpFailure(planResp);
+      const plan = (await planResp.json())?.data ?? {};
+      const conflicts = plan.conflicts ?? [];
+      if (onConflict === 'ask' && conflicts.length > 0) {
+        if (flags.json) return process.stdout.write(JSON.stringify({ ok: true, data: plan }, null, 2) + '\n');
+        console.log(
+          `${conflicts.length} file conflict(s) — nothing written. Re-run with --on-conflict=local or --on-conflict=remote:`,
+        );
+        for (const c of conflicts) console.log(`  ⚠ ${c.path} [${c.stage}] (${c.kind})`);
+        return;
+      }
+      const onConflictDefault = onConflict === 'remote' ? 'remote' : 'local';
+      const applyResp = await fetch(`${base}/api/kg/pull-apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: id, planId: plan.planId, resolutions: {}, onConflictDefault }),
+      });
+      if (!applyResp.ok) return structuredHttpFailure(applyResp);
+      const applied = (await applyResp.json())?.data ?? {};
+      if (flags.json) return process.stdout.write(JSON.stringify({ ok: true, data: applied }, null, 2) + '\n');
       console.log(
-        `pulled ${d.nodes} nodes, ${d.edges} edges (${d.status})` +
-          (d.errors?.length ? ` — ${d.errors.length} errors` : ''),
+        `files: ${applied.downloaded ?? 0} downloaded, ${applied.keptLocal ?? 0} kept-local, ` +
+          `${applied.unchangedSkipped ?? 0} unchanged` +
+          (applied.stale?.length ? `, ${applied.stale.length} stale (remote changed — skipped)` : ''),
       );
+      for (const s of applied.stale ?? []) console.log(`  ⚠ ${s.path}: ${s.reason}`);
       return;
     }
     case 'push': {

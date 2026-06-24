@@ -1,4 +1,5 @@
 import type { Express } from 'express';
+import type { PullApplyResult, PullPlan, PullResolution } from '@open-design/contracts';
 import type { SkillInfo } from './skills.js';
 import type { DesignSystemSummary } from './design-systems.js';
 import type { RoutineRoutesService } from './routine-routes.js';
@@ -70,6 +71,19 @@ export interface PipelineDeps {
   // List the project cwd's output file paths (cwd-relative). Used to derive
   // "done" stage state from on-disk outputs, offline-safe. Wired in server.ts.
   localOutputs(projectId: string): Promise<string[]>;
+  // Conflict-aware pull (PLAN → APPLY). `plan` classifies remote vs local
+  // without writing disk; `apply` downloads chosen-remote + new files against a
+  // prior plan's snapshot (TOCTOU-guarded). Wired in server.ts. See
+  // docs/guides/pull-conflict-resolution-spec.md.
+  pullConflict: {
+    plan(projectId: string): Promise<PullPlan>;
+    apply(
+      projectId: string,
+      planId: string,
+      resolutions: Record<string, PullResolution>,
+      onConflictDefault?: PullResolution,
+    ): Promise<PullApplyResult>;
+  };
 }
 
 export interface TelemetryDeps {

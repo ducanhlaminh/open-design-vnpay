@@ -46,6 +46,13 @@ export interface PipelineDef {
    * The UI renders an input box with this placeholder; the value is folded into
    * the run kickoff. */
   inputPlaceholder?: string;
+  /**
+   * When true, this stage's outputs stay LOCAL — they are never pushed to the
+   * KGS file store nor graph-converted on upload. Use for deliverables that
+   * don't belong in the shared knowledge graph (e.g. the HTML prototype, which
+   * is a rendered artifact, not graph data).
+   */
+  localOnly?: boolean;
 }
 
 // docs → UI: jira-ingest → feature-analysis → (ux-spec ∥ customer-journey) → ui.
@@ -61,23 +68,22 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
 
   // ── Workflow B: docs → HTML prototype (INDEPENDENT chain, own ids) ────────
   // Reuses the same upstream skills as Workflow A but with distinct ids so its
-  // run-state never overlaps. Feature Analysis + Customer Journey are merged
-  // into ONE step (`html-feature-cj`) that runs BOTH skills in a single run and
-  // emits both outputs; UX Spec consumes it; ui-html is built from UX Spec.
-  //   html-docs → html-feature-cj (feature + cj) → html-ux → ui-html
+  // run-state never overlaps. There is NO feature-analysis step here: the
+  // Customer Journey is authored DIRECTLY from the step-1 docs MD, and UX Spec is
+  // derived from those docs + the journey.
+  //   html-docs → html-cj (customer journey from docs) → html-ux → ui-html
   // Terminal `ui-html` runs a dedicated HTML skill (authored in Phase 2) that
   // emits one self-contained `.html` per screen.
   { id: 'html-docs',        name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
-  // `feature-journey` is a thin orchestrator skill that sequences the two below
-  // (feature first, then journey reads ./features/) so the coupled pair runs in
-  // dependency order within a single run. The detailed feature-analysis and
-  // customer-journey-spec workflows ride along via extraSkillIds.
-  { id: 'html-feature-cj',  name: 'Feature Analysis + Customer Journey', skillId: 'feature-journey', extraSkillIds: ['feature-analysis', 'customer-journey-spec'], dependsOn: ['html-docs'], convertToGraph: true, outputs: ['features/', 'features.json', 'docs/features.md', '-customer-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
-  { id: 'html-ux',          name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['html-feature-cj'], convertToGraph: true, outputs: ['-ux-spec.json', 'ux/'] },
+  // Customer Journey built straight from the ingested docs MD (no feature-analysis
+  // upstream). Each STAGE carries `sources[]` — the key text excerpts from the
+  // source MD — which the SpecPreview surfaces under each stage card.
+  { id: 'html-cj',          name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['html-docs'], convertToGraph: true, outputs: ['-customer-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
+  { id: 'html-ux',          name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['html-cj'], convertToGraph: true, outputs: ['-ux-spec.json', 'ux/'] },
   // ui-html also activates `frontend-design` (UI/UX craft) so the agent designs
   // boldly + well, not just structurally. The prototype skill additionally opts
   // into craft rules (anti-ai-slop, laws-of-ux, typography, color, animation).
-  { id: 'ui-html',          name: 'UI (HTML prototype)',       skillId: 'html-interactive-prototype', extraSkillIds: ['frontend-design'], dependsOn: ['html-ux'], outputs: ['prototype/'] },
+  { id: 'ui-html',          name: 'UI (HTML prototype)',       skillId: 'html-interactive-prototype', extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill'], dependsOn: ['html-ux'], outputs: ['prototype/'], localOnly: true },
 ];
 
 // Named docs→output flows. Each is an ordered subset of PIPELINE_DEFS. The UI
@@ -94,7 +100,7 @@ export const WORKFLOWS: readonly Workflow[] = [
     id: 'docs-to-html',
     name: 'Docs → HTML prototype',
     description: 'Product docs → interactive HTML/CSS prototype (React Flow canvas).',
-    pipelineIds: ['html-docs', 'html-feature-cj', 'html-ux', 'ui-html'],
+    pipelineIds: ['html-docs', 'html-cj', 'html-ux', 'ui-html'],
   },
 ];
 

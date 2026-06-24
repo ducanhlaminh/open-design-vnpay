@@ -9,25 +9,26 @@
 // See docs/sync-design-v3-spec-plan.md.
 
 import type { Express } from 'express';
+import {
+  ERR_PLAN_EXPIRED,
+  type PullApplyRequest,
+  type PullResolution,
+  type RemoteDeleteScope,
+} from '@open-design/contracts';
 import type { RouteDeps } from './server-context.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
+import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import { pullProject } from './kg-sync/pull.js';
 import { pushProject } from './kg-sync/push.js';
 import { KgSyncRepo } from './kg-sync/persistence.js';
+import { loadRemoteProjects, projectIdFromWorkspace } from './kg-sync/remote-registry.js';
 import { listProjects } from './db.js';
 
 export interface RegisterKgSyncRoutesDeps
   extends RouteDeps<'db' | 'http' | 'ids' | 'projectStore' | 'pipelines'> {}
 
-// Derive a pull-able project id from a DP_UI_WORKSPACE entity: prefer the
-// explicit projectId property, else the conventional `ws-project-<ID>` entity
-// id. Returns null for non-project workspaces (e.g. shared `ws-catalog-*`).
-function projectIdFromWorkspace(ws: { entityId?: string; properties?: Record<string, unknown> }): string | null {
-  const pid = ws.properties?.projectId;
-  if (typeof pid === 'string' && pid.trim()) return pid.trim();
-  const m = /^ws-project-(.+)$/i.exec(ws.entityId ?? '');
-  return m && m[1] ? m[1] : null;
-}
+// projectIdFromWorkspace now lives in kg-sync/remote-registry.ts (shared with the
+// remote registry) and is imported above.
 
 // A pipeline-eligible KGS app: either pulled from KGS (`source: 'kg-pull'`) OR
 // created fresh for pipelines (`kind: 'pipeline'`). push-all must cover BOTH —
@@ -199,6 +200,80 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       res.json({ ok: true, data: { pushed: results.length, results } });
     } catch (err) {
       sendApiError(res, 502, 'KG_PUSH_FAILED', (err as Error).message);
+    }
+  });
+
+  // POST /api/kg/pull-plan { projectId } — classify a project's media-service
+  // files against the local cwd WITHOUT writing (PLAN phase). Returns a PullPlan
+  // with a planId the matching pull-apply binds to. See
+  // docs/guides/pull-conflict-resolution-spec.md.
+  app.post('/api/kg/pull-plan', async (req, res) => {
+    const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId.trim() : '';
+    if (!projectId) return sendApiError(res, 400, 'BAD_REQUEST', 'projectId required');
+    if (!getProject(db, projectId)) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+    try {
+      const plan = await pipelines.pullConflict.plan(projectId);
+      res.json({ ok: true, data: plan });
+    } catch (err) {
+      sendApiError(res, 502, 'KG_PULL_FAILED', (err as Error).message);
+    }
+  });
+
+  // POST /api/kg/pull-apply (PullApplyRequest) — APPLY phase: download chosen-
+  // remote + new files for a prior plan, keep chosen-local untouched. A stale/
+  // unknown planId → 409 PLAN_EXPIRED (client re-plans). Files whose remote
+  // checksum drifted since PLAN land in `stale` (not written).
+  app.post('/api/kg/pull-apply', async (req, res) => {
+    const body = (req.body ?? {}) as Partial<PullApplyRequest>;
+    const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : '';
+    const planId = typeof body.planId === 'string' ? body.planId.trim() : '';
+    if (!projectId) return sendApiError(res, 400, 'BAD_REQUEST', 'projectId required');
+    if (!planId) return sendApiError(res, 400, 'BAD_REQUEST', 'planId required');
+    if (!getProject(db, projectId)) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+    const resolutions: Record<string, PullResolution> =
+      body.resolutions && typeof body.resolutions === 'object' ? body.resolutions : {};
+    const onConflictDefault: PullResolution = body.onConflictDefault === 'remote' ? 'remote' : 'local';
+    try {
+      const result = await pipelines.pullConflict.apply(projectId, planId, resolutions, onConflictDefault);
+      res.json({ ok: true, data: result });
+    } catch (err) {
+      if ((err as { code?: string }).code === ERR_PLAN_EXPIRED) {
+        return sendApiError(res, 409, ERR_PLAN_EXPIRED, 'plan expired — re-plan and retry');
+      }
+      sendApiError(res, 502, 'KG_PULL_FAILED', (err as Error).message);
+    }
+  });
+
+  // GET /api/kg/remote-projects — list every project living on the remote stores
+  // (KGS graph ⊕ media-service files), merged by projectId. Independent of what
+  // is mirrored locally, so the user can see + prune server-side leftovers.
+  app.get('/api/kg/remote-projects', async (_req, res) => {
+    try {
+      const kgs = new KgsClient(kgsConfigFromEnv());
+      const media = new MediaClient(mediaConfigFromEnv());
+      const data = await loadRemoteProjects(kgs, media);
+      res.json({ ok: true, data });
+    } catch (err) {
+      sendApiError(res, 502, 'KG_REMOTE_FAILED', (err as Error).message);
+    }
+  });
+
+  // DELETE /api/kg/remote-projects/:id?scope=files — remove a project's remote
+  // data. Phase 1 supports `files` only (media folder); `graph`/`all` are
+  // reserved (KgsClient has no delete yet) and rejected with 400.
+  app.delete('/api/kg/remote-projects/:id', async (req, res) => {
+    const projectId = req.params.id;
+    if (!projectId) return sendApiError(res, 400, 'BAD_REQUEST', 'project id required');
+    const scope = (typeof req.query.scope === 'string' ? req.query.scope : 'files') as RemoteDeleteScope;
+    if (scope !== 'files') {
+      return sendApiError(res, 400, 'BAD_REQUEST', `scope "${scope}" not supported yet (only "files")`);
+    }
+    try {
+      const media = new MediaClient(mediaConfigFromEnv());
+      const result = await media.deleteProjectFiles(projectId);
+      res.json({ ok: true, data: { projectId, scope, ...result } });
+    } catch (err) {
+      sendApiError(res, 502, 'KG_REMOTE_FAILED', (err as Error).message);
     }
   });
 }

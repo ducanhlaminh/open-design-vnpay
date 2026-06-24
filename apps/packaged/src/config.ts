@@ -39,6 +39,23 @@ export type RawPackagedConfig = {
   // either this is absent or the user has declined Privacy → metrics.
   posthogKey?: string;
   posthogHost?: string;
+  // KGS connection baked by tools/pack from process.env.KGS_* at packaging time.
+  // Forwarded to the daemon sidecar's spawn env as KGS_URL/KGS_APP_ID/
+  // KGS_TENANT/KGS_API_KEY so a shipped app reaches the central KGS without a
+  // repo-root .env.local. kgsApiKey is embedded in the bundle — ship a scoped key.
+  kgsUrl?: string;
+  kgsAppId?: string;
+  kgsTenant?: string;
+  kgsApiKey?: string;
+  // media-service (file artifact store) connection, baked by tools/pack from
+  // process.env.MEDIA_* at packaging time. Forwarded to the daemon sidecar's
+  // spawn env as MEDIA_URL/MEDIA_APP_ID/MEDIA_USER_ID/MEDIA_USER_ROLE so a
+  // shipped app reaches the media-service (graph→KGS, files→media). Omitted when
+  // unset; the daemon then uses its defaults (MEDIA_URL=localhost:8083, etc.).
+  mediaUrl?: string;
+  mediaAppId?: string;
+  mediaUserId?: string;
+  mediaUserRole?: string;
   webSidecarEntryRelative?: string;
   webStandaloneRoot?: string;
   webOutputMode?: string;
@@ -55,6 +72,14 @@ export type PackagedConfig = {
   telemetryRelayUrl: string | null;
   posthogKey: string | null;
   posthogHost: string | null;
+  kgsUrl: string | null;
+  kgsAppId: string | null;
+  kgsTenant: string | null;
+  kgsApiKey: string | null;
+  mediaUrl: string | null;
+  mediaAppId: string | null;
+  mediaUserId: string | null;
+  mediaUserRole: string | null;
   webSidecarEntry: string | null;
   webStandaloneRoot: string | null;
   webOutputMode: PackagedWebOutputMode;
@@ -178,6 +203,14 @@ export async function readPackagedConfig(): Promise<PackagedConfig> {
     telemetryRelayUrl: cleanOptionalString(raw.telemetryRelayUrl),
     posthogKey: cleanOptionalString(raw.posthogKey),
     posthogHost: cleanOptionalString(raw.posthogHost),
+    kgsUrl: cleanOptionalString(raw.kgsUrl),
+    kgsAppId: cleanOptionalString(raw.kgsAppId),
+    kgsTenant: cleanOptionalString(raw.kgsTenant),
+    kgsApiKey: cleanOptionalString(raw.kgsApiKey),
+    mediaUrl: cleanOptionalString(raw.mediaUrl),
+    mediaAppId: cleanOptionalString(raw.mediaAppId),
+    mediaUserId: cleanOptionalString(raw.mediaUserId),
+    mediaUserRole: cleanOptionalString(raw.mediaUserRole),
     webSidecarEntry,
     webStandaloneRoot,
     webOutputMode,

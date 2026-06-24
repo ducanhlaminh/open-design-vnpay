@@ -127,6 +127,18 @@ async function buildPrebundledStandaloneRuntime(
     metafilePath: paths.daemonPrebundleMetaPath,
     policyName: "daemonCli",
   });
+  // figma-clip resolves its pinned data assets (glyph-atlas.json, snapshot.json)
+  // at runtime relative to its bundled module: `<here>/assets` or `<here>/../assets`
+  // (packages/figma-clip/src/assets.ts). esbuild bundles the package's JS into
+  // daemon/chunks/*.mjs but never copies its data files, so without this the
+  // daemon throws at import-time ("figma-clip: không tìm thấy thư mục assets") and
+  // the whole sidecar crashes on launch. Mirror the assets next to the chunks so
+  // the `<here>/../assets` candidate (daemon/assets) resolves.
+  await cp(
+    join(config.workspaceRoot, "packages", "figma-clip", "assets"),
+    join(paths.daemonPrebundleRoot, "assets"),
+    { recursive: true },
+  );
 }
 
 export async function copyResourceTree(config: ToolPackConfig, paths: MacPaths): Promise<void> {
@@ -155,6 +167,14 @@ export function renderMacPackagedConfig(options: {
       ...(options.config.telemetryRelayUrl == null ? {} : { telemetryRelayUrl: options.config.telemetryRelayUrl }),
       ...(options.config.posthogKey == null ? {} : { posthogKey: options.config.posthogKey }),
       ...(options.config.posthogHost == null ? {} : { posthogHost: options.config.posthogHost }),
+      ...(options.config.kgsUrl == null ? {} : { kgsUrl: options.config.kgsUrl }),
+      ...(options.config.kgsAppId == null ? {} : { kgsAppId: options.config.kgsAppId }),
+      ...(options.config.kgsTenant == null ? {} : { kgsTenant: options.config.kgsTenant }),
+      ...(options.config.kgsApiKey == null ? {} : { kgsApiKey: options.config.kgsApiKey }),
+      ...(options.config.mediaUrl == null ? {} : { mediaUrl: options.config.mediaUrl }),
+      ...(options.config.mediaAppId == null ? {} : { mediaAppId: options.config.mediaAppId }),
+      ...(options.config.mediaUserId == null ? {} : { mediaUserId: options.config.mediaUserId }),
+      ...(options.config.mediaUserRole == null ? {} : { mediaUserRole: options.config.mediaUserRole }),
       ...(options.usePrebundledStandaloneWeb ? { webSidecarEntryRelative: MAC_PREBUNDLED_WEB_SIDECAR_RELATIVE_PATH } : {}),
       webOutputMode: options.config.webOutputMode,
       ...(options.config.portable ? {} : { namespaceBaseRoot: options.config.roots.runtime.namespaceBaseRoot }),

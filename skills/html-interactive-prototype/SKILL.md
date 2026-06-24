@@ -27,6 +27,8 @@ od:
       - typography-hierarchy
       - color
       - animation-discipline
+      - state-coverage
+      - accessibility-baseline
 ---
 
 # html-interactive-prototype — UX Spec → clickable HTML/CSS prototype
@@ -54,9 +56,13 @@ embeds one-per-frame via `<iframe srcdoc>`.
 > you are in the wrong mode — the deliverable here is real `.html`.
 
 ## Design quality & creativity — be bold
-The **`frontend-design`** skill is also active in this run, and this skill opts
-into the craft rules (**anti-ai-slop, laws-of-ux, typography-hierarchy, color,
-animation-discipline**). Treat all of that as **design guidance layered on this
+The **`frontend-design`**, **`web-design-guidelines`** (Vercel product-UI
+standards: layout, type, color, motion, a11y) and **`taste-skill`** (good taste:
+deliberate design variance, motion intensity, visual density — anti generic slop)
+skills are also active in this run,
+and this skill opts into the craft rules (**anti-ai-slop, laws-of-ux,
+typography-hierarchy, color, animation-discipline, state-coverage,
+accessibility-baseline**). Treat all of that as **design guidance layered on this
 skill — not separate deliverables**: the only files you write are still
 `./prototype/*.html`. Apply them to make the prototype genuinely *designed*:
 
@@ -98,14 +104,25 @@ Make the CSS genuinely good, not skeletal — include:
   **buttons** (primary / secondary / block / ghost, active press), **tabs**
   (selected state), **modal/dialog** (backdrop + panel), a bottom action bar,
   badges, and an empty state.
-- A phone frame for `mobile` screens and a centered wide shell for `web`.
+- A **full-bleed** screen shell (NO fake phone bezel): a root that fills 100%
+  width and its natural height, a sticky top app bar, and a scrollable content
+  area. Do NOT emit a fixed-size `.device`/phone-frame wrapper.
 
 Pick your own class names, but keep them STABLE across screens and matching the
 JS hooks in step 3 (e.g. a selected tab, a hidden tab panel, an open modal).
 
-Structure per `layout`:
-- `mobile` → wrap content in `.device` (phone frame) with an `.appbar` header.
-- `web` → use `.web-shell`.
+Structure per `layout` — **full-bleed, no phone bezel**:
+- Root element (e.g. `.screen`) fills **100% width and its natural height** — no
+  fixed `375×812` `.device` shell, no rounded phone frame, no drop-shadow bezel.
+- A **sticky** `.appbar` header pinned to the top, then a scrollable `.content`.
+- `mobile` → content flows full-width (the canvas renders it inside a ~430px
+  iframe, so it naturally reads as a mobile screen without a fake device).
+- `web` → same full-bleed root, but constrain `.content` to a readable
+  **centered max-width** (e.g. `min(100%, 960px)`). Still no `.device`.
+
+> The root must NOT have a fixed height or a hard-coded phone size — a fixed
+> shell with a `flex:1` child collapses when handed off (e.g. Copy-to-Figma).
+> Full-bleed + sticky app bar renders cleanly everywhere.
 
 Header shows `name` (`.appbar__title`) and `screen_intent` (`.appbar__sub`).
 Render `components[]` in `order` using this mapping:
@@ -123,6 +140,39 @@ Render `components[]` in `order` using this mapping:
 Use **realistic Vietnamese placeholder content** consistent with the screen
 intent (not lorem ipsum). A `confirmation`/`form` screen ends with an
 `.actionbar` holding its primary button.
+
+### 2.5 Icons — use the bundled Lucide set, inline as SVG
+A static **Lucide** icon set ships with this skill at **`assets/icons/<name>.svg`**
+(see `assets/icons/README.md` for the full name list + ISC license). Icons are the
+ONLY correct way to render glyphs here.
+
+- **NEVER use a Unicode character or emoji as an icon** (`←`, `⌂`, `⚠️`, `✓`, `→`,
+  `⚙`, `🏠`, `🔒`). They render inconsistently, drop out on handoff (e.g. Copy-to-Figma),
+  and read as AI-slop. Use a real SVG instead: `arrow-left`, `house`, `triangle-alert`,
+  `check`, `arrow-right`, `settings`, `lock`.
+- **Inline the SVG** — read `assets/icons/<name>.svg` and paste its `<svg>…</svg>` into
+  the markup. Do NOT `<link>`/`<img src>` it (the deliverable is self-contained, no CDN).
+- Lucide icons are `stroke="currentColor"`, so an icon **inherits the surrounding text
+  `color`** — set color on the parent, not the SVG. Keep ONE `stroke-width` across the
+  whole set (Lucide default `2`; `1.5`–`1.75` reads finer/more premium).
+- Missing a glyph? Reuse the closest one from `assets/icons/` (banking-relevant ones are
+  included: `snowflake` freeze, `wallet`, `credit-card`, `banknote`, `landmark`, `receipt`,
+  `shield-check`, `scan-face`, `qr-code`, `lock`). Never hand-draw a new icon path.
+
+**Size the icon to its position (set `width`/`height` on the `<svg>`, match the optical
+size of the text/area it sits in):**
+
+| Where | Icon size | Note |
+|---|---|---|
+| App-bar / nav action, section header | **24px** | Inside a ≥44px tap target for touch |
+| Inline with text — button label, list-row, field affix, badge | **16–20px** | ≈ the line's font-size; `vertical-align: middle`, small gap to the text |
+| Standalone tap target (icon-only button) | **20–24px** glyph | In a 40–44px hit area |
+| Empty-state / feature / hero glyph | **32–48px** | Decorative focal point only |
+| Dense table / caption / helper | **14–16px** | Do not go below 14px — illegible |
+
+Rule of thumb: the icon's optical height ≈ the cap-height/line-height of the text next to
+it. An icon must never dwarf its label or look lost beside it. One size per role, used
+consistently across all screens.
 
 ### 3. Make it actually clickable (vanilla JS, inline)
 Add a small inline `<script>` per file — no libraries:

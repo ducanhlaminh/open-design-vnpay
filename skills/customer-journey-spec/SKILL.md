@@ -46,13 +46,21 @@ on `/customer-journey`, scoped to the project.
 
 ## Workflow (do these in order)
 
-### 0. Read the feature input (from the `feature-analysis` pipeline, P2)
-If `./features/_index.json` exists (the docs→UI pipeline produced it), that is
-your input: read the manifest, then each `./features/<Feature Name>.md`. Use each
-feature's `actors` and `user_stories` (in the body) to build the USER_FLOW +
-STAGE journey — stories become stages with emotion / pain points. Keep
-traceability (a journey comes from a feature). If there is no `./features/`
-folder (ad-hoc use), take the journey from the user's request instead.
+### 0. Read the input (docs MD is the primary source)
+Pick the input in this order:
+1. **Docs MD (primary — `docs-to-html` workflow, P2):** read every Markdown file
+   under `./docs/` (e.g. `./docs/confluence/**/*.md`, `./docs/jira/**/*.md`).
+   These product docs ARE your source of truth — derive the actors, the to-be
+   journeys, and each stage (with emotion / pain points) directly from them. This
+   pipeline runs straight after docs ingest, with no feature-analysis upstream.
+2. **Feature manifest (`docs-to-ui` workflow):** if `./features/_index.json`
+   exists, read the manifest + each `./features/<Feature Name>.md` and let the
+   features shape the journey (stories → stages). Cross-reference the docs MD too.
+3. **Ad-hoc:** if neither is present, take the journey from the user's request.
+
+Whichever input you use, you MUST capture the **key source text** for each stage
+in its `sources[]` (next section) — short verbatim excerpts from the MD that
+justify that stage. This is what the Customer Journey preview surfaces.
 
 ### 1. Generate the JSON (content only — no project_id)
 Author a journey file following `references/schema.md`. **Do NOT put a
@@ -65,6 +73,12 @@ be ignored at best and misleading at worst. Key rules:
 - Each stage carries `emotion` (frustrated/anxious/neutral/satisfied/delighted),
   `user_actions`, `system_responses`, `touchpoints`, `pain_points` — this drives
   the emotion curve + pain markers on SimStudio's customer-journey view.
+- **Each stage MUST carry `sources[]`** — the key source-text excerpts that
+  justify it: `{ "file": "docs/confluence/<name>.md", "heading": "<section>",
+  "quote": "<short verbatim snippet from that MD>" }`. Keep quotes short (1–3
+  sentences), copied VERBATIM from the doc (do not paraphrase), and reference the
+  cwd-relative `file`. 1–3 sources per stage is ideal; this powers the preview's
+  "key text from MD" panel and keeps every stage traceable to its doc.
 - Optional **personas** (UX_PERSONA_PROFILE) — shared UX context / actor filter.
 - Use stable, human-readable ids (`UFLW-…`, `STG-…`, `PRSN-…`). The same id
   re-pushed updates the same node.

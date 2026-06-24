@@ -55,8 +55,12 @@ input: read the manifest, then each `./features/<Feature Name>.md`. Use each
 feature's frontmatter — `actors` → the screen's `primary_actor`,
 `suggested_screens` → the screens to spec, plus the user stories / acceptance
 criteria in the body — to author the S_SCREEN_SPEC screens. Keep traceability
-(a screen comes from a feature). If there is no `./features/` folder (ad-hoc use),
-take the screens from the user's request instead.
+(a screen comes from a feature). If there is no `./features/` folder (the
+`docs-to-html` workflow has no feature-analysis step), read the docs MD under
+`./docs/` (e.g. `./docs/confluence/**/*.md`, `./docs/jira/**/*.md`) together with
+the customer journey (below) and derive the screens from those instead — each
+doc section / journey stage that needs a UI becomes a screen. Only when neither
+docs nor features are present, take the screens from the user's request.
 
 **Customer journey (additional input, when it already exists):** If a customer
 journey produced by the `customer-journey-spec` pipeline is present on disk —

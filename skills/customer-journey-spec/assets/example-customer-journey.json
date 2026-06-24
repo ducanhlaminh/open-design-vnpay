@@ -31,7 +31,14 @@
           "emotion": "neutral",
           "user_actions": ["Tìm theo mã đơn / SĐT khách"],
           "touchpoints": ["Màn lịch sử đơn hàng"],
-          "pain_points": ["Khó tìm nếu nhiều đơn"]
+          "pain_points": ["Khó tìm nếu nhiều đơn"],
+          "sources": [
+            {
+              "file": "docs/confluence/Hoàn tiền đơn hàng.md",
+              "heading": "Tìm đơn",
+              "quote": "Chủ shop tìm đơn cần hoàn theo mã đơn hoặc số điện thoại khách trong màn Lịch sử đơn hàng."
+            }
+          ]
         },
         {
           "id": "STG-REFUND-2",
@@ -42,7 +49,14 @@
           "emotion": "anxious",
           "user_actions": ["Chọn lý do", "Nhập số tiền hoàn (toàn phần/một phần)"],
           "system_responses": ["Validate số tiền ≤ giá trị đơn"],
-          "pain_points": ["Sợ hoàn nhầm số tiền"]
+          "pain_points": ["Sợ hoàn nhầm số tiền"],
+          "sources": [
+            {
+              "file": "docs/confluence/Hoàn tiền đơn hàng.md",
+              "heading": "Quy tắc hoàn tiền",
+              "quote": "Số tiền hoàn phải nhỏ hơn hoặc bằng giá trị đơn; hỗ trợ hoàn toàn phần và hoàn một phần kèm lý do."
+            }
+          ]
         },
         {
           "id": "STG-REFUND-3",

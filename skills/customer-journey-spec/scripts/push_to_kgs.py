@@ -248,6 +248,7 @@ def main():
                 "touchpoints": st.get("touchpoints", []),
                 "pain_points": st.get("pain_points", []),
                 "thoughts": st.get("thoughts", []),
+                "sources": st.get("sources", []),   # key source-text excerpts (docs MD)
             }, project_id, dry_run):
                 ok += 1
                 stage_n += 1

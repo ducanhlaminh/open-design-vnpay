@@ -570,7 +570,12 @@
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  background: var(--bg);
+  /* VNPAY canvas gradient. Kept on this element (it needs its own
+     background to paint over rail descendants that escape the column);
+     `fixed` anchors it to the viewport so it lines up seamlessly with the
+     shell gradient behind and stays put while content scrolls. */
+  background: var(--app-bg-gradient, var(--bg));
+  background-attachment: fixed;
   padding: 0;
   /* Used by descendants (e.g. the plugins-home Scenario row) to
      pin themselves directly below the sticky topbar. Mirrors the

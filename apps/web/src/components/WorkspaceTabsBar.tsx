@@ -773,6 +773,7 @@ function displayTabFor(
     plugins: t('entry.navPlugins'),
     'design-systems': t('entry.navDesignSystems'),
     integrations: t('entry.navIntegrations'),
+    'remote-registry': t('entry.navRemoteRegistry'),
   };
   const entryIcon: Record<EntryHomeView, IconName> = {
     home: 'home',
@@ -783,6 +784,7 @@ function displayTabFor(
     plugins: 'grid',
     'design-systems': 'blocks',
     integrations: 'link',
+    'remote-registry': 'layers-filled',
   };
   return {
     id: tab.id,

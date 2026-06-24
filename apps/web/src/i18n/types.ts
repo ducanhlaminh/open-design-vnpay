@@ -724,6 +724,7 @@ export interface Dict {
   'entry.navPlugins': string;
   'entry.navDesignSystems': string;
   'entry.navIntegrations': string;
+  'entry.navRemoteRegistry': string;
   'workspaceTabs.project': string;
   'workspaceTabs.pluginDetails': string;
   'workspaceTabs.marketplace': string;

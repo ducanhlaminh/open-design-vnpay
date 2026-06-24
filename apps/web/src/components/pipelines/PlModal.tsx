@@ -15,7 +15,7 @@ interface Props {
   icon?: IconName;
   /** While true, Escape and backdrop clicks do not close (e.g. mid-submit). */
   busy?: boolean;
-  size?: 'sm' | 'md';
+  size?: 'sm' | 'md' | 'lg';
 }
 
 export function PlModal({ title, onClose, children, footer, icon, busy = false, size = 'sm' }: Props) {

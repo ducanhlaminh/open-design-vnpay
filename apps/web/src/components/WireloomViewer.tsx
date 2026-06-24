@@ -196,9 +196,9 @@ export function WireloomViewer({ screenName, elements }: { screenName: string; e
         padding: '2px 8px',
         borderRadius: 'var(--radius-sm, 6px)',
         cursor: 'pointer',
-        border: `1px solid ${view === k ? 'var(--accent, #c96442)' : 'var(--border, #e1e5eb)'}`,
-        background: view === k ? 'var(--accent-tint, #fbeee5)' : 'transparent',
-        color: view === k ? 'var(--accent, #c96442)' : 'var(--text-muted, #6b7280)',
+        border: `1px solid ${view === k ? 'var(--accent, #0066b3)' : 'var(--border, #e1e5eb)'}`,
+        background: view === k ? 'var(--accent-tint, #e6f0f8)' : 'transparent',
+        color: view === k ? 'var(--accent, #0066b3)' : 'var(--text-muted, #6b7280)',
       }}
     >
       {label}

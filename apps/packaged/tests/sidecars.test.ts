@@ -277,6 +277,40 @@ describe('buildPackagedDaemonSpawnEnv', () => {
     expect(env.POSTHOG_KEY).toBeUndefined();
     expect(env.POSTHOG_HOST).toBeUndefined();
   });
+
+  it('forwards MEDIA_* to the daemon spawn env when baked into the bundle', () => {
+    const env = buildPackagedDaemonSpawnEnv(fakePaths(), {
+      appVersion: null,
+      daemonCliEntry: null,
+      legacyDataDir: null,
+      requireDesktopAuth: true,
+      mediaUrl: 'https://media.example.com',
+      mediaAppId: 'app-123',
+      mediaUserId: 'od-service',
+      mediaUserRole: 'admin',
+    });
+    expect(env.MEDIA_URL).toBe('https://media.example.com');
+    expect(env.MEDIA_APP_ID).toBe('app-123');
+    expect(env.MEDIA_USER_ID).toBe('od-service');
+    expect(env.MEDIA_USER_ROLE).toBe('admin');
+  });
+
+  it('omits MEDIA_* when unset so the daemon keeps its own defaults', () => {
+    const env = buildPackagedDaemonSpawnEnv(fakePaths(), {
+      appVersion: null,
+      daemonCliEntry: null,
+      legacyDataDir: null,
+      requireDesktopAuth: true,
+      mediaUrl: null,
+      mediaAppId: null,
+      mediaUserId: null,
+      mediaUserRole: null,
+    });
+    expect('MEDIA_URL' in env).toBe(false);
+    expect('MEDIA_APP_ID' in env).toBe(false);
+    expect('MEDIA_USER_ID' in env).toBe(false);
+    expect('MEDIA_USER_ROLE' in env).toBe(false);
+  });
 });
 
 describe('waitForStatus child-exit fast-fail', () => {

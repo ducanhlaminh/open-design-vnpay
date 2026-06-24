@@ -13,7 +13,7 @@ import {
   listPipelineStatus,
   mergePipelineState,
 } from './pipelines.js';
-import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
+import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import type { RouteDeps } from './server-context.js';
 
 // A pipeline's "project" is a KGS app: either pulled from the central KGS
@@ -37,21 +37,21 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   const { db } = ctx;
 
   // Cross-device pipeline state = this device's local run metadata (transient
-  // running/failed) merged with the KGS file store (durable "done" signal any
-  // device sees after a pull). KGS unreachable → fall back to local only.
+  // running/failed) merged with the media-service file store (durable "done"
+  // signal any device sees after a pull). Media unreachable → fall back to local.
   const loadMergedState = async (projectId: string): Promise<ProjectPipelineState> => {
     const local = getProjectPipelineState(db, projectId) as ProjectPipelineState;
     // "Done" = the stage's output files exist — on local disk (offline-safe,
-    // covers outputs produced/pulled locally) OR in the KGS file store
+    // covers outputs produced/pulled locally) OR in the media-service file store
     // (cross-device). Both feed one file-derived state; mergePipelineState still
     // preserves a local in-flight 'running' (it never overrides a running stage).
     const localPaths = await ctx.pipelines.localOutputs(projectId).catch(() => [] as string[]);
     const fileState: ProjectPipelineState = deriveStateFromLocalFiles(localPaths);
     try {
-      const files = await new KgsClient(kgsConfigFromEnv()).listFiles(projectId);
+      const files = await new MediaClient(mediaConfigFromEnv()).listFiles(projectId);
       Object.assign(fileState, deriveStateFromKgsFiles(files));
     } catch {
-      // KGS unreachable — local file-derived done-state still applies.
+      // media-service unreachable — local file-derived done-state still applies.
     }
     return mergePipelineState(local, fileState);
   };
