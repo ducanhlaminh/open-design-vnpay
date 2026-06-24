@@ -1,8 +1,7 @@
 // @open-design/figma-h2d — clean-room DOM → Figma "HTML to Design" JSON serializer.
 // Browser-only (needs DOM/getComputedStyle/canvas). Produces the (figh2d) clipboard payload that
 // pastes into Figma as editable nodes — Figma builds the nodes from this JSON, so we never encode
-// a binary .fig (that's the brittle part @open-design/figma-clip owns). See
-// specs/current/h2d-serializer-spec.md.
+// a brittle binary .fig buffer. See specs/current/h2d-serializer-spec.md.
 
 export { captureElement, captureDocument } from "./serialize.js";
 export {

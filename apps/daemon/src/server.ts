@@ -410,6 +410,13 @@ import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { registerPipelineRoutes } from './pipeline-routes.js';
 import { getPipelineDef, stageForOutput } from './pipelines.js';
+import {
+  basConfluenceMeta,
+  basListFeatures,
+  basListProjects,
+  fetchSourceFiles,
+  resolveBasEndpoint,
+} from './bas/bas-client.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
@@ -12870,7 +12877,12 @@ export async function startServer({
     return applyPullFiles(projectId, cwd, media, stored, resolutions, onConflictDefault);
   };
 
-  const runPipeline = async (projectId: string, pipelineId: string, input?: string) => {
+  const runPipeline = async (
+    projectId: string,
+    pipelineId: string,
+    input?: string,
+    source?: import('@open-design/contracts').PipelineRunSource,
+  ) => {
     const def = getPipelineDef(pipelineId);
     if (!def) throw new Error(`Unknown pipeline ${pipelineId}`);
     const project = getProject(db, projectId);
@@ -12897,7 +12909,38 @@ export async function startServer({
     const skillDirective = def.extraSkillIds?.length
       ? 'This pipeline runs multiple skills in one go — follow EACH active skill\'s workflow and produce ALL of their outputs.'
       : "Follow the active skill's workflow exactly.";
-    const kickoff = `Run the "${def.name}" pipeline for KGS project "${projectId}". ${skillDirective}${trimmedInput ? ` Input/source for this run: ${trimmedInput}` : ''} When the skill pushes results to KGS, target project_id "${projectId}".`;
+    // Source directive: when a structured Confluence/BAS source is chosen, the
+    // daemon pre-fetches it into ./docs/source/ below (BE owns the BAS HTTP), so
+    // the skill just normalizes those local files. Otherwise fall back to the
+    // legacy free-text input (a JIRA key / JQL the skill resolves itself).
+    const sourceDir = source?.kind === 'confluence' ? './docs/source/confluence/' : './docs/source/bas/';
+    const sourceDirective = source
+      ? ` The source documents have already been fetched into ${sourceDir} — read every Markdown file there and normalize them into the stage output (do NOT call any external doc API yourself).`
+      : trimmedInput
+        ? ` Input/source for this run: ${trimmedInput}`
+        : '';
+    const kickoff = `Run the "${def.name}" pipeline for KGS project "${projectId}". ${skillDirective}${sourceDirective} When the skill pushes results to KGS, target project_id "${projectId}".`;
+
+    // BAS/Confluence source pre-fetch (BE owns the BAS HTTP) — done BEFORE any
+    // conversation/run state is created so a fetch failure aborts cleanly with no
+    // orphaned 'running' run. Writes Markdown under the project cwd's
+    // ./docs/source/; the skill then normalizes those local files.
+    if (source) {
+      const ep = await resolveBasEndpoint(RUNTIME_DATA_DIR);
+      if (!ep) {
+        throw new Error(
+          'BAS is not configured (set BAS_MCP_URL + BAS_MCP_TOKEN, or add a "ba-agent" MCP server in Settings).',
+        );
+      }
+      const cwd = await ensureProject(PROJECTS_DIR, projectId);
+      const files = await fetchSourceFiles(ep, source);
+      for (const f of files) {
+        const abs = path.join(cwd, f.relPath);
+        await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+        await fs.promises.writeFile(abs, f.content, 'utf8');
+      }
+      console.log(`[pipelines] pre-fetched ${files.length} BAS source file(s) into cwd for ${projectId}`);
+    }
 
     insertConversation(db, {
       id: conversationId,
@@ -12998,15 +13041,35 @@ export async function startServer({
     const files = await snapshotPipelineCwd(path.join(PROJECTS_DIR, projectId));
     return [...files.keys()];
   };
+  // BAS gateway reads for the Pipelines source picker. Each resolves the endpoint
+  // (env / mcp-config) server-side so the token never reaches the browser.
+  const requireBasEndpoint = async () => {
+    const ep = await resolveBasEndpoint(RUNTIME_DATA_DIR);
+    if (!ep) {
+      throw new Error(
+        'BAS is not configured (set BAS_MCP_URL + BAS_MCP_TOKEN, or add a "ba-agent" MCP server in Settings).',
+      );
+    }
+    return ep;
+  };
+  const basDeps = {
+    listProjects: async () => basListProjects(await requireBasEndpoint()),
+    listFeatures: async (projectId: string) => basListFeatures(await requireBasEndpoint(), projectId),
+    confluenceMeta: async (ref: string) => basConfluenceMeta(await requireBasEndpoint(), ref),
+  };
+  // Shared pipeline deps — passed to both the pipeline routes and the KG-sync
+  // routes (both type their `pipelines` as the full PipelineDeps).
+  const pipelineDeps = {
+    runPipeline,
+    pullFiles: pullFilesForProject,
+    uploadFiles: uploadProjectFiles,
+    localOutputs: localOutputsForProject,
+    pullConflict: { plan: planPull, apply: applyPull },
+    bas: basDeps,
+  };
   registerPipelineRoutes(app, {
     db,
-    pipelines: {
-      runPipeline,
-      pullFiles: pullFilesForProject,
-      uploadFiles: uploadProjectFiles,
-      localOutputs: localOutputsForProject,
-      pullConflict: { plan: planPull, apply: applyPull },
-    },
+    pipelines: pipelineDeps,
   });
 
   // KG sync (pull-all/push-all) is registered here — after the pipeline file
@@ -13018,13 +13081,7 @@ export async function startServer({
     http: httpDeps,
     ids: idDeps,
     projectStore: projectStoreDeps,
-    pipelines: {
-      runPipeline,
-      pullFiles: pullFilesForProject,
-      uploadFiles: uploadProjectFiles,
-      localOutputs: localOutputsForProject,
-      pullConflict: { plan: planPull, apply: applyPull },
-    },
+    pipelines: pipelineDeps,
   });
 
   // proxy routes (anthropic / openai / azure / google / ollama) live

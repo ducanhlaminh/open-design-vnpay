@@ -111,10 +111,10 @@ mà không cần Figma → dùng react-shadcn (giữ nguyên, không đụng).
 
 Sau khi có file (vd `screen.html`):
 ```bash
-node ../html-to-figma/scripts/copy-figma.mjs screen.html
+node ../html-to-figma/scripts/copy-figma-h2d.mjs screen.html
 ```
-→ mở `screen.copy.html`, bấm **Copy to Figma**, sang Figma **Cmd/Ctrl+V**. Xem
-`skills/html-to-figma/SKILL.md` cho chi tiết + giới hạn.
+→ mở `screen.copy.html`, bấm **Copy to Figma**, sang Figma **Cmd/Ctrl+V** (engine figh2d,
+client-side). Xem `skills/html-to-figma/SKILL.md` cho chi tiết + giới hạn.
 
 ## Tham chiếu
 

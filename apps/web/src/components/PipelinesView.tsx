@@ -30,6 +30,7 @@ import {
   PipelineResultModal,
   PipelineStatusModal,
   RunInputModal,
+  type RunSourcePayload,
 } from './pipelines/PipelineModals';
 import { PullConflictModal } from './pipelines/PullConflictModal';
 import { pullApply, pullPlan } from '../providers/pullConflict';
@@ -307,12 +308,15 @@ export function PipelinesView() {
   // Start a pipeline run in the BACKGROUND: POST the run, optimistically flip the
   // row to "running" (the poller takes over), and DON'T navigate away. Throws on
   // failure so callers (incl. the input modal) can surface it.
-  const startRun = async (pipelineId: string, input?: string) => {
+  const startRun = async (pipelineId: string, payload?: RunSourcePayload) => {
     if (!projectId) return;
+    const body: Record<string, unknown> = { projectId };
+    if (payload?.source) body.source = payload.source;
+    else if (payload?.input && payload.input.trim()) body.input = payload.input.trim();
     const res = await fetch(`/api/pipelines/${encodeURIComponent(pipelineId)}/run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ projectId, ...(input && input.trim() ? { input: input.trim() } : {}) }),
+      body: JSON.stringify(body),
     });
     if (!res.ok && res.status !== 202) {
       const j = await res.json().catch(() => ({}));
@@ -703,8 +707,8 @@ export function PipelinesView() {
           pipelineName={runInputFor.name}
           placeholder={runInputFor.inputPlaceholder ?? ''}
           onClose={() => setRunInputFor(null)}
-          onRun={async (input) => {
-            await startRun(runInputFor.id, input);
+          onRun={async (payload) => {
+            await startRun(runInputFor.id, payload);
             pushToast({ message: `Started “${runInputFor.name}” — running in background` });
           }}
         />

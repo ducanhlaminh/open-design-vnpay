@@ -1,5 +1,13 @@
 import type { Express } from 'express';
-import type { PullApplyResult, PullPlan, PullResolution } from '@open-design/contracts';
+import type {
+  BasFeature,
+  BasProject,
+  ConfluencePageMeta,
+  PipelineRunSource,
+  PullApplyResult,
+  PullPlan,
+  PullResolution,
+} from '@open-design/contracts';
 import type { SkillInfo } from './skills.js';
 import type { DesignSystemSummary } from './design-systems.js';
 import type { RoutineRoutesService } from './routine-routes.js';
@@ -57,11 +65,26 @@ export interface RoutineDeps {
 export interface PipelineDeps {
   // Seed a new conversation in `projectId` with `pipelineId`'s skill active and
   // start the agent run. Wired in server.ts (needs design.runs + startChatRun).
-  runPipeline(projectId: string, pipelineId: string, input?: string): Promise<{
+  // `source` (Confluence/BAS) is pre-fetched from the BAS gateway into the
+  // project cwd BEFORE the run, so pipeline 1 normalizes local files.
+  runPipeline(
+    projectId: string,
+    pipelineId: string,
+    input?: string,
+    source?: PipelineRunSource,
+  ): Promise<{
     projectId: string;
     conversationId: string;
     agentRunId: string;
   }>;
+  // BAS MCP gateway reads for the Pipelines source-selection modal. Each resolves
+  // the endpoint from env / mcp-config and proxies one BAS tool (server-side, so
+  // the token never reaches the browser). Throw when BAS is not configured.
+  bas: {
+    listProjects(): Promise<BasProject[]>;
+    listFeatures(projectId: string): Promise<BasFeature[]>;
+    confluenceMeta(ref: string): Promise<ConfluencePageMeta>;
+  };
   // Regenerate the project's pipeline files from the KGS file store into the
   // local project cwd (cross-device "pull to continue"). Wired in server.ts.
   pullFiles(projectId: string): Promise<{ pulled: number }>;

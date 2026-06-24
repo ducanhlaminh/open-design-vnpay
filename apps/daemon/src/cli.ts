@@ -169,6 +169,10 @@ const AUTOMATION_BOOLEAN_FLAGS = new Set([
 ]);
 const PIPELINE_STRING_FLAGS = new Set([
   'daemon-url', 'project', 'name', 'input',
+  // Pipeline-1 structured source (Confluence/BAS via the BAS gateway):
+  //   --source confluence --ref <url/id>
+  //   --source bas --bas-project <id> --feature <id,id> --document <id,id>
+  'source', 'ref', 'bas-project', 'feature', 'document',
 ]);
 const PIPELINE_BOOLEAN_FLAGS = new Set([
   'help', 'h', 'json',
@@ -210,7 +214,7 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
   'bundled', 'no-bundled',
 ]);
 
-const FIGMA_STRING_FLAGS = new Set(['daemon-url', 'selector', 'out', 'out-dir', 'engine', 'width']);
+const FIGMA_STRING_FLAGS = new Set(['out-dir', 'width']);
 const FIGMA_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 
 function resolveSkillScript(req, rel) {
@@ -230,33 +234,18 @@ function resolveSkillScript(req, rel) {
   return null;
 }
 
-function resolveCopyFigmaScript(req) {
-  return resolveSkillScript(req, 'skills/html-to-figma/scripts/copy-figma.mjs');
-}
-
-function figmaCopyPageHtml(payload, name) {
-  const b64 = Buffer.from(payload, 'utf8').toString('base64');
-  return `<!DOCTYPE html><meta charset="utf-8"><title>Copy to Figma — ${name}</title>
-<body style="font:15px/1.5 system-ui;max-width:640px;margin:48px auto;padding:0 16px">
-<h1 style="font-size:20px">Copy to Figma — ${name}</h1>
-<p>Bấm nút, rồi sang Figma <b>Cmd/Ctrl+V</b>. Ra node Auto Layout editable, không cần plugin.</p>
-<button onclick="cp()" style="font:600 16px system-ui;padding:14px 28px;border:0;border-radius:10px;background:#0d99ff;color:#fff;cursor:pointer">⧉ Copy to Figma</button>
-<div id="s" style="margin-top:16px;font-family:monospace;color:#0c7a35"></div>
-<script>const p=atob("${b64}");async function cp(){try{await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([p],{type:'text/html'})})]);s.textContent='\\u2713 copied '+p.length+' bytes';}catch(e){s.textContent='\\u2717 '+e.message}}</script>`;
-}
-
-// `od figma copy <artifact.html>` — extract the HTML to IR (Playwright, via the html-to-figma
-// skill) then POST it to the daemon's /api/artifacts/figma-clipboard (same endpoint the web
-// "Copy to Figma" button uses) to get a paste-ready payload. Writes <name>.figma.html + a
-// one-click <name>.copy.html beside the input.
+// `od figma copy <a.html> [<b.html> ...]` — serialize HTML artifact(s) to a Figma "HTML to
+// Design" (figh2d) clipboard payload, fully client-side via Playwright + @open-design/figma-h2d
+// (no daemon). Multiple inputs → ONE payload (paste once → sibling frames). Delegates to the
+// html-to-figma skill's copy-figma-h2d.mjs, which writes <name>.figma.html + a one-click
+// <name>.copy.html beside the first input.
 async function runFigma(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(
-      'od figma copy <artifact.html> [--selector <css>] [--out <path>] [--json] [--daemon-url <url>]\n' +
-        '  HTML (Contract-clean) -> Figma clipboard payload. Paste into Figma, no plugin.\n' +
-        'od figma copy <a.html> [<b.html> ...] --engine h2d [--out-dir <dir>] [--width <px>] [--json]\n' +
-        '  H2D engine (Figma-native figh2d JSON, client-side via Playwright). Multiple inputs ->\n' +
-        '  ONE payload (copy all màn): paste once, every screen lands as sibling frames.',
+      'od figma copy <a.html> [<b.html> ...] [--out-dir <dir>] [--width <px>] [--json]\n' +
+        '  HTML -> Figma clipboard payload (figh2d JSON, client-side via Playwright). Paste into\n' +
+        '  Figma, no plugin. Multiple inputs -> ONE payload (copy all màn): paste once, every\n' +
+        '  screen lands as sibling frames.',
     );
     process.exit(args.length === 0 ? 2 : 0);
   }
@@ -274,101 +263,30 @@ async function runFigma(args) {
     process.exit(2);
   }
   const positionals = rest.filter((a) => a && !a.startsWith('-'));
-  const input = positionals[0];
-  if (!input) {
-    console.error('usage: od figma copy <artifact.html> [--engine h2d]');
+  if (positionals.length === 0) {
+    console.error('usage: od figma copy <artifact.html> [<artifact2.html> ...]');
     process.exit(2);
   }
   const { createRequire } = await import('node:module');
   const req = createRequire(import.meta.url);
   const path = req('node:path');
-  const fs = req('node:fs');
   const { spawnSync } = req('node:child_process');
-
-  // H2D engine: Figma-native figh2d JSON, produced fully client-side by Playwright (no daemon
-  // IR→.fig step). Supports multiple inputs combined into one payload ("copy all màn").
-  if (flags.engine === 'h2d') {
-    const script = resolveSkillScript(req, 'skills/html-to-figma/scripts/copy-figma-h2d.mjs');
-    if (!script) {
-      console.error('không tìm thấy skills/html-to-figma/scripts/copy-figma-h2d.mjs (chạy từ trong repo)');
-      process.exit(1);
-    }
-    const h2dArgs = [script, ...positionals.map((p) => path.resolve(p))];
-    if (typeof flags['out-dir'] === 'string') h2dArgs.push('--out-dir', flags['out-dir']);
-    if (typeof flags.width === 'string') h2dArgs.push('--width', flags.width);
-    if (flags.json) h2dArgs.push('--json');
-    const run = spawnSync(process.execPath, h2dArgs, {
-      stdio: 'inherit',
-      maxBuffer: 256 * 1024 * 1024,
-    });
-    process.exit(run.status ?? 1);
-  }
-  const absInput = path.resolve(input);
-  if (!fs.existsSync(absInput)) {
-    console.error(`file not found: ${absInput}`);
-    process.exit(2);
-  }
-  const script = resolveCopyFigmaScript(req);
+  // figh2d JSON, produced fully client-side by Playwright + @open-design/figma-h2d (no daemon).
+  // Multiple inputs are combined into ONE payload ("copy all màn": paste once → sibling frames).
+  const script = resolveSkillScript(req, 'skills/html-to-figma/scripts/copy-figma-h2d.mjs');
   if (!script) {
-    console.error('không tìm thấy skills/html-to-figma/scripts/copy-figma.mjs (chạy từ trong repo)');
+    console.error('không tìm thấy skills/html-to-figma/scripts/copy-figma-h2d.mjs (chạy từ trong repo)');
     process.exit(1);
   }
-  // extract HTML -> IR (Playwright runs inside copy-figma.mjs --ir-only)
-  const exArgs = [script, absInput, '--ir-only'];
-  if (typeof flags.selector === 'string') exArgs.push('--selector', flags.selector);
-  const ex = spawnSync(process.execPath, exArgs, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-  if (ex.stderr) process.stderr.write(ex.stderr);
-  if (ex.status !== 0) {
-    console.error(
-      `extract thất bại (mã ${ex.status}). Thiếu Playwright? cd skills/html-to-figma && npm i playwright && npx playwright install chromium`,
-    );
-    process.exit(1);
-  }
-  let ir;
-  try {
-    ir = JSON.parse(ex.stdout);
-  } catch {
-    console.error('IR JSON không hợp lệ từ extractor');
-    process.exit(1);
-  }
-  // daemon owns the IR -> .fig transform (single source of truth, same as the web button)
-  const base = await cliDaemonBaseUrl(flags);
-  let resp;
-  try {
-    resp = await fetch(`${base}/api/artifacts/figma-clipboard`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ir }),
-    });
-  } catch (err) {
-    surfaceFetchError(err, base);
-    process.exit(1);
-  }
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok || typeof data.html !== 'string') {
-    console.error(`POST /api/artifacts/figma-clipboard failed: ${resp.status} ${JSON.stringify(data)}`);
-    process.exit(1);
-  }
-  const name = path.basename(absInput, path.extname(absInput));
-  const payloadPath =
-    typeof flags.out === 'string' ? path.resolve(flags.out) : path.join(path.dirname(absInput), `${name}.figma.html`);
-  const outDir = path.dirname(payloadPath);
-  const copyPath = path.join(outDir, `${name}.copy.html`);
-  fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(payloadPath, data.html, 'utf8');
-  fs.writeFileSync(copyPath, figmaCopyPageHtml(data.html, name), 'utf8');
-  if (flags.json) {
-    process.stdout.write(
-      JSON.stringify({ payloadPath, copyPath, warnings: data.warnings || [], stats: data.stats }, null, 2) + '\n',
-    );
-    return;
-  }
-  console.log(`[figma] payload: ${payloadPath} (${data.stats?.bytes} bytes)`);
-  console.log(`[figma] paste page: ${copyPath} — mở browser, bấm "Copy to Figma"`);
-  if (Array.isArray(data.warnings) && data.warnings.length) {
-    console.log(`[figma] ${data.warnings.length} cảnh báo:`);
-    data.warnings.forEach((w) => console.log('  - ' + w));
-  }
+  const h2dArgs = [script, ...positionals.map((p) => path.resolve(p))];
+  if (typeof flags['out-dir'] === 'string') h2dArgs.push('--out-dir', flags['out-dir']);
+  if (typeof flags.width === 'string') h2dArgs.push('--width', flags.width);
+  if (flags.json) h2dArgs.push('--json');
+  const run = spawnSync(process.execPath, h2dArgs, {
+    stdio: 'inherit',
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  process.exit(run.status ?? 1);
 }
 
 // `od kg …` — design-v3 KG sync (pull/push/status). Mirrors the daemon
@@ -6373,7 +6291,11 @@ Commands:
   new <projectId>      Create a NEW pipeline project (projectId IS the KGS project_id). [--name "<name>"]
   projects             List the KGS apps available for pipelines (created here or pulled via od kg pull).
   list                 List the docs→UI pipelines for a KGS project (status + gating).
-  run <pipelineId>     Run one pipeline — seeds a conversation with its skill active. [--input "<source>"]
+  run <pipelineId>     Run one pipeline — seeds a conversation with its skill active.
+                       Source for pipeline 1 (jira-ingest), one of:
+                         --input "<JIRA key / JQL>"                      (legacy, via mcp-atlassian)
+                         --source confluence --ref <page url/id>          (BAS gateway)
+                         --source bas --bas-project <id> --feature <id,id> | --document <id,id>
   upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
   pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
 
@@ -6505,12 +6427,45 @@ async function runPipeline(args) {
       console.error('Usage: od pipeline run <pipelineId> --project <id>');
       process.exit(2);
     }
+    // Build the optional structured source (mirrors the UI's source picker). The
+    // daemon pre-fetches Confluence/BAS docs from the BAS gateway before the run.
+    let source;
+    if (flags.source === 'confluence') {
+      const ref = (flags.ref || flags.input || '').toString().trim();
+      if (!ref) {
+        console.error('Usage: od pipeline run <id> --project <id> --source confluence --ref <url/id>');
+        process.exit(2);
+      }
+      source = { kind: 'confluence', ref };
+    } else if (flags.source === 'bas') {
+      const basProjectId = (flags['bas-project'] || '').toString().trim();
+      const splitIds = (v) =>
+        (v || '').toString().split(',').map((s) => s.trim()).filter(Boolean);
+      const featureIds = splitIds(flags.feature);
+      const documentIds = splitIds(flags.document);
+      if (!basProjectId || (featureIds.length === 0 && documentIds.length === 0)) {
+        console.error('Usage: od pipeline run <id> --project <id> --source bas --bas-project <id> --feature <id,id> | --document <id,id>');
+        process.exit(2);
+      }
+      source = {
+        kind: 'bas',
+        projectId: basProjectId,
+        ...(featureIds.length ? { featureIds } : {}),
+        ...(documentIds.length ? { documentIds } : {}),
+      };
+    } else if (flags.source) {
+      console.error('Unknown --source; expected "confluence" or "bas".');
+      process.exit(2);
+    }
     let resp;
     try {
       resp = await fetch(`${base}/api/pipelines/${encodeURIComponent(pipelineId)}/run`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId, ...(flags.input ? { input: flags.input } : {}) }),
+        body: JSON.stringify({
+          projectId,
+          ...(source ? { source } : flags.input ? { input: flags.input } : {}),
+        }),
       });
     } catch (err) {
       surfaceFetchError(err, base);

@@ -9,10 +9,28 @@
 // - PipelineResultModal:     list a finished pipeline's output files (Req 3).
 
 import { useEffect, useState } from 'react';
-import type { ChatRunStatusResponse, PipelineView } from '@open-design/contracts';
+import type {
+  BasFeature,
+  BasFeaturesResponse,
+  BasProject,
+  BasProjectsResponse,
+  ChatRunStatusResponse,
+  ConfluencePageMeta,
+  ConfluencePageMetaResponse,
+  PipelineRunSource,
+  PipelineView,
+} from '@open-design/contracts';
 
 import { Icon } from '../Icon';
 import { PlModal } from './PlModal';
+import styles from './PipelineSourceModal.module.css';
+
+/** What the run-source modal hands back: either a structured BAS/Confluence
+ * source (pre-fetched by the daemon) or a legacy free-text input (JIRA/JQL). */
+export interface RunSourcePayload {
+  source?: PipelineRunSource;
+  input?: string;
+}
 
 const RUN_STATUS_LABEL: Record<string, string> = {
   queued: 'Queued',
@@ -110,7 +128,16 @@ export function NewPipelineProjectModal({
   );
 }
 
-// ── Req 4: Run input (e.g. Confluence link) ──────────────────────────────────
+// ── Req 4: Run source (Confluence link or BAS document) ──────────────────────
+// Pipeline 1 (jira-ingest) ingests its source docs from the BAS MCP gateway. The
+// user picks ONE of two cards:
+//   • Confluence — paste a page URL/id; a preview panel shows the page metadata
+//     fetched via the daemon's BAS proxy.
+//   • BAS — pick a BAS workspace, then check the feature(s)/document(s) to ingest.
+// The daemon pre-fetches the choice into the project cwd before the run. A small
+// "Advanced" toggle keeps the legacy free-text JIRA key / JQL path.
+type SourceKind = 'confluence' | 'bas';
+
 export function RunInputModal({
   pipelineName,
   placeholder,
@@ -120,18 +147,126 @@ export function RunInputModal({
   pipelineName: string;
   placeholder: string;
   onClose: () => void;
-  onRun: (input: string) => Promise<void>;
+  onRun: (payload: RunSourcePayload) => Promise<void>;
 }) {
-  const [value, setValue] = useState('');
+  const [kind, setKind] = useState<SourceKind>('confluence');
+  const [advanced, setAdvanced] = useState(false);
+
+  // Confluence branch
+  const [confRef, setConfRef] = useState('');
+  const [confMeta, setConfMeta] = useState<ConfluencePageMeta | null>(null);
+  const [confLoading, setConfLoading] = useState(false);
+
+  // BAS branch
+  const [basProjects, setBasProjects] = useState<BasProject[] | null>(null);
+  const [basProjLoading, setBasProjLoading] = useState(false);
+  const [basProjectId, setBasProjectId] = useState('');
+  const [basFeatures, setBasFeatures] = useState<BasFeature[] | null>(null);
+  const [basFeatLoading, setBasFeatLoading] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Advanced (legacy JQL / JIRA key) branch
+  const [jql, setJql] = useState('');
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Lazy-load BAS workspaces the first time the BAS card is shown.
+  useEffect(() => {
+    if (advanced || kind !== 'bas' || basProjects !== null || basProjLoading) return;
+    setBasProjLoading(true);
+    setError(null);
+    void (async () => {
+      try {
+        const res = await fetch('/api/pipelines/bas/projects');
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || `BAS projects: ${res.status}`);
+        setBasProjects((j as BasProjectsResponse).projects ?? []);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setBasProjects([]);
+      } finally {
+        setBasProjLoading(false);
+      }
+    })();
+  }, [advanced, kind, basProjects, basProjLoading]);
+
+  const loadFeatures = async (pid: string) => {
+    setBasProjectId(pid);
+    setSelected(new Set());
+    setBasFeatures(null);
+    setBasFeatLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/pipelines/bas/projects/${encodeURIComponent(pid)}/features`);
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `BAS features: ${res.status}`);
+      setBasFeatures((j as BasFeaturesResponse).features ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBasFeatures([]);
+    } finally {
+      setBasFeatLoading(false);
+    }
+  };
+
+  const previewConfluence = async () => {
+    const ref = confRef.trim();
+    if (!ref || confLoading) return;
+    setConfLoading(true);
+    setError(null);
+    setConfMeta(null);
+    try {
+      const res = await fetch(`/api/pipelines/bas/confluence/page?ref=${encodeURIComponent(ref)}`);
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `Confluence preview: ${res.status}`);
+      setConfMeta((j as ConfluencePageMetaResponse).page);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfLoading(false);
+    }
+  };
+
+  const toggle = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const canRun = advanced
+    ? true // JQL is optional — the skill prompts if empty
+    : kind === 'confluence'
+      ? confRef.trim().length > 0
+      : basProjectId.length > 0 && selected.size > 0;
+
   const submit = async () => {
-    if (busy) return;
+    if (busy || !canRun) return;
     setBusy(true);
     setError(null);
     try {
-      await onRun(value.trim());
+      let payload: RunSourcePayload;
+      if (advanced) {
+        payload = { input: jql.trim() };
+      } else if (kind === 'confluence') {
+        payload = { source: { kind: 'confluence', ref: confRef.trim() } };
+      } else {
+        const feats = basFeatures ?? [];
+        const ids = [...selected];
+        const featureIds = ids.filter((id) => feats.find((f) => f.id === id)?.kind === 'feature');
+        const documentIds = ids.filter((id) => feats.find((f) => f.id === id)?.kind === 'document');
+        payload = {
+          source: {
+            kind: 'bas',
+            projectId: basProjectId,
+            ...(featureIds.length ? { featureIds } : {}),
+            ...(documentIds.length ? { documentIds } : {}),
+          },
+        };
+      }
+      await onRun(payload);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -143,6 +278,7 @@ export function RunInputModal({
     <PlModal
       title={`Run · ${pipelineName}`}
       icon="play"
+      size="md"
       busy={busy}
       onClose={onClose}
       footer={
@@ -154,7 +290,7 @@ export function RunInputModal({
             type="button"
             className="pl-btn pl-btn--run"
             onClick={() => void submit()}
-            disabled={busy}
+            disabled={busy || !canRun}
           >
             <Icon name={busy ? 'spinner' : 'play'} size={14} />
             <span>{busy ? 'Starting…' : 'Run pipeline'}</span>
@@ -162,23 +298,183 @@ export function RunInputModal({
         </>
       }
     >
-      <label className="pl-modal-field">
-        <span className="pl-modal-field__label">Source</span>
-        <input
-          type="text"
-          className="pl-input"
-          autoFocus
-          placeholder={placeholder}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') void submit();
-          }}
-        />
-        <span className="pl-modal-field__hint">
-          Paste the Confluence page URL/id (or JIRA key / JQL). Leave empty to let the skill ask.
-        </span>
-      </label>
+      {advanced ? (
+        <>
+          <label className="pl-modal-field">
+            <span className="pl-modal-field__label">JIRA key / JQL</span>
+            <input
+              type="text"
+              className="pl-input"
+              autoFocus
+              placeholder={placeholder}
+              value={jql}
+              onChange={(e) => setJql(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void submit();
+              }}
+            />
+            <span className="pl-modal-field__hint">
+              Paste a JIRA project key or JQL. Leave empty to let the skill ask. Pulled via the
+              <code> mcp-atlassian</code> server (not BAS).
+            </span>
+          </label>
+          <button type="button" className={styles.advancedToggle} onClick={() => setAdvanced(false)}>
+            ← Back to Confluence / BAS sources
+          </button>
+        </>
+      ) : (
+        <>
+          <div className={styles.cards} role="radiogroup" aria-label="Document source">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={kind === 'confluence'}
+              className={`${styles.card}${kind === 'confluence' ? ' ' + styles.cardSelected : ''}`}
+              onClick={() => setKind('confluence')}
+            >
+              <span className={styles.cardTop}>
+                <Icon name="import" size={16} />
+                Confluence
+                {kind === 'confluence' ? (
+                  <span className={styles.cardCheck} aria-hidden="true">
+                    <Icon name="check" size={14} />
+                  </span>
+                ) : null}
+              </span>
+              <span className={styles.cardDesc}>Paste a Confluence page link — preview its metadata, then ingest.</span>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={kind === 'bas'}
+              className={`${styles.card}${kind === 'bas' ? ' ' + styles.cardSelected : ''}`}
+              onClick={() => setKind('bas')}
+            >
+              <span className={styles.cardTop}>
+                <Icon name="folder" size={16} />
+                BAS
+                {kind === 'bas' ? (
+                  <span className={styles.cardCheck} aria-hidden="true">
+                    <Icon name="check" size={14} />
+                  </span>
+                ) : null}
+              </span>
+              <span className={styles.cardDesc}>Pick a BAS workspace, then choose the feature(s) / document(s).</span>
+            </button>
+          </div>
+
+          {kind === 'confluence' ? (
+            <div className={styles.panel}>
+              <label className="pl-modal-field">
+                <span className="pl-modal-field__label">Confluence page</span>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    type="text"
+                    className="pl-input"
+                    autoFocus
+                    placeholder="https://wiki…/pages/123456 or page id"
+                    value={confRef}
+                    onChange={(e) => {
+                      setConfRef(e.target.value);
+                      setConfMeta(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void previewConfluence();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="pl-btn"
+                    onClick={() => void previewConfluence()}
+                    disabled={confLoading || !confRef.trim()}
+                  >
+                    <Icon name={confLoading ? 'spinner' : 'eye'} size={14} />
+                    <span>{confLoading ? 'Loading…' : 'Preview'}</span>
+                  </button>
+                </div>
+              </label>
+              {confMeta ? (
+                <div className={styles.metaCard}>
+                  <span className={styles.metaTitle}>{confMeta.title}</span>
+                  {confMeta.space ? <span className={styles.metaRow}>Space: {confMeta.space}</span> : null}
+                  <span className={styles.metaRow}>{confMeta.url}</span>
+                  {confMeta.excerpt ? <p className={styles.metaExcerpt}>{confMeta.excerpt}</p> : null}
+                </div>
+              ) : (
+                <span className={styles.hint}>Click Preview to verify the page before running.</span>
+              )}
+            </div>
+          ) : (
+            <div className={styles.panel}>
+              <span className={styles.sectionLabel}>BAS workspace</span>
+              {basProjLoading ? (
+                <p className={styles.empty}>Loading BAS workspaces…</p>
+              ) : !basProjects || basProjects.length === 0 ? (
+                <p className={styles.empty}>No BAS workspaces returned (check BAS configuration).</p>
+              ) : (
+                <div className={styles.list}>
+                  {basProjects.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      className={`${styles.row}${p.id === basProjectId ? ' ' + styles.rowSelected : ''}`}
+                      onClick={() => void loadFeatures(p.id)}
+                    >
+                      <span className={`${styles.checkbox}${p.id === basProjectId ? ' ' + styles.checkboxOn : ''}`}>
+                        {p.id === basProjectId ? <Icon name="check" size={12} /> : null}
+                      </span>
+                      <span className={styles.rowBody}>
+                        <span className={styles.rowName}>{p.name}</span>
+                        {p.description ? <span className={styles.rowSummary}>{p.description}</span> : null}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {basProjectId ? (
+                <>
+                  <span className={styles.sectionLabel}>Documents / features to ingest</span>
+                  {basFeatLoading ? (
+                    <p className={styles.empty}>Loading…</p>
+                  ) : !basFeatures || basFeatures.length === 0 ? (
+                    <p className={styles.empty}>No features or documents found for this workspace.</p>
+                  ) : (
+                    <div className={styles.list}>
+                      {basFeatures.map((f) => {
+                        const on = selected.has(f.id);
+                        return (
+                          <button
+                            key={f.id}
+                            type="button"
+                            className={`${styles.row}${on ? ' ' + styles.rowSelected : ''}`}
+                            onClick={() => toggle(f.id)}
+                            aria-pressed={on}
+                          >
+                            <span className={`${styles.checkbox}${on ? ' ' + styles.checkboxOn : ''}`}>
+                              {on ? <Icon name="check" size={12} /> : null}
+                            </span>
+                            <span className={styles.rowBody}>
+                              <span className={styles.rowName}>{f.title}</span>
+                              {f.summary ? <span className={styles.rowSummary}>{f.summary}</span> : null}
+                            </span>
+                            <span className={styles.rowKind}>{f.kind}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              ) : null}
+            </div>
+          )}
+
+          <button type="button" className={styles.advancedToggle} onClick={() => setAdvanced(true)}>
+            Advanced: JIRA key / JQL (via mcp-atlassian) →
+          </button>
+        </>
+      )}
+
       {error ? (
         <div className="pl-modal-error" role="alert">
           <Icon name="info" size={14} />

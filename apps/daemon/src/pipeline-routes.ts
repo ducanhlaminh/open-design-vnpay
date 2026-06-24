@@ -1,5 +1,5 @@
 import type { Express, Response } from 'express';
-import type { ProjectPipelineState } from '@open-design/contracts';
+import type { PipelineRunSource, ProjectPipelineState } from '@open-design/contracts';
 
 import { getProject, getProjectPipelineState, insertProject, listProjects } from './db.js';
 import {
@@ -25,6 +25,37 @@ function isKgsProject(project: { metadata?: unknown } | null | undefined): boole
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
   const m = metadata as Record<string, unknown>;
   return m.source === 'kg-pull' || m.kind === 'pipeline';
+}
+
+// Validate the optional structured run source from the request body. Returns
+// undefined when absent; throws on a malformed shape so the route can 400.
+export function parseRunSource(raw: unknown): PipelineRunSource | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw !== 'object') throw new Error('source must be an object');
+  const s = raw as Record<string, unknown>;
+  if (s.kind === 'confluence') {
+    const ref = typeof s.ref === 'string' ? s.ref.trim() : '';
+    if (!ref) throw new Error('source.ref (Confluence URL/id) is required');
+    return { kind: 'confluence', ref };
+  }
+  if (s.kind === 'bas') {
+    const projectId = typeof s.projectId === 'string' ? s.projectId.trim() : '';
+    if (!projectId) throw new Error('source.projectId is required for a BAS source');
+    const strs = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
+    const featureIds = strs(s.featureIds);
+    const documentIds = strs(s.documentIds);
+    if (featureIds.length === 0 && documentIds.length === 0) {
+      throw new Error('a BAS source needs at least one featureId or documentId');
+    }
+    return {
+      kind: 'bas',
+      projectId,
+      ...(featureIds.length ? { featureIds } : {}),
+      ...(documentIds.length ? { documentIds } : {}),
+    };
+  }
+  throw new Error('source.kind must be "confluence" or "bas"');
 }
 
 // The pipelines capability has no scheduler/service of its own (unlike routines):
@@ -192,10 +223,54 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         });
       }
       const input = typeof req.body?.input === 'string' ? req.body.input : undefined;
-      const start = await ctx.pipelines.runPipeline(projectId, def.id, input);
+      let source: PipelineRunSource | undefined;
+      try {
+        source = parseRunSource(req.body?.source);
+      } catch (err: any) {
+        return res.status(400).json({ error: String(err?.message ?? err) });
+      }
+      const start = await ctx.pipelines.runPipeline(projectId, def.id, input, source);
       res.status(202).json(start);
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // ── BAS gateway proxy (pipeline-1 source picker) ───────────────────────────
+  // Server-side reads from the BAS MCP gateway so the bearer token never reaches
+  // the browser and there is no CORS. `ctx.pipelines.bas.*` resolves the endpoint
+  // from env / mcp-config; a "not configured" / unreachable error surfaces as 502
+  // so the modal can show a clear hint.
+
+  // GET /api/pipelines/bas/projects — BAS workspaces for the BAS source branch.
+  app.get('/api/pipelines/bas/projects', async (_req, res) => {
+    try {
+      const projects = await ctx.pipelines.bas.listProjects();
+      res.json({ projects });
+    } catch (err: any) {
+      res.status(502).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // GET /api/pipelines/bas/projects/:id/features — features/documents to ingest.
+  app.get('/api/pipelines/bas/projects/:id/features', async (req, res) => {
+    try {
+      const features = await ctx.pipelines.bas.listFeatures(req.params.id);
+      res.json({ projectId: req.params.id, features });
+    } catch (err: any) {
+      res.status(502).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // GET /api/pipelines/bas/confluence/page?ref=… — link metadata for the preview.
+  app.get('/api/pipelines/bas/confluence/page', async (req, res) => {
+    const ref = typeof req.query.ref === 'string' ? req.query.ref.trim() : '';
+    if (!ref) return res.status(400).json({ error: 'ref (Confluence URL/id) is required' });
+    try {
+      const page = await ctx.pipelines.bas.confluenceMeta(ref);
+      res.json({ page });
+    } catch (err: any) {
+      res.status(502).json({ error: String(err?.message ?? err) });
     }
   });
 

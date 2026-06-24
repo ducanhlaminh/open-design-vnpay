@@ -3,7 +3,6 @@ import {
   defaultScenarioPluginIdForProjectMetadata,
   type PluginManifest,
 } from '@open-design/contracts';
-import { irToClip } from '@open-design/figma-clip';
 import { createProjectArtifactFile } from './artifact-create.js';
 import { ArtifactPublicationBlockedError } from './artifact-publication-guard.js';
 import { ArtifactRegressionError } from './artifact-stub-guard.js';
@@ -792,42 +791,6 @@ export function registerProjectArtifactRoutes(app: Express, ctx: RegisterProject
         findings,
         agentMessage: renderFindingsForAgent(findings),
       });
-    } catch (err: any) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  // Copy to Figma — turn an extracted IR tree into a clipboard payload (the .fig Kiwi buffer
-  // wrapped as text/html). The IR is extracted client-side (web: rendered iframe DOM; CLI:
-  // Playwright extractor) so the daemon stays browser-free; here we run the pure IR→.fig
-  // transform via @open-design/figma-clip. Body: { ir, fontSizeFallback? }.
-  app.post('/api/artifacts/figma-clipboard', (req, res) => {
-    try {
-      const { ir, fontSizeFallback } = req.body || {};
-      if (!ir || typeof ir !== 'object') {
-        return res.status(400).json({ error: 'ir required' });
-      }
-      const opts =
-        typeof fontSizeFallback === 'number' ? { fontSizeFallback } : {};
-      const { html, warnings } = irToClip(ir, opts);
-      // shallow IR walk for response stats
-      let nodes = 0;
-      let vectors = 0;
-      let images = 0;
-      (function count(n: any) {
-        if (!n || typeof n !== 'object') return;
-        nodes++;
-        if (n.type === 'vector' && Array.isArray(n.paths)) vectors += n.paths.length;
-        if (n.type === 'image' || (n.type === 'vector' && !n.paths?.length && n.image) || n.image) images++;
-        if (Array.isArray(n.children)) n.children.forEach(count);
-      })(ir);
-      /** @type {import('@open-design/contracts').FigmaClipboardResponse} */
-      const body = {
-        html,
-        warnings,
-        stats: { nodes, bytes: html.length, vectors, images },
-      };
-      res.json(body);
     } catch (err: any) {
       res.status(500).json({ error: String(err) });
     }

@@ -20,8 +20,6 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { fetchProjectFiles, projectFileUrl } from '../../providers/registry';
-import { submitFigmaClipboard } from '../../providers/daemon';
-import { extractIRFromHTML } from '../../lib/html-to-ir';
 import { useT } from '../../i18n';
 import { RemixIcon } from '../RemixIcon';
 import styles from './PipelinePrototypeCanvas.module.css';
@@ -46,11 +44,11 @@ function prettyTitle(fileName: string): string {
 
 type CopyState = 'idle' | 'busy' | 'ready' | 'ok' | 'err';
 
-// Per-frame "Copy to Figma": fetch THIS screen's prototype HTML source, extract it to IR in a
-// throwaway same-origin iframe, POST to the daemon for the pure IR→.fig transform, then write the
-// Figma clipboard payload (paste straight into Figma — node editable, no plugin/MCP). Same pipeline
-// as the single-file viewer's toolbar button (extractIRFromHTML + submitFigmaClipboard), but
-// reachable directly from the docs→HTML prototype canvas — one button per screen.
+// Per-frame "Copy to Figma": fetch THIS screen's prototype HTML source and serialize it to a
+// Figma "HTML to Design" (figh2d) clipboard payload fully client-side via @open-design/figma-h2d
+// (no daemon round-trip — Figma builds editable nodes from the JSON on paste). Same engine as the
+// single-file viewer's toolbar button (htmlToFigmaClipboard), but reachable directly from the
+// docs→HTML prototype canvas — one button per screen.
 //
 // Reliability: the payload is built from a long async chain (fetch → extract → daemon). Doing that
 // chain INSIDE the click and writing a Promise-valued ClipboardItem is fragile — if the gesture
@@ -78,12 +76,9 @@ function FrameCopyToFigma({ projectId, entry }: { projectId: string; entry: Prot
       const resp = await fetch(projectFileUrl(projectId, entry.name));
       if (!resp.ok) throw new Error(`Không đọc được HTML màn (${resp.status})`);
       const html = await resp.text();
-      const { ir } = await extractIRFromHTML(html, FRAME.w);
-      const res = await submitFigmaClipboard(ir);
-      if (!res || typeof res.html !== 'string') {
-        throw new Error('Daemon không trả payload (endpoint /api/artifacts/figma-clipboard?)');
-      }
-      const blob = new Blob([res.html], { type: 'text/html' });
+      const { htmlToFigmaClipboard } = await import('../../lib/html-to-h2d');
+      const payloadHtml = await htmlToFigmaClipboard(html, FRAME.w);
+      const blob = new Blob([payloadHtml], { type: 'text/html' });
       blobRef.current = blob;
       return blob;
     })();

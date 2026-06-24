@@ -61,7 +61,15 @@ python3 scripts/confluence_export.py <page-url-or-id> --out ./docs/confluence
 ## Workflow (do these in order)
 
 ### 1. Discover the Jira scope for this project
-- **If the run kickoff includes "Input/source for this run: …"**, use that as the
+- **If the run kickoff says the source docs were "already fetched into
+  ./docs/source/…"** (the Pipelines UI's Confluence or BAS source picker), the
+  daemon has ALREADY pulled the raw documents from the BAS gateway into
+  `./docs/source/confluence/` or `./docs/source/bas/`. Do NOT call any external
+  doc API in that case — read every `.md` file under that folder and normalize
+  it into the `./docs/jira/` output below (one `.md` per source doc, same
+  frontmatter contract). This is the primary path for the docs→UI / docs→HTML
+  pipelines.
+- **Else if the kickoff includes "Input/source for this run: …"**, use that as the
   source: a Confluence page URL/id → run `scripts/confluence_export.py <it>`
   (see the Confluence section above); a JIRA project key / JQL → use it directly
   in the Jira steps below. This is the link the user typed in the Pipelines UI.

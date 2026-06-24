@@ -20,7 +20,6 @@ import type {
   ChatSseEvent,
   ChatSseStartPayload,
   DaemonAgentPayload,
-  FigmaClipboardResponse,
   ResearchOptions,
   RunContextSelection,
   SseErrorPayload,
@@ -759,24 +758,3 @@ export async function saveArtifact(
   }
 }
 
-/**
- * Copy to Figma — POST an extracted IR tree (figma-skill IR-SCHEMA, produced client-side by
- * extractIR() over the rendered artifact iframe) to the daemon, which runs the pure IR→.fig
- * transform and returns a clipboard-ready text/html payload to paste straight into Figma.
- */
-export async function submitFigmaClipboard(
-  ir: unknown,
-  fontSizeFallback?: number,
-): Promise<FigmaClipboardResponse | null> {
-  try {
-    const resp = await fetch('/api/artifacts/figma-clipboard', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ir, fontSizeFallback }),
-    });
-    if (!resp.ok) return null;
-    return (await resp.json()) as FigmaClipboardResponse;
-  } catch {
-    return null;
-  }
-}
