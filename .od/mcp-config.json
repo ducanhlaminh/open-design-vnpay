@@ -5,9 +5,9 @@
       "transport": "stdio",
       "enabled": true,
       "label": "Local UI Knowledge Graph (od-kg)",
-      "command": "/Users/anhnd13/.nvm/versions/node/v24.14.1/bin/node",
+      "command": "/Users/tungnt2/.local/share/fnm/node-versions/v24.13.0/installation/bin/node",
       "args": [
-        "/Users/anhnd13/Downloads/open-design-vnpay/tools/kg/bin/tools-kg.mjs",
+        "/Users/tungnt2/Documents/work/vpn-design-platform/ui/open-design-vnpay/tools/kg/bin/tools-kg.mjs",
         "mcp"
       ],
       "env": {

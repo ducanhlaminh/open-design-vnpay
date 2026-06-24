@@ -210,14 +210,13 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
   'bundled', 'no-bundled',
 ]);
 
-const FIGMA_STRING_FLAGS = new Set(['daemon-url', 'selector', 'out']);
+const FIGMA_STRING_FLAGS = new Set(['daemon-url', 'selector', 'out', 'out-dir', 'engine', 'width']);
 const FIGMA_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 
-function resolveCopyFigmaScript(req) {
+function resolveSkillScript(req, rel) {
   const path = req('node:path');
   const fs = req('node:fs');
   const { fileURLToPath } = req('node:url');
-  const rel = 'skills/html-to-figma/scripts/copy-figma.mjs';
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
     // apps/daemon/{dist|src} → repo root
@@ -229,6 +228,10 @@ function resolveCopyFigmaScript(req) {
     try { if (fs.existsSync(c)) return c; } catch { /* keep trying */ }
   }
   return null;
+}
+
+function resolveCopyFigmaScript(req) {
+  return resolveSkillScript(req, 'skills/html-to-figma/scripts/copy-figma.mjs');
 }
 
 function figmaCopyPageHtml(payload, name) {
@@ -250,7 +253,10 @@ async function runFigma(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(
       'od figma copy <artifact.html> [--selector <css>] [--out <path>] [--json] [--daemon-url <url>]\n' +
-        '  HTML (Contract-clean) -> Figma clipboard payload. Paste into Figma, no plugin.',
+        '  HTML (Contract-clean) -> Figma clipboard payload. Paste into Figma, no plugin.\n' +
+        'od figma copy <a.html> [<b.html> ...] --engine h2d [--out-dir <dir>] [--width <px>] [--json]\n' +
+        '  H2D engine (Figma-native figh2d JSON, client-side via Playwright). Multiple inputs ->\n' +
+        '  ONE payload (copy all màn): paste once, every screen lands as sibling frames.',
     );
     process.exit(args.length === 0 ? 2 : 0);
   }
@@ -267,9 +273,10 @@ async function runFigma(args) {
     console.error(err.message);
     process.exit(2);
   }
-  const input = rest.find((a) => a && !a.startsWith('-'));
+  const positionals = rest.filter((a) => a && !a.startsWith('-'));
+  const input = positionals[0];
   if (!input) {
-    console.error('usage: od figma copy <artifact.html>');
+    console.error('usage: od figma copy <artifact.html> [--engine h2d]');
     process.exit(2);
   }
   const { createRequire } = await import('node:module');
@@ -277,6 +284,25 @@ async function runFigma(args) {
   const path = req('node:path');
   const fs = req('node:fs');
   const { spawnSync } = req('node:child_process');
+
+  // H2D engine: Figma-native figh2d JSON, produced fully client-side by Playwright (no daemon
+  // IR→.fig step). Supports multiple inputs combined into one payload ("copy all màn").
+  if (flags.engine === 'h2d') {
+    const script = resolveSkillScript(req, 'skills/html-to-figma/scripts/copy-figma-h2d.mjs');
+    if (!script) {
+      console.error('không tìm thấy skills/html-to-figma/scripts/copy-figma-h2d.mjs (chạy từ trong repo)');
+      process.exit(1);
+    }
+    const h2dArgs = [script, ...positionals.map((p) => path.resolve(p))];
+    if (typeof flags['out-dir'] === 'string') h2dArgs.push('--out-dir', flags['out-dir']);
+    if (typeof flags.width === 'string') h2dArgs.push('--width', flags.width);
+    if (flags.json) h2dArgs.push('--json');
+    const run = spawnSync(process.execPath, h2dArgs, {
+      stdio: 'inherit',
+      maxBuffer: 256 * 1024 * 1024,
+    });
+    process.exit(run.status ?? 1);
+  }
   const absInput = path.resolve(input);
   if (!fs.existsSync(absInput)) {
     console.error(`file not found: ${absInput}`);
