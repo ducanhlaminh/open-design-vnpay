@@ -1,0 +1,32 @@
+{
+  "name": "@open-design/figma-h2d",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Clean-room DOM → Figma 'HTML to Design' (figh2d) JSON serializer + clipboard payload. Browser-only (needs DOM); no daemon/web/Next deps.",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    },
+    "./global": "./dist/figma-h2d.global.js"
+  },
+  "scripts": {
+    "build": "node ./esbuild.config.mjs && tsc -p tsconfig.json --emitDeclarationOnly",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.6"
+  },
+  "engines": {
+    "node": "~24"
+  }
+}

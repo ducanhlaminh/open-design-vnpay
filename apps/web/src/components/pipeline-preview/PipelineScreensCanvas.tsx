@@ -10,7 +10,8 @@
 // @babel/standalone in srcDoc and crashes the host preview), so all screens are
 // browsable at once.
 
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { captureElement, toFigmaClipboardHtml, type H2DDocument } from '@open-design/figma-h2d';
 import {
   Background,
   Controls,
@@ -96,6 +97,62 @@ export function PipelineScreensCanvas({ projectId, dir, activeName, workspaceId 
   const [error, setError] = useState<string | null>(null);
   const [resolved, setResolved] = useState<ThemeLabResolved | null>(null);
   const [mode, setMode] = useState<string>('light');
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [copyAll, setCopyAll] = useState<'idle' | 'busy' | 'ok' | 'err'>('idle');
+  const copyAllResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Copy all screens to Figma — serialize every rendered (same-origin) preview iframe to the
+  // figh2d clipboard format and combine them into ONE payload (an array of documents). Pasting
+  // once drops every screen into Figma as sibling frames. clipboard.write runs synchronously
+  // inside the click gesture with a Promise-valued ClipboardItem so the async capture doesn't
+  // expire the gesture. See apps/web/src/lib/html-to-h2d.ts for the single-artifact variant.
+  const copyAllToFigma = useCallback(() => {
+    if (copyAll === 'busy') return;
+    if (copyAllResetRef.current) clearTimeout(copyAllResetRef.current);
+    setCopyAll('busy');
+    const payload = (async () => {
+      const frames = Array.from(canvasRef.current?.querySelectorAll('iframe') ?? []);
+      const docs: H2DDocument[] = [];
+      for (const frame of frames) {
+        try {
+          const doc = frame.contentDocument;
+          if (!doc?.body) continue;
+          const root = doc.body.firstElementChild ?? doc.body;
+          docs.push(await captureElement(root, { skipRemoteAssetSerialization: false }));
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[Copy all to Figma] bỏ qua một màn:', err);
+        }
+      }
+      if (docs.length === 0) throw new Error('Không có màn nào để copy (preview chưa render?)');
+      const { html } = await toFigmaClipboardHtml(docs, { source: 'open-design' });
+      return new Blob([html], { type: 'text/html' });
+    })();
+    const done = (state: 'ok' | 'err', err?: unknown) => {
+      if (err) {
+        // eslint-disable-next-line no-console
+        console.error('[Copy all to Figma]', err);
+      }
+      setCopyAll(state);
+      copyAllResetRef.current = setTimeout(() => setCopyAll('idle'), 3200);
+    };
+    try {
+      window.focus();
+      navigator.clipboard
+        .write([new ClipboardItem({ 'text/html': payload })])
+        .then(() => done('ok'))
+        .catch((err) => {
+          payload
+            .then((blob) => navigator.clipboard.write([new ClipboardItem({ 'text/html': blob })]))
+            .then(() => done('ok'))
+            .catch((err2) => done('err', err2 || err));
+        });
+    } catch (err) {
+      payload.catch(() => {});
+      done('err', err);
+    }
+  }, [copyAll]);
+  useEffect(() => () => { if (copyAllResetRef.current) clearTimeout(copyAllResetRef.current); }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -180,7 +237,35 @@ export function PipelineScreensCanvas({ projectId, dir, activeName, workspaceId 
   return (
     <ScreenThemeContext.Provider value={{ resolved, mode }}>
       <div className={styles.root}>
-        <div className={styles.canvas}>
+        <div className={styles.canvas} ref={canvasRef}>
+          <button
+            type="button"
+            onClick={copyAllToFigma}
+            disabled={copyAll === 'busy'}
+            title="Copy tất cả màn sang Figma — paste một lần ra nhiều frame"
+            style={{
+              position: 'absolute',
+              top: 12,
+              right: 12,
+              zIndex: 5,
+              font: '600 13px system-ui',
+              padding: '8px 14px',
+              border: 0,
+              borderRadius: 8,
+              cursor: copyAll === 'busy' ? 'default' : 'pointer',
+              color: '#fff',
+              background:
+                copyAll === 'ok' ? '#0c7a35' : copyAll === 'err' ? '#b91c1c' : '#0d99ff',
+            }}
+          >
+            {copyAll === 'busy'
+              ? 'Đang copy…'
+              : copyAll === 'ok'
+                ? '✓ Đã copy — Cmd+V vào Figma'
+                : copyAll === 'err'
+                  ? '✗ Copy lỗi'
+                  : `⧉ Copy tất cả màn (${entries.length}) → Figma`}
+          </button>
           <ReactFlowProvider>
             <ReactFlow
               nodes={nodes}

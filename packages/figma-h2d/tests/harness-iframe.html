@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8" /></head>
+  <body>
+    <pre id="out">running…</pre>
+    <script type="module">
+      import { captureElement, toFigmaClipboardHtml } from "./harness.bundle.mjs";
+      const out = document.getElementById("out");
+      const ARTIFACT = `<!doctype html><html><head><style>
+        body{margin:0;font-family:Arial,sans-serif}
+        .card{display:flex;flex-direction:column;gap:8px;padding:12px;background:#fff;border:1px solid #ddd;border-radius:8px;width:320px}
+        .title{font-size:18px;font-weight:700;color:#111}
+        .body{font-size:14px;color:#555;line-height:20px}
+        .badge::before{content:"★ ";color:gold}
+        .rotated{transform:rotate(12deg);width:80px;height:40px;background:#f59e0b}
+        svg{width:24px;height:24px}
+      </style></head><body><div class="card" id="root">
+        <div class="title">Acme Dashboard</div>
+        <div class="body">A longer paragraph that should wrap onto multiple lines inside this fixed width card so we can verify line counting works in an iframe realm.</div>
+        <span class="badge">Featured</span>
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#10b981"/></svg>
+        <div class="rotated">rot</div>
+      </div></body></html>`;
+      (async () => {
+        try {
+          const iframe = document.createElement("iframe");
+          iframe.style.cssText = "position:fixed;left:-99999px;top:0;width:360px;height:4000px;border:0;visibility:hidden";
+          document.body.appendChild(iframe);
+          await new Promise((r) => { iframe.onload = () => r(); iframe.srcdoc = ARTIFACT; });
+          await (iframe.contentWindow.document.fonts?.ready ?? Promise.resolve());
+          await new Promise((r) => setTimeout(r, 150));
+
+          const el = iframe.contentDocument.getElementById("root");
+          const doc = await captureElement(el, { skipRemoteAssetSerialization: true });
+          const payload = await toFigmaClipboardHtml([doc], { source: "iframe-harness" });
+
+          const findText = (n, acc=[]) => { if(n.nodeType===3)acc.push(n); (n.childNodes||[]).forEach(c=>findText(c,acc)); return acc; };
+          const findBy = (n, pred) => { if(pred(n))return n; for(const c of n.childNodes||[]){const r=findBy(c,pred); if(r)return r;} return null; };
+          const para = findText(doc.root).find(t => t.text.includes("longer paragraph"));
+          const svg = findBy(doc.root, n => n.tag === "SVG");
+          const rot = findBy(doc.root, n => n.styles && n.styles.transform && n.styles.transform !== "none");
+          const pseudo = findBy(doc.root, n => n.pseudoElementNodes && n.pseudoElementNodes.before);
+          const checks = [
+            ["root.tag DIV", doc.root.tag, "DIV"],
+            ["root rect width", Math.round(doc.root.rect.width), 320],
+            ["paragraph multi-line", para ? para.lineCount > 1 : false, true],
+            ["svg baked", !!(svg && svg.content && svg.content.includes("<svg")), true],
+            ["rotated quad", !!(rot && rot.rect.quad), true],
+            ["::before captured", !!pseudo, true],
+            ["fonts", Object.keys(doc.fonts).length > 0, true],
+            ["payload figh2d+figmeta", payload.html.includes("(figh2d)") && payload.html.includes("(figmeta)"), true],
+          ];
+          const pass = checks.every(([,a,b]) => JSON.stringify(a)===JSON.stringify(b));
+          out.textContent = JSON.stringify({ PASS: pass, checks: checks.map(([k,a,b]) => `${JSON.stringify(a)===JSON.stringify(b)?'ok':'FAIL'} ${k}: got=${JSON.stringify(a)} want=${JSON.stringify(b)}`) }, null, 2);
+          window.__H2D_RESULT = { pass };
+          iframe.remove();
+        } catch (e) {
+          out.textContent = "ERROR: " + (e && e.stack || e);
+          window.__H2D_RESULT = { pass:false, error:String(e && e.stack || e) };
+        }
+      })();
+    </script>
+  </body>
+</html>

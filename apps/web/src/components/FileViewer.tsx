@@ -92,7 +92,6 @@ import type {
 } from '../types';
 import { Icon } from './Icon';
 import { RemixIcon } from './RemixIcon';
-import { submitFigmaClipboard } from '../providers/daemon';
 import { Toast } from './Toast';
 import { PreviewDrawOverlay } from './PreviewDrawOverlay';
 import {
@@ -6102,8 +6101,9 @@ function HtmlViewer({
   const boardAvailable = mode === 'preview' && source !== null;
   const showPreviewToolbarControls = mode === 'preview';
 
-  // Copy to Figma — extract the rendered artifact (iframe DOM) to IR client-side, POST it to the
-  // daemon for the IR→.fig transform, then write the clipboard payload. Paste straight into Figma.
+  // Copy to Figma — render the artifact in an offscreen iframe and serialize it to Figma's native
+  // "HTML to Design" (figh2d) clipboard payload client-side (no daemon round-trip). Figma builds
+  // editable nodes from the JSON on paste. See apps/web/src/lib/html-to-h2d.ts.
   const [figmaCopyState, setFigmaCopyState] = useState<'idle' | 'busy' | 'ok' | 'err'>('idle');
   const [figmaCopyErr, setFigmaCopyErr] = useState<string | null>(null);
   const figmaCopyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -6125,13 +6125,9 @@ function HtmlViewer({
     // not focused" / expired-gesture after the async extract + daemon round-trip. Extraction runs
     // on a private same-origin srcdoc iframe (the live preview iframe is cross-origin/unreadable).
     const payload = (async () => {
-      const { extractIRFromHTML } = await import('../lib/html-to-ir');
-      const { ir } = await extractIRFromHTML(html, previewWidth);
-      const res = await submitFigmaClipboard(ir);
-      if (!res || typeof res.html !== 'string') {
-        throw new Error('Daemon không trả payload (endpoint /api/artifacts/figma-clipboard?)');
-      }
-      return new Blob([res.html], { type: 'text/html' });
+      const { htmlToFigmaClipboard } = await import('../lib/html-to-h2d');
+      const html2 = await htmlToFigmaClipboard(html, previewWidth);
+      return new Blob([html2], { type: 'text/html' });
     })();
     const done = (state: 'ok' | 'err', err?: unknown) => {
       if (err) {
