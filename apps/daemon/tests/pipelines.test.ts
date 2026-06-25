@@ -6,6 +6,7 @@ import {
   PIPELINE_DEFS,
   computeActive,
   deriveStateFromKgsFiles,
+  deriveStateFromLocalFiles,
   getPipelineDef,
   listPipelineStatus,
   mergePipelineState,
@@ -91,6 +92,46 @@ test('deriveStateFromKgsFiles marks a stage succeeded when it has ≥1 KGS file'
   assert.equal(state['jira-ingest']?.status, 'succeeded');
   assert.equal(state['feature-analysis']?.status, 'succeeded');
   assert.equal(state['ux-spec'], undefined);
+});
+
+test('ui-html prototype output round-trips cross-device (not localOnly)', () => {
+  // Regression: the docs-to-html deliverable (prototype/) must sync via the media
+  // store. A localOnly ui-html would never reach another device on push/pull-all.
+  assert.equal(getPipelineDef('ui-html')?.localOnly, undefined);
+});
+
+test('deriveStateFromLocalFiles lights up docs-to-html stages from pulled files (cross-workflow)', () => {
+  // A freshly-pulled device has NO local run metadata — only the pulled output
+  // files. docs-to-ui and docs-to-html share output patterns, so each file must
+  // mark its owning stage in BOTH workflows. Before the fix, first-match-only
+  // attribution lit only the docs-to-ui stages and left the docs-to-html stepper
+  // empty ("run from scratch") even though every output was present.
+  const state = deriveStateFromLocalFiles([
+    'docs/confluence/_index.md', // → jira-ingest AND html-docs
+    'bidv-account-freeze-journey.json', // → customer-journey AND html-cj (-journey.json)
+    'bidv-account-freeze-ux-spec.json', // → ux-spec AND html-ux
+    'prototype/index.html', // → ui-html
+  ]);
+  for (const id of ['html-docs', 'html-cj', 'html-ux', 'ui-html']) {
+    assert.equal(state[id]?.status, 'succeeded', `${id} should be derived succeeded`);
+  }
+  // docs-to-ui stages still derive too (shared outputs belong to both workflows).
+  for (const id of ['jira-ingest', 'customer-journey', 'ux-spec']) {
+    assert.equal(state[id]?.status, 'succeeded', `${id} should be derived succeeded`);
+  }
+});
+
+test('deriveStateFromKgsFiles re-derives owning stage(s) from file path, not the stage tag', () => {
+  // The media `stage` tag is first-match-only (docs-to-ui). Deriving from PATH
+  // recovers the docs-to-html stage a shared output also belongs to.
+  const state = deriveStateFromKgsFiles([
+    { stage: 'jira-ingest', path: 'docs/confluence/_index.md' },
+    { stage: 'ux-spec', path: 'app-ux-spec.json' },
+  ]);
+  assert.equal(state['html-docs']?.status, 'succeeded');
+  assert.equal(state['html-ux']?.status, 'succeeded');
+  assert.equal(state['jira-ingest']?.status, 'succeeded');
+  assert.equal(state['ux-spec']?.status, 'succeeded');
 });
 
 test('mergePipelineState: KGS done is authoritative, local fills transient state', () => {

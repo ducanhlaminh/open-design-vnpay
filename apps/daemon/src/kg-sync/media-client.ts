@@ -208,7 +208,8 @@ export class MediaClient {
   }
 
   /** KgsClient-compatible: list a project's files as `{path, stage, ...}` rows
-   *  (consumed by pull + deriveStateFromKgsFiles, which reads `stage`). */
+   *  (consumed by pull + deriveStateFromKgsFiles, which re-derives the owning
+   *  stage(s) from `path`; the `stage` tag is retained for reference/debug). */
   async listFiles(projectId: string): Promise<Array<Record<string, unknown>>> {
     const folderId = await this.ensureFolder(projectId);
     const files = await this.listAllFiles(folderId);

@@ -48,9 +48,11 @@ export interface PipelineDef {
   inputPlaceholder?: string;
   /**
    * When true, this stage's outputs stay LOCAL — they are never pushed to the
-   * KGS file store nor graph-converted on upload. Use for deliverables that
-   * don't belong in the shared knowledge graph (e.g. the HTML prototype, which
-   * is a rendered artifact, not graph data).
+   * media file store nor graph-converted on upload, so they do NOT round-trip to
+   * another device via push-all/pull-all. Reserve this for genuinely
+   * device-local scratch outputs; a stage's user-facing DELIVERABLE must stay
+   * syncable (file-only is fine — that's `convertToGraph` unset, not localOnly).
+   * No stage currently sets this.
    */
   localOnly?: boolean;
 }
@@ -63,7 +65,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   { id: 'jira-ingest',      name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],                                  outputs: ['docs/jira/', 'docs/confluence/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
   { id: 'feature-analysis', name: 'Feature Analysis',          skillId: 'feature-analysis',      dependsOn: ['jira-ingest'],                     outputs: ['features/', 'features.json', 'docs/features.md'] },
   { id: 'ux-spec',          name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['feature-analysis'], convertToGraph: true, outputs: ['-ux-spec.json', 'ux/'] },
-  { id: 'customer-journey', name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['feature-analysis'], convertToGraph: true, outputs: ['-customer-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
+  { id: 'customer-journey', name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['feature-analysis'], convertToGraph: true, outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
   { id: 'ui',               name: 'UI (static + interactive)', skillId: 'react-shadcn',          dependsOn: ['ux-spec', 'customer-journey'],     outputs: ['ui/', 'screens/'] },
 
   // ── Workflow B: docs → HTML prototype (INDEPENDENT chain, own ids) ────────
@@ -78,12 +80,15 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // Customer Journey built straight from the ingested docs MD (no feature-analysis
   // upstream). Each STAGE carries `sources[]` — the key text excerpts from the
   // source MD — which the SpecPreview surfaces under each stage card.
-  { id: 'html-cj',          name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['html-docs'], convertToGraph: true, outputs: ['-customer-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
+  { id: 'html-cj',          name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['html-docs'], convertToGraph: true, outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
   { id: 'html-ux',          name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['html-cj'], convertToGraph: true, outputs: ['-ux-spec.json', 'ux/'] },
   // ui-html also activates `frontend-design` (UI/UX craft) so the agent designs
   // boldly + well, not just structurally. The prototype skill additionally opts
   // into craft rules (anti-ai-slop, laws-of-ux, typography, color, animation).
-  { id: 'ui-html',          name: 'UI (HTML prototype)',       skillId: 'html-interactive-prototype', extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill'], dependsOn: ['html-ux'], outputs: ['prototype/'], localOnly: true },
+  // The `prototype/` HTML output IS the workflow deliverable, so it syncs to the
+  // media file store like every other stage (push-all/pull-all cross-device
+  // handoff). It is file-only — `convertToGraph` stays unset (not graph data).
+  { id: 'ui-html',          name: 'UI (HTML prototype)',       skillId: 'html-interactive-prototype', extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill'], dependsOn: ['html-ux'], outputs: ['prototype/'] },
 ];
 
 // Named docs→output flows. Each is an ordered subset of PIPELINE_DEFS. The UI
@@ -123,9 +128,21 @@ function outputMatches(rel: string, pattern: string): boolean {
 }
 
 // Which pipeline owns a produced file (by its cwd-relative path), for manual
-// upload stage-attribution. Undefined → not a declared stage output.
+// upload stage-attribution. Undefined → not a declared stage output. First match
+// only — used to pick a single `stage` tag + `convertToGraph` decision on upload.
 export function stageForOutput(rel: string): PipelineDef | undefined {
   return PIPELINE_DEFS.find((d) => (d.outputs ?? []).some((p) => outputMatches(rel, p)));
+}
+
+// EVERY pipeline whose declared outputs match this file (not just the first).
+// The docs-to-ui and docs-to-html workflows reuse identical output patterns
+// (docs/, -ux-spec.json, cj/, …) under different stage ids, so one produced file
+// legitimately belongs to a stage in BOTH workflows. File-derived "done" state
+// must light up all of them — otherwise a freshly-pulled device (which has no
+// local run metadata, only the pulled files) sees the docs-to-html stepper as
+// empty even though every output is present. See deriveStateFrom* below.
+export function stagesForOutput(rel: string): PipelineDef[] {
+  return PIPELINE_DEFS.filter((d) => (d.outputs ?? []).some((p) => outputMatches(rel, p)));
 }
 
 function statusOf(state: ProjectPipelineState, id: string): PipelineStatus {
@@ -137,17 +154,20 @@ export function computeActive(state: ProjectPipelineState, def: PipelineDef): bo
   return def.dependsOn.every((dep) => statusOf(state, dep) === 'succeeded');
 }
 
-// Cross-device gating: derive "done" stages from the KGS file store. A stage
-// with ≥1 file in KGS is treated as succeeded — its output exists and is
-// pullable on any device — independent of this device's local run metadata.
+// Cross-device gating: derive "done" stages from the media file store. A stage
+// whose declared output file(s) exist in the store is treated as succeeded — its
+// output is pullable on any device — independent of this device's local run
+// metadata. We re-derive the owning stage(s) from each file's PATH (via
+// stagesForOutput) rather than trusting the single `stage` tag stamped at upload:
+// that tag is first-match-only (always the docs-to-ui stage for a shared
+// pattern), which would leave the docs-to-html stages permanently unlit.
 export function deriveStateFromKgsFiles(files: Array<Record<string, unknown>>): ProjectPipelineState {
-  const stages = new Set<string>();
-  for (const f of files) {
-    const stage = typeof f.stage === 'string' ? f.stage : '';
-    if (stage) stages.add(stage);
-  }
   const state: ProjectPipelineState = {};
-  for (const stage of stages) state[stage] = { status: 'succeeded' };
+  for (const f of files) {
+    const rel = typeof f.path === 'string' ? f.path : '';
+    if (!rel) continue;
+    for (const def of stagesForOutput(rel)) state[def.id] = { status: 'succeeded' };
+  }
   return state;
 }
 
@@ -155,13 +175,12 @@ export function deriveStateFromKgsFiles(files: Array<Record<string, unknown>>): 
 // file(s) exist in the project cwd is treated as succeeded. This makes the
 // stepper reflect on-disk outputs directly — offline-safe (no KGS round-trip)
 // and covering outputs produced/pulled locally but not yet on KGS. Paths are
-// cwd-relative; `stageForOutput` maps each to its owning stage (unmatched →
+// cwd-relative; `stagesForOutput` maps each to its owning stage(s) (unmatched →
 // ignored, so stray files don't mark a stage done).
 export function deriveStateFromLocalFiles(relPaths: string[]): ProjectPipelineState {
   const state: ProjectPipelineState = {};
   for (const rel of relPaths) {
-    const def = stageForOutput(rel);
-    if (def) state[def.id] = { status: 'succeeded' };
+    for (const def of stagesForOutput(rel)) state[def.id] = { status: 'succeeded' };
   }
   return state;
 }
