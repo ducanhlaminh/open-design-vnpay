@@ -10,6 +10,8 @@ import {
   getPipelineDef,
   listPipelineStatus,
   mergePipelineState,
+  stagesForOutput,
+  workflowDirForPipeline,
 } from '../src/pipelines.js';
 
 function def(id: string) {
@@ -92,6 +94,36 @@ test('deriveStateFromKgsFiles marks a stage succeeded when it has ≥1 KGS file'
   assert.equal(state['jira-ingest']?.status, 'succeeded');
   assert.equal(state['feature-analysis']?.status, 'succeeded');
   assert.equal(state['ux-spec'], undefined);
+});
+
+test('workflowDirForPipeline maps each pipeline to its workflow folder', () => {
+  assert.equal(workflowDirForPipeline('jira-ingest'), 'docs-to-ui');
+  assert.equal(workflowDirForPipeline('ui'), 'docs-to-ui');
+  assert.equal(workflowDirForPipeline('html-docs'), 'docs-to-html');
+  assert.equal(workflowDirForPipeline('ui-html'), 'docs-to-html');
+  assert.equal(workflowDirForPipeline('nope'), null);
+});
+
+test('stagesForOutput: workflow-namespaced files attribute to that workflow ONLY (isolation)', () => {
+  // docs-to-html files light up ONLY docs-to-html stages — the shared output
+  // patterns no longer bleed into docs-to-ui's stepper.
+  assert.deepEqual(stagesForOutput('docs-to-html/docs/confluence/x.md').map((d) => d.id), ['html-docs']);
+  assert.deepEqual(stagesForOutput('docs-to-html/app-ux-spec.json').map((d) => d.id), ['html-ux']);
+  assert.deepEqual(stagesForOutput('docs-to-html/app-journey.json').map((d) => d.id), ['html-cj']);
+  assert.deepEqual(stagesForOutput('docs-to-html/prototype/index.html').map((d) => d.id), ['ui-html']);
+  // docs-to-ui files light up ONLY docs-to-ui stages.
+  assert.deepEqual(stagesForOutput('docs-to-ui/docs/confluence/x.md').map((d) => d.id), ['jira-ingest']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/app-ux-spec.json').map((d) => d.id), ['ux-spec']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/screens/s/screen.json').map((d) => d.id), ['ui']);
+});
+
+test('stagesForOutput: unprefixed legacy paths still match across workflows (back-compat)', () => {
+  // Files produced before per-workflow folders existed have no prefix; they must
+  // still derive status (matching across all stages) so old projects don't break.
+  assert.deepEqual(
+    stagesForOutput('docs/confluence/x.md').map((d) => d.id).sort(),
+    ['html-docs', 'jira-ingest'],
+  );
 });
 
 test('ui-html prototype output round-trips cross-device (not localOnly)', () => {

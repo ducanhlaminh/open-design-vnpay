@@ -170,9 +170,9 @@ const AUTOMATION_BOOLEAN_FLAGS = new Set([
 const PIPELINE_STRING_FLAGS = new Set([
   'daemon-url', 'project', 'name', 'input',
   // Pipeline-1 structured source (Confluence/BAS via the BAS gateway):
-  //   --source confluence --ref <url/id>
-  //   --source bas --bas-project <id> --feature <id,id> --document <id,id>
-  'source', 'ref', 'bas-project', 'feature', 'document',
+  //   --source confluence --ref <page url/id>
+  //   --source bas --bas-document <kg-document-id> [--feature <id,id>]
+  'source', 'ref', 'bas-document', 'feature',
 ]);
 const PIPELINE_BOOLEAN_FLAGS = new Set([
   'help', 'h', 'json',
@@ -6295,7 +6295,7 @@ Commands:
                        Source for pipeline 1 (jira-ingest), one of:
                          --input "<JIRA key / JQL>"                      (legacy, via mcp-atlassian)
                          --source confluence --ref <page url/id>          (BAS gateway)
-                         --source bas --bas-project <id> --feature <id,id> | --document <id,id>
+                         --source bas --bas-document <kg-document-id> [--feature <id,id>]  (empty = whole doc)
   upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
   pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
 
@@ -6438,20 +6438,17 @@ async function runPipeline(args) {
       }
       source = { kind: 'confluence', ref };
     } else if (flags.source === 'bas') {
-      const basProjectId = (flags['bas-project'] || '').toString().trim();
-      const splitIds = (v) =>
-        (v || '').toString().split(',').map((s) => s.trim()).filter(Boolean);
-      const featureIds = splitIds(flags.feature);
-      const documentIds = splitIds(flags.document);
-      if (!basProjectId || (featureIds.length === 0 && documentIds.length === 0)) {
-        console.error('Usage: od pipeline run <id> --project <id> --source bas --bas-project <id> --feature <id,id> | --document <id,id>');
+      const documentId = (flags['bas-document'] || '').toString().trim();
+      const featureIds = (flags.feature || '').toString().split(',').map((s) => s.trim()).filter(Boolean);
+      if (!documentId) {
+        console.error('Usage: od pipeline run <id> --project <id> --source bas --bas-document <kg-document-id> [--feature <id,id>]');
         process.exit(2);
       }
+      // featureIds empty → ingest the whole document.
       source = {
         kind: 'bas',
-        projectId: basProjectId,
+        documentId,
         ...(featureIds.length ? { featureIds } : {}),
-        ...(documentIds.length ? { documentIds } : {}),
       };
     } else if (flags.source) {
       console.error('Unknown --source; expected "confluence" or "bas".');

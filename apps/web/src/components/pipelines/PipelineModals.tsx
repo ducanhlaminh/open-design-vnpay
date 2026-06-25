@@ -10,13 +10,11 @@
 
 import { useEffect, useState } from 'react';
 import type {
+  BasDocument,
+  BasDocumentsResponse,
   BasFeature,
   BasFeaturesResponse,
-  BasProject,
-  BasProjectsResponse,
   ChatRunStatusResponse,
-  ConfluencePageMeta,
-  ConfluencePageMetaResponse,
   PipelineRunSource,
   PipelineView,
 } from '@open-design/contracts';
@@ -152,15 +150,13 @@ export function RunInputModal({
   const [kind, setKind] = useState<SourceKind>('confluence');
   const [advanced, setAdvanced] = useState(false);
 
-  // Confluence branch
+  // Confluence branch — just paste the link/id; no preview/verify step.
   const [confRef, setConfRef] = useState('');
-  const [confMeta, setConfMeta] = useState<ConfluencePageMeta | null>(null);
-  const [confLoading, setConfLoading] = useState(false);
 
-  // BAS branch
-  const [basProjects, setBasProjects] = useState<BasProject[] | null>(null);
-  const [basProjLoading, setBasProjLoading] = useState(false);
-  const [basProjectId, setBasProjectId] = useState('');
+  // BAS branch (KG document → feature)
+  const [basDocuments, setBasDocuments] = useState<BasDocument[] | null>(null);
+  const [basDocLoading, setBasDocLoading] = useState(false);
+  const [basDocumentId, setBasDocumentId] = useState('');
   const [basFeatures, setBasFeatures] = useState<BasFeature[] | null>(null);
   const [basFeatLoading, setBasFeatLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -171,34 +167,34 @@ export function RunInputModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Lazy-load BAS workspaces the first time the BAS card is shown.
+  // Lazy-load BAS documents the first time the BAS card is shown.
   useEffect(() => {
-    if (advanced || kind !== 'bas' || basProjects !== null || basProjLoading) return;
-    setBasProjLoading(true);
+    if (advanced || kind !== 'bas' || basDocuments !== null || basDocLoading) return;
+    setBasDocLoading(true);
     setError(null);
     void (async () => {
       try {
-        const res = await fetch('/api/pipelines/bas/projects');
+        const res = await fetch('/api/pipelines/bas/documents');
         const j = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(j.error || `BAS projects: ${res.status}`);
-        setBasProjects((j as BasProjectsResponse).projects ?? []);
+        if (!res.ok) throw new Error(j.error || `BAS documents: ${res.status}`);
+        setBasDocuments((j as BasDocumentsResponse).documents ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
-        setBasProjects([]);
+        setBasDocuments([]);
       } finally {
-        setBasProjLoading(false);
+        setBasDocLoading(false);
       }
     })();
-  }, [advanced, kind, basProjects, basProjLoading]);
+  }, [advanced, kind, basDocuments, basDocLoading]);
 
-  const loadFeatures = async (pid: string) => {
-    setBasProjectId(pid);
+  const loadFeatures = async (docId: string) => {
+    setBasDocumentId(docId);
     setSelected(new Set());
     setBasFeatures(null);
     setBasFeatLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/pipelines/bas/projects/${encodeURIComponent(pid)}/features`);
+      const res = await fetch(`/api/pipelines/bas/documents/${encodeURIComponent(docId)}/features`);
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || `BAS features: ${res.status}`);
       setBasFeatures((j as BasFeaturesResponse).features ?? []);
@@ -207,24 +203,6 @@ export function RunInputModal({
       setBasFeatures([]);
     } finally {
       setBasFeatLoading(false);
-    }
-  };
-
-  const previewConfluence = async () => {
-    const ref = confRef.trim();
-    if (!ref || confLoading) return;
-    setConfLoading(true);
-    setError(null);
-    setConfMeta(null);
-    try {
-      const res = await fetch(`/api/pipelines/bas/confluence/page?ref=${encodeURIComponent(ref)}`);
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `Confluence preview: ${res.status}`);
-      setConfMeta((j as ConfluencePageMetaResponse).page);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setConfLoading(false);
     }
   };
 
@@ -240,7 +218,7 @@ export function RunInputModal({
     ? true // JQL is optional — the skill prompts if empty
     : kind === 'confluence'
       ? confRef.trim().length > 0
-      : basProjectId.length > 0 && selected.size > 0;
+      : basDocumentId.length > 0; // features optional → whole document
 
   const submit = async () => {
     if (busy || !canRun) return;
@@ -251,18 +229,16 @@ export function RunInputModal({
       if (advanced) {
         payload = { input: jql.trim() };
       } else if (kind === 'confluence') {
-        payload = { source: { kind: 'confluence', ref: confRef.trim() } };
+        // Confluence is fetched by the AGENT via the Atlassian MCP, not pre-fetched
+        // by the BE — so hand the link over as the run input.
+        payload = { input: confRef.trim() };
       } else {
-        const feats = basFeatures ?? [];
-        const ids = [...selected];
-        const featureIds = ids.filter((id) => feats.find((f) => f.id === id)?.kind === 'feature');
-        const documentIds = ids.filter((id) => feats.find((f) => f.id === id)?.kind === 'document');
+        const featureIds = [...selected];
         payload = {
           source: {
             kind: 'bas',
-            projectId: basProjectId,
+            documentId: basDocumentId,
             ...(featureIds.length ? { featureIds } : {}),
-            ...(documentIds.length ? { documentIds } : {}),
           },
         };
       }
@@ -359,7 +335,7 @@ export function RunInputModal({
                   </span>
                 ) : null}
               </span>
-              <span className={styles.cardDesc}>Pick a BAS workspace, then choose the feature(s) / document(s).</span>
+              <span className={styles.cardDesc}>Pick a BAS document, then choose the feature(s) to ingest.</span>
             </button>
           </div>
 
@@ -367,78 +343,54 @@ export function RunInputModal({
             <div className={styles.panel}>
               <label className="pl-modal-field">
                 <span className="pl-modal-field__label">Confluence page</span>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <input
-                    type="text"
-                    className="pl-input"
-                    autoFocus
-                    placeholder="https://wiki…/pages/123456 or page id"
-                    value={confRef}
-                    onChange={(e) => {
-                      setConfRef(e.target.value);
-                      setConfMeta(null);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') void previewConfluence();
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="pl-btn"
-                    onClick={() => void previewConfluence()}
-                    disabled={confLoading || !confRef.trim()}
-                  >
-                    <Icon name={confLoading ? 'spinner' : 'eye'} size={14} />
-                    <span>{confLoading ? 'Loading…' : 'Preview'}</span>
-                  </button>
-                </div>
+                <input
+                  type="text"
+                  className="pl-input"
+                  autoFocus
+                  placeholder="https://wiki…/pages/123456 or page id"
+                  value={confRef}
+                  onChange={(e) => setConfRef(e.target.value)}
+                />
               </label>
-              {confMeta ? (
-                <div className={styles.metaCard}>
-                  <span className={styles.metaTitle}>{confMeta.title}</span>
-                  {confMeta.space ? <span className={styles.metaRow}>Space: {confMeta.space}</span> : null}
-                  <span className={styles.metaRow}>{confMeta.url}</span>
-                  {confMeta.excerpt ? <p className={styles.metaExcerpt}>{confMeta.excerpt}</p> : null}
-                </div>
-              ) : (
-                <span className={styles.hint}>Click Preview to verify the page before running.</span>
-              )}
+              <span className={styles.hint}>Paste the Confluence page link or id, then Run.</span>
             </div>
           ) : (
             <div className={styles.panel}>
-              <span className={styles.sectionLabel}>BAS workspace</span>
-              {basProjLoading ? (
-                <p className={styles.empty}>Loading BAS workspaces…</p>
-              ) : !basProjects || basProjects.length === 0 ? (
-                <p className={styles.empty}>No BAS workspaces returned (check BAS configuration).</p>
+              <span className={styles.sectionLabel}>BAS document</span>
+              {basDocLoading ? (
+                <p className={styles.empty}>Loading BAS documents…</p>
+              ) : !basDocuments || basDocuments.length === 0 ? (
+                <p className={styles.empty}>No BAS documents returned (check BAS configuration).</p>
               ) : (
                 <div className={styles.list}>
-                  {basProjects.map((p) => (
+                  {basDocuments.map((d) => (
                     <button
-                      key={p.id}
+                      key={d.id}
                       type="button"
-                      className={`${styles.row}${p.id === basProjectId ? ' ' + styles.rowSelected : ''}`}
-                      onClick={() => void loadFeatures(p.id)}
+                      className={`${styles.row}${d.id === basDocumentId ? ' ' + styles.rowSelected : ''}`}
+                      onClick={() => void loadFeatures(d.id)}
                     >
-                      <span className={`${styles.checkbox}${p.id === basProjectId ? ' ' + styles.checkboxOn : ''}`}>
-                        {p.id === basProjectId ? <Icon name="check" size={12} /> : null}
+                      <span className={`${styles.checkbox}${d.id === basDocumentId ? ' ' + styles.checkboxOn : ''}`}>
+                        {d.id === basDocumentId ? <Icon name="check" size={12} /> : null}
                       </span>
                       <span className={styles.rowBody}>
-                        <span className={styles.rowName}>{p.name}</span>
-                        {p.description ? <span className={styles.rowSummary}>{p.description}</span> : null}
+                        <span className={styles.rowName}>{d.label || d.id}</span>
+                        {d.nodeCount !== undefined ? (
+                          <span className={styles.rowSummary}>{d.nodeCount} nodes</span>
+                        ) : null}
                       </span>
                     </button>
                   ))}
                 </div>
               )}
 
-              {basProjectId ? (
+              {basDocumentId ? (
                 <>
-                  <span className={styles.sectionLabel}>Documents / features to ingest</span>
+                  <span className={styles.sectionLabel}>Features (leave empty to ingest the whole document)</span>
                   {basFeatLoading ? (
                     <p className={styles.empty}>Loading…</p>
                   ) : !basFeatures || basFeatures.length === 0 ? (
-                    <p className={styles.empty}>No features or documents found for this workspace.</p>
+                    <p className={styles.empty}>No features found — running will ingest the whole document.</p>
                   ) : (
                     <div className={styles.list}>
                       {basFeatures.map((f) => {
@@ -455,10 +407,9 @@ export function RunInputModal({
                               {on ? <Icon name="check" size={12} /> : null}
                             </span>
                             <span className={styles.rowBody}>
-                              <span className={styles.rowName}>{f.title}</span>
+                              <span className={styles.rowName}>{f.name}</span>
                               {f.summary ? <span className={styles.rowSummary}>{f.summary}</span> : null}
                             </span>
-                            <span className={styles.rowKind}>{f.kind}</span>
                           </button>
                         );
                       })}

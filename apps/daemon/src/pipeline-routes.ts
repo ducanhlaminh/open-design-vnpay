@@ -39,20 +39,16 @@ export function parseRunSource(raw: unknown): PipelineRunSource | undefined {
     return { kind: 'confluence', ref };
   }
   if (s.kind === 'bas') {
-    const projectId = typeof s.projectId === 'string' ? s.projectId.trim() : '';
-    if (!projectId) throw new Error('source.projectId is required for a BAS source');
-    const strs = (v: unknown): string[] =>
-      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
-    const featureIds = strs(s.featureIds);
-    const documentIds = strs(s.documentIds);
-    if (featureIds.length === 0 && documentIds.length === 0) {
-      throw new Error('a BAS source needs at least one featureId or documentId');
-    }
+    const documentId = typeof s.documentId === 'string' ? s.documentId.trim() : '';
+    if (!documentId) throw new Error('source.documentId is required for a BAS source');
+    const featureIds = Array.isArray(s.featureIds)
+      ? s.featureIds.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+      : [];
+    // featureIds may be empty → ingest the whole document subgraph.
     return {
       kind: 'bas',
-      projectId,
+      documentId,
       ...(featureIds.length ? { featureIds } : {}),
-      ...(documentIds.length ? { documentIds } : {}),
     };
   }
   throw new Error('source.kind must be "confluence" or "bas"');
@@ -242,21 +238,21 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // from env / mcp-config; a "not configured" / unreachable error surfaces as 502
   // so the modal can show a clear hint.
 
-  // GET /api/pipelines/bas/projects — BAS workspaces for the BAS source branch.
-  app.get('/api/pipelines/bas/projects', async (_req, res) => {
+  // GET /api/pipelines/bas/documents — KG documents (top level of the BAS branch).
+  app.get('/api/pipelines/bas/documents', async (_req, res) => {
     try {
-      const projects = await ctx.pipelines.bas.listProjects();
-      res.json({ projects });
+      const documents = await ctx.pipelines.bas.listDocuments();
+      res.json({ documents });
     } catch (err: any) {
       res.status(502).json({ error: String(err?.message ?? err) });
     }
   });
 
-  // GET /api/pipelines/bas/projects/:id/features — features/documents to ingest.
-  app.get('/api/pipelines/bas/projects/:id/features', async (req, res) => {
+  // GET /api/pipelines/bas/documents/:id/features — a document's FEATURE nodes.
+  app.get('/api/pipelines/bas/documents/:id/features', async (req, res) => {
     try {
       const features = await ctx.pipelines.bas.listFeatures(req.params.id);
-      res.json({ projectId: req.params.id, features });
+      res.json({ documentId: req.params.id, features });
     } catch (err: any) {
       res.status(502).json({ error: String(err?.message ?? err) });
     }

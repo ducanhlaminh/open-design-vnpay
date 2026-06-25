@@ -102,47 +102,54 @@ export interface RunPipelineRequest {
 
 // ── BAS-sourced inputs for pipeline 1 (jira-ingest) ─────────────────────────
 // Both branches resolve their content through the BAS MCP gateway (the daemon's
-// BasClient): `confluence` → `confluence_fetch_page`; `bas` → the workspace/KG
-// document tools. The UI's source-selection modal builds one of these and sends
-// it as `RunPipelineRequest.source`.
+// BasClient). The picker is two-level for BAS: pick a KG document, then the
+// feature(s) within it (the gateway has no project→feature link, so the KG
+// document — which holds the analyzed features + business rules — is the unit).
+//   confluence → confluence_fetch_page (BE extracts the page_id from the link)
+//   bas        → kg_get_feature_detail per feature (or kg_get_document_subgraph
+//                for the whole document when no feature is selected)
 export type PipelineRunSource =
-  | { kind: 'confluence'; /** Confluence page URL or id. */ ref: string }
+  | { kind: 'confluence'; /** Confluence page URL or numeric page id. */ ref: string }
   | {
       kind: 'bas';
-      /** BAS workspace/project id the documents belong to. */
-      projectId: string;
-      /** Chosen feature ids (from `kg_search_features`), if any. */
+      /** KG document id (from `kg_list_documents`). */
+      documentId: string;
+      /** Chosen feature ids within that document; empty/absent → whole document. */
       featureIds?: string[];
-      /** Chosen document ids (from `workspace_list_documents`), if any. */
-      documentIds?: string[];
     };
 
-// A project/workspace in BAS (from `workspace_list_projects`). Pipeline-1's BAS
-// branch lists these so the user can pick which BAS workspace to ingest from.
-export interface BasProject {
+// A KG document in BAS (from `kg_list_documents`) — the top level of the BAS
+// source picker. The analyzed requirement features/rules live under it.
+export interface BasDocument {
+  /** KG document_id. */
   id: string;
-  name: string;
-  /** Optional short description shown under the project name in the picker. */
-  description?: string;
+  /** Human label if the gateway provides one; otherwise the UI shows the id. */
+  label?: string;
+  /** Node count from kg_list_documents, for a small "N nodes" hint. */
+  nodeCount?: number;
+  /** Last-updated ISO timestamp, if present. */
+  updatedAt?: string;
 }
 
-export interface BasProjectsResponse {
-  projects: BasProject[];
+export interface BasDocumentsResponse {
+  documents: BasDocument[];
 }
 
-// A selectable BAS document or feature (from `kg_search_features` /
-// `workspace_list_documents`) used as pipeline-1 input.
+// A feature within a KG document (from kg_get_document_subgraph's FEATURE nodes).
+// `documentId` is carried because kg_get_feature_detail needs BOTH ids.
 export interface BasFeature {
+  /** feature_id (reference_id of the FEATURE node). */
   id: string;
-  title: string;
-  /** 'feature' (KG feature node) or 'document' (workspace document). */
-  kind: 'feature' | 'document';
+  /** feature_name. */
+  name: string;
+  /** Owning KG document_id. */
+  documentId: string;
   /** Optional one-line summary for the row. */
   summary?: string;
 }
 
 export interface BasFeaturesResponse {
-  projectId: string;
+  documentId: string;
   features: BasFeature[];
 }
 

@@ -1,7 +1,7 @@
 import type { Express } from 'express';
 import type {
+  BasDocument,
   BasFeature,
-  BasProject,
   ConfluencePageMeta,
   PipelineRunSource,
   PullApplyResult,
@@ -80,9 +80,11 @@ export interface PipelineDeps {
   // BAS MCP gateway reads for the Pipelines source-selection modal. Each resolves
   // the endpoint from env / mcp-config and proxies one BAS tool (server-side, so
   // the token never reaches the browser). Throw when BAS is not configured.
+  // The BAS branch is KG-document-centric: list documents, then a document's
+  // features (the gateway exposes no project→feature link).
   bas: {
-    listProjects(): Promise<BasProject[]>;
-    listFeatures(projectId: string): Promise<BasFeature[]>;
+    listDocuments(): Promise<BasDocument[]>;
+    listFeatures(documentId: string): Promise<BasFeature[]>;
     confluenceMeta(ref: string): Promise<ConfluencePageMeta>;
   };
   // Regenerate the project's pipeline files from the KGS file store into the

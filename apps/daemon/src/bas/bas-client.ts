@@ -5,9 +5,13 @@
 // (see the BAS OpenAPI: JSON-RPC 2.0 over `POST {url}` with a Bearer token).
 //
 // Two read paths feed the Pipelines UI's source-selection modal:
-//   - Confluence link  → `confluence_fetch_page`            (link + metadata preview)
-//   - BAS document     → `workspace_list_projects` / `kg_search_features` /
-//                        `workspace_list_documents` / `workspace_get_document`
+//   - Confluence link → `confluence_fetch_page` (BE extracts the page_id from the
+//     link). Requires the BAS account behind the token to have a linked
+//     Confluence credential, else the tool returns "tool execution failed".
+//   - BAS document → the KG tools: `kg_list_documents` (documents),
+//     `kg_get_document_subgraph` (a document's FEATURE nodes), and
+//     `kg_get_feature_detail` (one feature's full content). The gateway exposes
+//     NO project→feature link, so the KG document is the pickable unit.
 //
 // Endpoint + token resolution (first hit wins):
 //   1. env  BAS_MCP_URL + BAS_MCP_TOKEN
@@ -15,15 +19,13 @@
 //      server whose id is BAS_MCP_SERVER_ID (default "ba-agent"): its `url`
 //      and `Authorization: Bearer …` header.
 //
-// NOTE: the BAS gateway was unreachable at authoring time (the configured Kong
-// route 404s and no local :8090 was running), so the per-tool ARGUMENT names and
-// RESULT shapes below are coded against the OpenAPI contract with tolerant
-// parsing. If a live gateway names things differently, adjust `TOOL_ARGS` /
-// the `pick*` mappers — they are deliberately the only places that assume shape.
+// Tool arg names + result shapes below are verified against the live gateway
+// (mcp-gateway-service 0.1.0). All tool inputSchemas are `additionalProperties:
+// false`, so the arg builders send ONLY the declared keys.
 
 import type {
+  BasDocument,
   BasFeature,
-  BasProject,
   ConfluencePageMeta,
   PipelineRunSource,
 } from '@open-design/contracts';
@@ -197,14 +199,12 @@ export class BasClient {
   }
 }
 
-// ── shape-tolerant helpers ───────────────────────────────────────────────────
-// The gateway result shapes aren't pinned by the OpenAPI (tool payloads are
-// opaque JSON strings), so pull the array out from whichever common key holds it.
+// ── shape helpers (verified against the live gateway) ────────────────────────
 
 function asArray(payload: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(payload)) return payload as Array<Record<string, unknown>>;
   if (payload && typeof payload === 'object') {
-    for (const key of ['projects', 'features', 'documents', 'items', 'data', 'results', 'pages']) {
+    for (const key of ['documents', 'features', 'nodes', 'items', 'data', 'results']) {
       const v = (payload as Record<string, unknown>)[key];
       if (Array.isArray(v)) return v as Array<Record<string, unknown>>;
     }
@@ -221,77 +221,84 @@ function str(row: Record<string, unknown>, ...keys: string[]): string {
   return '';
 }
 
-// Tool argument builders, isolated so a live-gateway arg-name mismatch is a
-// one-line fix. snake_case mirrors the snake_case tool names in the OpenAPI.
-const TOOL_ARGS = {
-  features: (projectId: string) => ({ project_id: projectId, projectId }),
-  documents: (projectId: string) => ({ project_id: projectId, projectId }),
-  confluence: (ref: string) => ({ page: ref, page_id: ref, url: ref, ref }),
-};
+// Pull a Confluence numeric page_id out of a pasted link (…/pages/<id>/… or
+// ?pageId=<id>) or accept a bare numeric id. Throws with guidance otherwise —
+// confluence_fetch_page requires page_id, not a URL.
+export function extractPageId(ref: string): string {
+  const t = ref.trim();
+  if (/^\d+$/.test(t)) return t;
+  const m = /\/pages\/(\d+)/.exec(t) ?? /[?&]pageId=(\d+)/.exec(t);
+  if (m) return m[1]!;
+  throw new Error(
+    `Could not find a Confluence page id in "${ref}". Paste the page URL (…/pages/<id>/…) or the numeric page id.`,
+  );
+}
 
 // ── high-level reads used by the routes + run-time prefetch ──────────────────
 
-export async function basListProjects(ep: BasEndpoint): Promise<BasProject[]> {
+// Top level of the BAS picker: the KG documents (kg_list_documents returns
+// `{document_id, node_count, edge_count, last_updated}` rows).
+export async function basListDocuments(ep: BasEndpoint): Promise<BasDocument[]> {
   const client = new BasClient(ep);
-  const payload = await client.callTool('workspace_list_projects', {});
-  return asArray(payload).map((row) => ({
-    id: str(row, 'id', 'project_id', 'projectId', 'key'),
-    name: str(row, 'name', 'title', 'label') || str(row, 'id', 'project_id'),
-    ...(str(row, 'description', 'summary') ? { description: str(row, 'description', 'summary') } : {}),
-  })).filter((p) => p.id);
+  const payload = await client.callTool('kg_list_documents', {});
+  return asArray(payload)
+    .map((row) => {
+      const id = str(row, 'document_id', 'id');
+      const label = str(row, 'label', 'name', 'title');
+      const nodeCount = typeof row.node_count === 'number' ? (row.node_count as number) : undefined;
+      const updatedAt = str(row, 'last_updated', 'updated_at');
+      return {
+        id,
+        ...(label ? { label } : {}),
+        ...(nodeCount !== undefined ? { nodeCount } : {}),
+        ...(updatedAt ? { updatedAt } : {}),
+      };
+    })
+    .filter((d) => d.id);
 }
 
-// Feature/document picker rows for a chosen BAS project. Tries KG features first
-// (richer for UI), falls back to workspace documents — and merges both when the
-// gateway returns each from a different tool.
-export async function basListFeatures(ep: BasEndpoint, projectId: string): Promise<BasFeature[]> {
+// Second level: the FEATURE nodes of one KG document. kg_get_document_subgraph
+// returns `{nodes:[{type, reference_id, summary, description, …}]}`; FEATURE
+// nodes carry the feature_id in `reference_id` and the name in `summary`.
+export async function basListFeatures(ep: BasEndpoint, documentId: string): Promise<BasFeature[]> {
   const client = new BasClient(ep);
+  const payload = await client.callTool('kg_get_document_subgraph', {
+    document_id: documentId,
+    include_edges: false,
+  });
+  const nodes = asArray((payload as Record<string, unknown>)?.nodes ?? payload);
   const out: BasFeature[] = [];
-  try {
-    const feats = await client.callTool('kg_search_features', TOOL_ARGS.features(projectId));
-    for (const row of asArray(feats)) {
-      const id = str(row, 'id', 'feature_id', 'featureId', 'key');
-      const title = str(row, 'title', 'name', 'summary') || id;
-      if (id) out.push({ id, title, kind: 'feature', ...(str(row, 'summary', 'description') ? { summary: str(row, 'summary', 'description') } : {}) });
-    }
-  } catch {
-    /* no KG features — try workspace documents below */
-  }
-  try {
-    const docs = await client.callTool('workspace_list_documents', TOOL_ARGS.documents(projectId));
-    for (const row of asArray(docs)) {
-      const id = str(row, 'id', 'document_id', 'documentId', 'key');
-      const title = str(row, 'title', 'name') || id;
-      if (id && !out.some((f) => f.id === id)) {
-        out.push({ id, title, kind: 'document', ...(str(row, 'summary', 'description') ? { summary: str(row, 'summary', 'description') } : {}) });
-      }
-    }
-  } catch {
-    /* workspace documents unavailable */
+  for (const n of nodes) {
+    if (str(n, 'type') !== 'FEATURE') continue;
+    const id = str(n, 'reference_id') || str(n, 'id');
+    const name = str(n, 'summary', 'name') || id;
+    if (!id) continue;
+    const summary = str(n, 'description');
+    out.push({ id, name, documentId, ...(summary ? { summary } : {}) });
   }
   return out;
 }
 
-function plainExcerpt(html: string, max = 280): string {
-  const text = html
+function plainExcerpt(text: string, max = 280): string {
+  const clean = text
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  return text.length > max ? text.slice(0, max) + '…' : text;
+  return clean.length > max ? clean.slice(0, max) + '…' : clean;
 }
 
 export async function basConfluenceMeta(ep: BasEndpoint, ref: string): Promise<ConfluencePageMeta> {
   const client = new BasClient(ep);
-  const payload = await client.callTool('confluence_fetch_page', TOOL_ARGS.confluence(ref));
-  const row = (Array.isArray(payload) ? payload[0] : payload) as Record<string, unknown> | undefined;
-  const p = row ?? {};
-  const body = str(p, 'body', 'content', 'html', 'storage', 'markdown');
+  const pageId = extractPageId(ref);
+  const payload = await client.callTool('confluence_fetch_page', { page_id: pageId, format: 'markdown' });
+  const p = (Array.isArray(payload) ? payload[0] : payload) as Record<string, unknown> | undefined ?? {};
+  const body = str(p, 'markdown', 'content', 'body', 'storage', 'view');
   return {
-    id: str(p, 'id', 'page_id', 'pageId') || ref,
-    title: str(p, 'title', 'name') || ref,
-    ...(str(p, 'space', 'space_key', 'spaceKey') ? { space: str(p, 'space', 'space_key', 'spaceKey') } : {}),
+    id: str(p, 'page_id', 'id') || pageId,
+    title: str(p, 'title', 'name') || `Confluence page ${pageId}`,
+    ...(str(p, 'space_key', 'space', 'spaceKey') ? { space: str(p, 'space_key', 'space', 'spaceKey') } : {}),
     url: str(p, 'url', 'webui', 'link') || ref,
     ...(body ? { excerpt: plainExcerpt(body) } : {}),
   };
@@ -316,59 +323,110 @@ function frontmatter(fields: Record<string, string>): string {
   return `---\n${lines.join('\n')}\n---\n\n`;
 }
 
+function titleCase(t: string): string {
+  return t.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Render a list of KG nodes (each `{summary, description}`) as a markdown bullet
+// list under a heading. Empty arrays render nothing.
+function renderNodeList(heading: string, nodes: unknown): string {
+  const arr = Array.isArray(nodes) ? (nodes as Array<Record<string, unknown>>) : [];
+  if (arr.length === 0) return '';
+  const lines = arr.map((n) => {
+    const s = str(n, 'summary', 'name', 'title');
+    const d = str(n, 'description', 'detail');
+    return d ? `- **${s || 'Item'}** — ${d}` : `- ${s || 'Item'}`;
+  });
+  return `\n## ${heading}\n${lines.join('\n')}\n`;
+}
+
+// kg_get_feature_detail → one self-contained markdown doc for the feature.
+function renderFeatureDetail(p: Record<string, unknown>, fallbackId: string): { name: string; md: string } {
+  const name = str(p, 'feature_name', 'name', 'summary') || str(p, 'feature_id') || fallbackId;
+  let md = `# ${name}\n`;
+  const summary = str(p, 'summary', 'description');
+  if (summary) md += `\n${summary}\n`;
+  md += renderNodeList('Feature details', p.feature_details);
+  md += renderNodeList('Business rules', p.business_rules);
+  md += renderNodeList('Acceptance criteria', p.acceptance_criteria);
+  md += renderNodeList('User flows', p.user_flows);
+  md += renderNodeList('UI screens', p.ui_screens);
+  md += renderNodeList('Permissions', p.permissions);
+  md += renderNodeList('Non-functional', p.non_functional);
+  md += renderNodeList('Additional', p.additional_nodes);
+  return { name, md };
+}
+
+// kg_get_document_subgraph → markdown grouping every node by type (used when the
+// user ingests a whole document without picking individual features).
+function renderDocumentSubgraph(payload: unknown): string {
+  const nodes = asArray((payload as Record<string, unknown>)?.nodes ?? payload);
+  if (nodes.length === 0) return '> (empty document subgraph)\n';
+  const byType = new Map<string, Array<Record<string, unknown>>>();
+  for (const n of nodes) {
+    const t = str(n, 'type') || 'NODE';
+    if (!byType.has(t)) byType.set(t, []);
+    byType.get(t)!.push(n);
+  }
+  const order = ['FEATURE', 'FEATURE_DETAIL', 'BUSINESS_RULE', 'ACCEPTANCE_CRITERIA', 'USER_FLOW', 'UI_SCREEN', 'PERMISSION', 'NON_FUNCTIONAL'];
+  const rank = (t: string) => (order.indexOf(t) < 0 ? 99 : order.indexOf(t));
+  let md = '';
+  for (const t of [...byType.keys()].sort((a, b) => rank(a) - rank(b))) {
+    md += renderNodeList(titleCase(t), byType.get(t));
+  }
+  return md;
+}
+
 export async function fetchSourceFiles(ep: BasEndpoint, source: PipelineRunSource): Promise<SourceFile[]> {
   const client = new BasClient(ep);
   if (source.kind === 'confluence') {
-    const payload = await client.callTool('confluence_fetch_page', TOOL_ARGS.confluence(source.ref));
-    const row = (Array.isArray(payload) ? payload[0] : payload) as Record<string, unknown> | undefined;
-    const p = row ?? {};
-    const title = str(p, 'title', 'name') || source.ref;
-    const body = str(p, 'markdown', 'body', 'content', 'html', 'storage');
-    const isHtml = /<[a-z][\s\S]*>/i.test(body);
+    const pageId = extractPageId(source.ref);
+    const payload = await client.callTool('confluence_fetch_page', { page_id: pageId, format: 'markdown' });
+    const p = (Array.isArray(payload) ? payload[0] : payload) as Record<string, unknown> | undefined ?? {};
+    const title = str(p, 'title', 'name') || `Confluence page ${pageId}`;
+    const body = str(p, 'markdown', 'content', 'body', 'storage', 'view');
     const content =
       frontmatter({
         title,
-        page_id: str(p, 'id', 'page_id', 'pageId') || source.ref,
+        page_id: pageId,
         url: str(p, 'url', 'webui', 'link') || source.ref,
         source: 'confluence',
-      }) + (isHtml ? plainExcerpt(body, 1_000_000) : body);
+      }) + (body || '> (empty page body)\n');
     return [{ relPath: `docs/source/confluence/${slug(title)}.md`, content }];
   }
 
-  // BAS documents/features → one markdown file each.
+  // BAS: KG document → selected feature(s), else the whole document subgraph.
   const files: SourceFile[] = [];
-  const docIds = source.documentIds ?? [];
   const featIds = source.featureIds ?? [];
-  for (const id of docIds) {
-    try {
-      const doc = await client.callTool('workspace_get_document', { id, document_id: id, project_id: source.projectId });
-      const p = (Array.isArray(doc) ? doc[0] : doc) as Record<string, unknown> | undefined ?? {};
-      const title = str(p, 'title', 'name') || id;
-      const body = str(p, 'markdown', 'body', 'content', 'text');
-      files.push({
-        relPath: `docs/source/bas/${slug(title)}.md`,
-        content: frontmatter({ title, document_id: id, project_id: source.projectId, source: 'bas' }) + body,
-      });
-    } catch (err) {
-      files.push({ relPath: `docs/source/bas/${slug(id)}.md`, content: `# ${id}\n\n> BAS document fetch failed: ${String((err as Error).message)}\n` });
+  if (featIds.length > 0) {
+    for (const fid of featIds) {
+      try {
+        const feat = await client.callTool('kg_get_feature_detail', {
+          document_id: source.documentId,
+          feature_id: fid,
+        });
+        const p = (Array.isArray(feat) ? feat[0] : feat) as Record<string, unknown> | undefined ?? {};
+        const { name, md } = renderFeatureDetail(p, fid);
+        files.push({
+          relPath: `docs/source/bas/feature-${slug(fid)}.md`,
+          content: frontmatter({ title: name, feature_id: fid, document_id: source.documentId, source: 'bas' }) + md,
+        });
+      } catch (err) {
+        files.push({
+          relPath: `docs/source/bas/feature-${slug(fid)}.md`,
+          content: `# ${fid}\n\n> BAS feature fetch failed: ${String((err as Error).message)}\n`,
+        });
+      }
     }
+  } else {
+    const payload = await client.callTool('kg_get_document_subgraph', { document_id: source.documentId });
+    files.push({
+      relPath: `docs/source/bas/${slug(source.documentId)}.md`,
+      content:
+        frontmatter({ title: source.documentId, document_id: source.documentId, source: 'bas' }) +
+        renderDocumentSubgraph(payload),
+    });
   }
-  for (const id of featIds) {
-    try {
-      const feat = await client.callTool('kg_get_feature_detail', { id, feature_id: id, project_id: source.projectId });
-      const p = (Array.isArray(feat) ? feat[0] : feat) as Record<string, unknown> | undefined ?? {};
-      const title = str(p, 'title', 'name', 'summary') || id;
-      const body = str(p, 'markdown', 'body', 'content', 'description', 'detail');
-      files.push({
-        relPath: `docs/source/bas/feature-${slug(id)}.md`,
-        content: frontmatter({ title, feature_id: id, project_id: source.projectId, source: 'bas' }) + body,
-      });
-    } catch (err) {
-      files.push({ relPath: `docs/source/bas/feature-${slug(id)}.md`, content: `# ${id}\n\n> BAS feature fetch failed: ${String((err as Error).message)}\n` });
-    }
-  }
-  if (files.length === 0) {
-    throw new Error('BAS source has no documentIds or featureIds selected');
-  }
+  if (files.length === 0) throw new Error('BAS source produced no files');
   return files;
 }

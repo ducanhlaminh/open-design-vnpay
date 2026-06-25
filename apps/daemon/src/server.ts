@@ -409,11 +409,11 @@ import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { registerPipelineRoutes } from './pipeline-routes.js';
-import { getPipelineDef, stageForOutput } from './pipelines.js';
+import { getPipelineDef, stageForOutput, workflowDirForPipeline } from './pipelines.js';
 import {
   basConfluenceMeta,
+  basListDocuments,
   basListFeatures,
-  basListProjects,
   fetchSourceFiles,
   resolveBasEndpoint,
 } from './bas/bas-client.js';
@@ -10214,7 +10214,7 @@ export async function startServer({
   };
 
   const startChatRun = async (chatBody, run) => {
-    /** @type {Partial<ChatRequest> & { imagePaths?: string[] }} */
+    /** @type {Partial<ChatRequest> & { imagePaths?: string[]; cwdSubdir?: string }} */
     chatBody = chatBody || {};
     const {
       agentId,
@@ -10236,6 +10236,7 @@ export async function startServer({
       locale,
       research,
       context,
+      cwdSubdir,
     } = chatBody;
     if (typeof projectId === 'string' && projectId) run.projectId = projectId;
     if (typeof conversationId === 'string' && conversationId)
@@ -10306,6 +10307,15 @@ export async function startServer({
         if (chatMeta?.baseDir) {
           cwd = path.normalize(chatMeta.baseDir);
           existingProjectFiles = await listFiles(PROJECTS_DIR, projectId, { metadata: chatMeta });
+        } else if (typeof cwdSubdir === 'string' && cwdSubdir) {
+          // Per-workflow isolation: a pipeline run is rooted at
+          // `<projectDir>/<workflowId>/` so the agent only ever sees its own
+          // workflow's files (the sibling workflow's outputs live outside this
+          // cwd). Files are listed from this subdir, not the project root.
+          const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+          cwd = path.join(projectRoot, cwdSubdir);
+          await fs.promises.mkdir(cwd, { recursive: true });
+          existingProjectFiles = await listFiles(PROJECTS_DIR, projectId, { metadata: { baseDir: cwd } });
         } else {
           cwd = await ensureProject(PROJECTS_DIR, projectId);
           existingProjectFiles = await listFiles(PROJECTS_DIR, projectId);
@@ -12888,6 +12898,11 @@ export async function startServer({
     const project = getProject(db, projectId);
     if (!project) throw new Error(`Project ${projectId} not found`);
 
+    // Per-workflow output namespace: this pipeline's run + outputs live under
+    // <projectDir>/<workflowId>/ so the two workflows never share a cwd (no
+    // cross-reads, no clobbering, no status bleed). null → run at the cwd root.
+    const wfDir = workflowDirForPipeline(pipelineId);
+
     const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
     let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId
       ? appConfig.agentId
@@ -12909,31 +12924,41 @@ export async function startServer({
     const skillDirective = def.extraSkillIds?.length
       ? 'This pipeline runs multiple skills in one go — follow EACH active skill\'s workflow and produce ALL of their outputs.'
       : "Follow the active skill's workflow exactly.";
-    // Source directive: when a structured Confluence/BAS source is chosen, the
-    // daemon pre-fetches it into ./docs/source/ below (BE owns the BAS HTTP), so
-    // the skill just normalizes those local files. Otherwise fall back to the
-    // legacy free-text input (a JIRA key / JQL the skill resolves itself).
-    const sourceDir = source?.kind === 'confluence' ? './docs/source/confluence/' : './docs/source/bas/';
-    const sourceDirective = source
-      ? ` The source documents have already been fetched into ${sourceDir} — read every Markdown file there and normalize them into the stage output (do NOT call any external doc API yourself).`
-      : trimmedInput
-        ? ` Input/source for this run: ${trimmedInput}`
+    // Two source tracks (kept deliberately separate):
+    //   • BAS document  → the daemon pre-fetches it via the BAS KG API into
+    //     ./docs/source/bas/ below (deterministic, no per-user credential); the
+    //     skill then just normalizes those local files.
+    //   • Confluence link / JIRA key → handed to the AGENT as input. The skill
+    //     fetches it ITSELF via the Atlassian MCP (Jira + Confluence Data Center)
+    //     and writes ./docs/source/. The BE does NOT pre-fetch Confluence (the
+    //     BAS gateway's confluence_* tools need a credential it can't link).
+    const basSource = source?.kind === 'bas' ? source : undefined;
+    const confluenceRef = source?.kind === 'confluence' ? source.ref.trim() : '';
+    const agentInput = trimmedInput || confluenceRef;
+    const sourceDirective = basSource
+      ? ' The source documents have already been fetched into ./docs/source/bas/ — read every Markdown file there and normalize them into the stage output (do NOT call any external doc API yourself).'
+      : agentInput
+        ? ` Input/source for this run: ${agentInput}. Fetch it YOURSELF via the Atlassian MCP (Jira + Confluence Data Center) — a Confluence page link via the skill's Confluence export, a JIRA key/JQL via the Jira tools — following the active skill's workflow.`
         : '';
     const kickoff = `Run the "${def.name}" pipeline for KGS project "${projectId}". ${skillDirective}${sourceDirective} When the skill pushes results to KGS, target project_id "${projectId}".`;
 
-    // BAS/Confluence source pre-fetch (BE owns the BAS HTTP) — done BEFORE any
+    // BAS document pre-fetch (BE owns the BAS KG HTTP) — done BEFORE any
     // conversation/run state is created so a fetch failure aborts cleanly with no
     // orphaned 'running' run. Writes Markdown under the project cwd's
-    // ./docs/source/; the skill then normalizes those local files.
-    if (source) {
+    // ./docs/source/bas/; the skill then normalizes those local files. Confluence
+    // is NOT pre-fetched here — the agent fetches it via the Atlassian MCP.
+    if (basSource) {
       const ep = await resolveBasEndpoint(RUNTIME_DATA_DIR);
       if (!ep) {
         throw new Error(
           'BAS is not configured (set BAS_MCP_URL + BAS_MCP_TOKEN, or add a "ba-agent" MCP server in Settings).',
         );
       }
-      const cwd = await ensureProject(PROJECTS_DIR, projectId);
-      const files = await fetchSourceFiles(ep, source);
+      const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+      // Pre-fetch into the same per-workflow folder the agent will run in, so
+      // the relative ./docs/source/ path in the kickoff resolves correctly.
+      const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+      const files = await fetchSourceFiles(ep, basSource);
       for (const f of files) {
         const abs = path.join(cwd, f.relPath);
         await fs.promises.mkdir(path.dirname(abs), { recursive: true });
@@ -12999,6 +13024,7 @@ export async function startServer({
       clientRequestId: run.clientRequestId,
       skillId: def.skillId,
       ...(def.extraSkillIds?.length ? { skillIds: def.extraSkillIds } : {}),
+      ...(wfDir ? { cwdSubdir: wfDir } : {}),
       designSystemId: appConfig.designSystemId ?? null,
       model: modelPrefs.model ?? null,
       reasoning: modelPrefs.reasoning ?? null,
@@ -13053,8 +13079,8 @@ export async function startServer({
     return ep;
   };
   const basDeps = {
-    listProjects: async () => basListProjects(await requireBasEndpoint()),
-    listFeatures: async (projectId: string) => basListFeatures(await requireBasEndpoint(), projectId),
+    listDocuments: async () => basListDocuments(await requireBasEndpoint()),
+    listFeatures: async (documentId: string) => basListFeatures(await requireBasEndpoint(), documentId),
     confluenceMeta: async (ref: string) => basConfluenceMeta(await requireBasEndpoint(), ref),
   };
   // Shared pipeline deps — passed to both the pipeline routes and the KG-sync

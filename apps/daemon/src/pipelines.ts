@@ -127,22 +127,57 @@ function outputMatches(rel: string, pattern: string): boolean {
   return rel === pattern || rel.endsWith('/' + pattern);
 }
 
-// Which pipeline owns a produced file (by its cwd-relative path), for manual
-// upload stage-attribution. Undefined → not a declared stage output. First match
-// only — used to pick a single `stage` tag + `convertToGraph` decision on upload.
-export function stageForOutput(rel: string): PipelineDef | undefined {
-  return PIPELINE_DEFS.find((d) => (d.outputs ?? []).some((p) => outputMatches(rel, p)));
+// The workflow a pipeline belongs to. Each pipeline id is in exactly one
+// workflow, so this is unambiguous. Drives the per-workflow output namespace:
+// a pipeline run writes under the project cwd subdirectory named after its
+// workflow id (workflowDirForPipeline), so the two workflows' outputs live in
+// separate folders and never collide. Undefined for an unknown id.
+export function workflowForPipeline(pipelineId: string): Workflow | undefined {
+  return WORKFLOWS.find((w) => w.pipelineIds.includes(pipelineId));
 }
 
-// EVERY pipeline whose declared outputs match this file (not just the first).
-// The docs-to-ui and docs-to-html workflows reuse identical output patterns
-// (docs/, -ux-spec.json, cj/, …) under different stage ids, so one produced file
-// legitimately belongs to a stage in BOTH workflows. File-derived "done" state
-// must light up all of them — otherwise a freshly-pulled device (which has no
-// local run metadata, only the pulled files) sees the docs-to-html stepper as
-// empty even though every output is present. See deriveStateFrom* below.
+// The cwd subdirectory a pipeline's run + outputs live under (== its workflow
+// id). Pipelines outside any workflow fall back to the cwd root (null).
+export function workflowDirForPipeline(pipelineId: string): string | null {
+  return workflowForPipeline(pipelineId)?.id ?? null;
+}
+
+// Split a cwd-relative output path into [workflow, rest] when it is namespaced
+// under a workflow folder (`<workflowId>/...`). Returns [undefined, rel] for a
+// legacy unprefixed path (produced before per-workflow folders existed).
+function splitWorkflowPath(rel: string): [Workflow | undefined, string] {
+  const slash = rel.indexOf('/');
+  if (slash > 0) {
+    const head = rel.slice(0, slash);
+    const wf = WORKFLOWS.find((w) => w.id === head);
+    if (wf) return [wf, rel.slice(slash + 1)];
+  }
+  return [undefined, rel];
+}
+
+// EVERY pipeline whose declared outputs match this file (cwd-relative path).
+// Workflow-namespaced files (`<workflowId>/...`) are attributed ONLY to that
+// workflow's stages — so the two workflows' shared output patterns (docs/,
+// -ux-spec.json, cj/, …) no longer cross-light each other's stepper. A legacy
+// unprefixed path (pre-namespacing) still matches across all stages so old
+// projects' status keeps deriving.
 export function stagesForOutput(rel: string): PipelineDef[] {
+  const [wf, sub] = splitWorkflowPath(rel);
+  if (wf) {
+    const ids = new Set(wf.pipelineIds);
+    return PIPELINE_DEFS.filter(
+      (d) => ids.has(d.id) && (d.outputs ?? []).some((p) => outputMatches(sub, p)),
+    );
+  }
   return PIPELINE_DEFS.filter((d) => (d.outputs ?? []).some((p) => outputMatches(rel, p)));
+}
+
+// Which pipeline owns a produced file, for manual upload stage-attribution
+// (`stage` tag + `convertToGraph` decision). First match — workflow-scoped when
+// the path is namespaced, else first across all stages. Undefined → not a
+// declared stage output.
+export function stageForOutput(rel: string): PipelineDef | undefined {
+  return stagesForOutput(rel)[0];
 }
 
 function statusOf(state: ProjectPipelineState, id: string): PipelineStatus {

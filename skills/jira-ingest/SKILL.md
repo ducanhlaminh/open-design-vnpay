@@ -62,17 +62,17 @@ python3 scripts/confluence_export.py <page-url-or-id> --out ./docs/confluence
 
 ### 1. Discover the Jira scope for this project
 - **If the run kickoff says the source docs were "already fetched into
-  ./docs/source/…"** (the Pipelines UI's Confluence or BAS source picker), the
-  daemon has ALREADY pulled the raw documents from the BAS gateway into
-  `./docs/source/confluence/` or `./docs/source/bas/`. Do NOT call any external
-  doc API in that case — read every `.md` file under that folder and normalize
-  it into the `./docs/jira/` output below (one `.md` per source doc, same
-  frontmatter contract). This is the primary path for the docs→UI / docs→HTML
-  pipelines.
-- **Else if the kickoff includes "Input/source for this run: …"**, use that as the
-  source: a Confluence page URL/id → run `scripts/confluence_export.py <it>`
-  (see the Confluence section above); a JIRA project key / JQL → use it directly
-  in the Jira steps below. This is the link the user typed in the Pipelines UI.
+  ./docs/source/bas/"** (the Pipelines UI's **BAS document** picker), the daemon
+  has ALREADY pulled the raw documents from the BAS KG API into
+  `./docs/source/bas/`. Do NOT call any external doc API in that case — read
+  every `.md` file under that folder and normalize it into the `./docs/jira/`
+  output below (one `.md` per source doc, same frontmatter contract).
+- **Else if the kickoff includes "Input/source for this run: …"** (the
+  **Confluence link** picker, or a free-text JIRA key/JQL), YOU fetch it via the
+  Atlassian MCP — this is the primary path: a Confluence page URL/id → run
+  `scripts/confluence_export.py <it>` (see the Confluence section above); a JIRA
+  project key / JQL → use it directly in the Jira steps below. The BE does NOT
+  pre-fetch Confluence — fetching it is your job here.
 - List the available Atlassian tools first (don't assume names). Typical
   `mcp-atlassian` tools: `jira_search` (JQL), `jira_get_issue`,
   `jira_get_project_issues`, `jira_get_epic_issues`, `jira_get_issue_comments`,
