@@ -72,6 +72,20 @@ export async function htmlToFigmaClipboard(html: string, width = 430, height = 8
   return payload;
 }
 
+/**
+ * Capture an ALREADY-rendered element (e.g. the live preview iframe's body) directly into a
+ * Figma clipboard payload. Unlike htmlToFigmaClipboard (which re-renders from the source HTML and
+ * thus resets to the script's default state), this preserves runtime state — the active step/tab
+ * the artifact's own JS has switched to. Only usable when the element is readable (same-origin
+ * iframe); callers fall back to htmlToFigmaClipboard for cross-origin/opaque previews.
+ */
+export async function elementToFigmaClipboard(root: Element): Promise<string> {
+  if (!root) throw new Error("Không có phần tử để trích xuất");
+  const doc = await captureElement(root, { skipRemoteAssetSerialization: false });
+  const { html: payload } = await toFigmaClipboardHtml([doc], { source: "open-design" });
+  return payload;
+}
+
 export interface ScreenHtml {
   html: string;
   /** Optional preview width per screen (defaults to `width`). */

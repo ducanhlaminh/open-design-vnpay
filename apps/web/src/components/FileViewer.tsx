@@ -6101,9 +6101,12 @@ function HtmlViewer({
   const boardAvailable = mode === 'preview' && source !== null;
   const showPreviewToolbarControls = mode === 'preview';
 
-  // Copy to Figma — render the artifact in an offscreen iframe and serialize it to Figma's native
-  // "HTML to Design" (figh2d) clipboard payload client-side (no daemon round-trip). Figma builds
-  // editable nodes from the JSON on paste. See apps/web/src/lib/html-to-h2d.ts.
+  // Copy to Figma — serialize the artifact to Figma's native "HTML to Design" (figh2d) clipboard
+  // payload client-side (no daemon round-trip); Figma builds editable nodes from the JSON on paste.
+  // Prefer capturing the LIVE preview DOM (srcDoc mode = same-origin readable) so runtime state —
+  // the active step/tab the artifact's own JS switched to — is preserved. Only when the preview is
+  // an opaque cross-origin (url-load) iframe do we fall back to re-rendering from source, which
+  // resets to the script's default state. See apps/web/src/lib/html-to-h2d.ts.
   const [figmaCopyState, setFigmaCopyState] = useState<'idle' | 'busy' | 'ok' | 'err'>('idle');
   const [figmaCopyErr, setFigmaCopyErr] = useState<string | null>(null);
   const figmaCopyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -6111,7 +6114,17 @@ function HtmlViewer({
     if (figmaCopyState === 'busy') return;
     if (figmaCopyResetRef.current) clearTimeout(figmaCopyResetRef.current);
     const html = typeof source === 'string' && source.trim() ? source : null;
-    if (!html) {
+    // Readable live preview root (same-origin srcDoc iframe) — captures the CURRENT DOM incl. any
+    // JS-driven step/tab switch. Returns null for cross-origin/opaque (url-load) iframes.
+    const liveRoot = (() => {
+      try {
+        const d = iframeRef.current?.contentDocument;
+        return (d?.body?.firstElementChild ?? d?.body) || null;
+      } catch {
+        return null;
+      }
+    })();
+    if (!html && !liveRoot) {
       setFigmaCopyErr('Chưa có nội dung artifact để trích xuất (source rỗng)');
       setFigmaCopyState('err');
       figmaCopyResetRef.current = setTimeout(() => setFigmaCopyState('idle'), 3200);
@@ -6124,11 +6137,12 @@ function HtmlViewer({
     setFigmaCopyState('busy');
     // Build the payload Blob lazily; clipboard.write is invoked synchronously inside the click
     // gesture with a Promise-valued ClipboardItem, so the browser doesn't reject with "document
-    // not focused" / expired-gesture after the async extract + daemon round-trip. Extraction runs
-    // on a private same-origin srcdoc iframe (the live preview iframe is cross-origin/unreadable).
+    // not focused" / expired-gesture after the async capture.
     const payload = (async () => {
-      const { htmlToFigmaClipboard } = await import('../lib/html-to-h2d');
-      const html2 = await htmlToFigmaClipboard(html, previewWidth, previewHeight);
+      const { htmlToFigmaClipboard, elementToFigmaClipboard } = await import('../lib/html-to-h2d');
+      const html2 = liveRoot
+        ? await elementToFigmaClipboard(liveRoot)
+        : await htmlToFigmaClipboard(html as string, previewWidth, previewHeight);
       return new Blob([html2], { type: 'text/html' });
     })();
     const done = (state: 'ok' | 'err', err?: unknown) => {
