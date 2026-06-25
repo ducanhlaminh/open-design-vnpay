@@ -222,3 +222,24 @@ H2D engine cần DOM → **không chạy được trong daemon Node**. Hiện ro
 - (a) **Web dùng H2D** (chuẩn hơn) + **CLI/daemon vẫn Kiwi** tạm thời — cảnh báo lệch output giữa 2 surface.
 - (b) Cho daemon chạy H2D qua **Playwright** (repo đã có cho e2e): daemon mở headless, inject artifact,
   gọi `captureElement` → trả payload. Thống nhất output cả 2 surface. Tốn công hơn.
+
+## 12. Bản vá hành vi (2026-06-24)
+
+Sau test paste thực tế, hai lỗi đã sửa:
+
+1. **Frame siêu cao trong Figma.** iframe trích xuất trước đặt `height:5000px` cứng → trang
+   `min-height:100vh`/`height:100%` nở thành 5000px, frame Figma cao vống. Sửa
+   (`apps/web/src/lib/html-to-h2d.ts`): render ở **chiều cao viewport thật** (FileViewer truyền
+   `previewHeight` từ iframe preview), sau layout **co iframe về đúng `root.getBoundingClientRect().height`**
+   rồi mới capture → frame hug nội dung.
+2. **Multi-step (wizard/tab) bằng script ra sai step.** Serializer trước **không bỏ `display:none`**
+   nên capture *mọi* step (đè/stack). Sửa (`packages/figma-h2d/src/serialize.ts`): bỏ qua element
+   có computed `display:none` (gồm cả thuộc tính `hidden`) và cả subtree. Xác nhận qua headless
+   Chrome: wizard 3-step (script active step 2) giờ chỉ ra **đúng step đang hiển thị**.
+
+**Giới hạn còn lại — nút đơn FileViewer & runtime state:** iframe preview của FileViewer là
+`sandbox="allow-scripts …"` **không có `allow-same-origin`** → opaque, không đọc được DOM sống.
+Nên nút đơn render lại từ chuỗi `source`: lấy đúng *một* step nhưng là **step mặc định của script**,
+không phải step user vừa bấm. Ngược lại **"Copy tất cả màn"** trên canvas capture trực tiếp các
+`PipelinePreviewIframe` (`allow-same-origin`) → giữ đúng runtime state (step đang active). Muốn nút
+đơn cũng giữ state thì phải thêm `allow-same-origin` cho preview iframe (cân nhắc bảo mật) — để sau.

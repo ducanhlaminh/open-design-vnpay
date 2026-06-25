@@ -9,16 +9,24 @@
 
 import { captureElement, toFigmaClipboardHtml, type H2DDocument } from "@open-design/figma-h2d";
 
+const raf = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+
 async function withArtifactIframe<T>(
   html: string,
   width: number,
+  height: number,
   fn: (root: Element) => Promise<T>,
 ): Promise<T> {
+  const w = Math.max(320, Math.round(width));
+  // Render at the real preview viewport height so `100vh`/`%` resolve like the user sees them —
+  // a fixed oversized height (e.g. 5000px) inflates vh-based layouts and the captured frame comes
+  // out absurdly tall instead of hugging its content.
+  const h0 = Math.max(200, Math.round(height) || 812);
   const frame = document.createElement("iframe");
   frame.setAttribute("aria-hidden", "true");
   frame.style.cssText =
-    `position:fixed;left:-100000px;top:0;width:${Math.max(320, Math.round(width))}px;` +
-    "height:5000px;border:0;visibility:hidden;pointer-events:none;";
+    `position:fixed;left:-100000px;top:0;width:${w}px;height:${h0}px;` +
+    "border:0;visibility:hidden;pointer-events:none;";
   document.body.appendChild(frame);
   try {
     await new Promise<void>((res) => {
@@ -32,26 +40,34 @@ async function withArtifactIframe<T>(
     } catch {
       /* fonts best-effort */
     }
-    await new Promise((r) => setTimeout(r, 180)); // let layout settle after fonts
+    await new Promise((r) => setTimeout(r, 180)); // let layout settle after fonts (and any step script)
+    // Hug: size the iframe to the artifact root's rendered height, then re-settle so vh/%
+    // recompute against that height. Short content shrinks; tall/scrolling content grows.
     const root = doc.body.firstElementChild ?? doc.body;
-    return await fn(root);
+    const rootH = Math.ceil(root.getBoundingClientRect().height);
+    if (rootH > 0 && Math.abs(rootH - h0) > 1) {
+      frame.style.height = `${rootH}px`;
+      await raf();
+      await raf();
+    }
+    return await fn(doc.body.firstElementChild ?? doc.body);
   } finally {
     frame.remove();
   }
 }
 
-async function captureHtml(html: string, width: number): Promise<H2DDocument> {
-  return withArtifactIframe(html, width, (root) =>
+async function captureHtml(html: string, width: number, height: number): Promise<H2DDocument> {
+  return withArtifactIframe(html, width, height, (root) =>
     captureElement(root, { skipRemoteAssetSerialization: false }),
   );
 }
 
 /** One artifact → a paste-ready Figma clipboard text/html payload. */
-export async function htmlToFigmaClipboard(html: string, width = 430): Promise<string> {
+export async function htmlToFigmaClipboard(html: string, width = 430, height = 812): Promise<string> {
   if (typeof html !== "string" || !html.trim()) {
     throw new Error("Không có nội dung artifact để trích xuất");
   }
-  const doc = await captureHtml(html, width);
+  const doc = await captureHtml(html, width, height);
   const { html: payload } = await toFigmaClipboardHtml([doc], { source: "open-design" });
   return payload;
 }
@@ -60,6 +76,8 @@ export interface ScreenHtml {
   html: string;
   /** Optional preview width per screen (defaults to `width`). */
   width?: number;
+  /** Optional preview viewport height per screen (defaults to `height`). */
+  height?: number;
 }
 
 /**
@@ -68,13 +86,17 @@ export interface ScreenHtml {
  * gets a clean offscreen layout; a screen that fails to capture is skipped (with a console warn)
  * rather than failing the whole batch.
  */
-export async function htmlsToFigmaClipboard(screens: ScreenHtml[], width = 430): Promise<string> {
+export async function htmlsToFigmaClipboard(
+  screens: ScreenHtml[],
+  width = 430,
+  height = 812,
+): Promise<string> {
   const usable = screens.filter((s) => typeof s.html === "string" && s.html.trim());
   if (usable.length === 0) throw new Error("Không có màn nào để trích xuất");
   const docs: H2DDocument[] = [];
   for (const screen of usable) {
     try {
-      docs.push(await captureHtml(screen.html, screen.width ?? width));
+      docs.push(await captureHtml(screen.html, screen.width ?? width, screen.height ?? height));
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn("[Copy all to Figma] bỏ qua một màn:", err);

@@ -238,6 +238,10 @@ function walkElement(ctx: WalkContext, el: Element, parent: ChildContext | undef
   const extracted = extractStyles(realm, el);
   if (!extracted) return null;
   const { styles, computedStyles } = extracted;
+  // display:none (incl. the `hidden` attribute, which computes to none) is not rendered — skip
+  // the element and its subtree. Without this, script-driven multi-step UIs (wizards/tabs that
+  // toggle steps via display) serialize EVERY step, so the wrong/stacked step lands in Figma.
+  if (styles.display === 'none') return null;
   const parentInverse = parent?.inverseTransform ?? null;
 
   // NB: the reference collapses an element to a bare text node only when it carries fginspector

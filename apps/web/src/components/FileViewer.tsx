@@ -6117,7 +6117,9 @@ function HtmlViewer({
       figmaCopyResetRef.current = setTimeout(() => setFigmaCopyState('idle'), 3200);
       return;
     }
-    const previewWidth = Math.round(iframeRef.current?.getBoundingClientRect().width || 430);
+    const previewRect = iframeRef.current?.getBoundingClientRect();
+    const previewWidth = Math.round(previewRect?.width || 430);
+    const previewHeight = Math.round(previewRect?.height || 812);
     setFigmaCopyErr(null);
     setFigmaCopyState('busy');
     // Build the payload Blob lazily; clipboard.write is invoked synchronously inside the click
@@ -6126,7 +6128,7 @@ function HtmlViewer({
     // on a private same-origin srcdoc iframe (the live preview iframe is cross-origin/unreadable).
     const payload = (async () => {
       const { htmlToFigmaClipboard } = await import('../lib/html-to-h2d');
-      const html2 = await htmlToFigmaClipboard(html, previewWidth);
+      const html2 = await htmlToFigmaClipboard(html, previewWidth, previewHeight);
       return new Blob([html2], { type: 'text/html' });
     })();
     const done = (state: 'ok' | 'err', err?: unknown) => {
