@@ -5,17 +5,26 @@
 import type { Realm } from "./realm.js";
 import { SVG_PRESENTATION_DEFAULTS } from "./style-defaults.js";
 
+const ELEMENT_NODE = 1;
+
+// camelCase default key -> dashed CSS/attribute name (e.g. strokeWidth -> stroke-width). Both
+// getPropertyValue and setAttribute need the dashed form.
 const PRESENTATION_DASH: Record<string, string> = Object.fromEntries(
   Object.keys(SVG_PRESENTATION_DEFAULTS).map((p) => [p, p.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase()]),
 );
 
 function bakeAttributes(realm: Realm, source: Node, clone: Node): void {
-  if (!(source instanceof Element) || !(clone instanceof Element)) return;
-  const cs = realm.win.getComputedStyle(source);
-  for (const [prop, def] of Object.entries(SVG_PRESENTATION_DEFAULTS)) {
-    const value = cs.getPropertyValue(prop);
+  // Duck-type via nodeType (not `instanceof Element`): nodes come from the artifact's iframe
+  // realm, so the parent-realm `Element` ctor would never match — which previously made this a
+  // no-op, leaving fill/stroke="currentColor" unresolved (icons paste as default black).
+  if (source.nodeType !== ELEMENT_NODE || clone.nodeType !== ELEMENT_NODE) return;
+  const cs = realm.win.getComputedStyle(source as Element);
+  const dst = clone as Element;
+  for (const [prop, dash] of Object.entries(PRESENTATION_DASH)) {
+    const value = cs.getPropertyValue(dash);
+    const def = SVG_PRESENTATION_DEFAULTS[prop]!;
     if (value && value.toLowerCase() !== def.toLowerCase()) {
-      clone.setAttribute(PRESENTATION_DASH[prop]!, value);
+      dst.setAttribute(dash, value);
     }
   }
   for (let i = 0; i < source.childNodes.length; i++) {
