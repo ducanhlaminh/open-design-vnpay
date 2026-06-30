@@ -9,6 +9,11 @@ import {
   trackProjectsMorePopoverClick,
 } from "../analytics/events";
 import { useT } from "../i18n";
+import {
+	kgProjectName,
+	loadHomeKgProjects,
+	useHomeProjectScope,
+} from "../state/home-project-scope";
 import { deleteLiveArtifact, fetchLiveArtifacts, fetchProjectFiles, liveArtifactPreviewUrl, projectFileUrl } from "../providers/registry";
 import type {
 	DesignSystemSummary,
@@ -81,6 +86,11 @@ export function DesignsTab({
 }: Props) {
 	const t = useT();
 	const analytics = useAnalytics();
+	// KGS project list (for resolving group-header names on /projects).
+	const kgProjectScope = useHomeProjectScope();
+	useEffect(() => {
+		void loadHomeKgProjects();
+	}, []);
 	// P0 page_view page_name=projects — fire once when the tab mounts so
 	// `/projects` landings register even before the user clicks anything.
 	// ref-keyed to survive re-renders that flip parent state without
@@ -311,6 +321,41 @@ export function DesignsTab({
 			),
 		[filtered],
 	);
+
+	// /projects grouped by the KGS project each card is scoped to
+	// (metadata.kgsProjectId). Headers are interleaved as full-width grid rows
+	// so the existing card render stays untouched. No grouping when nothing is
+	// scoped yet (single "" bucket) — falls back to the flat list.
+	const groupedDisplay = useMemo<
+		Array<DesignListItem | { type: "group-header"; key: string; label: string }>
+	>(() => {
+		const groups = new Map<string, DesignListItem[]>();
+		for (const it of filtered) {
+			const key = it.project.metadata?.kgsProjectId ?? "";
+			const bucket = groups.get(key);
+			if (bucket) bucket.push(it);
+			else groups.set(key, [it]);
+		}
+		if (groups.size === 1 && groups.has("")) return filtered;
+		const keys = [...groups.keys()].sort((a, b) => {
+			if (a === "") return 1;
+			if (b === "") return -1;
+			return kgProjectName(a).localeCompare(kgProjectName(b));
+		});
+		const out: Array<DesignListItem | { type: "group-header"; key: string; label: string }> = [];
+		for (const k of keys) {
+			out.push({
+				type: "group-header",
+				key: k,
+				label: k ? kgProjectName(k) : t("designs.group.unassigned"),
+			});
+			for (const it of groups.get(k)!) out.push(it);
+		}
+		return out;
+		// kgProjectScope in deps so headers re-resolve to names once the KGS
+		// project list loads (when landing directly on /projects).
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [filtered, t, kgProjectScope]);
 
 	const skillName = (id: string | null) =>
 		skills.find((s) => s.id === id)?.name ?? "";
@@ -556,7 +601,24 @@ export function DesignsTab({
 				</div>
 			) : view === "grid" ? (
 				<div className="design-grid">
-					{filtered.map((item) => {
+					{groupedDisplay.map((item) => {
+						if (item.type === "group-header") {
+							return (
+								<div
+									key={`grp:${item.key}`}
+									className="designs-group-header"
+									style={{
+										gridColumn: "1 / -1",
+										fontSize: 12,
+										fontWeight: 600,
+										opacity: 0.7,
+										padding: "10px 2px 4px",
+									}}
+								>
+									{item.label}
+								</div>
+							);
+						}
 						const p = item.project;
 						const skill = skillName(p.skillId);
 						const ds = dsName(p.designSystemId);

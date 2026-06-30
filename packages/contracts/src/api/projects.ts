@@ -89,6 +89,12 @@ export interface DesignSystemReviewEntry {
 
 export interface ProjectMetadata {
   kind: ProjectKind;
+  // KGS/SimStudio project this open-design project (and its conversations) is
+  // scoped to. Chosen from the Home "project" dropdown when starting a new
+  // conversation; the options come from the KGS project list. Used to group
+  // projects on /projects and to scope the conversation's KG operations
+  // (Push to KG, customer-journey / ux-spec skills) to this project_id.
+  kgsProjectId?: string;
   intent?: 'live-artifact';
   fidelity?: 'wireframe' | 'high-fidelity';
   speakerNotes?: boolean;

@@ -6,6 +6,9 @@ import {
   artifactKindToTracking,
   type TrackingProjectKind,
 } from '@open-design/contracts/analytics';
+import { validateKgPushDocument } from '@open-design/contracts';
+import { SpecPreview, specToMermaid, type SpecDoc } from './SpecPreview';
+import { MermaidDiagram } from './MermaidDiagram';
 import { useAnalytics } from '../analytics/provider';
 import { trackIframeLoad } from '../observability/iframe-error';
 import {
@@ -39,6 +42,9 @@ import {
   liveArtifactPreviewUrl,
   projectFileUrl,
   projectRawUrl,
+  pushToKg,
+  fetchKgProjects,
+  type WebKgProject,
   LiveArtifactRefreshError,
   refreshLiveArtifact,
   updateDeployConfig,
@@ -81,7 +87,7 @@ import {
   parseForceInline,
   shouldUrlLoadHtmlPreview,
 } from './file-viewer-render-mode';
-import { saveTemplate } from '../state/projects';
+import { saveTemplate, getProject } from '../state/projects';
 import type {
   LiveArtifactEventItem,
   LiveArtifact,
@@ -8055,8 +8061,22 @@ function TextViewer({
   const [text, setText] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [kgPush, setKgPush] = useState<{ status: 'idle' | 'running' | 'done' | 'error'; msg: string }>({
+    status: 'idle',
+    msg: '',
+  });
+  const [kgProjects, setKgProjects] = useState<WebKgProject[]>([]);
+  const [kgTarget, setKgTarget] = useState<string>('');
+  // The KGS project this conversation/project is already scoped to
+  // (metadata.kgsProjectId). When set, the Push-to-KG target is locked to it
+  // (filled + read-only); otherwise the user may pick a project.
+  const [lockedKgProject, setLockedKgProject] = useState<string>('');
+  // CJ/UX docs default to the rendered spec preview (like SimStudio /ux-spec);
+  // toggle to a Mermaid diagram or raw JSON.
+  const [specMode, setSpecMode] = useState<'preview' | 'mermaid' | 'json'>('preview');
   useEffect(() => {
     setText(null);
+    setKgPush({ status: 'idle', msg: '' });
     let cancelled = false;
     void fetchProjectFileText(projectId, file.name).then((t) => {
       if (!cancelled) setText(t ?? '');
@@ -8065,6 +8085,86 @@ function TextViewer({
       cancelled = true;
     };
   }, [projectId, file.name, file.mtime, reloadKey]);
+
+  // Resolve whether this conversation's project is already bound to a KGS
+  // project. If so, the push target is fixed to it.
+  useEffect(() => {
+    let cancelled = false;
+    void getProject(projectId).then((p) => {
+      if (cancelled) return;
+      const k = typeof p?.metadata?.kgsProjectId === 'string' ? p.metadata.kgsProjectId.trim() : '';
+      setLockedKgProject(k);
+      if (k) setKgTarget(k);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  // Detect a Customer Journey / UX Spec document (the shape the
+  // `customer-journey-spec` skill emits) so we can offer a "Push to KG" action.
+  const cjUx = useMemo(() => {
+    if (text == null || !isJsonFile(file)) return null;
+    try {
+      const parsed = JSON.parse(text) as {
+        journeys?: unknown[];
+        personas?: unknown[];
+        screens?: unknown[];
+        project_id?: unknown;
+      };
+      const hasJourneys = Array.isArray(parsed.journeys) && parsed.journeys.length > 0;
+      const hasPersonas = Array.isArray(parsed.personas) && parsed.personas.length > 0;
+      const hasScreens = Array.isArray(parsed.screens) && parsed.screens.length > 0;
+      if (!hasJourneys && !hasPersonas && !hasScreens) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, [file.name, file.mime, text]);
+
+  // Validate the document against the shared KG schema. Push is only allowed
+  // when this passes AND a target project is chosen.
+  const kgValidation = useMemo(
+    () => (cjUx ? validateKgPushDocument(cjUx) : { valid: false, errors: [] as string[] }),
+    [cjUx],
+  );
+  const kgCanPush = kgValidation.valid && !!(lockedKgProject || kgTarget);
+
+  // Load the SimStudio project list (for the target dropdown) once we know the
+  // file is a CJ/UX Spec document. Default the target to the file's own
+  // project_id when present, else the first project.
+  useEffect(() => {
+    if (!cjUx) return;
+    let cancelled = false;
+    void fetchKgProjects().then((projects) => {
+      if (cancelled) return;
+      setKgProjects(projects);
+      const fileProject = typeof cjUx.project_id === 'string' ? cjUx.project_id.trim() : '';
+      // Locked target always wins; otherwise keep prev / file / first.
+      setKgTarget((prev) => lockedKgProject || prev || fileProject || projects[0]?.id || '');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cjUx, lockedKgProject]);
+
+  async function handlePushKg() {
+    if (!cjUx) return;
+    const fileProject = typeof cjUx.project_id === 'string' ? cjUx.project_id.trim() : '';
+    const pid = lockedKgProject || kgTarget || fileProject || projectId;
+    if (!pid) {
+      setKgPush({ status: 'error', msg: t('fileViewer.pushToKgFailed', { msg: 'no project selected' }) });
+      return;
+    }
+    setKgPush({ status: 'running', msg: t('fileViewer.pushToKgRunning') });
+    try {
+      const res = await pushToKg(pid, cjUx as Parameters<typeof pushToKg>[1]);
+      setKgPush({ status: 'done', msg: t('fileViewer.pushToKgDone', { n: res.pushed, e: res.edges }) });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setKgPush({ status: 'error', msg: t('fileViewer.pushToKgFailed', { msg }) });
+    }
+  }
 
   async function copy() {
     if (text == null) return;
@@ -8099,7 +8199,33 @@ function TextViewer({
   return (
     <div className="viewer text-viewer">
       <div className="viewer-toolbar">
-        <div className="viewer-toolbar-left" />
+        <div className="viewer-toolbar-left">
+          {cjUx ? (
+            <div className="viewer-tabs">
+              <button
+                type="button"
+                className={`viewer-tab ${specMode === 'preview' ? 'active' : ''}`}
+                onClick={() => setSpecMode('preview')}
+              >
+                {t('fileViewer.specPreview')}
+              </button>
+              <button
+                type="button"
+                className={`viewer-tab ${specMode === 'mermaid' ? 'active' : ''}`}
+                onClick={() => setSpecMode('mermaid')}
+              >
+                Mermaid
+              </button>
+              <button
+                type="button"
+                className={`viewer-tab ${specMode === 'json' ? 'active' : ''}`}
+                onClick={() => setSpecMode('json')}
+              >
+                JSON
+              </button>
+            </div>
+          ) : null}
+        </div>
         <div className="viewer-toolbar-actions">
           <button
             type="button"
@@ -8128,11 +8254,94 @@ function TextViewer({
             <Icon name={copied ? 'check' : 'copy'} size={13} />
             <span>{copied ? t('fileViewer.copied') : t('fileViewer.copy')}</span>
           </button>
+          {cjUx ? (
+            <>
+              {lockedKgProject ? (
+                // Conversation already bound to a KGS project → filled + read-only.
+                <span
+                  className="viewer-action"
+                  title={t('fileViewer.pushToKgProjectLocked')}
+                  aria-label={t('fileViewer.pushToKgProjectLocked')}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, opacity: 0.85, cursor: 'default' }}
+                >
+                  <Icon name="folder" size={13} />
+                  <span>
+                    {(kgProjects.find((p) => p.id === lockedKgProject)?.name ?? lockedKgProject)} ({lockedKgProject})
+                  </span>
+                </span>
+              ) : (
+                <select
+                  className="viewer-action"
+                  value={kgTarget}
+                  onChange={(e) => setKgTarget(e.target.value)}
+                  title={t('fileViewer.pushToKgProject')}
+                  aria-label={t('fileViewer.pushToKgProject')}
+                  disabled={kgPush.status === 'running'}
+                >
+                  {kgProjects.length === 0 && kgTarget ? <option value={kgTarget}>{kgTarget}</option> : null}
+                  {kgProjects.length === 0 && !kgTarget ? (
+                    <option value="">{t('fileViewer.pushToKgNoProjects')}</option>
+                  ) : null}
+                  {kgProjects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.id})
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                type="button"
+                className="viewer-action primary"
+                onClick={() => void handlePushKg()}
+                disabled={kgPush.status === 'running' || !kgCanPush}
+                aria-busy={kgPush.status === 'running'}
+                title={
+                  !kgValidation.valid
+                    ? t('fileViewer.pushToKgInvalid')
+                    : !(lockedKgProject || kgTarget)
+                      ? t('fileViewer.pushToKgPickProject')
+                      : t('fileViewer.pushToKgTitle')
+                }
+              >
+                <Icon name="upload" size={13} />
+                <span>{kgPush.status === 'running' ? t('fileViewer.pushToKgRunning') : t('fileViewer.pushToKg')}</span>
+              </button>
+            </>
+          ) : null}
         </div>
       </div>
+      {cjUx && !kgValidation.valid ? (
+        <div
+          className="viewer-empty"
+          role="alert"
+          aria-live="polite"
+          style={{ padding: '6px 12px', color: 'var(--danger, #c0392b)' }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 2 }}>{t('fileViewer.pushToKgInvalid')}</div>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {kgValidation.errors.slice(0, 8).map((e, i) => (
+              <li key={i}>{e}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {cjUx && kgValidation.valid && kgPush.status !== 'idle' && kgPush.status !== 'running' ? (
+        <div
+          className="viewer-empty"
+          role="status"
+          aria-live="polite"
+          style={{ padding: '6px 12px', color: kgPush.status === 'error' ? 'var(--danger, #c0392b)' : undefined }}
+        >
+          {kgPush.msg}
+        </div>
+      ) : null}
       <div className="viewer-body">
         {text === null ? (
           <div className="viewer-empty">{t('fileViewer.loading')}</div>
+        ) : cjUx && specMode === 'preview' ? (
+          <SpecPreview doc={cjUx as SpecDoc} />
+        ) : cjUx && specMode === 'mermaid' ? (
+          <MermaidDiagram code={specToMermaid(cjUx as SpecDoc)} />
         ) : displayText !== null && lineCount > 0 ? (
           <CodeWithLines text={displayText} />
         ) : (

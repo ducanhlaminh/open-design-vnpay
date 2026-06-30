@@ -137,6 +137,7 @@ import {
 } from '../comments';
 import { buildPptxExportPrompt } from '../lib/build-pptx-export-prompt';
 import { AppChromeHeader } from './AppChromeHeader';
+import { KgProjectChip } from './KgProjectChip';
 import { AvatarMenu } from './AvatarMenu';
 import { HandoffButton } from './HandoffButton';
 import { ProjectDesignSystemPicker } from './ProjectDesignSystemPicker';
@@ -4204,6 +4205,9 @@ export function ProjectView({
               selectedId={project.designSystemId ?? null}
               onChange={handleChangeDesignSystemId}
             />
+            {project.metadata?.kgsProjectId ? (
+              <KgProjectChip kgProjectId={project.metadata.kgsProjectId} />
+            ) : null}
             {hasProjectInstructions ? (
               <button
                 type="button"
