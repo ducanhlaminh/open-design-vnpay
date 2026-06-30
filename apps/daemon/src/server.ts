@@ -278,8 +278,10 @@ import {
   buildOpenCodeMcpConfigContent,
   isManagedProjectCwd,
   readMcpConfig,
+  seedDefaultMcpConfig,
   writeMcpConfig,
 } from './mcp-config.js';
+import { ensureUvForMcp } from './ensure-uv.js';
 import {
   beginAuth,
   exchangeCodeForToken,
@@ -405,6 +407,7 @@ import { registerKgSyncRoutes } from './kg-sync-routes.js';
 import { registerHandoffRoutes } from './handoff-routes.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './handoff-design.js';
 import { TranscriptExportLockedError } from './transcript-export.js';
+import { publishFeedback, pullMergedFeedback } from './feedback.js';
 import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
@@ -3978,6 +3981,22 @@ export async function startServer({
     console.warn(`[plugins] registry seed failed: ${(err)?.message ?? err}`);
   }
 
+  // Seed the default external MCP servers (ba-agent) on a fresh data dir so a
+  // packaged build ships a working server out of the box instead of an empty
+  // list on every new machine. No-op once mcp-config.json exists.
+  try {
+    const seededMcp = await seedDefaultMcpConfig(RUNTIME_DATA_DIR);
+    if (seededMcp.length > 0) {
+      console.log(`[mcp] seeded ${seededMcp.length} default server(s): ${seededMcp.join(', ')}`);
+    }
+  } catch (err) {
+    console.warn(`[mcp] default seed failed: ${(err)?.message ?? err}`);
+  }
+  // Best-effort, non-blocking: when an enabled stdio MCP server is launched via
+  // `uvx` (e.g. mcp-atlassian) and the machine lacks uv, install it so the
+  // server actually starts. Runs after the seed so a fresh install is covered.
+  void ensureUvForMcp(RUNTIME_DATA_DIR);
+
   // Plan §3.A5 / spec §16 Phase 5 / PB2: periodic snapshot GC. Disabled
   // when OD_SNAPSHOT_GC_INTERVAL_MS is 0; otherwise one-time bootstrap
   // sweep + interval. The function returns a NOOP_HANDLE when disabled
@@ -5519,6 +5538,31 @@ export async function startServer({
 
   // ---- Messages -------------------------------------------------------------
 
+  // Synthetic prompts that merely *trigger* a run (pipeline/orbit/routine
+  // kickoffs) are written server-side via upsertMessage and carry these id
+  // prefixes; genuine typed user prompts get UUID ids. We only collect the
+  // latter as feedback.
+  const isFeedbackTriggerId = (id: string): boolean =>
+    id.startsWith('pipeline-user-') ||
+    id.startsWith('orbit-user-') ||
+    id.startsWith('routine-user-');
+
+  // Best-effort: ship this install's genuine end-user feedback prompts for a
+  // project to the shared media-service store (one `feedback/<installId>.jsonl`
+  // per install). Fire-and-forget — must never block a message write or throw
+  // into the request. publishFeedback rebuilds the whole file from app.sqlite
+  // and uploadFile is content-hash idempotent, so repeat calls are no-ops.
+  const publishFeedbackBestEffort = async (projectId: string): Promise<void> => {
+    try {
+      const cfg = await readAppConfig(RUNTIME_DATA_DIR);
+      const user = (cfg.feedbackUsername?.trim() || cfg.installationId || 'unknown') as string;
+      const installKey = (cfg.installationId || user) as string;
+      await publishFeedback(db, projectId, { user, installKey });
+    } catch (err) {
+      console.warn('[feedback] publish skipped', (err as Error)?.message ?? err);
+    }
+  };
+
   app.get('/api/projects/:id/conversations/:cid/messages', (req, res) => {
     const conv = getConversation(db, req.params.cid);
     if (!conv || conv.projectId !== req.params.id) {
@@ -5542,7 +5586,29 @@ export async function startServer({
     });
     // Bump the parent project's updatedAt so the project list re-orders.
     updateProject(db, req.params.id, {});
+    // Capture genuine user feedback prompts into the shared store so the
+    // cross-user summary-feedback digest can see every install's prompts.
+    if (m.role === 'user' && !isFeedbackTriggerId(req.params.mid)) {
+      void publishFeedbackBestEffort(req.params.id);
+    }
     res.json({ message: saved });
+  });
+
+  // Publish this install's latest prompts, then merge every install's feedback
+  // for the project into a local `.feedback-merged.jsonl`. CLI mirror of the
+  // auto-merge the summary-feedback skill triggers; lets `od feedback pull`
+  // refresh the cross-user log on demand.
+  app.post('/api/projects/:id/feedback/pull', async (req, res) => {
+    const projectId = req.params.id;
+    if (!projectId) return sendApiError(res, 400, 'BAD_REQUEST', 'project id required');
+    try {
+      await publishFeedbackBestEffort(projectId);
+      const cwd = await ensureProject(PROJECTS_DIR, projectId);
+      const merged = await pullMergedFeedback(projectId, cwd);
+      res.json({ ok: true, projectId, files: merged.files, records: merged.records, path: merged.path });
+    } catch (err) {
+      sendApiError(res, 502, 'FEEDBACK_PULL_FAILED', (err as Error).message);
+    }
   });
 
   // ---- Preview comments ----------------------------------------------------
@@ -10326,6 +10392,23 @@ export async function startServer({
     }
     if (run.cancelRequested || design.runs.isTerminal(run.status)) return;
 
+    // Cross-user feedback merge: when this run composes the `summary-feedback`
+    // skill, pull every install's `feedback/*.jsonl` from the shared media
+    // store and merge them into `<cwd>/.feedback-merged.jsonl` BEFORE the agent
+    // starts, so the skill reads the whole team's prompts as one local file
+    // (it never has to reach the network or the host DB itself). Best-effort —
+    // a media outage just means the merged file is absent/partial, and the
+    // skill reports that rather than failing the run.
+    if (cwd && typeof projectId === 'string' && projectId &&
+        Array.isArray(skillIds) && skillIds.includes('summary-feedback')) {
+      try {
+        const merged = await pullMergedFeedback(projectId, cwd);
+        console.log(`[feedback] merged ${merged.records} prompt(s) from ${merged.files} file(s) → ${merged.path}`);
+      } catch (err) {
+        console.warn('[feedback] merge skipped', (err as Error)?.message ?? err);
+      }
+    }
+
     // Sanitise supplied image paths: must live under UPLOAD_DIR.
     const safeImages = imagePaths.filter((p) => {
       const resolved = path.resolve(p);
@@ -12892,6 +12975,10 @@ export async function startServer({
     pipelineId: string,
     input?: string,
     source?: import('@open-design/contracts').PipelineRunSource,
+    // Per-run design system for UI-generating stages (`ui-html`). `undefined`
+    // → inherit the app-config default (legacy behavior); a string id or `null`
+    // (explicit "none") overrides it for THIS run only. See RunPipelineRequest.
+    designSystemId?: string | null,
   ) => {
     const def = getPipelineDef(pipelineId);
     if (!def) throw new Error(`Unknown pipeline ${pipelineId}`);
@@ -12940,7 +13027,17 @@ export async function startServer({
       : agentInput
         ? ` Input/source for this run: ${agentInput}. Fetch it YOURSELF via the Atlassian MCP (Jira + Confluence Data Center) — a Confluence page link via the skill's Confluence export, a JIRA key/JQL via the Jira tools — following the active skill's workflow.`
         : '';
-    const kickoff = `Run the "${def.name}" pipeline for KGS project "${projectId}". ${skillDirective}${sourceDirective} When the skill pushes results to KGS, target project_id "${projectId}".`;
+    // Graph push is gated on the stage's `convertToGraph` flag — the single
+    // source of truth for "this stage writes graph". A convertToGraph stage tells
+    // the agent to push to the project's KGS app; a file-only stage (e.g. the
+    // docs-to-html cj/ux stages) tells it explicitly NOT to push, so the produced
+    // JSON stays a local file (synced to the media store separately) and is never
+    // projected into the KGS graph. This mirrors the B2 upload gate in
+    // uploadProjectFiles, which also keys off convertToGraph.
+    const graphDirective = def.convertToGraph
+      ? ` When the skill pushes results to KGS, target project_id "${projectId}".`
+      : " This is a FILE-ONLY stage: produce the output file(s) only and do NOT push anything to KGS (do not run `od kg push` or the skill's push_to_kgs.py). The files are synced separately by the pipeline.";
+    const kickoff = `Run the "${def.name}" pipeline for KGS project "${projectId}". ${skillDirective}${sourceDirective}${graphDirective}`;
 
     // BAS document pre-fetch (BE owns the BAS KG HTTP) — done BEFORE any
     // conversation/run state is created so a fetch failure aborts cleanly with no
@@ -13025,7 +13122,9 @@ export async function startServer({
       skillId: def.skillId,
       ...(def.extraSkillIds?.length ? { skillIds: def.extraSkillIds } : {}),
       ...(wfDir ? { cwdSubdir: wfDir } : {}),
-      designSystemId: appConfig.designSystemId ?? null,
+      // Per-run choice (from the ui-html picker / CLI --design-system) wins; when
+      // the caller didn't specify one, fall back to the global app-config default.
+      designSystemId: designSystemId !== undefined ? designSystemId : (appConfig.designSystemId ?? null),
       model: modelPrefs.model ?? null,
       reasoning: modelPrefs.reasoning ?? null,
       message: kickoff,

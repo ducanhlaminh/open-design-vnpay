@@ -28,6 +28,13 @@ interface Props {
   selectedId: string | null;
   loading?: boolean;
   onChange: (id: string | null) => void;
+  /**
+   * Override the portaled popover/fullscreen z-index. The defaults (popover 140,
+   * fullscreen 210 from routines.css) sit BELOW modal backdrops (z 1000), so when
+   * this picker is embedded inside a modal — e.g. the pipeline ui-html run modal —
+   * pass a value above the modal so the popover isn't hidden behind the overlay.
+   */
+  popoverZIndex?: number;
 }
 
 export function ProjectDesignSystemPicker({
@@ -35,6 +42,7 @@ export function ProjectDesignSystemPicker({
   selectedId,
   loading,
   onChange,
+  popoverZIndex,
 }: Props) {
   const { locale, t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -194,7 +202,12 @@ export function ProjectDesignSystemPicker({
               ref={popoverRef}
               className="project-ds-picker-popover"
               data-testid="project-ds-picker-popover"
-              style={{ top: anchor.top, left: anchor.left, width: anchor.width }}
+              style={{
+                top: anchor.top,
+                left: anchor.left,
+                width: anchor.width,
+                ...(popoverZIndex != null ? { zIndex: popoverZIndex } : {}),
+              }}
             >
               <div className="project-ds-picker-search">
                 <Icon name="search" size={12} />
@@ -364,6 +377,7 @@ export function ProjectDesignSystemPicker({
             <div
               className="project-ds-picker-fullscreen"
               role="dialog"
+              style={popoverZIndex != null ? { zIndex: popoverZIndex + 1 } : undefined}
               aria-label={t('designSystemPicker.fullscreenAria', { title: previewTarget.title })}
               onClick={(event) => {
                 if (event.target === event.currentTarget) {

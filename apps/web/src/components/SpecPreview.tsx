@@ -645,11 +645,63 @@ function PersonasBlock({ personas }: { personas: SpecPersona[] }) {
 
 // ── Mermaid generators (CJ → journey, UX → flowchart) ────────────────────────
 function mmText(s: string | undefined): string {
-  return (s ?? '').replace(/["\n:;#]/g, ' ').replace(/\s+/g, ' ').trim() || '?';
+  return (s ?? '').replace(/["\n:;#|<>]/g, ' ').replace(/\s+/g, ' ').trim() || '?';
 }
 function mmId(s: string): string {
   return 'n' + (s || '').replace(/[^A-Za-z0-9_]/g, '_');
 }
+// Normalize a label/screen name for fuzzy CTA→screen matching: strip Vietnamese
+// diacritics, lowercase, keep alphanumerics separated by single spaces.
+function normLabel(s: string | undefined): string {
+  return (s ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+// Significant tokens only (len >= 4) so short Vietnamese function words don't
+// cause spurious matches.
+function sigTokens(s: string | undefined): string[] {
+  return normLabel(s).split(' ').filter((w) => w.length >= 4);
+}
+const CTA_TYPES = new Set(['button', 'cta', 'link', 'submit']);
+const BACK_RE = /\b(back|quay lai|tro lai|truoc|huy|cancel|close|dong|thoat)\b/;
+function isCta(c: SpecComponent): boolean {
+  const t = (c.component_type ?? '').toLowerCase();
+  const sem = (c.semantic_type ?? '').toLowerCase();
+  return CTA_TYPES.has(t) || /button|cta|submit|nav|link/.test(sem);
+}
+// The CTA most likely to drive forward navigation: primary prominence, else a
+// dedicated cta type, else the last action on the screen.
+function pickPrimaryCta(ctas: SpecComponent[]): SpecComponent | null {
+  if (ctas.length === 0) return null;
+  return (
+    ctas.find((c) => /primary|high|strong/i.test(c.prominence ?? '')) ??
+    ctas.find((c) => (c.component_type ?? '').toLowerCase() === 'cta') ??
+    ctas[ctas.length - 1] ??
+    null
+  );
+}
+// Heuristic: resolve a CTA label to a target screen by name/intent overlap.
+function matchTargetScreen(label: string, fromId: string, screens: SpecScreen[]): string | null {
+  const ln = normLabel(label);
+  if (ln.length < 3) return null;
+  const lt = sigTokens(label);
+  let best: { id: string; score: number } | null = null;
+  for (const s of screens) {
+    if (s.id === fromId) continue;
+    const cand = normLabel(s.name ?? s.title ?? s.id);
+    let score = 0;
+    if (cand.length >= 4 && (cand.includes(ln) || ln.includes(cand))) score += 3;
+    const st = new Set([...sigTokens(s.name ?? s.title ?? s.id), ...sigTokens(s.screen_intent)]);
+    for (const w of lt) if (st.has(w)) score += 1;
+    if (score > 0 && (!best || score > best.score)) best = { id: s.id, score };
+  }
+  return best ? best.id : null;
+}
+
 export function specToMermaid(doc: SpecDoc): string {
   const journeys = Array.isArray(doc.journeys) ? doc.journeys : [];
   const screens = Array.isArray(doc.screens) ? doc.screens : [];
@@ -664,22 +716,78 @@ export function specToMermaid(doc: SpecDoc): string {
     }
     return lines.join('\n');
   }
-  const lines = ['flowchart TD'];
-  if (screens.length === 0) return 'flowchart TD\n  empty["(no content)"]';
-  for (const s of screens) {
-    lines.push(`  subgraph ${mmId(s.id)}["${mmText(s.name ?? s.title ?? s.id)}"]`);
-    lines.push('  direction TB');
-    const comps = [...(s.components ?? [])].sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
-    if (comps.length === 0) lines.push(`    ${mmId(s.id + '_empty')}["(empty)"]`);
-    let prev: string | null = null;
-    comps.forEach((c, i) => {
-      const cid = mmId(`${s.id}_${c.id ?? i}`);
-      lines.push(`    ${cid}["${glyph(c.component_type)} ${mmText(c.label ?? c.component_type)}"]`);
-      if (prev) lines.push(`    ${prev} --> ${cid}`);
-      prev = cid;
-    });
-    lines.push('  end');
+
+  // UX spec → screen-level NAVIGATION flowchart. Each screen is ONE node; edges
+  // are inferred from CTA-like components, not from component order:
+  //   1. a CTA whose label name-matches another screen → edge to that screen,
+  //   2. otherwise the primary CTA advances to the next screen in order,
+  //   3. back/cancel CTAs loop to the previous screen (dashed).
+  if (screens.length === 0) return 'flowchart LR\n  empty["(no content)"]';
+  const lines = ['flowchart LR'];
+  for (const s of screens) lines.push(`  ${mmId(s.id)}["${mmText(s.name ?? s.title ?? s.id)}"]`);
+
+  type Edge = { from: string; to: string; label: string; dashed: boolean };
+  const edges: Edge[] = [];
+  const byKey = new Map<string, Edge>();
+  const addEdge = (from: string, to: string, label: string, dashed: boolean) => {
+    if (from === to) return;
+    const key = `${from}>${to}>${dashed ? 'd' : 's'}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      if (label && !existing.label.split(' / ').includes(label)) {
+        existing.label = existing.label ? `${existing.label} / ${label}` : label;
+      }
+      return;
+    }
+    const e = { from, to, label, dashed };
+    byKey.set(key, e);
+    edges.push(e);
+  };
+
+  screens.forEach((s, i) => {
+    const prevScreen = i > 0 ? screens[i - 1] : undefined;
+    const nextScreen = i < screens.length - 1 ? screens[i + 1] : undefined;
+    const ctas = [...(s.components ?? [])].filter(isCta).sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+    const primary = pickPrimaryCta(ctas);
+    let forwardUsed = false;
+    for (const c of ctas) {
+      const raw = c.label ?? c.component_type ?? '';
+      const label = mmText(raw);
+      if (BACK_RE.test(normLabel(raw))) {
+        if (prevScreen) addEdge(mmId(s.id), mmId(prevScreen.id), label, true);
+        continue;
+      }
+      const target = matchTargetScreen(raw, s.id, screens);
+      if (target) {
+        addEdge(mmId(s.id), mmId(target), label, false);
+        if (c === primary) forwardUsed = true;
+      } else if (c === primary && nextScreen && !forwardUsed) {
+        addEdge(mmId(s.id), mmId(nextScreen.id), label, false);
+        forwardUsed = true;
+      }
+    }
+  });
+
+  // Fallback: nothing inferred → linear storyboard in document order so the
+  // graph is still connected instead of disjoint boxes.
+  if (edges.length === 0 && screens.length > 1) {
+    for (let i = 0; i < screens.length - 1; i++) {
+      const a = screens[i];
+      const b = screens[i + 1];
+      if (a && b) addEdge(mmId(a.id), mmId(b.id), '', false);
+    }
   }
+
+  // Start marker → entry screen (first screen with no incoming solid edge).
+  const incoming = new Set(edges.filter((e) => !e.dashed).map((e) => e.to));
+  const entry = screens.find((s) => !incoming.has(mmId(s.id))) ?? screens[0];
+  if (entry) lines.push(`  __start(("●")) --> ${mmId(entry.id)}`);
+  for (const e of edges) {
+    const arrow = e.dashed ? '-.->' : '-->';
+    lines.push(e.label ? `  ${e.from} ${arrow}|"${e.label}"| ${e.to}` : `  ${e.from} ${arrow} ${e.to}`);
+  }
+  lines.push('  classDef odstart fill:#0066b3,stroke:#0066b3,color:#ffffff;');
+  lines.push('  class __start odstart;');
   return lines.join('\n');
 }
 

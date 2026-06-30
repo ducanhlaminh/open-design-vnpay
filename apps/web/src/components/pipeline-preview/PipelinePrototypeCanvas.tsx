@@ -20,8 +20,7 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { fetchProjectFiles, projectFileUrl } from '../../providers/registry';
-import { useT } from '../../i18n';
-import { RemixIcon } from '../RemixIcon';
+import type { H2DRecipeState, ScreenSpec } from '../../lib/html-to-h2d';
 import styles from './PipelinePrototypeCanvas.module.css';
 
 interface PrototypeEntry {
@@ -33,154 +32,16 @@ interface PrototypeEntry {
 
 // One frame size for every prototype page. Phone-ish (the skill is mobile-first);
 // web pages just scroll inside the iframe.
-const FRAME = { w: 430, h: 840 } as const;
+const FRAME = { w: 375, h: 812 } as const;
+// Capture viewport height — matches the CLI's default so a `min-height:100vh`
+// screen resolves to a mobile height instead of an inflated frame.
+const CAPTURE_H = 932;
 
 function prettyTitle(fileName: string): string {
   const base = fileName.split('/').pop() ?? fileName;
   const stem = base.replace(/\.html?$/i, '');
   if (stem === 'index') return 'Overview';
   return stem.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-type CopyState = 'idle' | 'busy' | 'ready' | 'ok' | 'err';
-
-// Per-frame "Copy to Figma": fetch THIS screen's prototype HTML source and serialize it to a
-// Figma "HTML to Design" (figh2d) clipboard payload fully client-side via @open-design/figma-h2d
-// (no daemon round-trip — Figma builds editable nodes from the JSON on paste). Same engine as the
-// single-file viewer's toolbar button (htmlToFigmaClipboard), but reachable directly from the
-// docs→HTML prototype canvas — one button per screen.
-//
-// Reliability: the payload is built from a long async chain (fetch → extract → daemon). Doing that
-// chain INSIDE the click and writing a Promise-valued ClipboardItem is fragile — if the gesture
-// loses focus mid-chain the browser rejects the write and the OS clipboard silently keeps its
-// PREVIOUS content, so every paste shows whichever screen last copied successfully. We instead
-// PREFETCH the payload Blob on hover/focus (cached per screen) and, on click, write the already
-// RESOLVED Blob synchronously — the dependable clipboard path. Cold clicks (no prefetch yet) fall
-// back to building first, then flip to a "ready — click again" state so the second click writes the
-// cached Blob instantly.
-function FrameCopyToFigma({ projectId, entry }: { projectId: string; entry: PrototypeEntry }) {
-  const t = useT();
-  const [state, setState] = useState<CopyState>('idle');
-  const [err, setErr] = useState<string | null>(null);
-  const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const blobRef = useRef<Blob | null>(null); // prepared payload for THIS screen
-  const prepRef = useRef<Promise<Blob> | null>(null); // in-flight prepare (dedupe)
-  useEffect(() => () => { if (resetRef.current) clearTimeout(resetRef.current); }, []);
-
-  // Build (and cache) the Figma clipboard Blob for this screen. Deduped: concurrent calls share one
-  // in-flight promise; a failure clears the cache so a later attempt retries.
-  const buildPayload = useCallback((): Promise<Blob> => {
-    if (blobRef.current) return Promise.resolve(blobRef.current);
-    if (prepRef.current) return prepRef.current;
-    const p = (async () => {
-      const resp = await fetch(projectFileUrl(projectId, entry.name));
-      if (!resp.ok) throw new Error(`Không đọc được HTML màn (${resp.status})`);
-      const html = await resp.text();
-      const { htmlToFigmaClipboard } = await import('../../lib/html-to-h2d');
-      const payloadHtml = await htmlToFigmaClipboard(html, FRAME.w);
-      const blob = new Blob([payloadHtml], { type: 'text/html' });
-      blobRef.current = blob;
-      return blob;
-    })();
-    prepRef.current = p;
-    p.catch(() => { prepRef.current = null; }); // allow retry after failure
-    return p;
-  }, [projectId, entry.name]);
-
-  // Prefetch on hover/focus so the click can write an already-resolved Blob.
-  const prefetch = useCallback(() => {
-    if (!blobRef.current && !prepRef.current) void buildPayload().catch(() => {});
-  }, [buildPayload]);
-
-  const finish = useCallback((next: 'ok' | 'err' | 'ready', e?: unknown) => {
-    if (e) {
-      // eslint-disable-next-line no-console
-      console.error('[Copy to Figma]', e);
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-    setState(next);
-    if (resetRef.current) clearTimeout(resetRef.current);
-    // 'ready' is a persistent prompt to click again — don't auto-reset it.
-    if (next !== 'ready') resetRef.current = setTimeout(() => setState('idle'), 3200);
-  }, []);
-
-  const writeBlob = useCallback((blob: Blob) => {
-    navigator.clipboard
-      .write([new ClipboardItem({ 'text/html': blob })])
-      .then(() => finish('ok'))
-      .catch((e) => finish('err', e));
-  }, [finish]);
-
-  const copy = useCallback(() => {
-    if (state === 'busy') return;
-    setErr(null);
-    // Fast path: payload already prepared (hover prefetch, or a prior cold click) → write the
-    // RESOLVED Blob synchronously inside this gesture. This is the reliable path.
-    if (blobRef.current) {
-      writeBlob(blobRef.current);
-      return;
-    }
-    // Cold path: not prepared yet. Keep the gesture alive with a Promise-valued ClipboardItem; if
-    // the browser rejects that, the Blob is cached by then — prompt the user to click once more.
-    setState('busy');
-    const payload = buildPayload();
-    try {
-      navigator.clipboard
-        .write([new ClipboardItem({ 'text/html': payload })])
-        .then(() => finish('ok'))
-        .catch(() => {
-          payload
-            .then(() => finish('ready')) // Blob is cached now → next click hits the fast path
-            .catch((e2) => finish('err', e2));
-        });
-    } catch (e) {
-      payload.then(() => finish('ready')).catch((e2) => finish('err', e2 || e));
-    }
-  }, [state, buildPayload, writeBlob, finish]);
-
-  const label =
-    state === 'ok'
-      ? t('fileViewer.copyToFigmaDone')
-      : state === 'err'
-        ? err || t('fileViewer.copyToFigmaError')
-        : state === 'busy'
-          ? t('fileViewer.copyToFigmaBusy')
-          : state === 'ready'
-            ? 'Đã chuẩn bị xong — bấm lần nữa để chép'
-            : t('fileViewer.copyToFigma');
-
-  return (
-    <button
-      type="button"
-      data-testid="canvas-copy-figma"
-      // nodrag/nopan: keep the click from starting a React Flow node drag / canvas pan.
-      className={
-        `nodrag nopan ${styles.copyFigmaBtn}` +
-        (state === 'ok' ? ` ${styles.copyFigmaOk}` : '') +
-        (state === 'err' ? ` ${styles.copyFigmaErr}` : '') +
-        (state === 'ready' ? ` ${styles.copyFigmaReady}` : '')
-      }
-      title={label}
-      aria-label={label}
-      disabled={state === 'busy'}
-      onPointerEnter={prefetch}
-      onFocus={prefetch}
-      onClick={copy}
-    >
-      <RemixIcon
-        name={
-          state === 'ok'
-            ? 'check-line'
-            : state === 'err'
-              ? 'error-warning-line'
-              : state === 'ready'
-                ? 'clipboard-fill'
-                : 'clipboard-line'
-        }
-        size={13}
-      />
-    </button>
-  );
 }
 
 function HtmlFrameNode({ data }: NodeProps) {
@@ -194,7 +55,6 @@ function HtmlFrameNode({ data }: NodeProps) {
       <div className={styles.frameLabel} title={entry.title}>
         <span className={styles.frameTitle}>{entry.title}</span>
         {active && <span className={styles.activeBadge}>open</span>}
-        <FrameCopyToFigma projectId={projectId} entry={entry} />
       </div>
       <div
         className={active ? `${styles.frame} ${styles.frameActive}` : styles.frame}
@@ -223,7 +83,80 @@ interface Props {
 
 export function PipelinePrototypeCanvas({ projectId, dir, activeName }: Props) {
   const [entries, setEntries] = useState<PrototypeEntry[] | null>(null);
+  // The `<stem>.states.json` recipes present under `dir` — a multistep screen
+  // expands into one frame per state on copy-all (parity with the CLI).
+  const [statesSet, setStatesSet] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
+  const [copyAll, setCopyAll] = useState<'idle' | 'busy' | 'ok' | 'err'>('idle');
+  const copyAllResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (copyAllResetRef.current) clearTimeout(copyAllResetRef.current); }, []);
+
+  // Copy ALL screens to Figma in one payload — the in-browser equivalent of the CLI
+  // `copy-figma-h2d.mjs <screens>`: each screen is re-rendered offscreen with its demo-player
+  // frozen, driven through its `<stem>.states.json` recipe (one frame per state), and combined.
+  // Pasting once drops every screen — and every state of a multistep screen — into Figma as sibling
+  // frames. clipboard.write runs synchronously inside the click gesture with a Promise-valued
+  // ClipboardItem so the async fetch+capture chain doesn't expire the gesture.
+  const copyAllToFigma = useCallback(() => {
+    if (copyAll === 'busy') return;
+    if (copyAllResetRef.current) clearTimeout(copyAllResetRef.current);
+    setCopyAll('busy');
+    const list = entries ?? [];
+    const payload = (async () => {
+      const specs: ScreenSpec[] = [];
+      for (const entry of list) {
+        const resp = await fetch(projectFileUrl(projectId, entry.name));
+        if (!resp.ok) {
+          // eslint-disable-next-line no-console
+          console.warn(`[Copy all to Figma] bỏ qua ${entry.name} (${resp.status})`);
+          continue;
+        }
+        const html = await resp.text();
+        // Optional multistep recipe sitting beside the html, e.g. `foo.states.json`.
+        const statesName = entry.name.replace(/\.html?$/i, '') + '.states.json';
+        let states: H2DRecipeState[] | null = null;
+        if (statesSet.has(statesName)) {
+          try {
+            const sr = await fetch(projectFileUrl(projectId, statesName));
+            if (sr.ok) {
+              const parsed = JSON.parse(await sr.text());
+              if (Array.isArray(parsed) && parsed.length) states = parsed as H2DRecipeState[];
+            }
+          } catch {
+            /* no/!invalid recipe → single capture */
+          }
+        }
+        specs.push({ html, width: FRAME.w, height: CAPTURE_H, states });
+      }
+      if (specs.length === 0) throw new Error('Không có màn nào để copy');
+      const { screensToFigmaClipboard } = await import('../../lib/html-to-h2d');
+      const html = await screensToFigmaClipboard(specs, FRAME.w, CAPTURE_H);
+      return new Blob([html], { type: 'text/html' });
+    })();
+    const done = (state: 'ok' | 'err', err?: unknown) => {
+      if (err) {
+        // eslint-disable-next-line no-console
+        console.error('[Copy all to Figma]', err);
+      }
+      setCopyAll(state);
+      copyAllResetRef.current = setTimeout(() => setCopyAll('idle'), 3200);
+    };
+    try {
+      window.focus();
+      navigator.clipboard
+        .write([new ClipboardItem({ 'text/html': payload })])
+        .then(() => done('ok'))
+        .catch((err) => {
+          payload
+            .then((blob) => navigator.clipboard.write([new ClipboardItem({ 'text/html': blob })]))
+            .then(() => done('ok'))
+            .catch((err2) => done('err', err2 || err));
+        });
+    } catch (err) {
+      payload.catch(() => {});
+      done('err', err);
+    }
+  }, [copyAll, entries, projectId, statesSet]);
 
   useEffect(() => {
     let cancelled = false;
@@ -232,9 +165,9 @@ export function PipelinePrototypeCanvas({ projectId, dir, activeName }: Props) {
     void (async () => {
       try {
         const files = await fetchProjectFiles(projectId);
+        const names = files.map((f) => f.name);
         // Direct `<dir>/<file>.html` children only (one segment under dir).
-        const htmlFiles = files
-          .map((f) => f.name)
+        const htmlFiles = names
           .filter((n) => {
             if (!n.startsWith(`${dir}/`) || !/\.html?$/i.test(n)) return false;
             return n.slice(dir.length + 1).split('/').length === 1;
@@ -245,7 +178,12 @@ export function PipelinePrototypeCanvas({ projectId, dir, activeName }: Props) {
             const bi = /(^|\/)index\.html?$/i.test(b) ? 0 : 1;
             return ai - bi || a.localeCompare(b);
           });
+        // `<stem>.states.json` recipes under dir, for multistep copy-all.
+        const states = new Set(
+          names.filter((n) => n.startsWith(`${dir}/`) && /\.states\.json$/i.test(n)),
+        );
         if (cancelled) return;
+        setStatesSet(states);
         if (htmlFiles.length === 0) {
           setError(`No prototype HTML found under ${dir}/ — run the “UI (HTML prototype)” pipeline first.`);
           setEntries([]);
@@ -286,6 +224,37 @@ export function PipelinePrototypeCanvas({ projectId, dir, activeName }: Props) {
   return (
     <div className={styles.root}>
       <div className={styles.canvas}>
+        {entries.length > 0 && (
+          <button
+            type="button"
+            data-testid="canvas-copy-all-figma"
+            onClick={copyAllToFigma}
+            disabled={copyAll === 'busy'}
+            title="Copy tất cả màn sang Figma — paste một lần ra nhiều frame (gồm cả multistep)"
+            style={{
+              position: 'absolute',
+              top: 12,
+              right: 12,
+              zIndex: 5,
+              font: '600 13px system-ui',
+              padding: '8px 14px',
+              border: 0,
+              borderRadius: 8,
+              cursor: copyAll === 'busy' ? 'default' : 'pointer',
+              color: '#fff',
+              background:
+                copyAll === 'ok' ? '#0c7a35' : copyAll === 'err' ? '#b91c1c' : '#0d99ff',
+            }}
+          >
+            {copyAll === 'busy'
+              ? 'Đang copy…'
+              : copyAll === 'ok'
+                ? '✓ Đã copy — Cmd+V vào Figma'
+                : copyAll === 'err'
+                  ? '✗ Lỗi — xem console'
+                  : '⧉ Copy tất cả màn sang Figma'}
+          </button>
+        )}
         <ReactFlowProvider>
           <ReactFlow
             nodes={nodes}

@@ -15,11 +15,14 @@ import type {
   BasFeature,
   BasFeaturesResponse,
   ChatRunStatusResponse,
+  DesignSystemSummary,
   PipelineRunSource,
   PipelineView,
 } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
+import { fetchDesignSystems } from '../../providers/registry';
+import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { PlModal } from './PlModal';
 import styles from './PipelineSourceModal.module.css';
 
@@ -426,6 +429,116 @@ export function RunInputModal({
         </>
       )}
 
+      {error ? (
+        <div className="pl-modal-error" role="alert">
+          <Icon name="info" size={14} />
+          <span>{error}</span>
+        </div>
+      ) : null}
+    </PlModal>
+  );
+}
+
+// ── Design-system picker for UI stages (ui-html) ─────────────────────────────
+// Shown before running a pipeline whose `acceptsDesignSystem` is set. Picks an
+// optional brand to apply at HTML-gen time: "None" → a generic, design-led
+// prototype (the pre-existing behavior); a system → its DESIGN.md + tokens get
+// injected into the agent's system prompt for this run. Only NON-draft systems
+// are offered, because the daemon won't inject a draft's assets (see
+// isProjectUsableDesignSystem) — so a draft created from a .fig must be
+// published first to appear here.
+export function DesignSystemRunModal({
+  pipelineName,
+  onClose,
+  onRun,
+}: {
+  pipelineName: string;
+  onClose: () => void;
+  onRun: (designSystemId: string | null) => Promise<void>;
+}) {
+  const [systems, setSystems] = useState<DesignSystemSummary[] | null>(null);
+  const [selected, setSelected] = useState<string | null>(null); // null = None
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const all = await fetchDesignSystems();
+        if (cancelled) return;
+        setSystems(all.filter((s) => s.status !== 'draft'));
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+          setSystems([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onRun(selected);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <PlModal
+      title={`Run · ${pipelineName}`}
+      icon="play"
+      busy={busy}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="pl-btn pl-btn--run"
+            onClick={() => void submit()}
+            disabled={busy || systems === null}
+          >
+            <Icon name={busy ? 'spinner' : 'play'} size={14} />
+            <span>{busy ? 'Starting…' : 'Run pipeline'}</span>
+          </button>
+        </>
+      }
+    >
+      <div className="pl-modal-field pl-modal-field--ds">
+        <span className="pl-modal-field__label">Design system (optional)</span>
+        {/* Same swatch + live-theme-preview picker as the chat composer. It
+            portals its popover to <body>; popoverZIndex lifts it above the
+            modal backdrop (z 1000) so it isn't hidden behind the overlay. The
+            --ds modifier restyles its compact header pill into a full-width
+            form control (see pipelines.css). */}
+        <ProjectDesignSystemPicker
+          designSystems={systems ?? []}
+          selectedId={selected}
+          loading={systems === null}
+          onChange={setSelected}
+          popoverZIndex={1100}
+        />
+        <span className="pl-modal-field__hint">
+          Applies a brand's <code>DESIGN.md</code> + tokens to the generated HTML. Leave as{' '}
+          <strong>None</strong> for a generic, design-led prototype. Only published systems
+          appear — publish a draft (e.g. one created from a <code>.fig</code>) to use it here.
+        </span>
+      </div>
+      {systems !== null && systems.length === 0 ? (
+        <p className="pl-modal-empty">No published design systems yet — running with None.</p>
+      ) : null}
       {error ? (
         <div className="pl-modal-error" role="alert">
           <Icon name="info" size={14} />

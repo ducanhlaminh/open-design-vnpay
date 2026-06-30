@@ -111,6 +111,16 @@ export type ToolPackConfig = {
   mediaUserId?: string;
   mediaUserRole?: string;
   /**
+   * Atlassian (Jira + Confluence Data Center) personal tokens, sourced from
+   * process.env.OD_ATLASSIAN_*_TOKEN at packaging time and baked into
+   * open-design-config.json so the packaged daemon seeds the `mcp-atlassian`
+   * stdio MCP server with working creds. WARNING: embedded in the bundle
+   * (extractable) — ship scoped/rotatable tokens. Omitted when unset, in which
+   * case the daemon does not seed the Atlassian server.
+   */
+  atlassianJiraToken?: string;
+  atlassianConfluenceToken?: string;
+  /**
    * Personal API key (`phx_...`) used by the @posthog/cli sourcemap helper to
    * upload browser sourcemaps to PostHog after `next build` and before the
    * web bundle is copied into the Electron package. Sourced from
@@ -382,6 +392,8 @@ export function resolveToolPackConfig(
     mediaAppId: resolveToolPackKgsScalar(process.env.MEDIA_APP_ID, "MEDIA_APP_ID"),
     mediaUserId: resolveToolPackKgsScalar(process.env.MEDIA_USER_ID, "MEDIA_USER_ID"),
     mediaUserRole: resolveToolPackKgsScalar(process.env.MEDIA_USER_ROLE, "MEDIA_USER_ROLE"),
+    atlassianJiraToken: process.env.OD_ATLASSIAN_JIRA_TOKEN?.trim() || undefined,
+    atlassianConfluenceToken: process.env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim() || undefined,
     posthogCliApiKey: resolveToolPackPosthogCliApiKey(
       process.env.POSTHOG_CLI_API_KEY ?? process.env.POSTHOG_PERSONAL_API_KEY,
     ),

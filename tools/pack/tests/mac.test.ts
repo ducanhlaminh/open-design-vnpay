@@ -198,6 +198,28 @@ describe("renderMacPackagedConfig", () => {
       await rm(root, { force: true, recursive: true });
     }
   });
+
+  it("never bakes a build-machine namespaceBaseRoot into the shipped config", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-mac-"));
+    try {
+      // Non-portable is the default distribution build. The embedded config
+      // travels inside the .app to other machines/users, so a build-time
+      // absolute runtime path would crash startup with EACCES. The runtime
+      // resolves a per-user writable root from this field's absence instead.
+      const config = makeConfig(root, { portable: false });
+
+      const packagedConfig = JSON.parse(
+        renderMacPackagedConfig({
+          appVersion: "1.2.3",
+          config,
+          usePrebundledStandaloneWeb: true,
+        }),
+      ) as Record<string, unknown>;
+      expect(packagedConfig).not.toHaveProperty("namespaceBaseRoot");
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
 });
 
 describe("createMacElectronRebuildOptions", () => {

@@ -69,6 +69,8 @@ function resolveHeadlessConfig(): PackagedConfig {
     mediaAppId: process.env.MEDIA_APP_ID?.trim() || null,
     mediaUserId: process.env.MEDIA_USER_ID?.trim() || null,
     mediaUserRole: process.env.MEDIA_USER_ROLE?.trim() || null,
+    atlassianJiraToken: process.env.OD_ATLASSIAN_JIRA_TOKEN?.trim() || null,
+    atlassianConfluenceToken: process.env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim() || null,
     webSidecarEntry: null,
     webStandaloneRoot: null,
     webOutputMode: "server",
@@ -132,6 +134,8 @@ async function main(): Promise<void> {
     mediaAppId: config.mediaAppId,
     mediaUserId: config.mediaUserId,
     mediaUserRole: config.mediaUserRole,
+    atlassianJiraToken: config.atlassianJiraToken,
+    atlassianConfluenceToken: config.atlassianConfluenceToken,
     // PR #974 round-5 (lefarcen P2): headless packaged mode runs daemon
     // + web only, no Electron, no privileged shell.openPath surface.
     // Pinning OD_REQUIRE_DESKTOP_AUTH here would arm a gate no client

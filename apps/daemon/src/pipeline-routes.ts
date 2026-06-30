@@ -102,7 +102,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           (n, id) => (state[id]?.status === 'succeeded' ? n + 1 : n),
           0,
         );
-        return { id: p.id, name: p.name, done, total };
+        const running = wf.pipelineIds.reduce(
+          (n, id) => (state[id]?.status === 'running' || state[id]?.status === 'queued' ? n + 1 : n),
+          0,
+        );
+        return { id: p.id, name: p.name, done, total, running };
       }),
     );
     res.json({ projects });
@@ -225,7 +229,16 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       } catch (err: any) {
         return res.status(400).json({ error: String(err?.message ?? err) });
       }
-      const start = await ctx.pipelines.runPipeline(projectId, def.id, input, source);
+      // Per-run design system (ui-html picker). string → use it; null → explicit
+      // "none" (suppress the app-config default); absent → inherit the default.
+      const rawDesignSystemId = req.body?.designSystemId;
+      const designSystemId =
+        typeof rawDesignSystemId === 'string'
+          ? rawDesignSystemId
+          : rawDesignSystemId === null
+            ? null
+            : undefined;
+      const start = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId);
       res.status(202).json(start);
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });

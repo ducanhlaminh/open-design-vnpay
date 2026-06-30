@@ -689,6 +689,9 @@ export function mergeDaemonConfig(
   if (daemonConfig.customInstructions !== undefined) {
     next.customInstructions = daemonConfig.customInstructions ?? undefined;
   }
+  if (daemonConfig.feedbackUsername !== undefined) {
+    next.feedbackUsername = daemonConfig.feedbackUsername ?? undefined;
+  }
   return next;
 }
 
@@ -803,6 +806,7 @@ export async function syncConfigToDaemon(
     telemetry: config.telemetry,
     privacyDecisionAt: config.privacyDecisionAt,
     customInstructions: config.customInstructions ?? null,
+    feedbackUsername: config.feedbackUsername ?? null,
   };
   try {
     const response = await fetch('/api/app-config', {

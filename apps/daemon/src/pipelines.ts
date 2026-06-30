@@ -47,6 +47,14 @@ export interface PipelineDef {
    * the run kickoff. */
   inputPlaceholder?: string;
   /**
+   * When true, this stage generates UI and can apply a design system: the UI
+   * shows a design-system picker before running and sends the chosen id as
+   * `RunPipelineRequest.designSystemId`, which the daemon forwards to the chat
+   * run (overriding the app-config default for that run only). Today only the
+   * `ui-html` HTML-prototype stage sets this.
+   */
+  acceptsDesignSystem?: boolean;
+  /**
    * When true, this stage's outputs stay LOCAL — they are never pushed to the
    * media file store nor graph-converted on upload, so they do NOT round-trip to
    * another device via push-all/pull-all. Reserve this for genuinely
@@ -80,15 +88,21 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // Customer Journey built straight from the ingested docs MD (no feature-analysis
   // upstream). Each STAGE carries `sources[]` — the key text excerpts from the
   // source MD — which the SpecPreview surfaces under each stage card.
-  { id: 'html-cj',          name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['html-docs'], convertToGraph: true, outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
-  { id: 'html-ux',          name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['html-cj'], convertToGraph: true, outputs: ['-ux-spec.json', 'ux/'] },
+  // FILE-ONLY (no `convertToGraph`): the docs-to-html workflow produces an HTML
+  // prototype, so its cj/ux JSON stays a local file synced to the media store and
+  // is NEVER projected into the KGS graph. Only the docs-to-ui workflow's
+  // `customer-journey` / `ux-spec` stages set convertToGraph. The two workflows'
+  // outputs are namespaced per-workflow (workflowDirForPipeline), so this flag
+  // split never crosses over to the docs-to-ui stages that share these skills.
+  { id: 'html-cj',          name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['html-docs'], outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
+  { id: 'html-ux',          name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['html-cj'], outputs: ['-ux-spec.json', 'ux/'] },
   // ui-html also activates `frontend-design` (UI/UX craft) so the agent designs
   // boldly + well, not just structurally. The prototype skill additionally opts
   // into craft rules (anti-ai-slop, laws-of-ux, typography, color, animation).
   // The `prototype/` HTML output IS the workflow deliverable, so it syncs to the
   // media file store like every other stage (push-all/pull-all cross-device
   // handoff). It is file-only — `convertToGraph` stays unset (not graph data).
-  { id: 'ui-html',          name: 'UI (HTML prototype)',       skillId: 'html-interactive-prototype', extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill'], dependsOn: ['html-ux'], outputs: ['prototype/'] },
+  { id: 'ui-html',          name: 'UI (HTML prototype)',       skillId: 'html-interactive-prototype', extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill'], dependsOn: ['html-ux'], outputs: ['prototype/'], acceptsDesignSystem: true },
 ];
 
 // Named docs→output flows. Each is an ordered subset of PIPELINE_DEFS. The UI
@@ -263,6 +277,7 @@ export function listPipelineStatus(
       status: run?.status ?? 'idle',
       active: computeActive(state, def),
       ...(def.inputPlaceholder ? { inputPlaceholder: def.inputPlaceholder } : {}),
+      ...(def.acceptsDesignSystem ? { acceptsDesignSystem: true } : {}),
       ...(def.outputs && def.outputs.length ? { outputs: [...def.outputs] } : {}),
       ...(run?.lastRunId ? { lastRunId: run.lastRunId } : {}),
       ...(run?.lastConversationId ? { lastConversationId: run.lastConversationId } : {}),

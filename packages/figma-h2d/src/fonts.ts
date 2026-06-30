@@ -22,6 +22,45 @@ function stretchKeyword(stretch: string): string {
   return "ultra-expanded";
 }
 
+// CSS generic / system font keywords. These are NOT real font faces — the
+// browser resolves them to an OS font (e.g. `system-ui` → San Francisco on
+// macOS), so a canvas-width probe reports them "available" and they leak into
+// the emitted family name. Figma's HTML-to-Design paste then tries to load a
+// font literally named "system-ui", fails, and throws
+// `Cannot read properties of undefined (reading 'startsWith')`. Skip them so
+// the resolver falls through to the next CONCRETE family in the stack (the
+// designer's intended fallback, e.g. "Helvetica Neue" / "Arial"), which Figma
+// can actually load.
+const GENERIC_FONT_KEYWORDS = new Set([
+  "system-ui",
+  "-apple-system",
+  "blinkmacsystemfont",
+  "ui-sans-serif",
+  "ui-serif",
+  "ui-monospace",
+  "ui-rounded",
+  "sans-serif",
+  "serif",
+  "monospace",
+  "cursive",
+  "fantasy",
+  "math",
+  "emoji",
+  "fangsong",
+  "inherit",
+  "initial",
+  "unset",
+  "revert",
+]);
+
+/** Concrete fallback when a font-family stack is ALL generics — Figma-loadable. */
+function genericFallbackFamily(families: readonly string[]): string {
+  const lower = families.map((f) => f.toLowerCase());
+  if (lower.includes("monospace") || lower.includes("ui-monospace")) return "Courier New";
+  if (lower.includes("serif") || lower.includes("ui-serif")) return "Times New Roman";
+  return "Arial";
+}
+
 /** Split a CSS font-family list into individual family names (quotes stripped). */
 function parseFamilies(value: string): string[] {
   const out: string[] = [];
@@ -129,6 +168,10 @@ export class FontCollector {
     const families = parseFamilies(family);
     for (const candidate of families) {
       const key = candidate.toLowerCase();
+      // Never emit a CSS generic / system keyword as the resolved family —
+      // Figma can't load it and crashes on paste. Fall through to the next
+      // concrete family in the stack.
+      if (GENERIC_FONT_KEYWORDS.has(key)) continue;
       const probeKey = `${key}|${stretch}|${style}|${weight}|latin`;
       if (this.unavailable.has(probeKey)) continue;
       if (this.families.has(key)) {
@@ -143,6 +186,38 @@ export class FontCollector {
       this.addUsage(key, stretch, style, weight, size, family);
       return;
     }
+    // No concrete family in the stack was available (e.g. `font-family:
+    // system-ui` alone) — record a Figma-loadable fallback so the text still
+    // gets a font instead of nothing.
+    const fallback = genericFallbackFamily(families);
+    const key = fallback.toLowerCase();
+    if (!this.families.has(key)) {
+      if (!this.isAvailable(fallback, stretch, style, weight)) return;
+      this.families.set(key, { familyName: fallback, faces: [], usages: [] });
+    }
+    this.addUsage(key, stretch, style, weight, size, family);
+  }
+
+  /**
+   * Resolve a node's raw CSS `font-family` value to a SINGLE family that is
+   * present in `getFonts()` — i.e. a real, Figma-loadable font. Figma's
+   * HTML-to-Design paste parses each element's `styles.fontFamily`, maps over
+   * the family list and tries to load every entry; a CSS generic / system
+   * keyword (`system-ui`, `-apple-system`, `sans-serif`, …) or any family it
+   * doesn't have resolves to `undefined` and crashes the paste on
+   * `.startsWith`. Emitting only the resolved concrete family avoids that.
+   * Returns null when nothing resolves (caller should leave the value as-is).
+   */
+  emitFamily(value: string | undefined): string | null {
+    if (!value) return null;
+    const families = parseFamilies(value);
+    for (const candidate of families) {
+      if (GENERIC_FONT_KEYWORDS.has(candidate.toLowerCase())) continue;
+      const fam = this.families.get(candidate.toLowerCase());
+      if (fam) return fam.familyName;
+    }
+    const fallback = this.families.get(genericFallbackFamily(families).toLowerCase());
+    return fallback ? fallback.familyName : null;
   }
 
   /** Line-box height previously measured for a style set, or null. */

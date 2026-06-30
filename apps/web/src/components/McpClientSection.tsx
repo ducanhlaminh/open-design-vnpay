@@ -7,6 +7,7 @@
 
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -318,27 +319,44 @@ export const McpClientSection = forwardRef<McpClientSectionHandle, Props>(
   // Without this, OpenCode / Codex / Gemini users save a server and have
   // no way to learn it never reached the agent (issue #2142).
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  // Drives the spinner on the manual reload button (below). Kept separate
+  // from `loaded` so re-fetching does not blank the whole panel.
+  const [refreshing, setRefreshing] = useState(false);
 
+  // Guard against committing a fetch result after the section unmounts
+  // (settings dialog closed mid-request).
+  const mountedRef = useRef(true);
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const data = await fetchMcpServers();
-      if (cancelled) return;
-      if (!data) {
-        setError(t('mcpClient.daemonError'));
-        setLoaded(true);
-        return;
-      }
-      const fresh = rowsFromServers(data.servers);
-      setRows(fresh);
-      setSavedSig(signature(fresh));
-      setTemplates(data.templates);
-      setLoaded(true);
-    })();
+    mountedRef.current = true;
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
     };
   }, []);
+
+  // Re-fetch the saved servers + template catalog from the daemon. Shared by
+  // the initial mount load and the manual reload button so a server list that
+  // changed out-of-band (e.g. another process / `od mcp` wrote
+  // mcp-config.json, or you copied it into a packaged build's data dir) shows
+  // up without reopening Settings.
+  const loadServers = useCallback(async () => {
+    const data = await fetchMcpServers();
+    if (!mountedRef.current) return;
+    if (!data) {
+      setError(t('mcpClient.daemonError'));
+      setLoaded(true);
+      return;
+    }
+    const fresh = rowsFromServers(data.servers);
+    setRows(fresh);
+    setSavedSig(signature(fresh));
+    setTemplates(data.templates);
+    setError(null);
+    setLoaded(true);
+  }, [t]);
+
+  useEffect(() => {
+    void loadServers();
+  }, [loadServers]);
 
   useEffect(() => {
     let cancelled = false;
@@ -357,6 +375,18 @@ export const McpClientSection = forwardRef<McpClientSectionHandle, Props>(
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
+
+  // Manual reload. Blocked while saving or while there are unsaved edits so a
+  // re-fetch can never silently discard the user's in-progress changes.
+  const handleReload = useCallback(async () => {
+    if (refreshing || saving || dirty) return;
+    setRefreshing(true);
+    try {
+      await loadServers();
+    } finally {
+      if (mountedRef.current) setRefreshing(false);
+    }
+  }, [refreshing, saving, dirty, loadServers]);
 
   const updateRow = (idx: number, patch: Partial<DraftRow>) => {
     setRows((curr) => curr.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
@@ -437,22 +467,38 @@ export const McpClientSection = forwardRef<McpClientSectionHandle, Props>(
           <h3>{t('mcpClient.title')}</h3>
           <p className="hint">{t('mcpClient.subtitle')}</p>
         </div>
-        <button
-          type="button"
-          className="primary mcp-add-btn"
-          onClick={() => {
-            trackIntegrationsMcpTabClick(analytics.track, {
-              page_name: 'integrations',
-              area: 'mcp_tab',
-              element: 'add_server',
-            });
-            setPickerOpen((v) => !v);
-          }}
-          aria-expanded={pickerOpen}
-        >
-          <Icon name="sparkles" size={13} />
-          <span>{t('mcpClient.addServer')}</span>
-        </button>
+        <div className="section-head-actions">
+          <button
+            type="button"
+            className="mcp-add-btn"
+            onClick={() => void handleReload()}
+            disabled={refreshing || saving || dirty}
+            title={t('designFiles.refresh')}
+          >
+            <Icon
+              name={refreshing ? 'spinner' : 'reload'}
+              size={13}
+              className={refreshing ? 'icon-spin' : ''}
+            />
+            <span>{t('designFiles.refresh')}</span>
+          </button>
+          <button
+            type="button"
+            className="primary mcp-add-btn"
+            onClick={() => {
+              trackIntegrationsMcpTabClick(analytics.track, {
+                page_name: 'integrations',
+                area: 'mcp_tab',
+                element: 'add_server',
+              });
+              setPickerOpen((v) => !v);
+            }}
+            aria-expanded={pickerOpen}
+          >
+            <Icon name="sparkles" size={13} />
+            <span>{t('mcpClient.addServer')}</span>
+          </button>
+        </div>
       </div>
 
       <McpAgentSupportBanner agents={agents} />

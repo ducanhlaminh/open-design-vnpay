@@ -34,7 +34,15 @@ export async function serializeDocument(doc: H2DDocument): Promise<string> {
   for (const [key, asset] of entries) {
     assets[key] = {
       url: asset.url,
-      blob: asset.blob ? await blobToDataUrl(asset.blob) : null,
+      // Figma's H2D paste parser does `o(asset.blob.base64Blob, asset.blob.type)`
+      // and `base64Blob.startsWith("data:")`, so `blob` MUST be an object
+      // `{ base64Blob, type }` — NOT a bare data-URL string. Emitting a string
+      // makes `blob.base64Blob` undefined → `undefined.startsWith` crashes the
+      // whole paste (TypeError: ...reading 'startsWith') for any document that
+      // contains an image/canvas asset.
+      blob: asset.blob
+        ? { base64Blob: await blobToDataUrl(asset.blob), type: asset.blob.type }
+        : null,
       ...(asset.error ? { error: asset.error } : {}),
     };
   }

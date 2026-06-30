@@ -29,6 +29,13 @@ export interface PipelineView {
    */
   inputPlaceholder?: string;
   /**
+   * When true, this stage generates UI and can apply a design system. The UI
+   * opens a design-system picker before running (None + the installed systems);
+   * the chosen id is sent as `RunPipelineRequest.designSystemId`. Today only the
+   * `ui-html` HTML-prototype stage of the docs→HTML workflow sets this.
+   */
+  acceptsDesignSystem?: boolean;
+  /**
    * Output path patterns this pipeline produces in the project cwd (from the
    * daemon registry). The UI surfaces a stage's result files ("Quick result")
    * by matching these against `GET /api/projects/:id/files`. Patterns:
@@ -78,6 +85,10 @@ export interface PipelineProject {
   done: number;
   /** Total number of pipelines in the docs→UI flow (the stepper length). */
   total: number;
+  /** How many of this project's pipelines are currently in flight
+   * (`running`/`queued`) — drives the picker card's live running spinner.
+   * 0 when nothing is running. */
+  running: number;
 }
 
 export interface PipelineProjectsResponse {
@@ -98,6 +109,14 @@ export interface RunPipelineRequest {
    * then normalizes those local files. The agent never calls BAS itself.
    */
   source?: PipelineRunSource;
+  /**
+   * Optional design system to apply at a UI-generating stage (`ui-html`). A
+   * non-empty id overrides the app-config default for THIS run only; `null`
+   * means "no design system" for this run (suppresses the global default);
+   * omitted → fall back to the app-config default (the pre-existing behavior).
+   * Only stages whose `PipelineView.acceptsDesignSystem` is true consume it.
+   */
+  designSystemId?: string | null;
 }
 
 // ── BAS-sourced inputs for pipeline 1 (jira-ingest) ─────────────────────────

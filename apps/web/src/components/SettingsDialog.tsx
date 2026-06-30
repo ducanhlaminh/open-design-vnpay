@@ -3393,6 +3393,32 @@ export function SettingsDialog({
                   }
                 />
               </div>
+              <div className="memory-field-block instructions-rules-card">
+                <div className="memory-block-head">
+                  <div>
+                    <h4>Feedback username</h4>
+                    <p className="hint">
+                      Display name stamped on your feedback prompts when they are
+                      shared for the cross-user feedback summary, so the digest can
+                      attribute each prompt to a person. Leave blank to use the
+                      install id.
+                    </p>
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  className="custom-instructions-input instructions-rules-input"
+                  maxLength={120}
+                  placeholder="e.g. anhnd"
+                  value={cfg.feedbackUsername ?? ''}
+                  onChange={(event) =>
+                    setCfg({
+                      ...cfg,
+                      feedbackUsername: event.target.value || undefined,
+                    })
+                  }
+                />
+              </div>
             </section>
           ) : null}
 

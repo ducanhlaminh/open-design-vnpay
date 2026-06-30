@@ -56,6 +56,12 @@ export type RawPackagedConfig = {
   mediaAppId?: string;
   mediaUserId?: string;
   mediaUserRole?: string;
+  // Atlassian (Jira + Confluence) personal tokens baked by tools/pack from
+  // process.env.OD_ATLASSIAN_*_TOKEN. Forwarded to the daemon spawn env as
+  // OD_ATLASSIAN_JIRA_TOKEN / OD_ATLASSIAN_CONFLUENCE_TOKEN so it seeds the
+  // mcp-atlassian server on a fresh install. Embedded in the bundle.
+  atlassianJiraToken?: string;
+  atlassianConfluenceToken?: string;
   webSidecarEntryRelative?: string;
   webStandaloneRoot?: string;
   webOutputMode?: string;
@@ -80,6 +86,8 @@ export type PackagedConfig = {
   mediaAppId: string | null;
   mediaUserId: string | null;
   mediaUserRole: string | null;
+  atlassianJiraToken: string | null;
+  atlassianConfluenceToken: string | null;
   webSidecarEntry: string | null;
   webStandaloneRoot: string | null;
   webOutputMode: PackagedWebOutputMode;
@@ -211,6 +219,8 @@ export async function readPackagedConfig(): Promise<PackagedConfig> {
     mediaAppId: cleanOptionalString(raw.mediaAppId),
     mediaUserId: cleanOptionalString(raw.mediaUserId),
     mediaUserRole: cleanOptionalString(raw.mediaUserRole),
+    atlassianJiraToken: cleanOptionalString(raw.atlassianJiraToken),
+    atlassianConfluenceToken: cleanOptionalString(raw.atlassianConfluenceToken),
     webSidecarEntry,
     webStandaloneRoot,
     webOutputMode,

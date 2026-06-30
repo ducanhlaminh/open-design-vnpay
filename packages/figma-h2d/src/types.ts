@@ -76,7 +76,9 @@ export interface AssetEntry {
 
 export interface SerializedAsset {
   url: string;
-  blob: string | null; // data URL
+  // Figma's H2D parser reads `blob.base64Blob` (a data URL) + `blob.type`
+  // (MIME). Must be this object shape, not a bare data-URL string.
+  blob: { base64Blob: string; type: string } | null;
   error?: string;
 }
 

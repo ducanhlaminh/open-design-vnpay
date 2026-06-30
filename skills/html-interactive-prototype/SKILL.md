@@ -49,11 +49,12 @@ embeds one-per-frame via `<iframe srcdoc>`.
   to run **UX Spec** first.
 - **Output:** one file per screen `./prototype/<slug>.html` (self-contained) plus
   `./prototype/index.html` (a hub linking every screen). `<slug>` = the screen
-  `id` lower-cased (or a kebab of `name`). NOTHING else — no `screen.json`, no
-  React, no shared external CSS/JS file.
+  `id` lower-cased (or a kebab of `name`). The ONLY other allowed file is a
+  per-screen `./prototype/<slug>.states.json` for multistep screens (see 3.5) —
+  no `screen.json`, no React, no shared external CSS/JS file.
 
-> This pipeline does NOT emit `screen.json`. If you find yourself writing JSON,
-> you are in the wrong mode — the deliverable here is real `.html`.
+> This pipeline does NOT emit `screen.json` (the only JSON it may write is a
+> `<slug>.states.json` capture recipe — see 3.5). The deliverable is real `.html`.
 
 ## Design quality & creativity — be bold
 The **`frontend-design`**, **`web-design-guidelines`** (Vercel product-UI
@@ -115,7 +116,7 @@ Structure per `layout` — **full-bleed, no phone bezel**:
 - Root element (e.g. `.screen`) fills **100% width and its natural height** — no
   fixed `375×812` `.device` shell, no rounded phone frame, no drop-shadow bezel.
 - A **sticky** `.appbar` header pinned to the top, then a scrollable `.content`.
-- `mobile` → content flows full-width (the canvas renders it inside a ~430px
+- `mobile` → content flows full-width (the canvas renders it inside a ~375px
   iframe, so it naturally reads as a mobile screen without a fake device).
 - `web` → same full-bleed root, but constrain `.content` to a readable
   **centered max-width** (e.g. `min(100%, 960px)`). Still no `.device`.
@@ -184,6 +185,46 @@ Add a small inline `<script>` per file — no libraries:
   link to the sibling file: `onclick="location.href='<target-slug>.html'"`
   (relative, same `./prototype/` folder). Pick the target from the journey flow
   (step 1); the back arrow goes to the previous screen or `index.html`.
+
+### 3.5 Multistep / show-hide screens — state hooks + states recipe + looping demo
+
+Some screens reveal content in steps or toggle visibility (wizard steps, an OTP
+sheet, progressive disclosure). For EACH such screen, do all three:
+
+**a) Stable state hooks** — make every distinct visual state reachable + labelable
+via stable attributes, not ad-hoc class toggles:
+- the state container carries `data-state="<id>"` (e.g. `step-1`, `step-2`,
+  `otp-open`); your JS sets `data-state` to switch;
+- the control that advances carries `data-action="next"` (and `data-action="back"`
+  / `data-open="<id>"` for a modal). The SAME hooks drive both the JS and the
+  capture recipe below — keep them stable.
+
+**b) Emit a states recipe** `./prototype/<slug>.states.json` listing every state in
+display order, so Copy-to-Figma captures EACH state as its own Figma frame
+(`scripts/copy-figma-h2d.mjs` reads it automatically beside the `.html`):
+```json
+[
+  { "label": "Bước 1 — Nhập tiền", "actions": [] },
+  { "label": "Bước 2 — Xác nhận",  "actions": [{ "click": "[data-action='next']" }] },
+  { "label": "OTP",                "actions": [{ "click": "[data-open='otp']" }] }
+]
+```
+- `actions` apply IN ORDER, CUMULATIVELY, on one render. First state = the initial
+  load (empty `actions`). Vocabulary: `{"click":"<css>"}`, `{"wait":<ms>}`,
+  `{"set":{"selector":"<css>","attr":"data-state","value":"<id>"}}` (use single
+  quotes inside CSS attr selectors so the JSON stays valid).
+- Only emit a recipe for a screen that genuinely has >1 state.
+
+**c) Looping auto-advance, freezable for capture.** The auto-advance demo must
+LOOP (after the last state, wrap back to the first so the viewer can re-watch
+step 1) AND pause during capture — gate it on the capture flag:
+```js
+if (!window.__H2D_CAPTURE) {
+  // cycle data-state through the states every ~1.2s, wrapping back to the first
+}
+```
+NEVER auto-advance while `window.__H2D_CAPTURE` is set — the capture tool relies
+on a stable, recipe-driven state.
 
 ### 4. Write `./prototype/index.html`
 A simple hub: the project name + a responsive grid of cards, one per screen

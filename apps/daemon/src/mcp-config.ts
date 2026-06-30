@@ -15,7 +15,7 @@
 // users can copy-paste between Open Design and other tools without
 // translation.
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 
@@ -271,6 +271,113 @@ async function doWrite(dataDir: string, body: unknown): Promise<McpConfig> {
   await writeFile(tmp, JSON.stringify(next, null, 2), 'utf8');
   await rename(tmp, file);
   return next;
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Default external MCP servers seeded into a FRESH install.
+//
+// A packaged build copies bundled skills / design systems into place, but
+// external MCP servers live in <dataDir>/mcp-config.json (per-machine
+// runtime state) and are NOT part of the bundle. Without a seed, every new
+// machine starts with an empty server list. We seed HTTP servers (portable)
+// plus ONE stdio exception — `mcp-atlassian` — which is only added when its
+// tokens were baked from build env and whose `command` is the bare `uvx`
+// (resolved from PATH + auto-installed by ensureUvInstalled), never a
+// dev-machine absolute path. Other stdio servers stay machine-local because
+// their `command` points at a path (homebrew/fnm node) absent on the target.
+//
+// `ba-agent` authenticates with a static Bearer header. We deliberately do
+// NOT bake that token into source / the bundle (it would then be readable by
+// anyone with the app, and would live in git). Instead the server entry is
+// seeded WITHOUT a token, and the user pastes it into the server's Headers
+// field at /integrations (Authorization=Bearer …). A deployment that prefers
+// to bake the token at build/run time can still set OD_BA_AGENT_TOKEN; the
+// URL is likewise overridable via OD_BA_AGENT_URL.
+// ───────────────────────────────────────────────────────────────────────
+
+const BA_AGENT_DEFAULT_URL = 'https://a2.openledger.vn/api/mcp/';
+
+/**
+ * Build the default server list. The `ba-agent` entry is always seeded so it
+ * shows up on every machine; its Bearer token is left empty by default (the
+ * user fills it via the /integrations Headers field) and only baked in when
+ * OD_BA_AGENT_TOKEN is set. OD_BA_AGENT_URL overrides the endpoint.
+ */
+export function defaultMcpServers(
+  env: NodeJS.ProcessEnv = process.env,
+): McpServerConfig[] {
+  const url = env.OD_BA_AGENT_URL?.trim() || BA_AGENT_DEFAULT_URL;
+  const server: McpServerConfig = {
+    id: 'ba-agent',
+    label: 'BA Agent',
+    transport: 'http',
+    enabled: true,
+    url,
+    authMode: 'none',
+  };
+  // Optional build/run-time token bake-in. Left out by default so no secret
+  // lands in source — the token is entered through the UI instead.
+  const rawToken = env.OD_BA_AGENT_TOKEN?.trim();
+  if (rawToken) {
+    server.headers = {
+      Authorization: /^Bearer\s/i.test(rawToken) ? rawToken : `Bearer ${rawToken}`,
+    };
+  }
+  const servers: McpServerConfig[] = [server];
+
+  // Atlassian (Jira + Confluence Data Center) via the uvx-launched
+  // `mcp-atlassian` server. Unlike `ba-agent` (HTTP, fully portable) this is a
+  // stdio server, so we only seed it when its tokens were baked from build env
+  // (OD_ATLASSIAN_* → tools/pack → packaged config → daemon spawn env). The
+  // tokens are NEVER hardcoded in source. The command is the bare `uvx`,
+  // resolved from PATH: the packaged daemon augments PATH with ~/.local/bin and
+  // Homebrew (see resolvePackagedPathEnv / wellKnownUserToolchainBins), and
+  // `ensureUvInstalled` installs uv there on first run when the target machine
+  // lacks it. The org Jira/Confluence URLs are not secret, so they default
+  // inline and stay overridable via OD_ATLASSIAN_*_URL.
+  const jiraToken = env.OD_ATLASSIAN_JIRA_TOKEN?.trim();
+  const confluenceToken = env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim();
+  if (jiraToken || confluenceToken) {
+    servers.push({
+      id: 'mcp-atlassian',
+      label: 'Atlassian (Jira + Confluence Data Center)',
+      transport: 'stdio',
+      enabled: true,
+      command: 'uvx',
+      args: ['mcp-atlassian@0.21.1'],
+      env: {
+        JIRA_URL: env.OD_ATLASSIAN_JIRA_URL?.trim() || 'https://jr.servicehub.vn',
+        ...(jiraToken ? { JIRA_PERSONAL_TOKEN: jiraToken } : {}),
+        CONFLUENCE_URL: env.OD_ATLASSIAN_CONFLUENCE_URL?.trim() || 'https://wiki.servicehub.vn',
+        ...(confluenceToken ? { CONFLUENCE_PERSONAL_TOKEN: confluenceToken } : {}),
+      },
+    });
+  }
+  return servers;
+}
+
+/**
+ * Seed the default servers the first time the daemon runs against a data dir.
+ * No-op when mcp-config.json already exists, so we never clobber a user's
+ * edits nor resurrect a default they deliberately removed. Returns the ids
+ * actually written (empty when skipped). Best-effort: the caller logs and
+ * swallows failures so a seed problem can never block daemon startup.
+ */
+export async function seedDefaultMcpConfig(
+  dataDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string[]> {
+  const file = configFile(dataDir);
+  try {
+    await stat(file);
+    return []; // config already exists — respect existing state
+  } catch (err) {
+    if ((err as { code?: string }).code !== 'ENOENT') throw err;
+  }
+  const servers = defaultMcpServers(env);
+  if (servers.length === 0) return [];
+  const written = await writeMcpConfig(dataDir, { servers });
+  return written.servers.map((s) => s.id);
 }
 
 // ───────────────────────────────────────────────────────────────────────

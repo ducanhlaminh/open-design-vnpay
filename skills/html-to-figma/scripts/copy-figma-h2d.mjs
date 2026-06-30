@@ -3,12 +3,34 @@
 //
 //   node copy-figma-h2d.mjs <input.html> [<input2.html> ...] [--out-dir <dir>] [--json]
 //
+// SIZING & TIMING:
+//   --width <px>   per-screen viewport width (default 430, iPhone-class).
+//   --height <px>  per-screen viewport height (default 932). A `min-height:100vh`
+//                  screen resolves to this; taller content still grows the frame.
+//   --settle <ms>  pause before each capture (default 500) so CSS entry/transition
+//                  animations finish — without it the frame is grabbed at page-load
+//                  (pre-animation). The CLI also awaits in-flight animations' end
+//                  (capped) so finite reveals land in their final state. The JS
+//                  demo-player stays frozen regardless (see __H2D_CAPTURE below).
+//
 // Renders each HTML in headless Chromium (Playwright), injects the clean-room
 // @open-design/figma-h2d serializer (dist/figma-h2d.global.js), and captures each to a figh2d
 // document. Multiple inputs are combined into ONE payload (the figh2d blob is a document array) —
 // paste once → every screen lands in Figma as sibling frames. This is the "copy all màn" path for
 // the CLI, and the engine matches the web "Copy to Figma" button. See
 // specs/current/h2d-serializer-spec.md.
+//
+// MULTI-STATE (multistep / show-hide screens): if a `<input-basename>.states.json` recipe sits
+// beside an input (or is passed via --states), the page is driven through EACH listed state and a
+// frame is captured per state — so one multistep HTML file copies as N frames (every step). The
+// recipe is `[{ label, actions }]`; actions run in order, CUMULATIVELY, on a single render:
+//   { "click": "[data-action='next']" }   click an element (CSS; use single quotes inside)
+//   { "wait": 250 }                         pause N ms (let a transition settle)
+//   { "set": { "selector": ".screen", "attr": "data-state", "value": "step-2" } }  set an attribute
+// The first state is usually the initial load with empty `actions`. The CLI freezes the page's own
+// auto-advance during capture by setting `window.__H2D_CAPTURE = true` before the page scripts run,
+// so a looping demo-player can't shift the state mid-capture (the generated HTML must gate its
+// auto-advance on `!window.__H2D_CAPTURE`).
 //
 // Output beside the first input (or --out-dir):
 //   <name>.figma.html   raw clipboard payload (text/html)
@@ -24,15 +46,124 @@ const REPO_ROOT = resolve(SKILL_DIR, "..", "..");
 const H2D_GLOBAL = join(REPO_ROOT, "packages", "figma-h2d", "dist", "figma-h2d.global.js");
 
 function parseArgs(argv) {
-  const args = { inputs: [], outDir: null, json: false, width: 430 };
+  const args = { inputs: [], outDir: null, json: false, width: 430, height: 932, settle: 500, states: null };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--out-dir") args.outDir = argv[++i];
     else if (a === "--json") args.json = true;
     else if (a === "--width") args.width = Number(argv[++i]) || 430;
+    else if (a === "--height") args.height = Number(argv[++i]) || 932;
+    else if (a === "--settle") args.settle = Math.max(0, Number(argv[++i]) || 0);
+    else if (a === "--states") args.states = argv[++i];
     else if (a && !a.startsWith("-")) args.inputs.push(a);
   }
   return args;
+}
+
+// Max time (ms) to wait for in-flight CSS/WAAPI animations to finish before a
+// capture. Finite reveal/transition animations resolve before this; an infinite
+// looping animation (e.g. a scanning spinner) never finishes, so the cap stops
+// the wait and we capture whatever frame is current.
+const ANIM_SETTLE_MAX_MS = 2000;
+
+// Measure the artifact root's content height (real fn — `page.evaluate(string)`
+// would eval the source as an expression and return the function itself, not its
+// result; see the captureFrame note). A `position:sticky;bottom:0` bottom nav is
+// what makes this matter: if the screen content overflows the capture viewport, the
+// nav pins to the VIEWPORT edge while the captured frame spans the full (taller)
+// box — leaving a gap below the nav in Figma.
+const measureRootHeight = (page) =>
+  page
+    .evaluate(() =>
+      Math.ceil((document.body.firstElementChild ?? document.body).getBoundingClientRect().height),
+    )
+    .catch(() => 0);
+
+// Resize the viewport to the screen's content height ("hug") so it never overflows
+// — then a sticky/fixed bottom nav sits at its natural flow position (flush with
+// the frame bottom) instead of pinned to a too-short viewport. We reset to the base
+// mobile viewport first (a prior multistep state's taller hug must not inflate this
+// one via `min-height:100vh`) and iterate because resizing changes `100vh`, which
+// can re-grow the screen.
+async function hugViewport(page, baseW, baseH) {
+  const vp = page.viewportSize();
+  if (vp && (vp.width !== baseW || vp.height !== baseH)) {
+    await page.setViewportSize({ width: baseW, height: baseH }).catch(() => {});
+    await page.waitForTimeout(40);
+  }
+  for (let i = 0; i < 3; i++) {
+    const rootH = await measureRootHeight(page);
+    const cur = page.viewportSize();
+    if (!rootH || !cur || Math.abs(rootH - cur.height) <= 1) break;
+    await page.setViewportSize({ width: cur.width, height: rootH }).catch(() => {});
+    await page.waitForTimeout(60); // let layout reflow against the new height
+  }
+}
+
+// Let entry/transition animations finish before capturing. The JS demo-player
+// stays frozen (window.__H2D_CAPTURE === true, set at init) so it never shifts
+// state — this only waits out CSS @keyframes / transitions, which are NOT gated
+// on that flag. Order: a fixed `settleMs` pause (covers JS-timed reveals and lets
+// a just-applied state's transition kick off), then HUG the viewport to content
+// height (sticky bottom nav flush), then await every running animation's `.finished`,
+// bounded by ANIM_SETTLE_MAX_MS so an infinite loop can't hang the run.
+async function settleBeforeCapture(page, settleMs, baseW, baseH) {
+  if (settleMs > 0) await page.waitForTimeout(settleMs);
+  await hugViewport(page, baseW, baseH);
+  await page
+    .evaluate(async (maxMs) => {
+      const running = (document.getAnimations ? document.getAnimations() : []).filter(
+        (a) => a.playState === "running",
+      );
+      if (running.length) {
+        await Promise.race([
+          Promise.all(running.map((a) => a.finished.catch(() => {}))),
+          new Promise((r) => setTimeout(r, maxMs)),
+        ]);
+      }
+      await (document.fonts ? document.fonts.ready : Promise.resolve());
+    }, ANIM_SETTLE_MAX_MS)
+    .catch(() => {});
+}
+
+// Multi-state recipe driving N captures of ONE multistep HTML. Looks for an
+// explicit --states file, else `<input-basename>.states.json` beside the input.
+// Returns an array of { label, actions } or null when there's no recipe.
+function loadStatesRecipe(input, explicit) {
+  const candidate = explicit
+    ? resolve(explicit)
+    : join(dirname(input), basename(input, extname(input)) + ".states.json");
+  if (!existsSync(candidate)) return null;
+  try {
+    const recipe = JSON.parse(readFileSync(candidate, "utf8"));
+    if (Array.isArray(recipe) && recipe.length > 0) return recipe;
+    console.error(`[copy-figma-h2d] states recipe rỗng/không phải mảng: ${basename(candidate)}`);
+  } catch (err) {
+    console.error(`[copy-figma-h2d] states recipe lỗi parse (${basename(candidate)}): ${err?.message ?? err}`);
+  }
+  return null;
+}
+
+// Apply one recipe action to the live page. Unknown actions are ignored. A
+// failing action is logged but does not abort the run (capture best-effort).
+async function applyAction(page, action) {
+  if (!action || typeof action !== "object") return;
+  try {
+    if (typeof action.click === "string") {
+      await page.click(action.click, { timeout: 5000 });
+    } else if (typeof action.wait === "number") {
+      await page.waitForTimeout(Math.max(0, action.wait));
+    } else if (action.set && typeof action.set === "object" && action.set.selector) {
+      const { selector, attr = "data-state", value = "" } = action.set;
+      await page.$eval(
+        selector,
+        (el, payload) => el.setAttribute(payload.attr, payload.value),
+        { attr, value },
+      );
+    }
+  } catch (err) {
+    console.error(`[copy-figma-h2d]   action ${JSON.stringify(action)} lỗi: ${err?.message ?? err}`);
+  }
 }
 
 // Playwright is an optional peer (same as assets/extract.js). Resolve it from a few likely roots.
@@ -62,6 +193,11 @@ const IN_PAGE_CAPTURE = `async () => {
   const doc = await window.figmaH2D.captureElement(root, { skipRemoteAssetSerialization: false });
   return await window.figmaH2D.serializeDocument(doc);
 }`;
+
+// page.evaluate(string) evaluates the string as an EXPRESSION — a bare
+// `async () => {…}` resolves to the (non-serializable) function, not its result.
+// Wrap it as an IIFE so the capture actually runs and returns the JSON string.
+const captureFrame = (page) => page.evaluate(`(${IN_PAGE_CAPTURE})()`);
 
 function base64Utf8(text) {
   return Buffer.from(text, "utf8").toString("base64");
@@ -99,7 +235,7 @@ function copyPageHTML(payload, name) {
 async function main() {
   const args = parseArgs(process.argv);
   if (args.inputs.length === 0) {
-    console.error("Usage: node copy-figma-h2d.mjs <input.html> [<input2.html> ...] [--out-dir <dir>] [--width <px>] [--json]");
+    console.error("Usage: node copy-figma-h2d.mjs <input.html> [<input2.html> ...] [--out-dir <dir>] [--width <px>] [--height <px>] [--settle <ms>] [--states <recipe.json>] [--json]");
     process.exit(1);
   }
   if (!existsSync(H2D_GLOBAL)) {
@@ -110,22 +246,68 @@ async function main() {
     if (!existsSync(input)) throw new Error(`Không thấy file: ${input}`);
   }
 
-  const { chromium } = await loadPlaywright();
+  const pw = await loadPlaywright();
+  // CJS→ESM interop: some resolutions surface exports under `.default`.
+  const chromium = pw.chromium ?? pw.default?.chromium;
+  if (!chromium) throw new Error("Playwright: không tìm thấy export 'chromium'");
   const browser = await chromium.launch();
   const docJsonStrings = [];
+  // Mobile-sized base viewport: a screen with `min-height:100vh` resolves to this
+  // height (default 932 ≈ iPhone @430w) instead of the old hardcoded 2000px that
+  // left every frame far too tall. Each capture then hugs the viewport to the
+  // screen's content height (settleBeforeCapture → hugViewport). Tune with --height.
+  const baseW = Math.max(320, Math.round(args.width));
+  const baseH = Math.max(480, Math.round(args.height));
   try {
     const context = await browser.newContext({
-      viewport: { width: Math.max(320, Math.round(args.width)), height: 2000 },
+      viewport: { width: baseW, height: baseH },
       deviceScaleFactor: 1,
     });
     for (const input of inputs) {
       const page = await context.newPage();
       try {
+        // Freeze the page's own auto-advance so the recipe — not a looping demo
+        // player — controls which state is captured. addInitScript alone is NOT
+        // enough: it does not reliably run for page.setContent(), so a player that
+        // toggles state on a timer would still fire and (now that we wait for
+        // animations to settle, > its interval) shift the frame. Belt-and-braces:
+        // keep the init hook AND re-assert the flags right after setContent so any
+        // already-scheduled interval is killed on its next tick before it toggles.
+        await page.addInitScript(() => {
+          window.__H2D_CAPTURE = true;
+          window.__stop = true;
+        });
         await page.setContent(readFileSync(input, "utf8"), { waitUntil: "networkidle" });
+        await page
+          .evaluate(() => {
+            window.__H2D_CAPTURE = true;
+            window.__stop = true;
+          })
+          .catch(() => {});
         await page.evaluate(() => document.fonts?.ready).catch(() => {});
         await page.addScriptTag({ path: H2D_GLOBAL });
-        const json = await page.evaluate(IN_PAGE_CAPTURE);
-        if (typeof json === "string" && json.trim()) docJsonStrings.push(json);
+
+        const recipe = loadStatesRecipe(input, inputs.length === 1 ? args.states : null);
+        if (recipe) {
+          // Multistep: drive each state (actions are cumulative on this one render)
+          // and capture ONE frame per state.
+          let n = 0;
+          for (const state of recipe) {
+            const actions = Array.isArray(state?.actions) ? state.actions : [];
+            for (const action of actions) await applyAction(page, action);
+            await settleBeforeCapture(page, args.settle, baseW, baseH);
+            const json = await captureFrame(page);
+            if (typeof json === "string" && json.trim()) {
+              docJsonStrings.push(json);
+              n += 1;
+              console.error(`[copy-figma-h2d]   ${basename(input)} · state "${state?.label ?? n}" ✓`);
+            }
+          }
+        } else {
+          await settleBeforeCapture(page, args.settle, baseW, baseH);
+          const json = await captureFrame(page);
+          if (typeof json === "string" && json.trim()) docJsonStrings.push(json);
+        }
       } catch (err) {
         console.error(`[copy-figma-h2d] bỏ qua ${basename(input)}: ${err?.message ?? err}`);
       } finally {

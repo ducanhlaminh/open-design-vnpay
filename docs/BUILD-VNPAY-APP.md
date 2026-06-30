@@ -1,6 +1,6 @@
-# Build app đóng gói (DMG / Windows) — bản VNPAY có KGS baked
+# Build app đóng gói (DMG mac Silicon + Intel / Windows) — bản VNPAY có KGS baked
 
-Lệnh build packaged app cho fork này, đã nhúng sẵn cấu hình KGS để **đưa mỗi app là chạy** (không cần `.env.local` ở máy người nhận).
+Lệnh build packaged app cho fork này, đã nhúng sẵn cấu hình KGS để **đưa mỗi app là chạy** (không cần `.env.local` ở máy người nhận). Một máy macOS build được DMG cho **cả Apple Silicon (arm64) lẫn Intel (x64)**.
 
 Chạy mọi lệnh từ thư mục submodule: `ui/open-design-vnpay`.
 
@@ -12,7 +12,7 @@ Chạy mọi lệnh từ thư mục submodule: `ui/open-design-vnpay`.
   node -v   # v24.x
   pnpm -v   # 10.33.2
   ```
-- Mac DMG **chỉ build được trên macOS**; arch theo CPU máy build (Apple Silicon → arm64).
+- Mac DMG **chỉ build được trên macOS**. Mặc định arch = CPU máy build; build arch còn lại bằng `OD_PACK_MAC_ARCH` (xem §3) → một máy Apple Silicon ra được cả arm64 lẫn x64.
 - Windows `.exe`/NSIS build tốt nhất trên Windows (hoặc CI). Build trên mac chỉ tạo cấu hình, chưa kiểm thử native.
 
 ## 1. Export cấu hình KGS (BẮT BUỘC — để bake vào app)
@@ -28,6 +28,9 @@ export KGS_API_KEY=<lấy từ tests/kgs/.env hoặc .env.local — KHÔNG commi
 
 > ⚠️ `KGS_API_KEY` sẽ nằm trong app phân phối — ai có app đều trích được. Dùng key scope hẹp.
 > Nếu KHÔNG export các biến này → app build ra sẽ default `KGS_URL=localhost:28001` (KG sync fail).
+>
+> 💡 Nhanh gọn: nếu repo đã có `.env.local` chứa sẵn `KGS_*` (+ `MEDIA_*`) thì chỉ cần
+> `set -a; source .env.local; set +a` trước khi build — tools-pack bake hết vào `open-design-config.json`.
 
 ## 2. (Nếu sửa code trong `tools/pack`) rebuild dist trước
 
@@ -36,19 +39,31 @@ CLI `tools-pack` chạy từ `dist`, nên sau khi sửa `tools/pack/src/**` ph�
 pnpm --filter @open-design/tools-pack build
 ```
 
-## 3. Build Mac DMG (đã verify chạy được)
+## 3. Build Mac DMG — Apple Silicon (arm64) + Intel (x64)
+
+Arch của DMG mặc định = arch máy build. Dùng `OD_PACK_MAC_ARCH` để **cross-build** arch khác từ cùng một máy — tools-pack tự build better-sqlite3 đúng arch và để electron-builder tải Electron đúng arch (xem `tools/pack/src/mac/app.ts` + `builder.ts`).
 
 ```bash
-# unsigned (mặc định) — người nhận phải chuột phải → Open lần đầu (Gatekeeper)
+# Apple Silicon (arm64) — khi máy build là Apple Silicon (đã verify chạy được)
 pnpm tools-pack mac build --to dmg
 
-# signed + notarized (bỏ được bước chuột-phải-Open) — cần Apple Developer ID
-# cert trong keychain + biến notarize (APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID)
-pnpm tools-pack mac build --to dmg --signed
+# Intel (x64) — cross-build từ máy Apple Silicon (tải Electron x64 → chậm hơn)
+OD_PACK_MAC_ARCH=x64 pnpm tools-pack mac build --to dmg
 ```
 
-- Output DMG: `.tmp/tools-pack/out/mac/namespaces/default/dmg/Open Design-default.dmg`
-- `--to all` = app + dmg + zip. `--to app` = chỉ `.app`.
+> ⚠️ **Cả hai arch ghi ra CÙNG một file** `dmg/Open Design-default.dmg` (tên không kèm arch) → build arch sau **đè** arch trước. Khi cần cả hai, **copy DMG ra trước khi build arch kia**:
+> ```bash
+> DMG=".tmp/tools-pack/out/mac/namespaces/default/dmg/Open Design-default.dmg"
+> pnpm tools-pack mac build --to dmg                        # arm64
+> cp "$DMG" ~/Desktop/OpenDesign-arm64.dmg
+> OD_PACK_MAC_ARCH=x64 pnpm tools-pack mac build --to dmg   # intel
+> cp "$DMG" ~/Desktop/OpenDesign-x64.dmg
+> ```
+
+- Output DMG (chung): `.tmp/tools-pack/out/mac/namespaces/default/dmg/Open Design-default.dmg`
+- `.app` theo arch: `.tmp/tools-pack/out/mac/namespaces/default/builder/mac-arm64/Open Design.app` (hoặc `mac-x64/`).
+- `--to all` = app + dmg + zip · `--to app` = chỉ `.app`.
+- **Signed + notarized** (bỏ bước chuột-phải-Open lần đầu) — cần Apple Developer ID cert trong keychain + biến `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID`, thêm cờ `--signed`.
 - Cài / dọn: `pnpm tools-pack mac install` · `pnpm tools-pack mac cleanup`
 
 ## 4. Build Windows (NSIS installer)
@@ -65,16 +80,20 @@ pnpm tools-pack win cleanup
 ## 5. Verify nhanh sau build
 
 ```bash
+# đổi mac-arm64 → mac-x64 nếu vừa build Intel
 APP=".tmp/tools-pack/out/mac/namespaces/default/builder/mac-arm64/Open Design.app"
+# arch của .app đúng chưa?
+file "$APP/Contents/MacOS/Open Design" | grep -oE 'arm64|x86_64'
 # KGS đã baked?
 python3 -c "import json;print(json.load(open('$APP/Contents/Resources/open-design-config.json')).get('kgsUrl'))"
-# figma-clip assets có trong daemon prebundle? (nếu thiếu → daemon crash khi mở)
-ls "$APP/Contents/Resources/app/prebundled/daemon/assets/"   # phải có snapshot.json + glyph-atlas.json
+# web standalone có trong app? (thiếu → app fallback dev → lỗi HMR, xem Lưu ý #1)
+ls "$APP/Contents/Resources/open-design-web-standalone/apps/web/server.js"
+# (figma-clip assets đã bỏ — KHÔNG cần check nữa, xem Lưu ý #2)
 ```
 
 ## Lưu ý quan trọng (đã gặp khi build)
 
-1. **Đừng chạy `pnpm tools-dev` cùng namespace `default`** khi test packaged app trên cùng máy → đụng IPC socket `/tmp/open-design/ipc/default/web.sock` → packaged web fallback sang dev server (lỗi HMR `wss://app/_next/webpack-hmr`). Người nhận không gặp. Stop dev: `pnpm tools-dev stop`.
-2. **figma-clip assets**: packaging phải copy `packages/figma-clip/assets` vào `prebundled/daemon/assets` (đã fix trong `tools/pack/src/mac/app.ts` và `tools/pack/src/win/app.ts`) — nếu thiếu, daemon crash ngay khi mở ("figma-clip: không tìm thấy thư mục assets").
+1. **Đừng chạy `pnpm tools-dev` cùng namespace `default`** khi test packaged app trên cùng máy → đụng IPC socket `/tmp/open-design/ipc/default/web.sock` → packaged web sidecar không claim được IPC, fallback sang `next dev` (lỗi HMR `wss://app/_next/webpack-hmr` → `ERR_NAME_NOT_RESOLVED`). Người nhận máy khác KHÔNG gặp. Cách xử lý: `pnpm tools-dev stop` + kill runner `tools-dev run web` còn sót + `rm -f /tmp/open-design/ipc/default/*.sock`, rồi mở lại app (log phải hiện `starting standalone Next.js server`). Fix vĩnh viễn để chạy được cả hai cùng lúc: build app với version có channel suffix (vd `0.8.0-beta.1` → namespace `release-beta`) cho khỏi đụng `default`.
+2. **figma-clip (ĐÃ GỠ — không còn cần)**: cơ chế copy-to-Figma cũ (figma-clip, daemon asset `glyph-atlas.json`/`snapshot.json`) đã được thay bằng **figma-h2d chạy client-side**, không còn dùng asset trong daemon. `packages/figma-clip` đã bị xoá khỏi repo, nên bước copy assets trong `tools/pack/src/{mac,win}/app.ts` giờ chỉ là **no-op** (copy nếu source còn tồn tại — hiện không). → Thư mục `prebundled/daemon/assets/` trống là **bình thường**, daemon KHÔNG crash vì điều này. (Ghi chú cũ "thiếu assets → crash" không còn đúng.)
 3. **Agent CLI không bundle**: người nhận phải tự cài + login Claude Code (hoặc agent khác) để chạy pipeline.
 4. Đừng sửa file bên trong `.app` đã build rồi mở lại — phá chữ ký ad-hoc, Gatekeeper từ chối. Build lại thay vì patch tay.

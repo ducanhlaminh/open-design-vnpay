@@ -35,6 +35,7 @@ import {
   type SettingsSection,
 } from './components/SettingsDialog';
 import { PrivacyConsentModal } from './components/PrivacyConsentModal';
+import { FeedbackUsernameGate } from './components/FeedbackUsernameGate';
 import {
   daemonIsLive,
   fetchAppVersionInfo,
@@ -357,6 +358,13 @@ export function App() {
     daemonConfigLoaded &&
     config.privacyDecisionAt == null &&
     config.onboardingCompleted === true;
+  // Mandatory feedback-username gate: once the daemon config has hydrated and
+  // onboarding is done, block the app until the user has set a display name
+  // (feedbackUsername) used to attribute their shared feedback prompts.
+  const showFeedbackUsernameGate =
+    daemonConfigLoaded &&
+    config.onboardingCompleted === true &&
+    !(config.feedbackUsername ?? '').trim();
   useEffect(() => {
     const body = activeProjectId
       ? { projectId: activeProjectId, fileName: activeFileName }
@@ -1436,6 +1444,7 @@ export function App() {
         onOpenLiveArtifact={handleOpenLiveArtifact}
         onDeleteProject={handleDeleteProject}
         onRenameProject={handleRenameProject}
+        onProjectsRefresh={refreshProjects}
         onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
         onCreateDesignSystem={() => navigate({ kind: 'design-system-create' })}
         renderDesignSystemCreation={(onBack, hooks) => (
@@ -1556,6 +1565,20 @@ export function App() {
               installationId,
               privacyDecisionAt: Date.now(),
               telemetry: { metrics: true, content: true, artifactManifest: false },
+            });
+          }}
+        />
+      ) : null}
+
+      {/* Mandatory: blocks the app until a feedback display name is set. Sits
+          last so it layers above the privacy banner; dismisses itself once
+          feedbackUsername is persisted. */}
+      {showFeedbackUsernameGate ? (
+        <FeedbackUsernameGate
+          onSubmit={(username) => {
+            void handleConfigPersist({
+              ...latestPersistedConfigRef.current,
+              feedbackUsername: username,
             });
           }}
         />

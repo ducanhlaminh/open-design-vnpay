@@ -26,6 +26,7 @@ import { Icon, type IconName } from './Icon';
 import { Toast } from './Toast';
 import { navigate } from '../router';
 import {
+  DesignSystemRunModal,
   NewPipelineProjectModal,
   PipelineResultModal,
   PipelineStatusModal,
@@ -34,6 +35,8 @@ import {
 } from './pipelines/PipelineModals';
 import { PullConflictModal } from './pipelines/PullConflictModal';
 import { pullApply, pullPlan } from '../providers/pullConflict';
+import { useT } from '../i18n';
+import { relativeTimeLong } from '../utils/chatTime';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: 'Not started',
@@ -78,6 +81,7 @@ interface ToastState {
 }
 
 export function PipelinesView() {
+  const t = useT();
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [workflowId, setWorkflowId] = useState<string>('');
   const [projects, setProjects] = useState<PipelineProject[]>([]);
@@ -96,6 +100,7 @@ export function PipelinesView() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [runInputFor, setRunInputFor] = useState<PipelineView | null>(null);
+  const [designSystemFor, setDesignSystemFor] = useState<PipelineView | null>(null);
   const [statusFor, setStatusFor] = useState<PipelineView | null>(null);
   const [resultFor, setResultFor] = useState<PipelineView | null>(null);
 
@@ -184,6 +189,20 @@ export function PipelinesView() {
     if (prevRunningRef.current && !anyRunning) void loadProjects();
     prevRunningRef.current = anyRunning;
   }, [anyRunning, loadProjects]);
+
+  // Keep the project-list running spinners live: while ANY project (not just the
+  // selected one) has a pipeline in flight, re-poll the list so a run started or
+  // finished on another project shows / clears its spinner without a manual
+  // refresh. The initial fetch already carries `running`, so entering the route
+  // shows the spinners immediately.
+  const anyProjectRunning = projects.some((p) => p.running > 0);
+  useEffect(() => {
+    if (!anyProjectRunning) return;
+    const id = window.setInterval(() => {
+      void loadProjects();
+    }, 3500);
+    return () => window.clearInterval(id);
+  }, [anyProjectRunning, loadProjects]);
 
   // Pull/push ALL KGS apps at once (not per-project). Pull refreshes the app list.
   const syncAll = async (kind: 'pull' | 'push') => {
@@ -308,11 +327,18 @@ export function PipelinesView() {
   // Start a pipeline run in the BACKGROUND: POST the run, optimistically flip the
   // row to "running" (the poller takes over), and DON'T navigate away. Throws on
   // failure so callers (incl. the input modal) can surface it.
-  const startRun = async (pipelineId: string, payload?: RunSourcePayload) => {
+  const startRun = async (
+    pipelineId: string,
+    payload?: RunSourcePayload,
+    // Per-run design system for UI stages: a string id, or `null` for explicit
+    // "None". `undefined` (the common case) omits the field → daemon default.
+    designSystemId?: string | null,
+  ) => {
     if (!projectId) return;
     const body: Record<string, unknown> = { projectId };
     if (payload?.source) body.source = payload.source;
     else if (payload?.input && payload.input.trim()) body.input = payload.input.trim();
+    if (designSystemId !== undefined) body.designSystemId = designSystemId;
     const res = await fetch(`/api/pipelines/${encodeURIComponent(pipelineId)}/run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -357,6 +383,7 @@ export function PipelinesView() {
   // open a modal first; the rest start immediately.
   const onRunClick = (p: PipelineView) => {
     if (p.inputPlaceholder) setRunInputFor(p);
+    else if (p.acceptsDesignSystem) setDesignSystemFor(p);
     else void runDirect(p);
   };
 
@@ -487,6 +514,15 @@ export function PipelinesView() {
                 <span className="pl-proj-card__top">
                   <Icon name="folder" size={15} />
                   <span className="pl-proj-card__name">{pr.name}</span>
+                  {pr.running > 0 ? (
+                    <span
+                      className="pl-proj-card__running"
+                      aria-label={`${pr.running} pipeline running`}
+                      title={`${pr.running} pipeline running`}
+                    >
+                      <Icon name="spinner" size={13} />
+                    </span>
+                  ) : null}
                   {pr.id === projectId ? (
                     <span className="pl-proj-card__check" aria-hidden="true">
                       <Icon name="check" size={13} />
@@ -500,6 +536,7 @@ export function PipelinesView() {
                     aria-hidden="true"
                   />
                   {pr.done}/{pr.total} done
+                  {pr.running > 0 ? ` · ${pr.running} running` : ''}
                 </span>
               </button>
             );
@@ -590,6 +627,9 @@ export function PipelinesView() {
                       </span>
                     </div>
                     {meta.blurb ? <p className="pl-step__desc">{meta.blurb}</p> : null}
+                    {p.updatedAt ? (
+                      <p className="pl-step__lastrun">Last run: {relativeTimeLong(p.updatedAt, t)}</p>
+                    ) : null}
                     {!p.active && p.dependsOn.length > 0 ? (
                       <p className="pl-step__lock">
                         <Icon name="eye-off" size={12} />
@@ -710,6 +750,16 @@ export function PipelinesView() {
           onRun={async (payload) => {
             await startRun(runInputFor.id, payload);
             pushToast({ message: `Started “${runInputFor.name}” — running in background` });
+          }}
+        />
+      ) : null}
+      {designSystemFor ? (
+        <DesignSystemRunModal
+          pipelineName={designSystemFor.name}
+          onClose={() => setDesignSystemFor(null)}
+          onRun={async (designSystemId) => {
+            await startRun(designSystemFor.id, undefined, designSystemId);
+            pushToast({ message: `Started “${designSystemFor.name}” — running in background` });
           }}
         />
       ) : null}

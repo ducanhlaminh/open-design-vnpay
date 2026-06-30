@@ -173,6 +173,8 @@ const PIPELINE_STRING_FLAGS = new Set([
   //   --source confluence --ref <page url/id>
   //   --source bas --bas-document <kg-document-id> [--feature <id,id>]
   'source', 'ref', 'bas-document', 'feature',
+  // Per-run design system for UI-generating stages (ui-html): --design-system <id>
+  'design-system',
 ]);
 const PIPELINE_BOOLEAN_FLAGS = new Set([
   'help', 'h', 'json',
@@ -506,6 +508,7 @@ const SUBCOMMAND_MAP = {
   pipelines: runPipeline,
   memory: runMemory,
   run: runRun,
+  feedback: runFeedback,
   files: runFiles,
   conversation: runConversation,
   daemon: runDaemon,
@@ -4741,6 +4744,46 @@ Common options:
   }
 }
 
+async function runFeedback(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od feedback pull --project <projectId> [--json]
+      Publish this install's end-user prompts to the shared media store, merge
+      every install's feedback for the project, and write
+      <projectCwd>/.feedback-merged.jsonl. Then run the summary-feedback skill
+      (or @summary-feedback in the UI) to digest it.
+
+Common options:
+  --daemon-url <url>   Open Design daemon HTTP base.
+  --json               Emit raw JSON.`);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  const flags = parseFlags(rest, { string: PROJECT_STRING_FLAGS, boolean: PROJECT_BOOLEAN_FLAGS });
+  const base = (await projectDaemonUrl(flags)).replace(/\/$/, '');
+  switch (sub) {
+    case 'pull': {
+      if (!flags.project) {
+        console.error('--project <projectId> is required');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(flags.project)}/feedback/pull`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+      });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[feedback] pulled ${data.records} prompt(s) from ${data.files} file(s) → ${data.path}`);
+      return;
+    }
+    default:
+      console.error(`Unknown subcommand: ${sub}. Try: od feedback pull --project <id>`);
+      process.exit(2);
+  }
+}
+
 async function runRun(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
@@ -6296,6 +6339,8 @@ Commands:
                          --input "<JIRA key / JQL>"                      (legacy, via mcp-atlassian)
                          --source confluence --ref <page url/id>          (BAS gateway)
                          --source bas --bas-document <kg-document-id> [--feature <id,id>]  (empty = whole doc)
+                       For UI stages (ui-html): --design-system <id> applies a brand;
+                       --design-system none forces no design system; omit to use the default.
   upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
   pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
 
@@ -6454,6 +6499,14 @@ async function runPipeline(args) {
       console.error('Unknown --source; expected "confluence" or "bas".');
       process.exit(2);
     }
+    // Per-run design system for UI stages (ui-html): `--design-system <id>` picks
+    // a brand; `--design-system none` (or empty) forces no design system for this
+    // run; omit the flag to inherit the app-config default.
+    let designSystemId;
+    if (flags['design-system'] !== undefined) {
+      const ds = String(flags['design-system']).trim();
+      designSystemId = ds && ds.toLowerCase() !== 'none' ? ds : null;
+    }
     let resp;
     try {
       resp = await fetch(`${base}/api/pipelines/${encodeURIComponent(pipelineId)}/run`, {
@@ -6462,6 +6515,7 @@ async function runPipeline(args) {
         body: JSON.stringify({
           projectId,
           ...(source ? { source } : flags.input ? { input: flags.input } : {}),
+          ...(designSystemId !== undefined ? { designSystemId } : {}),
         }),
       });
     } catch (err) {

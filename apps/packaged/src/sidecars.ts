@@ -256,6 +256,8 @@ export type PackagedDaemonSpawnEnvOptions = {
   mediaAppId?: string | null;
   mediaUserId?: string | null;
   mediaUserRole?: string | null;
+  atlassianJiraToken?: string | null;
+  atlassianConfluenceToken?: string | null;
 };
 
 /**
@@ -325,6 +327,15 @@ export function buildPackagedDaemonSpawnEnv(
     ...(options.mediaUserRole == null || options.mediaUserRole.length === 0
       ? {}
       : { MEDIA_USER_ROLE: options.mediaUserRole }),
+    // Atlassian tokens baked by tools/pack. The daemon reads these at startup
+    // (mcp-config.ts defaultMcpServers) to seed the mcp-atlassian stdio server.
+    // Forwarded only when set so an unconfigured build seeds no Atlassian server.
+    ...(options.atlassianJiraToken == null || options.atlassianJiraToken.length === 0
+      ? {}
+      : { OD_ATLASSIAN_JIRA_TOKEN: options.atlassianJiraToken }),
+    ...(options.atlassianConfluenceToken == null || options.atlassianConfluenceToken.length === 0
+      ? {}
+      : { OD_ATLASSIAN_CONFLUENCE_TOKEN: options.atlassianConfluenceToken }),
   };
 }
 
@@ -414,6 +425,8 @@ export async function startPackagedSidecars(
     mediaAppId: string | null;
     mediaUserId: string | null;
     mediaUserRole: string | null;
+    atlassianJiraToken: string | null;
+    atlassianConfluenceToken: string | null;
     /**
      * PR #974 round-5 (lefarcen P2): caller asserts whether a desktop
      * runtime is being started in this packaged process group. The
@@ -461,6 +474,8 @@ export async function startPackagedSidecars(
         mediaAppId: options.mediaAppId,
         mediaUserId: options.mediaUserId,
         mediaUserRole: options.mediaUserRole,
+        atlassianJiraToken: options.atlassianJiraToken,
+        atlassianConfluenceToken: options.atlassianConfluenceToken,
       }),
       nodeCommand: options.nodeCommand,
       paths,

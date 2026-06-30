@@ -127,18 +127,15 @@ async function buildPrebundledStandaloneRuntime(
     metafilePath: paths.daemonPrebundleMetaPath,
     policyName: "daemonCli",
   });
-  // figma-clip resolves its pinned data assets (glyph-atlas.json, snapshot.json)
-  // at runtime relative to its bundled module: `<here>/assets` or `<here>/../assets`
-  // (packages/figma-clip/src/assets.ts). esbuild bundles the package's JS into
-  // daemon/chunks/*.mjs but never copies its data files, so without this the
-  // daemon throws at import-time ("figma-clip: không tìm thấy thư mục assets") and
-  // the whole sidecar crashes on launch. Mirror the assets next to the chunks so
-  // the `<here>/../assets` candidate (daemon/assets) resolves.
-  await cp(
-    join(config.workspaceRoot, "packages", "figma-clip", "assets"),
-    join(paths.daemonPrebundleRoot, "assets"),
-    { recursive: true },
-  );
+  // figma-clip used to resolve pinned data assets (glyph-atlas.json, snapshot.json)
+  // at runtime relative to its bundled module, so the pack copied them next to the
+  // daemon chunks. The package was REMOVED when copy-to-Figma moved to the
+  // client-side figma-h2d engine (no daemon assets), so this is now a no-op on
+  // current checkouts — only copy when the source still exists (older trees).
+  const figmaClipAssets = join(config.workspaceRoot, "packages", "figma-clip", "assets");
+  if (await stat(figmaClipAssets).then(() => true).catch(() => false)) {
+    await cp(figmaClipAssets, join(paths.daemonPrebundleRoot, "assets"), { recursive: true });
+  }
 }
 
 export async function copyResourceTree(config: ToolPackConfig, paths: MacPaths): Promise<void> {
@@ -175,9 +172,19 @@ export function renderMacPackagedConfig(options: {
       ...(options.config.mediaAppId == null ? {} : { mediaAppId: options.config.mediaAppId }),
       ...(options.config.mediaUserId == null ? {} : { mediaUserId: options.config.mediaUserId }),
       ...(options.config.mediaUserRole == null ? {} : { mediaUserRole: options.config.mediaUserRole }),
+      ...(options.config.atlassianJiraToken == null ? {} : { atlassianJiraToken: options.config.atlassianJiraToken }),
+      ...(options.config.atlassianConfluenceToken == null ? {} : { atlassianConfluenceToken: options.config.atlassianConfluenceToken }),
       ...(options.usePrebundledStandaloneWeb ? { webSidecarEntryRelative: MAC_PREBUNDLED_WEB_SIDECAR_RELATIVE_PATH } : {}),
       webOutputMode: options.config.webOutputMode,
-      ...(options.config.portable ? {} : { namespaceBaseRoot: options.config.roots.runtime.namespaceBaseRoot }),
+      // Do NOT bake `namespaceBaseRoot` here. This config is embedded into the
+      // shipped `.app` bundle and travels to other machines/users; a build-time
+      // absolute path (`<repo>/.tmp/tools-pack/runtime/mac/namespaces`) is not
+      // writable there and crashes startup with EACCES on the first mkdir. The
+      // packaged runtime instead defaults to `app.getPath("userData")/namespaces`
+      // (a per-user writable location) when this field is absent — see
+      // apps/packaged/src/config.ts. The local lifecycle still targets the
+      // `.tmp` runtime root by injecting `namespaceBaseRoot` through the
+      // separate launch config (writeLaunchPackagedConfig + OD_PACKAGED_CONFIG_PATH).
     },
     null,
     2,
@@ -188,9 +195,19 @@ export function createMacElectronRebuildOptions(
   config: ToolPackConfig,
   appRoot: string,
 ): RebuildOptions {
+  // OD_PACK_MAC_ARCH cross-builds native modules (e.g. better-sqlite3) for a
+  // target arch other than the host — set OD_PACK_MAC_ARCH=x64 on an Apple
+  // Silicon machine to produce an Intel build. node-gyp cross-compiles via the
+  // macOS SDK. Defaults to the host arch.
+  const overrideArch = process.env.OD_PACK_MAC_ARCH;
+  const targetArch: NodeJS.Architecture =
+    overrideArch === "x64" || overrideArch === "arm64" ? overrideArch : process.arch;
   return {
-    arch: process.arch,
-    buildFromSource: ELECTRON_BUILDER_BUILD_DEPENDENCIES_FROM_SOURCE,
+    arch: targetArch,
+    // Cross-arch: force build-from-source so the addon is compiled for the
+    // target arch instead of fetching a host-arch prebuild.
+    buildFromSource:
+      targetArch !== process.arch ? true : ELECTRON_BUILDER_BUILD_DEPENDENCIES_FROM_SOURCE,
     buildPath: appRoot,
     electronVersion: config.electronVersion,
     force: true,

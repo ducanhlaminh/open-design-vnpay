@@ -882,6 +882,50 @@
   color: var(--text-soft);
 }
 
+/* Design-system picker embedded in the ui-html run modal. The shared
+   ProjectDesignSystemPicker trigger is a compact header pill by default; the
+   --ds field modifier promotes it to a full-width form control matching
+   .pl-input so the run modal reads as one consistent form. Its portaled popover
+   and live-preview pane keep their own styling. */
+.pl-modal-field--ds .project-ds-picker {
+  display: flex;
+  width: 100%;
+}
+.pl-modal-field--ds .project-ds-picker-trigger {
+  width: 100%;
+  max-width: none;
+  min-height: 38px;
+  justify-content: flex-start;
+  gap: 9px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-app);
+  color: var(--text-strong);
+  font-size: 13px;
+}
+.pl-modal-field--ds .project-ds-picker-trigger:hover:not(:disabled) {
+  border-color: var(--selected);
+}
+.pl-modal-field--ds .project-ds-picker.open .project-ds-picker-trigger {
+  border-color: var(--selected);
+  box-shadow: 0 0 0 3px var(--selected-soft);
+}
+.pl-modal-field--ds .project-ds-picker-label {
+  flex: 1 1 auto;
+  text-align: left;
+}
+/* Chevron stays pinned to the right edge of the full-width control. */
+.pl-modal-field--ds .project-ds-picker-trigger > svg:last-child {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+/* Swatch chips read a touch larger at form-control size. */
+.pl-modal-field--ds .project-ds-picker-swatch {
+  width: 12px;
+  height: 12px;
+}
+
 .pl-modal-error {
   display: flex;
   align-items: flex-start;
@@ -1059,5 +1103,24 @@
     width: 100%;
     max-width: none;
   }
+}
+
+/* ---- Project-card running spinner + per-stage last-run ------------------- */
+@keyframes pl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.pl-proj-card__running {
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent, #0066b3);
+  animation: pl-spin 0.9s linear infinite;
+  transform-origin: center;
+}
+.pl-step__lastrun {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
 }
 

@@ -72,6 +72,9 @@ export interface PipelineDeps {
     pipelineId: string,
     input?: string,
     source?: PipelineRunSource,
+    // Per-run design system for UI stages (`ui-html`). undefined → inherit the
+    // app-config default; string id / null ("none") override it for this run.
+    designSystemId?: string | null,
   ): Promise<{
     projectId: string;
     conversationId: string;

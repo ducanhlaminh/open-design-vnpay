@@ -377,6 +377,11 @@ async function capture(container: Element | Document, options: CaptureOptions): 
 
   const assets = await images.getBlobMap();
   const fonts = ctx.fonts.getFonts();
+  // Rewrite every node's `styles.fontFamily` down to the single resolved,
+  // Figma-loadable family (post-capture, so text measurement above still used
+  // the real rendered stack). Prevents Figma's paste from choking on CSS
+  // generic / system keywords (`system-ui`, `-apple-system`, …) in the stack.
+  rewriteEmittedFontFamilies(root, ctx.fonts);
 
   if (isElement) {
     const el = container as Element;
@@ -407,6 +412,23 @@ async function capture(container: Element | Document, options: CaptureOptions): 
     assets,
     fonts,
   };
+}
+
+/** Walk the captured tree and collapse each element's `styles.fontFamily` to
+ * the single resolved, Figma-loadable family (see FontCollector.emitFamily). */
+function rewriteEmittedFontFamilies(node: H2DNode | undefined, fonts: FontCollector): void {
+  if (!node || node.nodeType !== NODE_TYPE.ELEMENT) return;
+  const el = node as H2DElementNode;
+  const ff = el.styles?.fontFamily;
+  if (ff) {
+    const resolved = fonts.emitFamily(ff);
+    if (resolved) el.styles.fontFamily = resolved;
+  }
+  for (const child of el.childNodes ?? []) rewriteEmittedFontFamilies(child, fonts);
+  if (el.pseudoElementNodes) {
+    rewriteEmittedFontFamilies(el.pseudoElementNodes.before, fonts);
+    rewriteEmittedFontFamilies(el.pseudoElementNodes.after, fonts);
+  }
 }
 
 export function captureElement(el: Element, options: CaptureOptions = {}): Promise<H2DDocument> {

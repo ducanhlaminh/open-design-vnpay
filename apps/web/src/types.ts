@@ -368,6 +368,8 @@ export interface AppConfig {
   // PrivacySection persist it through `syncConfigToDaemon`.
   telemetry?: TelemetryConfig;
   customInstructions?: string;
+  /** Display name stamped on this install's published feedback prompts. */
+  feedbackUsername?: string;
 }
 
 export interface TelemetryConfig {
