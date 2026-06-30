@@ -388,6 +388,14 @@ async function buildPrebundledStandaloneRuntime(
     metafilePath: paths.daemonPrebundleMetaPath,
     policyName: "daemonCli",
   });
+  // figma-clip used to ship pinned data assets the daemon resolved next to its
+  // bundled module; the pack mirrored them at daemon/assets. The package was
+  // REMOVED when copy-to-Figma moved to the client-side figma-h2d engine, so this
+  // is now a no-op — only copy when the source still exists (older checkouts).
+  const figmaClipAssets = join(config.workspaceRoot, "packages", "figma-clip", "assets");
+  if (await stat(figmaClipAssets).then(() => true).catch(() => false)) {
+    await cp(figmaClipAssets, join(paths.daemonPrebundleRoot, "assets"), { recursive: true });
+  }
 }
 
 export async function createWinPackagedAppCacheKey(

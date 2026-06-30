@@ -1,33 +1,47 @@
 {
   "servers": [
     {
-      "id": "sm-mcp",
+      "id": "kg-local",
       "transport": "stdio",
       "enabled": true,
-      "label": "Knowledge Graph (sm-mcp)",
-      "command": "/Users/anhnd13/.local/bin/sm-mcp",
+      "label": "Local UI Knowledge Graph (od-kg)",
+      "command": "/Users/tungnt2/.local/share/fnm/node-versions/v24.13.0/installation/bin/node",
       "args": [
-        "-transport=stdio"
+        "/Users/tungnt2/Documents/work/vpn-design-platform/ui/open-design-vnpay/tools/kg/bin/tools-kg.mjs",
+        "mcp"
       ],
       "env": {
-        "KGS_BASE_URL": "http://localhost:28001",
-        "KGS_API_KEY": "kgs_ak_demo_46c7c303bfd6510b4284b85697eacc1c",
-        "KGS_APP_ID": "8b076083-ee2a-4704-9bb7-566ea5d5dd48",
-        "NEO4J_URI": "bolt://localhost:27687",
-        "NEO4J_USER": "neo4j",
-        "NEO4J_PASSWORD": "demo_password",
-        "KGS_TENANT_ID": "default"
+        "OD_KG_BOLT_URI": "bolt://localhost:27787",
+        "OD_KG_USER": "neo4j",
+        "OD_KG_PASSWORD": "od_local_password",
+        "OD_KG_WORKSPACE": "ws-od-prototypes"
       }
     },
     {
-      "id": "bas-mcp",
+      "id": "ba-agent",
       "transport": "http",
-      "enabled": false,
+      "enabled": true,
+      "label": "BA Agent",
+      "url": "https://a2.openledger.vn/api/mcp/",
       "authMode": "none",
-      "label": "BAS MCP Gateway",
-      "url": "http://localhost:8090/mcp/",
       "headers": {
-        "Authorization": "Bearer CHANGE_ME_BAS_ACCESS_TOKEN"
+        "Authorization": "Bearer mcp_8fa6c06e_M4UvTXvDVT_abi-P15Dgsd7KuxEua6nrt1lY--kMdlg"
+      }
+    },
+    {
+      "id": "mcp-atlassian",
+      "transport": "stdio",
+      "enabled": true,
+      "label": "Atlassian (Jira + Confluence Data Center)",
+      "command": "/opt/homebrew/bin/uvx",
+      "args": [
+        "mcp-atlassian@0.21.1"
+      ],
+      "env": {
+        "JIRA_URL": "https://jr.servicehub.vn",
+        "JIRA_PERSONAL_TOKEN": "NjQ0NDM0ODcxMjEwOibuH7Z0oLyeYwYeZgOKYUmF5/lA",
+        "CONFLUENCE_URL": "https://wiki.servicehub.vn",
+        "CONFLUENCE_PERSONAL_TOKEN": "Mjc0Nzk5NDY4ODIzOh8rhUuv1CtVmJ478hFkSojtKZE0"
       }
     }
   ]

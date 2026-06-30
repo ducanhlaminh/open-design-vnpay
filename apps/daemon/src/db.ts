@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { migrateCritique } from './critique/persistence.js';
 import { migrateMediaTasks } from './media-tasks.js';
 import { migratePlugins } from './plugins/persistence.js';
+import { migrateKgSync } from './kg-sync/persistence.js';
 
 type SqliteDb = Database.Database;
 type DbRow = Record<string, any>;
@@ -285,6 +286,7 @@ function migrate(db: SqliteDb): void {
   migrateCritique(db);
   migrateMediaTasks(db);
   migratePlugins(db);
+  migrateKgSync(db);
 }
 
 // ---------- deployments ----------
@@ -583,6 +585,56 @@ export function updateProject(db: SqliteDb, id: string, patch: DbRow) {
 
 export function deleteProject(db: SqliteDb, id: string) {
   db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
+}
+
+// ---------- project pipeline state (metadata_json.pipelines) ----------
+// Pipeline run state lives as a `pipelines` object inside the project's
+// metadata_json, keyed by pipeline id. dependsOn is NOT stored here (it lives in
+// the daemon pipeline registry, pipelines.ts); only mutable status + last-run
+// pointers persist, so adding a pipeline never needs a migration.
+
+interface PipelineRunStateRow {
+  status: string;
+  lastRunId?: string;
+  lastConversationId?: string;
+  updatedAt?: number;
+}
+
+export function getProjectPipelineState(
+  db: SqliteDb,
+  projectId: string,
+): Record<string, PipelineRunStateRow> {
+  const project = getProject(db, projectId);
+  const metadata = project?.metadata;
+  if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+    const pipelines = (metadata as Record<string, unknown>).pipelines;
+    if (pipelines && typeof pipelines === 'object' && !Array.isArray(pipelines)) {
+      return pipelines as Record<string, PipelineRunStateRow>;
+    }
+  }
+  return {};
+}
+
+export function setProjectPipelineStatus(
+  db: SqliteDb,
+  projectId: string,
+  pipelineId: string,
+  patch: { status?: string; lastRunId?: string; lastConversationId?: string },
+) {
+  const project = getProject(db, projectId);
+  if (!project) return null;
+  const metadata: Record<string, unknown> =
+    project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+      ? { ...(project.metadata as Record<string, unknown>) }
+      : {};
+  const pipelines: Record<string, PipelineRunStateRow> =
+    metadata.pipelines && typeof metadata.pipelines === 'object' && !Array.isArray(metadata.pipelines)
+      ? { ...(metadata.pipelines as Record<string, PipelineRunStateRow>) }
+      : {};
+  const prev = pipelines[pipelineId] ?? { status: 'idle' };
+  pipelines[pipelineId] = { ...prev, ...patch, updatedAt: Date.now() };
+  metadata.pipelines = pipelines;
+  return updateProject(db, projectId, { metadata });
 }
 
 function normalizeProject(row: DbRow) {

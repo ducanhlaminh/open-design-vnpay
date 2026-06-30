@@ -52,6 +52,12 @@ import {
   writeProjectTextFileDetailed,
 } from '../providers/registry';
 import type { ProjectFilePreview } from '../providers/registry';
+import { PipelineUiPreview } from './pipeline-preview/PipelineUiPreview';
+import { PipelineScreensCanvas } from './pipeline-preview/PipelineScreensCanvas';
+import { PipelinePrototypeCanvas } from './pipeline-preview/PipelinePrototypeCanvas';
+import { adaptScreenSpec } from './pipeline-preview/screen-adapter';
+import { SpecPreview, specToMermaid, type SpecDoc } from './SpecPreview';
+import { MermaidDiagram } from './MermaidDiagram';
 import {
   exportAsHtml,
   exportAsImage,
@@ -663,6 +669,18 @@ export function FileViewer({
     });
   }, [projectId, projectKind, file.name, file.kind, rendererMatch?.renderer.id, analytics.track]);
 
+  // A pipeline screen's generated `shell.html` / `shell-light.html` loads
+  // @babel/standalone in srcDoc and crashes the host preview. Route those (and
+  // the screen.json itself) to the React Flow screens canvas instead, so every
+  // pipeline-output file shows the design-v3-style all-screens view.
+  if (isPipelineScreenShellFile(file)) {
+    return <PipelineScreenViewer projectId={projectId} file={file} />;
+  }
+  // `ui-html` pipeline output: show every prototype page as a React Flow canvas
+  // (not the single-file HTML viewer). Must precede the generic html renderer.
+  if (isPipelinePrototypeFile(file)) {
+    return <PipelinePrototypeViewer projectId={projectId} file={file} />;
+  }
   if (rendererMatch?.renderer.id === 'html' || rendererMatch?.renderer.id === 'deck-html') {
     return (
       <HtmlViewer
@@ -693,6 +711,9 @@ export function FileViewer({
       />
     );
   }
+  if (isPipelineUiScreenFile(file)) {
+    return <PipelineScreenViewer projectId={projectId} file={file} />;
+  }
   if (rendererMatch?.renderer.id === 'markdown') {
     return <MarkdownViewer projectId={projectId} file={file} />;
   }
@@ -713,6 +734,11 @@ export function FileViewer({
       return <SketchViewer projectId={projectId} file={file} />;
     }
     return <ImageViewer projectId={projectId} file={file} />;
+  }
+  // A Customer-Journey / UX-Spec JSON (customer-journey-spec / ux-spec skill
+  // output) renders as a visual spec; any other JSON falls back to source.
+  if (isJsonFile(file)) {
+    return <SpecFileViewer projectId={projectId} file={file} />;
   }
   if (file.kind === 'text' || file.kind === 'code') {
     return <TextViewer projectId={projectId} file={file} />;
@@ -6074,6 +6100,79 @@ function HtmlViewer({
   };
   const boardAvailable = mode === 'preview' && source !== null;
   const showPreviewToolbarControls = mode === 'preview';
+
+  // Copy to Figma — serialize the artifact to Figma's native "HTML to Design" (figh2d) clipboard
+  // payload client-side (no daemon round-trip); Figma builds editable nodes from the JSON on paste.
+  // Prefer capturing the LIVE preview DOM (srcDoc mode = same-origin readable) so runtime state —
+  // the active step/tab the artifact's own JS switched to — is preserved. Only when the preview is
+  // an opaque cross-origin (url-load) iframe do we fall back to re-rendering from source, which
+  // resets to the script's default state. See apps/web/src/lib/html-to-h2d.ts.
+  const [figmaCopyState, setFigmaCopyState] = useState<'idle' | 'busy' | 'ok' | 'err'>('idle');
+  const [figmaCopyErr, setFigmaCopyErr] = useState<string | null>(null);
+  const figmaCopyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyToFigma = useCallback(() => {
+    if (figmaCopyState === 'busy') return;
+    if (figmaCopyResetRef.current) clearTimeout(figmaCopyResetRef.current);
+    const html = typeof source === 'string' && source.trim() ? source : null;
+    // Readable live preview root (same-origin srcDoc iframe) — captures the CURRENT DOM incl. any
+    // JS-driven step/tab switch. Returns null for cross-origin/opaque (url-load) iframes.
+    const liveRoot = (() => {
+      try {
+        const d = iframeRef.current?.contentDocument;
+        return (d?.body?.firstElementChild ?? d?.body) || null;
+      } catch {
+        return null;
+      }
+    })();
+    if (!html && !liveRoot) {
+      setFigmaCopyErr('Chưa có nội dung artifact để trích xuất (source rỗng)');
+      setFigmaCopyState('err');
+      figmaCopyResetRef.current = setTimeout(() => setFigmaCopyState('idle'), 3200);
+      return;
+    }
+    const previewRect = iframeRef.current?.getBoundingClientRect();
+    const previewWidth = Math.round(previewRect?.width || 430);
+    const previewHeight = Math.round(previewRect?.height || 812);
+    setFigmaCopyErr(null);
+    setFigmaCopyState('busy');
+    // Build the payload Blob lazily; clipboard.write is invoked synchronously inside the click
+    // gesture with a Promise-valued ClipboardItem, so the browser doesn't reject with "document
+    // not focused" / expired-gesture after the async capture.
+    const payload = (async () => {
+      const { htmlToFigmaClipboard, elementToFigmaClipboard } = await import('../lib/html-to-h2d');
+      const html2 = liveRoot
+        ? await elementToFigmaClipboard(liveRoot)
+        : await htmlToFigmaClipboard(html as string, previewWidth, previewHeight);
+      return new Blob([html2], { type: 'text/html' });
+    })();
+    const done = (state: 'ok' | 'err', err?: unknown) => {
+      if (err) {
+        // eslint-disable-next-line no-console
+        console.error('[Copy to Figma]', err);
+        setFigmaCopyErr(err instanceof Error ? err.message : String(err));
+      }
+      setFigmaCopyState(state);
+      figmaCopyResetRef.current = setTimeout(() => setFigmaCopyState('idle'), 3200);
+    };
+    try {
+      window.focus();
+      navigator.clipboard
+        .write([new ClipboardItem({ 'text/html': payload })])
+        .then(() => done('ok'))
+        .catch((err) => {
+          // Fallback for browsers that reject a Promise-valued ClipboardItem: await then write.
+          payload
+            .then((blob) => navigator.clipboard.write([new ClipboardItem({ 'text/html': blob })]))
+            .then(() => done('ok'))
+            .catch((err2) => done('err', err2 || err));
+        });
+    } catch (err) {
+      // surface extract/clipboard-unsupported errors
+      payload.catch(() => {}); // avoid unhandled rejection
+      done('err', err);
+    }
+  }, [figmaCopyState]);
+  useEffect(() => () => { if (figmaCopyResetRef.current) clearTimeout(figmaCopyResetRef.current); }, []);
   const manualEditPanel = manualEditMode ? (
     <ManualEditPanel
       targets={manualEditTargets}
@@ -6360,6 +6459,35 @@ function HtmlViewer({
                 onClick={activateScreenshotTool}
               >
                 <RemixIcon name="screenshot-2-line" size={15} />
+              </button>
+              <button
+                type="button"
+                className={`viewer-action viewer-action-icon${figmaCopyState === 'ok' ? ' active' : ''}`}
+                data-testid="copy-to-figma"
+                data-tooltip={
+                  figmaCopyState === 'ok'
+                    ? t('fileViewer.copyToFigmaDone')
+                    : figmaCopyState === 'err'
+                      ? figmaCopyErr || t('fileViewer.copyToFigmaError')
+                      : figmaCopyState === 'busy'
+                        ? t('fileViewer.copyToFigmaBusy')
+                        : t('fileViewer.copyToFigma')
+                }
+                title={t('fileViewer.copyToFigma')}
+                aria-label={t('fileViewer.copyToFigma')}
+                disabled={figmaCopyState === 'busy'}
+                onClick={copyToFigma}
+              >
+                <RemixIcon
+                  name={
+                    figmaCopyState === 'ok'
+                      ? 'check-line'
+                      : figmaCopyState === 'err'
+                        ? 'error-warning-line'
+                        : 'clipboard-line'
+                  }
+                  size={15}
+                />
               </button>
               {source !== null && mode === 'preview' ? (
                 <div className="zoom-menu viewer-toolbar-zoom" ref={zoomMenuRef}>
@@ -7672,6 +7800,244 @@ export function SvgViewer({
           <div className="viewer-empty">{t('fileViewer.previewUnavailable')}</div>
         ) : (
           <pre className="viewer-source">{source ?? ''}</pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Pipeline UI screen artifact (react-shadcn `screen.json`): render it in the
+// embedded design-v3 runtime + theme/branding inspector (PipelineUiPreview)
+// instead of raw JSON, so it looks like the design-v3 preview and the theme can
+// be switched live.
+function isPipelineUiScreenFile(file: ProjectFile): boolean {
+  const base = file.name.split('/').pop()?.toLowerCase() ?? '';
+  return base === 'screen.json';
+}
+
+// An HTML file produced by the `ui-html` pipeline lives directly under a
+// `prototype/` directory (`<dir>/prototype/<slug>.html`). Open ANY of them as the
+// React Flow prototype canvas — every sibling prototype page shown as one frame —
+// instead of the single-file HTML viewer.
+function isPipelinePrototypeFile(file: ProjectFile): boolean {
+  const parts = file.name.split('/');
+  const base = parts[parts.length - 1]?.toLowerCase() ?? '';
+  return parts.length >= 2 && parts[parts.length - 2] === 'prototype' && /\.html?$/.test(base);
+}
+
+// The generated render shells that sit next to a `screen.json`
+// (`<dir>/<slug>/shell.html` / `shell-light.html`). They load
+// @babel/standalone in srcDoc and crash the host HTML preview, so we render the
+// screens canvas for them instead of HtmlViewer.
+function isPipelineScreenShellFile(file: ProjectFile): boolean {
+  const parts = file.name.split('/');
+  if (parts.length < 3) return false;
+  const base = parts[parts.length - 1]!.toLowerCase();
+  return base === 'shell.html' || base === 'shell-light.html';
+}
+
+// A pipeline screen lives at `<dir>/<slug>/screen.json` (with sibling shells).
+// When that layout holds, show the whole project's screens as a React Flow
+// canvas (design-v3 all-view) instead of a single screen — every sibling
+// screen.json renders at once through the clean runtime path. Falls back to the
+// single-screen viewer for a flat `screen.json` with no enclosing screens dir.
+function PipelineScreenViewer({ projectId, file }: { projectId: string; file: ProjectFile }) {
+  const parts = file.name.split('/');
+  const dir = parts.length >= 3 ? parts.slice(0, -2).join('/') : null;
+  if (dir) {
+    // For a shell*.html, focus its sibling screen.json on the canvas.
+    const slug = parts[parts.length - 2]!;
+    const base = parts[parts.length - 1]!.toLowerCase();
+    const activeName = base === 'screen.json' ? file.name : `${dir}/${slug}/screen.json`;
+    return (
+      <div className="viewer" style={{ height: '100%' }}>
+        <PipelineScreensCanvas projectId={projectId} dir={dir} activeName={activeName} />
+      </div>
+    );
+  }
+  return <PipelineSingleScreenViewer projectId={projectId} file={file} />;
+}
+
+// Prototype pages (`<dir>/prototype/<slug>.html`) → the React Flow prototype
+// canvas, with the opened file highlighted.
+function PipelinePrototypeViewer({ projectId, file }: { projectId: string; file: ProjectFile }) {
+  const dir = file.name.split('/').slice(0, -1).join('/');
+  return (
+    <div className="viewer" style={{ height: '100%' }}>
+      <PipelinePrototypeCanvas projectId={projectId} dir={dir} activeName={file.name} />
+    </div>
+  );
+}
+
+function PipelineSingleScreenViewer({ projectId, file }: { projectId: string; file: ProjectFile }) {
+  const [spec, setSpec] = useState<unknown>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setSpec(null);
+    setError(null);
+    void fetchProjectFileText(projectId, file.name).then((text) => {
+      if (cancelled) return;
+      try {
+        // react-shadcn emits {screen:{roots:[…]}} with componentSlug; the runtime
+        // wants {layout:{tree}} with component — adapt before handing it over.
+        const adapted = adaptScreenSpec(JSON.parse(text ?? 'null'));
+        if (!adapted) {
+          setError('Unrecognized screen.json shape (no roots / layout.tree / nodes).');
+          return;
+        }
+        setSpec(adapted);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Invalid screen.json');
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, file.name, file.mtime]);
+
+  if (error) {
+    return (
+      <div className="viewer" style={{ padding: 16, color: 'crimson' }}>
+        screen.json parse error: {error}
+      </div>
+    );
+  }
+  if (spec == null) {
+    return <div className="viewer" style={{ padding: 16 }}>Loading preview…</div>;
+  }
+  return (
+    <div className="viewer" style={{ height: '100%' }}>
+      <PipelineUiPreview spec={spec} projectId={projectId} screenPath={file.name} />
+    </div>
+  );
+}
+
+// Customer-Journey / UX-Spec JSON viewer. When the document carries non-empty
+// journeys / personas / screens it renders the visual SpecPreview (with a
+// Mermaid + raw-source toggle); any other JSON falls back to the plain
+// TextViewer so non-spec files behave exactly as before.
+type SpecViewMode = 'preview' | 'mermaid' | 'source';
+
+function SpecFileViewer({
+  projectId,
+  file,
+}: {
+  projectId: string;
+  file: ProjectFile;
+}) {
+  const t = useT();
+  const [text, setText] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const [mode, setMode] = useState<SpecViewMode>('preview');
+
+  useEffect(() => {
+    setText(null);
+    let cancelled = false;
+    void fetchProjectFileText(projectId, file.name).then((next) => {
+      if (!cancelled) setText(next ?? '');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, file.name, file.mtime, reloadKey]);
+
+  const spec = useMemo<SpecDoc | null>(() => {
+    if (text == null) return null;
+    try {
+      const parsed = JSON.parse(text) as SpecDoc;
+      const hasJourneys = Array.isArray(parsed.journeys) && parsed.journeys.length > 0;
+      const hasPersonas = Array.isArray(parsed.personas) && parsed.personas.length > 0;
+      const hasScreens = Array.isArray(parsed.screens) && parsed.screens.length > 0;
+      return hasJourneys || hasPersonas || hasScreens ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [text]);
+
+  const displayText = useMemo(
+    () => (text == null ? null : formatJsonFileTextForDisplay(file, text)),
+    [file.name, file.mime, text],
+  );
+  const lineCount = displayText ? displayText.split('\n').length : 0;
+
+  // A plain (non-spec) JSON file behaves exactly like the generic text viewer.
+  if (text !== null && !spec) {
+    return <TextViewer projectId={projectId} file={file} />;
+  }
+
+  async function copy() {
+    if (text == null) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // best-effort: ignore clipboard failures
+    }
+  }
+
+  const modeTab = (k: SpecViewMode, label: string) => (
+    <button
+      key={k}
+      type="button"
+      onClick={() => setMode(k)}
+      style={{
+        fontSize: 12,
+        fontWeight: 600,
+        padding: '3px 10px',
+        borderRadius: 'var(--radius-sm, 6px)',
+        cursor: 'pointer',
+        border: `1px solid ${mode === k ? 'var(--accent, #0066b3)' : 'var(--border, #e1e5eb)'}`,
+        background: mode === k ? 'var(--accent-tint, #e6f0f8)' : 'transparent',
+        color: mode === k ? 'var(--accent, #0066b3)' : 'var(--text-muted, #6b7280)',
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="viewer text-viewer">
+      <div className="viewer-toolbar">
+        <div className="viewer-toolbar-left" style={{ display: 'flex', gap: 6 }}>
+          {modeTab('preview', 'Preview')}
+          {modeTab('mermaid', 'Mermaid')}
+          {modeTab('source', 'Source')}
+        </div>
+        <div className="viewer-toolbar-actions">
+          <button
+            type="button"
+            className="viewer-action"
+            onClick={() => setReloadKey((n) => n + 1)}
+            title={t('fileViewer.reloadDisk')}
+          >
+            <Icon name="reload" size={13} />
+            <span>{t('fileViewer.reload')}</span>
+          </button>
+          <button
+            type="button"
+            className="viewer-action"
+            onClick={() => void copy()}
+            title={t('fileViewer.copyTitle')}
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={13} />
+            <span>{copied ? t('fileViewer.copied') : t('fileViewer.copy')}</span>
+          </button>
+        </div>
+      </div>
+      <div className="viewer-body">
+        {text === null || spec === null ? (
+          <div className="viewer-empty">{t('fileViewer.loading')}</div>
+        ) : mode === 'preview' ? (
+          <SpecPreview doc={spec} />
+        ) : mode === 'mermaid' ? (
+          <MermaidDiagram code={specToMermaid(spec)} />
+        ) : displayText !== null && lineCount > 0 ? (
+          <CodeWithLines text={displayText} />
+        ) : (
+          <pre className="viewer-source">{displayText}</pre>
         )}
       </div>
     </div>

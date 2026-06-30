@@ -10,6 +10,7 @@ Follow the root `AGENTS.md` first. This file only records module-level boundarie
 - `pnpm tools-dev inspect desktop ...` inspects the desktop runtime through sidecar IPC.
 - `tools/pack` provides `@open-design/tools-pack` and the `tools-pack` bin. The active slice is packaged artifact build/install/start/stop/logs/uninstall/cleanup/list/reset plus beta release artifact preparation for mac and Windows lanes, plus a Linux AppImage lane with optional containerized builds.
 - `tools/serve` provides `@open-design/tools-serve` and the `tools-serve` bin. It owns local fixture services such as `tools-serve start updater`.
+- `tools/kg` provides `@open-design/tools-kg` and the `tools-kg` bin. It owns the local UI knowledge-graph control plane: project-local Neo4j lifecycle via Docker (`tools-kg neo4j up|down|status`, data in named docker volumes), one-way clone of the UI_* subgraph from the upstream design KG (`tools-kg clone [--refresh]`), prototype-screen lint/export (`tools-kg lint|export <slug>`), style-composition lint/CSS export (`tools-kg style-lint|css <composition> [--vars-only]`), resolved token palettes for creative grounding (`tools-kg tokens <composition>`), and the `od-kg` stdio MCP server (`tools-kg mcp`) that agents use to author screens AND theme compositions as graph nodes/edges. Writes are restricted to the prototype workspace; cloned reference nodes (marked `odClonedFrom`) are immutable to agents; agent style data is property-first (layersJson/scheme/themeId) so it survives `clone --refresh`.
 
 ## Retired tools
 
@@ -38,6 +39,8 @@ pnpm --filter @open-design/tools-pack typecheck
 pnpm --filter @open-design/tools-pack build
 pnpm --filter @open-design/tools-serve typecheck
 pnpm --filter @open-design/tools-serve build
+pnpm --filter @open-design/tools-kg typecheck
+pnpm --filter @open-design/tools-kg build
 pnpm tools-dev status --json
 pnpm tools-dev logs --json
 pnpm tools-dev check

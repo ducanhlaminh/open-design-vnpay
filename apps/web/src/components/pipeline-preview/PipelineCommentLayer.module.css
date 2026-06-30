@@ -1,0 +1,203 @@
+/* Comment overlay for the pipeline UI preview. The layer covers the iframe
+   exactly (canvas wrapper is position:relative); it is pointer-transparent by
+   default so the runtime stays interactive, and only the capture surface / pins
+   / popovers opt back into pointer events. Styled with open-design tokens. */
+
+.layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.capture {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+/* Hover highlight while picking a target. */
+.hoverBox {
+  position: absolute;
+  pointer-events: none;
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: -1px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent, #2563eb) 10%, transparent);
+}
+.hoverTag {
+  position: absolute;
+  top: -18px;
+  left: 0;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-family: var(--mono, ui-monospace, monospace);
+  color: #fff;
+  background: var(--accent, #2563eb);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* Faint box around a commented node (always visible). */
+.anchorBox {
+  position: absolute;
+  pointer-events: none;
+  outline: 1px dashed color-mix(in srgb, var(--accent, #2563eb) 55%, transparent);
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+
+.pin {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent, #2563eb);
+  border: 2px solid #fff;
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.3));
+  cursor: pointer;
+  pointer-events: auto;
+}
+.pinOpen {
+  background: var(--accent-strong, var(--accent, #1d4ed8));
+  transform: translate(-50%, -50%) scale(1.1);
+}
+
+.popover,
+.composer {
+  position: absolute;
+  pointer-events: auto;
+  width: 240px;
+  max-width: 70%;
+  background: var(--bg-elevated, var(--bg, #fff));
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius, 10px);
+  box-shadow: var(--shadow-lg, 0 8px 30px rgba(0, 0, 0, 0.18));
+  z-index: 6;
+}
+
+.popHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.popNode {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--text-muted, #6b7280);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.popClose {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #6b7280);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.commentItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-soft, var(--border, #f1f1f3));
+}
+.commentItem:first-child {
+  border-top: none;
+}
+.commentText {
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text, #111);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.commentDel {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--red, #b91c1c);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.draftBox {
+  position: absolute;
+  pointer-events: none;
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+
+.composerHead {
+  padding: 6px 10px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--text-muted, #6b7280);
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composerInput {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text, #111);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+.composerActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+.btnGhost,
+.btnPrimary {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+}
+.btnGhost {
+  border: 1px solid var(--border, #e5e7eb);
+  background: transparent;
+  color: var(--text, #111);
+}
+.btnPrimary {
+  border: 1px solid var(--accent, #2563eb);
+  background: var(--accent, #2563eb);
+  color: #fff;
+}
+.btnPrimary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

@@ -7,12 +7,16 @@ import {
   MCP_TEMPLATES,
   buildAcpMcpServers,
   buildClaudeMcpJson,
+  buildCodexMcpToml,
   buildOpenCodeMcpConfigContent,
+  defaultMcpServers,
   isManagedProjectCwd,
   readMcpConfig,
   sanitizeMcpServer,
+  seedDefaultMcpConfig,
   writeMcpConfig,
 } from '../src/mcp-config.js';
+
 
 describe('mcp-config storage', () => {
   let dataDir: string;
@@ -1076,5 +1080,99 @@ describe('MCP_TEMPLATES', () => {
     // GitHub repo slug). Getting this wrong silently 404s on the registry.
     expect(tpl?.args).toEqual(['-y', 'a11y-mcp-server']);
     expect(tpl?.envFields ?? []).toEqual([]);
+  });
+});
+
+describe('defaultMcpServers', () => {
+  it('ships ba-agent as a portable HTTP server WITHOUT a baked token (UI-managed)', () => {
+    const servers = defaultMcpServers({});
+    expect(servers).toHaveLength(1);
+    const ba = servers[0]!;
+    expect(ba.id).toBe('ba-agent');
+    expect(ba.transport).toBe('http');
+    expect(ba.enabled).toBe(true);
+    expect(ba.authMode).toBe('none');
+    expect(ba.url).toBe('https://a2.openledger.vn/api/mcp/');
+    // No secret in source: the token is entered via the /integrations
+    // Headers field, not baked into the seed.
+    expect(ba.headers).toBeUndefined();
+  });
+
+  it('bakes the token only when OD_BA_AGENT_TOKEN is set', () => {
+    const [ba] = defaultMcpServers({
+      OD_BA_AGENT_URL: 'https://example.test/mcp/',
+      OD_BA_AGENT_TOKEN: 'tok123',
+    });
+    expect(ba?.url).toBe('https://example.test/mcp/');
+    expect(ba?.headers?.Authorization).toBe('Bearer tok123');
+  });
+
+  it('does not double-prefix a token that already includes "Bearer "', () => {
+    const [ba] = defaultMcpServers({ OD_BA_AGENT_TOKEN: 'Bearer abc' });
+    expect(ba?.headers?.Authorization).toBe('Bearer abc');
+  });
+
+  it('still ships ba-agent (token-less) when OD_BA_AGENT_TOKEN is empty', () => {
+    const servers = defaultMcpServers({ OD_BA_AGENT_TOKEN: '' });
+    expect(servers).toHaveLength(1);
+    expect(servers[0]?.headers).toBeUndefined();
+  });
+});
+
+describe('seedDefaultMcpConfig', () => {
+  let dataDir: string;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(path.join(tmpdir(), 'od-mcpseed-'));
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('seeds a token-less ba-agent into a fresh data dir (user adds the token in the UI)', async () => {
+    const seeded = await seedDefaultMcpConfig(dataDir, {});
+    expect(seeded).toEqual(['ba-agent']);
+    const cfg = await readMcpConfig(dataDir);
+    expect(cfg.servers.map((s) => s.id)).toEqual(['ba-agent']);
+    expect(cfg.servers[0]?.url).toBe('https://a2.openledger.vn/api/mcp/');
+    // No token baked in — the user pastes it into the Headers field.
+    expect(cfg.servers[0]?.headers).toBeUndefined();
+  });
+
+  it('keeps the user-entered token: a later UI save survives a re-seed', async () => {
+    await seedDefaultMcpConfig(dataDir, {});
+    // User pastes the token via /integrations (PUT /api/mcp/servers).
+    await writeMcpConfig(dataDir, {
+      servers: [
+        {
+          id: 'ba-agent',
+          transport: 'http',
+          enabled: true,
+          url: 'https://a2.openledger.vn/api/mcp/',
+          authMode: 'none',
+          headers: { Authorization: 'Bearer my-real-token' },
+        },
+      ],
+    });
+    // Re-seed (next daemon boot) must not wipe the token.
+    const reseed = await seedDefaultMcpConfig(dataDir, {});
+    expect(reseed).toEqual([]);
+    const cfg = await readMcpConfig(dataDir);
+    expect(cfg.servers[0]?.headers?.Authorization).toBe('Bearer my-real-token');
+  });
+
+  it('is a no-op once a config file already exists (never clobbers user state)', async () => {
+    // User saved a config that deliberately does NOT include ba-agent.
+    await writeMcpConfig(dataDir, {
+      servers: [
+        { id: 'only-mine', transport: 'http', enabled: true, url: 'https://mine.test/mcp/' },
+      ],
+    });
+    const seeded = await seedDefaultMcpConfig(dataDir, {});
+    expect(seeded).toEqual([]);
+    const cfg = await readMcpConfig(dataDir);
+    // ba-agent must NOT be resurrected.
+    expect(cfg.servers.map((s) => s.id)).toEqual(['only-mine']);
   });
 });

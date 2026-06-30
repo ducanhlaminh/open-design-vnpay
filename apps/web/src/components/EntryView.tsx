@@ -110,6 +110,8 @@ interface Props {
   onOpenLiveArtifact: (projectId: string, artifactId: string) => void;
   onDeleteProject: (id: string) => void;
   onRenameProject: (id: string, name: string) => void;
+  // Re-fetch the project list on demand (reload button on the Projects view).
+  onProjectsRefresh?: () => Promise<void> | void;
   onChangeDefaultDesignSystem: (id: string) => void;
   onCreateDesignSystem?: () => void;
   renderDesignSystemCreation?: (
@@ -279,6 +281,7 @@ export function EntryView({
   onOpenLiveArtifact,
   onDeleteProject,
   onRenameProject,
+  onProjectsRefresh,
   onChangeDefaultDesignSystem,
   onCreateDesignSystem,
   renderDesignSystemCreation,
@@ -374,6 +377,7 @@ export function EntryView({
       onOpenLiveArtifact={onOpenLiveArtifact}
       onDeleteProject={onDeleteProject}
       onRenameProject={onRenameProject}
+      {...(onProjectsRefresh ? { onProjectsRefresh } : {})}
       onChangeDefaultDesignSystem={onChangeDefaultDesignSystem}
       onCreateDesignSystem={onCreateDesignSystem}
       renderDesignSystemCreation={renderDesignSystemCreation}

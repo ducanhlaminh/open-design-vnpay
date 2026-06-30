@@ -8,7 +8,7 @@
 // can be rebased without touching this file. `EntryView` becomes a
 // thin wrapper that passes data and callbacks through to this shell.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   defaultScenarioPluginIdForProjectMetadata,
   type ConnectorDetail,
@@ -87,6 +87,8 @@ import type {
   PluginShareProjectOutcome,
 } from '../state/projects';
 import { TasksView } from './TasksView';
+import { PipelinesView } from './PipelinesView';
+import { RemoteRegistryView } from './RemoteRegistryView';
 import {
   API_KEY_PLACEHOLDERS,
   API_PROTOCOL_TABS,
@@ -249,6 +251,11 @@ interface Props {
   onOpenLiveArtifact: (projectId: string, artifactId: string) => void;
   onDeleteProject: (id: string) => Promise<boolean | void> | boolean | void;
   onRenameProject: (id: string, name: string) => void;
+  // Re-fetch the project list from the daemon on demand. Surfaced as a
+  // reload button on the Projects view so a fresh `pull all` (or any
+  // out-of-band write to the SQLite store) shows up without restarting
+  // the app.
+  onProjectsRefresh?: () => Promise<void> | void;
   onChangeDefaultDesignSystem: (id: string) => void;
   onCreateDesignSystem?: () => void;
   renderDesignSystemCreation?: (
@@ -354,6 +361,7 @@ export function EntryShell({
   onOpenLiveArtifact,
   onDeleteProject,
   onRenameProject,
+  onProjectsRefresh,
   onChangeDefaultDesignSystem,
   onCreateDesignSystem,
   renderDesignSystemCreation,
@@ -376,7 +384,22 @@ export function EntryShell({
     useState<CreateTab>('prototype');
   const [integrationTab, setIntegrationTab] = useState<IntegrationTab>(integrationInitialTab);
   const [homePromptHandoff, setHomePromptHandoff] = useState<HomePromptHandoff | null>(null);
+  const [projectsRefreshing, setProjectsRefreshing] = useState(false);
   const analytics = useAnalytics();
+
+  // Manual re-fetch of the project list. Drives a spinner on the reload
+  // button without flipping `projectsLoading`, which would swap the whole
+  // list for the full-page loader instead of refreshing in place.
+  const handleProjectsRefresh = useCallback(async () => {
+    if (!onProjectsRefresh || projectsRefreshing) return;
+    setProjectsRefreshing(true);
+    try {
+      await onProjectsRefresh();
+    } finally {
+      setProjectsRefreshing(false);
+    }
+  }, [onProjectsRefresh, projectsRefreshing]);
+
   function changeView(next: EntryViewKind) {
     const navElement = navElementForView(next);
     if (navElement) {
@@ -634,6 +657,22 @@ export function EntryShell({
                 <div className="entry-section">
                   <header className="entry-section__head">
                     <h1 className="entry-section__title">{t('entry.navProjects')}</h1>
+                    {onProjectsRefresh ? (
+                      <button
+                        type="button"
+                        className={`entry-section__refresh${projectsRefreshing ? ' is-loading' : ''}`}
+                        onClick={() => void handleProjectsRefresh()}
+                        disabled={projectsRefreshing}
+                        title={t('designFiles.refresh')}
+                      >
+                        <Icon
+                          name={projectsRefreshing ? 'spinner' : 'reload'}
+                          size={15}
+                          className={projectsRefreshing ? 'icon-spin' : ''}
+                        />
+                        <span>{t('designFiles.refresh')}</span>
+                      </button>
+                    ) : null}
                   </header>
                   <DesignsTab
                     projects={projects}
@@ -655,6 +694,8 @@ export function EntryShell({
                 connectorsLoading={connectorsLoading}
               />
             ) : null}
+            {view === 'pipelines' ? <PipelinesView /> : null}
+            {view === 'remote-registry' ? <RemoteRegistryView /> : null}
             {view === 'plugins' ? (
               <PluginsView
                 onCreatePlugin={startPluginAuthoring}

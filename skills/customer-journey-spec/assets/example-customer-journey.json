@@ -1,0 +1,75 @@
+{
+  "$comment": "Example Customer Journey (content only). Do NOT include project_id — it is filled at PUSH time from the conversation's bound KGS project (or the Push to KG dropdown / --project-id). The agent generates a file like this; the open-design-vnpay 'Push to KG' button or scripts/push_to_kgs.py then materialises it into the KGS open-design app under the chosen project.",
+  "personas": [
+    {
+      "name": "Chủ cửa hàng",
+      "tech_savviness": "medium",
+      "device_primary": "mobile",
+      "market": "VN",
+      "context_of_use": "Quản lý shop tại quầy + trên đường",
+      "occupation": "Chủ shop nhỏ",
+      "language_primary": "vi",
+      "prefers_guidance": true,
+      "error_tolerance": "low"
+    }
+  ],
+  "journeys": [
+    {
+      "id": "UFLW-OWNER-REFUND",
+      "name": "Hoàn tiền đơn hàng",
+      "actor_id": "actor-owner",
+      "journey_mode": "to_be",
+      "goal": "Chủ shop xử lý yêu cầu hoàn tiền của khách an toàn, nhanh",
+      "flow_type": "primary",
+      "stages": [
+        {
+          "id": "STG-REFUND-1",
+          "name": "Tìm đơn hàng cần hoàn",
+          "order": 1,
+          "stage_type": "action",
+          "goal": "Định vị đúng đơn",
+          "emotion": "neutral",
+          "user_actions": ["Tìm theo mã đơn / SĐT khách"],
+          "touchpoints": ["Màn lịch sử đơn hàng"],
+          "pain_points": ["Khó tìm nếu nhiều đơn"],
+          "sources": [
+            {
+              "file": "docs/confluence/Hoàn tiền đơn hàng.md",
+              "heading": "Tìm đơn",
+              "quote": "Chủ shop tìm đơn cần hoàn theo mã đơn hoặc số điện thoại khách trong màn Lịch sử đơn hàng."
+            }
+          ]
+        },
+        {
+          "id": "STG-REFUND-2",
+          "name": "Xác nhận lý do + số tiền hoàn",
+          "order": 2,
+          "stage_type": "decision",
+          "goal": "Nhập đúng số tiền + lý do",
+          "emotion": "anxious",
+          "user_actions": ["Chọn lý do", "Nhập số tiền hoàn (toàn phần/một phần)"],
+          "system_responses": ["Validate số tiền ≤ giá trị đơn"],
+          "pain_points": ["Sợ hoàn nhầm số tiền"],
+          "sources": [
+            {
+              "file": "docs/confluence/Hoàn tiền đơn hàng.md",
+              "heading": "Quy tắc hoàn tiền",
+              "quote": "Số tiền hoàn phải nhỏ hơn hoặc bằng giá trị đơn; hỗ trợ hoàn toàn phần và hoàn một phần kèm lý do."
+            }
+          ]
+        },
+        {
+          "id": "STG-REFUND-3",
+          "name": "Hoàn tất + thông báo khách",
+          "order": 3,
+          "stage_type": "confirmation",
+          "goal": "Hoàn thành + khách nhận được tiền",
+          "emotion": "satisfied",
+          "user_actions": ["Xác nhận hoàn"],
+          "system_responses": ["Gửi SMS/biên lai cho khách", "Cập nhật trạng thái đơn = Đã hoàn"],
+          "touchpoints": ["Màn chi tiết đơn", "SMS"]
+        }
+      ]
+    }
+  ]
+}

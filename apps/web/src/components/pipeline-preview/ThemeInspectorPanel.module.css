@@ -1,0 +1,374 @@
+/* Right-panel DS inspector for the pipeline UI preview. Mirrors design-v3's
+   Styles-tab inspector (header + composition picker + mode toggle + Typography
+   specimen + Color swatches) but styled with open-design's own design tokens
+   (the host chrome), since open-design web does not ship the shadcn token
+   vocabulary. The specimen values themselves come from the resolved preview
+   theme (cssVars + tokens), so they reflect the selected branding. */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-panel, var(--bg, #fff));
+  color: var(--text, #111);
+  font-family: var(--sans, system-ui, sans-serif);
+}
+
+.head {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  flex-shrink: 0;
+}
+.headLabel {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--text-faint, var(--text-muted, #6b7280));
+}
+.headTitle {
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong, var(--text, #111));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ── composition + mode row ───────────────────────────────────────────── */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.select {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text, #111);
+  background: var(--bg-subtle, var(--bg-elevated, #f4f4f5));
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+}
+.modeToggle {
+  display: inline-flex;
+  height: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  padding: 2px;
+  gap: 2px;
+  background: var(--bg-subtle, #f4f4f5);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius-sm, 6px);
+}
+.modeBtn {
+  display: inline-flex;
+  height: 24px;
+  width: 28px;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  color: var(--text-muted, #6b7280);
+  cursor: pointer;
+}
+.modeBtnActive {
+  background: var(--accent, #2563eb);
+  color: #fff;
+}
+
+/* ── sections ─────────────────────────────────────────────────────────── */
+.section {
+  margin: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius, 10px);
+  background: var(--bg, #fff);
+}
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.sectionLabel {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-faint, var(--text-muted, #6b7280));
+}
+.sectionMeta {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--text-muted, #6b7280);
+}
+
+/* Composition axes — card pickers (one grid of selectable cards per axis) */
+.axisList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+.axisGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.axisLabel {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--text-faint, var(--text-muted, #9ca3af));
+}
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.cardGridWide {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: inherit;
+  text-align: left;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius-sm, 8px);
+  cursor: pointer;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.card:hover:not(:disabled) {
+  border-color: var(--text-faint, #9ca3af);
+}
+.card:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.cardActive {
+  border-color: var(--accent, #2563eb);
+  box-shadow: inset 0 0 0 1px var(--accent, #2563eb);
+}
+
+/* card = preview tile (top) + label foot (bottom) */
+.cardPreview {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  background: var(--bg-subtle, var(--bg-elevated, #f7f7f8));
+}
+.cardFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 5px 8px;
+}
+.cardName {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-strong, var(--text, #111));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cardMeta {
+  flex-shrink: 0;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 9px;
+  color: var(--text-muted, #6b7280);
+}
+
+/* preview visuals */
+.swatchRow {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+.swatch {
+  flex: 1;
+  height: 100%;
+}
+.previewFallback {
+  font-size: 11px;
+  color: var(--text-faint, #9ca3af);
+}
+.previewBox {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border, #cbd5e1);
+  background: var(--bg-elevated, #e5e7eb);
+}
+.radiusRow {
+  display: flex;
+  align-items: center;
+}
+.radiusDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--text-faint, #94a3b8);
+}
+.radiusLine {
+  height: 1px;
+  background: var(--text-muted, #475569);
+}
+.sizeBox {
+  width: 46px;
+  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.3);
+}
+.fontSpecimen {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-strong, var(--text, #111));
+}
+.iconPreview {
+  font-size: 13px;
+  letter-spacing: 2px;
+  color: var(--text-muted, #6b7280);
+}
+
+/* Typography */
+.typoHero {
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.typoHeroSample {
+  font-size: 40px;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  color: var(--text-strong, var(--text, #111));
+}
+.typoHeroMeta {
+  margin-top: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-muted, #6b7280);
+}
+.fontTiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px;
+}
+.fontTile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.fontTileSample {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--text-strong, var(--text, #111));
+}
+.fontTileLabel {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-faint, var(--text-muted, #9ca3af));
+}
+.fontTileName {
+  font-size: 10px;
+  color: var(--text, #111);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Colors */
+.colorList {
+  display: flex;
+  flex-direction: column;
+}
+.colorRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-soft, var(--border, #f1f1f3));
+}
+.colorRow:first-child {
+  border-top: none;
+}
+.swatch {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e5e7eb);
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+}
+.colorText {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.colorName {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-strong, var(--text, #111));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.colorValue {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--text-muted, #6b7280);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hint {
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+}
+.error {
+  margin: 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--red, #b91c1c);
+  background: var(--red-bg, rgba(220, 38, 38, 0.08));
+  border: 1px solid var(--red-border, rgba(220, 38, 38, 0.2));
+}
+.applying {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--text-faint, #9ca3af);
+}

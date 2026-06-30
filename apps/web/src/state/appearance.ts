@@ -8,13 +8,13 @@ const ACCENT_VARS = [
   '--accent-hover',
 ] as const;
 
-export const DEFAULT_ACCENT_COLOR = '#c96442';
+export const DEFAULT_ACCENT_COLOR = '#0066b3';
 export const ACCENT_SWATCHES = [
   DEFAULT_ACCENT_COLOR,
+  '#ed1c24',
   '#2563eb',
   '#7c3aed',
   '#059669',
-  '#dc2626',
   '#d97706',
   '#0891b2',
   '#db2777',
@@ -43,9 +43,10 @@ function accentVars(accentColor: string): Record<(typeof ACCENT_VARS)[number], s
 
 export function applyAppearanceToDocument({
   theme,
-  accentColor,
 }: {
   theme?: AppTheme;
+  // accentColor is accepted for back-compat but ignored: the accent is
+  // brand-locked to VNPAY blue (the Settings accent picker was removed).
   accentColor?: string;
 }): void {
   const root = document.documentElement;
@@ -55,7 +56,8 @@ export function applyAppearanceToDocument({
     root.removeAttribute('data-theme');
   }
 
-  const normalized = resolveAccentColor(accentColor);
+  // Always apply the VNPAY brand accent, regardless of any saved/legacy value.
+  const normalized = DEFAULT_ACCENT_COLOR;
   const vars = accentVars(normalized);
   for (const name of ACCENT_VARS) {
     root.style.setProperty(name, vars[name]);

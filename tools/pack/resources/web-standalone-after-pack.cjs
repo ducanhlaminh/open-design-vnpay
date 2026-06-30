@@ -650,7 +650,15 @@ async function signMacAdhocBundle(appPath) {
   await normalizeMacVersionedFrameworks(appPath);
   const targets = await collectMacAdhocSignTargets(appPath);
   for (const target of targets) {
-    await execFileAsync("codesign", ["--force", "--sign", "-", "--timestamp=none", target], {
+    // --deep so codesign signs nested mach-O helpers (e.g. the Electron
+    // Framework's Helpers/chrome_crashpad_handler) BEFORE sealing the enclosing
+    // bundle. Without it, ad-hoc signing a framework whose helpers are unsigned
+    // fails with "code object is not signed at all / In subcomponent: …". This
+    // bites cross-arch builds (OD_PACK_MAC_ARCH=x64 on an arm64 host), where the
+    // downloaded x64 Electron dist arrives without usable signatures; the native
+    // arm64 path slips through because its dist is already signed. The final
+    // verify below already uses --deep --strict, so deep-signing is consistent.
+    await execFileAsync("codesign", ["--force", "--deep", "--sign", "-", "--timestamp=none", target], {
       maxBuffer: 20 * 1024 * 1024,
     });
   }

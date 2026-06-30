@@ -87,6 +87,40 @@ export type ToolPackConfig = {
   posthogKey?: string;
   posthogHost?: string;
   /**
+   * KGS (Knowledge Graph Store) connection, sourced from process.env at
+   * packaging time and baked into open-design-config.json so the packaged
+   * daemon can read KGS_URL/KGS_APP_ID/KGS_TENANT/KGS_API_KEY at launch — a
+   * shipped app has no repo-root `.env.local` to read. WARNING: kgsApiKey is
+   * embedded in the bundle (anyone with the app can extract it); ship a scoped
+   * key. All four are omitted when their env var is unset.
+   */
+  kgsUrl?: string;
+  kgsAppId?: string;
+  kgsTenant?: string;
+  kgsApiKey?: string;
+  /**
+   * media-service (file artifact store) connection, sourced from process.env at
+   * packaging time and baked into open-design-config.json so the packaged daemon
+   * can read MEDIA_URL/MEDIA_APP_ID/MEDIA_USER_ID/MEDIA_USER_ROLE at launch (the
+   * hybrid counterpart to KGS — graph stays in KGS, files move to media). All
+   * four are omitted when their env var is unset; the daemon then falls back to
+   * its own defaults (MEDIA_URL=localhost:8083, MEDIA_APP_ID=KGS_APP_ID, …).
+   */
+  mediaUrl?: string;
+  mediaAppId?: string;
+  mediaUserId?: string;
+  mediaUserRole?: string;
+  /**
+   * Atlassian (Jira + Confluence Data Center) personal tokens, sourced from
+   * process.env.OD_ATLASSIAN_*_TOKEN at packaging time and baked into
+   * open-design-config.json so the packaged daemon seeds the `mcp-atlassian`
+   * stdio MCP server with working creds. WARNING: embedded in the bundle
+   * (extractable) — ship scoped/rotatable tokens. Omitted when unset, in which
+   * case the daemon does not seed the Atlassian server.
+   */
+  atlassianJiraToken?: string;
+  atlassianConfluenceToken?: string;
+  /**
    * Personal API key (`phx_...`) used by the @posthog/cli sourcemap helper to
    * upload browser sourcemaps to PostHog after `next build` and before the
    * web bundle is copied into the Electron package. Sourced from
@@ -190,6 +224,33 @@ function resolveToolPackPosthogHost(value: string | undefined): string | undefin
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error(`POSTHOG_HOST must be http(s): ${value}`);
+  }
+  return normalized.replace(/\/+$/, "");
+}
+
+// Trim + reject control chars (a misconfigured env must not bake garbage into
+// the bundle). Empty → undefined so the field is omitted from packaged config.
+function resolveToolPackKgsScalar(value: string | undefined, label: string): string | undefined {
+  if (value == null) return undefined;
+  const normalized = value.trim();
+  if (normalized.length === 0) return undefined;
+  if (/[\s\x00-\x1f]/.test(normalized)) {
+    throw new Error(`${label} contains whitespace or control chars: ${value}`);
+  }
+  return normalized;
+}
+
+function resolveToolPackServiceUrl(value: string | undefined, label: string): string | undefined {
+  const normalized = resolveToolPackKgsScalar(value, label);
+  if (normalized == null) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error(`${label} must be an absolute URL: ${value}`);
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error(`${label} must be http(s): ${value}`);
   }
   return normalized.replace(/\/+$/, "");
 }
@@ -323,6 +384,16 @@ export function resolveToolPackConfig(
     telemetryRelayUrl: resolveToolPackTelemetryRelayUrl(process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL),
     posthogKey: resolveToolPackPosthogKey(process.env.POSTHOG_KEY),
     posthogHost: resolveToolPackPosthogHost(process.env.POSTHOG_HOST),
+    kgsUrl: resolveToolPackServiceUrl(process.env.KGS_URL, "KGS_URL"),
+    kgsAppId: resolveToolPackKgsScalar(process.env.KGS_APP_ID, "KGS_APP_ID"),
+    kgsTenant: resolveToolPackKgsScalar(process.env.KGS_TENANT, "KGS_TENANT"),
+    kgsApiKey: resolveToolPackKgsScalar(process.env.KGS_API_KEY, "KGS_API_KEY"),
+    mediaUrl: resolveToolPackServiceUrl(process.env.MEDIA_URL, "MEDIA_URL"),
+    mediaAppId: resolveToolPackKgsScalar(process.env.MEDIA_APP_ID, "MEDIA_APP_ID"),
+    mediaUserId: resolveToolPackKgsScalar(process.env.MEDIA_USER_ID, "MEDIA_USER_ID"),
+    mediaUserRole: resolveToolPackKgsScalar(process.env.MEDIA_USER_ROLE, "MEDIA_USER_ROLE"),
+    atlassianJiraToken: process.env.OD_ATLASSIAN_JIRA_TOKEN?.trim() || undefined,
+    atlassianConfluenceToken: process.env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim() || undefined,
     posthogCliApiKey: resolveToolPackPosthogCliApiKey(
       process.env.POSTHOG_CLI_API_KEY ?? process.env.POSTHOG_PERSONAL_API_KEY,
     ),

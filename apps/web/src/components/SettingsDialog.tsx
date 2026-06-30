@@ -98,10 +98,7 @@ import {
   useCritiqueTheaterEnabled,
 } from './Theater';
 import {
-  ACCENT_SWATCHES,
-  DEFAULT_ACCENT_COLOR,
   applyAppearanceToDocument,
-  normalizeAccentColor,
   resolveAccentColor,
 } from '../state/appearance';
 import { isAutosaveDraftOnlyChange } from '../App';
@@ -3396,6 +3393,32 @@ export function SettingsDialog({
                   }
                 />
               </div>
+              <div className="memory-field-block instructions-rules-card">
+                <div className="memory-block-head">
+                  <div>
+                    <h4>Feedback username</h4>
+                    <p className="hint">
+                      Display name stamped on your feedback prompts when they are
+                      shared for the cross-user feedback summary, so the digest can
+                      attribute each prompt to a person. Leave blank to use the
+                      install id.
+                    </p>
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  className="custom-instructions-input instructions-rules-input"
+                  maxLength={120}
+                  placeholder="e.g. anhnd"
+                  value={cfg.feedbackUsername ?? ''}
+                  onChange={(event) =>
+                    setCfg({
+                      ...cfg,
+                      feedbackUsername: event.target.value || undefined,
+                    })
+                  }
+                />
+              </div>
             </section>
           ) : null}
 
@@ -5758,23 +5781,14 @@ function AppearanceSection({
   const { t } = useI18n();
   const analytics = useAnalytics();
   const current = cfg.theme ?? 'system';
-  const currentAccent = normalizeAccentColor(cfg.accentColor) ?? DEFAULT_ACCENT_COLOR;
-  const accentLabel = t('pet.fieldAccent');
-  const defaultAccentLabel = t('pet.fieldAccentDefault');
-  const customAccentLabel = t('pet.fieldAccentCustom');
 
   // Apply the draft theme immediately so the user sees a live preview
   // before hitting Save. SettingsDialog's cleanup reverts this on cancel.
+  // The accent is brand-locked to VNPAY blue (the picker was removed), so
+  // appearance is theme-only here.
   useLayoutEffect(() => {
-    applyAppearanceToDocument({
-      theme: current,
-      accentColor: currentAccent,
-    });
-  }, [current, currentAccent]);
-
-  const setAccentColor = (color: string) => {
-    setCfg((c) => ({ ...c, accentColor: normalizeAccentColor(color) ?? c.accentColor ?? DEFAULT_ACCENT_COLOR }));
-  };
+    applyAppearanceToDocument({ theme: current });
+  }, [current]);
 
   return (
     <section className="settings-section">
@@ -5786,9 +5800,7 @@ function AppearanceSection({
             className={'seg-btn' + (current === value ? ' active' : '')}
             aria-pressed={current === value}
             onClick={() => {
-              // P1 ui_click area=appearance — `system|light|dark` only
-              // emits from the segmented control; accent swatch picks
-              // use `accent_color` with the swatch hex below.
+              // P1 ui_click area=appearance — `system|light|dark` only.
               if (value === 'system' || value === 'light' || value === 'dark') {
                 trackSettingsAppearanceClick(analytics.track, {
                   page_name: 'settings',
@@ -5803,41 +5815,6 @@ function AppearanceSection({
             <span className="seg-title">{t(labelKey)}</span>
           </button>
         ))}
-      </div>
-      <div className="field">
-        <span className="field-label">{accentLabel}</span>
-        <div className="pet-swatches" role="radiogroup" aria-label={accentLabel}>
-          {ACCENT_SWATCHES.map((color) => {
-            const active = currentAccent === color;
-            return (
-              <button
-                key={color}
-                type="button"
-                className={`pet-swatch${active ? ' active' : ''}`}
-                style={{ background: color }}
-                aria-label={color === DEFAULT_ACCENT_COLOR ? defaultAccentLabel : color}
-                aria-checked={active}
-                role="radio"
-                onClick={() => {
-                  trackSettingsAppearanceClick(analytics.track, {
-                    page_name: 'settings',
-                    area: 'appearance',
-                    element: 'accent_color',
-                    color,
-                  });
-                  setAccentColor(color);
-                }}
-              />
-            );
-          })}
-          <input
-            type="color"
-            aria-label={customAccentLabel}
-            className="pet-swatch-picker"
-            value={currentAccent}
-            onChange={(e) => setAccentColor(e.target.value)}
-          />
-        </div>
       </div>
     </section>
   );

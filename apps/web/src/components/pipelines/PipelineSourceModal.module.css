@@ -1,0 +1,204 @@
+/* Source-selection UI for pipeline 1 (jira-ingest): two cards (Confluence / BAS)
+   plus the per-source panels (Confluence link + metadata preview, BAS project →
+   feature picker). Scoped to the run-source modal; reuses the global pl-* input
+   and button primitives for everything else. */
+
+.cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--pl-border, rgba(120, 120, 130, 0.28));
+  border-radius: 12px;
+  background: var(--pl-surface, rgba(255, 255, 255, 0.02));
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    background 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.card:hover {
+  border-color: var(--accent, #0066b3);
+}
+
+.cardSelected {
+  border-color: var(--accent, #0066b3);
+  background: color-mix(in srgb, var(--accent, #0066b3) 8%, transparent);
+}
+
+.cardTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.cardCheck {
+  margin-left: auto;
+  color: var(--accent, #0066b3);
+  display: inline-flex;
+}
+
+.cardDesc {
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0.7;
+}
+
+.panel {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.advancedToggle {
+  margin-top: 10px;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--accent, #0066b3);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+/* Confluence metadata preview card */
+.metaCard {
+  border: 1px solid var(--pl-border, rgba(120, 120, 130, 0.28));
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--pl-surface, rgba(255, 255, 255, 0.02));
+}
+
+.metaTitle {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.metaRow {
+  font-size: 12px;
+  opacity: 0.72;
+  word-break: break-all;
+}
+
+.metaExcerpt {
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.85;
+  border-top: 1px dashed var(--pl-border, rgba(120, 120, 130, 0.28));
+  padding-top: 8px;
+}
+
+/* BAS project + feature pickers */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--pl-border, rgba(120, 120, 130, 0.28));
+  border-radius: 9px;
+  background: var(--pl-surface, rgba(255, 255, 255, 0.02));
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: border-color 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.row:hover {
+  border-color: var(--accent, #0066b3);
+}
+
+.rowSelected {
+  border-color: var(--accent, #0066b3);
+  background: color-mix(in srgb, var(--accent, #0066b3) 8%, transparent);
+}
+
+.rowBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rowName {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowSummary {
+  font-size: 11.5px;
+  opacity: 0.62;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowKind {
+  margin-left: auto;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
+.checkbox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1.5px solid var(--pl-border, rgba(120, 120, 130, 0.4));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.checkboxOn {
+  background: var(--accent, #0066b3);
+  border-color: var(--accent, #0066b3);
+}
+
+.sectionLabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+  font-weight: 600;
+}
+
+.hint {
+  font-size: 12px;
+  opacity: 0.62;
+}
+
+.empty {
+  font-size: 12.5px;
+  opacity: 0.6;
+  padding: 10px 2px;
+}

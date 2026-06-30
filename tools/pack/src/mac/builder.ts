@@ -104,7 +104,15 @@ export async function runElectronBuilder(
       iconSize: 96,
       title: identity.installerTitle,
     },
-    electronDist: config.electronDistPath,
+    // The pinned electronDist is the HOST-arch Electron. For a cross-arch
+    // build (OD_PACK_MAC_ARCH != host) omit it so electron-builder downloads
+    // the target-arch Electron for electronVersion instead of packaging the
+    // host-arch one.
+    electronDist:
+      (process.env.OD_PACK_MAC_ARCH === "x64" || process.env.OD_PACK_MAC_ARCH === "arm64") &&
+      process.env.OD_PACK_MAC_ARCH !== process.arch
+        ? undefined
+        : config.electronDistPath,
     electronVersion: config.electronVersion,
     executableName: identity.executableName,
     extraMetadata: {
@@ -128,7 +136,12 @@ export async function runElectronBuilder(
       icon: macResources.icon,
       identity: config.signed ? undefined : null,
       notarize: false,
-      target: targets,
+      // Per-target arch is the reliable way to force a cross-arch build
+      // (the CLI --x64/--arm64 flag alone is ignored when electronDist is set).
+      target:
+        process.env.OD_PACK_MAC_ARCH === "x64" || process.env.OD_PACK_MAC_ARCH === "arm64"
+          ? targets.map((t) => ({ target: t, arch: process.env.OD_PACK_MAC_ARCH }))
+          : targets,
     },
     nodeGypRebuild: false,
     npmRebuild: false,
@@ -145,9 +158,19 @@ export async function runElectronBuilder(
   await rm(paths.appBuilderOutputRoot, { force: true, recursive: true });
   await mkdir(dirname(paths.appBuilderConfigPath), { recursive: true });
   await writeFile(paths.appBuilderConfigPath, `${JSON.stringify(builderConfig, null, 2)}\n`, "utf8");
+  // OD_PACK_MAC_ARCH=x64|arm64 targets a specific arch (cross-build); without it
+  // electron-builder uses the host arch. Must match the @electron/rebuild arch
+  // in mac/app.ts so the Electron shell and the native modules agree.
+  const macArchFlags =
+    process.env.OD_PACK_MAC_ARCH === "x64"
+      ? ["--x64"]
+      : process.env.OD_PACK_MAC_ARCH === "arm64"
+        ? ["--arm64"]
+        : [];
   await execFileAsync(process.execPath, [
     config.electronBuilderCliPath,
     "--mac",
+    ...macArchFlags,
     "--projectDir",
     paths.assembledAppRoot,
     "--config",

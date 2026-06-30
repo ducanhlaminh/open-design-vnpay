@@ -769,18 +769,22 @@ function displayTabFor(
     onboarding: t('settings.welcomeTitle'),
     projects: t('entry.navProjects'),
     tasks: t('entry.navTasks'),
+    pipelines: t('entry.navPipelines'),
     plugins: t('entry.navPlugins'),
     'design-systems': t('entry.navDesignSystems'),
     integrations: t('entry.navIntegrations'),
+    'remote-registry': t('entry.navRemoteRegistry'),
   };
   const entryIcon: Record<EntryHomeView, IconName> = {
     home: 'home',
     onboarding: 'sparkles',
     projects: 'folder',
     tasks: 'kanban',
+    pipelines: 'pipeline',
     plugins: 'grid',
     'design-systems': 'blocks',
     integrations: 'link',
+    'remote-registry': 'layers-filled',
   };
   return {
     id: tab.id,

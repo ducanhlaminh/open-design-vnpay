@@ -4175,9 +4175,6 @@ export function ProjectView({
             />
           </>
         )}
-        actions={(
-          null
-        )}
       >
         <div className="app-project-title">
           <span className="app-project-title-line">

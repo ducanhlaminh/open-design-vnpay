@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // @ts-nocheck
+import './load-local-env.js'; // fill missing env (KGS creds) from .env.local before anything reads it
 import { runDaemonCliStartup } from './daemon-startup.js';
 import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
 import { runArtifactsCli } from './artifacts-cli.js';
@@ -166,6 +167,18 @@ const AUTOMATION_STRING_FLAGS = new Set([
 const AUTOMATION_BOOLEAN_FLAGS = new Set([
   'help', 'h', 'json', 'disabled', 'enabled',
 ]);
+const PIPELINE_STRING_FLAGS = new Set([
+  'daemon-url', 'project', 'name', 'input',
+  // Pipeline-1 structured source (Confluence/BAS via the BAS gateway):
+  //   --source confluence --ref <page url/id>
+  //   --source bas --bas-document <kg-document-id> [--feature <id,id>]
+  'source', 'ref', 'bas-document', 'feature',
+  // Per-run design system for UI-generating stages (ui-html): --design-system <id>
+  'design-system',
+]);
+const PIPELINE_BOOLEAN_FLAGS = new Set([
+  'help', 'h', 'json',
+]);
 const MEMORY_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'description', 'type', 'body', 'body-file',
 ]);
@@ -203,8 +216,285 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
   'bundled', 'no-bundled',
 ]);
 
+const FIGMA_STRING_FLAGS = new Set(['out-dir', 'width']);
+const FIGMA_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
+
+function resolveSkillScript(req, rel) {
+  const path = req('node:path');
+  const fs = req('node:fs');
+  const { fileURLToPath } = req('node:url');
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    // apps/daemon/{dist|src} → repo root
+    path.resolve(here, '../../..', rel),
+    path.resolve(here, '../../../..', rel),
+    path.resolve(process.cwd(), rel),
+  ];
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return c; } catch { /* keep trying */ }
+  }
+  return null;
+}
+
+// `od figma copy <a.html> [<b.html> ...]` — serialize HTML artifact(s) to a Figma "HTML to
+// Design" (figh2d) clipboard payload, fully client-side via Playwright + @open-design/figma-h2d
+// (no daemon). Multiple inputs → ONE payload (paste once → sibling frames). Delegates to the
+// html-to-figma skill's copy-figma-h2d.mjs, which writes <name>.figma.html + a one-click
+// <name>.copy.html beside the first input.
+async function runFigma(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(
+      'od figma copy <a.html> [<b.html> ...] [--out-dir <dir>] [--width <px>] [--json]\n' +
+        '  HTML -> Figma clipboard payload (figh2d JSON, client-side via Playwright). Paste into\n' +
+        '  Figma, no plugin. Multiple inputs -> ONE payload (copy all màn): paste once, every\n' +
+        '  screen lands as sibling frames.',
+    );
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  if (sub !== 'copy') {
+    console.error(`unknown figma subcommand: ${sub} (expected: copy)`);
+    process.exit(2);
+  }
+  const rest = args.slice(1);
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: FIGMA_STRING_FLAGS, boolean: FIGMA_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const positionals = rest.filter((a) => a && !a.startsWith('-'));
+  if (positionals.length === 0) {
+    console.error('usage: od figma copy <artifact.html> [<artifact2.html> ...]');
+    process.exit(2);
+  }
+  const { createRequire } = await import('node:module');
+  const req = createRequire(import.meta.url);
+  const path = req('node:path');
+  const { spawnSync } = req('node:child_process');
+  // figh2d JSON, produced fully client-side by Playwright + @open-design/figma-h2d (no daemon).
+  // Multiple inputs are combined into ONE payload ("copy all màn": paste once → sibling frames).
+  const script = resolveSkillScript(req, 'skills/html-to-figma/scripts/copy-figma-h2d.mjs');
+  if (!script) {
+    console.error('không tìm thấy skills/html-to-figma/scripts/copy-figma-h2d.mjs (chạy từ trong repo)');
+    process.exit(1);
+  }
+  const h2dArgs = [script, ...positionals.map((p) => path.resolve(p))];
+  if (typeof flags['out-dir'] === 'string') h2dArgs.push('--out-dir', flags['out-dir']);
+  if (typeof flags.width === 'string') h2dArgs.push('--width', flags.width);
+  if (flags.json) h2dArgs.push('--json');
+  const run = spawnSync(process.execPath, h2dArgs, {
+    stdio: 'inherit',
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  process.exit(run.status ?? 1);
+}
+
+// `od kg …` — design-v3 KG sync (pull/push/status). Mirrors the daemon
+// /api/projects/:id/kg-* endpoints; see kg-sync-routes.ts.
+async function runKg(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od kg pull [project-id]     Pull from KGS. No id = pull ALL apps; with id = one project (graph + files).
+  od kg push [project-id]     Push to KGS. No id = push ALL mirrored apps; with id = one.
+  od kg pull-all             Pull every KGS app into the local mirror.
+  od kg push-all             Push every locally-mirrored KGS app back.
+  od kg status <project-id>   Show local mirror counts.
+  od kg remote list           List projects on the remote stores (KGS graph + media files).
+  od kg remote delete <id>    Delete a project's remote data. Requires --yes.
+
+Pull options (od kg pull <project-id>):
+  --on-conflict <mode>   How to resolve files that differ between local and remote:
+                         local (default, keep local), remote (overwrite local),
+                         or ask (list conflicts and stop without writing).
+
+Remote delete options (od kg remote delete <id>):
+  --scope <scope>      What to remove: files (default; media folder). graph/all reserved.
+  --yes                Required confirmation — remote deletion is irreversible.
+
+Common options:
+  --daemon-url <url>   Open Design daemon HTTP base.
+  --json               Emit raw JSON.`);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  const flags = parseFlags(rest, {
+    string: ['daemon-url', 'on-conflict', 'scope'],
+    boolean: ['json', 'yes'],
+  });
+  const id = rest.find((a) => !a.startsWith('-'));
+  const base = await cliDaemonBaseUrl(flags);
+
+  // Pull/push ALL: bare `od kg pull`/`push` (no id) or explicit *-all.
+  if (sub === 'pull-all' || (sub === 'pull' && !id)) {
+    const resp = await fetch(`${base}/api/kg/pull-all`, { method: 'POST' });
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    const d = data?.data ?? {};
+    console.log(`pulled ${d.pulled ?? 0} project(s) from KGS`);
+    for (const r of d.results ?? []) {
+      console.log(`  • ${r.projectId}: ${r.status} (${r.nodes ?? 0} nodes, ${r.edges ?? 0} edges, ${r.files ?? 0} files)${r.error ? ` — ${r.error}` : ''}`);
+    }
+    return;
+  }
+  if (sub === 'push-all' || (sub === 'push' && !id)) {
+    const resp = await fetch(`${base}/api/kg/push-all`, { method: 'POST' });
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    const d = data?.data ?? {};
+    console.log(`pushed ${d.pushed ?? 0} project(s) to KGS`);
+    for (const r of d.results ?? []) {
+      console.log(`  • ${r.projectId}: ${r.status} (${r.nodesPushed ?? 0} nodes, ${r.edgesPushed ?? 0} edges, ${r.filesUploaded ?? 0} files, ws:${r.workspace ?? '?'})${r.error ? ` — ${r.error}` : ''}`);
+    }
+    return;
+  }
+
+  // `od kg remote list|delete` — the remote registry (KGS + media). Handled
+  // before the per-project id guard since `remote list` takes no id.
+  if (sub === 'remote') {
+    const nonFlags = rest.filter((a) => !a.startsWith('-'));
+    const action = nonFlags[0];
+    const targetId = nonFlags[1];
+    if (action === 'list') {
+      const resp = await fetch(`${base}/api/kg/remote-projects`);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const rows = data?.data ?? [];
+      if (!rows.length) {
+        console.log('no remote projects');
+        return;
+      }
+      console.log(`${rows.length} remote project(s):`);
+      for (const r of rows) {
+        const where = [r.inKgs ? 'KGS' : null, r.inMedia ? `media:${r.files}f` : null]
+          .filter(Boolean)
+          .join(' + ');
+        const label = r.name && r.name !== r.projectId ? `${r.projectId} (${r.name})` : r.projectId;
+        console.log(`  • ${label} — ${where || 'none'}`);
+      }
+      return;
+    }
+    if (action === 'delete') {
+      if (!targetId) {
+        console.error('Usage: od kg remote delete <project-id> [--scope=files] --yes');
+        process.exit(2);
+      }
+      const scope = typeof flags.scope === 'string' ? flags.scope : 'files';
+      if (!flags.yes) {
+        console.error(`refusing to delete remote "${targetId}" (scope=${scope}) without --yes`);
+        process.exit(2);
+      }
+      const url = `${base}/api/kg/remote-projects/${encodeURIComponent(targetId)}?scope=${encodeURIComponent(scope)}`;
+      const resp = await fetch(url, { method: 'DELETE' });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const d = data?.data ?? {};
+      console.log(
+        `deleted ${d.filesDeleted ?? 0} file(s) from "${targetId}"` +
+          (d.folderRemoved ? ' (folder removed)' : ' (no media folder)'),
+      );
+      return;
+    }
+    console.error(`unknown subcommand: od kg remote ${action ?? ''} (expected: list, delete)`);
+    process.exit(2);
+  }
+
+  if (!id) {
+    console.error(`Usage: od kg ${sub} <project-id>`);
+    process.exit(2);
+  }
+  switch (sub) {
+    case 'pull': {
+      const onConflict = typeof flags['on-conflict'] === 'string' ? flags['on-conflict'] : 'local';
+      if (!['local', 'remote', 'ask'].includes(onConflict)) {
+        console.error(`invalid --on-conflict "${onConflict}" (expected: local, remote, ask)`);
+        process.exit(2);
+      }
+      // 1) Graph pull (nodes/edges into the local SQLite mirror) — unchanged.
+      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/kg-pull`, { method: 'POST' });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      const d = data?.data ?? {};
+      if (!flags.json) {
+        console.log(
+          `pulled ${d.nodes} nodes, ${d.edges} edges (${d.status})` +
+            (d.errors?.length ? ` — ${d.errors.length} errors` : ''),
+        );
+      }
+      // 2) Conflict-aware file pull (PLAN → APPLY). `ask` lists conflicts and
+      // stops; `local`/`remote` apply immediately with that default.
+      const planResp = await fetch(`${base}/api/kg/pull-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: id }),
+      });
+      if (!planResp.ok) return structuredHttpFailure(planResp);
+      const plan = (await planResp.json())?.data ?? {};
+      const conflicts = plan.conflicts ?? [];
+      if (onConflict === 'ask' && conflicts.length > 0) {
+        if (flags.json) return process.stdout.write(JSON.stringify({ ok: true, data: plan }, null, 2) + '\n');
+        console.log(
+          `${conflicts.length} file conflict(s) — nothing written. Re-run with --on-conflict=local or --on-conflict=remote:`,
+        );
+        for (const c of conflicts) console.log(`  ⚠ ${c.path} [${c.stage}] (${c.kind})`);
+        return;
+      }
+      const onConflictDefault = onConflict === 'remote' ? 'remote' : 'local';
+      const applyResp = await fetch(`${base}/api/kg/pull-apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: id, planId: plan.planId, resolutions: {}, onConflictDefault }),
+      });
+      if (!applyResp.ok) return structuredHttpFailure(applyResp);
+      const applied = (await applyResp.json())?.data ?? {};
+      if (flags.json) return process.stdout.write(JSON.stringify({ ok: true, data: applied }, null, 2) + '\n');
+      console.log(
+        `files: ${applied.downloaded ?? 0} downloaded, ${applied.keptLocal ?? 0} kept-local, ` +
+          `${applied.unchangedSkipped ?? 0} unchanged` +
+          (applied.stale?.length ? `, ${applied.stale.length} stale (remote changed — skipped)` : ''),
+      );
+      for (const s of applied.stale ?? []) console.log(`  ⚠ ${s.path}: ${s.reason}`);
+      return;
+    }
+    case 'push': {
+      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/kg-push`, { method: 'POST' });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const d = data?.data ?? {};
+      console.log(
+        `pushed ${d.nodesPushed} nodes, ${d.edgesPushed} edges (${d.status})` +
+          (d.errors?.length ? ` — ${d.errors.length} errors` : '') +
+          (d.caveats?.length ? ` — ${d.caveats.length} caveats` : ''),
+      );
+      if (!flags.json && d.caveats?.length) for (const c of d.caveats) console.log(`  ⚠ ${c}`);
+      return;
+    }
+    case 'status': {
+      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/kg-status`);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const d = data?.data ?? {};
+      console.log(`${d.nodes} nodes (${d.localNodes} local), ${d.edges} edges (${d.localEdges} local)`);
+      return;
+    }
+    default:
+      console.error(`unknown subcommand: od kg ${sub} (expected: pull, push, status)`);
+      process.exit(2);
+  }
+}
+
 const SUBCOMMAND_MAP = {
+  kg: runKg,
   artifacts: runArtifacts,
+  figma: runFigma,
   media: runMedia,
   mcp: runMcp,
   research: runResearch,
@@ -214,8 +504,11 @@ const SUBCOMMAND_MAP = {
   project: runProject,
   automation: runAutomation,
   automations: runAutomation,
+  pipeline: runPipeline,
+  pipelines: runPipeline,
   memory: runMemory,
   run: runRun,
+  feedback: runFeedback,
   files: runFiles,
   conversation: runConversation,
   daemon: runDaemon,
@@ -318,6 +611,12 @@ function printRootHelp() {
       Automations tab, so an external agent (hermes, openclaw, ...) can
       schedule, trigger, or harvest results from a routine without
       opening the web UI.
+
+  od pipeline <projects|list|run> --project <kgsProjectId> [--json]
+      Drive the docs->UI pipelines for a KGS app (pulled via od kg pull).
+      "projects" lists eligible KGS apps; "run <pipelineId>" seeds a
+      conversation with that pipeline's skill active; pipelines are gated so
+      one only runs once its prerequisites have succeeded.
 
   od memory tree <list|view|edit|move> [args]
       Inspect and edit the memory tree that is injected into agent prompts.
@@ -4445,6 +4744,46 @@ Common options:
   }
 }
 
+async function runFeedback(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od feedback pull --project <projectId> [--json]
+      Publish this install's end-user prompts to the shared media store, merge
+      every install's feedback for the project, and write
+      <projectCwd>/.feedback-merged.jsonl. Then run the summary-feedback skill
+      (or @summary-feedback in the UI) to digest it.
+
+Common options:
+  --daemon-url <url>   Open Design daemon HTTP base.
+  --json               Emit raw JSON.`);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  const flags = parseFlags(rest, { string: PROJECT_STRING_FLAGS, boolean: PROJECT_BOOLEAN_FLAGS });
+  const base = (await projectDaemonUrl(flags)).replace(/\/$/, '');
+  switch (sub) {
+    case 'pull': {
+      if (!flags.project) {
+        console.error('--project <projectId> is required');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(flags.project)}/feedback/pull`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+      });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[feedback] pulled ${data.records} prompt(s) from ${data.files} file(s) → ${data.path}`);
+      return;
+    }
+    default:
+      console.error(`Unknown subcommand: ${sub}. Try: od feedback pull --project <id>`);
+      process.exit(2);
+  }
+}
+
 async function runRun(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
@@ -5986,6 +6325,257 @@ Output:
 
 Common options:
   --daemon-url <url>   Open Design daemon HTTP base.`);
+}
+
+function printPipelineHelp() {
+  console.log(`Usage: od pipeline <new|projects|list|run|upload|pull> [options]
+
+Commands:
+  new <projectId>      Create a NEW pipeline project (projectId IS the KGS project_id). [--name "<name>"]
+  projects             List the KGS apps available for pipelines (created here or pulled via od kg pull).
+  list                 List the docs→UI pipelines for a KGS project (status + gating).
+  run <pipelineId>     Run one pipeline — seeds a conversation with its skill active.
+                       Source for pipeline 1 (jira-ingest), one of:
+                         --input "<JIRA key / JQL>"                      (legacy, via mcp-atlassian)
+                         --source confluence --ref <page url/id>          (BAS gateway)
+                         --source bas --bas-document <kg-document-id> [--feature <id,id>]  (empty = whole doc)
+                       For UI stages (ui-html): --design-system <id> applies a brand;
+                       --design-system none forces no design system; omit to use the default.
+  upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
+  pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
+
+Options:
+  --project <id>       KGS project id (required for list/run/pull). This is a KGS app
+                       pulled with 'od kg pull <id>', NOT a chat workspace.
+                       Auto-resolved from OD_PROJECT_ID when invoked by the daemon.
+  --json               Machine-readable output.
+
+Pipelines: jira-ingest → feature-analysis → (ux-spec ∥ customer-journey) → ui.
+A pipeline is only runnable once its prerequisite pipelines have succeeded.`);
+}
+
+async function runPipeline(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    printPipelineHelp();
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  let flags;
+  try {
+    flags = parseFlags(rest, {
+      string: PIPELINE_STRING_FLAGS,
+      boolean: PIPELINE_BOOLEAN_FLAGS,
+    });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  const writeJson = (data) =>
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+
+  // Positional args, skipping --flag values so `run <id> --project x` and
+  // `run --project x <id>` both resolve the id correctly.
+  const positional = [];
+  for (let i = 0; i < rest.length; i++) {
+    const value = rest[i];
+    if (!value) continue;
+    if (value.startsWith('--')) {
+      const eq = value.indexOf('=');
+      const key = eq >= 0 ? value.slice(2, eq) : value.slice(2);
+      if (eq < 0 && PIPELINE_STRING_FLAGS.has(key)) i++;
+      continue;
+    }
+    positional.push(value);
+  }
+
+  if (sub === 'projects') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/projects`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    const list = data.projects ?? [];
+    if (list.length === 0) {
+      console.log('No KGS project pulled yet. Pull one with: od kg pull <project-id>');
+      return;
+    }
+    console.log('# id\tname');
+    for (const p of list) console.log([p.id, p.name].join('\t'));
+    return;
+  }
+
+  if (sub === 'new' || sub === 'create') {
+    const id = positional[0];
+    if (!id) {
+      console.error('Usage: od pipeline new <projectId> [--name "<name>"]   (projectId IS the KGS project_id)');
+      process.exit(2);
+    }
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/projects`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId: id, name: flags.name || id }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Created pipeline project "${data.id ?? id}".`);
+    return;
+  }
+
+  const projectId = flags.project || process.env.OD_PROJECT_ID;
+  if (!projectId) {
+    console.error('Missing --project <id> (or set OD_PROJECT_ID). It must be a KGS project pulled with `od kg pull <id>` — see `od pipeline projects`.');
+    process.exit(2);
+  }
+
+  if (sub === 'list') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines?projectId=${encodeURIComponent(projectId)}`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    const pipelines = data.pipelines ?? [];
+    console.log('# id\tname\tstatus\tactive\tdependsOn');
+    for (const p of pipelines) {
+      console.log([
+        p.id,
+        p.name,
+        p.status,
+        p.active ? 'yes' : 'no',
+        (p.dependsOn ?? []).join(',') || '-',
+      ].join('\t'));
+    }
+    return;
+  }
+
+  if (sub === 'run') {
+    const pipelineId = positional[0];
+    if (!pipelineId) {
+      console.error('Usage: od pipeline run <pipelineId> --project <id>');
+      process.exit(2);
+    }
+    // Build the optional structured source (mirrors the UI's source picker). The
+    // daemon pre-fetches Confluence/BAS docs from the BAS gateway before the run.
+    let source;
+    if (flags.source === 'confluence') {
+      const ref = (flags.ref || flags.input || '').toString().trim();
+      if (!ref) {
+        console.error('Usage: od pipeline run <id> --project <id> --source confluence --ref <url/id>');
+        process.exit(2);
+      }
+      source = { kind: 'confluence', ref };
+    } else if (flags.source === 'bas') {
+      const documentId = (flags['bas-document'] || '').toString().trim();
+      const featureIds = (flags.feature || '').toString().split(',').map((s) => s.trim()).filter(Boolean);
+      if (!documentId) {
+        console.error('Usage: od pipeline run <id> --project <id> --source bas --bas-document <kg-document-id> [--feature <id,id>]');
+        process.exit(2);
+      }
+      // featureIds empty → ingest the whole document.
+      source = {
+        kind: 'bas',
+        documentId,
+        ...(featureIds.length ? { featureIds } : {}),
+      };
+    } else if (flags.source) {
+      console.error('Unknown --source; expected "confluence" or "bas".');
+      process.exit(2);
+    }
+    // Per-run design system for UI stages (ui-html): `--design-system <id>` picks
+    // a brand; `--design-system none` (or empty) forces no design system for this
+    // run; omit the flag to inherit the app-config default.
+    let designSystemId;
+    if (flags['design-system'] !== undefined) {
+      const ds = String(flags['design-system']).trim();
+      designSystemId = ds && ds.toLowerCase() !== 'none' ? ds : null;
+    }
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/${encodeURIComponent(pipelineId)}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          ...(source ? { source } : flags.input ? { input: flags.input } : {}),
+          ...(designSystemId !== undefined ? { designSystemId } : {}),
+        }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Started pipeline "${pipelineId}".`);
+    console.log(`  project:      ${data.projectId}`);
+    console.log(`  conversation: ${data.conversationId}`);
+    console.log(`  run:          ${data.agentRunId}`);
+    return;
+  }
+
+  if (sub === 'pull') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/pull-files`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Pulled ${data.pulled ?? 0} pipeline file(s) from KGS into the project workspace.`);
+    return;
+  }
+
+  if (sub === 'upload') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/upload`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(
+      `Uploaded ${data.uploaded ?? 0} file(s) to KGS` +
+        (data.converted ? `, converted ${data.converted} to graph` : '') + '.',
+    );
+    return;
+  }
+
+  console.error(`unknown subcommand: od pipeline ${sub}`);
+  printPipelineHelp();
+  process.exit(2);
 }
 
 async function runAutomation(args) {

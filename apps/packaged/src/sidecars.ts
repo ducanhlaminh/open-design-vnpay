@@ -248,6 +248,16 @@ export type PackagedDaemonSpawnEnvOptions = {
   telemetryRelayUrl?: string | null;
   posthogKey?: string | null;
   posthogHost?: string | null;
+  kgsUrl?: string | null;
+  kgsAppId?: string | null;
+  kgsTenant?: string | null;
+  kgsApiKey?: string | null;
+  mediaUrl?: string | null;
+  mediaAppId?: string | null;
+  mediaUserId?: string | null;
+  mediaUserRole?: string | null;
+  atlassianJiraToken?: string | null;
+  atlassianConfluenceToken?: string | null;
 };
 
 /**
@@ -300,6 +310,32 @@ export function buildPackagedDaemonSpawnEnv(
     ...(options.posthogHost == null || options.posthogHost.length === 0
       ? {}
       : { POSTHOG_HOST: options.posthogHost }),
+    // KGS connection baked into the bundle by tools/pack. The daemon reads
+    // these as KGS_URL/KGS_APP_ID/KGS_TENANT/KGS_API_KEY (kg-sync/kgs-client.ts)
+    // — a shipped app has no repo-root .env.local, so without this the daemon
+    // falls back to KGS_URL=localhost:28001 and all KG sync fails. Forwarded
+    // only when set so an unconfigured build keeps the daemon's own defaults.
+    ...(options.kgsUrl == null || options.kgsUrl.length === 0 ? {} : { KGS_URL: options.kgsUrl }),
+    ...(options.kgsAppId == null || options.kgsAppId.length === 0 ? {} : { KGS_APP_ID: options.kgsAppId }),
+    ...(options.kgsTenant == null || options.kgsTenant.length === 0 ? {} : { KGS_TENANT: options.kgsTenant }),
+    ...(options.kgsApiKey == null || options.kgsApiKey.length === 0 ? {} : { KGS_API_KEY: options.kgsApiKey }),
+    // media-service file store (hybrid with KGS). Same posture as KGS above:
+    // forwarded only when baked, else the daemon keeps its own defaults.
+    ...(options.mediaUrl == null || options.mediaUrl.length === 0 ? {} : { MEDIA_URL: options.mediaUrl }),
+    ...(options.mediaAppId == null || options.mediaAppId.length === 0 ? {} : { MEDIA_APP_ID: options.mediaAppId }),
+    ...(options.mediaUserId == null || options.mediaUserId.length === 0 ? {} : { MEDIA_USER_ID: options.mediaUserId }),
+    ...(options.mediaUserRole == null || options.mediaUserRole.length === 0
+      ? {}
+      : { MEDIA_USER_ROLE: options.mediaUserRole }),
+    // Atlassian tokens baked by tools/pack. The daemon reads these at startup
+    // (mcp-config.ts defaultMcpServers) to seed the mcp-atlassian stdio server.
+    // Forwarded only when set so an unconfigured build seeds no Atlassian server.
+    ...(options.atlassianJiraToken == null || options.atlassianJiraToken.length === 0
+      ? {}
+      : { OD_ATLASSIAN_JIRA_TOKEN: options.atlassianJiraToken }),
+    ...(options.atlassianConfluenceToken == null || options.atlassianConfluenceToken.length === 0
+      ? {}
+      : { OD_ATLASSIAN_CONFLUENCE_TOKEN: options.atlassianConfluenceToken }),
   };
 }
 
@@ -381,6 +417,16 @@ export async function startPackagedSidecars(
     telemetryRelayUrl: string | null;
     posthogKey: string | null;
     posthogHost: string | null;
+    kgsUrl: string | null;
+    kgsAppId: string | null;
+    kgsTenant: string | null;
+    kgsApiKey: string | null;
+    mediaUrl: string | null;
+    mediaAppId: string | null;
+    mediaUserId: string | null;
+    mediaUserRole: string | null;
+    atlassianJiraToken: string | null;
+    atlassianConfluenceToken: string | null;
     /**
      * PR #974 round-5 (lefarcen P2): caller asserts whether a desktop
      * runtime is being started in this packaged process group. The
@@ -420,6 +466,16 @@ export async function startPackagedSidecars(
         telemetryRelayUrl: options.telemetryRelayUrl,
         posthogKey: options.posthogKey,
         posthogHost: options.posthogHost,
+        kgsUrl: options.kgsUrl,
+        kgsAppId: options.kgsAppId,
+        kgsTenant: options.kgsTenant,
+        kgsApiKey: options.kgsApiKey,
+        mediaUrl: options.mediaUrl,
+        mediaAppId: options.mediaAppId,
+        mediaUserId: options.mediaUserId,
+        mediaUserRole: options.mediaUserRole,
+        atlassianJiraToken: options.atlassianJiraToken,
+        atlassianConfluenceToken: options.atlassianConfluenceToken,
       }),
       nodeCommand: options.nodeCommand,
       paths,

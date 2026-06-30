@@ -1,0 +1,1126 @@
+/* ============================================================
+   Pipelines page (/pipelines) — docs → UI flow.
+
+   A dedicated top-level surface (moved out of the Automations tab).
+   The five pipelines render as a numbered vertical stepper that
+   mirrors the DAG: jira-ingest → feature-analysis →
+   {ux-spec ∥ customer-journey} → ui. All colors come from the
+   neutral product tokens in styles/tokens.css so light/dark just work.
+   ============================================================ */
+
+:root {
+  --pl-ease: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.pipelines-page {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 40px 32px 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* ---- Hero ------------------------------------------------- */
+.pipelines-page__hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.pipelines-page__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 640px;
+}
+
+.pipelines-page__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+  border: 1px solid var(--accent-soft);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pipelines-page__title {
+  margin: 0;
+  font-size: 34px;
+  line-height: 1.1;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+}
+
+.pipelines-page__lede {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.pipelines-progress {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 104px;
+  padding: 14px 18px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.pipelines-progress__count {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.pipelines-progress__total {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+.pipelines-progress__label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+/* ---- Workflow tabs --------------------------------------- */
+.pl-workflow-tabs {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pl-workflow-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  transition: border-color 0.18s var(--pl-ease), background 0.18s var(--pl-ease),
+    box-shadow 0.18s var(--pl-ease), transform 0.18s var(--pl-ease);
+}
+
+.pl-workflow-tab:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.pl-workflow-tab.is-active {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.pl-workflow-tab__name {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
+.pl-workflow-tab.is-active .pl-workflow-tab__name {
+  color: var(--accent-strong);
+}
+
+.pl-workflow-tab__desc {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+/* ---- Toolbar --------------------------------------------- */
+.pipelines-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.pipelines-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pipelines-toolbar__group--actions {
+  justify-content: flex-end;
+}
+
+.pl-field__label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+/* ---- Req 1+2: KGS project selection cards ---------------- */
+.pipelines-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pl-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.pl-proj-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: left;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  transition: border-color 0.18s var(--pl-ease), box-shadow 0.18s var(--pl-ease),
+    transform 0.18s var(--pl-ease), background 0.18s var(--pl-ease);
+}
+
+.pl-proj-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.pl-proj-card.is-selected {
+  border-color: var(--selected);
+  box-shadow: 0 0 0 3px var(--selected-soft);
+}
+
+.pl-proj-card__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-soft);
+}
+
+.pl-proj-card__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14.5px;
+  font-weight: 620;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pl-proj-card__check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-pill);
+  background: var(--selected);
+  color: #fff;
+}
+
+.pl-proj-card__progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-proj-card__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--text-faint);
+}
+
+.pl-proj-card__dot[data-complete='yes'] {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-bg);
+}
+
+/* New-project card — dashed affordance at the end of the grid */
+.pl-proj-card--new {
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: var(--bg-app);
+  color: var(--text-muted);
+  font-size: 13.5px;
+  font-weight: 600;
+  box-shadow: none;
+  min-height: 78px;
+}
+
+.pl-proj-card--new:hover {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+
+/* Inputs */
+.pl-input {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-app);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.16s var(--pl-ease), box-shadow 0.16s var(--pl-ease);
+}
+
+.pl-input::placeholder {
+  color: var(--text-faint);
+}
+
+.pl-input:focus {
+  outline: none;
+  border-color: var(--selected);
+  box-shadow: 0 0 0 3px var(--selected-soft);
+}
+
+.pl-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Buttons */
+.pl-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 560;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.16s var(--pl-ease), border-color 0.16s var(--pl-ease),
+    transform 0.12s var(--pl-ease), box-shadow 0.16s var(--pl-ease), color 0.16s var(--pl-ease);
+}
+
+.pl-btn > svg {
+  color: var(--text-soft);
+  transition: color 0.16s var(--pl-ease);
+}
+
+.pl-btn:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.pl-btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.pl-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pl-btn--xs {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 540;
+}
+
+.pl-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.pl-btn--primary > svg {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.pl-btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.pl-btn--primary > svg {
+  color: #fff;
+}
+
+/* Run button — accent-tinted "go" affordance on each step */
+.pl-btn--run {
+  background: var(--accent-tint);
+  border-color: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.pl-btn--run > svg {
+  color: var(--accent);
+}
+
+.pl-btn--run:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.pl-btn--run:hover:not(:disabled) > svg {
+  color: #fff;
+}
+
+/* Danger — cancel run / view error */
+.pl-btn--danger {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red);
+}
+
+.pl-btn--danger > svg {
+  color: var(--red);
+}
+
+.pl-btn--danger:hover:not(:disabled) {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+
+.pl-btn--danger:hover:not(:disabled) > svg {
+  color: #fff;
+}
+
+/* ---- Error / empty --------------------------------------- */
+.pipelines-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--red-bg);
+  border: 1px solid var(--red-border);
+  color: var(--red);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.pipelines-error > svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.pipelines-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 28px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  border: 1px dashed var(--border-strong);
+}
+
+.pipelines-empty__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius);
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+}
+
+.pipelines-empty__body strong {
+  display: block;
+  font-size: 15px;
+  color: var(--text-strong);
+  margin-bottom: 4px;
+}
+
+.pipelines-empty__body p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.pipelines-empty__body code {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-muted);
+  color: var(--text);
+}
+
+.pipelines-empty__hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-soft);
+  text-align: center;
+}
+
+/* ---- Stepper flow ---------------------------------------- */
+.pipelines-flow {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pl-step {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 16px;
+  position: relative;
+}
+
+/* Spine: node circle + connector line down to the next step */
+.pl-step__spine {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 18px; /* aligns node with the card's first line */
+}
+
+.pl-step__node {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-panel);
+  border: 1.5px solid var(--border-strong);
+  color: var(--text-soft);
+  z-index: 1;
+  transition: background 0.2s var(--pl-ease), border-color 0.2s var(--pl-ease),
+    color 0.2s var(--pl-ease);
+}
+
+.pl-step__num {
+  font-size: 13px;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-step__connector {
+  flex: 1 1 auto;
+  width: 2px;
+  min-height: 28px;
+  margin: 4px 0;
+  background: var(--border);
+  border-radius: 2px;
+  transition: background 0.2s var(--pl-ease);
+}
+
+/* Card */
+.pl-step__card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
+  transition: border-color 0.18s var(--pl-ease), box-shadow 0.18s var(--pl-ease),
+    transform 0.18s var(--pl-ease);
+}
+
+.pl-step__card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.pl-step__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  transition: background 0.2s var(--pl-ease), color 0.2s var(--pl-ease);
+}
+
+.pl-step__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pl-step__heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pl-step__name {
+  font-size: 15px;
+  font-weight: 620;
+  color: var(--text-strong);
+}
+
+.pl-step__desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.pl-step__lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-soft);
+}
+
+.pl-step__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Status pill */
+.pl-status {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+}
+
+.pl-status--idle,
+.pl-status--queued,
+.pl-status--canceled {
+  background: var(--bg-muted);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.pl-status--running {
+  background: var(--amber-bg);
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 28%, transparent);
+}
+
+.pl-status--succeeded {
+  background: var(--green-bg);
+  color: var(--green);
+  border-color: var(--green-border);
+}
+
+.pl-status--failed {
+  background: var(--red-bg);
+  color: var(--red);
+  border-color: var(--red-border);
+}
+
+/* ---- Per-status spine + card styling --------------------- */
+/* Done */
+.pl-step[data-status='succeeded'] .pl-step__node {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green);
+}
+.pl-step[data-status='succeeded'] .pl-step__connector {
+  background: var(--green-border);
+}
+.pl-step[data-status='succeeded'] .pl-step__icon {
+  background: var(--green-bg);
+  color: var(--green);
+}
+
+/* Running — accent node with a soft pulse */
+.pl-step[data-status='running'] .pl-step__node {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  animation: pl-pulse 1.6s var(--pl-ease) infinite;
+}
+.pl-step[data-status='running'] .pl-step__card {
+  border-color: var(--accent-soft);
+}
+.pl-step[data-status='running'] .pl-step__icon {
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+}
+
+/* Failed */
+.pl-step[data-status='failed'] .pl-step__node {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red);
+}
+
+/* Locked — gated by an unfinished dependency */
+.pl-step[data-active='no'] .pl-step__card {
+  background: var(--bg-app);
+  border-style: dashed;
+  opacity: 0.92;
+}
+.pl-step[data-active='no'] .pl-step__name {
+  color: var(--text-muted);
+}
+.pl-step[data-active='no'] .pl-step__icon {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-faint);
+}
+
+@keyframes pl-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--accent-soft);
+  }
+  50% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+}
+
+/* ---- Skeleton loading ------------------------------------ */
+.pl-step--skeleton .pl-step__node {
+  background: var(--bg-muted);
+  border-color: var(--border);
+}
+
+.pl-step--skeleton .pl-step__card {
+  height: 74px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-subtle) 0%,
+    var(--bg-muted) 50%,
+    var(--bg-subtle) 100%
+  );
+  background-size: 200% 100%;
+  animation: pl-shimmer 1.4s linear infinite;
+  border-color: var(--border-soft);
+}
+
+.pipelines-flow--loading .pl-step__spine {
+  padding-top: 22px;
+}
+
+@keyframes pl-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* ============================================================
+   Modals (new-project / run-input / status / quick-result)
+   ============================================================ */
+.pl-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(20, 18, 16, 0.42);
+  backdrop-filter: blur(2px);
+  animation: pl-fade-in 0.16s var(--pl-ease);
+}
+
+.pl-modal {
+  width: 100%;
+  max-width: 460px;
+  max-height: min(86vh, 720px);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  animation: pl-pop-in 0.2s var(--pl-ease);
+}
+
+.pl-modal--md {
+  max-width: 580px;
+}
+
+.pl-modal--lg {
+  max-width: 900px;
+}
+
+.pl-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.pl-modal__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
+.pl-modal__title > svg {
+  color: var(--accent-strong);
+}
+
+.pl-modal__close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: background 0.16s var(--pl-ease), color 0.16s var(--pl-ease);
+}
+
+.pl-modal__close:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+
+.pl-modal__body {
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.pl-modal__foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.pl-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.pl-modal-field__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pl-modal-field .pl-input {
+  width: 100%;
+  height: 38px;
+}
+
+.pl-modal-field__hint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+
+/* Design-system picker embedded in the ui-html run modal. The shared
+   ProjectDesignSystemPicker trigger is a compact header pill by default; the
+   --ds field modifier promotes it to a full-width form control matching
+   .pl-input so the run modal reads as one consistent form. Its portaled popover
+   and live-preview pane keep their own styling. */
+.pl-modal-field--ds .project-ds-picker {
+  display: flex;
+  width: 100%;
+}
+.pl-modal-field--ds .project-ds-picker-trigger {
+  width: 100%;
+  max-width: none;
+  min-height: 38px;
+  justify-content: flex-start;
+  gap: 9px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-app);
+  color: var(--text-strong);
+  font-size: 13px;
+}
+.pl-modal-field--ds .project-ds-picker-trigger:hover:not(:disabled) {
+  border-color: var(--selected);
+}
+.pl-modal-field--ds .project-ds-picker.open .project-ds-picker-trigger {
+  border-color: var(--selected);
+  box-shadow: 0 0 0 3px var(--selected-soft);
+}
+.pl-modal-field--ds .project-ds-picker-label {
+  flex: 1 1 auto;
+  text-align: left;
+}
+/* Chevron stays pinned to the right edge of the full-width control. */
+.pl-modal-field--ds .project-ds-picker-trigger > svg:last-child {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+/* Swatch chips read a touch larger at form-control size. */
+.pl-modal-field--ds .project-ds-picker-swatch {
+  width: 12px;
+  height: 12px;
+}
+
+.pl-modal-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--red-bg);
+  border: 1px solid var(--red-border);
+  color: var(--red);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.pl-modal-error > svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.pl-modal-empty {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* Status modal */
+.pl-status-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pl-status-detail__badge {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--radius-pill);
+  font-size: 12.5px;
+  font-weight: 650;
+  border: 1px solid transparent;
+}
+
+.pl-status-detail__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+  margin: 0;
+}
+
+.pl-status-detail__meta dt {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+  margin-bottom: 3px;
+}
+
+.pl-status-detail__meta dd {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--text-strong);
+}
+
+.pl-mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.pl-status-detail__error {
+  margin: 0;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--red-bg);
+  border: 1px solid var(--red-border);
+  color: var(--red);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 200px;
+}
+
+.pl-status-detail__hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+
+/* Quick-result file list */
+.pl-result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pl-result-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+}
+
+.pl-result-row__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}
+
+.pl-result-row__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes pl-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes pl-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+
+/* ---- Responsive ------------------------------------------ */
+@media (max-width: 760px) {
+  .pipelines-page {
+    padding: 28px 18px 72px;
+  }
+  .pipelines-page__hero {
+    flex-direction: column;
+  }
+  .pipelines-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pipelines-toolbar__group--actions {
+    justify-content: flex-start;
+  }
+  .pl-step__card {
+    flex-wrap: wrap;
+  }
+  .pl-step__actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .pl-step__input {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: none;
+  }
+}
+
+/* ---- Project-card running spinner + per-stage last-run ------------------- */
+@keyframes pl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.pl-proj-card__running {
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent, #0066b3);
+  animation: pl-spin 0.9s linear infinite;
+  transform-origin: center;
+}
+.pl-step__lastrun {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+}
+

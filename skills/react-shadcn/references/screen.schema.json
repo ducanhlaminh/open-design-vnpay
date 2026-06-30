@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-design.local/skills/react-shadcn/screen.schema.json",
+  "title": "react-shadcn screen.json",
+  "description": "Content tree consumed by the skill shell (assets/shell.html). Ported from design-v3's xpos-screens.schema.json, relaxed to the three top-level forms the shell's extractScreen() accepts: {screen:{...}} | {roots:[...]} | [...roots]. Component slugs are NOT enumerated here — builder/validate.mjs checks them against PRIMITIVE_SLUGS in builder/app-shell-block.jsx (single source).",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["screen"],
+      "properties": {
+        "$schema": { "type": "string" },
+        "__provenance": {
+          "type": "object",
+          "description": "Stamp written by ui_screen_export (graph -> JSON). builder/validate.mjs gates on it so the KG-first pipeline is not silently skipped.",
+          "properties": {
+            "tool": { "const": "ui_screen_export" },
+            "workspaceId": { "type": "string" },
+            "screenSlug": { "type": "string" },
+            "exportedAt": { "type": "string" }
+          }
+        },
+        "version": { "type": "integer" },
+        "source": { "type": "string" },
+        "screen": { "$ref": "#/$defs/screen" }
+      },
+      "additionalProperties": false
+    },
+    { "$ref": "#/$defs/screen" },
+    {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/node" }
+    }
+  ],
+  "$defs": {
+    "screen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roots"],
+      "properties": {
+        "$schema": { "type": "string" },
+        "slug": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "category": { "enum": ["mobile", "web"] },
+        "viewport": {
+          "enum": ["mobile", "desktop"],
+          "description": "mobile (default) = mobile-first column capped at 480px, no device frame; desktop = full-bleed"
+        },
+        "roots": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/node" }
+        },
+        "flow": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/flowEdge" }
+        }
+      }
+    },
+    "flowEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "type"],
+      "properties": {
+        "from": { "type": "string", "minLength": 1, "description": "id of the trigger node in this screen" },
+        "to": { "type": "string", "minLength": 1, "description": "slug of the target screen" },
+        "type": { "enum": ["navigate", "showDialog", "closeDialog"] },
+        "label": { "type": "string" }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [
+        { "required": ["componentSlug"] },
+        { "required": ["component"] }
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "optional; used as the React key and as flow.from anchor" },
+        "componentSlug": { "type": "string", "minLength": 1, "description": "PascalCase export name (Button, InputGroupInput) or HTML fallback tag (div, span, …)" },
+        "component": { "type": "string", "minLength": 1, "description": "kebab-case alias accepted by the shell (design-v3 render-tree field)" },
+        "label": { "type": "string" },
+        "text": { "type": "string", "description": "leaf text content, rendered before children" },
+        "props": { "type": "object", "additionalProperties": true },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    }
+  }
+}

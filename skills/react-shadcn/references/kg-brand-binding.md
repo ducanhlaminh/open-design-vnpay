@@ -1,8 +1,15 @@
-# Reskin brand từ Knowledge Graph (sm-mcp) — bind VERBATIM, đủ 7 layer
+# Reskin brand từ Knowledge Graph (kg-local) — bind VERBATIM, đủ 7 layer
+
+> 🚦 **Cập nhật OUTPUT POLICY:** artifact KHÔNG còn ghi `brand.css`. Theme do **host
+> `preview-runtime-v3` resolve** lúc render (ThemeLab đọc composition của màn từ KG).
+> Doc này giờ dùng để **author/đảm bảo GIÁ TRỊ token đủ 7 layer trong KG** + gắn đúng
+> composition cho màn — KHÔNG phải để fill css ra file cạnh `screen.json`. Mọi bước
+> "ghi `<artifact>/brand.css`" bên dưới là LỊCH SỬ (standalone shell), bỏ qua khi output
+> chỉ `screen.json`.
 
 > Tài liệu nguồn-sự-thật khi muốn đổi tông màu/brand của artifact sang **một
 > design system thật trong KG** (vd "VNPAY Glass"). Token KG là source of truth —
-> **không bao giờ chế giá trị**. Pull rồi bind nguyên văn vào `:root`/`html.dark`.
+> **không bao giờ chế giá trị**. Giá trị token bind ở host (`:root`/`html.dark`).
 
 ## ⚠️ Lỗi kinh điển: chỉ lấy layer màu → style SAI so với KG
 
@@ -11,16 +18,23 @@ Một composition trong KG **KHÔNG phải chỉ là màu**. Nó là **một ch�
 control density… → component ra **lệch hẳn** so với data thật (bo góc sai, control
 thấp, font sai). **BẮT BUỘC pull TẤT CẢ layer của composition, không chỉ color.**
 
-## Công cụ (MCP server `sm-mcp`)
+## Công cụ (MCP server `kg-local` — Neo4j LOCAL của project)
 
-- `kg_search "<text>"` — tìm node theo ngôn ngữ tự nhiên (vd composition id).
-- `kg_get_theme_composition(composition_id)` — meta composition.
-- `kg_cypher_read(cypher, params?)` — query Cypher read-only (≤200 dòng, 10s).
-  Server tự inject `$app_id`/`$tenant_id`. **Tên tham số là `cypher`** (không phải `query`).
+> Server cũ `sm-mcp` (gọi chéo sang dự án vpn-design-main) đã RETIRED. Toàn bộ
+> subgraph UI (theme, composition, token value, component catalog, screen XPOS)
+> đã được **clone về Neo4j local** (`pnpm tools-kg clone`); MCP `kg-local`
+> (định nghĩa trong `.od/mcp-config.json`, source `tools/kg/`) là đường truy
+> cập duy nhất. Re-sync khi design KG nguồn đổi: `pnpm tools-kg clone --refresh`.
 
-Nếu tool `kg_*` chưa xuất hiện: `sm-mcp` chưa được nạp vào session. Add server
-(stdio `sm-mcp`, env `KGS_*`/`NEO4J_*` — xem `.od/mcp-config.json`) rồi **mở lại
-session** (MCP chỉ nạp tool lúc khởi động).
+- `kg_cypher_read({query, params?, limit?})` — Cypher read-only (write clause bị
+  chặn). **Tên tham số là `query`.** Không cần `$app_id`/`$tenant_id`.
+- `kg_find({term, label?, limit?})` — tìm node theo substring trên
+  name/slug/componentSlug (thay cho `kg_search` semantic cũ).
+- Meta composition: dùng thẳng Cypher (xem các query dưới) — không còn tool
+  `kg_get_theme_composition` riêng.
+
+Nếu tool `kg_*` chưa xuất hiện: mở lại session (MCP chỉ nạp tool lúc khởi
+động). Neo4j local phải đang chạy: `pnpm tools-kg neo4j status`.
 
 ## Composition "VNPAY Glass" — 7 layer (ws-project-XPOS)
 
@@ -158,6 +172,28 @@ parse ra: màu nền (`--card`/`--popover`) + `backdrop-filter` (blur 28/24 + sa
 
 Mọi giá trị (blur, shadow, hairline gradient, mask) **resolve từ rawValue KG**, biến
 `--glass-*` tách **light/dark** để toggle không cần rebuild.
+
+## ⚡ Kiến trúc 3 tầng mới: structure ở SHELL, brand.css chỉ chở GIÁ TRỊ
+
+Từ bản nâng cấp "Token từ KG, sáng tác mức A": các block structural ([data-slot]
+glass/control/tabs) đã chuyển **vĩnh viễn vào shell** (`builder/shell-structural.css`,
+mọi var có fallback = cỡ gốc component nên composition phẳng tự degrade). Reskin
+artifact giờ KHÔNG đụng shell: lấy `cssVars` từ `ui_tokens_get` (hoặc
+`tools-kg css <comp> --vars-only`) → ghi `<artifact>/brand.css` hoặc dán slot
+`<style id="brand">`. Default values của shell sinh từ
+`assets/vnpay-glass-vars.css` (regenerate: `pnpm tools-kg css <glass-comp-id>
+--vars-only --out skills/react-shadcn/assets/vnpay-glass-vars.css`).
+
+## Tạo BRAND/STYLE MỚI trong KG local (không cần sửa make-showcase.mjs)
+
+Từ khi có style-authoring tools trên MCP `kg-local`, reskin **không còn phải dán
+rawValue vào `make-showcase.mjs`**: tạo theme/composition ngay trong KG local
+(`ui_theme_upsert` based-on layer cũ → `ui_token_values_set` override →
+`ui_composition_upsert` mix với layer clone → `ui_composition_export_css` ra
+stylesheet cùng shape `vnpay-glass.css`). Resolver (`tools/kg/src/kg-css.ts`) là
+bản port verbatim của `kgRawValueToCss` dưới đây — 2 nơi phải giữ sync. Quy
+trình chi tiết + ví dụ emerald đã verify: `references/screen-graph-authoring.md`
+mục "Style authoring".
 
 ## Triển khai chuẩn (single source) + cách regenerate
 

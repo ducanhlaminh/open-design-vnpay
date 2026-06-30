@@ -1,4 +1,13 @@
 import type { Express } from 'express';
+import type {
+  BasDocument,
+  BasFeature,
+  ConfluencePageMeta,
+  PipelineRunSource,
+  PullApplyResult,
+  PullPlan,
+  PullResolution,
+} from '@open-design/contracts';
 import type { SkillInfo } from './skills.js';
 import type { DesignSystemSummary } from './design-systems.js';
 import type { RoutineRoutesService } from './routine-routes.js';
@@ -53,6 +62,58 @@ export interface RoutineDeps {
   routineService: RoutineRoutesService;
 }
 
+export interface PipelineDeps {
+  // Seed a new conversation in `projectId` with `pipelineId`'s skill active and
+  // start the agent run. Wired in server.ts (needs design.runs + startChatRun).
+  // `source` (Confluence/BAS) is pre-fetched from the BAS gateway into the
+  // project cwd BEFORE the run, so pipeline 1 normalizes local files.
+  runPipeline(
+    projectId: string,
+    pipelineId: string,
+    input?: string,
+    source?: PipelineRunSource,
+    // Per-run design system for UI stages (`ui-html`). undefined → inherit the
+    // app-config default; string id / null ("none") override it for this run.
+    designSystemId?: string | null,
+  ): Promise<{
+    projectId: string;
+    conversationId: string;
+    agentRunId: string;
+  }>;
+  // BAS MCP gateway reads for the Pipelines source-selection modal. Each resolves
+  // the endpoint from env / mcp-config and proxies one BAS tool (server-side, so
+  // the token never reaches the browser). Throw when BAS is not configured.
+  // The BAS branch is KG-document-centric: list documents, then a document's
+  // features (the gateway exposes no project→feature link).
+  bas: {
+    listDocuments(): Promise<BasDocument[]>;
+    listFeatures(documentId: string): Promise<BasFeature[]>;
+    confluenceMeta(ref: string): Promise<ConfluencePageMeta>;
+  };
+  // Regenerate the project's pipeline files from the KGS file store into the
+  // local project cwd (cross-device "pull to continue"). Wired in server.ts.
+  pullFiles(projectId: string): Promise<{ pulled: number }>;
+  // Manual upload: push the project's current output files to the KGS file
+  // store (+ B2 convert for convertToGraph stages). Wired in server.ts.
+  uploadFiles(projectId: string): Promise<{ uploaded: number; converted: number }>;
+  // List the project cwd's output file paths (cwd-relative). Used to derive
+  // "done" stage state from on-disk outputs, offline-safe. Wired in server.ts.
+  localOutputs(projectId: string): Promise<string[]>;
+  // Conflict-aware pull (PLAN → APPLY). `plan` classifies remote vs local
+  // without writing disk; `apply` downloads chosen-remote + new files against a
+  // prior plan's snapshot (TOCTOU-guarded). Wired in server.ts. See
+  // docs/guides/pull-conflict-resolution-spec.md.
+  pullConflict: {
+    plan(projectId: string): Promise<PullPlan>;
+    apply(
+      projectId: string,
+      planId: string,
+      resolutions: Record<string, PullResolution>,
+      onConflictDefault?: PullResolution,
+    ): Promise<PullApplyResult>;
+  };
+}
+
 export interface TelemetryDeps {
   reportFinalizedMessage: (saved: any, body?: any) => void;
   /**
@@ -101,6 +162,7 @@ export interface ServerContext {
   mcp: any;
   resources: ResourceDeps;
   routines: RoutineDeps;
+  pipelines: PipelineDeps;
   telemetry?: TelemetryDeps;
   validation: any;
   finalize: any;

@@ -9,6 +9,7 @@ import type { RegisterMcpRoutesDeps } from './mcp-routes.js';
 import type { RegisterMediaRoutesDeps } from './media-routes.js';
 import type { RegisterProjectArtifactRoutesDeps, RegisterProjectFileRoutesDeps, RegisterProjectRoutesDeps, RegisterProjectUploadRoutesDeps } from './project-routes.js';
 import type { RegisterRoutineRoutesDeps } from './routine-routes.js';
+import type { RegisterPipelineRoutesDeps } from './pipeline-routes.js';
 import type { RegisterStaticResourceRoutesDeps } from './static-resource-routes.js';
 
 type AllRegisteredRouteDeps =
@@ -28,6 +29,7 @@ type AllRegisteredRouteDeps =
   & RegisterProjectRoutesDeps
   & RegisterProjectUploadRoutesDeps
   & RegisterRoutineRoutesDeps
+  & RegisterPipelineRoutesDeps
   & RegisterStaticResourceRoutesDeps;
 
 type Assert<T extends true> = T;

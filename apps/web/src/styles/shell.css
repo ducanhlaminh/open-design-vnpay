@@ -10,7 +10,8 @@
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto 1fr;
   height: 100vh;
-  background: var(--bg-app);
+  background: var(--app-bg-gradient, var(--bg-app));
+  background-attachment: fixed;
   overflow: hidden;
 }
 .app > .split {
@@ -26,7 +27,8 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 36px minmax(0, 1fr);
-  background: var(--bg-app);
+  background: var(--app-bg-gradient, var(--bg-app));
+  background-attachment: fixed;
   overflow: hidden;
 }
 .workspace-shell__body {

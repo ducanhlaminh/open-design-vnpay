@@ -108,6 +108,16 @@ async function main(): Promise<void> {
     telemetryRelayUrl: config.telemetryRelayUrl,
     posthogKey: config.posthogKey,
     posthogHost: config.posthogHost,
+    kgsUrl: config.kgsUrl,
+    kgsAppId: config.kgsAppId,
+    kgsTenant: config.kgsTenant,
+    kgsApiKey: config.kgsApiKey,
+    mediaUrl: config.mediaUrl,
+    mediaAppId: config.mediaAppId,
+    mediaUserId: config.mediaUserId,
+    mediaUserRole: config.mediaUserRole,
+    atlassianJiraToken: config.atlassianJiraToken,
+    atlassianConfluenceToken: config.atlassianConfluenceToken,
     // PR #974 round-5 (lefarcen P2): the Electron entry runs desktop
     // main alongside the daemon, so the import-folder gate must be
     // pinned ON from request 0. See `apps/packaged/src/headless.ts` for

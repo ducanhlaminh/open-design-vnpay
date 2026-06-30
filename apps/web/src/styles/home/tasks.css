@@ -855,12 +855,10 @@
 }
 
 .automation-template-card:hover {
-  background: color-mix(in srgb, var(--bg-panel) 86%, var(--bg-subtle));
+  background: var(--bg-panel);
   border-color: var(--border-strong);
-  transform: translateY(-2px);
-  box-shadow:
-    0 1px 2px color-mix(in srgb, #000 3%, transparent),
-    0 10px 24px color-mix(in srgb, #000 5%, transparent);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
 }
 
 .automation-template-card:active {
@@ -876,11 +874,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
   background: var(--bg-subtle);
   color: var(--text-muted);
+  transition:
+    background-color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    color 160ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .automation-template-card.is-orbit .automation-template-card__icon {
@@ -930,11 +931,28 @@
 .automation-template-card__cta {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  align-self: flex-start;
   margin-top: auto;
-  color: color-mix(in srgb, var(--accent, #79a8ff) 78%, var(--text));
-  font-size: 12px;
-  font-weight: 700;
+  padding: 5px 11px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11.5px;
+  font-weight: 650;
+  transition:
+    background-color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* Card hover lifts the CTA into a solid accent pill (mirrors the pipelines
+   run-button affordance) so the whole card reads as one click target. */
+.automation-template-card:hover .automation-template-card__cta {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 /* ============================================================
@@ -949,8 +967,8 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: color-mix(in srgb, var(--scrim, rgba(0, 0, 0, 0.45)) 92%, transparent);
-  backdrop-filter: blur(3px);
+  background: rgba(20, 18, 16, 0.42);
+  backdrop-filter: blur(2px);
   animation: automation-modal-fade-in 160ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
@@ -966,11 +984,9 @@
   width: min(880px, calc(100vw - 64px));
   max-height: min(680px, calc(100vh - 48px));
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-elevated, var(--bg-panel));
-  box-shadow:
-    0 24px 60px color-mix(in srgb, #000 30%, transparent),
-    0 1px 0 color-mix(in srgb, #fff 5%, transparent) inset;
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
   animation: automation-modal-pop-in 200ms cubic-bezier(0.23, 1, 0.32, 1);
 }

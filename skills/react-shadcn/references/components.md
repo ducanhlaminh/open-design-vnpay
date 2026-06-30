@@ -1,5 +1,12 @@
 # Component inventory — VNPAY UI set (verbatim)
 
+> ✅ **Whitelist = đầy đủ subpart**: mọi component/subpart liệt kê dưới đây đều
+> mount được qua `componentSlug` trong screen.json (PRIMITIVE_SLUGS trong
+> `builder/app-shell-block.jsx` phủ hết export của bundle), **TRỪ** họ `Form*`
+> (react-hook-form — xem mục Forms) và các non-component (`buttonVariants`,
+> `useCarousel`, `CarouselApi`…). Check nhanh trước khi render:
+> `node builder/validate.mjs <file.screen.json>`.
+
 > These are the REAL components, bundled verbatim from
 > `vpn-design-main/ui/preview/preview-runtime-v3/src/components/ui` (Base UI +
 > radix-ui, Tailwind v4 tokens). You do NOT copy their source — they are already
@@ -40,7 +47,7 @@ are all available before your `<script type="text/babel">` runs. **Do not
 
 **Data display**: `Avatar AvatarImage AvatarFallback AvatarBadge AvatarGroup AvatarGroupCount`
 
-**Forms (react-hook-form)**: `Form FormField FormItem FormLabel FormControl FormDescription FormMessage` · `Field FieldSet FieldLegend FieldGroup FieldLabel FieldTitle FieldDescription FieldError FieldContent FieldSeparator`
+**Forms (react-hook-form — ⚠️ KHÔNG mount được từ screen.json)**: `Form FormField FormItem FormLabel FormControl FormDescription FormMessage` cần function props / form context (useForm) mà cây JSON không diễn đạt được → slug `Form*` ra badge đỏ. Dùng họ `Field*` + `Input/Select/...` thay thế; slug `"form"` (thường) mount `<form>` HTML. · `Field FieldSet FieldLegend FieldGroup FieldLabel FieldTitle FieldDescription FieldError FieldContent FieldSeparator` ✅ mount tốt
 
 **Media / motion**: `Carousel CarouselContent CarouselItem CarouselPrevious CarouselNext`
 
@@ -76,8 +83,9 @@ the DOM.
 ### Brand thật từ KG (VNPAY Glass) — pull đủ 7 layer
 
 Default theme trong bundle chỉ là tông sẵn để preview. Muốn artifact mang **design
-system thật trong KG**, KHÔNG tự chế giá trị: pull qua `sm-mcp` rồi bind verbatim vào
-`:root`/`html.dark`. **Phải lấy CẢ 7 layer** của composition (spacing · radius ·
+system thật trong KG**, KHÔNG tự chế giá trị: pull qua MCP `kg-local` (Neo4j local
+của project, clone từ design KG — xem `references/kg-brand-binding.md`) rồi bind
+verbatim vào `:root`/`html.dark`. **Phải lấy CẢ 7 layer** của composition (spacing · radius ·
 typography · control-density · color · icon · brand), không chỉ layer màu — nếu thiếu,
 radius/font/chiều-cao-control sẽ sai so với KG. Lưu ý 2 điểm bộ component này KHÔNG tự
 xử được, phải bind thêm:

@@ -720,9 +720,11 @@ export interface Dict {
   'entry.navHome': string;
   'entry.navProjects': string;
   'entry.navTasks': string;
+  'entry.navPipelines': string;
   'entry.navPlugins': string;
   'entry.navDesignSystems': string;
   'entry.navIntegrations': string;
+  'entry.navRemoteRegistry': string;
   'workspaceTabs.project': string;
   'workspaceTabs.pluginDetails': string;
   'workspaceTabs.marketplace': string;
@@ -1886,6 +1888,10 @@ export interface Dict {
   'sketch.tooltipDirty': string;
   'sketch.tooltipClean': string;
   'fileViewer.empty': string;
+  'fileViewer.copyToFigma': string;
+  'fileViewer.copyToFigmaBusy': string;
+  'fileViewer.copyToFigmaDone': string;
+  'fileViewer.copyToFigmaError': string;
   'fileViewer.loading': string;
   'fileViewer.exportPptx': string;
   'fileViewer.openInNewTab': string;

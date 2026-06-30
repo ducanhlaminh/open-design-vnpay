@@ -40,6 +40,15 @@ export interface AppConfigPrefs {
   privacyDecisionAt?: number | null;
   orbit?: OrbitConfigPrefs;
   customInstructions?: string | null;
+  /**
+   * Display name stamped on this install's feedback prompts when they are
+   * published to the shared media-service feedback log (one
+   * `feedback/<user>.jsonl` per install, merged at summary time). Lets the
+   * cross-user feedback digest attribute each prompt to a person, since the
+   * daemon has no end-user identity of its own. Falls back to the
+   * media-service user id when unset.
+   */
+  feedbackUsername?: string | null;
 }
 
 export interface AppConfigResponse {

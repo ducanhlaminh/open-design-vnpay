@@ -69,11 +69,25 @@ const ICON_TOKEN_TO_LUCIDE = {
   "asset.icon.help": "CircleHelp",
 };
 
-/* <Asset token="asset.icon.add"/> -> a Lucide icon, or a labelled placeholder. */
+/* asset.icon.<kebab-name> -> PascalCase Lucide export name (arrow-up-right ->
+   ArrowUpRight). Lets any icon token resolve without a manual table entry;
+   ICON_TOKEN_TO_LUCIDE stays only for names that don't map 1-1. */
+function iconTokenToPascal(path) {
+  const m = /^asset\.icon\.(.+)$/.exec(path || "");
+  if (!m) return null;
+  return m[1]
+    .split(/[-_.]/)
+    .filter(Boolean)
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+    .join("");
+}
+
+/* <Asset token="asset.icon.add"/> -> a Lucide icon, or a labelled placeholder.
+   Lookup order: explicit table -> PascalCase auto-derivation -> placeholder. */
 function AssetPrimitive(props) {
   const { token, value, className, title, children, ...rest } = props;
   const path = token || value || "";
-  const name = ICON_TOKEN_TO_LUCIDE[path];
+  const name = ICON_TOKEN_TO_LUCIDE[path] || iconTokenToPascal(path);
   const Icon = name ? Lucide[name] : null;
   if (Icon) {
     return React.createElement(Icon, {
@@ -112,49 +126,62 @@ for (const name of Object.keys(UI)) {
   }
 }
 
-/* design-v3's curated primitive whitelist — the exact keys of its
-   COMPONENT_PRIMITIVES map. Only these slugs render; anything else falls to a
-   red "?slug" badge, identical to design-v3 (no generic UI[slug] mounting). */
+/* Curated primitive whitelist — design-v3's COMPONENT_PRIMITIVES keys extended
+   to cover EVERY component subpart the prebuilt bundle actually exports
+   (close/overlay/portal slots, select-group, tooltip-provider, progress parts,
+   …). Still whitelist-only: anything outside falls to a red "?slug" badge.
+   Deliberately excluded: react-hook-form family (Form, FormField, …) — they
+   need function props / form context that a JSON tree cannot express. */
 const PRIMITIVE_SLUGS = [
   "accordion", "accordion-item", "accordion-trigger", "accordion-content",
-  "alert", "alert-title", "alert-description",
+  "alert", "alert-title", "alert-description", "alert-action",
   "alert-dialog", "alert-dialog-trigger", "alert-dialog-content", "alert-dialog-header",
   "alert-dialog-footer", "alert-dialog-title", "alert-dialog-description",
-  "alert-dialog-action", "alert-dialog-cancel",
+  "alert-dialog-action", "alert-dialog-cancel", "alert-dialog-media",
+  "alert-dialog-overlay", "alert-dialog-portal",
   "aspect-ratio",
-  "avatar", "avatar-image", "avatar-fallback",
+  "avatar", "avatar-image", "avatar-fallback", "avatar-group", "avatar-group-count",
+  "avatar-badge",
   "badge",
   "breadcrumb", "breadcrumb-list", "breadcrumb-item", "breadcrumb-link",
-  "breadcrumb-page", "breadcrumb-separator",
+  "breadcrumb-page", "breadcrumb-separator", "breadcrumb-ellipsis",
   "button",
   "card", "card-header", "card-title", "card-description", "card-content", "card-footer",
+  "card-action",
   "carousel", "carousel-content", "carousel-item", "carousel-previous", "carousel-next",
   "checkbox",
   "collapsible", "collapsible-trigger", "collapsible-content",
   "command", "command-input", "command-list", "command-empty", "command-group", "command-item",
+  "command-dialog", "command-shortcut", "command-separator",
   "dialog", "dialog-trigger", "dialog-content", "dialog-header", "dialog-footer",
-  "dialog-title", "dialog-description",
+  "dialog-title", "dialog-description", "dialog-close", "dialog-overlay", "dialog-portal",
   "drawer", "drawer-trigger", "drawer-content", "drawer-header", "drawer-footer",
-  "drawer-title", "drawer-description",
+  "drawer-title", "drawer-description", "drawer-close", "drawer-overlay", "drawer-portal",
   "dropdown-menu", "dropdown-menu-trigger", "dropdown-menu-content", "dropdown-menu-item",
-  "dropdown-menu-label", "dropdown-menu-separator",
+  "dropdown-menu-label", "dropdown-menu-separator", "dropdown-menu-portal",
+  "dropdown-menu-group", "dropdown-menu-checkbox-item", "dropdown-menu-radio-group",
+  "dropdown-menu-radio-item", "dropdown-menu-shortcut", "dropdown-menu-sub",
+  "dropdown-menu-sub-trigger", "dropdown-menu-sub-content",
   "field", "field-content", "field-description", "field-error", "field-group",
   "field-label", "field-legend", "field-separator", "field-set", "field-title",
   "hover-card", "hover-card-trigger", "hover-card-content",
   "input", "input-group", "input-group-addon", "input-group-button",
   "input-group-input", "input-group-text", "input-group-textarea",
-  "input-otp", "input-otp-group", "input-otp-slot",
+  "input-otp", "input-otp-group", "input-otp-slot", "input-otp-separator",
   "label",
   "pagination", "pagination-content", "pagination-item", "pagination-link",
-  "pagination-previous", "pagination-next",
-  "popover", "popover-trigger", "popover-content",
-  "progress",
+  "pagination-previous", "pagination-next", "pagination-ellipsis",
+  "popover", "popover-trigger", "popover-content", "popover-header", "popover-title",
+  "popover-description",
+  "progress", "progress-track", "progress-indicator", "progress-label", "progress-value",
   "radio-group", "radio-group-item",
-  "scroll-area",
+  "scroll-area", "scroll-bar",
   "select", "select-trigger", "select-value", "select-content", "select-item",
+  "select-group", "select-label", "select-separator", "select-scroll-up-button",
+  "select-scroll-down-button",
   "separator",
   "sheet", "sheet-trigger", "sheet-content", "sheet-header", "sheet-footer",
-  "sheet-title", "sheet-description",
+  "sheet-title", "sheet-description", "sheet-close",
   "skeleton",
   "slider",
   "switch",
@@ -163,7 +190,7 @@ const PRIMITIVE_SLUGS = [
   "tabs", "tabs-list", "tabs-trigger", "tabs-content",
   "textarea",
   "toggle", "toggle-group", "toggle-group-item",
-  "tooltip", "tooltip-trigger", "tooltip-content",
+  "tooltip", "tooltip-trigger", "tooltip-content", "tooltip-provider",
 ];
 
 const htmlFallback = (tag) => ({ children, ...props }) =>

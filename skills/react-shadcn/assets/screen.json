@@ -1,5 +1,5 @@
 {
-  "$schema": "../../../schemas/xpos-screens.schema.json",
+  "$schema": "../references/screen.schema.json",
   "version": 1,
   "source": "authored-xpos-screen-seed",
   "screen": {
@@ -88,9 +88,7 @@
               {
                 "id": "m05-search",
                 "componentSlug": "InputGroup",
-                "props": {
-                  "className": "bg-card"
-                },
+                "props": {},
                 "children": [
                   {
                     "id": "m05-search-addon",
@@ -127,7 +125,7 @@
                     "id": "m05-demo-products",
                     "componentSlug": "Card",
                     "props": {
-                      "className": "rounded-input p-4 gap-3 min-w-0 border border-border bg-card shadow-none"
+                      "className": "rounded-input p-4 gap-3 min-w-0 border shadow-none"
                     },
                     "children": [
                       {
@@ -169,7 +167,7 @@
                     "id": "m05-demo-orders",
                     "componentSlug": "Card",
                     "props": {
-                      "className": "rounded-input p-4 gap-3 min-w-0 border border-border bg-card shadow-none"
+                      "className": "rounded-input p-4 gap-3 min-w-0 border shadow-none"
                     },
                     "children": [
                       {
@@ -211,7 +209,7 @@
                     "id": "m05-demo-cash",
                     "componentSlug": "Card",
                     "props": {
-                      "className": "rounded-input p-4 gap-3 min-w-0 border border-border bg-card shadow-none"
+                      "className": "rounded-input p-4 gap-3 min-w-0 border shadow-none"
                     },
                     "children": [
                       {
@@ -307,7 +305,7 @@
                     "id": "m05-p1",
                     "componentSlug": "Card",
                     "props": {
-                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border shadow-none"
                     },
                     "children": [
                       {
@@ -374,7 +372,7 @@
                     "id": "m05-p2",
                     "componentSlug": "Card",
                     "props": {
-                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border shadow-none"
                     },
                     "children": [
                       {
@@ -441,7 +439,7 @@
                     "id": "m05-p3",
                     "componentSlug": "Card",
                     "props": {
-                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border shadow-none"
                     },
                     "children": [
                       {
@@ -508,7 +506,7 @@
                     "id": "m05-p4",
                     "componentSlug": "Card",
                     "props": {
-                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border shadow-none"
                     },
                     "children": [
                       {
@@ -575,7 +573,7 @@
                     "id": "m05-p5",
                     "componentSlug": "Card",
                     "props": {
-                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border shadow-none"
                     },
                     "children": [
                       {
@@ -642,7 +640,7 @@
                     "id": "m05-p6",
                     "componentSlug": "Card",
                     "props": {
-                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border border-border bg-card shadow-none"
+                      "className": "rounded-input overflow-hidden min-w-0 p-0 gap-0 border shadow-none"
                     },
                     "children": [
                       {

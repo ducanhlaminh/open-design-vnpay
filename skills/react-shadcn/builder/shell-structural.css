@@ -1,0 +1,123 @@
+/* ===================================================================== *
+ *  STRUCTURAL TOKEN BINDINGS — permanent part of the shell template.
+ *
+ *  Binds composition tokens to the real components via [data-slot]. Every
+ *  var() carries a FALLBACK equal to the component's own default size/look,
+ *  so a FLAT composition (no glass/control tokens — e.g. "shadcn Default")
+ *  degrades gracefully to the verbatim component instead of breaking.
+ *  Values arrive from brand.css / <style id="brand"> (vars-only payload
+ *  emitted by tools-kg `ui_composition_export_css {varsOnly:true}`).
+ *
+ *  Audited mapping source: references/kg-brand-binding.md. Keep in sync with
+ *  the vars emitted by tools/kg/src/export-css.ts glassVars().
+ * ===================================================================== */
+
+/* ── Brand gradient on the primary surface (no-op without --primary-gradient) ── */
+.bg-primary { background-image: var(--primary-gradient, none) !important; }
+[data-slot="button"][data-variant="default"]:hover {
+  background-image: var(--primary-gradient-hover, var(--primary-gradient, none)) !important;
+}
+
+/* ── Glass: card treatment (inert when --glass-card-* are unset) ── */
+[data-slot="card"] {
+  backdrop-filter: blur(var(--glass-card-blur, 0px)) saturate(var(--glass-card-sat, 100%));
+  -webkit-backdrop-filter: blur(var(--glass-card-blur, 0px)) saturate(var(--glass-card-sat, 100%));
+  box-shadow: var(--glass-card-shadow, 0 0 #0000);
+  position: relative;
+}
+[data-slot="card"]::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  padding: 1px; pointer-events: none;
+  background: var(--glass-card-hairline, none);
+  -webkit-mask: var(--glass-card-mask, none); -webkit-mask-composite: xor;
+  mask: var(--glass-card-mask, none); mask-composite: exclude;
+}
+
+/* ── Glass: popover / overlay family ── */
+[data-slot="popover-content"],
+[data-slot="dialog-content"],
+[data-slot="alert-dialog-content"],
+[data-slot="sheet-content"],
+[data-slot="drawer-content"],
+[data-slot="dropdown-menu-content"],
+[data-slot="dropdown-menu-sub-content"],
+[data-slot="select-content"],
+[data-slot="hover-card-content"],
+[data-slot="tooltip-content"] {
+  backdrop-filter: blur(var(--glass-pop-blur, 0px)) saturate(var(--glass-pop-sat, 100%));
+  -webkit-backdrop-filter: blur(var(--glass-pop-blur, 0px)) saturate(var(--glass-pop-sat, 100%));
+  box-shadow: var(--glass-pop-shadow, 0 0 #0000);
+  border-width: var(--glass-pop-border-width, 1px);
+  position: relative;
+}
+[data-slot="popover-content"]::before,
+[data-slot="dialog-content"]::before,
+[data-slot="alert-dialog-content"]::before,
+[data-slot="sheet-content"]::before,
+[data-slot="drawer-content"]::before,
+[data-slot="dropdown-menu-content"]::before,
+[data-slot="dropdown-menu-sub-content"]::before,
+[data-slot="select-content"]::before,
+[data-slot="hover-card-content"]::before,
+[data-slot="tooltip-content"]::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  padding: 1px; pointer-events: none;
+  background: var(--glass-pop-hairline, none);
+  -webkit-mask: var(--glass-pop-mask, none); -webkit-mask-composite: xor;
+  mask: var(--glass-pop-mask, none); mask-composite: exclude;
+}
+/* keep menu/select items above the hairline pseudo */
+[data-slot="dropdown-menu-item"], [data-slot="select-item"],
+[data-slot="dialog-header"], [data-slot="sheet-header"] { position: relative; z-index: 1; }
+
+/* ── Control sizing (fallbacks = verbatim component defaults: h-8/h-7/h-9/h-6) ── */
+[data-slot="button"] { border-radius: var(--radius-control, var(--radius-md, 0.5rem)); }
+[data-slot="button"]:not([data-size^="icon"]) { height: var(--control-h-default, 2rem); padding-inline: var(--control-px-default, 0.75rem); }
+[data-slot="button"][data-size="sm"] { height: var(--control-h-sm, 1.75rem); padding-inline: var(--control-px-sm, 0.625rem); }
+[data-slot="button"][data-size="lg"] { height: var(--control-h-lg, 2.25rem); }
+[data-slot="button"][data-size="xs"] { height: var(--control-h-xs, 1.5rem); padding-inline: var(--control-px-xs, 0.5rem); }
+[data-slot="button"][data-size="icon"] { height: var(--control-size-default, 2rem); width: var(--control-size-default, 2rem); }
+[data-slot="button"][data-size="icon-sm"] { height: var(--control-size-sm, 1.75rem); width: var(--control-size-sm, 1.75rem); }
+[data-slot="button"][data-size="icon-lg"] { height: var(--control-size-lg, 2.25rem); width: var(--control-size-lg, 2.25rem); }
+[data-slot="button"][data-size="icon-xs"] { height: var(--control-size-xs, 1.5rem); width: var(--control-size-xs, 1.5rem); }
+[data-slot="input"], [data-slot="select-trigger"] { height: var(--input-height, 2rem); border-radius: var(--radius-input, var(--radius-md, 0.5rem)); }
+[data-slot="input-group"] { min-height: var(--input-height, 2rem); border-radius: var(--radius-input, var(--radius-md, 0.5rem)); }
+[data-slot="textarea"] { border-radius: var(--radius-input, var(--radius-md, 0.5rem)); }
+[data-slot="toggle"] { height: var(--control-h-default, 2rem); min-width: var(--control-h-default, 2rem); border-radius: var(--radius-control, var(--radius-md, 0.5rem)); }
+[data-slot="toggle-group-item"] { height: var(--control-h-default, 2rem); min-width: var(--control-h-default, 2rem); }
+[data-slot="input-otp-slot"] { width: var(--control-size-default, 2rem); height: var(--control-size-default, 2rem); }
+
+/* ── Tabs as segmented control (token-driven; falls back to component look) ── */
+[data-slot="tabs-list"] {
+  height: var(--control-h-sm, 2rem); padding: 4px;
+  border-radius: var(--radius-control, var(--radius-md, 0.5rem));
+  background-color: var(--muted) !important;
+  backdrop-filter: blur(var(--glass-pop-blur, 0px)) saturate(var(--glass-pop-sat, 100%));
+  -webkit-backdrop-filter: blur(var(--glass-pop-blur, 0px)) saturate(var(--glass-pop-sat, 100%));
+}
+[data-slot="tabs-trigger"] {
+  padding-inline: var(--control-px-sm, 0.625rem);
+  border-radius: calc(var(--radius-control, var(--radius-md, 0.5rem)) - 5px);
+  color: var(--muted-foreground);
+  transition: color .18s ease, background-color .18s ease;
+}
+[data-slot="tabs-trigger"][data-state="active"] {
+  background: var(--popover) !important;
+  color: var(--primary) !important;
+  box-shadow: var(--glass-pop-shadow, 0 0 #0000);
+  font-weight: 600;
+}
+
+/* ── Selection controls (fallback = component size-4) ── */
+[data-slot="checkbox"], [data-slot="radio-group-item"] { width: var(--selection-indicator-size, 1rem); height: var(--selection-indicator-size, 1rem); }
+[data-slot="checkbox-indicator"] > svg { width: 1rem; height: 1rem; }
+[data-slot="radio-group-indicator"] > span { width: 0.625rem; height: 0.625rem; }
+
+/* ── Page base ── */
+html, body, #root { height: 100%; }
+body {
+  margin: 0; overflow: auto;
+  background: var(--background) fixed;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}

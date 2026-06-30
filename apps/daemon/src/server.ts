@@ -13,8 +13,12 @@ import os from 'node:os';
 import net from 'node:net';
 import {
   defaultScenarioPluginIdForProjectMetadata,
+  ERR_PLAN_EXPIRED,
   type OpenDesignGithubLatestReleaseResponse,
   type OpenDesignGithubRepoResponse,
+  type PullApplyResult,
+  type PullPlan,
+  type PullResolution,
   PLUGIN_SHARE_ACTION_PLUGIN_IDS,
 } from '@open-design/contracts';
 import {
@@ -274,8 +278,10 @@ import {
   buildOpenCodeMcpConfigContent,
   isManagedProjectCwd,
   readMcpConfig,
+  seedDefaultMcpConfig,
   writeMcpConfig,
 } from './mcp-config.js';
+import { ensureUvForMcp } from './ensure-uv.js';
 import {
   beginAuth,
   exchangeCodeForToken,
@@ -364,6 +370,7 @@ import {
   updateConversation,
   updatePreviewCommentStatus,
   updateProject,
+  setProjectPipelineStatus,
   updateRoutine,
   updateRoutineRun,
   upsertDeployment,
@@ -396,12 +403,26 @@ import { registerDeployRoutes, registerDeploymentCheckRoutes } from './deploy-ro
 import { registerMediaRoutes } from './media-routes.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes } from './project-routes.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
+import { registerKgSyncRoutes } from './kg-sync-routes.js';
 import { registerHandoffRoutes } from './handoff-routes.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './handoff-design.js';
 import { TranscriptExportLockedError } from './transcript-export.js';
+import { publishFeedback, pullMergedFeedback } from './feedback.js';
 import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
+import { registerPipelineRoutes } from './pipeline-routes.js';
+import { getPipelineDef, stageForOutput, workflowDirForPipeline } from './pipelines.js';
+import {
+  basConfluenceMeta,
+  basListDocuments,
+  basListFeatures,
+  fetchSourceFiles,
+  resolveBasEndpoint,
+} from './bas/bas-client.js';
+import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
+import { MediaClient, mediaConfigFromEnv, type LocalSyncFile } from './kg-sync/media-client.js';
+import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
 import { configureConnectorCredentialStore, connectorService, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
 import { composioConnectorProvider } from './connectors/composio.js';
@@ -3960,6 +3981,22 @@ export async function startServer({
     console.warn(`[plugins] registry seed failed: ${(err)?.message ?? err}`);
   }
 
+  // Seed the default external MCP servers (ba-agent) on a fresh data dir so a
+  // packaged build ships a working server out of the box instead of an empty
+  // list on every new machine. No-op once mcp-config.json exists.
+  try {
+    const seededMcp = await seedDefaultMcpConfig(RUNTIME_DATA_DIR);
+    if (seededMcp.length > 0) {
+      console.log(`[mcp] seeded ${seededMcp.length} default server(s): ${seededMcp.join(', ')}`);
+    }
+  } catch (err) {
+    console.warn(`[mcp] default seed failed: ${(err)?.message ?? err}`);
+  }
+  // Best-effort, non-blocking: when an enabled stdio MCP server is launched via
+  // `uvx` (e.g. mcp-atlassian) and the machine lacks uv, install it so the
+  // server actually starts. Runs after the seed so a fresh install is covered.
+  void ensureUvForMcp(RUNTIME_DATA_DIR);
+
   // Plan §3.A5 / spec §16 Phase 5 / PB2: periodic snapshot GC. Disabled
   // when OD_SNAPSHOT_GC_INTERVAL_MS is 0; otherwise one-time bootstrap
   // sweep + interval. The function returns a NOOP_HANDLE when disabled
@@ -5300,6 +5337,7 @@ export async function startServer({
     validation: validationDeps,
   });
 
+  // design-v3 KG sync (pull/push/status)
   // Resource catalog
   registerStaticResourceRoutes(app, {
     http: httpDeps,
@@ -5500,6 +5538,31 @@ export async function startServer({
 
   // ---- Messages -------------------------------------------------------------
 
+  // Synthetic prompts that merely *trigger* a run (pipeline/orbit/routine
+  // kickoffs) are written server-side via upsertMessage and carry these id
+  // prefixes; genuine typed user prompts get UUID ids. We only collect the
+  // latter as feedback.
+  const isFeedbackTriggerId = (id: string): boolean =>
+    id.startsWith('pipeline-user-') ||
+    id.startsWith('orbit-user-') ||
+    id.startsWith('routine-user-');
+
+  // Best-effort: ship this install's genuine end-user feedback prompts for a
+  // project to the shared media-service store (one `feedback/<installId>.jsonl`
+  // per install). Fire-and-forget — must never block a message write or throw
+  // into the request. publishFeedback rebuilds the whole file from app.sqlite
+  // and uploadFile is content-hash idempotent, so repeat calls are no-ops.
+  const publishFeedbackBestEffort = async (projectId: string): Promise<void> => {
+    try {
+      const cfg = await readAppConfig(RUNTIME_DATA_DIR);
+      const user = (cfg.feedbackUsername?.trim() || cfg.installationId || 'unknown') as string;
+      const installKey = (cfg.installationId || user) as string;
+      await publishFeedback(db, projectId, { user, installKey });
+    } catch (err) {
+      console.warn('[feedback] publish skipped', (err as Error)?.message ?? err);
+    }
+  };
+
   app.get('/api/projects/:id/conversations/:cid/messages', (req, res) => {
     const conv = getConversation(db, req.params.cid);
     if (!conv || conv.projectId !== req.params.id) {
@@ -5523,7 +5586,29 @@ export async function startServer({
     });
     // Bump the parent project's updatedAt so the project list re-orders.
     updateProject(db, req.params.id, {});
+    // Capture genuine user feedback prompts into the shared store so the
+    // cross-user summary-feedback digest can see every install's prompts.
+    if (m.role === 'user' && !isFeedbackTriggerId(req.params.mid)) {
+      void publishFeedbackBestEffort(req.params.id);
+    }
     res.json({ message: saved });
+  });
+
+  // Publish this install's latest prompts, then merge every install's feedback
+  // for the project into a local `.feedback-merged.jsonl`. CLI mirror of the
+  // auto-merge the summary-feedback skill triggers; lets `od feedback pull`
+  // refresh the cross-user log on demand.
+  app.post('/api/projects/:id/feedback/pull', async (req, res) => {
+    const projectId = req.params.id;
+    if (!projectId) return sendApiError(res, 400, 'BAD_REQUEST', 'project id required');
+    try {
+      await publishFeedbackBestEffort(projectId);
+      const cwd = await ensureProject(PROJECTS_DIR, projectId);
+      const merged = await pullMergedFeedback(projectId, cwd);
+      res.json({ ok: true, projectId, files: merged.files, records: merged.records, path: merged.path });
+    } catch (err) {
+      sendApiError(res, 502, 'FEEDBACK_PULL_FAILED', (err as Error).message);
+    }
   });
 
   // ---- Preview comments ----------------------------------------------------
@@ -10195,7 +10280,7 @@ export async function startServer({
   };
 
   const startChatRun = async (chatBody, run) => {
-    /** @type {Partial<ChatRequest> & { imagePaths?: string[] }} */
+    /** @type {Partial<ChatRequest> & { imagePaths?: string[]; cwdSubdir?: string }} */
     chatBody = chatBody || {};
     const {
       agentId,
@@ -10217,6 +10302,7 @@ export async function startServer({
       locale,
       research,
       context,
+      cwdSubdir,
     } = chatBody;
     if (typeof projectId === 'string' && projectId) run.projectId = projectId;
     if (typeof conversationId === 'string' && conversationId)
@@ -10287,6 +10373,15 @@ export async function startServer({
         if (chatMeta?.baseDir) {
           cwd = path.normalize(chatMeta.baseDir);
           existingProjectFiles = await listFiles(PROJECTS_DIR, projectId, { metadata: chatMeta });
+        } else if (typeof cwdSubdir === 'string' && cwdSubdir) {
+          // Per-workflow isolation: a pipeline run is rooted at
+          // `<projectDir>/<workflowId>/` so the agent only ever sees its own
+          // workflow's files (the sibling workflow's outputs live outside this
+          // cwd). Files are listed from this subdir, not the project root.
+          const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+          cwd = path.join(projectRoot, cwdSubdir);
+          await fs.promises.mkdir(cwd, { recursive: true });
+          existingProjectFiles = await listFiles(PROJECTS_DIR, projectId, { metadata: { baseDir: cwd } });
         } else {
           cwd = await ensureProject(PROJECTS_DIR, projectId);
           existingProjectFiles = await listFiles(PROJECTS_DIR, projectId);
@@ -10296,6 +10391,23 @@ export async function startServer({
       }
     }
     if (run.cancelRequested || design.runs.isTerminal(run.status)) return;
+
+    // Cross-user feedback merge: when this run composes the `summary-feedback`
+    // skill, pull every install's `feedback/*.jsonl` from the shared media
+    // store and merge them into `<cwd>/.feedback-merged.jsonl` BEFORE the agent
+    // starts, so the skill reads the whole team's prompts as one local file
+    // (it never has to reach the network or the host DB itself). Best-effort —
+    // a media outage just means the merged file is absent/partial, and the
+    // skill reports that rather than failing the run.
+    if (cwd && typeof projectId === 'string' && projectId &&
+        Array.isArray(skillIds) && skillIds.includes('summary-feedback')) {
+      try {
+        const merged = await pullMergedFeedback(projectId, cwd);
+        console.log(`[feedback] merged ${merged.records} prompt(s) from ${merged.files} file(s) → ${merged.path}`);
+      } catch (err) {
+        console.warn('[feedback] merge skipped', (err as Error)?.message ?? err);
+      }
+    }
 
     // Sanitise supplied image paths: must live under UPLOAD_DIR.
     const safeImages = imagePaths.filter((p) => {
@@ -12685,6 +12797,416 @@ export async function startServer({
     db,
     paths: { RUNTIME_DATA_DIR },
     routines: { routineService },
+  });
+
+  // Pipelines: per-project, dependency-gated skill runs (the docs→UI flow).
+  // Each run seeds a fresh conversation in the EXISTING project with the
+  // pipeline's skill active (interactive — the user watches/intervenes), then
+  // reflects the run's terminal status back into the gate (metadata_json) so a
+  // downstream pipeline only unlocks once its prerequisites have succeeded.
+  // Mirrors the Orbit run handler but reuses the project and drives the prompt
+  // through `skillId` (composeDaemonSystemPrompt injects the SKILL.md body).
+  // B1 helpers: snapshot the project cwd before a pipeline run and upload the
+  // files it produced/changed to the KGS file store afterwards (cross-device
+  // handoff + tracking). Pure file-diff, so no per-stage output globs needed.
+  const pipelineFileMime = (p: string): string => {
+    if (p.endsWith('.md')) return 'text/markdown';
+    if (p.endsWith('.json')) return 'application/json';
+    if (p.endsWith('.txt')) return 'text/plain';
+    if (p.endsWith('.html')) return 'text/html';
+    if (p.endsWith('.css')) return 'text/css';
+    if (p.endsWith('.csv')) return 'text/csv';
+    return 'application/octet-stream';
+  };
+  const snapshotPipelineCwd = async (root: string): Promise<Map<string, { mtimeMs: number; size: number }>> => {
+    const out = new Map<string, { mtimeMs: number; size: number }>();
+    const walk = async (dir: string, rel: string): Promise<void> => {
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [] as Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>);
+      for (const e of entries) {
+        if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+        const abs = path.join(dir, e.name);
+        const relPath = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) { await walk(abs, relPath); continue; }
+        if (!e.isFile()) continue;
+        const st = await fs.promises.stat(abs).catch(() => null);
+        if (!st || st.size > 16 * 1024 * 1024) continue;
+        out.set(relPath, { mtimeMs: st.mtimeMs, size: st.size });
+      }
+    };
+    await walk(root, '');
+    return out;
+  };
+  // MANUAL upload (button-triggered): push the project's CURRENT output files to
+  // the media-service file store (graph stays in KGS — see
+  // docs/guides/media-file-sync-design.md). Each file is attributed to its stage
+  // via the registry's `outputs` patterns (unmatched files → stage 'misc'); for
+  // a convertToGraph stage it also runs B2 (file → graph) right after. A single
+  // content-hash `syncProjectFiles` replaces the per-file upload loop (idempotent
+  // re-push is a no-op). Returns counts (`uploaded` = files present after sync).
+  const uploadProjectFiles = async (projectId: string): Promise<{ uploaded: number; converted: number }> => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const files = await snapshotPipelineCwd(cwd);
+    const kgs = new KgsClient(kgsConfigFromEnv());
+    const media = new MediaClient(mediaConfigFromEnv());
+    // Ensure the project's DP_UI_WORKSPACE node exists so a manual single-project
+    // upload also makes it discoverable by another device's pull-all. Best-effort
+    // (idempotent) — a workspace-ensure failure must not block the file upload.
+    await kgs
+      .ensureWorkspace(projectId, getProject(db, projectId)?.name ?? projectId)
+      .catch(() => {});
+    const syncFiles: LocalSyncFile[] = [];
+    const toConvert: Array<{ pipelineId: string; skillId: string; rel: string }> = [];
+    for (const rel of files.keys()) {
+      const def = stageForOutput(rel);
+      // localOnly stages (e.g. ui-html → prototype/) stay on this device — never
+      // pushed to the KGS file store nor graph-converted.
+      if (def?.localOnly) continue;
+      const content = await fs.promises.readFile(path.join(cwd, rel)).catch(() => null);
+      if (!content) continue;
+      syncFiles.push({ path: rel, stage: def?.id ?? 'misc', mime: pipelineFileMime(rel), content });
+      if (def?.convertToGraph) toConvert.push({ skillId: def.skillId, rel });
+    }
+    const synced = await media.syncProjectFiles(projectId, syncFiles);
+    let converted = 0;
+    for (const { skillId, rel } of toConvert) {
+      converted += await convertStageToGraph(projectId, skillId, cwd, [rel]);
+    }
+    // `uploaded` reports files present in the store after sync (uploaded + already
+    // up-to-date), preserving the "N files" button feedback across re-pushes.
+    return { uploaded: synced.uploaded + synced.skipped, converted };
+  };
+
+  // B2: for a convertToGraph stage, run its skill's converter
+  // (skills/<skillId>/scripts/push_to_kgs.py, stdlib-only) on each produced JSON
+  // to push it into the KGS graph. Best-effort: missing converter / python
+  // failure is logged and skipped, never fails the run. KGS env
+  // (KGS_URL/KGS_APP_ID/KGS_API_KEY) is inherited from process.env (loaded by
+  // load-local-env). Idempotent vs the skill's own in-run push (409).
+  const convertStageToGraph = async (
+    projectId: string,
+    skillId: string,
+    cwd: string,
+    uploadedPaths: string[],
+  ): Promise<number> => {
+    const converter = path.join(SKILLS_DIR, skillId, 'scripts', 'push_to_kgs.py');
+    try {
+      await fs.promises.access(converter);
+    } catch {
+      return 0; // this stage has no graph converter — stays file-only
+    }
+    const jsons = uploadedPaths.filter((p) => p.toLowerCase().endsWith('.json'));
+    if (jsons.length === 0) return 0;
+    let converted = 0;
+    for (const rel of jsons) {
+      try {
+        await execFileBuffered('python3', [converter, path.join(cwd, rel), '--project-id', projectId], {
+          cwd,
+          timeout: 120_000,
+        });
+        converted += 1;
+      } catch (error) {
+        console.warn(`[pipelines] B2 convert failed for ${rel}:`, error);
+      }
+    }
+    return converted;
+  };
+
+  // Regenerate a project's pipeline files from the media-service file store into
+  // its local cwd (cross-device "pull to continue"). Unconditional overwrite —
+  // the conflict-aware variant lives in planPull/applyPull. Path-traversal
+  // guarded to cwd.
+  const pullPipelineFiles = async (projectId: string, cwd: string): Promise<number> => {
+    const media = new MediaClient(mediaConfigFromEnv());
+    const files = await media.listFiles(projectId);
+    const cwdReal = path.resolve(cwd);
+    let pulled = 0;
+    for (const f of files) {
+      const rel = typeof f.path === 'string' ? f.path : '';
+      if (!rel) continue;
+      const dest = path.resolve(cwd, rel);
+      if (dest !== cwdReal && !dest.startsWith(cwdReal + path.sep)) continue;
+      const content = await media.downloadFile(projectId, rel).catch(() => null);
+      if (!content) continue;
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.writeFile(dest, content);
+      pulled += 1;
+    }
+    return pulled;
+  };
+
+  // Conflict-aware pull (PLAN → RESOLVE → APPLY). Unlike pullPipelineFiles (which
+  // overwrites blindly), this classifies remote files against the local cwd and
+  // hands conflicts back to the caller. planStore holds the per-plan snapshot
+  // (path→remoteChecksum at plan time) so APPLY can detect remote drift (TOCTOU).
+  // See docs/guides/pull-conflict-resolution-spec.md.
+  const planStore = new PullPlanStore();
+
+  // PLAN: classify the project's media-service files against the local cwd (no
+  // writes), snapshot the result, and return it. Core logic in pull-conflict.ts.
+  const planPull = async (projectId: string): Promise<PullPlan> => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const media = new MediaClient(mediaConfigFromEnv());
+    const { plan, remoteByPath } = await planPullFiles(projectId, cwd, media);
+    planStore.put(plan, remoteByPath);
+    return plan;
+  };
+
+  // APPLY: act on a prior plan's resolutions (TOCTOU-guarded). Unknown/expired
+  // planId → throws ERR_PLAN_EXPIRED (route maps to 409).
+  const applyPull = async (
+    projectId: string,
+    planId: string,
+    resolutions: Record<string, PullResolution>,
+    onConflictDefault: PullResolution = 'local',
+  ): Promise<PullApplyResult> => {
+    const stored = planStore.get(planId);
+    if (!stored) {
+      const err = new Error(`plan ${planId} expired or unknown`) as Error & { code?: string };
+      err.code = ERR_PLAN_EXPIRED;
+      throw err;
+    }
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const media = new MediaClient(mediaConfigFromEnv());
+    return applyPullFiles(projectId, cwd, media, stored, resolutions, onConflictDefault);
+  };
+
+  const runPipeline = async (
+    projectId: string,
+    pipelineId: string,
+    input?: string,
+    source?: import('@open-design/contracts').PipelineRunSource,
+    // Per-run design system for UI-generating stages (`ui-html`). `undefined`
+    // → inherit the app-config default (legacy behavior); a string id or `null`
+    // (explicit "none") overrides it for THIS run only. See RunPipelineRequest.
+    designSystemId?: string | null,
+  ) => {
+    const def = getPipelineDef(pipelineId);
+    if (!def) throw new Error(`Unknown pipeline ${pipelineId}`);
+    const project = getProject(db, projectId);
+    if (!project) throw new Error(`Project ${projectId} not found`);
+
+    // Per-workflow output namespace: this pipeline's run + outputs live under
+    // <projectDir>/<workflowId>/ so the two workflows never share a cwd (no
+    // cross-reads, no clobbering, no status bleed). null → run at the cwd root.
+    const wfDir = workflowDirForPipeline(pipelineId);
+
+    const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+    let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId
+      ? appConfig.agentId
+      : null;
+    if (!agentId) {
+      const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+      agentId = agents.find((agent) => agent.available)?.id ?? null;
+    }
+    if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
+
+    const now = Date.now();
+    const conversationId = `pipeline-conv-${randomUUID()}`;
+    const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
+    // projectId here is the KGS project_id (the kg-pull project's id == KGS
+    // project_id). Name it explicitly so the skill pushes to the right KGS app.
+    const trimmedInput = typeof input === 'string' ? input.trim() : '';
+    // A combined pipeline (extraSkillIds) activates several skills in one run; tell
+    // the agent to complete EACH skill's workflow and produce ALL their outputs.
+    const skillDirective = def.extraSkillIds?.length
+      ? 'This pipeline runs multiple skills in one go — follow EACH active skill\'s workflow and produce ALL of their outputs.'
+      : "Follow the active skill's workflow exactly.";
+    // Two source tracks (kept deliberately separate):
+    //   • BAS document  → the daemon pre-fetches it via the BAS KG API into
+    //     ./docs/source/bas/ below (deterministic, no per-user credential); the
+    //     skill then just normalizes those local files.
+    //   • Confluence link / JIRA key → handed to the AGENT as input. The skill
+    //     fetches it ITSELF via the Atlassian MCP (Jira + Confluence Data Center)
+    //     and writes ./docs/source/. The BE does NOT pre-fetch Confluence (the
+    //     BAS gateway's confluence_* tools need a credential it can't link).
+    const basSource = source?.kind === 'bas' ? source : undefined;
+    const confluenceRef = source?.kind === 'confluence' ? source.ref.trim() : '';
+    const agentInput = trimmedInput || confluenceRef;
+    const sourceDirective = basSource
+      ? ' The source documents have already been fetched into ./docs/source/bas/ — read every Markdown file there and normalize them into the stage output (do NOT call any external doc API yourself).'
+      : agentInput
+        ? ` Input/source for this run: ${agentInput}. Fetch it YOURSELF via the Atlassian MCP (Jira + Confluence Data Center) — a Confluence page link via the skill's Confluence export, a JIRA key/JQL via the Jira tools — following the active skill's workflow.`
+        : '';
+    // Graph push is gated on the stage's `convertToGraph` flag — the single
+    // source of truth for "this stage writes graph". A convertToGraph stage tells
+    // the agent to push to the project's KGS app; a file-only stage (e.g. the
+    // docs-to-html cj/ux stages) tells it explicitly NOT to push, so the produced
+    // JSON stays a local file (synced to the media store separately) and is never
+    // projected into the KGS graph. This mirrors the B2 upload gate in
+    // uploadProjectFiles, which also keys off convertToGraph.
+    const graphDirective = def.convertToGraph
+      ? ` When the skill pushes results to KGS, target project_id "${projectId}".`
+      : " This is a FILE-ONLY stage: produce the output file(s) only and do NOT push anything to KGS (do not run `od kg push` or the skill's push_to_kgs.py). The files are synced separately by the pipeline.";
+    const kickoff = `Run the "${def.name}" pipeline for KGS project "${projectId}". ${skillDirective}${sourceDirective}${graphDirective}`;
+
+    // BAS document pre-fetch (BE owns the BAS KG HTTP) — done BEFORE any
+    // conversation/run state is created so a fetch failure aborts cleanly with no
+    // orphaned 'running' run. Writes Markdown under the project cwd's
+    // ./docs/source/bas/; the skill then normalizes those local files. Confluence
+    // is NOT pre-fetched here — the agent fetches it via the Atlassian MCP.
+    if (basSource) {
+      const ep = await resolveBasEndpoint(RUNTIME_DATA_DIR);
+      if (!ep) {
+        throw new Error(
+          'BAS is not configured (set BAS_MCP_URL + BAS_MCP_TOKEN, or add a "ba-agent" MCP server in Settings).',
+        );
+      }
+      const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+      // Pre-fetch into the same per-workflow folder the agent will run in, so
+      // the relative ./docs/source/ path in the kickoff resolves correctly.
+      const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+      const files = await fetchSourceFiles(ep, basSource);
+      for (const f of files) {
+        const abs = path.join(cwd, f.relPath);
+        await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+        await fs.promises.writeFile(abs, f.content, 'utf8');
+      }
+      console.log(`[pipelines] pre-fetched ${files.length} BAS source file(s) into cwd for ${projectId}`);
+    }
+
+    insertConversation(db, {
+      id: conversationId,
+      projectId,
+      title: def.name,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const run = design.runs.create({
+      projectId,
+      conversationId,
+      assistantMessageId,
+      clientRequestId: `pipeline-${pipelineId}-${randomUUID()}`,
+      agentId,
+    });
+    upsertMessage(db, conversationId, {
+      id: `pipeline-user-${run.id}`,
+      role: 'user',
+      content: kickoff,
+    });
+    upsertMessage(db, conversationId, {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      agentId,
+      agentName: getAgentDef(agentId)?.name ?? agentId,
+      runId: run.id,
+      runStatus: 'queued',
+      startedAt: now,
+    });
+
+    setProjectPipelineStatus(db, projectId, pipelineId, {
+      status: 'running',
+      lastRunId: run.id,
+      lastConversationId: conversationId,
+    });
+
+    const pipelineCwd = await ensureProject(PROJECTS_DIR, projectId).catch(() => null);
+    // Cross-device: pull upstream stage outputs from KGS into the cwd first, so
+    // this stage's inputs are present even on a device that never ran them.
+    if (pipelineCwd) {
+      try {
+        const n = await pullPipelineFiles(projectId, pipelineCwd);
+        if (n) console.log(`[pipelines] pulled ${n} KGS file(s) into cwd for ${projectId}`);
+      } catch (error) {
+        console.warn('[pipelines] pull KGS files failed (continuing):', error);
+      }
+    }
+    const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+    design.runs.start(run, () => startChatRun({
+      agentId,
+      projectId,
+      conversationId: run.conversationId,
+      assistantMessageId: run.assistantMessageId,
+      clientRequestId: run.clientRequestId,
+      skillId: def.skillId,
+      ...(def.extraSkillIds?.length ? { skillIds: def.extraSkillIds } : {}),
+      ...(wfDir ? { cwdSubdir: wfDir } : {}),
+      // Per-run choice (from the ui-html picker / CLI --design-system) wins; when
+      // the caller didn't specify one, fall back to the global app-config default.
+      designSystemId: designSystemId !== undefined ? designSystemId : (appConfig.designSystemId ?? null),
+      model: modelPrefs.model ?? null,
+      reasoning: modelPrefs.reasoning ?? null,
+      message: kickoff,
+    }, run));
+
+    // Reflect terminal status back into the gate so downstream pipelines unlock.
+    void (async () => {
+      try {
+        const finalStatus = await design.runs.wait(run);
+        db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`)
+          .run(finalStatus.status, Date.now(), assistantMessageId);
+        const next = finalStatus.status === 'succeeded'
+          ? 'succeeded'
+          : finalStatus.status === 'canceled'
+            ? 'idle'
+            : 'failed';
+        // Upload to KGS is now MANUAL (the "Upload to KGS" button /
+        // POST /api/pipelines/upload). The run only produces files locally and
+        // updates the gate; the user uploads when ready.
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: next });
+      } catch (error) {
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        console.warn('[pipelines] run failed:', error);
+      }
+    })();
+
+    return { projectId, conversationId, agentRunId: run.id };
+  };
+
+  const pullFilesForProject = async (projectId: string) => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const pulled = await pullPipelineFiles(projectId, cwd);
+    return { pulled };
+  };
+  // List the project cwd's output files (cwd-relative) without creating the dir:
+  // snapshotPipelineCwd tolerates a missing root (→ empty), so this is a safe
+  // read-path probe for deriving "done" stage state from on-disk outputs.
+  const localOutputsForProject = async (projectId: string): Promise<string[]> => {
+    const files = await snapshotPipelineCwd(path.join(PROJECTS_DIR, projectId));
+    return [...files.keys()];
+  };
+  // BAS gateway reads for the Pipelines source picker. Each resolves the endpoint
+  // (env / mcp-config) server-side so the token never reaches the browser.
+  const requireBasEndpoint = async () => {
+    const ep = await resolveBasEndpoint(RUNTIME_DATA_DIR);
+    if (!ep) {
+      throw new Error(
+        'BAS is not configured (set BAS_MCP_URL + BAS_MCP_TOKEN, or add a "ba-agent" MCP server in Settings).',
+      );
+    }
+    return ep;
+  };
+  const basDeps = {
+    listDocuments: async () => basListDocuments(await requireBasEndpoint()),
+    listFeatures: async (documentId: string) => basListFeatures(await requireBasEndpoint(), documentId),
+    confluenceMeta: async (ref: string) => basConfluenceMeta(await requireBasEndpoint(), ref),
+  };
+  // Shared pipeline deps — passed to both the pipeline routes and the KG-sync
+  // routes (both type their `pipelines` as the full PipelineDeps).
+  const pipelineDeps = {
+    runPipeline,
+    pullFiles: pullFilesForProject,
+    uploadFiles: uploadProjectFiles,
+    localOutputs: localOutputsForProject,
+    pullConflict: { plan: planPull, apply: applyPull },
+    bas: basDeps,
+  };
+  registerPipelineRoutes(app, {
+    db,
+    pipelines: pipelineDeps,
+  });
+
+  // KG sync (pull-all/push-all) is registered here — after the pipeline file
+  // helpers exist — so push-all can also upload output files and pull-all can
+  // also restore them (full graph + files round-trip). Paths are distinct from
+  // other routes, so the later registration order is harmless.
+  registerKgSyncRoutes(app, {
+    db,
+    http: httpDeps,
+    ids: idDeps,
+    projectStore: projectStoreDeps,
+    pipelines: pipelineDeps,
   });
 
   // proxy routes (anthropic / openai / azure / google / ollama) live

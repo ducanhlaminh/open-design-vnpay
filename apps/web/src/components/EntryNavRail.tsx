@@ -18,9 +18,11 @@ export type EntryView =
   | 'onboarding'
   | 'projects'
   | 'tasks'
+  | 'pipelines'
   | 'plugins'
   | 'design-systems'
-  | 'integrations';
+  | 'integrations'
+  | 'remote-registry';
 
 interface Props {
   view: EntryView;
@@ -71,7 +73,7 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
           data-testid="entry-nav-logo"
         >
           <img
-            src="/app-icon.svg"
+            src="/app-icon.png"
             alt=""
             className="entry-nav-rail__logo-img"
             draggable={false}
@@ -112,6 +114,24 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
           testId="entry-nav-tasks"
         >
           <Icon name="kanban" size={18} />
+        </NavButton>
+        <NavButton
+          active={view === 'pipelines'}
+          ariaLabel={t('entry.navPipelines')}
+          tooltip={t('entry.navPipelines')}
+          onClick={() => onViewChange('pipelines')}
+          testId="entry-nav-pipelines"
+        >
+          <Icon name="pipeline" size={18} />
+        </NavButton>
+        <NavButton
+          active={view === 'remote-registry'}
+          ariaLabel={t('entry.navRemoteRegistry')}
+          tooltip={t('entry.navRemoteRegistry')}
+          onClick={() => onViewChange('remote-registry')}
+          testId="entry-nav-remote-registry"
+        >
+          <Icon name="layers-filled" size={18} />
         </NavButton>
         <NavButton
           active={view === 'design-systems'}
