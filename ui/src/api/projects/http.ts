@@ -100,4 +100,15 @@ export class HttpProjectApiClient extends BaseApiClient {
   deleteTemplate(id: string): Promise<void> {
     return this.del(`/api/templates/${id}`);
   }
+
+  // ── F-06: Create Project from Design Template ──────────────────────────────
+
+  createProjectFromTemplate(req: {
+    templateId: string;
+    inputs: Record<string, string>;
+    designSystemId?: string;
+    name?: string;
+  }): Promise<Project> {
+    return this.post('/api/projects/from-template', req);
+  }
 }

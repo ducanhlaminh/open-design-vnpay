@@ -33,6 +33,8 @@ export interface ProjectMetadata {
   description?: string;
   surface?: ProjectPlatform;
   tags?: string[];
+  templateId?: string;
+  templateInputs?: Record<string, string>;
 }
 
 export interface Project {
@@ -85,17 +87,87 @@ export interface Artifact {
 
 // ── Design Systems ───────────────────────────────────────────────────────
 
+// ── DSPreviewPage (NEW) ──────────────────────────────────────────────────
+export interface DSPreviewPage {
+  path: string;
+  role: 'colors' | 'typography' | 'spacing' | 'buttons' | 'app' | string;
+  title: string;
+}
+
 export interface DesignSystemSummary {
   id: string;
   name: string;
   description?: string;
-  builtin: boolean;
+  /** @deprecated use sourceType instead */
+  builtin?: boolean;
+  category: string;
+  sourceType: 'bundled' | 'imported' | 'generated';
+  hasTokens: boolean;
+  hasComponents: boolean;
+  previewPages: DSPreviewPage[];
   updatedAt: string;
 }
 
 export interface DesignSystemDetail extends DesignSystemSummary {
   content: string;
   previewUrl?: string;
+}
+
+// ── Design Templates (NEW) ────────────────────────────────────────────────
+
+export type TemplateMode = 'prototype' | 'deck' | 'template' | 'image' | 'video' | 'audio';
+
+export interface TemplateInput {
+  name: string;
+  type: 'string' | 'text' | 'select' | 'number' | 'boolean';
+  required: boolean;
+  default?: string;
+  options?: string[];
+  placeholder?: string;
+}
+
+export interface DesignTemplateSummary {
+  id: string;
+  name: string;
+  description?: string;
+  mode: TemplateMode;
+  platform?: 'desktop' | 'mobile' | 'tablet';
+  scenario?: string;
+  triggers: string[];
+  hasExample: boolean;
+  exampleUrl: string;
+  inputs: TemplateInput[];
+}
+
+// ── Prompt Templates (NEW) ────────────────────────────────────────────────
+
+export interface PromptTemplateArg {
+  name: string;
+  default: string;
+}
+
+export interface PromptTemplateSummary {
+  id: string;
+  surface: 'image' | 'video';
+  title: string;
+  summary: string;
+  category: string;
+  tags: string[];
+  model: string;    // "gpt-image-2" | "seedance-2.0" | ...
+  aspect: string;   // "1:1" | "16:9" | ...
+  previewImageUrl?: string;
+  argumentCount: number;
+}
+
+export interface PromptTemplateDetail extends PromptTemplateSummary {
+  rawPrompt: string;
+  arguments: PromptTemplateArg[];
+  source: {
+    repo: string;
+    license: string;
+    author?: string;
+    url?: string;
+  };
 }
 
 // ── Skills ───────────────────────────────────────────────────────────────
@@ -210,4 +282,33 @@ export interface AppConfig {
   privacyDecisionAt?: number | null;
   telemetry?: TelemetryConfig;
   customInstructions?: string;
+}
+
+// ── Media Jobs (F-26) ────────────────────────────────────────────────────
+
+export type MediaJobStatus = 'pending' | 'processing' | 'done' | 'failed';
+
+export interface MediaJobSummary {
+  id: string;
+  kind: 'image' | 'video' | 'audio';
+  status: MediaJobStatus;
+  model: string;
+  templateId?: string;
+  resultUrl?: string;
+  errorMsg?: string;
+  durationMs?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ── CreateProjectRequest (re-export for components) ──────────────────────
+
+export interface CreateProjectRequest {
+  name: string;
+  kind?: ProjectKind;
+  skillId?: string;
+  designSystemId?: string;
+  description?: string;
+  pendingPrompt?: string;
+  metadata?: ProjectMetadata;
 }

@@ -38,3 +38,145 @@ html, body, #root {
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+
+/* ── Keyframe Animations ─────────────────────────────────────────────────── */
+
+/* F-12: TokenStrip loading shimmer */
+@keyframes shimmer {
+  0%   { opacity: 0.3; }
+  50%  { opacity: 0.6; }
+  100% { opacity: 0.3; }
+}
+
+/* F-14: Streaming cursor blink */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+.streaming-cursor { animation: blink 0.7s step-end infinite; }
+
+/* F-15: SpinnerIcon spin + StatusDot pulse */
+@keyframes spin  { to { transform: rotate(360deg); } }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* F-16: DS picker dropdown animation */
+@keyframes fadeSlideDown {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* F-18: Drawer slide-in */
+@keyframes slideInRight {
+  from { transform: translateX(40px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* ── Markdown Viewer (F-13) ─────────────────────────────────────────────── */
+
+.markdown-viewer h1 { font-size: 20px; font-weight: 700; margin: 16px 0 8px; }
+.markdown-viewer h2 { font-size: 16px; font-weight: 600; margin: 12px 0 6px; }
+.markdown-viewer h3 { font-size: 14px; font-weight: 600; margin: 10px 0 4px; }
+.markdown-viewer h4 { font-size: 13px; font-weight: 600; margin: 8px 0 4px; }
+.markdown-viewer code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: rgba(255,255,255,0.06);
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.markdown-viewer pre code {
+  display: block;
+  padding: 12px;
+  overflow-x: auto;
+  background: rgba(0,0,0,0.3);
+  border-radius: 6px;
+}
+.markdown-viewer ul { padding-left: 20px; margin: 6px 0; }
+.markdown-viewer li { margin: 3px 0; }
+
+/* ── Markdown Message (F-14) — inherit markdown viewer styles ───────────── */
+
+.markdown-message h1,
+.markdown-message h2,
+.markdown-message h3,
+.markdown-message h4 { font-weight: 600; margin: 8px 0 4px; }
+.markdown-message h1 { font-size: 18px; }
+.markdown-message h2 { font-size: 15px; }
+.markdown-message h3 { font-size: 14px; }
+.markdown-message h4 { font-size: 13px; }
+.markdown-message code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: rgba(255,255,255,0.06);
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.markdown-message pre code {
+  display: block;
+  padding: 12px;
+  overflow-x: auto;
+  background: rgba(0,0,0,0.3);
+  border-radius: 6px;
+}
+.markdown-message ul { padding-left: 20px; margin: 6px 0; }
+.markdown-message li { margin: 3px 0; }
+
+/* ── Design System Picker (F-16) ────────────────────────────────────────── */
+
+.ds-picker-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 200;
+  width: 280px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  animation: fadeSlideDown 0.12s ease;
+}
+.ds-picker-category {
+  padding: 8px 12px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+/* ── DS Card (F-17) ─────────────────────────────────────────────────────── */
+
+.ds-card:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  border-color: var(--color-accent) !important;
+}
+
+/* ── Drawer (F-18) ──────────────────────────────────────────────────────── */
+
+.drawer {
+  animation: slideInRight 0.2s ease;
+}
+
+/* ── Project Card (F-36) ─────────────────────────────────────────────────── */
+
+.project-card:hover {
+  border-color: var(--color-accent) !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+}
+.project-card-actions {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.project-card:hover .project-card-actions {
+  opacity: 1;
+}
+
+/* ── Prompt Template Card (F-23) ─────────────────────────────────────────── */
+
+.prompt-template-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+}

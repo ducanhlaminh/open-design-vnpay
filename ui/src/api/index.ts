@@ -7,6 +7,7 @@ import { HttpProjectApiClient } from './projects/http';
 import { HttpRunsApiClient } from './runs/http';
 import {
   HttpDesignSystemApiClient,
+  HttpDesignTemplateApiClient,
   HttpSkillApiClient,
   HttpConfigApiClient,
   HttpAgentApiClient,
@@ -34,6 +35,9 @@ export const api = {
 
   // T04 — Design Systems: listDesignSystems, getDesignSystem, create/update/delete, importFromGitHub
   designSystems: new HttpDesignSystemApiClient(),
+
+  // F-07 — Design Templates: listDesignTemplates, getDesignTemplate, URL builders
+  designTemplates: new HttpDesignTemplateApiClient(),
 
   // T05 — Skills: listSkills, getSkill, getExampleUrl
   skills: new HttpSkillApiClient(),

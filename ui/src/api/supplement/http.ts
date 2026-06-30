@@ -4,6 +4,10 @@
  * SRS FR-09, FR-10, FR-11, FR-12, FR-13, FR-14, FR-16, FR-17, FR-18
  */
 import { BaseApiClient } from '../client';
+import type {
+  PromptTemplateSummary,
+  PromptTemplateDetail,
+} from '../../types';
 
 // ── T17: Export (FR-09) ─────────────────────────────────────────────────
 
@@ -279,6 +283,39 @@ export class HttpMediaApiClient extends BaseApiClient {
     }
 
     throw new Error('Media generation timed out');
+  }
+
+  // ── Prompt Templates (NEW — F-04) ──────────────────────────────────────────
+
+  listPromptTemplates(params?: {
+    surface?: 'image' | 'video';
+    category?: string;
+    model?: string;
+    q?: string;
+  }): Promise<{ items: PromptTemplateSummary[]; total: number }> {
+    const qs = new URLSearchParams(
+      Object.fromEntries(
+        Object.entries(params ?? {}).filter(([, v]) => v !== undefined),
+      ) as Record<string, string>,
+    ).toString();
+    return this.get(`/api/prompt-templates${qs ? '?' + qs : ''}`);
+  }
+
+  getPromptTemplate(id: string): Promise<PromptTemplateDetail> {
+    return this.get(`/api/prompt-templates/${id}`);
+  }
+
+  generateFromPromptTemplate(req: {
+    templateId: string;
+    values: Record<string, string>;
+    projectId: string;
+    outputAspect?: string;
+  }): Promise<MediaTask> {
+    return this.post('/api/media/generate-from-template', req);
+  }
+
+  getPromptTemplatePreviewUrl(id: string): string {
+    return this.buildUrl(`/api/prompt-templates/${id}/preview`);
   }
 }
 

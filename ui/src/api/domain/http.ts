@@ -7,6 +7,8 @@ import { BaseApiClient } from '../client';
 import type {
   DesignSystemSummary,
   DesignSystemDetail,
+  DesignTemplateSummary,
+  TemplateMode,
   SkillSummary,
   SkillDetail,
   AgentInfo,
@@ -16,14 +18,45 @@ import type {
 // ── T04: Design Systems (FR-04) ───────────────────────────────────────────
 
 export class HttpDesignSystemApiClient extends BaseApiClient {
-  listDesignSystems(): Promise<DesignSystemSummary[]> {
-    return this.get('/api/design-systems');
+  listDesignSystems(params?: {
+    category?: string;
+    q?: string;
+    source?: 'bundled' | 'imported' | 'generated';
+  }): Promise<DesignSystemSummary[]> {
+    const qs = new URLSearchParams(
+      Object.fromEntries(
+        Object.entries(params ?? {}).filter(([, v]) => v !== undefined),
+      ) as Record<string, string>,
+    ).toString();
+    return this.get(`/api/design-systems${qs ? '?' + qs : ''}`);
   }
 
   getDesignSystem(id: string): Promise<DesignSystemDetail> {
     return this.get(`/api/design-systems/${id}`);
   }
 
+  // URL builders — return URL strings for iframe/fetch, no API call
+  getTokensCssUrl(id: string): string {
+    return this.buildUrl(`/api/design-systems/${id}/tokens.css`);
+  }
+
+  getComponentsUrl(id: string): string {
+    return this.buildUrl(`/api/design-systems/${id}/components`);
+  }
+
+  getDesignMdUrl(id: string): string {
+    return this.buildUrl(`/api/design-systems/${id}/design.md`);
+  }
+
+  getPreviewPageUrl(id: string, role: string): string {
+    return this.buildUrl(`/api/design-systems/${id}/preview/${role}`);
+  }
+
+  getAssetUrl(id: string, path: string): string {
+    return this.buildUrl(`/api/design-systems/${id}/assets/${path}`);
+  }
+
+  /** @deprecated use getPreviewPageUrl instead */
   getPreviewUrl(id: string): string {
     return this.buildUrl(`/api/design-systems/${id}/preview`);
   }
@@ -49,6 +82,40 @@ export class HttpDesignSystemApiClient extends BaseApiClient {
 
   importFromGitHub(repoUrl: string): Promise<DesignSystemDetail> {
     return this.post('/api/design-systems/import/github', { repoUrl });
+  }
+}
+
+// ── F-05: HttpDesignTemplateApiClient (NEW — F-03/F-05) ──────────────────────
+
+export class HttpDesignTemplateApiClient extends BaseApiClient {
+  listDesignTemplates(params?: {
+    mode?: TemplateMode;
+    q?: string;
+    scenario?: string;
+  }): Promise<{ items: DesignTemplateSummary[]; total: number }> {
+    const qs = new URLSearchParams(
+      Object.fromEntries(
+        Object.entries(params ?? {}).filter(([, v]) => v !== undefined),
+      ) as Record<string, string>,
+    ).toString();
+    return this.get(`/api/design-templates${qs ? '?' + qs : ''}`);
+  }
+
+  getDesignTemplate(id: string): Promise<DesignTemplateSummary> {
+    return this.get(`/api/design-templates/${id}`);
+  }
+
+  // URL builders
+  getTemplateExampleUrl(id: string): string {
+    return this.buildUrl(`/api/design-templates/${id}/example`);
+  }
+
+  getTemplateDerivedExampleUrl(id: string, key: string): string {
+    return this.buildUrl(`/api/design-templates/${id}/examples/${key}`);
+  }
+
+  getTemplateAssetUrl(id: string, path: string): string {
+    return this.buildUrl(`/api/design-templates/${id}/assets/${path}`);
   }
 }
 
