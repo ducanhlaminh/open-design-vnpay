@@ -79,6 +79,27 @@ function pickAttributes(realm: Realm, el: Element): Record<string, string> {
   return out;
 }
 
+// --- design-system component marker ---------------------------------------------------------
+// A node carrying `data-slot` is a design-system component. We stamp a marker into the figh2d
+// layer-name field (`owningReactComponent`) so a downstream Figma plugin can find the pasted
+// frame and swap it for a real component INSTANCE (variant chosen from the data-* attrs) + bind
+// tokens. Shape: `kg:<slot>|<attr>=<val>;…` (identity/internal attrs excluded). Paste keeps the
+// layer name, so this survives the clipboard even though pluginData does not.
+const KG_MARKER_SKIP = new Set(["data-node-id", "data-name", "data-testid"]);
+function kgComponentMarker(el: Element): string | undefined {
+  const slot = el.getAttribute("data-slot");
+  if (!slot) return undefined;
+  const parts: string[] = [];
+  for (const { name, value } of Array.from(el.attributes)) {
+    const lower = name.toLowerCase();
+    if (!lower.startsWith("data-") || lower === "data-slot") continue;
+    if (KG_MARKER_SKIP.has(lower) || lower.startsWith("data-h2d-")) continue;
+    parts.push(`${lower.slice(5)}=${value}`); // strip "data-" prefix
+  }
+  if (el.getAttribute("aria-invalid") === "true") parts.push("aria-invalid=true");
+  return parts.length ? `kg:${slot}|${parts.join(";")}` : `kg:${slot}`;
+}
+
 // --- pseudo-element content (::before / ::after) --------------------------------------------
 function decodeCssString(value: string): string {
   return value.replace(/\\([0-9a-fA-F]{1,6})\s?|\\(.)/g, (_m, hex: string, ch: string) => {
@@ -299,6 +320,8 @@ function walkElement(ctx: WalkContext, el: Element, parent: ChildContext | undef
     pseudoElementStyles,
   };
   if (Object.keys(computedStyles).length > 0) node.computedStyles = computedStyles;
+  const kgMarker = kgComponentMarker(el);
+  if (kgMarker) node.owningReactComponent = kgMarker;
   return node;
 }
 

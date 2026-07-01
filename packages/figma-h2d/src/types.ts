@@ -49,6 +49,10 @@ export interface H2DElementNode {
   pseudoElementStyles?: { placeholder?: Record<string, string> };
   /** Specified (pre-resolution) values for sizing/grid props, via CSS Typed OM. */
   computedStyles?: Record<string, string>;
+  /** figh2d layer-name field. We encode a design-system component marker here
+   *  (`kg:<slot>|<variant>`) for nodes carrying `data-slot`, so a downstream Figma
+   *  plugin can swap the pasted frame for a real component instance + bound tokens. */
+  owningReactComponent?: string;
 }
 
 export type H2DNode = H2DElementNode | H2DTextNode;
