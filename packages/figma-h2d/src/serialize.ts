@@ -87,6 +87,12 @@ function pickAttributes(realm: Realm, el: Element): Record<string, string> {
 // layer name, so this survives the clipboard even though pluginData does not.
 const KG_MARKER_SKIP = new Set(["data-node-id", "data-name", "data-testid"]);
 function kgComponentMarker(el: Element): string | undefined {
+  // lucide <svg> icons: name the layer `icon/<name>` so the swap plugin can
+  // replace it with the design system's Icon/<name> component.
+  if (el.tagName.toLowerCase() === "svg") {
+    const m = (el.getAttribute("class") ?? "").match(/lucide-([a-z0-9-]+)/);
+    return m ? `icon/${m[1]}` : undefined;
+  }
   const slot = el.getAttribute("data-slot");
   if (!slot) return undefined;
   const parts: string[] = [];
