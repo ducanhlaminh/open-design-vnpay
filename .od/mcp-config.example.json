@@ -5,9 +5,9 @@
       "transport": "stdio",
       "enabled": true,
       "label": "Local UI Knowledge Graph (od-kg)",
-      "command": "/Users/tungnt2/.local/share/fnm/node-versions/v24.13.0/installation/bin/node",
+      "command": "node",
       "args": [
-        "/Users/tungnt2/Documents/work/vpn-design-platform/ui/open-design-vnpay/tools/kg/bin/tools-kg.mjs",
+        "<repo>/tools/kg/bin/tools-kg.mjs",
         "mcp"
       ],
       "env": {
@@ -25,7 +25,7 @@
       "url": "https://a2.openledger.vn/api/mcp/",
       "authMode": "none",
       "headers": {
-        "Authorization": "Bearer mcp_8fa6c06e_M4UvTXvDVT_abi-P15Dgsd7KuxEua6nrt1lY--kMdlg"
+        "Authorization": "Bearer <BAS_MCP_TOKEN>"
       }
     },
     {
@@ -33,15 +33,15 @@
       "transport": "stdio",
       "enabled": true,
       "label": "Atlassian (Jira + Confluence Data Center)",
-      "command": "/opt/homebrew/bin/uvx",
+      "command": "uvx",
       "args": [
         "mcp-atlassian@0.21.1"
       ],
       "env": {
         "JIRA_URL": "https://jr.servicehub.vn",
-        "JIRA_PERSONAL_TOKEN": "NjQ0NDM0ODcxMjEwOibuH7Z0oLyeYwYeZgOKYUmF5/lA",
+        "JIRA_PERSONAL_TOKEN": "<JIRA_PERSONAL_TOKEN>",
         "CONFLUENCE_URL": "https://wiki.servicehub.vn",
-        "CONFLUENCE_PERSONAL_TOKEN": "Mjc0Nzk5NDY4ODIzOh8rhUuv1CtVmJ478hFkSojtKZE0"
+        "CONFLUENCE_PERSONAL_TOKEN": "<CONFLUENCE_PERSONAL_TOKEN>"
       }
     }
   ]
