@@ -598,6 +598,10 @@ interface PipelineRunStateRow {
   lastRunId?: string;
   lastConversationId?: string;
   updatedAt?: number;
+  /** Free-text input of the last run (Confluence URL / JIRA key / JQL). */
+  lastInput?: string;
+  /** Structured source of the last run (Confluence ref or BAS document). */
+  lastSource?: unknown;
 }
 
 export function getProjectPipelineState(
@@ -619,7 +623,13 @@ export function setProjectPipelineStatus(
   db: SqliteDb,
   projectId: string,
   pipelineId: string,
-  patch: { status?: string; lastRunId?: string; lastConversationId?: string },
+  patch: {
+    status?: string;
+    lastRunId?: string;
+    lastConversationId?: string;
+    lastInput?: string;
+    lastSource?: unknown;
+  },
 ) {
   const project = getProject(db, projectId);
   if (!project) return null;

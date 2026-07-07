@@ -1,6 +1,7 @@
-// Pipelines page (docs → UI). A per-KGS-app, dependency-gated flow of the five
+// Pipelines page (docs → output). A per-KGS-app, dependency-gated flow of
 // pipelines, rendered as a numbered vertical stepper that mirrors the actual
-// DAG: jira-ingest → feature-analysis → {ux-spec ∥ customer-journey} → ui.
+// DAG of the selected workflow: docs-to-html (html-docs → html-cj → html-ux →
+// ui-html) or docs-to-react (react-docs → react-cj → react-ux → ui-react).
 //
 // The "project" here is a KGS app — a project pulled from the central KGS
 // (`od kg pull`), whose id is the KGS project_id. Runs happen in the BACKGROUND:
@@ -10,7 +11,7 @@
 // result (the stage's output files). A step is locked until its prerequisites
 // have succeeded.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   PipelineProject,
   PipelineProjectsResponse,
@@ -27,16 +28,22 @@ import { Toast } from './Toast';
 import { navigate } from '../router';
 import {
   DesignSystemRunModal,
-  NewPipelineProjectModal,
+  PullAllModal,
+  PushAllModal,
   PipelineResultModal,
   PipelineStatusModal,
   RunInputModal,
   type RunSourcePayload,
 } from './pipelines/PipelineModals';
 import { PullConflictModal } from './pipelines/PullConflictModal';
+import { PlModal } from './pipelines/PlModal';
 import { pullApply, pullPlan } from '../providers/pullConflict';
 import { useT } from '../i18n';
 import { relativeTimeLong } from '../utils/chatTime';
+
+// Max project cards shown before the picker collapses behind "Show all" —
+// keeps the pipeline stepper (the page's real content) above the fold.
+const PROJECT_CARD_LIMIT = 7;
 
 const STATUS_LABEL: Record<string, string> = {
   idle: 'Not started',
@@ -84,6 +91,13 @@ export function PipelinesView() {
   const t = useT();
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [workflowId, setWorkflowId] = useState<string>('');
+  // Pull all / Push all are scoped to the ACTIVE workflow tab — their modals
+  // only offer (and only sync) this workflow's pipelines. Fallback to all
+  // while the workflow list is still loading.
+  const activeWorkflows = useMemo(() => {
+    const hit = workflows.filter((w) => w.id === workflowId);
+    return hit.length > 0 ? hit : workflows;
+  }, [workflows, workflowId]);
   const [projects, setProjects] = useState<PipelineProject[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [projectId, setProjectId] = useState<string>('');
@@ -94,11 +108,69 @@ export function PipelinesView() {
 
   const [syncBusy, setSyncBusy] = useState<null | 'pull' | 'push'>(null);
   const [uploading, setUploading] = useState(false);
+  // Project history (version hóa output), scoped per PIPELINE CARD: the card's
+  // Lịch sử button opens a panel listing the store versions whose snapshot
+  // contains THAT stage's outputs (v.stages) + this machine's commits for the
+  // same pipeline. Restore from a card only rewinds that stage's files.
+  const [historyForId, setHistoryForId] = useState<string | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyData, setHistoryData] = useState<{
+    versions: Array<{ verId: string; at: string; by: { email?: string; name?: string } | null; files: number; gitCommit?: string; stages?: string[] }>;
+    commits: Array<{ commit: string; at: string; kind: string; pipelineId?: string; status?: string; by?: { email?: string } | null; filesChanged?: number; note?: string }>;
+  } | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState<string | null>(null);
   const [pullBusy, setPullBusy] = useState(false);
+  const [buildBusy, setBuildBusy] = useState(false);
+  // Project picker controls — with many KGS projects the raw card grid became
+  // a wall pushing the actual pipeline flow below the fold.
+  const [projectSearch, setProjectSearch] = useState('');
+  const [showAllProjects, setShowAllProjects] = useState(false);
+  // Which stage's "run info" panel is expanded (input/source of the last run).
+  const [infoForId, setInfoForId] = useState<string | null>(null);
+
+  // Đổi project → đóng panel lịch sử của card cũ; dữ liệu cũ không còn đúng.
+  useEffect(() => {
+    setHistoryForId(null);
+    setHistoryData(null);
+  }, [projectId]);
+
+  // Relevance order for the picker: the selected project is pinned first, then
+  // anything currently running, then in-progress work, then untouched, and
+  // finished projects last — alphabetical inside each band. With no search the
+  // grid shows the first PROJECT_CARD_LIMIT cards; searching always shows every
+  // match (a filtered result set is small by construction).
+  const { visibleProjects, hiddenProjectCount } = useMemo(() => {
+    const q = projectSearch.trim().toLowerCase();
+    const matches = q
+      ? projects.filter(
+          (pr) => pr.name.toLowerCase().includes(q) || pr.id.toLowerCase().includes(q),
+        )
+      : projects;
+    const band = (pr: PipelineProject): number => {
+      if (pr.id === projectId) return 0;
+      if (pr.running > 0) return 1;
+      if (pr.done > 0 && pr.done < pr.total) return 2;
+      if (pr.total === 0 || pr.done === 0) return 3;
+      return 4; // complete
+    };
+    const sorted = matches
+      .slice()
+      .sort((a, b) => band(a) - band(b) || a.name.localeCompare(b.name));
+    if (q || showAllProjects || sorted.length <= PROJECT_CARD_LIMIT) {
+      return { visibleProjects: sorted, hiddenProjectCount: 0 };
+    }
+    return {
+      visibleProjects: sorted.slice(0, PROJECT_CARD_LIMIT),
+      hiddenProjectCount: sorted.length - PROJECT_CARD_LIMIT,
+    };
+  }, [projects, projectSearch, showAllProjects, projectId]);
   const [pullPlanState, setPullPlanState] = useState<PullPlan | null>(null);
 
   const [toast, setToast] = useState<ToastState | null>(null);
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  // "Pull all"/"Push all" open pick-projects/pipelines modals instead of
+  // moving everything blindly. (Tạo dự án đã chuyển hẳn sang Pipeline Studio.)
+  const [pullAllOpen, setPullAllOpen] = useState(false);
+  const [pushAllOpen, setPushAllOpen] = useState(false);
   const [runInputFor, setRunInputFor] = useState<PipelineView | null>(null);
   const [designSystemFor, setDesignSystemFor] = useState<PipelineView | null>(null);
   const [statusFor, setStatusFor] = useState<PipelineView | null>(null);
@@ -205,11 +277,21 @@ export function PipelinesView() {
   }, [anyProjectRunning, loadProjects]);
 
   // Pull/push ALL KGS apps at once (not per-project). Pull refreshes the app list.
-  const syncAll = async (kind: 'pull' | 'push') => {
+  // `projectIds` narrows to the projects chosen in the Pull all / Push all modal;
+  // `stages` narrows which pipelines' OUTPUT FILES travel (graph stays whole-
+  // project). Either omitted → legacy everything.
+  const syncAll = async (kind: 'pull' | 'push', projectIds?: string[], stages?: string[]) => {
     setSyncBusy(kind);
     setError(null);
     try {
-      const res = await fetch(`/api/kg/${kind}-all`, { method: 'POST' });
+      const res = await fetch(`/api/kg/${kind}-all`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...(projectIds?.length ? { projectIds } : {}),
+          ...(stages?.length ? { stages } : {}),
+        }),
+      });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || `${kind}-all failed: ${res.status}`);
       if (kind === 'pull') {
@@ -230,38 +312,16 @@ export function PipelinesView() {
             ? `Pulled ${projectCount} project(s) from KGS — ${fileCount} file(s)`
             : `Pushed ${projectCount} project(s) to KGS — ${fileCount} file(s)`,
       });
+      return true;
     } catch (err) {
       pushToast({
         message: kind === 'pull' ? "Couldn't pull from KGS" : "Couldn't push to KGS",
         details: err instanceof Error ? err.message : String(err),
         code: 'error',
       });
+      return false;
     } finally {
       setSyncBusy(null);
-    }
-  };
-
-  // Create a brand-new pipeline project (id IS the KGS project_id). Throws on
-  // failure so the modal can keep itself open + show the inline error too.
-  const createProject = async (id: string) => {
-    try {
-      const res = await fetch('/api/pipelines/projects', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId: id, name: id }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j?.error || `create failed: ${res.status}`);
-      await loadProjects();
-      setProjectId(id);
-      pushToast({ message: `Created project “${id}”` });
-    } catch (err) {
-      pushToast({
-        message: "Couldn't create project",
-        details: err instanceof Error ? err.message : String(err),
-        code: 'error',
-      });
-      throw err;
     }
   };
 
@@ -287,6 +347,87 @@ export function PipelinesView() {
       });
     } finally {
       setUploading(false);
+    }
+  };
+
+  // Changelog của project: published versions (store `_v/`) + local commits.
+  const loadHistory = async (pid: string) => {
+    setHistoryBusy(true);
+    try {
+      const res = await fetch(`/api/pipelines/history?projectId=${encodeURIComponent(pid)}`);
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || `history failed: ${res.status}`);
+      setHistoryData({ versions: j.versions ?? [], commits: j.commits ?? [] });
+    } catch (err) {
+      setHistoryData(null);
+      pushToast({
+        message: 'Không tải được lịch sử',
+        details: err instanceof Error ? err.message : String(err),
+        code: 'error',
+      });
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  // Restore: rewind outputs về một bản đã push (store) hoặc một commit local.
+  // `stage` giới hạn version-restore vào output của đúng pipeline đó (nút
+  // Khôi phục trong card). Trạng thái hiện tại được daemon chốt vào
+  // .odhistory trước — luôn undo được.
+  const restoreHistory = async (opts: { verId?: string; commit?: string; stage?: string }) => {
+    if (!projectId) return;
+    const label = opts.verId ?? opts.commit?.slice(0, 10) ?? '';
+    const scope = opts.stage ? `output của bước "${opts.stage}"` : 'output';
+    if (!window.confirm(`Khôi phục ${scope} về bản ${label}? Trạng thái hiện tại sẽ được lưu vào lịch sử trước khi ghi đè.`)) {
+      return;
+    }
+    setRestoreBusy(label);
+    try {
+      const res = await fetch('/api/pipelines/history/restore', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, ...opts }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || `restore failed: ${res.status}`);
+      pushToast({ message: `Đã khôi phục ${j.files ?? 0} file về bản ${label}` });
+      void load(projectId);
+      void loadHistory(projectId);
+    } catch (err) {
+      pushToast({
+        message: 'Khôi phục thất bại',
+        details: err instanceof Error ? err.message : String(err),
+        code: 'error',
+      });
+    } finally {
+      setRestoreBusy(null);
+    }
+  };
+
+  // Build/rebuild the docs-to-react app from synced sources. dist/ never
+  // syncs (PipelineDef.syncExclude), so after "Pull project" this is what
+  // makes the app previewable again. 422 carries the tsc/vite error tail.
+  const buildReactApp = async () => {
+    if (!projectId) return;
+    setBuildBusy(true);
+    try {
+      const res = await fetch('/api/pipelines/react-build', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || `build failed: ${res.status}`);
+      void load(projectId);
+      pushToast({ message: `Built React app for “${projectId}” → react/dist/` });
+    } catch (err) {
+      pushToast({
+        message: "Couldn't build the React app",
+        details: err instanceof Error ? err.message : String(err),
+        code: 'error',
+      });
+    } finally {
+      setBuildBusy(false);
     }
   };
 
@@ -453,9 +594,9 @@ export function PipelinesView() {
           <button
             type="button"
             className="pl-btn"
-            onClick={() => void syncAll('pull')}
+            onClick={() => setPullAllOpen(true)}
             disabled={syncBusy !== null}
-            title="Pull ALL apps from KGS into the local mirror"
+            title="Pull các project từ KGS về — chỉ output của workflow đang chọn"
           >
             <Icon name={syncBusy === 'pull' ? 'spinner' : 'download'} size={14} />
             <span>{syncBusy === 'pull' ? 'Pulling…' : 'Pull all'}</span>
@@ -463,9 +604,9 @@ export function PipelinesView() {
           <button
             type="button"
             className="pl-btn"
-            onClick={() => void syncAll('push')}
+            onClick={() => setPushAllOpen(true)}
             disabled={syncBusy !== null}
-            title="Push ALL locally-mirrored apps back to KGS"
+            title="Push các project local lên KGS — chỉ output của workflow đang chọn"
           >
             <Icon name={syncBusy === 'push' ? 'spinner' : 'upload'} size={14} />
             <span>{syncBusy === 'push' ? 'Pushing…' : 'Push all'}</span>
@@ -494,14 +635,46 @@ export function PipelinesView() {
               <span>{uploading ? 'Uploading…' : 'Upload project'}</span>
             </button>
           ) : null}
+          {hasProjects && workflowId === 'docs-to-react' ? (
+            <button
+              type="button"
+              className="pl-btn"
+              onClick={() => void buildReactApp()}
+              disabled={buildBusy || !projectId}
+              title="Build the React app from its sources (react/dist/ is never synced — after a pull, build here to preview). Requires Docker."
+            >
+              <Icon name={buildBusy ? 'spinner' : 'play'} size={14} />
+              <span>{buildBusy ? 'Building…' : 'Build app'}</span>
+            </button>
+          ) : null}
         </div>
       </div>
 
-      {/* Req 1 + 2: KGS project selection cards + New project card */}
+      {/* Req 1 + 2: KGS project selection cards + New project card.
+          UX for many projects: search + smart order (selected → running →
+          in-progress → untouched → complete) + collapsed grid (first
+          PROJECT_CARD_LIMIT cards) with an explicit "Show all" toggle. */}
       <section className="pipelines-projects" aria-label="KGS project">
-        <span className="pl-field__label">KGS project</span>
+        <div className="pl-proj-toolbar">
+          <span className="pl-field__label">
+            KGS project
+            {projects.length > 0 ? (
+              <span className="pl-proj-count"> · {projects.length}</span>
+            ) : null}
+          </span>
+          {projects.length > PROJECT_CARD_LIMIT ? (
+            <input
+              type="search"
+              className="pl-proj-search"
+              placeholder="Search projects…"
+              value={projectSearch}
+              onChange={(ev) => setProjectSearch(ev.target.value)}
+              aria-label="Search projects"
+            />
+          ) : null}
+        </div>
         <div className="pl-card-grid">
-          {projects.map((pr) => {
+          {visibleProjects.map((pr) => {
             const complete = pr.total > 0 && pr.done >= pr.total;
             return (
               <button
@@ -541,15 +714,34 @@ export function PipelinesView() {
               </button>
             );
           })}
-          <button
-            type="button"
-            className="pl-proj-card pl-proj-card--new"
-            onClick={() => setNewProjectOpen(true)}
-          >
-            <Icon name="plus" size={18} />
-            <span>New project</span>
-          </button>
+          {hiddenProjectCount > 0 ? (
+            <button
+              type="button"
+              className="pl-proj-card pl-proj-card--more"
+              onClick={() => setShowAllProjects(true)}
+              title="Show every project card"
+            >
+              <span className="pl-proj-more__count">+{hiddenProjectCount}</span>
+              <span>Show all</span>
+            </button>
+          ) : null}
+          {showAllProjects && projects.length > PROJECT_CARD_LIMIT ? (
+            <button
+              type="button"
+              className="pl-proj-card pl-proj-card--more"
+              onClick={() => setShowAllProjects(false)}
+              title="Collapse back to the most relevant projects"
+            >
+              <span className="pl-proj-more__chevron">
+                <Icon name="chevron-down" size={16} />
+              </span>
+              <span>Show less</span>
+            </button>
+          ) : null}
         </div>
+        {projectSearch && visibleProjects.length === 0 ? (
+          <div className="pl-proj-noresult">No project matches “{projectSearch}”.</div>
+        ) : null}
       </section>
 
       {error ? (
@@ -566,11 +758,11 @@ export function PipelinesView() {
             <Icon name="pipeline" size={22} />
           </span>
           <div className="pipelines-empty__body">
-            <strong>No pipeline project yet</strong>
+            <strong>Chưa có dự án nào trên máy này</strong>
             <p>
-              Click <strong>New project</strong> above to create one (the id is the KGS project_id),
-              or pull an existing one with <code>od kg pull &lt;project-id&gt;</code> /{' '}
-              <strong>Pull all</strong>. Then run its docs → UI pipelines here.
+              Dự án được tạo trên <strong>Pipeline Studio</strong> (kèm link Confluence + design
+              system). Nhờ quản lý add bạn vào dự án, rồi bấm <strong>Pull all</strong> (hoặc{' '}
+              <code>od kg pull &lt;project-id&gt;</code>) để kéo về và chạy pipeline tại đây.
             </p>
           </div>
         </div>
@@ -593,6 +785,9 @@ export function PipelinesView() {
             const meta = metaFor(p.id);
             const isLast = idx === pipelines.length - 1;
             const canChat = !!p.lastConversationId;
+            const hasRunInfo = Boolean(p.updatedAt || p.lastInput || p.lastSource || p.lastRunId);
+            const infoOpen = infoForId === p.id;
+            const histOpen = historyForId === p.id;
             return (
               <li
                 key={p.id}
@@ -625,10 +820,87 @@ export function PipelinesView() {
                       <span className={`pl-status pl-status--${p.status}`}>
                         {STATUS_LABEL[p.status] ?? p.status}
                       </span>
+                      {hasRunInfo ? (
+                        <button
+                          type="button"
+                          className={`pl-step__infobtn${infoOpen ? ' is-open' : ''}`}
+                          onClick={() => setInfoForId(infoOpen ? null : p.id)}
+                          title="Show what this stage's last run was fed (input link / source / time)"
+                          aria-expanded={infoOpen}
+                        >
+                          <Icon name="info" size={13} />
+                        </button>
+                      ) : null}
                     </div>
                     {meta.blurb ? <p className="pl-step__desc">{meta.blurb}</p> : null}
                     {p.updatedAt ? (
                       <p className="pl-step__lastrun">Last run: {relativeTimeLong(p.updatedAt, t)}</p>
+                    ) : null}
+                    {infoOpen ? (
+                      <dl className="pl-step__info">
+                        {p.updatedAt ? (
+                          <div className="pl-step__info-row">
+                            <dt>Last run</dt>
+                            <dd>
+                              {new Date(p.updatedAt).toLocaleString()} (
+                              {relativeTimeLong(p.updatedAt, t)})
+                            </dd>
+                          </div>
+                        ) : null}
+                        {p.lastInput ? (
+                          <div className="pl-step__info-row">
+                            <dt>Input</dt>
+                            <dd>
+                              {/^https?:\/\//i.test(p.lastInput.trim()) ? (
+                                <a href={p.lastInput.trim()} target="_blank" rel="noreferrer">
+                                  {p.lastInput.trim()}
+                                </a>
+                              ) : (
+                                <code>{p.lastInput}</code>
+                              )}
+                            </dd>
+                          </div>
+                        ) : null}
+                        {p.lastSource?.kind === 'confluence' ? (
+                          <div className="pl-step__info-row">
+                            <dt>Source</dt>
+                            <dd>
+                              Confluence —{' '}
+                              {/^https?:\/\//i.test(p.lastSource.ref.trim()) ? (
+                                <a href={p.lastSource.ref.trim()} target="_blank" rel="noreferrer">
+                                  {p.lastSource.ref.trim()}
+                                </a>
+                              ) : (
+                                <code>{p.lastSource.ref}</code>
+                              )}
+                            </dd>
+                          </div>
+                        ) : p.lastSource?.kind === 'bas' ? (
+                          <div className="pl-step__info-row">
+                            <dt>Source</dt>
+                            <dd>
+                              BAS document <code>{p.lastSource.documentId}</code>
+                              {p.lastSource.featureIds?.length
+                                ? ` · ${p.lastSource.featureIds.length} feature(s): ${p.lastSource.featureIds.join(', ')}`
+                                : ' · whole document'}
+                            </dd>
+                          </div>
+                        ) : null}
+                        {canChat ? (
+                          <div className="pl-step__info-row">
+                            <dt>Run</dt>
+                            <dd>
+                              <button
+                                type="button"
+                                className="pl-step__info-link"
+                                onClick={() => openChat(p)}
+                              >
+                                Open the run conversation →
+                              </button>
+                            </dd>
+                          </div>
+                        ) : null}
+                      </dl>
                     ) : null}
                     {!p.active && p.dependsOn.length > 0 ? (
                       <p className="pl-step__lock">
@@ -640,6 +912,7 @@ export function PipelinesView() {
                         first
                       </p>
                     ) : null}
+
                   </div>
 
                   <div className="pl-step__actions">
@@ -730,6 +1003,20 @@ export function PipelinesView() {
                         <span>{isBusy ? 'Starting…' : 'Run'}</span>
                       </button>
                     )}
+                    <button
+                      type="button"
+                      className="pl-btn"
+                      onClick={() => {
+                        const next = histOpen ? null : p.id;
+                        setHistoryForId(next);
+                        if (next && projectId) void loadHistory(projectId);
+                      }}
+                      title="Các bản đã push chứa output của bước này — xem & khôi phục riêng bước này"
+                      aria-expanded={histOpen}
+                    >
+                      <Icon name={historyBusy && histOpen ? 'spinner' : 'history'} size={14} />
+                      <span>Lịch sử</span>
+                    </button>
                   </div>
                 </div>
               </li>
@@ -739,13 +1026,121 @@ export function PipelinesView() {
       )}
 
       {/* ── Modals ── */}
-      {newProjectOpen ? (
-        <NewPipelineProjectModal onClose={() => setNewProjectOpen(false)} onCreate={createProject} />
+      {historyForId
+        ? (() => {
+            const stageId = historyForId;
+            const stageName = pipelines.find((x) => x.id === stageId)?.name ?? stageId;
+            // Store versions whose frozen snapshot carries THIS stage's outputs
+            // + this machine's .odhistory commits for the same pipeline.
+            const vers = (historyData?.versions ?? []).filter((v) => v.stages?.includes(stageId));
+            const cms = (historyData?.commits ?? []).filter((c) => c.pipelineId === stageId);
+            return (
+              <PlModal
+                title={`Lịch sử — ${stageName}`}
+                icon="history"
+                size="md"
+                busy={restoreBusy !== null}
+                onClose={() => setHistoryForId(null)}
+              >
+                <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+                  Bản đã push chứa output bước này ({vers.length})
+                </div>
+                {historyBusy && !historyData ? (
+                  <div style={{ fontSize: 12, opacity: 0.6 }}>Đang tải…</div>
+                ) : null}
+                {vers.map((v, i) => (
+                  <div
+                    key={v.verId}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 12.5 }}
+                  >
+                    <code style={{ fontWeight: 700 }}>{v.verId}</code>
+                    <span
+                      style={{ opacity: 0.75, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}
+                    >
+                      {v.by?.name || v.by?.email || 'không rõ'} · {new Date(v.at).toLocaleString('vi-VN')}
+                      {i === 0 ? ' · mới nhất' : ''}
+                    </span>
+                    <button
+                      type="button"
+                      className="pl-btn"
+                      disabled={restoreBusy !== null}
+                      onClick={() => void restoreHistory({ verId: v.verId, stage: stageId })}
+                      title={`Khôi phục CHỈ output của bước "${stageName}" về bản ${v.verId}`}
+                    >
+                      {restoreBusy === v.verId ? 'Đang khôi phục…' : 'Khôi phục'}
+                    </button>
+                  </div>
+                ))}
+                {historyData && vers.length === 0 ? (
+                  <div style={{ fontSize: 12, opacity: 0.6 }}>
+                    Chưa có bản nào trên store chứa output của bước này — chạy bước rồi push để tạo.
+                  </div>
+                ) : null}
+                {cms.length > 0 ? (
+                  <>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, margin: '12px 0 4px' }}>
+                      Trên máy này ({cms.length})
+                    </div>
+                    {cms.slice(0, 10).map((c) => (
+                      <div
+                        key={c.commit}
+                        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', fontSize: 12 }}
+                      >
+                        <code style={{ opacity: 0.6 }}>{c.commit.slice(0, 8)}</code>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                          {c.kind}
+                          {c.status ? ` [${c.status}]` : ''}
+                          {typeof c.filesChanged === 'number' ? ` · ${c.filesChanged} file` : ''}
+                          {' · '}
+                          {new Date(c.at).toLocaleString('vi-VN')}
+                        </span>
+                        <button
+                          type="button"
+                          className="pl-btn"
+                          disabled={restoreBusy !== null}
+                          onClick={() => void restoreHistory({ commit: c.commit })}
+                          title="Rewind TOÀN BỘ project về commit này (mọi file, không chỉ bước này)"
+                        >
+                          {restoreBusy === c.commit.slice(0, 10) ? '…' : 'Khôi phục'}
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                ) : null}
+              </PlModal>
+            );
+          })()
+        : null}
+      {pullAllOpen ? (
+        <PullAllModal
+          localIds={new Set(projects.map((pr) => pr.id))}
+          workflows={activeWorkflows}
+          scopeName={activeWorkflows[0]?.name}
+          onClose={() => setPullAllOpen(false)}
+          onConfirm={async (ids, stages) => {
+            const ok = await syncAll('pull', ids, stages);
+            if (!ok) throw new Error('Pull failed — see the toast for details.');
+          }}
+        />
+      ) : null}
+      {pushAllOpen ? (
+        <PushAllModal
+          projects={projects.map((pr) => ({ id: pr.id, name: pr.name }))}
+          workflows={activeWorkflows}
+          scopeName={activeWorkflows[0]?.name}
+          onClose={() => setPushAllOpen(false)}
+          onConfirm={async (ids, stages) => {
+            const ok = await syncAll('push', ids, stages);
+            if (!ok) throw new Error('Push failed — see the toast for details.');
+          }}
+        />
       ) : null}
       {runInputFor ? (
         <RunInputModal
           pipelineName={runInputFor.name}
           placeholder={runInputFor.inputPlaceholder ?? ''}
+          defaultConfluencePages={projects.find((pr) => pr.id === projectId)?.config?.confluencePages}
+          defaultBasDocumentId={projects.find((pr) => pr.id === projectId)?.config?.basDocumentId}
           onClose={() => setRunInputFor(null)}
           onRun={async (payload) => {
             await startRun(runInputFor.id, payload);
@@ -756,6 +1151,7 @@ export function PipelinesView() {
       {designSystemFor ? (
         <DesignSystemRunModal
           pipelineName={designSystemFor.name}
+          defaultId={projects.find((pr) => pr.id === projectId)?.config?.designSystemId}
           onClose={() => setDesignSystemFor(null)}
           onRun={async (designSystemId) => {
             await startRun(designSystemFor.id, undefined, designSystemId);

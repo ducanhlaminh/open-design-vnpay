@@ -13,6 +13,7 @@ import type {
   PullPlan,
   PullResolution,
 } from '@open-design/contracts';
+import { isHistoryArtifact, isSyncExcluded } from '../pipelines.js';
 
 /** Max bytes of either side we will inline-diff. A text file larger than this is
  *  classified `binary` (metadata-only comparison) — see conflictKind. */
@@ -151,6 +152,13 @@ export async function planPullFiles(
     if (!rel) continue;
     // Snapshot every remote checksum (TOCTOU baseline) even for skipped paths.
     remoteByPath.set(rel, rf.checksum);
+    // History metadata (_v/ snapshots, changelog.json) is store-side only —
+    // never a pull candidate; restore has its own API.
+    if (isHistoryArtifact(rel)) continue;
+    // syncExclude paths (build artifacts / template scaffold a stale store may
+    // still carry) are invisible to PLAN: they must never surface as "new"
+    // files or conflicts — pull would pin an old template over the local one.
+    if (isSyncExcluded(rel)) continue;
     const dest = path.resolve(cwd, rel);
     if (!withinCwd(dest, cwdReal)) continue; // path-traversal guard
 

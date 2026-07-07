@@ -121,6 +121,23 @@ export type ToolPackConfig = {
   atlassianJiraToken?: string;
   atlassianConfluenceToken?: string;
   /**
+   * Google SSO + preview-identity auth, sourced from process.env at packaging
+   * time and baked into open-design-config.json so the packaged daemon runs
+   * with login bật sẵn (SESSION_SECRET/GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/
+   * IDENTITY_URL — auth-routes.ts authConfigFromEnv; auth là opt-in theo
+   * SESSION_SECRET nên thiếu là bản packaged chạy KHÔNG login và pull-all
+   * không lọc membership). WARNING: googleClientSecret + authSessionSecret
+   * nằm trong bundle (trích được) — SESSION_SECRET chung nghĩa là ai có nó
+   * forge được session cookie; chỉ dùng cho phân phối nội bộ, phải rotate
+   * được. authDomainLock = passthrough OD_AUTH_DOMAIN_LOCK (bật khóa domain
+   * email cho bản phát hành). Tất cả omit khi env unset.
+   */
+  authSessionSecret?: string;
+  googleClientId?: string;
+  googleClientSecret?: string;
+  identityUrl?: string;
+  authDomainLock?: string;
+  /**
    * Personal API key (`phx_...`) used by the @posthog/cli sourcemap helper to
    * upload browser sourcemaps to PostHog after `next build` and before the
    * web bundle is copied into the Electron package. Sourced from
@@ -394,6 +411,11 @@ export function resolveToolPackConfig(
     mediaUserRole: resolveToolPackKgsScalar(process.env.MEDIA_USER_ROLE, "MEDIA_USER_ROLE"),
     atlassianJiraToken: process.env.OD_ATLASSIAN_JIRA_TOKEN?.trim() || undefined,
     atlassianConfluenceToken: process.env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim() || undefined,
+    authSessionSecret: process.env.SESSION_SECRET?.trim() || undefined,
+    googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() || undefined,
+    googleClientSecret: process.env.GOOGLE_CLIENT_SECRET?.trim() || undefined,
+    identityUrl: process.env.IDENTITY_URL?.trim() || undefined,
+    authDomainLock: process.env.OD_AUTH_DOMAIN_LOCK?.trim() || undefined,
     posthogCliApiKey: resolveToolPackPosthogCliApiKey(
       process.env.POSTHOG_CLI_API_KEY ?? process.env.POSTHOG_PERSONAL_API_KEY,
     ),

@@ -1,0 +1,211 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--muted, #f3f4f6);
+}
+
+.msg {
+  padding: 16px;
+  color: var(--muted-foreground, #6b7280);
+  font-size: 13px;
+}
+
+.topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--card, #fff);
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.caseSelect {
+  max-width: 46%;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--card, #fff);
+  color: var(--foreground, #111827);
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Hardened against the app's global button styles (padding / min-width /
+   gradient backgrounds would otherwise stretch the circles into ovals and
+   paint artifacts over the active dot). */
+.stepDot,
+.stepDotActive {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  margin: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e5e7eb);
+  background: var(--card, #fff);
+  background-image: none;
+  box-shadow: none;
+  appearance: none;
+  color: var(--muted-foreground, #6b7280);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.stepDot:hover {
+  border-color: var(--primary, #2563eb);
+  color: var(--primary, #2563eb);
+}
+
+.stepDot:focus-visible,
+.stepDotActive:focus-visible {
+  outline: 2px solid var(--ring, #93c5fd);
+  outline-offset: 1px;
+}
+
+.stepDotActive {
+  background: var(--primary, #2563eb);
+  background-image: none;
+  border-color: var(--primary, #2563eb);
+  color: #fff;
+  font-weight: 600;
+}
+
+.playBtn,
+.playBtnActive {
+  flex: 0 0 auto;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--card, #fff);
+  color: var(--foreground, #111827);
+}
+
+.playBtnActive {
+  background: var(--primary, #2563eb);
+  border-color: var(--primary, #2563eb);
+  color: #fff;
+}
+
+.stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 16px;
+}
+
+.device {
+  display: flex;
+  flex-direction: column;
+  width: min(420px, 100%);
+  background: var(--card, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.deviceHeader {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--foreground, #111827);
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.deviceStep {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--muted, #f3f4f6);
+  color: var(--muted-foreground, #6b7280);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.iframe {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+}
+
+.hint {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted-foreground, #6b7280);
+  padding: 6px 12px 0;
+}
+
+.actionbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--card, #fff);
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+
+.navBtn {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  background: var(--card, #fff);
+  color: var(--foreground, #111827);
+}
+
+.navBtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.actionBtn {
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--primary, #2563eb);
+  color: #fff;
+}
+
+.done {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--primary, #16a34a);
+}

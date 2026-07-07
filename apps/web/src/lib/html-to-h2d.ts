@@ -137,6 +137,79 @@ export async function htmlsToFigmaClipboard(
   return payload;
 }
 
+// ── URL-loaded screens (docs → React build) ────────────────────────────────────────────────────
+// The built React pages reference their chunks RELATIVELY (`./assets/*.js`), so a srcdoc
+// re-render can't resolve them — these screens must load by URL in the offscreen iframe
+// (same-origin: the daemon serves the project files). The app also renders AFTER the load
+// event (the bundle mounts React), so we poll until the root actually has content.
+
+export interface ScreenUrl {
+  url: string;
+  width?: number;
+  height?: number;
+}
+
+async function loadSrcUrl(frame: HTMLIFrameElement, url: string): Promise<Document> {
+  await new Promise<void>((res, rej) => {
+    frame.onload = () => res();
+    frame.onerror = () => rej(new Error(`Không tải được ${url}`));
+    frame.src = url;
+  });
+  const doc = frame.contentDocument;
+  if (!doc) throw new Error(`Không đọc được nội dung ${url} (khác origin?)`);
+  return doc;
+}
+
+// React mounts async after `load` — wait until the body has real rendered
+// content (bounded), then let settleAndHug size the frame to it.
+async function waitForAppRender(doc: Document, timeoutMs = 4000): Promise<void> {
+  const t0 = Date.now();
+  for (;;) {
+    const root = doc.body?.firstElementChild;
+    if (root && root.childElementCount > 0 && root.getBoundingClientRect().height > 40) return;
+    if (Date.now() - t0 > timeoutMs) return; // capture whatever is there
+    await new Promise((r) => setTimeout(r, 120));
+  }
+}
+
+/**
+ * Many URL-loaded screens → one combined Figma payload (sibling frames on paste). Built for the
+ * UI-React canvas' "Copy to Figma": each `react/dist/screens/<slug>.html` page is loaded offscreen
+ * BY URL so its shared asset chunks resolve and the real app renders. A screen that fails is
+ * skipped (console warn) rather than failing the batch.
+ */
+export async function urlsToFigmaClipboard(
+  screens: ScreenUrl[],
+  width = 430,
+  height = 812,
+): Promise<string> {
+  const usable = screens.filter((s) => typeof s.url === "string" && s.url.trim());
+  if (usable.length === 0) throw new Error("Không có màn nào để trích xuất");
+  const docs: H2DDocument[] = [];
+  for (const screen of usable) {
+    const frame = makeArtifactIframe(screen.width ?? width, screen.height ?? height);
+    document.body.appendChild(frame);
+    try {
+      const doc = await loadSrcUrl(frame, screen.url);
+      await waitForAppRender(doc);
+      await settleAndHug(frame, doc);
+      docs.push(
+        await captureElement(doc.body.firstElementChild ?? doc.body, {
+          skipRemoteAssetSerialization: false,
+        }),
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[Copy to Figma] bỏ qua một màn React:", screen.url, err);
+    } finally {
+      frame.remove();
+    }
+  }
+  if (docs.length === 0) throw new Error("Không trích xuất được màn nào");
+  const { html: payload } = await toFigmaClipboardHtml(docs, { source: "open-design" });
+  return payload;
+}
+
 // ── Multistep "copy all" (parity with the CLI scripts/copy-figma-h2d.mjs) ──────────────────────
 // A prototype screen can ship a `<stem>.states.json` recipe: drive the page through each listed
 // state and capture ONE frame per state (scanning → success → error, etc.). Actions run in order,

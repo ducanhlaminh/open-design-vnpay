@@ -14,6 +14,10 @@ export const API_ERROR_CODES = [
   'AGENT_AUTH_REQUIRED',
   'AGENT_EXECUTION_FAILED',
   'AGENT_PROMPT_TOO_LARGE',
+  // Agent-in-sandbox preflight failed (docker down, image missing, or auth
+  // volume absent). The run fails loudly instead of silently falling back to
+  // an unsandboxed host spawn — see apps/daemon/src/agent-sandbox.ts.
+  'AGENT_SANDBOX_UNAVAILABLE',
   'PROJECT_NOT_FOUND',
   // Handoff (`POST /api/projects/:id/handoff`): the requested conversation
   // is not in the project, or has no messages to synthesize a handoff from.

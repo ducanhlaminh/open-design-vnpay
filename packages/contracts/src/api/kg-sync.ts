@@ -5,6 +5,21 @@
 
 export type KgSyncStatus = 'ok' | 'partial';
 
+/**
+ * Body of `POST /api/kg/pull-all` and `push-all`. `projectIds` narrows to a
+ * chosen subset of projects (the UI's Pull all / Push all modals / --projects);
+ * `stages` narrows which pipelines' OUTPUT FILES travel (--stages) — the KG
+ * graph always moves whole-project. `workflow` is a convenience for CLI/API
+ * callers: when `stages` is absent it expands to that workflow's pipeline ids
+ * (the UI modals are workflow-scoped and always send explicit `stages`).
+ * Absent or empty → everything.
+ */
+export interface KgPullAllRequest {
+  projectIds?: string[];
+  stages?: string[];
+  workflow?: string;
+}
+
 export interface KgPullResult {
   projectId: string;
   nodes: number;
@@ -46,4 +61,33 @@ export interface KgPushResponse {
 export interface KgStatusResponse {
   ok: true;
   data: KgSyncCounts;
+}
+
+/** Per-stage local↔remote file diff (POST /api/kg/sync-status, `od kg diff`).
+ *  Counts follow the push/pull eligibility rules (history metadata, syncExclude
+ *  and localOnly-stage files never travel → never counted), so `differs` always
+ *  corresponds to something a push or pull would actually move. */
+export interface StageSyncStatus {
+  stage: string;
+  /** Sync-eligible files in the local cwd / on the store. */
+  local: number;
+  remote: number;
+  /** Present on both sides with different checksums. */
+  changed: number;
+  /** Local-only (a push would upload) / remote-only (a pull would download). */
+  localOnly: number;
+  remoteOnly: number;
+  differs: boolean;
+}
+
+export interface ProjectSyncStatus {
+  projectId: string;
+  stages: StageSyncStatus[];
+  /** Set when this project's diff could not be computed (others still return). */
+  error?: string;
+}
+
+export interface KgSyncStatusResponse {
+  ok: boolean;
+  data: { results: ProjectSyncStatus[] };
 }

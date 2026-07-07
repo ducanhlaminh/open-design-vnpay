@@ -96,7 +96,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     // parallel and fall back to local-only on failure (loadMergedState swallows
     // KGS errors).
     const projects = await Promise.all(
-      kgsProjects.map(async (p: { id: string; name: string }) => {
+      kgsProjects.map(async (p: { id: string; name: string; metadata?: Record<string, unknown> }) => {
         const state = await loadMergedState(p.id);
         const done = wf.pipelineIds.reduce(
           (n, id) => (state[id]?.status === 'succeeded' ? n + 1 : n),
@@ -106,7 +106,19 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           (n, id) => (state[id]?.status === 'running' || state[id]?.status === 'queued' ? n + 1 : n),
           0,
         );
-        return { id: p.id, name: p.name, done, total, running };
+        // Studio config (mirrored into metadata on pull): Run prefills the
+        // Confluence link + design system from it (per-run override allowed).
+        const sc = p.metadata?.studioConfig;
+        const config =
+          sc && typeof sc === 'object' && !Array.isArray(sc)
+            ? (sc as {
+                confluencePages?: Array<{ id?: string; title?: string; url?: string }>;
+                designSystemId?: string;
+                basDocumentId?: string;
+                basDocumentTitle?: string;
+              })
+            : undefined;
+        return { id: p.id, name: p.name, done, total, running, ...(config ? { config } : {}) };
       }),
     );
     res.json({ projects });
@@ -117,36 +129,14 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     res.json({ workflows: WORKFLOWS, defaultWorkflowId: DEFAULT_WORKFLOW_ID });
   });
 
-  // POST /api/pipelines/projects { projectId, name } — create a NEW pipeline
-  // project (id IS the KGS project_id). Marked metadata.kind='pipeline' so it
-  // shows in the selector and can run pipelines (starting at jira-ingest). Use
-  // this for a brand-new product; use `od kg pull <id>` to bring in one that
-  // already has data in KGS.
-  app.post('/api/pipelines/projects', (req, res) => {
-    const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId.trim() : '';
-    const name = typeof req.body?.name === 'string' && req.body.name.trim()
-      ? req.body.name.trim()
-      : projectId;
-    if (!/^[A-Za-z0-9._-]{1,128}$/.test(projectId)) {
-      return res.status(400).json({
-        error: 'invalid project id (allowed: A-Z a-z 0-9 . _ - , max 128). This is the KGS project_id.',
-      });
-    }
-    if (getProject(db, projectId)) {
-      return res.status(409).json({ error: `project "${projectId}" already exists` });
-    }
-    const now = Date.now();
-    insertProject(db, {
-      id: projectId,
-      name,
-      skillId: null,
-      designSystemId: null,
-      pendingPrompt: null,
-      metadata: { kind: 'pipeline' },
-      createdAt: now,
-      updatedAt: now,
+  // POST /api/pipelines/projects đã GỠ (2026-07): dự án khai sinh ở Pipeline
+  // Studio (identity + media project.json + workspace KGS); open-design chỉ
+  // pull về (`od kg pull-all` tạo project row với source kg-pull). Trả 410 để
+  // client cũ nhận thông báo rõ thay vì 404 mù.
+  app.post('/api/pipelines/projects', (_req, res) => {
+    res.status(410).json({
+      error: 'tạo dự án đã chuyển sang Pipeline Studio — tạo ở đó rồi dùng `od kg pull-all` để kéo về',
     });
-    res.status(201).json({ id: projectId, name });
   });
 
   // GET /api/pipelines?projectId=... — the docs→UI pipeline list for a project,
@@ -197,6 +187,67 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       res.json({ ok: true, ...result });
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // GET /api/pipelines/history?projectId= — project changelog: published
+  // versions (store `_v/` snapshots indexed by changelog.json) + machine-local
+  // .odhistory commits, newest first.
+  app.get('/api/pipelines/history', async (req, res) => {
+    try {
+      const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+      res.json({ ok: true, ...(await ctx.pipelines.history(projectId)) });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // POST /api/pipelines/history/restore { projectId, verId? | commit?, paths? }
+  // — rewind the cwd to a published version (downloads `_v/<verId>/…`) or a
+  // local commit. The pre-restore state is committed first, so this is safe.
+  app.post('/api/pipelines/history/restore', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+      const verId = typeof req.body?.verId === 'string' ? req.body.verId : undefined;
+      const commit = typeof req.body?.commit === 'string' ? req.body.commit : undefined;
+      if (!verId && !commit) return res.status(400).json({ error: 'verId hoặc commit là bắt buộc' });
+      const paths = Array.isArray(req.body?.paths)
+        ? (req.body.paths as unknown[]).filter((p): p is string => typeof p === 'string')
+        : undefined;
+      const stage = typeof req.body?.stage === 'string' && req.body.stage ? req.body.stage : undefined;
+      const result = await ctx.pipelines.restoreHistory(projectId, {
+        ...(verId ? { verId } : {}),
+        ...(commit ? { commit } : {}),
+        ...(paths ? { paths } : {}),
+        ...(stage ? { stage } : {}),
+      });
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // POST /api/pipelines/react-build { projectId } — build (or rebuild) the
+  // docs-to-react app from its synced sources. dist/ is never synced
+  // (PipelineDef.syncExclude), so this is how a device that pulled a project
+  // gets a previewable app: build.sh reseeds the scaffold + runs tsc+vite in
+  // the shared toolkit container. Requires Docker on this machine.
+  app.post('/api/pipelines/react-build', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const project = getProject(db, projectId);
+      if (!project) return res.status(404).json({ error: 'project not found' });
+      const result = await ctx.pipelines.buildReact(projectId);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      // Build failures carry the tsc/vite tail — surface it so the UI/CLI can
+      // show WHY instead of a bare 500.
+      res.status(422).json({ error: String(err?.message ?? err) });
     }
   });
 
@@ -266,6 +317,20 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     try {
       const features = await ctx.pipelines.bas.listFeatures(req.params.id);
       res.json({ documentId: req.params.id, features });
+    } catch (err: any) {
+      res.status(502).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // GET /api/pipelines/confluence/pages?q=… — tìm trang Confluence theo tên
+  // cho picker của modal Run pipeline 1 (như bên pipeline-studio). q < 2 ký
+  // tự → [] không gọi upstream.
+  app.get('/api/pipelines/confluence/pages', async (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (q.length < 2) return res.json({ pages: [] });
+    try {
+      const pages = await ctx.pipelines.bas.searchConfluencePages(q);
+      res.json({ pages });
     } catch (err: any) {
       res.status(502).json({ error: String(err?.message ?? err) });
     }

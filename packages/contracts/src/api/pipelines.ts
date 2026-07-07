@@ -46,6 +46,14 @@ export interface PipelineView {
   lastRunId?: string;
   lastConversationId?: string;
   updatedAt?: number;
+  /**
+   * Free-text input of the LAST run (Confluence URL / JIRA key / JQL), kept so
+   * the source behind a stage's output stays reviewable after the run (the
+   * per-stage "run info" panel).
+   */
+  lastInput?: string;
+  /** Structured source of the LAST run (Confluence ref or BAS document). */
+  lastSource?: PipelineRunSource;
 }
 
 export interface PipelinesResponse {
@@ -56,9 +64,10 @@ export interface PipelinesResponse {
 }
 
 // A workflow is one named docs→output flow — an ordered set of pipelines with
-// its own terminal. `docs-to-ui` ends at react-shadcn `screen.json`;
-// `docs-to-html` is an independent chain ending at an HTML prototype. The two
-// have separate pipeline ids, so their run-state never overlaps.
+// its own terminal. `docs-to-html` ends at an interactive HTML prototype;
+// `docs-to-react` ends at a built Vite+React app. Each workflow has its own
+// pipeline ids, so their run-state never overlaps. (The former `docs-to-ui`
+// react-shadcn workflow was removed.)
 export interface Workflow {
   id: string;
   name: string;
@@ -89,6 +98,17 @@ export interface PipelineProject {
    * (`running`/`queued`) — drives the picker card's live running spinner.
    * 0 when nothing is running. */
   running: number;
+  /** Cấu hình từ Pipeline Studio (project.json trên store, mirror về khi
+   *  pull): Run tự điền nguồn tài liệu (link Confluence HOẶC tài liệu BAS đã
+   *  chọn) + design system từ đây — vẫn cho override từng lần chạy. */
+  config?: {
+    /** Các trang Confluence nguồn (chọn NHIỀU từ picker của studio) — Run
+     *  điền tất cả, mỗi dòng một trang (bước Docs nhận cả link lẫn page id). */
+    confluencePages?: Array<{ id?: string; title?: string; url?: string }>;
+    designSystemId?: string;
+    basDocumentId?: string;
+    basDocumentTitle?: string;
+  };
 }
 
 export interface PipelineProjectsResponse {
@@ -154,6 +174,19 @@ export interface BasDocumentsResponse {
   documents: BasDocument[];
 }
 
+/** Một trang Confluence từ picker tìm-theo-tên của modal Run pipeline 1
+ *  (GET /api/pipelines/confluence/pages?q=) — như picker bên pipeline-studio. */
+export interface ConfluencePageHit {
+  id: string;
+  title: string;
+  url?: string;
+  space?: string;
+}
+
+export interface ConfluencePagesResponse {
+  pages: ConfluencePageHit[];
+}
+
 // A feature within a KG document (from kg_get_document_subgraph's FEATURE nodes).
 // `documentId` is carried because kg_get_feature_detail needs BOTH ids.
 export interface BasFeature {
@@ -203,6 +236,84 @@ export interface PipelineRunState {
   lastRunId?: string;
   lastConversationId?: string;
   updatedAt?: number;
+  /** Free-text input of the last run (Confluence URL / JIRA key / JQL). */
+  lastInput?: string;
+  /** Structured source of the last run (Confluence ref or BAS document). */
+  lastSource?: PipelineRunSource;
 }
 
 export type ProjectPipelineState = Record<string, PipelineRunState>;
+
+/* ── Project history (version hóa output) ──
+ * Two layers: PUBLISHED versions on the media store (one per push — the
+ * `_v/<verId>/…` snapshots indexed by changelog.json, what pipeline-studio
+ * renders), and machine-local fine-grained commits (the hidden .odhistory
+ * git repo). GET /api/pipelines/history returns both, newest first. */
+
+export interface HistoryActorRef {
+  id?: string;
+  email?: string;
+  name?: string;
+}
+
+/** One published version — an entry of the store-side changelog.json. */
+export interface PublishedVersion {
+  verId: string;
+  /** ISO timestamp of the push. */
+  at: string;
+  by: HistoryActorRef | null;
+  /** .odhistory commit hash on the pushing machine. */
+  gitCommit?: string;
+  /** Deliverable files frozen into the snapshot. */
+  files: number;
+  uploaded: number;
+  deleted: number;
+  note?: string;
+  /** Pipeline (stage) ids whose outputs are present in this snapshot —
+   *  derived from the snapshot files' `stage:` tags, so the UI can show a
+   *  per-pipeline history. Absent when the snapshot was pruned. */
+  stages?: string[];
+}
+
+/** One machine-local history commit (.odhistory). */
+export interface ProjectHistoryCommit {
+  commit: string;
+  /** ISO timestamp. */
+  at: string;
+  subject: string;
+  kind: 'manual-edits' | 'run' | 'build' | 'pre-pull' | 'pull' | 'push' | 'restore' | 'export';
+  pipelineId?: string;
+  runId?: string;
+  status?: string;
+  by?: HistoryActorRef | null;
+  input?: string;
+  verId?: string;
+  note?: string;
+  filesChanged?: number;
+}
+
+export interface ProjectHistoryResponse {
+  versions: PublishedVersion[];
+  commits: ProjectHistoryCommit[];
+}
+
+/** Restore either a published version (from the store) or a local commit. */
+export interface RestoreHistoryRequest {
+  projectId: string;
+  verId?: string;
+  commit?: string;
+  /** Restrict a commit-restore to these cwd-relative paths. */
+  paths?: string[];
+  /** Restrict a version-restore to one pipeline's outputs (stage id) —
+   *  per-pipeline "Khôi phục" from a stage card writes only that stage's
+   *  files back instead of the whole snapshot. */
+  stage?: string;
+}
+
+export interface RestoreHistoryResponse {
+  restored: 'version' | 'commit';
+  verId?: string;
+  commit?: string;
+  /** Files written (version restore) / touched (commit restore). */
+  files: number;
+}

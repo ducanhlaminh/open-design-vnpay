@@ -37,6 +37,11 @@ const argv = process.argv.slice(2);
 // `const` Sets — leaving them at the bottom of the file would hit the
 // TDZ ("Cannot access 'MEDIA_GENERATE_STRING_FLAGS' before
 // initialization") and crash every `od media …` invocation.
+// `od sandbox …` flag sets — hoisted here for the same TDZ reason as the
+// media flags above (SUBCOMMAND_MAP dispatch runs during module evaluation).
+const SANDBOX_STRING_FLAGS = new Set(['daemon-url']);
+const SANDBOX_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'probe-auth', 'force', 'all', 'yes']);
+
 const MEDIA_GENERATE_STRING_FLAGS = new Set([
   'project',
   'surface',
@@ -169,6 +174,8 @@ const AUTOMATION_BOOLEAN_FLAGS = new Set([
 ]);
 const PIPELINE_STRING_FLAGS = new Set([
   'daemon-url', 'project', 'name', 'input',
+  // history/restore (version hóa output): --version v3 | --commit <sha> [--path <p>] [--stage <id>]
+  'version', 'commit', 'path', 'stage',
   // Pipeline-1 structured source (Confluence/BAS via the BAS gateway):
   //   --source confluence --ref <page url/id>
   //   --source bas --bas-document <kg-document-id> [--feature <id,id>]
@@ -299,8 +306,16 @@ async function runKg(args) {
   od kg pull [project-id]     Pull from KGS. No id = pull ALL apps; with id = one project (graph + files).
   od kg push [project-id]     Push to KGS. No id = push ALL mirrored apps; with id = one.
   od kg pull-all             Pull every KGS app into the local mirror.
+                             --projects <id,id,…> pulls only those projects.
+                             --stages <id,id,…> pulls only those pipelines' output files.
+                             --workflow <id> shorthand for --stages = that workflow's pipelines.
   od kg push-all             Push every locally-mirrored KGS app back.
+                             --projects <id,id,…> pushes only those projects.
+                             --stages <id,id,…> pushes only those pipelines' output files.
+                             --workflow <id> shorthand for --stages = that workflow's pipelines.
   od kg status <project-id>   Show local mirror counts.
+  od kg diff                 Per-pipeline local↔store file diff (what a push/pull would move).
+                             --projects <id,id,…> narrows to those projects.
   od kg remote list           List projects on the remote stores (KGS graph + media files).
   od kg remote delete <id>    Delete a project's remote data. Requires --yes.
 
@@ -321,15 +336,29 @@ Common options:
   const sub = args[0];
   const rest = args.slice(1);
   const flags = parseFlags(rest, {
-    string: ['daemon-url', 'on-conflict', 'scope'],
+    string: ['daemon-url', 'on-conflict', 'scope', 'projects', 'stages', 'workflow'],
     boolean: ['json', 'yes'],
   });
   const id = rest.find((a) => !a.startsWith('-'));
   const base = await cliDaemonBaseUrl(flags);
+  // Shared --projects/--stages parsing for pull-all/push-all (comma lists →
+  // body filters; omitted → everything, mirroring the UI modals).
+  const csvFlag = (v) =>
+    typeof v === 'string' ? v.split(',').map((s) => s.trim()).filter(Boolean) : [];
 
   // Pull/push ALL: bare `od kg pull`/`push` (no id) or explicit *-all.
   if (sub === 'pull-all' || (sub === 'pull' && !id)) {
-    const resp = await fetch(`${base}/api/kg/pull-all`, { method: 'POST' });
+    const projectIds = csvFlag(flags.projects);
+    const stages = csvFlag(flags.stages);
+    const resp = await fetch(`${base}/api/kg/pull-all`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...(projectIds.length > 0 ? { projectIds } : {}),
+        ...(stages.length > 0 ? { stages } : {}),
+        ...(typeof flags.workflow === 'string' && flags.workflow ? { workflow: flags.workflow } : {}),
+      }),
+    });
     if (!resp.ok) return structuredHttpFailure(resp);
     const data = await resp.json();
     if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
@@ -341,7 +370,17 @@ Common options:
     return;
   }
   if (sub === 'push-all' || (sub === 'push' && !id)) {
-    const resp = await fetch(`${base}/api/kg/push-all`, { method: 'POST' });
+    const projectIds = csvFlag(flags.projects);
+    const stages = csvFlag(flags.stages);
+    const resp = await fetch(`${base}/api/kg/push-all`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...(projectIds.length > 0 ? { projectIds } : {}),
+        ...(stages.length > 0 ? { stages } : {}),
+        ...(typeof flags.workflow === 'string' && flags.workflow ? { workflow: flags.workflow } : {}),
+      }),
+    });
     if (!resp.ok) return structuredHttpFailure(resp);
     const data = await resp.json();
     if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
@@ -349,6 +388,33 @@ Common options:
     console.log(`pushed ${d.pushed ?? 0} project(s) to KGS`);
     for (const r of d.results ?? []) {
       console.log(`  • ${r.projectId}: ${r.status} (${r.nodesPushed ?? 0} nodes, ${r.edgesPushed ?? 0} edges, ${r.filesUploaded ?? 0} files, ws:${r.workspace ?? '?'})${r.error ? ` — ${r.error}` : ''}`);
+    }
+    return;
+  }
+
+  // `od kg diff` — per-pipeline local↔store file diff (mirrors the badges in
+  // the UI's Pull all / Push all modals).
+  if (sub === 'diff') {
+    const projectIds = csvFlag(flags.projects);
+    const resp = await fetch(`${base}/api/kg/sync-status`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(projectIds.length > 0 ? { projectIds } : {}),
+    });
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    const results = data?.data?.results ?? [];
+    if (!results.length) return console.log('no local KGS project.');
+    for (const r of results) {
+      console.log(`${r.projectId}${r.error ? ` — error: ${r.error}` : ''}`);
+      for (const s of r.stages ?? []) {
+        const delta = s.differs
+          ? `KHÁC (${[s.changed && `${s.changed} changed`, s.localOnly && `${s.localOnly} local-only`, s.remoteOnly && `${s.remoteOnly} remote-only`].filter(Boolean).join(', ')})`
+          : 'đồng bộ';
+        console.log(`  • ${s.stage}: local ${s.local} / remote ${s.remote} — ${delta}`);
+      }
+      if (!(r.stages ?? []).length && !r.error) console.log('  (không có file sync-eligible)');
     }
     return;
   }
@@ -517,6 +583,7 @@ const SUBCOMMAND_MAP = {
   'design-systems': runDesignSystems,
   craft: runCraft,
   diagnostics: runDiagnostics,
+  sandbox: runSandbox,
   status: runStatus,
   version: runVersion,
   doctor: runDoctor,
@@ -628,6 +695,11 @@ function printRootHelp() {
       Bundle daemon/web/desktop logs, machine info, and recent crash reports
       into a zip for support tickets. Same output as Settings → About →
       Export diagnostics.
+
+  od sandbox <status|enable|disable|build|login|logout|ps|kill> [args]
+      Agent-in-sandbox: run gated pipeline agents (default: claude + ui-react)
+      inside an isolated Docker container. status/enable/disable talk to the
+      daemon; build/login/ps/kill drive docker on this machine.
 
   "$OD_NODE_BIN" "$OD_BIN" tools ...
       Recommended agent-runtime form; avoids relying on user PATH for od or node.
@@ -5543,6 +5615,217 @@ async function runStatus(args) {
 }
 
 // ---------------------------------------------------------------------------
+// Subcommand: od sandbox <status|enable|disable|build|login|logout|ps|kill>
+//
+// CLI surface of the agent-in-sandbox capability (see
+// docs/agent-in-sandbox-spec-plan.md in the parent repo and
+// apps/daemon/src/agent-sandbox.ts). `status` / `enable` / `disable` go
+// through the daemon HTTP API (same data the Settings card reads);
+// `build` / `login` / `logout` / `ps` / `kill` are machine-local docker
+// operations (login needs a TTY, build streams docker output), so they run
+// docker directly — the daemon only supplies builderDir/image via status.
+// ---------------------------------------------------------------------------
+
+const SANDBOX_USAGE = `Usage:
+  od sandbox status [--json] [--probe-auth]   Daemon/docker/image/auth health.
+                                              --probe-auth starts a short-lived
+                                              container to verify credentials.
+  od sandbox enable | disable                 Toggle sandbox.enabled in app config.
+  od sandbox build [--force]                  Build the od-agent-sandbox image.
+  od sandbox login                            Claude CLI OAuth login into the shared
+                                              auth volume (interactive, needs a TTY).
+  od sandbox logout --yes                     Delete the auth volume (credentials!).
+  od sandbox ps [--json]                      Live sandboxed-run containers.
+  od sandbox kill <runId> | --all             Kill sandbox container(s).
+
+All subcommands accept --daemon-url <url>.`;
+
+async function sandboxFetchStatus(flags, probeAuth = false) {
+  const base = await cliDaemonBaseUrl(flags);
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/sandbox/status${probeAuth ? '?probeAuth=1' : ''}`);
+  } catch (err) {
+    console.error(`cannot reach daemon at ${base}: ${err?.message ?? err}`);
+    process.exit(1);
+  }
+  if (!resp.ok) await structuredHttpFailure(resp);
+  return resp.json();
+}
+
+/**
+ * Machine-local fallback for `od sandbox build|login` when the daemon is not
+ * running: those subcommands only need builderDir + the pinned image tag,
+ * both of which are derivable from the repo layout around this CLI file
+ * (dist/cli.js → ../../../skills/ui-react/builder). Returns null when the
+ * layout doesn't match (e.g. a packaged install with relocated resources) —
+ * callers then require a running daemon.
+ */
+async function sandboxLocalBuilderInfo() {
+  const nodePath = await import('node:path');
+  const { existsSync, readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const here = nodePath.dirname(fileURLToPath(import.meta.url));
+  const builderDir = nodePath.resolve(here, '..', '..', '..', 'skills', 'ui-react', 'builder');
+  const versionFile = nodePath.join(builderDir, 'sandbox', 'sandbox.version');
+  if (!existsSync(versionFile)) return null;
+  const image = `od-agent-sandbox:${readFileSync(versionFile, 'utf8').trim()}`;
+  return { builderDir, image };
+}
+
+/**
+ * `build`/`login` context: prefer the daemon's status (authoritative for a
+ * packaged daemon whose skills root lives elsewhere), fall back to the local
+ * repo layout so first-time setup works before the daemon has ever started.
+ */
+async function sandboxBuilderContext(flags) {
+  const base = await cliDaemonBaseUrl(flags);
+  try {
+    const resp = await fetch(`${base}/api/sandbox/status`);
+    if (resp.ok) return await resp.json();
+  } catch {
+    // Daemon down — fall through to the local layout.
+  }
+  const local = await sandboxLocalBuilderInfo();
+  if (local) {
+    const { spawnSync } = await import('node:child_process');
+    const dockerOk = spawnSync('docker', ['version'], { stdio: 'ignore' }).status === 0;
+    const imageOk =
+      dockerOk &&
+      spawnSync('docker', ['image', 'inspect', local.image], { stdio: 'ignore' }).status === 0;
+    return { ...local, dockerOk, imageOk };
+  }
+  console.error(
+    `cannot reach daemon at ${base} and no local skills/ui-react/builder found — start the daemon (pnpm tools-dev) and retry.`,
+  );
+  process.exit(1);
+}
+
+async function runSandbox(args) {
+  const sub = args[0];
+  if (!sub || sub === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(SANDBOX_USAGE);
+    process.exit(0);
+  }
+  const flags = parseFlags(args.slice(1), {
+    string: SANDBOX_STRING_FLAGS,
+    boolean: SANDBOX_BOOLEAN_FLAGS,
+  });
+  const { spawnSync } = await import('node:child_process');
+  const nodePath = await import('node:path');
+  const runDocker = (dockerArgs, opts = {}) =>
+    spawnSync('docker', dockerArgs, { stdio: 'inherit', ...opts });
+
+  if (sub === 'status') {
+    const status = await sandboxFetchStatus(flags, flags['probe-auth'] === true);
+    if (flags.json) {
+      process.stdout.write(JSON.stringify(status, null, 2) + '\n');
+      return;
+    }
+    const yn = (v) => (v === true ? 'yes' : v === false ? 'NO' : 'not probed');
+    console.log(`agent sandbox: ${status.enabled ? 'ENABLED' : 'disabled'}`);
+    console.log(`  gate:        runtimes=[${status.runtimes.join(', ')}] skills=[${status.skills.join(', ')}] timeout=${status.timeoutMinutes}m`);
+    console.log(`  docker:      ${yn(status.dockerOk)}`);
+    console.log(`  image:       ${status.image} ${status.imageOk ? '(present)' : '(MISSING — run: od sandbox build)'}`);
+    if (status.claudeVersion) console.log(`  claude cli:  ${status.claudeVersion} (pinned in image)`);
+    console.log(`  auth volume: ${yn(status.authVolumeOk)}${status.authVolumeOk === false ? ' (run: od sandbox login)' : ''}`);
+    console.log(`  logged in:   ${yn(status.authLoggedIn)}`);
+    console.log(`  active runs: ${status.activeContainers.length ? status.activeContainers.join(', ') : 'none'}`);
+    if (!status.enabled) console.log('\nEnable with: od sandbox enable');
+    return;
+  }
+
+  if (sub === 'enable' || sub === 'disable') {
+    const base = await cliDaemonBaseUrl(flags);
+    const current = await (await fetch(`${base}/api/app-config`)).json().catch(() => ({}));
+    const sandbox = {
+      ...(current?.config?.sandbox ?? {}),
+      enabled: sub === 'enable',
+    };
+    const resp = await fetch(`${base}/api/app-config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sandbox }),
+    });
+    if (!resp.ok) await structuredHttpFailure(resp);
+    console.log(`agent sandbox ${sub}d`);
+    if (sub === 'enable') {
+      const status = await sandboxFetchStatus(flags, false);
+      if (!status.dockerOk) console.log('note: docker is not running — sandboxed runs will fail preflight.');
+      else if (!status.imageOk) console.log('note: image missing — run: od sandbox build');
+      else if (!status.authVolumeOk) console.log('note: not logged in yet — run: od sandbox login');
+    }
+    return;
+  }
+
+  if (sub === 'build') {
+    const status = await sandboxBuilderContext(flags);
+    const script = nodePath.join(status.builderDir, 'sandbox', 'build-sandbox.sh');
+    const result = spawnSync('bash', [script, ...(flags.force ? ['--force'] : [])], { stdio: 'inherit' });
+    process.exit(result.status ?? 1);
+  }
+
+  if (sub === 'login') {
+    const status = await sandboxBuilderContext(flags);
+    if (!status.dockerOk) {
+      console.error('docker is not running — start Docker/OrbStack first.');
+      process.exit(1);
+    }
+    if (!status.imageOk) {
+      console.error(`image ${status.image} missing — run: od sandbox build`);
+      process.exit(1);
+    }
+    console.log('Opening Claude CLI login inside the sandbox (credentials persist in the od-claude-auth volume)…');
+    const result = runDocker([
+      'run', '-it', '--rm',
+      '-v', 'od-claude-auth:/home/node/.claude',
+      status.image,
+      'claude', '/login',
+    ]);
+    process.exit(result.status ?? 1);
+  }
+
+  if (sub === 'logout') {
+    if (!flags.yes) {
+      console.error('This deletes the od-claude-auth volume (your sandbox Claude credentials). Re-run with --yes to confirm.');
+      process.exit(2);
+    }
+    const result = runDocker(['volume', 'rm', 'od-claude-auth']);
+    process.exit(result.status ?? 1);
+  }
+
+  if (sub === 'ps') {
+    const format = flags.json ? '{{json .}}' : 'table {{.Names}}\t{{.Status}}\t{{.RunningFor}}';
+    const result = runDocker(['ps', '--filter', 'label=od.sandbox=1', '--format', format]);
+    process.exit(result.status ?? 1);
+  }
+
+  if (sub === 'kill') {
+    if (flags.all) {
+      const list = spawnSync('docker', ['ps', '-q', '--filter', 'label=od.sandbox=1'], { encoding: 'utf8' });
+      const ids = (list.stdout ?? '').split('\n').filter(Boolean);
+      if (ids.length === 0) {
+        console.log('no sandbox containers running');
+        return;
+      }
+      const result = runDocker(['kill', ...ids]);
+      process.exit(result.status ?? 1);
+    }
+    const runId = args.slice(1).find((a) => !a.startsWith('-'));
+    if (!runId) {
+      console.error('usage: od sandbox kill <runId> | --all');
+      process.exit(2);
+    }
+    const name = runId.startsWith('od-sbx-') ? runId : `od-sbx-${runId}`;
+    const result = runDocker(['kill', name]);
+    process.exit(result.status ?? 1);
+  }
+
+  console.error(`unknown subcommand: od sandbox ${sub}\n\n${SANDBOX_USAGE}`);
+  process.exit(2);
+}
+
+// ---------------------------------------------------------------------------
 // Subcommand: od diagnostics export <path> [--json]
 //
 // CLI surface for the Settings → About “Export diagnostics” feature. The
@@ -6328,11 +6611,13 @@ Common options:
 }
 
 function printPipelineHelp() {
-  console.log(`Usage: od pipeline <new|projects|list|run|upload|pull> [options]
+  console.log(`Usage: od pipeline <projects|list|run|upload|pull|build|history|restore> [options]
+
+Dự án khai sinh ở Pipeline Studio (kèm link Confluence + design system + phân
+quyền); kéo về máy bằng \`od kg pull-all\` rồi chạy pipeline tại đây.
 
 Commands:
-  new <projectId>      Create a NEW pipeline project (projectId IS the KGS project_id). [--name "<name>"]
-  projects             List the KGS apps available for pipelines (created here or pulled via od kg pull).
+  projects             List the KGS apps available for pipelines (pulled via od kg pull).
   list                 List the docs→UI pipelines for a KGS project (status + gating).
   run <pipelineId>     Run one pipeline — seeds a conversation with its skill active.
                        Source for pipeline 1 (jira-ingest), one of:
@@ -6343,6 +6628,12 @@ Commands:
                        --design-system none forces no design system; omit to use the default.
   upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
   pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
+  build                Build/rebuild the docs-to-react app from synced sources (react/dist/ never
+                       syncs — after a pull, run this to make the app previewable). Needs Docker.
+  history              Changelog: published versions (store _v/) + local .odhistory commits.
+  restore              Rewind outputs: --version v3 (store snapshot) or --commit <sha> [--path <p>].
+                       --stage <pipeline-id> limits a version-restore to one pipeline's files.
+                       The current state is committed first, so restore is always undoable.
 
 Options:
   --project <id>       KGS project id (required for list/run/pull). This is a KGS app
@@ -6350,7 +6641,8 @@ Options:
                        Auto-resolved from OD_PROJECT_ID when invoked by the daemon.
   --json               Machine-readable output.
 
-Pipelines: jira-ingest → feature-analysis → (ux-spec ∥ customer-journey) → ui.
+Workflows: docs-to-html (html-docs → html-cj → html-ux → ui-html) and
+docs-to-react (react-docs → react-cj → react-ux → ui-react).
 A pipeline is only runnable once its prerequisite pipelines have succeeded.`);
 }
 
@@ -6412,27 +6704,12 @@ async function runPipeline(args) {
   }
 
   if (sub === 'new' || sub === 'create') {
-    const id = positional[0];
-    if (!id) {
-      console.error('Usage: od pipeline new <projectId> [--name "<name>"]   (projectId IS the KGS project_id)');
-      process.exit(2);
-    }
-    let resp;
-    try {
-      resp = await fetch(`${base}/api/pipelines/projects`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId: id, name: flags.name || id }),
-      });
-    } catch (err) {
-      surfaceFetchError(err, base);
-      process.exit(3);
-    }
-    if (!resp.ok) return structuredHttpFailure(resp);
-    const data = await resp.json();
-    if (flags.json) return writeJson(data);
-    console.log(`Created pipeline project "${data.id ?? id}".`);
-    return;
+    // Dự án giờ khai sinh ở Pipeline Studio (kèm link Confluence + design
+    // system + phân quyền) — open-design chỉ pull về làm.
+    console.error(
+      'od pipeline new đã bị gỡ: tạo dự án trên Pipeline Studio (nút "Dự án mới"), rồi `od kg pull-all` để kéo về.',
+    );
+    process.exit(2);
   }
 
   const projectId = flags.project || process.env.OD_PROJECT_ID;
@@ -6569,6 +6846,103 @@ async function runPipeline(args) {
     console.log(
       `Uploaded ${data.uploaded ?? 0} file(s) to KGS` +
         (data.converted ? `, converted ${data.converted} to graph` : '') + '.',
+    );
+    return;
+  }
+
+  // od pipeline build --project <id> — build/rebuild the docs-to-react app
+  // from synced sources. dist/ never syncs (syncExclude), so this is the
+  // cross-device "make it previewable" step. Requires Docker on the daemon
+  // machine.
+  if (sub === 'build') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/react-build`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      console.error(`build failed:\n${data.error ?? resp.statusText}`);
+      process.exit(1);
+    }
+    if (flags.json) return writeJson(data);
+    console.log('React app built → react/dist/');
+    if (data.output) console.log(String(data.output).split('\n').slice(-5).join('\n'));
+    return;
+  }
+
+  // od pipeline history --project <id> — the project changelog (published
+  // versions + machine-local .odhistory commits), newest first.
+  if (sub === 'history') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/history?projectId=${encodeURIComponent(projectId)}`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    const versions = data.versions ?? [];
+    const commits = data.commits ?? [];
+    console.log(`Published versions (store): ${versions.length}`);
+    for (const v of versions) {
+      console.log(
+        `  • ${v.verId}  ${v.at}  ${v.by?.email ?? '(không rõ ai)'}  ${v.files} file(s)` +
+          (v.gitCommit ? `  git:${String(v.gitCommit).slice(0, 10)}` : ''),
+      );
+    }
+    console.log(`Local history (.odhistory): ${commits.length}`);
+    for (const c of commits.slice(0, 20)) {
+      console.log(
+        `  • ${String(c.commit).slice(0, 10)}  ${c.at}  ${c.kind}` +
+          (c.pipelineId ? ` ${c.pipelineId}` : '') +
+          (c.status ? ` [${c.status}]` : '') +
+          (c.by?.email ? `  ${c.by.email}` : '') +
+          (c.filesChanged ? `  ${c.filesChanged} file(s)` : ''),
+      );
+    }
+    return;
+  }
+
+  // od pipeline restore --project <id> (--version v3 | --commit <sha> [--path p])
+  if (sub === 'restore') {
+    const verId = typeof flags.version === 'string' ? flags.version : undefined;
+    const commit = typeof flags.commit === 'string' ? flags.commit : undefined;
+    if (!verId && !commit) {
+      console.error('cần --version <vN> hoặc --commit <sha>');
+      process.exit(2);
+    }
+    const paths = typeof flags.path === 'string' ? [flags.path] : undefined;
+    const stage = typeof flags.stage === 'string' ? flags.stage : undefined;
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/history/restore`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, verId, commit, paths, stage }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      console.error(`restore failed: ${data.error ?? resp.statusText}`);
+      process.exit(1);
+    }
+    if (flags.json) return writeJson(data);
+    console.log(
+      data.restored === 'version'
+        ? `Đã khôi phục ${data.files} file từ bản ${data.verId}.`
+        : `Đã rewind ${data.files} file về commit ${String(data.commit).slice(0, 10)}.`,
     );
     return;
   }

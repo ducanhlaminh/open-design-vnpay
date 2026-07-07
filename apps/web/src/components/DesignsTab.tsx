@@ -26,6 +26,16 @@ import { Toast } from "./Toast";
 type SubTab = "recent" | "yours";
 type ViewMode = "grid" | "kanban";
 
+// A pipeline project is a KGS app (created on the Pipelines page or mirrored
+// via kg-pull) — mirrors the daemon's isKgsProject. Everything else is a
+// regular chat project.
+function isPipelineProject(p: { metadata?: unknown }): boolean {
+	const m = p.metadata;
+	if (!m || typeof m !== "object" || Array.isArray(m)) return false;
+	const meta = m as Record<string, unknown>;
+	return meta.kind === "pipeline" || meta.source === "kg-pull";
+}
+
 type DesignListItem =
 	| { type: "project"; project: Project; updatedAt: number; createdAt: number }
 	| {
@@ -124,6 +134,26 @@ export function DesignsTab({
 			return "grid";
 		}
 	});
+	// Chat vs Pipeline projects are different worlds (ad-hoc conversations vs
+	// KGS docs→prototype apps), so the list is split instead of interleaved.
+	// Persisted like the grid/kanban view choice.
+	const [scope, setScope] = useState<"chat" | "pipeline">(() => {
+		if (typeof window === "undefined") return "chat";
+		try {
+			const stored = window.localStorage.getItem("od-designs-scope");
+			return stored === "pipeline" ? "pipeline" : "chat";
+		} catch {
+			return "chat";
+		}
+	});
+	const changeScope = (next: "chat" | "pipeline") => {
+		setScope(next);
+		try {
+			window.localStorage.setItem("od-designs-scope", next);
+		} catch {
+			/* storage unavailable — scope just won't persist */
+		}
+	};
 
 	useEffect(() => {
 		let cancelled = false;
@@ -256,9 +286,20 @@ export function DesignsTab({
 		if (view === "kanban" && selectMode) exitSelectMode();
 	}, [selectMode, view]);
 
+	// The scope split happens before every other derivation so search, sort,
+	// live artifacts and both view modes all operate on one world at a time.
+	const scopedProjects = useMemo(
+		() => projects.filter((p) => isPipelineProject(p) === (scope === "pipeline")),
+		[projects, scope],
+	);
+	const pipelineCount = useMemo(
+		() => projects.filter((p) => isPipelineProject(p)).length,
+		[projects],
+	);
+
 	const filtered = useMemo(() => {
 		const q = filter.trim().toLowerCase();
-		let list: DesignListItem[] = projects
+		let list: DesignListItem[] = scopedProjects
 			.filter(
 				(project) =>
 					!shouldHideProjectCard(
@@ -273,7 +314,7 @@ export function DesignsTab({
 				createdAt: project.createdAt,
 			}));
 
-		const liveItems = projects.flatMap((project) =>
+		const liveItems = scopedProjects.flatMap((project) =>
 			(liveArtifactsByProject[project.id] ?? []).map((liveArtifact) => ({
 				type: "live-artifact" as const,
 				project,
@@ -301,7 +342,7 @@ export function DesignsTab({
 				item.liveArtifact.title.toLowerCase().includes(q)
 			);
 		});
-	}, [projects, liveArtifactsByProject, filter, sub]);
+	}, [scopedProjects, liveArtifactsByProject, filter, sub]);
 
 	const filteredProjects = useMemo(
 		() =>
@@ -412,6 +453,24 @@ export function DesignsTab({
 		>
 			<div className="tab-panel-toolbar designs-toolbar">
 				<div className="toolbar-left">
+					<div className="subtab-pill" role="group" aria-label="Project scope">
+						<button
+							aria-pressed={scope === "chat"}
+							className={scope === "chat" ? "active" : ""}
+							onClick={() => changeScope("chat")}
+							title="Regular chat projects"
+						>
+							Chat ({projects.length - pipelineCount})
+						</button>
+						<button
+							aria-pressed={scope === "pipeline"}
+							className={scope === "pipeline" ? "active" : ""}
+							onClick={() => changeScope("pipeline")}
+							title="KGS pipeline projects (docs → prototype workflows)"
+						>
+							Pipelines ({pipelineCount})
+						</button>
+					</div>
 					<div
 						className="subtab-pill"
 						role="group"

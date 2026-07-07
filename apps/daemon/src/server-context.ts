@@ -89,16 +89,37 @@ export interface PipelineDeps {
     listDocuments(): Promise<BasDocument[]>;
     listFeatures(documentId: string): Promise<BasFeature[]>;
     confluenceMeta(ref: string): Promise<ConfluencePageMeta>;
+    // Picker "tìm trang Confluence theo tên" (như pipeline-studio): PAT trực
+    // tiếp (CONFLUENCE_URL/_PERSONAL_TOKEN) ưu tiên, else gateway
+    // confluence_search. Wired in server.ts.
+    searchConfluencePages(q: string): Promise<import('@open-design/contracts').ConfluencePageHit[]>;
   };
   // Regenerate the project's pipeline files from the KGS file store into the
-  // local project cwd (cross-device "pull to continue"). Wired in server.ts.
-  pullFiles(projectId: string): Promise<{ pulled: number }>;
+  // local project cwd (cross-device "pull to continue"). `stages` narrows to
+  // those pipelines' outputs (Pull all modal); absent → all. Wired in server.ts.
+  pullFiles(projectId: string, stages?: string[]): Promise<{ pulled: number }>;
   // Manual upload: push the project's current output files to the KGS file
-  // store (+ B2 convert for convertToGraph stages). Wired in server.ts.
-  uploadFiles(projectId: string): Promise<{ uploaded: number; converted: number }>;
+  // store (+ B2 convert for convertToGraph stages). `stages` narrows to those
+  // pipelines' outputs (Push all modal); absent → all. Wired in server.ts.
+  uploadFiles(projectId: string, stages?: string[]): Promise<{ uploaded: number; converted: number }>;
+  // Per-stage local↔remote file diff (badges in the Pull all / Push all modals
+  // + `od kg diff`). Wired in server.ts.
+  syncStatus(projectId: string): Promise<import('@open-design/contracts').ProjectSyncStatus>;
+  // On-demand docs-to-react build (Build button / `od pipelines build`):
+  // react/dist/ is never synced (PipelineDef.syncExclude), so a pulled project
+  // reconstructs it locally via the ui-react builder. Wired in server.ts.
+  buildReact(projectId: string): Promise<{ built: boolean; output: string }>;
   // List the project cwd's output file paths (cwd-relative). Used to derive
   // "done" stage state from on-disk outputs, offline-safe. Wired in server.ts.
   localOutputs(projectId: string): Promise<string[]>;
+  // Project history: published versions (store changelog + _v/ snapshots) và
+  // machine-local .odhistory commits; restore rewinds the cwd to either.
+  // Wired in server.ts (project-history.ts + kg-sync/published-versions.ts).
+  history(projectId: string): Promise<import('@open-design/contracts').ProjectHistoryResponse>;
+  restoreHistory(
+    projectId: string,
+    opts: { verId?: string; commit?: string; paths?: string[]; stage?: string },
+  ): Promise<import('@open-design/contracts').RestoreHistoryResponse>;
   // Conflict-aware pull (PLAN → APPLY). `plan` classifies remote vs local
   // without writing disk; `apply` downloads chosen-remote + new files against a
   // prior plan's snapshot (TOCTOU-guarded). Wired in server.ts. See

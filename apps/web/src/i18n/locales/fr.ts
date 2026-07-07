@@ -1930,4 +1930,19 @@ export const fr: Dict = {
   'diagnostics.exporting': 'Exportation…',
   'diagnostics.exportSuccess': 'Diagnostic enregistré dans {path}',
   'diagnostics.exportFailed': 'Impossible d\'exporter le diagnostic: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'Sandbox',
+  'assistant.sandboxedTitle': 'Cette exécution s\'est déroulée dans une sandbox Docker isolée',
+  'settings.sandboxTitle': 'Sandbox d\'agent',
+  'settings.sandboxHint': 'Exécute les agents de pipeline autorisés dans un conteneur Docker isolé. Nécessite Docker/OrbStack.',
+  'settings.sandboxEnabled': 'Sandbox des exécutions {runtimes} pour les skills : {skills}',
+  'settings.sandboxDocker': 'Moteur Docker',
+  'settings.sandboxImage': 'Image sandbox',
+  'settings.sandboxAuth': 'Connexion Claude (volume d\'auth)',
+  'settings.sandboxActiveRuns': 'Exécutions sandbox actives',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': 'manquant',
+  'settings.sandboxRunCmd': 'exécuter : {cmd}',
+  'settings.sandboxDaemonOffline': 'Daemon hors ligne — statut sandbox indisponible.',
 };

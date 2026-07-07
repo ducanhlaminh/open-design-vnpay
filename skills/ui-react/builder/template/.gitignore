@@ -1,0 +1,9 @@
+# Keep the project CWD light and deterministic. Tailwind v4 auto-detects content
+# and RESPECTS .gitignore — excluding dist/ here stops it from re-scanning its own
+# built output (which otherwise grows the CSS on every rebuild). node_modules never
+# lands here (it's the shared image toolkit); .vite-cache lives in a Docker volume.
+node_modules/
+dist/
+.vite-cache/
+/screens/
+*.local

@@ -24,7 +24,10 @@ import { createHash } from 'node:crypto';
 
 const PATH_TAG = 'path:';
 const STAGE_TAG = 'stage:';
-const PAGE_SIZE = 500;
+// Media-service clamps list `limit` to 100 — request exactly that so the
+// returned page size matches expectations (the loop above no longer depends
+// on it for termination, but a matching size avoids wasted requests).
+const PAGE_SIZE = 100;
 
 export interface MediaClientConfig {
   baseUrl: string;
@@ -77,7 +80,7 @@ interface RawFolder {
   path?: string;
 }
 
-function sha256hex(buf: Buffer): string {
+export function sha256hex(buf: Buffer): string {
   return createHash('sha256').update(buf).digest('hex');
 }
 
@@ -175,10 +178,19 @@ export class MediaClient {
 
   // ── reads ────────────────────────────────────────────────────────────────
 
-  /** All files in a folder, fully paginated (List defaults to 20 rows). */
+  /** All files in a folder, fully paginated.
+   *
+   *  INVARIANT: the loop must terminate on `items.length === 0` or
+   *  `out.length >= total`, and advance the offset by the rows ACTUALLY
+   *  returned — never assume the server honors the requested limit. The
+   *  media-service CLAMPS `limit` to 100: the old `items.length < PAGE_SIZE`
+   *  check (with PAGE_SIZE=500) stopped after the first 100 rows, so every
+   *  folder past 100 files was half-invisible — pushes re-uploaded "missing"
+   *  files (same-path duplicates snowballed), readChangelog missed
+   *  changelog.json (verId reset to v1), and pulls fetched partial projects. */
   async listAllFiles(folderId: string): Promise<MediaFile[]> {
     const out: MediaFile[] = [];
-    for (let offset = 0; ; offset += PAGE_SIZE) {
+    for (let offset = 0; ; ) {
       const res = await fetch(
         this.url(`/api/v1/files?folder_id=${encodeURIComponent(folderId)}&limit=${PAGE_SIZE}&offset=${offset}`),
         { headers: this.headers() },
@@ -187,7 +199,8 @@ export class MediaClient {
       const body = (await res.json()) as { items?: RawFile[]; total?: number };
       const items = body.items ?? [];
       for (const f of items) out.push(this.toMediaFile(f));
-      if (items.length < PAGE_SIZE || out.length >= (body.total ?? out.length)) break;
+      offset += items.length;
+      if (items.length === 0 || out.length >= (body.total ?? out.length)) break;
     }
     return out;
   }
@@ -230,7 +243,9 @@ export class MediaClient {
 
   // ── writes ───────────────────────────────────────────────────────────────
 
-  private async deleteFile(id: string): Promise<void> {
+  /** Public: version pruning (published-versions.ts) and the syncExclude
+   *  hygiene pass in server.ts delete store rows directly by id. */
+  async deleteFile(id: string): Promise<void> {
     const res = await fetch(this.url(`/api/v1/files/${encodeURIComponent(id)}`), {
       method: 'DELETE',
       headers: this.headers(),

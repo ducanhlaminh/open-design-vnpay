@@ -106,13 +106,16 @@
 }
 
 /* ---- Workflow tabs --------------------------------------- */
+/* One row, equal-width cards — content-sized widths made the second card
+   wrap under the first on narrower panes. */
 .pl-workflow-tabs {
   display: flex;
   gap: 10px;
-  flex-wrap: wrap;
 }
 
 .pl-workflow-tab {
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -191,10 +194,395 @@
   gap: 10px;
 }
 
+/* Picker toolbar: label + count on the left, search on the right. Appears
+   once the project list outgrows the collapsed grid. */
+.pl-proj-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pl-proj-count {
+  color: var(--text-soft);
+  font-weight: 500;
+}
+
+.pl-proj-search {
+  flex: 0 1 260px;
+  min-width: 140px;
+  padding: 6px 12px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  transition: border-color 0.18s var(--pl-ease), box-shadow 0.18s var(--pl-ease);
+}
+
+.pl-proj-search:focus {
+  outline: none;
+  border-color: var(--selected);
+  box-shadow: 0 0 0 3px var(--selected-soft);
+}
+
+.pl-proj-search::placeholder {
+  color: var(--text-soft);
+}
+
+.pl-proj-noresult {
+  font-size: 13px;
+  color: var(--text-soft);
+  padding: 2px 2px 0;
+}
+
 .pl-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 12px;
+}
+
+/* ── Pull-all pick-projects modal ────────────────────────────────────────────
+   Search on top, then one bordered list: sticky select-all header + rows of
+   [checkbox | folder avatar | name+id | local badge · files]. Checked rows
+   tint via :has(). All inputs hardened against the app's global input pills
+   (same bleed class as the simulator stepper dots). */
+
+.pl-pullall__hint {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+
+.pl-pullall__state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-soft);
+  font-size: 13px;
+  padding: 22px 0;
+}
+
+.pl-pullall__search {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 10px;
+  padding: 7px 12px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  transition: border-color 0.18s var(--pl-ease), box-shadow 0.18s var(--pl-ease);
+}
+
+.pl-pullall__search:focus {
+  outline: none;
+  border-color: var(--selected);
+  box-shadow: 0 0 0 3px var(--selected-soft);
+}
+
+.pl-pullall__search::placeholder {
+  color: var(--text-soft);
+}
+
+.pl-pullall__list {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.pl-pullall__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  background: var(--bg-inset, rgba(0, 0, 0, 0.03));
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pl-pullall__headlabel {
+  flex: 1 1 auto;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.pl-pullall__headcount {
+  flex: none;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--selected);
+  background: var(--selected-soft);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-pullall__items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 330px;
+  overflow-y: auto;
+}
+
+.pl-pullall__items > li + li {
+  border-top: 1px solid var(--border);
+}
+
+.pl-pullall__row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.14s var(--pl-ease);
+}
+
+.pl-pullall__row:hover {
+  background: color-mix(in srgb, var(--selected-soft) 45%, transparent);
+}
+
+/* Checked rows read as chosen at a glance: soft tint + accent inset bar. */
+.pl-pullall__row:has(input:checked) {
+  background: var(--selected-soft);
+  box-shadow: inset 3px 0 0 var(--selected);
+}
+
+.pl-pullall__row:has(input:checked) .pl-pullall__name {
+  color: var(--selected);
+}
+
+.pl-pullall__avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--bg-inset, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--border);
+  color: var(--text-soft);
+}
+
+.pl-pullall__row:has(input:checked) .pl-pullall__avatar {
+  color: var(--selected);
+  border-color: color-mix(in srgb, var(--selected) 35%, var(--border));
+  background: color-mix(in srgb, var(--selected-soft) 70%, var(--bg-panel));
+}
+
+.pl-pullall__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pl-pullall__name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pl-pullall__id {
+  font-size: 11.5px;
+  color: var(--text-soft);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pl-pullall__meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pl-pullall__files {
+  font-size: 12px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pl-pullall__badge {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--selected-soft);
+  color: var(--selected);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.pl-pullall__footcount {
+  flex: 1 1 auto;
+  font-size: 12.5px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hardened against the app's global input styles (full-width padded pills) —
+   these must stay real 15px checkboxes. */
+.pl-pullall__head input[type='checkbox'],
+.pl-pullall__row input[type='checkbox'] {
+  appearance: auto;
+  -webkit-appearance: checkbox;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  accent-color: var(--selected, #2563eb);
+  cursor: pointer;
+}
+
+/* Per-stage "run info" — what the last run was fed (input link, source, time).
+   Toggled by the ⓘ button in the step heading. */
+.pl-step__infobtn {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: color 0.18s var(--pl-ease), border-color 0.18s var(--pl-ease),
+    background 0.18s var(--pl-ease);
+}
+
+.pl-step__infobtn:hover {
+  color: var(--selected);
+  border-color: var(--border);
+}
+
+.pl-step__infobtn.is-open {
+  color: var(--selected);
+  background: var(--selected-soft);
+}
+
+.pl-step__info {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 4px);
+  background: var(--bg-inset, rgba(0, 0, 0, 0.03));
+  font-size: 12.5px;
+}
+
+.pl-step__info-row {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pl-step__info-row dt {
+  flex: 0 0 64px;
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.pl-step__info-row dd {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
+.pl-step__info-row a {
+  color: var(--selected);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.pl-step__info-row code {
+  font-size: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.pl-step__info-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--selected);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* "Show all (+N)" / "Show less" — ghost card, visually quieter than real
+   project cards so the grid reads as content first, controls last. */
+.pl-proj-card--more {
+  align-items: center;
+  justify-content: center;
+  flex-direction: row;
+  gap: 8px;
+  border-style: dashed;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-soft);
+  font-size: 13.5px;
+  font-weight: 560;
+}
+
+.pl-proj-card--more:hover {
+  color: var(--text-strong);
+  border-color: var(--border-strong);
+  transform: none;
+  box-shadow: none;
+}
+
+.pl-proj-more__count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--selected-soft);
+  color: var(--selected);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pl-proj-more__chevron {
+  display: inline-grid;
+  place-items: center;
+  transform: rotate(180deg);
 }
 
 .pl-proj-card {

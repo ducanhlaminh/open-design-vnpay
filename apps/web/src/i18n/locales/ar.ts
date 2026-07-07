@@ -1705,4 +1705,19 @@ export const ar: Dict = {
   'diagnostics.exporting': 'جارٍ التصدير…',
   'diagnostics.exportSuccess': 'تم حفظ التشخيص في {path}',
   'diagnostics.exportFailed': 'تعذّر تصدير التشخيص: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'معزول',
+  'assistant.sandboxedTitle': 'تم تنفيذ هذا التشغيل داخل بيئة Docker معزولة',
+  'settings.sandboxTitle': 'بيئة الوكيل المعزولة',
+  'settings.sandboxHint': 'يشغّل وكلاء خط الأنابيب المسموح بهم داخل حاوية Docker معزولة. يتطلب Docker/OrbStack.',
+  'settings.sandboxEnabled': 'عزل تشغيلات {runtimes} للمهارات: {skills}',
+  'settings.sandboxDocker': 'محرك Docker',
+  'settings.sandboxImage': 'صورة البيئة المعزولة',
+  'settings.sandboxAuth': 'تسجيل دخول Claude (وحدة تخزين المصادقة)',
+  'settings.sandboxActiveRuns': 'التشغيلات المعزولة النشطة',
+  'settings.sandboxOk': 'سليم',
+  'settings.sandboxMissing': 'مفقود',
+  'settings.sandboxRunCmd': 'شغّل: {cmd}',
+  'settings.sandboxDaemonOffline': 'الخدمة غير متصلة — حالة البيئة المعزولة غير متاحة.',
 };

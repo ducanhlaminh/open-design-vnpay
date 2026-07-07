@@ -55,6 +55,8 @@ import type { ProjectFilePreview } from '../providers/registry';
 import { PipelineUiPreview } from './pipeline-preview/PipelineUiPreview';
 import { PipelineScreensCanvas } from './pipeline-preview/PipelineScreensCanvas';
 import { PipelinePrototypeCanvas } from './pipeline-preview/PipelinePrototypeCanvas';
+import { PipelineReactPreview } from './pipeline-preview/PipelineReactPreview';
+import { PipelineReactCanvas } from './pipeline-preview/PipelineReactCanvas';
 import { adaptScreenSpec } from './pipeline-preview/screen-adapter';
 import { SpecPreview, specToMermaid, type SpecDoc } from './SpecPreview';
 import { MermaidDiagram } from './MermaidDiagram';
@@ -680,6 +682,21 @@ export function FileViewer({
   // (not the single-file HTML viewer). Must precede the generic html renderer.
   if (isPipelinePrototypeFile(file)) {
     return <PipelinePrototypeViewer projectId={projectId} file={file} />;
+  }
+  // `ui-react` (docs → React) built per-screen page: `react/dist/screens/<slug>.html`
+  // → the all-screens React Flow canvas (every screen at once + flow edges).
+  if (isPipelineReactScreenFile(file)) {
+    const screensDir = file.name.split('/').slice(0, -1).join('/');
+    return (
+      <div className="viewer" style={{ height: '100%' }}>
+        <PipelineReactCanvas projectId={projectId} dir={screensDir} activeName={file.name} />
+      </div>
+    );
+  }
+  // `ui-react` full-app build: `react/dist/index.html` (all screens + HashRouter) →
+  // a freely resizable preview (no device frame). Precedes the generic html renderer.
+  if (isPipelineReactBuiltFile(file)) {
+    return <PipelineReactPreview projectId={projectId} fileName={file.name} mtime={file.mtime} />;
   }
   if (rendererMatch?.renderer.id === 'html' || rendererMatch?.renderer.id === 'deck-html') {
     return (
@@ -7823,6 +7840,34 @@ function isPipelinePrototypeFile(file: ProjectFile): boolean {
   const parts = file.name.split('/');
   const base = parts[parts.length - 1]?.toLowerCase() ?? '';
   return parts.length >= 2 && parts[parts.length - 2] === 'prototype' && /\.html?$/.test(base);
+}
+
+// The docs → React workflow's built app lives at `<dir>/react/dist/index.html`
+// (a single self-contained bundle from the ui-react pipeline). Route it to the
+// resizable React preview instead of the generic single-file HTML viewer.
+function isPipelineReactBuiltFile(file: ProjectFile): boolean {
+  const p = file.name.split('/');
+  const n = p.length;
+  return (
+    n >= 3 &&
+    p[n - 1]!.toLowerCase() === 'index.html' &&
+    p[n - 2] === 'dist' &&
+    p[n - 3] === 'react'
+  );
+}
+
+// Built per-screen pages of the docs → React workflow live at
+// `<dir>/react/dist/screens/<slug>.html` → the all-screens React Flow canvas.
+function isPipelineReactScreenFile(file: ProjectFile): boolean {
+  const p = file.name.split('/');
+  const n = p.length;
+  return (
+    n >= 4 &&
+    /\.html?$/i.test(p[n - 1]!) &&
+    p[n - 2] === 'screens' &&
+    p[n - 3] === 'dist' &&
+    p[n - 4] === 'react'
+  );
 }
 
 // The generated render shells that sit next to a `screen.json`

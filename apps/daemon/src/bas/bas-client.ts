@@ -234,6 +234,102 @@ export function extractPageId(ref: string): string {
   );
 }
 
+// ── Confluence page search (modal Run pipeline 1 — picker "tìm trang theo
+// tên" như bên pipeline-studio) ──────────────────────────────────────────────
+
+export interface ConfluencePageHit {
+  id: string;
+  title: string;
+  url?: string;
+  space?: string;
+}
+
+export interface ConfluenceCreds {
+  base: string;
+  token: string;
+}
+
+/**
+ * Confluence PAT cho picker tìm trang — MỘT chỗ config duy nhất với agent:
+ *   ① per-user: Settings → MCP servers → server `mcp-atlassian` (env
+ *      CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN — chính là creds agent dùng
+ *      khi chạy pipeline, user sửa được trong UI);
+ *   ② fallback: env của daemon (CONFLUENCE_URL/_PERSONAL_TOKEN — deploy-wide).
+ */
+export async function resolveConfluenceCreds(dataDir: string): Promise<ConfluenceCreds | null> {
+  try {
+    const cfg = await readMcpConfig(dataDir);
+    const server =
+      cfg.servers.find((s) => s.id === 'mcp-atlassian') ??
+      cfg.servers.find((s) => /atlassian/i.test(s.id) || /atlassian/i.test(s.label ?? ''));
+    const env = (server?.env ?? {}) as Record<string, string>;
+    const base = (env.CONFLUENCE_URL ?? '').trim().replace(/\/+$/, '');
+    const token = (env.CONFLUENCE_PERSONAL_TOKEN ?? '').trim();
+    if (base && token) return { base, token };
+  } catch {
+    /* mcp-config unreadable — fall through to env */
+  }
+  const base = (process.env.CONFLUENCE_URL ?? '').trim().replace(/\/+$/, '');
+  const token = (process.env.CONFLUENCE_PERSONAL_TOKEN ?? '').trim();
+  return base && token ? { base, token } : null;
+}
+
+/**
+ * Tìm trang Confluence theo tiêu đề. Hai đường, ưu tiên theo thứ tự:
+ *   ① PAT trực tiếp (env CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN — CQL
+ *      `title~`, verified live với wiki.servicehub.vn);
+ *   ② BAS gateway `confluence_search` (credential Confluence link với tài
+ *      khoản BAS đứng sau token) khi `ep` khả dụng.
+ * Cả hai đều thiếu → throw message cấu hình rõ ràng.
+ */
+export async function searchConfluencePages(
+  ep: BasEndpoint | null,
+  q: string,
+  limit = 25,
+  creds: ConfluenceCreds | null = null,
+): Promise<ConfluencePageHit[]> {
+  if (creds) {
+    const cql = `type=page AND title~"${q.replace(/["\\]/g, ' ').trim()}" order by lastmodified desc`;
+    const url = `${creds.base}/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=${Math.min(Math.max(limit, 1), 50)}&expand=space`;
+    const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` } });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Confluence search HTTP ${res.status}: ${text.slice(0, 200)}`);
+    const body = JSON.parse(text) as {
+      results?: Array<{
+        id?: string;
+        title?: string;
+        space?: { key?: string };
+        _links?: { webui?: string };
+      }>;
+    };
+    return (body.results ?? [])
+      .map((r) => ({
+        id: String(r.id ?? ''),
+        title: r.title ?? String(r.id ?? ''),
+        ...(r._links?.webui ? { url: `${creds.base}${r._links.webui}` } : {}),
+        ...(r.space?.key ? { space: r.space.key } : {}),
+      }))
+      .filter((r) => r.id);
+  }
+  if (!ep) {
+    throw new Error(
+      'Tìm trang Confluence chưa cấu hình — thêm CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN vào server mcp-atlassian trong Settings → MCP (hoặc env daemon / BAS gateway).',
+    );
+  }
+  const client = new BasClient(ep);
+  const payload = await client.callTool('confluence_search', { query: q, limit: Math.min(Math.max(limit, 1), 50) });
+  return asArray(payload)
+    .map((row) => {
+      const links = (row._links ?? {}) as Record<string, unknown>;
+      const id = str(row, 'page_id', 'id', 'content_id');
+      const title = str(row, 'title', 'label', 'name');
+      const url = str(row, 'url', 'webui', 'link') || (typeof links.webui === 'string' ? links.webui : '');
+      const space = str(row, 'space_key', 'space');
+      return { id, title: title || id, ...(url ? { url } : {}), ...(space ? { space } : {}) };
+    })
+    .filter((r) => r.id);
+}
+
 // ── high-level reads used by the routes + run-time prefetch ──────────────────
 
 // Top level of the BAS picker: the KG documents (kg_list_documents returns

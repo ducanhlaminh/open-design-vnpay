@@ -1704,4 +1704,19 @@ export const pl: Dict = {
   'diagnostics.exporting': 'Eksportowanie…',
   'diagnostics.exportSuccess': 'Diagnostyka zapisana w {path}',
   'diagnostics.exportFailed': 'Nie udało się wyeksportować diagnostyki: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'Sandbox',
+  'assistant.sandboxedTitle': 'To uruchomienie odbyło się w izolowanym sandboksie Dockera',
+  'settings.sandboxTitle': 'Sandbox agenta',
+  'settings.sandboxHint': 'Uruchamia dozwolone agenty pipeline w izolowanym kontenerze Dockera. Wymaga Dockera/OrbStack.',
+  'settings.sandboxEnabled': 'Sandbox uruchomień {runtimes} dla skilli: {skills}',
+  'settings.sandboxDocker': 'Silnik Dockera',
+  'settings.sandboxImage': 'Obraz sandboksa',
+  'settings.sandboxAuth': 'Logowanie Claude (wolumen auth)',
+  'settings.sandboxActiveRuns': 'Aktywne uruchomienia w sandboksie',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': 'brak',
+  'settings.sandboxRunCmd': 'uruchom: {cmd}',
+  'settings.sandboxDaemonOffline': 'Daemon offline — status sandboksa niedostępny.',
 };

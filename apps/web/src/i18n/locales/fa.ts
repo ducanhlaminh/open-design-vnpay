@@ -1747,4 +1747,19 @@ export const fa: Dict = {
   'diagnostics.exporting': 'در حال صادر کردن…',
   'diagnostics.exportSuccess': 'تشخیص در {path} ذخیره شد',
   'diagnostics.exportFailed': 'صادر کردن تشخیص ناموفق بود: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'سندباکس',
+  'assistant.sandboxedTitle': 'این اجرا درون سندباکس ایزوله‌ی Docker انجام شد',
+  'settings.sandboxTitle': 'سندباکس ایجنت',
+  'settings.sandboxHint': 'ایجنت‌های مجاز پایپ‌لاین را درون یک کانتینر ایزوله‌ی Docker اجرا می‌کند. به Docker/OrbStack نیاز دارد.',
+  'settings.sandboxEnabled': 'سندباکس اجراهای {runtimes} برای مهارت‌های: {skills}',
+  'settings.sandboxDocker': 'موتور Docker',
+  'settings.sandboxImage': 'ایمیج سندباکس',
+  'settings.sandboxAuth': 'ورود Claude (والیوم احراز هویت)',
+  'settings.sandboxActiveRuns': 'اجراهای فعال سندباکس',
+  'settings.sandboxOk': 'سالم',
+  'settings.sandboxMissing': 'موجود نیست',
+  'settings.sandboxRunCmd': 'اجرا کنید: {cmd}',
+  'settings.sandboxDaemonOffline': 'دیمن آفلاین است — وضعیت سندباکس در دسترس نیست.',
 };

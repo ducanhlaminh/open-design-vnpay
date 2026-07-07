@@ -416,7 +416,6 @@ export const en: Dict = {
   'entry.navPlugins': 'Plugins',
   'entry.navDesignSystems': 'Design systems',
   'entry.navIntegrations': 'Integrations',
-  'entry.navRemoteRegistry': 'Remote registry',
   'workspaceTabs.project': 'Project',
   'workspaceTabs.pluginDetails': 'Plugin details',
   'workspaceTabs.marketplace': 'Marketplace',
@@ -2452,4 +2451,19 @@ export const en: Dict = {
   'diagnostics.exporting': 'Exporting…',
   'diagnostics.exportSuccess': 'Saved diagnostics to {path}',
   'diagnostics.exportFailed': 'Could not export diagnostics: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'Sandboxed',
+  'assistant.sandboxedTitle': 'This run executed inside an isolated Docker sandbox',
+  'settings.sandboxTitle': 'Agent sandbox',
+  'settings.sandboxHint': 'Run gated pipeline agents inside an isolated Docker container. Requires Docker/OrbStack.',
+  'settings.sandboxEnabled': 'Sandbox {runtimes} runs for skills: {skills}',
+  'settings.sandboxDocker': 'Docker engine',
+  'settings.sandboxImage': 'Sandbox image',
+  'settings.sandboxAuth': 'Claude login (auth volume)',
+  'settings.sandboxActiveRuns': 'Active sandboxed runs',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': 'missing',
+  'settings.sandboxRunCmd': 'run: {cmd}',
+  'settings.sandboxDaemonOffline': 'Daemon offline — sandbox status unavailable.',
 };

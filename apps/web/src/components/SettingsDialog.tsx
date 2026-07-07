@@ -86,6 +86,7 @@ import type { MediaProvider } from '../media/models';
 import { Toast } from './Toast';
 import { PetSettings } from './pet/PetSettings';
 import { McpClientSection } from './McpClientSection';
+import { SandboxSection } from './SandboxSection';
 import { SkillsSection } from './SkillsSection';
 import { DesignSystemsSection } from './DesignSystemsSection';
 import { PrivacySection } from './PrivacySection';
@@ -2278,6 +2279,7 @@ export function SettingsDialog({
                 </div>
               ) : null}
           {cfg.mode === 'daemon' ? (
+            <>
             <section className="settings-section">
               <div className="section-head">
                 <div>
@@ -2896,6 +2898,8 @@ export function SettingsDialog({
                 );
               })()}
             </section>
+            <SandboxSection daemonLive={daemonLive} />
+            </>
           ) : (
             /*
               BYOK panel — wrap the per-protocol form in a bordered card so

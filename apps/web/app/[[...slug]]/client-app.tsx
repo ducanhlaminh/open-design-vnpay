@@ -27,6 +27,18 @@ const App = dynamic(() => import('../../src/App').then((m) => m.App), {
   loading: () => <div className="od-loading-shell">Loading Open Design…</div>,
 });
 
+// Google SSO gate (daemon auth-routes.ts, opt-in via SESSION_SECRET): holds
+// the SPA behind a login screen only when the daemon reports auth enabled —
+// with auth disabled it renders the app directly, zero behavior change.
+const AuthGate = dynamic(
+  () => import('../../src/components/AuthGate').then((m) => m.AuthGate),
+  { ssr: false },
+);
+
 export function ClientApp() {
-  return <App />;
+  return (
+    <AuthGate>
+      <App />
+    </AuthGate>
+  );
 }

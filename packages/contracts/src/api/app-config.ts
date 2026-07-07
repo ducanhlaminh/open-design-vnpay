@@ -19,6 +19,23 @@ export interface OrbitConfigPrefs {
   templateSkillId?: string | null;
 }
 
+/**
+ * Agent-in-sandbox prefs. When enabled, runs whose agent runtime is in
+ * `runtimes` AND whose skill is in `skills` spawn inside a throwaway
+ * `od-agent-sandbox` Docker container instead of as a host process.
+ */
+export interface SandboxConfigPrefs {
+  enabled: boolean;
+  /** Agent runtime ids allowed to sandbox (default ['claude']). */
+  runtimes?: string[];
+  /** Skill ids gated into the sandbox (default ['ui-react']). */
+  skills?: string[];
+  /** Hard kill for a sandboxed run, minutes (default 30). */
+  timeoutMinutes?: number;
+  cpus?: number;
+  memoryGb?: number;
+}
+
 export interface AppConfigPrefs {
   onboardingCompleted?: boolean;
   agentId?: string | null;
@@ -49,6 +66,7 @@ export interface AppConfigPrefs {
    * media-service user id when unset.
    */
   feedbackUsername?: string | null;
+  sandbox?: SandboxConfigPrefs;
 }
 
 export interface AppConfigResponse {

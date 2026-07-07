@@ -1754,4 +1754,19 @@ export const ko: Dict = {
   'diagnostics.exporting': '내보내는 중…',
   'diagnostics.exportSuccess': '진단 정보를 {path}에 저장했습니다',
   'diagnostics.exportFailed': '진단 정보 내보내기 실패: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': '샌드박스',
+  'assistant.sandboxedTitle': '이 실행은 격리된 Docker 샌드박스 안에서 수행되었습니다',
+  'settings.sandboxTitle': '에이전트 샌드박스',
+  'settings.sandboxHint': '허용된 파이프라인 에이전트를 격리된 Docker 컨테이너에서 실행합니다. Docker/OrbStack이 필요합니다.',
+  'settings.sandboxEnabled': '{skills} 스킬의 {runtimes} 실행을 샌드박스로 격리',
+  'settings.sandboxDocker': 'Docker 엔진',
+  'settings.sandboxImage': '샌드박스 이미지',
+  'settings.sandboxAuth': 'Claude 로그인(인증 볼륨)',
+  'settings.sandboxActiveRuns': '활성 샌드박스 실행',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': '없음',
+  'settings.sandboxRunCmd': '실행: {cmd}',
+  'settings.sandboxDaemonOffline': '데몬 오프라인 — 샌드박스 상태를 확인할 수 없습니다.',
 };

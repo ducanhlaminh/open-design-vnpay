@@ -21,8 +21,7 @@ export type EntryView =
   | 'pipelines'
   | 'plugins'
   | 'design-systems'
-  | 'integrations'
-  | 'remote-registry';
+  | 'integrations';
 
 interface Props {
   view: EntryView;
@@ -123,15 +122,6 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
           testId="entry-nav-pipelines"
         >
           <Icon name="pipeline" size={18} />
-        </NavButton>
-        <NavButton
-          active={view === 'remote-registry'}
-          ariaLabel={t('entry.navRemoteRegistry')}
-          tooltip={t('entry.navRemoteRegistry')}
-          onClick={() => onViewChange('remote-registry')}
-          testId="entry-nav-remote-registry"
-        >
-          <Icon name="layers-filled" size={18} />
         </NavButton>
         <NavButton
           active={view === 'design-systems'}

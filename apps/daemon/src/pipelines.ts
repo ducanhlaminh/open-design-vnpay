@@ -63,37 +63,38 @@ export interface PipelineDef {
    * No stage currently sets this.
    */
   localOnly?: boolean;
+  /**
+   * Path patterns (same syntax as `outputs`, workflow-dir-relative) that are
+   * NEVER synced to the media file store — in BOTH directions. Push skips
+   * (and prunes previously-pushed copies of) them; pull ignores them even
+   * when an older store still carries them. Use for derived build artifacts
+   * (`react/dist/` is rebuilt from source via the Build button) and
+   * template-owned scaffold that the builder reseeds — syncing those would
+   * pin a stale template over a newer toolkit on the pulling device.
+   */
+  syncExclude?: string[];
 }
 
-// docs → UI: jira-ingest → feature-analysis → (ux-spec ∥ customer-journey) → ui.
-// jira-ingest + feature-analysis ship as new skills; ux-spec, customer-journey-spec
-// and react-shadcn already exist under skills/.
+// Two docs→output workflows share the same upstream skills (jira-ingest,
+// customer-journey-spec, ux-spec) under workflow-scoped pipeline ids.
+// (The former Workflow A "docs → UI" — react-shadcn screen.json, KGS graph
+// projection via convertToGraph — was removed 2026-07: docs-to-html and
+// docs-to-react are the two supported flows.)
 export const PIPELINE_DEFS: readonly PipelineDef[] = [
-  // ── Workflow A: docs → UI (react-shadcn screen.json) ──────────────────────
-  { id: 'jira-ingest',      name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],                                  outputs: ['docs/jira/', 'docs/confluence/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
-  { id: 'feature-analysis', name: 'Feature Analysis',          skillId: 'feature-analysis',      dependsOn: ['jira-ingest'],                     outputs: ['features/', 'features.json', 'docs/features.md'] },
-  { id: 'ux-spec',          name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['feature-analysis'], convertToGraph: true, outputs: ['-ux-spec.json', 'ux/'] },
-  { id: 'customer-journey', name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['feature-analysis'], convertToGraph: true, outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
-  { id: 'ui',               name: 'UI (static + interactive)', skillId: 'react-shadcn',          dependsOn: ['ux-spec', 'customer-journey'],     outputs: ['ui/', 'screens/'] },
-
-  // ── Workflow B: docs → HTML prototype (INDEPENDENT chain, own ids) ────────
-  // Reuses the same upstream skills as Workflow A but with distinct ids so its
-  // run-state never overlaps. There is NO feature-analysis step here: the
-  // Customer Journey is authored DIRECTLY from the step-1 docs MD, and UX Spec is
-  // derived from those docs + the journey.
+  // ── Workflow B: docs → HTML prototype ─────────────────────────────────────
+  // There is NO feature-analysis step here: the Customer Journey is authored
+  // DIRECTLY from the step-1 docs MD, and UX Spec is derived from those docs +
+  // the journey.
   //   html-docs → html-cj (customer journey from docs) → html-ux → ui-html
-  // Terminal `ui-html` runs a dedicated HTML skill (authored in Phase 2) that
-  // emits one self-contained `.html` per screen.
+  // Terminal `ui-html` runs a dedicated HTML skill that emits one
+  // self-contained `.html` per screen.
   { id: 'html-docs',        name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
   // Customer Journey built straight from the ingested docs MD (no feature-analysis
   // upstream). Each STAGE carries `sources[]` — the key text excerpts from the
   // source MD — which the SpecPreview surfaces under each stage card.
-  // FILE-ONLY (no `convertToGraph`): the docs-to-html workflow produces an HTML
-  // prototype, so its cj/ux JSON stays a local file synced to the media store and
-  // is NEVER projected into the KGS graph. Only the docs-to-ui workflow's
-  // `customer-journey` / `ux-spec` stages set convertToGraph. The two workflows'
-  // outputs are namespaced per-workflow (workflowDirForPipeline), so this flag
-  // split never crosses over to the docs-to-ui stages that share these skills.
+  // FILE-ONLY (no `convertToGraph`): both remaining workflows produce local
+  // file deliverables synced to the media store; nothing is projected into the
+  // KGS graph anymore (that was the removed docs-to-ui workflow's job).
   { id: 'html-cj',          name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['html-docs'], outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
   { id: 'html-ux',          name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['html-cj'], outputs: ['-ux-spec.json', 'ux/'] },
   // ui-html also activates `frontend-design` (UI/UX craft) so the agent designs
@@ -103,6 +104,44 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // media file store like every other stage (push-all/pull-all cross-device
   // handoff). It is file-only — `convertToGraph` stays unset (not graph data).
   { id: 'ui-html',          name: 'UI (HTML prototype)',       skillId: 'html-interactive-prototype', extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill'], dependsOn: ['html-ux'], outputs: ['prototype/'], acceptsDesignSystem: true },
+
+  // ── Workflow C: docs → React app (INDEPENDENT chain, own ids) ─────────────
+  // Same upstream skills as Workflow B (jira-ingest → customer-journey → ux-spec)
+  // with distinct ids so run-state never overlaps, but the terminal `ui-react`
+  // skill emits a REAL, buildable Vite + React 19 + Tailwind v4 shadcn app (built
+  // in an isolated Docker container) rather than static HTML. FILE-ONLY like
+  // docs-to-html: the react/ deliverable syncs to the media store but is never
+  // projected into the KGS graph (no convertToGraph). Outputs are namespaced
+  // under `docs-to-react/` (workflowDirForPipeline), so sharing cj/ux/docs
+  // patterns with the other two workflows never crosses their steppers.
+  { id: 'react-docs',       name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],                  outputs: ['docs/jira/', 'docs/confluence/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
+  { id: 'react-cj',         name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['react-docs'],      outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
+  { id: 'react-ux',         name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['react-cj'],        outputs: ['-ux-spec.json', 'ux/'] },
+  // Terminal ui-react activates the same design/craft skills as ui-html so the
+  // app is genuinely designed; the built `react/` (source + dist) IS the
+  // deliverable and syncs to the media store (file-only, convertToGraph unset).
+  // Sync policy for the react/ tree: what the agent authored (src/screens,
+  // App.tsx, main.tsx, index.css, flow.json) AND the built `dist/` travel.
+  // dist/ syncs because remote consumers (pipeline-studio) preview the app
+  // from the store — dist/screens/*.html + shared dist/assets/* chunks — and
+  // have no Docker builder to reconstruct it (~1MB/project, multi-entry build,
+  // no singlefile). It can still be rebuilt locally on demand (Build button →
+  // POST /api/pipelines/react-build). Generated entries (react/screens/) and
+  // template-owned scaffold stay excluded — pulling those would pin a stale
+  // template over a newer toolkit. `*.artifact.json` are daemon-side render
+  // metadata written next to each html — noise for remote consumers.
+  { id: 'ui-react',         name: 'UI (React app)',            skillId: 'ui-react',              extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill'], dependsOn: ['react-ux'], outputs: ['react/'], acceptsDesignSystem: true,
+    syncExclude: [
+      'react/screens/',
+      'react/package.json',
+      'react/vite.config.ts',
+      'react/tsconfig.json',
+      'react/components.json',
+      'react/index.html',
+      'react/src/components/ui/',
+      'react/src/lib/',
+      '*.artifact.json',
+    ] },
 ];
 
 // Named docs→output flows. Each is an ordered subset of PIPELINE_DEFS. The UI
@@ -110,16 +149,16 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
 // the active workflow's pipeline ids.
 export const WORKFLOWS: readonly Workflow[] = [
   {
-    id: 'docs-to-ui',
-    name: 'Docs → UI',
-    description: 'Product docs → react-shadcn screens (design-v3 preview).',
-    pipelineIds: ['jira-ingest', 'feature-analysis', 'ux-spec', 'customer-journey', 'ui'],
-  },
-  {
     id: 'docs-to-html',
     name: 'Docs → HTML prototype',
     description: 'Product docs → interactive HTML/CSS prototype (React Flow canvas).',
     pipelineIds: ['html-docs', 'html-cj', 'html-ux', 'ui-html'],
+  },
+  {
+    id: 'docs-to-react',
+    name: 'Docs → React',
+    description: 'Product docs → a real Vite + React 19 + Tailwind v4 shadcn app (built in Docker).',
+    pipelineIds: ['react-docs', 'react-cj', 'react-ux', 'ui-react'],
   },
 ];
 
@@ -169,6 +208,16 @@ function splitWorkflowPath(rel: string): [Workflow | undefined, string] {
   return [undefined, rel];
 }
 
+// STORE METADATA (not pipeline outputs): published version snapshots + their
+// changelog index, and `project.json` — the project config Pipeline Studio
+// writes at create/config time (dự án khai sinh ở studio: link Confluence +
+// design system). None of these may light a stage, sync, or pull as an
+// output. Mirrors kg-sync/published-versions.ts isHistoryPath (kept local
+// here so the pure registry stays dependency-free).
+export function isHistoryArtifact(rel: string): boolean {
+  return rel === 'changelog.json' || rel === 'project.json' || rel.startsWith('_v/');
+}
+
 // EVERY pipeline whose declared outputs match this file (cwd-relative path).
 // Workflow-namespaced files (`<workflowId>/...`) are attributed ONLY to that
 // workflow's stages — so the two workflows' shared output patterns (docs/,
@@ -176,6 +225,9 @@ function splitWorkflowPath(rel: string): [Workflow | undefined, string] {
 // unprefixed path (pre-namespacing) still matches across all stages so old
 // projects' status keeps deriving.
 export function stagesForOutput(rel: string): PipelineDef[] {
+  // `_v/v3/docs-to-react/x-cj.json` would otherwise match the endsWith
+  // patterns and mark stages done from a frozen SNAPSHOT.
+  if (isHistoryArtifact(rel)) return [];
   const [wf, sub] = splitWorkflowPath(rel);
   if (wf) {
     const ids = new Set(wf.pipelineIds);
@@ -192,6 +244,21 @@ export function stagesForOutput(rel: string): PipelineDef[] {
 // declared stage output.
 export function stageForOutput(rel: string): PipelineDef | undefined {
   return stagesForOutput(rel)[0];
+}
+
+/**
+ * Whether a project-cwd-relative path is barred from media-store sync by its
+ * stage's `syncExclude` patterns (both directions: push skip/prune AND pull
+ * ignore). Workflow-namespaced paths are matched against the workflow-relative
+ * remainder, mirroring stagesForOutput.
+ */
+export function isSyncExcluded(rel: string): boolean {
+  const [wf, sub] = splitWorkflowPath(rel);
+  const candidate = wf ? sub : rel;
+  const defs = wf
+    ? PIPELINE_DEFS.filter((d) => new Set(wf.pipelineIds).has(d.id))
+    : PIPELINE_DEFS;
+  return defs.some((d) => (d.syncExclude ?? []).some((p) => outputMatches(candidate, p)));
 }
 
 function statusOf(state: ProjectPipelineState, id: string): PipelineStatus {
@@ -282,6 +349,8 @@ export function listPipelineStatus(
       ...(run?.lastRunId ? { lastRunId: run.lastRunId } : {}),
       ...(run?.lastConversationId ? { lastConversationId: run.lastConversationId } : {}),
       ...(run?.updatedAt ? { updatedAt: run.updatedAt } : {}),
+      ...(run?.lastInput ? { lastInput: run.lastInput } : {}),
+      ...(run?.lastSource ? { lastSource: run.lastSource } : {}),
     };
   });
 }

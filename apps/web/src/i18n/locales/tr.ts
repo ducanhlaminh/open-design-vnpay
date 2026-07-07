@@ -1691,4 +1691,19 @@ export const tr: Dict = {
   'diagnostics.exporting': 'Dışa aktarılıyor…',
   'diagnostics.exportSuccess': 'Tanılama {path} konumuna kaydedildi',
   'diagnostics.exportFailed': 'Tanılama dışa aktarılamadı: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'Sandbox',
+  'assistant.sandboxedTitle': 'Bu çalıştırma yalıtılmış bir Docker sandbox\'ında yürütüldü',
+  'settings.sandboxTitle': 'Ajan sandbox\'ı',
+  'settings.sandboxHint': 'İzinli pipeline ajanlarını yalıtılmış bir Docker konteynerinde çalıştırır. Docker/OrbStack gerektirir.',
+  'settings.sandboxEnabled': '{skills} skilleri için {runtimes} çalıştırmalarını sandbox\'la',
+  'settings.sandboxDocker': 'Docker motoru',
+  'settings.sandboxImage': 'Sandbox imajı',
+  'settings.sandboxAuth': 'Claude girişi (auth birimi)',
+  'settings.sandboxActiveRuns': 'Aktif sandbox çalıştırmaları',
+  'settings.sandboxOk': 'Tamam',
+  'settings.sandboxMissing': 'eksik',
+  'settings.sandboxRunCmd': 'çalıştır: {cmd}',
+  'settings.sandboxDaemonOffline': 'Daemon çevrimdışı — sandbox durumu alınamıyor.',
 };

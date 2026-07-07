@@ -416,7 +416,6 @@ export const zhCN: Dict = {
   'entry.navPlugins': '插件',
   'entry.navDesignSystems': '设计体系',
   'entry.navIntegrations': '集成',
-  'entry.navRemoteRegistry': '远程注册表',
   'workspaceTabs.project': '项目',
   'workspaceTabs.pluginDetails': '插件详情',
   'workspaceTabs.marketplace': '插件市场',
@@ -2431,4 +2430,19 @@ export const zhCN: Dict = {
   'diagnostics.exporting': '导出中…',
   'diagnostics.exportSuccess': '诊断日志已保存到 {path}',
   'diagnostics.exportFailed': '导出诊断日志失败：{message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': '沙箱',
+  'assistant.sandboxedTitle': '此次运行在隔离的 Docker 沙箱中执行',
+  'settings.sandboxTitle': '代理沙箱',
+  'settings.sandboxHint': '在隔离的 Docker 容器中运行被允许的流水线代理。需要 Docker/OrbStack。',
+  'settings.sandboxEnabled': '对 {skills} 技能的 {runtimes} 运行启用沙箱',
+  'settings.sandboxDocker': 'Docker 引擎',
+  'settings.sandboxImage': '沙箱镜像',
+  'settings.sandboxAuth': 'Claude 登录（认证卷）',
+  'settings.sandboxActiveRuns': '活跃的沙箱运行',
+  'settings.sandboxOk': '正常',
+  'settings.sandboxMissing': '缺失',
+  'settings.sandboxRunCmd': '运行：{cmd}',
+  'settings.sandboxDaemonOffline': '守护进程离线 — 无法获取沙箱状态。',
 };

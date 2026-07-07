@@ -652,6 +652,21 @@ export interface Dict {
   'settings.mcpCapabilityDefault': string;
   'settings.mcpRunningNote': string;
 
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': string;
+  'assistant.sandboxedTitle': string;
+  'settings.sandboxTitle': string;
+  'settings.sandboxHint': string;
+  'settings.sandboxEnabled': string;
+  'settings.sandboxDocker': string;
+  'settings.sandboxImage': string;
+  'settings.sandboxAuth': string;
+  'settings.sandboxActiveRuns': string;
+  'settings.sandboxOk': string;
+  'settings.sandboxMissing': string;
+  'settings.sandboxRunCmd': string;
+  'settings.sandboxDaemonOffline': string;
+
   // Notifications (settings + system notifications)
   'settings.notifications': string;
   'settings.notificationsHint': string;
@@ -724,7 +739,6 @@ export interface Dict {
   'entry.navPlugins': string;
   'entry.navDesignSystems': string;
   'entry.navIntegrations': string;
-  'entry.navRemoteRegistry': string;
   'workspaceTabs.project': string;
   'workspaceTabs.pluginDetails': string;
   'workspaceTabs.marketplace': string;

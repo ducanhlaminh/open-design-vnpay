@@ -2004,4 +2004,19 @@ export const zhTW: Dict = {
   'skillPluginCandidate.publishRepo': '發布倉庫',
   'skillPluginCandidate.dismiss': '忽略',
   'skillPluginCandidate.repoDescription': '這個倉庫看起來可以做成外掛。',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': '沙箱',
+  'assistant.sandboxedTitle': '此次執行在隔離的 Docker 沙箱中進行',
+  'settings.sandboxTitle': '代理沙箱',
+  'settings.sandboxHint': '在隔離的 Docker 容器中執行獲准的管線代理。需要 Docker/OrbStack。',
+  'settings.sandboxEnabled': '對 {skills} 技能的 {runtimes} 執行啟用沙箱',
+  'settings.sandboxDocker': 'Docker 引擎',
+  'settings.sandboxImage': '沙箱映像',
+  'settings.sandboxAuth': 'Claude 登入（驗證磁碟區）',
+  'settings.sandboxActiveRuns': '作用中的沙箱執行',
+  'settings.sandboxOk': '正常',
+  'settings.sandboxMissing': '缺少',
+  'settings.sandboxRunCmd': '執行：{cmd}',
+  'settings.sandboxDaemonOffline': '守護程式離線 — 無法取得沙箱狀態。',
 };

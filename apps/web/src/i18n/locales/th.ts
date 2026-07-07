@@ -1537,4 +1537,19 @@ export const th: Dict = {
   'settings.designSystemsCategory': 'หมวดหมู่',
   'settings.designSystemsAllCategories': 'ทุกหมวดหมู่',
   'settings.designSystemsShowInHomeGallery': 'แสดงในแกลเลอรีหน้าแรก',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'แซนด์บ็อกซ์',
+  'assistant.sandboxedTitle': 'การรันนี้ทำงานในแซนด์บ็อกซ์ Docker ที่แยกออกมา',
+  'settings.sandboxTitle': 'แซนด์บ็อกซ์เอเจนต์',
+  'settings.sandboxHint': 'รันเอเจนต์ไปป์ไลน์ที่ได้รับอนุญาตในคอนเทนเนอร์ Docker ที่แยกออกมา ต้องใช้ Docker/OrbStack',
+  'settings.sandboxEnabled': 'แซนด์บ็อกซ์การรัน {runtimes} สำหรับสกิล: {skills}',
+  'settings.sandboxDocker': 'เอนจิน Docker',
+  'settings.sandboxImage': 'อิมเมจแซนด์บ็อกซ์',
+  'settings.sandboxAuth': 'การล็อกอิน Claude (โวลุ่ม auth)',
+  'settings.sandboxActiveRuns': 'การรันแซนด์บ็อกซ์ที่ใช้งานอยู่',
+  'settings.sandboxOk': 'ปกติ',
+  'settings.sandboxMissing': 'ขาดหาย',
+  'settings.sandboxRunCmd': 'รัน: {cmd}',
+  'settings.sandboxDaemonOffline': 'เดมอนออฟไลน์ — ไม่สามารถดูสถานะแซนด์บ็อกซ์ได้',
 };

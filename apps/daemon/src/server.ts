@@ -64,6 +64,9 @@ export {
   signDesktopImportToken,
   verifyDesktopImportToken,
 } from './desktop-auth.js';
+import { getMachineUser, registerAuthRoutes } from './auth-routes.js';
+import { ensureProjectRegistered } from './kg-sync/identity-registry.js';
+import { commitHistory, listHistory, restoreCommit } from './project-history.js';
 import {
   findSkillById,
   listSkills,
@@ -296,6 +299,15 @@ import {
   setToken,
 } from './mcp-tokens.js';
 import { agentCliEnvForAgent, readAppConfig, readPluginEnvKnobs, writeAppConfig } from './app-config.js';
+import {
+  resolveSandboxConfig,
+  sandboxImageTag,
+  sandboxPreflight,
+  shouldSandboxRun,
+  sweepOrphanSandboxContainers,
+  killSandboxContainer,
+  wrapInvocationInSandbox,
+} from './agent-sandbox.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
 import {
@@ -400,6 +412,7 @@ import { registerXaiRoutes } from './xai-routes.js';
 import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
 import { registerDesignSystemToolRoutes } from './design-system-tool-routes.js';
 import { registerDeployRoutes, registerDeploymentCheckRoutes } from './deploy-routes.js';
+import { registerSandboxRoutes } from './sandbox-routes.js';
 import { registerMediaRoutes } from './media-routes.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes } from './project-routes.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
@@ -412,16 +425,26 @@ import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { registerPipelineRoutes } from './pipeline-routes.js';
-import { getPipelineDef, stageForOutput, workflowDirForPipeline } from './pipelines.js';
+import { getPipelineDef, isHistoryArtifact, isSyncExcluded, stageForOutput, workflowDirForPipeline } from './pipelines.js';
+import {
+  historyKeepCount,
+  nextVerId,
+  publishVersion,
+  pruneVersions,
+  readChangelog,
+  writeChangelog,
+} from './kg-sync/published-versions.js';
 import {
   basConfluenceMeta,
   basListDocuments,
   basListFeatures,
   fetchSourceFiles,
   resolveBasEndpoint,
+  resolveConfluenceCreds,
+  searchConfluencePages,
 } from './bas/bas-client.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
-import { MediaClient, mediaConfigFromEnv, type LocalSyncFile } from './kg-sync/media-client.js';
+import { MediaClient, mediaConfigFromEnv, sha256hex, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
 import { configureConnectorCredentialStore, connectorService, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
@@ -3557,6 +3580,13 @@ export async function startServer({
     });
   }
 
+  // Google SSO (gateway mode, ported from pipeline-studio) — OPT-IN via
+  // SESSION_SECRET + GOOGLE_CLIENT_ID/SECRET in the env; inert otherwise.
+  // Gates BROWSER requests to /api/* only (Sec-Fetch/Origin heuristics), so
+  // the local CLI, desktop sidecar and internal fetches stay ungated. Must
+  // register BEFORE every other /api route so the gate middleware runs first.
+  registerAuthRoutes(app, undefined, { stateDir: RUNTIME_DATA_DIR });
+
   // Multi-directory scanning shared by every skill / template surface. The
   // helpers delegate to listSkills(roots) which walks roots in priority
   // order, tags each entry with the SkillSource ('user' for the user
@@ -5379,6 +5409,10 @@ export async function startServer({
     ids: idDeps,
     deploy: deployDeps,
     projectStore: projectStoreDeps,
+  });
+  registerSandboxRoutes(app, {
+    http: httpDeps,
+    paths: pathDeps,
   });
   registerFinalizeRoutes(app, {
     db,
@@ -11138,11 +11172,46 @@ export async function startServer({
       return;
     }
 
+    // ── Agent-in-sandbox gate (docs/agent-in-sandbox-spec-plan.md) ────────
+    // Decide BEFORE the start event so the payload can carry `sandboxed`.
+    // Preflight failures fail the run loudly: silently spawning on the host
+    // instead would drop the isolation boundary without anyone noticing.
+    let sandboxPlan = null;
+    {
+      const appCfgForSandbox = await readAppConfig(RUNTIME_DATA_DIR).catch(() => ({}));
+      const sandboxCfg = resolveSandboxConfig(appCfgForSandbox.sandbox, process.env);
+      const runSkillIds = [
+        run.skillId ?? null,
+        ...(Array.isArray(skillIds) ? skillIds : []),
+      ];
+      if (shouldSandboxRun({ agentId, skillIds: runSkillIds, cfg: sandboxCfg })) {
+        let image = null;
+        let failure = null;
+        try {
+          image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
+        } catch {
+          failure = 'Sandbox version pin (skills/ui-react/builder/sandbox/sandbox.version) is unreadable.';
+        }
+        if (image) {
+          const preflight = await sandboxPreflight(image);
+          if (!preflight.ok) failure = preflight.reason ?? 'sandbox preflight failed';
+        }
+        if (failure) {
+          revokeToolToken('child_exit');
+          unregisterChatAgentEventSink();
+          send('error', createSseErrorPayload('AGENT_SANDBOX_UNAVAILABLE', failure, { retryable: true }));
+          return design.runs.finish(run, 'failed', 1, null);
+        }
+        sandboxPlan = { image, cfg: sandboxCfg };
+      }
+    }
+
     run.status = 'running';
     run.updatedAt = Date.now();
     send('start', {
       runId,
       agentId,
+      sandboxed: Boolean(sandboxPlan),
       bin: userFacingAgentLabel(agentId, resolvedBin),
       streamFormat: def.streamFormat ?? 'plain',
       projectId: typeof projectId === 'string' ? projectId : null,
@@ -11201,11 +11270,36 @@ export async function startServer({
           : {}),
       }, agentLaunch);
       spawnedAgentEnv = env;
-      const invocation = createCommandInvocation({
+      let invocation = createCommandInvocation({
         command: agentLaunch.launchPath,
         args,
         env,
       });
+      if (sandboxPlan) {
+        // Same stdio protocol, different vessel: `docker run -i` pipes the
+        // agent's stream-json stdin/stdout through unchanged, so everything
+        // below (prompt write, stream parse, tool results) is untouched.
+        // Container env is whitelist-only via -e flags; the docker CLIENT
+        // process itself still gets the host `env` (harmless — it is not
+        // the container environment).
+        const wrapped = wrapInvocationInSandbox({
+          agentBin: def.bin,
+          args,
+          env,
+          cwd: effectiveCwd,
+          runId,
+          projectId: typeof projectId === 'string' && projectId ? projectId : null,
+          daemonUrl,
+          image: sandboxPlan.image,
+          cfg: sandboxPlan.cfg,
+        });
+        run.sandboxContainerName = wrapped.containerName;
+        invocation = createCommandInvocation({
+          command: wrapped.command,
+          args: wrapped.args,
+          env,
+        });
+      }
       child = spawn(invocation.command, invocation.args, {
         env,
         stdio: [stdinMode, 'pipe', 'pipe'],
@@ -11217,6 +11311,24 @@ export async function startServer({
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       run.child = child;
+      if (sandboxPlan && run.sandboxContainerName) {
+        // Hard wall-clock cap for a sandboxed run: a hung container would
+        // otherwise sit on its CPU/RAM reservation forever (run state is
+        // in-memory, so nothing else would ever reap it mid-session).
+        const sandboxDeadlineMs = sandboxPlan.cfg.timeoutMinutes * 60_000;
+        const sandboxContainerName = run.sandboxContainerName;
+        const sandboxTimeout = setTimeout(() => {
+          if (design.runs.isTerminal(run.status)) return;
+          send('error', createSseErrorPayload(
+            'AGENT_EXECUTION_FAILED',
+            `Sandboxed run exceeded ${sandboxPlan.cfg.timeoutMinutes} minutes and was killed (sandbox.timeoutMinutes).`,
+          ));
+          void killSandboxContainer(sandboxContainerName);
+          if (run.child && !run.child.killed) run.child.kill('SIGKILL');
+        }, sandboxDeadlineMs);
+        sandboxTimeout.unref?.();
+        child.once('close', () => clearTimeout(sandboxTimeout));
+      }
       if (def.promptViaStdin && child.stdin && def.streamFormat !== 'pi-rpc') {
         // EPIPE from a fast-exiting CLI (bad auth, missing model, exit on
         // launch) would otherwise surface as an unhandled stream error and
@@ -12816,6 +12928,17 @@ export async function startServer({
     if (p.endsWith('.html')) return 'text/html';
     if (p.endsWith('.css')) return 'text/css';
     if (p.endsWith('.csv')) return 'text/csv';
+    // dist/assets/* of the ui-react build: browsers enforce strict MIME on
+    // <script type="module"> — octet-stream chunks would be BLOCKED when a
+    // remote consumer (pipeline-studio) serves them back from the store.
+    if (p.endsWith('.js') || p.endsWith('.mjs')) return 'text/javascript';
+    if (p.endsWith('.svg')) return 'image/svg+xml';
+    if (p.endsWith('.png')) return 'image/png';
+    if (p.endsWith('.jpg') || p.endsWith('.jpeg')) return 'image/jpeg';
+    if (p.endsWith('.webp')) return 'image/webp';
+    if (p.endsWith('.ico')) return 'image/x-icon';
+    if (p.endsWith('.woff2')) return 'font/woff2';
+    if (p.endsWith('.woff')) return 'font/woff';
     return 'application/octet-stream';
   };
   const snapshotPipelineCwd = async (root: string): Promise<Map<string, { mtimeMs: number; size: number }>> => {
@@ -12843,33 +12966,103 @@ export async function startServer({
   // a convertToGraph stage it also runs B2 (file → graph) right after. A single
   // content-hash `syncProjectFiles` replaces the per-file upload loop (idempotent
   // re-push is a no-op). Returns counts (`uploaded` = files present after sync).
-  const uploadProjectFiles = async (projectId: string): Promise<{ uploaded: number; converted: number }> => {
+  // `stages` (Push all modal / `od kg push-all --stages`) narrows the push to
+  // those pipelines' outputs; absent/empty → everything (legacy). Unattributed
+  // 'misc' files only travel on unfiltered pushes.
+  const uploadProjectFiles = async (projectId: string, stages?: string[]): Promise<{ uploaded: number; converted: number }> => {
     const cwd = await ensureProject(PROJECTS_DIR, projectId);
     const files = await snapshotPipelineCwd(cwd);
     const kgs = new KgsClient(kgsConfigFromEnv());
-    const media = new MediaClient(mediaConfigFromEnv());
+    const projectName = getProject(db, projectId)?.name ?? projectId;
+    // Attribution: everything this push writes is stamped with the machine's
+    // owner (last Google login — auth-routes getMachineUser). `sub` is the
+    // preview-identity user id, so the media store's owner_id and the
+    // identity project registration line up across apps. No login yet →
+    // legacy behavior (od-service, no owner props, no registration).
+    const machine = getMachineUser();
+    const owner = machine && !machine.sub.startsWith('google:')
+      ? { id: machine.sub, email: machine.email, name: machine.name }
+      : null;
+    const media = new MediaClient({
+      ...mediaConfigFromEnv(),
+      ...(owner ? { userId: owner.id } : {}),
+    });
     // Ensure the project's DP_UI_WORKSPACE node exists so a manual single-project
     // upload also makes it discoverable by another device's pull-all. Best-effort
     // (idempotent) — a workspace-ensure failure must not block the file upload.
-    await kgs
-      .ensureWorkspace(projectId, getProject(db, projectId)?.name ?? projectId)
-      .catch(() => {});
+    await kgs.ensureWorkspace(projectId, projectName, owner).catch(() => {});
+    // Register into preview-identity (owner = machine user) so pipeline-studio
+    // shows the project as owned without an admin registering it by hand.
+    // Best-effort by contract — never fails the push.
+    await ensureProjectRegistered(projectId, projectName, owner);
     const syncFiles: LocalSyncFile[] = [];
     const toConvert: Array<{ pipelineId: string; skillId: string; rel: string }> = [];
     for (const rel of files.keys()) {
+      // History metadata never re-enters the push set: changelog.json/_v/ live
+      // on the store (composed below), even if a stray copy lands in the cwd.
+      if (isHistoryArtifact(rel)) continue;
       const def = stageForOutput(rel);
+      if (stages?.length && (!def || !stages.includes(def.id))) continue;
       // localOnly stages (e.g. ui-html → prototype/) stay on this device — never
       // pushed to the KGS file store nor graph-converted.
       if (def?.localOnly) continue;
+      // syncExclude paths (react/dist/, generated entries, template scaffold)
+      // never travel: derived artifacts are rebuilt on demand and scaffold is
+      // reseeded by the builder — see PipelineDef.syncExclude.
+      if (isSyncExcluded(rel)) continue;
       const content = await fs.promises.readFile(path.join(cwd, rel)).catch(() => null);
       if (!content) continue;
       syncFiles.push({ path: rel, stage: def?.id ?? 'misc', mime: pipelineFileMime(rel), content });
       if (def?.convertToGraph) toConvert.push({ skillId: def.skillId, rel });
     }
     const synced = await media.syncProjectFiles(projectId, syncFiles);
+    // One-time store hygiene: earlier pushes (before syncExclude existed)
+    // uploaded dist/ + scaffold; prune any store file that is now excluded so
+    // pulling devices stop receiving stale build artifacts. Best-effort — a
+    // prune failure must not fail the sync that already succeeded.
+    try {
+      const remote = await media.listFiles(projectId);
+      for (const f of remote) {
+        const rel = typeof f.path === 'string' ? f.path : '';
+        if (rel && !isHistoryArtifact(rel) && isSyncExcluded(rel) && typeof f.id === 'string') {
+          await media.deleteFile(f.id).catch(() => {});
+        }
+      }
+    } catch {
+      /* listFiles unavailable — prune next push */
+    }
     let converted = 0;
     for (const { skillId, rel } of toConvert) {
       converted += await convertStageToGraph(projectId, skillId, cwd, [rel]);
+    }
+    // ── Published version: freeze this push's deliverables under _v/<id> and
+    // append the changelog entry pipeline-studio renders as the timeline.
+    // Best-effort by contract — a history failure never fails the push.
+    try {
+      const entries = await readChangelog(media, projectId);
+      const verId = nextVerId(entries);
+      // Reference the machine-local git state: the push commit (or, when the
+      // tree was already committed by the run/build hooks, current HEAD).
+      const committed = await commitHistory(cwd, { kind: 'push', verId, by: historyActor() }).catch(() => null);
+      const gitCommit = committed?.commit ?? (await listHistory(cwd, 1))[0]?.commit;
+      // Deliverables only (stage-attributed) — scratch 'misc' files sync as
+      // latest but aren't worth freezing per-version.
+      const deliverables = syncFiles.filter((f) => f.stage !== 'misc');
+      await publishVersion(media, projectId, verId, deliverables);
+      entries.push({
+        verId,
+        at: new Date().toISOString(),
+        by: owner ? { id: owner.id, email: owner.email, name: owner.name } : null,
+        ...(gitCommit ? { gitCommit } : {}),
+        files: deliverables.length,
+        uploaded: synced.uploaded,
+        deleted: synced.deleted,
+      });
+      await writeChangelog(media, projectId, entries);
+      const dropped = await pruneVersions(media, projectId, historyKeepCount());
+      if (dropped.length) console.log(`[history] pruned versions: ${dropped.join(', ')}`);
+    } catch (err) {
+      console.warn('[history] publish version failed (push itself succeeded):', err);
     }
     // `uploaded` reports files present in the store after sync (uploaded + already
     // up-to-date), preserving the "N files" button feedback across re-pushes.
@@ -12911,11 +13104,21 @@ export async function startServer({
     return converted;
   };
 
+  // The machine's owner (last Google login) as a history-commit author.
+  const historyActor = () => {
+    const m = getMachineUser();
+    return m ? { id: m.sub, email: m.email, name: m.name } : null;
+  };
+
   // Regenerate a project's pipeline files from the media-service file store into
   // its local cwd (cross-device "pull to continue"). Unconditional overwrite —
-  // the conflict-aware variant lives in planPull/applyPull. Path-traversal
-  // guarded to cwd.
-  const pullPipelineFiles = async (projectId: string, cwd: string): Promise<number> => {
+  // BUT the .odhistory pre-pull commit below fences the current state first,
+  // so an overwriting pull can always be undone. The conflict-aware variant
+  // lives in planPull/applyPull. Path-traversal guarded to cwd.
+  // `stages` (Pull all modal / `od kg pull-all --stages`) narrows the pull to
+  // those pipelines' outputs; absent/empty → everything (legacy).
+  const pullPipelineFiles = async (projectId: string, cwd: string, stages?: string[]): Promise<number> => {
+    await commitHistory(cwd, { kind: 'pre-pull', by: historyActor() }).catch(() => null);
     const media = new MediaClient(mediaConfigFromEnv());
     const files = await media.listFiles(projectId);
     const cwdReal = path.resolve(cwd);
@@ -12923,6 +13126,17 @@ export async function startServer({
     for (const f of files) {
       const rel = typeof f.path === 'string' ? f.path : '';
       if (!rel) continue;
+      // History metadata stays on the store: version snapshots are restored
+      // ON DEMAND (restore API), not dragged down by every pull.
+      if (isHistoryArtifact(rel)) continue;
+      // Never pull syncExclude paths, even from a store that predates the
+      // exclusion — restoring an old scaffold/dist over a newer local toolkit
+      // is exactly the failure mode syncExclude exists to prevent.
+      if (isSyncExcluded(rel)) continue;
+      if (stages?.length) {
+        const sid = f.stage || stageForOutput(rel)?.id;
+        if (!sid || !stages.includes(sid)) continue;
+      }
       const dest = path.resolve(cwd, rel);
       if (dest !== cwdReal && !dest.startsWith(cwdReal + path.sep)) continue;
       const content = await media.downloadFile(projectId, rel).catch(() => null);
@@ -12930,6 +13144,13 @@ export async function startServer({
       await fs.promises.mkdir(path.dirname(dest), { recursive: true });
       await fs.promises.writeFile(dest, content);
       pulled += 1;
+    }
+    if (pulled > 0) {
+      await commitHistory(cwd, {
+        kind: 'pull',
+        note: `pulled ${pulled} file(s) từ store`,
+        by: historyActor(),
+      }).catch(() => null);
     }
     return pulled;
   };
@@ -12966,8 +13187,17 @@ export async function startServer({
       throw err;
     }
     const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    // Same fence as pullPipelineFiles: chosen-remote overwrites stay
+    // reversible because the pre-apply state is committed first.
+    await commitHistory(cwd, { kind: 'pre-pull', by: historyActor() }).catch(() => null);
     const media = new MediaClient(mediaConfigFromEnv());
-    return applyPullFiles(projectId, cwd, media, stored, resolutions, onConflictDefault);
+    const result = await applyPullFiles(projectId, cwd, media, stored, resolutions, onConflictDefault);
+    await commitHistory(cwd, {
+      kind: 'pull',
+      note: 'pull-apply (đã giải quyết conflict)',
+      by: historyActor(),
+    }).catch(() => null);
+    return result;
   };
 
   const runPipeline = async (
@@ -13099,9 +13329,19 @@ export async function startServer({
       status: 'running',
       lastRunId: run.id,
       lastConversationId: conversationId,
+      // Persist WHAT this run was fed (Confluence link / JQL / BAS document)
+      // so the stage's "run info" panel can answer "where did this output
+      // come from?" long after the run finished.
+      ...(agentInput ? { lastInput: agentInput } : {}),
+      ...(source ? { lastSource: source } : {}),
     });
 
     const pipelineCwd = await ensureProject(PROJECTS_DIR, projectId).catch(() => null);
+    if (pipelineCwd) {
+      // Fence any manual edits into their own history commit so the diff of
+      // the coming run is purely the run's output.
+      await commitHistory(pipelineCwd, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
+    }
     // Cross-device: pull upstream stage outputs from KGS into the cwd first, so
     // this stage's inputs are present even on a device that never ran them.
     if (pipelineCwd) {
@@ -13145,6 +13385,18 @@ export async function startServer({
         // POST /api/pipelines/upload). The run only produces files locally and
         // updates the gate; the user uploads when ready.
         setProjectPipelineStatus(db, projectId, pipelineId, { status: next });
+        // History snapshot: this run's outputs become one .odhistory commit —
+        // re-running the stage overwrites files but never erases this state.
+        if (pipelineCwd) {
+          void commitHistory(pipelineCwd, {
+            kind: 'run',
+            pipelineId,
+            runId: run.id,
+            status: next,
+            by: historyActor(),
+            ...(agentInput ? { input: agentInput } : {}),
+          }).catch(() => null);
+        }
       } catch (error) {
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
         console.warn('[pipelines] run failed:', error);
@@ -13154,10 +13406,111 @@ export async function startServer({
     return { projectId, conversationId, agentRunId: run.id };
   };
 
-  const pullFilesForProject = async (projectId: string) => {
+  // Studio-written project config (`project.json` on the store — dự án khai
+  // sinh ở Pipeline Studio): mirror it into the local project row's metadata
+  // so the Run flow can prefill the Confluence link + design system. The file
+  // itself is store metadata (isHistoryArtifact) and never lands in the cwd.
+  const syncStudioConfig = async (projectId: string): Promise<void> => {
+    const media = new MediaClient(mediaConfigFromEnv());
+    const buf = await media.downloadFile(projectId, 'project.json').catch(() => null);
+    if (!buf) return;
+    let cfg;
+    try {
+      cfg = JSON.parse(buf.toString('utf8'));
+    } catch {
+      return;
+    }
+    if (!cfg || typeof cfg !== 'object') return;
+    const project = getProject(db, projectId);
+    if (!project) return;
+    // Trang Confluence nguồn: mảng confluencePages (mới) hoặc các key 1-trang
+    // legacy — chuẩn hóa về mảng {id?,title?,url?}.
+    const rawPages = Array.isArray(cfg.confluencePages) ? cfg.confluencePages : [];
+    const confluencePages = rawPages
+      .filter((p) => p && typeof p === 'object' && (typeof p.id === 'string' || typeof p.url === 'string'))
+      .map((p) => ({
+        ...(typeof p.id === 'string' && p.id ? { id: p.id } : {}),
+        ...(typeof p.title === 'string' && p.title ? { title: p.title } : {}),
+        ...(typeof p.url === 'string' && p.url ? { url: p.url } : {}),
+      }));
+    if (confluencePages.length === 0 && (typeof cfg.confluenceUrl === 'string' || typeof cfg.confluencePageId === 'string')) {
+      const legacy = {
+        ...(typeof cfg.confluencePageId === 'string' && cfg.confluencePageId ? { id: cfg.confluencePageId } : {}),
+        ...(typeof cfg.confluenceTitle === 'string' && cfg.confluenceTitle ? { title: cfg.confluenceTitle } : {}),
+        ...(typeof cfg.confluenceUrl === 'string' && cfg.confluenceUrl ? { url: cfg.confluenceUrl } : {}),
+      };
+      if (legacy.id || legacy.url) confluencePages.push(legacy);
+    }
+    const studioConfig = {
+      ...(confluencePages.length ? { confluencePages } : {}),
+      ...(typeof cfg.designSystemId === 'string' && cfg.designSystemId ? { designSystemId: cfg.designSystemId } : {}),
+      ...(typeof cfg.basDocumentId === 'string' && cfg.basDocumentId ? { basDocumentId: cfg.basDocumentId } : {}),
+      ...(typeof cfg.basDocumentTitle === 'string' && cfg.basDocumentTitle
+        ? { basDocumentTitle: cfg.basDocumentTitle }
+        : {}),
+      ...(typeof cfg.displayName === 'string' && cfg.displayName ? { displayName: cfg.displayName } : {}),
+    };
+    updateProject(db, projectId, { metadata: { ...(project.metadata ?? {}), studioConfig } });
+  };
+
+  const pullFilesForProject = async (projectId: string, stages?: string[]) => {
     const cwd = await ensureProject(PROJECTS_DIR, projectId);
-    const pulled = await pullPipelineFiles(projectId, cwd);
+    const pulled = await pullPipelineFiles(projectId, cwd, stages);
+    await syncStudioConfig(projectId).catch(() => {});
     return { pulled };
+  };
+
+  // Per-stage local↔remote diff (sync-status): which pipelines' outputs on this
+  // machine differ from the store. Mirrors the push/pull eligibility rules
+  // (history metadata, syncExclude, localOnly stages never travel → excluded),
+  // so a "differs" verdict always corresponds to something a push or pull
+  // would actually move. Feeds the Pull all / Push all modals' badges and
+  // `od kg diff`.
+  const syncStatusForProject = async (projectId: string) => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const media = new MediaClient(mediaConfigFromEnv());
+    const [localFiles, remote] = await Promise.all([
+      snapshotPipelineCwd(cwd),
+      media.listFiles(projectId).catch(() => []),
+    ]);
+    const stats = new Map();
+    const statFor = (stage) => {
+      if (!stats.has(stage)) {
+        stats.set(stage, { stage, local: 0, remote: 0, changed: 0, localOnly: 0, remoteOnly: 0 });
+      }
+      return stats.get(stage);
+    };
+    const eligible = (rel, def) => Boolean(rel) && !isHistoryArtifact(rel) && !isSyncExcluded(rel) && !def?.localOnly;
+    const remoteByPath = new Map();
+    for (const f of remote) {
+      const rel = typeof f.path === 'string' ? f.path : '';
+      const def = stageForOutput(rel);
+      if (!eligible(rel, def)) continue;
+      const stage = f.stage || def?.id || 'misc';
+      remoteByPath.set(rel, { checksum: f.checksum, stage });
+      statFor(stage).remote += 1;
+    }
+    for (const rel of localFiles.keys()) {
+      const def = stageForOutput(rel);
+      if (!eligible(rel, def)) continue;
+      const r = remoteByPath.get(rel);
+      const stage = r?.stage ?? def?.id ?? 'misc';
+      const s = statFor(stage);
+      s.local += 1;
+      if (!r) {
+        s.localOnly += 1;
+        continue;
+      }
+      remoteByPath.delete(rel);
+      const content = await fs.promises.readFile(path.join(cwd, rel)).catch(() => null);
+      if (content && sha256hex(content) !== r.checksum) s.changed += 1;
+    }
+    // Whatever remains on the remote side has no local counterpart.
+    for (const { stage } of remoteByPath.values()) statFor(stage).remoteOnly += 1;
+    const stages = [...stats.values()]
+      .map((s) => ({ ...s, differs: s.changed + s.localOnly + s.remoteOnly > 0 }))
+      .sort((a, b) => a.stage.localeCompare(b.stage));
+    return { projectId, stages };
   };
   // List the project cwd's output files (cwd-relative) without creating the dir:
   // snapshotPipelineCwd tolerates a missing root (→ empty), so this is a safe
@@ -13181,14 +13534,156 @@ export async function startServer({
     listDocuments: async () => basListDocuments(await requireBasEndpoint()),
     listFeatures: async (documentId: string) => basListFeatures(await requireBasEndpoint(), documentId),
     confluenceMeta: async (ref: string) => basConfluenceMeta(await requireBasEndpoint(), ref),
+    // Picker "tìm trang Confluence theo tên" (modal Run pipeline 1): creds
+    // per-user từ Settings → MCP (mcp-atlassian) trước, env daemon fallback,
+    // cuối cùng là BAS gateway — endpoint gateway optional nên không dùng
+    // requireBasEndpoint.
+    searchConfluencePages: async (q: string) =>
+      searchConfluencePages(
+        await resolveBasEndpoint(RUNTIME_DATA_DIR).catch(() => null),
+        q,
+        25,
+        await resolveConfluenceCreds(RUNTIME_DATA_DIR),
+      ),
   };
+  // Build (or rebuild) the docs-to-react app ON DEMAND — the Build button /
+  // `od pipelines build`. `react/dist/` is deliberately not synced
+  // (PipelineDef.syncExclude), so a device that pulled a project reconstructs
+  // dist from the synced src/ through the SAME builder the agent used:
+  // build.sh reseeds the template scaffold (cp -Rn) then runs tsc+vite in the
+  // shared toolkit container. Requires Docker on this machine.
+  const buildReactAppForProject = async (
+    projectId: string,
+  ): Promise<{ built: boolean; output: string }> => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const reactDir = path.join(cwd, 'docs-to-react', 'react');
+    const hasSrc = await fs.promises.access(path.join(reactDir, 'src')).then(
+      () => true,
+      () => false,
+    );
+    if (!hasSrc) {
+      throw new Error(
+        'no docs-to-react/react/src in this project — run the "UI (React app)" pipeline (or pull files) first',
+      );
+    }
+    const script = path.join(SKILLS_DIR, 'ui-react', 'builder', 'build.sh');
+    const r = await execFileBuffered('bash', [script, reactDir], {
+      cwd,
+      timeout: 15 * 60_000,
+      maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, UIREACT_PROJECT_ID: projectId },
+    });
+    const tail = [r.stdout, r.stderr]
+      .filter(Boolean)
+      .join('\n')
+      .split('\n')
+      .slice(-40)
+      .join('\n');
+    if (!r.ok) throw new Error(tail || 'react build failed');
+    await commitHistory(cwd, {
+      kind: 'build',
+      note: 'react build (dist rebuilt)',
+      by: historyActor(),
+    }).catch(() => null);
+    return { built: true, output: tail };
+  };
+
+  // Project history: published versions (store) + machine-local commits,
+  // newest first on both tracks.
+  const projectHistoryForProject = async (projectId: string) => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const media = new MediaClient(mediaConfigFromEnv());
+    const [versions, commits, remote] = await Promise.all([
+      readChangelog(media, projectId).catch(() => []),
+      listHistory(cwd, 100),
+      media.listFiles(projectId).catch(() => []),
+    ]);
+    // Per-version stage ids from the snapshot files' `stage:` tags (fallback:
+    // re-derive from the path) — lets the UI scope history to one pipeline
+    // card. Pruned versions simply have no `_v/` rows → no stages.
+    const stagesByVer = new Map();
+    for (const f of remote) {
+      const rel = typeof f.path === 'string' ? f.path : '';
+      const m = /^_v\/(v\d+)\/(.+)$/.exec(rel);
+      if (!m) continue;
+      const stage = f.stage || stageForOutput(m[2])?.id;
+      if (!stage) continue;
+      const set = stagesByVer.get(m[1]) ?? new Set();
+      set.add(stage);
+      stagesByVer.set(m[1], set);
+    }
+    const withStages = versions.map((v) => ({
+      ...v,
+      stages: [...(stagesByVer.get(v.verId) ?? [])].sort(),
+    }));
+    return { versions: withStages.slice().reverse(), commits };
+  };
+
+  // Restore: a published version pulls `_v/<verId>/…` back over the cwd; a
+  // local commit rewinds through git. Both fence the current state first so
+  // restore itself is always undoable.
+  const restoreHistoryForProject = async (
+    projectId: string,
+    opts: { verId?: string; commit?: string; paths?: string[]; stage?: string },
+  ) => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    if (opts.commit) {
+      const r = await restoreCommit(cwd, opts.commit, opts.paths, historyActor());
+      return { restored: 'commit', commit: opts.commit, files: r?.filesChanged ?? 0 };
+    }
+    if (!opts.verId) throw new Error('verId hoặc commit là bắt buộc');
+    await commitHistory(cwd, {
+      kind: 'pre-pull',
+      note: `trước khi khôi phục ${opts.verId}${opts.stage ? ` (${opts.stage})` : ''}`,
+      by: historyActor(),
+    }).catch(() => null);
+    const media = new MediaClient(mediaConfigFromEnv());
+    const remote = await media.listFiles(projectId);
+    const prefix = `_v/${opts.verId}/`;
+    const cwdReal = path.resolve(cwd);
+    let files = 0;
+    for (const f of remote) {
+      const rel = typeof f.path === 'string' ? f.path : '';
+      if (!rel.startsWith(prefix)) continue;
+      const target = rel.slice(prefix.length);
+      // Per-pipeline restore: only that stage's outputs (stage tag, else
+      // re-derived from the path) — the rest of the snapshot stays untouched.
+      if (opts.stage && (f.stage || stageForOutput(target)?.id) !== opts.stage) continue;
+      const dest = path.resolve(cwd, target);
+      if (dest !== cwdReal && !dest.startsWith(cwdReal + path.sep)) continue;
+      const content = await media.downloadFile(projectId, rel).catch(() => null);
+      if (!content) continue;
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.writeFile(dest, content);
+      files += 1;
+    }
+    if (files === 0) {
+      throw new Error(
+        opts.stage
+          ? `bản ${opts.verId} không có file nào của stage ${opts.stage} (hoặc snapshot đã bị prune)`
+          : `không có snapshot ${opts.verId} trên store`,
+      );
+    }
+    await commitHistory(cwd, {
+      kind: 'restore',
+      verId: opts.verId,
+      note: `khôi phục ${files} file từ bản ${opts.verId}${opts.stage ? ` (stage ${opts.stage})` : ''}`,
+      by: historyActor(),
+    }).catch(() => null);
+    return { restored: 'version', verId: opts.verId, files };
+  };
+
   // Shared pipeline deps — passed to both the pipeline routes and the KG-sync
   // routes (both type their `pipelines` as the full PipelineDeps).
   const pipelineDeps = {
     runPipeline,
     pullFiles: pullFilesForProject,
     uploadFiles: uploadProjectFiles,
+    syncStatus: syncStatusForProject,
+    buildReact: buildReactAppForProject,
     localOutputs: localOutputsForProject,
+    history: projectHistoryForProject,
+    restoreHistory: restoreHistoryForProject,
     pullConflict: { plan: planPull, apply: applyPull },
     bas: basDeps,
   };
@@ -13282,6 +13777,21 @@ export async function startServer({
           server.keepAliveTimeout = 120_000;
           server.headersTimeout = 125_000;
         }
+        // Reap sandbox containers orphaned by a previous daemon process.
+        // Run state is in-memory, so at startup EVERY live od.sandbox
+        // container belongs to a run that died with the old daemon.
+        // Fire-and-forget: docker being down just means nothing to sweep.
+        void readAppConfig(RUNTIME_DATA_DIR)
+          .then((cfg) => {
+            if (!resolveSandboxConfig(cfg.sandbox, process.env).enabled) return [];
+            return sweepOrphanSandboxContainers();
+          })
+          .then((killed) => {
+            if (killed.length > 0) {
+              console.warn(`[od] sandbox: reaped ${killed.length} orphaned container(s): ${killed.join(', ')}`);
+            }
+          })
+          .catch(() => {});
         const address = server.address();
         // `address()` can in theory return `string | AddressInfo | null`. For
         // a TCP listener it's always `AddressInfo` with a `.port` — the guard
