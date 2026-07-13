@@ -53,32 +53,39 @@ it is dormant until a feature is linked and an app has context.
   Unlinked features / media errors keep the kickoff byte-identical to before.
 - `ui/pipeline-studio/server/projects.ts` — `ProjectConfig.appId?: string`.
 
-## Phase 2 — App CRUD + link (dual-track: HTTP + CLI + contract)
+## Where the App layer lives — pipeline-studio, not the daemon
 
-- Contract `packages/contracts/src/api/apps.ts`: `App`, `AppContextFile`,
-  create/list/get/link DTOs.
-- Daemon `apps/daemon/src/app-routes.ts`:
-  - `POST /api/apps` create · `GET /api/apps` list · `GET /api/apps/:id`.
-  - `PUT /api/projects/:id/app { appId }` link a feature (writes `project.json`).
-  - `GET/PUT /api/apps/:id/context/*` read/write charter + IA files on media.
-- CLI `od app` in `apps/daemon/src/cli.ts` (via `SUBCOMMAND_MAP`): `create`,
-  `list`, `link <featureId> <appId>`, `context get|set|edit` — each `--json`.
+Projects/features are born and configured in **pipeline-studio** (it owns
+`project.json` on the media store); the daemon only *consumes* `appId` at run
+time (Phase 1). So App CRUD, linking, and charter authoring live in
+pipeline-studio's server + FE — there is no `od app` CLI (studio is a proxy app
+with no CLI track). The daemon side is finished at Phase 1.
 
-## Phase 3 — Promote (extend, reviewed)
+## Phase 2 — App CRUD + link + charter API — DONE (pipeline-studio server)
+
+`ui/pipeline-studio/server/apps.ts` (`registerApps`), wired in `index.ts`. An App
+is a media folder `app--<slug>` with `app.json` (marker + name) and
+`app-context/**`.
+
+- `GET /api/apps` list · `POST /api/apps { name }` create · `GET /api/apps/:id`.
+- `PUT /api/projects/:id/app { appId }` link/unlink a feature (empty = unlink).
+- `GET /api/apps/:id/charter` · `PUT /api/apps/:id/charter { markdown }` read/write
+  `app-context/ux-charter.md`.
+- Gated on `projects:manage` (or admin), mirroring project create/config.
+
+## Phase 3 — Promote (extend, reviewed) — pipeline-studio server
 
 - `POST /api/apps/:id/promote { featureId }`: read the feature's
-  `app-context-delta.md`, show a diff, merge accepted bullets into the app
-  charter, snapshot the previous version under `_v/`, clear the consumed delta.
-- CLI `od app promote <featureId> [--section ...]`.
-- Start human-in-the-loop (explicit promote). A reconcile agent that dedups /
-  resolves conflicting deltas is a later optional automation.
+  `app-context-delta.md` output, merge accepted bullets into the app charter,
+  snapshot the previous charter under `_v/`, clear the consumed delta.
+- Human-in-the-loop (explicit promote); an auto-reconcile agent is later/optional.
 
 ## Phase 4 — Studio UI
 
-- pipeline-studio dashboard gains an **App > Feature** grouping (apps as the top
-  list; features nested). App detail page = charter/IA editor (markdown +
-  JSON) + a "Promote deltas" review panel reading each feature's pending delta.
-- A feature's config card gets an **App** selector (writes `project.json.appId`).
+- pipeline-studio dashboard gains an **App > Feature** grouping. App detail page =
+  charter editor (markdown) + a "Promote deltas" review panel.
+- A feature's config card gets an **App** selector (calls
+  `PUT /api/projects/:id/app`).
 
 ## Non-goals / keep simple
 
