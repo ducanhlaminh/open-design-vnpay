@@ -5,7 +5,8 @@
 // - RunInputModal:          collect a run input (e.g. Confluence link) before
 //                            running a pipeline that declares inputPlaceholder (Req 4).
 // - PipelineStatusModal:     poll GET /api/runs/:id and show compact status (Req 3).
-// - PipelineResultModal:     list a finished pipeline's output files (Req 3).
+// - PipelineResultModal:     preview a finished pipeline's output files inline
+//                            (file rail + embedded FileViewer), no workspace nav.
 
 import { useEffect, useRef, useState } from 'react';
 import type {
@@ -17,13 +18,16 @@ import type {
   DesignSystemSummary,
   PipelineRunSource,
   PipelineView,
+  ProjectFile,
   ProjectSyncStatus,
   RemoteProject,
   TargetPlatform,
   Workflow,
 } from '@open-design/contracts';
+import type { TrackingProjectKind } from '@open-design/contracts/analytics';
 
 import { Icon } from '../Icon';
+import { FileViewer } from '../FileViewer';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { PlModal } from './PlModal';
@@ -1365,25 +1369,65 @@ export function PipelineStatusModal({
   );
 }
 
-// ── Req 3: Quick result — the pipeline's output files ────────────────────────
-interface ProjectFile {
-  name: string;
-  path: string;
+// ── Req 3: Quick result — preview the pipeline's output files IN the modal ───
+// Instead of navigating into the project workspace (conversation + folder tree)
+// to see a stage's result, we render the same FileViewer the workspace uses,
+// right here, with a left rail to switch between this stage's output files. A
+// non-tech user never has to meet "workspace"/folders — they open a stage and
+// see its screens immediately. "Open in workspace" stays as a power-user escape
+// hatch (the old navigate-away behavior via onViewFile).
+const isScreenFile = (name: string) =>
+  name.endsWith('.screen.json') || /(^|\/)screen\.json$/.test(name);
+
+// A non-tech "Quick result" only lists files FileViewer renders as a visual UI
+// preview, and nothing else (markdown, manifests, build assets, source, the
+// full-app dist/index.html bundle, and wireframes/*.wire.json + flows/*.flow.json
+// siblings all stay hidden — someone who doesn't know what a "workspace" is has
+// no use for them here). Per step:
+//   • ui-html / ui-react (UI-Spec) → ONLY the React per-screen pages
+//     (dist/screens/) and the HTML prototype (prototype/), plus the prototype
+//     auto-demo recording (prototype-demo/*.webm). The dist/index.html full-app
+//     bundle is dropped — the screens canvas already shows every screen.
+//   • ux-spec / cj → the one primary spec JSON (SpecPreview loads its
+//     wireframes/flows as tabs INSIDE it).
+//   • ux-review / ux-research → the report JSON (ReviewPreview /
+//     UxResearchPreview); the sibling report.md stays hidden.
+//   • design-v3 screens → screen.json.
+// If a step produces NO previewable file (docs) we fall back to listing
+// everything so the modal is never empty.
+function isUiPreviewFile(name: string): boolean {
+  const lower = name.toLowerCase();
+  const base = lower.split('/').pop() ?? '';
+  if (base === 'screen.json') return true;
+  // UI-Spec previews: React per-screen pages + HTML prototype (not the
+  // dist/index.html bundle, dev entry, or build assets).
+  if (/\.html?$/.test(base)) {
+    return /(^|\/)dist\/screens\//.test(lower) || /(^|\/)prototype\//.test(lower);
+  }
+  // Prototype auto-demo recording (Playwright walkthrough video).
+  if (/(^|\/)prototype-demo\/.*\.webm$/.test(lower)) return true;
+  // Primary visual spec docs (UX Spec / Customer Journey).
+  if (/-ux-spec\.json$/.test(base) || /-(customer-journey|journey|cj)\.json$/.test(base)) return true;
+  // Visual report previews — UX Heuristic Review + UX Research.
+  return /(^|\/)(heuristic-review|ux-research)\/[^/]*\.json$/.test(lower);
 }
 
 export function PipelineResultModal({
   projectId,
+  projectKind,
   pipeline,
   onClose,
   onViewFile,
 }: {
   projectId: string;
+  projectKind: TrackingProjectKind;
   pipeline: PipelineView;
   onClose: () => void;
   onViewFile: (fileName: string) => void;
 }) {
   const [files, setFiles] = useState<ProjectFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeName, setActiveName] = useState<string | null>(null);
   const outputs = pipeline.outputs ?? [];
 
   useEffect(() => {
@@ -1392,14 +1436,20 @@ export function PipelineResultModal({
       try {
         const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`);
         if (!res.ok) throw new Error(`files: ${res.status}`);
-        const data = (await res.json()) as { files?: Array<{ name?: string; path?: string }> };
+        const data = (await res.json()) as { files?: ProjectFile[] };
         const all = (data.files ?? [])
-          .map((f) => {
-            const rel = (f.name ?? f.path ?? '').replace(/^\/+/, '');
-            return { name: rel, path: f.path ?? rel };
-          })
+          // Normalize name to a clean relative path but keep every ProjectFile
+          // field (kind/mime/mtime/size) — FileViewer needs them to dispatch.
+          .map((f) => ({ ...f, name: (f.name ?? f.path ?? '').replace(/^\/+/, '') }))
           .filter((f) => f.name && outputs.some((o) => outputMatches(stripWorkflowDir(f.name), o)));
-        if (!cancelled) setFiles(all);
+        // Non-tech listing: UI-previewable files only, falling back to the full
+        // set when a stage ships none (so doc/cj stages still show something).
+        const ui = all.filter((f) => isUiPreviewFile(f.name));
+        const shown = ui.length > 0 ? ui : all;
+        if (!cancelled) {
+          setFiles(shown);
+          setActiveName(shown[0]?.name ?? null);
+        }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }
@@ -1411,18 +1461,36 @@ export function PipelineResultModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, pipeline.id]);
 
-  const isScreen = (name: string) => name.endsWith('.screen.json') || /(^|\/)screen\.json$/.test(name);
+  const active = files?.find((f) => f.name === activeName) ?? null;
+  const hasFiles = Boolean(files && files.length > 0);
 
   return (
     <PlModal
       title={`Quick result · ${pipeline.name}`}
       icon="file-code"
-      size="md"
+      size="xl"
+      bodyClassName={hasFiles ? 'pl-modal__body--flush' : undefined}
       onClose={onClose}
       footer={
-        <button type="button" className="pl-btn pl-btn--primary" onClick={onClose}>
-          Close
-        </button>
+        <>
+          {active ? (
+            <button
+              type="button"
+              className="pl-btn"
+              onClick={() => {
+                onViewFile(active.name);
+                onClose();
+              }}
+              title="Mở file này trong workspace đầy đủ (hội thoại + cây thư mục)"
+            >
+              <Icon name="external-link" size={13} />
+              <span>Mở trong workspace</span>
+            </button>
+          ) : null}
+          <button type="button" className="pl-btn pl-btn--primary" onClick={onClose}>
+            Close
+          </button>
+        </>
       }
     >
       {error ? (
@@ -1438,29 +1506,39 @@ export function PipelineResultModal({
           produce its {outputs.join(', ') || 'outputs'}.
         </p>
       ) : (
-        <ul className="pl-result-list">
-          {files.map((f) => (
-            <li key={f.name} className="pl-result-row">
-              <span className="pl-result-row__icon" aria-hidden="true">
-                <Icon name={isScreen(f.name) ? 'image' : 'file'} size={15} />
-              </span>
-              <span className="pl-result-row__name" title={f.name}>
-                {f.name}
-              </span>
-              <button
-                type="button"
-                className="pl-btn pl-btn--run"
-                onClick={() => {
-                  onViewFile(f.name);
-                  onClose();
-                }}
-              >
-                <Icon name={isScreen(f.name) ? 'eye' : 'external-link'} size={13} />
-                <span>{isScreen(f.name) ? 'Preview' : 'View'}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+        <div className="pl-result-preview">
+          <aside className="pl-result-rail" aria-label="Output files">
+            {files.map((f) => {
+              const isActive = f.name === activeName;
+              return (
+                <button
+                  key={f.name}
+                  type="button"
+                  className={`pl-result-rail__item${isActive ? ' pl-result-rail__item--active' : ''}`}
+                  onClick={() => setActiveName(f.name)}
+                  aria-current={isActive}
+                  title={f.name}
+                >
+                  <span className="pl-result-rail__icon" aria-hidden="true">
+                    <Icon name={isScreenFile(f.name) ? 'image' : 'file'} size={14} />
+                  </span>
+                  <span className="pl-result-rail__name">{f.name}</span>
+                </button>
+              );
+            })}
+          </aside>
+          <div className="pl-result-stage">
+            {active ? (
+              <FileViewer
+                // Remount the viewer per file so each renderer resets cleanly.
+                key={active.name}
+                projectId={projectId}
+                projectKind={projectKind}
+                file={active}
+              />
+            ) : null}
+          </div>
+        </div>
       )}
     </PlModal>
   );

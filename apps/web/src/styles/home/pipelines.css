@@ -1252,6 +1252,23 @@
   max-width: 900px;
 }
 
+/* Quick-result preview: a wide, tall dialog whose body is a full-bleed
+   two-pane surface (file rail + live FileViewer). */
+.pl-modal--xl {
+  max-width: 1200px;
+  width: min(1200px, calc(100vw - 48px));
+  height: min(88vh, 900px);
+  max-height: 88vh;
+}
+
+.pl-modal__body--flush {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
 .pl-modal__head {
   display: flex;
   align-items: center;
@@ -1528,45 +1545,97 @@
 }
 
 /* Quick-result file list */
-.pl-result-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+/* Quick-result two-pane preview: left rail lists this stage's output files,
+   right stage renders the selected file with the same FileViewer the full
+   workspace uses. Switching files never navigates — no workspace/folder tree. */
+.pl-result-preview {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.pl-result-rail {
+  flex: none;
+  width: 244px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
+  padding: 10px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border-soft);
+  background: var(--bg-subtle);
 }
 
-.pl-result-row {
+.pl-result-rail__item {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 10px 12px;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--bg-app);
-  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-soft);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.16s var(--pl-ease), color 0.16s var(--pl-ease),
+    border-color 0.16s var(--pl-ease);
 }
 
-.pl-result-row__icon {
+.pl-result-rail__item:hover {
+  background: var(--bg-app);
+  color: var(--text);
+}
+
+.pl-result-rail__item--active {
+  background: var(--bg-panel);
+  border-color: var(--border);
+  color: var(--text-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.pl-result-rail__icon {
   flex: none;
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius-sm);
   background: var(--bg-subtle);
   color: var(--text-muted);
 }
 
-.pl-result-row__name {
+.pl-result-rail__item--active .pl-result-rail__icon {
+  background: var(--accent-soft, var(--bg-subtle));
+  color: var(--accent-strong);
+}
+
+.pl-result-rail__name {
   flex: 1 1 auto;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.pl-result-stage {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  background: var(--bg-app);
+}
+
+/* The FileViewer subtree expects to fill its parent. */
+.pl-result-stage > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 @keyframes pl-fade-in {

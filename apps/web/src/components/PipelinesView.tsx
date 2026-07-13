@@ -1603,6 +1603,7 @@ export function PipelinesView() {
       {resultFor ? (
         <PipelineResultModal
           projectId={projectId}
+          projectKind="other"
           pipeline={resultFor}
           onClose={() => setResultFor(null)}
           onViewFile={viewFile}
