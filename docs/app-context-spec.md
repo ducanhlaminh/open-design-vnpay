@@ -73,19 +73,27 @@ is a media folder `app--<slug>` with `app.json` (marker + name) and
   `app-context/ux-charter.md`.
 - Gated on `projects:manage` (or admin), mirroring project create/config.
 
-## Phase 3 — Promote (extend, reviewed) — pipeline-studio server
+## Phase 3 — Promote (extend, reviewed) — DONE (pipeline-studio server)
 
-- `POST /api/apps/:id/promote { featureId }`: read the feature's
-  `app-context-delta.md` output, merge accepted bullets into the app charter,
-  snapshot the previous charter under `_v/`, clear the consumed delta.
-- Human-in-the-loop (explicit promote); an auto-reconcile agent is later/optional.
+- `GET /api/projects/:id/app-delta` — a feature's pending proposal.
+- `POST /api/apps/:id/promote { featureId, markdown? }` — snapshot the current
+  charter under `app-context/_history/`, then set it to the FE-reviewed `markdown`
+  (or append the raw delta under a provenance heading), and clear the consumed
+  delta. Human-in-the-loop; an auto-reconcile agent is later/optional.
 
-## Phase 4 — Studio UI
+## Phase 4 — Studio UI — DONE (functional core)
 
-- pipeline-studio dashboard gains an **App > Feature** grouping. App detail page =
-  charter editor (markdown) + a "Promote deltas" review panel.
-- A feature's config card gets an **App** selector (calls
-  `PUT /api/projects/:id/app`).
+`AppLinkCard` on the project-detail page (`src/components/app-link-card.tsx`):
+- **App selector** — link/unlink the feature to an app, or create one inline
+  (`api.apps` / `createApp` / `linkFeatureApp`).
+- **Charter editor** modal — read/write the shared `ux-charter.md`.
+- **Promote** — when the feature's last run left a delta, review it and promote
+  the merged markdown into the charter.
+Adapter surfaces `config.appId`; `ProjectConfig`/`api` carry the app methods.
+
+Deferred (additive, do when a real need shows): a dashboard **App > Feature**
+tree grouping and a standalone app-detail route — the per-feature card already
+covers link → charter → inherit → promote end to end.
 
 ## Non-goals / keep simple
 
