@@ -33,9 +33,17 @@ if ! mkdir "$lockdir" 2>/dev/null; then
 fi
 trap 'rmdir "$lockdir" 2>/dev/null || true' EXIT
 
-echo "[sandbox] building $image (base uireact-base:$toolkit_version, claude $claude_version)…"
+# Native host arch (arm64 on Apple Silicon, amd64 on Intel/Windows/Linux) so
+# the agent container never runs under QEMU. OD_DOCKER_PLATFORM overrides.
+case "$(uname -m)" in
+  arm64|aarch64) native="linux/arm64" ;;
+  *)             native="linux/amd64" ;;
+esac
+platform="${OD_DOCKER_PLATFORM:-$native}"
+
+echo "[sandbox] building $image ($platform, base uireact-base:$toolkit_version, claude $claude_version)…"
 docker build \
-  --platform linux/arm64 \
+  --platform "$platform" \
   --build-arg TOOLKIT_VERSION="$toolkit_version" \
   --build-arg CLAUDE_CODE_VERSION="$claude_version" \
   -t "$image" \

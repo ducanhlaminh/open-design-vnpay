@@ -34,6 +34,9 @@
   flex-direction: column;
   gap: 10px;
   max-width: 640px;
+  /* Flex child: without this, long unbreakable content (button names, arrow
+     chains) refuses to shrink and overflows the hero row. */
+  min-width: 0;
 }
 
 .pipelines-page__eyebrow {
@@ -66,6 +69,51 @@
   font-size: 14.5px;
   line-height: 1.55;
   color: var(--text-muted);
+}
+
+/* The hero's 3-step how-to under the lede — numbered badges instead of a
+   prose arrow-chain so a first-time user can scan the flow at a glance. */
+.pipelines-page__steps {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: pl-hero-step;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.pipelines-page__steps li {
+  counter-increment: pl-hero-step;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+/* Single text wrapper per row (badge + span) — mixed inline children would
+   each become their own flex item and refuse to wrap. */
+.pipelines-page__steps li > span {
+  min-width: 0;
+}
+
+.pipelines-page__steps li::before {
+  content: counter(pl-hero-step);
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  transform: translateY(2px);
 }
 
 .pipelines-progress {
@@ -176,6 +224,18 @@
 
 .pipelines-toolbar__group--actions {
   justify-content: flex-end;
+}
+
+/* Small uppercase label naming a toolbar button group ("Dự án đang chọn" /
+   "Tất cả dự án") so first-time users see which scope each button acts on. */
+.pipelines-toolbar__label {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  margin-right: 2px;
+  white-space: nowrap;
 }
 
 .pl-field__label {
@@ -1236,6 +1296,10 @@
 .pl-modal__body {
   padding: 18px;
   overflow-y: auto;
+  /* Never scroll sideways: a single overflowing row (e.g. an unhardened
+     checkbox blown up by the global input pill styles) must clip instead of
+     shifting the whole dialog content off-screen. */
+  overflow-x: hidden;
 }
 
 .pl-modal__foot {
@@ -1267,6 +1331,60 @@
 .pl-modal-field__hint {
   font-size: 12px;
   line-height: 1.45;
+  color: var(--text-soft);
+}
+
+/* "Chạy full workflow" — resume toggle row (RunAllModal). The checkbox is
+   hardened against the app's global input styles (full-width padded pills)
+   exactly like .pl-pullall__row's: without this it stretches into a pill and
+   blows the modal out horizontally. */
+.pl-runall-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.pl-runall-toggle:hover {
+  background: var(--bg-subtle, rgba(0, 0, 0, 0.02));
+}
+
+.pl-runall-toggle input[type='checkbox'] {
+  appearance: auto;
+  -webkit-appearance: checkbox;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  min-width: 0;
+  min-height: 0;
+  margin: 2px 0 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  accent-color: var(--selected, #2563eb);
+  cursor: pointer;
+}
+
+.pl-runall-toggle__body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pl-runall-toggle__title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.pl-runall-toggle__desc {
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--text-soft);
 }
 

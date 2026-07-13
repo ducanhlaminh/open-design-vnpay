@@ -5,8 +5,8 @@ description: |
   project from Jira (and optionally Confluence) via the configured `mcp-atlassian`
   MCP server, and write each issue/page as a self-contained Markdown file with
   YAML frontmatter under `./docs/jira/`. This is the FIRST step of the docs→UI
-  pipeline: its `.md` output is the only input the `feature-analysis` pipeline
-  (P2) reads. Activate when the user runs the "Docs → Markdown (JIRA)" pipeline,
+  pipeline: its `.md` output is the input the next stage (`cj`,
+  customer-journey-spec) reads. Activate when the user runs the "Docs → Markdown (JIRA)" pipeline,
   or asks to "pull jira", "kéo tài liệu jira", "ingest docs", "lấy issue về md".
 triggers:
   - "jira ingest"
@@ -32,7 +32,7 @@ text snapshot rather than live Jira calls.
   Data Center)") — already configured in this workspace. Credentials live in the
   daemon; you only call the tools.
 - **Output:** one `.md` per issue under `./docs/jira/`, plus an index
-  `./docs/jira/_index.md`. These are the ONLY thing P2 (`feature-analysis`) reads.
+  `./docs/jira/_index.md`. These are what the next stage (`cj`) reads.
 - **No KGS push here.** This stage only writes local Markdown.
 
 ## Confluence page trees — use the export script (do NOT hand-recurse children)
@@ -131,7 +131,7 @@ Write `./docs/jira/_index.md` — a table of every pulled issue
 - `./docs/jira/_index.md` exists and lists N issues.
 - N matches the number of `<KEY>.md` files written.
 - Tell the user how many issues were pulled and from what scope, then stop. The
-  next pipeline (`feature-analysis`) becomes available once this run succeeds.
+  next pipeline (`cj`, Customer Journey) becomes available once this run succeeds.
 
 ## Hard rules
 - Source of truth is `mcp-atlassian`; do not fabricate issues or invent keys.

@@ -258,6 +258,8 @@ export type PackagedDaemonSpawnEnvOptions = {
   mediaUserRole?: string | null;
   atlassianJiraToken?: string | null;
   atlassianConfluenceToken?: string | null;
+  sandboxDefault?: string | null;
+  sandboxSkills?: string | null;
   authSessionSecret?: string | null;
   googleClientId?: string | null;
   googleClientSecret?: string | null;
@@ -341,6 +343,15 @@ export function buildPackagedDaemonSpawnEnv(
     ...(options.atlassianConfluenceToken == null || options.atlassianConfluenceToken.length === 0
       ? {}
       : { OD_ATLASSIAN_CONFLUENCE_TOKEN: options.atlassianConfluenceToken }),
+    // Agent-in-sandbox defaults baked by tools/pack: the daemon applies them
+    // only while the user has no persisted sandbox prefs (agent-sandbox.ts
+    // resolveSandboxConfig), so `od sandbox disable` still wins.
+    ...(options.sandboxDefault == null || options.sandboxDefault.length === 0
+      ? {}
+      : { OD_SANDBOX_DEFAULT: options.sandboxDefault }),
+    ...(options.sandboxSkills == null || options.sandboxSkills.length === 0
+      ? {}
+      : { OD_SANDBOX_SKILLS: options.sandboxSkills }),
     // Google SSO + preview-identity auth baked by tools/pack. The daemon reads
     // these in auth-routes.ts authConfigFromEnv — auth is opt-in on
     // SESSION_SECRET, so an unconfigured build simply runs with login off.
@@ -450,6 +461,8 @@ export async function startPackagedSidecars(
     mediaUserRole: string | null;
     atlassianJiraToken: string | null;
     atlassianConfluenceToken: string | null;
+    sandboxDefault: string | null;
+    sandboxSkills: string | null;
     authSessionSecret: string | null;
     googleClientId: string | null;
     googleClientSecret: string | null;
@@ -504,6 +517,8 @@ export async function startPackagedSidecars(
         mediaUserRole: options.mediaUserRole,
         atlassianJiraToken: options.atlassianJiraToken,
         atlassianConfluenceToken: options.atlassianConfluenceToken,
+        sandboxDefault: options.sandboxDefault,
+        sandboxSkills: options.sandboxSkills,
         authSessionSecret: options.authSessionSecret,
         googleClientId: options.googleClientId,
         googleClientSecret: options.googleClientSecret,

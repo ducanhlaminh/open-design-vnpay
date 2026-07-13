@@ -28,14 +28,28 @@ interface PrototypeEntry {
   name: string;
   /** Readable label derived from the file name. */
   title: string;
+  /** Target platform of this screen, from its `<meta name="od-layout">`. */
+  layout: ScreenLayout;
 }
 
-// One frame size for every prototype page. Phone-ish (the skill is mobile-first);
-// web pages just scroll inside the iframe.
-const FRAME = { w: 375, h: 812 } as const;
-// Capture viewport height — matches the CLI's default so a `min-height:100vh`
-// screen resolves to a mobile height instead of an inflated frame.
-const CAPTURE_H = 932;
+// Per-layout frame sizes. Each prototype page declares its platform via
+// `<meta name="od-layout" content="mobile|web">` (written by the ui-html
+// skill from the UX Spec's per-screen `layout`); a missing marker falls back
+// to mobile — the pre-marker behavior. `capH` is the capture viewport height
+// (mobile matches the CLI's default so `min-height:100vh` resolves to a phone
+// height instead of an inflated frame).
+type ScreenLayout = 'mobile' | 'web';
+const FRAMES: Record<ScreenLayout, { w: number; h: number; capH: number }> = {
+  mobile: { w: 375, h: 812, capH: 932 },
+  web: { w: 1280, h: 800, capH: 800 },
+};
+
+/** Read the screen's declared platform from its HTML source (default mobile). */
+function detectLayout(html: string): ScreenLayout {
+  const tag = html.match(/<meta\b[^>]*\bname=["']od-layout["'][^>]*>/i)?.[0];
+  const content = tag?.match(/\bcontent=["']([^"']+)["']/i)?.[1];
+  return content?.trim().toLowerCase() === 'web' ? 'web' : 'mobile';
+}
 
 function prettyTitle(fileName: string): string {
   const base = fileName.split('/').pop() ?? fileName;
@@ -50,6 +64,7 @@ function HtmlFrameNode({ data }: NodeProps) {
     projectId: string;
     active: boolean;
   };
+  const frame = FRAMES[entry.layout];
   return (
     <div className={styles.frameWrap}>
       <div className={styles.frameLabel} title={entry.title}>
@@ -58,13 +73,13 @@ function HtmlFrameNode({ data }: NodeProps) {
       </div>
       <div
         className={active ? `${styles.frame} ${styles.frameActive}` : styles.frame}
-        style={{ width: FRAME.w, height: FRAME.h }}
+        style={{ width: frame.w, height: frame.h }}
       >
         <iframe
           src={projectFileUrl(projectId, entry.name)}
           title={entry.title}
           className={styles.iframe}
-          style={{ width: FRAME.w, height: FRAME.h }}
+          style={{ width: frame.w, height: frame.h }}
         />
       </div>
     </div>
@@ -126,11 +141,13 @@ export function PipelinePrototypeCanvas({ projectId, dir, activeName }: Props) {
             /* no/!invalid recipe → single capture */
           }
         }
-        specs.push({ html, width: FRAME.w, height: CAPTURE_H, states });
+        // Size the Figma frame per the screen's declared platform.
+        const frame = FRAMES[detectLayout(html)];
+        specs.push({ html, width: frame.w, height: frame.capH, states });
       }
       if (specs.length === 0) throw new Error('Không có màn nào để copy');
       const { screensToFigmaClipboard } = await import('../../lib/html-to-h2d');
-      const html = await screensToFigmaClipboard(specs, FRAME.w, CAPTURE_H);
+      const html = await screensToFigmaClipboard(specs, FRAMES.mobile.w, FRAMES.mobile.capH);
       return new Blob([html], { type: 'text/html' });
     })();
     const done = (state: 'ok' | 'err', err?: unknown) => {
@@ -185,11 +202,28 @@ export function PipelinePrototypeCanvas({ projectId, dir, activeName }: Props) {
         if (cancelled) return;
         setStatesSet(states);
         if (htmlFiles.length === 0) {
-          setError(`No prototype HTML found under ${dir}/ — run the “UI (HTML prototype)” pipeline first.`);
+          setError(`No prototype HTML found under ${dir}/ — run the “UI-Spec (HTML)” pipeline first.`);
           setEntries([]);
           return;
         }
-        setEntries(htmlFiles.map((name) => ({ name, title: prettyTitle(name) })));
+        // Per-screen platform: read each page's `<meta name="od-layout">` to
+        // size its frame (fetch failure → mobile, the pre-marker default).
+        const layouts = await Promise.all(
+          htmlFiles.map(async (name): Promise<ScreenLayout> => {
+            try {
+              const resp = await fetch(projectFileUrl(projectId, name));
+              return resp.ok ? detectLayout(await resp.text()) : 'mobile';
+            } catch {
+              return 'mobile';
+            }
+          }),
+        );
+        if (cancelled) return;
+        setEntries(htmlFiles.map((name, i) => ({
+          name,
+          title: prettyTitle(name),
+          layout: layouts[i] ?? 'mobile',
+        })));
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
@@ -209,7 +243,7 @@ export function PipelinePrototypeCanvas({ projectId, dir, activeName }: Props) {
         position: { x, y: 0 },
         data: { entry, projectId, active: entry.name === activeName },
       };
-      x += FRAME.w + 80;
+      x += FRAMES[entry.layout].w + 80;
       return node;
     });
   }, [entries, activeName, projectId]);

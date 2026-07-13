@@ -146,9 +146,7 @@ import {
   CritiqueTheaterMount,
   useCritiqueTheaterEnabled,
 } from './Theater';
-import { decideAutoOpenAfterWrite } from './auto-open-file';
 import { buildRepoImportPrompt, designSystemNeedsRepoConnect } from './design-system-github-evidence';
-import { collectReferencedJsxNames } from '../runtime/jsx-module-refs';
 import { FileWorkspace } from './FileWorkspace';
 import { Icon } from './Icon';
 import {
@@ -652,6 +650,10 @@ export function ProjectView({
   const tabsLoadedRef = useRef(false);
   const tabsHydratedFromSavedStateRef = useRef(false);
   const hasAppliedInitialPrimaryOpenRef = useRef(false);
+  // Render-mirrored routeFileName: the async tabs hydration reads it AFTER
+  // resolve, so it must see the CURRENT deep link, not the mount-time value.
+  const routeFileNameRef = useRef(routeFileName);
+  routeFileNameRef.current = routeFileName;
   // Routed to FileWorkspace — bumped whenever the user clicks "open" on a
   // tool card, an attachment chip, or a produced-file chip in chat. We
   // include a nonce so re-clicking the same name after the user closed the
@@ -1023,6 +1025,13 @@ export function ProjectView({
   // Hydrate the open-tabs state once per project. After this initial
   // load, every mutation flows through saveTabsState() which keeps DB +
   // local state coherent.
+  //
+  // INVARIANT: a deep-linked file (route .../files/<name> — e.g. "View" from
+  // the Pipelines Quick-result modal) must survive this hydration. The
+  // deep-link's openRequest fires on mount BEFORE loadTabs resolves, so the
+  // saved state would otherwise land LAST and flip the active tab back to
+  // whatever was open in the previous session (the "preview shows a different
+  // file" bug). Merging the deep link into the hydrated state keeps it active.
   useEffect(() => {
     let cancelled = false;
     tabsLoadedRef.current = false;
@@ -1032,7 +1041,16 @@ export function ProjectView({
       const state = await loadTabs(project.id);
       if (cancelled) return;
       tabsHydratedFromSavedStateRef.current = state.hasSavedState === true;
-      setOpenTabsState(state);
+      const deepLink = routeFileNameRef.current;
+      setOpenTabsState(
+        deepLink
+          ? {
+              ...state,
+              tabs: state.tabs.includes(deepLink) ? state.tabs : [...state.tabs, deepLink],
+              active: deepLink,
+            }
+          : state,
+      );
       tabsLoadedRef.current = true;
     })();
     return () => {
@@ -1327,10 +1345,15 @@ export function ProjectView({
   // When the URL points at a specific file, fire an open request so the
   // FileWorkspace promotes it to an active tab. We watch routeFileName
   // (the parsed segment) so back/forward navigation triggers the same path.
+  // ALSO refresh the files list: deep-links (Pipelines Quick result) race the
+  // stage's own writes/clears — without a refresh a just-produced file opens
+  // onto a blank pane (stale list has no entry for it) and a just-cleared one
+  // can't show its missing-file notice against fresh truth.
   useEffect(() => {
     if (!routeFileName) return;
     requestOpenFile(routeFileName);
-  }, [routeFileName, requestOpenFile]);
+    void refreshProjectFiles();
+  }, [routeFileName, requestOpenFile, refreshProjectFiles]);
 
   // Sync the URL when the active tab changes, so reload + share-link both
   // land back on the same view. Replace (not push) on tab activation so the
@@ -2424,19 +2447,14 @@ export function ProjectView({
         }
         persistAssistantSoon();
         persistAssistantSoon();
-        // Track Write tool invocations so we can auto-open the destination
-        // file the moment the agent finishes writing it. The file-creating
-        // tools we care about: Write (new file), Edit (existing file —
-        // surfacing the freshly-modified file is also useful).
+        // Track Write/Edit tool invocations so we can refresh the workspace file
+        // list the moment the agent finishes writing — the new/edited file then
+        // shows up in the file list. We deliberately DO NOT auto-open its tab
+        // (user preference: no automatic file-view switching).
         if (ev.kind === 'tool_use' && ((ev.name === 'Write' || ev.name === 'write') || ev.name === 'Edit')) {
           const input = ev.input as { file_path?: unknown; filePath?: unknown } | null;
           const filePath = input?.file_path ?? input?.filePath;
           if (typeof filePath === 'string' && filePath.length > 0) {
-            // Preserve the full path so decideAutoOpenAfterWrite can do a
-            // path-suffix match against the project's relative file paths.
-            // Reducing to a basename here would lose the segment alignment
-            // we need to disambiguate same-basename collisions across the
-            // project tree and outside it.
             pendingWritesRef.current.set(ev.id, filePath);
           }
         }
@@ -2444,27 +2462,9 @@ export function ProjectView({
           const filePath = pendingWritesRef.current.get(ev.toolUseId);
           if (filePath) {
             pendingWritesRef.current.delete(ev.toolUseId);
-            if (!ev.isError) {
-              // Refresh first so FileWorkspace's file list (and the tab
-              // body) sees the new content before we ask it to focus.
-              // Only auto-open if the file actually landed in the project's
-              // file list — otherwise an out-of-project Write (e.g. an
-              // upstream repo edit) would spawn a permanent placeholder tab.
-              void refreshProjectFiles().then(async (nextFiles) => {
-                // A .jsx/.tsx loaded by a sibling HTML entry is a module of a
-                // multi-file React prototype, not a standalone page — don't
-                // strand the user on a dead-end preview tab. Issue #2744.
-                const moduleFileNames = /\.(jsx|tsx)$/i.test(filePath)
-                  ? await collectReferencedJsxNames(nextFiles, readProjectHtml)
-                  : undefined;
-                const decision = decideAutoOpenAfterWrite(filePath, nextFiles, {
-                  moduleFileNames,
-                });
-                if (decision.shouldOpen && decision.fileName) {
-                  requestOpenFile(decision.fileName);
-                }
-              });
-            }
+            // Refresh the file list so the new/edited file is discoverable; the
+            // user opens it themselves — no auto-focus.
+            if (!ev.isError) void refreshProjectFiles();
           }
         }
       };

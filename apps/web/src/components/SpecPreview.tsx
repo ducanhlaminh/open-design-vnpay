@@ -5,7 +5,7 @@
 // stage cards and screen wireframe follow those routes; styled with open-design
 // theme tokens.
 import { useMemo, useState } from 'react';
-import { WireloomViewer, type WireElement } from './WireloomViewer';
+import { WireFrameView, wiretextEditUrl, DEVICES, WEB_DEVICES, type WireDoc, type DeviceKey } from './WireFrameView';
 
 interface SpecComponent {
   id?: string;
@@ -17,6 +17,11 @@ interface SpecComponent {
   data_type?: string;
   semantic_type?: string;
   prominence?: string;
+  /** EXPLICIT navigation target (screen id) — the ONLY source of flow edges
+   *  since 2026-07-10; the ux-spec skill requires it on every navigating CTA. */
+  navigates_to?: string;
+  /** 'navigate' (default) | 'back' — back renders as a dashed return edge. */
+  nav_type?: string;
 }
 interface SpecScreen {
   id: string;
@@ -27,6 +32,7 @@ interface SpecScreen {
   primary_actor?: string;
   actor_id?: string;
   layout?: string;
+  navigation_group?: string;
   components?: SpecComponent[];
 }
 type PainPoint = string | { text?: string; description?: string; severity?: string };
@@ -159,29 +165,6 @@ function actorOf(s: { primary_actor?: string; actor_id?: string }): string {
   return s.primary_actor || s.actor_id || '';
 }
 
-// Our components have no region; infer one (appbar/footer/bottom_nav/body) from
-// type + semantic_type + position so the wireloom wireframe lays out like /ux-spec.
-function inferRegion(c: SpecComponent, idx: number, total: number): string {
-  const t = (c.component_type ?? '').toLowerCase();
-  const sem = (c.semantic_type ?? '').toLowerCase();
-  if (t === 'navbar' || t === 'appbar' || sem === 'appbar' || sem === 'navbar') return 'appbar';
-  if (t === 'tabbar' || sem === 'bottom_nav' || sem === 'tabbar') return 'bottom_nav';
-  if (idx === 0 && (t === 'heading' || t === 'title' || sem === 'header' || sem === 'title')) return 'appbar';
-  if ((t === 'button' || t === 'cta') && idx >= total - 2) return 'footer';
-  return 'body';
-}
-function toWireElements(comps: SpecComponent[]): WireElement[] {
-  return comps.map((c, i) => ({
-    id: c.id ?? `c${i}`,
-    role: c.label || c.component_type || c.id || '',
-    component_glyph: c.component_type || 'text',
-    region: inferRegion(c, i, comps.length),
-    order: c.order ?? i + 1,
-    prominence: c.prominence,
-    input_type: c.data_type,
-  }));
-}
-
 const S = {
   wrap: {
     display: 'grid',
@@ -213,8 +196,11 @@ const S = {
       display: 'block',
       width: '100%',
       textAlign: 'left',
-      border: `1px solid ${active ? T.accentSoft : 'transparent'}`,
-      background: active ? T.selected : 'transparent',
+      // Active = accent BORDER (+ faint tint), not a heavy fill — keeps the text
+      // and the type badge readable. Non-active stays borderless (1.5px
+      // transparent so there's no layout shift when it becomes active).
+      border: `1.5px solid ${active ? T.accent : 'transparent'}`,
+      background: active ? T.subtle : 'transparent',
       borderRadius: T.radiusSm,
       padding: '6px 8px',
       marginBottom: 2,
@@ -518,7 +504,16 @@ function CustomerJourneyView({ journeys, personas }: { journeys: SpecJourney[]; 
 }
 
 // ── UX Spec ──────────────────────────────────────────────────────────────────
-function UxSpecView({ screens, personas }: { screens: SpecScreen[]; personas: SpecPersona[] }) {
+function UxSpecView({
+  screens,
+  personas,
+  wireframes,
+}: {
+  screens: SpecScreen[];
+  personas: SpecPersona[];
+  /** Wireframe bố cục tự do per screen id (wireframes/<id>.wire.json). */
+  wireframes?: Record<string, WireDoc> | null;
+}) {
   const [actor, setActor] = useState<string>('all');
   const actors = useMemo(() => {
     const set = new Set<string>();
@@ -527,6 +522,9 @@ function UxSpecView({ screens, personas }: { screens: SpecScreen[]; personas: Sp
   }, [screens]);
   const visible = actor === 'all' ? screens : screens.filter((s) => actorOf(s) === actor);
   const [sel, setSel] = useState<string>(screens[0]?.id ?? '');
+  // Device chosen for WEB screens' wireframe (shared across screens as you page
+  // through them). A mobile screen ignores this — it's always a phone.
+  const [device, setDevice] = useState<DeviceKey>('desktop');
   const screen = visible.find((s) => s.id === sel) ?? visible[0] ?? screens[0];
   const comps = useMemo(
     () => [...(screen?.components ?? [])].sort((a, b) => (a.order ?? 99) - (b.order ?? 99)),
@@ -547,15 +545,18 @@ function UxSpecView({ screens, personas }: { screens: SpecScreen[]; personas: Sp
             ))}
           </select>
         </div>
-        {visible.map((s) => (
-          <button key={s.id} type="button" style={S.sideItem(s.id === screen.id)} onClick={() => setSel(s.id)}>
+        {visible.map((s) => {
+          const active = s.id === screen.id;
+          return (
+          <button key={s.id} type="button" style={S.sideItem(active)} onClick={() => setSel(s.id)}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontWeight: 500, flex: 1 }}>{s.name ?? s.title ?? s.id}</span>
+              <span style={{ fontWeight: active ? 700 : 500, color: active ? T.accent : T.text, flex: 1 }}>{s.name ?? s.title ?? s.id}</span>
               <span style={S.badge}>{s.screen_type ?? '—'}</span>
             </div>
             <div style={{ fontSize: 10, color: T.textMuted, marginTop: 2 }}>{actorOf(s) || '—'}</div>
           </button>
-        ))}
+          );
+        })}
       </aside>
       <main style={S.main}>
         <header>
@@ -569,11 +570,72 @@ function UxSpecView({ screens, personas }: { screens: SpecScreen[]; personas: Sp
           ) : null}
         </header>
 
-        <div style={S.sectionTitle}>Wireframe (Wireloom) — {comps.length} thành phần</div>
-        <WireloomViewer screenName={screen.name ?? screen.title ?? screen.id} elements={toWireElements(comps)} />
+        <div style={{ ...S.sectionTitle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <span>Wireframe — {comps.length} thành phần</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {screen.layout === 'web' ? (
+              <div
+                role="tablist"
+                style={{ display: 'inline-flex', gap: 2, padding: 2, borderRadius: 8, background: T.subtle, border: `1px solid ${T.border}` }}
+              >
+                {WEB_DEVICES.map((d) => {
+                  const active = device === d;
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setDevice(d)}
+                      title={`${DEVICES[d].label} · ${DEVICES[d].w}px`}
+                      style={{
+                        border: 0,
+                        cursor: 'pointer',
+                        borderRadius: 6,
+                        padding: '3px 10px',
+                        fontSize: 11,
+                        fontWeight: active ? 700 : 500,
+                        background: active ? T.panel : 'transparent',
+                        color: active ? T.accent : T.textMuted,
+                        boxShadow: active ? '0 1px 2px rgba(0,0,0,0.06)' : undefined,
+                      }}
+                    >
+                      {DEVICES[d].label}
+                      <span style={{ marginLeft: 5, fontSize: 10, opacity: 0.7 }}>{DEVICES[d].w}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {wireframes?.[screen.id] ? (
+              <a
+                href={wiretextEditUrl(wireframes[screen.id]!)}
+                target="_blank"
+                rel="noreferrer"
+                title="Mở wireframe này trong editor wiretext.app để chỉnh tay (data nằm trong URL, không upload)"
+                style={{ fontSize: 10.5, fontWeight: 500, color: T.textMuted, border: `1px solid ${T.border}`, borderRadius: 6, padding: '2px 8px', textDecoration: 'none' }}
+              >
+                Mở trong wiretext ↗
+              </a>
+            ) : null}
+          </div>
+        </div>
+        {wireframes?.[screen.id] ? (
+          <WireFrameView
+            doc={wireframes[screen.id]!}
+            platform={screen.layout}
+            device={device}
+            base={wireframes[screen.id]!.overlayOf ? wireframes[wireframes[screen.id]!.overlayOf!] ?? undefined : undefined}
+          />
+        ) : (
+          <p style={{ border: `1px dashed ${T.border}`, borderRadius: 9, background: T.subtle, padding: '20px 14px', textAlign: 'center', fontSize: 12, color: T.textMuted, margin: 0 }}>
+            Màn này chưa có wireframe — chạy lại bước <strong>UX Spec</strong> để agent soạn bố cục
+            (<code>wireframes/{screen.id}.wire.json</code>).
+          </p>
+        )}
 
         {/* Components table — text-mockup chi tiết */}
-        <div style={S.sectionTitle}>Components</div>
+        <div style={S.sectionTitle}>Components ({comps.length})</div>
         <div style={{ border: `1px solid ${T.border}`, borderRadius: T.radius, overflow: 'hidden' }}>
           {comps.length === 0 ? (
             <div style={{ color: T.textMuted, fontSize: 12, padding: 10 }}>(màn chưa có component)</div>
@@ -584,19 +646,49 @@ function UxSpecView({ screens, personas }: { screens: SpecScreen[]; personas: Sp
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 8,
-                  padding: '7px 10px',
-                  fontSize: 12,
+                  gap: 10,
+                  padding: '8px 10px',
+                  fontSize: 12.5,
                   borderTop: i ? `1px solid ${T.borderSoft}` : 'none',
-                  background: i % 2 ? T.subtle : T.panel,
+                  background: T.panel,
                 }}
               >
-                <span style={{ fontFamily: T.mono, fontSize: 13, width: 20, textAlign: 'center', color: T.accent }}>
+                {/* order index */}
+                <span style={{ flexShrink: 0, width: 18, textAlign: 'right', fontFamily: T.mono, fontSize: 11, color: T.textMuted }}>
+                  {i + 1}
+                </span>
+                {/* glyph in a tinted square */}
+                <span
+                  style={{
+                    flexShrink: 0,
+                    width: 26,
+                    height: 26,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: 6,
+                    background: T.accentTint,
+                    color: T.accent,
+                    fontFamily: T.mono,
+                    fontSize: 13,
+                  }}
+                >
                   {glyph(c.component_type)}
                 </span>
-                <span style={{ flex: 1 }}>{c.label || c.component_type || c.id}</span>
-                <span style={S.badge}>{c.component_type ?? 'text'}</span>
-                {c.required ? <span style={{ ...S.badge, background: 'var(--amber-bg, #fef3c7)', color: T.amber }}>required</span> : null}
+                {/* label + semantic hint */}
+                <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {c.label || c.component_type || c.id}
+                  </span>
+                  {c.semantic_type ? (
+                    <span style={{ fontSize: 10.5, color: T.textMuted }}>{c.semantic_type}</span>
+                  ) : null}
+                </span>
+                {/* type + required chips */}
+                <span style={{ ...S.badge, flexShrink: 0 }}>{c.component_type ?? 'text'}</span>
+                {c.required ? (
+                  <span style={{ ...S.badge, flexShrink: 0, background: 'var(--amber-bg, #fef3c7)', color: T.amber }}>required</span>
+                ) : null}
               </div>
             ))
           )}
@@ -608,35 +700,107 @@ function UxSpecView({ screens, personas }: { screens: SpecScreen[]; personas: Sp
   );
 }
 
+// Distinct hue per persona so the cards don't read as one grey block.
+const PERSONA_HUES = [210, 152, 268, 22, 334, 45, 190, 300];
+const personaInitials = (name: string): string =>
+  (name || '?')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? '')
+    .join('') || '?';
+const prettyKey = (k: string): string => k.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
+// The one attribute that best captions a persona (shown under the name).
+const PERSONA_CAPTION_KEYS = ['role', 'title', 'segment', 'occupation', 'market'];
+
+function PersonaCard({ p, i }: { p: SpecPersona; i: number }) {
+  const hue = PERSONA_HUES[i % PERSONA_HUES.length]!;
+  const color = `hsl(${hue} 55% 45%)`;
+  const captionKey = PERSONA_CAPTION_KEYS.find((k) => typeof (p as Record<string, unknown>)[k] === 'string');
+  const caption = captionKey ? String((p as Record<string, unknown>)[captionKey]) : '';
+  const attrs = Object.entries(p as Record<string, unknown>).filter(
+    ([k]) => !['id', 'name', captionKey].includes(k),
+  );
+  return (
+    <div
+      style={{
+        border: `1px solid ${T.border}`,
+        borderLeft: `3px solid ${color}`,
+        borderRadius: T.radius,
+        overflow: 'hidden',
+        background: T.panel,
+        minWidth: 230,
+        flex: '1 1 250px',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      {/* header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 12px' }}>
+        <div
+          style={{
+            width: 38,
+            height: 38,
+            flexShrink: 0,
+            borderRadius: '50%',
+            background: color,
+            color: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 14,
+            fontWeight: 700,
+            letterSpacing: 0.3,
+          }}
+        >
+          {personaInitials(p.name)}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 13.5, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {p.name}
+          </div>
+          {caption ? (
+            <div style={{ fontSize: 11.5, color, fontWeight: 600, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {caption}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {/* attributes */}
+      {attrs.length ? (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1, background: T.border, borderTop: `1px solid ${T.border}` }}>
+          {attrs.map(([k, v], idx) => (
+            <div
+              key={k}
+              style={{
+                background: T.panel,
+                padding: '8px 12px',
+                // last odd cell spans both columns so the grid stays flush
+                gridColumn: idx === attrs.length - 1 && attrs.length % 2 === 1 ? '1 / -1' : undefined,
+              }}
+            >
+              <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: T.textMuted }}>
+                {prettyKey(k)}
+              </div>
+              <div style={{ fontSize: 12, color: T.textSoft, marginTop: 2, wordBreak: 'break-word' }}>
+                {Array.isArray(v) ? v.join(', ') : String(v)}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function PersonasBlock({ personas }: { personas: SpecPersona[] }) {
   if (!personas || personas.length === 0) return null;
   return (
     <>
       <div style={S.sectionTitle}>Personas ({personas.length})</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
         {personas.map((p, i) => (
-          <div
-            key={p.id ?? i}
-            style={{
-              border: `1px solid ${T.border}`,
-              borderRadius: T.radius,
-              padding: 10,
-              fontSize: 11,
-              minWidth: 180,
-              flex: '1 1 180px',
-              background: T.subtle,
-            }}
-          >
-            <div style={{ fontWeight: 600, fontSize: 12 }}>🧑 {p.name}</div>
-            {Object.entries(p)
-              .filter(([k]) => !['id', 'name'].includes(k))
-              .slice(0, 6)
-              .map(([k, v]) => (
-                <div key={k} style={{ color: T.textMuted, marginTop: 2 }}>
-                  <span style={{ color: T.textSoft }}>{k}:</span> {Array.isArray(v) ? v.join(', ') : String(v)}
-                </div>
-              ))}
-          </div>
+          <PersonaCard key={p.id ?? i} p={p} i={i} />
         ))}
       </div>
     </>
@@ -650,56 +814,14 @@ function mmText(s: string | undefined): string {
 function mmId(s: string): string {
   return 'n' + (s || '').replace(/[^A-Za-z0-9_]/g, '_');
 }
-// Normalize a label/screen name for fuzzy CTA→screen matching: strip Vietnamese
-// diacritics, lowercase, keep alphanumerics separated by single spaces.
-function normLabel(s: string | undefined): string {
-  return (s ?? '')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[đĐ]/g, 'd')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
-// Significant tokens only (len >= 4) so short Vietnamese function words don't
-// cause spurious matches.
-function sigTokens(s: string | undefined): string[] {
-  return normLabel(s).split(' ').filter((w) => w.length >= 4);
-}
-const CTA_TYPES = new Set(['button', 'cta', 'link', 'submit']);
-const BACK_RE = /\b(back|quay lai|tro lai|truoc|huy|cancel|close|dong|thoat)\b/;
-function isCta(c: SpecComponent): boolean {
-  const t = (c.component_type ?? '').toLowerCase();
-  const sem = (c.semantic_type ?? '').toLowerCase();
-  return CTA_TYPES.has(t) || /button|cta|submit|nav|link/.test(sem);
-}
-// The CTA most likely to drive forward navigation: primary prominence, else a
-// dedicated cta type, else the last action on the screen.
-function pickPrimaryCta(ctas: SpecComponent[]): SpecComponent | null {
-  if (ctas.length === 0) return null;
-  return (
-    ctas.find((c) => /primary|high|strong/i.test(c.prominence ?? '')) ??
-    ctas.find((c) => (c.component_type ?? '').toLowerCase() === 'cta') ??
-    ctas[ctas.length - 1] ??
-    null
+/** Whether the spec carries EXPLICIT navigation data (any component with a
+ *  `navigates_to`). Specs authored before 2026-07-10 don't — the viewer shows
+ *  a "re-run UX Spec" hint instead of guessing edges from labels. */
+export function specHasExplicitNav(doc: SpecDoc): boolean {
+  const screens = Array.isArray(doc.screens) ? doc.screens : [];
+  return screens.some((s) =>
+    (s.components ?? []).some((c) => typeof c.navigates_to === 'string' && c.navigates_to.trim().length > 0),
   );
-}
-// Heuristic: resolve a CTA label to a target screen by name/intent overlap.
-function matchTargetScreen(label: string, fromId: string, screens: SpecScreen[]): string | null {
-  const ln = normLabel(label);
-  if (ln.length < 3) return null;
-  const lt = sigTokens(label);
-  let best: { id: string; score: number } | null = null;
-  for (const s of screens) {
-    if (s.id === fromId) continue;
-    const cand = normLabel(s.name ?? s.title ?? s.id);
-    let score = 0;
-    if (cand.length >= 4 && (cand.includes(ln) || ln.includes(cand))) score += 3;
-    const st = new Set([...sigTokens(s.name ?? s.title ?? s.id), ...sigTokens(s.screen_intent)]);
-    for (const w of lt) if (st.has(w)) score += 1;
-    if (score > 0 && (!best || score > best.score)) best = { id: s.id, score };
-  }
-  return best ? best.id : null;
 }
 
 export function specToMermaid(doc: SpecDoc): string {
@@ -717,11 +839,11 @@ export function specToMermaid(doc: SpecDoc): string {
     return lines.join('\n');
   }
 
-  // UX spec → screen-level NAVIGATION flowchart. Each screen is ONE node; edges
-  // are inferred from CTA-like components, not from component order:
-  //   1. a CTA whose label name-matches another screen → edge to that screen,
-  //   2. otherwise the primary CTA advances to the next screen in order,
-  //   3. back/cancel CTAs loop to the previous screen (dashed).
+  // UX spec → screen-level NAVIGATION flowchart. Each screen is ONE node;
+  // edges come EXCLUSIVELY from components' explicit `navigates_to` (the
+  // ux-spec skill requires it on every navigating CTA; `nav_type: 'back'`
+  // renders dashed). The old label-matching heuristic guessed wrong flows
+  // and was removed 2026-07-10 — a dangling/absent target draws NO edge.
   if (screens.length === 0) return 'flowchart LR\n  empty["(no content)"]';
   const lines = ['flowchart LR'];
   for (const s of screens) lines.push(`  ${mmId(s.id)}["${mmText(s.name ?? s.title ?? s.id)}"]`);
@@ -744,37 +866,14 @@ export function specToMermaid(doc: SpecDoc): string {
     edges.push(e);
   };
 
-  screens.forEach((s, i) => {
-    const prevScreen = i > 0 ? screens[i - 1] : undefined;
-    const nextScreen = i < screens.length - 1 ? screens[i + 1] : undefined;
-    const ctas = [...(s.components ?? [])].filter(isCta).sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
-    const primary = pickPrimaryCta(ctas);
-    let forwardUsed = false;
-    for (const c of ctas) {
-      const raw = c.label ?? c.component_type ?? '';
-      const label = mmText(raw);
-      if (BACK_RE.test(normLabel(raw))) {
-        if (prevScreen) addEdge(mmId(s.id), mmId(prevScreen.id), label, true);
-        continue;
-      }
-      const target = matchTargetScreen(raw, s.id, screens);
-      if (target) {
-        addEdge(mmId(s.id), mmId(target), label, false);
-        if (c === primary) forwardUsed = true;
-      } else if (c === primary && nextScreen && !forwardUsed) {
-        addEdge(mmId(s.id), mmId(nextScreen.id), label, false);
-        forwardUsed = true;
-      }
-    }
-  });
-
-  // Fallback: nothing inferred → linear storyboard in document order so the
-  // graph is still connected instead of disjoint boxes.
-  if (edges.length === 0 && screens.length > 1) {
-    for (let i = 0; i < screens.length - 1; i++) {
-      const a = screens[i];
-      const b = screens[i + 1];
-      if (a && b) addEdge(mmId(a.id), mmId(b.id), '', false);
+  const screenIds = new Set(screens.map((s) => s.id));
+  for (const s of screens) {
+    const comps = [...(s.components ?? [])].sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+    for (const c of comps) {
+      const target = typeof c.navigates_to === 'string' ? c.navigates_to.trim() : '';
+      if (!target || !screenIds.has(target)) continue; // no target / dangling id → no edge, no guess
+      const dashed = (c.nav_type ?? '').toLowerCase() === 'back';
+      addEdge(mmId(s.id), mmId(target), mmText(c.label ?? c.component_type ?? ''), dashed);
     }
   }
 
@@ -791,7 +890,14 @@ export function specToMermaid(doc: SpecDoc): string {
   return lines.join('\n');
 }
 
-export function SpecPreview({ doc }: { doc: SpecDoc }) {
+export function SpecPreview({
+  doc,
+  wireframes,
+}: {
+  doc: SpecDoc;
+  /** Wireframe bố cục tự do per screen id (wireframes/<id>.wire.json, cạnh file spec). */
+  wireframes?: Record<string, WireDoc> | null;
+}) {
   const screens = Array.isArray(doc.screens) ? doc.screens : [];
   const journeys = Array.isArray(doc.journeys) ? doc.journeys : [];
   const personas = Array.isArray(doc.personas) ? doc.personas : [];
@@ -812,7 +918,7 @@ export function SpecPreview({ doc }: { doc: SpecDoc }) {
 
   const body =
     active === 'ux' ? (
-      <UxSpecView screens={screens} personas={personas} />
+      <UxSpecView screens={screens} personas={personas} wireframes={wireframes} />
     ) : (
       <CustomerJourneyView journeys={journeys} personas={personas} />
     );

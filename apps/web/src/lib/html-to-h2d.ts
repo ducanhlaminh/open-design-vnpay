@@ -172,6 +172,26 @@ async function waitForAppRender(doc: Document, timeoutMs = 4000): Promise<void> 
   }
 }
 
+// Read the screen's self-declared platform, set at runtime by the ui-react skill
+// on the screen root (`data-od-layout="web"|"mobile"`). Post-render only (React
+// adds it after mount), so call AFTER waitForAppRender.
+function readOdLayout(doc: Document): "web" | "mobile" | null {
+  const el = doc.querySelector("[data-od-layout]");
+  const v = el?.getAttribute("data-od-layout")?.trim().toLowerCase();
+  return v === "web" || v === "mobile" ? v : null;
+}
+
+// A web screen handed a phone-width frame (no layout.json, frame not resized)
+// would be squished. If the rendered DOM declares it web, widen the frame to a
+// desktop width before capture. Only WIDENS — a wider caller/user size is kept.
+const WEB_MIN_FRAME = 1024;
+const WEB_FRAME_WIDTH = 1180;
+function maybeWidenForWebLayout(frame: HTMLIFrameElement, doc: Document): void {
+  if (readOdLayout(doc) !== "web") return;
+  const cur = Math.round(parseFloat(frame.style.width) || 0);
+  if (cur < WEB_MIN_FRAME) frame.style.width = `${WEB_FRAME_WIDTH}px`;
+}
+
 /**
  * Many URL-loaded screens → one combined Figma payload (sibling frames on paste). Built for the
  * UI-React canvas' "Copy to Figma": each `react/dist/screens/<slug>.html` page is loaded offscreen
@@ -192,6 +212,8 @@ export async function urlsToFigmaClipboard(
     try {
       const doc = await loadSrcUrl(frame, screen.url);
       await waitForAppRender(doc);
+      // Self-describing web screen → widen before settle so it isn't squished.
+      maybeWidenForWebLayout(frame, doc);
       await settleAndHug(frame, doc);
       docs.push(
         await captureElement(doc.body.firstElementChild ?? doc.body, {

@@ -75,11 +75,63 @@ export interface PipelineDeps {
     // Per-run design system for UI stages (`ui-html`). undefined → inherit the
     // app-config default; string id / null ("none") override it for this run.
     designSystemId?: string | null,
+    // Target platform for `acceptsPlatform` stages (the UX stage): folded into
+    // the kickoff so the skill authors screens with the matching `layout`.
+    // undefined → no directive (the skill defaults to mobile).
+    platform?: import('@open-design/contracts').TargetPlatform,
+    // RE-RUN clear scope: 'stage' (default) clears only this stage's outputs;
+    // 'downstream' also clears every stage that depends on it. See
+    // RunPipelineRequest.resetScope.
+    resetScope?: 'stage' | 'downstream',
+    // Docs stage, deterministic Confluence path: also fetch link-referenced
+    // pages (depth 1, capped). undefined → true. See RunPipelineRequest.
+    followLinks?: boolean,
   ): Promise<{
     projectId: string;
-    conversationId: string;
-    agentRunId: string;
+    /** Absent on a DETERMINISTIC run (docs stage, Confluence source): the
+     * daemon fetches the pages itself — no conversation is seeded and no
+     * agent runs, so there is nothing to open. */
+    conversationId?: string;
+    agentRunId?: string;
+    /** Resolves when THIS stage's run reaches a terminal state (never rejects).
+     * Consumed by the run-all orchestrator; routes must strip it before
+     * JSON-serializing the start payload. */
+    completion: Promise<'succeeded' | 'failed' | 'idle'>;
   }>;
+  /** UX knowledge base (media-store backed, see ux-kb-sync.ts): status
+   * resolves the active KB source (env → media cache → home folder); push
+   * uploads a local KB folder to the store so every machine syncs it before
+   * the ux-research stage. Wired in server.ts. */
+  uxKbStatus(): Promise<{
+    dir: string | null;
+    source: 'env' | 'media' | 'home' | 'none';
+    synced?: number;
+    note?: string;
+  }>;
+  uxKbPush(dir?: string): Promise<{
+    project: string;
+    files: number;
+    uploaded: number;
+    skipped: number;
+    deleted: number;
+  }>;
+  /** Run the WHOLE workflow sequentially with no per-stage review (the "Run
+   * full workflow" button / `od pipeline run-all`). Starts the chain in the
+   * background and returns the planned stage order; progress surfaces through
+   * the normal per-stage statuses. Wired in server.ts. */
+  runWorkflowAll(
+    projectId: string,
+    opts: {
+      workflowId?: string;
+      terminal?: import('@open-design/contracts').WorkflowTerminal;
+      input?: string;
+      source?: PipelineRunSource;
+      designSystemId?: string | null;
+      platform?: import('@open-design/contracts').TargetPlatform;
+      skipSucceeded?: boolean;
+      followLinks?: boolean;
+    },
+  ): Promise<{ projectId: string; workflowId: string; stages: string[] }>;
   // BAS MCP gateway reads for the Pipelines source-selection modal. Each resolves
   // the endpoint from env / mcp-config and proxies one BAS tool (server-side, so
   // the token never reaches the browser). Throw when BAS is not configured.
@@ -105,10 +157,15 @@ export interface PipelineDeps {
   // Per-stage local↔remote file diff (badges in the Pull all / Push all modals
   // + `od kg diff`). Wired in server.ts.
   syncStatus(projectId: string): Promise<import('@open-design/contracts').ProjectSyncStatus>;
-  // On-demand docs-to-react build (Build button / `od pipelines build`):
+  // On-demand ui-react build (Build button / `od pipelines build`):
   // react/dist/ is never synced (PipelineDef.syncExclude), so a pulled project
   // reconstructs it locally via the ui-react builder. Wired in server.ts.
   buildReact(projectId: string): Promise<{ built: boolean; output: string }>;
+  // Prototype auto-demo (Dựng demo button / `od pipeline demo`): Playwright
+  // drives the BUILT react app through its flow.json use cases and records
+  // video + per-step screenshots under react/prototype-demo/ (deterministic,
+  // no agent). Wired in server.ts (react-demo.ts).
+  buildReactDemo(projectId: string): Promise<{ cases: number; output: string }>;
   // List the project cwd's output file paths (cwd-relative). Used to derive
   // "done" stage state from on-disk outputs, offline-safe. Wired in server.ts.
   localOutputs(projectId: string): Promise<string[]>;

@@ -58,8 +58,11 @@ import { PipelinePrototypeCanvas } from './pipeline-preview/PipelinePrototypeCan
 import { PipelineReactPreview } from './pipeline-preview/PipelineReactPreview';
 import { PipelineReactCanvas } from './pipeline-preview/PipelineReactCanvas';
 import { adaptScreenSpec } from './pipeline-preview/screen-adapter';
-import { SpecPreview, specToMermaid, type SpecDoc } from './SpecPreview';
-import { MermaidDiagram } from './MermaidDiagram';
+import { SpecPreview, type SpecDoc } from './SpecPreview';
+import { SpecFlowCanvas, isFlowDoc, type FlowDoc } from './SpecFlowCanvas';
+import { ReviewPreview, type ReviewReport } from './ReviewPreview';
+import { UxResearchPreview, isUxResearchReport, type UxResearchReport } from './UxResearchPreview';
+import type { WireDoc } from './WireFrameView';
 import {
   exportAsHtml,
   exportAsImage,
@@ -731,7 +734,10 @@ export function FileViewer({
   if (isPipelineUiScreenFile(file)) {
     return <PipelineScreenViewer projectId={projectId} file={file} />;
   }
-  if (rendererMatch?.renderer.id === 'markdown') {
+  // Manifest-declared markdown artifacts AND plain .md files (pipeline docs —
+  // docs/confluence/*.md etc. carry no artifact manifest) both get the
+  // rendered markdown preview instead of the raw-text viewer.
+  if (rendererMatch?.renderer.id === 'markdown' || (file.kind === 'text' && /\.md$/i.test(file.name))) {
     return <MarkdownViewer projectId={projectId} file={file} />;
   }
   if (rendererMatch?.renderer.id === 'svg') {
@@ -7962,7 +7968,7 @@ function PipelineSingleScreenViewer({ projectId, file }: { projectId: string; fi
 // journeys / personas / screens it renders the visual SpecPreview (with a
 // Mermaid + raw-source toggle); any other JSON falls back to the plain
 // TextViewer so non-spec files behave exactly as before.
-type SpecViewMode = 'preview' | 'mermaid' | 'source';
+type SpecViewMode = 'preview' | 'flow' | 'source';
 
 function SpecFileViewer({
   projectId,
@@ -7976,6 +7982,15 @@ function SpecFileViewer({
   const [reloadKey, setReloadKey] = useState(0);
   const [copied, setCopied] = useState(false);
   const [mode, setMode] = useState<SpecViewMode>('preview');
+  // Wireframe bố cục tự do cạnh file spec (`<dir>/wireframes/<SCREEN-ID>.wire.json`,
+  // bước ux emit) — key theo screen id để SpecPreview render tab Wireframe.
+  const [wireframes, setWireframes] = useState<Record<string, WireDoc> | null>(null);
+  // Rule flowcharts cạnh file spec (`<dir>/flows/<FLOW-ID>.flow.json`, bước ux
+  // emit) — tab Flow render wireframe + flowchart (thay Mermaid đã gỡ).
+  const [flows, setFlows] = useState<FlowDoc[] | null>(null);
+  // Per-screen platform (web|mobile) from the workflow's ux-spec — drives the
+  // review preview's responsive layout (web = stacked, mobile = side-by-side).
+  const [platforms, setPlatforms] = useState<Record<string, string> | null>(null);
 
   useEffect(() => {
     setText(null);
@@ -7988,8 +8003,131 @@ function SpecFileViewer({
     };
   }, [projectId, file.name, file.mtime, reloadKey]);
 
-  const spec = useMemo<SpecDoc | null>(() => {
+  useEffect(() => {
+    setWireframes(null);
+    setPlatforms(null);
+    setFlows(null);
+    let cancelled = false;
+    void (async () => {
+      const slash = file.name.lastIndexOf('/');
+      let dir = slash >= 0 ? file.name.slice(0, slash + 1) : '';
+      // The heuristic-review report lives at `<wf>/heuristic-review/report.json`
+      // but the wireframes are at `<wf>/wireframes/` — one level up. Strip the
+      // trailing `heuristic-review/` so the review preview finds them too.
+      dir = dir.replace(/heuristic-review\/$/i, '');
+      const prefix = `${dir}wireframes/`;
+      const flowPrefix = `${dir}flows/`;
+      try {
+        const files = await fetchProjectFiles(projectId);
+        // Per-screen platform from the workflow's ux-spec (for the review
+        // preview's responsive layout). Best-effort; failure → all mobile.
+        const specFile = files.find((f) => f.name.startsWith(dir) && /-ux-spec\.json$/i.test(f.name));
+        if (specFile) {
+          const rawSpec = await fetchProjectFileText(projectId, specFile.name).catch(() => null);
+          if (rawSpec && !cancelled) {
+            try {
+              const parsedSpec = JSON.parse(rawSpec) as { screens?: Array<{ id?: string; layout?: string }> };
+              const pmap: Record<string, string> = {};
+              for (const s of parsedSpec.screens ?? []) if (s.id) pmap[s.id] = s.layout ?? 'mobile';
+              if (Object.keys(pmap).length) setPlatforms(pmap);
+            } catch {
+              /* malformed ux-spec → default mobile */
+            }
+          }
+        }
+        // Rule flowcharts (`flows/<FLOW-ID>.flow.json`) — feed the Flow tab.
+        const flowNames = files
+          .map((f) => f.name)
+          .filter((n) => n.startsWith(flowPrefix) && /\.flow\.json$/i.test(n))
+          .sort();
+        if (flowNames.length && !cancelled) {
+          const docs: FlowDoc[] = [];
+          await Promise.all(
+            flowNames.map(async (n) => {
+              const raw = await fetchProjectFileText(projectId, n).catch(() => null);
+              if (!raw) return;
+              try {
+                const parsed = JSON.parse(raw) as unknown;
+                if (isFlowDoc(parsed)) docs.push(parsed);
+              } catch {
+                /* flow.json hỏng → bỏ qua flow đó */
+              }
+            }),
+          );
+          if (!cancelled && docs.length) setFlows(docs.sort((a, b) => a.id.localeCompare(b.id)));
+        }
+        const wireNames = files
+          .map((f) => f.name)
+          .filter((n) => n.startsWith(prefix) && /\.wire\.json$/i.test(n));
+        if (!wireNames.length || cancelled) return;
+        const map: Record<string, WireDoc> = {};
+        await Promise.all(
+          wireNames.map(async (n) => {
+            const raw = await fetchProjectFileText(projectId, n).catch(() => null);
+            if (!raw) return;
+            try {
+              const parsed = JSON.parse(raw) as WireDoc;
+              // Accept either shape: a layout tree (preferred) or legacy objects[].
+              if (parsed.layout || Array.isArray(parsed.objects)) {
+                const stem = n.slice(prefix.length).replace(/\.wire\.json$/i, '');
+                map[stem] = parsed;
+              }
+            } catch {
+              /* wire.json hỏng → màn đó hiện placeholder */
+            }
+          }),
+        );
+        if (!cancelled && Object.keys(map).length) setWireframes(map);
+      } catch {
+        /* không list được files → SpecPreview tự hiện placeholder */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, file.name, file.mtime, reloadKey]);
+
+  // A heuristic-review report (ux-review stage) also carries a `screens` array,
+  // but those screens hold findings/verdict — NOT ux-spec name/components. Detect
+  // it (by path or shape) so it renders as a review, not a broken spec.
+  const review = useMemo<ReviewReport | null>(() => {
     if (text == null) return null;
+    if (!/(^|\/)heuristic-review\//i.test(file.name) && !/heuristic-review/i.test(file.name)) {
+      // Not the review path — still catch the shape (top-level summary.verdict or
+      // screens carrying findings) so a mislocated report renders correctly.
+      try {
+        const p = JSON.parse(text) as ReviewReport;
+        const shapeMatch =
+          (p.summary && typeof p.summary.verdict === 'string') ||
+          (Array.isArray(p.screens) && p.screens.some((s) => Array.isArray((s as { findings?: unknown }).findings)));
+        if (!shapeMatch) return null;
+        return p;
+      } catch {
+        return null;
+      }
+    }
+    try {
+      return JSON.parse(text) as ReviewReport;
+    } catch {
+      return null;
+    }
+  }, [text, file.name]);
+
+  // A UX Research report (ux-research stage): the explicit `kind` marker or the
+  // criteria[]-with-sources shape — neither a spec (screens) nor a review
+  // (findings/verdict), so it gets its own preview.
+  const uxResearch = useMemo<UxResearchReport | null>(() => {
+    if (text == null || review) return null;
+    try {
+      const p = JSON.parse(text) as unknown;
+      return isUxResearchReport(p) ? p : null;
+    } catch {
+      return null;
+    }
+  }, [text, review]);
+
+  const spec = useMemo<SpecDoc | null>(() => {
+    if (text == null || review || uxResearch) return null; // a review/research report is not a spec
     try {
       const parsed = JSON.parse(text) as SpecDoc;
       const hasJourneys = Array.isArray(parsed.journeys) && parsed.journeys.length > 0;
@@ -7999,7 +8137,7 @@ function SpecFileViewer({
     } catch {
       return null;
     }
-  }, [text]);
+  }, [text, review]);
 
   const displayText = useMemo(
     () => (text == null ? null : formatJsonFileTextForDisplay(file, text)),
@@ -8007,8 +8145,9 @@ function SpecFileViewer({
   );
   const lineCount = displayText ? displayText.split('\n').length : 0;
 
-  // A plain (non-spec) JSON file behaves exactly like the generic text viewer.
-  if (text !== null && !spec) {
+  // A plain (non-spec, non-review, non-research) JSON file behaves like the
+  // generic text viewer.
+  if (text !== null && !spec && !review && !uxResearch) {
     return <TextViewer projectId={projectId} file={file} />;
   }
 
@@ -8048,7 +8187,9 @@ function SpecFileViewer({
       <div className="viewer-toolbar">
         <div className="viewer-toolbar-left" style={{ display: 'flex', gap: 6 }}>
           {modeTab('preview', 'Preview')}
-          {modeTab('mermaid', 'Mermaid')}
+          {/* Flow (wireframe + rule flowchart) is a spec-only view; a review
+              report has no flow diagram. Replaces the retired Mermaid view. */}
+          {spec ? modeTab('flow', 'Flow') : null}
           {modeTab('source', 'Source')}
         </div>
         <div className="viewer-toolbar-actions">
@@ -8073,12 +8214,16 @@ function SpecFileViewer({
         </div>
       </div>
       <div className="viewer-body">
-        {text === null || spec === null ? (
+        {text === null || (spec === null && review === null && uxResearch === null) ? (
           <div className="viewer-empty">{t('fileViewer.loading')}</div>
-        ) : mode === 'preview' ? (
-          <SpecPreview doc={spec} />
-        ) : mode === 'mermaid' ? (
-          <MermaidDiagram code={specToMermaid(spec)} />
+        ) : review && mode === 'preview' ? (
+          <ReviewPreview report={review} wireframes={wireframes} platforms={platforms} />
+        ) : uxResearch && mode === 'preview' ? (
+          <UxResearchPreview report={uxResearch} />
+        ) : spec && mode === 'preview' ? (
+          <SpecPreview doc={spec} wireframes={wireframes} />
+        ) : spec && mode === 'flow' ? (
+          <SpecFlowCanvas flows={flows ?? []} spec={spec} wireframes={wireframes} platforms={platforms} />
         ) : displayText !== null && lineCount > 0 ? (
           <CodeWithLines text={displayText} />
         ) : (

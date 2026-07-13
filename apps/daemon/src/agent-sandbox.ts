@@ -25,7 +25,7 @@ export const SANDBOX_IMAGE_NAME = 'od-agent-sandbox';
 export const SANDBOX_AUTH_VOLUME = 'od-claude-auth';
 export const SANDBOX_CONTAINER_PREFIX = 'od-sbx-';
 export const SANDBOX_LABEL_KEY = 'od.sandbox';
-const CONTAINER_PROJECT_DIR = '/work/app';
+export const CONTAINER_PROJECT_DIR = '/work/app';
 const CONTAINER_AUTH_DIR = '/home/node/.claude';
 const CONTAINER_VITE_CACHE_DIR = '/work/.vite-cache';
 const DOCKER_TIMEOUT_MS = 10_000;
@@ -40,37 +40,50 @@ export interface ResolvedSandboxConfig {
 }
 
 /**
- * Default sandboxed skills = EVERY pipeline step across the three docs→output
- * workflows. All of them are safe in the container: cj/ux/feature/shadcn/html
- * are pure author-files-in-CWD steps, ui-react builds in-place on the baked
- * toolkit, and jira-ingest's stdio MCP (`uvx mcp-atlassian`) is baked into the
- * od-agent-sandbox image (see sandbox/Dockerfile). General chat / Orbit /
- * routine runs stay host-spawned — different CWD + integration surface.
+ * Default sandboxed skills = EVERYTHING (`'*'`). Since 2026-07-10 the sandbox
+ * covers ALL runs of the gated runtimes — pipeline steps AND general chat /
+ * Orbit / routine turns — so the host needs no Claude install at all: the CLI
+ * lives in the od-agent-sandbox image and credentials in the od-claude-auth
+ * volume. The daemon↔agent protocol is stdio, and every chat cwd mounts the
+ * same way a pipeline cwd does. Known tradeoff: stdio MCP servers must be
+ * baked into the image (`uvx mcp-atlassian` is; arbitrary host-configured
+ * MCPs are not) and file references outside the project cwd are invisible to
+ * the container. Narrow via prefs.skills / OD_SANDBOX_SKILLS to sandbox only
+ * specific skills again.
  */
-const DEFAULT_SANDBOX_SKILLS = [
-  'jira-ingest',
-  'customer-journey-spec',
-  'ux-spec',
-  'ui-react',
-  'html-interactive-prototype',
-];
+const DEFAULT_SANDBOX_SKILLS = ['*'];
 
 /**
  * Prefs → effective config. `OD_SANDBOX=1|0` overrides the persisted
  * `enabled` flag for quick dev toggling without editing app-config.json.
  * A `'*'` entry in `runtimes`/`skills` matches everything.
+ *
+ * Packaged DEFAULTS (baked at build time, forwarded by apps/packaged as
+ * spawn env): `OD_SANDBOX_DEFAULT=1` turns the sandbox on and
+ * `OD_SANDBOX_SKILLS` (comma list, e.g. `*`) seeds the skill gate — but
+ * ONLY while the user hasn't persisted their own prefs, so `od sandbox
+ * disable` / an explicit app-config.json always wins over the baked default.
  */
 export function resolveSandboxConfig(
   prefs: SandboxConfigPrefs | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedSandboxConfig {
   let enabled = prefs?.enabled === true;
+  if (prefs?.enabled === undefined && env.OD_SANDBOX_DEFAULT === '1') enabled = true;
   if (env.OD_SANDBOX === '1') enabled = true;
   else if (env.OD_SANDBOX === '0') enabled = false;
+  const envSkills = (env.OD_SANDBOX_SKILLS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
   return {
     enabled,
     runtimes: prefs?.runtimes?.length ? prefs.runtimes : ['claude'],
-    skills: prefs?.skills?.length ? prefs.skills : [...DEFAULT_SANDBOX_SKILLS],
+    skills: prefs?.skills?.length
+      ? prefs.skills
+      : envSkills.length
+        ? envSkills
+        : [...DEFAULT_SANDBOX_SKILLS],
     timeoutMinutes: prefs?.timeoutMinutes ?? 30,
     cpus: prefs?.cpus ?? 2,
     memoryGb: prefs?.memoryGb ?? 4,
@@ -78,10 +91,10 @@ export function resolveSandboxConfig(
 }
 
 /**
- * The gate. Sandboxing is opt-in per runtime AND per skill: by default every
- * docs→output pipeline step runs in the container (DEFAULT_SANDBOX_SKILLS),
- * while general chat / Orbit / routine runs keep host spawn. `'*'` in either
- * list matches everything.
+ * The gate. Sandboxing is scoped per runtime AND per skill; the DEFAULT skill
+ * scope is `'*'` — every run of a gated runtime (pipeline steps, general
+ * chat, Orbit, routines) goes through the container. A user-persisted
+ * `skills` list narrows it back to specific skills.
  */
 export function shouldSandboxRun(input: {
   agentId: string | null | undefined;
@@ -259,6 +272,39 @@ export async function sandboxAuthLoggedIn(image: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export interface SandboxRuntimeStatus {
+  dockerRunning: boolean;
+  imagePresent: boolean;
+  authLoggedIn: boolean;
+  /** First line of `<agentBin> --version` run INSIDE the image, when probeable. */
+  version: string | null;
+}
+
+/**
+ * Full sandbox-side availability picture for a runtime — what "Local CLI"
+ * detection reports when the sandbox owns this runtime's runs (the host
+ * binary is irrelevant then). Runs a short-lived container for the version
+ * probe, so callers should cache (detectAgents already does).
+ */
+export async function sandboxRuntimeStatus(
+  image: string,
+  agentBin = 'claude',
+): Promise<SandboxRuntimeStatus> {
+  if (!(await dockerAvailable())) {
+    return { dockerRunning: false, imagePresent: false, authLoggedIn: false, version: null };
+  }
+  if (!(await dockerImagePresent(image))) {
+    return { dockerRunning: true, imagePresent: false, authLoggedIn: false, version: null };
+  }
+  const [authLoggedIn, version] = await Promise.all([
+    sandboxAuthLoggedIn(image),
+    docker(['run', '--rm', image, agentBin, '--version'], 30_000)
+      .then((out) => out.split('\n')[0] ?? null)
+      .catch(() => null),
+  ]);
+  return { dockerRunning: true, imagePresent: true, authLoggedIn, version };
 }
 
 export async function killSandboxContainer(containerName: string): Promise<boolean> {

@@ -197,6 +197,7 @@ describe('gate middleware (integration)', () => {
     const app = express();
     registerAuthRoutes(app, authCfg);
     app.get('/api/projects', (_req, res) => res.json({ ok: true }));
+    app.get(/^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, (_req, res) => res.json({ ok: true }));
     const server: Server = await new Promise((resolve) => {
       const s = app.listen(0, '127.0.0.1', () => resolve(s));
     });
@@ -240,6 +241,24 @@ describe('gate middleware (integration)', () => {
       });
       expect(me.status).toBe(200);
       expect(await me.json()).toMatchObject({ user: { email: 'dev@vnpay.vn' } });
+    });
+  });
+
+  it('iframe-safe read-only GETs stay open: sandboxed previews never send cookies (issue: 401 on dist/screen assets)', async () => {
+    await withApp(cfg(), async (base) => {
+      // A dist/screen module import fetched from a sandboxed iframe: browser
+      // request (Origin: null → sec-fetch headers present) with NO cookie.
+      const asset = await fetch(
+        `${base}/api/projects/TEST/raw/docs-to-ui/react/dist/assets/chunk.js`,
+        { headers: { 'sec-fetch-dest': 'script', origin: 'null' } },
+      );
+      expect(asset.status).toBe(200);
+      // Only GET is exempt — a browser DELETE on the same path still needs a session.
+      const del = await fetch(
+        `${base}/api/projects/TEST/raw/docs-to-ui/react/dist/assets/chunk.js`,
+        { method: 'DELETE', headers: { 'sec-fetch-dest': 'empty', origin: 'null' } },
+      );
+      expect(del.status).toBe(401);
     });
   });
 

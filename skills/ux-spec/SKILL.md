@@ -48,30 +48,81 @@ it and shows it on `/ux-spec`, scoped to the project.
 
 ## Workflow (do these in order)
 
-### 0. Read the inputs (features, plus the customer journey when present)
-**Features (primary input, from the `feature-analysis` pipeline, P2):** If
-`./features/_index.json` exists (the docs→UI pipeline produced it), that is your
-input: read the manifest, then each `./features/<Feature Name>.md`. Use each
-feature's frontmatter — `actors` → the screen's `primary_actor`,
-`suggested_screens` → the screens to spec, plus the user stories / acceptance
-criteria in the body — to author the S_SCREEN_SPEC screens. Keep traceability
-(a screen comes from a feature). If there is no `./features/` folder (the
-`docs-to-html` workflow has no feature-analysis step), read the docs MD under
-`./docs/` (e.g. `./docs/confluence/**/*.md`, `./docs/jira/**/*.md`) together with
-the customer journey (below) and derive the screens from those instead — each
-doc section / journey stage that needs a UI becomes a screen. Only when neither
-docs nor features are present, take the screens from the user's request.
+### 0. Read the inputs (docs + the customer journey)
+The docs→UI workflow is `docs → cj → ux`: there is NO feature-analysis step and
+NO `./features/` folder — do not look for one. Your inputs are:
 
-**Customer journey (additional input, when it already exists):** If a customer
-journey produced by the `customer-journey-spec` pipeline is present on disk —
-`./*-customer-journey.json` / `./*-cj.json` or under `./customer-journey/` —
-read it too and let it shape the screens: every USER_FLOW **STAGE** should be
-served by at least one screen, the screen ordering should follow the journey, and
-each screen's spec should support that stage's intent / pain points. Keep the
-traceability both ways (a screen comes from a feature **and** serves a journey
-stage). If no journey file is present (e.g. when this pipeline runs in parallel
-with Customer Journey and that one hasn't finished yet), just proceed with the
-features — do not block or fabricate a journey.
+**Docs (primary input):** the ingested Markdown under `./docs/` (e.g.
+`./docs/confluence/**/*.md`, `./docs/jira/**/*.md`). Read these to understand the
+domain and derive the screens — each doc section that needs a UI becomes a
+screen. Only when no docs are present at all, take the screens from the user's
+request.
+
+**Customer journey (primary input, produced by the upstream `cj` stage):** the
+journey file on disk — `./*-customer-journey.json` / `./*-cj.json` or under
+`./customer-journey/`. Read it and let it shape the screens: every USER_FLOW
+**STAGE** should be served by at least one screen, the screen ordering should
+follow the journey, and each screen's spec should support that stage's intent /
+pain points. Keep traceability (a screen serves a journey stage). If, unusually,
+no journey file is present, derive the screens from the docs alone — do not block
+or fabricate a journey.
+
+### 0b. Target platform → every screen's `layout`
+The kickoff message may name a **target platform** for this run:
+- **WEBSITE** (`platform: web`) → set `layout: "web"` on EVERY screen, and spec
+  web-appropriate patterns: data **tables** instead of card lists where the
+  content is tabular, **sidebar or top navigation** instead of bottom tab bars,
+  wider **multi-column forms**, hover-revealed row actions.
+- **MOBILE** (`platform: mobile`) → set `layout: "mobile"` on every screen, with
+  mobile patterns (bottom action bars, single-column forms, list rows).
+- **No platform named** → default to `layout: "mobile"` (the legacy behavior —
+  do not guess web from the docs' content).
+
+Downstream UI-Spec stages (`ui-html`, `ui-react`) read each screen's `layout`
+and render it as a phone screen or a full web page — so the value you set here
+decides what the user ultimately gets.
+
+### 0b2. Read the UX Research criteria (produced by the upstream `ux-research` stage)
+The docs→UI workflow runs `ux-research` BEFORE this stage; its report is at
+`./ux-research/report.json` (criteria: id, statement, priority, applies_to —
+journey stage/flow names, sources). Read it and author AGAINST it:
+
+- Every `must` criterion MUST be satisfiable by the screens you design — when a
+  criterion names a flow, the screens serving that flow must carry the
+  components/affordances it demands (e.g. inline-validation implies per-field
+  error affordances in the spec).
+- Cite the criterion id in the screen's `screen_intent` rationale when it drove
+  a design choice (same style as citing a Mobbin reference).
+- `should`/`nice` criteria: apply when they don't conflict with docs/journey;
+  conflicts resolve in favor of the docs (they are the requirements).
+
+If the report is absent (stage skipped on this machine), continue without it —
+do not block.
+
+### 0c. Gather real-world references from Mobbin (when the `mobbin` MCP is available)
+If the run exposes Mobbin MCP tools (server id `mobbin`), use them BEFORE
+authoring screens — this is how the spec inherits real-market patterns instead
+of guessed ones:
+
+1. From the docs/journey, identify the app's **domain** (banking, e-commerce,
+   healthcare, …) and the 3-5 **key flows** (e.g. onboarding/KYC, transfer,
+   checkout).
+2. Search Mobbin for each key flow scoped to that domain and the target
+   platform from 0b (mobile/web). Prefer flow/screen searches over generic
+   app browsing.
+3. Save what you use into `./ux-refs/mobbin/` — downloaded screen images as
+   `<flow>-<app>-<nn>.png` plus ONE `notes.md` summarising, per flow: the
+   screen sequence observed, recurring components, and any pattern you adopted
+   or deliberately rejected (with reason).
+4. Let the references shape the SCREEN INVENTORY and per-screen components
+   (step 1), and cite them in each screen's `screen_intent` rationale when a
+   pattern came from a reference.
+
+Rules: `./ux-refs/` is **reference material only** — it is NOT a stage output,
+never push it to KGS and never list it in the spec. Cap the effort (≤ ~15
+images total, one search pass per flow — no exhaustive crawling). If the
+`mobbin` tools are absent or every call errors (auth/plan), skip this step
+silently and continue — the stage must produce the same outputs without it.
 
 ### 1. Generate the JSON (content only — no project_id)
 Author a UX Spec file following `references/schema.md`. **Do NOT put a
@@ -79,8 +130,15 @@ Author a UX Spec file following `references/schema.md`. **Do NOT put a
 project is chosen at PUSH time (conversation binding / Push to KG dropdown /
 `--project-id`), so a `project_id` invented here would be ignored. Key rules:
 - One or more **screens** (S_SCREEN_SPEC). Each has `screen_type`,
-  `screen_intent`, `primary_actor`, and an ordered list of **components**
-  (DP_UI_COMPONENT) — the inputs/buttons/lists that render the box-text mockup.
+  `screen_intent`, `primary_actor`, `layout` (see 0b), and an ordered list of
+  **components** (DP_UI_COMPONENT) — the inputs/buttons/lists that render the
+  box-text mockup.
+- **Navigation is EXPLICIT and required**: every component that moves the user
+  to another screen (button, link, list row opening a detail, …) MUST carry
+  `navigates_to: "<screen-id>"` (+ `nav_type: "back"` for back/cancel/close
+  actions). Viewers draw the flow diagram EXCLUSIVELY from these fields — no
+  label-based guessing — so a navigating CTA without `navigates_to` shows no
+  edge at all. Targets must be ids that exist in `screens`.
 - Optional **personas** (UX_PERSONA_PROFILE) — shared UX context, drives the
   actor filter.
 - Use stable, human-readable ids (`SCR-…`, `PRSN-…`). The same id re-pushed
@@ -88,6 +146,56 @@ project is chosen at PUSH time (conversation binding / Push to KG dropdown /
 
 Write the file under the project (e.g. `./<feature>-ux-spec.json`).
 See `assets/example-ux-spec.json` for a complete, valid example.
+
+### 1b. Author one wireframe per screen (layout tree)
+For EVERY screen, also write `./wireframes/<SCREEN-ID>.wire.json` following
+`references/wireframe.md`. Describe the screen as a **layout TREE** (`stack` /
+`row` containers + component leaves) — like writing HTML/JSX structure, NOT pixel
+coordinates. The host lays it out with flexbox so it never overlaps. Compose a
+real screen (mobile → one vertical stack of full-width fields, sections, chips,
+a primary CTA; web → navbar + a row of sidebar + main), matching the archetype
+and worked example in `references/wireframe.md`. The Wireframe view renders it and
+it opens in wiretext.app for hand-tweaks.
+
+### 1c. Author one RULE FLOWCHART per user flow (`flows/<FLOW-ID>.flow.json`)
+The wireframes are the SCREENS; the user flow is expressed as wireframes + a
+**rule flowchart** (decision diamonds with Yes/No branches — like a classic
+troubleshooting flowchart). For EVERY journey flow (each cj USER_FLOW that the
+screens serve), write `./flows/<FLOW-ID>.flow.json`:
+
+```jsonc
+{
+  "id": "FLOW-TRANSFER",           // stable id, FLOW-…
+  "name": "Chuyển tiền nội bộ",
+  "entry": "SCR-TRANSFER",          // the screen the flow starts on
+  // nodes[] lists ONLY the non-screen nodes. Screens are implicit: any edge
+  // endpoint that matches a spec screen id IS that screen (the viewer renders
+  // its wireframe thumbnail as the node).
+  "nodes": [
+    { "id": "D-OTP",  "kind": "decision", "label": "OTP hợp lệ?" },
+    { "id": "E-DONE", "kind": "end",      "label": "Giao dịch hoàn tất" }
+  ],
+  "edges": [
+    { "from": "SCR-TRANSFER", "to": "D-OTP",      "label": "Xác nhận chuyển" },
+    { "from": "D-OTP",        "to": "E-DONE",      "label": "Yes" },
+    { "from": "D-OTP",        "to": "SCR-TRANSFER","label": "No — báo lỗi tại field" }
+  ]
+}
+```
+
+Rules:
+- **Every screen referenced must exist in the spec** (`screens[].id`) — the
+  flowchart joins wireframes by id, a dangling id renders as a hole.
+- **Every decision node has ≥ 2 labeled outgoing edges** (Yes/No or the actual
+  conditions). A decision with one branch is not a decision.
+- **Edge labels leaving a SCREEN name the user ACTION** on that screen ("Xác
+  nhận chuyển", "Bỏ qua") — the same wording the screen's component
+  `navigates_to` action uses. Downstream `ui-react` reuses these labels 1:1 as
+  `data-flow-action` values, which is what makes the built app's flow.json,
+  the simulator, and the Playwright demo line up with this chart.
+- Keep `navigates_to` on components authoritative for plain screen→screen
+  navigation; the flow file ADDS the rule layer (conditions, ends) on top —
+  don't contradict it.
 
 ### 2. Push to KGS
 Two equivalent ways (both write via the KGS graph API → projected to Neo4j):

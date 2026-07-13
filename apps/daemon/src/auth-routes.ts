@@ -357,9 +357,21 @@ export function registerAuthRoutes(
   // itself + the health probes the bearer middleware also leaves open.
   const OPEN_PATHS = new Set(['/health', '/version', '/daemon/status']);
 
+  // Read-only content routes consumed by SANDBOXED preview iframes
+  // (Origin: null — the browser NEVER attaches cookies there, so a session
+  // check can only ever 401 them). The moment login was enabled these
+  // broke every preview: dist/screen module imports
+  // (`/projects/:id/raw/react/dist/assets/*.js`), prototype pages, pet
+  // spritesheets, and skill example images. Mirrors the CORS layer's
+  // null-origin GET allowance (server.ts `_NULL_ORIGIN_SAFE_GET_RE`) plus
+  // the skill example asset route its iframe loads.
+  const IFRAME_SAFE_GET_RE =
+    /^\/projects\/[^/]+\/raw\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/skills\/[^/]+\/assets\//;
+
   app.use('/api', (req: Request, res: Response, next: NextFunction) => {
     if (req.path.startsWith('/auth/')) return next();
     if (OPEN_PATHS.has(req.path)) return next();
+    if (req.method === 'GET' && IFRAME_SAFE_GET_RE.test(req.path)) return next();
     if (!isBrowserRequest(req.headers as Record<string, unknown>)) return next(); // CLI/internal
     const user = verifySession(cfg.sessionSecret, readCookie(req, SESSION_COOKIE));
     if (!user) {

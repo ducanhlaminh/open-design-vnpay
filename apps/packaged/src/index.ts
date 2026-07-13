@@ -118,6 +118,8 @@ async function main(): Promise<void> {
     mediaUserRole: config.mediaUserRole,
     atlassianJiraToken: config.atlassianJiraToken,
     atlassianConfluenceToken: config.atlassianConfluenceToken,
+    sandboxDefault: config.sandboxDefault,
+    sandboxSkills: config.sandboxSkills,
     authSessionSecret: config.authSessionSecret,
     googleClientId: config.googleClientId,
     googleClientSecret: config.googleClientSecret,

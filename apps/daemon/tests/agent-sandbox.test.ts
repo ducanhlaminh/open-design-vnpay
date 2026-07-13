@@ -10,18 +10,13 @@ import {
 const cfg = resolveSandboxConfig({ enabled: true }, {});
 
 describe('resolveSandboxConfig', () => {
-  it('defaults to disabled, claude runtime, and the full pipeline skill set', () => {
+  it('defaults to disabled, claude runtime, and EVERY run in scope (skills *)', () => {
     const resolved = resolveSandboxConfig(undefined, {});
     expect(resolved.enabled).toBe(false);
     expect(resolved.runtimes).toEqual(['claude']);
-    // Every docs→output pipeline step is sandboxed by default.
-    expect(resolved.skills).toEqual([
-      'jira-ingest',
-      'customer-journey-spec',
-      'ux-spec',
-      'ui-react',
-      'html-interactive-prototype',
-    ]);
+    // The sandbox owns ALL runs of gated runtimes by default — pipeline
+    // steps AND general chat / Orbit / routine turns.
+    expect(resolved.skills).toEqual(['*']);
     expect(resolved.timeoutMinutes).toBe(30);
   });
 
@@ -42,21 +37,28 @@ describe('resolveSandboxConfig', () => {
 });
 
 describe('shouldSandboxRun', () => {
-  it('sandboxes every default pipeline skill', () => {
+  it('sandboxes EVERY claude run by default — pipeline skills, ad-hoc skills, and skill-less chat', () => {
     for (const skill of ['jira-ingest', 'customer-journey-spec', 'ux-spec', 'ui-react', 'html-interactive-prototype']) {
       expect(shouldSandboxRun({ agentId: 'claude', skillIds: [skill], cfg })).toBe(true);
     }
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['ui-react', 'frontend-design'], cfg })).toBe(true);
+    // General chat / Orbit / routine runs carry no skill — still sandboxed.
+    expect(shouldSandboxRun({ agentId: 'claude', skillIds: [], cfg })).toBe(true);
+    expect(shouldSandboxRun({ agentId: 'claude', skillIds: [null, undefined], cfg })).toBe(true);
+    expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['summary-feedback'], cfg })).toBe(true);
   });
 
-  it('rejects disabled config, other runtimes, non-pipeline skills, empty skills', () => {
+  it('rejects disabled config, other runtimes, null agent — and honors a NARROWED skill list', () => {
     const disabled = resolveSandboxConfig({ enabled: false }, {});
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['ui-react'], cfg: disabled })).toBe(false);
     expect(shouldSandboxRun({ agentId: 'codex', skillIds: ['ui-react'], cfg })).toBe(false);
-    expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['summary-feedback'], cfg })).toBe(false);
-    expect(shouldSandboxRun({ agentId: 'claude', skillIds: [], cfg })).toBe(false);
     expect(shouldSandboxRun({ agentId: null, skillIds: ['ui-react'], cfg })).toBe(false);
-    expect(shouldSandboxRun({ agentId: 'claude', skillIds: [null, undefined], cfg })).toBe(false);
+    // User-persisted narrow list restores skill-scoped sandboxing: chat and
+    // unlisted skills go back to host spawn.
+    const narrowed = resolveSandboxConfig({ enabled: true, skills: ['ui-react'] }, {});
+    expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['ui-react'], cfg: narrowed })).toBe(true);
+    expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['summary-feedback'], cfg: narrowed })).toBe(false);
+    expect(shouldSandboxRun({ agentId: 'claude', skillIds: [], cfg: narrowed })).toBe(false);
   });
 
   it('supports wildcard matching in runtimes and skills', () => {

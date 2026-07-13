@@ -121,6 +121,15 @@ export type ToolPackConfig = {
   atlassianJiraToken?: string;
   atlassianConfluenceToken?: string;
   /**
+   * Agent-in-sandbox DEFAULTS, sourced from process.env.OD_SANDBOX_DEFAULT /
+   * OD_SANDBOX_SKILLS at packaging time and baked into
+   * open-design-config.json. The packaged runtime forwards them to the daemon
+   * spawn env; they apply only while the user has no persisted sandbox prefs
+   * (an explicit app-config.json / `od sandbox disable` wins).
+   */
+  sandboxDefault?: string;
+  sandboxSkills?: string;
+  /**
    * Google SSO + preview-identity auth, sourced from process.env at packaging
    * time and baked into open-design-config.json so the packaged daemon runs
    * with login bật sẵn (SESSION_SECRET/GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/
@@ -411,6 +420,8 @@ export function resolveToolPackConfig(
     mediaUserRole: resolveToolPackKgsScalar(process.env.MEDIA_USER_ROLE, "MEDIA_USER_ROLE"),
     atlassianJiraToken: process.env.OD_ATLASSIAN_JIRA_TOKEN?.trim() || undefined,
     atlassianConfluenceToken: process.env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim() || undefined,
+    sandboxDefault: process.env.OD_SANDBOX_DEFAULT?.trim() || undefined,
+    sandboxSkills: process.env.OD_SANDBOX_SKILLS?.trim() || undefined,
     authSessionSecret: process.env.SESSION_SECRET?.trim() || undefined,
     googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() || undefined,
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET?.trim() || undefined,

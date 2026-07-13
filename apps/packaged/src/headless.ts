@@ -71,6 +71,8 @@ function resolveHeadlessConfig(): PackagedConfig {
     mediaUserRole: process.env.MEDIA_USER_ROLE?.trim() || null,
     atlassianJiraToken: process.env.OD_ATLASSIAN_JIRA_TOKEN?.trim() || null,
     atlassianConfluenceToken: process.env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim() || null,
+    sandboxDefault: process.env.OD_SANDBOX_DEFAULT?.trim() || null,
+    sandboxSkills: process.env.OD_SANDBOX_SKILLS?.trim() || null,
     // Headless reads auth straight from the launcher env (no baked config).
     authSessionSecret: process.env.SESSION_SECRET?.trim() || null,
     googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() || null,
@@ -142,6 +144,8 @@ async function main(): Promise<void> {
     mediaUserRole: config.mediaUserRole,
     atlassianJiraToken: config.atlassianJiraToken,
     atlassianConfluenceToken: config.atlassianConfluenceToken,
+    sandboxDefault: config.sandboxDefault,
+    sandboxSkills: config.sandboxSkills,
     authSessionSecret: config.authSessionSecret,
     googleClientId: config.googleClientId,
     googleClientSecret: config.googleClientSecret,

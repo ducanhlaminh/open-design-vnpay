@@ -1,7 +1,7 @@
 ---
 name: ui-react
 description: |
-  Terminal step of the docs → React workflow (the `ui-react` pipeline). Read the
+  Terminal UI-Spec option of the docs-to-ui workflow (the `ui-react` pipeline — React app output). Read the
   UX Spec (S_SCREEN_SPEC screens + components produced by the `ux-spec` pipeline)
   and author a REAL, buildable Vite + React 19 + Tailwind v4 app on the canonical
   shadcn/ui (radix) component set: first derive a reusable APP COMPONENT layer
@@ -52,10 +52,10 @@ on host) and hand off the built app. The file-viewer previews the built
   agent-in-sandbox runtime your CWD is the mounted project dir (`/work/app`) —
   it contains the same `.od-skills/`, spec files and `./react/` as a host run.
   Never write outside it.
-- **Input (context, when present):** `./features/` and `./*-customer-journey.json`
-  — use the customer journey to decide the **navigation flow** between screens
-  (which screen a button routes to). If no UX Spec exists, stop and tell the user
-  to run **UX Spec** first.
+- **Input (context, when present):** the customer journey
+  (`./*-customer-journey.json` / `./*-cj.json` or `./customer-journey/`) — use it
+  to decide the **navigation flow** between screens (which screen a button routes
+  to). If no UX Spec exists, stop and tell the user to run **UX Spec** first.
 - **Output:** a Vite React app under **`./react/`**. You author only `./react/src/`
   (the `components/app/` composite layer, screens, routes, theme tokens) +
   `./react/flow.json`. The build produces
@@ -205,6 +205,35 @@ promote it to `src/components/app/` instead of copy-pasting:
   intent (not lorem ipsum).
 - Full-bleed layout: `web` → constrain content to a centered max-width; `mobile`
   → full-width (the canvas frames it). No fake phone bezel.
+- **Web screens MUST be responsive** — the preview shows every `layout: "web"`
+  screen at three viewports (Desktop 1280 / Tablet 834 / Mobile 390), so a
+  desktop-only layout reads as broken at the smaller two. Build with Tailwind
+  breakpoints, **mobile-first** (base classes = mobile, layer `md:`/`lg:` up):
+  - Desktop **sidebar / inline nav** → hidden below `lg:` in favor of a top bar
+    with a hamburger opening a `Sheet side="left"` (drawer). Never let a fixed
+    sidebar squeeze the content column on small widths.
+  - **Tables** → `hidden md:table` (or `lg:`) + a stacked card list
+    (`md:hidden`) for the same rows on mobile — no horizontally-scrolling table
+    as the only mobile affordance.
+  - **Multi-column forms/grids** → single column at base (`grid-cols-1
+    md:grid-cols-2 …`); touch-sized controls at base.
+  - When the UX Spec's wireframe carries per-device redesigns
+    (`wireframes/<id>.wire.json` → `layouts.tablet` / `layouts.mobile`), those
+    ARE the tablet/mobile designs — implement them via the breakpoints above,
+    don't invent a different small-screen layout.
+  - `mobile` (app) screens are single-width; no breakpoints needed.
+- **Tag each screen's platform on its root element** — put `data-od-layout="web"`
+  (or `"mobile"`, copied from the UX Spec `layout`) on the outermost element the
+  screen returns:
+  ```tsx
+  export default function AdminDashboard() {
+    return <div data-od-layout="web" className="min-h-screen">…</div>;
+  }
+  ```
+  The preview + Copy-to-Figma read this at runtime to size the frame (a web
+  screen auto-widens to desktop instead of being squished into a phone frame).
+  It is the SAME per-screen platform you also list in `layout.json` below — both
+  must agree.
 
 ### 4. Wire routes in `src/App.tsx` + emit `flow.json`
 Screens **default-export**, so import them as defaults and add a `<Route>` per screen
@@ -214,7 +243,13 @@ flow derived from the customer journey; the first screen is `path="/"`.
 
 Then write **`./react/flow.json`** — the user-action flow from the journey. The
 all-screens canvas draws the navigation arrows, and the use-case simulator
-steps through EVERY edge (navigation AND in-screen dialogs):
+steps through EVERY edge (navigation AND in-screen dialogs).
+**Carry the UX rule flowcharts down:** when the upstream ux run authored
+`../flows/<FLOW-ID>.flow.json`, reuse its edge labels VERBATIM — the action
+label leaving a screen there is the `label` (→ `data-flow-action`) here, and a
+decision's Yes/No branches become the corresponding conditional edges' labels
+(e.g. `"xác nhận — OTP hợp lệ"` / `"xác nhận — OTP sai"`), so the canvas shows
+the same conditions the UX flowchart declared:
 ```json
 [
   { "from": "login", "to": "home",  "label": "đăng nhập" },
@@ -234,6 +269,58 @@ steps through EVERY edge (navigation AND in-screen dialogs):
 Include dialog/alert interactions that matter to the journey as `dialog` +
 `dismiss` edge pairs — they are use-case steps, not decoration. Omit the file
 only if there is no meaningful flow at all.
+
+**Overlay screens from the UX Spec.** A UX Spec screen with `overlay_kind`
+(`dialog` / `drawer` / `sheet`) + `overlay_of` is NOT a separate route — it is a
+secondary state of its base screen. Render it INSIDE the `overlay_of` screen as
+the matching primitive and wire it as a flow pair, not a `<Route>`:
+
+| `overlay_kind` | build inside the base screen with | flow edges (base slug = S) |
+|---|---|---|
+| `dialog` | `Dialog` / `AlertDialog` (app `ConfirmDialog`) | `{from:S,to:S,type:"dialog","overlay":"dialog"}` open + `{from:S,to:S,type:"dismiss"}` close |
+| `sheet` | `Sheet` (bottom) — action menus, filters | same pair, `"overlay":"sheet"` on the open edge |
+| `drawer` | `Sheet side="left"` / `Drawer` — nav menu | same pair, `"overlay":"drawer"` on the open edge |
+
+A GLOBAL overlay (`overlay_of` null, e.g. the app nav drawer) is rendered once in
+the shared shell/`ScreenShell`, opened by the header hamburger on every screen —
+not duplicated per screen. Bind each edge's `label` to the real trigger /
+close control via `data-flow-action` exactly as for any other flow edge.
+
+**`overlay` field + `#od-open` contract (REQUIRED for every overlay).** The
+preview canvas shows web screens at Desktop/Tablet/Mobile viewports; at
+tablet/mobile it adds an EXTRA frame per overlay — the base screen with that
+overlay already open (a phone deliverable needs the "drawer open" artboard,
+desktop shows nav inline). Two things make that work:
+
+1. Every `type: "dialog"` edge that opens an overlay carries
+   `"overlay": "drawer" | "sheet" | "dialog"` (see table above).
+2. Every overlay's open state MUST honor the URL hash `#od-open=<label>`
+   (label = the open edge's exact `label`). Implement ONE tiny helper in the
+   app layer and use it as each overlay's initial open state:
+
+   ```tsx
+   // src/components/app/useOdOpen.ts — preview contract: a screen loaded with
+   // #od-open=<flow-action-label> mounts with that overlay already open.
+   export function useOdOpen(label: string): boolean {
+     if (typeof window === 'undefined') return false;
+     return decodeURIComponent(window.location.hash).includes(`od-open=${label}`);
+   }
+   // in a screen:
+   const [menuOpen, setMenuOpen] = useState(useOdOpen('mở menu'));
+   ```
+
+   Per-screen pages wrap a catch-all HashRouter, so the extra hash never
+   breaks routing.
+
+Also write **`./react/layout.json`** — each screen's target platform, copied
+VERBATIM from the UX Spec's per-screen `layout` field:
+```json
+{ "login": "mobile", "admin-dashboard": "web" }
+```
+Keys are the SAME screen slugs as flow.json (`src/screens/<slug>.tsx`); values
+are `"mobile"` | `"web"`. The preview canvases size each frame from this file
+(phone width vs desktop width) — a missing file or slug falls back to the
+phone frame, so emit it whenever the spec has any `layout: "web"` screen.
 
 **Bind every flow edge to its real UI control.** On the `from` screen, the
 element that triggers that navigation (the `Button`, link, card row, …) MUST
@@ -255,6 +342,47 @@ element degrades to fuzzy text matching and may not be clickable in the
 simulator. Do NOT invent a flow edge for an action the screen does not render;
 fix the screen or drop the edge.
 
+### 4b. Reason a per-screen DEMO scenario → emit `./react/demo.json`
+The prototype auto-demo (Playwright) records ONE video per screen showing a
+user actually using it — this is where you REASON the interaction, because not
+every meaningful interaction is a flow.json edge (selecting a card, toggling a
+switch, expanding a section, scrolling a long list). You just built every
+screen, so you know its real interactions. Write **`./react/demo.json`** — one
+entry per screen slug, a short realistic in-screen scenario (do NOT navigate to
+other screens — cross-screen flow is the flowchart's job):
+
+```json
+{
+  "card-design": {
+    "title": "Thiết kế thẻ",
+    "steps": [
+      { "do": "scroll", "note": "Cuộn xem toàn bộ danh sách thiết kế" },
+      { "do": "tap",  "target": "Sản phẩm thẻ",          "note": "Mở bảng chọn sản phẩm thẻ" },
+      { "do": "tap",  "target": "Vietcombank Visa Debit", "note": "Chọn một sản phẩm thẻ" },
+      { "do": "tap",  "target": "Lưu thay đổi",           "note": "Lưu → hiện dialog xác nhận" }
+    ]
+  },
+  "card-services": {
+    "steps": [
+      { "do": "scroll", "note": "Cuộn xem các dịch vụ thẻ" },
+      { "do": "tap", "target": "Thiết kế thẻ", "note": "Nhấn vào dịch vụ Thiết kế thẻ" }
+    ]
+  }
+}
+```
+
+Rules:
+- `do`: `scroll` | `tap` | `hold`. Start most screens with a `scroll` so the
+  video shows the fixed header + scroll behaviour a wireframe can't.
+- `target` (tap/hold): the element's **visible text** OR its `data-flow-action`.
+  Prefer the exact visible label of the button/row/tab — the runner resolves by
+  data-flow-action, then aria-label, then visible text, so a real on-screen
+  label always works even without a data-flow-action.
+- `note`: a short Vietnamese caption shown on the touch overlay ("đang làm gì").
+- Keep each screen's scenario SHORT (2–5 steps) and self-contained; only demo
+  interactions the screen actually renders. Every built screen SHOULD have an
+  entry (a screen with nothing to do → just a `scroll` step).
+
 ### 5. Bind design-system tokens
 Edit `./react/src/index.css` `:root` / `.dark` per the **Design system** section.
 Composite-level styling (spacing, radius, tone variants) lives in
@@ -267,7 +395,8 @@ errors, fix `src/`, and repeat until it exits 0 and writes `./react/dist/`.
 
 ## Hard rules
 - **Author only `./react/src/`** (screens, `src/components/app/`, `App.tsx`,
-  `main.tsx`, `index.css`) **+ `./react/flow.json`**. Do NOT edit
+  `main.tsx`, `index.css`) **+ `./react/flow.json` + `./react/layout.json` +
+  `./react/demo.json`**. Do NOT edit
   `package.json` / `vite.config.ts` (keep `base: './'`) / `tsconfig.json` / the
   `components/ui/` set / the generated `screens/` entries / anything else
   outside `./react/`.
@@ -286,7 +415,7 @@ errors, fix `src/`, and repeat until it exits 0 and writes `./react/dist/`.
 - `build.sh` is green → `./react/dist/index.html` **and** `./react/dist/screens/<slug>.html`
   (one per screen) exist, AND
 - there is one `src/screens/<slug>.tsx` (default-export) + `<Route>` per UX Spec
-  screen, cross-screen navigation is wired, and `./react/flow.json` reflects it, AND
+  screen, cross-screen navigation is wired, and `./react/flow.json` + `./react/layout.json` reflect it, AND
 - every `flow.json` edge has its `data-flow-action="<label>"` element on the
   `from` screen (the simulator contract above), AND
 - `src/components/app/` holds the derived composite layer (with `index.ts`

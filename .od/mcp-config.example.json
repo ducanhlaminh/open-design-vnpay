@@ -29,6 +29,14 @@
       }
     },
     {
+      "id": "mobbin",
+      "transport": "http",
+      "enabled": true,
+      "label": "Mobbin (UI/UX reference library)",
+      "url": "https://api.mobbin.com/mcp",
+      "authMode": "oauth"
+    },
+    {
       "id": "mcp-atlassian",
       "transport": "stdio",
       "enabled": true,

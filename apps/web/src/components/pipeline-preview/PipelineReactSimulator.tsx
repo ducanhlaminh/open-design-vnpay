@@ -201,14 +201,25 @@ interface Props {
   projectId: string;
   entries: SimScreenEntry[];
   flow: SimFlowEdge[];
+  /** slug → target platform (react/layout.json): web screens get a desktop-wide
+   *  device frame instead of the phone width. */
+  layouts?: Record<string, 'mobile' | 'web'>;
   /** Back to the canvas view (rendered as a button in the topbar). */
   onExit?: () => void;
 }
 
-export function PipelineReactSimulator({ projectId, entries, flow, onExit }: Props) {
+// Web screens preview at three breakpoints (the built app is real responsive
+// HTML — changing the frame width changes the viewport). Mobile-app screens
+// keep the single phone width from the CSS.
+const WEB_DEVICE_WIDTHS = { desktop: 1280, tablet: 834, mobile: 390 } as const;
+type WebDevice = keyof typeof WEB_DEVICE_WIDTHS;
+
+export function PipelineReactSimulator({ projectId, entries, flow, layouts, onExit }: Props) {
   const useCases = useMemo(() => deriveUseCases(entries, flow), [entries, flow]);
   const [pathIdx, setPathIdx] = useState(0);
   const [stepIdx, setStepIdx] = useState(0);
+  // Viewport for WEB screens (Desktop/Tablet/Mobile tabs in the topbar).
+  const [device, setDevice] = useState<WebDevice>('desktop');
   // 'found' → the action element is spotlighted in-screen; 'missing' → no match.
   const [hotspot, setHotspot] = useState<'found' | 'missing' | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -281,7 +292,7 @@ export function PipelineReactSimulator({ projectId, entries, flow, onExit }: Pro
     return (
       <div className={styles.msg}>
         Không dựng được kịch bản mô phỏng — thiếu hoặc rỗng <code>react/flow.json</code>.
-        Chạy lại bước “UI (React app)” để agent sinh luồng điều hướng.
+        Chạy lại bước “UI-Spec (React)” để agent sinh luồng điều hướng.
         {onExit ? (
           <>
             {' '}
@@ -322,6 +333,23 @@ export function PipelineReactSimulator({ projectId, entries, flow, onExit }: Pro
             </button>
           ))}
         </div>
+        {entry && layouts?.[entry.slug] === 'web' ? (
+          <div className={styles.deviceTabs} role="tablist" title="Kích thước khung xem (viewport) cho màn web">
+            {(Object.keys(WEB_DEVICE_WIDTHS) as WebDevice[]).map((d) => (
+              <button
+                key={d}
+                type="button"
+                role="tab"
+                aria-selected={device === d}
+                className={device === d ? styles.deviceTabActive : styles.deviceTab}
+                onClick={() => setDevice(d)}
+              >
+                {d === 'desktop' ? 'Desktop' : d === 'tablet' ? 'Tablet' : 'Mobile'}
+                <span className={styles.deviceTabW}>{WEB_DEVICE_WIDTHS[d]}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {onExit ? (
           <button type="button" className={styles.playBtn} onClick={onExit} title="Quay về canvas toàn màn hình">
             🗺 Canvas
@@ -330,7 +358,12 @@ export function PipelineReactSimulator({ projectId, entries, flow, onExit }: Pro
       </div>
 
       <div className={styles.stage}>
-        <div className={styles.device}>
+        <div
+          className={styles.device}
+          // Web screen → frame at the chosen breakpoint (real responsive
+          // viewport); mobile-app screens keep the CSS phone width.
+          style={entry && layouts?.[entry.slug] === 'web' ? { width: `min(${WEB_DEVICE_WIDTHS[device]}px, 100%)` } : undefined}
+        >
           <div className={styles.deviceHeader} title={entry.title}>
             <span className={styles.deviceStep}>
               {stepIdx + 1}/{path.steps.length}

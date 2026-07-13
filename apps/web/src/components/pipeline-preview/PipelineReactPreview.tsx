@@ -14,7 +14,7 @@ import styles from './PipelineReactPreview.module.css';
 
 const WIDTH_PRESETS: Array<{ label: string; w: number | 'full' }> = [
   { label: 'Mobile', w: 390 },
-  { label: 'Tablet', w: 768 },
+  { label: 'Tablet', w: 834 },
   { label: 'Desktop', w: 1280 },
   { label: 'Full', w: 'full' },
 ];

@@ -81,16 +81,20 @@ def node(node_id, label, props, project_id, dry_run):
     return True
 
 
-def edge(source_id, target_id, relation_type, dry_run):
+def edge(source_id, target_id, relation_type, dry_run, extra_props=None):
     if not source_id or not target_id:
         return False
     if dry_run:
-        print(f"  [dry] edge {relation_type:14s} {source_id} -> {target_id}")
+        suffix = f" {extra_props}" if extra_props else ""
+        print(f"  [dry] edge {relation_type:14s} {source_id} -> {target_id}{suffix}")
         return True
+    props = {"app_id": APP_ID, "_seed": "open-design-cj"}
+    if extra_props:
+        props.update(extra_props)
     r = kgs_call("POST", "/v1/graph/edges", {
         "sourceNodeId": source_id, "targetNodeId": target_id,
         "relationType": relation_type,
-        "propertiesJson": json.dumps({"app_id": APP_ID, "_seed": "open-design-cj"}),
+        "propertiesJson": json.dumps(props, ensure_ascii=False),
     })
     if "_error" in r and r.get("_status") != 409:
         print(f"  ✗ edge {relation_type} {source_id}->{target_id} {r.get('_error','')[:60]}")
@@ -260,7 +264,14 @@ def main():
     screens = doc.get("screens", [])
     comp_n = 0
     print(f"[3/3] S_SCREEN_SPEC + DP_UI_COMPONENT ({len(screens)} screens)")
+    # Overlay screens (dialog/drawer/sheet) get a FLOWS_TO edge base → overlay so
+    # the graph carries the "this screen opens that overlay" relationship. A
+    # GLOBAL overlay (overlay_of null/empty) has no single base, so no edge.
+    flow_edges = []
+    screen_ids = {s.get("id") for s in screens if isinstance(s, dict)}
     for s in screens:
+        overlay_kind = s.get("overlay_kind", "")
+        overlay_of = s.get("overlay_of") or ""
         if node(s["id"], "S_SCREEN_SPEC", {
             "title": s.get("title", s.get("name", s["id"])),
             "name": s.get("name", s.get("title", s["id"])),
@@ -271,8 +282,12 @@ def main():
             "actor_id": s.get("actor_id", s.get("primary_actor", "")),
             "permissions": s.get("permissions", []),
             "navigation_group": s.get("navigation_group", ""),
+            "overlay_kind": overlay_kind,
+            "overlay_of": overlay_of,
         }, project_id, dry_run):
             ok += 1
+        if overlay_kind and overlay_of and overlay_of in screen_ids:
+            flow_edges.append((overlay_of, s["id"], overlay_kind))
         for ci, c in enumerate(s.get("components", []), 1):
             cid = c.get("id") or f"{s['id']}-c{ci}"
             props = {k: v for k, v in c.items() if k != "id"}
@@ -290,9 +305,14 @@ def main():
 
     # ── Edges (after all nodes exist) ──────────────────────────────────────
     edge_n = 0
-    print(f"[edges] ({len(edge_list)})")
+    print(f"[edges] ({len(edge_list) + len(flow_edges)})")
     for src, tgt, rel in edge_list:
         if edge(src, tgt, rel, dry_run):
+            edge_n += 1
+    # Overlay flow edges: base -[FLOWS_TO {type:"show<Kind>"}]-> overlay screen.
+    for base_id, overlay_id, kind in flow_edges:
+        flow_type = "show" + kind[:1].upper() + kind[1:]   # dialog→showDialog, drawer→showDrawer, sheet→showSheet
+        if edge(base_id, overlay_id, "FLOWS_TO", dry_run, {"type": flow_type, "overlay_kind": kind}):
             edge_n += 1
 
     print(f"✔ pushed {ok} nodes + {edge_n} edges ({len(personas)} personas, {len(journeys)} journeys, "

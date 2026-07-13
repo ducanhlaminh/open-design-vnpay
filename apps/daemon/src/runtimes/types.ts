@@ -135,6 +135,17 @@ export type DetectedAgent = Omit<
   authMessage?: string;
   path?: string;
   version?: string | null;
+  /** Present when the agent sandbox OWNS this runtime's runs (enabled +
+   *  skills `'*'`): every run spawns inside the od-agent-sandbox container,
+   *  so `available`/`version`/`authStatus` above reflect the SANDBOX (docker
+   *  + image + auth volume), not a host install. Attached by /api/agents. */
+  sandbox?: {
+    owns: boolean;
+    dockerRunning: boolean;
+    imagePresent: boolean;
+    authLoggedIn: boolean;
+    version: string | null;
+  };
 };
 
 export type RuntimeExecOptions = ExecFileOptions & {

@@ -36,7 +36,22 @@ const GLYPH_ALIAS: Record<string, string> = {
   stepper: 'text', badge: 'text',
 };
 
-export function elementsToWireloom(screenName: string, elements: WireElement[]): string {
+// nav-like glyphs that belong in a web sidebar (list rows + nav bars).
+function isNavLike(e: WireElement): boolean {
+  const g = GLYPH_ALIAS[e.component_glyph?.toLowerCase() ?? ''] ?? e.component_glyph;
+  return g === 'list_item' || g === 'navbar';
+}
+
+export function elementsToWireloom(
+  screenName: string,
+  elements: WireElement[],
+  // `web` renders a desktop-shaped frame (top bar + sidebar + wide main) instead
+  // of the mobile single-column window. Anything else (incl. undefined) keeps the
+  // legacy mobile layout, so existing screens are unaffected.
+  layout?: string,
+  // Optional navigation group of the screen — rendered as a breadcrumb on web.
+  navGroup?: string,
+): string {
   const sorted = [...elements].sort((a, b) => {
     const ra = REGION_ORDER[a.region] ?? 5;
     const rb = REGION_ORDER[b.region] ?? 5;
@@ -52,6 +67,90 @@ export function elementsToWireloom(screenName: string, elements: WireElement[]):
     byRegion.set(r, arr);
   });
 
+  return layout === 'web'
+    ? webWireloom(screenName, byRegion, navGroup)
+    : mobileWireloom(screenName, byRegion);
+}
+
+// Desktop form idiom: inputs/selects render as a LABEL-LEFT row (fixed label
+// column + wide control) instead of the mobile full-width stacked control.
+// Self-labeled controls (checkbox/radio/button/text/…) fall back to the shared
+// renderElement.
+function renderWebMainElement(el: WireElement, indent: string): string[] {
+  const glyph = GLYPH_ALIAS[el.component_glyph?.toLowerCase() ?? ''] ?? el.component_glyph ?? 'text';
+  if (glyph !== 'input' && glyph !== 'select') return renderElement(el, indent);
+  const role = esc(el.role);
+  const control =
+    glyph === 'select'
+      ? `combo "Chọn…"`
+      : (() => {
+          const WL = new Set(['password', 'email', 'search']);
+          const t = el.input_type && WL.has(el.input_type) ? ` type=${el.input_type}` : '';
+          return `input placeholder=""${t}`;
+        })();
+  return [
+    `${indent}row:`,
+    `${indent}  col 240:`,
+    `${indent}    text "${role}" muted`,
+    `${indent}  col fill:`,
+    `${indent}    ${control}`,
+  ];
+}
+
+// Desktop-shaped frame: full-width top bar (+ breadcrumb when the screen has a
+// navigation group), a fixed sidebar of nav-like elements (lists + navbars, plus
+// any bottom-nav items — web has no bottom tab bar), a wide main column using
+// the label-left form idiom, and a right-aligned action footer. The columns
+// force the window to render at a web width instead of the narrow phone column.
+function webWireloom(
+  screenName: string,
+  byRegion: Map<string, WireElement[]>,
+  navGroup?: string,
+): string {
+  const out: string[] = [`window "${esc(screenName)}":`];
+  const appbar = byRegion.get('appbar') ?? [];
+  if (appbar.length) {
+    out.push('  header:');
+    appbar.forEach((e) => out.push(...renderElement(e, '    ')));
+  }
+  if (navGroup) {
+    out.push('  breadcrumb:');
+    out.push(`    crumb "${esc(navGroup)}"`);
+    out.push(`    crumb "${esc(screenName)}"`);
+  }
+  const body = byRegion.get('body') ?? [];
+  const hero = byRegion.get('hero') ?? [];
+  const bn = byRegion.get('bottom_nav') ?? [];
+  const sidebar = [...body.filter(isNavLike), ...bn];
+  const main = [...hero, ...body.filter((e) => !isNavLike(e))];
+
+  out.push('  row:');
+  if (sidebar.length) {
+    out.push('    col 240:');
+    sidebar.forEach((e) => out.push(...renderElement(e, '      ')));
+    out.push('    col fill:');
+    if (main.length) main.forEach((e) => out.push(...renderWebMainElement(e, '      ')));
+    else out.push('      spacer "—"');
+  } else {
+    // No sidebar → a single wide column so the frame still reads as desktop.
+    out.push('    col 720:');
+    if (main.length) main.forEach((e) => out.push(...renderWebMainElement(e, '      ')));
+    else out.push('      spacer "Chưa có component nào được định nghĩa"');
+  }
+
+  const footer = byRegion.get('footer') ?? [];
+  if (footer.length) {
+    // Desktop action bar: actions cluster bottom-right.
+    out.push('  footer:');
+    out.push('    row justify=end:');
+    footer.forEach((e) => out.push(...renderElement(e, '      ')));
+  }
+  return out.join('\n');
+}
+
+// Mobile single-column window (legacy behavior): appbar→header, hero/body→panel,
+// footer→footer, bottom_nav→tabbar.
+function mobileWireloom(screenName: string, byRegion: Map<string, WireElement[]>): string {
   const out: string[] = [`window "${esc(screenName)}":`];
   const appbar = byRegion.get('appbar') ?? [];
   if (appbar.length) {
@@ -157,12 +256,27 @@ function ensureInit() {
 
 let counter = 0;
 
-export function WireloomViewer({ screenName, elements }: { screenName: string; elements: WireElement[] }) {
+export function WireloomViewer({
+  screenName,
+  elements,
+  layout,
+  navGroup,
+}: {
+  screenName: string;
+  elements: WireElement[];
+  /** Screen target platform; `web` renders a desktop-shaped wireframe. */
+  layout?: string;
+  /** Navigation group — shown as a breadcrumb on web wireframes. */
+  navGroup?: string;
+}) {
   const [view, setView] = useState<'wire' | 'source'>('wire');
   const [svg, setSvg] = useState<string>('');
   const [err, setErr] = useState<string>('');
   const idRef = useRef<string>(`wireloom-${++counter}`);
-  const source = useMemo(() => elementsToWireloom(screenName, elements), [screenName, elements]);
+  const source = useMemo(
+    () => elementsToWireloom(screenName, elements, layout, navGroup),
+    [screenName, elements, layout, navGroup],
+  );
 
   useEffect(() => {
     if (view !== 'wire' || !source) return;

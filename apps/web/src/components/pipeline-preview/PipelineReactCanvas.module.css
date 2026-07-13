@@ -99,6 +99,14 @@
   color: #fff;
 }
 
+/* Separator between the mode buttons and the web-viewport buttons. */
+.modeDivider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--border, #e5e7eb);
+}
+
 .iframe {
   display: block;
   width: 100%;

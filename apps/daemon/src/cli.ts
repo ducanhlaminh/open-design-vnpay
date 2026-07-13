@@ -182,9 +182,19 @@ const PIPELINE_STRING_FLAGS = new Set([
   'source', 'ref', 'bas-document', 'feature',
   // Per-run design system for UI-generating stages (ui-html): --design-system <id>
   'design-system',
+  // Target platform for the UX stage: --platform <mobile|web>
+  'platform',
+  // run-all: which UI-Spec terminal(s) to finish with: ui-html | ui-react | both
+  'terminal',
 ]);
 const PIPELINE_BOOLEAN_FLAGS = new Set([
   'help', 'h', 'json',
+  // Re-run: also clear the stale downstream stages (default clears only this one).
+  'reset-downstream',
+  // run-all: resume — skip stages that already succeeded (default re-runs all).
+  'skip-succeeded',
+  // docs (deterministic Confluence): do NOT fetch the pages the seeds link to.
+  'no-follow-links',
 ]);
 const MEMORY_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'description', 'type', 'body', 'body-file',
@@ -558,6 +568,7 @@ Common options:
 }
 
 const SUBCOMMAND_MAP = {
+  kb: runKb,
   kg: runKg,
   artifacts: runArtifacts,
   figma: runFigma,
@@ -697,9 +708,10 @@ function printRootHelp() {
       Export diagnostics.
 
   od sandbox <status|enable|disable|build|login|logout|ps|kill> [args]
-      Agent-in-sandbox: run gated pipeline agents (default: claude + ui-react)
-      inside an isolated Docker container. status/enable/disable talk to the
-      daemon; build/login/ps/kill drive docker on this machine.
+      Agent-in-sandbox: run EVERY claude run (pipeline steps, chat, Orbit,
+      routines — default skills '*') inside an isolated Docker container.
+      status/enable/disable talk to the daemon; build/login/ps/kill drive
+      docker on this machine.
 
   "$OD_NODE_BIN" "$OD_BIN" tools ...
       Recommended agent-runtime form; avoids relying on user PATH for od or node.
@@ -6611,7 +6623,7 @@ Common options:
 }
 
 function printPipelineHelp() {
-  console.log(`Usage: od pipeline <projects|list|run|upload|pull|build|history|restore> [options]
+  console.log(`Usage: od pipeline <projects|list|run|run-all|upload|pull|build|demo|history|restore> [options]
 
 Dự án khai sinh ở Pipeline Studio (kèm link Confluence + design system + phân
 quyền); kéo về máy bằng \`od kg pull-all\` rồi chạy pipeline tại đây.
@@ -6620,16 +6632,36 @@ Commands:
   projects             List the KGS apps available for pipelines (pulled via od kg pull).
   list                 List the docs→UI pipelines for a KGS project (status + gating).
   run <pipelineId>     Run one pipeline — seeds a conversation with its skill active.
-                       Source for pipeline 1 (jira-ingest), one of:
-                         --input "<JIRA key / JQL>"                      (legacy, via mcp-atlassian)
-                         --source confluence --ref <page url/id>          (BAS gateway)
-                         --source bas --bas-document <kg-document-id> [--feature <id,id>]  (empty = whole doc)
-                       For UI stages (ui-html): --design-system <id> applies a brand;
+                       Source for pipeline 1 (docs), one of:
+                         --source confluence --ref <page url/id>   → DETERMINISTIC: the daemon
+                              fetches the page(s) itself (PAT REST, gateway fallback — no agent).
+                              Pages the seeds LINK to are fetched too (depth 1, capped);
+                              --no-follow-links fetches only the picked pages.
+                         --input "<page url/id per line>"           → same deterministic path
+                         --input "<JIRA key / JQL>"                 → agent run (via mcp-atlassian)
+                         --source bas …                             → ĐANG BẢO TRÌ (bị chặn)
+                       For UI-Spec stages (ui-html, ui-react): --design-system <id> applies a brand;
                        --design-system none forces no design system; omit to use the default.
+                       For the UX stage: --platform <mobile|web> sets the target platform of
+                       every screen (its layout field); omit for the default (mobile).
+                       Re-run: --reset-downstream also clears the stale downstream stages
+                       (default clears only this stage's outputs so the agent regenerates).
+  run-all              Run the WHOLE workflow with no per-stage review: the daemon chains
+                       every stage (docs → cj → ux-research → ux → ux-review → UI-Spec)
+                       automatically as each one succeeds. Takes the same source flags as
+                       'run' (--input / --source ...) plus:
+                         --terminal <ui-html|ui-react|both>   final UI-Spec option (default ui-html)
+                         --platform <mobile|web>              UX-stage target platform
+                         --design-system <id|none>            for the UI terminal(s)
+                         --skip-succeeded                     resume: only run the missing stages
   upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
   pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
-  build                Build/rebuild the docs-to-react app from synced sources (react/dist/ never
+  build                Build/rebuild the ui-react app from synced sources (react/dist/ never
                        syncs — after a pull, run this to make the app previewable). Needs Docker.
+  demo                 Prototype auto-demo: Playwright drives the BUILT react app through the
+                       flow.json use cases and records video + per-step screenshots into
+                       react/prototype-demo/ (deterministic — no agent/LLM). First run installs
+                       a pinned Playwright + Chromium into the daemon data dir (one-time).
   history              Changelog: published versions (store _v/) + local .odhistory commits.
   restore              Rewind outputs: --version v3 (store snapshot) or --commit <sha> [--path <p>].
                        --stage <pipeline-id> limits a version-restore to one pipeline's files.
@@ -6641,9 +6673,87 @@ Options:
                        Auto-resolved from OD_PROJECT_ID when invoked by the daemon.
   --json               Machine-readable output.
 
-Workflows: docs-to-html (html-docs → html-cj → html-ux → ui-html) and
-docs-to-react (react-docs → react-cj → react-ux → ui-react).
-A pipeline is only runnable once its prerequisite pipelines have succeeded.`);
+Workflow: docs-to-ui (docs → cj → ux-research → ux → ux-review → ui-html | ui-react).
+The final UI-Spec step has two options — HTML prototype (ui-html) or React app
+(ui-react); run either or both. A pipeline is only runnable once its
+prerequisites succeeded; 'run-all' chains the whole flow automatically.`);
+}
+
+// od kb — the UX knowledge base on the media store (ux-kb-sync.ts): `status`
+// shows which KB the next ux-research run resolves to; `push` uploads a local
+// KB folder (default UX_KB_DIR / ~/ux-knowledge-base) so every machine syncs
+// the fresh knowledge before its next run.
+async function runKb(args) {
+  const sub = args[0];
+  if (!sub || sub === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: od kb <status|push> [options]
+
+Commands:
+  status               Which UX knowledge base the next ux-research run uses
+                       (env UX_KB_DIR → media-store cache → ~/ux-knowledge-base).
+  push                 Upload a local KB folder to the media store (project
+                       "ux-knowledge-base") — content-hash sync, re-push của bộ
+                       không đổi sẽ không upload gì. Mọi máy tự đồng bộ bản mới
+                       trước lần chạy UX Research kế tiếp.
+
+Options:
+  --dir <path>         push: KB folder nguồn (default: $UX_KB_DIR hoặc ~/ux-knowledge-base).
+  --json               Machine-readable output.`);
+    process.exit(sub ? 0 : 2);
+  }
+  let flags;
+  try {
+    flags = parseFlags(args.slice(1), {
+      string: new Set(['daemon-url', 'dir']),
+      boolean: new Set(['help', 'h', 'json']),
+    });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  if (sub === 'status') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/ux-kb/status`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    const label = { env: 'UX_KB_DIR (override)', media: 'media store (cache)', home: '~/ux-knowledge-base', none: 'KHÔNG có' }[data.source] ?? data.source;
+    console.log(`Knowledge base: ${label}`);
+    if (data.dir) console.log(`  dir:    ${data.dir}`);
+    if (data.synced !== undefined) console.log(`  synced: ${data.synced} file(s) mới từ media store`);
+    if (data.note) console.log(`  note:   ${data.note}`);
+    return;
+  }
+  if (sub === 'push') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/ux-kb/push`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...(flags.dir ? { dir: flags.dir } : {}) }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      console.error(`push failed: ${data.error ?? resp.statusText}`);
+      process.exit(1);
+    }
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    console.log(`Đã push knowledge base lên media project "${data.project}":`);
+    console.log(`  ${data.files} file · ${data.uploaded} uploaded · ${data.skipped} không đổi · ${data.deleted} dọn trùng`);
+    return;
+  }
+  console.error(`Unknown od kb subcommand "${sub}" — dùng status|push.`);
+  process.exit(2);
 }
 
 async function runPipeline(args) {
@@ -6760,18 +6870,10 @@ async function runPipeline(args) {
       }
       source = { kind: 'confluence', ref };
     } else if (flags.source === 'bas') {
-      const documentId = (flags['bas-document'] || '').toString().trim();
-      const featureIds = (flags.feature || '').toString().split(',').map((s) => s.trim()).filter(Boolean);
-      if (!documentId) {
-        console.error('Usage: od pipeline run <id> --project <id> --source bas --bas-document <kg-document-id> [--feature <id,id>]');
-        process.exit(2);
-      }
-      // featureIds empty → ingest the whole document.
-      source = {
-        kind: 'bas',
-        documentId,
-        ...(featureIds.length ? { featureIds } : {}),
-      };
+      // Nguồn BAS đang KHÓA BẢO TRÌ (daemon cũng chặn 503) — mirror của cờ
+      // BAS_SOURCE_LOCKED trong pipeline-routes.ts.
+      console.error('Nguồn BAS đang bảo trì — dùng --source confluence --ref <url/id> (hoặc --input JIRA key/JQL).');
+      process.exit(2);
     } else if (flags.source) {
       console.error('Unknown --source; expected "confluence" or "bas".');
       process.exit(2);
@@ -6784,6 +6886,20 @@ async function runPipeline(args) {
       const ds = String(flags['design-system']).trim();
       designSystemId = ds && ds.toLowerCase() !== 'none' ? ds : null;
     }
+    // Target platform for the UX stage: `--platform web` makes every screen in
+    // the UX spec `layout: "web"`; omit for the default (mobile).
+    let platform;
+    if (flags.platform !== undefined) {
+      const p = String(flags.platform).trim().toLowerCase();
+      if (p !== 'mobile' && p !== 'web') {
+        console.error('Invalid --platform; expected "mobile" or "web".');
+        process.exit(2);
+      }
+      platform = p;
+    }
+    // Re-run scope: `--reset-downstream` also clears every stage that depends on
+    // this one (they go stale); default clears only this stage's own outputs.
+    const resetScope = flags['reset-downstream'] ? 'downstream' : undefined;
     let resp;
     try {
       resp = await fetch(`${base}/api/pipelines/${encodeURIComponent(pipelineId)}/run`, {
@@ -6793,6 +6909,9 @@ async function runPipeline(args) {
           projectId,
           ...(source ? { source } : flags.input ? { input: flags.input } : {}),
           ...(designSystemId !== undefined ? { designSystemId } : {}),
+          ...(platform !== undefined ? { platform } : {}),
+          ...(resetScope !== undefined ? { resetScope } : {}),
+          ...(flags['no-follow-links'] ? { followLinks: false } : {}),
         }),
       });
     } catch (err) {
@@ -6804,8 +6923,82 @@ async function runPipeline(args) {
     if (flags.json) return writeJson(data);
     console.log(`Started pipeline "${pipelineId}".`);
     console.log(`  project:      ${data.projectId}`);
-    console.log(`  conversation: ${data.conversationId}`);
-    console.log(`  run:          ${data.agentRunId}`);
+    // A deterministic run (docs stage, Confluence source) has no conversation
+    // or agent run — the daemon fetched the pages itself.
+    if (data.conversationId) console.log(`  conversation: ${data.conversationId}`);
+    if (data.agentRunId) console.log(`  run:          ${data.agentRunId}`);
+    if (!data.agentRunId) console.log('  mode:         deterministic (daemon fetch, no agent)');
+    return;
+  }
+
+  // od pipeline run-all — run the WHOLE workflow sequentially, no per-stage
+  // review: the daemon auto-chains each stage as its predecessor succeeds.
+  if (sub === 'run-all') {
+    let source;
+    if (flags.source === 'confluence') {
+      const ref = (flags.ref || flags.input || '').toString().trim();
+      if (!ref) {
+        console.error('Usage: od pipeline run-all --project <id> --source confluence --ref <url/id>');
+        process.exit(2);
+      }
+      source = { kind: 'confluence', ref };
+    } else if (flags.source === 'bas') {
+      // Nguồn BAS đang KHÓA BẢO TRÌ — như nhánh run ở trên.
+      console.error('Nguồn BAS đang bảo trì — dùng --source confluence --ref <url/id> (hoặc --input JIRA key/JQL).');
+      process.exit(2);
+    } else if (flags.source) {
+      console.error('Unknown --source; expected "confluence" or "bas".');
+      process.exit(2);
+    }
+    let terminal;
+    if (flags.terminal !== undefined) {
+      const t = String(flags.terminal).trim().toLowerCase();
+      if (t !== 'ui-html' && t !== 'ui-react' && t !== 'both') {
+        console.error('Invalid --terminal; expected "ui-html", "ui-react" or "both".');
+        process.exit(2);
+      }
+      terminal = t;
+    }
+    let designSystemId;
+    if (flags['design-system'] !== undefined) {
+      const ds = String(flags['design-system']).trim();
+      designSystemId = ds && ds.toLowerCase() !== 'none' ? ds : null;
+    }
+    let platform;
+    if (flags.platform !== undefined) {
+      const p = String(flags.platform).trim().toLowerCase();
+      if (p !== 'mobile' && p !== 'web') {
+        console.error('Invalid --platform; expected "mobile" or "web".');
+        process.exit(2);
+      }
+      platform = p;
+    }
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/run-all`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          ...(source ? { source } : flags.input ? { input: flags.input } : {}),
+          ...(terminal !== undefined ? { terminal } : {}),
+          ...(designSystemId !== undefined ? { designSystemId } : {}),
+          ...(platform !== undefined ? { platform } : {}),
+          ...(flags['skip-succeeded'] ? { skipSucceeded: true } : {}),
+          ...(flags['no-follow-links'] ? { followLinks: false } : {}),
+        }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Started full workflow "${data.workflowId}" (${(data.stages ?? []).length} stage(s), auto-chained).`);
+    console.log(`  project: ${data.projectId}`);
+    console.log(`  stages:  ${(data.stages ?? []).join(' → ')}`);
+    console.log('Theo dõi tiến độ: od pipeline list --project ' + projectId);
     return;
   }
 
@@ -6850,7 +7043,7 @@ async function runPipeline(args) {
     return;
   }
 
-  // od pipeline build --project <id> — build/rebuild the docs-to-react app
+  // od pipeline build --project <id> — build/rebuild the ui-react app
   // from synced sources. dist/ never syncs (syncExclude), so this is the
   // cross-device "make it previewable" step. Requires Docker on the daemon
   // machine.
@@ -6874,6 +7067,32 @@ async function runPipeline(args) {
     if (flags.json) return writeJson(data);
     console.log('React app built → react/dist/');
     if (data.output) console.log(String(data.output).split('\n').slice(-5).join('\n'));
+    return;
+  }
+
+  // od pipeline demo — Playwright auto-demo of the BUILT react app: derive use
+  // cases from flow.json, drive the real app, record video + step screenshots
+  // under react/prototype-demo/ (deterministic, no agent).
+  if (sub === 'demo') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/react-demo`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      console.error(`demo failed:\n${data.error ?? resp.statusText}`);
+      process.exit(1);
+    }
+    if (flags.json) return writeJson(data);
+    console.log(`Đã dựng ${data.cases ?? 0} kịch bản demo → react/prototype-demo/ (video + screenshot từng bước)`);
+    if (data.output) console.log(String(data.output).split('\n').slice(-6).join('\n'));
     return;
   }
 

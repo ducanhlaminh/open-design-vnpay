@@ -1,7 +1,7 @@
 // Pipelines page (docs → output). A per-KGS-app, dependency-gated flow of
 // pipelines, rendered as a numbered vertical stepper that mirrors the actual
-// DAG of the selected workflow: docs-to-html (html-docs → html-cj → html-ux →
-// ui-html) or docs-to-react (react-docs → react-cj → react-ux → ui-react).
+// DAG of the docs-to-ui workflow: docs → cj → ux → then ONE step with two
+// UI-Spec options (ui-html | ui-react) — run either or both.
 //
 // The "project" here is a KGS app — a project pulled from the central KGS
 // (`od kg pull`), whose id is the KGS project_id. Runs happen in the BACKGROUND:
@@ -19,6 +19,7 @@ import type {
   PipelinesResponse,
   PullPlan,
   RunPipelineResponse,
+  TargetPlatform,
   Workflow,
   WorkflowsResponse,
 } from '@open-design/contracts';
@@ -28,11 +29,15 @@ import { Toast } from './Toast';
 import { navigate } from '../router';
 import {
   DesignSystemRunModal,
+  PlatformRunModal,
+  RerunScopeModal,
   PullAllModal,
   PushAllModal,
   PipelineResultModal,
   PipelineStatusModal,
+  RunAllModal,
   RunInputModal,
+  type RunAllPayload,
   type RunSourcePayload,
 } from './pipelines/PipelineModals';
 import { PullConflictModal } from './pipelines/PullConflictModal';
@@ -61,24 +66,36 @@ const PIPELINE_META: Record<string, { icon: IconName; blurb: string }> = {
   'jira-ingest': { icon: 'import', blurb: 'Pull Confluence / JIRA sources into clean Markdown docs.' },
   'feature-analysis': { icon: 'search', blurb: 'Extract the feature set and requirements from the ingested docs.' },
   'ux-spec': { icon: 'draw', blurb: 'Generate UX specifications from the features and customer journey.' },
+  'ux-research': { icon: 'search', blurb: 'Desk research từ UX knowledge base (Growth.Design, NN/g, Baymard): tiêu chí UX kèm nguồn + hình minh hoạ, làm chuẩn cho UX Spec.' },
+  'ux-review': { icon: 'eye', blurb: 'Heuristic review gate: judge the UX Spec against Nielsen + Norman usability heuristics before any UI is built.' },
   'customer-journey': { icon: 'orbit', blurb: 'Map the end-to-end customer journey from the docs, with key source text per stage.' },
   ui: { icon: 'blocks', blurb: 'Generate the static + interactive UI screens, then preview them.' },
   'ui-html': {
     icon: 'file-code',
-    blurb: 'Build the interactive HTML/CSS prototype — one self-contained file per screen.',
+    blurb: 'Option A — HTML preview: dựng UI-Spec thành trang HTML/CSS tĩnh xem nhanh, một file tự chứa mỗi màn.',
+  },
+  'ui-react': {
+    icon: 'blocks',
+    blurb: 'Option B — Prototype: app Vite + React 19 thật (Docker build) — nền cho mô phỏng thao tác + demo Playwright.',
   },
 };
 
-// Workflow B reuses the same upstream skills under distinct ids; map them to the
-// canonical meta so its steps get the right icon + blurb.
+// The merged workflow's stages reuse the upstream skills under short ids; map
+// them to the canonical meta so each step gets the right icon + blurb.
 const META_ALIAS: Record<string, string> = {
-  'html-docs': 'jira-ingest',
-  'html-cj': 'customer-journey',
-  'html-ux': 'ux-spec',
+  docs: 'jira-ingest',
+  cj: 'customer-journey',
+  ux: 'ux-spec',
 };
 
 function metaFor(id: string): { icon: IconName; blurb: string } {
   return PIPELINE_META[META_ALIAS[id] ?? id] ?? { icon: 'sparkles', blurb: '' };
+}
+
+// Short format label for a UI-Spec terminal option (the picker's card title
+// and the merged step's status chips).
+function uiSpecOptionLabel(p: { id: string }): string {
+  return p.id === 'ui-react' ? 'React' : 'HTML';
 }
 
 interface ToastState {
@@ -107,7 +124,6 @@ export function PipelinesView() {
   const [error, setError] = useState<string | null>(null);
 
   const [syncBusy, setSyncBusy] = useState<null | 'pull' | 'push'>(null);
-  const [uploading, setUploading] = useState(false);
   // Project history (version hóa output), scoped per PIPELINE CARD: the card's
   // Lịch sử button opens a panel listing the store versions whose snapshot
   // contains THAT stage's outputs (v.stages) + this machine's commits for the
@@ -119,8 +135,8 @@ export function PipelinesView() {
     commits: Array<{ commit: string; at: string; kind: string; pipelineId?: string; status?: string; by?: { email?: string } | null; filesChanged?: number; note?: string }>;
   } | null>(null);
   const [restoreBusy, setRestoreBusy] = useState<string | null>(null);
-  const [pullBusy, setPullBusy] = useState(false);
   const [buildBusy, setBuildBusy] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
   // Project picker controls — with many KGS projects the raw card grid became
   // a wall pushing the actual pipeline flow below the fold.
   const [projectSearch, setProjectSearch] = useState('');
@@ -171,8 +187,15 @@ export function PipelinesView() {
   // moving everything blindly. (Tạo dự án đã chuyển hẳn sang Pipeline Studio.)
   const [pullAllOpen, setPullAllOpen] = useState(false);
   const [pushAllOpen, setPushAllOpen] = useState(false);
+  const [runAllOpen, setRunAllOpen] = useState(false);
   const [runInputFor, setRunInputFor] = useState<PipelineView | null>(null);
   const [designSystemFor, setDesignSystemFor] = useState<PipelineView | null>(null);
+  const [platformFor, setPlatformFor] = useState<PipelineView | null>(null);
+  const [resetScopeFor, setResetScopeFor] = useState<PipelineView | null>(null);
+  // Chosen re-run clear scope, threaded from the scope modal through the normal
+  // run flow (input/design-system/platform modals all end at startRun). A ref so
+  // it survives the intermediate modals without re-render churn; consumed once.
+  const pendingResetScopeRef = useRef<'stage' | 'downstream' | undefined>(undefined);
   const [statusFor, setStatusFor] = useState<PipelineView | null>(null);
   const [resultFor, setResultFor] = useState<PipelineView | null>(null);
 
@@ -216,13 +239,21 @@ export function PipelinesView() {
     void loadProjects();
   }, [loadProjects]);
 
-  const load = useCallback(async (pid: string) => {
+  const load = useCallback(async (pid: string, opts?: { background?: boolean }) => {
     if (!pid || !workflowId) {
       setPipelines([]);
       return;
     }
-    setLoading(true);
-    setError(null);
+    // Background refreshes (the 2.5s in-flight poll + post-action reloads)
+    // must NOT flip `loading`: that swaps the whole stepper for the skeleton
+    // on every tick — a constant visible flicker while a pipeline runs. The
+    // skeleton is for the FIRST load / project switch only, when there is
+    // nothing on screen yet.
+    const background = opts?.background === true;
+    if (!background) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const res = await fetch(
         `/api/pipelines?projectId=${encodeURIComponent(pid)}&workflowId=${encodeURIComponent(workflowId)}`,
@@ -233,11 +264,16 @@ export function PipelinesView() {
       }
       const data = (await res.json()) as PipelinesResponse;
       setPipelines(data.pipelines ?? []);
+      if (background) setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPipelines([]);
+      // A transient poll hiccup must not wipe the stepper mid-run — keep the
+      // last known state on background failures; the next tick self-heals.
+      if (!background) {
+        setError(err instanceof Error ? err.message : String(err));
+        setPipelines([]);
+      }
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [workflowId]);
 
@@ -253,7 +289,7 @@ export function PipelinesView() {
   useEffect(() => {
     if (!anyRunning || !projectId) return;
     const id = window.setInterval(() => {
-      void load(projectId);
+      void load(projectId, { background: true });
     }, 2500);
     return () => window.clearInterval(id);
   }, [anyRunning, projectId, load]);
@@ -296,7 +332,7 @@ export function PipelinesView() {
       if (!res.ok) throw new Error(j?.error || `${kind}-all failed: ${res.status}`);
       if (kind === 'pull') {
         await loadProjects();
-        if (projectId) void load(projectId);
+        if (projectId) void load(projectId, { background: true });
       }
       // push-all/pull-all now round-trip output files too (graph + files); show
       // the file count so the user can see the artifacts moved, not just nodes.
@@ -322,31 +358,6 @@ export function PipelinesView() {
       return false;
     } finally {
       setSyncBusy(null);
-    }
-  };
-
-  // Manual upload of the selected project's output files to KGS (+ B2 convert).
-  const uploadToKgs = async () => {
-    if (!projectId) return;
-    setUploading(true);
-    try {
-      const res = await fetch('/api/pipelines/upload', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j?.error || `upload failed: ${res.status}`);
-      void load(projectId);
-      pushToast({ message: `Uploaded “${projectId}” to KGS` });
-    } catch (err) {
-      pushToast({
-        message: "Couldn't upload to KGS",
-        details: err instanceof Error ? err.message : String(err),
-        code: 'error',
-      });
-    } finally {
-      setUploading(false);
     }
   };
 
@@ -391,7 +402,7 @@ export function PipelinesView() {
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || `restore failed: ${res.status}`);
       pushToast({ message: `Đã khôi phục ${j.files ?? 0} file về bản ${label}` });
-      void load(projectId);
+      void load(projectId, { background: true });
       void loadHistory(projectId);
     } catch (err) {
       pushToast({
@@ -404,7 +415,7 @@ export function PipelinesView() {
     }
   };
 
-  // Build/rebuild the docs-to-react app from synced sources. dist/ never
+  // Build/rebuild the ui-react app from synced sources. dist/ never
   // syncs (PipelineDef.syncExclude), so after "Pull project" this is what
   // makes the app previewable again. 422 carries the tsc/vite error tail.
   const buildReactApp = async () => {
@@ -418,7 +429,7 @@ export function PipelinesView() {
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || `build failed: ${res.status}`);
-      void load(projectId);
+      void load(projectId, { background: true });
       pushToast({ message: `Built React app for “${projectId}” → react/dist/` });
     } catch (err) {
       pushToast({
@@ -431,24 +442,52 @@ export function PipelinesView() {
     }
   };
 
-  // Conflict-aware pull of the selected project's files (PLAN → RESOLVE → APPLY).
-  // 0 conflicts → apply straight through (keep-local default, no modal); else open
-  // PullConflictModal so the user resolves each differing file.
-  const pullProject = async () => {
+  // Prototype auto-demo: Playwright drives the BUILT react app through its
+  // flow.json use cases (video + per-step screenshots → react/prototype-demo/).
+  const buildReactDemoRun = async () => {
     if (!projectId) return;
-    setPullBusy(true);
+    setDemoBusy(true);
     try {
-      const plan = await pullPlan(projectId);
+      const res = await fetch('/api/pipelines/react-demo', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || `demo failed: ${res.status}`);
+      pushToast({
+        message: `Đã quay ${j.cases ?? 0} kịch bản demo → react/prototype-demo/`,
+        details: 'Đẩy kết quả lên để studio phát video trong tab Mô phỏng.',
+      });
+    } catch (err) {
+      pushToast({
+        message: 'Không dựng được demo',
+        details: err instanceof Error ? err.message : String(err),
+        code: 'error',
+      });
+    } finally {
+      setDemoBusy(false);
+    }
+  };
+
+  // Conflict-aware pull of ONE project's files (PLAN → RESOLVE → APPLY).
+  // 0 conflicts → apply straight through (keep-local default, no modal); else open
+  // PullConflictModal so the user resolves each differing file. Reached from the
+  // Pull modal when exactly one locally-mirrored project is selected — bulk pulls
+  // take the blind-overwrite path instead (pre-pull .odhistory snapshot).
+  const pullProject = async (pid: string) => {
+    try {
+      const plan = await pullPlan(pid);
       if (plan.conflicts.length === 0) {
         const result = await pullApply({
-          projectId,
+          projectId: pid,
           planId: plan.planId,
           resolutions: {},
           onConflictDefault: 'local',
         });
-        void load(projectId);
+        void load(pid, { background: true });
         pushToast({
-          message: `Pulled “${projectId}” — ${result.downloaded} new file(s)`,
+          message: `Pulled “${pid}” — ${result.downloaded} new file(s)`,
           ...(result.stale.length ? { details: `${result.stale.length} skipped (remote changed)`, code: 'warn' } : {}),
         });
       } else {
@@ -460,8 +499,6 @@ export function PipelinesView() {
         details: err instanceof Error ? err.message : String(err),
         code: 'error',
       });
-    } finally {
-      setPullBusy(false);
     }
   };
 
@@ -474,12 +511,21 @@ export function PipelinesView() {
     // Per-run design system for UI stages: a string id, or `null` for explicit
     // "None". `undefined` (the common case) omits the field → daemon default.
     designSystemId?: string | null,
+    // Target platform for the UX stage (`acceptsPlatform`). `undefined` omits
+    // the field → the skill's default (mobile).
+    platform?: TargetPlatform,
   ) => {
     if (!projectId) return;
     const body: Record<string, unknown> = { projectId };
     if (payload?.source) body.source = payload.source;
     else if (payload?.input && payload.input.trim()) body.input = payload.input.trim();
+    if (payload?.followLinks === false) body.followLinks = false;
     if (designSystemId !== undefined) body.designSystemId = designSystemId;
+    if (platform !== undefined) body.platform = platform;
+    // Re-run clear scope chosen in the scope modal (default 'stage' when absent —
+    // still clears this stage's own outputs so the agent regenerates).
+    if (pendingResetScopeRef.current) body.resetScope = pendingResetScopeRef.current;
+    pendingResetScopeRef.current = undefined;
     const res = await fetch(`/api/pipelines/${encodeURIComponent(pipelineId)}/run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -504,6 +550,41 @@ export function PipelinesView() {
     );
   };
 
+  // Kick the WHOLE workflow (POST /api/pipelines/run-all): the daemon chains
+  // every stage automatically — no per-stage review. We optimistically flip the
+  // first planned stage to running; the poller tracks the rest of the chain.
+  const startRunAll = async (payload: RunAllPayload) => {
+    if (!projectId) return;
+    const res = await fetch('/api/pipelines/run-all', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        projectId,
+        ...(workflowId ? { workflowId } : {}),
+        ...(payload.input ? { input: payload.input } : {}),
+        terminal: payload.terminal,
+        platform: payload.platform,
+        designSystemId: payload.designSystemId,
+        ...(payload.skipSucceeded ? { skipSucceeded: true } : {}),
+        ...(payload.followLinks === false ? { followLinks: false } : {}),
+      }),
+    });
+    if (!res.ok && res.status !== 202) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.error || `run-all failed: ${res.status}`);
+    }
+    const j = (await res.json().catch(() => null)) as { stages?: string[] } | null;
+    const first = j?.stages?.[0];
+    if (first) {
+      setPipelines((prev) => prev.map((p) => (p.id === first ? { ...p, status: 'running' } : p)));
+    }
+    void load(projectId, { background: true });
+    pushToast({
+      message: `Đã khởi động full workflow — ${j?.stages?.length ?? 0} bước chạy nối tiếp trong nền`,
+      details: (j?.stages ?? []).join(' → '),
+    });
+  };
+
   const runDirect = async (p: PipelineView) => {
     setBusyId(p.id);
     try {
@@ -520,12 +601,43 @@ export function PipelinesView() {
     }
   };
 
-  // Run click: pipelines that take an input (e.g. jira-ingest's Confluence link)
-  // open a modal first; the rest start immediately.
-  const onRunClick = (p: PipelineView) => {
+  // Transitive downstream of a stage (every pipeline whose dependsOn chain
+  // reaches it) — drives whether the re-run scope choice is meaningful.
+  const downstreamOf = useCallback(
+    (id: string): PipelineView[] => {
+      const set = new Set<string>([id]);
+      for (;;) {
+        let grew = false;
+        for (const p of pipelines) {
+          if (set.has(p.id)) continue;
+          if (p.dependsOn.some((d) => set.has(d))) {
+            set.add(p.id);
+            grew = true;
+          }
+        }
+        if (!grew) break;
+      }
+      return pipelines.filter((p) => p.id !== id && set.has(p.id));
+    },
+    [pipelines],
+  );
+
+  // The normal run flow: stages with an input/design-system/platform choice open
+  // their modal first; the rest start immediately.
+  const proceedRun = (p: PipelineView) => {
     if (p.inputPlaceholder) setRunInputFor(p);
     else if (p.acceptsDesignSystem) setDesignSystemFor(p);
+    else if (p.acceptsPlatform) setPlatformFor(p);
     else void runDirect(p);
+  };
+
+  // Run click: a RE-RUN (already succeeded) of a stage that has downstream first
+  // asks the clear scope (this stage only vs also the stale downstream); then the
+  // normal flow proceeds. A first run — or a terminal with no downstream — skips
+  // straight to it (a re-run there still clears its own output daemon-side).
+  const onRunClick = (p: PipelineView) => {
+    if (p.status === 'succeeded' && downstreamOf(p.id).length > 0) setResetScopeFor(p);
+    else proceedRun(p);
   };
 
   const openChat = (p: PipelineView) => {
@@ -538,7 +650,29 @@ export function PipelinesView() {
   };
 
   const hasProjects = projects.length > 0;
-  const doneCount = pipelines.filter((p) => p.status === 'succeeded').length;
+
+  // UI-Spec option picker (the merged terminal step's Run): choose HTML or
+  // React, then hand off to the normal per-pipeline run flow.
+  const [uiSpecPickerOpen, setUiSpecPickerOpen] = useState(false);
+
+  // Group the flat pipeline list into stepper entries. Adjacent stages with
+  // the SAME non-empty dependsOn are alternative OPTIONS of one step (the
+  // UI-Spec terminals: ui-html | ui-react) — they render as ONE card whose
+  // Run opens an option-picker modal, so the flow never reads as "HTML first,
+  // React after".
+  const stepEntries: PipelineView[][] = [];
+  for (const p of pipelines) {
+    const last = stepEntries[stepEntries.length - 1];
+    const sibling =
+      !!last &&
+      p.dependsOn.length > 0 &&
+      JSON.stringify(last[0]!.dependsOn) === JSON.stringify(p.dependsOn);
+    if (sibling) last!.push(p);
+    else stepEntries.push([p]);
+  }
+  // A step is done when any of its options succeeded (either UI-Spec output
+  // completes the step).
+  const doneCount = stepEntries.filter((opts) => opts.some((p) => p.status === 'succeeded')).length;
 
   return (
     <section className="pipelines-page" aria-labelledby="pipelines-title" data-testid="pipelines-view">
@@ -551,16 +685,30 @@ export function PipelinesView() {
           <h1 id="pipelines-title" className="pipelines-page__title">
             Pipelines
           </h1>
-          <p className="pipelines-page__lede">
-            A dependency-gated flow that turns product docs into UI screens — each step runs a
-            guided agent in the background; track it, jump into the chat, or open its result.
-          </p>
+          <p className="pipelines-page__lede">Biến tài liệu sản phẩm thành màn hình UI:</p>
+          <ol className="pipelines-page__steps">
+            <li>
+              <span>
+                <strong>Chọn dự án</strong> — chưa có thì bấm <strong>Tải dự án về…</strong>
+              </span>
+            </li>
+            <li>
+              <span>
+                <strong>Chạy lần lượt các bước</strong> — bước sau mở khi bước trước xong.
+              </span>
+            </li>
+            <li>
+              <span>
+                <strong>Đẩy kết quả lên…</strong> để studio và máy khác cùng thấy.
+              </span>
+            </li>
+          </ol>
         </div>
         {hasProjects && pipelines.length > 0 ? (
           <div className="pipelines-progress" aria-label="Pipeline progress">
             <span className="pipelines-progress__count">
               {doneCount}
-              <span className="pipelines-progress__total">/{pipelines.length}</span>
+              <span className="pipelines-progress__total">/{stepEntries.length}</span>
             </span>
             <span className="pipelines-progress__label">steps done</span>
           </div>
@@ -588,65 +736,47 @@ export function PipelinesView() {
         </div>
       ) : null}
 
-      {/* Sync toolbar (global KGS pull/push + per-project upload) */}
+      {/* Sync toolbar — MỘT cặp Pull/Push duy nhất. Mỗi nút mở hộp thoại chọn
+          dự án + bước (dự án đang chọn được tick sẵn nên thao tác thường ngày
+          vẫn là 2 click); pull đúng một dự án đã có trên máy đi đường xử lý
+          xung đột. Build app KHÔNG nằm ở đây — nó thuộc option React trong
+          modal UI-Spec. */}
       <div className="pipelines-toolbar">
         <div className="pipelines-toolbar__group pipelines-toolbar__group--actions">
+          <span className="pipelines-toolbar__label">Chạy</span>
+          <button
+            type="button"
+            className="pl-btn pl-btn--run"
+            onClick={() => setRunAllOpen(true)}
+            disabled={!projectId || pipelines.length === 0 || pipelines.some((p) => p.status === 'running' || p.status === 'queued')}
+            title="Chạy toàn bộ workflow tự động — các bước nối tiếp nhau, không cần duyệt output từng bước"
+          >
+            <Icon name="play" size={14} />
+            <span>Chạy full workflow</span>
+          </button>
+        </div>
+        <div className="pipelines-toolbar__group pipelines-toolbar__group--actions">
+          <span className="pipelines-toolbar__label">Đồng bộ</span>
           <button
             type="button"
             className="pl-btn"
             onClick={() => setPullAllOpen(true)}
             disabled={syncBusy !== null}
-            title="Pull các project từ KGS về — chỉ output của workflow đang chọn"
+            title="Tải dự án từ kho chung (KGS) về máy — hộp thoại cho chọn dự án và bước; dự án đang chọn được tick sẵn"
           >
             <Icon name={syncBusy === 'pull' ? 'spinner' : 'download'} size={14} />
-            <span>{syncBusy === 'pull' ? 'Pulling…' : 'Pull all'}</span>
+            <span>{syncBusy === 'pull' ? 'Đang tải…' : 'Tải dự án về…'}</span>
           </button>
           <button
             type="button"
             className="pl-btn"
             onClick={() => setPushAllOpen(true)}
             disabled={syncBusy !== null}
-            title="Push các project local lên KGS — chỉ output của workflow đang chọn"
+            title="Đẩy kết quả lên kho chung (KGS) để studio / máy khác thấy — hộp thoại cho chọn dự án và bước; dự án đang chọn được tick sẵn"
           >
             <Icon name={syncBusy === 'push' ? 'spinner' : 'upload'} size={14} />
-            <span>{syncBusy === 'push' ? 'Pushing…' : 'Push all'}</span>
+            <span>{syncBusy === 'push' ? 'Đang đẩy…' : 'Đẩy kết quả lên…'}</span>
           </button>
-          {hasProjects ? (
-            <button
-              type="button"
-              className="pl-btn"
-              onClick={() => void pullProject()}
-              disabled={pullBusy || !projectId}
-              title="Pull this project's files from KGS, resolving conflicts with local edits"
-            >
-              <Icon name={pullBusy ? 'spinner' : 'download'} size={14} />
-              <span>{pullBusy ? 'Pulling…' : 'Pull project'}</span>
-            </button>
-          ) : null}
-          {hasProjects ? (
-            <button
-              type="button"
-              className="pl-btn"
-              onClick={() => void uploadToKgs()}
-              disabled={uploading || !projectId}
-              title="Upload this project's output files to KGS (UX/CJ also convert to graph)"
-            >
-              <Icon name={uploading ? 'spinner' : 'upload'} size={14} />
-              <span>{uploading ? 'Uploading…' : 'Upload project'}</span>
-            </button>
-          ) : null}
-          {hasProjects && workflowId === 'docs-to-react' ? (
-            <button
-              type="button"
-              className="pl-btn"
-              onClick={() => void buildReactApp()}
-              disabled={buildBusy || !projectId}
-              title="Build the React app from its sources (react/dist/ is never synced — after a pull, build here to preview). Requires Docker."
-            >
-              <Icon name={buildBusy ? 'spinner' : 'play'} size={14} />
-              <span>{buildBusy ? 'Building…' : 'Build app'}</span>
-            </button>
-          ) : null}
         </div>
       </div>
 
@@ -761,7 +891,7 @@ export function PipelinesView() {
             <strong>Chưa có dự án nào trên máy này</strong>
             <p>
               Dự án được tạo trên <strong>Pipeline Studio</strong> (kèm link Confluence + design
-              system). Nhờ quản lý add bạn vào dự án, rồi bấm <strong>Pull all</strong> (hoặc{' '}
+              system). Nhờ quản lý add bạn vào dự án, rồi bấm <strong>Tải dự án về…</strong> (hoặc{' '}
               <code>od kg pull &lt;project-id&gt;</code>) để kéo về và chạy pipeline tại đây.
             </p>
           </div>
@@ -779,11 +909,87 @@ export function PipelinesView() {
         </div>
       ) : (
         <ol className="pipelines-flow">
-          {pipelines.map((p, idx) => {
+          {stepEntries.map((opts, idx) => {
+            const isLast = idx === stepEntries.length - 1;
+            // Option-group step (the UI-Spec terminals): ONE card whose Run
+            // opens the HTML-vs-React picker modal — the options are
+            // alternatives, not consecutive steps.
+            if (opts.length > 1) {
+              const anyRunning = opts.some((o) => o.status === 'running' || o.status === 'queued');
+              const anyDone = opts.some((o) => o.status === 'succeeded');
+              const active = opts.some((o) => o.active);
+              const groupStatus = anyRunning ? 'running' : anyDone ? 'succeeded' : 'idle';
+              return (
+                <li
+                  key={opts.map((o) => o.id).join('+')}
+                  className="pl-step"
+                  data-status={groupStatus}
+                  data-active={active ? 'yes' : 'no'}
+                >
+                  <div className="pl-step__spine" aria-hidden="true">
+                    <span className="pl-step__node">
+                      {anyDone ? (
+                        <Icon name="check" size={14} />
+                      ) : anyRunning ? (
+                        <Icon name="spinner" size={14} />
+                      ) : !active ? (
+                        <Icon name="eye-off" size={13} />
+                      ) : (
+                        <span className="pl-step__num">{idx + 1}</span>
+                      )}
+                    </span>
+                    {!isLast ? <span className="pl-step__connector" /> : null}
+                  </div>
+
+                  <div className="pl-step__card">
+                    <span className="pl-step__icon" aria-hidden="true">
+                      <Icon name="blocks" size={18} />
+                    </span>
+                    <div className="pl-step__body">
+                      <div className="pl-step__heading">
+                        <span className="pl-step__name">UI-Spec</span>
+                        {opts.map((o) => (
+                          <span key={o.id} className={`pl-status pl-status--${o.status}`}>
+                            {uiSpecOptionLabel(o)}: {STATUS_LABEL[o.status] ?? o.status}
+                          </span>
+                        ))}
+                      </div>
+                      <p className="pl-step__desc">
+                        Bước cuối — sinh UI-Spec từ UX Spec. Bấm Run để chọn định dạng: HTML
+                        prototype hoặc React app (chạy một hoặc cả hai).
+                      </p>
+                      {!active && opts[0]!.dependsOn.length > 0 ? (
+                        <p className="pl-step__lock">
+                          <Icon name="eye-off" size={12} />
+                          Locked — finish{' '}
+                          {opts[0]!.dependsOn
+                            .map((dep) => pipelines.find((x) => x.id === dep)?.name ?? dep)
+                            .join(', ')}{' '}
+                          first
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="pl-step__actions">
+                      <button
+                        type="button"
+                        className="pl-btn pl-btn--run"
+                        onClick={() => setUiSpecPickerOpen(true)}
+                        disabled={!active}
+                        title="Chọn định dạng UI-Spec (HTML / React) rồi chạy"
+                      >
+                        <Icon name={anyRunning ? 'spinner' : 'play'} size={14} />
+                        <span>{anyRunning ? 'Đang chạy…' : anyDone ? 'Run / kết quả' : 'Run'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              );
+            }
+            const p = opts[0]!;
             const isBusy = busyId === p.id;
             const isRunning = p.status === 'running' || p.status === 'queued';
             const meta = metaFor(p.id);
-            const isLast = idx === pipelines.length - 1;
             const canChat = !!p.lastConversationId;
             const hasRunInfo = Boolean(p.updatedAt || p.lastInput || p.lastSource || p.lastRunId);
             const infoOpen = infoForId === p.id;
@@ -1111,13 +1317,195 @@ export function PipelinesView() {
             );
           })()
         : null}
+      {uiSpecPickerOpen
+        ? (() => {
+            // Live options from the current pipeline list (statuses keep
+            // refreshing while the modal is open).
+            const options = stepEntries.find((e) => e.length > 1);
+            if (!options) return null;
+            return (
+              <PlModal
+                title="UI-Spec — chọn định dạng"
+                icon="blocks"
+                size="md"
+                onClose={() => setUiSpecPickerOpen(false)}
+              >
+                <p style={{ fontSize: 12.5, opacity: 0.75, margin: '0 0 12px' }}>
+                  Hai lựa chọn là NGANG HÀNG — cùng sinh UI-Spec từ UX Spec. Chạy một định dạng,
+                  hoặc cả hai nếu cần so sánh.
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  {options.map((o) => {
+                    const oRunning = o.status === 'running' || o.status === 'queued';
+                    const oCanChat = !!o.lastConversationId;
+                    return (
+                      <div
+                        key={o.id}
+                        style={{
+                          border: '1px solid var(--border, rgba(127,127,127,.3))',
+                          borderRadius: 10,
+                          padding: '14px 14px 12px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <Icon name={o.id === 'ui-react' ? 'blocks' : 'file-code'} size={18} />
+                          <span style={{ fontWeight: 700, fontSize: 13.5 }}>
+                            {uiSpecOptionLabel(o)}
+                          </span>
+                          <span className={`pl-status pl-status--${o.status}`}>
+                            {STATUS_LABEL[o.status] ?? o.status}
+                          </span>
+                        </div>
+                        <p style={{ fontSize: 12, opacity: 0.75, margin: 0, flex: 1 }}>
+                          {o.id === 'ui-react'
+                            ? 'App Vite + React 19 + Tailwind v4 thật, build trong Docker — preview như app chạy thật, có luồng điều hướng.'
+                            : 'HTML/CSS prototype tương tác — mỗi màn một file tự chứa, mở xem ngay không cần build.'}
+                        </p>
+                        {o.updatedAt ? (
+                          <p style={{ fontSize: 11.5, opacity: 0.6, margin: 0 }}>
+                            Last run: {relativeTimeLong(o.updatedAt, t)}
+                          </p>
+                        ) : null}
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {oRunning ? (
+                            <button
+                              type="button"
+                              className="pl-btn pl-btn--run"
+                              onClick={() => {
+                                setUiSpecPickerOpen(false);
+                                setStatusFor(o);
+                              }}
+                            >
+                              <Icon name="spinner" size={14} />
+                              <span>Status</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="pl-btn pl-btn--run"
+                              disabled={busyId === o.id || !o.active}
+                              onClick={() => {
+                                setUiSpecPickerOpen(false);
+                                onRunClick(o);
+                              }}
+                            >
+                              <Icon
+                                name={o.status === 'failed' || o.status === 'succeeded' ? 'refresh' : 'play'}
+                                size={14}
+                              />
+                              <span>
+                                {o.status === 'succeeded'
+                                  ? 'Run again'
+                                  : o.status === 'failed'
+                                    ? 'Retry'
+                                    : 'Run'}
+                              </span>
+                            </button>
+                          )}
+                          {o.status === 'succeeded' ? (
+                            <button
+                              type="button"
+                              className="pl-btn"
+                              onClick={() => {
+                                setUiSpecPickerOpen(false);
+                                setResultFor(o);
+                              }}
+                            >
+                              <Icon name="file-code" size={14} />
+                              <span>Quick result</span>
+                            </button>
+                          ) : null}
+                          {o.status === 'failed' ? (
+                            <button
+                              type="button"
+                              className="pl-btn pl-btn--danger"
+                              onClick={() => {
+                                setUiSpecPickerOpen(false);
+                                setStatusFor(o);
+                              }}
+                            >
+                              <Icon name="info" size={14} />
+                              <span>View error</span>
+                            </button>
+                          ) : null}
+                          {oCanChat ? (
+                            <button
+                              type="button"
+                              className="pl-btn"
+                              onClick={() => openChat(o)}
+                            >
+                              <Icon name="comment" size={14} />
+                              <span>Open chat</span>
+                            </button>
+                          ) : null}
+                          {o.id === 'ui-react' && o.status === 'succeeded' ? (
+                            <button
+                              type="button"
+                              className="pl-btn"
+                              onClick={() => void buildReactApp()}
+                              disabled={buildBusy || demoBusy || !projectId}
+                              title="Build lại app từ source — react/dist/ không được sync, nên sau khi Pull dự án cần build lại để preview. Cần Docker trên máy này."
+                            >
+                              <Icon name={buildBusy ? 'spinner' : 'play'} size={14} />
+                              <span>{buildBusy ? 'Đang build…' : 'Build app'}</span>
+                            </button>
+                          ) : null}
+                          {o.id === 'ui-react' && o.status === 'succeeded' ? (
+                            <button
+                              type="button"
+                              className="pl-btn"
+                              onClick={() => void buildReactDemoRun()}
+                              disabled={demoBusy || buildBusy || !projectId}
+                              title="Prototype tự chạy: Playwright bấm xuyên các kịch bản flow.json trên app đã build, ghi video + screenshot từng bước vào react/prototype-demo/ (không dùng agent). Lần đầu sẽ cài Playwright + Chromium (một lần)."
+                            >
+                              <Icon name={demoBusy ? 'spinner' : 'present'} size={14} />
+                              <span>{demoBusy ? 'Đang quay…' : 'Dựng demo'}</span>
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="pl-btn"
+                            onClick={() => {
+                              setUiSpecPickerOpen(false);
+                              setHistoryForId(o.id);
+                              if (projectId) void loadHistory(projectId);
+                            }}
+                            title="Các bản đã push chứa output của định dạng này"
+                          >
+                            <Icon name="history" size={14} />
+                            <span>Lịch sử</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </PlModal>
+            );
+          })()
+        : null}
       {pullAllOpen ? (
         <PullAllModal
           localIds={new Set(projects.map((pr) => pr.id))}
           workflows={activeWorkflows}
           scopeName={activeWorkflows[0]?.name}
+          initialSelectedIds={projectId ? [projectId] : undefined}
           onClose={() => setPullAllOpen(false)}
           onConfirm={async (ids, stages) => {
+            // Exactly ONE locally-mirrored project + full stage scope → the
+            // conflict-aware path (PLAN → RESOLVE → APPLY), so local edits are
+            // never overwritten silently. Anything broader takes the bulk
+            // endpoint (blind overwrite behind a pre-pull .odhistory snapshot).
+            const allStages = activeWorkflows[0]?.pipelineIds.length ?? 0;
+            const pid = ids.length === 1 ? ids[0]! : null;
+            if (pid && projects.some((pr) => pr.id === pid) && stages.length >= allStages) {
+              setProjectId(pid);
+              await pullProject(pid);
+              return;
+            }
             const ok = await syncAll('pull', ids, stages);
             if (!ok) throw new Error('Pull failed — see the toast for details.');
           }}
@@ -1128,11 +1516,22 @@ export function PipelinesView() {
           projects={projects.map((pr) => ({ id: pr.id, name: pr.name }))}
           workflows={activeWorkflows}
           scopeName={activeWorkflows[0]?.name}
+          initialSelectedIds={projectId ? [projectId] : undefined}
           onClose={() => setPushAllOpen(false)}
           onConfirm={async (ids, stages) => {
             const ok = await syncAll('push', ids, stages);
             if (!ok) throw new Error('Push failed — see the toast for details.');
           }}
+        />
+      ) : null}
+      {runAllOpen ? (
+        <RunAllModal
+          workflowName={workflows.find((w) => w.id === workflowId)?.name ?? 'Docs → UI-Spec'}
+          defaultConfluencePages={projects.find((pr) => pr.id === projectId)?.config?.confluencePages}
+          defaultDesignSystemId={projects.find((pr) => pr.id === projectId)?.config?.designSystemId}
+          anySucceeded={pipelines.some((p) => p.status === 'succeeded')}
+          onClose={() => setRunAllOpen(false)}
+          onRun={startRunAll}
         />
       ) : null}
       {runInputFor ? (
@@ -1159,6 +1558,31 @@ export function PipelinesView() {
           }}
         />
       ) : null}
+      {platformFor ? (
+        <PlatformRunModal
+          pipelineName={platformFor.name}
+          onClose={() => setPlatformFor(null)}
+          onRun={async (platform) => {
+            await startRun(platformFor.id, undefined, undefined, platform);
+            pushToast({ message: `Started “${platformFor.name}” — running in background` });
+          }}
+        />
+      ) : null}
+      {resetScopeFor ? (
+        <RerunScopeModal
+          pipelineName={resetScopeFor.name}
+          downstreamNames={downstreamOf(resetScopeFor.id).map((d) => d.name)}
+          onClose={() => setResetScopeFor(null)}
+          onChoose={async (scope) => {
+            // Remember the choice, then continue into the stage's normal run
+            // flow (which may open the platform/design-system/input modal).
+            pendingResetScopeRef.current = scope;
+            const p = resetScopeFor;
+            setResetScopeFor(null);
+            proceedRun(p);
+          }}
+        />
+      ) : null}
       {statusFor ? (
         <PipelineStatusModal
           pipeline={statusFor}
@@ -1172,7 +1596,7 @@ export function PipelinesView() {
               : null
           }
           onRefresh={() => {
-            if (projectId) void load(projectId);
+            if (projectId) void load(projectId, { background: true });
           }}
         />
       ) : null}
@@ -1190,7 +1614,7 @@ export function PipelinesView() {
           plan={pullPlanState}
           onClose={() => setPullPlanState(null)}
           onApplied={(result) => {
-            void load(projectId);
+            void load(projectId, { background: true });
             pushToast({
               message: `Pulled “${projectId}” — ${result.downloaded} downloaded, ${result.keptLocal} kept local`,
               ...(result.stale.length

@@ -1,19 +1,17 @@
 import type { Express, Response } from 'express';
-import type { PipelineRunSource, ProjectPipelineState } from '@open-design/contracts';
+import type { PipelineRunSource, ProjectPipelineState, TargetPlatform, WorkflowTerminal } from '@open-design/contracts';
 
 import { getProject, getProjectPipelineState, insertProject, listProjects } from './db.js';
 import {
   DEFAULT_WORKFLOW_ID,
   WORKFLOWS,
   computeActive,
-  deriveStateFromKgsFiles,
   deriveStateFromLocalFiles,
   getPipelineDef,
   getWorkflow,
   listPipelineStatus,
   mergePipelineState,
 } from './pipelines.js';
-import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import type { RouteDeps } from './server-context.js';
 
 // A pipeline's "project" is a KGS app: either pulled from the central KGS
@@ -54,6 +52,15 @@ export function parseRunSource(raw: unknown): PipelineRunSource | undefined {
   throw new Error('source.kind must be "confluence" or "bas"');
 }
 
+// Nguồn BAS (KG document) của pipeline 1 đang KHÓA BẢO TRÌ (2026-07): card
+// picker bị disable trên UI (RunInputModal), CLI chặn `--source bas`, và mọi
+// run mang source.kind === 'bas' bị từ chối 503 tại cả hai route dưới đây
+// (fail-closed — client cũ/gọi thẳng API cũng không lách được). Mở lại: gỡ cờ
+// này + hai mirror ở cli.ts và RunInputModal.
+const BAS_SOURCE_LOCKED = true;
+const BAS_LOCKED_MSG =
+  'Nguồn BAS đang bảo trì — chọn trang Confluence (hoặc nhập JIRA key/JQL) cho bước Docs.';
+
 // The pipelines capability has no scheduler/service of its own (unlike routines):
 // runs are manual and one-shot. The route layer validates project + gating and
 // delegates the actual conversation-seeding run to `ctx.pipelines.runPipeline`,
@@ -68,18 +75,15 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // signal any device sees after a pull). Media unreachable → fall back to local.
   const loadMergedState = async (projectId: string): Promise<ProjectPipelineState> => {
     const local = getProjectPipelineState(db, projectId) as ProjectPipelineState;
-    // "Done" = the stage's output files exist — on local disk (offline-safe,
-    // covers outputs produced/pulled locally) OR in the media-service file store
-    // (cross-device). Both feed one file-derived state; mergePipelineState still
-    // preserves a local in-flight 'running' (it never overrides a running stage).
+    // "Done" is derived from THIS DEVICE'S LOCAL state only: a stage is done when
+    // its output files exist in the local cwd (or local run metadata says so).
+    // The media/KGS store is deliberately NOT consulted — a stage whose output is
+    // only on the store shows "not started" until the user pulls it into local
+    // (Pull all / running a downstream stage auto-pulls its inputs), at which
+    // point the local files flip it to done. This makes a local re-run's clear
+    // reflect immediately (no stale store copy keeping a reset stage "done").
     const localPaths = await ctx.pipelines.localOutputs(projectId).catch(() => [] as string[]);
     const fileState: ProjectPipelineState = deriveStateFromLocalFiles(localPaths);
-    try {
-      const files = await new MediaClient(mediaConfigFromEnv()).listFiles(projectId);
-      Object.assign(fileState, deriveStateFromKgsFiles(files));
-    } catch {
-      // media-service unreachable — local file-derived done-state still applies.
-    }
     return mergePipelineState(local, fileState);
   };
 
@@ -232,7 +236,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   });
 
   // POST /api/pipelines/react-build { projectId } — build (or rebuild) the
-  // docs-to-react app from its synced sources. dist/ is never synced
+  // ui-react app from its synced sources. dist/ is never synced
   // (PipelineDef.syncExclude), so this is how a device that pulled a project
   // gets a previewable app: build.sh reseeds the scaffold + runs tsc+vite in
   // the shared toolkit container. Requires Docker on this machine.
@@ -248,6 +252,114 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       // Build failures carry the tsc/vite tail — surface it so the UI/CLI can
       // show WHY instead of a bare 500.
       res.status(422).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // ── UX knowledge base (media-store backed, ux-research stage) ─────────────
+  // GET /api/ux-kb/status — which KB the next ux-research run will use
+  // (env override / media cache / home folder / none).
+  app.get('/api/ux-kb/status', async (_req, res) => {
+    try {
+      res.json(await ctx.pipelines.uxKbStatus());
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // POST /api/ux-kb/push { dir? } — upload a local KB folder to the media
+  // store (content-hash sync; NN/g full-text article cache stays local by
+  // design). Every machine's next ux-research run picks the new set up.
+  app.post('/api/ux-kb/push', async (req, res) => {
+    try {
+      const dir = typeof req.body?.dir === 'string' ? req.body.dir : undefined;
+      res.json(await ctx.pipelines.uxKbPush(dir));
+    } catch (err: any) {
+      res.status(422).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // POST /api/pipelines/react-demo { projectId } — Playwright auto-demo of the
+  // BUILT react app: derive use cases from flow.json, drive the real app, and
+  // record video + per-step screenshots under react/prototype-demo/. 422 with
+  // the runner tail on failure (missing dist/flow, playwright env, dead click).
+  app.post('/api/pipelines/react-demo', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const result = await ctx.pipelines.buildReactDemo(projectId);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(422).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // POST /api/pipelines/run-all — run the WHOLE workflow sequentially with no
+  // per-stage review (the "Run full workflow" button / `od pipeline run-all`).
+  // The daemon chains the stages in the background — each stage is a normal
+  // run; a success auto-starts the next. 409 when a chain is already in flight
+  // for this project or (with skipSucceeded) nothing is left to run. Progress
+  // surfaces through the normal per-stage statuses (GET /api/pipelines).
+  app.post('/api/pipelines/run-all', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const project = getProject(db, projectId);
+      if (!project) return res.status(404).json({ error: 'project not found' });
+      if (!isKgsProject(project)) {
+        return res.status(400).json({
+          error: 'project is not a KGS app; pull it first with `od kg pull <project-id>`',
+        });
+      }
+      const workflowId = typeof req.body?.workflowId === 'string' ? req.body.workflowId : undefined;
+      const rawTerminal = req.body?.terminal;
+      if (
+        rawTerminal !== undefined &&
+        rawTerminal !== 'ui-html' &&
+        rawTerminal !== 'ui-react' &&
+        rawTerminal !== 'both'
+      ) {
+        return res.status(400).json({ error: "terminal must be 'ui-html', 'ui-react' or 'both'" });
+      }
+      const input = typeof req.body?.input === 'string' ? req.body.input : undefined;
+      let source: PipelineRunSource | undefined;
+      try {
+        source = parseRunSource(req.body?.source);
+      } catch (err: any) {
+        return res.status(400).json({ error: String(err?.message ?? err) });
+      }
+      if (BAS_SOURCE_LOCKED && source?.kind === 'bas') {
+        return res.status(503).json({ error: BAS_LOCKED_MSG });
+      }
+      const rawDesignSystemId = req.body?.designSystemId;
+      const designSystemId =
+        typeof rawDesignSystemId === 'string'
+          ? rawDesignSystemId
+          : rawDesignSystemId === null
+            ? null
+            : undefined;
+      const rawPlatform = req.body?.platform;
+      if (rawPlatform !== undefined && rawPlatform !== 'mobile' && rawPlatform !== 'web') {
+        return res.status(400).json({ error: "platform must be 'mobile' or 'web'" });
+      }
+      const result = await ctx.pipelines.runWorkflowAll(projectId, {
+        ...(workflowId !== undefined ? { workflowId } : {}),
+        ...(rawTerminal !== undefined ? { terminal: rawTerminal as WorkflowTerminal } : {}),
+        ...(input !== undefined ? { input } : {}),
+        ...(source !== undefined ? { source } : {}),
+        ...(designSystemId !== undefined ? { designSystemId } : {}),
+        ...(rawPlatform !== undefined ? { platform: rawPlatform as TargetPlatform } : {}),
+        skipSucceeded: req.body?.skipSucceeded === true,
+        ...(req.body?.followLinks === false ? { followLinks: false } : {}),
+      });
+      res.status(202).json(result);
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      const status = /already in progress|nothing to run/i.test(msg)
+        ? 409
+        : /Unknown workflow/i.test(msg)
+          ? 404
+          : 500;
+      res.status(status).json({ error: msg });
     }
   });
 
@@ -280,6 +392,9 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       } catch (err: any) {
         return res.status(400).json({ error: String(err?.message ?? err) });
       }
+      if (BAS_SOURCE_LOCKED && source?.kind === 'bas') {
+        return res.status(503).json({ error: BAS_LOCKED_MSG });
+      }
       // Per-run design system (ui-html picker). string → use it; null → explicit
       // "none" (suppress the app-config default); absent → inherit the default.
       const rawDesignSystemId = req.body?.designSystemId;
@@ -289,7 +404,23 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           : rawDesignSystemId === null
             ? null
             : undefined;
-      const start = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId);
+      // Target platform (UX-stage picker / CLI --platform). Only 'mobile' |
+      // 'web' pass through; absent → the skill's default (mobile).
+      const rawPlatform = req.body?.platform;
+      if (rawPlatform !== undefined && rawPlatform !== 'mobile' && rawPlatform !== 'web') {
+        return res.status(400).json({ error: "platform must be 'mobile' or 'web'" });
+      }
+      const platform = rawPlatform as TargetPlatform | undefined;
+      // RE-RUN clear scope (UI re-run dialog / CLI --reset-downstream). Only
+      // 'stage' | 'downstream' pass; absent → 'stage' (clear this stage only).
+      const rawScope = req.body?.resetScope;
+      if (rawScope !== undefined && rawScope !== 'stage' && rawScope !== 'downstream') {
+        return res.status(400).json({ error: "resetScope must be 'stage' or 'downstream'" });
+      }
+      const resetScope = rawScope as 'stage' | 'downstream' | undefined;
+      // Docs link-follow: only an explicit false disables it (default on).
+      const followLinks = req.body?.followLinks === false ? false : undefined;
+      const { completion: _completion, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId, platform, resetScope, followLinks);
       res.status(202).json(start);
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });

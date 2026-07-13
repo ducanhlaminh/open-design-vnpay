@@ -21,17 +21,29 @@ SimStudio's `/ux-spec` after Pull All.
 {
   "id":            "SCR-REFUND-LIST",
   "name":          "Danh sách đơn cần hoàn",   // → screens.name
-  "screen_type":   "list",                     // list | form | detail | confirmation | …
+  "screen_type":   "list",                     // list | form | detail | confirmation | dialog | drawer | sheet | …
   "screen_intent": "Tìm và chọn đơn để hoàn",  // shown on the UX Spec header
-  "layout":        "mobile",
+  "layout":        "mobile",                   // "mobile" | "web" — this screen's target platform
+                                               //   (from the run's platform choice, see SKILL.md 0b;
+                                               //   no choice → "mobile"). ui-html/ui-react render per this.
   "primary_actor": "actor-owner",              // accepts "actor_id" as an alias
   "permissions":   ["owner"],
   "navigation_group": "Refund",
+  // OVERLAY screens only (a dialog / slide-in drawer / bottom sheet shown ON TOP
+  // of a base screen, not a full page). Omit both for a normal full screen.
+  "overlay_kind":  "dialog",                   // "dialog" | "drawer" | "sheet" — how it layers
+  "overlay_of":    "SCR-REFUND-LIST",          // id of the base screen it overlays; null for a GLOBAL
+                                               //   overlay (e.g. the app nav drawer, shared by all screens)
   "components": [ Component, ... ]             // drive the box-text mockup
 }
 ```
 Mapped props read by node_mapper: `id, title(=name), screen_type, layout,
-primary_actor(=actor_id), permissions[], navigation_group, project_id`.
+primary_actor(=actor_id), permissions[], navigation_group, overlay_kind,
+overlay_of, project_id`.
+
+The wireframe of an overlay screen must MIRROR these: set `overlay` +
+`overlayOf` in its `wire.json` (see `references/wireframe.md`) so the preview
+frames it as that layer over the dimmed base screen.
 
 ## Component  → KGS `DP_UI_COMPONENT`  → SimStudio `ui_components` table
 ```jsonc
@@ -42,7 +54,15 @@ primary_actor(=actor_id), permissions[], navigation_group, project_id`.
   "order":          1,
   "required":       false,
   "data_type":      "string",
-  "semantic_type":  "search"
+  "semantic_type":  "search",
+  // NAVIGATION (REQUIRED on every component that moves the user to another
+  // screen — buttons, links, list rows that open a detail, …). This is the
+  // ONLY source of the flow diagram: viewers draw edges EXCLUSIVELY from
+  // `navigates_to` and never guess from labels, so a navigating CTA without
+  // it simply renders no edge.
+  "navigates_to":   "SCR-REFUND-DETAIL",       // id of the destination screen (must exist in `screens`)
+  "nav_type":       "navigate"                 // "navigate" (default, solid arrow) | "back" (dashed return
+                                               //   edge — back/cancel/close actions)
 }
 ```
 - The component links to its screen by the **`screen_id` PROP** (the script sets

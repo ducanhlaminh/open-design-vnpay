@@ -16,7 +16,10 @@ type PackagedConfigEntrypoints = {
   webSidecarEntryRelative?: string;
 };
 
-function createPackagedConfig(
+// Exported so the electron-builder cache key can hash the FULL baked config:
+// a build with different baked values (KGS/auth/sandbox env) must be a cache
+// MISS — reusing a cached win-unpacked silently ships the old config.
+export function createPackagedConfig(
   config: ToolPackConfig,
   packagedVersion: string,
   entrypoints: PackagedConfigEntrypoints = {},
@@ -36,8 +39,23 @@ function createPackagedConfig(
     ...(config.mediaAppId == null ? {} : { mediaAppId: config.mediaAppId }),
     ...(config.mediaUserId == null ? {} : { mediaUserId: config.mediaUserId }),
     ...(config.mediaUserRole == null ? {} : { mediaUserRole: config.mediaUserRole }),
+    ...(config.atlassianJiraToken == null ? {} : { atlassianJiraToken: config.atlassianJiraToken }),
+    ...(config.atlassianConfluenceToken == null ? {} : { atlassianConfluenceToken: config.atlassianConfluenceToken }),
+    // Google SSO (opt-in via SESSION_SECRET) — mirror the mac writer; omitting
+    // these shipped Windows builds with login silently OFF.
+    ...(config.authSessionSecret == null ? {} : { authSessionSecret: config.authSessionSecret }),
+    ...(config.googleClientId == null ? {} : { googleClientId: config.googleClientId }),
+    ...(config.googleClientSecret == null ? {} : { googleClientSecret: config.googleClientSecret }),
+    ...(config.identityUrl == null ? {} : { identityUrl: config.identityUrl }),
+    ...(config.authDomainLock == null ? {} : { authDomainLock: config.authDomainLock }),
+    ...(config.sandboxDefault == null ? {} : { sandboxDefault: config.sandboxDefault }),
+    ...(config.sandboxSkills == null ? {} : { sandboxSkills: config.sandboxSkills }),
     webOutputMode: config.webOutputMode,
-    ...(config.portable ? {} : { namespaceBaseRoot: config.roots.runtime.namespaceBaseRoot }),
+    // Never bake namespaceBaseRoot: baking the BUILD machine's absolute path
+    // pointed cross-built Windows installs at the builder's filesystem (same
+    // failure the mac writer already fixed). Omitted → apps/packaged falls
+    // back to `<userData>/namespaces` (%APPDATA%\Open Design\namespaces),
+    // correct on every machine.
   };
 }
 

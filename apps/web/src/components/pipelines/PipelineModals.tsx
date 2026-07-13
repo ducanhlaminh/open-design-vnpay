@@ -19,6 +19,7 @@ import type {
   PipelineView,
   ProjectSyncStatus,
   RemoteProject,
+  TargetPlatform,
   Workflow,
 } from '@open-design/contracts';
 
@@ -34,6 +35,38 @@ import sp from './StagePicker.module.css';
 export interface RunSourcePayload {
   source?: PipelineRunSource;
   input?: string;
+  /** false → docs stage fetches ONLY the picked pages (no link-follow). */
+  followLinks?: boolean;
+}
+
+/** Shared "fetch cả trang được link" toggle (docs stage, deterministic path). */
+function FollowLinksToggle({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="pl-runall-toggle">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(ev) => onChange(ev.target.checked)}
+        disabled={disabled}
+      />
+      <span className="pl-runall-toggle__body">
+        <span className="pl-runall-toggle__title">Fetch cả trang được link (depth 1)</span>
+        <span className="pl-runall-toggle__desc">
+          Trang spec thường dẫn chiếu tài liệu khác (BO spec, logic dùng chung…) — daemon fetch luôn
+          các trang mà trang nguồn link tới (cùng wiki, tối đa 15 trang) và rewrite link chéo thành
+          link file nội bộ. Bỏ tick nếu chỉ cần đúng các trang đã chọn.
+        </span>
+      </span>
+    </label>
+  );
 }
 
 const RUN_STATUS_LABEL: Record<string, string> = {
@@ -55,6 +88,19 @@ function outputMatches(rel: string, pattern: string): boolean {
   return rel === pattern || rel.endsWith('/' + pattern);
 }
 
+// Mirror of the daemon's `splitWorkflowPath` (pipelines.ts): every pipeline
+// writes under its workflow folder — `docs-to-ui/…` today, `docs-to-html/…` /
+// `docs-to-react/…` on projects from before the 2026-07 merge — while the
+// stage `outputs` patterns are workflow-RELATIVE. Strip the folder before
+// matching; without this, folder patterns (`prototype/`, `docs/jira/`,
+// `react/`, …) never match and Quick result reports "No output files yet"
+// for stages that plainly succeeded. Legacy unprefixed paths pass through
+// unchanged.
+const WORKFLOW_DIR_RE = /^(docs-to-ui|docs-to-html|docs-to-react)\//;
+function stripWorkflowDir(rel: string): string {
+  return rel.replace(WORKFLOW_DIR_RE, '');
+}
+
 // ── Req 4: Run source (Confluence link or BAS document) ──────────────────────
 // Pipeline 1 (jira-ingest) ingests its source docs from the BAS MCP gateway. The
 // user picks ONE of two cards:
@@ -69,6 +115,197 @@ export interface ConfluencePageRefLike {
   id?: string;
   title?: string;
   url?: string;
+}
+
+const confPageKey = (p: ConfluencePageRefLike) => p.id ?? p.url ?? '';
+
+/** Picker trang Confluence DÙNG CHUNG (modal Run bước Docs + modal Chạy full
+ * workflow): tìm trang theo tên qua GET /api/pipelines/confluence/pages (tick
+ * chọn nhiều), hoặc dán link/page id (mỗi dòng một trang — tự thêm vào danh
+ * sách khi rời ô nhập). Parent chỉ giữ danh sách `pages`; mọi state tìm kiếm
+ * sống trong picker. */
+export function ConfluencePagePicker({
+  pages,
+  onPagesChange,
+}: {
+  pages: ConfluencePageRefLike[];
+  onPagesChange: (pages: ConfluencePageRefLike[]) => void;
+}) {
+  const [manual, setManual] = useState(false);
+  const [manualText, setManualText] = useState('');
+  const [query, setQuery] = useState('');
+  const [hits, setHits] = useState<Array<{ id: string; title: string; url?: string; space?: string }> | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchErr, setSearchErr] = useState<string | null>(null);
+  const debounce = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    if (manual) return;
+    clearTimeout(debounce.current);
+    if (query.trim().length < 2) {
+      setHits(null);
+      return;
+    }
+    debounce.current = setTimeout(() => {
+      setSearching(true);
+      setSearchErr(null);
+      void (async () => {
+        try {
+          const res = await fetch(`/api/pipelines/confluence/pages?q=${encodeURIComponent(query.trim())}`);
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+          setHits((j as { pages?: Array<{ id: string; title: string; url?: string; space?: string }> }).pages ?? []);
+        } catch (err) {
+          setSearchErr(err instanceof Error ? err.message : String(err));
+          setHits([]);
+        } finally {
+          setSearching(false);
+        }
+      })();
+    }, 350);
+    return () => clearTimeout(debounce.current);
+  }, [query, manual]);
+
+  const togglePage = (p: { id: string; title: string; url?: string }) => {
+    onPagesChange(
+      pages.some((x) => x.id === p.id)
+        ? pages.filter((x) => x.id !== p.id)
+        : [...pages, { id: p.id, title: p.title, ...(p.url ? { url: p.url } : {}) }],
+    );
+  };
+  // Dán tay: commit khi blur HOẶC bấm Thêm — không bắt user nhớ bấm nút để
+  // khỏi mất text khi chuyển thẳng sang Run.
+  const commitManual = (backToSearch: boolean) => {
+    const refs = manualText
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (refs.length) {
+      const existing = new Set(pages.map(confPageKey));
+      onPagesChange([
+        ...pages,
+        ...refs
+          .filter((r) => !existing.has(r))
+          .map((r) => (/^https?:\/\//i.test(r) ? { url: r } : { id: r })),
+      ]);
+      setManualText('');
+    }
+    if (backToSearch) setManual(false);
+  };
+
+  return (
+    <div className={styles.panel}>
+      {/* các trang đã chọn — gỡ từng trang */}
+      {pages.length > 0 ? (
+        <>
+          <span className={styles.sectionLabel}>Đã chọn ({pages.length})</span>
+          <div className={styles.list}>
+            {pages.map((p) => (
+              <button
+                key={confPageKey(p)}
+                type="button"
+                className={`${styles.row} ${styles.rowSelected}`}
+                onClick={() => onPagesChange(pages.filter((x) => confPageKey(x) !== confPageKey(p)))}
+                title="Bấm để bỏ trang này"
+              >
+                <span className={`${styles.checkbox} ${styles.checkboxOn}`}>
+                  <Icon name="close" size={11} />
+                </span>
+                <span className={styles.rowBody}>
+                  <span className={styles.rowName}>{p.title ?? p.url ?? p.id}</span>
+                  {p.id ? <span className={styles.rowSummary}>{p.id}</span> : null}
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      {manual ? (
+        <>
+          <label className="pl-modal-field">
+            <span className="pl-modal-field__label">Dán link / page id</span>
+            <textarea
+              className="pl-input"
+              rows={3}
+              autoFocus
+              placeholder={'https://wiki…/pages/123456 hoặc page id\n(mỗi dòng một trang)'}
+              value={manualText}
+              onChange={(e) => setManualText(e.target.value)}
+              onBlur={() => commitManual(false)}
+            />
+          </label>
+          <div className={styles.footerLinks}>
+            <button
+              type="button"
+              className="pl-btn pl-btn--primary"
+              onClick={() => commitManual(true)}
+              disabled={!manualText.trim()}
+            >
+              <Icon name="plus" size={13} />
+              <span>Thêm vào danh sách</span>
+            </button>
+            <button type="button" className={styles.linkBtn} onClick={() => setManual(false)}>
+              ← Quay lại tìm theo tên
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <label className="pl-modal-field">
+            <span className="pl-modal-field__label">Tìm trang Confluence</span>
+            <input
+              type="text"
+              className="pl-input"
+              placeholder="Gõ tên trang để tìm — tick chọn nhiều trang…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </label>
+          {searching ? (
+            <p className={styles.empty}>Đang tìm…</p>
+          ) : searchErr ? (
+            <p className={styles.empty}>{searchErr}</p>
+          ) : hits !== null ? (
+            hits.length === 0 ? (
+              <p className={styles.empty}>Không trang nào khớp “{query}”.</p>
+            ) : (
+              <div className={styles.list}>
+                {hits.map((p) => {
+                  const on = pages.some((x) => x.id === p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      className={`${styles.row}${on ? ' ' + styles.rowSelected : ''}`}
+                      onClick={() => togglePage(p)}
+                      aria-pressed={on}
+                    >
+                      <span className={`${styles.checkbox}${on ? ' ' + styles.checkboxOn : ''}`}>
+                        {on ? <Icon name="check" size={12} /> : null}
+                      </span>
+                      <span className={styles.rowBody}>
+                        <span className={styles.rowName}>{p.title}</span>
+                        <span className={styles.rowSummary}>
+                          {p.space ? `${p.space} · ` : ''}
+                          {p.id}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )
+          ) : null}
+          <div className={styles.footerLinks}>
+            <button type="button" className={styles.linkBtn} onClick={() => setManual(true)}>
+              Dán link / page id thay vì tìm →
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 export function RunInputModal({
@@ -89,69 +326,16 @@ export function RunInputModal({
   onClose: () => void;
   onRun: (payload: RunSourcePayload) => Promise<void>;
 }) {
-  const [kind, setKind] = useState<SourceKind>(defaultBasDocumentId ? 'bas' : 'confluence');
+  // Nguồn BAS đang khóa bảo trì: luôn khởi tạo ở Confluence, kể cả khi config
+  // dự án từ studio có sẵn basDocumentId (nó vẫn được giữ trong project.json —
+  // mở khóa là dùng lại được).
+  const [kind, setKind] = useState<SourceKind>('confluence');
   const [advanced, setAdvanced] = useState(false);
 
-  // Confluence branch — picker "tìm trang theo tên, tick chọn nhiều" như bên
-  // pipeline-studio (GET /api/pipelines/confluence/pages), kèm chế độ dán
-  // link tay. Seeded từ config dự án trên studio.
+  // Confluence branch — dùng picker chung ConfluencePagePicker (tìm theo tên +
+  // dán link, tick chọn nhiều). Seeded từ config dự án trên studio.
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
-  const [confManual, setConfManual] = useState(false);
-  const [confRef, setConfRef] = useState('');
-  const [confQuery, setConfQuery] = useState('');
-  const [confHits, setConfHits] = useState<Array<{ id: string; title: string; url?: string; space?: string }> | null>(null);
-  const [confSearching, setConfSearching] = useState(false);
-  const [confSearchErr, setConfSearchErr] = useState<string | null>(null);
-  const confDebounce = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => {
-    if (advanced || kind !== 'confluence' || confManual) return;
-    clearTimeout(confDebounce.current);
-    if (confQuery.trim().length < 2) {
-      setConfHits(null);
-      return;
-    }
-    confDebounce.current = setTimeout(() => {
-      setConfSearching(true);
-      setConfSearchErr(null);
-      void (async () => {
-        try {
-          const res = await fetch(`/api/pipelines/confluence/pages?q=${encodeURIComponent(confQuery.trim())}`);
-          const j = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-          setConfHits((j as { pages?: Array<{ id: string; title: string; url?: string; space?: string }> }).pages ?? []);
-        } catch (err) {
-          setConfSearchErr(err instanceof Error ? err.message : String(err));
-          setConfHits([]);
-        } finally {
-          setConfSearching(false);
-        }
-      })();
-    }, 350);
-    return () => clearTimeout(confDebounce.current);
-  }, [confQuery, kind, advanced, confManual]);
-
-  const confKey = (p: ConfluencePageRefLike) => p.id ?? p.url ?? '';
-  const toggleConfPage = (p: { id: string; title: string; url?: string }) => {
-    setConfPages((prev) =>
-      prev.some((x) => x.id === p.id)
-        ? prev.filter((x) => x.id !== p.id)
-        : [...prev, { id: p.id, title: p.title, ...(p.url ? { url: p.url } : {}) }],
-    );
-  };
-  const addManualConfLinks = () => {
-    const refs = confRef
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (!refs.length) return;
-    setConfPages((prev) => {
-      const existing = new Set(prev.map(confKey));
-      return [...prev, ...refs.filter((r) => !existing.has(r)).map((r) => (/^https?:\/\//i.test(r) ? { url: r } : { id: r }))];
-    });
-    setConfRef('');
-    setConfManual(false);
-  };
+  const [followLinks, setFollowLinks] = useState(true);
 
   // BAS branch (KG document → feature)
   const [basDocuments, setBasDocuments] = useState<BasDocument[] | null>(null);
@@ -227,9 +411,7 @@ export function RunInputModal({
   const canRun = advanced
     ? true // JQL is optional — the skill prompts if empty
     : kind === 'confluence'
-      ? confManual
-        ? confRef.trim().length > 0
-        : confPages.length > 0
+      ? confPages.length > 0
       : basDocumentId.length > 0; // features optional → whole document
 
   const submit = async () => {
@@ -241,12 +423,12 @@ export function RunInputModal({
       if (advanced) {
         payload = { input: jql.trim() };
       } else if (kind === 'confluence') {
-        // Confluence is fetched by the AGENT via the Atlassian MCP, not pre-fetched
-        // by the BE — hand the picked pages over as the run input, one per line.
-        const refs = confManual
-          ? [confRef.trim()]
-          : confPages.map((p) => p.url ?? p.id).filter((x): x is string => Boolean(x));
-        payload = { input: refs.join('\n') };
+        // One page URL/id per line. When every line parses to a page id the
+        // daemon runs the docs stage DETERMINISTICALLY (fetches the pages
+        // itself via the BAS gateway — no agent); a short-link/opaque URL
+        // falls back to the agent path.
+        const refs = confPages.map((p) => p.url ?? p.id).filter((x): x is string => Boolean(x));
+        payload = { input: refs.join('\n'), ...(followLinks ? {} : { followLinks: false }) };
       } else {
         const featureIds = [...selected];
         payload = {
@@ -336,128 +518,45 @@ export function RunInputModal({
               </span>
               <span className={styles.cardDesc}>Paste a Confluence page link — preview its metadata, then ingest.</span>
             </button>
+            {/* Nguồn BAS ĐANG KHÓA BẢO TRÌ — card disabled, BE cũng chặn 503
+                (BAS_SOURCE_LOCKED, pipeline-routes.ts). Mở lại: bỏ disabled +
+                khôi phục onClick setKind('bas') + gỡ cờ BE/CLI. */}
             <button
               type="button"
               role="radio"
-              aria-checked={kind === 'bas'}
-              className={`${styles.card}${kind === 'bas' ? ' ' + styles.cardSelected : ''}`}
-              onClick={() => setKind('bas')}
+              aria-checked={false}
+              aria-disabled="true"
+              disabled
+              className={styles.card}
+              style={{ opacity: 0.55, cursor: 'not-allowed' }}
+              title="Nguồn BAS đang bảo trì"
             >
               <span className={styles.cardTop}>
                 <Icon name="folder" size={16} />
                 BAS
-                {kind === 'bas' ? (
-                  <span className={styles.cardCheck} aria-hidden="true">
-                    <Icon name="check" size={14} />
-                  </span>
-                ) : null}
+                <span
+                  style={{
+                    marginLeft: 'auto',
+                    fontSize: 10.5,
+                    fontWeight: 700,
+                    padding: '1px 8px',
+                    borderRadius: 999,
+                    background: 'var(--warn-weak, #fff3e0)',
+                    color: 'var(--warn, #b45309)',
+                  }}
+                >
+                  Đang bảo trì
+                </span>
               </span>
-              <span className={styles.cardDesc}>Pick a BAS document, then choose the feature(s) to ingest.</span>
+              <span className={styles.cardDesc}>Tạm khóa — dùng nguồn Confluence (hoặc JIRA key/JQL ở Advanced).</span>
             </button>
           </div>
 
           {kind === 'confluence' ? (
-            <div className={styles.panel}>
-              {/* các trang đã chọn — gỡ từng trang */}
-              {confPages.length > 0 ? (
-                <>
-                  <span className={styles.sectionLabel}>Đã chọn ({confPages.length})</span>
-                  <div className={styles.list}>
-                    {confPages.map((p) => (
-                      <button
-                        key={confKey(p)}
-                        type="button"
-                        className={`${styles.row} ${styles.rowSelected}`}
-                        onClick={() => setConfPages((prev) => prev.filter((x) => confKey(x) !== confKey(p)))}
-                        title="Bấm để bỏ trang này"
-                      >
-                        <span className={`${styles.checkbox} ${styles.checkboxOn}`}>
-                          <Icon name="close" size={11} />
-                        </span>
-                        <span className={styles.rowBody}>
-                          <span className={styles.rowName}>{p.title ?? p.url ?? p.id}</span>
-                          {p.id ? <span className={styles.rowSummary}>{p.id}</span> : null}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              ) : null}
-
-              {confManual ? (
-                <>
-                  <label className="pl-modal-field">
-                    <span className="pl-modal-field__label">Dán link / page id</span>
-                    <textarea
-                      className="pl-input"
-                      rows={3}
-                      autoFocus
-                      placeholder={'https://wiki…/pages/123456 hoặc page id\n(mỗi dòng một trang)'}
-                      value={confRef}
-                      onChange={(e) => setConfRef(e.target.value)}
-                    />
-                  </label>
-                  <div className={styles.footerLinks}>
-                    <button type="button" className="pl-btn pl-btn--primary" onClick={addManualConfLinks} disabled={!confRef.trim()}>
-                      <Icon name="plus" size={13} />
-                      <span>Thêm vào danh sách</span>
-                    </button>
-                    <button type="button" className={styles.linkBtn} onClick={() => setConfManual(false)}>
-                      ← Quay lại tìm theo tên
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <label className="pl-modal-field">
-                    <span className="pl-modal-field__label">Tìm trang Confluence</span>
-                    <input
-                      type="text"
-                      className="pl-input"
-                      autoFocus
-                      placeholder="Gõ tên trang để tìm — tick chọn nhiều trang…"
-                      value={confQuery}
-                      onChange={(e) => setConfQuery(e.target.value)}
-                    />
-                  </label>
-                  {confSearching ? (
-                    <p className={styles.empty}>Đang tìm…</p>
-                  ) : confSearchErr ? (
-                    <p className={styles.empty}>{confSearchErr}</p>
-                  ) : confHits !== null ? (
-                    confHits.length === 0 ? (
-                      <p className={styles.empty}>Không trang nào khớp “{confQuery}”.</p>
-                    ) : (
-                      <div className={styles.list}>
-                        {confHits.map((p) => {
-                          const on = confPages.some((x) => x.id === p.id);
-                          return (
-                            <button
-                              key={p.id}
-                              type="button"
-                              className={`${styles.row}${on ? ' ' + styles.rowSelected : ''}`}
-                              onClick={() => toggleConfPage(p)}
-                              aria-pressed={on}
-                            >
-                              <span className={`${styles.checkbox}${on ? ' ' + styles.checkboxOn : ''}`}>
-                                {on ? <Icon name="check" size={12} /> : null}
-                              </span>
-                              <span className={styles.rowBody}>
-                                <span className={styles.rowName}>{p.title}</span>
-                                <span className={styles.rowSummary}>
-                                  {p.space ? `${p.space} · ` : ''}
-                                  {p.id}
-                                </span>
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )
-                  ) : null}
-                </>
-              )}
-            </div>
+            <>
+              <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
+              <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
+            </>
           ) : (
             <div className={styles.panel}>
               <span className={styles.sectionLabel}>BAS document</span>
@@ -526,12 +625,7 @@ export function RunInputModal({
 
           {/* Lối tắt phụ, gom một hàng ghost-chip — không tranh chú ý với picker. */}
           <div className={styles.footerLinks}>
-            {kind === 'confluence' && !confManual ? (
-              <button type="button" className={styles.linkBtn} onClick={() => setConfManual(true)}>
-                <Icon name="edit" size={12} />
-                <span>Dán link thủ công</span>
-              </button>
-            ) : null}
+            {/* "Dán link thủ công" giờ nằm TRONG ConfluencePagePicker. */}
             <button type="button" className={styles.linkBtn} onClick={() => setAdvanced(true)}>
               <Icon name="settings" size={12} />
               <span>Advanced: JIRA key / JQL</span>
@@ -654,6 +748,473 @@ export function DesignSystemRunModal({
       {systems !== null && systems.length === 0 ? (
         <p className="pl-modal-empty">No published design systems yet — running with None.</p>
       ) : null}
+      {error ? (
+        <div className="pl-modal-error" role="alert">
+          <Icon name="info" size={14} />
+          <span>{error}</span>
+        </div>
+      ) : null}
+    </PlModal>
+  );
+}
+
+// ── Target-platform picker for the UX stage ─────────────────────────────────
+// Shown before running a pipeline whose `acceptsPlatform` is set (the UX Spec
+// stage — it decides every screen's `layout`). Mobile is the default and the
+// legacy behavior; Website makes the skill author `layout: "web"` screens,
+// which the UI-Spec terminals then render as full web pages.
+export function PlatformRunModal({
+  pipelineName,
+  onClose,
+  onRun,
+}: {
+  pipelineName: string;
+  onClose: () => void;
+  onRun: (platform: TargetPlatform) => Promise<void>;
+}) {
+  const [platform, setPlatform] = useState<TargetPlatform>('mobile');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onRun(platform);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <PlModal
+      title={`Run · ${pipelineName}`}
+      icon="play"
+      busy={busy}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="pl-btn pl-btn--run"
+            onClick={() => void submit()}
+            disabled={busy}
+          >
+            <Icon name={busy ? 'spinner' : 'play'} size={14} />
+            <span>{busy ? 'Starting…' : 'Run pipeline'}</span>
+          </button>
+        </>
+      }
+    >
+      <div className={styles.cards} role="radiogroup" aria-label="Target platform">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={platform === 'mobile'}
+          className={`${styles.card}${platform === 'mobile' ? ' ' + styles.cardSelected : ''}`}
+          onClick={() => setPlatform('mobile')}
+        >
+          <span className={styles.cardTop}>
+            <Icon name="home" size={16} />
+            Mobile app
+            {platform === 'mobile' ? (
+              <span className={styles.cardCheck} aria-hidden="true">
+                <Icon name="check" size={14} />
+              </span>
+            ) : null}
+          </span>
+          <span className={styles.cardDesc}>
+            Phone-first screens (bottom actions, single-column forms) — the default.
+          </span>
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={platform === 'web'}
+          className={`${styles.card}${platform === 'web' ? ' ' + styles.cardSelected : ''}`}
+          onClick={() => setPlatform('web')}
+        >
+          <span className={styles.cardTop}>
+            <Icon name="grid" size={16} />
+            Website
+            {platform === 'web' ? (
+              <span className={styles.cardCheck} aria-hidden="true">
+                <Icon name="check" size={14} />
+              </span>
+            ) : null}
+          </span>
+          <span className={styles.cardDesc}>
+            Full web pages (tables, sidebar/top navigation, multi-column forms).
+          </span>
+        </button>
+      </div>
+      <span className={styles.hint}>
+        Sets every screen's <code>layout</code> in the UX Spec; the UI-Spec stages render
+        each screen accordingly.
+      </span>
+      {error ? (
+        <div className="pl-modal-error" role="alert">
+          <Icon name="info" size={14} />
+          <span>{error}</span>
+        </div>
+      ) : null}
+    </PlModal>
+  );
+}
+
+// ── Run FULL workflow (no per-stage review) ─────────────────────────────────
+// One dialog collects every choice the per-stage modals would ask (source for
+// the docs stage, platform for UX, design system + terminal option for the
+// UI-Spec step), then the daemon chains all stages automatically — each one
+// starts as its predecessor succeeds, no user review in between. Progress
+// shows on the normal stepper.
+export type WorkflowTerminalChoice = 'ui-html' | 'ui-react' | 'both';
+
+export interface RunAllPayload {
+  input?: string;
+  terminal: WorkflowTerminalChoice;
+  platform: TargetPlatform;
+  designSystemId: string | null;
+  skipSucceeded: boolean;
+  /** false → docs stage fetches ONLY the picked pages (no link-follow). */
+  followLinks?: boolean;
+}
+
+export function RunAllModal({
+  workflowName,
+  defaultConfluencePages,
+  defaultDesignSystemId,
+  anySucceeded,
+  onClose,
+  onRun,
+}: {
+  workflowName: string;
+  /** Nguồn cấu hình sẵn từ Pipeline Studio (project.json) — điền sẵn vào ô
+   *  nguồn, mỗi dòng một trang; user vẫn sửa được cho từng lần chạy. */
+  defaultConfluencePages?: ConfluencePageRefLike[];
+  defaultDesignSystemId?: string;
+  /** Có bước nào đã xong chưa — quyết định hiện checkbox "chỉ chạy bước còn thiếu". */
+  anySucceeded: boolean;
+  onClose: () => void;
+  onRun: (payload: RunAllPayload) => Promise<void>;
+}) {
+  // Same shared Confluence picker as the per-stage Docs modal (search by name
+  // + paste links, multi-select); prefill from the studio project config. The
+  // run input is one page URL/id per line, built from the picked pages.
+  const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
+  const [followLinks, setFollowLinks] = useState(true);
+  const [terminal, setTerminal] = useState<WorkflowTerminalChoice>('ui-html');
+  const [platform, setPlatform] = useState<TargetPlatform>('mobile');
+  const [systems, setSystems] = useState<DesignSystemSummary[] | null>(null);
+  const [designSystemId, setDesignSystemId] = useState<string | null>(defaultDesignSystemId ?? null);
+  const [skipSucceeded, setSkipSucceeded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const all = await fetchDesignSystems();
+        if (!cancelled) setSystems(all.filter((s) => s.status !== 'draft'));
+      } catch {
+        if (!cancelled) setSystems([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const canRun = confPages.length > 0 || skipSucceeded;
+  const submit = async () => {
+    if (busy || !canRun) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const input = confPages
+        .map((p) => p.url ?? p.id)
+        .filter((x): x is string => Boolean(x))
+        .join('\n');
+      await onRun({
+        ...(input ? { input } : {}),
+        terminal,
+        platform,
+        designSystemId,
+        skipSucceeded,
+        ...(followLinks ? {} : { followLinks: false }),
+      });
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+
+  const terminalCard = (value: WorkflowTerminalChoice, label: string, desc: string) => (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={terminal === value}
+      className={`${styles.card}${terminal === value ? ' ' + styles.cardSelected : ''}`}
+      onClick={() => setTerminal(value)}
+    >
+      <span className={styles.cardTop}>
+        <Icon name={value === 'ui-react' ? 'blocks' : value === 'both' ? 'sparkles' : 'file-code'} size={16} />
+        {label}
+        {terminal === value ? (
+          <span className={styles.cardCheck} aria-hidden="true">
+            <Icon name="check" size={14} />
+          </span>
+        ) : null}
+      </span>
+      <span className={styles.cardDesc}>{desc}</span>
+    </button>
+  );
+
+  return (
+    <PlModal
+      title={`Chạy full workflow · ${workflowName}`}
+      icon="play"
+      size="md"
+      busy={busy}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="pl-btn pl-btn--run"
+            onClick={() => void submit()}
+            disabled={busy || !canRun}
+            title={canRun ? undefined : 'Chọn ít nhất một trang Confluence (hoặc tick "chỉ chạy bước còn thiếu" khi Docs đã xong)'}
+          >
+            <Icon name={busy ? 'spinner' : 'play'} size={14} />
+            <span>{busy ? 'Đang khởi động…' : 'Chạy tất cả các bước'}</span>
+          </button>
+        </>
+      }
+    >
+      <p className={styles.hint} style={{ marginTop: 0 }}>
+        Toàn bộ các bước chạy <strong>tự động nối tiếp</strong> — bước sau khởi động ngay khi bước
+        trước xong, không cần duyệt output từng bước. Theo dõi tiến độ trên stepper; một bước lỗi
+        sẽ dừng chuỗi tại đó.
+      </p>
+      <div className="pl-modal-field">
+        <span className="pl-modal-field__label">Nguồn tài liệu (bước Docs)</span>
+        {/* Cùng picker với nút Run của riêng bước Docs: tìm trang theo tên,
+            tick chọn nhiều, hoặc dán link/page id. */}
+        <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
+        <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
+        <span className="pl-modal-field__hint">
+          Điền sẵn từ cấu hình dự án trên Pipeline Studio (nếu có). Link/id Confluence được daemon
+          fetch trực tiếp (không cần agent); dán JIRA key/JQL như một dòng nếu muốn chạy qua agent.
+          Nguồn BAS đang bảo trì.
+        </span>
+      </div>
+      <div className="pl-modal-field">
+        <span className="pl-modal-field__label">Nền tảng (bước UX Spec)</span>
+        <div className={styles.cards} role="radiogroup" aria-label="Target platform">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={platform === 'mobile'}
+            className={`${styles.card}${platform === 'mobile' ? ' ' + styles.cardSelected : ''}`}
+            onClick={() => setPlatform('mobile')}
+          >
+            <span className={styles.cardTop}>
+              <Icon name="home" size={16} />
+              Mobile app
+              {platform === 'mobile' ? (
+                <span className={styles.cardCheck} aria-hidden="true">
+                  <Icon name="check" size={14} />
+                </span>
+              ) : null}
+            </span>
+            <span className={styles.cardDesc}>Màn hình dọc kiểu điện thoại — mặc định.</span>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={platform === 'web'}
+            className={`${styles.card}${platform === 'web' ? ' ' + styles.cardSelected : ''}`}
+            onClick={() => setPlatform('web')}
+          >
+            <span className={styles.cardTop}>
+              <Icon name="grid" size={16} />
+              Website
+              {platform === 'web' ? (
+                <span className={styles.cardCheck} aria-hidden="true">
+                  <Icon name="check" size={14} />
+                </span>
+              ) : null}
+            </span>
+            <span className={styles.cardDesc}>Trang web đầy đủ (bảng, sidebar, form nhiều cột).</span>
+          </button>
+        </div>
+      </div>
+      <div className="pl-modal-field">
+        <span className="pl-modal-field__label">Kết quả UI-Spec (bước cuối)</span>
+        <div className={styles.cards} role="radiogroup" aria-label="UI-Spec terminal">
+          {terminalCard('ui-html', 'HTML prototype', 'Prototype HTML tương tác, mỗi màn một file.')}
+          {terminalCard('ui-react', 'React app', 'App Vite + React 19 thật (cần Docker).')}
+          {terminalCard('both', 'Cả hai', 'HTML trước, React sau.')}
+        </div>
+      </div>
+      <div className="pl-modal-field pl-modal-field--ds">
+        <span className="pl-modal-field__label">Design system (tùy chọn)</span>
+        <ProjectDesignSystemPicker
+          designSystems={systems ?? []}
+          selectedId={designSystemId}
+          loading={systems === null}
+          onChange={setDesignSystemId}
+          popoverZIndex={1100}
+        />
+      </div>
+      {anySucceeded ? (
+        // Checkbox hardening lives in .pl-runall-toggle (pipelines.css) — the
+        // app's global input pill styles would otherwise stretch it full-width
+        // and blow the modal out horizontally.
+        <label className="pl-runall-toggle">
+          <input
+            type="checkbox"
+            checked={skipSucceeded}
+            onChange={(ev) => setSkipSucceeded(ev.target.checked)}
+            disabled={busy}
+          />
+          <span className="pl-runall-toggle__body">
+            <span className="pl-runall-toggle__title">Chỉ chạy các bước còn thiếu</span>
+            <span className="pl-runall-toggle__desc">
+              Giữ kết quả các bước đã xong. Bỏ tick = chạy lại từ đầu — output cũ được snapshot vào
+              lịch sử trước khi xóa.
+            </span>
+          </span>
+        </label>
+      ) : null}
+      {error ? (
+        <div className="pl-modal-error" role="alert">
+          <Icon name="info" size={14} />
+          <span>{error}</span>
+        </div>
+      ) : null}
+    </PlModal>
+  );
+}
+
+// ── Re-run clear-scope picker ────────────────────────────────────────────────
+// Shown when re-running a stage that already succeeded AND has downstream
+// stages. A re-run always clears the stage's OWN outputs (so the agent
+// regenerates instead of seeing leftovers and stopping); this modal only asks
+// whether to ALSO clear the now-stale downstream stages.
+export function RerunScopeModal({
+  pipelineName,
+  downstreamNames,
+  onClose,
+  onChoose,
+}: {
+  pipelineName: string;
+  /** Human names of the stages that go stale if this one is regenerated. */
+  downstreamNames: string[];
+  onClose: () => void;
+  onChoose: (scope: 'stage' | 'downstream') => Promise<void>;
+}) {
+  const [scope, setScope] = useState<'stage' | 'downstream'>('stage');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onChoose(scope);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <PlModal
+      title={`Chạy lại · ${pipelineName}`}
+      icon="refresh"
+      busy={busy}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
+            Hủy
+          </button>
+          <button
+            type="button"
+            className="pl-btn pl-btn--run"
+            onClick={() => void submit()}
+            disabled={busy}
+          >
+            <Icon name={busy ? 'spinner' : 'refresh'} size={14} />
+            <span>{busy ? 'Đang chạy…' : 'Chạy lại'}</span>
+          </button>
+        </>
+      }
+    >
+      <div className={styles.cards} role="radiogroup" aria-label="Phạm vi chạy lại">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={scope === 'stage'}
+          className={`${styles.card}${scope === 'stage' ? ' ' + styles.cardSelected : ''}`}
+          onClick={() => setScope('stage')}
+        >
+          <span className={styles.cardTop}>
+            <Icon name="refresh" size={16} />
+            Chỉ bước này
+            {scope === 'stage' ? (
+              <span className={styles.cardCheck} aria-hidden="true">
+                <Icon name="check" size={14} />
+              </span>
+            ) : null}
+          </span>
+          <span className={styles.cardDesc}>
+            Xóa &amp; tạo lại đúng bước này. Các bước sau giữ nguyên kết quả cũ (có thể đã lỗi thời).
+          </span>
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={scope === 'downstream'}
+          className={`${styles.card}${scope === 'downstream' ? ' ' + styles.cardSelected : ''}`}
+          onClick={() => setScope('downstream')}
+        >
+          <span className={styles.cardTop}>
+            <Icon name="layers-filled" size={16} />
+            Cả các bước sau
+            {scope === 'downstream' ? (
+              <span className={styles.cardCheck} aria-hidden="true">
+                <Icon name="check" size={14} />
+              </span>
+            ) : null}
+          </span>
+          <span className={styles.cardDesc}>
+            Xóa luôn kết quả của các bước phụ thuộc — chúng về trạng thái chưa chạy và phải chạy lại.
+          </span>
+        </button>
+      </div>
+      {scope === 'downstream' && downstreamNames.length ? (
+        <span className={styles.hint}>
+          Sẽ xóa kết quả: <strong>{downstreamNames.join(', ')}</strong>. Bản cũ vẫn khôi phục được từ Lịch sử.
+        </span>
+      ) : (
+        <span className={styles.hint}>Bản cũ luôn được lưu vào Lịch sử trước khi xóa nên khôi phục được.</span>
+      )}
       {error ? (
         <div className="pl-modal-error" role="alert">
           <Icon name="info" size={14} />
@@ -837,7 +1398,7 @@ export function PipelineResultModal({
             const rel = (f.name ?? f.path ?? '').replace(/^\/+/, '');
             return { name: rel, path: f.path ?? rel };
           })
-          .filter((f) => f.name && outputs.some((o) => outputMatches(f.name, o)));
+          .filter((f) => f.name && outputs.some((o) => outputMatches(stripWorkflowDir(f.name), o)));
         if (!cancelled) setFiles(all);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -1066,6 +1627,7 @@ export function PullAllModal({
   localIds,
   workflows,
   scopeName,
+  initialSelectedIds,
   onClose,
   onConfirm,
 }: {
@@ -1077,6 +1639,9 @@ export function PullAllModal({
   workflows: Workflow[];
   /** Active workflow name, shown in the modal title. */
   scopeName?: string;
+  /** Preselected project ids (the currently-selected project) — the common
+   *  "update my project" case stays confirm-only. */
+  initialSelectedIds?: readonly string[];
   onClose: () => void;
   /** Always receives the explicit stage list of the scoped workflow. */
   onConfirm: (projectIds: string[], stages: string[]) => Promise<void>;
@@ -1087,7 +1652,9 @@ export function PullAllModal({
   // the empty state so the user knows WHY the list is empty.
   const [scopeReason, setScopeReason] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [selected, setSelected] = useState<ReadonlySet<string>>(
+    () => new Set(initialSelectedIds ?? []),
+  );
   const [stageSel, setStageSel] = useState<ReadonlySet<string>>(() => allStageIds(workflows));
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1289,6 +1856,7 @@ export function PushAllModal({
   projects,
   workflows,
   scopeName,
+  initialSelectedIds,
   onClose,
   onConfirm,
 }: {
@@ -1298,15 +1866,18 @@ export function PushAllModal({
   workflows: Workflow[];
   /** Active workflow name, shown in the modal title. */
   scopeName?: string;
+  /** Preselected project ids (the currently-selected project). Absent → every
+   *  project, the classic Push all. */
+  initialSelectedIds?: readonly string[];
   onClose: () => void;
   /** Always receives the explicit stage list of the scoped workflow. */
   onConfirm: (projectIds: string[], stages: string[]) => Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
-  // Preselect every project — the classic Push all pushed everything; the
-  // modal exists to let the user narrow, not to make the common case slower.
+  // Preselect the caller's project when given (pushing YOUR project is the
+  // common case — confirm-only); else every project, the classic Push all.
   const [selected, setSelected] = useState<ReadonlySet<string>>(
-    () => new Set(projects.map((p) => p.id)),
+    () => new Set(initialSelectedIds?.length ? initialSelectedIds : projects.map((p) => p.id)),
   );
   const [stageSel, setStageSel] = useState<ReadonlySet<string>>(() => allStageIds(workflows));
   const [busy, setBusy] = useState(false);

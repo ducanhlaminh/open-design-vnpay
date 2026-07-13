@@ -27,6 +27,7 @@ import {
 } from "./constants.js";
 import { pathExists, removeTree } from "./fs.js";
 import {
+  createPackagedConfig,
   readPackagedVersion,
   writeBuiltAppManifest,
   writePackagedConfig,
@@ -106,7 +107,10 @@ async function runElectronBuilderRaw(config: ToolPackConfig, paths: WinPaths, pr
     buildDependenciesFromSource: ELECTRON_BUILDER_BUILD_DEPENDENCIES_FROM_SOURCE,
     compression: "maximum",
     directories: { output: paths.appBuilderOutputRoot },
-    electronDist: config.electronDistPath,
+    // NOTE (VNPAY fork): omit electronDist on Windows so electron-builder downloads the
+    // win32-x64 Electron for `electronVersion` itself. The shared config.electronDistPath
+    // points at the *host* Electron dist (macOS `Electron.app`, no `electron.exe`), which
+    // breaks cross-building the Windows target from a Mac. mac/linux keep their own dist.
     electronVersion: config.electronVersion,
     executableName: PRODUCT_NAME,
     extraMetadata: {
@@ -280,6 +284,9 @@ export async function runElectronBuilder(
     npmRebuild: ELECTRON_BUILDER_NPM_REBUILD,
     packagedAppKey,
     packagedVersion,
+    // The baked config VALUES (KGS/auth/sandbox from build env) live inside
+    // the cached win-unpacked — they must invalidate it when they change.
+    packagedConfig: createPackagedConfig(config, packagedVersion, packagedConfigEntrypoints),
     packagedConfigSchemaVersion: usePrebundle ? 2 : 1,
     portable: config.portable,
     platform: "win32",

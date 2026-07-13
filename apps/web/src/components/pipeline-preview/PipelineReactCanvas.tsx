@@ -35,10 +35,29 @@ interface ScreenEntry {
   name: string;
   slug: string;
   title: string;
+  /** STATE frame: this frame is the base screen with an overlay (drawer /
+   *  dialog / sheet) forced open via `#od-open=<label>` — see the ui-react
+   *  skill contract. Only synthesized at tablet/mobile viewports. */
+  odOpen?: string;
 }
+/** Unique React Flow node id — state frames share the base screen's file. */
+const nodeIdOf = (e: ScreenEntry) => (e.odOpen ? `${e.name}::${e.slug}` : e.name);
 
 const DEFAULT_W = 420;
 const DEFAULT_H = 760;
+// Per-platform frame sizes. Each screen's platform comes from the
+// agent-authored `react/layout.json` ({ "<slug>": "mobile" | "web" }, copied
+// from the UX Spec's per-screen `layout`); missing file/slug → mobile — the
+// pre-existing behavior, so old projects render unchanged.
+export type ScreenLayout = 'mobile' | 'web';
+const FRAME_SIZES: Record<ScreenLayout, { w: number; h: number }> = {
+  mobile: { w: DEFAULT_W, h: DEFAULT_H },
+  web: { w: 1180, h: DEFAULT_H },
+};
+// Canvas-wide viewport toggle for WEB frames (Desktop/Tablet/Mobile). Desktop
+// keeps the canvas' historical 1180.
+const WEB_DEVICE_WIDTHS = { desktop: 1180, tablet: 834, mobile: 390 } as const;
+type WebDevice = keyof typeof WEB_DEVICE_WIDTHS;
 // Distinct anchor slots per node edge-side so parallel edges fan out instead
 // of stacking on one center point.
 const ANCHOR_SLOTS = 5;
@@ -93,7 +112,9 @@ function ScreenFrameNode({ data, selected }: NodeProps) {
       </div>
       <div className={styles.frame}>
         <iframe
-          src={projectFileUrl(projectId, entry.name)}
+          // State frames append the od-open hash so the built screen mounts
+          // with that overlay already open (ui-react skill contract).
+          src={projectFileUrl(projectId, entry.name) + (entry.odOpen ? `#od-open=${encodeURIComponent(entry.odOpen)}` : '')}
           title={entry.title}
           className={styles.iframe}
         />
@@ -122,11 +143,18 @@ interface FlowEdge {
   from: string;
   to: string;
   label?: string;
+  /** 'navigate' (default) | 'dialog' | 'dismiss' — see the ui-react skill. */
+  type?: string;
+  /** On a `dialog` edge: which overlay kind the action opens
+   *  ('drawer' | 'sheet' | 'dialog'). Drives the per-device STATE frames. */
+  overlay?: string;
 }
 
 export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
   const [entries, setEntries] = useState<ScreenEntry[] | null>(null);
   const [flow, setFlow] = useState<FlowEdge[]>([]);
+  // slug → target platform, from the agent-authored `react/layout.json`.
+  const [layouts, setLayouts] = useState<Record<string, ScreenLayout>>({});
   const [error, setError] = useState<string | null>(null);
   // Move mode (default): frames are draggable from anywhere — an overlay
   // keeps the iframes from eating the pointer. Interact mode: the app inside
@@ -137,6 +165,10 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
   // 'canvas' = all-screens map; 'sim' = use-case walkthrough (one device
   // frame, stepped along a flow.json path).
   const [view, setView] = useState<'canvas' | 'sim'>('canvas');
+  // Viewport applied to every WEB frame on the canvas (Desktop/Tablet/Mobile) —
+  // the built app is real responsive HTML, so re-framing a web screen at a
+  // breakpoint width previews its tablet/mobile rendering.
+  const [device, setDevice] = useState<WebDevice>('desktop');
 
   // Copy ALL built screens to Figma in one payload (H2D). Screens load
   // offscreen BY URL (relative ./assets/* chunks must resolve — srcdoc can't),
@@ -147,6 +179,12 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
   const [copyAll, setCopyAll] = useState<'idle' | 'busy' | 'ok' | 'err'>('idle');
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (copyResetRef.current) clearTimeout(copyResetRef.current); }, []);
+  // Live map id(entry.name) → the frame's CURRENT on-canvas size. Copy-to-Figma
+  // uses this so a screen lands in Figma at exactly the size shown here — the
+  // web frame from layout.json, OR whatever the user dragged the frame to via
+  // NodeResizer. Kept in a ref because copyAllToFigma is defined before the
+  // `nodes` state; a useEffect below refreshes it whenever nodes change.
+  const nodeSizeRef = useRef<Map<string, { w: number; h: number }>>(new Map());
   const copyAllToFigma = useCallback(() => {
     if (copyAll === 'busy' || !entries || entries.length === 0) return;
     if (copyResetRef.current) clearTimeout(copyResetRef.current);
@@ -154,7 +192,15 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
     const payload = (async () => {
       const { urlsToFigmaClipboard } = await import('../../lib/html-to-h2d');
       const html = await urlsToFigmaClipboard(
-        entries.map((e) => ({ url: projectFileUrl(projectId, e.name) })),
+        // Frame size = what's shown on the canvas RIGHT NOW (user-resized frame,
+        // or the layout.json web/mobile default) so the paste matches the view.
+        entries.map((e) => {
+          const onCanvas = nodeSizeRef.current.get(e.name);
+          const fallback = FRAME_SIZES[layouts[e.slug] ?? 'mobile'];
+          const width = onCanvas && onCanvas.w > 0 ? onCanvas.w : fallback.w;
+          const height = onCanvas && onCanvas.h > 0 ? onCanvas.h : fallback.h;
+          return { url: projectFileUrl(projectId, e.name), width, height };
+        }),
         DEFAULT_W,
         DEFAULT_H,
       );
@@ -183,13 +229,14 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
       payload.catch(() => {});
       done('err', err);
     }
-  }, [copyAll, entries, projectId]);
+  }, [copyAll, entries, layouts, projectId]);
 
   useEffect(() => {
     let cancelled = false;
     setEntries(null);
     setError(null);
     setFlow([]);
+    setLayouts({});
     void (async () => {
       try {
         const files = await fetchProjectFiles(projectId);
@@ -202,7 +249,7 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
           .sort((a, b) => a.localeCompare(b));
         if (cancelled) return;
         if (htmlFiles.length === 0) {
-          setError(`No built screens under ${dir}/ — run the “UI (React app)” pipeline first.`);
+          setError(`No built screens under ${dir}/ — run the “UI-Spec (React)” pipeline first.`);
           setEntries([]);
           return;
         }
@@ -228,6 +275,21 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
         } catch {
           /* no/invalid flow.json → frames only */
         }
+        // Optional per-screen platform manifest at `<reactRoot>/layout.json` —
+        // sizes each frame (phone vs desktop). Missing → all mobile.
+        try {
+          const txt = await fetchProjectFileText(projectId, `${reactRoot}/layout.json`);
+          const parsed = JSON.parse(txt ?? 'null') as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            const next: Record<string, ScreenLayout> = {};
+            for (const [slug, v] of Object.entries(parsed as Record<string, unknown>)) {
+              if (v === 'web' || v === 'mobile') next[slug] = v;
+            }
+            setLayouts(next);
+          }
+        } catch {
+          /* no/invalid layout.json → phone frames */
+        }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
@@ -237,6 +299,37 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
     };
   }, [projectId, dir]);
 
+  // STATE frames: every `dialog` edge that opens an overlay becomes its own
+  // frame (the base screen with that drawer / dialog / sheet forced open via
+  // #od-open) plus an arrow base → state. Synthesized for BOTH mobile and web
+  // regardless of the device toggle — a dialog is a first-class screen state
+  // the reader must see (an all-mobile project has no device toggle, so gating
+  // this on `device !== 'desktop'` hid every dialog). The device toggle only
+  // affects web frame WIDTH below, not whether states show.
+  const deviceView = useMemo(() => {
+    if (!entries) return null;
+    const bySlug = new Map(entries.map((e) => [e.slug, e]));
+    const extraEntries: ScreenEntry[] = [];
+    const extraFlow: FlowEdge[] = [];
+    const viewLayouts: Record<string, ScreenLayout> = { ...layouts };
+    const seen = new Set<string>();
+    for (const e of flow) {
+      if (e.type !== 'dialog' || !e.overlay || !e.label) continue;
+      const base = bySlug.get(e.from);
+      if (!base) continue;
+      const stateSlug = `${e.from}--od-${e.label}`;
+      if (seen.has(stateSlug)) continue;
+      seen.add(stateSlug);
+      extraEntries.push({ name: base.name, slug: stateSlug, title: `${base.title} · ${e.label}`, odOpen: e.label });
+      extraFlow.push({ from: e.from, to: stateSlug, label: e.label });
+      viewLayouts[stateSlug] = layouts[base.slug] ?? 'mobile';
+    }
+    return { entries: [...entries, ...extraEntries], flow: [...flow, ...extraFlow], layouts: viewLayouts };
+  }, [entries, flow, layouts, device]);
+  const viewEntries = deviceView?.entries ?? null;
+  const viewFlow = deviceView?.flow ?? flow;
+  const viewLayouts = deviceView?.layouts ?? layouts;
+
   // Flow-aware layered layout, shared by nodes AND edges:
   //   column = navigation depth (longest path from a root screen),
   //   row    = barycenter-ordered index within the column (each screen sits
@@ -244,6 +337,8 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
   //            most edge crossings).
   // Screens absent from flow.json park in one trailing column.
   const layout = useMemo(() => {
+    const entries = viewEntries;
+    const flow = viewFlow;
     if (!entries || entries.length === 0) return null;
     const slugs = new Set(entries.map((e) => e.slug));
     const inFlow = flow.filter((e) => slugs.has(e.from) && slugs.has(e.to) && e.from !== e.to);
@@ -339,23 +434,45 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
       }
     }
     return { colOf, rowOf };
-  }, [entries, flow]);
+  }, [viewEntries, viewFlow]);
 
   const layoutNodes: Node[] = useMemo(() => {
+    const entries = viewEntries;
     if (!entries || !layout) return [];
     const GAP_X = 260;
     const GAP_Y = 150;
-    return entries.map((entry) => ({
-      id: entry.name,
-      type: 'screenFrame',
-      position: {
-        x: (layout.colOf.get(entry.slug) ?? 0) * (DEFAULT_W + GAP_X),
-        y: (layout.rowOf.get(entry.slug) ?? 0) * (DEFAULT_H + GAP_Y),
-      },
-      style: { width: DEFAULT_W, height: DEFAULT_H },
-      data: { entry, projectId, active: entry.name === activeName },
-    }));
-  }, [entries, layout, activeName, projectId]);
+    // Web frames follow the chosen device viewport; mobile-app frames are a phone.
+    const sizeOf = (slug: string) =>
+      (viewLayouts[slug] ?? 'mobile') === 'web'
+        ? { w: WEB_DEVICE_WIDTHS[device], h: DEFAULT_H }
+        : FRAME_SIZES.mobile;
+    // Variable frame widths (web screens are desktop-wide): column x offsets
+    // accumulate each column's WIDEST frame instead of a fixed step.
+    const colWidth = new Map<number, number>();
+    for (const e of entries) {
+      const c = layout.colOf.get(e.slug) ?? 0;
+      colWidth.set(c, Math.max(colWidth.get(c) ?? 0, sizeOf(e.slug).w));
+    }
+    const xOfCol = new Map<number, number>();
+    let x = 0;
+    for (const c of [...colWidth.keys()].sort((a, b) => a - b)) {
+      xOfCol.set(c, x);
+      x += colWidth.get(c)! + GAP_X;
+    }
+    return entries.map((entry) => {
+      const size = sizeOf(entry.slug);
+      return {
+        id: nodeIdOf(entry),
+        type: 'screenFrame',
+        position: {
+          x: xOfCol.get(layout.colOf.get(entry.slug) ?? 0) ?? 0,
+          y: (layout.rowOf.get(entry.slug) ?? 0) * (DEFAULT_H + GAP_Y),
+        },
+        style: { width: size.w, height: size.h },
+        data: { entry, projectId, active: entry.name === activeName && !entry.odOpen },
+      };
+    });
+  }, [viewEntries, layout, viewLayouts, device, activeName, projectId]);
 
   // Controlled-but-mutable nodes: without onNodesChange React Flow treats the
   // nodes prop as immutable state and silently ignores every drag/resize.
@@ -376,9 +493,31 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
     setNodes((ns) => ns.map((n) => ({ ...n, data: { ...n.data, moveMode } })));
   }, [moveMode, setNodes]);
 
+  const hasWeb = useMemo(
+    () => (entries ?? []).some((e) => layouts[e.slug] === 'web'),
+    [entries, layouts],
+  );
+  // Switching device re-derives the whole view set (web frame widths AND the
+  // per-device state frames), so the canvas re-lays out from scratch.
+  const applyDevice = (d: WebDevice) => setDevice(d);
+
+  // Keep the copy-size ref in sync with each frame's current rendered size
+  // (measured by React Flow; reflects NodeResizer drags). Copy-to-Figma reads it.
+  useEffect(() => {
+    const m = new Map<string, { w: number; h: number }>();
+    for (const n of nodes) {
+      const w = Math.round(n.measured?.width ?? (typeof n.width === 'number' ? n.width : 0));
+      const h = Math.round(n.measured?.height ?? (typeof n.height === 'number' ? n.height : 0));
+      if (w > 0) m.set(n.id, { w, h });
+    }
+    nodeSizeRef.current = m;
+  }, [nodes]);
+
   const edges: Edge[] = useMemo(() => {
+    const entries = viewEntries;
+    const flow = viewFlow;
     if (!entries || !layout || flow.length === 0) return [];
-    const bySlug = new Map(entries.map((e) => [e.slug, e.name]));
+    const bySlug = new Map(entries.map((e) => [e.slug, nodeIdOf(e)]));
     // Deterministic fan-out: edges leave/enter through per-node anchor slots
     // (sorted by the counterpart's row so lanes don't swap arbitrarily).
     const sorted = flow
@@ -429,7 +568,7 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
       } as Edge);
     }
     return out;
-  }, [entries, layout, flow]);
+  }, [viewEntries, layout, viewFlow]);
 
   if (error && (!entries || entries.length === 0)) {
     return <div className={styles.msg}>{error}</div>;
@@ -444,6 +583,7 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
         projectId={projectId}
         entries={entries}
         flow={flow}
+        layouts={layouts}
         onExit={() => setView('canvas')}
       />
     );
@@ -497,7 +637,7 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
               className={styles.modeBtn}
               onClick={copyAllToFigma}
               disabled={copyAll === 'busy'}
-              title="Copy TẤT CẢ màn hình thành frame Figma (H2D) — dán vào Figma bằng Cmd+V"
+              title="Copy TẤT CẢ màn hình thành frame Figma (H2D) — mỗi frame theo đúng kích thước đang hiển thị trên canvas (kéo frame web rộng ra nếu cần); dán vào Figma bằng Cmd+V"
             >
               {copyAll === 'busy'
                 ? '⧉ Đang trích xuất…'
@@ -507,6 +647,22 @@ export function PipelineReactCanvas({ projectId, dir, activeName }: Props) {
                     ? '⚠ Lỗi — thử lại'
                     : '⧉ Copy Figma'}
             </button>
+            {hasWeb ? (
+              <>
+                <span className={styles.modeDivider} />
+                {(Object.keys(WEB_DEVICE_WIDTHS) as WebDevice[]).map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    className={device === d ? styles.modeBtnActive : styles.modeBtn}
+                    onClick={() => applyDevice(d)}
+                    title={`Khung màn web theo ${d} (${WEB_DEVICE_WIDTHS[d]}px) — app responsive tự reflow`}
+                  >
+                    {d === 'desktop' ? '🖥' : d === 'tablet' ? '▤' : '📱'} {WEB_DEVICE_WIDTHS[d]}
+                  </button>
+                ))}
+              </>
+            ) : null}
           </Panel>
           <Background gap={32} size={1} color="var(--border, #e5e7eb)" />
           <Controls showInteractive={false} />

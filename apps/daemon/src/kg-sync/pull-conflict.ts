@@ -13,7 +13,7 @@ import type {
   PullPlan,
   PullResolution,
 } from '@open-design/contracts';
-import { isHistoryArtifact, isSyncExcluded } from '../pipelines.js';
+import { isExportArtifact, isHistoryArtifact, isSyncExcluded } from '../pipelines.js';
 
 /** Max bytes of either side we will inline-diff. A text file larger than this is
  *  classified `binary` (metadata-only comparison) — see conflictKind. */
@@ -159,6 +159,9 @@ export async function planPullFiles(
     // still carry) are invisible to PLAN: they must never surface as "new"
     // files or conflicts — pull would pin an old template over the local one.
     if (isSyncExcluded(rel)) continue;
+    // Derived MD exports never pull (regenerated on every push) — surfacing
+    // them as "new"/conflicts would be pure noise.
+    if (isExportArtifact(rel)) continue;
     const dest = path.resolve(cwd, rel);
     if (!withinCwd(dest, cwdReal)) continue; // path-traversal guard
 

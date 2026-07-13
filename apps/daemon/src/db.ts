@@ -602,6 +602,8 @@ interface PipelineRunStateRow {
   lastInput?: string;
   /** Structured source of the last run (Confluence ref or BAS document). */
   lastSource?: unknown;
+  /** Target platform of the last run (stages with `acceptsPlatform`). */
+  lastPlatform?: string;
 }
 
 export function getProjectPipelineState(
@@ -629,6 +631,7 @@ export function setProjectPipelineStatus(
     lastConversationId?: string;
     lastInput?: string;
     lastSource?: unknown;
+    lastPlatform?: string;
   },
 ) {
   const project = getProject(db, projectId);
