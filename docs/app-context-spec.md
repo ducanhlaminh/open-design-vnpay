@@ -91,9 +91,15 @@ is a media folder `app--<slug>` with `app.json` (marker + name) and
   the merged markdown into the charter.
 Adapter surfaces `config.appId`; `ProjectConfig`/`api` carry the app methods.
 
-Deferred (additive, do when a real need shows): a dashboard **App > Feature**
-tree grouping and a standalone app-detail route — the per-feature card already
-covers link → charter → inherit → promote end to end.
+### Apps-first navigation (also done)
+
+The studio index is now the **Apps** page (`pages/apps.tsx`): a grid of app
+cards (+ a "Chưa gán app" bucket for unlinked features); clicking one opens
+`/app/:appId` (`pages/app-detail.tsx`) — the app's feature list + a "Charter dùng
+chung" editor. The old flat feature list moved to `/all`; the sidebar leads with
+**Apps** then **Tất cả feature**. The projects list API now carries `appId` per
+row (read from `project.json` in `loadProjects`) so grouping needs no per-row
+fetch.
 
 ## Non-goals / keep simple
 
