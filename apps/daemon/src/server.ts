@@ -453,6 +453,7 @@ import {
 } from './bas/bas-client.js';
 import { buildReactDemo } from './react-demo.js';
 import { pushUxKb, resolveUxKbDir } from './ux-kb-sync.js';
+import { appContextDirective, resolveAppId, stageAppContext } from './app-context.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv, sha256hex, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
@@ -13619,7 +13620,28 @@ export async function startServer({
           ' The daemon verified there is NO UX knowledge base available (no env override, nothing on the media store, no local folder) — produce the fallback report (knowledge_base: "unavailable") without hunting for it.';
       }
     }
-    const kickoff = `Run the "${def.name}" pipeline for KGS project "${projectId}". ${skillDirective}${sourceDirective}${platformDirective}${rerunDirective}${kbDirective}${graphDirective}`;
+    // App context (shared cross-feature charter / IA / domain): if this feature
+    // is linked to an App (project.json.appId on the media store), stage the
+    // app's `app-context/**` into the run cwd as `./.app-context` and tell the
+    // agent to honor it, so every feature of the app stays consistent. Only the
+    // design stages consume it — the `docs` ingestion stage has nothing to align.
+    // Best-effort: unlinked features and any media error keep the kickoff
+    // byte-identical to the legacy one (appCtxDirective stays '').
+    let appCtxDirective = '';
+    if (def.id !== 'docs') {
+      try {
+        const appId = await resolveAppId(projectId);
+        if (appId) {
+          const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+          const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+          const staged = await stageAppContext(appId, runCwd);
+          appCtxDirective = appContextDirective(staged);
+        }
+      } catch (error) {
+        console.warn('[app-context] staging failed (continuing without it):', error);
+      }
+    }
+    const kickoff = `Run the "${def.name}" pipeline for KGS project "${projectId}". ${skillDirective}${sourceDirective}${platformDirective}${rerunDirective}${kbDirective}${appCtxDirective}${graphDirective}`;
 
     // BAS document pre-fetch (BE owns the BAS KG HTTP) — done BEFORE any
     // conversation/run state is created so a fetch failure aborts cleanly with no
