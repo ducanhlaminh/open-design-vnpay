@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { PipelinePulseRating, PipelineView } from '@open-design/contracts';
 import { Icon } from '../Icon';
@@ -57,6 +57,23 @@ export function PipelineEvaluationStep({ projectId, workflowId, pipeline, pipeli
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadedRun, setLoadedRun] = useState<string | null>(null);
+
+  // "Xem đánh giá": khi mở lại một run đã gửi, nạp câu trả lời đã lưu (GET) vào
+  // form — trước đây nó mở form trống nên "xem" chẳng thấy gì.
+  useEffect(() => {
+    if (!open || !submitted || loadedRun === runId) return;
+    void fetch(`/api/pipelines/feedback?projectId=${encodeURIComponent(projectId)}`)
+      .then((response) => (response.ok ? response.json() : { feedback: [] }))
+      .then((data: { feedback?: Array<{ runId: string; answers?: unknown }> }) => {
+        const record = (data.feedback ?? []).find((item) => item.runId === runId);
+        if (record?.answers && typeof record.answers === 'object' && !Array.isArray(record.answers)) {
+          setAnswers(record.answers as Answers);
+        }
+        setLoadedRun(runId);
+      })
+      .catch(() => undefined);
+  }, [open, submitted, runId, projectId, loadedRun]);
   const set = (id: string, value: string | string[]) => setAnswers((current) => ({ ...current, [id]: value }));
   const used = (answers.A5 as string[] | undefined) ?? [];
   const progress = Math.round(((section + 1) / SECTIONS.length) * 100);

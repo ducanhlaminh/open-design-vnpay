@@ -205,9 +205,7 @@ function migrate(db: SqliteDb): void {
 
     CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
       ON routine_runs(routine_id, started_at DESC);
-
   `);
-  db.exec(`DROP TABLE IF EXISTS pipeline_pulse_feedback`);
   // Forward-compatible column add for databases created before metadata_json.
   // SQLite has no IF NOT EXISTS for ALTER, so we check pragma_table_info.
   const cols = db.prepare(`PRAGMA table_info(projects)`).all() as DbRow[];
