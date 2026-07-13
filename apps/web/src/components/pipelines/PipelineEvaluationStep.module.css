@@ -104,6 +104,8 @@
 .field > input,
 .field textarea { box-sizing: border-box; width: 100%; padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-subtle); color: var(--text); font: inherit; }
 .field textarea { min-height: 88px; resize: vertical; }
+/* Ô "nêu rõ Khác" hiện dưới lưới lựa chọn — cách một chút cho rõ. */
+.otherInput { margin-top: 8px; }
 .pipelineBlock { margin-bottom: 24px; padding: 20px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-subtle); }
 .pipelineBlock h3 { margin: 0 0 20px; color: var(--accent); }
 
