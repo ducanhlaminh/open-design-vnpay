@@ -186,6 +186,7 @@ const PIPELINE_STRING_FLAGS = new Set([
   'platform',
   // run-all: which UI-Spec terminal(s) to finish with: ui-html | ui-react | both
   'terminal',
+  'rating', 'issue', 'comment', 'run', 'workflow',
 ]);
 const PIPELINE_BOOLEAN_FLAGS = new Set([
   'help', 'h', 'json',
@@ -865,6 +866,28 @@ async function runMediaGenerate(rawArgs) {
       'project id required. Pass --project <id> or set OD_PROJECT_ID. The daemon injects this when it spawns the code agent.',
     );
     process.exit(2);
+  }
+
+  if (sub === 'feedback') {
+    const pipelineId = positional[0];
+    const rating = flags.rating;
+    if (!pipelineId || !flags.run || !rating) {
+      console.error('Usage: od pipeline feedback <stage> --project <id> --run <id> --rating <ready|minor_edits|major_edits|unusable>');
+      process.exit(2);
+    }
+    const issues = typeof flags.issue === 'string'
+      ? flags.issue.split(',').map((value) => value.trim()).filter(Boolean)
+      : [];
+    const resp = await fetch(`${base}/api/pipelines/feedback`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId, workflowId: flags.workflow || 'docs-to-ui', pipelineId,
+        runId: flags.run, rating, issues, comment: flags.comment || '' }),
+    });
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Feedback recorded for ${pipelineId} (${flags.run}): ${rating}`);
+    return;
   }
 
   const surface = flags.surface;
@@ -6623,7 +6646,7 @@ Common options:
 }
 
 function printPipelineHelp() {
-  console.log(`Usage: od pipeline <projects|list|run|run-all|upload|pull|build|demo|history|restore> [options]
+  console.log(`Usage: od pipeline <projects|list|run|run-all|feedback|upload|pull|build|demo|history|restore> [options]
 
 Dự án khai sinh ở Pipeline Studio (kèm link Confluence + design system + phân
 quyền); kéo về máy bằng \`od kg pull-all\` rồi chạy pipeline tại đây.
@@ -6666,6 +6689,8 @@ Commands:
   restore              Rewind outputs: --version v3 (store snapshot) or --commit <sha> [--path <p>].
                        --stage <pipeline-id> limits a version-restore to one pipeline's files.
                        The current state is committed first, so restore is always undoable.
+  feedback <stage>     Submit run pulse feedback: --run <id> --rating <ready|minor_edits|major_edits|unusable>
+                       [--issue <comma-separated codes>] [--comment <text>].
 
 Options:
   --project <id>       KGS project id (required for list/run/pull). This is a KGS app

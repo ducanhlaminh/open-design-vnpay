@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   PipelineProject,
+  PipelinePulseFeedbackListResponse,
   PipelineProjectsResponse,
   PipelineView,
   PipelinesResponse,
@@ -42,6 +43,7 @@ import {
 } from './pipelines/PipelineModals';
 import { PullConflictModal } from './pipelines/PullConflictModal';
 import { PlModal } from './pipelines/PlModal';
+import { PipelineEvaluationStep } from './pipelines/PipelineEvaluationStep';
 import { pullApply, pullPlan } from '../providers/pullConflict';
 import { useT } from '../i18n';
 import { relativeTimeLong } from '../utils/chatTime';
@@ -122,6 +124,7 @@ export function PipelinesView() {
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ratedRunIds, setRatedRunIds] = useState<Set<string>>(new Set());
 
   const [syncBusy, setSyncBusy] = useState<null | 'pull' | 'push'>(null);
   // Project history (version hóa output), scoped per PIPELINE CARD: the card's
@@ -255,15 +258,20 @@ export function PipelinesView() {
       setError(null);
     }
     try {
-      const res = await fetch(
-        `/api/pipelines?projectId=${encodeURIComponent(pid)}&workflowId=${encodeURIComponent(workflowId)}`,
-      );
+      const [res, feedbackRes] = await Promise.all([
+        fetch(`/api/pipelines?projectId=${encodeURIComponent(pid)}&workflowId=${encodeURIComponent(workflowId)}`),
+        fetch(`/api/pipelines/feedback?projectId=${encodeURIComponent(pid)}`),
+      ]);
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `load failed: ${res.status}`);
       }
       const data = (await res.json()) as PipelinesResponse;
       setPipelines(data.pipelines ?? []);
+      if (feedbackRes.ok) {
+        const feedbackData = (await feedbackRes.json()) as PipelinePulseFeedbackListResponse;
+        setRatedRunIds(new Set(feedbackData.feedback.map((item) => item.runId)));
+      }
       if (background) setError(null);
     } catch (err) {
       // A transient poll hiccup must not wipe the stepper mid-run — keep the
@@ -673,6 +681,14 @@ export function PipelinesView() {
   // A step is done when any of its options succeeded (either UI-Spec output
   // completes the step).
   const doneCount = stepEntries.filter((opts) => opts.some((p) => p.status === 'succeeded')).length;
+  const feedbackPipeline = pipelines
+    .filter((pipeline) => pipeline.status === 'succeeded' || pipeline.status === 'failed')
+    .sort((left, right) => (left.updatedAt ?? 0) - (right.updatedAt ?? 0))
+    .at(-1);
+  const feedbackRunId = feedbackPipeline
+    ? feedbackPipeline.lastRunId
+      ?? `legacy:${projectId}:${workflowId}:${feedbackPipeline.id}:${feedbackPipeline.updatedAt ?? 'existing'}`
+    : null;
 
   return (
     <section className="pipelines-page" aria-labelledby="pipelines-title" data-testid="pipelines-view">
@@ -1228,6 +1244,17 @@ export function PipelinesView() {
               </li>
             );
           })}
+          {feedbackPipeline && feedbackRunId ? (
+            <PipelineEvaluationStep
+              projectId={projectId}
+              workflowId={workflowId}
+              pipeline={feedbackPipeline}
+              pipelines={pipelines}
+              runId={feedbackRunId}
+              submitted={ratedRunIds.has(feedbackRunId)}
+              onSubmitted={() => setRatedRunIds((current) => new Set(current).add(feedbackRunId))}
+            />
+          ) : null}
         </ol>
       )}
 

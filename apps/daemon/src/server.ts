@@ -14242,6 +14242,7 @@ export async function startServer({
   registerPipelineRoutes(app, {
     db,
     pipelines: pipelineDeps,
+    paths: pathDeps,
   });
 
   // KG sync (pull-all/push-all) is registered here — after the pipeline file

@@ -80,6 +80,47 @@ export interface PipelinesResponse {
   pipelines: PipelineView[];
 }
 
+export type PipelinePulseRating = 'ready' | 'minor_edits' | 'major_edits' | 'unusable';
+
+export type PipelinePulseIssue =
+  | 'run_error'
+  | 'wrong_business'
+  | 'missing_cases'
+  | 'low_quality'
+  | 'too_slow'
+  | 'other';
+
+export interface PipelinePulseFeedback {
+  id: string;
+  projectId: string;
+  workflowId: string;
+  pipelineId: string;
+  runId: string;
+  rating: PipelinePulseRating;
+  issues: PipelinePulseIssue[];
+  comment?: string;
+  createdAt: number;
+  user?: string;
+  surveyKind?: 'pulse' | 'deep';
+  answers?: Record<string, unknown>;
+}
+
+export interface PipelinePulseFeedbackRequest {
+  projectId: string;
+  workflowId: string;
+  pipelineId: string;
+  runId: string;
+  rating: PipelinePulseRating;
+  issues?: PipelinePulseIssue[];
+  comment?: string;
+  surveyKind?: 'pulse' | 'deep';
+  answers?: Record<string, unknown>;
+}
+
+export interface PipelinePulseFeedbackListResponse {
+  feedback: PipelinePulseFeedback[];
+}
+
 // A workflow is one named docs→output flow — an ordered set of pipelines.
 // Since the 2026-07 merge there is exactly ONE workflow, `docs-to-ui`: three
 // shared upstream stages (docs → cj → ux) feeding two terminal UI-Spec

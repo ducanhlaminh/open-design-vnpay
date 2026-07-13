@@ -26,6 +26,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
+import { randomUUID } from 'node:crypto';
+import type { PipelinePulseFeedback, PipelinePulseFeedbackRequest } from '@open-design/contracts';
 
 type SqliteDb = Database.Database;
 
@@ -75,6 +77,56 @@ function safeKey(raw: string): string {
 /** This install's feedback file path within the project's media folder. */
 export function feedbackFilePath(installKey: string): string {
   return `${FEEDBACK_DIR}/${safeKey(installKey)}.jsonl`;
+}
+
+export function pipelineEvaluationFilePath(user: string): string {
+  return `${FEEDBACK_DIR}/${safeKey(user)}.json`;
+}
+
+export async function readPipelineEvaluations(
+  projectId: string,
+  user: string,
+  opts: { client?: MediaClient } = {},
+): Promise<PipelinePulseFeedback[]> {
+  const client = opts.client ?? new MediaClient(mediaConfigFromEnv());
+  const filePath = pipelineEvaluationFilePath(user);
+  const listed = await client.listFiles(projectId);
+  if (!listed.some((file) => file.path === filePath)) return [];
+  const content = await client.downloadFile(projectId, filePath);
+  try {
+    const parsed = JSON.parse(content.toString('utf8')) as unknown;
+    return Array.isArray(parsed) ? parsed as PipelinePulseFeedback[] : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function publishPipelineEvaluation(
+  projectId: string,
+  user: string,
+  input: PipelinePulseFeedbackRequest,
+  opts: { client?: MediaClient } = {},
+): Promise<PipelinePulseFeedback> {
+  const client = opts.client ?? new MediaClient(mediaConfigFromEnv());
+  const records = await readPipelineEvaluations(projectId, user, { client });
+  const existing = records.find((record) => record.runId === input.runId);
+  const feedback: PipelinePulseFeedback = {
+    ...input,
+    id: existing?.id ?? randomUUID(),
+    user,
+    issues: input.issues ?? [],
+    createdAt: existing?.createdAt ?? Date.now(),
+  };
+  const next = [...records.filter((record) => record.runId !== input.runId), feedback]
+    .sort((left, right) => left.createdAt - right.createdAt);
+  await client.uploadFile(
+    projectId,
+    FEEDBACK_DIR,
+    pipelineEvaluationFilePath(user),
+    'application/json',
+    Buffer.from(`${JSON.stringify(next, null, 2)}\n`, 'utf8'),
+  );
+  return feedback;
 }
 
 /** Read this install's real end-user feedback prompts for a project. Excludes

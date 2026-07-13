@@ -1,5 +1,5 @@
 import type { Express, Response } from 'express';
-import type { PipelineRunSource, ProjectPipelineState, TargetPlatform, WorkflowTerminal } from '@open-design/contracts';
+import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunSource, ProjectPipelineState, TargetPlatform, WorkflowTerminal } from '@open-design/contracts';
 
 import { getProject, getProjectPipelineState, insertProject, listProjects } from './db.js';
 import {
@@ -13,6 +13,8 @@ import {
   mergePipelineState,
 } from './pipelines.js';
 import type { RouteDeps } from './server-context.js';
+import { readAppConfig } from './app-config.js';
+import { publishPipelineEvaluation, readPipelineEvaluations } from './feedback.js';
 
 // A pipeline's "project" is a KGS app: either pulled from the central KGS
 // (`od kg pull`, metadata.source === 'kg-pull') OR created fresh for pipelines
@@ -65,7 +67,7 @@ const BAS_LOCKED_MSG =
 // runs are manual and one-shot. The route layer validates project + gating and
 // delegates the actual conversation-seeding run to `ctx.pipelines.runPipeline`,
 // a closure wired in server.ts that has access to design.runs + startChatRun.
-export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines'> {}
+export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines' | 'paths'> {}
 
 export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutesDeps) {
   const { db } = ctx;
@@ -154,6 +156,62 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       ?? getWorkflow(DEFAULT_WORKFLOW_ID)!;
     const state = await loadMergedState(projectId);
     res.json({ projectId, workflowId: wf.id, pipelines: listPipelineStatus(state, wf.pipelineIds) });
+  });
+
+  app.get('/api/pipelines/feedback', (req, res) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+    void (async () => {
+      try {
+        const config = await readAppConfig(ctx.paths.RUNTIME_DATA_DIR);
+        const user = config.feedbackUsername?.trim() || config.installationId || 'unknown';
+        res.json({ feedback: await readPipelineEvaluations(projectId, user) });
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
+  app.post('/api/pipelines/feedback', async (req, res) => {
+    const body = req.body as Partial<{
+      projectId: string; workflowId: string; pipelineId: string; runId: string;
+      rating: PipelinePulseRating; issues: PipelinePulseIssue[]; comment: string;
+      surveyKind: 'pulse' | 'deep'; answers: Record<string, unknown>;
+    }>;
+    const ratings = new Set<PipelinePulseRating>(['ready', 'minor_edits', 'major_edits', 'unusable']);
+    const issueAllowlist = new Set<PipelinePulseIssue>(['run_error', 'wrong_business', 'missing_cases', 'low_quality', 'too_slow', 'other']);
+    if (!body.projectId || !body.workflowId || !body.pipelineId || !body.runId || !body.rating) {
+      return res.status(400).json({ error: 'projectId, workflowId, pipelineId, runId and rating are required' });
+    }
+    if (!getProject(db, body.projectId)) return res.status(404).json({ error: 'project not found' });
+    if (!ratings.has(body.rating)) return res.status(400).json({ error: 'invalid rating' });
+    const issues = Array.isArray(body.issues)
+      ? Array.from(new Set(body.issues.filter((issue): issue is PipelinePulseIssue => issueAllowlist.has(issue))))
+      : [];
+    if ((body.rating === 'major_edits' || body.rating === 'unusable') && issues.length === 0) {
+      return res.status(400).json({ error: 'at least one issue is required for this rating' });
+    }
+    try {
+      const config = await readAppConfig(ctx.paths.RUNTIME_DATA_DIR);
+      const user = config.feedbackUsername?.trim() || config.installationId || 'unknown';
+      const comment = body.comment?.trim().slice(0, 2000);
+      const answers = body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers)
+        ? body.answers : undefined;
+      const feedback = await publishPipelineEvaluation(body.projectId, user, {
+        projectId: body.projectId,
+        workflowId: body.workflowId,
+        pipelineId: body.pipelineId,
+        runId: body.runId,
+        rating: body.rating,
+        issues,
+        surveyKind: body.surveyKind === 'deep' ? 'deep' : 'pulse',
+        ...(comment ? { comment } : {}),
+        ...(answers ? { answers } : {}),
+      });
+      res.status(201).json({ feedback });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   // POST /api/pipelines/pull-files { projectId } — regenerate the project's
