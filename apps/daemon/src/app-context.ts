@@ -97,12 +97,15 @@ export function appContextDirective(stagedFiles: string[]): string {
   if (stagedFiles.length === 0) return '';
   return (
     ` This feature belongs to an APP with shared cross-feature context staged at "./.app-context"` +
-    ` (files: ${stagedFiles.join(', ')}). READ it FIRST and treat it as the app-wide source of truth:` +
-    ` any UX charter's MUST rules are hard constraints; its conventions (navigation, empty/error/loading` +
-    ` states, forms, terminology, a11y, tone) are defaults you follow so this feature stays consistent with` +
-    ` the rest of the app; and any screens/patterns it already establishes must be REUSED, not reinvented.` +
-    ` If this feature genuinely needs a NEW cross-cutting decision (a new shared pattern, glossary term, or` +
-    ` navigation entry), record it as a PROPOSAL by appending a short bullet to "./app-context-delta.md" in` +
-    ` your output — do NOT edit ./.app-context directly (it is read-only; a human promotes deltas to the app).`
+    ` (files: ${stagedFiles.join(', ')}). READ it FIRST and treat it as the app-wide source of truth.` +
+    ` "ux-charter.json" is a STRUCTURED set of UX criteria — each { "id", "priority" (must|should|nice),` +
+    ` "area", "text" }. Treat every "must" as a HARD CONSTRAINT and every "should" as a default you follow,` +
+    ` so this feature stays consistent with the rest of the app; reuse any patterns/conventions it` +
+    ` establishes rather than reinventing them.` +
+    ` If this feature genuinely needs a NEW cross-cutting criterion, record it as a PROPOSAL in` +
+    ` "./app-context-delta.json" — a JSON object {"criteria":[{ "id": "kebab-id", "priority":` +
+    ` "must|should|nice", "area": "...", "text": "..." }]} (create the file, or extend its "criteria" array).` +
+    ` Do NOT edit ./.app-context directly (it is read-only; a human reviews and promotes deltas into the` +
+    ` app charter).`
   );
 }

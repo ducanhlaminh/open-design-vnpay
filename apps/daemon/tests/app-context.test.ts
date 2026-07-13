@@ -12,17 +12,17 @@ describe('app-context — kickoff directive', () => {
   });
 
   it('lists the staged context files and points the agent at ./.app-context', () => {
-    const d = appContextDirective(['ux-charter.md', 'ia.json']);
+    const d = appContextDirective(['ux-charter.json', 'ia.json']);
     expect(d).toContain('./.app-context');
-    expect(d).toContain('ux-charter.md');
+    expect(d).toContain('ux-charter.json');
     expect(d).toContain('ia.json');
-    // The charter's MUST rules must be framed as hard constraints.
-    expect(d).toMatch(/MUST rules are hard constraints/i);
+    // The charter's "must" criteria must be framed as hard constraints.
+    expect(d).toMatch(/hard constraint/i);
   });
 
-  it('routes cross-cutting additions to a delta proposal, never a direct edit', () => {
-    const d = appContextDirective(['ux-charter.md']);
-    expect(d).toContain('app-context-delta.md');
+  it('routes cross-cutting additions to a JSON delta proposal, never a direct edit', () => {
+    const d = appContextDirective(['ux-charter.json']);
+    expect(d).toContain('app-context-delta.json');
     // Read-only guarantee: the agent must not write into the staged folder.
     expect(d).toMatch(/do NOT edit \.\/\.app-context directly/i);
   });
