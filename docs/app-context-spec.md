@@ -67,11 +67,23 @@ with no CLI track). The daemon side is finished at Phase 1.
 is a media folder `app--<slug>` with `app.json` (marker + name) and
 `app-context/**`.
 
-- `GET /api/apps` list · `POST /api/apps { name }` create · `GET /api/apps/:id`.
+An App has the **same lifecycle + RBAC as a feature/project**: on create it also
+registers an **identity project** (`/api/v1/projects`, keyed by the app id, creator
+= owner), so membership, roles and the `/access` screen work for an app id
+unchanged. Full CRUD:
+
+- `GET /api/apps` list (access-filtered) · `POST /api/apps { name }` create
+  (identity + media) · `GET /api/apps/:id` (detail + caller role/canManage).
+- `PUT /api/apps/:id { name }` rename · `DELETE /api/apps/:id` (identity + media).
 - `PUT /api/projects/:id/app { appId }` link/unlink a feature (empty = unlink).
-- `GET /api/apps/:id/charter` · `PUT /api/apps/:id/charter { markdown }` read/write
-  `app-context/ux-charter.md`.
-- Gated on `projects:manage` (or admin), mirroring project create/config.
+- `GET/PUT /api/apps/:id/charter` read/write `app-context/ux-charter.md`.
+- Gates: create → `projects:manage`/admin; per-app writes (rename/delete/charter/
+  promote) → `projects:manage`/admin **or the app owner**; reads → membership.
+
+**Membership ("add people to app")** reuses the project access machinery: the app
+page renders `AccessPanel({ kgsId: appId })` → the `/access?project=<appId>` screen,
+which resolves an `app--*` id as its own manageable resource (the member routes
+proxy to identity, which already knows the app).
 
 ## Phase 3 — Promote (extend, reviewed) — DONE (pipeline-studio server)
 
