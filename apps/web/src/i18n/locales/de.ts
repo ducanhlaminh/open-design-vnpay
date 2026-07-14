@@ -1529,6 +1529,7 @@ export const de: Dict = {
   'notify.failureBody': 'Die Aufgabe wurde mit einem Fehler beendet.',
   'updater.available': 'Update verfügbar',
   'updater.availableBody': 'Open Design {version} ist verfügbar. Es wird heruntergeladen, bevor der Installer geöffnet werden kann.',
+  'updater.checkForUpdates': 'Nach Updates suchen',
   'updater.checking': 'Suche nach Updates',
   'updater.download': 'Update herunterladen',
   'updater.downloading': 'Update wird heruntergeladen',

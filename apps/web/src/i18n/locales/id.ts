@@ -1710,6 +1710,7 @@ export const id: Dict = {
   'notify.failureBody': 'Cek chat untuk detail error.',
   'updater.available': 'Update tersedia',
   'updater.availableBody': 'Open Design {version} tersedia. Update akan diunduh sebelum installer dapat dibuka.',
+  'updater.checkForUpdates': 'Periksa pembaruan',
   'updater.checking': 'Memeriksa update',
   'updater.download': 'Unduh update',
   'updater.downloading': 'Mengunduh update',

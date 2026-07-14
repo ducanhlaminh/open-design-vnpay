@@ -249,7 +249,17 @@ function isDesktopUpdateChannel(value: unknown): value is DesktopUpdateChannel {
   return typeof value === "string" && DESKTOP_UPDATE_CHANNEL_VALUES.has(value);
 }
 
+// VNPAY fork: the stable channel is published as GitHub Releases on the public
+// repo `ducanhlaminh/open-design-vnpay` (see scripts/release-github.mjs), not the
+// upstream R2 feed. GitHub's `releases/latest/download/<asset>` URL always
+// resolves to the newest published (non-draft, non-prerelease) release, so it
+// acts as the rolling "latest" feed. Non-stable channels keep the upstream feed.
+// `OD_UPDATE_METADATA_URL` still overrides this for local/fixture testing.
+const STABLE_GITHUB_METADATA_URL =
+  "https://github.com/ducanhlaminh/open-design-vnpay/releases/latest/download/metadata.json";
+
 function defaultMetadataUrl(channel: DesktopUpdateChannel): string {
+  if (channel === DESKTOP_UPDATE_CHANNELS.STABLE) return STABLE_GITHUB_METADATA_URL;
   return `${DEFAULT_RELEASE_ORIGIN}/${channel}/latest/metadata.json`;
 }
 

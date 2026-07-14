@@ -1870,6 +1870,7 @@ export const zhTW: Dict = {
   'notify.failureBody': '本輪任務出錯，請查看錯誤訊息。',
   'updater.available': '有可用更新',
   'updater.availableBody': 'Open Design {version} 可用。下載完成後即可開啟安裝器。',
+  'updater.checkForUpdates': '檢查更新',
   'updater.checking': '正在檢查更新',
   'updater.download': '下載更新',
   'updater.downloading': '正在下載更新',

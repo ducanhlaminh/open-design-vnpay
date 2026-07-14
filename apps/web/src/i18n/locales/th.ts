@@ -1487,6 +1487,7 @@ export const th: Dict = {
   'notify.failureBody': 'หน้าที่ทำผิดพลาด',
   'updater.available': 'มีอัปเดตใหม่',
   'updater.availableBody': 'Open Design {version} พร้อมใช้งานแล้ว จะดาวน์โหลดก่อนเปิดตัวติดตั้ง',
+  'updater.checkForUpdates': 'ตรวจสอบการอัปเดต',
   'updater.checking': 'กำลังตรวจสอบอัปเดต',
   'updater.download': 'ดาวน์โหลดอัปเดต',
   'updater.downloading': 'กำลังดาวน์โหลดอัปเดต',

@@ -1632,6 +1632,7 @@ export const ru: Dict = {
   'notify.failureBody': 'Задача завершилась с ошибкой.',
   'updater.available': 'Доступно обновление',
   'updater.availableBody': 'Open Design {version} доступен. Он будет загружен перед открытием установщика.',
+  'updater.checkForUpdates': 'Проверить обновления',
   'updater.checking': 'Проверка обновлений',
   'updater.download': 'Скачать обновление',
   'updater.downloading': 'Загрузка обновления',

@@ -1591,6 +1591,7 @@ export const ar: Dict = {
   'notify.failureBody': 'انتهت المهمة بخطأ.',
   'updater.available': 'يتوفر تحديث',
   'updater.availableBody': 'Open Design {version} متوفر. سيتم تنزيله قبل فتح المثبت.',
+  'updater.checkForUpdates': 'التحقق من وجود تحديثات',
   'updater.checking': 'جارٍ البحث عن تحديثات',
   'updater.download': 'تنزيل التحديث',
   'updater.downloading': 'جارٍ تنزيل التحديث',

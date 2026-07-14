@@ -1641,6 +1641,7 @@ export const ko: Dict = {
   'notify.failureBody': '작업이 오류로 종료되었습니다.',
   'updater.available': '업데이트 사용 가능',
   'updater.availableBody': 'Open Design {version}을 사용할 수 있습니다. 설치 프로그램을 열기 전에 다운로드됩니다.',
+  'updater.checkForUpdates': '업데이트 확인',
   'updater.checking': '업데이트 확인 중',
   'updater.download': '업데이트 다운로드',
   'updater.downloading': '업데이트 다운로드 중',

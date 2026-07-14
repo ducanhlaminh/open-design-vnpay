@@ -1601,6 +1601,7 @@ export const hu: Dict = {
   'notify.failureBody': 'A feladat hibával ért véget.',
   'updater.available': 'Frissítés érhető el',
   'updater.availableBody': 'Az Open Design {version} elérhető. A telepítő megnyitása előtt letöltődik.',
+  'updater.checkForUpdates': 'Frissítések keresése',
   'updater.checking': 'Frissítések keresése',
   'updater.download': 'Frissítés letöltése',
   'updater.downloading': 'Frissítés letöltése',

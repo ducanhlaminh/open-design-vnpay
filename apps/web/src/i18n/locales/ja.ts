@@ -1528,6 +1528,7 @@ export const ja: Dict = {
   'notify.failureBody': 'タスクはエラーで終了しました。',
   'updater.available': 'アップデートがあります',
   'updater.availableBody': 'Open Design {version} を利用できます。インストーラーを開く前にダウンロードします。',
+  'updater.checkForUpdates': 'アップデートを確認',
   'updater.checking': 'アップデートを確認中',
   'updater.download': 'アップデートをダウンロード',
   'updater.downloading': 'アップデートをダウンロード中',

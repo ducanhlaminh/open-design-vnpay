@@ -1633,6 +1633,7 @@ export const uk: Dict = {
   'notify.failureBody': 'Завдання завершилось помилкою.',
   'updater.available': 'Доступне оновлення',
   'updater.availableBody': 'Open Design {version} доступний. Його буде завантажено перед відкриттям інсталятора.',
+  'updater.checkForUpdates': 'Перевірити оновлення',
   'updater.checking': 'Перевірка оновлень',
   'updater.download': 'Завантажити оновлення',
   'updater.downloading': 'Завантаження оновлення',

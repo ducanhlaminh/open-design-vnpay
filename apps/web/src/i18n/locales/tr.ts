@@ -1578,6 +1578,7 @@ export const tr: Dict = {
   'notify.failureBody': 'Görev bir hata ile sona erdi.',
   'updater.available': 'Güncelleme mevcut',
   'updater.availableBody': 'Open Design {version} mevcut. Yükleyici açılmadan önce indirilecek.',
+  'updater.checkForUpdates': 'Güncellemeleri denetle',
   'updater.checking': 'Güncellemeler denetleniyor',
   'updater.download': 'Güncellemeyi indir',
   'updater.downloading': 'Güncelleme indiriliyor',

@@ -696,6 +696,7 @@ export interface Dict {
   // Desktop updater
   'updater.available': string;
   'updater.availableBody': string;
+  'updater.checkForUpdates': string;
   'updater.checking': string;
   'updater.download': string;
   'updater.downloading': string;

@@ -3,6 +3,7 @@ import type { OpenDesignHostUpdaterStatusSnapshot } from '@open-design/host';
 
 import { Icon } from './Icon';
 import {
+  checkForUpdaterUpdate,
   deriveUpdaterModel,
   openUpdaterInstaller,
   quitAfterUpdaterInstallerOpen,
@@ -23,6 +24,10 @@ import {
 const INSTALL_HANDOFF_WATCHDOG_MS = 10_000;
 
 type InstallState = 'idle' | 'opening' | 'handoff' | 'recoverable';
+// Terminal outcome of a user-triggered manual check. Live host progress
+// (checking/downloading) is read from the model; this only records what to
+// show once a check settles without producing an installable update.
+type CheckPhase = 'idle' | 'checking' | 'uptodate' | 'error';
 type Translator = (key: keyof Dict, vars?: Record<string, string | number>) => string;
 
 function versionText(t: Translator, model: UpdaterModel): string {
@@ -60,10 +65,12 @@ export function UpdaterPopup() {
   const t = useT();
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const actionInFlightRef = useRef(false);
+  const checkInFlightRef = useRef(false);
   const handoffWatchdogRef = useRef<number | null>(null);
   const [model, setModel] = useState<UpdaterModel>(() => deriveUpdaterModel(null));
   const [panelOpen, setPanelOpen] = useState(false);
   const [installState, setInstallState] = useState<InstallState>('idle');
+  const [checkPhase, setCheckPhase] = useState<CheckPhase>('idle');
 
   const clearHandoffWatchdog = useCallback(() => {
     if (handoffWatchdogRef.current == null) return;
@@ -108,11 +115,14 @@ export function UpdaterPopup() {
     };
   }, []);
 
-  const ready = model.environment === 'desktop' && model.shouldShowControl;
+  const isDesktop = model.environment === 'desktop';
+  const ready = isDesktop && model.shouldShowControl;
   const installBusy = installState === 'opening' || installState === 'handoff';
+  const hostBusy = model.busy;
   const canStartInstall = ready || installState === 'recoverable';
-  const showControl = ready || installState !== 'idle';
-  const controlLabel = t('updater.openInstaller');
+  // Show the nav-rail control whenever the desktop updater is usable (so the
+  // user can manually check), plus during an in-flight install handoff.
+  const canShow = isDesktop && (model.enabled || ready || installState !== 'idle');
   const channelLabel = channelLabelFor(model.status?.channel);
   const analytics = useAnalytics();
   const appVersionBefore = useAppVersion();
@@ -120,6 +130,12 @@ export function UpdaterPopup() {
     () => updateVersionProps(model, appVersionBefore),
     [appVersionBefore, model.availableVersion],
   );
+
+  // Once an installable update is ready, the ready UI takes over from any
+  // lingering manual-check outcome.
+  useEffect(() => {
+    if (ready) setCheckPhase('idle');
+  }, [ready]);
 
   const indicatorSurfaceKey = `${model.currentVersion ?? 'unknown'}->${model.availableVersion ?? 'unknown'}:${model.status?.downloadPath ?? 'unknown'}`;
   const lastIndicatorSurfaceKeyRef = useRef<string | null>(null);
@@ -163,6 +179,7 @@ export function UpdaterPopup() {
       ...versionProps,
     });
     setPanelOpen(false);
+    setCheckPhase('idle');
   }, [analytics.track, installBusy, versionProps]);
 
   useEffect(() => {
@@ -182,6 +199,27 @@ export function UpdaterPopup() {
       document.removeEventListener('keydown', onKey);
     };
   }, [close, panelOpen]);
+
+  const runCheck = useCallback(async () => {
+    if (checkInFlightRef.current || !model.canCheck) return;
+    checkInFlightRef.current = true;
+    setCheckPhase('checking');
+    try {
+      const result = await checkForUpdaterUpdate({ payload: { source: 'updater-check-button' } });
+      if (!result.ok) {
+        setCheckPhase('error');
+        return;
+      }
+      setModel(result.model);
+      // An installable update flips the ready effect; otherwise report the
+      // terminal outcome so the popup can say "you're up to date".
+      setCheckPhase(result.model.upToDate && !result.model.hasDownloadedInstaller ? 'uptodate' : 'idle');
+    } catch {
+      setCheckPhase('error');
+    } finally {
+      checkInFlightRef.current = false;
+    }
+  }, [model.canCheck]);
 
   const installAndQuit = async () => {
     if (actionInFlightRef.current || !canStartInstall) return;
@@ -252,7 +290,57 @@ export function UpdaterPopup() {
     }
   };
 
-  if (!showControl) return null;
+  if (!canShow) return null;
+
+  const downloadPercent = model.downloadProgress?.percent ?? null;
+  const busyText =
+    downloadPercent != null ? t('updater.downloadingPercent', { percent: downloadPercent }) : t('updater.checking');
+
+  // Keep the install UI up through the whole install/handoff/recover cycle,
+  // even after `installerOpened` flips `ready` false.
+  const showInstallUi = ready || installState !== 'idle';
+
+  // A single smart primary button: Check → (auto-download) → Install.
+  let primaryLabel: string;
+  let primaryDisabled: boolean;
+  let primaryTestId: string;
+  let primaryOnClick: (() => void) | undefined;
+  if (showInstallUi) {
+    primaryLabel = installBusy ? t('updater.opening') : t('updater.openInstaller');
+    primaryDisabled = installBusy;
+    primaryTestId = 'updater-install-button';
+    primaryOnClick = () => {
+      void installAndQuit();
+    };
+  } else if (hostBusy || checkPhase === 'checking') {
+    primaryLabel = busyText;
+    primaryDisabled = true;
+    primaryTestId = 'updater-check-button';
+    primaryOnClick = undefined;
+  } else {
+    primaryLabel = t('updater.checkForUpdates');
+    primaryDisabled = !model.canCheck;
+    primaryTestId = 'updater-check-button';
+    primaryOnClick = () => {
+      void runCheck();
+    };
+  }
+
+  const popupTitle = showInstallUi ? t('updater.ready') : t('updater.checkForUpdates');
+  let bodyText: string;
+  if (showInstallUi) {
+    bodyText = versionText(t, model);
+  } else if (hostBusy || checkPhase === 'checking') {
+    bodyText = busyText;
+  } else if (checkPhase === 'uptodate') {
+    bodyText = t('updater.upToDate');
+  } else if (checkPhase === 'error') {
+    bodyText = model.errorMessage ?? t('updater.failed');
+  } else {
+    bodyText = model.currentVersion ? `v${model.currentVersion}` : t('updater.checkForUpdates');
+  }
+
+  const controlLabel = showInstallUi ? t('updater.openInstaller') : t('updater.checkForUpdates');
 
   return (
     <div className="entry-updater-menu" ref={wrapRef}>
@@ -260,7 +348,7 @@ export function UpdaterPopup() {
         aria-disabled={installBusy ? 'true' : undefined}
         aria-expanded={panelOpen}
         aria-label={controlLabel}
-        className={`entry-nav-rail__btn entry-updater-menu__button is-ready${panelOpen ? ' is-active' : ''}${installBusy ? ' is-disabled' : ''}`}
+        className={`entry-nav-rail__btn entry-updater-menu__button${showInstallUi ? ' is-ready' : ''}${panelOpen ? ' is-active' : ''}${installBusy ? ' is-disabled' : ''}`}
         data-testid="entry-nav-updater"
         data-tooltip={controlLabel}
         title={controlLabel}
@@ -271,13 +359,15 @@ export function UpdaterPopup() {
             setPanelOpen(false);
             return;
           }
-          trackUpdateIndicatorClick(analytics.track, {
-            page_name: 'home',
-            area: 'update_indicator',
-            element: 'ready_indicator',
-            action: 'open_prompt',
-            ...versionProps,
-          });
+          if (showInstallUi) {
+            trackUpdateIndicatorClick(analytics.track, {
+              page_name: 'home',
+              area: 'update_indicator',
+              element: 'ready_indicator',
+              action: 'open_prompt',
+              ...versionProps,
+            });
+          }
           setPanelOpen(true);
         }}
       >
@@ -288,7 +378,7 @@ export function UpdaterPopup() {
       {panelOpen ? (
         <section
           aria-labelledby="updater-popup-title"
-          className="updater-popup is-ready"
+          className={`updater-popup${showInstallUi ? ' is-ready' : ''}`}
           data-testid="updater-popup"
           role="dialog"
         >
@@ -296,8 +386,8 @@ export function UpdaterPopup() {
             <Icon name="arrow-up" size={20} strokeWidth={2.2} />
           </div>
           <div className="updater-popup__body">
-            <h2 id="updater-popup-title">{t('updater.ready')}</h2>
-            <p>{versionText(t, model)}</p>
+            <h2 id="updater-popup-title">{popupTitle}</h2>
+            <p>{bodyText}</p>
             {channelLabel != null ? <span className="updater-popup__badge">{channelLabel}</span> : null}
           </div>
           <div className="updater-popup__actions">
@@ -306,14 +396,14 @@ export function UpdaterPopup() {
             </button>
             <button
               className="updater-popup__button updater-popup__button--primary"
-              data-testid="updater-install-button"
-              disabled={installBusy}
+              data-testid={primaryTestId}
+              disabled={primaryDisabled}
               type="button"
               onClick={() => {
-                void installAndQuit();
+                primaryOnClick?.();
               }}
             >
-              {installBusy ? t('updater.opening') : t('updater.openInstaller')}
+              {primaryLabel}
             </button>
           </div>
         </section>

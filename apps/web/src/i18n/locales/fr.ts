@@ -1607,6 +1607,7 @@ export const fr: Dict = {
   'notify.failureBody': 'La tâche s\'est terminée avec une erreur.',
   'updater.available': 'Mise à jour disponible',
   'updater.availableBody': 'Open Design {version} est disponible. Elle sera téléchargée avant l’ouverture du programme d’installation.',
+  'updater.checkForUpdates': 'Rechercher des mises à jour',
   'updater.checking': 'Recherche de mises à jour',
   'updater.download': 'Télécharger la mise à jour',
   'updater.downloading': 'Téléchargement de la mise à jour',

@@ -2316,6 +2316,7 @@ export const zhCN: Dict = {
   'notify.failureBody': '本轮任务出错，请查看错误信息。',
   'updater.available': '有可用更新',
   'updater.availableBody': 'Open Design {version} 可用。下载安装完成后即可打开安装器。',
+  'updater.checkForUpdates': '检查更新',
   'updater.checking': '正在检查更新',
   'updater.download': '下载更新',
   'updater.downloading': '正在下载更新',

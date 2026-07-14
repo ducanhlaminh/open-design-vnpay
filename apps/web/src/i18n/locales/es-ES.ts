@@ -1480,6 +1480,7 @@ export const esES: Dict = {
   'notify.failureBody': 'La tarea terminó con un error.',
   'updater.available': 'Actualización disponible',
   'updater.availableBody': 'Open Design {version} está disponible. Se descargará antes de abrir el instalador.',
+  'updater.checkForUpdates': 'Buscar actualizaciones',
   'updater.checking': 'Buscando actualizaciones',
   'updater.download': 'Descargar actualización',
   'updater.downloading': 'Descargando actualización',

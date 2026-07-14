@@ -1634,6 +1634,7 @@ export const fa: Dict = {
   'notify.failureBody': 'وظیفه با خطا پایان یافت.',
   'updater.available': 'به‌روزرسانی موجود است',
   'updater.availableBody': 'Open Design {version} موجود است. پیش از باز شدن نصب‌کننده دانلود می‌شود.',
+  'updater.checkForUpdates': 'بررسی به‌روزرسانی‌ها',
   'updater.checking': 'در حال بررسی به‌روزرسانی‌ها',
   'updater.download': 'دانلود به‌روزرسانی',
   'updater.downloading': 'در حال دانلود به‌روزرسانی',

@@ -47,26 +47,19 @@ describe('UpdaterPopup', () => {
     restoreHost = null;
   });
 
-  it('stays hidden for non-installable updater states', async () => {
-    for (const status of [
-      idleStatus(),
-      { ...idleStatus(), state: 'not-available' as const },
-      downloadedStatus({
-        progress: {
-          receivedBytes: 50,
-          totalBytes: 100,
-        },
-        state: 'downloading',
-      }),
-      downloadedStatus({
-        downloadPath: undefined,
-        error: {
-          code: 'update-store-invalid-shape',
-          message: 'update store contains unexpected root entries',
-        },
-        state: 'error',
-      }),
-    ]) {
+  it('stays hidden when no desktop host is available', async () => {
+    const view = render(<UpdaterPopup />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('entry-nav-updater')).toBeNull();
+    expect(screen.queryByTestId('updater-popup')).toBeNull();
+    view.unmount();
+  });
+
+  it('shows a manual check control on desktop before an update is downloaded', async () => {
+    for (const status of [idleStatus(), { ...idleStatus(), state: 'not-available' as const }]) {
       restoreHost = installMockOpenDesignHost({
         host: {
           updater: {
@@ -75,14 +68,17 @@ describe('UpdaterPopup', () => {
         },
       });
 
-      const view = render(<UpdaterPopup />);
-      await act(async () => {
-        await Promise.resolve();
-      });
+      render(<UpdaterPopup />);
 
-      expect(screen.queryByTestId('entry-nav-updater')).toBeNull();
+      const button = await screen.findByTestId('entry-nav-updater');
+      expect(button.getAttribute('data-tooltip')).toBe('Check for updates');
       expect(screen.queryByTestId('updater-popup')).toBeNull();
-      view.unmount();
+
+      fireEvent.click(button);
+      expect(await screen.findByRole('dialog', { name: 'Check for updates' })).toBeTruthy();
+      expect(screen.getByTestId('updater-check-button').textContent).toBe('Check for updates');
+
+      cleanup();
       restoreHost?.();
       restoreHost = null;
     }
@@ -283,7 +279,7 @@ describe('UpdaterPopup', () => {
     expect(screen.getByTestId('updater-install-button').getAttribute('disabled')).toBeNull();
   });
 
-  it('reacts to updater subscription events by showing the ready indicator only', async () => {
+  it('promotes the check control to a ready indicator on a downloaded subscription event', async () => {
     const listeners = new Set<OpenDesignHostUpdaterStatusListener>();
     restoreHost = installMockOpenDesignHost({
       host: {
@@ -298,16 +294,55 @@ describe('UpdaterPopup', () => {
     });
 
     render(<UpdaterPopup />);
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(screen.queryByTestId('entry-nav-updater')).toBeNull();
+    const button = await screen.findByTestId('entry-nav-updater');
+    expect(button.getAttribute('data-tooltip')).toBe('Check for updates');
 
     act(() => {
       for (const listener of listeners) listener(downloadedStatus());
     });
 
-    expect(await screen.findByTestId('entry-nav-updater')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByTestId('entry-nav-updater').getAttribute('data-tooltip')).toBe('Install update'),
+    );
     expect(screen.queryByTestId('updater-popup')).toBeNull();
+  });
+
+  it('runs a manual check and reports being up to date', async () => {
+    const check = vi.fn(async () => ({ ...idleStatus(), state: 'not-available' as const }));
+    restoreHost = installMockOpenDesignHost({
+      host: {
+        updater: {
+          check,
+          status: vi.fn(async () => idleStatus()),
+        },
+      },
+    });
+
+    render(<UpdaterPopup />);
+    fireEvent.click(await screen.findByTestId('entry-nav-updater'));
+    fireEvent.click(screen.getByTestId('updater-check-button'));
+
+    await waitFor(() => expect(check).toHaveBeenCalledWith({ payload: { source: 'updater-check-button' } }));
+    expect(await screen.findByText("You're already on the latest version.")).toBeTruthy();
+  });
+
+  it('offers install when a manual check finds a downloaded update', async () => {
+    const check = vi.fn(async () => downloadedStatus());
+    restoreHost = installMockOpenDesignHost({
+      host: {
+        updater: {
+          check,
+          status: vi.fn(async () => idleStatus()),
+        },
+      },
+    });
+
+    render(<UpdaterPopup />);
+    fireEvent.click(await screen.findByTestId('entry-nav-updater'));
+    fireEvent.click(screen.getByTestId('updater-check-button'));
+
+    await waitFor(() => expect(check).toHaveBeenCalled());
+    expect(await screen.findByRole('dialog', { name: 'Update ready' })).toBeTruthy();
+    expect(screen.getByTestId('updater-install-button').textContent).toBe('Install update');
   });
 });

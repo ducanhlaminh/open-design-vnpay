@@ -1465,6 +1465,7 @@ export const it: Dict = {
   'notify.failureBody': 'L\'attività si è conclusa con un errore.',
   'updater.available': 'Aggiornamento disponibile',
   'updater.availableBody': 'Open Design {version} è disponibile. Verrà scaricato prima di aprire il programma di installazione.',
+  'updater.checkForUpdates': 'Controlla aggiornamenti',
   'updater.checking': 'Controllo aggiornamenti',
   'updater.download': 'Scarica aggiornamento',
   'updater.downloading': 'Download aggiornamento',

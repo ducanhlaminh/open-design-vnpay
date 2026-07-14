@@ -1632,6 +1632,7 @@ export const ptBR: Dict = {
   'notify.failureBody': 'A tarefa terminou com erro.',
   'updater.available': 'Atualização disponível',
   'updater.availableBody': 'Open Design {version} está disponível. Ela será baixada antes que o instalador possa abrir.',
+  'updater.checkForUpdates': 'Verificar atualizações',
   'updater.checking': 'Verificando atualizações',
   'updater.download': 'Baixar atualização',
   'updater.downloading': 'Baixando atualização',

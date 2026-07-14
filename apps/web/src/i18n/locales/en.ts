@@ -2414,6 +2414,7 @@ export const en: Dict = {
   'notify.failureBody': 'The task ended with an error.',
   'updater.available': 'Update available',
   'updater.availableBody': 'Open Design {version} is available. It will download before the installer can open.',
+  'updater.checkForUpdates': 'Check for updates',
   'updater.checking': 'Checking for updates',
   'updater.download': 'Download update',
   'updater.downloading': 'Downloading update',
