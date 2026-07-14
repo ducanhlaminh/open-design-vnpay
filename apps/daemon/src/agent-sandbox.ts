@@ -15,7 +15,7 @@
 //   - probe/kill/sweep helpers for preflight, cancel, and orphan cleanup.
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { SandboxConfigPrefs } from './app-config.js';
 
@@ -374,4 +374,92 @@ export async function sandboxPreflight(image: string): Promise<SandboxPreflightR
     };
   }
   return { ok: true };
+}
+
+// The docker --platform for a NATIVE build (no QEMU): arm64 host → linux/arm64,
+// everything else (Intel mac / Windows / Linux x64) → linux/amd64. Mirrors the
+// builder scripts' `uname -m` logic; OD_DOCKER_PLATFORM overrides.
+function nativeDockerPlatform(): string {
+  const override = (process.env.OD_DOCKER_PLATFORM ?? '').trim();
+  if (override) return override;
+  return process.arch === 'arm64' ? 'linux/arm64' : 'linux/amd64';
+}
+
+// One `docker build` streamed line-by-line to `onLog` (builds take minutes, so
+// no capture-with-timeout). Rejects on a non-zero exit.
+function dockerBuildStream(args: string[], onLog?: (line: string) => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn('docker', ['build', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const pipe = (buf: Buffer) => onLog?.(buf.toString());
+    child.stdout?.on('data', pipe);
+    child.stderr?.on('data', pipe);
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`docker build exited ${code}`));
+    });
+  });
+}
+
+// Single-flight per image so concurrent spawns (run-all, parallel runs) don't
+// race the same build.
+const sandboxBuildInFlight = new Map<string, Promise<SandboxPreflightResult>>();
+
+/**
+ * Ensure the sandbox image exists, BUILDING it in-process (direct `docker
+ * build`, no bash — works on Windows without Git Bash) when missing. This is
+ * the first-run auto-build so a fresh machine doesn't hard-fail preflight with
+ * "image is missing". Requires Docker to be running (caller checks / build
+ * fails loudly otherwise). Builds `uireact-base:<toolkit>` first when absent,
+ * then the sandbox image, both at the host's NATIVE arch. Returns ok when the
+ * image is present after the attempt. The auth volume (interactive OAuth) is
+ * NOT auto-created — that stays a manual `od sandbox login`.
+ */
+export async function ensureSandboxImage(
+  builderDir: string,
+  image: string,
+  onLog?: (line: string) => void,
+): Promise<SandboxPreflightResult> {
+  if (await dockerImagePresent(image)) return { ok: true };
+  const existing = sandboxBuildInFlight.get(image);
+  if (existing) return existing;
+  const task = (async (): Promise<SandboxPreflightResult> => {
+    try {
+      const platform = nativeDockerPlatform();
+      const toolkit = readFileSync(path.join(builderDir, 'base', 'toolkit.version'), 'utf8').trim();
+      const claude = readFileSync(path.join(builderDir, 'sandbox', 'claude.version'), 'utf8').trim();
+      const baseImage = `uireact-base:${toolkit}`;
+      if (!(await dockerImagePresent(baseImage))) {
+        onLog?.(`[sandbox] auto-building ${baseImage} (${platform}) — first run, a few minutes…\n`);
+        await dockerBuildStream(
+          ['--platform', platform, '-t', baseImage, '-t', 'uireact-base:latest', '-f', path.join(builderDir, 'Dockerfile'), builderDir],
+          onLog,
+        );
+      }
+      onLog?.(`[sandbox] auto-building ${image} (${platform})…\n`);
+      await dockerBuildStream(
+        [
+          '--platform', platform,
+          '--build-arg', `TOOLKIT_VERSION=${toolkit}`,
+          '--build-arg', `CLAUDE_CODE_VERSION=${claude}`,
+          '-t', image,
+          '-t', `${SANDBOX_IMAGE_NAME}:latest`,
+          '-f', path.join(builderDir, 'sandbox', 'Dockerfile'),
+          path.join(builderDir, 'sandbox'),
+        ],
+        onLog,
+      );
+      if (await dockerImagePresent(image)) return { ok: true };
+      return { ok: false, reason: `Sandbox image ${image} build finished but the image is still missing.` };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `Auto-building sandbox image ${image} failed (${err instanceof Error ? err.message : String(err)}). Build it manually: od sandbox build.`,
+      };
+    } finally {
+      sandboxBuildInFlight.delete(image);
+    }
+  })();
+  sandboxBuildInFlight.set(image, task);
+  return task;
 }

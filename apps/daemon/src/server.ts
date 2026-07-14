@@ -301,6 +301,9 @@ import {
 import { agentCliEnvForAgent, readAppConfig, readPluginEnvKnobs, writeAppConfig } from './app-config.js';
 import {
   CONTAINER_PROJECT_DIR,
+  dockerAvailable,
+  dockerImagePresent,
+  ensureSandboxImage,
   resolveSandboxConfig,
   sandboxImageTag,
   sandboxPreflight,
@@ -11252,12 +11255,23 @@ export async function startServer({
     if (willSandbox) {
       let image = null;
       let failure = null;
+      const builderDir = path.join(SKILLS_DIR, 'ui-react', 'builder');
       try {
-        image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
+        image = sandboxImageTag(builderDir);
       } catch {
         failure = 'Sandbox version pin (skills/ui-react/builder/sandbox/sandbox.version) is unreadable.';
       }
-      if (image) {
+      // First-run AUTO-BUILD: on a fresh machine the sandbox image doesn't
+      // exist yet. Rather than hard-failing preflight with "image is missing",
+      // build it in-process (direct `docker build`, so it works on Windows
+      // without Git Bash) as long as Docker is running. The login volume still
+      // can't be automated — preflight below reports that if absent.
+      if (image && (await dockerAvailable()) && !(await dockerImagePresent(image))) {
+        send('stderr', { chunk: `\n[sandbox] image ${image} missing — building it now (first run, this can take a few minutes)…\n` });
+        const built = await ensureSandboxImage(builderDir, image, (line) => send('stderr', { chunk: line }));
+        if (!built.ok) failure = built.reason ?? 'sandbox image auto-build failed';
+      }
+      if (image && !failure) {
         const preflight = await sandboxPreflight(image);
         if (!preflight.ok) failure = preflight.reason ?? 'sandbox preflight failed';
       }

@@ -5,10 +5,12 @@
 # build symlinks /app/node_modules -> /opt/toolkit/node_modules). Per-project
 # config lives in the project CWD; this image carries deps only, no project.
 #
-# MUST be linux/arm64 to match Apple Silicon — an amd64 image would run under
-# QEMU (slow) and ship the wrong native binaries (lightningcss/esbuild), so we
-# pin the platform. Rebuild + bump base/toolkit.version when the superset changes.
-FROM --platform=linux/arm64 node:24-bookworm-slim
+# Built for the HOST's native arch (build-base.sh passes --platform: arm64 on
+# Apple Silicon, amd64 on Intel/Windows/Linux) so the container never runs
+# under QEMU and native deps (lightningcss/esbuild) install the right
+# binaries. Do NOT re-pin a platform in this FROM — a FROM pin overrides the
+# build flag and forces emulation on the other arch.
+FROM node:24-bookworm-slim
 
 # pnpm via corepack (matches the repo's package-manager story).
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
@@ -23,8 +25,8 @@ COPY base/pnpm-lock.yaml ./pnpm-lock.yaml
 # Locked install: the committed lockfile pins the whole superset so rebuilds
 # are reproducible (regenerate with `pnpm install --lockfile-only
 # --ignore-workspace` in base/ when bumping deps). Native deps (lightningcss,
-# esbuild) install their linux-arm64 binaries here — correct because this
-# stage runs on arm64 linux, the same runtime the build uses.
+# esbuild) install the binaries for THIS stage's arch here — correct because
+# the build runs on the same arch the toolkit is later used on.
 RUN pnpm install --frozen-lockfile --prod=false \
  && pnpm store prune \
  && mkdir -p /work/app \
