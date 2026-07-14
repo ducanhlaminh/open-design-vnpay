@@ -85,11 +85,27 @@ if [ -z "$SKIP_WIN" ]; then
   if [ -z "$WINUP" ] || [ ! -d "$WINUP" ]; then
     echo "[release] could not resolve win-unpacked path" >&2; exit 1
   fi
+  # No-code machine setup: ship the Docker/sandbox bootstrap script already in
+  # place next to Open Design.exe so the user never has to copy files by hand.
+  cp scripts/setup-no-code/setup-open-design-windows.bat "$WINUP/"
+  cp scripts/setup-no-code/setup-open-design-windows.ps1 "$WINUP/"
+  cp scripts/setup-no-code/README.txt "$WINUP/HUONG-DAN-CAI-DAT.txt"
   WIN_ZIP="$WORK/open-design-$VERSION-win-x64-portable.zip"
   ditto -c -k --keepParent "$WINUP" "$WIN_ZIP"
 else
   echo "[release] [3/4] skipping Windows (--skip-win)"
 fi
+
+# ---- 3b. mac no-code setup script (separate small asset) --------------------
+# The mac script finds the installed app under /Applications itself, so it
+# doesn't need to live inside the DMG — ship it as its own tiny zip next to
+# the DMGs on the release page.
+MAC_SETUP_ZIP="$WORK/open-design-$VERSION-setup-no-code-mac.zip"
+MAC_SETUP_STAGE="$WORK/setup-no-code-mac"
+rm -rf "$MAC_SETUP_STAGE"; mkdir -p "$MAC_SETUP_STAGE"
+cp scripts/setup-no-code/setup-open-design-mac.command "$MAC_SETUP_STAGE/"
+cp scripts/setup-no-code/README.txt "$MAC_SETUP_STAGE/HUONG-DAN-CAI-DAT.txt"
+ditto -c -k --keepParent "$MAC_SETUP_STAGE" "$MAC_SETUP_ZIP"
 
 # ---- 4. publish -------------------------------------------------------------
 echo "[release] [4/4] publishing to GitHub Release $TAG ..."
@@ -98,6 +114,11 @@ node --experimental-strip-types scripts/release-github.ts \
   --arm64-dmg "$WORK/mac-arm64.dmg" \
   --x64-dmg "$WORK/mac-x64.dmg" \
   $SIGNED $DRYRUN
+
+if [ -z "$DRYRUN" ]; then
+  echo "[release] uploading mac no-code setup script ..."
+  gh release upload "$TAG" "$MAC_SETUP_ZIP" --repo "$REPO" --clobber
+fi
 
 if [ -n "$WIN_ZIP" ] && [ -z "$DRYRUN" ]; then
   echo "[release] uploading Windows portable zip ..."
