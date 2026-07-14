@@ -91,6 +91,60 @@ ls "$APP/Contents/Resources/open-design-web-standalone/apps/web/server.js"
 # (figma-clip assets đã bỏ — KHÔNG cần check nữa, xem Lưu ý #2)
 ```
 
+## 6. Publish lên GitHub Release (feed auto-update + tải thủ công)
+
+Script `pnpm release:github` (`scripts/release-github.ts`) đẩy DMG mac (+ Windows) lên một GitHub Release `open-design-v<version>` và sinh `metadata.json` — feed mà app tự đọc để phát hiện bản mới (`defaultMetadataUrl` trong `apps/desktop/src/main/updater.ts` trỏ `releases/latest/download/metadata.json`).
+
+### Yêu cầu
+- `gh` CLI đã đăng nhập: `gh auth login`. Repo `ducanhlaminh/open-design-vnpay` **phải public** (private → user tải asset bị 403).
+- Version lấy từ `apps/packaged/package.json`. Muốn ra bản mới → **bump version trước** (vd `0.8.0` → `0.8.1`). Tag `open-design-v<ver>` đã tồn tại thì script upload đè (`--clobber`).
+
+### Các bước (mac Silicon + Intel)
+```bash
+# 1. Bump apps/packaged/package.json: "version": "0.8.1"
+
+# 2. Build 2 arch — nhớ copy DMG ra vì 2 arch CHUNG 1 path (§3)
+SP=~/Desktop
+DMG=".tmp/tools-pack/out/mac/namespaces/default/dmg/Open Design-default.dmg"
+pnpm tools-pack mac build --to dmg && cp "$DMG" "$SP/mac-arm64.dmg"
+OD_PACK_MAC_ARCH=x64 pnpm tools-pack mac build --to dmg && cp "$DMG" "$SP/mac-x64.dmg"
+
+# 3. Publish (sinh metadata.json: platforms.mac arm64 + platforms.macIntel x64)
+pnpm release:github --version 0.8.1 \
+  --arm64-dmg "$SP/mac-arm64.dmg" \
+  --x64-dmg "$SP/mac-x64.dmg"
+# + --signed nếu build ký (§3) · + --dry-run để xem metadata trước khi upload
+```
+
+### Windows
+- **Có máy Windows** — build installer thật rồi thêm vào cùng release (auto-update được):
+  ```bash
+  pnpm tools-pack win build --to nsis            # ra ...-setup.exe
+  pnpm release:github --version 0.8.1 --win-installer "<path setup.exe>"
+  # → metadata.json.platforms.win.artifacts.installer
+  ```
+- **Chỉ có máy mac** (KHÔNG dựng được NSIS — packer chặn "Windows installer build must run on Windows"): publish **portable ZIP**:
+  ```bash
+  pnpm tools-pack win build --to dir --json      # chỉ --to dir chạy trên mac
+  # win-unpacked nằm ở CACHE path — field "unpackedPath" trong JSON output, KHÔNG phải out/win/.../builder/
+  WINUP=$(pnpm tools-pack win build --to dir --json 2>/dev/null | grep -oE '"unpackedPath": "[^"]*"' | tail -1 | sed 's/.*: "//;s/"//')
+  ditto -c -k --keepParent "$WINUP" "$SP/open-design-0.8.1-win-x64-portable.zip"
+  gh release upload open-design-v0.8.1 "$SP/open-design-0.8.1-win-x64-portable.zip" \
+    --repo ducanhlaminh/open-design-vnpay --clobber
+  ```
+  Người dùng Windows: giải nén → chạy `Open Design.exe`. (Không installer, KHÔNG auto-update — zip không nằm trong `metadata.json`.)
+
+### Verify
+```bash
+gh release view open-design-v0.8.1 --repo ducanhlaminh/open-design-vnpay --json assets --jq '[.assets[].name]'
+curl -fsSL https://github.com/ducanhlaminh/open-design-vnpay/releases/latest/download/metadata.json | grep releaseVersion
+```
+
+### Gotchas
+- **Chưa ký** → macOS chuột phải → Open; Windows More info → Run anyway. Ký để bỏ (§3 mac; Windows Authenticode).
+- Feed app đọc là bản **Latest** trên GitHub — script tự set `--latest` khi tạo release mới.
+- `win --to dir` để win-unpacked trong **cache** (`unpackedPath`), không phải thư mục `out/`.
+
 ## Lưu ý quan trọng (đã gặp khi build)
 
 1. **Đừng chạy `pnpm tools-dev` cùng namespace `default`** khi test packaged app trên cùng máy → đụng IPC socket `/tmp/open-design/ipc/default/web.sock` → packaged web sidecar không claim được IPC, fallback sang `next dev` (lỗi HMR `wss://app/_next/webpack-hmr` → `ERR_NAME_NOT_RESOLVED`). Người nhận máy khác KHÔNG gặp. Cách xử lý: `pnpm tools-dev stop` + kill runner `tools-dev run web` còn sót + `rm -f /tmp/open-design/ipc/default/*.sock`, rồi mở lại app (log phải hiện `starting standalone Next.js server`). Fix vĩnh viễn để chạy được cả hai cùng lúc: build app với version có channel suffix (vd `0.8.0-beta.1` → namespace `release-beta`) cho khỏi đụng `default`.
