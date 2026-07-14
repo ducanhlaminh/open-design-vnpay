@@ -72,6 +72,12 @@ export interface ChatSseStartPayload {
    */
   skillId?: string | null;
   skillIds?: string[];
+  /**
+   * True when this run was spawned inside the agent-in-sandbox Docker
+   * container (docs/agent-in-sandbox-spec-plan.md). Drives the "sandboxed"
+   * badge on the assistant message header.
+   */
+  sandboxed?: boolean;
 }
 
 export interface ChatSseChunkPayload {

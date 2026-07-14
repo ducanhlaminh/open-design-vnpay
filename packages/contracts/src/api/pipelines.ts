@@ -5,6 +5,14 @@
 // depends on has succeeded. There is no scheduler/executor — runs are manual
 // (button / `od pipeline run`) and the agent does the work guided by the skill.
 
+/**
+ * Target platform of the generated screens. Mirrors the UX Spec schema's
+ * per-screen `layout` field (`mobile` | `web`): the platform chosen at the UX
+ * stage tells the skill which `layout` to author, and the UI-Spec terminals +
+ * previews follow each screen's `layout` from there.
+ */
+export type TargetPlatform = 'mobile' | 'web';
+
 export type PipelineStatus =
   | 'idle'
   | 'queued'
@@ -36,6 +44,13 @@ export interface PipelineView {
    */
   acceptsDesignSystem?: boolean;
   /**
+   * When true, this stage decides the target platform of the generated screens
+   * (the UX Spec stage: every screen's `layout` field). The UI shows a
+   * Mobile/Website picker before running; the choice is sent as
+   * `RunPipelineRequest.platform`. Omitted/`mobile` keeps the legacy behavior.
+   */
+  acceptsPlatform?: boolean;
+  /**
    * Output path patterns this pipeline produces in the project cwd (from the
    * daemon registry). The UI surfaces a stage's result files ("Quick result")
    * by matching these against `GET /api/projects/:id/files`. Patterns:
@@ -46,6 +61,16 @@ export interface PipelineView {
   lastRunId?: string;
   lastConversationId?: string;
   updatedAt?: number;
+  /**
+   * Free-text input of the LAST run (Confluence URL / JIRA key / JQL), kept so
+   * the source behind a stage's output stays reviewable after the run (the
+   * per-stage "run info" panel).
+   */
+  lastInput?: string;
+  /** Structured source of the LAST run (Confluence ref or BAS document). */
+  lastSource?: PipelineRunSource;
+  /** Target platform of the LAST run (stages with `acceptsPlatform`). */
+  lastPlatform?: TargetPlatform;
 }
 
 export interface PipelinesResponse {
@@ -55,10 +80,52 @@ export interface PipelinesResponse {
   pipelines: PipelineView[];
 }
 
-// A workflow is one named docs→output flow — an ordered set of pipelines with
-// its own terminal. `docs-to-ui` ends at react-shadcn `screen.json`;
-// `docs-to-html` is an independent chain ending at an HTML prototype. The two
-// have separate pipeline ids, so their run-state never overlaps.
+export type PipelinePulseRating = 'ready' | 'minor_edits' | 'major_edits' | 'unusable';
+
+export type PipelinePulseIssue =
+  | 'run_error'
+  | 'wrong_business'
+  | 'missing_cases'
+  | 'low_quality'
+  | 'too_slow'
+  | 'other';
+
+export interface PipelinePulseFeedback {
+  id: string;
+  projectId: string;
+  workflowId: string;
+  pipelineId: string;
+  runId: string;
+  rating: PipelinePulseRating;
+  issues: PipelinePulseIssue[];
+  comment?: string;
+  createdAt: number;
+  user?: string;
+  surveyKind?: 'pulse' | 'deep';
+  answers?: Record<string, unknown>;
+}
+
+export interface PipelinePulseFeedbackRequest {
+  projectId: string;
+  workflowId: string;
+  pipelineId: string;
+  runId: string;
+  rating: PipelinePulseRating;
+  issues?: PipelinePulseIssue[];
+  comment?: string;
+  surveyKind?: 'pulse' | 'deep';
+  answers?: Record<string, unknown>;
+}
+
+export interface PipelinePulseFeedbackListResponse {
+  feedback: PipelinePulseFeedback[];
+}
+
+// A workflow is one named docs→output flow — an ordered set of pipelines.
+// Since the 2026-07 merge there is exactly ONE workflow, `docs-to-ui`: three
+// shared upstream stages (docs → cj → ux) feeding two terminal UI-Spec
+// OPTIONS — `ui-html` (interactive HTML prototype) and `ui-react` (built
+// Vite+React app). (The earlier react-shadcn workflow was removed.)
 export interface Workflow {
   id: string;
   name: string;
@@ -89,6 +156,17 @@ export interface PipelineProject {
    * (`running`/`queued`) — drives the picker card's live running spinner.
    * 0 when nothing is running. */
   running: number;
+  /** Cấu hình từ Pipeline Studio (project.json trên store, mirror về khi
+   *  pull): Run tự điền nguồn tài liệu (link Confluence HOẶC tài liệu BAS đã
+   *  chọn) + design system từ đây — vẫn cho override từng lần chạy. */
+  config?: {
+    /** Các trang Confluence nguồn (chọn NHIỀU từ picker của studio) — Run
+     *  điền tất cả, mỗi dòng một trang (bước Docs nhận cả link lẫn page id). */
+    confluencePages?: Array<{ id?: string; title?: string; url?: string }>;
+    designSystemId?: string;
+    basDocumentId?: string;
+    basDocumentTitle?: string;
+  };
 }
 
 export interface PipelineProjectsResponse {
@@ -117,6 +195,32 @@ export interface RunPipelineRequest {
    * Only stages whose `PipelineView.acceptsDesignSystem` is true consume it.
    */
   designSystemId?: string | null;
+  /**
+   * Target platform for stages whose `PipelineView.acceptsPlatform` is true
+   * (the UX Spec stage). `web` makes the skill author every screen with
+   * `layout: "web"`; `mobile` pins the legacy mobile layout. Omitted → the
+   * skill's default (mobile), preserving pre-existing behavior.
+   */
+  platform?: TargetPlatform;
+  /**
+   * Docs stage, deterministic Confluence path: also fetch the pages each seed
+   * page LINKS to (same wiki, depth 1, capped) so referenced sibling docs (BO
+   * specs, shared logic pages) land in ./docs too. Omitted → true. Ignored by
+   * other stages and by the agent (JIRA/JQL) path.
+   */
+  followLinks?: boolean;
+  /**
+   * On a RE-RUN, how much to clear before the agent regenerates (a re-run that
+   * left the previous outputs in place made the agent see them and declare the
+   * work already done):
+   *   'stage' (default) → clear only THIS stage's outputs;
+   *   'downstream'      → clear this stage AND every stage that depends on it
+   *                       (transitively) — those are now stale, so they reset to
+   *                       idle and must be re-run.
+   * A first run (no prior output) is a no-op either way. Cleared files are
+   * snapshotted to project history first, so a re-run stays recoverable.
+   */
+  resetScope?: 'stage' | 'downstream';
 }
 
 // ── BAS-sourced inputs for pipeline 1 (jira-ingest) ─────────────────────────
@@ -152,6 +256,19 @@ export interface BasDocument {
 
 export interface BasDocumentsResponse {
   documents: BasDocument[];
+}
+
+/** Một trang Confluence từ picker tìm-theo-tên của modal Run pipeline 1
+ *  (GET /api/pipelines/confluence/pages?q=) — như picker bên pipeline-studio. */
+export interface ConfluencePageHit {
+  id: string;
+  title: string;
+  url?: string;
+  space?: string;
+}
+
+export interface ConfluencePagesResponse {
+  pages: ConfluencePageHit[];
 }
 
 // A feature within a KG document (from kg_get_document_subgraph's FEATURE nodes).
@@ -191,8 +308,61 @@ export interface ConfluencePageMetaResponse {
 
 export interface RunPipelineResponse {
   projectId: string;
-  conversationId: string;
-  agentRunId: string;
+  /** Absent on a DETERMINISTIC run (docs stage with a Confluence source): the
+   * daemon fetches the pages itself — no conversation, no agent run. Progress
+   * still surfaces through the stage status. */
+  conversationId?: string;
+  agentRunId?: string;
+}
+
+// ── Run the WHOLE workflow with one click (no per-stage review gate) ────────
+// POST /api/pipelines/run-all: the daemon runs the workflow's stages
+// SEQUENTIALLY in dependency order — each stage's normal run (same seeding,
+// clearing, and gating as a manual run), auto-chained: when a stage's run
+// succeeds the next one starts immediately, without the user reviewing the
+// output in between. A stage failure aborts the chain (later stages stay
+// idle). Progress surfaces through the existing per-stage statuses
+// (GET /api/pipelines) — the stepper animates through the chain.
+
+/** Which UI-Spec terminal(s) the full run ends with. */
+export type WorkflowTerminal = 'ui-html' | 'ui-react' | 'both';
+
+export interface RunWorkflowRequest {
+  projectId: string;
+  /** Workflow to run; omitted → the default workflow. */
+  workflowId?: string;
+  /**
+   * Terminal stage(s) to finish with. The two UI-Spec terminals are OPTIONS —
+   * a full run picks one (default `ui-html`) or `both` (html first, then
+   * react).
+   */
+  terminal?: WorkflowTerminal;
+  /** Free-text input for the first stage (Confluence URL / JIRA key / JQL). */
+  input?: string;
+  /** Structured source for the first stage — same as RunPipelineRequest. */
+  source?: PipelineRunSource;
+  /** Design system for the UI terminal(s) — same semantics as RunPipelineRequest. */
+  designSystemId?: string | null;
+  /** Target platform for the UX stage — same semantics as RunPipelineRequest. */
+  platform?: TargetPlatform;
+  /** Docs stage link-follow — same semantics as RunPipelineRequest.followLinks. */
+  followLinks?: boolean;
+  /**
+   * When true, stages already `succeeded` are SKIPPED (resume: only the
+   * missing stages run, each clearing just its own outputs). Default false: a
+   * full fresh run — the project RESETS up front (the first stage runs with a
+   * downstream cascade-clear, so every stage's old outputs are snapshotted to
+   * history, wiped, and their statuses flip to idle) before the chain rebuilds
+   * stage by stage.
+   */
+  skipSucceeded?: boolean;
+}
+
+export interface RunWorkflowResponse {
+  projectId: string;
+  workflowId: string;
+  /** Stage ids the chain will run, in order (after any skipSucceeded filter). */
+  stages: string[];
 }
 
 // Persisted shape stored under projects.metadata_json -> `pipelines`. Keyed by
@@ -203,6 +373,86 @@ export interface PipelineRunState {
   lastRunId?: string;
   lastConversationId?: string;
   updatedAt?: number;
+  /** Free-text input of the last run (Confluence URL / JIRA key / JQL). */
+  lastInput?: string;
+  /** Structured source of the last run (Confluence ref or BAS document). */
+  lastSource?: PipelineRunSource;
+  /** Target platform of the last run (stages with `acceptsPlatform`). */
+  lastPlatform?: TargetPlatform;
 }
 
 export type ProjectPipelineState = Record<string, PipelineRunState>;
+
+/* ── Project history (version hóa output) ──
+ * Two layers: PUBLISHED versions on the media store (one per push — the
+ * `_v/<verId>/…` snapshots indexed by changelog.json, what pipeline-studio
+ * renders), and machine-local fine-grained commits (the hidden .odhistory
+ * git repo). GET /api/pipelines/history returns both, newest first. */
+
+export interface HistoryActorRef {
+  id?: string;
+  email?: string;
+  name?: string;
+}
+
+/** One published version — an entry of the store-side changelog.json. */
+export interface PublishedVersion {
+  verId: string;
+  /** ISO timestamp of the push. */
+  at: string;
+  by: HistoryActorRef | null;
+  /** .odhistory commit hash on the pushing machine. */
+  gitCommit?: string;
+  /** Deliverable files frozen into the snapshot. */
+  files: number;
+  uploaded: number;
+  deleted: number;
+  note?: string;
+  /** Pipeline (stage) ids whose outputs are present in this snapshot —
+   *  derived from the snapshot files' `stage:` tags, so the UI can show a
+   *  per-pipeline history. Absent when the snapshot was pruned. */
+  stages?: string[];
+}
+
+/** One machine-local history commit (.odhistory). */
+export interface ProjectHistoryCommit {
+  commit: string;
+  /** ISO timestamp. */
+  at: string;
+  subject: string;
+  kind: 'manual-edits' | 'run' | 'build' | 'pre-pull' | 'pull' | 'push' | 'restore' | 'export';
+  pipelineId?: string;
+  runId?: string;
+  status?: string;
+  by?: HistoryActorRef | null;
+  input?: string;
+  verId?: string;
+  note?: string;
+  filesChanged?: number;
+}
+
+export interface ProjectHistoryResponse {
+  versions: PublishedVersion[];
+  commits: ProjectHistoryCommit[];
+}
+
+/** Restore either a published version (from the store) or a local commit. */
+export interface RestoreHistoryRequest {
+  projectId: string;
+  verId?: string;
+  commit?: string;
+  /** Restrict a commit-restore to these cwd-relative paths. */
+  paths?: string[];
+  /** Restrict a version-restore to one pipeline's outputs (stage id) —
+   *  per-pipeline "Khôi phục" from a stage card writes only that stage's
+   *  files back instead of the whole snapshot. */
+  stage?: string;
+}
+
+export interface RestoreHistoryResponse {
+  restored: 'version' | 'commit';
+  verId?: string;
+  commit?: string;
+  /** Files written (version restore) / touched (commit restore). */
+  files: number;
+}

@@ -1641,4 +1641,19 @@ export const ja: Dict = {
   'diagnostics.exporting': 'エクスポート中…',
   'diagnostics.exportSuccess': '診断情報を {path} に保存しました',
   'diagnostics.exportFailed': '診断情報のエクスポートに失敗しました: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'サンドボックス',
+  'assistant.sandboxedTitle': 'この実行は隔離された Docker サンドボックス内で行われました',
+  'settings.sandboxTitle': 'エージェントサンドボックス',
+  'settings.sandboxHint': '許可されたパイプラインエージェントを隔離された Docker コンテナ内で実行します。Docker/OrbStack が必要です。',
+  'settings.sandboxEnabled': '{skills} スキルの {runtimes} 実行をサンドボックス化',
+  'settings.sandboxDocker': 'Docker エンジン',
+  'settings.sandboxImage': 'サンドボックスイメージ',
+  'settings.sandboxAuth': 'Claude ログイン（認証ボリューム）',
+  'settings.sandboxActiveRuns': '実行中のサンドボックス',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': '未設定',
+  'settings.sandboxRunCmd': '実行: {cmd}',
+  'settings.sandboxDaemonOffline': 'デーモンがオフラインのため、サンドボックスの状態を取得できません。',
 };

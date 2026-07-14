@@ -141,6 +141,17 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* Agent-in-sandbox run marker next to the assistant role label. */
+.sandboxed-badge {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
 .chat-day-separator {
   display: flex;
   align-items: center;

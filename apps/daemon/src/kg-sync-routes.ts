@@ -16,12 +16,15 @@ import {
   type RemoteDeleteScope,
 } from '@open-design/contracts';
 import type { RouteDeps } from './server-context.js';
+import { getMachineUser } from './auth-routes.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import { pullProject } from './kg-sync/pull.js';
 import { pushProject } from './kg-sync/push.js';
 import { KgSyncRepo } from './kg-sync/persistence.js';
 import { loadRemoteProjects, projectIdFromWorkspace } from './kg-sync/remote-registry.js';
+import { pullScopeFor } from './kg-sync/identity-registry.js';
+import { WORKFLOWS } from './pipelines.js';
 import { listProjects } from './db.js';
 
 export interface RegisterKgSyncRoutesDeps
@@ -47,6 +50,28 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
   const { sendApiError } = ctx.http;
   const { randomId } = ctx.ids;
   const { getProject, insertProject } = ctx.projectStore;
+
+  // Optional string[] body field ("projectIds"/"stages" pickers) → trimmed
+  // list, or null when absent/empty (= no filter, legacy behavior).
+  const stringList = (v: unknown): string[] | null => {
+    if (!Array.isArray(v)) return null;
+    const list = v.filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+    return list.length > 0 ? list : null;
+  };
+
+  // Resolve the effective stage filter for pull-all/push-all: explicit `stages`
+  // wins; else `workflow` expands to that workflow's pipeline ids (CLI/API
+  // convenience — the UI modals always send explicit stages). Throws on an
+  // unknown workflow id so a typo doesn't silently sync everything.
+  const stageFilterOf = (body: any): string[] | undefined => {
+    const stages = stringList(body?.stages);
+    if (stages) return stages;
+    const workflowId = typeof body?.workflow === 'string' && body.workflow.trim() ? body.workflow.trim() : null;
+    if (!workflowId) return undefined;
+    const wf = WORKFLOWS.find((w) => w.id === workflowId);
+    if (!wf) throw new Error(`unknown workflow: ${workflowId} (có: ${WORKFLOWS.map((w) => w.id).join(', ')})`);
+    return [...wf.pipelineIds];
+  };
 
   // Ensure a local projects row exists so kg_nodes' FK is satisfied. A pulled
   // remote project the user hasn't otherwise created gets a placeholder row.
@@ -100,12 +125,28 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     res.json({ ok: true, data: { projectId, ...counts } });
   });
 
-  // POST /api/kg/pull-all — pull EVERY KGS app/project at once. Enumerates the
-  // workspaces in the KGS app graph, derives each one's project id, and mirrors
-  // each into a local kg-pull project. One button, not per-project.
-  app.post('/api/kg/pull-all', async (_req, res) => {
+  // POST /api/kg/pull-all — pull KGS apps/projects into the local mirror.
+  // Enumerates the workspaces in the KGS app graph, derives each one's project
+  // id, and mirrors each into a local kg-pull project. Optional body filters
+  // (both from the UI's Pull all modal): `projectIds` narrows WHICH projects,
+  // `stages` narrows WHICH pipelines' output files travel (the graph pull
+  // stays whole-project). Absent/empty → everything (legacy).
+  app.post('/api/kg/pull-all', async (req, res) => {
     const now = Date.now();
     try {
+      const requestedList = stringList(req.body?.projectIds);
+      const requested = requestedList ? new Set(requestedList) : null;
+      const stages = stageFilterOf(req.body);
+      // Membership scope: dự án khai sinh ở studio → máy này chỉ pull các dự
+      // án mà machine user (Google login gần nhất) được add vào; app admin
+      // thấy tất; identity chưa cấu hình → legacy pull-everything.
+      const scope = await pullScopeFor(getMachineUser()?.sub ?? null);
+      if (!scope.all && scope.ids.size === 0) {
+        return res.json({
+          ok: true,
+          data: { pulled: 0, projectIds: [], results: [], ...(scope.reason ? { reason: scope.reason } : {}) },
+        });
+      }
       const cfg = kgsConfigFromEnv();
       const client = new KgsClient(cfg);
       const workspaces = await client.queryEntities(['DP_UI_WORKSPACE'], {});
@@ -115,7 +156,9 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
             .map((ws) => projectIdFromWorkspace(ws as { entityId?: string; properties?: Record<string, unknown> }))
             .filter((x): x is string => Boolean(x)),
         ),
-      );
+      )
+        .filter((id) => !requested || requested.size === 0 || requested.has(id))
+        .filter((id) => scope.all || scope.ids.has(id));
       const results = [];
       for (const projectId of projectIds) {
         ensureProject(projectId, now);
@@ -127,7 +170,7 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
           let files = 0;
           let filesError: string | undefined;
           try {
-            files = (await pipelines.pullFiles(projectId)).pulled;
+            files = (await pipelines.pullFiles(projectId, stages)).pulled;
           } catch (err) {
             filesError = (err as Error).message;
           }
@@ -149,22 +192,35 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     }
   });
 
-  // POST /api/kg/push-all — push EVERY pipeline-eligible KGS app back at once.
+  // POST /api/kg/push-all — push pipeline-eligible KGS apps back at once.
   // Covers both pulled mirrors and locally-created (`kind: 'pipeline'`) projects.
-  app.post('/api/kg/push-all', async (_req, res) => {
+  // Optional body filters (the UI's Push all modal): `projectIds` narrows WHICH
+  // local projects, `stages` narrows WHICH pipelines' output files travel (the
+  // graph push stays whole-project). Absent/empty → everything (legacy).
+  app.post('/api/kg/push-all', async (req, res) => {
     try {
+      const requestedList = stringList(req.body?.projectIds);
+      const requested = requestedList ? new Set(requestedList) : null;
+      const stages = stageFilterOf(req.body);
       const cfg = kgsConfigFromEnv();
       const client = new KgsClient(cfg);
-      const projects = listProjects(db).filter((p: { metadata?: unknown }) => isKgsProject(p));
+      const projects = listProjects(db)
+        .filter((p: { metadata?: unknown }) => isKgsProject(p))
+        .filter((p: { id: string }) => !requested || requested.has(p.id));
       const results = [];
       for (const p of projects as Array<{ id: string; name?: string }>) {
         try {
           // Ensure the project's DP_UI_WORKSPACE node exists so another device's
           // pull-all (which discovers projects by enumerating DP_UI_WORKSPACE) can
           // find it. A locally-created project has no workspace node until now.
+          // Owner attribution = the machine's last Google login (may be null).
+          const machine = getMachineUser();
+          const owner = machine && !machine.sub.startsWith('google:')
+            ? { id: machine.sub, email: machine.email, name: machine.name }
+            : null;
           let workspace: 'created' | 'exists' | 'error' = 'exists';
           try {
-            workspace = await client.ensureWorkspace(p.id, p.name ?? p.id);
+            workspace = await client.ensureWorkspace(p.id, p.name ?? p.id, owner);
           } catch {
             workspace = 'error';
           }
@@ -177,7 +233,7 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
           let filesConverted = 0;
           let filesError: string | undefined;
           try {
-            const u = await pipelines.uploadFiles(p.id);
+            const u = await pipelines.uploadFiles(p.id, stages);
             filesUploaded = u.uploaded;
             filesConverted = u.converted;
           } catch (err) {
@@ -200,6 +256,31 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       res.json({ ok: true, data: { pushed: results.length, results } });
     } catch (err) {
       sendApiError(res, 502, 'KG_PUSH_FAILED', (err as Error).message);
+    }
+  });
+
+  // POST /api/kg/sync-status { projectIds? } — per-stage local↔remote file diff
+  // for the Pull all / Push all modals' "≠ remote" badges and `od kg diff`.
+  // Read-only; per-project failures degrade to an `error` row so one broken
+  // project can't blank the whole panel.
+  app.post('/api/kg/sync-status', async (req, res) => {
+    try {
+      const requestedList = stringList(req.body?.projectIds);
+      const requested = requestedList ? new Set(requestedList) : null;
+      const projects = listProjects(db)
+        .filter((p: { metadata?: unknown }) => isKgsProject(p))
+        .filter((p: { id: string }) => !requested || requested.has(p.id));
+      const results = [];
+      for (const p of projects as Array<{ id: string }>) {
+        try {
+          results.push(await pipelines.syncStatus(p.id));
+        } catch (err) {
+          results.push({ projectId: p.id, stages: [], error: (err as Error).message });
+        }
+      }
+      res.json({ ok: true, data: { results } });
+    } catch (err) {
+      sendApiError(res, 502, 'KG_SYNC_STATUS_FAILED', (err as Error).message);
     }
   });
 
@@ -244,15 +325,19 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     }
   });
 
-  // GET /api/kg/remote-projects — list every project living on the remote stores
-  // (KGS graph ⊕ media-service files), merged by projectId. Independent of what
-  // is mirrored locally, so the user can see + prune server-side leftovers.
+  // GET /api/kg/remote-projects — list the remote projects (KGS graph ⊕ media
+  // files, merged by projectId) VISIBLE TO THIS MACHINE'S USER: dự án khai
+  // sinh ở studio nên user thường chỉ thấy dự án mình được add vào; app admin
+  // thấy tất; identity chưa cấu hình → mọi thứ (legacy). Drives the Pull all
+  // modal + `od kg remote list`.
   app.get('/api/kg/remote-projects', async (_req, res) => {
     try {
       const kgs = new KgsClient(kgsConfigFromEnv());
       const media = new MediaClient(mediaConfigFromEnv());
+      const scope = await pullScopeFor(getMachineUser()?.sub ?? null);
       const data = await loadRemoteProjects(kgs, media);
-      res.json({ ok: true, data });
+      const visible = scope.all ? data : data.filter((p: { projectId: string }) => scope.ids.has(p.projectId));
+      res.json({ ok: true, data: visible, ...(scope.reason ? { reason: scope.reason } : {}) });
     } catch (err) {
       sendApiError(res, 502, 'KG_REMOTE_FAILED', (err as Error).message);
     }

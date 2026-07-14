@@ -1747,4 +1747,19 @@ export const uk: Dict = {
   'diagnostics.exporting': 'Експортування…',
   'diagnostics.exportSuccess': 'Діагностику збережено: {path}',
   'diagnostics.exportFailed': 'Не вдалося експортувати діагностику: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'Пісочниця',
+  'assistant.sandboxedTitle': 'Цей запуск виконувався в ізольованій Docker-пісочниці',
+  'settings.sandboxTitle': 'Пісочниця агента',
+  'settings.sandboxHint': 'Запускає дозволених агентів пайплайна в ізольованому Docker-контейнері. Потрібен Docker/OrbStack.',
+  'settings.sandboxEnabled': 'Пісочниця запусків {runtimes} для скілів: {skills}',
+  'settings.sandboxDocker': 'Рушій Docker',
+  'settings.sandboxImage': 'Образ пісочниці',
+  'settings.sandboxAuth': 'Вхід Claude (том авторизації)',
+  'settings.sandboxActiveRuns': 'Активні запуски в пісочниці',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': 'відсутнє',
+  'settings.sandboxRunCmd': 'виконайте: {cmd}',
+  'settings.sandboxDaemonOffline': 'Демон офлайн — статус пісочниці недоступний.',
 };

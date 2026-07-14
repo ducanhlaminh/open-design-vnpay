@@ -12,10 +12,6 @@ import type {
   ImportLocalDesignSystemRequest,
   ImportLocalDesignSystemResponse,
   ReplaceProjectWorkingDirResponse,
-  KgPushDocument,
-  KgPushResponse,
-  KgProject,
-  KgProjectsResponse,
 } from '@open-design/contracts';
 import type {
   AgentInfo,
@@ -1149,47 +1145,6 @@ export async function updateDeployConfig(
     if (err instanceof Error) throw err;
     return null;
   }
-}
-
-export type WebKgPushResponse = KgPushResponse;
-export type WebKgProject = KgProject;
-
-/**
- * List SimStudio projects (from preview-project) so the "Push to KG" dropdown
- * can pick a target. Returns [] on any error so the UI degrades gracefully.
- */
-export async function fetchKgProjects(): Promise<WebKgProject[]> {
-  try {
-    const resp = await fetch('/api/kg/projects');
-    if (!resp.ok) return [];
-    const data = (await resp.json()) as KgProjectsResponse;
-    return Array.isArray(data?.projects) ? data.projects : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Push a Customer Journey + UX Spec document into the Knowledge Graph
- * (KGS open-design app), scoped to `projectId`. Backs the FileViewer
- * "Push to KG" button; SimStudio's Pull All then renders the data.
- */
-export async function pushToKg(
-  projectId: string,
-  json: KgPushDocument,
-): Promise<WebKgPushResponse> {
-  const resp = await fetch('/api/kg/push', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectId, json }),
-  });
-  if (!resp.ok) {
-    const payload = (await resp.json().catch(() => null)) as
-      | { error?: { message?: string }; message?: string }
-      | null;
-    throw new Error(payload?.error?.message || payload?.message || `Push to KG failed (${resp.status})`);
-  }
-  return (await resp.json()) as WebKgPushResponse;
 }
 
 export async function fetchCloudflarePagesZones(): Promise<WebCloudflarePagesZonesResponse | null> {

@@ -2537,24 +2537,32 @@ process.stdin.on('end', () => {
   });
 
   it('reports an early-phase diagnostics block when the agent CLI is missing (#2248)', async () => {
-    // Clear PATH so the daemon cannot locate `claude`. We restore the
-    // env in `finally` to avoid leaking the empty PATH to later tests.
-    // Depending on whether the resolver short-circuits or the spawn
-    // itself ENOENTs, the kind may be agent_not_installed or
-    // agent_spawn_failed and the phase may be 'binary_resolution' or
-    // 'spawn'. Both are valid "we never reached the smoke test" shapes
-    // — the actionable bit for the UI is that diagnostics arrived at
-    // all and that the phase is one of the two early values.
+    // Make `claude` genuinely unresolvable so diagnostics stop at an early
+    // phase. Clearing PATH alone is not enough: the resolver ALSO scans the
+    // well-known user toolchain dirs (~/.claude/local, ~/.local/bin, …), so on
+    // a dev machine that has Claude Code installed it still finds the absolute
+    // binary, spawns it, and reaches the output_parse phase. Pointing
+    // OD_AGENT_HOME at a fresh EMPTY dir scopes that scan there (executables.ts
+    // uses an empty env + skips system bins under the override) → nothing
+    // found, regardless of what is installed on the host. Restored in finally.
     const oldPath = process.env.PATH;
+    const oldAgentHome = process.env.OD_AGENT_HOME;
+    const emptyHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'od-no-agent-'));
     process.env.PATH = '';
+    process.env.OD_AGENT_HOME = emptyHome;
     try {
       const result = await testAgentConnection({ agentId: 'claude' });
       expect(result.ok).toBe(false);
       expect(['agent_not_installed', 'agent_spawn_failed']).toContain(result.kind);
       expect(result.diagnostics).toBeDefined();
+      // Both are valid "we never reached the smoke test" shapes — the
+      // actionable bit for the UI is that diagnostics arrived at an early phase.
       expect(['binary_resolution', 'spawn']).toContain(result.diagnostics?.phase);
     } finally {
       process.env.PATH = oldPath;
+      if (oldAgentHome === undefined) delete process.env.OD_AGENT_HOME;
+      else process.env.OD_AGENT_HOME = oldAgentHome;
+      await fsp.rm(emptyHome, { recursive: true, force: true }).catch(() => {});
     }
   });
 

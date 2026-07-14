@@ -85,6 +85,25 @@ export interface OrbitConfigPrefs {
   templateSkillId?: string | null;
 }
 
+/**
+ * Agent-in-sandbox prefs (docs/agent-in-sandbox-spec-plan.md in the parent
+ * repo). When enabled, runs whose agent is in `runtimes` AND whose skill is in
+ * `skills` are spawned inside a throwaway `od-agent-sandbox` Docker container
+ * instead of as a host process. Image/volume names and mount layout are code
+ * constants in agent-sandbox.ts, not prefs.
+ */
+export interface SandboxConfigPrefs {
+  enabled: boolean;
+  /** Agent runtime ids allowed to sandbox (default ['claude']). */
+  runtimes?: string[];
+  /** Skill ids gated into the sandbox (default ['ui-react']). */
+  skills?: string[];
+  /** Hard kill for a sandboxed run, minutes (default 30). */
+  timeoutMinutes?: number;
+  cpus?: number;
+  memoryGb?: number;
+}
+
 export interface AppConfigPrefs {
   onboardingCompleted?: boolean;
   agentId?: string | null;
@@ -101,6 +120,7 @@ export interface AppConfigPrefs {
   customInstructions?: string | null;
   /** Display name stamped on this install's published feedback prompts. */
   feedbackUsername?: string | null;
+  sandbox?: SandboxConfigPrefs;
 }
 
 const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
@@ -118,6 +138,7 @@ const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
   'orbit',
   'customInstructions',
   'feedbackUsername',
+  'sandbox',
 ] as const);
 
 function configFile(dataDir: string): string {
@@ -240,6 +261,41 @@ function validateOrbit(raw: unknown): OrbitConfigPrefs | undefined {
   return orbit;
 }
 
+function validateStringArray(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const items = raw
+    .filter((v): v is string => typeof v === 'string')
+    .map((v) => v.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : undefined;
+}
+
+function validateBoundedNumber(raw: unknown, min: number, max: number): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+  if (raw < min || raw > max) return undefined;
+  return raw;
+}
+
+export function validateSandbox(raw: unknown): SandboxConfigPrefs | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const sandbox: SandboxConfigPrefs = {
+    enabled: typeof obj.enabled === 'boolean' ? obj.enabled : false,
+  };
+  const runtimes = validateStringArray(obj.runtimes);
+  if (runtimes) sandbox.runtimes = runtimes;
+  const skills = validateStringArray(obj.skills);
+  if (skills) sandbox.skills = skills;
+  const timeoutMinutes = validateBoundedNumber(obj.timeoutMinutes, 1, 24 * 60);
+  if (timeoutMinutes !== undefined) sandbox.timeoutMinutes = timeoutMinutes;
+  const cpus = validateBoundedNumber(obj.cpus, 0.5, 32);
+  if (cpus !== undefined) sandbox.cpus = cpus;
+  const memoryGb = validateBoundedNumber(obj.memoryGb, 1, 64);
+  if (memoryGb !== undefined) sandbox.memoryGb = memoryGb;
+  return sandbox;
+}
+
 export function agentCliEnvForAgent(
   prefs: AgentCliEnvPrefs | undefined,
   agentId: string,
@@ -311,6 +367,14 @@ function applyConfigValue(
   }
   if (key === 'orbit') {
     const validated = validateOrbit(value);
+    if (validated !== undefined) {
+      target[key] = validated;
+    } else {
+      delete target[key];
+    }
+  }
+  if (key === 'sandbox') {
+    const validated = validateSandbox(value);
     if (validated !== undefined) {
       target[key] = validated;
     } else {

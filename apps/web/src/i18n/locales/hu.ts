@@ -1714,4 +1714,19 @@ export const hu: Dict = {
   'diagnostics.exporting': 'Exportálás…',
   'diagnostics.exportSuccess': 'Diagnosztika mentve: {path}',
   'diagnostics.exportFailed': 'Diagnosztika exportálása sikertelen: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'Sandbox',
+  'assistant.sandboxedTitle': 'Ez a futás izolált Docker-sandboxban zajlott',
+  'settings.sandboxTitle': 'Ügynök-sandbox',
+  'settings.sandboxHint': 'Az engedélyezett pipeline-ügynököket izolált Docker-konténerben futtatja. Docker/OrbStack szükséges.',
+  'settings.sandboxEnabled': '{runtimes} futások sandboxolása a következő skillekhez: {skills}',
+  'settings.sandboxDocker': 'Docker-motor',
+  'settings.sandboxImage': 'Sandbox-image',
+  'settings.sandboxAuth': 'Claude-bejelentkezés (auth kötet)',
+  'settings.sandboxActiveRuns': 'Aktív sandbox-futások',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': 'hiányzik',
+  'settings.sandboxRunCmd': 'futtasd: {cmd}',
+  'settings.sandboxDaemonOffline': 'A démon offline — a sandbox állapota nem érhető el.',
 };

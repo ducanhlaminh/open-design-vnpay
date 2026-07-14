@@ -9,11 +9,6 @@ import {
   trackProjectsMorePopoverClick,
 } from "../analytics/events";
 import { useT } from "../i18n";
-import {
-	kgProjectName,
-	loadHomeKgProjects,
-	useHomeProjectScope,
-} from "../state/home-project-scope";
 import { deleteLiveArtifact, fetchLiveArtifacts, fetchProjectFiles, liveArtifactPreviewUrl, projectFileUrl } from "../providers/registry";
 import type {
 	DesignSystemSummary,
@@ -30,6 +25,16 @@ import { Toast } from "./Toast";
 
 type SubTab = "recent" | "yours";
 type ViewMode = "grid" | "kanban";
+
+// A pipeline project is a KGS app (created on the Pipelines page or mirrored
+// via kg-pull) — mirrors the daemon's isKgsProject. Everything else is a
+// regular chat project.
+function isPipelineProject(p: { metadata?: unknown }): boolean {
+	const m = p.metadata;
+	if (!m || typeof m !== "object" || Array.isArray(m)) return false;
+	const meta = m as Record<string, unknown>;
+	return meta.kind === "pipeline" || meta.source === "kg-pull";
+}
 
 type DesignListItem =
 	| { type: "project"; project: Project; updatedAt: number; createdAt: number }
@@ -86,11 +91,6 @@ export function DesignsTab({
 }: Props) {
 	const t = useT();
 	const analytics = useAnalytics();
-	// KGS project list (for resolving group-header names on /projects).
-	const kgProjectScope = useHomeProjectScope();
-	useEffect(() => {
-		void loadHomeKgProjects();
-	}, []);
 	// P0 page_view page_name=projects — fire once when the tab mounts so
 	// `/projects` landings register even before the user clicks anything.
 	// ref-keyed to survive re-renders that flip parent state without
@@ -134,6 +134,26 @@ export function DesignsTab({
 			return "grid";
 		}
 	});
+	// Chat vs Pipeline projects are different worlds (ad-hoc conversations vs
+	// KGS docs→prototype apps), so the list is split instead of interleaved.
+	// Persisted like the grid/kanban view choice.
+	const [scope, setScope] = useState<"chat" | "pipeline">(() => {
+		if (typeof window === "undefined") return "chat";
+		try {
+			const stored = window.localStorage.getItem("od-designs-scope");
+			return stored === "pipeline" ? "pipeline" : "chat";
+		} catch {
+			return "chat";
+		}
+	});
+	const changeScope = (next: "chat" | "pipeline") => {
+		setScope(next);
+		try {
+			window.localStorage.setItem("od-designs-scope", next);
+		} catch {
+			/* storage unavailable — scope just won't persist */
+		}
+	};
 
 	useEffect(() => {
 		let cancelled = false;
@@ -266,9 +286,20 @@ export function DesignsTab({
 		if (view === "kanban" && selectMode) exitSelectMode();
 	}, [selectMode, view]);
 
+	// The scope split happens before every other derivation so search, sort,
+	// live artifacts and both view modes all operate on one world at a time.
+	const scopedProjects = useMemo(
+		() => projects.filter((p) => isPipelineProject(p) === (scope === "pipeline")),
+		[projects, scope],
+	);
+	const pipelineCount = useMemo(
+		() => projects.filter((p) => isPipelineProject(p)).length,
+		[projects],
+	);
+
 	const filtered = useMemo(() => {
 		const q = filter.trim().toLowerCase();
-		let list: DesignListItem[] = projects
+		let list: DesignListItem[] = scopedProjects
 			.filter(
 				(project) =>
 					!shouldHideProjectCard(
@@ -283,7 +314,7 @@ export function DesignsTab({
 				createdAt: project.createdAt,
 			}));
 
-		const liveItems = projects.flatMap((project) =>
+		const liveItems = scopedProjects.flatMap((project) =>
 			(liveArtifactsByProject[project.id] ?? []).map((liveArtifact) => ({
 				type: "live-artifact" as const,
 				project,
@@ -311,7 +342,7 @@ export function DesignsTab({
 				item.liveArtifact.title.toLowerCase().includes(q)
 			);
 		});
-	}, [projects, liveArtifactsByProject, filter, sub]);
+	}, [scopedProjects, liveArtifactsByProject, filter, sub]);
 
 	const filteredProjects = useMemo(
 		() =>
@@ -321,41 +352,6 @@ export function DesignsTab({
 			),
 		[filtered],
 	);
-
-	// /projects grouped by the KGS project each card is scoped to
-	// (metadata.kgsProjectId). Headers are interleaved as full-width grid rows
-	// so the existing card render stays untouched. No grouping when nothing is
-	// scoped yet (single "" bucket) — falls back to the flat list.
-	const groupedDisplay = useMemo<
-		Array<DesignListItem | { type: "group-header"; key: string; label: string }>
-	>(() => {
-		const groups = new Map<string, DesignListItem[]>();
-		for (const it of filtered) {
-			const key = it.project.metadata?.kgsProjectId ?? "";
-			const bucket = groups.get(key);
-			if (bucket) bucket.push(it);
-			else groups.set(key, [it]);
-		}
-		if (groups.size === 1 && groups.has("")) return filtered;
-		const keys = [...groups.keys()].sort((a, b) => {
-			if (a === "") return 1;
-			if (b === "") return -1;
-			return kgProjectName(a).localeCompare(kgProjectName(b));
-		});
-		const out: Array<DesignListItem | { type: "group-header"; key: string; label: string }> = [];
-		for (const k of keys) {
-			out.push({
-				type: "group-header",
-				key: k,
-				label: k ? kgProjectName(k) : t("designs.group.unassigned"),
-			});
-			for (const it of groups.get(k)!) out.push(it);
-		}
-		return out;
-		// kgProjectScope in deps so headers re-resolve to names once the KGS
-		// project list loads (when landing directly on /projects).
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [filtered, t, kgProjectScope]);
 
 	const skillName = (id: string | null) =>
 		skills.find((s) => s.id === id)?.name ?? "";
@@ -457,6 +453,24 @@ export function DesignsTab({
 		>
 			<div className="tab-panel-toolbar designs-toolbar">
 				<div className="toolbar-left">
+					<div className="subtab-pill" role="group" aria-label="Project scope">
+						<button
+							aria-pressed={scope === "chat"}
+							className={scope === "chat" ? "active" : ""}
+							onClick={() => changeScope("chat")}
+							title="Regular chat projects"
+						>
+							Chat ({projects.length - pipelineCount})
+						</button>
+						<button
+							aria-pressed={scope === "pipeline"}
+							className={scope === "pipeline" ? "active" : ""}
+							onClick={() => changeScope("pipeline")}
+							title="KGS pipeline projects (docs → prototype workflows)"
+						>
+							Pipelines ({pipelineCount})
+						</button>
+					</div>
 					<div
 						className="subtab-pill"
 						role="group"
@@ -601,24 +615,7 @@ export function DesignsTab({
 				</div>
 			) : view === "grid" ? (
 				<div className="design-grid">
-					{groupedDisplay.map((item) => {
-						if (item.type === "group-header") {
-							return (
-								<div
-									key={`grp:${item.key}`}
-									className="designs-group-header"
-									style={{
-										gridColumn: "1 / -1",
-										fontSize: 12,
-										fontWeight: 600,
-										opacity: 0.7,
-										padding: "10px 2px 4px",
-									}}
-								>
-									{item.label}
-								</div>
-							);
-						}
+					{filtered.map((item) => {
 						const p = item.project;
 						const skill = skillName(p.skillId);
 						const ds = dsName(p.designSystemId);

@@ -15,10 +15,22 @@ interface Props {
   icon?: IconName;
   /** While true, Escape and backdrop clicks do not close (e.g. mid-submit). */
   busy?: boolean;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
+  /** Extra class on the scrollable body — e.g. to drop padding for a
+   *  full-bleed preview surface (the Quick-result two-pane layout). */
+  bodyClassName?: string;
 }
 
-export function PlModal({ title, onClose, children, footer, icon, busy = false, size = 'sm' }: Props) {
+export function PlModal({
+  title,
+  onClose,
+  children,
+  footer,
+  icon,
+  busy = false,
+  size = 'sm',
+  bodyClassName,
+}: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !busy) onClose();
@@ -56,7 +68,9 @@ export function PlModal({ title, onClose, children, footer, icon, busy = false, 
             <Icon name="close" size={16} />
           </button>
         </header>
-        <div className="pl-modal__body">{children}</div>
+        <div className={bodyClassName ? `pl-modal__body ${bodyClassName}` : 'pl-modal__body'}>
+          {children}
+        </div>
         {footer ? <footer className="pl-modal__foot">{footer}</footer> : null}
       </div>
     </div>

@@ -6,7 +6,10 @@ import {
   basListDocuments,
   basListFeatures,
   extractPageId,
+  fetchConfluencePages,
   fetchSourceFiles,
+  looksLikeConfluenceRef,
+  renderConfluenceIndex,
   resolveBasEndpoint,
 } from '../src/bas/bas-client.js';
 import { parseRunSource } from '../src/pipeline-routes.js';
@@ -135,6 +138,172 @@ test('fetchSourceFiles(confluence) writes one markdown file with frontmatter', a
   assert.match(files[0]!.content, /page_id: 12/);
   assert.match(files[0]!.content, /source: confluence/);
   assert.match(files[0]!.content, /# Spec/);
+});
+
+test('looksLikeConfluenceRef gates the deterministic docs path (page id resolvable → true)', () => {
+  assert.equal(looksLikeConfluenceRef('874352117'), true);
+  assert.equal(looksLikeConfluenceRef('https://wiki.test/spaces/X/pages/874352117/Login'), true);
+  assert.equal(looksLikeConfluenceRef('https://wiki.test/pages/viewpage.action?pageId=98765'), true);
+  // Opaque short links / JIRA keys / JQL → agent path, not deterministic.
+  assert.equal(looksLikeConfluenceRef('https://wiki.test/x/AbCd'), false);
+  assert.equal(looksLikeConfluenceRef('PROJ-123'), false);
+  assert.equal(looksLikeConfluenceRef('project = PROJ ORDER BY created'), false);
+});
+
+test('fetchConfluencePages (gateway fallback) fetches every ref as a final docs/confluence/ deliverable', async () => {
+  stubFetch((name, args) => {
+    assert.equal(name, 'confluence_fetch_page');
+    return makeRes(
+      toolResult(2, {
+        page_id: args.page_id,
+        title: `Page ${args.page_id}`,
+        url: `https://wiki/${args.page_id}`,
+        markdown: `# Page ${args.page_id}\nbody`,
+      }),
+    );
+  });
+  const pages = await fetchConfluencePages({ ep: EP }, ['https://wiki/pages/12/Spec', '34']);
+  assert.equal(pages.length, 2);
+  assert.deepEqual(pages.map((p) => p.pageId), ['12', '34']);
+  // FINAL output paths (docs/confluence/…), not the agent-input docs/source/ tree.
+  assert.match(pages[0]!.relPath, /^docs\/confluence\/.*\.md$/);
+  assert.match(pages[0]!.content, /source: confluence/);
+  assert.match(pages[0]!.content, /# Page 12/);
+  // _index.md companion lists every page with its id + url.
+  const index = renderConfluenceIndex(pages);
+  assert.match(index, /Page 12/);
+  assert.match(index, /page 34/);
+});
+
+test('htmlToMarkdown decodes named Latin-1 + numeric entities (Vietnamese wiki text)', async () => {
+  const { htmlToMarkdown } = await import('../src/bas/bas-client.js');
+  const md = htmlToMarkdown('<p>Phi&ecirc;n bản t&agrave;i liệu &#7871; &#x1EBF; &amp; m&ocirc; tả</p>');
+  assert.equal(md, 'Phiên bản tài liệu ế ế & mô tả');
+});
+
+test('htmlToMarkdown emits REAL GFM tables (separator row, padded cells, escaped pipes, nested)', async () => {
+  const { htmlToMarkdown } = await import('../src/bas/bas-client.js');
+  const md = htmlToMarkdown(
+    '<table><tr><th>Cột A</th><th>Cột B</th></tr>' +
+      '<tr><td>x | y</td><td><table><tr><td>trong</td></tr></table></td></tr>' +
+      '<tr><td>thiếu ô</td></tr></table>',
+  );
+  const lines = md.split('\n').filter(Boolean);
+  assert.equal(lines[0], '| Cột A | Cột B |');
+  assert.equal(lines[1], '| --- | --- |');
+  // Escaped pipe survives; the nested table flattens into the outer cell.
+  assert.match(lines[2]!, /^\| x \\\| y \| .*trong.* \|$/);
+  // Short row padded to the header width.
+  assert.equal(lines[3], '| thiếu ô |  |');
+});
+
+test('fetchConfluencePages prefers the direct PAT REST fetch and converts body.view HTML', async () => {
+  globalThis.fetch = vi.fn(async (url: any) => {
+    const u = String(url);
+    assert.match(u, /^https:\/\/wiki\.test\/rest\/api\/content\/12\?expand=/);
+    return makeRes(
+      JSON.stringify({
+        title: 'Thiết kế thẻ',
+        body: { view: { value: '<h1>Tổng quan</h1><p>Thẻ <strong>ghi nợ</strong></p><ul><li>Bước 1</li></ul>' } },
+        _links: { base: 'https://wiki.test', webui: '/spaces/X/pages/12/T' },
+      }),
+    ) as any;
+  }) as any;
+  const pages = await fetchConfluencePages(
+    { creds: { base: 'https://wiki.test', token: 'pat' } },
+    ['12'],
+  );
+  assert.equal(pages.length, 1);
+  assert.equal(pages[0]!.title, 'Thiết kế thẻ');
+  assert.equal(pages[0]!.url, 'https://wiki.test/spaces/X/pages/12/T');
+  assert.match(pages[0]!.content, /# Tổng quan/);
+  assert.match(pages[0]!.content, /\*\*ghi nợ\*\*/);
+  assert.match(pages[0]!.content, /- Bước 1/);
+});
+
+test('fetchConfluencePages follows seed links depth-1, rewrites cross-page links, marks linked pages', async () => {
+  const BODIES: Record<string, { title: string; html: string }> = {
+    '12': {
+      title: 'Thiết kế thẻ',
+      html: '<p>Xem <a href="https://wiki.test/spaces/X/pages/34/BO+SPEC">BO spec</a> và <a href="https://jira.test/browse/PRJ-1">ticket</a></p>',
+    },
+    // Linked page links onward to page 56 — depth 2, must NOT be fetched.
+    '34': { title: 'BO SPEC', html: '<p>Chi tiết <a href="/spaces/X/pages/56/Deep">sâu hơn</a></p>' },
+  };
+  globalThis.fetch = vi.fn(async (url: any) => {
+    const id = /\/content\/(\d+)\?/.exec(String(url))?.[1] ?? '';
+    const b = BODIES[id];
+    if (!b) return makeRes('not found', { status: 404 }) as any;
+    return makeRes(
+      JSON.stringify({
+        title: b.title,
+        body: { view: { value: b.html } },
+        _links: { base: 'https://wiki.test', webui: `/spaces/X/pages/${id}/x` },
+      }),
+    ) as any;
+  }) as any;
+  const pages = await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['12']);
+  assert.deepEqual(pages.map((p) => [p.pageId, p.linked ?? false]), [['12', false], ['34', true]]);
+  // Cross-page link rewritten to the local file; external (JIRA) link untouched.
+  assert.match(pages[0]!.content, /\[BO spec\]\(\.\/BO-SPEC\.md\)/);
+  assert.match(pages[0]!.content, /https:\/\/jira\.test\/browse\/PRJ-1/);
+  // Depth-2 target not fetched → its link stays a wiki URL (relative href kept).
+  assert.match(pages[1]!.content, /\[sâu hơn\]\(\/spaces\/X\/pages\/56\/Deep\)/);
+  assert.match(pages[1]!.content, /fetched_via: linked-from-seed/);
+  // Index groups the auto-fetched pages separately.
+  const index = renderConfluenceIndex(pages);
+  assert.match(index, /## Trang liên kết/);
+  assert.ok(index.indexOf('Thiết kế thẻ') < index.indexOf('## Trang liên kết'));
+});
+
+test('fetchConfluencePages followLinks:false fetches only the picked pages', async () => {
+  globalThis.fetch = vi.fn(async (url: any) => {
+    const id = /\/content\/(\d+)\?/.exec(String(url))?.[1] ?? '';
+    assert.equal(id, '12'); // page 34 must never be requested
+    return makeRes(
+      JSON.stringify({
+        title: 'Seed',
+        body: { view: { value: '<a href="/pages/34">link</a>' } },
+        _links: { base: 'https://wiki.test', webui: '/spaces/X/pages/12/x' },
+      }),
+    ) as any;
+  }) as any;
+  const pages = await fetchConfluencePages(
+    { creds: { base: 'https://wiki.test', token: 'pat' } },
+    ['12'],
+    { followLinks: false },
+  );
+  assert.equal(pages.length, 1);
+});
+
+test('fetchConfluencePages falls back to the gateway when the direct fetch fails', async () => {
+  globalThis.fetch = vi.fn(async (url: any, init: any) => {
+    const u = String(url);
+    if (u.startsWith('https://wiki.test/rest/')) return makeRes('denied', { status: 401 }) as any;
+    // Gateway MCP protocol (initialize → tools/call).
+    const msg = JSON.parse(init.body);
+    if (msg.method === 'initialize') return makeRes(rpcResult(msg.id, { protocolVersion: '2025-03-26' }), { sessionId: 's1' }) as any;
+    if (msg.method === 'notifications/initialized') return makeRes('', { status: 202 }) as any;
+    if (msg.method === 'tools/call') {
+      return makeRes(toolResult(msg.id, { page_id: '12', title: 'Via gateway', markdown: 'gw body' })) as any;
+    }
+    return makeRes(rpcResult(msg.id, {})) as any;
+  }) as any;
+  const pages = await fetchConfluencePages(
+    { creds: { base: 'https://wiki.test', token: 'bad' }, ep: EP },
+    ['12'],
+  );
+  assert.equal(pages[0]!.title, 'Via gateway');
+  assert.match(pages[0]!.content, /gw body/);
+});
+
+test('fetchConfluencePages dedupes slug collisions with the page id suffix', async () => {
+  stubFetch((_name, args) =>
+    makeRes(toolResult(2, { page_id: args.page_id, title: 'Same Title', markdown: 'x' })),
+  );
+  const pages = await fetchConfluencePages({ ep: EP }, ['11', '22']);
+  assert.notEqual(pages[0]!.relPath, pages[1]!.relPath);
+  assert.match(pages[1]!.relPath, /-22\.md$/);
 });
 
 test('fetchSourceFiles(bas) renders a selected feature detail into markdown', async () => {

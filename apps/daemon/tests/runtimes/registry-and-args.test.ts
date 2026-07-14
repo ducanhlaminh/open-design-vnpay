@@ -107,17 +107,12 @@ test('codex args disable plugins when OD_CODEX_DISABLE_PLUGINS is 1', () => {
   withPlatform('darwin', () => {
     const args = codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project' });
 
-    assert.deepEqual(args.slice(0, 9), [
-      'exec',
-      '--json',
-      '--skip-git-repo-check',
-      '--sandbox',
-      'workspace-write',
-      '-c',
-      'sandbox_workspace_write.network_access=true',
-      '--disable',
-      'plugins',
-    ]);
+    // Assert the flag itself, not its exact position — the base sandbox prefix
+    // is covered by the "workspace-write sandbox" test, and pinning positions
+    // here broke when `-c approval_policy="never"` was inserted before it.
+    const di = args.indexOf('--disable');
+    assert.ok(di >= 0, 'expected --disable when OD_CODEX_DISABLE_PLUGINS=1');
+    assert.equal(args[di + 1], 'plugins', 'expected --disable to be followed by plugins');
   });
 });
 

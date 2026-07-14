@@ -1745,4 +1745,19 @@ export const ptBR: Dict = {
   'diagnostics.exporting': 'Exportando…',
   'diagnostics.exportSuccess': 'Diagnósticos salvos em {path}',
   'diagnostics.exportFailed': 'Falha ao exportar diagnósticos: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'Sandbox',
+  'assistant.sandboxedTitle': 'Esta execução ocorreu dentro de uma sandbox Docker isolada',
+  'settings.sandboxTitle': 'Sandbox de agente',
+  'settings.sandboxHint': 'Executa agentes de pipeline habilitados em um contêiner Docker isolado. Requer Docker/OrbStack.',
+  'settings.sandboxEnabled': 'Sandbox de execuções de {runtimes} para as skills: {skills}',
+  'settings.sandboxDocker': 'Motor Docker',
+  'settings.sandboxImage': 'Imagem da sandbox',
+  'settings.sandboxAuth': 'Login do Claude (volume de auth)',
+  'settings.sandboxActiveRuns': 'Execuções em sandbox ativas',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': 'ausente',
+  'settings.sandboxRunCmd': 'execute: {cmd}',
+  'settings.sandboxDaemonOffline': 'Daemon offline — status da sandbox indisponível.',
 };

@@ -1,20 +1,20 @@
 import type { Express, Response } from 'express';
-import type { PipelineRunSource, ProjectPipelineState } from '@open-design/contracts';
+import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunSource, ProjectPipelineState, TargetPlatform, WorkflowTerminal } from '@open-design/contracts';
 
 import { getProject, getProjectPipelineState, insertProject, listProjects } from './db.js';
 import {
   DEFAULT_WORKFLOW_ID,
   WORKFLOWS,
   computeActive,
-  deriveStateFromKgsFiles,
   deriveStateFromLocalFiles,
   getPipelineDef,
   getWorkflow,
   listPipelineStatus,
   mergePipelineState,
 } from './pipelines.js';
-import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import type { RouteDeps } from './server-context.js';
+import { readAppConfig } from './app-config.js';
+import { publishPipelineEvaluation, readPipelineEvaluations } from './feedback.js';
 
 // A pipeline's "project" is a KGS app: either pulled from the central KGS
 // (`od kg pull`, metadata.source === 'kg-pull') OR created fresh for pipelines
@@ -54,11 +54,20 @@ export function parseRunSource(raw: unknown): PipelineRunSource | undefined {
   throw new Error('source.kind must be "confluence" or "bas"');
 }
 
+// Nguồn BAS (KG document) của pipeline 1 đang KHÓA BẢO TRÌ (2026-07): card
+// picker bị disable trên UI (RunInputModal), CLI chặn `--source bas`, và mọi
+// run mang source.kind === 'bas' bị từ chối 503 tại cả hai route dưới đây
+// (fail-closed — client cũ/gọi thẳng API cũng không lách được). Mở lại: gỡ cờ
+// này + hai mirror ở cli.ts và RunInputModal.
+const BAS_SOURCE_LOCKED = true;
+const BAS_LOCKED_MSG =
+  'Nguồn BAS đang bảo trì — chọn trang Confluence (hoặc nhập JIRA key/JQL) cho bước Docs.';
+
 // The pipelines capability has no scheduler/service of its own (unlike routines):
 // runs are manual and one-shot. The route layer validates project + gating and
 // delegates the actual conversation-seeding run to `ctx.pipelines.runPipeline`,
 // a closure wired in server.ts that has access to design.runs + startChatRun.
-export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines'> {}
+export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines' | 'paths'> {}
 
 export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutesDeps) {
   const { db } = ctx;
@@ -68,18 +77,15 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // signal any device sees after a pull). Media unreachable → fall back to local.
   const loadMergedState = async (projectId: string): Promise<ProjectPipelineState> => {
     const local = getProjectPipelineState(db, projectId) as ProjectPipelineState;
-    // "Done" = the stage's output files exist — on local disk (offline-safe,
-    // covers outputs produced/pulled locally) OR in the media-service file store
-    // (cross-device). Both feed one file-derived state; mergePipelineState still
-    // preserves a local in-flight 'running' (it never overrides a running stage).
+    // "Done" is derived from THIS DEVICE'S LOCAL state only: a stage is done when
+    // its output files exist in the local cwd (or local run metadata says so).
+    // The media/KGS store is deliberately NOT consulted — a stage whose output is
+    // only on the store shows "not started" until the user pulls it into local
+    // (Pull all / running a downstream stage auto-pulls its inputs), at which
+    // point the local files flip it to done. This makes a local re-run's clear
+    // reflect immediately (no stale store copy keeping a reset stage "done").
     const localPaths = await ctx.pipelines.localOutputs(projectId).catch(() => [] as string[]);
     const fileState: ProjectPipelineState = deriveStateFromLocalFiles(localPaths);
-    try {
-      const files = await new MediaClient(mediaConfigFromEnv()).listFiles(projectId);
-      Object.assign(fileState, deriveStateFromKgsFiles(files));
-    } catch {
-      // media-service unreachable — local file-derived done-state still applies.
-    }
     return mergePipelineState(local, fileState);
   };
 
@@ -96,7 +102,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     // parallel and fall back to local-only on failure (loadMergedState swallows
     // KGS errors).
     const projects = await Promise.all(
-      kgsProjects.map(async (p: { id: string; name: string }) => {
+      kgsProjects.map(async (p: { id: string; name: string; metadata?: Record<string, unknown> }) => {
         const state = await loadMergedState(p.id);
         const done = wf.pipelineIds.reduce(
           (n, id) => (state[id]?.status === 'succeeded' ? n + 1 : n),
@@ -106,7 +112,19 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           (n, id) => (state[id]?.status === 'running' || state[id]?.status === 'queued' ? n + 1 : n),
           0,
         );
-        return { id: p.id, name: p.name, done, total, running };
+        // Studio config (mirrored into metadata on pull): Run prefills the
+        // Confluence link + design system from it (per-run override allowed).
+        const sc = p.metadata?.studioConfig;
+        const config =
+          sc && typeof sc === 'object' && !Array.isArray(sc)
+            ? (sc as {
+                confluencePages?: Array<{ id?: string; title?: string; url?: string }>;
+                designSystemId?: string;
+                basDocumentId?: string;
+                basDocumentTitle?: string;
+              })
+            : undefined;
+        return { id: p.id, name: p.name, done, total, running, ...(config ? { config } : {}) };
       }),
     );
     res.json({ projects });
@@ -117,36 +135,14 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     res.json({ workflows: WORKFLOWS, defaultWorkflowId: DEFAULT_WORKFLOW_ID });
   });
 
-  // POST /api/pipelines/projects { projectId, name } — create a NEW pipeline
-  // project (id IS the KGS project_id). Marked metadata.kind='pipeline' so it
-  // shows in the selector and can run pipelines (starting at jira-ingest). Use
-  // this for a brand-new product; use `od kg pull <id>` to bring in one that
-  // already has data in KGS.
-  app.post('/api/pipelines/projects', (req, res) => {
-    const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId.trim() : '';
-    const name = typeof req.body?.name === 'string' && req.body.name.trim()
-      ? req.body.name.trim()
-      : projectId;
-    if (!/^[A-Za-z0-9._-]{1,128}$/.test(projectId)) {
-      return res.status(400).json({
-        error: 'invalid project id (allowed: A-Z a-z 0-9 . _ - , max 128). This is the KGS project_id.',
-      });
-    }
-    if (getProject(db, projectId)) {
-      return res.status(409).json({ error: `project "${projectId}" already exists` });
-    }
-    const now = Date.now();
-    insertProject(db, {
-      id: projectId,
-      name,
-      skillId: null,
-      designSystemId: null,
-      pendingPrompt: null,
-      metadata: { kind: 'pipeline' },
-      createdAt: now,
-      updatedAt: now,
+  // POST /api/pipelines/projects đã GỠ (2026-07): dự án khai sinh ở Pipeline
+  // Studio (identity + media project.json + workspace KGS); open-design chỉ
+  // pull về (`od kg pull-all` tạo project row với source kg-pull). Trả 410 để
+  // client cũ nhận thông báo rõ thay vì 404 mù.
+  app.post('/api/pipelines/projects', (_req, res) => {
+    res.status(410).json({
+      error: 'tạo dự án đã chuyển sang Pipeline Studio — tạo ở đó rồi dùng `od kg pull-all` để kéo về',
     });
-    res.status(201).json({ id: projectId, name });
   });
 
   // GET /api/pipelines?projectId=... — the docs→UI pipeline list for a project,
@@ -160,6 +156,62 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       ?? getWorkflow(DEFAULT_WORKFLOW_ID)!;
     const state = await loadMergedState(projectId);
     res.json({ projectId, workflowId: wf.id, pipelines: listPipelineStatus(state, wf.pipelineIds) });
+  });
+
+  app.get('/api/pipelines/feedback', (req, res) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+    void (async () => {
+      try {
+        const config = await readAppConfig(ctx.paths.RUNTIME_DATA_DIR);
+        const user = config.feedbackUsername?.trim() || config.installationId || 'unknown';
+        res.json({ feedback: await readPipelineEvaluations(projectId, user) });
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
+  app.post('/api/pipelines/feedback', async (req, res) => {
+    const body = req.body as Partial<{
+      projectId: string; workflowId: string; pipelineId: string; runId: string;
+      rating: PipelinePulseRating; issues: PipelinePulseIssue[]; comment: string;
+      surveyKind: 'pulse' | 'deep'; answers: Record<string, unknown>;
+    }>;
+    const ratings = new Set<PipelinePulseRating>(['ready', 'minor_edits', 'major_edits', 'unusable']);
+    const issueAllowlist = new Set<PipelinePulseIssue>(['run_error', 'wrong_business', 'missing_cases', 'low_quality', 'too_slow', 'other']);
+    if (!body.projectId || !body.workflowId || !body.pipelineId || !body.runId || !body.rating) {
+      return res.status(400).json({ error: 'projectId, workflowId, pipelineId, runId and rating are required' });
+    }
+    if (!getProject(db, body.projectId)) return res.status(404).json({ error: 'project not found' });
+    if (!ratings.has(body.rating)) return res.status(400).json({ error: 'invalid rating' });
+    const issues = Array.isArray(body.issues)
+      ? Array.from(new Set(body.issues.filter((issue): issue is PipelinePulseIssue => issueAllowlist.has(issue))))
+      : [];
+    if ((body.rating === 'major_edits' || body.rating === 'unusable') && issues.length === 0) {
+      return res.status(400).json({ error: 'at least one issue is required for this rating' });
+    }
+    try {
+      const config = await readAppConfig(ctx.paths.RUNTIME_DATA_DIR);
+      const user = config.feedbackUsername?.trim() || config.installationId || 'unknown';
+      const comment = body.comment?.trim().slice(0, 2000);
+      const answers = body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers)
+        ? body.answers : undefined;
+      const feedback = await publishPipelineEvaluation(body.projectId, user, {
+        projectId: body.projectId,
+        workflowId: body.workflowId,
+        pipelineId: body.pipelineId,
+        runId: body.runId,
+        rating: body.rating,
+        issues,
+        surveyKind: body.surveyKind === 'deep' ? 'deep' : 'pulse',
+        ...(comment ? { comment } : {}),
+        ...(answers ? { answers } : {}),
+      });
+      res.status(201).json({ feedback });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   // POST /api/pipelines/pull-files { projectId } — regenerate the project's
@@ -200,6 +252,175 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
   });
 
+  // GET /api/pipelines/history?projectId= — project changelog: published
+  // versions (store `_v/` snapshots indexed by changelog.json) + machine-local
+  // .odhistory commits, newest first.
+  app.get('/api/pipelines/history', async (req, res) => {
+    try {
+      const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+      res.json({ ok: true, ...(await ctx.pipelines.history(projectId)) });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // POST /api/pipelines/history/restore { projectId, verId? | commit?, paths? }
+  // — rewind the cwd to a published version (downloads `_v/<verId>/…`) or a
+  // local commit. The pre-restore state is committed first, so this is safe.
+  app.post('/api/pipelines/history/restore', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+      const verId = typeof req.body?.verId === 'string' ? req.body.verId : undefined;
+      const commit = typeof req.body?.commit === 'string' ? req.body.commit : undefined;
+      if (!verId && !commit) return res.status(400).json({ error: 'verId hoặc commit là bắt buộc' });
+      const paths = Array.isArray(req.body?.paths)
+        ? (req.body.paths as unknown[]).filter((p): p is string => typeof p === 'string')
+        : undefined;
+      const stage = typeof req.body?.stage === 'string' && req.body.stage ? req.body.stage : undefined;
+      const result = await ctx.pipelines.restoreHistory(projectId, {
+        ...(verId ? { verId } : {}),
+        ...(commit ? { commit } : {}),
+        ...(paths ? { paths } : {}),
+        ...(stage ? { stage } : {}),
+      });
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // POST /api/pipelines/react-build { projectId } — build (or rebuild) the
+  // ui-react app from its synced sources. dist/ is never synced
+  // (PipelineDef.syncExclude), so this is how a device that pulled a project
+  // gets a previewable app: build.sh reseeds the scaffold + runs tsc+vite in
+  // the shared toolkit container. Requires Docker on this machine.
+  app.post('/api/pipelines/react-build', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const project = getProject(db, projectId);
+      if (!project) return res.status(404).json({ error: 'project not found' });
+      const result = await ctx.pipelines.buildReact(projectId);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      // Build failures carry the tsc/vite tail — surface it so the UI/CLI can
+      // show WHY instead of a bare 500.
+      res.status(422).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // ── UX knowledge base (media-store backed, ux-research stage) ─────────────
+  // GET /api/ux-kb/status — which KB the next ux-research run will use
+  // (env override / media cache / home folder / none).
+  app.get('/api/ux-kb/status', async (_req, res) => {
+    try {
+      res.json(await ctx.pipelines.uxKbStatus());
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // POST /api/ux-kb/push { dir? } — upload a local KB folder to the media
+  // store (content-hash sync; NN/g full-text article cache stays local by
+  // design). Every machine's next ux-research run picks the new set up.
+  app.post('/api/ux-kb/push', async (req, res) => {
+    try {
+      const dir = typeof req.body?.dir === 'string' ? req.body.dir : undefined;
+      res.json(await ctx.pipelines.uxKbPush(dir));
+    } catch (err: any) {
+      res.status(422).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // POST /api/pipelines/react-demo { projectId } — Playwright auto-demo of the
+  // BUILT react app: derive use cases from flow.json, drive the real app, and
+  // record video + per-step screenshots under react/prototype-demo/. 422 with
+  // the runner tail on failure (missing dist/flow, playwright env, dead click).
+  app.post('/api/pipelines/react-demo', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const result = await ctx.pipelines.buildReactDemo(projectId);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(422).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // POST /api/pipelines/run-all — run the WHOLE workflow sequentially with no
+  // per-stage review (the "Run full workflow" button / `od pipeline run-all`).
+  // The daemon chains the stages in the background — each stage is a normal
+  // run; a success auto-starts the next. 409 when a chain is already in flight
+  // for this project or (with skipSucceeded) nothing is left to run. Progress
+  // surfaces through the normal per-stage statuses (GET /api/pipelines).
+  app.post('/api/pipelines/run-all', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const project = getProject(db, projectId);
+      if (!project) return res.status(404).json({ error: 'project not found' });
+      if (!isKgsProject(project)) {
+        return res.status(400).json({
+          error: 'project is not a KGS app; pull it first with `od kg pull <project-id>`',
+        });
+      }
+      const workflowId = typeof req.body?.workflowId === 'string' ? req.body.workflowId : undefined;
+      const rawTerminal = req.body?.terminal;
+      if (
+        rawTerminal !== undefined &&
+        rawTerminal !== 'ui-html' &&
+        rawTerminal !== 'ui-react' &&
+        rawTerminal !== 'both'
+      ) {
+        return res.status(400).json({ error: "terminal must be 'ui-html', 'ui-react' or 'both'" });
+      }
+      const input = typeof req.body?.input === 'string' ? req.body.input : undefined;
+      let source: PipelineRunSource | undefined;
+      try {
+        source = parseRunSource(req.body?.source);
+      } catch (err: any) {
+        return res.status(400).json({ error: String(err?.message ?? err) });
+      }
+      if (BAS_SOURCE_LOCKED && source?.kind === 'bas') {
+        return res.status(503).json({ error: BAS_LOCKED_MSG });
+      }
+      const rawDesignSystemId = req.body?.designSystemId;
+      const designSystemId =
+        typeof rawDesignSystemId === 'string'
+          ? rawDesignSystemId
+          : rawDesignSystemId === null
+            ? null
+            : undefined;
+      const rawPlatform = req.body?.platform;
+      if (rawPlatform !== undefined && rawPlatform !== 'mobile' && rawPlatform !== 'web') {
+        return res.status(400).json({ error: "platform must be 'mobile' or 'web'" });
+      }
+      const result = await ctx.pipelines.runWorkflowAll(projectId, {
+        ...(workflowId !== undefined ? { workflowId } : {}),
+        ...(rawTerminal !== undefined ? { terminal: rawTerminal as WorkflowTerminal } : {}),
+        ...(input !== undefined ? { input } : {}),
+        ...(source !== undefined ? { source } : {}),
+        ...(designSystemId !== undefined ? { designSystemId } : {}),
+        ...(rawPlatform !== undefined ? { platform: rawPlatform as TargetPlatform } : {}),
+        skipSucceeded: req.body?.skipSucceeded === true,
+        ...(req.body?.followLinks === false ? { followLinks: false } : {}),
+      });
+      res.status(202).json(result);
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      const status = /already in progress|nothing to run/i.test(msg)
+        ? 409
+        : /Unknown workflow/i.test(msg)
+          ? 404
+          : 500;
+      res.status(status).json({ error: msg });
+    }
+  });
+
   // POST /api/pipelines/:id/run { projectId } — seed a new conversation in the
   // project with this pipeline's skill active and start the run. 409 if the
   // pipeline is not active yet (its prerequisites have not all succeeded).
@@ -229,6 +450,9 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       } catch (err: any) {
         return res.status(400).json({ error: String(err?.message ?? err) });
       }
+      if (BAS_SOURCE_LOCKED && source?.kind === 'bas') {
+        return res.status(503).json({ error: BAS_LOCKED_MSG });
+      }
       // Per-run design system (ui-html picker). string → use it; null → explicit
       // "none" (suppress the app-config default); absent → inherit the default.
       const rawDesignSystemId = req.body?.designSystemId;
@@ -238,7 +462,23 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           : rawDesignSystemId === null
             ? null
             : undefined;
-      const start = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId);
+      // Target platform (UX-stage picker / CLI --platform). Only 'mobile' |
+      // 'web' pass through; absent → the skill's default (mobile).
+      const rawPlatform = req.body?.platform;
+      if (rawPlatform !== undefined && rawPlatform !== 'mobile' && rawPlatform !== 'web') {
+        return res.status(400).json({ error: "platform must be 'mobile' or 'web'" });
+      }
+      const platform = rawPlatform as TargetPlatform | undefined;
+      // RE-RUN clear scope (UI re-run dialog / CLI --reset-downstream). Only
+      // 'stage' | 'downstream' pass; absent → 'stage' (clear this stage only).
+      const rawScope = req.body?.resetScope;
+      if (rawScope !== undefined && rawScope !== 'stage' && rawScope !== 'downstream') {
+        return res.status(400).json({ error: "resetScope must be 'stage' or 'downstream'" });
+      }
+      const resetScope = rawScope as 'stage' | 'downstream' | undefined;
+      // Docs link-follow: only an explicit false disables it (default on).
+      const followLinks = req.body?.followLinks === false ? false : undefined;
+      const { completion: _completion, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId, platform, resetScope, followLinks);
       res.status(202).json(start);
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
@@ -266,6 +506,20 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     try {
       const features = await ctx.pipelines.bas.listFeatures(req.params.id);
       res.json({ documentId: req.params.id, features });
+    } catch (err: any) {
+      res.status(502).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // GET /api/pipelines/confluence/pages?q=… — tìm trang Confluence theo tên
+  // cho picker của modal Run pipeline 1 (như bên pipeline-studio). q < 2 ký
+  // tự → [] không gọi upstream.
+  app.get('/api/pipelines/confluence/pages', async (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (q.length < 2) return res.json({ pages: [] });
+    try {
+      const pages = await ctx.pipelines.bas.searchConfluencePages(q);
+      res.json({ pages });
     } catch (err: any) {
       res.status(502).json({ error: String(err?.message ?? err) });
     }

@@ -1571,4 +1571,19 @@ export const it: Dict = {
   'liveArtifact.viewer.code.loading': 'Caricamento codice…',
   'liveArtifact.viewer.code.unavailable': 'Il codice non è ancora disponibile.',
   'liveArtifact.viewer.code.empty': 'Questo file di codice è vuoto.',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'Sandbox',
+  'assistant.sandboxedTitle': 'Questa esecuzione è avvenuta in una sandbox Docker isolata',
+  'settings.sandboxTitle': 'Sandbox agente',
+  'settings.sandboxHint': 'Esegue gli agenti di pipeline abilitati in un container Docker isolato. Richiede Docker/OrbStack.',
+  'settings.sandboxEnabled': 'Sandbox delle esecuzioni {runtimes} per le skill: {skills}',
+  'settings.sandboxDocker': 'Motore Docker',
+  'settings.sandboxImage': 'Immagine sandbox',
+  'settings.sandboxAuth': 'Login Claude (volume auth)',
+  'settings.sandboxActiveRuns': 'Esecuzioni sandbox attive',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': 'mancante',
+  'settings.sandboxRunCmd': 'esegui: {cmd}',
+  'settings.sandboxDaemonOffline': 'Daemon offline — stato sandbox non disponibile.',
 };

@@ -46,17 +46,16 @@ on `/customer-journey`, scoped to the project.
 
 ## Workflow (do these in order)
 
-### 0. Read the input (docs MD is the primary source)
-Pick the input in this order:
-1. **Docs MD (primary — `docs-to-html` workflow, P2):** read every Markdown file
-   under `./docs/` (e.g. `./docs/confluence/**/*.md`, `./docs/jira/**/*.md`).
-   These product docs ARE your source of truth — derive the actors, the to-be
-   journeys, and each stage (with emotion / pain points) directly from them. This
-   pipeline runs straight after docs ingest, with no feature-analysis upstream.
-2. **Feature manifest (`docs-to-ui` workflow):** if `./features/_index.json`
-   exists, read the manifest + each `./features/<Feature Name>.md` and let the
-   features shape the journey (stories → stages). Cross-reference the docs MD too.
-3. **Ad-hoc:** if neither is present, take the journey from the user's request.
+### 0. Read the input (docs MD is the source)
+The docs→UI workflow is `docs → cj → ux`: this pipeline runs straight after docs
+ingest, with NO feature-analysis upstream and NO `./features/` folder — do not
+look for one.
+1. **Docs MD (primary):** read every Markdown file under `./docs/` (e.g.
+   `./docs/confluence/**/*.md`, `./docs/jira/**/*.md`). These product docs ARE
+   your source of truth — derive the actors, the to-be journeys, and each stage
+   (with emotion / pain points) directly from them.
+2. **Ad-hoc:** if no docs are present at all, take the journey from the user's
+   request.
 
 Whichever input you use, you MUST capture the **key source text** for each stage
 in its `sources[]` (next section) — short verbatim excerpts from the MD that

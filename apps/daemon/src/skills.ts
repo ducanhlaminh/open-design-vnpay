@@ -438,6 +438,9 @@ function withSkillRootPreamble(body: string, dir: string): string {
     absoluteGuidance,
     "> Either form resolves to the same file; the relative form keeps you",
     "> inside the project working directory, which is preferred.",
+    "> If you are running inside the od-agent sandbox container (working",
+    "> directory `/work/app`), ONLY the relative form exists — the absolute",
+    "> fallback is a HOST path that does not exist in the container.",
     ...(referencedFiles.length > 0
       ? [
           ">",

@@ -652,6 +652,21 @@ export interface Dict {
   'settings.mcpCapabilityDefault': string;
   'settings.mcpRunningNote': string;
 
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': string;
+  'assistant.sandboxedTitle': string;
+  'settings.sandboxTitle': string;
+  'settings.sandboxHint': string;
+  'settings.sandboxEnabled': string;
+  'settings.sandboxDocker': string;
+  'settings.sandboxImage': string;
+  'settings.sandboxAuth': string;
+  'settings.sandboxActiveRuns': string;
+  'settings.sandboxOk': string;
+  'settings.sandboxMissing': string;
+  'settings.sandboxRunCmd': string;
+  'settings.sandboxDaemonOffline': string;
+
   // Notifications (settings + system notifications)
   'settings.notifications': string;
   'settings.notificationsHint': string;
@@ -724,7 +739,6 @@ export interface Dict {
   'entry.navPlugins': string;
   'entry.navDesignSystems': string;
   'entry.navIntegrations': string;
-  'entry.navRemoteRegistry': string;
   'workspaceTabs.project': string;
   'workspaceTabs.pluginDetails': string;
   'workspaceTabs.marketplace': string;
@@ -1484,10 +1498,6 @@ export interface Dict {
   'designs.filterAria': string;
   'designs.searchPlaceholder': string;
   'designs.emptyNoProjects': string;
-  'designs.group.unassigned': string;
-  'home.kgScope.label': string;
-  'home.kgScope.help': string;
-  'home.kgScope.none': string;
   'designs.emptyNoMatch': string;
   'designs.deleteTitle': string;
   'designs.deleteConfirm': string;
@@ -1649,7 +1659,6 @@ export interface Dict {
 
   // Project view / chat pane / composer
   'project.backToProjects': string;
-  'project.kgScopeTitle': string;
   'project.metaFreeform': string;
   'project.customInstructions': string;
   'project.customInstructionsPlaceholder': string;
@@ -1925,17 +1934,6 @@ export interface Dict {
   'fileViewer.reloadDisk': string;
   'fileViewer.copy': string;
   'fileViewer.copyTitle': string;
-  'fileViewer.pushToKg': string;
-  'fileViewer.pushToKgTitle': string;
-  'fileViewer.pushToKgProject': string;
-  'fileViewer.pushToKgProjectLocked': string;
-  'fileViewer.pushToKgNoProjects': string;
-  'fileViewer.pushToKgInvalid': string;
-  'fileViewer.pushToKgPickProject': string;
-  'fileViewer.specPreview': string;
-  'fileViewer.pushToKgRunning': string;
-  'fileViewer.pushToKgDone': string;
-  'fileViewer.pushToKgFailed': string;
   'fileViewer.saveDisabled': string;
   'fileViewer.save': string;
   'fileViewer.preview': string;

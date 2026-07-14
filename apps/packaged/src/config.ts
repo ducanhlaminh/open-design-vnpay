@@ -62,6 +62,21 @@ export type RawPackagedConfig = {
   // mcp-atlassian server on a fresh install. Embedded in the bundle.
   atlassianJiraToken?: string;
   atlassianConfluenceToken?: string;
+  // Agent-in-sandbox defaults baked by tools/pack (OD_SANDBOX_DEFAULT /
+  // OD_SANDBOX_SKILLS at packaging time); forwarded to the daemon spawn env.
+  // Apply only while the user has no persisted sandbox prefs.
+  sandboxDefault?: string;
+  sandboxSkills?: string;
+  // Google SSO + preview-identity auth baked by tools/pack (SESSION_SECRET/
+  // GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/IDENTITY_URL/OD_AUTH_DOMAIN_LOCK).
+  // Forwarded to the daemon spawn env so the packaged app runs with Google
+  // login + membership-scoped pull. Secrets embedded in the bundle — nội bộ,
+  // rotate được.
+  authSessionSecret?: string;
+  googleClientId?: string;
+  googleClientSecret?: string;
+  identityUrl?: string;
+  authDomainLock?: string;
   webSidecarEntryRelative?: string;
   webStandaloneRoot?: string;
   webOutputMode?: string;
@@ -88,6 +103,13 @@ export type PackagedConfig = {
   mediaUserRole: string | null;
   atlassianJiraToken: string | null;
   atlassianConfluenceToken: string | null;
+  sandboxDefault: string | null;
+  sandboxSkills: string | null;
+  authSessionSecret: string | null;
+  googleClientId: string | null;
+  googleClientSecret: string | null;
+  identityUrl: string | null;
+  authDomainLock: string | null;
   webSidecarEntry: string | null;
   webStandaloneRoot: string | null;
   webOutputMode: PackagedWebOutputMode;
@@ -221,6 +243,13 @@ export async function readPackagedConfig(): Promise<PackagedConfig> {
     mediaUserRole: cleanOptionalString(raw.mediaUserRole),
     atlassianJiraToken: cleanOptionalString(raw.atlassianJiraToken),
     atlassianConfluenceToken: cleanOptionalString(raw.atlassianConfluenceToken),
+    sandboxDefault: cleanOptionalString(raw.sandboxDefault),
+    sandboxSkills: cleanOptionalString(raw.sandboxSkills),
+    authSessionSecret: cleanOptionalString(raw.authSessionSecret),
+    googleClientId: cleanOptionalString(raw.googleClientId),
+    googleClientSecret: cleanOptionalString(raw.googleClientSecret),
+    identityUrl: cleanOptionalString(raw.identityUrl),
+    authDomainLock: cleanOptionalString(raw.authDomainLock),
     webSidecarEntry,
     webStandaloneRoot,
     webOutputMode,

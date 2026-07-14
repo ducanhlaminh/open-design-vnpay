@@ -1,7 +1,7 @@
 ---
 name: html-interactive-prototype
 description: |
-  Terminal step of the docs → HTML prototype workflow (the `ui-html` pipeline).
+  Terminal UI-Spec option of the docs-to-ui workflow (the `ui-html` pipeline — HTML prototype output).
   Read the UX Spec (S_SCREEN_SPEC screens + components produced by the `ux-spec`
   pipeline) and render EACH screen as a self-contained, CLICKABLE prototype:
   plain HTML + hand-written CSS + a little vanilla JS for real interactivity
@@ -43,10 +43,16 @@ embeds one-per-frame via `<iframe srcdoc>`.
   with `id, name, screen_type, screen_intent, layout, primary_actor,
   permissions, navigation_group, components[]`; each component has
   `component_type, label, order, required, data_type, semantic_type`.
-- **Input (context, when present):** `./features/` and `./*-customer-journey.json`
-  — use the customer journey to decide the **navigation flow** between screens
-  (which screen a button goes to). If no UX Spec exists, stop and tell the user
-  to run **UX Spec** first.
+  - **Overlay screens** (`overlay_kind` = `dialog`/`drawer`/`sheet` +
+    `overlay_of`) do NOT get their own `<slug>.html` page — render them as an
+    in-page **modal / slide-in drawer / bottom sheet** (backdrop + panel, JS
+    toggled) ON the `overlay_of` screen's page, opened by that screen's trigger.
+    A GLOBAL overlay (`overlay_of` null, e.g. the nav drawer) is the same
+    drawer/menu on every page, opened by the header hamburger.
+- **Input (context, when present):** the customer journey
+  (`./*-customer-journey.json` / `./*-cj.json` or `./customer-journey/`) — use it
+  to decide the **navigation flow** between screens (which screen a button goes
+  to). If no UX Spec exists, stop and tell the user to run **UX Spec** first.
 - **Output:** one file per screen `./prototype/<slug>.html` (self-contained) plus
   `./prototype/index.html` (a hub linking every screen). `<slug>` = the screen
   `id` lower-cased (or a kebab of `name`). The ONLY other allowed file is a
@@ -120,6 +126,12 @@ Structure per `layout` — **full-bleed, no phone bezel**:
   iframe, so it naturally reads as a mobile screen without a fake device).
 - `web` → same full-bleed root, but constrain `.content` to a readable
   **centered max-width** (e.g. `min(100%, 960px)`). Still no `.device`.
+  Prefer web patterns: a data **table** where the spec's list is tabular,
+  sidebar/top navigation instead of bottom tabs, multi-column forms.
+- **Declare the layout in every file's `<head>`**:
+  `<meta name="od-layout" content="mobile">` or `content="web"` (copy the
+  screen's `layout` from the UX Spec). The preview canvas reads this marker to
+  size each frame (phone vs desktop) — a missing marker falls back to mobile.
 
 > The root must NOT have a fixed height or a hard-coded phone size — a fixed
 > shell with a `flex:1` child collapses when handed off (e.g. Copy-to-Figma).

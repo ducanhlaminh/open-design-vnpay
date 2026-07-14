@@ -361,10 +361,28 @@ export function App() {
   // Mandatory feedback-username gate: once the daemon config has hydrated and
   // onboarding is done, block the app until the user has set a display name
   // (feedbackUsername) used to attribute their shared feedback prompts.
-  const showFeedbackUsernameGate =
+  // With Google SSO active, the session identity (set by AuthGate before the
+  // app mounts) fills it silently — the gate only renders for installs that
+  // came in without a session.
+  const ssoSessionName = (
+    window as Window & { __odSessionUser?: { email?: string; name?: string } }
+  ).__odSessionUser?.name?.trim() ?? (
+    window as Window & { __odSessionUser?: { email?: string; name?: string } }
+  ).__odSessionUser?.email?.trim() ?? '';
+  const feedbackUsernameMissing =
     daemonConfigLoaded &&
     config.onboardingCompleted === true &&
     !(config.feedbackUsername ?? '').trim();
+  const showFeedbackUsernameGate = feedbackUsernameMissing && !ssoSessionName;
+  useEffect(() => {
+    if (!feedbackUsernameMissing || !ssoSessionName) return;
+    // One-shot: persisting feedbackUsername flips feedbackUsernameMissing off.
+    void handleConfigPersist({
+      ...latestPersistedConfigRef.current,
+      feedbackUsername: ssoSessionName,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleConfigPersist is a stable useCallback; ref is stable.
+  }, [feedbackUsernameMissing, ssoSessionName]);
   useEffect(() => {
     const body = activeProjectId
       ? { projectId: activeProjectId, fileName: activeFileName }

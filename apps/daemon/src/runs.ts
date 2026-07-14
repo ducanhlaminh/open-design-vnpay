@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { randomUUID } from 'node:crypto';
+import { killSandboxContainer } from './agent-sandbox.js';
 
 export const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'canceled']);
 
@@ -211,6 +212,14 @@ export function createChatRunService({
           if (run.child && !run.child.killed) run.child.kill('SIGTERM');
         }, graceMs).unref();
       } else if (run.child && !run.child.killed) {
+        // Sandboxed runs: run.child is the docker CLIENT. The attached CLI
+        // proxies SIGTERM into the container, but if the client dies before
+        // the container exits (or gets SIGKILLed later) the container would
+        // linger — kill it by name as well; `docker run --rm` then reaps it
+        // and the client's close path finishes the run normally.
+        if (run.sandboxContainerName) {
+          void killSandboxContainer(run.sandboxContainerName);
+        }
         run.child.kill('SIGTERM');
       } else {
         finish(run, 'canceled', null, 'SIGTERM');
@@ -229,6 +238,12 @@ export function createChatRunService({
         } catch {
           // Process signals below are the shutdown fallback.
         }
+      }
+      // Sandboxed runs: also kill the container by name — SIGKILL on the
+      // docker client below would otherwise leave the container running
+      // (the startup orphan sweep is the backstop, not the plan).
+      if (run.sandboxContainerName) {
+        void killSandboxContainer(run.sandboxContainerName);
       }
       killChild(run, 'SIGTERM');
       finish(run, 'canceled', null, 'SIGTERM');

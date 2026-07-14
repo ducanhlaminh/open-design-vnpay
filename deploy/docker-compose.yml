@@ -3,12 +3,9 @@ name: open-design
 services:
   open-design:
     container_name: open-design
-    image: ${OPEN_DESIGN_IMAGE:-vnp/open-design:latest}
+    image: ${OPEN_DESIGN_IMAGE:-docker.io/vanjayak/open-design:latest}
     build:
       context: ..
-      args:
-        NODE_IMAGE: ${NODE_IMAGE:-docker.io/library/node:24-alpine}
-        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-docker.io/library/node:24-alpine}
       dockerfile: deploy/Dockerfile
     restart: always
     environment:
@@ -19,16 +16,8 @@ services:
       OD_PORT: 7456
       OD_WEB_PORT: ${OPEN_DESIGN_PORT:-7456}
       OD_API_TOKEN: ${OD_API_TOKEN:?Please run 'openssl rand -hex 32' to generate one, and set it in your .env file.}
-      # Bifrost LLM proxy — routes OpenAI-compatible and Anthropic-compatible
-      # requests through a single proxy endpoint instead of calling the upstream
-      # providers directly. Both OPENAI_* and ANTHROPIC_* are set so all code
-      # paths (memory extraction, chat, media agents) pick up the same proxy.
-      OPENAI_API_KEY: ${BIFROST_API_KEY:-}
-      OPENAI_BASE_URL: ${BIFROST_URL:-https://b9.openledger.vn/v1}
-      ANTHROPIC_API_KEY: ${BIFROST_API_KEY:-}
-      ANTHROPIC_BASE_URL: ${BIFROST_URL:-https://b9.openledger.vn/v1}
     ports:
-      - "${OPEN_DESIGN_BIND_HOST:-127.0.0.1}:${OPEN_DESIGN_PORT:-7456}:7456"
+      - "127.0.0.1:${OPEN_DESIGN_PORT:-7456}:7456"
     volumes:
       - open_design_data:/app/.od
     read_only: true

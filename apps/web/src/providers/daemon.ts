@@ -563,6 +563,12 @@ async function consumeDaemonRun({
                 skillIds: skillIdsList,
               });
             }
+            // Agent-in-sandbox runs announce themselves on the start payload;
+            // keep it in the event list so the header badge survives reloads
+            // (message events are the only per-run state that persists).
+            if (data.sandboxed === true) {
+              handlers.onAgentEvent({ kind: 'status', label: 'sandboxed' });
+            }
             handlers.onAgentEvent({
               kind: 'status',
               label: 'starting',

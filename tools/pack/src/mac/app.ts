@@ -174,6 +174,13 @@ export function renderMacPackagedConfig(options: {
       ...(options.config.mediaUserRole == null ? {} : { mediaUserRole: options.config.mediaUserRole }),
       ...(options.config.atlassianJiraToken == null ? {} : { atlassianJiraToken: options.config.atlassianJiraToken }),
       ...(options.config.atlassianConfluenceToken == null ? {} : { atlassianConfluenceToken: options.config.atlassianConfluenceToken }),
+      ...(options.config.authSessionSecret == null ? {} : { authSessionSecret: options.config.authSessionSecret }),
+      ...(options.config.googleClientId == null ? {} : { googleClientId: options.config.googleClientId }),
+      ...(options.config.googleClientSecret == null ? {} : { googleClientSecret: options.config.googleClientSecret }),
+      ...(options.config.identityUrl == null ? {} : { identityUrl: options.config.identityUrl }),
+      ...(options.config.authDomainLock == null ? {} : { authDomainLock: options.config.authDomainLock }),
+      ...(options.config.sandboxDefault == null ? {} : { sandboxDefault: options.config.sandboxDefault }),
+      ...(options.config.sandboxSkills == null ? {} : { sandboxSkills: options.config.sandboxSkills }),
       ...(options.usePrebundledStandaloneWeb ? { webSidecarEntryRelative: MAC_PREBUNDLED_WEB_SIDECAR_RELATIVE_PATH } : {}),
       webOutputMode: options.config.webOutputMode,
       // Do NOT bake `namespaceBaseRoot` here. This config is embedded into the

@@ -1745,4 +1745,19 @@ export const ru: Dict = {
   'diagnostics.exporting': 'Экспортирование…',
   'diagnostics.exportSuccess': 'Диагностика сохранена: {path}',
   'diagnostics.exportFailed': 'Не удалось экспортировать диагностику: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'Песочница',
+  'assistant.sandboxedTitle': 'Этот запуск выполнялся в изолированной Docker-песочнице',
+  'settings.sandboxTitle': 'Песочница агента',
+  'settings.sandboxHint': 'Запускает разрешённых агентов пайплайна в изолированном Docker-контейнере. Требуется Docker/OrbStack.',
+  'settings.sandboxEnabled': 'Песочница запусков {runtimes} для скиллов: {skills}',
+  'settings.sandboxDocker': 'Движок Docker',
+  'settings.sandboxImage': 'Образ песочницы',
+  'settings.sandboxAuth': 'Вход Claude (том авторизации)',
+  'settings.sandboxActiveRuns': 'Активные запуски в песочнице',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': 'отсутствует',
+  'settings.sandboxRunCmd': 'выполните: {cmd}',
+  'settings.sandboxDaemonOffline': 'Демон недоступен — статус песочницы неизвестен.',
 };

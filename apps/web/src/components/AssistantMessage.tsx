@@ -451,6 +451,11 @@ export function AssistantMessage({
     | Extract<AgentEvent, { kind: "usage" }>
     | undefined;
   const roleLabel = assistantRoleLabel(message, t);
+  // Set by the daemon's start payload (`sandboxed: true`) when this run was
+  // spawned inside the agent-in-sandbox Docker container.
+  const isSandboxed = events.some(
+    (e) => e.kind === "status" && e.label === "sandboxed"
+  );
   const hasEmptyResponse = events.some(
     (e) => e.kind === "status" && e.label === "empty_response"
   );
@@ -508,6 +513,14 @@ export function AssistantMessage({
     <div className="msg assistant">
       <div className="role">
         <span>{roleLabel}</span>
+        {isSandboxed && (
+          <span
+            className="sandboxed-badge"
+            title={t("assistant.sandboxedTitle")}
+          >
+            {t("assistant.sandboxedBadge")}
+          </span>
+        )}
         <MessageTimestamp message={message} t={t} />
       </div>
       <div className="assistant-flow">
@@ -2199,7 +2212,10 @@ function buildBlocks(events: AgentEvent[]): Block[] {
         ev.label === "starting" ||
         ev.label === "requesting" ||
         ev.label === "thinking" ||
-        ev.label === "empty_response"
+        ev.label === "empty_response" ||
+        // Rendered as a header badge next to the role label, not as a
+        // status block in the flow.
+        ev.label === "sandboxed"
       )
         continue;
       const last = out[out.length - 1];

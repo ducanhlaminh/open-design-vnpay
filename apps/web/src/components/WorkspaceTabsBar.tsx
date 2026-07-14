@@ -4,6 +4,7 @@ import { useT } from '../i18n';
 import { navigate, type EntryHomeView, type Route } from '../router';
 import type { Project } from '../types';
 import { Icon, type IconName } from './Icon';
+import { SsoUserChip } from './SsoUserChip';
 
 type WorkspaceChromeTab =
   | {
@@ -612,6 +613,8 @@ export function WorkspaceTabsBar({ route, projects }: Props) {
         >
           <Icon name="search" size={15} />
         </button>
+        {/* Google SSO avatar — renders nothing when auth is off. */}
+        <SsoUserChip />
         {tabsMenuOpen && typeof document !== 'undefined'
           ? createPortal(
               <div
@@ -773,7 +776,6 @@ function displayTabFor(
     plugins: t('entry.navPlugins'),
     'design-systems': t('entry.navDesignSystems'),
     integrations: t('entry.navIntegrations'),
-    'remote-registry': t('entry.navRemoteRegistry'),
   };
   const entryIcon: Record<EntryHomeView, IconName> = {
     home: 'home',
@@ -784,7 +786,6 @@ function displayTabFor(
     plugins: 'grid',
     'design-systems': 'blocks',
     integrations: 'link',
-    'remote-registry': 'layers-filled',
   };
   return {
     id: tab.id,

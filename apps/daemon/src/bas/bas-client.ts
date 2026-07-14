@@ -234,6 +234,102 @@ export function extractPageId(ref: string): string {
   );
 }
 
+// ── Confluence page search (modal Run pipeline 1 — picker "tìm trang theo
+// tên" như bên pipeline-studio) ──────────────────────────────────────────────
+
+export interface ConfluencePageHit {
+  id: string;
+  title: string;
+  url?: string;
+  space?: string;
+}
+
+export interface ConfluenceCreds {
+  base: string;
+  token: string;
+}
+
+/**
+ * Confluence PAT cho picker tìm trang — MỘT chỗ config duy nhất với agent:
+ *   ① per-user: Settings → MCP servers → server `mcp-atlassian` (env
+ *      CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN — chính là creds agent dùng
+ *      khi chạy pipeline, user sửa được trong UI);
+ *   ② fallback: env của daemon (CONFLUENCE_URL/_PERSONAL_TOKEN — deploy-wide).
+ */
+export async function resolveConfluenceCreds(dataDir: string): Promise<ConfluenceCreds | null> {
+  try {
+    const cfg = await readMcpConfig(dataDir);
+    const server =
+      cfg.servers.find((s) => s.id === 'mcp-atlassian') ??
+      cfg.servers.find((s) => /atlassian/i.test(s.id) || /atlassian/i.test(s.label ?? ''));
+    const env = (server?.env ?? {}) as Record<string, string>;
+    const base = (env.CONFLUENCE_URL ?? '').trim().replace(/\/+$/, '');
+    const token = (env.CONFLUENCE_PERSONAL_TOKEN ?? '').trim();
+    if (base && token) return { base, token };
+  } catch {
+    /* mcp-config unreadable — fall through to env */
+  }
+  const base = (process.env.CONFLUENCE_URL ?? '').trim().replace(/\/+$/, '');
+  const token = (process.env.CONFLUENCE_PERSONAL_TOKEN ?? '').trim();
+  return base && token ? { base, token } : null;
+}
+
+/**
+ * Tìm trang Confluence theo tiêu đề. Hai đường, ưu tiên theo thứ tự:
+ *   ① PAT trực tiếp (env CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN — CQL
+ *      `title~`, verified live với wiki.servicehub.vn);
+ *   ② BAS gateway `confluence_search` (credential Confluence link với tài
+ *      khoản BAS đứng sau token) khi `ep` khả dụng.
+ * Cả hai đều thiếu → throw message cấu hình rõ ràng.
+ */
+export async function searchConfluencePages(
+  ep: BasEndpoint | null,
+  q: string,
+  limit = 25,
+  creds: ConfluenceCreds | null = null,
+): Promise<ConfluencePageHit[]> {
+  if (creds) {
+    const cql = `type=page AND title~"${q.replace(/["\\]/g, ' ').trim()}" order by lastmodified desc`;
+    const url = `${creds.base}/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=${Math.min(Math.max(limit, 1), 50)}&expand=space`;
+    const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` } });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Confluence search HTTP ${res.status}: ${text.slice(0, 200)}`);
+    const body = JSON.parse(text) as {
+      results?: Array<{
+        id?: string;
+        title?: string;
+        space?: { key?: string };
+        _links?: { webui?: string };
+      }>;
+    };
+    return (body.results ?? [])
+      .map((r) => ({
+        id: String(r.id ?? ''),
+        title: r.title ?? String(r.id ?? ''),
+        ...(r._links?.webui ? { url: `${creds.base}${r._links.webui}` } : {}),
+        ...(r.space?.key ? { space: r.space.key } : {}),
+      }))
+      .filter((r) => r.id);
+  }
+  if (!ep) {
+    throw new Error(
+      'Tìm trang Confluence chưa cấu hình — thêm CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN vào server mcp-atlassian trong Settings → MCP (hoặc env daemon / BAS gateway).',
+    );
+  }
+  const client = new BasClient(ep);
+  const payload = await client.callTool('confluence_search', { query: q, limit: Math.min(Math.max(limit, 1), 50) });
+  return asArray(payload)
+    .map((row) => {
+      const links = (row._links ?? {}) as Record<string, unknown>;
+      const id = str(row, 'page_id', 'id', 'content_id');
+      const title = str(row, 'title', 'label', 'name');
+      const url = str(row, 'url', 'webui', 'link') || (typeof links.webui === 'string' ? links.webui : '');
+      const space = str(row, 'space_key', 'space');
+      return { id, title: title || id, ...(url ? { url } : {}), ...(space ? { space } : {}) };
+    })
+    .filter((r) => r.id);
+}
+
 // ── high-level reads used by the routes + run-time prefetch ──────────────────
 
 // Top level of the BAS picker: the KG documents (kg_list_documents returns
@@ -373,6 +469,324 @@ function renderDocumentSubgraph(payload: unknown): string {
   let md = '';
   for (const t of [...byType.keys()].sort((a, b) => rank(a) - rank(b))) {
     md += renderNodeList(titleCase(t), byType.get(t));
+  }
+  return md;
+}
+
+/** Whether `ref` resolves to a Confluence page id (URL carrying /pages/<id>/ or
+ * ?pageId=<id>, or a bare numeric id). Gate for the docs stage's DETERMINISTIC
+ * (no-agent) path: input made only of such refs never touches an LLM. */
+export function looksLikeConfluenceRef(ref: string): boolean {
+  try {
+    extractPageId(ref);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** One deterministically-fetched Confluence page, ready to write into the docs
+ * stage's output tree. `relPath` is unique across the batch (slug collisions
+ * get the page id suffixed). */
+export interface ConfluenceDocPage {
+  pageId: string;
+  title: string;
+  url: string;
+  relPath: string;
+  content: string;
+  /** true → not user-picked: auto-fetched because a seed page links to it. */
+  linked?: boolean;
+}
+
+/** Minimal HTML → Markdown for Confluence `body.view` (rendered HTML). No
+ * dependency on purpose: headings, lists, tables (pipe rows), links, inline
+ * code/bold/italic, code blocks; everything else strips to text. Downstream
+ * consumers are agents + the studio doc viewer — rough-but-clean markdown is
+ * exactly enough. */
+// Named entities Confluence actually emits (Latin-1 letters cover the bulk of
+// Vietnamese accents — ê/à/ó/…; everything beyond Latin-1 arrives as numeric
+// entities, handled generically below).
+const NAMED_ENTITIES: Record<string, string> = {
+  nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
+  agrave: 'à', aacute: 'á', acirc: 'â', atilde: 'ã', auml: 'ä', aring: 'å',
+  egrave: 'è', eacute: 'é', ecirc: 'ê', euml: 'ë',
+  igrave: 'ì', iacute: 'í', icirc: 'î', iuml: 'ï',
+  ograve: 'ò', oacute: 'ó', ocirc: 'ô', otilde: 'õ', ouml: 'ö',
+  ugrave: 'ù', uacute: 'ú', ucirc: 'û', uuml: 'ü',
+  yacute: 'ý', yuml: 'ÿ', ccedil: 'ç', ntilde: 'ñ',
+  Agrave: 'À', Aacute: 'Á', Acirc: 'Â', Atilde: 'Ã', Auml: 'Ä', Aring: 'Å',
+  Egrave: 'È', Eacute: 'É', Ecirc: 'Ê', Euml: 'Ë',
+  Igrave: 'Ì', Iacute: 'Í', Icirc: 'Î', Iuml: 'Ï',
+  Ograve: 'Ò', Oacute: 'Ó', Ocirc: 'Ô', Otilde: 'Õ', Ouml: 'Ö',
+  Ugrave: 'Ù', Uacute: 'Ú', Ucirc: 'Û', Uuml: 'Ü', Yacute: 'Ý', Ccedil: 'Ç', Ntilde: 'Ñ',
+  ldquo: '“', rdquo: '”', lsquo: '‘', rsquo: '’', hellip: '…', ndash: '–', mdash: '—',
+  rarr: '→', larr: '←', bull: '•', middot: '·', deg: '°', times: '×', divide: '÷',
+  copy: '©', reg: '®', trade: '™', laquo: '«', raquo: '»', sect: '§', para: '¶',
+};
+
+export function htmlToMarkdown(html: string, resolveHref?: (href: string) => string): string {
+  const decode = (s: string) =>
+    s
+      .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) => {
+        try { return String.fromCodePoint(parseInt(h, 16)); } catch { return _m; }
+      })
+      .replace(/&#(\d+);/g, (_m, d: string) => {
+        try { return String.fromCodePoint(Number(d)); } catch { return _m; }
+      })
+      .replace(/&([a-zA-Z]+);/g, (m, name: string) => NAMED_ENTITIES[name] ?? m);
+  let s = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '');
+  // Code blocks first so their contents survive untouched.
+  s = s.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_m, code: string) => `\n\`\`\`\n${decode(code.replace(/<[^>]+>/g, ''))}\n\`\`\`\n`);
+  // Inline marks before block handling (block handlers strip remaining tags).
+  s = s.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, '**$2**');
+  s = s.replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, '*$2*');
+  s = s.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`');
+  s = s.replace(/<a [^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, t: string) => {
+    const label = t.replace(/<[^>]+>/g, '').trim();
+    const target = resolveHref ? resolveHref(href) : href;
+    return `[${label || target}](${target})`;
+  });
+  // Tables → REAL GFM tables (header row + `| --- |` separator, cells padded
+  // to a uniform width, pipes escaped) so react-markdown/remark-gfm render
+  // them as tables instead of literal pipe text. Innermost-first loop handles
+  // Confluence's nested tables: each pass converts tables with no <table>
+  // inside, so an outer table sees its inner one already flattened to text.
+  const tableToMd = (tbl: string): string => {
+    const rows: string[][] = [];
+    for (const tr of tbl.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+      const cells = [...tr[1]!.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((c) =>
+        c[1]!.replace(/<[^>]+>/g, ' ').replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim(),
+      );
+      if (cells.length) rows.push(cells);
+    }
+    if (!rows.length) return '\n';
+    const width = Math.max(...rows.map((r) => r.length));
+    const pad = (r: string[]) => [...r, ...Array<string>(Math.max(0, width - r.length)).fill('')];
+    const line = (r: string[]) => `| ${pad(r).join(' | ')} |`;
+    const sep = `| ${Array<string>(width).fill('---').join(' | ')} |`;
+    return `\n${line(rows[0]!)}\n${sep}\n${rows.slice(1).map(line).join('\n')}\n\n`;
+  };
+  // Fixed-point loop (no .test(): a /g regex's lastIndex would desync).
+  for (;;) {
+    const next = s.replace(/<table(?:(?!<table)[\s\S])*?<\/table>/gi, (tbl) => tableToMd(tbl));
+    if (next === s) break;
+    s = next;
+  }
+  s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, l: string, t: string) => `\n${'#'.repeat(Number(l))} ${t.replace(/<[^>]+>/g, '').trim()}\n`);
+  s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_m, t: string) => `- ${t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()}\n`);
+  s = s.replace(/<img [^>]*alt="([^"]+)"[^>]*\/?>/gi, '($1)').replace(/<img[^>]*\/?>/gi, '');
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/<\/(p|div|ul|ol|table|section|article|blockquote)>/gi, '\n\n');
+  s = s.replace(/<[^>]+>/g, '');
+  s = decode(s);
+  return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Direct-PAT page fetch (Data Center REST, same creds the page SEARCH uses —
+ * verified live with wiki.servicehub.vn). Returns the RAW rendered HTML
+ * (`body.view`) — conversion happens later so cross-page links can be
+ * rewritten once every fetched page is known. */
+async function fetchConfluencePageDirect(
+  creds: ConfluenceCreds,
+  pageId: string,
+): Promise<{ title: string; url: string; html: string }> {
+  const res = await fetch(`${creds.base}/rest/api/content/${pageId}?expand=body.view,space`, {
+    headers: { authorization: `Bearer ${creds.token}` },
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Confluence REST ${res.status} for page ${pageId}: ${text.slice(0, 160)}`);
+  const p = JSON.parse(text) as {
+    title?: string;
+    body?: { view?: { value?: string } };
+    _links?: { base?: string; webui?: string };
+  };
+  const url = p._links?.webui
+    ? `${(p._links.base ?? creds.base).replace(/\/+$/, '')}${p._links.webui}`
+    : `${creds.base}/pages/viewpage.action?pageId=${pageId}`;
+  return {
+    title: p.title ?? `Confluence page ${pageId}`,
+    url,
+    html: p.body?.view?.value ?? '',
+  };
+}
+
+/** Wiki-internal page ids referenced by `html`'s links: same wiki host (or a
+ * relative /spaces|/pages href) AND a resolvable page id. Everything else
+ * (JIRA, external sites, anchors) is ignored. */
+export function extractLinkedPageIds(html: string, base: string): string[] {
+  const ids = new Set<string>();
+  for (const m of html.matchAll(/href="([^"]+)"/gi)) {
+    const href = (m[1] ?? '').trim();
+    if (!href) continue;
+    const sameWiki = href.startsWith('/') || href.toLowerCase().startsWith(base.toLowerCase());
+    if (!sameWiki) continue;
+    const idMatch = /\/pages\/(\d+)/.exec(href) ?? /[?&]pageId=(\d+)/.exec(href);
+    if (idMatch) ids.add(idMatch[1]!);
+  }
+  return [...ids];
+}
+
+/** What the deterministic docs fetch authenticates with — direct PAT is
+ * preferred (the SAME creds that power the page search picker); the BAS
+ * gateway's `confluence_fetch_page` is only a fallback because most gateway
+ * deployments have no Confluence credential linked ("tool execution failed"). */
+export interface ConfluenceFetchSource {
+  creds?: ConfluenceCreds | null;
+  ep?: BasEndpoint | null;
+}
+
+// Link-follow crawl bounds: only pages linked DIRECTLY from a seed page
+// (depth 1), and never more than this many pages in total — an unbounded
+// follow could drag half the wiki into ./docs and drown the downstream
+// stages in irrelevant context.
+const FOLLOW_MAX_DEPTH = 1;
+const FOLLOW_MAX_TOTAL = 15;
+
+/** TOOL-ONLY docs fetch (no agent / no LLM): pull each Confluence page as
+ * markdown — direct PAT REST first, gateway `confluence_fetch_page` as the
+ * fallback — shaped as final `docs/confluence/<slug>.md` deliverables (same
+ * frontmatter the agent path produced). Throws on the first unfetchable SEED
+ * page — the docs stage FAILS loudly instead of silently shipping a partial
+ * source set.
+ *
+ * `followLinks` (default true, PAT path only): specs habitually reference
+ * sibling docs (BO specs, shared logic pages). A bounded BFS also fetches the
+ * pages a seed links to (same wiki, depth ≤ FOLLOW_MAX_DEPTH, total ≤
+ * FOLLOW_MAX_TOTAL), and cross-page links between FETCHED pages are rewritten
+ * to relative `./<file>.md` so the doc set reads as one linked bundle. A
+ * linked page that fails to fetch (permissions, deleted) is skipped with a
+ * warning — only seeds are load-bearing. */
+export async function fetchConfluencePages(
+  src: ConfluenceFetchSource,
+  refs: string[],
+  opts: { followLinks?: boolean } = {},
+): Promise<ConfluenceDocPage[]> {
+  if (!src.creds && !src.ep) throw new Error('no Confluence credential (PAT) and no BAS gateway configured');
+  const followLinks = opts.followLinks !== false;
+  const client = src.ep ? new BasClient(src.ep) : null;
+  const fetchViaGateway = async (pageId: string, ref: string) => {
+    if (!client) throw new Error('BAS gateway not configured');
+    const payload = await client.callTool('confluence_fetch_page', { page_id: pageId, format: 'markdown' });
+    const p = ((Array.isArray(payload) ? payload[0] : payload) as Record<string, unknown> | undefined) ?? {};
+    return {
+      title: str(p, 'title', 'name') || `Confluence page ${pageId}`,
+      url: str(p, 'url', 'webui', 'link') || ref,
+      body: str(p, 'markdown', 'content', 'body', 'storage', 'view'),
+    };
+  };
+
+  // ── Pass 1: fetch every page (seeds + bounded link-follow) ────────────────
+  interface RawPage {
+    pageId: string;
+    title: string;
+    url: string;
+    /** Raw body.view HTML (direct fetch) — converted in pass 2. */
+    html?: string;
+    /** Pre-converted markdown (gateway fallback path). */
+    markdown?: string;
+    linked: boolean;
+  }
+  const fetched = new Map<string, RawPage>();
+  const seedIds: string[] = [];
+  for (const ref of refs) {
+    const pageId = extractPageId(ref);
+    if (fetched.has(pageId)) continue;
+    seedIds.push(pageId);
+    if (src.creds) {
+      try {
+        const p = await fetchConfluencePageDirect(src.creds, pageId);
+        fetched.set(pageId, { pageId, ...p, linked: false });
+        continue;
+      } catch (err) {
+        if (!client) throw err;
+        console.warn(`[bas] direct Confluence fetch failed for ${pageId}, falling back to gateway:`, err);
+      }
+    }
+    const gw = await fetchViaGateway(pageId, ref);
+    fetched.set(pageId, { pageId, title: gw.title, url: gw.url, markdown: gw.body, linked: false });
+  }
+  // Bounded BFS over wiki-internal links (direct-PAT only: the gateway path
+  // returns markdown, not reliably parseable for links).
+  if (followLinks && src.creds) {
+    let frontier = seedIds;
+    for (let depth = 1; depth <= FOLLOW_MAX_DEPTH; depth++) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        const page = fetched.get(id);
+        if (!page?.html) continue;
+        for (const linkedId of extractLinkedPageIds(page.html, src.creds.base)) {
+          if (fetched.size >= FOLLOW_MAX_TOTAL) break;
+          if (fetched.has(linkedId)) continue;
+          try {
+            const p = await fetchConfluencePageDirect(src.creds, linkedId);
+            fetched.set(linkedId, { pageId: linkedId, ...p, linked: true });
+            next.push(linkedId);
+          } catch (err) {
+            // Linked pages are best-effort — permissions/deleted pages skip.
+            console.warn(`[bas] linked Confluence page ${linkedId} skipped:`, err);
+          }
+        }
+      }
+      frontier = next;
+      if (fetched.size >= FOLLOW_MAX_TOTAL) {
+        console.warn(`[bas] link-follow stopped at the ${FOLLOW_MAX_TOTAL}-page cap`);
+        break;
+      }
+    }
+  }
+
+  // ── Pass 2: assign files, then convert with cross-page links rewritten ────
+  const pages: ConfluenceDocPage[] = [];
+  const takenPaths = new Set<string>();
+  const relByPageId = new Map<string, string>();
+  const ordered = [...fetched.values()].sort((a, b) => Number(a.linked) - Number(b.linked));
+  for (const p of ordered) {
+    let relPath = `docs/confluence/${slug(p.title)}.md`;
+    if (takenPaths.has(relPath)) relPath = `docs/confluence/${slug(p.title)}-${p.pageId}.md`;
+    takenPaths.add(relPath);
+    relByPageId.set(p.pageId, relPath);
+  }
+  const resolveHref = (href: string): string => {
+    const idMatch = /\/pages\/(\d+)/.exec(href) ?? /[?&]pageId=(\d+)/.exec(href);
+    const rel = idMatch ? relByPageId.get(idMatch[1]!) : undefined;
+    return rel ? `./${rel.split('/').pop()}` : href;
+  };
+  for (const p of ordered) {
+    const body = p.html !== undefined ? htmlToMarkdown(p.html, resolveHref) : (p.markdown ?? '');
+    pages.push({
+      pageId: p.pageId,
+      title: p.title,
+      url: p.url,
+      relPath: relByPageId.get(p.pageId)!,
+      linked: p.linked,
+      content:
+        frontmatter({
+          title: p.title,
+          page_id: p.pageId,
+          url: p.url,
+          source: 'confluence',
+          ...(p.linked ? { fetched_via: 'linked-from-seed' } : {}),
+        }) + (body || '> (empty page body)\n'),
+    });
+  }
+  if (pages.length === 0) throw new Error('Confluence source produced no files');
+  return pages;
+}
+
+/** The `docs/confluence/_index.md` companion of a deterministic docs run —
+ * the per-page table of contents downstream stages (and reviewers) start
+ * from. Seed pages and link-followed pages list in separate groups so it is
+ * obvious what the user picked vs what the crawl pulled in. */
+export function renderConfluenceIndex(pages: ConfluenceDocPage[]): string {
+  const row = (p: ConfluenceDocPage) =>
+    `- [${p.title}](./${p.relPath.split('/').pop()}) — page ${p.pageId} · ${p.url}`;
+  const seeds = pages.filter((p) => !p.linked);
+  const linked = pages.filter((p) => p.linked);
+  let md = `# Tài liệu nguồn (Confluence)\n\n${seeds.map(row).join('\n')}\n`;
+  if (linked.length) {
+    md += `\n## Trang liên kết (tự fetch từ link trong trang nguồn)\n\n${linked.map(row).join('\n')}\n`;
   }
   return md;
 }

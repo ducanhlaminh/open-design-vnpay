@@ -1072,6 +1072,27 @@ export function FileWorkspace({
             commentPortalId={commentPortalId}
             onCommentModeChange={onCommentModeChange}
           />
+        ) : activeTab && activeTab !== DESIGN_FILES_TAB && activeTab !== DESIGN_SYSTEM_TAB ? (
+          // The tab names a file that is NOT in the project right now —
+          // typically a pipeline re-run just cleared the stage's outputs (a
+          // Quick-result / deep-link click raced the wipe), or the file was
+          // produced after the list was last fetched. Without this branch the
+          // pane went silently blank and read as "opened the wrong file".
+          <div className="viewer-empty" style={{ display: 'grid', gap: 10, placeItems: 'center', padding: 24 }}>
+            <div style={{ maxWidth: 520, textAlign: 'center', lineHeight: 1.6 }}>
+              File <code>{activeTab}</code> hiện không có trong dự án — thường do stage vừa được{' '}
+              <strong>chạy lại</strong> nên output cũ đã bị dọn để sinh bản mới (chạy xong sẽ có bản
+              mới), hoặc danh sách file chưa kịp cập nhật.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" className="pl-btn pl-btn--primary" onClick={() => void onRefreshFiles()}>
+                Tải lại danh sách
+              </button>
+              <button type="button" className="pl-btn" onClick={() => closeTab(activeTab)}>
+                Đóng tab này
+              </button>
+            </div>
+          </div>
         ) : (
           <div className="viewer-empty">
             {t('workspace.openFromDesignFiles')}{' '}

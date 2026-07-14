@@ -1,0 +1,128 @@
+.root {
+  height: 100%;
+  min-height: 0;
+  background: var(--muted, #f3f4f6);
+}
+
+.msg {
+  padding: 16px;
+  color: var(--muted-foreground, #6b7280);
+  font-size: 13px;
+}
+
+/* The resizable node fills whatever size React Flow / NodeResizer gives it. */
+.node {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+.label {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--foreground, #111827);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: grab;
+  user-select: none;
+}
+
+.label:active {
+  cursor: grabbing;
+}
+
+.grip {
+  flex: 0 0 auto;
+  color: var(--muted-foreground, #9ca3af);
+  font-size: 11px;
+}
+
+.frame {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #fff;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+/* Move mode: catches the pointer so a drag starts on the node instead of
+   being swallowed by the iframe. Removed entirely in interact mode. */
+.dragOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  cursor: grab;
+  background: transparent;
+}
+
+.dragOverlay:active {
+  cursor: grabbing;
+}
+
+.modeBar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--card, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.modeBtn,
+.modeBtnActive {
+  border: 0;
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted-foreground, #6b7280);
+}
+
+.modeBtn:hover {
+  color: var(--foreground, #111827);
+}
+
+.modeBtnActive {
+  background: var(--primary, #2563eb);
+  color: #fff;
+}
+
+/* Separator between the mode buttons and the web-viewport buttons. */
+.modeDivider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--border, #e5e7eb);
+}
+
+.iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+/* Invisible edge anchors — required for React Flow to render flow.json
+   arrows between frames; never interactive (nodesConnectable is off). */
+.edgeAnchor {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  background: transparent;
+}

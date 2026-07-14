@@ -171,10 +171,23 @@ export class KgsClient {
   // app is invisible cross-device until it has one. Idempotent: queries by
   // projectId first and only creates when absent (createNode has no upsert, so
   // skipping the existence check would mint a duplicate workspace on every push).
-  async ensureWorkspace(projectId: string, name: string): Promise<'created' | 'exists'> {
+  async ensureWorkspace(
+    projectId: string,
+    name: string,
+    owner?: { id: string; email: string; name?: string } | null,
+  ): Promise<'created' | 'exists'> {
     const existing = await this.queryEntities(['DP_UI_WORKSPACE'], { projectId }, 1);
     if (existing.length > 0) return 'exists';
-    await this.createNode('DP_UI_WORKSPACE', { projectId, kind: 'project', name });
+    // Owner attribution (the machine's last Google login — see auth-routes
+    // getMachineUser) rides on the node itself so graph consumers can answer
+    // "whose project is this" without a join. CreateNode has no upsert:
+    // pre-existing workspaces keep whatever they were created with.
+    await this.createNode('DP_UI_WORKSPACE', {
+      projectId,
+      kind: 'project',
+      name,
+      ...(owner ? { owner_id: owner.id, owner_email: owner.email, owner_name: owner.name ?? '' } : {}),
+    });
     return 'created';
   }
 

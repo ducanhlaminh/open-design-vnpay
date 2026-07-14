@@ -1,5 +1,5 @@
 {
-  "$comment": "Example UX Spec (screens + personas, content only). Do NOT include project_id — it is filled at PUSH time from the conversation's bound KGS project (or the Push to KG dropdown / --project-id). The agent generates a file like this; the open-design-vnpay 'Push to KG' button or scripts/push_to_kgs.py then materialises it into the KGS open-design app and it shows on /ux-spec after Pull All.",
+  "$comment": "Example UX Spec (screens + personas, content only). Do NOT include project_id — it is filled at PUSH time from the conversation's bound KGS project (or the Push to KG dropdown / --project-id). The agent generates a file like this; the open-design-vnpay 'Push to KG' button or scripts/push_to_kgs.py then materialises it into the KGS open-design app and it shows on /ux-spec after Pull All. Each screen's `layout` is its target platform: the two refund screens are `mobile`; the admin screen shows the `web` shape (table + sidebar-friendly patterns) used when the run targets WEBSITE.",
   "personas": [
     {
       "name": "Chủ cửa hàng",
@@ -23,7 +23,7 @@
       "components": [
         { "id": "SCR-REFUND-LIST-search", "component_type": "input", "label": "Tìm theo mã đơn / SĐT khách", "order": 1, "data_type": "string", "semantic_type": "search" },
         { "id": "SCR-REFUND-LIST-rows", "component_type": "list", "label": "Danh sách đơn hàng", "order": 2 },
-        { "id": "SCR-REFUND-LIST-cta", "component_type": "button", "label": "Chọn đơn để hoàn", "order": 3 }
+        { "id": "SCR-REFUND-LIST-cta", "component_type": "button", "label": "Chọn đơn để hoàn", "order": 3, "navigates_to": "SCR-REFUND-CONFIRM" }
       ]
     },
     {
@@ -38,7 +38,23 @@
       "components": [
         { "id": "SCR-REFUND-CONFIRM-reason", "component_type": "select", "label": "Lý do hoàn", "order": 1, "required": true },
         { "id": "SCR-REFUND-CONFIRM-amount", "component_type": "input", "label": "Số tiền hoàn", "order": 2, "required": true, "data_type": "number" },
-        { "id": "SCR-REFUND-CONFIRM-submit", "component_type": "button", "label": "Xác nhận hoàn", "order": 3 }
+        { "id": "SCR-REFUND-CONFIRM-submit", "component_type": "button", "label": "Xác nhận hoàn", "order": 3, "navigates_to": "SCR-REFUND-LIST", "nav_type": "back" }
+      ]
+    },
+    {
+      "id": "SCR-REFUND-ADMIN",
+      "name": "Quản trị yêu cầu hoàn tiền",
+      "screen_type": "list",
+      "screen_intent": "Duyệt và đối soát toàn bộ yêu cầu hoàn trên bàn làm việc web",
+      "layout": "web",
+      "primary_actor": "actor-admin",
+      "permissions": ["admin"],
+      "navigation_group": "Refund",
+      "components": [
+        { "id": "SCR-REFUND-ADMIN-filters", "component_type": "input", "label": "Lọc theo trạng thái / khoảng ngày / cửa hàng", "order": 1, "semantic_type": "search" },
+        { "id": "SCR-REFUND-ADMIN-table", "component_type": "list", "label": "Bảng yêu cầu hoàn (mã đơn, khách, số tiền, trạng thái, người duyệt)", "order": 2, "semantic_type": "table" },
+        { "id": "SCR-REFUND-ADMIN-approve", "component_type": "button", "label": "Duyệt các yêu cầu đã chọn", "order": 3 },
+        { "id": "SCR-REFUND-ADMIN-export", "component_type": "button", "label": "Xuất đối soát (CSV)", "order": 4 }
       ]
     }
   ]

@@ -26,8 +26,6 @@ import type {
   ProjectTemplate,
 } from '../types';
 
-import { getHomeKgProjectId } from './home-project-scope';
-
 export type { PluginInstallOutcome } from '@open-design/contracts';
 export type { PluginShareAction } from '@open-design/contracts';
 
@@ -74,17 +72,10 @@ export async function createProject(input: {
     // calling it directly throws — the surrounding try/catch then turns
     // the Create button into a silent no-op (issue #849).
     const id = randomUUID();
-    // Stamp the Home-selected KGS project scope onto the new project so
-    // /projects can group by it and the conversation's KG operations target
-    // that project_id. Single chokepoint: every create flow funnels here.
-    const kgsProjectId = getHomeKgProjectId();
-    const scopedMetadata: ProjectMetadata | undefined = kgsProjectId
-      ? { ...(input.metadata ?? { kind: 'other' }), kgsProjectId }
-      : input.metadata;
     const resp = await fetch('/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, ...input, metadata: scopedMetadata }),
+      body: JSON.stringify({ id, ...input }),
     });
     if (!resp.ok) return null;
     return (await resp.json()) as {

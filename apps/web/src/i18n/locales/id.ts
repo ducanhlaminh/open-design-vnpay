@@ -1747,4 +1747,19 @@ export const id: Dict = {
   'diagnostics.exporting': 'Mengekspor…',
   'diagnostics.exportSuccess': 'Diagnostik disimpan di {path}',
   'diagnostics.exportFailed': 'Gagal mengekspor diagnostik: {message}',
+
+  // Agent-in-sandbox (settings card + run badge)
+  'assistant.sandboxedBadge': 'Sandbox',
+  'assistant.sandboxedTitle': 'Eksekusi ini berjalan di dalam sandbox Docker terisolasi',
+  'settings.sandboxTitle': 'Sandbox agen',
+  'settings.sandboxHint': 'Menjalankan agen pipeline yang diizinkan di dalam kontainer Docker terisolasi. Membutuhkan Docker/OrbStack.',
+  'settings.sandboxEnabled': 'Sandbox eksekusi {runtimes} untuk skill: {skills}',
+  'settings.sandboxDocker': 'Mesin Docker',
+  'settings.sandboxImage': 'Image sandbox',
+  'settings.sandboxAuth': 'Login Claude (volume auth)',
+  'settings.sandboxActiveRuns': 'Eksekusi sandbox aktif',
+  'settings.sandboxOk': 'OK',
+  'settings.sandboxMissing': 'tidak ada',
+  'settings.sandboxRunCmd': 'jalankan: {cmd}',
+  'settings.sandboxDaemonOffline': 'Daemon offline — status sandbox tidak tersedia.',
 };

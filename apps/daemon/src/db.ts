@@ -205,7 +205,9 @@ function migrate(db: SqliteDb): void {
 
     CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
       ON routine_runs(routine_id, started_at DESC);
+
   `);
+  db.exec(`DROP TABLE IF EXISTS pipeline_pulse_feedback`);
   // Forward-compatible column add for databases created before metadata_json.
   // SQLite has no IF NOT EXISTS for ALTER, so we check pragma_table_info.
   const cols = db.prepare(`PRAGMA table_info(projects)`).all() as DbRow[];
@@ -598,6 +600,12 @@ interface PipelineRunStateRow {
   lastRunId?: string;
   lastConversationId?: string;
   updatedAt?: number;
+  /** Free-text input of the last run (Confluence URL / JIRA key / JQL). */
+  lastInput?: string;
+  /** Structured source of the last run (Confluence ref or BAS document). */
+  lastSource?: unknown;
+  /** Target platform of the last run (stages with `acceptsPlatform`). */
+  lastPlatform?: string;
 }
 
 export function getProjectPipelineState(
@@ -619,7 +627,14 @@ export function setProjectPipelineStatus(
   db: SqliteDb,
   projectId: string,
   pipelineId: string,
-  patch: { status?: string; lastRunId?: string; lastConversationId?: string },
+  patch: {
+    status?: string;
+    lastRunId?: string;
+    lastConversationId?: string;
+    lastInput?: string;
+    lastSource?: unknown;
+    lastPlatform?: string;
+  },
 ) {
   const project = getProject(db, projectId);
   if (!project) return null;

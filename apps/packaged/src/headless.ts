@@ -71,6 +71,14 @@ function resolveHeadlessConfig(): PackagedConfig {
     mediaUserRole: process.env.MEDIA_USER_ROLE?.trim() || null,
     atlassianJiraToken: process.env.OD_ATLASSIAN_JIRA_TOKEN?.trim() || null,
     atlassianConfluenceToken: process.env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim() || null,
+    sandboxDefault: process.env.OD_SANDBOX_DEFAULT?.trim() || null,
+    sandboxSkills: process.env.OD_SANDBOX_SKILLS?.trim() || null,
+    // Headless reads auth straight from the launcher env (no baked config).
+    authSessionSecret: process.env.SESSION_SECRET?.trim() || null,
+    googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() || null,
+    googleClientSecret: process.env.GOOGLE_CLIENT_SECRET?.trim() || null,
+    identityUrl: process.env.IDENTITY_URL?.trim() || null,
+    authDomainLock: process.env.OD_AUTH_DOMAIN_LOCK?.trim() || null,
     webSidecarEntry: null,
     webStandaloneRoot: null,
     webOutputMode: "server",
@@ -136,6 +144,13 @@ async function main(): Promise<void> {
     mediaUserRole: config.mediaUserRole,
     atlassianJiraToken: config.atlassianJiraToken,
     atlassianConfluenceToken: config.atlassianConfluenceToken,
+    sandboxDefault: config.sandboxDefault,
+    sandboxSkills: config.sandboxSkills,
+    authSessionSecret: config.authSessionSecret,
+    googleClientId: config.googleClientId,
+    googleClientSecret: config.googleClientSecret,
+    identityUrl: config.identityUrl,
+    authDomainLock: config.authDomainLock,
     // PR #974 round-5 (lefarcen P2): headless packaged mode runs daemon
     // + web only, no Electron, no privileged shell.openPath surface.
     // Pinning OD_REQUIRE_DESKTOP_AUTH here would arm a gate no client

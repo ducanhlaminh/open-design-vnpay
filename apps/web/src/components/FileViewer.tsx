@@ -6,9 +6,6 @@ import {
   artifactKindToTracking,
   type TrackingProjectKind,
 } from '@open-design/contracts/analytics';
-import { validateKgPushDocument } from '@open-design/contracts';
-import { SpecPreview, specToMermaid, type SpecDoc } from './SpecPreview';
-import { MermaidDiagram } from './MermaidDiagram';
 import { useAnalytics } from '../analytics/provider';
 import { trackIframeLoad } from '../observability/iframe-error';
 import {
@@ -42,9 +39,6 @@ import {
   liveArtifactPreviewUrl,
   projectFileUrl,
   projectRawUrl,
-  pushToKg,
-  fetchKgProjects,
-  type WebKgProject,
   LiveArtifactRefreshError,
   refreshLiveArtifact,
   updateDeployConfig,
@@ -61,9 +55,14 @@ import type { ProjectFilePreview } from '../providers/registry';
 import { PipelineUiPreview } from './pipeline-preview/PipelineUiPreview';
 import { PipelineScreensCanvas } from './pipeline-preview/PipelineScreensCanvas';
 import { PipelinePrototypeCanvas } from './pipeline-preview/PipelinePrototypeCanvas';
+import { PipelineReactPreview } from './pipeline-preview/PipelineReactPreview';
+import { PipelineReactCanvas } from './pipeline-preview/PipelineReactCanvas';
 import { adaptScreenSpec } from './pipeline-preview/screen-adapter';
-import { SpecPreview, specToMermaid, type SpecDoc } from './SpecPreview';
-import { MermaidDiagram } from './MermaidDiagram';
+import { SpecPreview, type SpecDoc } from './SpecPreview';
+import { SpecFlowCanvas, isFlowDoc, type FlowDoc } from './SpecFlowCanvas';
+import { ReviewPreview, type ReviewReport } from './ReviewPreview';
+import { UxResearchPreview, isUxResearchReport, type UxResearchReport } from './UxResearchPreview';
+import type { WireDoc } from './WireFrameView';
 import {
   exportAsHtml,
   exportAsImage,
@@ -87,7 +86,7 @@ import {
   parseForceInline,
   shouldUrlLoadHtmlPreview,
 } from './file-viewer-render-mode';
-import { saveTemplate, getProject } from '../state/projects';
+import { saveTemplate } from '../state/projects';
 import type {
   LiveArtifactEventItem,
   LiveArtifact,
@@ -687,6 +686,21 @@ export function FileViewer({
   if (isPipelinePrototypeFile(file)) {
     return <PipelinePrototypeViewer projectId={projectId} file={file} />;
   }
+  // `ui-react` (docs → React) built per-screen page: `react/dist/screens/<slug>.html`
+  // → the all-screens React Flow canvas (every screen at once + flow edges).
+  if (isPipelineReactScreenFile(file)) {
+    const screensDir = file.name.split('/').slice(0, -1).join('/');
+    return (
+      <div className="viewer" style={{ height: '100%' }}>
+        <PipelineReactCanvas projectId={projectId} dir={screensDir} activeName={file.name} />
+      </div>
+    );
+  }
+  // `ui-react` full-app build: `react/dist/index.html` (all screens + HashRouter) →
+  // a freely resizable preview (no device frame). Precedes the generic html renderer.
+  if (isPipelineReactBuiltFile(file)) {
+    return <PipelineReactPreview projectId={projectId} fileName={file.name} mtime={file.mtime} />;
+  }
   if (rendererMatch?.renderer.id === 'html' || rendererMatch?.renderer.id === 'deck-html') {
     return (
       <HtmlViewer
@@ -720,7 +734,10 @@ export function FileViewer({
   if (isPipelineUiScreenFile(file)) {
     return <PipelineScreenViewer projectId={projectId} file={file} />;
   }
-  if (rendererMatch?.renderer.id === 'markdown') {
+  // Manifest-declared markdown artifacts AND plain .md files (pipeline docs —
+  // docs/confluence/*.md etc. carry no artifact manifest) both get the
+  // rendered markdown preview instead of the raw-text viewer.
+  if (rendererMatch?.renderer.id === 'markdown' || (file.kind === 'text' && /\.md$/i.test(file.name))) {
     return <MarkdownViewer projectId={projectId} file={file} />;
   }
   if (rendererMatch?.renderer.id === 'svg') {
@@ -7831,6 +7848,34 @@ function isPipelinePrototypeFile(file: ProjectFile): boolean {
   return parts.length >= 2 && parts[parts.length - 2] === 'prototype' && /\.html?$/.test(base);
 }
 
+// The docs → React workflow's built app lives at `<dir>/react/dist/index.html`
+// (a single self-contained bundle from the ui-react pipeline). Route it to the
+// resizable React preview instead of the generic single-file HTML viewer.
+function isPipelineReactBuiltFile(file: ProjectFile): boolean {
+  const p = file.name.split('/');
+  const n = p.length;
+  return (
+    n >= 3 &&
+    p[n - 1]!.toLowerCase() === 'index.html' &&
+    p[n - 2] === 'dist' &&
+    p[n - 3] === 'react'
+  );
+}
+
+// Built per-screen pages of the docs → React workflow live at
+// `<dir>/react/dist/screens/<slug>.html` → the all-screens React Flow canvas.
+function isPipelineReactScreenFile(file: ProjectFile): boolean {
+  const p = file.name.split('/');
+  const n = p.length;
+  return (
+    n >= 4 &&
+    /\.html?$/i.test(p[n - 1]!) &&
+    p[n - 2] === 'screens' &&
+    p[n - 3] === 'dist' &&
+    p[n - 4] === 'react'
+  );
+}
+
 // The generated render shells that sit next to a `screen.json`
 // (`<dir>/<slug>/shell.html` / `shell-light.html`). They load
 // @babel/standalone in srcDoc and crash the host HTML preview, so we render the
@@ -7923,7 +7968,7 @@ function PipelineSingleScreenViewer({ projectId, file }: { projectId: string; fi
 // journeys / personas / screens it renders the visual SpecPreview (with a
 // Mermaid + raw-source toggle); any other JSON falls back to the plain
 // TextViewer so non-spec files behave exactly as before.
-type SpecViewMode = 'preview' | 'mermaid' | 'source';
+type SpecViewMode = 'preview' | 'flow' | 'source';
 
 function SpecFileViewer({
   projectId,
@@ -7937,6 +7982,15 @@ function SpecFileViewer({
   const [reloadKey, setReloadKey] = useState(0);
   const [copied, setCopied] = useState(false);
   const [mode, setMode] = useState<SpecViewMode>('preview');
+  // Wireframe bố cục tự do cạnh file spec (`<dir>/wireframes/<SCREEN-ID>.wire.json`,
+  // bước ux emit) — key theo screen id để SpecPreview render tab Wireframe.
+  const [wireframes, setWireframes] = useState<Record<string, WireDoc> | null>(null);
+  // Rule flowcharts cạnh file spec (`<dir>/flows/<FLOW-ID>.flow.json`, bước ux
+  // emit) — tab Flow render wireframe + flowchart (thay Mermaid đã gỡ).
+  const [flows, setFlows] = useState<FlowDoc[] | null>(null);
+  // Per-screen platform (web|mobile) from the workflow's ux-spec — drives the
+  // review preview's responsive layout (web = stacked, mobile = side-by-side).
+  const [platforms, setPlatforms] = useState<Record<string, string> | null>(null);
 
   useEffect(() => {
     setText(null);
@@ -7949,8 +8003,131 @@ function SpecFileViewer({
     };
   }, [projectId, file.name, file.mtime, reloadKey]);
 
-  const spec = useMemo<SpecDoc | null>(() => {
+  useEffect(() => {
+    setWireframes(null);
+    setPlatforms(null);
+    setFlows(null);
+    let cancelled = false;
+    void (async () => {
+      const slash = file.name.lastIndexOf('/');
+      let dir = slash >= 0 ? file.name.slice(0, slash + 1) : '';
+      // The heuristic-review report lives at `<wf>/heuristic-review/report.json`
+      // but the wireframes are at `<wf>/wireframes/` — one level up. Strip the
+      // trailing `heuristic-review/` so the review preview finds them too.
+      dir = dir.replace(/heuristic-review\/$/i, '');
+      const prefix = `${dir}wireframes/`;
+      const flowPrefix = `${dir}flows/`;
+      try {
+        const files = await fetchProjectFiles(projectId);
+        // Per-screen platform from the workflow's ux-spec (for the review
+        // preview's responsive layout). Best-effort; failure → all mobile.
+        const specFile = files.find((f) => f.name.startsWith(dir) && /-ux-spec\.json$/i.test(f.name));
+        if (specFile) {
+          const rawSpec = await fetchProjectFileText(projectId, specFile.name).catch(() => null);
+          if (rawSpec && !cancelled) {
+            try {
+              const parsedSpec = JSON.parse(rawSpec) as { screens?: Array<{ id?: string; layout?: string }> };
+              const pmap: Record<string, string> = {};
+              for (const s of parsedSpec.screens ?? []) if (s.id) pmap[s.id] = s.layout ?? 'mobile';
+              if (Object.keys(pmap).length) setPlatforms(pmap);
+            } catch {
+              /* malformed ux-spec → default mobile */
+            }
+          }
+        }
+        // Rule flowcharts (`flows/<FLOW-ID>.flow.json`) — feed the Flow tab.
+        const flowNames = files
+          .map((f) => f.name)
+          .filter((n) => n.startsWith(flowPrefix) && /\.flow\.json$/i.test(n))
+          .sort();
+        if (flowNames.length && !cancelled) {
+          const docs: FlowDoc[] = [];
+          await Promise.all(
+            flowNames.map(async (n) => {
+              const raw = await fetchProjectFileText(projectId, n).catch(() => null);
+              if (!raw) return;
+              try {
+                const parsed = JSON.parse(raw) as unknown;
+                if (isFlowDoc(parsed)) docs.push(parsed);
+              } catch {
+                /* flow.json hỏng → bỏ qua flow đó */
+              }
+            }),
+          );
+          if (!cancelled && docs.length) setFlows(docs.sort((a, b) => a.id.localeCompare(b.id)));
+        }
+        const wireNames = files
+          .map((f) => f.name)
+          .filter((n) => n.startsWith(prefix) && /\.wire\.json$/i.test(n));
+        if (!wireNames.length || cancelled) return;
+        const map: Record<string, WireDoc> = {};
+        await Promise.all(
+          wireNames.map(async (n) => {
+            const raw = await fetchProjectFileText(projectId, n).catch(() => null);
+            if (!raw) return;
+            try {
+              const parsed = JSON.parse(raw) as WireDoc;
+              // Accept either shape: a layout tree (preferred) or legacy objects[].
+              if (parsed.layout || Array.isArray(parsed.objects)) {
+                const stem = n.slice(prefix.length).replace(/\.wire\.json$/i, '');
+                map[stem] = parsed;
+              }
+            } catch {
+              /* wire.json hỏng → màn đó hiện placeholder */
+            }
+          }),
+        );
+        if (!cancelled && Object.keys(map).length) setWireframes(map);
+      } catch {
+        /* không list được files → SpecPreview tự hiện placeholder */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, file.name, file.mtime, reloadKey]);
+
+  // A heuristic-review report (ux-review stage) also carries a `screens` array,
+  // but those screens hold findings/verdict — NOT ux-spec name/components. Detect
+  // it (by path or shape) so it renders as a review, not a broken spec.
+  const review = useMemo<ReviewReport | null>(() => {
     if (text == null) return null;
+    if (!/(^|\/)heuristic-review\//i.test(file.name) && !/heuristic-review/i.test(file.name)) {
+      // Not the review path — still catch the shape (top-level summary.verdict or
+      // screens carrying findings) so a mislocated report renders correctly.
+      try {
+        const p = JSON.parse(text) as ReviewReport;
+        const shapeMatch =
+          (p.summary && typeof p.summary.verdict === 'string') ||
+          (Array.isArray(p.screens) && p.screens.some((s) => Array.isArray((s as { findings?: unknown }).findings)));
+        if (!shapeMatch) return null;
+        return p;
+      } catch {
+        return null;
+      }
+    }
+    try {
+      return JSON.parse(text) as ReviewReport;
+    } catch {
+      return null;
+    }
+  }, [text, file.name]);
+
+  // A UX Research report (ux-research stage): the explicit `kind` marker or the
+  // criteria[]-with-sources shape — neither a spec (screens) nor a review
+  // (findings/verdict), so it gets its own preview.
+  const uxResearch = useMemo<UxResearchReport | null>(() => {
+    if (text == null || review) return null;
+    try {
+      const p = JSON.parse(text) as unknown;
+      return isUxResearchReport(p) ? p : null;
+    } catch {
+      return null;
+    }
+  }, [text, review]);
+
+  const spec = useMemo<SpecDoc | null>(() => {
+    if (text == null || review || uxResearch) return null; // a review/research report is not a spec
     try {
       const parsed = JSON.parse(text) as SpecDoc;
       const hasJourneys = Array.isArray(parsed.journeys) && parsed.journeys.length > 0;
@@ -7960,7 +8137,7 @@ function SpecFileViewer({
     } catch {
       return null;
     }
-  }, [text]);
+  }, [text, review]);
 
   const displayText = useMemo(
     () => (text == null ? null : formatJsonFileTextForDisplay(file, text)),
@@ -7968,8 +8145,9 @@ function SpecFileViewer({
   );
   const lineCount = displayText ? displayText.split('\n').length : 0;
 
-  // A plain (non-spec) JSON file behaves exactly like the generic text viewer.
-  if (text !== null && !spec) {
+  // A plain (non-spec, non-review, non-research) JSON file behaves like the
+  // generic text viewer.
+  if (text !== null && !spec && !review && !uxResearch) {
     return <TextViewer projectId={projectId} file={file} />;
   }
 
@@ -8009,7 +8187,9 @@ function SpecFileViewer({
       <div className="viewer-toolbar">
         <div className="viewer-toolbar-left" style={{ display: 'flex', gap: 6 }}>
           {modeTab('preview', 'Preview')}
-          {modeTab('mermaid', 'Mermaid')}
+          {/* Flow (wireframe + rule flowchart) is a spec-only view; a review
+              report has no flow diagram. Replaces the retired Mermaid view. */}
+          {spec ? modeTab('flow', 'Flow') : null}
           {modeTab('source', 'Source')}
         </div>
         <div className="viewer-toolbar-actions">
@@ -8034,12 +8214,16 @@ function SpecFileViewer({
         </div>
       </div>
       <div className="viewer-body">
-        {text === null || spec === null ? (
+        {text === null || (spec === null && review === null && uxResearch === null) ? (
           <div className="viewer-empty">{t('fileViewer.loading')}</div>
-        ) : mode === 'preview' ? (
-          <SpecPreview doc={spec} />
-        ) : mode === 'mermaid' ? (
-          <MermaidDiagram code={specToMermaid(spec)} />
+        ) : review && mode === 'preview' ? (
+          <ReviewPreview report={review} wireframes={wireframes} platforms={platforms} />
+        ) : uxResearch && mode === 'preview' ? (
+          <UxResearchPreview report={uxResearch} />
+        ) : spec && mode === 'preview' ? (
+          <SpecPreview doc={spec} wireframes={wireframes} />
+        ) : spec && mode === 'flow' ? (
+          <SpecFlowCanvas flows={flows ?? []} spec={spec} wireframes={wireframes} platforms={platforms} />
         ) : displayText !== null && lineCount > 0 ? (
           <CodeWithLines text={displayText} />
         ) : (
@@ -8061,22 +8245,8 @@ function TextViewer({
   const [text, setText] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [kgPush, setKgPush] = useState<{ status: 'idle' | 'running' | 'done' | 'error'; msg: string }>({
-    status: 'idle',
-    msg: '',
-  });
-  const [kgProjects, setKgProjects] = useState<WebKgProject[]>([]);
-  const [kgTarget, setKgTarget] = useState<string>('');
-  // The KGS project this conversation/project is already scoped to
-  // (metadata.kgsProjectId). When set, the Push-to-KG target is locked to it
-  // (filled + read-only); otherwise the user may pick a project.
-  const [lockedKgProject, setLockedKgProject] = useState<string>('');
-  // CJ/UX docs default to the rendered spec preview (like SimStudio /ux-spec);
-  // toggle to a Mermaid diagram or raw JSON.
-  const [specMode, setSpecMode] = useState<'preview' | 'mermaid' | 'json'>('preview');
   useEffect(() => {
     setText(null);
-    setKgPush({ status: 'idle', msg: '' });
     let cancelled = false;
     void fetchProjectFileText(projectId, file.name).then((t) => {
       if (!cancelled) setText(t ?? '');
@@ -8085,86 +8255,6 @@ function TextViewer({
       cancelled = true;
     };
   }, [projectId, file.name, file.mtime, reloadKey]);
-
-  // Resolve whether this conversation's project is already bound to a KGS
-  // project. If so, the push target is fixed to it.
-  useEffect(() => {
-    let cancelled = false;
-    void getProject(projectId).then((p) => {
-      if (cancelled) return;
-      const k = typeof p?.metadata?.kgsProjectId === 'string' ? p.metadata.kgsProjectId.trim() : '';
-      setLockedKgProject(k);
-      if (k) setKgTarget(k);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
-
-  // Detect a Customer Journey / UX Spec document (the shape the
-  // `customer-journey-spec` skill emits) so we can offer a "Push to KG" action.
-  const cjUx = useMemo(() => {
-    if (text == null || !isJsonFile(file)) return null;
-    try {
-      const parsed = JSON.parse(text) as {
-        journeys?: unknown[];
-        personas?: unknown[];
-        screens?: unknown[];
-        project_id?: unknown;
-      };
-      const hasJourneys = Array.isArray(parsed.journeys) && parsed.journeys.length > 0;
-      const hasPersonas = Array.isArray(parsed.personas) && parsed.personas.length > 0;
-      const hasScreens = Array.isArray(parsed.screens) && parsed.screens.length > 0;
-      if (!hasJourneys && !hasPersonas && !hasScreens) return null;
-      return parsed;
-    } catch {
-      return null;
-    }
-  }, [file.name, file.mime, text]);
-
-  // Validate the document against the shared KG schema. Push is only allowed
-  // when this passes AND a target project is chosen.
-  const kgValidation = useMemo(
-    () => (cjUx ? validateKgPushDocument(cjUx) : { valid: false, errors: [] as string[] }),
-    [cjUx],
-  );
-  const kgCanPush = kgValidation.valid && !!(lockedKgProject || kgTarget);
-
-  // Load the SimStudio project list (for the target dropdown) once we know the
-  // file is a CJ/UX Spec document. Default the target to the file's own
-  // project_id when present, else the first project.
-  useEffect(() => {
-    if (!cjUx) return;
-    let cancelled = false;
-    void fetchKgProjects().then((projects) => {
-      if (cancelled) return;
-      setKgProjects(projects);
-      const fileProject = typeof cjUx.project_id === 'string' ? cjUx.project_id.trim() : '';
-      // Locked target always wins; otherwise keep prev / file / first.
-      setKgTarget((prev) => lockedKgProject || prev || fileProject || projects[0]?.id || '');
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [cjUx, lockedKgProject]);
-
-  async function handlePushKg() {
-    if (!cjUx) return;
-    const fileProject = typeof cjUx.project_id === 'string' ? cjUx.project_id.trim() : '';
-    const pid = lockedKgProject || kgTarget || fileProject || projectId;
-    if (!pid) {
-      setKgPush({ status: 'error', msg: t('fileViewer.pushToKgFailed', { msg: 'no project selected' }) });
-      return;
-    }
-    setKgPush({ status: 'running', msg: t('fileViewer.pushToKgRunning') });
-    try {
-      const res = await pushToKg(pid, cjUx as Parameters<typeof pushToKg>[1]);
-      setKgPush({ status: 'done', msg: t('fileViewer.pushToKgDone', { n: res.pushed, e: res.edges }) });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setKgPush({ status: 'error', msg: t('fileViewer.pushToKgFailed', { msg }) });
-    }
-  }
 
   async function copy() {
     if (text == null) return;
@@ -8199,33 +8289,7 @@ function TextViewer({
   return (
     <div className="viewer text-viewer">
       <div className="viewer-toolbar">
-        <div className="viewer-toolbar-left">
-          {cjUx ? (
-            <div className="viewer-tabs">
-              <button
-                type="button"
-                className={`viewer-tab ${specMode === 'preview' ? 'active' : ''}`}
-                onClick={() => setSpecMode('preview')}
-              >
-                {t('fileViewer.specPreview')}
-              </button>
-              <button
-                type="button"
-                className={`viewer-tab ${specMode === 'mermaid' ? 'active' : ''}`}
-                onClick={() => setSpecMode('mermaid')}
-              >
-                Mermaid
-              </button>
-              <button
-                type="button"
-                className={`viewer-tab ${specMode === 'json' ? 'active' : ''}`}
-                onClick={() => setSpecMode('json')}
-              >
-                JSON
-              </button>
-            </div>
-          ) : null}
-        </div>
+        <div className="viewer-toolbar-left" />
         <div className="viewer-toolbar-actions">
           <button
             type="button"
@@ -8254,94 +8318,11 @@ function TextViewer({
             <Icon name={copied ? 'check' : 'copy'} size={13} />
             <span>{copied ? t('fileViewer.copied') : t('fileViewer.copy')}</span>
           </button>
-          {cjUx ? (
-            <>
-              {lockedKgProject ? (
-                // Conversation already bound to a KGS project → filled + read-only.
-                <span
-                  className="viewer-action"
-                  title={t('fileViewer.pushToKgProjectLocked')}
-                  aria-label={t('fileViewer.pushToKgProjectLocked')}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, opacity: 0.85, cursor: 'default' }}
-                >
-                  <Icon name="folder" size={13} />
-                  <span>
-                    {(kgProjects.find((p) => p.id === lockedKgProject)?.name ?? lockedKgProject)} ({lockedKgProject})
-                  </span>
-                </span>
-              ) : (
-                <select
-                  className="viewer-action"
-                  value={kgTarget}
-                  onChange={(e) => setKgTarget(e.target.value)}
-                  title={t('fileViewer.pushToKgProject')}
-                  aria-label={t('fileViewer.pushToKgProject')}
-                  disabled={kgPush.status === 'running'}
-                >
-                  {kgProjects.length === 0 && kgTarget ? <option value={kgTarget}>{kgTarget}</option> : null}
-                  {kgProjects.length === 0 && !kgTarget ? (
-                    <option value="">{t('fileViewer.pushToKgNoProjects')}</option>
-                  ) : null}
-                  {kgProjects.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.id})
-                    </option>
-                  ))}
-                </select>
-              )}
-              <button
-                type="button"
-                className="viewer-action primary"
-                onClick={() => void handlePushKg()}
-                disabled={kgPush.status === 'running' || !kgCanPush}
-                aria-busy={kgPush.status === 'running'}
-                title={
-                  !kgValidation.valid
-                    ? t('fileViewer.pushToKgInvalid')
-                    : !(lockedKgProject || kgTarget)
-                      ? t('fileViewer.pushToKgPickProject')
-                      : t('fileViewer.pushToKgTitle')
-                }
-              >
-                <Icon name="upload" size={13} />
-                <span>{kgPush.status === 'running' ? t('fileViewer.pushToKgRunning') : t('fileViewer.pushToKg')}</span>
-              </button>
-            </>
-          ) : null}
         </div>
       </div>
-      {cjUx && !kgValidation.valid ? (
-        <div
-          className="viewer-empty"
-          role="alert"
-          aria-live="polite"
-          style={{ padding: '6px 12px', color: 'var(--danger, #c0392b)' }}
-        >
-          <div style={{ fontWeight: 600, marginBottom: 2 }}>{t('fileViewer.pushToKgInvalid')}</div>
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {kgValidation.errors.slice(0, 8).map((e, i) => (
-              <li key={i}>{e}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {cjUx && kgValidation.valid && kgPush.status !== 'idle' && kgPush.status !== 'running' ? (
-        <div
-          className="viewer-empty"
-          role="status"
-          aria-live="polite"
-          style={{ padding: '6px 12px', color: kgPush.status === 'error' ? 'var(--danger, #c0392b)' : undefined }}
-        >
-          {kgPush.msg}
-        </div>
-      ) : null}
       <div className="viewer-body">
         {text === null ? (
           <div className="viewer-empty">{t('fileViewer.loading')}</div>
-        ) : cjUx && specMode === 'preview' ? (
-          <SpecPreview doc={cjUx as SpecDoc} />
-        ) : cjUx && specMode === 'mermaid' ? (
-          <MermaidDiagram code={specToMermaid(cjUx as SpecDoc)} />
         ) : displayText !== null && lineCount > 0 ? (
           <CodeWithLines text={displayText} />
         ) : (

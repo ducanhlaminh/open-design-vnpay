@@ -4,10 +4,15 @@ import type { PipelineView, ProjectPipelineState } from '@open-design/contracts'
 
 import {
   PIPELINE_DEFS,
+  WORKFLOWS,
   computeActive,
+  stageRegenSet,
+  hasDownstream,
+  upstreamStages,
   deriveStateFromKgsFiles,
   deriveStateFromLocalFiles,
   getPipelineDef,
+  isSyncExcluded,
   listPipelineStatus,
   mergePipelineState,
   stagesForOutput,
@@ -26,166 +31,340 @@ function viewOf(views: PipelineView[], id: string): PipelineView {
   return v;
 }
 
-test('jira-ingest has no prerequisites and is active from an empty state', () => {
-  assert.equal(computeActive({}, def('jira-ingest')), true);
+test('there is exactly ONE workflow whose terminal step offers two UI-Spec options', () => {
+  assert.equal(WORKFLOWS.length, 1);
+  assert.equal(WORKFLOWS[0]!.id, 'docs-to-ui');
+  assert.deepEqual(WORKFLOWS[0]!.pipelineIds, ['docs', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react']);
+  // Both terminals are OPTIONS of the same step: same dependency, run either or both.
+  // That dependency is the heuristic-review gate (not `ux` directly), so the
+  // review must run once before either UI terminal unlocks.
+  assert.deepEqual(def('ui-html').dependsOn, ['ux-review']);
+  assert.deepEqual(def('ui-react').dependsOn, ['ux-review']);
 });
 
-test('feature-analysis is gated until jira-ingest has succeeded', () => {
-  assert.equal(computeActive({}, def('feature-analysis')), false);
-  const running: ProjectPipelineState = { 'jira-ingest': { status: 'running' } };
-  assert.equal(computeActive(running, def('feature-analysis')), false);
-  const done: ProjectPipelineState = { 'jira-ingest': { status: 'succeeded' } };
-  assert.equal(computeActive(done, def('feature-analysis')), true);
+test('the ux-review gate sits between ux and the terminals (Gate 1: heuristic review)', () => {
+  const g = def('ux-review');
+  assert.deepEqual(g.dependsOn, ['ux']);
+  assert.equal(g.skillId, 'heuristic-eval');
+  // File-only review deliverable — never projected into KGS.
+  assert.equal(g.convertToGraph, undefined);
+  assert.deepEqual(g.outputs, ['heuristic-review/']);
 });
 
-test('ux-spec and customer-journey both unlock after feature-analysis succeeds', () => {
-  const state: ProjectPipelineState = {
-    'jira-ingest': { status: 'succeeded' },
-    'feature-analysis': { status: 'succeeded' },
+test('Gate 2 (post-render WCAG) rides along on BOTH terminals as wcag-lint', () => {
+  // The measurable a11y gate is deterministic and the terminals are optional,
+  // so it is baked into each terminal (not a separate stage that could not gate
+  // "either one"). Both terminals must carry the wcag-lint extra skill.
+  assert.ok(def('ui-html').extraSkillIds?.includes('wcag-lint'));
+  assert.ok(def('ui-react').extraSkillIds?.includes('wcag-lint'));
+  // The report is written inside the produced output dir, so it needs no new
+  // output pattern and it must round-trip (not be caught by react syncExclude).
+  assert.equal(isSyncExcluded('docs-to-ui/prototype/a11y-report.json'), false);
+  assert.equal(isSyncExcluded('docs-to-ui/react/a11y-report.json'), false);
+  // …and it attributes to the owning terminal via the existing dir patterns.
+  assert.deepEqual(stagesForOutput('docs-to-ui/prototype/a11y-report.json').map((d) => d.id), ['ui-html']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/react/a11y-report.json').map((d) => d.id), ['ui-react']);
+});
+
+test('docs has no prerequisites and is active from an empty state', () => {
+  assert.equal(computeActive({}, def('docs')), true);
+});
+
+test('cj is gated until docs has succeeded', () => {
+  assert.equal(computeActive({}, def('cj')), false);
+  const running: ProjectPipelineState = { docs: { status: 'running' } };
+  assert.equal(computeActive(running, def('cj')), false);
+  const done: ProjectPipelineState = { docs: { status: 'succeeded' } };
+  assert.equal(computeActive(done, def('cj')), true);
+});
+
+test('the shared chain gates linearly through the review gate (docs → cj → ux-research → ux → ux-review → ui-html | ui-react)', () => {
+  const s: ProjectPipelineState = {
+    docs: { status: 'succeeded' },
+    cj: { status: 'succeeded' },
   };
-  assert.equal(computeActive(state, def('ux-spec')), true);
-  assert.equal(computeActive(state, def('customer-journey')), true);
+  // cj done unlocks the RESEARCH stage — the UX Spec still waits on its report.
+  assert.equal(computeActive(s, def('ux-research')), true);
+  assert.equal(computeActive(s, def('ux')), false);
+  assert.equal(computeActive(s, def('ux-review')), false);
+  const withResearch = { ...s, 'ux-research': { status: 'succeeded' as const } };
+  assert.equal(computeActive(withResearch, def('ux')), true);
+  assert.equal(computeActive(withResearch, def('ux-review')), false);
+  assert.equal(computeActive(withResearch, def('ui-html')), false);
+  assert.equal(computeActive(withResearch, def('ui-react')), false);
+  // ux done unlocks the review gate — but NOT the terminals yet.
+  const withUx = { ...withResearch, ux: { status: 'succeeded' as const } };
+  assert.equal(computeActive(withUx, def('ux-review')), true);
+  assert.equal(computeActive(withUx, def('ui-html')), false);
+  assert.equal(computeActive(withUx, def('ui-react')), false);
+  // only after the review gate succeeds do BOTH terminals unlock.
+  const withReview = { ...withUx, 'ux-review': { status: 'succeeded' as const } };
+  assert.equal(computeActive(withReview, def('ui-html')), true);
+  assert.equal(computeActive(withReview, def('ui-react')), true);
 });
 
-test('ui requires BOTH ux-spec and customer-journey to have succeeded (join)', () => {
-  const base: ProjectPipelineState = {
-    'jira-ingest': { status: 'succeeded' },
-    'feature-analysis': { status: 'succeeded' },
-  };
-  assert.equal(
-    computeActive({ ...base, 'ux-spec': { status: 'succeeded' } }, def('ui')),
-    false,
-  );
-  assert.equal(
-    computeActive(
-      {
-        ...base,
-        'ux-spec': { status: 'succeeded' },
-        'customer-journey': { status: 'succeeded' },
-      },
-      def('ui'),
-    ),
-    true,
-  );
-});
-
-test('listPipelineStatus returns all five in registry order with derived active + status', () => {
-  const views = listPipelineStatus({ 'jira-ingest': { status: 'succeeded' } });
+test('listPipelineStatus returns every stage in registry order with derived active + status', () => {
+  const views = listPipelineStatus({ docs: { status: 'succeeded' } });
   assert.deepEqual(
     views.map((v) => v.id),
     PIPELINE_DEFS.map((d) => d.id),
   );
-  assert.equal(viewOf(views, 'jira-ingest').status, 'succeeded');
-  assert.equal(viewOf(views, 'jira-ingest').active, true);
-  // feature-analysis is still idle but unlocked because jira-ingest succeeded.
-  assert.equal(viewOf(views, 'feature-analysis').status, 'idle');
-  assert.equal(viewOf(views, 'feature-analysis').active, true);
-  // ux-spec stays locked until feature-analysis succeeds.
-  assert.equal(viewOf(views, 'ux-spec').active, false);
+  assert.equal(viewOf(views, 'docs').status, 'succeeded');
+  assert.equal(viewOf(views, 'docs').active, true);
+  // cj is still idle but unlocked because docs succeeded.
+  assert.equal(viewOf(views, 'cj').status, 'idle');
+  assert.equal(viewOf(views, 'cj').active, true);
+  // ux stays locked until cj succeeds.
+  assert.equal(viewOf(views, 'ux').active, false);
 });
 
 test('deriveStateFromKgsFiles marks a stage succeeded when it has ≥1 KGS file', () => {
   const state = deriveStateFromKgsFiles([
-    { stage: 'jira-ingest', path: 'docs/jira/A.md', status: 'ACTIVE' },
-    { stage: 'jira-ingest', path: 'docs/jira/B.md', status: 'ACTIVE' },
-    { stage: 'feature-analysis', path: 'features.json', status: 'CONVERTED' },
-    { path: 'no-stage.txt' }, // ignored: no stage
+    { stage: 'docs', path: 'docs-to-ui/docs/jira/A.md', status: 'ACTIVE' },
+    { stage: 'docs', path: 'docs-to-ui/docs/jira/B.md', status: 'ACTIVE' },
+    { stage: 'cj', path: 'docs-to-ui/app-cj.json', status: 'ACTIVE' },
+    { path: 'no-stage.txt' }, // ignored: matches no stage output
   ]);
-  assert.equal(state['jira-ingest']?.status, 'succeeded');
-  assert.equal(state['feature-analysis']?.status, 'succeeded');
-  assert.equal(state['ux-spec'], undefined);
+  assert.equal(state['docs']?.status, 'succeeded');
+  assert.equal(state['cj']?.status, 'succeeded');
+  assert.equal(state['ux'], undefined);
 });
 
-test('workflowDirForPipeline maps each pipeline to its workflow folder', () => {
-  assert.equal(workflowDirForPipeline('jira-ingest'), 'docs-to-ui');
-  assert.equal(workflowDirForPipeline('ui'), 'docs-to-ui');
-  assert.equal(workflowDirForPipeline('html-docs'), 'docs-to-html');
-  assert.equal(workflowDirForPipeline('ui-html'), 'docs-to-html');
+test('workflowDirForPipeline maps every pipeline to the single workflow folder', () => {
+  for (const id of ['docs', 'cj', 'ux', 'ux-review', 'ui-html', 'ui-react']) {
+    assert.equal(workflowDirForPipeline(id), 'docs-to-ui');
+  }
+  // Retired ids (twin workflows + the removed react-shadcn flow) resolve to nothing.
+  assert.equal(workflowDirForPipeline('html-docs'), null);
+  assert.equal(workflowDirForPipeline('react-docs'), null);
+  assert.equal(workflowDirForPipeline('jira-ingest'), null);
   assert.equal(workflowDirForPipeline('nope'), null);
 });
 
-test('stagesForOutput: workflow-namespaced files attribute to that workflow ONLY (isolation)', () => {
-  // docs-to-html files light up ONLY docs-to-html stages — the shared output
-  // patterns no longer bleed into docs-to-ui's stepper.
-  assert.deepEqual(stagesForOutput('docs-to-html/docs/confluence/x.md').map((d) => d.id), ['html-docs']);
-  assert.deepEqual(stagesForOutput('docs-to-html/app-ux-spec.json').map((d) => d.id), ['html-ux']);
-  assert.deepEqual(stagesForOutput('docs-to-html/app-journey.json').map((d) => d.id), ['html-cj']);
-  assert.deepEqual(stagesForOutput('docs-to-html/prototype/index.html').map((d) => d.id), ['ui-html']);
-  // docs-to-ui files light up ONLY docs-to-ui stages.
-  assert.deepEqual(stagesForOutput('docs-to-ui/docs/confluence/x.md').map((d) => d.id), ['jira-ingest']);
-  assert.deepEqual(stagesForOutput('docs-to-ui/app-ux-spec.json').map((d) => d.id), ['ux-spec']);
-  assert.deepEqual(stagesForOutput('docs-to-ui/screens/s/screen.json').map((d) => d.id), ['ui']);
+test('stagesForOutput: workflow-namespaced files attribute to the owning stage', () => {
+  assert.deepEqual(stagesForOutput('docs-to-ui/docs/confluence/x.md').map((d) => d.id), ['docs']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/app-ux-spec.json').map((d) => d.id), ['ux']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/heuristic-review/summary.md').map((d) => d.id), ['ux-review']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/app-journey.json').map((d) => d.id), ['cj']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/prototype/index.html').map((d) => d.id), ['ui-html']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/react/dist/index.html').map((d) => d.id), ['ui-react']);
 });
 
-test('stagesForOutput: unprefixed legacy paths still match across workflows (back-compat)', () => {
-  // Files produced before per-workflow folders existed have no prefix; they must
-  // still derive status (matching across all stages) so old projects don't break.
-  assert.deepEqual(
-    stagesForOutput('docs/confluence/x.md').map((d) => d.id).sort(),
-    ['html-docs', 'jira-ingest'],
-  );
+test('stagesForOutput: RETIRED workflow folders keep lighting the merged stages (no migration)', () => {
+  // Old projects hold docs-to-html/… and docs-to-react/… trees on disk and on
+  // the media store; the legacy-dir shim maps both onto the merged workflow.
+  assert.deepEqual(stagesForOutput('docs-to-html/docs/confluence/x.md').map((d) => d.id), ['docs']);
+  assert.deepEqual(stagesForOutput('docs-to-html/app-ux-spec.json').map((d) => d.id), ['ux']);
+  assert.deepEqual(stagesForOutput('docs-to-html/app-journey.json').map((d) => d.id), ['cj']);
+  assert.deepEqual(stagesForOutput('docs-to-html/prototype/index.html').map((d) => d.id), ['ui-html']);
+  assert.deepEqual(stagesForOutput('docs-to-react/app-ux-spec.json').map((d) => d.id), ['ux']);
+  assert.deepEqual(stagesForOutput('docs-to-react/app-customer-journey.json').map((d) => d.id), ['cj']);
+  assert.deepEqual(stagesForOutput('docs-to-react/react/dist/index.html').map((d) => d.id), ['ui-react']);
+});
+
+test('stagesForOutput: unprefixed legacy paths still match (back-compat)', () => {
+  // Files produced before per-workflow folders existed have no prefix; they
+  // must still derive status so old projects don't break.
+  assert.deepEqual(stagesForOutput('docs/confluence/x.md').map((d) => d.id), ['docs']);
 });
 
 test('ui-html prototype output round-trips cross-device (not localOnly)', () => {
-  // Regression: the docs-to-html deliverable (prototype/) must sync via the media
-  // store. A localOnly ui-html would never reach another device on push/pull-all.
+  // Regression: the HTML UI-Spec deliverable (prototype/) must sync via the
+  // media store. A localOnly ui-html would never reach another device.
   assert.equal(getPipelineDef('ui-html')?.localOnly, undefined);
 });
 
-test('deriveStateFromLocalFiles lights up docs-to-html stages from pulled files (cross-workflow)', () => {
+test('ui-react built app round-trips cross-device (not localOnly) and takes a design system', () => {
+  // The react/ deliverable (source + dist) must sync via the media store like
+  // the ui-html prototype does, and both terminals offer the design-system picker.
+  assert.equal(getPipelineDef('ui-react')?.localOnly, undefined);
+  assert.equal(getPipelineDef('ui-react')?.acceptsDesignSystem, true);
+  assert.equal(getPipelineDef('ui-html')?.acceptsDesignSystem, true);
+});
+
+test('stageRegenSet: re-run clear scope — self only, or self + transitive downstream', () => {
+  // Non-cascade: only the stage itself.
+  assert.deepEqual(stageRegenSet('ux', false), ['ux']);
+  // Cascade from ux: ux + everything that (transitively) depends on it.
+  assert.deepEqual(
+    [...stageRegenSet('ux', true)].sort(),
+    ['ui-html', 'ui-react', 'ux', 'ux-review'].sort(),
+  );
+  // Cascade from the gate: gate + both terminals (not ux, which is upstream).
+  assert.deepEqual(
+    [...stageRegenSet('ux-review', true)].sort(),
+    ['ui-html', 'ui-react', 'ux-review'].sort(),
+  );
+  // Terminals have no downstream — cascade == self.
+  assert.deepEqual(stageRegenSet('ui-html', true), ['ui-html']);
+  assert.deepEqual(stageRegenSet('ui-react', true), ['ui-react']);
+  // docs cascades to the whole workflow.
+  assert.equal(stageRegenSet('docs', true).length, PIPELINE_DEFS.length);
+});
+
+test('hasDownstream: only terminals lack downstream (scope choice hidden there)', () => {
+  assert.equal(hasDownstream('docs'), true);
+  assert.equal(hasDownstream('ux'), true);
+  assert.equal(hasDownstream('ux-review'), true);
+  assert.equal(hasDownstream('ui-html'), false);
+  assert.equal(hasDownstream('ui-react'), false);
+});
+
+test('upstreamStages: pre-run pull scope is inputs only — never self, never downstream', () => {
+  // ux-review pulls its inputs (docs/cj/ux) but NOT the UI terminals, so running
+  // it can't resurrect ui-html/ui-react outputs into the local cwd.
+  assert.deepEqual([...upstreamStages('ux-review')].sort(), ['cj', 'docs', 'ux', 'ux-research']);
+  assert.deepEqual(upstreamStages('docs'), []); // head stage has no inputs
+  assert.deepEqual([...upstreamStages('ux')].sort(), ['cj', 'docs', 'ux-research']);
+  // A terminal pulls the whole chain above it, but not the sibling terminal.
+  const uiHtmlUp = upstreamStages('ui-html');
+  assert.ok(uiHtmlUp.includes('ux-review') && uiHtmlUp.includes('ux'));
+  assert.ok(!uiHtmlUp.includes('ui-html') && !uiHtmlUp.includes('ui-react'));
+});
+
+test('ux stage owns the target-platform choice (acceptsPlatform), terminals follow the spec', () => {
+  // The UX stage authors each screen's `layout` (mobile|web), so the platform
+  // picker attaches there; the UI-Spec terminals just render per that field.
+  assert.equal(getPipelineDef('ux')?.acceptsPlatform, true);
+  assert.equal(getPipelineDef('ui-html')?.acceptsPlatform, undefined);
+  assert.equal(getPipelineDef('ui-react')?.acceptsPlatform, undefined);
+  // …and the flag reaches clients through the pipeline view list.
+  const view = listPipelineStatus({}, ['ux', 'ui-html']).find((p) => p.id === 'ux');
+  assert.equal(view?.acceptsPlatform, true);
+});
+
+test('deriveStateFromLocalFiles lights the merged stages from unprefixed pulled files', () => {
   // A freshly-pulled device has NO local run metadata — only the pulled output
-  // files. docs-to-ui and docs-to-html share output patterns, so each file must
-  // mark its owning stage in BOTH workflows. Before the fix, first-match-only
-  // attribution lit only the docs-to-ui stages and left the docs-to-html stepper
-  // empty ("run from scratch") even though every output was present.
+  // files. Legacy unprefixed files must mark their owning stages.
   const state = deriveStateFromLocalFiles([
-    'docs/confluence/_index.md', // → jira-ingest AND html-docs
-    'bidv-account-freeze-journey.json', // → customer-journey AND html-cj (-journey.json)
-    'bidv-account-freeze-ux-spec.json', // → ux-spec AND html-ux
+    'docs/confluence/_index.md', // → docs
+    'bidv-account-freeze-journey.json', // → cj (-journey.json)
+    'bidv-account-freeze-ux-spec.json', // → ux
     'prototype/index.html', // → ui-html
   ]);
-  for (const id of ['html-docs', 'html-cj', 'html-ux', 'ui-html']) {
-    assert.equal(state[id]?.status, 'succeeded', `${id} should be derived succeeded`);
-  }
-  // docs-to-ui stages still derive too (shared outputs belong to both workflows).
-  for (const id of ['jira-ingest', 'customer-journey', 'ux-spec']) {
+  for (const id of ['docs', 'cj', 'ux', 'ui-html']) {
     assert.equal(state[id]?.status, 'succeeded', `${id} should be derived succeeded`);
   }
 });
 
 test('deriveStateFromKgsFiles re-derives owning stage(s) from file path, not the stage tag', () => {
-  // The media `stage` tag is first-match-only (docs-to-ui). Deriving from PATH
-  // recovers the docs-to-html stage a shared output also belongs to.
+  // The media `stage` tag is stamped at upload time; old stores carry tags
+  // from RETIRED stage ids (html-docs, react-ux, jira-ingest, …). Deriving
+  // from PATH recovers the merged stage regardless of the tag.
   const state = deriveStateFromKgsFiles([
     { stage: 'jira-ingest', path: 'docs/confluence/_index.md' },
-    { stage: 'ux-spec', path: 'app-ux-spec.json' },
+    { stage: 'html-ux', path: 'docs-to-html/app-ux-spec.json' },
+    { stage: 'react-cj', path: 'docs-to-react/app-cj.json' },
   ]);
-  assert.equal(state['html-docs']?.status, 'succeeded');
-  assert.equal(state['html-ux']?.status, 'succeeded');
-  assert.equal(state['jira-ingest']?.status, 'succeeded');
-  assert.equal(state['ux-spec']?.status, 'succeeded');
+  assert.equal(state['docs']?.status, 'succeeded');
+  assert.equal(state['ux']?.status, 'succeeded');
+  assert.equal(state['cj']?.status, 'succeeded');
 });
 
 test('mergePipelineState: KGS done is authoritative, local fills transient state', () => {
   const local: ProjectPipelineState = {
-    'jira-ingest': { status: 'failed' }, // local says failed...
-    'feature-analysis': { status: 'running' },
+    docs: { status: 'failed' }, // local says failed...
+    cj: { status: 'running' },
   };
   const kgs: ProjectPipelineState = {
-    'jira-ingest': { status: 'succeeded' }, // ...but KGS has files → done (cross-device)
+    docs: { status: 'succeeded' }, // ...but KGS has files → done (cross-device)
   };
   const merged = mergePipelineState(local, kgs);
   // KGS file presence wins over a stale local 'failed'.
-  assert.equal(merged['jira-ingest']?.status, 'succeeded');
-  // No KGS files for feature-analysis → keep this device's in-flight 'running'.
-  assert.equal(merged['feature-analysis']?.status, 'running');
-  // After merge, feature-analysis is active (jira-ingest done per KGS).
-  assert.equal(computeActive(merged, def('feature-analysis')), true);
+  assert.equal(merged['docs']?.status, 'succeeded');
+  // No KGS files for cj → keep this device's in-flight 'running'.
+  assert.equal(merged['cj']?.status, 'running');
+  // After merge, cj is active (docs done per KGS).
+  assert.equal(computeActive(merged, def('cj')), true);
 });
 
 test('mergePipelineState: a local in-flight re-run (running) shows over old KGS files', () => {
-  const local: ProjectPipelineState = { 'ux-spec': { status: 'running' } };
-  const kgs: ProjectPipelineState = { 'ux-spec': { status: 'succeeded' } };
+  const local: ProjectPipelineState = { ux: { status: 'running' } };
+  const kgs: ProjectPipelineState = { ux: { status: 'succeeded' } };
   const merged = mergePipelineState(local, kgs);
-  assert.equal(merged['ux-spec']?.status, 'running');
+  assert.equal(merged['ux']?.status, 'running');
+});
+
+// ── syncExclude: react/ generated entries + template scaffold never sync ─────
+// (dist/ DOES sync since 2026-07: remote consumers — pipeline-studio — preview
+// the built app from the store and have no Docker builder to reconstruct it.)
+
+test('isSyncExcluded: react scaffold barred; agent sources AND built dist sync', () => {
+  // Excluded: generated entries, template-owned scaffold, render metadata —
+  // in BOTH the merged folder and the retired docs-to-react folder.
+  for (const wfDir of ['docs-to-ui', 'docs-to-react']) {
+    for (const rel of [
+      `${wfDir}/react/screens/home-entry.tsx`,
+      `${wfDir}/react/package.json`,
+      `${wfDir}/react/vite.config.ts`,
+      `${wfDir}/react/tsconfig.json`,
+      `${wfDir}/react/components.json`,
+      `${wfDir}/react/index.html`,
+      `${wfDir}/react/src/components/ui/button.tsx`,
+      `${wfDir}/react/src/lib/utils.ts`,
+      `${wfDir}/react/dist/index.html.artifact.json`,
+      `${wfDir}/react/dist/screens/home.html.artifact.json`,
+    ]) {
+      assert.equal(isSyncExcluded(rel), true, `${rel} should be sync-excluded`);
+    }
+  }
+  // Synced: everything the agent authored + the flow manifest + the built
+  // dist deliverable (index.html, per-screen pages, shared asset chunks).
+  for (const rel of [
+    'docs-to-ui/react/flow.json',
+    'docs-to-ui/react/src/App.tsx',
+    'docs-to-ui/react/src/main.tsx',
+    'docs-to-ui/react/src/index.css',
+    'docs-to-ui/react/src/screens/home.tsx',
+    // The agent-authored composite layer (use-case wrappers) MUST sync —
+    // only the template-owned ui/ + lib/ are barred.
+    'docs-to-ui/react/src/components/app/AccountRow.tsx',
+    'docs-to-ui/react/src/components/app/index.ts',
+    'docs-to-ui/react/dist/index.html',
+    'docs-to-ui/react/dist/screens/home.html',
+    'docs-to-ui/react/dist/assets/button-abc123.js',
+    'docs-to-ui/react/dist/assets/chunk-KS7C4IRE-BW1GRIZQ.css',
+    'docs-to-ui/some-ux-spec.json',
+    'docs-to-ui/docs/jira/story.md',
+    'docs-to-react/react/flow.json',
+    'docs-to-react/react/dist/screens/home.html',
+  ]) {
+    assert.equal(isSyncExcluded(rel), false, `${rel} should sync`);
+  }
+});
+
+test('isSyncExcluded: non-react outputs are untouched by the react exclusions', () => {
+  assert.equal(isSyncExcluded('docs-to-ui/prototype/home.html'), false);
+  assert.equal(isSyncExcluded('docs-to-html/prototype/home.html'), false);
+  // A stray screens/ folder at the workflow root must not be caught by
+  // ui-react's `react/screens/` pattern.
+  assert.equal(isSyncExcluded('docs-to-ui/screens/home.json'), false);
+  // dist/index.html must NOT be caught by the `react/index.html` scaffold
+  // pattern (endsWith-on-basename only matches the exact relative path).
+  assert.equal(isSyncExcluded('react/dist/index.html'), false);
+  // Un-namespaced legacy scaffold paths still barred.
+  assert.equal(isSyncExcluded('react/index.html'), true);
+});
+
+test('history artifacts (_v/ snapshots + changelog.json) never light a stage', () => {
+  // Frozen snapshot paths repeat real output shapes — every classifier must
+  // ignore them or old versions would re-mark stages done forever.
+  assert.deepEqual(stagesForOutput('_v/v3/docs-to-ui/prototype/home.html'), []);
+  assert.deepEqual(stagesForOutput('_v/v1/docs-to-react/mua-sim-customer-journey.json'), []);
+  assert.deepEqual(stagesForOutput('changelog.json'), []);
+  const state = deriveStateFromKgsFiles([
+    { path: '_v/v2/docs-to-html/some-ux-spec.json' },
+    { path: 'changelog.json' },
+  ]);
+  assert.deepEqual(state, {});
+});
+
+test('syncExclude never bars a stage-gating source: react/ still lights ui-react from synced files', () => {
+  // Cross-device gating derives "done" from store files — flow.json/src keep
+  // the ui-react stage discoverable even though scaffold files don't sync.
+  const state = deriveStateFromKgsFiles([{ path: 'docs-to-ui/react/flow.json' }]);
+  assert.equal(state['ui-react']?.status, 'succeeded');
+  // Legacy folder derives the same stage.
+  const legacy = deriveStateFromKgsFiles([{ path: 'docs-to-react/react/flow.json' }]);
+  assert.equal(legacy['ui-react']?.status, 'succeeded');
 });
