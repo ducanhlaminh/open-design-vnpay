@@ -24,6 +24,7 @@
     "seed:test-projects": "node --experimental-strip-types scripts/seed-test-projects.ts",
     "seed:curated-design-skills": "node --experimental-strip-types scripts/seed-curated-design-skills.ts",
     "release:github": "node --experimental-strip-types scripts/release-github.ts",
+    "release:all": "bash scripts/build-and-release.sh",
     "typecheck": "pnpm -r --workspace-concurrency=4 --if-present run typecheck && tsc -p scripts/tsconfig.json --noEmit"
   },
   "devDependencies": {
