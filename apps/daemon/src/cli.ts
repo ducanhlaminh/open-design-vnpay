@@ -868,28 +868,6 @@ async function runMediaGenerate(rawArgs) {
     process.exit(2);
   }
 
-  if (sub === 'feedback') {
-    const pipelineId = positional[0];
-    const rating = flags.rating;
-    if (!pipelineId || !flags.run || !rating) {
-      console.error('Usage: od pipeline feedback <stage> --project <id> --run <id> --rating <ready|minor_edits|major_edits|unusable>');
-      process.exit(2);
-    }
-    const issues = typeof flags.issue === 'string'
-      ? flags.issue.split(',').map((value) => value.trim()).filter(Boolean)
-      : [];
-    const resp = await fetch(`${base}/api/pipelines/feedback`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ projectId, workflowId: flags.workflow || 'docs-to-ui', pipelineId,
-        runId: flags.run, rating, issues, comment: flags.comment || '' }),
-    });
-    if (!resp.ok) return structuredHttpFailure(resp);
-    const data = await resp.json();
-    if (flags.json) return writeJson(data);
-    console.log(`Feedback recorded for ${pipelineId} (${flags.run}): ${rating}`);
-    return;
-  }
-
   const surface = flags.surface;
   if (!surface || !['image', 'video', 'audio'].includes(surface)) {
     console.error('--surface must be one of: image | video | audio');
@@ -6851,6 +6829,28 @@ async function runPipeline(args) {
   if (!projectId) {
     console.error('Missing --project <id> (or set OD_PROJECT_ID). It must be a KGS project pulled with `od kg pull <id>` — see `od pipeline projects`.');
     process.exit(2);
+  }
+
+  if (sub === 'feedback') {
+    const pipelineId = positional[0];
+    const rating = flags.rating;
+    if (!pipelineId || !flags.run || !rating) {
+      console.error('Usage: od pipeline feedback <stage> --project <id> --run <id> --rating <ready|minor_edits|major_edits|unusable>');
+      process.exit(2);
+    }
+    const issues = typeof flags.issue === 'string'
+      ? flags.issue.split(',').map((value) => value.trim()).filter(Boolean)
+      : [];
+    const resp = await fetch(`${base}/api/pipelines/feedback`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId, workflowId: flags.workflow || 'docs-to-ui', pipelineId,
+        runId: flags.run, rating, issues, comment: flags.comment || '' }),
+    });
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Feedback recorded for ${pipelineId} (${flags.run}): ${rating}`);
+    return;
   }
 
   if (sub === 'list') {

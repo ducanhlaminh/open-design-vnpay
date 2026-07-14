@@ -15,8 +15,9 @@ Two tiers, mapped onto the existing 3-part project plumbing (identity + media
 folder + KGS node) so no new primitive is introduced:
 
 - **App (Project)** — the container. A media project keyed by its `appId` whose
-  shared context lives under `app-context/**` (markdown for the charter/domain,
-  JSON for IA/inventory). Media is the home because "media = where config lives"
+  shared context lives under `app-context/**` (the UX charter is a JSON list of
+  criteria — id/priority(must|should|nice)/text/area — same shape as ux-research's
+  report.json). Media is the home because "media = where config lives"
   (KGS has no node-update API).
 - **Feature** — one pipeline run (today's studio "project"). Its `project.json`
   gains an optional `appId` pointing at its app.
@@ -29,7 +30,7 @@ Context flows **inherit → extend**:
   is staged as `./.ux-kb`. The kickoff tells the agent to treat it as the app-
   wide source of truth.
 - **Extend (write, reviewed):** a feature never edits `./.app-context`. It only
-  *proposes* additions by appending to an `app-context-delta.md` output file. A
+  *proposes* additions by appending to an `app-context-delta.json` output file. A
   human **promotes** deltas into the app context — versioned via the existing
   `_v/<verId>` + `changelog.json` output-versioning.
 
@@ -76,7 +77,7 @@ unchanged. Full CRUD:
   (identity + media) · `GET /api/apps/:id` (detail + caller role/canManage).
 - `PUT /api/apps/:id { name }` rename · `DELETE /api/apps/:id` (identity + media).
 - `PUT /api/projects/:id/app { appId }` link/unlink a feature (empty = unlink).
-- `GET/PUT /api/apps/:id/charter` read/write `app-context/ux-charter.md`.
+- `GET/PUT /api/apps/:id/charter` read/write `app-context/ux-charter.json` (structured UX criteria: id/priority/text/area).
 - Gates: create → `projects:manage`/admin; per-app writes (rename/delete/charter/
   promote) → `projects:manage`/admin **or the app owner**; reads → membership.
 
@@ -88,27 +89,31 @@ proxy to identity, which already knows the app).
 ## Phase 3 — Promote (extend, reviewed) — DONE (pipeline-studio server)
 
 - `GET /api/projects/:id/app-delta` — a feature's pending proposal.
-- `POST /api/apps/:id/promote { featureId, markdown? }` — snapshot the current
-  charter under `app-context/_history/`, then set it to the FE-reviewed `markdown`
-  (or append the raw delta under a provenance heading), and clear the consumed
-  delta. Human-in-the-loop; an auto-reconcile agent is later/optional.
+- `POST /api/apps/:id/promote { featureId, charter? }` — snapshot the current
+  charter under `app-context/_history/`, then set it to the FE-reviewed `charter`
+  (or MERGE the delta's criteria into the current charter BY id), and clear the
+  consumed delta. Human-in-the-loop; an auto-reconcile agent is later/optional.
 
 ## Phase 4 — Studio UI — DONE (functional core)
 
 `AppLinkCard` on the project-detail page (`src/components/app-link-card.tsx`):
 - **App selector** — link/unlink the feature to an app, or create one inline
   (`api.apps` / `createApp` / `linkFeatureApp`).
-- **Charter editor** modal — read/write the shared `ux-charter.md`.
-- **Promote** — when the feature's last run left a delta, review it and promote
-  the merged markdown into the charter.
+- **Shared-data modal** (`SharedDataModal`, opened from AppDetail's "Dữ liệu dùng
+  chung" button) — two panes: left rail of shared data (UX Charter, Design
+  System), right pane RENDERS each nicely — the charter as criteria cards grouped
+  by priority (not a raw table/JSON), the design system as palette + mini-mock.
+  Charter editing is a JSON editor behind a "Sửa" button (owner/manage).
+- **Promote** — when the feature's last run left a delta, review it and promote;
+  the delta's criteria merge into the charter BY id.
 Adapter surfaces `config.appId`; `ProjectConfig`/`api` carry the app methods.
 
 ### Apps-first navigation (also done)
 
 The studio index is now the **Apps** page (`pages/apps.tsx`): a grid of app
 cards (+ a "Chưa gán app" bucket for unlinked features); clicking one opens
-`/app/:appId` (`pages/app-detail.tsx`) — the app's feature list + a "Charter dùng
-chung" editor. The old flat feature list moved to `/all`; the sidebar leads with
+`/app/:appId` (`pages/app-detail.tsx`) — the app's feature list + the "Dữ liệu
+dùng chung" modal. The old flat feature list moved to `/all`; the sidebar leads with
 **Apps** then **Tất cả feature**. The projects list API now carries `appId` per
 row (read from `project.json` in `loadProjects`) so grouping needs no per-row
 fetch.

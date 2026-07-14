@@ -188,7 +188,14 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     const issues = Array.isArray(body.issues)
       ? Array.from(new Set(body.issues.filter((issue): issue is PipelinePulseIssue => issueAllowlist.has(issue))))
       : [];
-    if ((body.rating === 'major_edits' || body.rating === 'unusable') && issues.length === 0) {
+    // The `issues` allowlist is a PULSE-survey field; the DEEP survey captures
+    // its own rich `answers` instead, so only gate on issues for pulse — else a
+    // major_edits/unusable deep submission (the most important feedback) 400s.
+    if (
+      body.surveyKind !== 'deep' &&
+      (body.rating === 'major_edits' || body.rating === 'unusable') &&
+      issues.length === 0
+    ) {
       return res.status(400).json({ error: 'at least one issue is required for this rating' });
     }
     try {
