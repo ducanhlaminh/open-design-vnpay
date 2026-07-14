@@ -93,6 +93,15 @@ ls "$APP/Contents/Resources/open-design-web-standalone/apps/web/server.js"
 
 ## 6. Publish lên GitHub Release (feed auto-update + tải thủ công)
 
+> **TL;DR — 1 lệnh làm hết** (bump → build mac arm64 + Intel → win portable zip → publish):
+> ```bash
+> pnpm release:all 0.8.2            # bump lên 0.8.2 rồi build+publish cả 3 nền tảng
+> pnpm release:all                 # dùng version hiện tại
+> pnpm release:all 0.8.2 --dry-run # build hết, in metadata, KHÔNG upload
+> # cờ khác: --signed (ký mac), --skip-win (chỉ mac)
+> ```
+> Script: `scripts/build-and-release.sh`. Phần dưới là chi tiết từng bước / khi cần chạy tay.
+
 Script `pnpm release:github` (`scripts/release-github.ts`) đẩy DMG mac (+ Windows) lên một GitHub Release `open-design-v<version>` và sinh `metadata.json` — feed mà app tự đọc để phát hiện bản mới (`defaultMetadataUrl` trong `apps/desktop/src/main/updater.ts` trỏ `releases/latest/download/metadata.json`).
 
 ### Yêu cầu
