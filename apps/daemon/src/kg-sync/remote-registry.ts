@@ -44,6 +44,11 @@ interface MediaRow {
   files: number;
 }
 
+/** Media-folder id prefix marking a folder as an App container (matches
+ *  pipeline-studio's server/apps.ts APP_PREFIX) — a grouping + shared
+ *  UX-charter layer above features, never a pipeline target itself. */
+export const APP_PREFIX = 'app--';
+
 /** Merge the two remote sources into one project list, keyed by projectId and
  *  sorted by id. A project present in only one store still appears, with the
  *  matching `inKgs`/`inMedia` flag false. */
@@ -56,6 +61,7 @@ export function mergeRemoteProjects(kgs: KgsRow[], media: MediaRow[]): RemotePro
       inKgs: true,
       inMedia: false,
       files: 0,
+      isApp: k.projectId.startsWith(APP_PREFIX),
     });
   }
   for (const m of media) {
@@ -70,6 +76,7 @@ export function mergeRemoteProjects(kgs: KgsRow[], media: MediaRow[]): RemotePro
         inKgs: false,
         inMedia: true,
         files: m.files,
+        isApp: m.projectId.startsWith(APP_PREFIX),
       });
     }
   }

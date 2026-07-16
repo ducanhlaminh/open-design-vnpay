@@ -1762,10 +1762,35 @@ export function PullAllModal({
   }, []);
 
   const q = search.trim().toLowerCase();
-  const filtered = (rows ?? []).filter(
-    (r) => !q || r.name.toLowerCase().includes(q) || r.projectId.toLowerCase().includes(q),
-  );
+  const matchesQuery = (r: RemoteProject) =>
+    !q || r.name.toLowerCase().includes(q) || r.projectId.toLowerCase().includes(q);
+
+  // Apps group features but have no KGS workspace of their own (mirrors
+  // pipeline-studio's server/apps.ts) — never individually pullable, so they
+  // never enter `filtered`/`selected`; they're only rendered as headers.
+  const appsById = new Map((rows ?? []).filter((r) => r.isApp).map((r) => [r.projectId, r]));
+  const features = (rows ?? []).filter((r) => !r.isApp);
+  const filtered = features.filter(matchesQuery);
   const allVisibleSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.projectId));
+
+  // Group visible features by parent app (pipeline-studio App → Feature
+  // hierarchy); features with no appId, or whose app isn't in this list
+  // (filtered by scope), stay in the "ungrouped" bucket.
+  const grouped = new Map<string, RemoteProject[]>();
+  const ungrouped: RemoteProject[] = [];
+  for (const r of filtered) {
+    const appId = r.appId && appsById.has(r.appId) ? r.appId : null;
+    if (!appId) {
+      ungrouped.push(r);
+      continue;
+    }
+    const list = grouped.get(appId) ?? [];
+    list.push(r);
+    grouped.set(appId, list);
+  }
+  const appGroups = [...grouped.entries()]
+    .map(([appId, items]) => ({ app: appsById.get(appId)!, items }))
+    .sort((a, b) => a.app.name.localeCompare(b.app.name));
 
   const toggle = (id: string) => {
     const next = new Set(selected);
@@ -1778,6 +1803,29 @@ export function PullAllModal({
     if (allVisibleSelected) for (const r of filtered) next.delete(r.projectId);
     else for (const r of filtered) next.add(r.projectId);
     setSelected(next);
+  };
+  const renderRow = (r: RemoteProject, nested: boolean) => {
+    const isLocal = localIds.has(r.projectId);
+    return (
+      <li key={r.projectId}>
+        <label className={`pl-pullall__row${nested ? ' pl-pullall__row--nested' : ''}`}>
+          <input type="checkbox" checked={selected.has(r.projectId)} onChange={() => toggle(r.projectId)} />
+          <span className="pl-pullall__avatar" aria-hidden="true">
+            <Icon name="folder" size={15} />
+          </span>
+          <span className="pl-pullall__text">
+            <span className="pl-pullall__name">{r.name}</span>
+            {r.name !== r.projectId ? <span className="pl-pullall__id">{r.projectId}</span> : null}
+          </span>
+          <span className="pl-pullall__meta">
+            {isLocal ? <span className="pl-pullall__badge">local</span> : null}
+            <span className="pl-pullall__files">
+              {r.files > 0 ? `${r.files} files` : r.inKgs ? 'graph only' : '—'}
+            </span>
+          </span>
+        </label>
+      </li>
+    );
   };
 
   const submit = async () => {
@@ -1807,7 +1855,7 @@ export function PullAllModal({
       footer={
         <>
           <span className="pl-pullall__footcount" aria-live="polite">
-            {selected.size > 0 ? `${selected.size} of ${rows?.length ?? 0} selected` : ''}
+            {selected.size > 0 ? `${selected.size} of ${features.length} selected` : ''}
           </span>
           <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
             Cancel
@@ -1839,7 +1887,7 @@ export function PullAllModal({
           <Icon name="spinner" size={16} />
           <span>Loading remote projects…</span>
         </div>
-      ) : rows.length === 0 ? (
+      ) : features.length === 0 ? (
         <div className="pl-pullall__state">
           {scopeReason ?? 'Không có dự án nào bạn được tham gia trên store — nhờ quản lý add bạn vào dự án trên Pipeline Studio.'}
         </div>
@@ -1849,7 +1897,7 @@ export function PullAllModal({
             Choose which remote projects to mirror locally — graph and output files are pulled
             together.
           </p>
-          {rows.length > 8 ? (
+          {features.length > 8 ? (
             <input
               type="search"
               className="pl-pullall__search"
@@ -1865,39 +1913,23 @@ export function PullAllModal({
                 Select all{q ? ' matches' : ''}
               </span>
               <span className="pl-pullall__headcount">
-                {selected.size}/{rows.length}
+                {selected.size}/{features.length}
               </span>
             </label>
             <ul className="pl-pullall__items">
-              {filtered.map((r) => {
-                const isLocal = localIds.has(r.projectId);
-                return (
-                  <li key={r.projectId}>
-                    <label className="pl-pullall__row">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(r.projectId)}
-                        onChange={() => toggle(r.projectId)}
-                      />
-                      <span className="pl-pullall__avatar" aria-hidden="true">
-                        <Icon name="folder" size={15} />
-                      </span>
-                      <span className="pl-pullall__text">
-                        <span className="pl-pullall__name">{r.name}</span>
-                        {r.name !== r.projectId ? (
-                          <span className="pl-pullall__id">{r.projectId}</span>
-                        ) : null}
-                      </span>
-                      <span className="pl-pullall__meta">
-                        {isLocal ? <span className="pl-pullall__badge">local</span> : null}
-                        <span className="pl-pullall__files">
-                          {r.files > 0 ? `${r.files} files` : r.inKgs ? 'graph only' : '—'}
-                        </span>
-                      </span>
-                    </label>
-                  </li>
-                );
-              })}
+              {/* App → Feature hierarchy (pipeline-studio's App concept): each
+                  app is a non-checkable group header — it has no KGS
+                  workspace of its own — with its features nested underneath. */}
+              {appGroups.map(({ app, items }) => (
+                <li key={app.projectId}>
+                  <div className="pl-pullall__group">
+                    <Icon name="folder-filled" size={13} />
+                    <span>{app.name}</span>
+                  </div>
+                  <ul className="pl-pullall__items">{items.map((r) => renderRow(r, true))}</ul>
+                </li>
+              ))}
+              {ungrouped.map((r) => renderRow(r, false))}
               {filtered.length === 0 ? (
                 <li className="pl-pullall__state">No project matches “{search}”.</li>
               ) : null}

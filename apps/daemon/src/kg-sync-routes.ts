@@ -24,6 +24,7 @@ import { pushProject } from './kg-sync/push.js';
 import { KgSyncRepo } from './kg-sync/persistence.js';
 import { loadRemoteProjects, projectIdFromWorkspace } from './kg-sync/remote-registry.js';
 import { pullScopeFor } from './kg-sync/identity-registry.js';
+import { resolveAppId } from './app-context.js';
 import { WORKFLOWS } from './pipelines.js';
 import { listProjects } from './db.js';
 
@@ -337,6 +338,19 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       const scope = await pullScopeFor(getMachineUser()?.sub ?? null);
       const data = await loadRemoteProjects(kgs, media);
       const visible = scope.all ? data : data.filter((p: { projectId: string }) => scope.ids.has(p.projectId));
+      // App → Feature grouping (mirrors pipeline-studio's App concept): a
+      // feature's project.json optionally carries an appId linking it to its
+      // parent App. Resolved here (not in loadRemoteProjects) so the pure
+      // merge stays fake-testable; App entries themselves are never linked to
+      // another app. Best-effort per project — one project.json read failing
+      // must not fail the whole list.
+      await Promise.all(
+        visible
+          .filter((p) => !p.isApp)
+          .map(async (p) => {
+            p.appId = await resolveAppId(p.projectId);
+          }),
+      );
       res.json({ ok: true, data: visible, ...(scope.reason ? { reason: scope.reason } : {}) });
     } catch (err) {
       sendApiError(res, 502, 'KG_REMOTE_FAILED', (err as Error).message);

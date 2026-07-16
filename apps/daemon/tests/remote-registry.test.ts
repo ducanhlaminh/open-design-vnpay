@@ -38,15 +38,26 @@ describe('mergeRemoteProjects', () => {
       ],
     );
     expect(merged).toEqual([
-      { projectId: 'a-kgs', name: 'KgsOnly', inKgs: true, inMedia: false, files: 0 },
-      { projectId: 'b-both', name: 'Both', inKgs: true, inMedia: true, files: 5 },
-      { projectId: 'c-media', name: 'c-media', inKgs: false, inMedia: true, files: 2 },
+      { projectId: 'a-kgs', name: 'KgsOnly', inKgs: true, inMedia: false, files: 0, isApp: false },
+      { projectId: 'b-both', name: 'Both', inKgs: true, inMedia: true, files: 5, isApp: false },
+      { projectId: 'c-media', name: 'c-media', inKgs: false, inMedia: true, files: 2, isApp: false },
     ]);
   });
 
   it('uses projectId as name when a media-only project has no KGS name', () => {
     const merged = mergeRemoteProjects([], [{ projectId: 'orphan', files: 1 }]);
     expect(merged[0]).toMatchObject({ projectId: 'orphan', name: 'orphan', inKgs: false, inMedia: true });
+  });
+
+  it('flags an App container (media folder app--<slug>) via isApp, whether seen from KGS or media', () => {
+    const fromKgs = mergeRemoteProjects([{ projectId: 'app--bidv', name: 'BIDV' }], []);
+    expect(fromKgs[0]).toMatchObject({ projectId: 'app--bidv', isApp: true });
+
+    const fromMedia = mergeRemoteProjects([], [{ projectId: 'app--bidv', files: 2 }]);
+    expect(fromMedia[0]).toMatchObject({ projectId: 'app--bidv', isApp: true });
+
+    const feature = mergeRemoteProjects([{ projectId: 'BIDV-onboarding', name: 'Onboarding' }], []);
+    expect(feature[0]).toMatchObject({ projectId: 'BIDV-onboarding', isApp: false });
   });
 });
 
@@ -69,13 +80,21 @@ describe('loadRemoteProjects', () => {
     const rows = await loadRemoteProjects(kgs, media);
     const byId = Object.fromEntries(rows.map((r) => [r.projectId, r]));
     expect(rows).toHaveLength(2);
-    expect(byId.XPOS).toEqual({ projectId: 'XPOS', name: 'X POS', inKgs: true, inMedia: true, files: 3 });
+    expect(byId.XPOS).toEqual({
+      projectId: 'XPOS',
+      name: 'X POS',
+      inKgs: true,
+      inMedia: true,
+      files: 3,
+      isApp: false,
+    });
     expect(byId['media-only']).toEqual({
       projectId: 'media-only',
       name: 'media-only',
       inKgs: false,
       inMedia: true,
       files: 1,
+      isApp: false,
     });
   });
 
@@ -90,6 +109,8 @@ describe('loadRemoteProjects', () => {
       listAllFiles: async () => [1, 2],
     };
     const rows = await loadRemoteProjects(kgs, media);
-    expect(rows).toEqual([{ projectId: 'XPOS', name: 'XPOS', inKgs: false, inMedia: true, files: 2 }]);
+    expect(rows).toEqual([
+      { projectId: 'XPOS', name: 'XPOS', inKgs: false, inMedia: true, files: 2, isApp: false },
+    ]);
   });
 });

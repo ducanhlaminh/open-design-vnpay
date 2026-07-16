@@ -19,6 +19,14 @@ export interface RemoteProject {
   inMedia: boolean;
   /** File count in the media folder (0 when inMedia is false). */
   files: number;
+  /** True when projectId is an App container (media folder `app--<slug>`,
+   *  per pipeline-studio's server/apps.ts) — not a pipeline target itself,
+   *  just a grouping + shared UX-charter layer above features. */
+  isApp: boolean;
+  /** The parent App's projectId, read from this feature's project.json
+   *  (apps/daemon/src/app-context.ts resolveAppId). Undefined/null when
+   *  ungrouped, or when this entry is itself an App. */
+  appId?: string | null;
 }
 
 /** What a remote delete removes. Phase 1 implements `files` only. */
