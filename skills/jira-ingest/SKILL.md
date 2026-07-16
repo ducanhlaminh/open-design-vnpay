@@ -53,10 +53,17 @@ python3 scripts/confluence_export.py <page-url-or-id> --out ./docs/confluence
   from the `mcp-atlassian` entry in the nearest `.od/mcp-config.json` — no setup.
 - **Output**: `./docs/confluence/<…nested folders…>/<Page Title>.md`, each with
   frontmatter (`page_id`, `title`, `url`, `depth`). Feeds P2 like the Jira `.md`.
-- **Conversion**: uses `html2text` (falls back to a basic tag-strip if absent).
-- **Sanity-check the count** it prints ("Exported N page(s)") against the tree you
-  expect. If it wrote only 1 file you passed a leaf page, not the index — pass the
-  index page id. `--no-root` skips the index page itself; `--json` emits a manifest.
+- **Images**: any `<img>` from the same Confluence host is downloaded (same
+  Bearer token) into a sibling `attachments/` folder next to that page's `.md`,
+  and the Markdown `![alt](...)` link is rewritten to the local relative path —
+  so images survive outside a logged-in Confluence session. Images from other
+  hosts (external CDNs, emoji sprites) are left as-is, untouched.
+- **Conversion**: uses `html2text` (falls back to a basic tag-strip if absent);
+  both paths preserve images.
+- **Sanity-check the count** it prints ("Exported N page(s), M image(s)")
+  against the tree you expect. If it wrote only 1 file you passed a leaf page,
+  not the index — pass the index page id. `--no-root` skips the index page
+  itself; `--json` emits a manifest (includes an `images` count per page).
 
 ## Workflow (do these in order)
 

@@ -21,6 +21,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import unquote, urlparse
 
 
 def find_creds():
@@ -64,6 +65,87 @@ def api(base, token, path, retries=3):
     raise RuntimeError("unreachable")
 
 
+def resolve_url(base, src):
+    """Resolve a possibly-relative Confluence image src against the API base."""
+    if src.startswith("http://") or src.startswith("https://"):
+        return src
+    if src.startswith("//"):
+        return "https:" + src
+    if src.startswith("/"):
+        return base + src
+    return base + "/" + src
+
+
+def is_same_host(base, url):
+    return urlparse(base).netloc == urlparse(url).netloc
+
+
+def download_binary(token, url, retries=3):
+    for attempt in range(retries):
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+        try:
+            with urllib.request.urlopen(req, timeout=40) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 502, 503) and attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+    raise RuntimeError("unreachable")
+
+
+def filename_from_url(url):
+    name = unquote(os.path.basename(urlparse(url).path)) or "image"
+    return sanitize(name)
+
+
+IMG_SRC_RE = re.compile(r'(<img\b[^>]*\bsrc=["\'])([^"\']+)(["\'])', re.IGNORECASE)
+
+
+def localize_images(base, token, html, attachments_dir, rel_prefix):
+    """Download every same-host <img src> referenced in html into
+    attachments_dir and rewrite src to a path relative to the page's .md
+    file, so the exported Markdown carries real images instead of
+    Confluence-authenticated URLs that break outside a logged-in session."""
+    if not html:
+        return html, 0
+    downloaded = {}
+    count = 0
+
+    def repl(m):
+        nonlocal count
+        prefix, src, suffix = m.group(1), m.group(2), m.group(3)
+        if src.startswith("data:"):
+            return m.group(0)
+        url = resolve_url(base, src)
+        if not is_same_host(base, url):
+            return m.group(0)
+        if url in downloaded:
+            return f"{prefix}{rel_prefix}/{downloaded[url]}{suffix}"
+        try:
+            data = download_binary(token, url)
+        except Exception as e:
+            print(f"  ! image download failed ({url}): {e}", file=sys.stderr)
+            return m.group(0)
+        name = filename_from_url(url)
+        candidate, n = name, 1
+        os.makedirs(attachments_dir, exist_ok=True)
+        while os.path.exists(os.path.join(attachments_dir, candidate)):
+            with open(os.path.join(attachments_dir, candidate), "rb") as f:
+                if f.read() == data:
+                    break
+            stem, ext = os.path.splitext(name)
+            candidate, n = f"{stem}-{n}{ext}", n + 1
+        else:
+            with open(os.path.join(attachments_dir, candidate), "wb") as f:
+                f.write(data)
+            count += 1
+        downloaded[url] = candidate
+        return f"{prefix}{rel_prefix}/{candidate}{suffix}"
+
+    return IMG_SRC_RE.sub(repl, html), count
+
+
 def page_id_from_arg(arg):
     if arg.isdigit():
         return arg
@@ -87,8 +169,20 @@ def html_to_md(html):
         h.unicode_snob = True
         return h.handle(html)
     except Exception:
-        # stdlib fallback (lower fidelity) if html2text is unavailable
-        text = re.sub(r"(?s)<(script|style).*?</\1>", "", html)
+        # stdlib fallback (lower fidelity) if html2text is unavailable. Turn
+        # <img> into Markdown image syntax BEFORE the generic tag-strip below
+        # (which would otherwise drop the (already-localized) src entirely).
+        def img_to_md(m):
+            tag = m.group(0)
+            src_m = re.search(r'src=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+            if not src_m:
+                return ""
+            alt_m = re.search(r'alt=["\']([^"\']*)["\']', tag, re.IGNORECASE)
+            alt = alt_m.group(1) if alt_m else ""
+            return f"![{alt}]({src_m.group(1)})"
+
+        text = re.sub(r"<img\b[^>]*>", img_to_md, html, flags=re.IGNORECASE)
+        text = re.sub(r"(?s)<(script|style).*?</\1>", "", text)
         text = re.sub(r"(?i)<br\s*/?>", "\n", text)
         text = re.sub(r"(?i)</(p|div|li|tr|h[1-6])>", "\n", text)
         text = re.sub(r"<[^>]+>", "", text)
@@ -162,14 +256,19 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     written = []
 
+    total_images = 0
     for meta in targets:
         pid = str(meta["id"])
         full = fetch_page(base, token, pid)  # ensure body present (+ ancestors)
         title = full.get("title", meta.get("title", pid))
-        md = html_to_md(body_html(full))
         folders = rel_folders(full, root_id)
         target_dir = os.path.join(out_dir, *folders) if folders else out_dir
         os.makedirs(target_dir, exist_ok=True)
+        html, img_count = localize_images(
+            base, token, body_html(full), os.path.join(target_dir, "attachments"), "attachments",
+        )
+        total_images += img_count
+        md = html_to_md(html)
         fp = os.path.join(target_dir, sanitize(title) + ".md")
         url = f"{base}/pages/viewpage.action?pageId={pid}"
         with open(fp, "w", encoding="utf-8") as f:
@@ -182,14 +281,21 @@ def main():
                 "---\n\n"
                 f"# {title}\n\n{md}\n"
             )
-        written.append({"id": pid, "title": title, "path": fp})
+        written.append({"id": pid, "title": title, "path": fp, "images": img_count})
         if not as_json:
-            print(f"✅ {fp}")
+            suffix = f" (+{img_count} image(s))" if img_count else ""
+            print(f"✅ {fp}{suffix}")
 
     if as_json:
-        print(json.dumps({"root": root_id, "count": len(written), "files": written}, ensure_ascii=False, indent=2))
+        print(json.dumps(
+            {"root": root_id, "count": len(written), "images": total_images, "files": written},
+            ensure_ascii=False, indent=2,
+        ))
     else:
-        print(f"\n✅ Exported {len(written)} page(s) into {out_dir}/ (root + {len(descendants)} descendant pages, no nesting missed).")
+        print(
+            f"\n✅ Exported {len(written)} page(s) into {out_dir}/ "
+            f"(root + {len(descendants)} descendant pages, {total_images} image(s), no nesting missed)."
+        )
 
 
 if __name__ == "__main__":
