@@ -38,10 +38,14 @@ function channelFromNamespace(namespace: string): ReleaseChannelIdentity | null 
   return null;
 }
 
-function productNameForChannel(channel: ReleaseChannelIdentity): string {
+// Preview embeds the resolved app version in the display/executable name
+// (e.g. "Open Design 0.8.1-preview.5") so successive preview builds installed
+// side by side are distinguishable at a glance; other channels keep a fixed
+// channel-word name.
+function productNameForChannel(channel: ReleaseChannelIdentity, version: string | null | undefined): string {
   if (channel === "beta") return `${PRODUCT_NAME} Beta`;
   if (channel === "nightly") return `${PRODUCT_NAME} Nightly`;
-  if (channel === "preview") return `${PRODUCT_NAME} Preview`;
+  if (channel === "preview") return version != null && version.length > 0 ? `${PRODUCT_NAME} ${version}` : `${PRODUCT_NAME} Preview`;
   return PRODUCT_NAME;
 }
 
@@ -57,7 +61,7 @@ export function resolveMacInstallIdentity(config: Pick<ToolPackConfig, "namespac
   const channel = channelFromVersion(config.appVersion) ?? channelFromNamespace(config.namespace);
   const channelIdentity = channel == null
     ? { appId: "io.open-design.desktop", productName: PRODUCT_NAME }
-    : { appId: appIdForChannel(channel), productName: productNameForChannel(channel) };
+    : { appId: appIdForChannel(channel), productName: productNameForChannel(channel, config.appVersion) };
   const publicAppBundleName = `${channelIdentity.productName}.app`;
   const systemAppBundleName = channel != null
     ? publicAppBundleName

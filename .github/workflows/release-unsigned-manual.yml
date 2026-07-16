@@ -153,6 +153,11 @@ jobs:
           pnpm --filter @open-design/web build:sidecar
 
       - name: Build mac arm64 DMG (unsigned)
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
         run: |
           pnpm exec tools-pack mac build \
             --dir "$RUNNER_TEMP/tools-pack" \
@@ -215,6 +220,11 @@ jobs:
           pnpm --filter @open-design/web build:sidecar
 
       - name: Build mac intel DMG (unsigned)
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
         run: |
           pnpm exec tools-pack mac build \
             --dir "$RUNNER_TEMP/tools-pack" \
@@ -286,6 +296,11 @@ jobs:
 
       - name: Build windows portable zip
         shell: pwsh
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
         run: |
           $ErrorActionPreference = "Stop"
           pnpm exec tools-pack win build `

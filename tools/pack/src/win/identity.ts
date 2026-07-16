@@ -34,10 +34,13 @@ function channelFromNamespace(namespace: string): ReleaseChannelIdentity | null 
   return null;
 }
 
-function displayNameForChannel(channel: ReleaseChannelIdentity): string {
+// Preview embeds the resolved app version in the display name (e.g.
+// "Open Design 0.8.1-preview.5") so successive preview builds are
+// distinguishable at a glance; other channels keep a fixed channel-word name.
+function displayNameForChannel(channel: ReleaseChannelIdentity, version: string | null | undefined): string {
   if (channel === "beta") return `${PRODUCT_NAME} Beta`;
   if (channel === "nightly") return `${PRODUCT_NAME} Nightly`;
-  if (channel === "preview") return `${PRODUCT_NAME} Preview`;
+  if (channel === "preview") return version != null && version.length > 0 ? `${PRODUCT_NAME} ${version}` : `${PRODUCT_NAME} Preview`;
   return PRODUCT_NAME;
 }
 
@@ -48,7 +51,7 @@ function sanitizeNamespace(value: string): string {
 export function resolveWinInstallIdentity(config: Pick<ToolPackConfig, "namespace" | "appVersion">): WinInstallIdentity {
   const namespaceToken = sanitizeNamespace(config.namespace);
   const channel = channelFromVersion(config.appVersion) ?? channelFromNamespace(config.namespace);
-  const displayName = channel == null ? `${PRODUCT_NAME} ${namespaceToken}` : displayNameForChannel(channel);
+  const displayName = channel == null ? `${PRODUCT_NAME} ${namespaceToken}` : displayNameForChannel(channel, config.appVersion);
 
   return {
     appPathsKey: `Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\${displayName}.exe`,
