@@ -73,6 +73,9 @@ function resolveHeadlessConfig(): PackagedConfig {
     atlassianConfluenceToken: process.env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim() || null,
     sandboxDefault: process.env.OD_SANDBOX_DEFAULT?.trim() || null,
     sandboxSkills: process.env.OD_SANDBOX_SKILLS?.trim() || null,
+    // Headless has no desktop main / updater, but reads this straight from
+    // the launcher env like everything else here for type-shape consistency.
+    updateChannel: process.env.OD_UPDATE_CHANNEL?.trim() || null,
     // Headless reads auth straight from the launcher env (no baked config).
     authSessionSecret: process.env.SESSION_SECRET?.trim() || null,
     googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() || null,

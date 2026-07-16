@@ -90,6 +90,7 @@ const DESKTOP_UPDATE_CHANNEL_VALUES = new Set<string>(Object.values(DESKTOP_UPDA
 export type DesktopUpdaterConfigInput = {
   appVersion?: string | null;
   arch?: string;
+  channel?: string | null;
   currentVersion?: string | null;
   downloadRoot?: string | null;
   env?: NodeJS.ProcessEnv;
@@ -309,7 +310,18 @@ export function resolveDesktopUpdaterConfig(input: DesktopUpdaterConfigInput): D
     input.currentVersion ??
     input.appVersion ??
     "0.0.0";
-  const channel = normalizeChannel(env[DESKTOP_UPDATE_ENV.CHANNEL], defaultChannelForVersion(currentVersion));
+  // The packaged app's channel is baked at packaging time from --namespace
+  // (see tools/pack/src/config.ts's updateChannel, threaded through
+  // apps/packaged/src/index.ts's `update.channel`) and takes precedence over
+  // guessing from the version string, which broke once auto builds switched
+  // to clean sequential versions with no channel marker (e.g. "0.8.3").
+  // OD_UPDATE_CHANNEL still overrides everything for local/fixture testing.
+  const normalizedInputChannel = input.channel ?? undefined;
+  const bakedChannel = isDesktopUpdateChannel(normalizedInputChannel) ? normalizedInputChannel : undefined;
+  const channel = normalizeChannel(
+    env[DESKTOP_UPDATE_ENV.CHANNEL],
+    bakedChannel ?? defaultChannelForVersion(currentVersion),
+  );
   const installerObservationRoot = normalizeOptionalRoot(input.installerObservationRoot, "installer observation root");
   const namespace = normalizeOptionalNonEmpty(input.namespace);
 
@@ -907,6 +919,104 @@ async function fetchJson(fetchImpl: typeof globalThis.fetch, url: string): Promi
   const body = await response.json();
   if (!isRecord(body)) throw new Error("metadata response was not a JSON object");
   return body;
+}
+
+// VNPAY fork: preview releases are tagged per-version by
+// release-unsigned-manual.yml and never flip GitHub's "Latest" (so stable
+// users are unaffected), which means there is no static URL like the stable
+// feed's `releases/latest/download/metadata.json` that always resolves to
+// the newest one. Instead, list releases, pick the highest-versioned
+// prerelease tagged `open-design-v<version>`, and synthesize a
+// metadata.json-shaped object from its assets — everything downstream
+// (selectUpdateCandidate, checksum verify, download, stage, install) is then
+// unchanged from the stable-channel path.
+const PREVIEW_GITHUB_RELEASES_URL =
+  "https://api.github.com/repos/ducanhlaminh/open-design-vnpay/releases?per_page=30";
+const PREVIEW_RELEASE_TAG_RE = /^open-design-v(\d+\.\d+\.\d+)$/;
+
+type GithubReleaseAsset = { name: string; browser_download_url: string; size?: number };
+type GithubRelease = { tag_name: string; prerelease: boolean; assets: GithubReleaseAsset[] };
+
+function isGithubReleaseAsset(value: unknown): value is GithubReleaseAsset {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    typeof value.browser_download_url === "string" &&
+    (value.size == null || typeof value.size === "number")
+  );
+}
+
+function isGithubRelease(value: unknown): value is GithubRelease {
+  return (
+    isRecord(value) &&
+    typeof value.tag_name === "string" &&
+    typeof value.prerelease === "boolean" &&
+    Array.isArray(value.assets) &&
+    value.assets.every(isGithubReleaseAsset)
+  );
+}
+
+function findGithubAsset(assets: GithubReleaseAsset[], name: string): GithubReleaseAsset | null {
+  return assets.find((asset) => asset.name === name) ?? null;
+}
+
+// `${assetName}.sha256` is uploaded alongside each auto-update-relevant
+// asset by release-unsigned-manual.yml's publish job; resolveChecksum
+// already knows how to fetch an arbitrary checksum URL and parse a hex
+// digest out of it (parseChecksumText), so pointing sha256Url at it reuses
+// that verification path unchanged.
+function githubAssetArtifact(assets: GithubReleaseAsset[], assetName: string): Record<string, unknown> | null {
+  const asset = findGithubAsset(assets, assetName);
+  if (asset == null) return null;
+  const checksumAsset = findGithubAsset(assets, `${assetName}.sha256`);
+  return {
+    name: asset.name,
+    url: asset.browser_download_url,
+    ...(asset.size == null ? {} : { size: asset.size }),
+    ...(checksumAsset == null ? {} : { sha256Url: checksumAsset.browser_download_url }),
+  };
+}
+
+async function fetchPreviewMetadataFromGithubReleases(fetchImpl: typeof globalThis.fetch): Promise<Record<string, unknown>> {
+  const response = await fetchImpl(PREVIEW_GITHUB_RELEASES_URL, {
+    headers: { Accept: "application/vnd.github+json" },
+  });
+  if (!response.ok) throw new Error(`github releases request returned HTTP ${response.status}`);
+  const body: unknown = await response.json();
+  if (!Array.isArray(body)) throw new Error("github releases response was not a JSON array");
+
+  let newest: { release: GithubRelease; version: string } | null = null;
+  for (const entry of body) {
+    if (!isGithubRelease(entry) || !entry.prerelease) continue;
+    const match = PREVIEW_RELEASE_TAG_RE.exec(entry.tag_name);
+    if (match == null) continue;
+    const version = match[1];
+    if (newest == null || compareVersions(version, newest.version) > 0) {
+      newest = { release: entry, version };
+    }
+  }
+  // No matching preview release found (e.g. brand-new fork with nothing
+  // published yet) — return channel-only metadata so selectUpdateCandidate's
+  // "metadata does not include a preview update version" error surfaces
+  // cleanly instead of a confusing downstream crash.
+  if (newest == null) return { channel: DESKTOP_UPDATE_CHANNELS.PREVIEW };
+
+  const { assets } = newest.release;
+  const macArtifact = githubAssetArtifact(assets, `open-design-${newest.version}-mac-arm64.dmg`);
+  const macIntelArtifact = githubAssetArtifact(assets, `open-design-${newest.version}-mac-x64.dmg`);
+  const winArtifact = githubAssetArtifact(assets, `open-design-${newest.version}-win-x64-installer.exe`);
+
+  return {
+    channel: DESKTOP_UPDATE_CHANNELS.PREVIEW,
+    platforms: {
+      ...(macArtifact == null ? {} : { mac: { arch: "arm64", artifacts: { dmg: macArtifact }, enabled: true } }),
+      ...(macIntelArtifact == null
+        ? {}
+        : { macIntel: { arch: "x64", artifacts: { dmg: macIntelArtifact }, enabled: true } }),
+      ...(winArtifact == null ? {} : { win: { arch: "x64", artifacts: { installer: winArtifact }, enabled: true } }),
+    },
+    previewVersion: newest.version,
+  };
 }
 
 function parseChecksumText(text: string, algorithm: "sha256" | "sha512"): string {
@@ -1579,7 +1689,16 @@ export function createDesktopUpdater(
     const keepDownloadedVisible = activeRelease != null;
     if (!keepDownloadedVisible) setState(DESKTOP_UPDATE_STATES.CHECKING);
     try {
-      const body = await fetchJson(fetchImpl, config.metadataUrl);
+      // Only take the GitHub-releases-list path when metadataUrl is still the
+      // computed default — an explicit override (OD_UPDATE_METADATA_URL, used
+      // by tests and local fixture servers) means the caller wants the
+      // generic fetch against whatever URL they pointed at, same as every
+      // other channel.
+      const body =
+        config.channel === DESKTOP_UPDATE_CHANNELS.PREVIEW &&
+        config.metadataUrl === defaultMetadataUrl(DESKTOP_UPDATE_CHANNELS.PREVIEW)
+          ? await fetchPreviewMetadataFromGithubReleases(fetchImpl)
+          : await fetchJson(fetchImpl, config.metadataUrl);
       lastCheckedAt = now().toISOString();
       metadata = body;
       const root = await writeMetadataPatch((current) => ({

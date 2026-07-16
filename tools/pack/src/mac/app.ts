@@ -181,6 +181,7 @@ export function renderMacPackagedConfig(options: {
       ...(options.config.authDomainLock == null ? {} : { authDomainLock: options.config.authDomainLock }),
       ...(options.config.sandboxDefault == null ? {} : { sandboxDefault: options.config.sandboxDefault }),
       ...(options.config.sandboxSkills == null ? {} : { sandboxSkills: options.config.sandboxSkills }),
+      ...(options.config.updateChannel == null ? {} : { updateChannel: options.config.updateChannel }),
       ...(options.usePrebundledStandaloneWeb ? { webSidecarEntryRelative: MAC_PREBUNDLED_WEB_SIDECAR_RELATIVE_PATH } : {}),
       webOutputMode: options.config.webOutputMode,
       // Do NOT bake `namespaceBaseRoot` here. This config is embedded into the

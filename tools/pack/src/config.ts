@@ -130,6 +130,14 @@ export type ToolPackConfig = {
   sandboxDefault?: string;
   sandboxSkills?: string;
   /**
+   * Release channel ("stable" | "beta" | "nightly" | "preview") resolved
+   * from --namespace/--app-version at packaging time and baked into
+   * open-design-config.json, so the packaged app's updater
+   * (apps/desktop/src/main/updater.ts) knows its own channel directly
+   * instead of re-deriving it from its version string.
+   */
+  updateChannel?: string;
+  /**
    * Google SSO + preview-identity auth, sourced from process.env at packaging
    * time and baked into open-design-config.json so the packaged daemon runs
    * with login bật sẵn (SESSION_SECRET/GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/
@@ -213,6 +221,26 @@ function defaultNamespaceForAppVersion(platform: ToolPackPlatform, appVersion: s
 
   const namespace = `release-${channel}`;
   return platform === "mac" ? namespace : `${namespace}-${platform}`;
+}
+
+// The packaged app's own updater (apps/desktop/src/main/updater.ts) used to
+// guess its release channel by regex-matching "beta"/"preview"/"nightly" in
+// its OWN version string — that broke once auto builds switched to clean
+// sequential versions with no channel marker (e.g. "0.8.3"). Bake the
+// channel tools-pack already resolved (from --namespace, same source
+// mac/win identity.ts use) into open-design-config.json instead, so the
+// packaged app knows its channel directly instead of re-deriving it.
+function updateChannelFromNamespace(namespace: string): ToolPackPrereleaseChannel | "stable" | null {
+  if (namespace === SIDECAR_DEFAULTS.namespace) return "stable";
+  if (/(?:^|[-_.])stable(?:$|[-_.])/i.test(namespace)) return "stable";
+  if (/(?:^|[-_.])beta(?:$|[-_.])/i.test(namespace)) return "beta";
+  if (/(?:^|[-_.])nightly(?:$|[-_.])/i.test(namespace)) return "nightly";
+  if (/(?:^|[-_.])preview(?:$|[-_.])/i.test(namespace)) return "preview";
+  return null;
+}
+
+function resolveUpdateChannelForBaking(namespace: string, appVersion: string | undefined): string | undefined {
+  return channelFromAppVersion(appVersion) ?? updateChannelFromNamespace(namespace) ?? undefined;
 }
 
 function resolveToolPackWebOutputMode(platform: ToolPackPlatform, value: string | undefined): ToolPackWebOutputMode {
@@ -387,6 +415,7 @@ export function resolveToolPackConfig(
     namespace,
     platform,
     portable: options.portable === true,
+    updateChannel: resolveUpdateChannelForBaking(namespace, appVersion),
     roots: {
       output: {
         appBuilderRoot: join(outputNamespaceRoot, "builder"),

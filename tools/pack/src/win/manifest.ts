@@ -50,6 +50,7 @@ export function createPackagedConfig(
     ...(config.authDomainLock == null ? {} : { authDomainLock: config.authDomainLock }),
     ...(config.sandboxDefault == null ? {} : { sandboxDefault: config.sandboxDefault }),
     ...(config.sandboxSkills == null ? {} : { sandboxSkills: config.sandboxSkills }),
+    ...(config.updateChannel == null ? {} : { updateChannel: config.updateChannel }),
     webOutputMode: config.webOutputMode,
     // Never bake namespaceBaseRoot: baking the BUILD machine's absolute path
     // pointed cross-built Windows installs at the builder's filesystem (same

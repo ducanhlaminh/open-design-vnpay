@@ -163,6 +163,7 @@ async function main(): Promise<void> {
     },
     preloadPath: join(app.getAppPath(), "preload.cjs"),
     update: {
+      channel: config.updateChannel,
       currentVersion: config.appVersion,
       downloadRoot: paths.updateRoot,
       installerObservationRoot: paths.installerObservationRoot,

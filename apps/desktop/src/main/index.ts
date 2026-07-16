@@ -112,6 +112,7 @@ export type DesktopMainOptions = {
   preloadPath?: string;
   onDesktopReady?: (controls: { show(): void }) => void;
   update?: {
+    channel?: string | null;
     currentVersion?: string | null;
     downloadRoot?: string | null;
     installerObservationRoot?: string | null;
@@ -355,6 +356,7 @@ export async function runDesktopMain(
 
   const updater = createDesktopUpdater(
     {
+      channel: options.update?.channel,
       currentVersion: options.update?.currentVersion,
       downloadRoot: options.update?.downloadRoot,
       installerObservationRoot: options.update?.installerObservationRoot,
