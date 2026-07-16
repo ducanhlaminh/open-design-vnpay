@@ -1,0 +1,256 @@
+name: release-unsigned-manual
+
+# Manual, unsigned release build for the ducanhlaminh fork — all 3 platforms
+# build natively on GitHub-hosted runners (macos-14 = real Apple Silicon,
+# macos-15-intel = real Intel Mac, windows-latest = real Windows Server VM;
+# none of this is emulated/cross-compiled), then a publish job uploads
+# everything to a single GitHub Release.
+#
+# release-stable.yml is upstream nexu-io/open-design's pipeline — gated by
+# `if: github.repository == 'nexu-io/open-design'` and needs Apple/R2 secrets
+# this fork doesn't have (`gh secret list` confirms zero secrets configured
+# here) — it can't run on this fork at all. This is a standalone equivalent:
+# no code-signing/notarization (mac builds omit --signed; win never signs by
+# design — forceCodeSigning=false in tools/pack/src/win/builder.ts), no R2
+# publish, no e2e smoke tests. Just build + upload to GitHub Releases, which
+# is what this fork's own runtime updater actually reads
+# (apps/desktop/src/main/updater.ts, STABLE_GITHUB_METADATA_URL).
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: "App version to build (matches apps/packaged/package.json unless overridden)"
+        required: true
+        default: "0.8.1"
+
+jobs:
+  build_mac:
+    name: Build mac arm64
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.33.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # postinstall.mjs builds packages/* and tools/* but not apps/* — mirrors
+      # the explicit build steps release-stable.yml's `verify` job documents.
+      - name: Build daemon
+        run: pnpm --filter @open-design/daemon build
+
+      - name: Build desktop
+        run: pnpm --filter @open-design/desktop build
+
+      - name: Build mac arm64 DMG (unsigned)
+        run: |
+          pnpm exec tools-pack mac build \
+            --dir "$RUNNER_TEMP/tools-pack" \
+            --namespace default \
+            --portable \
+            --app-version "${{ inputs.app_version }}" \
+            --to all \
+            --json
+
+      - name: Rename artifact
+        run: |
+          set -euo pipefail
+          dmg="$(find "$RUNNER_TEMP/tools-pack/out/mac" -iname '*.dmg' | head -1)"
+          cp "$dmg" "$RUNNER_TEMP/open-design-${{ inputs.app_version }}-mac-arm64.dmg"
+
+      - name: Upload mac arm64 DMG
+        uses: actions/upload-artifact@v7
+        with:
+          name: mac-arm64-dmg
+          path: ${{ runner.temp }}/open-design-${{ inputs.app_version }}-mac-arm64.dmg
+          retention-days: 3
+
+  build_mac_intel:
+    name: Build mac intel x64
+    runs-on: macos-15-intel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.33.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build daemon
+        run: pnpm --filter @open-design/daemon build
+
+      - name: Build desktop
+        run: pnpm --filter @open-design/desktop build
+
+      - name: Build mac intel DMG (unsigned)
+        run: |
+          pnpm exec tools-pack mac build \
+            --dir "$RUNNER_TEMP/tools-pack" \
+            --namespace default \
+            --portable \
+            --app-version "${{ inputs.app_version }}" \
+            --to all \
+            --json
+
+      - name: Rename artifact
+        run: |
+          set -euo pipefail
+          dmg="$(find "$RUNNER_TEMP/tools-pack/out/mac" -iname '*.dmg' | head -1)"
+          cp "$dmg" "$RUNNER_TEMP/open-design-${{ inputs.app_version }}-mac-x64.dmg"
+
+      - name: Upload mac intel DMG
+        uses: actions/upload-artifact@v7
+        with:
+          name: mac-intel-dmg
+          path: ${{ runner.temp }}/open-design-${{ inputs.app_version }}-mac-x64.dmg
+          retention-days: 3
+
+  build_win:
+    name: Build windows portable zip
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.33.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build daemon
+        run: pnpm --filter @open-design/daemon build
+
+      - name: Build desktop
+        run: pnpm --filter @open-design/desktop build
+
+      - name: Build web
+        run: |
+          pnpm --filter @open-design/web build
+          pnpm --filter @open-design/web build:sidecar
+
+      - name: Setup NSIS (not used by --to zip, but tools-pack may probe for it)
+        shell: pwsh
+        run: |
+          if ((Get-Command makensis.exe -ErrorAction SilentlyContinue) -or (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe")) {
+            exit 0
+          }
+          choco install nsis -y --no-progress
+
+      - name: Build windows portable zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pnpm exec tools-pack win build `
+            --dir "${{ runner.temp }}/tools-pack" `
+            --namespace default `
+            --portable `
+            --app-version "${{ inputs.app_version }}" `
+            --to zip `
+            --json
+
+      - name: Rename artifact
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path "${{ runner.temp }}/tools-pack" -Recurse -Filter "*.zip" | Select-Object -First 1
+          if ($null -eq $zip) { throw "no .zip artifact found under ${{ runner.temp }}/tools-pack" }
+          Copy-Item -Path $zip.FullName -Destination "${{ runner.temp }}/open-design-${{ inputs.app_version }}-win-x64-portable.zip"
+
+      - name: Upload windows portable zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: win-portable-zip
+          path: ${{ runner.temp }}/open-design-${{ inputs.app_version }}-win-x64-portable.zip
+          retention-days: 3
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build_mac, build_mac_intel, build_win]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Download mac arm64 DMG
+        uses: actions/download-artifact@v8
+        with:
+          name: mac-arm64-dmg
+          path: ${{ runner.temp }}/assets
+
+      - name: Download mac intel DMG
+        uses: actions/download-artifact@v8
+        with:
+          name: mac-intel-dmg
+          path: ${{ runner.temp }}/assets
+
+      - name: Download windows portable zip
+        uses: actions/download-artifact@v8
+        with:
+          name: win-portable-zip
+          path: ${{ runner.temp }}/assets
+
+      # Publishes both mac DMGs + writes/updates the metadata.json feed the
+      # app's own runtime updater reads (STABLE_GITHUB_METADATA_URL in
+      # apps/desktop/src/main/updater.ts). Windows portable zip is a plain
+      # downloadable asset — release-github.ts's --win-installer flag assumes
+      # an NSIS .exe (hardcodes "-setup.exe" naming + ArtifactKind "installer"),
+      # which a portable zip isn't, so it's uploaded separately below instead
+      # of wired into metadata.json's platforms.win entry.
+      - name: Publish mac DMGs (updates metadata.json feed)
+        run: |
+          node --experimental-strip-types scripts/release-github.ts \
+            --arm64-dmg "${{ runner.temp }}/assets/open-design-${{ inputs.app_version }}-mac-arm64.dmg" \
+            --x64-dmg "${{ runner.temp }}/assets/open-design-${{ inputs.app_version }}-mac-x64.dmg" \
+            --version "${{ inputs.app_version }}"
+
+      - name: Upload windows portable zip to release
+        run: |
+          set -euo pipefail
+          tag="open-design-v${{ inputs.app_version }}"
+          gh release upload "$tag" \
+            "${{ runner.temp }}/assets/open-design-${{ inputs.app_version }}-win-x64-portable.zip" \
+            --clobber
