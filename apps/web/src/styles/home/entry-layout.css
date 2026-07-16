@@ -384,18 +384,35 @@
   margin-left: 0;
 }
 .entry-main__topbar .entry-updater-menu .entry-updater-menu__button {
-  width: 32px;
+  width: auto;
   height: 32px;
+  padding: 0 12px 0 8px;
+  gap: 6px;
   border-radius: 999px;
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
+  border-color: var(--border);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-xs);
   color: color-mix(in srgb, var(--updater-accent) 66%, var(--text-muted));
+  font-size: 12px;
+  font-weight: 500;
 }
 .entry-main__topbar .entry-updater-menu .entry-updater-menu__button::before {
-  inset: 5px;
+  inset: 3px;
   border-radius: inherit;
   opacity: 0;
+}
+.entry-updater-menu__label {
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .entry-main__topbar .entry-updater-menu .entry-updater-menu__label {
+    display: none;
+  }
+  .entry-main__topbar .entry-updater-menu .entry-updater-menu__button {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
 }
 .entry-main__topbar .entry-updater-menu .entry-updater-menu__button.is-ready {
   border-color: color-mix(in srgb, var(--updater-accent-strong) 18%, var(--border));
@@ -420,12 +437,23 @@
   opacity: 0.72;
   transform: none;
 }
+/* The pill button is wider than the icon now (icon + visible label), so the
+   "update ready" dot anchors to the glyph corner instead of the button's own
+   corner — otherwise it floats next to the label text instead of the icon. */
 .entry-main__topbar .entry-updater-menu .entry-updater-menu__button.is-ready::after {
-  top: 3px;
-  right: 3px;
+  content: none;
+}
+.entry-main__topbar .entry-updater-menu .entry-updater-menu__button.is-ready .entry-updater-menu__glyph::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  right: -2px;
   width: 6px;
   height: 6px;
-  border-width: 1.5px;
+  z-index: 3;
+  border-radius: 999px;
+  background: var(--updater-accent-dot);
+  border: 1.5px solid var(--bg-panel);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--updater-accent-strong) 24%, transparent),
     0 0 6px color-mix(in srgb, var(--updater-accent) 20%, transparent);

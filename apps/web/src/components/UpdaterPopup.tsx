@@ -372,8 +372,9 @@ export function UpdaterPopup() {
         }}
       >
         <span className="entry-updater-menu__glyph">
-          <Icon name="arrow-up" size={18} strokeWidth={2.25} />
+          <Icon name={showInstallUi ? 'download' : 'refresh'} size={16} strokeWidth={2.25} />
         </span>
+        <span className="entry-updater-menu__label">{controlLabel}</span>
       </button>
       {panelOpen ? (
         <section
@@ -383,7 +384,7 @@ export function UpdaterPopup() {
           role="dialog"
         >
           <div className="updater-popup__icon">
-            <Icon name="arrow-up" size={20} strokeWidth={2.2} />
+            <Icon name={showInstallUi ? 'download' : 'refresh'} size={20} strokeWidth={2.2} />
           </div>
           <div className="updater-popup__body">
             <h2 id="updater-popup-title">{popupTitle}</h2>
