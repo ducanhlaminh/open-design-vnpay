@@ -15,14 +15,21 @@ name: release-unsigned-manual
 # publish, no e2e smoke tests. Just build + upload to GitHub Releases, which
 # is what this fork's own runtime updater actually reads
 # (apps/desktop/src/main/updater.ts, STABLE_GITHUB_METADATA_URL).
+#
+# Triggers automatically on push to `preview` (dedicated branch, separate
+# from `main`, so routine commits don't burn ~15-20 min x 3 platforms on
+# every push) — version is read from apps/packaged/package.json in that
+# case, since `push` events have no `inputs` context. workflow_dispatch
+# still accepts an explicit --app_version override for manual runs.
 
 on:
+  push:
+    branches: [preview]
   workflow_dispatch:
     inputs:
       app_version:
-        description: "App version to build (matches apps/packaged/package.json unless overridden)"
-        required: true
-        default: "0.8.1"
+        description: "App version to build (blank = read apps/packaged/package.json)"
+        required: false
 
 permissions:
   contents: write
@@ -31,6 +38,10 @@ jobs:
   verify:
     name: Verify (typecheck + guard)
     runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      is_manual_stable: ${{ steps.version.outputs.is_manual_stable }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -51,6 +62,34 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Every automatic (push-to-preview) build gets its OWN version — never
+      # reuses/overwrites a prior build. Manual workflow_dispatch runs can
+      # still pin an exact x.y.z to cut a real stable release (updates the
+      # metadata.json feed + flips GitHub's "Latest" tag); auto preview runs
+      # append -preview.<run_number> (monotonic per-workflow counter, no
+      # state to maintain) and publish as a separate, non-latest release so
+      # they never affect what stable-channel users auto-update to.
+      - name: Resolve app version
+        id: version
+        run: |
+          set -euo pipefail
+          override="${{ inputs.app_version }}"
+          base_version="$(node -p "require('./apps/packaged/package.json').version")"
+          if [ -n "$override" ]; then
+            version="$override"
+            is_manual_stable="true"
+          else
+            version="${base_version}-preview.${{ github.run_number }}"
+            is_manual_stable="false"
+          fi
+          tag="open-design-v${version}"
+          {
+            echo "app_version=$version"
+            echo "release_tag=$tag"
+            echo "is_manual_stable=$is_manual_stable"
+          } >> "$GITHUB_OUTPUT"
+          echo "resolved app_version=$version tag=$tag is_manual_stable=$is_manual_stable"
 
       # apps/daemon and apps/desktop aren't in postinstall.mjs's buildTargets;
       # typecheck fails without dist/*.d.ts for the workspace packages that
@@ -116,7 +155,7 @@ jobs:
             --dir "$RUNNER_TEMP/tools-pack" \
             --namespace default \
             --portable \
-            --app-version "${{ inputs.app_version }}" \
+            --app-version "${{ needs.verify.outputs.app_version }}" \
             --to all \
             --json
 
@@ -124,13 +163,13 @@ jobs:
         run: |
           set -euo pipefail
           dmg="$(find "$RUNNER_TEMP/tools-pack/out/mac" -iname '*.dmg' | head -1)"
-          cp "$dmg" "$RUNNER_TEMP/open-design-${{ inputs.app_version }}-mac-arm64.dmg"
+          cp "$dmg" "$RUNNER_TEMP/open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg"
 
       - name: Upload mac arm64 DMG
         uses: actions/upload-artifact@v7
         with:
           name: mac-arm64-dmg
-          path: ${{ runner.temp }}/open-design-${{ inputs.app_version }}-mac-arm64.dmg
+          path: ${{ runner.temp }}/open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg
           retention-days: 3
 
   build_mac_intel:
@@ -178,7 +217,7 @@ jobs:
             --dir "$RUNNER_TEMP/tools-pack" \
             --namespace default \
             --portable \
-            --app-version "${{ inputs.app_version }}" \
+            --app-version "${{ needs.verify.outputs.app_version }}" \
             --to all \
             --json
 
@@ -186,13 +225,13 @@ jobs:
         run: |
           set -euo pipefail
           dmg="$(find "$RUNNER_TEMP/tools-pack/out/mac" -iname '*.dmg' | head -1)"
-          cp "$dmg" "$RUNNER_TEMP/open-design-${{ inputs.app_version }}-mac-x64.dmg"
+          cp "$dmg" "$RUNNER_TEMP/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg"
 
       - name: Upload mac intel DMG
         uses: actions/upload-artifact@v7
         with:
           name: mac-intel-dmg
-          path: ${{ runner.temp }}/open-design-${{ inputs.app_version }}-mac-x64.dmg
+          path: ${{ runner.temp }}/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg
           retention-days: 3
 
   build_win:
@@ -250,7 +289,7 @@ jobs:
             --dir "${{ runner.temp }}/tools-pack" `
             --namespace default `
             --portable `
-            --app-version "${{ inputs.app_version }}" `
+            --app-version "${{ needs.verify.outputs.app_version }}" `
             --to zip `
             --json
 
@@ -259,18 +298,18 @@ jobs:
         run: |
           $zip = Get-ChildItem -Path "${{ runner.temp }}/tools-pack" -Recurse -Filter "*.zip" | Select-Object -First 1
           if ($null -eq $zip) { throw "no .zip artifact found under ${{ runner.temp }}/tools-pack" }
-          Copy-Item -Path $zip.FullName -Destination "${{ runner.temp }}/open-design-${{ inputs.app_version }}-win-x64-portable.zip"
+          Copy-Item -Path $zip.FullName -Destination "${{ runner.temp }}/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip"
 
       - name: Upload windows portable zip
         uses: actions/upload-artifact@v7
         with:
           name: win-portable-zip
-          path: ${{ runner.temp }}/open-design-${{ inputs.app_version }}-win-x64-portable.zip
+          path: ${{ runner.temp }}/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip
           retention-days: 3
 
   publish:
     name: Publish GitHub Release
-    needs: [build_mac, build_mac_intel, build_win]
+    needs: [verify, build_mac, build_mac_intel, build_win]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -303,24 +342,40 @@ jobs:
           name: win-portable-zip
           path: ${{ runner.temp }}/assets
 
-      # Publishes both mac DMGs + writes/updates the metadata.json feed the
-      # app's own runtime updater reads (STABLE_GITHUB_METADATA_URL in
-      # apps/desktop/src/main/updater.ts). Windows portable zip is a plain
-      # downloadable asset — release-github.ts's --win-installer flag assumes
-      # an NSIS .exe (hardcodes "-setup.exe" naming + ArtifactKind "installer"),
-      # which a portable zip isn't, so it's uploaded separately below instead
-      # of wired into metadata.json's platforms.win entry.
-      - name: Publish mac DMGs (updates metadata.json feed)
+      # Manual runs with an explicit --app_version cut a REAL stable release:
+      # release-github.ts writes/updates the metadata.json feed the app's own
+      # runtime updater reads (STABLE_GITHUB_METADATA_URL in
+      # apps/desktop/src/main/updater.ts) and flips GitHub's "Latest" tag —
+      # this is what stable-channel users actually auto-update to, so it only
+      # happens when a human explicitly asked for it.
+      - name: "[stable] Publish mac DMGs (updates metadata.json feed, flips Latest)"
+        if: needs.verify.outputs.is_manual_stable == 'true'
         run: |
           node --experimental-strip-types scripts/release-github.ts \
-            --arm64-dmg "${{ runner.temp }}/assets/open-design-${{ inputs.app_version }}-mac-arm64.dmg" \
-            --x64-dmg "${{ runner.temp }}/assets/open-design-${{ inputs.app_version }}-mac-x64.dmg" \
-            --version "${{ inputs.app_version }}"
+            --arm64-dmg "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg" \
+            --x64-dmg "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg" \
+            --version "${{ needs.verify.outputs.app_version }}"
 
-      - name: Upload windows portable zip to release
+      - name: "[stable] Upload windows portable zip to release"
+        if: needs.verify.outputs.is_manual_stable == 'true'
         run: |
           set -euo pipefail
-          tag="open-design-v${{ inputs.app_version }}"
-          gh release upload "$tag" \
-            "${{ runner.temp }}/assets/open-design-${{ inputs.app_version }}-win-x64-portable.zip" \
+          gh release upload "${{ needs.verify.outputs.release_tag }}" \
+            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip" \
             --clobber
+
+      # Auto (push-to-preview) runs: plain, separate, non-latest release per
+      # run — never touches metadata.json or the "Latest" tag, so stable
+      # users are unaffected. Every push gets a fresh, uniquely-tagged
+      # release (see the version-resolve step) instead of overwriting one.
+      - name: "[preview] Create dedicated release for this build"
+        if: needs.verify.outputs.is_manual_stable != 'true'
+        run: |
+          set -euo pipefail
+          gh release create "${{ needs.verify.outputs.release_tag }}" \
+            --title "Open Design ${{ needs.verify.outputs.app_version }} (preview build)" \
+            --notes "Automatic unsigned preview build from ${{ github.sha }} — not a stable release, does not affect stable-channel auto-update." \
+            --prerelease \
+            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg" \
+            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg" \
+            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip"
