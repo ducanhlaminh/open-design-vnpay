@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import {
@@ -219,6 +222,98 @@ test('fetchConfluencePages prefers the direct PAT REST fetch and converts body.v
   assert.match(pages[0]!.content, /# Tổng quan/);
   assert.match(pages[0]!.content, /\*\*ghi nợ\*\*/);
   assert.match(pages[0]!.content, /- Bước 1/);
+});
+
+test('fetchConfluencePages downloads a same-host <img> into attachmentsDir and rewrites src to a Markdown image', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-img-'));
+  try {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/12')) {
+        return makeRes(
+          JSON.stringify({
+            title: 'Trang có ảnh',
+            body: {
+              view: {
+                value: '<p>Xem <img src="/download/attachments/12/pic.png?version=1" alt="minh họa"></p>',
+              },
+            },
+            _links: { base: 'https://wiki.test', webui: '/spaces/X/pages/12/T' },
+          }),
+        ) as any;
+      }
+      if (u.startsWith('https://wiki.test/download/attachments/12/pic.png')) {
+        return {
+          ok: true,
+          status: 200,
+          arrayBuffer: async () => new TextEncoder().encode('FAKE-PNG-BYTES').buffer,
+        } as any;
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    const pages = await fetchConfluencePages(
+      { creds: { base: 'https://wiki.test', token: 'pat' } },
+      ['12'],
+      { attachmentsDir },
+    );
+    assert.equal(pages.length, 1);
+    assert.match(pages[0]!.content, /!\[minh họa\]\(attachments\/pic\.png\)/);
+    const files = await readdir(attachmentsDir);
+    assert.deepEqual(files, ['pic.png']);
+    assert.equal(await readFile(join(attachmentsDir, 'pic.png'), 'utf8'), 'FAKE-PNG-BYTES');
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages leaves an other-host <img> untouched (falls back to alt-text)', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-img-'));
+  try {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/12')) {
+        return makeRes(
+          JSON.stringify({
+            title: 'Trang có ảnh ngoài',
+            body: { view: { value: '<p>Xem <img src="https://cdn.example.com/logo.png" alt="logo"></p>' } },
+            _links: { base: 'https://wiki.test', webui: '/spaces/X/pages/12/T' },
+          }),
+        ) as any;
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    const pages = await fetchConfluencePages(
+      { creds: { base: 'https://wiki.test', token: 'pat' } },
+      ['12'],
+      { attachmentsDir },
+    );
+    assert.equal(pages.length, 1);
+    assert.match(pages[0]!.content, /\(logo\)/);
+    assert.doesNotMatch(pages[0]!.content, /!\[/);
+    assert.deepEqual(await readdir(attachmentsDir), []);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages without attachmentsDir keeps the old alt-text-only behavior (no download attempted)', async () => {
+  globalThis.fetch = vi.fn(async (url: any) => {
+    const u = String(url);
+    if (u.startsWith('https://wiki.test/rest/api/content/12')) {
+      return makeRes(
+        JSON.stringify({
+          title: 'Trang có ảnh',
+          body: { view: { value: '<p>Xem <img src="/download/attachments/12/pic.png" alt="minh họa"></p>' } },
+          _links: { base: 'https://wiki.test', webui: '/spaces/X/pages/12/T' },
+        }),
+      ) as any;
+    }
+    throw new Error(`unexpected fetch (no attachmentsDir should mean no image download): ${u}`);
+  }) as any;
+  const pages = await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['12']);
+  assert.equal(pages.length, 1);
+  assert.match(pages[0]!.content, /\(minh họa\)/);
+  assert.doesNotMatch(pages[0]!.content, /!\[/);
 });
 
 test('fetchConfluencePages follows seed links depth-1, rewrites cross-page links, marks linked pages', async () => {

@@ -13453,10 +13453,11 @@ export async function startServer({
             'Chưa có credential Confluence: thêm CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN vào server mcp-atlassian (Settings → MCP) hoặc cấu hình BAS gateway (BAS_MCP_URL + BAS_MCP_TOKEN).',
           );
         }
+        const cwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
         const pages = await fetchConfluencePages({ creds, ep }, refs, {
           followLinks: followLinks !== false,
+          attachmentsDir: path.join(cwd, 'docs/confluence/attachments'),
         });
-        const cwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
         for (const p of pages) {
           const abs = path.join(cwd, p.relPath);
           await fs.promises.mkdir(path.dirname(abs), { recursive: true });

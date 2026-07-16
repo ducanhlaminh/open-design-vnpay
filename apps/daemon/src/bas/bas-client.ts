@@ -23,6 +23,9 @@
 // (mcp-gateway-service 0.1.0). All tool inputSchemas are `additionalProperties:
 // false`, so the arg builders send ONLY the declared keys.
 
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+
 import type {
   BasDocument,
   BasFeature,
@@ -524,7 +527,107 @@ const NAMED_ENTITIES: Record<string, string> = {
   copy: '©', reg: '®', trade: '™', laquo: '«', raquo: '»', sect: '§', para: '¶',
 };
 
-export function htmlToMarkdown(html: string, resolveHref?: (href: string) => string): string {
+// VNPAY fork: this is the DETERMINISTIC docs path (a Confluence page URL
+// pasted directly into the docs stage — runDocsDeterministic in server.ts).
+// The agent-run JIRA-key path has its own, separate image-download logic
+// (skills/jira-ingest/scripts/confluence_export.py's localize_images) — the
+// two never share code, so both need the same fix independently.
+const IMG_SRC_RE = /(<img\b[^>]*\bsrc=["'])([^"']+)(["'])/gi;
+
+function resolveImgUrl(base: string, src: string): string {
+  if (/^https?:\/\//i.test(src)) return src;
+  if (src.startsWith('//')) return `https:${src}`;
+  if (src.startsWith('/')) return `${base}${src}`;
+  return `${base}/${src}`;
+}
+
+function isSameHost(base: string, url: string): boolean {
+  try {
+    return new URL(base).host === new URL(url).host;
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeImageFileName(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, '-').slice(0, 120) || 'image';
+}
+
+async function downloadConfluenceBinary(creds: ConfluenceCreds, url: string): Promise<Buffer> {
+  const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` } });
+  if (!res.ok) throw new Error(`image download HTTP ${res.status} for ${url}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** Download every same-host <img src> in html into attachmentsDir, rewriting
+ *  src to a path relative to the page's .md so the exported Markdown carries
+ *  real images instead of Confluence-authenticated URLs that break outside a
+ *  logged-in session. Images from other hosts (external CDNs, emoji sprites)
+ *  and data: URIs are left untouched. Best-effort per image — one download
+ *  failing must not fail the whole page. */
+async function localizeConfluenceImages(
+  creds: ConfluenceCreds,
+  html: string,
+  attachmentsDir: string,
+  relPrefix: string,
+): Promise<{ html: string; count: number }> {
+  const rawSrcs = new Set<string>();
+  for (const m of html.matchAll(IMG_SRC_RE)) rawSrcs.add(m[2]!);
+  const localBySrc = new Map<string, string>();
+  const downloadedByUrl = new Map<string, string>();
+  let count = 0;
+  for (const src of rawSrcs) {
+    if (src.startsWith('data:')) continue;
+    const url = resolveImgUrl(creds.base, src);
+    if (!isSameHost(creds.base, url)) continue;
+    let localName = downloadedByUrl.get(url);
+    if (!localName) {
+      try {
+        const data = await downloadConfluenceBinary(creds, url);
+        const rawName = sanitizeImageFileName(
+          decodeURIComponent(path.basename(new URL(url).pathname)) || 'image',
+        );
+        await fs.mkdir(attachmentsDir, { recursive: true });
+        let candidate = rawName;
+        let n = 1;
+        for (;;) {
+          const existing = await fs.readFile(path.join(attachmentsDir, candidate)).catch(() => null);
+          if (!existing) break;
+          if (existing.equals(data)) break;
+          const ext = path.extname(rawName);
+          const stem = path.basename(rawName, ext);
+          candidate = `${stem}-${n}${ext}`;
+          n += 1;
+        }
+        const alreadyThere = await fs.readFile(path.join(attachmentsDir, candidate)).catch(() => null);
+        if (!alreadyThere) {
+          await fs.writeFile(path.join(attachmentsDir, candidate), data);
+          count += 1;
+        }
+        localName = candidate;
+        downloadedByUrl.set(url, localName);
+      } catch (err) {
+        console.warn(`[bas] image download failed (${url}):`, err);
+        continue;
+      }
+    }
+    localBySrc.set(src, `${relPrefix}/${localName}`);
+  }
+  const out = html.replace(IMG_SRC_RE, (full, prefix: string, src: string, suffix: string) => {
+    const local = localBySrc.get(src);
+    return local ? `${prefix}${local}${suffix}` : full;
+  });
+  return { html: out, count };
+}
+
+export function htmlToMarkdown(
+  html: string,
+  resolveHref?: (href: string) => string,
+  /** Prefix a src must start with to be treated as already-localized
+   *  (localizeConfluenceImages ran first) — anything else degrades to
+   *  alt-text-only, same as before images were downloaded at all. */
+  localizedImagePrefix?: string,
+): string {
   const decode = (s: string) =>
     s
       .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) => {
@@ -576,7 +679,19 @@ export function htmlToMarkdown(html: string, resolveHref?: (href: string) => str
   }
   s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, l: string, t: string) => `\n${'#'.repeat(Number(l))} ${t.replace(/<[^>]+>/g, '').trim()}\n`);
   s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_m, t: string) => `- ${t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()}\n`);
-  s = s.replace(/<img [^>]*alt="([^"]+)"[^>]*\/?>/gi, '($1)').replace(/<img[^>]*\/?>/gi, '');
+  // src has already been localized (localizeConfluenceImages) before this
+  // function runs, when the caller has Confluence creds to download with —
+  // emit a real Markdown image instead of dropping it. An unlocalized src
+  // (no creds, or a same-host download that failed) still degrades to the
+  // alt-text-only / stripped behavior, same as before this fix.
+  s = s.replace(/<img\b([^>]*)\/?>/gi, (_m, attrs: string) => {
+    const srcMatch = /\bsrc=["']([^"']+)["']/i.exec(attrs);
+    const altMatch = /\balt=["']([^"']*)["']/i.exec(attrs);
+    const src = srcMatch?.[1];
+    const alt = altMatch?.[1] ?? '';
+    if (src && localizedImagePrefix && src.startsWith(localizedImagePrefix)) return `![${alt}](${src})`;
+    return alt ? `(${alt})` : '';
+  });
   s = s.replace(/<br\s*\/?>/gi, '\n');
   s = s.replace(/<\/(p|div|ul|ol|table|section|article|blockquote)>/gi, '\n\n');
   s = s.replace(/<[^>]+>/g, '');
@@ -661,7 +776,7 @@ const FOLLOW_MAX_TOTAL = 15;
 export async function fetchConfluencePages(
   src: ConfluenceFetchSource,
   refs: string[],
-  opts: { followLinks?: boolean } = {},
+  opts: { followLinks?: boolean; attachmentsDir?: string } = {},
 ): Promise<ConfluenceDocPage[]> {
   if (!src.creds && !src.ep) throw new Error('no Confluence credential (PAT) and no BAS gateway configured');
   const followLinks = opts.followLinks !== false;
@@ -753,8 +868,34 @@ export async function fetchConfluencePages(
     const rel = idMatch ? relByPageId.get(idMatch[1]!) : undefined;
     return rel ? `./${rel.split('/').pop()}` : href;
   };
+  let totalImages = 0;
   for (const p of ordered) {
-    const body = p.html !== undefined ? htmlToMarkdown(p.html, resolveHref) : (p.markdown ?? '');
+    let body: string;
+    if (p.html !== undefined) {
+      // Same-host <img src> download (mirrors the agent-run JIRA-key path's
+      // confluence_export.py localize_images) — only possible on the direct
+      // PAT path, which is the only one that has raw HTML + creds to
+      // authenticate the image download with.
+      let html = p.html;
+      let localizedImagePrefix: string | undefined;
+      if (src.creds && opts.attachmentsDir) {
+        const localized = await localizeConfluenceImages(
+          src.creds,
+          html,
+          opts.attachmentsDir,
+          'attachments',
+        ).catch((err) => {
+          console.warn(`[bas] image localization failed for page ${p.pageId}:`, err);
+          return { html, count: 0 };
+        });
+        html = localized.html;
+        totalImages += localized.count;
+        localizedImagePrefix = 'attachments';
+      }
+      body = htmlToMarkdown(html, resolveHref, localizedImagePrefix);
+    } else {
+      body = p.markdown ?? '';
+    }
     pages.push({
       pageId: p.pageId,
       title: p.title,
@@ -772,6 +913,7 @@ export async function fetchConfluencePages(
     });
   }
   if (pages.length === 0) throw new Error('Confluence source produced no files');
+  console.log(`[bas] deterministic docs fetch: ${pages.length} page(s), ${totalImages} image(s) downloaded`);
   return pages;
 }
 
