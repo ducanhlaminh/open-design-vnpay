@@ -24,6 +24,9 @@ on:
         required: true
         default: "0.8.1"
 
+permissions:
+  contents: write
+
 jobs:
   build_mac:
     name: Build mac arm64
