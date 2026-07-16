@@ -91,13 +91,16 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "resolved app_version=$version tag=$tag is_manual_stable=$is_manual_stable"
 
-      # apps/daemon and apps/desktop aren't in postinstall.mjs's buildTargets;
-      # typecheck fails without dist/*.d.ts for the workspace packages that
-      # depend on them (apps/packaged dynamic-imports @open-design/desktop/main).
-      - name: Build daemon and desktop (typecheck dependencies)
+      # apps/daemon, apps/desktop, and packages/figma-h2d aren't in
+      # postinstall.mjs's buildTargets; typecheck fails without their
+      # dist/*.d.ts (apps/packaged dynamic-imports @open-design/desktop/main;
+      # apps/web imports @open-design/figma-h2d directly — same gap the
+      # platform build jobs below hit first).
+      - name: Build daemon, desktop, figma-h2d (typecheck dependencies)
         run: |
           pnpm --filter @open-design/daemon build
           pnpm --filter @open-design/desktop build
+          pnpm --filter @open-design/figma-h2d build
 
       - name: Typecheck workspaces
         run: pnpm -r --workspace-concurrency=4 --if-present run typecheck
