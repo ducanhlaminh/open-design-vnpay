@@ -178,6 +178,8 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           OD_SANDBOX_DEFAULT: ${{ secrets.OD_SANDBOX_DEFAULT }}
           OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
+          OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
+          OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
         run: |
           set -euo pipefail
           # tools-pack derives release-channel identity (appId/productName)
@@ -258,6 +260,8 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           OD_SANDBOX_DEFAULT: ${{ secrets.OD_SANDBOX_DEFAULT }}
           OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
+          OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
+          OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
         run: |
           set -euo pipefail
           # tools-pack derives release-channel identity (appId/productName)
@@ -352,6 +356,8 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           OD_SANDBOX_DEFAULT: ${{ secrets.OD_SANDBOX_DEFAULT }}
           OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
+          OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
+          OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
           # See the matching comment in the mac build step: --namespace picks
