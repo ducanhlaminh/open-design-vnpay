@@ -105,3 +105,29 @@ export async function loadRemoteProjects(kgs: WorkspaceSource, media: FolderSour
 
   return mergeRemoteProjects(kgsRows, mediaRows);
 }
+
+/** Whether a single project is visible under the given pull scope. Membership
+ *  cascades App → Feature: pipeline-studio's own App detail page shows every
+ *  feature linked to an app once you can see the app, with no separate
+ *  per-feature membership check (server/apps.ts `PUT /api/projects/:id/app`
+ *  just requires projects:manage, not membership on the feature itself) — a
+ *  feature whose parent app you're a member/owner of must be visible here
+ *  too, or it's invisible in Open Design while showing up fine in the studio.
+ *  `appId` must already be resolved (see resolveAppId) before calling this. */
+export function isProjectVisible(
+  projectId: string,
+  appId: string | null | undefined,
+  scope: { all: boolean; ids: ReadonlySet<string> },
+): boolean {
+  if (scope.all) return true;
+  return scope.ids.has(projectId) || (appId != null && scope.ids.has(appId));
+}
+
+/** Which of `data`'s projects the given pull scope makes visible — see
+ *  isProjectVisible. Each project's `appId` must already be resolved. */
+export function filterVisibleProjects(
+  data: RemoteProject[],
+  scope: { all: boolean; ids: ReadonlySet<string> },
+): RemoteProject[] {
+  return data.filter((p) => isProjectVisible(p.projectId, p.appId, scope));
+}

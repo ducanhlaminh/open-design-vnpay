@@ -22,7 +22,12 @@ import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import { pullProject } from './kg-sync/pull.js';
 import { pushProject } from './kg-sync/push.js';
 import { KgSyncRepo } from './kg-sync/persistence.js';
-import { loadRemoteProjects, projectIdFromWorkspace } from './kg-sync/remote-registry.js';
+import {
+  filterVisibleProjects,
+  isProjectVisible,
+  loadRemoteProjects,
+  projectIdFromWorkspace,
+} from './kg-sync/remote-registry.js';
 import { pullScopeFor } from './kg-sync/identity-registry.js';
 import { resolveAppId } from './app-context.js';
 import { WORKFLOWS } from './pipelines.js';
@@ -151,15 +156,26 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       const cfg = kgsConfigFromEnv();
       const client = new KgsClient(cfg);
       const workspaces = await client.queryEntities(['DP_UI_WORKSPACE'], {});
-      const projectIds = Array.from(
+      const candidateIds = Array.from(
         new Set(
           workspaces
             .map((ws) => projectIdFromWorkspace(ws as { entityId?: string; properties?: Record<string, unknown> }))
             .filter((x): x is string => Boolean(x)),
         ),
-      )
-        .filter((id) => !requested || requested.size === 0 || requested.has(id))
-        .filter((id) => scope.all || scope.ids.has(id));
+      ).filter((id) => !requested || requested.size === 0 || requested.has(id));
+      // Membership cascades App → Feature (see isProjectVisible) — resolve
+      // each candidate's appId only when actually needed (scope.all skips
+      // this entirely; a direct scope.ids hit also skips the network call).
+      const projectIds = scope.all
+        ? candidateIds
+        : (
+            await Promise.all(
+              candidateIds.map(async (id) => {
+                const appId = scope.ids.has(id) ? null : await resolveAppId(id);
+                return isProjectVisible(id, appId, scope) ? id : null;
+              }),
+            )
+          ).filter((id): id is string => id != null);
       const results = [];
       for (const projectId of projectIds) {
         ensureProject(projectId, now);
@@ -337,20 +353,23 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       const media = new MediaClient(mediaConfigFromEnv());
       const scope = await pullScopeFor(getMachineUser()?.sub ?? null);
       const data = await loadRemoteProjects(kgs, media);
-      const visible = scope.all ? data : data.filter((p: { projectId: string }) => scope.ids.has(p.projectId));
       // App → Feature grouping (mirrors pipeline-studio's App concept): a
       // feature's project.json optionally carries an appId linking it to its
-      // parent App. Resolved here (not in loadRemoteProjects) so the pure
-      // merge stays fake-testable; App entries themselves are never linked to
-      // another app. Best-effort per project — one project.json read failing
-      // must not fail the whole list.
+      // parent App. Resolved for EVERY feature (not just the ones already in
+      // scope) so membership can cascade below — pipeline-studio's own App
+      // detail page shows every linked feature once you can see the app, with
+      // no separate per-feature membership check; Open Design must match that
+      // or a feature under an app you own/are a member of is invisible here
+      // even though you can see it fine in the studio. Best-effort per
+      // project — one project.json read failing must not fail the whole list.
       await Promise.all(
-        visible
+        data
           .filter((p) => !p.isApp)
           .map(async (p) => {
             p.appId = await resolveAppId(p.projectId);
           }),
       );
+      const visible = filterVisibleProjects(data, scope);
       res.json({ ok: true, data: visible, ...(scope.reason ? { reason: scope.reason } : {}) });
     } catch (err) {
       sendApiError(res, 502, 'KG_REMOTE_FAILED', (err as Error).message);

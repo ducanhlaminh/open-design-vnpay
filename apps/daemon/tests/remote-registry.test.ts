@@ -5,12 +5,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  filterVisibleProjects,
+  isProjectVisible,
   loadRemoteProjects,
   mergeRemoteProjects,
   projectIdFromWorkspace,
   type FolderSource,
   type WorkspaceSource,
 } from '../src/kg-sync/remote-registry.js';
+import type { RemoteProject } from '@open-design/contracts';
 
 describe('projectIdFromWorkspace', () => {
   it('prefers the explicit projectId property', () => {
@@ -112,5 +115,58 @@ describe('loadRemoteProjects', () => {
     expect(rows).toEqual([
       { projectId: 'XPOS', name: 'XPOS', inKgs: false, inMedia: true, files: 2, isApp: false },
     ]);
+  });
+});
+
+describe('isProjectVisible / filterVisibleProjects', () => {
+  it('scope.all sees everything regardless of ids', () => {
+    expect(isProjectVisible('anything', null, { all: true, ids: new Set() })).toBe(true);
+  });
+
+  it('a direct member sees their own project', () => {
+    const scope = { all: false, ids: new Set(['TN1']) };
+    expect(isProjectVisible('TN1', null, scope)).toBe(true);
+  });
+
+  it("cascades: a feature is visible when its PARENT APP is in scope, even if the feature itself isn't", () => {
+    const scope = { all: false, ids: new Set(['app--bidv']) };
+    expect(isProjectVisible('TN1', 'app--bidv', scope)).toBe(true);
+  });
+
+  it('neither the project nor its app is in scope → not visible', () => {
+    const scope = { all: false, ids: new Set(['app--other']) };
+    expect(isProjectVisible('TN1', 'app--bidv', scope)).toBe(false);
+  });
+
+  it('an unlinked feature (no appId) needs its own direct membership', () => {
+    const scope = { all: false, ids: new Set(['app--bidv']) };
+    expect(isProjectVisible('standalone-feature', null, scope)).toBe(false);
+  });
+
+  it('filterVisibleProjects applies the cascade across a full project list', () => {
+    const data: RemoteProject[] = [
+      { projectId: 'app--bidv', name: 'BIDV', inKgs: false, inMedia: true, files: 0, isApp: true },
+      {
+        projectId: 'TN1',
+        name: 'Tính năng 1',
+        inKgs: true,
+        inMedia: true,
+        files: 1,
+        isApp: false,
+        appId: 'app--bidv',
+      },
+      {
+        projectId: 'unrelated',
+        name: 'Unrelated',
+        inKgs: true,
+        inMedia: false,
+        files: 0,
+        isApp: false,
+        appId: null,
+      },
+    ];
+    const scope = { all: false, ids: new Set(['app--bidv']) };
+    const visible = filterVisibleProjects(data, scope);
+    expect(visible.map((p) => p.projectId)).toEqual(['app--bidv', 'TN1']);
   });
 });
