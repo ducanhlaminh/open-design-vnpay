@@ -176,6 +176,8 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          OD_SANDBOX_DEFAULT: ${{ secrets.OD_SANDBOX_DEFAULT }}
+          OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
         run: |
           set -euo pipefail
           # tools-pack derives release-channel identity (appId/productName)
@@ -254,6 +256,8 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          OD_SANDBOX_DEFAULT: ${{ secrets.OD_SANDBOX_DEFAULT }}
+          OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
         run: |
           set -euo pipefail
           # tools-pack derives release-channel identity (appId/productName)
@@ -346,6 +350,8 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          OD_SANDBOX_DEFAULT: ${{ secrets.OD_SANDBOX_DEFAULT }}
+          OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
         run: |
           $ErrorActionPreference = "Stop"
           # See the matching comment in the mac build step: --namespace picks
