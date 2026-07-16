@@ -102,7 +102,7 @@ def filename_from_url(url):
 IMG_SRC_RE = re.compile(r'(<img\b[^>]*\bsrc=["\'])([^"\']+)(["\'])', re.IGNORECASE)
 
 
-def localize_images(base, token, html, attachments_dir, rel_prefix):
+def localize_images(base, token, html, attachments_dir, rel_prefix, page_label=""):
     """Download every same-host <img src> referenced in html into
     attachments_dir and rewrite src to a path relative to the page's .md
     file, so the exported Markdown carries real images instead of
@@ -111,20 +111,28 @@ def localize_images(base, token, html, attachments_dir, rel_prefix):
         return html, 0
     downloaded = {}
     count = 0
+    seen_tags = 0
+    other_host = 0
+    data_uri = 0
+    failed = 0
 
     def repl(m):
-        nonlocal count
+        nonlocal count, seen_tags, other_host, data_uri, failed
+        seen_tags += 1
         prefix, src, suffix = m.group(1), m.group(2), m.group(3)
         if src.startswith("data:"):
+            data_uri += 1
             return m.group(0)
         url = resolve_url(base, src)
         if not is_same_host(base, url):
+            other_host += 1
             return m.group(0)
         if url in downloaded:
             return f"{prefix}{rel_prefix}/{downloaded[url]}{suffix}"
         try:
             data = download_binary(token, url)
         except Exception as e:
+            failed += 1
             print(f"  ! image download failed ({url}): {e}", file=sys.stderr)
             return m.group(0)
         name = filename_from_url(url)
@@ -143,7 +151,24 @@ def localize_images(base, token, html, attachments_dir, rel_prefix):
         downloaded[url] = candidate
         return f"{prefix}{rel_prefix}/{candidate}{suffix}"
 
-    return IMG_SRC_RE.sub(repl, html), count
+    result = IMG_SRC_RE.sub(repl, html)
+    # Diagnostics: if a page you know has images comes out with 0 downloads,
+    # this line says WHY — no <img src> tags at all (export_view didn't
+    # resolve the embed macro to plain HTML) vs tags found but skipped/failed.
+    if seen_tags == 0 and ("<ac:image" in html or "ri:attachment" in html):
+        print(
+            f"  ! {page_label}: body HTML has an unresolved <ac:image>/ri:attachment "
+            "macro instead of a plain <img src> — export_view/view did not render "
+            "the embedded image; nothing to download.",
+            file=sys.stderr,
+        )
+    elif seen_tags > 0:
+        print(
+            f"  [images] {page_label}: {seen_tags} <img> tag(s) seen, "
+            f"{count} downloaded, {other_host} other-host, {data_uri} data-uri, {failed} failed",
+            file=sys.stderr,
+        )
+    return result, count
 
 
 def page_id_from_arg(arg):
@@ -266,6 +291,7 @@ def main():
         os.makedirs(target_dir, exist_ok=True)
         html, img_count = localize_images(
             base, token, body_html(full), os.path.join(target_dir, "attachments"), "attachments",
+            page_label=title,
         )
         total_images += img_count
         md = html_to_md(html)
