@@ -180,6 +180,14 @@ jobs:
           OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
           OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
           OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
+          KGS_URL: ${{ secrets.KGS_URL }}
+          KGS_APP_ID: ${{ secrets.KGS_APP_ID }}
+          KGS_TENANT: ${{ secrets.KGS_TENANT }}
+          KGS_API_KEY: ${{ secrets.KGS_API_KEY }}
+          MEDIA_URL: ${{ secrets.MEDIA_URL }}
+          MEDIA_APP_ID: ${{ secrets.MEDIA_APP_ID }}
+          MEDIA_USER_ID: ${{ secrets.MEDIA_USER_ID }}
+          MEDIA_USER_ROLE: ${{ secrets.MEDIA_USER_ROLE }}
         run: |
           set -euo pipefail
           # tools-pack derives release-channel identity (appId/productName)
@@ -262,6 +270,14 @@ jobs:
           OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
           OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
           OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
+          KGS_URL: ${{ secrets.KGS_URL }}
+          KGS_APP_ID: ${{ secrets.KGS_APP_ID }}
+          KGS_TENANT: ${{ secrets.KGS_TENANT }}
+          KGS_API_KEY: ${{ secrets.KGS_API_KEY }}
+          MEDIA_URL: ${{ secrets.MEDIA_URL }}
+          MEDIA_APP_ID: ${{ secrets.MEDIA_APP_ID }}
+          MEDIA_USER_ID: ${{ secrets.MEDIA_USER_ID }}
+          MEDIA_USER_ROLE: ${{ secrets.MEDIA_USER_ROLE }}
         run: |
           set -euo pipefail
           # tools-pack derives release-channel identity (appId/productName)
@@ -358,6 +374,14 @@ jobs:
           OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
           OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
           OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
+          KGS_URL: ${{ secrets.KGS_URL }}
+          KGS_APP_ID: ${{ secrets.KGS_APP_ID }}
+          KGS_TENANT: ${{ secrets.KGS_TENANT }}
+          KGS_API_KEY: ${{ secrets.KGS_API_KEY }}
+          MEDIA_URL: ${{ secrets.MEDIA_URL }}
+          MEDIA_APP_ID: ${{ secrets.MEDIA_APP_ID }}
+          MEDIA_USER_ID: ${{ secrets.MEDIA_USER_ID }}
+          MEDIA_USER_ROLE: ${{ secrets.MEDIA_USER_ROLE }}
         run: |
           $ErrorActionPreference = "Stop"
           # See the matching comment in the mac build step: --namespace picks
