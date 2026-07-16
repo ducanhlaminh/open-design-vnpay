@@ -67,11 +67,19 @@ jobs:
       # reuses/overwrites a prior build. Manual workflow_dispatch runs can
       # still pin an exact x.y.z to cut a real stable release (updates the
       # metadata.json feed + flips GitHub's "Latest" tag); auto preview runs
-      # append -preview.<run_number> (monotonic per-workflow counter, no
-      # state to maintain) and publish as a separate, non-latest release so
-      # they never affect what stable-channel users auto-update to.
+      # bump the patch number by 1 from the highest existing open-design-v
+      # release under the same major.minor (so the app displays as a clean
+      # "Open Design 0.8.2", not "0.8.1-preview.6" — see
+      # tools/pack/src/{mac,win}/identity.ts) and publish as a separate,
+      # non-latest release so they never affect what stable-channel users
+      # auto-update to. Patch numbers are a SHARED sequence between auto and
+      # manual releases — a manual stable cut just continues from whatever
+      # patch auto builds already used, same as any CI-driven build-number
+      # scheme; it does not reserve or predict future manual version choices.
       - name: Resolve app version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           override="${{ inputs.app_version }}"
@@ -80,7 +88,17 @@ jobs:
             version="$override"
             is_manual_stable="true"
           else
-            version="${base_version}-preview.${{ github.run_number }}"
+            major_minor="$(echo "$base_version" | cut -d. -f1-2)"
+            major_minor_re="$(echo "$major_minor" | sed -E 's/\./\\./g')"
+            base_patch="$(echo "$base_version" | cut -d. -f3)"
+            highest_patch="$(
+              gh release list --repo "${{ github.repository }}" --limit 200 --json tagName --jq '.[].tagName' \
+                | grep -oE "^open-design-v${major_minor_re}\.[0-9]+$" \
+                | sed -E "s/^open-design-v${major_minor_re}\.//" \
+                | sort -n | tail -1
+            )"
+            next_patch="$(( ${highest_patch:-$base_patch} + 1 ))"
+            version="${major_minor}.${next_patch}"
             is_manual_stable="false"
           fi
           tag="open-design-v${version}"
@@ -159,9 +177,20 @@ jobs:
           IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
         run: |
+          set -euo pipefail
+          # tools-pack derives release-channel identity (appId/productName)
+          # from --namespace when --app-version has no beta/preview/nightly
+          # marker in it (see tools/pack/src/mac/identity.ts). Manual runs
+          # cut a real stable release (namespace default == stable channel);
+          # auto preview runs must use the preview namespace explicitly so
+          # they never resolve to the stable app's bundle identity.
+          namespace="default"
+          if [ "${{ needs.verify.outputs.is_manual_stable }}" != "true" ]; then
+            namespace="release-preview"
+          fi
           pnpm exec tools-pack mac build \
             --dir "$RUNNER_TEMP/tools-pack" \
-            --namespace default \
+            --namespace "$namespace" \
             --portable \
             --app-version "${{ needs.verify.outputs.app_version }}" \
             --to all \
@@ -226,9 +255,20 @@ jobs:
           IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
         run: |
+          set -euo pipefail
+          # tools-pack derives release-channel identity (appId/productName)
+          # from --namespace when --app-version has no beta/preview/nightly
+          # marker in it (see tools/pack/src/mac/identity.ts). Manual runs
+          # cut a real stable release (namespace default == stable channel);
+          # auto preview runs must use the preview namespace explicitly so
+          # they never resolve to the stable app's bundle identity.
+          namespace="default"
+          if [ "${{ needs.verify.outputs.is_manual_stable }}" != "true" ]; then
+            namespace="release-preview"
+          fi
           pnpm exec tools-pack mac build \
             --dir "$RUNNER_TEMP/tools-pack" \
-            --namespace default \
+            --namespace "$namespace" \
             --portable \
             --app-version "${{ needs.verify.outputs.app_version }}" \
             --to all \
@@ -303,9 +343,16 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
         run: |
           $ErrorActionPreference = "Stop"
+          # See the matching comment in the mac build step: --namespace picks
+          # the release-channel identity when --app-version has no
+          # beta/preview/nightly marker (tools/pack/src/win/identity.ts).
+          $namespace = "default"
+          if ("${{ needs.verify.outputs.is_manual_stable }}" -ne "true") {
+            $namespace = "release-preview-win"
+          }
           pnpm exec tools-pack win build `
             --dir "${{ runner.temp }}/tools-pack" `
-            --namespace default `
+            --namespace $namespace `
             --portable `
             --app-version "${{ needs.verify.outputs.app_version }}" `
             --to zip `
