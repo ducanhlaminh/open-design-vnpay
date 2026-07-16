@@ -47,13 +47,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # postinstall.mjs builds packages/* and tools/* but not apps/* — mirrors
-      # the explicit build steps release-stable.yml's `verify` job documents.
+      # postinstall.mjs builds packages/* and tools/* but not apps/*, and
+      # misses packages/figma-h2d specifically (not in its buildTargets list)
+      # — apps/web imports it and Next build fails with "Module not found"
+      # without this. Mirrors the explicit build steps release-stable.yml's
+      # `verify` job documents, plus the figma-h2d gap found the hard way.
+      - name: Build figma-h2d
+        run: pnpm --filter @open-design/figma-h2d build
+
       - name: Build daemon
         run: pnpm --filter @open-design/daemon build
 
       - name: Build desktop
         run: pnpm --filter @open-design/desktop build
+
+      - name: Build web
+        run: |
+          pnpm --filter @open-design/web build
+          pnpm --filter @open-design/web build:sidecar
 
       - name: Build mac arm64 DMG (unsigned)
         run: |
@@ -100,11 +111,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build figma-h2d
+        run: pnpm --filter @open-design/figma-h2d build
+
       - name: Build daemon
         run: pnpm --filter @open-design/daemon build
 
       - name: Build desktop
         run: pnpm --filter @open-design/desktop build
+
+      - name: Build web
+        run: |
+          pnpm --filter @open-design/web build
+          pnpm --filter @open-design/web build:sidecar
 
       - name: Build mac intel DMG (unsigned)
         run: |
@@ -152,6 +171,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build figma-h2d
+        run: pnpm --filter @open-design/figma-h2d build
 
       - name: Build daemon
         run: pnpm --filter @open-design/daemon build
