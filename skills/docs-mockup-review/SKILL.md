@@ -155,10 +155,12 @@ KGS. Write:
 }
 ```
 
-   `id` and `path` MUST be the image's path exactly as it exists in the project
-   cwd (the same string a `GET /api/projects/:id/raw/<path>` call would use) —
-   this is how the preview loads the real image and how Export finds every
-   file it needs to bundle. Never invent, rename, or re-encode a path.
+   `id` and `path` MUST be the image's path exactly as YOU see it relative to
+   YOUR OWN working directory (e.g. `docs/confluence/<page>/attachments/<file>.png`
+   — do NOT prepend anything, and do NOT try to guess or include the
+   workflow's storage folder name, you have no visibility into it and must
+   not invent one). The preview and Export reconstruct the full path
+   themselves. Never invent, rename, or re-encode the path you see.
 
 2. **`./review/summary.md`** — a human-readable digest: the project verdict +
    score at the top, a table of images (page / score / verdict / #blockers /

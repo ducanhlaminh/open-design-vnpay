@@ -68,6 +68,28 @@ const T = {
   green: 'var(--green, #16a34a)',
   radius: 'var(--radius, 8px)',
 };
+/**
+ * The `docs-mockup-review` skill runs with its shell cwd set to the
+ * workflow-scoped folder (`<project>/docs-to-prd/`, see server.ts's
+ * runPipeline) — it writes `report.json`'s `images[].path` relative to THAT
+ * cwd (e.g. `docs/confluence/x/attachments/y.png`), with zero visibility
+ * into the `docs-to-prd/` prefix the daemon namespaces it under. But
+ * `/api/projects/:id/raw/*` resolves names relative to the PROJECT ROOT, so
+ * a raw path needs that prefix reconstructed before it can load. `fileName`
+ * (report.json's own path, e.g. `docs-to-prd/review/report.json`) is always
+ * correct — root-relative, from the project's real file listing — so derive
+ * the prefix from IT (two path segments up: past `review/report.json`)
+ * instead of trusting anything the agent wrote. Idempotent: a path that
+ * already carries the prefix (or a legacy unprefixed report with no prefix
+ * at all) passes through unchanged.
+ */
+export function resolveImagePath(reportFileName: string, imagePath: string): string {
+  const parts = reportFileName.split('/');
+  const prefix = parts.length > 2 ? parts.slice(0, parts.length - 2).join('/') : '';
+  if (!prefix || imagePath.startsWith(`${prefix}/`)) return imagePath;
+  return `${prefix}/${imagePath}`;
+}
+
 const asVerdict = (v: unknown): Verdict => (v === 'fail' || v === 'warn' ? v : 'pass');
 const verdictColor = (v: Verdict) => (v === 'fail' ? T.red : v === 'warn' ? T.amber : T.green);
 const verdictLabel = (v: Verdict) => (v === 'fail' ? 'Chưa đạt' : v === 'warn' ? 'Cảnh báo' : 'Đạt');
@@ -166,10 +188,12 @@ function FindingRow({
 function ImageCard({
   image,
   projectId,
+  reportFileName,
   onChange,
 }: {
   image: MockupReviewImage;
   projectId: string;
+  reportFileName: string;
   onChange: (next: MockupReviewImage) => void;
 }) {
   const [open, setOpen] = useState(true);
@@ -214,7 +238,7 @@ function ImageCard({
           <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: T.faint }}>Mockup</div>
             <img
-              src={projectRawUrl(projectId, image.path)}
+              src={projectRawUrl(projectId, resolveImagePath(reportFileName, image.path))}
               alt={image.page ?? image.path}
               style={{ width: '100%', borderRadius: 9, border: `1px solid ${T.border}`, display: 'block' }}
             />
@@ -338,7 +362,7 @@ export function DocsReviewPreview({
       // Always export the SAVED file list — if there are unsaved edits, save
       // first so the exported zip never silently ships a stale report.
       if (dirty) await save();
-      const files = [fileName, ...images.map((img) => img.path)];
+      const files = [fileName, ...images.map((img) => resolveImagePath(fileName, img.path))];
       const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/archive/batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -401,7 +425,7 @@ export function DocsReviewPreview({
       </div>
 
       {images.map((img) => (
-        <ImageCard key={img.id} image={img} projectId={projectId} onChange={(next) => updateImage(img.id, next)} />
+        <ImageCard key={img.id} image={img} projectId={projectId} reportFileName={fileName} onChange={(next) => updateImage(img.id, next)} />
       ))}
     </div>
   );

@@ -4848,7 +4848,20 @@ Common options:
         console.error(`No images[] in ${reportPath} — nothing to export.`);
         process.exit(1);
       }
-      const files = [reportPath, ...images.map((img) => img?.path).filter((p) => typeof p === 'string')];
+      // The docs-mockup-review skill runs with its cwd set to the workflow
+      // folder (docs-to-prd/) and has no visibility into that prefix, so
+      // images[].path is written relative to ITS cwd, not the project root
+      // /api/projects/:id/raw|archive expect. Reconstruct the prefix from
+      // reportPath itself (two segments up, past review/report.json) —
+      // mirrors resolveImagePath in DocsReviewPreview.tsx.
+      const reportParts = reportPath.split('/');
+      const prdPrefix = reportParts.length > 2 ? reportParts.slice(0, reportParts.length - 2).join('/') : '';
+      const resolveImagePath = (p) =>
+        !prdPrefix || p.startsWith(`${prdPrefix}/`) ? p : `${prdPrefix}/${p}`;
+      const files = [
+        reportPath,
+        ...images.map((img) => (typeof img?.path === 'string' ? resolveImagePath(img.path) : null)).filter((p) => typeof p === 'string'),
+      ];
       const batchResp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/archive/batch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
