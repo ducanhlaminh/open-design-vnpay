@@ -62,6 +62,7 @@ import { SpecPreview, type SpecDoc } from './SpecPreview';
 import { SpecFlowCanvas, isFlowDoc, type FlowDoc } from './SpecFlowCanvas';
 import { ReviewPreview, type ReviewReport } from './ReviewPreview';
 import { UxResearchPreview, isUxResearchReport, type UxResearchReport } from './UxResearchPreview';
+import { DocsReviewPreview, isDocsMockupReviewReport, type DocsMockupReviewReport } from './DocsReviewPreview';
 import type { WireDoc } from './WireFrameView';
 import {
   exportAsHtml,
@@ -8087,11 +8088,25 @@ function SpecFileViewer({
     };
   }, [projectId, file.name, file.mtime, reloadKey]);
 
+  // A docs-mockup-review report (review-docs stage, docs-to-reviews workflow):
+  // the explicit `kind` marker, or the `images[].path` shape as a fallback —
+  // checked FIRST since it also carries a top-level `summary.verdict` string
+  // that would otherwise satisfy the heuristic-review shape check below.
+  const docsMockupReview = useMemo<DocsMockupReviewReport | null>(() => {
+    if (text == null) return null;
+    try {
+      const p = JSON.parse(text) as unknown;
+      return isDocsMockupReviewReport(p) ? (p as DocsMockupReviewReport) : null;
+    } catch {
+      return null;
+    }
+  }, [text]);
+
   // A heuristic-review report (ux-review stage) also carries a `screens` array,
   // but those screens hold findings/verdict — NOT ux-spec name/components. Detect
   // it (by path or shape) so it renders as a review, not a broken spec.
   const review = useMemo<ReviewReport | null>(() => {
-    if (text == null) return null;
+    if (text == null || docsMockupReview) return null;
     if (!/(^|\/)heuristic-review\//i.test(file.name) && !/heuristic-review/i.test(file.name)) {
       // Not the review path — still catch the shape (top-level summary.verdict or
       // screens carrying findings) so a mislocated report renders correctly.
@@ -8111,23 +8126,23 @@ function SpecFileViewer({
     } catch {
       return null;
     }
-  }, [text, file.name]);
+  }, [text, file.name, docsMockupReview]);
 
   // A UX Research report (ux-research stage): the explicit `kind` marker or the
   // criteria[]-with-sources shape — neither a spec (screens) nor a review
   // (findings/verdict), so it gets its own preview.
   const uxResearch = useMemo<UxResearchReport | null>(() => {
-    if (text == null || review) return null;
+    if (text == null || review || docsMockupReview) return null;
     try {
       const p = JSON.parse(text) as unknown;
       return isUxResearchReport(p) ? p : null;
     } catch {
       return null;
     }
-  }, [text, review]);
+  }, [text, review, docsMockupReview]);
 
   const spec = useMemo<SpecDoc | null>(() => {
-    if (text == null || review || uxResearch) return null; // a review/research report is not a spec
+    if (text == null || review || uxResearch || docsMockupReview) return null; // a review/research report is not a spec
     try {
       const parsed = JSON.parse(text) as SpecDoc;
       const hasJourneys = Array.isArray(parsed.journeys) && parsed.journeys.length > 0;
@@ -8137,7 +8152,7 @@ function SpecFileViewer({
     } catch {
       return null;
     }
-  }, [text, review]);
+  }, [text, review, uxResearch, docsMockupReview]);
 
   const displayText = useMemo(
     () => (text == null ? null : formatJsonFileTextForDisplay(file, text)),
@@ -8145,9 +8160,9 @@ function SpecFileViewer({
   );
   const lineCount = displayText ? displayText.split('\n').length : 0;
 
-  // A plain (non-spec, non-review, non-research) JSON file behaves like the
-  // generic text viewer.
-  if (text !== null && !spec && !review && !uxResearch) {
+  // A plain (non-spec, non-review, non-research, non-mockup-review) JSON file
+  // behaves like the generic text viewer.
+  if (text !== null && !spec && !review && !uxResearch && !docsMockupReview) {
     return <TextViewer projectId={projectId} file={file} />;
   }
 
@@ -8214,8 +8229,15 @@ function SpecFileViewer({
         </div>
       </div>
       <div className="viewer-body">
-        {text === null || (spec === null && review === null && uxResearch === null) ? (
+        {text === null || (spec === null && review === null && uxResearch === null && docsMockupReview === null) ? (
           <div className="viewer-empty">{t('fileViewer.loading')}</div>
+        ) : docsMockupReview && mode === 'preview' ? (
+          <DocsReviewPreview
+            projectId={projectId}
+            fileName={file.name}
+            report={docsMockupReview}
+            onSaved={() => setReloadKey((k) => k + 1)}
+          />
         ) : review && mode === 'preview' ? (
           <ReviewPreview report={review} wireframes={wireframes} platforms={platforms} />
         ) : uxResearch && mode === 'preview' ? (

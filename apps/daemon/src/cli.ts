@@ -156,6 +156,7 @@ const PROJECT_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'skill', 'design-system', 'plugin', 'metadata-json',
   'pending-prompt', 'project', 'conversation', 'message', 'path', 'as',
   'agent', 'model', 'snapshot-id', 'inputs', 'grant-caps', 'editor',
+  'report', 'out',
 ]);
 const PROJECT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'follow']);
 // `od automation …` mirrors the Automations tab. Same surface, same
@@ -4679,6 +4680,11 @@ async function runProject(args) {
   od project handoff <id> --conversation <id> --api-key <key> --model <model>
                     [--base-url <url>] [--max-tokens <n>]
                     Synthesize a resume-conversation handoff prompt.
+  od project export-review <id> [--report <path>] [--out <path>]
+                    Bundle a docs-mockup-review report (review-docs stage)
+                    with every mockup image it references into one .zip —
+                    the CLI form of the preview's "Xuất file review" button.
+                    --report defaults to docs-to-reviews/review/report.json.
 
 Common options:
   --daemon-url <url>   Open Design daemon HTTP base.
@@ -4821,6 +4827,46 @@ Common options:
       }
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       console.log(`[project] opened ${id} in ${editor} (${data.path ?? ''})`);
+      return;
+    }
+    case 'export-review': {
+      const id = rest.find((a) => !a.startsWith('-'));
+      if (!id) {
+        console.error('Usage: od project export-review <id> [--report <path>] [--out <path>]');
+        process.exit(2);
+      }
+      const reportPath = typeof flags.report === 'string' && flags.report
+        ? flags.report
+        : 'docs-to-reviews/review/report.json';
+      const rawResp = await fetch(
+        `${base}/api/projects/${encodeURIComponent(id)}/raw/${reportPath.split('/').map(encodeURIComponent).join('/')}`,
+      );
+      if (!rawResp.ok) return structuredHttpFailure(rawResp, 'report-not-found');
+      const report = await rawResp.json().catch(() => null);
+      const images = Array.isArray(report?.images) ? report.images : [];
+      if (images.length === 0) {
+        console.error(`No images[] in ${reportPath} — nothing to export.`);
+        process.exit(1);
+      }
+      const files = [reportPath, ...images.map((img) => img?.path).filter((p) => typeof p === 'string')];
+      const batchResp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/archive/batch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ files }),
+      });
+      if (!batchResp.ok) return structuredHttpFailure(batchResp, 'export-failed');
+      const buf = Buffer.from(await batchResp.arrayBuffer());
+      const outPath = typeof flags.out === 'string' && flags.out ? flags.out : `${id}-review.zip`;
+      const fs = (require ? require('node:fs') : null);
+      if (!fs) {
+        console.error('node:fs unavailable in this runtime — cannot write the .zip to disk.');
+        process.exit(1);
+      }
+      fs.writeFileSync(outPath, buf);
+      if (flags.json) {
+        return process.stdout.write(JSON.stringify({ out: outPath, files: files.length }, null, 2) + '\n');
+      }
+      console.log(`[project] exported review (${files.length} file(s), ${images.length} image(s)) -> ${outPath}`);
       return;
     }
     default:

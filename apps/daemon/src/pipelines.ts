@@ -189,11 +189,30 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
       'react/src/lib/',
       '*.artifact.json',
     ] },
+
+  // ── `docs-to-reviews` workflow's own terminal ──────────────────────────────
+  // PRD Mockup Review: reads the SAME `docs`/`cj`/`ux-research` outputs as
+  // docs-to-ui (shared ids — see WORKFLOWS below) and reviews the MOCKUP
+  // IMAGES embedded in the source Confluence docs (not a generated wireframe
+  // like ux-review) against the surrounding text + customer journey + UX
+  // research criteria: does each mockup actually deliver the feature its own
+  // doc text describes. FILE-ONLY, one report keyed by image (not by screen —
+  // there is no UX Spec here, this workflow never reaches `ux`/`ux-review`).
+  { id: 'review-docs',      name: 'PRD Mockup Review',         skillId: 'docs-mockup-review',    dependsOn: ['ux-research'], outputs: ['review/'] },
 ];
 
-// Named docs→output flows. Each is an ordered subset of PIPELINE_DEFS. Since
-// the 2026-07 merge there is exactly ONE workflow; the UI's workflow tab bar
-// auto-hides with a single entry, and progress + gating span all its stages.
+// Named docs→output flows. Each is an ordered subset of PIPELINE_DEFS. The
+// UI's workflow tab bar auto-hides when there is only one entry.
+//
+// `docs`/`cj`/`ux-research` are deliberately listed in BOTH workflows below —
+// a pipeline id's declared workflow (for folder-naming purposes, see
+// `workflowForPipeline`) is whichever workflow lists it FIRST in this array,
+// but `ProjectPipelineState` is keyed by pipeline id, not by workflow, so a
+// project that already ran `docs-to-ui` shows those 3 stages as already
+// `succeeded` under the `docs-to-reviews` tab too — no re-fetching the same
+// Confluence pages / re-running the same journey+research twice. This is an
+// intentional stage-reuse fork of the 2026-07 workflow-merge pattern (same
+// idea as `docs-html`/`docs-react` sharing one folder), not an accident.
 export const WORKFLOWS: readonly Workflow[] = [
   {
     id: 'docs-to-ui',
@@ -201,6 +220,13 @@ export const WORKFLOWS: readonly Workflow[] = [
     description:
       'Product docs → UX Research (evidence-based criteria) → UX Spec → a heuristic review gate → UI-Spec: an interactive HTML prototype or a real Vite + React 19 app — pick either (or both) at the final stage.',
     pipelineIds: ['docs', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react'],
+  },
+  {
+    id: 'docs-to-reviews',
+    name: 'Docs → PRD Review',
+    description:
+      'Product docs (Confluence, with embedded mockup images) → Customer Journey → UX Research → a review of every mockup against the feature text next to it — editable in the preview, exportable with all its images.',
+    pipelineIds: ['docs', 'cj', 'ux-research', 'review-docs'],
   },
 ];
 
@@ -231,10 +257,12 @@ function outputMatches(rel: string, pattern: string): boolean {
   return rel === pattern || rel.endsWith('/' + pattern);
 }
 
-// The workflow a pipeline belongs to. Each pipeline id is in exactly one
-// workflow, so this is unambiguous. Drives the per-workflow output namespace:
-// a pipeline run writes under the project cwd subdirectory named after its
-// workflow id (workflowDirForPipeline). Undefined for an unknown id.
+// The workflow a pipeline belongs to. Most pipeline ids are in exactly one
+// workflow; a stage deliberately SHARED across workflows for reuse (docs/cj/
+// ux-research — see the comment above WORKFLOWS) resolves to whichever
+// workflow lists it FIRST here, which is also where its output folder lives
+// (workflowDirForPipeline) — every workflow that shares it reads/writes that
+// same folder. Undefined for an unknown id.
 export function workflowForPipeline(pipelineId: string): Workflow | undefined {
   return WORKFLOWS.find((w) => w.pipelineIds.includes(pipelineId));
 }

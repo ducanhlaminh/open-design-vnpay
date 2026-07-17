@@ -31,8 +31,7 @@ function viewOf(views: PipelineView[], id: string): PipelineView {
   return v;
 }
 
-test('there is exactly ONE workflow whose terminal step offers two UI-Spec options', () => {
-  assert.equal(WORKFLOWS.length, 1);
+test('docs-to-ui: terminal step offers two UI-Spec options', () => {
   assert.equal(WORKFLOWS[0]!.id, 'docs-to-ui');
   assert.deepEqual(WORKFLOWS[0]!.pipelineIds, ['docs', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react']);
   // Both terminals are OPTIONS of the same step: same dependency, run either or both.
@@ -40,6 +39,22 @@ test('there is exactly ONE workflow whose terminal step offers two UI-Spec optio
   // review must run once before either UI terminal unlocks.
   assert.deepEqual(def('ui-html').dependsOn, ['ux-review']);
   assert.deepEqual(def('ui-react').dependsOn, ['ux-review']);
+});
+
+test('docs-to-reviews: shares docs/cj/ux-research with docs-to-ui, own review-docs terminal', () => {
+  const wf = WORKFLOWS.find((w) => w.id === 'docs-to-reviews');
+  assert.ok(wf, 'docs-to-reviews workflow should exist');
+  assert.deepEqual(wf!.pipelineIds, ['docs', 'cj', 'ux-research', 'review-docs']);
+  assert.deepEqual(def('review-docs').dependsOn, ['ux-research']);
+  assert.equal(def('review-docs').skillId, 'docs-mockup-review');
+  // File-only: never projected into KGS.
+  assert.equal(def('review-docs').convertToGraph, undefined);
+  assert.deepEqual(def('review-docs').outputs, ['review/']);
+  // The shared ids resolve to docs-to-ui's folder (first workflow to list
+  // them) — both workflows read/write the SAME docs/cj/ux-research output,
+  // so a project that ran docs-to-ui shows those 3 stages already done here.
+  assert.equal(workflowDirForPipeline('docs'), 'docs-to-ui');
+  assert.equal(workflowDirForPipeline('review-docs'), 'docs-to-reviews');
 });
 
 test('the ux-review gate sits between ux and the terminals (Gate 1: heuristic review)', () => {
