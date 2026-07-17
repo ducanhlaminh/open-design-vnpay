@@ -651,6 +651,11 @@ export function htmlToMarkdown(
     const target = resolveHref ? resolveHref(href) : href;
     return `[${label || target}](${target})`;
   });
+  // Pure-inline formatting tags (Confluence highlight <span>s, underline, …)
+  // vanish with NO replacement text. They must go BEFORE the <li>/table-cell
+  // handlers, whose generic tag→space strip would otherwise split words in
+  // half whenever a highlight starts or ends mid-word ("t oàn bộ hồ sơ N CC").
+  s = s.replace(/<\/?(?:span|u|s|sub|sup|small|mark|font|abbr|time|ins|del)\b[^>]*>/gi, '');
   // Tables → REAL GFM tables (header row + `| --- |` separator, cells padded
   // to a uniform width, pipes escaped) so react-markdown/remark-gfm render
   // them as tables instead of literal pipe text. Innermost-first loop handles
@@ -678,6 +683,43 @@ export function htmlToMarkdown(
     s = next;
   }
   s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, l: string, t: string) => `\n${'#'.repeat(Number(l))} ${t.replace(/<[^>]+>/g, '').trim()}\n`);
+  // Lists → markdown that KEEPS the nesting (Confluence specs lean on
+  // bullet-under-heading structure). Innermost-first fixed-point, same trick
+  // as the tables above: each pass converts lists containing no nested
+  // <ul>/<ol>, so an outer <li> sees its inner list already as markdown
+  // lines and indents them 2 more spaces — depth accumulates per pass. The
+  // old single flat `<li>` regex collapsed a nested list into its parent's
+  // line, flattening the whole hierarchy.
+  const liItemToMd = (inner: string, marker: string): string => {
+    // Continuation lines keep their leading indent as-is — it carries the
+    // accumulated nesting depth from earlier passes; only the item's own
+    // first line gets whitespace-collapsed.
+    const lines = inner
+      .replace(/<[^>]+>/g, ' ')
+      .split('\n')
+      .map((l) => l.trimEnd())
+      .filter((l) => l.trim().length > 0);
+    const first = (lines.shift() ?? '').replace(/\s+/g, ' ').trim();
+    const rest = lines.map((l) => `  ${l}`);
+    return [`${marker}${first}`, ...rest].join('\n');
+  };
+  const listToMd = (listHtml: string, ordered: boolean): string => {
+    const items: string[] = [];
+    let n = 0;
+    for (const li of listHtml.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
+      n += 1;
+      items.push(liItemToMd(li[1]!, ordered ? `${n}. ` : '- '));
+    }
+    return items.length ? `\n${items.join('\n')}\n\n` : '\n';
+  };
+  for (;;) {
+    const next = s.replace(/<(ul|ol)\b(?:(?!<ul\b|<ol\b)[\s\S])*?<\/\1>/gi, (list, tag: string) =>
+      listToMd(list, tag.toLowerCase() === 'ol'),
+    );
+    if (next === s) break;
+    s = next;
+  }
+  // Orphan <li> with no surviving parent list (malformed markup) — old flat behavior.
   s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_m, t: string) => `- ${t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()}\n`);
   // src has already been localized (localizeConfluenceImages) before this
   // function runs, when the caller has Confluence creds to download with —

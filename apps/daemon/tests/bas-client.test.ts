@@ -184,6 +184,45 @@ test('htmlToMarkdown decodes named Latin-1 + numeric entities (Vietnamese wiki t
   assert.equal(md, 'Phiên bản tài liệu ế ế & mô tả');
 });
 
+test('htmlToMarkdown drops inline highlight spans WITHOUT splitting words (Confluence bôi vàng mid-word)', async () => {
+  const { htmlToMarkdown } = await import('../src/bas/bas-client.js');
+  // Real shape from wiki body.view: the author's yellow highlight starts and
+  // ends mid-word, so <span> boundaries sit inside words. The old generic
+  // tag→space strip inside <li>/table cells produced "t oàn bộ hồ sơ N CC".
+  const md = htmlToMarkdown(
+    '<ul><li>hiển thị t<span style="background-color:#ffea00">oàn bộ hồ sơ N</span>CC đã tạo, ' +
+      'tìm kiếm th<span class="inline-highlight">eo</span> tên</li></ul>' +
+      '<table><tr><td>lọc th<span style="background-color:#ffea00">eo</span> Loại</td></tr></table>',
+  );
+  assert.match(md, /hiển thị toàn bộ hồ sơ NCC đã tạo/);
+  assert.match(md, /tìm kiếm theo tên/);
+  assert.match(md, /lọc theo Loại/);
+});
+
+test('htmlToMarkdown keeps nested list hierarchy instead of flattening it into one line', async () => {
+  const { htmlToMarkdown } = await import('../src/bas/bas-client.js');
+  // Real shape from the NCC spec page: a bullet whose content is a heading,
+  // with the screen description as a NESTED sub-bullet. The old single-pass
+  // <li> regex merged the heading and the first sub-bullet into one flat line.
+  const md = htmlToMarkdown(
+    '<ul><li><h2>MH-NCC-01 – Danh sách Nhà cung cấp</h2>' +
+      '<ul><li><strong>Ý nghĩa màn hình:</strong> Màn danh sách</li>' +
+      '<li><em>UI Screen tương ứng</em></li></ul></li></ul>',
+  );
+  const lines = md.split('\n').filter(Boolean);
+  assert.equal(lines[0], '- ## MH-NCC-01 – Danh sách Nhà cung cấp');
+  assert.equal(lines[1], '  - **Ý nghĩa màn hình:** Màn danh sách');
+  assert.equal(lines[2], '  - *UI Screen tương ứng*');
+});
+
+test('htmlToMarkdown numbers ordered-list items', async () => {
+  const { htmlToMarkdown } = await import('../src/bas/bas-client.js');
+  const md = htmlToMarkdown('<ol><li>Bước một</li><li>Bước hai</li></ol>');
+  const lines = md.split('\n').filter(Boolean);
+  assert.equal(lines[0], '1. Bước một');
+  assert.equal(lines[1], '2. Bước hai');
+});
+
 test('htmlToMarkdown emits REAL GFM tables (separator row, padded cells, escaped pipes, nested)', async () => {
   const { htmlToMarkdown } = await import('../src/bas/bas-client.js');
   const md = htmlToMarkdown(
