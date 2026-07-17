@@ -41,20 +41,29 @@ test('docs-to-ui: terminal step offers two UI-Spec options', () => {
   assert.deepEqual(def('ui-react').dependsOn, ['ux-review']);
 });
 
-test('docs-to-reviews: shares docs/cj/ux-research with docs-to-ui, own review-docs terminal', () => {
-  const wf = WORKFLOWS.find((w) => w.id === 'docs-to-reviews');
-  assert.ok(wf, 'docs-to-reviews workflow should exist');
-  assert.deepEqual(wf!.pipelineIds, ['docs', 'cj', 'ux-research', 'review-docs']);
-  assert.deepEqual(def('review-docs').dependsOn, ['ux-research']);
-  assert.equal(def('review-docs').skillId, 'docs-mockup-review');
+test('docs-to-prd: fully independent of docs-to-ui — its own docs/cj/ux-research + review terminal', () => {
+  const wf = WORKFLOWS.find((w) => w.id === 'docs-to-prd');
+  assert.ok(wf, 'docs-to-prd workflow should exist');
+  assert.deepEqual(wf!.pipelineIds, ['prd-docs', 'prd-cj', 'prd-ux-research', 'prd-review']);
+  // Same ingredient skills as docs-to-ui's docs/cj/ux-research, but distinct
+  // ids — so nothing here is ever "already done" from a docs-to-ui run.
+  assert.equal(def('prd-docs').skillId, 'jira-ingest');
+  assert.equal(def('prd-cj').skillId, 'customer-journey-spec');
+  assert.equal(def('prd-ux-research').skillId, 'ux-research');
+  assert.deepEqual(def('prd-cj').dependsOn, ['prd-docs']);
+  assert.deepEqual(def('prd-ux-research').dependsOn, ['prd-cj']);
+  assert.deepEqual(def('prd-review').dependsOn, ['prd-ux-research']);
+  assert.equal(def('prd-review').skillId, 'docs-mockup-review');
   // File-only: never projected into KGS.
-  assert.equal(def('review-docs').convertToGraph, undefined);
-  assert.deepEqual(def('review-docs').outputs, ['review/']);
-  // The shared ids resolve to docs-to-ui's folder (first workflow to list
-  // them) — both workflows read/write the SAME docs/cj/ux-research output,
-  // so a project that ran docs-to-ui shows those 3 stages already done here.
+  assert.equal(def('prd-review').convertToGraph, undefined);
+  assert.deepEqual(def('prd-review').outputs, ['review/']);
+  // Each id resolves to docs-to-prd's OWN folder — never docs-to-ui's.
+  assert.equal(workflowDirForPipeline('prd-docs'), 'docs-to-prd');
+  assert.equal(workflowDirForPipeline('prd-ux-research'), 'docs-to-prd');
+  assert.equal(workflowDirForPipeline('prd-review'), 'docs-to-prd');
+  // And docs-to-ui's own ids are untouched, still resolving to docs-to-ui.
   assert.equal(workflowDirForPipeline('docs'), 'docs-to-ui');
-  assert.equal(workflowDirForPipeline('review-docs'), 'docs-to-reviews');
+  assert.equal(workflowDirForPipeline('ux-research'), 'docs-to-ui');
 });
 
 test('the ux-review gate sits between ux and the terminals (Gate 1: heuristic review)', () => {
@@ -179,8 +188,13 @@ test('stagesForOutput: RETIRED workflow folders keep lighting the merged stages 
 
 test('stagesForOutput: unprefixed legacy paths still match (back-compat)', () => {
   // Files produced before per-workflow folders existed have no prefix; they
-  // must still derive status so old projects don't break.
-  assert.deepEqual(stagesForOutput('docs/confluence/x.md').map((d) => d.id), ['docs']);
+  // must still derive status so old projects don't break. An unprefixed path
+  // is ambiguous between docs-to-ui's `docs` and docs-to-prd's `prd-docs`
+  // (same relative output pattern, independent workflows) — but no legacy
+  // unprefixed file can actually be a docs-to-prd one (that workflow was
+  // introduced after per-workflow folders already existed), and
+  // stageForOutput's first-match still resolves to `docs` (declared first).
+  assert.deepEqual(stagesForOutput('docs/confluence/x.md').map((d) => d.id), ['docs', 'prd-docs']);
 });
 
 test('ui-html prototype output round-trips cross-device (not localOnly)', () => {
@@ -213,8 +227,17 @@ test('stageRegenSet: re-run clear scope — self only, or self + transitive down
   // Terminals have no downstream — cascade == self.
   assert.deepEqual(stageRegenSet('ui-html', true), ['ui-html']);
   assert.deepEqual(stageRegenSet('ui-react', true), ['ui-react']);
-  // docs cascades to the whole workflow.
-  assert.equal(stageRegenSet('docs', true).length, PIPELINE_DEFS.length);
+  // docs cascades to its own workflow only — docs-to-prd's independent
+  // prd-docs/prd-cj/prd-ux-research/prd-review never light up from this.
+  assert.deepEqual(
+    [...stageRegenSet('docs', true)].sort(),
+    ['docs', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react'].sort(),
+  );
+  // And prd-docs cascades to its own 4-stage workflow only.
+  assert.deepEqual(
+    [...stageRegenSet('prd-docs', true)].sort(),
+    ['prd-docs', 'prd-cj', 'prd-ux-research', 'prd-review'].sort(),
+  );
 });
 
 test('hasDownstream: only terminals lack downstream (scope choice hidden there)', () => {

@@ -1,7 +1,9 @@
 ---
 name: docs-mockup-review
 description: |
-  Terminal stage of the `docs-to-reviews` workflow (pipeline `review-docs`).
+  Terminal stage of the `docs-to-prd` workflow (pipeline `prd-review`) — an
+  INDEPENDENT workflow from `docs-to-ui`, with its own docs/journey/research
+  run (`prd-docs`/`prd-cj`/`prd-ux-research`), never sharing output with it.
   Read the ingested Confluence docs (Markdown + their embedded mockup images
   under `attachments/`), the Customer Journey, and the UX Research report, then
   review EVERY mockup image against the feature text that surrounds it in its
@@ -28,14 +30,15 @@ od:
       - heuristic-eval
 ---
 
-# docs-mockup-review — review PRD mockups against their own doc text (Gate, `docs-to-reviews`)
+# docs-mockup-review — review PRD mockups against their own doc text (Gate, `docs-to-prd`)
 
-You are the **PRD Mockup Review** stage of the `docs-to-reviews` workflow. Upstream,
-`docs` ingested Confluence pages (Markdown + a copy of every embedded image under
-each page's `attachments/`), `cj` authored the Customer Journey from that text, and
-`ux-research` produced evidence-based UX criteria. There is no `ux`/`ux-spec` stage
-in this workflow — the mockup IMAGES in the source docs are themselves the design
-under review, not something this pipeline generates.
+You are the **PRD Mockup Review** stage of the `docs-to-prd` workflow — separate
+from `docs-to-ui`, with its own ingestion run. Upstream in THIS workflow,
+`prd-docs` ingested Confluence pages (Markdown + a copy of every embedded image
+under each page's `attachments/`), `prd-cj` authored the Customer Journey from
+that text, and `prd-ux-research` produced evidence-based UX criteria. There is
+no `ux`/`ux-spec` stage in this workflow — the mockup IMAGES in the source docs
+are themselves the design under review, not something this pipeline generates.
 
 Your job is narrower than a fresh design review: the doc's author already wrote
 what a screen must do (prose, right next to the image) and already drew what they

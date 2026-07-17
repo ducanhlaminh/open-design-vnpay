@@ -13533,12 +13533,14 @@ export async function startServer({
     // cross-reads, no clobbering, no status bleed). null → run at the cwd root.
     const wfDir = workflowDirForPipeline(pipelineId);
 
-    // Docs stage, Confluence source → the TOOL-ONLY path (runDocsDeterministic
-    // above): a structured confluence source, or a free-text input whose every
-    // line is a page URL/id, is fetched by the daemon itself — no agent. Only
-    // JIRA key / JQL input (needs the Atlassian MCP) still goes to the agent.
-    // (The BAS source is LOCKED for maintenance at the routes/CLI.)
-    if (def.id === 'docs') {
+    // Any stage running the jira-ingest skill (docs-to-ui's `docs`, docs-to-prd's
+    // `prd-docs` — same skill, independent workflows), Confluence source → the
+    // TOOL-ONLY path (runDocsDeterministic above): a structured confluence
+    // source, or a free-text input whose every line is a page URL/id, is
+    // fetched by the daemon itself — no agent. Only JIRA key / JQL input
+    // (needs the Atlassian MCP) still goes to the agent. (The BAS source is
+    // LOCKED for maintenance at the routes/CLI.)
+    if (def.skillId === 'jira-ingest') {
       const inputRefs = (input ?? '')
         .split(/\r?\n/)
         .map((s) => s.trim())
@@ -13617,7 +13619,8 @@ export async function startServer({
     const rerunDirective = isRerun
       ? ' This is a RE-RUN: the previous outputs for this stage have been cleared — regenerate every deliverable from scratch. Do NOT assume prior work exists or skip steps because a file seems present.'
       : '';
-    // UX knowledge base directive (ux-research stage only): the DAEMON
+    // UX knowledge base directive (any stage running the ux-research skill —
+    // docs-to-ui's `ux-research`, docs-to-prd's `prd-ux-research`): the DAEMON
     // resolves the KB (env override → media-store sync → local home folder —
     // see ux-kb-sync.ts) and STAGES it into the run cwd as `./.ux-kb` — a
     // dot-folder, so snapshot/push/re-run-clear never see it. The agent gets a
@@ -13626,7 +13629,7 @@ export async function startServer({
     // `~/…` path that file tools never expand, then wrongly declared the KB
     // unavailable). Staging failure falls back to the absolute-path directive.
     let kbDirective = '';
-    if (def.id === 'ux-research') {
+    if (def.skillId === 'ux-research') {
       const kb = await resolveUxKbDir(RUNTIME_DATA_DIR);
       if (kb.dir) {
         const kbTail =

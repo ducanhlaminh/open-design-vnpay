@@ -4681,10 +4681,10 @@ async function runProject(args) {
                     [--base-url <url>] [--max-tokens <n>]
                     Synthesize a resume-conversation handoff prompt.
   od project export-review <id> [--report <path>] [--out <path>]
-                    Bundle a docs-mockup-review report (review-docs stage)
+                    Bundle a docs-mockup-review report (prd-review stage)
                     with every mockup image it references into one .zip —
                     the CLI form of the preview's "Xuất file review" button.
-                    --report defaults to docs-to-reviews/review/report.json.
+                    --report defaults to docs-to-prd/review/report.json.
 
 Common options:
   --daemon-url <url>   Open Design daemon HTTP base.
@@ -4837,7 +4837,7 @@ Common options:
       }
       const reportPath = typeof flags.report === 'string' && flags.report
         ? flags.report
-        : 'docs-to-reviews/review/report.json';
+        : 'docs-to-prd/review/report.json';
       const rawResp = await fetch(
         `${base}/api/projects/${encodeURIComponent(id)}/raw/${reportPath.split('/').map(encodeURIComponent).join('/')}`,
       );

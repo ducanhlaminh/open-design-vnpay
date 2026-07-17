@@ -8088,7 +8088,7 @@ function SpecFileViewer({
     };
   }, [projectId, file.name, file.mtime, reloadKey]);
 
-  // A docs-mockup-review report (review-docs stage, docs-to-reviews workflow):
+  // A docs-mockup-review report (prd-review stage, docs-to-prd workflow):
   // the explicit `kind` marker, or the `images[].path` shape as a fallback —
   // checked FIRST since it also carries a top-level `summary.verdict` string
   // that would otherwise satisfy the heuristic-review shape check below.

@@ -1,4 +1,4 @@
-// DocsReviewPreview — the `docs-to-reviews` workflow's review-docs stage
+// DocsReviewPreview — the `docs-to-prd` workflow's prd-review stage
 // preview (`review/report.json`, output of the `docs-mockup-review` skill).
 // Unlike ReviewPreview (read-only, judges a GENERATED wireframe) this renders
 // the REAL mockup image from the source doc on the left and an EDITABLE
