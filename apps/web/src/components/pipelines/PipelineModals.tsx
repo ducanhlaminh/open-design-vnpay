@@ -93,14 +93,15 @@ function outputMatches(rel: string, pattern: string): boolean {
 }
 
 // Mirror of the daemon's `splitWorkflowPath` (pipelines.ts): every pipeline
-// writes under its workflow folder — `docs-to-ui/…` today, `docs-to-html/…` /
-// `docs-to-react/…` on projects from before the 2026-07 merge — while the
-// stage `outputs` patterns are workflow-RELATIVE. Strip the folder before
-// matching; without this, folder patterns (`prototype/`, `docs/jira/`,
-// `react/`, …) never match and Quick result reports "No output files yet"
-// for stages that plainly succeeded. Legacy unprefixed paths pass through
-// unchanged.
-const WORKFLOW_DIR_RE = /^(docs-to-ui|docs-to-html|docs-to-react)\//;
+// writes under its workflow folder — `docs-to-ui/…` and `docs-to-prd/…` today,
+// `docs-to-html/…` / `docs-to-react/…` on projects from before the 2026-07
+// merge — while the stage `outputs` patterns are workflow-RELATIVE. Strip the
+// folder before matching; without this, folder patterns (`prototype/`,
+// `docs/jira/`, `react/`, `review/`, …) never match and Quick result reports
+// "No output files yet" for stages that plainly succeeded. Legacy unprefixed
+// paths pass through unchanged. MUST be kept in sync with daemon `WORKFLOWS`
+// (pipelines.ts) — every workflow id added there needs its id added here too.
+const WORKFLOW_DIR_RE = /^(docs-to-ui|docs-to-prd|docs-to-html|docs-to-react)\//;
 function stripWorkflowDir(rel: string): string {
   return rel.replace(WORKFLOW_DIR_RE, '');
 }
@@ -1424,8 +1425,9 @@ function isUiPreviewFile(name: string): boolean {
   if (/(^|\/)prototype-demo\/.*\.webm$/.test(lower)) return true;
   // Primary visual spec docs (UX Spec / Customer Journey).
   if (/-ux-spec\.json$/.test(base) || /-(customer-journey|journey|cj)\.json$/.test(base)) return true;
-  // Visual report previews — UX Heuristic Review + UX Research.
-  return /(^|\/)(heuristic-review|ux-research)\/[^/]*\.json$/.test(lower);
+  // Visual report previews — UX Heuristic Review + UX Research + docs-to-prd's
+  // PRD Mockup Review (DocsReviewPreview).
+  return /(^|\/)(heuristic-review|ux-research|review)\/[^/]*\.json$/.test(lower);
 }
 
 export function PipelineResultModal({
