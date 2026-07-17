@@ -141,6 +141,31 @@ export interface WorkflowsResponse {
   defaultWorkflowId: string;
 }
 
+/** Một trang Confluence nguồn — dùng cả cho config Pipeline Studio lẫn cấu
+ *  hình Run-all đã lưu (chọn NHIỀU từ picker, mỗi dòng một trang). */
+export interface ConfluencePageRef {
+  id?: string;
+  title?: string;
+  url?: string;
+}
+
+/** Bộ cấu hình cho "Chạy full workflow" — dùng chung cho hai nguồn:
+ *  `PipelineProject.config` (đọc từ Pipeline Studio, project.json) và
+ *  `PipelineProject.savedRunAll` (lưu lại từ lần Run-all gần nhất trên máy
+ *  này). Mọi field đều optional vì `config` chỉ set nguồn tài liệu + design
+ *  system trong khi `savedRunAll` set đầy đủ mọi lựa chọn của modal Run-all. */
+export interface RunAllConfig {
+  confluencePages?: ConfluencePageRef[];
+  designSystemId?: string | null;
+  basDocumentId?: string;
+  basDocumentTitle?: string;
+  displayName?: string;
+  terminal?: WorkflowTerminal;
+  platform?: TargetPlatform;
+  followLinks?: boolean;
+  skipSucceeded?: boolean;
+}
+
 // A KGS app/project available for pipelines. These are projects pulled from the
 // central KGS (`od kg pull <project-id>`), whose open-design id IS the KGS
 // project_id. Pipelines run ONLY on these — not on ephemeral chat workspaces.
@@ -159,14 +184,13 @@ export interface PipelineProject {
   /** Cấu hình từ Pipeline Studio (project.json trên store, mirror về khi
    *  pull): Run tự điền nguồn tài liệu (link Confluence HOẶC tài liệu BAS đã
    *  chọn) + design system từ đây — vẫn cho override từng lần chạy. */
-  config?: {
-    /** Các trang Confluence nguồn (chọn NHIỀU từ picker của studio) — Run
-     *  điền tất cả, mỗi dòng một trang (bước Docs nhận cả link lẫn page id). */
-    confluencePages?: Array<{ id?: string; title?: string; url?: string }>;
-    designSystemId?: string;
-    basDocumentId?: string;
-    basDocumentTitle?: string;
-  };
+  config?: RunAllConfig;
+  /** Cấu hình Run-all được LƯU LẠI từ lần chạy full workflow gần nhất trên
+   *  project này (ghi mỗi lần POST /api/pipelines/run-all thành công) — modal
+   *  Run-all mở lại (kể cả sau khi cancel giữa chừng) điền sẵn từ đây thay vì
+   *  bắt nhập lại. Khi chưa từng chạy lần nào (`undefined`), modal fallback về
+   *  `config` (Pipeline Studio). */
+  savedRunAll?: RunAllConfig;
 }
 
 export interface PipelineProjectsResponse {
@@ -341,6 +365,11 @@ export interface RunWorkflowRequest {
   input?: string;
   /** Structured source for the first stage — same as RunPipelineRequest. */
   source?: PipelineRunSource;
+  /** Structured Confluence picks behind `input` (title kept for redisplay) —
+   * NOT used to run the docs stage (that reads `input`/`source`); persisted
+   * into `savedRunAll` so a later Run-all modal open can restore the picker
+   * with titles instead of just bare URLs. */
+  confluencePages?: ConfluencePageRef[];
   /** Design system for the UI terminal(s) — same semantics as RunPipelineRequest. */
   designSystemId?: string | null;
   /** Target platform for the UX stage — same semantics as RunPipelineRequest. */

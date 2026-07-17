@@ -882,6 +882,9 @@ export type WorkflowTerminalChoice = 'ui-html' | 'ui-react' | 'both';
 
 export interface RunAllPayload {
   input?: string;
+  /** Structured picks behind `input` — sent alongside it purely so the daemon
+   *  can persist a redisplay-able (titled) version into `savedRunAll`. */
+  confluencePages?: ConfluencePageRefLike[];
   terminal: WorkflowTerminalChoice;
   platform: TargetPlatform;
   designSystemId: string | null;
@@ -894,15 +897,25 @@ export function RunAllModal({
   workflowName,
   defaultConfluencePages,
   defaultDesignSystemId,
+  defaultTerminal,
+  defaultPlatform,
+  defaultFollowLinks,
+  defaultSkipSucceeded,
   anySucceeded,
   onClose,
   onRun,
 }: {
   workflowName: string;
-  /** Nguồn cấu hình sẵn từ Pipeline Studio (project.json) — điền sẵn vào ô
-   *  nguồn, mỗi dòng một trang; user vẫn sửa được cho từng lần chạy. */
+  /** Nguồn điền sẵn — ưu tiên cấu hình Run-all ĐÃ LƯU từ lần chạy gần nhất
+   *  trên máy này; chưa từng chạy lần nào thì fallback về cấu hình Pipeline
+   *  Studio (project.json). Caller (PipelinesView) chọn cái nào truyền vào,
+   *  modal chỉ biết "đây là giá trị khởi tạo". */
   defaultConfluencePages?: ConfluencePageRefLike[];
-  defaultDesignSystemId?: string;
+  defaultDesignSystemId?: string | null;
+  defaultTerminal?: WorkflowTerminalChoice;
+  defaultPlatform?: TargetPlatform;
+  defaultFollowLinks?: boolean;
+  defaultSkipSucceeded?: boolean;
   /** Có bước nào đã xong chưa — quyết định hiện checkbox "chỉ chạy bước còn thiếu". */
   anySucceeded: boolean;
   onClose: () => void;
@@ -912,12 +925,14 @@ export function RunAllModal({
   // + paste links, multi-select); prefill from the studio project config. The
   // run input is one page URL/id per line, built from the picked pages.
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
-  const [followLinks, setFollowLinks] = useState(true);
-  const [terminal, setTerminal] = useState<WorkflowTerminalChoice>('ui-html');
-  const [platform, setPlatform] = useState<TargetPlatform>('mobile');
+  const [followLinks, setFollowLinks] = useState(defaultFollowLinks ?? true);
+  const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(defaultTerminal ?? 'ui-html');
+  const [platform, setPlatform] = useState<TargetPlatform>(defaultPlatform ?? 'mobile');
   const [systems, setSystems] = useState<DesignSystemSummary[] | null>(null);
-  const [designSystemId, setDesignSystemId] = useState<string | null>(defaultDesignSystemId ?? null);
-  const [skipSucceeded, setSkipSucceeded] = useState(false);
+  const [designSystemId, setDesignSystemId] = useState<string | null>(
+    defaultDesignSystemId === undefined ? null : defaultDesignSystemId,
+  );
+  const [skipSucceeded, setSkipSucceeded] = useState(defaultSkipSucceeded ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -948,6 +963,7 @@ export function RunAllModal({
         .join('\n');
       await onRun({
         ...(input ? { input } : {}),
+        ...(confPages.length ? { confluencePages: confPages } : {}),
         terminal,
         platform,
         designSystemId,

@@ -570,6 +570,7 @@ export function PipelinesView() {
         projectId,
         ...(workflowId ? { workflowId } : {}),
         ...(payload.input ? { input: payload.input } : {}),
+        ...(payload.confluencePages?.length ? { confluencePages: payload.confluencePages } : {}),
         terminal: payload.terminal,
         platform: payload.platform,
         designSystemId: payload.designSystemId,
@@ -1551,16 +1552,28 @@ export function PipelinesView() {
           }}
         />
       ) : null}
-      {runAllOpen ? (
-        <RunAllModal
-          workflowName={workflows.find((w) => w.id === workflowId)?.name ?? 'Docs → UI-Spec'}
-          defaultConfluencePages={projects.find((pr) => pr.id === projectId)?.config?.confluencePages}
-          defaultDesignSystemId={projects.find((pr) => pr.id === projectId)?.config?.designSystemId}
-          anySucceeded={pipelines.some((p) => p.status === 'succeeded')}
-          onClose={() => setRunAllOpen(false)}
-          onRun={startRunAll}
-        />
-      ) : null}
+      {runAllOpen ? (() => {
+        const runAllProject = projects.find((pr) => pr.id === projectId);
+        // Saved run-all config (this device's last trigger) wins; a project
+        // that has never run full-workflow yet has no `savedRunAll`, so this
+        // falls back to Pipeline Studio's config — exactly "first run defaults
+        // from Studio, every run after that remembers what was last used".
+        const runAllDefaults = runAllProject?.savedRunAll ?? runAllProject?.config;
+        return (
+          <RunAllModal
+            workflowName={workflows.find((w) => w.id === workflowId)?.name ?? 'Docs → UI-Spec'}
+            defaultConfluencePages={runAllDefaults?.confluencePages}
+            defaultDesignSystemId={runAllDefaults?.designSystemId}
+            defaultTerminal={runAllDefaults?.terminal}
+            defaultPlatform={runAllDefaults?.platform}
+            defaultFollowLinks={runAllDefaults?.followLinks}
+            defaultSkipSucceeded={runAllDefaults?.skipSucceeded}
+            anySucceeded={pipelines.some((p) => p.status === 'succeeded')}
+            onClose={() => setRunAllOpen(false)}
+            onRun={startRunAll}
+          />
+        );
+      })() : null}
       {runInputFor ? (
         <RunInputModal
           pipelineName={runInputFor.name}
@@ -1577,7 +1590,7 @@ export function PipelinesView() {
       {designSystemFor ? (
         <DesignSystemRunModal
           pipelineName={designSystemFor.name}
-          defaultId={projects.find((pr) => pr.id === projectId)?.config?.designSystemId}
+          defaultId={projects.find((pr) => pr.id === projectId)?.config?.designSystemId ?? undefined}
           onClose={() => setDesignSystemFor(null)}
           onRun={async (designSystemId) => {
             await startRun(designSystemFor.id, undefined, designSystemId);

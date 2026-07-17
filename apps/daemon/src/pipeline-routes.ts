@@ -1,7 +1,7 @@
 import type { Express, Response } from 'express';
-import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunSource, ProjectPipelineState, TargetPlatform, WorkflowTerminal } from '@open-design/contracts';
+import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunSource, ProjectPipelineState, RunAllConfig, TargetPlatform, WorkflowTerminal } from '@open-design/contracts';
 
-import { getProject, getProjectPipelineState, insertProject, listProjects } from './db.js';
+import { getProject, getProjectPipelineState, insertProject, listProjects, updateProject } from './db.js';
 import {
   DEFAULT_WORKFLOW_ID,
   WORKFLOWS,
@@ -116,15 +116,22 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         // Confluence link + design system from it (per-run override allowed).
         const sc = p.metadata?.studioConfig;
         const config =
-          sc && typeof sc === 'object' && !Array.isArray(sc)
-            ? (sc as {
-                confluencePages?: Array<{ id?: string; title?: string; url?: string }>;
-                designSystemId?: string;
-                basDocumentId?: string;
-                basDocumentTitle?: string;
-              })
-            : undefined;
-        return { id: p.id, name: p.name, done, total, running, ...(config ? { config } : {}) };
+          sc && typeof sc === 'object' && !Array.isArray(sc) ? (sc as RunAllConfig) : undefined;
+        // Run-all config SAVED from this device's last successful trigger
+        // (POST /api/pipelines/run-all writes it) — takes precedence over the
+        // Studio config above; Studio config only seeds the very first run.
+        const rac = p.metadata?.runAllConfig;
+        const savedRunAll =
+          rac && typeof rac === 'object' && !Array.isArray(rac) ? (rac as RunAllConfig) : undefined;
+        return {
+          id: p.id,
+          name: p.name,
+          done,
+          total,
+          running,
+          ...(config ? { config } : {}),
+          ...(savedRunAll ? { savedRunAll } : {}),
+        };
       }),
     );
     res.json({ projects });
@@ -406,6 +413,37 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       if (rawPlatform !== undefined && rawPlatform !== 'mobile' && rawPlatform !== 'web') {
         return res.status(400).json({ error: "platform must be 'mobile' or 'web'" });
       }
+      const rawConfluencePages = Array.isArray(req.body?.confluencePages) ? req.body.confluencePages : [];
+      const confluencePages = rawConfluencePages
+        .filter(
+          (p: unknown): p is { id?: string; title?: string; url?: string } =>
+            !!p && typeof p === 'object' && (typeof (p as any).id === 'string' || typeof (p as any).url === 'string'),
+        )
+        .map((p: { id?: string; title?: string; url?: string }) => ({
+          ...(typeof p.id === 'string' && p.id ? { id: p.id } : {}),
+          ...(typeof p.title === 'string' && p.title ? { title: p.title } : {}),
+          ...(typeof p.url === 'string' && p.url ? { url: p.url } : {}),
+        }));
+      const skipSucceeded = req.body?.skipSucceeded === true;
+      const followLinks = req.body?.followLinks !== false;
+      // Remember this device's last-used run-all choices (per project) so a
+      // later open of the Run-all modal — e.g. after canceling a stage mid-chain
+      // — prefills from here instead of forcing the user to re-enter everything.
+      // Only Pipeline-Studio's config seeds the FIRST run (no saved config yet);
+      // every trigger after that overwrites this with the latest choices.
+      updateProject(db, projectId, {
+        metadata: {
+          ...(project.metadata ?? {}),
+          runAllConfig: {
+            ...(confluencePages.length ? { confluencePages } : {}),
+            ...(designSystemId !== undefined ? { designSystemId } : {}),
+            terminal: (rawTerminal as WorkflowTerminal | undefined) ?? 'ui-html',
+            platform: (rawPlatform as TargetPlatform | undefined) ?? 'mobile',
+            followLinks,
+            skipSucceeded,
+          },
+        },
+      });
       const result = await ctx.pipelines.runWorkflowAll(projectId, {
         ...(workflowId !== undefined ? { workflowId } : {}),
         ...(rawTerminal !== undefined ? { terminal: rawTerminal as WorkflowTerminal } : {}),
@@ -413,8 +451,8 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         ...(source !== undefined ? { source } : {}),
         ...(designSystemId !== undefined ? { designSystemId } : {}),
         ...(rawPlatform !== undefined ? { platform: rawPlatform as TargetPlatform } : {}),
-        skipSucceeded: req.body?.skipSucceeded === true,
-        ...(req.body?.followLinks === false ? { followLinks: false } : {}),
+        skipSucceeded,
+        ...(followLinks ? {} : { followLinks: false }),
       });
       res.status(202).json(result);
     } catch (err: any) {
