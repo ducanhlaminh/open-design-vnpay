@@ -3864,13 +3864,22 @@ export async function startServer({
     // Non-browser client → allow.
     if (origin == null || origin === '') return next();
 
-    // Origin: null (sandboxed iframes).  Only allowed for safe, read-only
+    // Origin: null (sandboxed iframes) OR Origin: od://app (the packaged
+    // desktop app's renderer — apps/packaged/src/protocol.ts registers the
+    // `od://` scheme and its every request is proxied to this daemon via
+    // `new Request(target, request)`, which carries the renderer's REAL
+    // Origin header through unchanged). Neither is `null` on the wire in the
+    // od:// case nor a valid http(s) localhost origin, so a Vite dist's
+    // `crossorigin` <script type=module>/<link modulepreload> tags — which
+    // force CORS mode and always attach Origin, even same-origin — 403 out
+    // here once react/dist stopped being a single inlined HTML file and
+    // started issuing real asset requests. Only allowed for safe, read-only
     // routes that set their own CORS headers for canvas drawing.
-    if (origin === 'null') {
+    if (origin === 'null' || origin === 'od://app') {
       const isSafeReadOnly =
         req.method === 'GET' && _NULL_ORIGIN_SAFE_GET_RE.test(req.path);
       if (!isSafeReadOnly) {
-        return res.status(403).json({ error: 'Origin: null not allowed for this route' });
+        return res.status(403).json({ error: `Origin: ${origin} not allowed for this route` });
       }
       return next();
     }
@@ -9236,7 +9245,7 @@ export async function startServer({
   // (no preflight needed), but an explicit handler future-proofs the route if
   // artifacts ever add custom request headers.
   app.options(/^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, (req, res) => {
-    if (req.headers.origin === 'null') {
+    if (req.headers.origin === 'null' || req.headers.origin === 'od://app') {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET');
       res.header('Access-Control-Allow-Headers', 'Content-Type');
@@ -9254,7 +9263,12 @@ export async function startServer({
       // data: URIs, file://, and some sandboxed iframes also send null — all are
       // local-only callers, so this is safe. Real cross-origin sites send a real
       // origin and remain blocked by the browser's same-origin policy.
-      if (req.headers.origin === 'null') {
+      // Origin: "od://app" is the packaged desktop app's own renderer (its
+      // requests proxy through apps/packaged/src/protocol.ts, carrying that
+      // origin unchanged) — a Vite dist's `crossorigin` script/link tags force
+      // CORS mode and always attach Origin even same-origin, so a built
+      // react/dist preview loaded in this route needs the same allowance.
+      if (req.headers.origin === 'null' || req.headers.origin === 'od://app') {
         res.header('Access-Control-Allow-Origin', '*');
       }
       res.type(file.mime).send(file.buffer);

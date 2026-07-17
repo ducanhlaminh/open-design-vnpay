@@ -47,11 +47,14 @@ function createOriginMiddleware(resolvedPort: number, host = '127.0.0.1') {
   return (req: Request, res: Response, next: NextFunction) => {
     const origin = req.headers.origin;
     if (origin == null || origin === '') return next();
-    if (origin === 'null') {
+    // od://app is the packaged desktop app's own renderer origin (its
+    // requests proxy through apps/packaged/src/protocol.ts, carrying the
+    // real Origin header unchanged) — treated the same as Origin: null.
+    if (origin === 'null' || origin === 'od://app') {
       const isSafeReadOnly =
         req.method === 'GET' && _NULL_ORIGIN_SAFE_GET_RE.test(req.path);
       if (!isSafeReadOnly) {
-        return res.status(403).json({ error: 'Origin: null not allowed for this route' });
+        return res.status(403).json({ error: `Origin: ${origin} not allowed for this route` });
       }
       return next();
     }
@@ -80,8 +83,8 @@ function makeTestApp(port: number, host = '127.0.0.1') {
     res.json({ active: true });
   });
   app.get('/api/projects/:id/raw/:name', (req, res) => {
-    // Mimics the real raw-file route that sets CORS for Origin: null
-    if (req.headers.origin === 'null') {
+    // Mimics the real raw-file route that sets CORS for Origin: null / od://app
+    if (req.headers.origin === 'null' || req.headers.origin === 'od://app') {
       res.header('Access-Control-Allow-Origin', '*');
     }
     res.json({ file: req.params.name });
@@ -345,6 +348,38 @@ describe('daemon origin validation middleware', () => {
   it('rejects Origin: null on non-raw-file GET routes', async () => {
     const res = await request(port, 'GET', '/api/projects', {
       origin: 'null',
+    });
+    expect(res.status).toBe(403);
+  });
+
+  // --- Origin: od://app (packaged desktop app renderer) ---
+  // A Vite-built dist's `crossorigin` <script type=module>/<link> tags force
+  // CORS mode and always attach Origin — even for a same-origin fetch — so
+  // the packaged app's od://app origin shows up here exactly like a
+  // sandboxed iframe's Origin: null. Regression coverage for the
+  // react/dist preview 403 (docs-to-ui/react/dist/assets/*.js 403ing inside
+  // the packaged app once dist stopped being a single inlined HTML file).
+
+  it('allows Origin: od://app for GET raw-file preview routes', async () => {
+    const res = await request(port, 'GET', '/api/projects/abc/raw/index.js', {
+      origin: 'od://app',
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+  });
+
+  it('rejects Origin: od://app on POST to state-changing endpoints', async () => {
+    const res = await request(port, 'POST', '/api/projects', {
+      origin: 'od://app',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(res.status).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Origin: od://app not allowed for this route' });
+  });
+
+  it('rejects Origin: od://app on non-raw-file GET routes', async () => {
+    const res = await request(port, 'GET', '/api/projects', {
+      origin: 'od://app',
     });
     expect(res.status).toBe(403);
   });
