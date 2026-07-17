@@ -1,20 +1,34 @@
 // DocsReviewPreview — the `docs-to-prd` workflow's prd-review stage
 // preview (`review/report.json`, output of the `docs-mockup-review` skill).
 // Unlike ReviewPreview (read-only, judges a GENERATED wireframe) this renders
-// the REAL mockup image from the source doc on the left and an EDITABLE
-// findings list on the right, per Nielsen/Norman "left = artifact under
-// review, right = judgement" layout. Edits persist back to `report.json` via
-// the same upsert route FileViewer's Inspect panel uses; Export bundles the
+// the REAL mockup image from the source doc on the left and its findings on
+// the right, per Nielsen/Norman "left = artifact under review, right =
+// judgement" layout. It opens in a formatted READ mode; the "Chỉnh sửa"
+// button switches the findings to an editable form whose edits persist back
+// to `report.json` via the same upsert route FileViewer's Inspect panel uses.
+// Clicking a mockup opens it full-screen (lightbox). Export bundles the
 // (possibly edited) report + every image it references into one .zip so a
 // reviewer always gets the full picture, never a report with missing images.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { projectRawUrl } from '../providers/registry';
 import { triggerDownload } from '../runtime/exports';
+import { renderMarkdown } from '../runtime/markdown';
+import styles from './DocsReviewPreview.module.css';
 
 export type FindingKind = 'mismatch' | 'heuristic';
 export type Severity = 'blocker' | 'major' | 'minor';
 export type Verdict = 'pass' | 'warn' | 'fail';
+
+/** Bounding box normalized to the mockup image: x/y = top-left corner,
+ *  w/h = size, all as 0–1 fractions of the image's width/height — so the
+ *  same region renders correctly at any display size. */
+export interface FindingRegion {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 export interface MockupFinding {
   kind?: FindingKind;
@@ -23,6 +37,7 @@ export interface MockupFinding {
   severity?: Severity;
   issue?: string;
   recommendation?: string;
+  region?: FindingRegion;
 }
 
 export interface MockupReviewImage {
@@ -94,7 +109,7 @@ const asVerdict = (v: unknown): Verdict => (v === 'fail' || v === 'warn' ? v : '
 const verdictColor = (v: Verdict) => (v === 'fail' ? T.red : v === 'warn' ? T.amber : T.green);
 const verdictLabel = (v: Verdict) => (v === 'fail' ? 'Chưa đạt' : v === 'warn' ? 'Cảnh báo' : 'Đạt');
 const sevColor = (s?: string) => (s === 'blocker' ? T.red : s === 'major' ? T.amber : T.muted);
-const sevLabel = (s?: string) => (s === 'blocker' ? 'Blocker' : s === 'major' ? 'Major' : 'Minor');
+const sevLabel = (s?: string) => (s === 'blocker' ? 'Nghiêm trọng' : s === 'major' ? 'Nặng' : 'Nhẹ');
 
 /** Same arithmetic as the docs-mockup-review skill's step 3 — recomputed
  *  client-side so an edit's score impact shows immediately, no re-run needed. */
@@ -111,14 +126,531 @@ function scoreImage(findings: MockupFinding[]): { score: number; verdict: Verdic
   return { score, verdict };
 }
 
-function FindingRow({
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+
+/* ── Chú thích mã heuristic ──
+ * N.1–N.10 (Nielsen) + D1–D6 (Norman) là danh mục TĨNH — dịch gọn từ
+ * craft/heuristic-eval.md (nguồn chấm điểm của skill docs-mockup-review).
+ * UXR-xx là mã ĐỘNG: tiêu chí do bước ux-research của chính run này sinh ra,
+ * nên GlossaryModal tải ux-research/report.json cạnh report review để tra.
+ * Mirror của glossary bên pipeline-studio docs-review-panel — keep in sync. */
+const NIELSEN_GLOSSARY: Array<{ code: string; title: string; desc: string }> = [
+  { code: 'N.1', title: 'Hiển thị trạng thái hệ thống', desc: 'Người dùng luôn biết hệ thống đang làm gì: loading, tiến trình, kết quả của mỗi hành động chậm/bất đồng bộ.' },
+  { code: 'N.2', title: 'Khớp với thế giới thực', desc: 'Nhãn và khái niệm dùng ngôn ngữ của người dùng, theo thứ tự tự nhiên — không dùng thuật ngữ hệ thống.' },
+  { code: 'N.3', title: 'Người dùng kiểm soát & tự do', desc: 'Mọi màn hình sau điểm vào có đường thoát rõ ràng: hủy, quay lại, thoát trước khi chốt giao dịch.' },
+  { code: 'N.4', title: 'Nhất quán & chuẩn mực', desc: 'Cùng một khái niệm dùng cùng nhãn, vị trí, hành vi ở mọi màn hình; theo chuẩn nền tảng.' },
+  { code: 'N.5', title: 'Phòng ngừa lỗi', desc: 'Hành động phá hủy / không đảo ngược phải có xác nhận; thiết kế chặn lỗi trước khi nó xảy ra.' },
+  { code: 'N.6', title: 'Nhận biết thay vì ghi nhớ', desc: 'Hiển thị lựa chọn sẵn (gần đây, danh bạ, gợi ý) thay vì bắt người dùng nhớ và gõ lại.' },
+  { code: 'N.7', title: 'Linh hoạt & hiệu quả', desc: 'Đường tắt cho người dùng thành thạo (thao tác nhanh, mẫu lưu sẵn) mà không cản người mới.' },
+  { code: 'N.8', title: 'Thẩm mỹ & tối giản', desc: 'Mỗi màn hình chỉ chứa thông tin nhiệm vụ cần; nội dung phụ không cạnh tranh với nội dung chính.' },
+  { code: 'N.9', title: 'Nhận biết & phục hồi lỗi', desc: 'Thông báo lỗi nói rõ chuyện gì xảy ra, vì sao, và cách sửa — ngay tại chỗ xảy ra lỗi.' },
+  { code: 'N.10', title: 'Trợ giúp & tài liệu', desc: 'Tác vụ không hiển nhiên có trợ giúp tại chỗ (tooltip, hướng dẫn nhập liệu, ví dụ).' },
+];
+const NORMAN_GLOSSARY: Array<{ code: string; title: string; desc: string }> = [
+  { code: 'D1', title: 'Affordance', desc: 'Phần tử tương tác phải trông tương tác được — nút phải giống nút, không như text tĩnh.' },
+  { code: 'D2', title: 'Signifier', desc: 'Tín hiệu chỉ rõ hành động nằm ở đâu: icon + nhãn, vùng chạm rõ, điểm vào nhìn thấy được.' },
+  { code: 'D3', title: 'Mapping', desc: 'Quan hệ giữa control và kết quả phải tự nhiên: thứ tự, hướng, cách nhóm khớp với hệ quả.' },
+  { code: 'D4', title: 'Feedback', desc: 'Mỗi hành động của người dùng có phản hồi tức thì, có nghĩa (đổi trạng thái, xác nhận).' },
+  { code: 'D5', title: 'Constraint', desc: 'Thiết kế chặn hành động sai từ cấu trúc: picker thay vì gõ tự do, disable đến khi hợp lệ.' },
+  { code: 'D6', title: 'Conceptual model', desc: 'Trình tự màn hình khớp cách người dùng nghĩ về tác vụ (chọn người nhận → số tiền → xem lại → xong).' },
+];
+
+interface UxrCriterion {
+  id: string;
+  title: string;
+  statement?: string;
+}
+
+/** Modal tra cứu chú thích mã. `focus` = mã cần cuộn tới + làm nổi khi mở
+ *  (bấm từ chip mã trên finding). Đóng bằng Esc/click nền — sự kiện được
+ *  nuốt (capture + stopPropagation) để không đóng nhầm modal host bên ngoài. */
+function GlossaryModal({
+  uxr,
+  focus,
+  onClose,
+}: {
+  /** Tiêu chí UXR của run này — null khi report ux-research chưa có/tải lỗi. */
+  uxr: UxrCriterion[] | null;
+  focus: string | null;
+  onClose: () => void;
+}) {
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+  useEffect(() => {
+    if (!focus) return;
+    bodyRef.current?.querySelector(`[data-code="${focus}"]`)?.scrollIntoView({ block: 'center' });
+  }, [focus]);
+  // Danh sách CARD: lưới 2 cột, mỗi rule một card — chip mã accent ở đầu,
+  // tên đậm, mô tả nhạt bên dưới. Card focus (bấm từ chip mã trên finding)
+  // viền + nền accent.
+  const list = (rows: Array<{ code: string; title: string; desc: string }>) => (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 8 }}>
+      {rows.map((r) => {
+        const focused = focus === r.code;
+        return (
+          <div
+            key={r.code}
+            data-code={r.code}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              padding: '11px 13px',
+              borderRadius: 10,
+              border: `1px solid ${focused ? T.accent : T.border}`,
+              background: focused ? 'color-mix(in srgb, var(--accent, #0066b3) 8%, transparent)' : T.subtle,
+              boxShadow: focused ? `0 0 0 1px ${T.accent}` : 'none',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ padding: '1px 7px', borderRadius: 999, background: 'color-mix(in srgb, var(--accent, #0066b3) 12%, transparent)', fontFamily: 'ui-monospace, monospace', fontSize: 11, fontWeight: 700, color: T.accent, whiteSpace: 'nowrap' }}>
+                {r.code}
+              </span>
+              <span style={{ minWidth: 0, fontSize: 13, fontWeight: 650, lineHeight: 1.4, color: T.ink }}>{r.title}</span>
+            </div>
+            {r.desc ? <span style={{ fontSize: 12.5, lineHeight: 1.6, color: T.soft }}>{r.desc}</span> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+  const section = (label: string) => (
+    <div style={{ margin: '0 0 4px', padding: '0 10px', fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: T.soft }}>
+      {label}
+    </div>
+  );
+  return (
+    <div
+      role="dialog"
+      aria-label="Chú thích mã đánh giá"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClose();
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'rgba(15,18,24,0.55)' }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        // NỀN ĐẶC có chủ đích: --bg-panel của theme glass là rgba trong suốt,
+        // để nó ở đây thì nội dung workspace phía sau xuyên qua chữ — glossary
+        // là bề mặt đọc, dùng --bg (đặc) thay vì bề mặt kính.
+        style={{ display: 'flex', flexDirection: 'column', width: '100%', maxWidth: 720, maxHeight: '82vh', overflow: 'hidden', borderRadius: 12, border: `1px solid ${T.border}`, background: 'var(--bg, #faf9f7)', boxShadow: '0 20px 60px rgba(0,0,0,0.35)' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '11px 14px', borderBottom: `1px solid ${T.border}` }}>
+          <Icon name="help-circle" size={15} />
+          <span style={{ fontSize: 14, fontWeight: 650, color: T.ink }}>Chú thích mã đánh giá</span>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Đóng (Esc)"
+            style={{ marginLeft: 'auto', display: 'flex', padding: 4, border: 0, borderRadius: 6, background: 'transparent', color: T.soft, cursor: 'pointer' }}
+          >
+            <Icon name="close" size={15} />
+          </button>
+        </div>
+        <div ref={bodyRef} style={{ display: 'flex', flexDirection: 'column', gap: 18, overflowY: 'auto', padding: '14px 12px' }}>
+          <div>
+            {section('Nielsen — 10 heuristic khả dụng (N.1–N.10)')}
+            {list(NIELSEN_GLOSSARY)}
+          </div>
+          <div>
+            {section('Norman — 6 nguyên tắc thiết kế (D1–D6)')}
+            {list(NORMAN_GLOSSARY)}
+          </div>
+          <div>
+            {section('UXR — tiêu chí UX Research của run này')}
+            {uxr?.length ? (
+              list(uxr.map((c) => ({ code: c.id, title: c.title, desc: c.statement ?? '' })))
+            ) : (
+              <p style={{ margin: 0, padding: '0 10px', fontSize: 12.5, color: T.soft }}>
+                Chưa đọc được report UX Research của run này — mã UXR-xx xem trong preview bước ux-research sau khi bước đó chạy.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The displayed content box of an `object-fit: contain` image INSIDE its
+ *  element box — normalized region overlays must anchor to the drawn pixels,
+ *  not the letterboxed element. Recomputes on load + resize. */
+function useImageContentRect(ref: React.RefObject<HTMLImageElement | null>) {
+  const [rect, setRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const compute = () => {
+      const nw = el.naturalWidth;
+      const nh = el.naturalHeight;
+      if (!nw || !nh) {
+        setRect(null);
+        return;
+      }
+      const scale = Math.min(el.clientWidth / nw, el.clientHeight / nh);
+      const w = nw * scale;
+      const h = nh * scale;
+      setRect({ left: (el.clientWidth - w) / 2, top: (el.clientHeight - h) / 2, width: w, height: h });
+    };
+    compute();
+    el.addEventListener('load', compute);
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener('load', compute);
+      ro.disconnect();
+    };
+  }, [ref]);
+  return rect;
+}
+
+/** One numbered severity-colored callout box over the mockup. */
+function RegionBox({ n, region, color }: { n: number; region: FindingRegion; color: string }) {
+  const x = clamp01(region.x);
+  const y = clamp01(region.y);
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: `${x * 100}%`,
+        top: `${y * 100}%`,
+        width: `${clamp01(region.w) * 100}%`,
+        height: `${clamp01(region.h) * 100}%`,
+        border: `2px solid ${color}`,
+        borderRadius: 4,
+        boxShadow: '0 0 0 1px rgba(255,255,255,0.65), inset 0 0 0 1px rgba(255,255,255,0.45)',
+        pointerEvents: 'none',
+      }}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          top: -9,
+          left: -9,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minWidth: 17,
+          height: 17,
+          padding: '0 4px',
+          borderRadius: 999,
+          background: color,
+          color: '#fff',
+          fontSize: 10.5,
+          fontWeight: 800,
+          boxShadow: '0 0 0 1.5px rgba(255,255,255,0.85)',
+        }}
+      >
+        {n}
+      </span>
+    </div>
+  );
+}
+
+/** Findings that carry a region, with their 1-based display number. */
+const regionsOf = (findings: MockupFinding[]) =>
+  findings.flatMap((f, i) => (f.region ? [{ n: i + 1, region: f.region, color: sevColor(f.severity) }] : []));
+
+/** Drag-to-draw layer for edit mode: mousedown→drag→mouseup emits the drawn
+ *  box normalized to this layer (which is sized to the image content rect).
+ *  Esc or a sub-1% drag cancels. */
+function DrawLayer({ onCommit, onCancel }: { onCommit: (r: FindingRegion) => void; onCancel: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [start, setStart] = useState<{ x: number; y: number } | null>(null);
+  const [cur, setCur] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onCancel]);
+  const norm = (e: React.MouseEvent) => {
+    const r = ref.current!.getBoundingClientRect();
+    return { x: clamp01((e.clientX - r.left) / r.width), y: clamp01((e.clientY - r.top) / r.height) };
+  };
+  const box =
+    start && cur
+      ? {
+          x: Math.min(start.x, cur.x),
+          y: Math.min(start.y, cur.y),
+          w: Math.abs(cur.x - start.x),
+          h: Math.abs(cur.y - start.y),
+        }
+      : null;
+  return (
+    <div
+      ref={ref}
+      onMouseDown={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const p = norm(e);
+        setStart(p);
+        setCur(p);
+      }}
+      onMouseMove={(e) => {
+        if (start) setCur(norm(e));
+      }}
+      onMouseUp={(e) => {
+        e.stopPropagation();
+        if (box && box.w > 0.01 && box.h > 0.01) onCommit(box);
+        else onCancel();
+      }}
+      style={{ position: 'absolute', inset: 0, cursor: 'crosshair', background: 'rgba(15,18,24,0.12)' }}
+    >
+      {box ? (
+        <div
+          style={{
+            position: 'absolute',
+            left: `${box.x * 100}%`,
+            top: `${box.y * 100}%`,
+            width: `${box.w * 100}%`,
+            height: `${box.h * 100}%`,
+            border: `2px dashed ${T.accent}`,
+            borderRadius: 4,
+            background: 'rgba(255,255,255,0.15)',
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** Full-screen zoom for a mockup image. Backdrop click / ✕ / Esc close it;
+ *  clicking the image itself does not, so a mis-aimed pan doesn't dismiss.
+ *  The lightbox usually opens INSIDE another modal (the Quick-result PlModal
+ *  hangs its own Escape closer on window and a click-outside closer on its
+ *  backdrop) — so every dismiss event here must be swallowed (capture-phase
+ *  Esc + stopPropagation on clicks), otherwise one Esc/click closes both
+ *  layers at once. */
+function Lightbox({
+  src,
+  alt,
+  regions,
+  onClose,
+}: {
+  src: string;
+  alt: string;
+  regions?: Array<{ n: number; region: FindingRegion; color: string }>;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+  return (
+    <div
+      onClick={(e) => {
+        e.stopPropagation();
+        onClose();
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-label={alt}
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 10, padding: 28, background: 'rgba(15, 18, 24, 0.85)', cursor: 'zoom-out' }}
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        title="Đóng (Esc)"
+        style={{ position: 'absolute', top: 14, right: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', width: 34, height: 34, border: 0, borderRadius: 999, background: 'rgba(255,255,255,0.14)', color: '#fff', cursor: 'pointer' }}
+      >
+        <Icon name="close" size={16} />
+      </button>
+      <div onClick={(e) => e.stopPropagation()} style={{ position: 'relative', cursor: 'default' }}>
+        <img
+          src={src}
+          alt={alt}
+          style={{ display: 'block', maxWidth: '94vw', maxHeight: '88vh', borderRadius: 10, background: '#fff', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
+        />
+        {regions?.map((r) => (
+          <RegionBox key={r.n} n={r.n} region={r.region} color={r.color} />
+        ))}
+      </div>
+      <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.75)' }}>{alt}</div>
+    </div>
+  );
+}
+
+/** report.json's `feature_text` usually arrives as ONE flattened line —
+ *  `<screen title> **Ý nghĩa màn hình:** … | <validation note> | BR-005: …` —
+ *  the review agent joins the doc's segments with " | " when excerpting.
+ *  Rebuild lightweight structure for display: the pre-bold screen title
+ *  becomes a heading, each |-separated segment its own bullet. An excerpt
+ *  that already spans multiple lines is real markdown — pass it through. */
+export function formatFeatureText(text: string): string {
+  const t = text.trim();
+  if (t.includes('\n')) return t;
+  const boldIdx = t.indexOf('**');
+  let title = '';
+  let body = t;
+  // Only treat the pre-bold prefix as a title when it is short enough to BE
+  // one — a bold phrase deep inside a long sentence is not a heading split.
+  if (boldIdx > 0 && boldIdx <= 120) {
+    title = t.slice(0, boldIdx).trim();
+    body = t.slice(boldIdx).trim();
+  }
+  const segments = body.split(/\s+\|\s+/).map((s) => s.trim()).filter(Boolean);
+  const lines: string[] = [];
+  if (title) lines.push(`### ${title}`);
+  if (segments.length > 1) lines.push(...segments.map((s) => `- ${s}`));
+  else if (segments.length === 1) lines.push(segments[0]!);
+  return lines.length ? lines.join('\n') : t;
+}
+
+/** "Text trong tài liệu" — the VERBATIM excerpt the docs stage extracted next
+ *  to the mockup. The docs stage converts Confluence/BAS pages to Markdown, so
+ *  the excerpt renders through the app's markdown walker (headings, bullets,
+ *  tables) after `formatFeatureText` restores its structure. Long excerpts
+ *  collapse to a fixed height with a "Xem thêm" toggle so the mockup column
+ *  stays scannable. */
+const FEATURE_TEXT_COLLAPSED_MAX = 200;
+function FeatureTextBox({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const formatted = useMemo(() => formatFeatureText(text), [text]);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (el) setOverflows(el.scrollHeight > FEATURE_TEXT_COLLAPSED_MAX + 16);
+  }, [formatted]);
+  const collapsed = overflows && !expanded;
+  return (
+    <div style={{ borderRadius: 9, border: `1px solid ${T.border}`, padding: '11px 13px', background: T.paper }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: T.soft, marginBottom: 7 }}>
+        <Icon name="file" size={12} />
+        Text trong tài liệu
+      </div>
+      <div style={{ position: 'relative' }}>
+        <div
+          ref={bodyRef}
+          className={styles.prose}
+          style={{ maxHeight: collapsed ? FEATURE_TEXT_COLLAPSED_MAX : undefined, overflow: 'hidden' }}
+        >
+          {renderMarkdown(formatted)}
+        </div>
+        {collapsed ? (
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 44, background: `linear-gradient(to bottom, transparent, ${T.paper})`, pointerEvents: 'none' }} />
+        ) : null}
+      </div>
+      {overflows ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 6, border: 0, padding: 0, background: 'transparent', fontSize: 12, fontWeight: 600, color: T.accent, cursor: 'pointer' }}
+        >
+          <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={12} />
+          {expanded ? 'Thu gọn' : 'Xem thêm'}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+const SEV_CARD_CLASS: Record<Severity, string> = {
+  blocker: styles.findingBlocker!,
+  major: styles.findingMajor!,
+  minor: styles.findingMinor!,
+};
+const SEV_BADGE_CLASS: Record<Severity, string> = {
+  blocker: styles.sevBlocker!,
+  major: styles.sevMajor!,
+  minor: styles.sevMinor!,
+};
+
+/** Read-mode rendering of one finding — formatted text, no form controls.
+ *  Severity colors the card's left border + badge; the recommendation sits
+ *  in its own accent callout so the actionable part stands out from the
+ *  issue analysis. */
+function FindingView({
   finding,
-  onChange,
-  onRemove,
+  index,
+  onShowCode,
 }: {
   finding: MockupFinding;
+  index: number;
+  /** Mở modal chú thích, cuộn tới mã này. */
+  onShowCode: (code: string) => void;
+}) {
+  const sev: Severity = finding.severity ?? 'minor';
+  return (
+    <div className={`${styles.finding} ${SEV_CARD_CLASS[sev]}`}>
+      <div className={styles.findingHead}>
+        <span
+          title={finding.region ? 'Số khung khoanh trên ảnh' : undefined}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 17, height: 17, padding: '0 4px', borderRadius: 999, background: sevColor(sev), color: '#fff', fontSize: 10.5, fontWeight: 800 }}
+        >
+          {index}
+        </span>
+        <span className={`${styles.sevBadge} ${SEV_BADGE_CLASS[sev]}`}>{sevLabel(sev)}</span>
+        {finding.heuristic ? (
+          <button
+            type="button"
+            onClick={() => onShowCode(finding.heuristic!)}
+            title="Xem chú thích mã này"
+            className={styles.heuristicChip}
+            style={{ cursor: 'pointer' }}
+          >
+            {finding.heuristic}
+          </button>
+        ) : null}
+        <span className={styles.findingKind}>
+          {finding.kind === 'heuristic' ? 'Heuristic UX' : 'Lệch mockup ↔ text'}
+        </span>
+      </div>
+      {finding.issue ? <p className={styles.findingIssue}>{finding.issue}</p> : null}
+      {finding.recommendation ? (
+        <div className={styles.reco}>
+          <span className={styles.recoIcon}>
+            <Icon name="sparkles" size={13} />
+          </span>
+          <span>
+            <span className={styles.recoLabel}>Đề xuất: </span>
+            {finding.recommendation}
+          </span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FindingRow({
+  finding,
+  index,
+  drawing,
+  onChange,
+  onRemove,
+  onDrawRegion,
+  onClearRegion,
+}: {
+  finding: MockupFinding;
+  index: number;
+  /** True while the user is drag-drawing THIS finding's region on the image. */
+  drawing: boolean;
   onChange: (next: MockupFinding) => void;
   onRemove: () => void;
+  onDrawRegion: () => void;
+  onClearRegion: () => void;
 }) {
   const inputStyle: React.CSSProperties = {
     width: '100%',
@@ -131,16 +663,19 @@ function FindingRow({
     fontFamily: 'inherit',
   };
   return (
-    <div style={{ border: `1px solid ${T.border}`, borderRadius: 9, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div style={{ border: `1px solid ${drawing ? T.accent : T.border}`, borderRadius: 9, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 17, height: 17, padding: '0 4px', borderRadius: 999, background: sevColor(finding.severity), color: '#fff', fontSize: 10.5, fontWeight: 800 }}>
+          {index}
+        </span>
         <select
           value={finding.severity ?? 'minor'}
           onChange={(e) => onChange({ ...finding, severity: e.target.value as Severity })}
           style={{ ...inputStyle, width: 'auto', fontWeight: 700, color: sevColor(finding.severity) }}
         >
-          <option value="blocker">Blocker</option>
-          <option value="major">Major</option>
-          <option value="minor">Minor</option>
+          <option value="blocker">Nghiêm trọng</option>
+          <option value="major">Nặng</option>
+          <option value="minor">Nhẹ</option>
         </select>
         <select
           value={finding.kind ?? 'mismatch'}
@@ -181,6 +716,31 @@ function FindingRow({
         rows={2}
         style={{ ...inputStyle, resize: 'vertical' }}
       />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          onClick={onDrawRegion}
+          disabled={drawing}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, border: `1px ${drawing ? 'solid' : 'dashed'} ${T.accent}`, borderRadius: 7, padding: '5px 10px', fontSize: 12, fontWeight: 600, color: T.accent, background: 'transparent', cursor: drawing ? 'default' : 'pointer' }}
+        >
+          <Icon name="draw" size={13} />
+          {drawing
+            ? 'Đang khoanh — kéo chuột trên ảnh (Esc để hủy)'
+            : finding.region
+              ? 'Vẽ lại vùng khoanh'
+              : 'Khoanh vùng trên ảnh'}
+        </button>
+        {finding.region && !drawing ? (
+          <button
+            type="button"
+            onClick={onClearRegion}
+            style={{ display: 'flex', alignItems: 'center', gap: 5, border: 0, borderRadius: 7, padding: '5px 8px', fontSize: 12, fontWeight: 600, color: T.soft, background: 'transparent', cursor: 'pointer' }}
+          >
+            <Icon name="close" size={12} />
+            Xóa vùng
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -189,14 +749,26 @@ function ImageCard({
   image,
   projectId,
   reportFileName,
+  editing,
   onChange,
+  onShowCode,
 }: {
   image: MockupReviewImage;
   projectId: string;
   reportFileName: string;
+  editing: boolean;
   onChange: (next: MockupReviewImage) => void;
+  onShowCode: (code: string) => void;
 }) {
   const [open, setOpen] = useState(true);
+  const [zoom, setZoom] = useState(false);
+  /** Index of the finding whose region is being drag-drawn, or null. */
+  const [drawFor, setDrawFor] = useState<number | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const contentRect = useImageContentRect(imgRef);
+  useEffect(() => {
+    if (!editing) setDrawFor(null);
+  }, [editing]);
   const findings = image.findings ?? [];
   const { score, verdict } = useMemo(() => scoreImage(findings), [findings]);
   const counts = useMemo(() => {
@@ -214,7 +786,13 @@ function ImageCard({
     setFindings([...findings, { kind: 'mismatch', severity: 'minor', issue: '', recommendation: '' }]);
   const updateFinding = (i: number, next: MockupFinding) =>
     setFindings(findings.map((f, idx) => (idx === i ? next : f)));
-  const removeFinding = (i: number) => setFindings(findings.filter((_, idx) => idx !== i));
+  const removeFinding = (i: number) => {
+    setDrawFor(null);
+    setFindings(findings.filter((_, idx) => idx !== i));
+  };
+
+  const imageUrl = projectRawUrl(projectId, resolveImagePath(reportFileName, image.path));
+  const imageAlt = image.page ?? image.path;
 
   return (
     <div style={{ border: `1px solid ${T.border}`, borderRadius: 11, overflow: 'hidden' }}>
@@ -225,7 +803,7 @@ function ImageCard({
       >
         <span style={{ fontSize: 13.5, fontWeight: 600, color: T.ink }}>{image.page ?? image.path}</span>
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
-          {findings.length ? <span style={{ fontSize: 11.5, color: T.faint }}>{findings.length} vấn đề</span> : null}
+          {findings.length ? <span style={{ fontSize: 11.5, color: T.soft }}>{findings.length} vấn đề</span> : null}
           <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13, fontWeight: 600, color: T.ink }}>{score}</span>
           <span style={{ fontSize: 11.5, fontWeight: 700, padding: '2px 9px', borderRadius: 999, color: '#fff', background: verdictColor(verdict) }}>
             {verdictLabel(verdict)}
@@ -233,41 +811,118 @@ function ImageCard({
         </span>
       </button>
       {open ? (
-        <div style={{ borderTop: `1px solid ${T.border}`, padding: 14, display: 'grid', gridTemplateColumns: 'minmax(0, 360px) 1fr', gap: 16, alignItems: 'start' }}>
-          {/* left — the REAL mockup image from the source doc */}
-          <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: T.faint }}>Mockup</div>
+        <div style={{ borderTop: `1px solid ${T.border}`, padding: 14, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* top — the REAL mockup image from the source doc, full card width
+           *  so a desktop-wide mockup is actually readable; tall mobile shots
+           *  letterbox inside the height cap. Click = zoom. */}
+          <div style={{ position: 'relative', width: '100%' }}>
             <img
-              src={projectRawUrl(projectId, resolveImagePath(reportFileName, image.path))}
-              alt={image.page ?? image.path}
-              style={{ width: '100%', borderRadius: 9, border: `1px solid ${T.border}`, display: 'block' }}
+              ref={imgRef}
+              src={imageUrl}
+              alt={imageAlt}
+              onClick={() => {
+                if (drawFor == null) setZoom(true);
+              }}
+              title={drawFor == null ? 'Phóng to ảnh' : undefined}
+              style={{ width: '100%', maxHeight: 560, objectFit: 'contain', borderRadius: 9, border: `1px solid ${T.border}`, background: T.subtle, display: 'block', cursor: drawFor == null ? 'zoom-in' : 'crosshair' }}
             />
-            {image.feature_text ? (
-              <div style={{ borderRadius: 9, border: `1px dashed ${T.border}`, padding: '10px 12px', fontSize: 12, lineHeight: 1.5, color: T.soft }}>
-                <strong style={{ color: T.ink }}>Text trong tài liệu: </strong>
-                {image.feature_text}
+            {/* region callouts, anchored to the drawn image content (not the letterbox) */}
+            {contentRect ? (
+              <div style={{ position: 'absolute', left: contentRect.left, top: contentRect.top, width: contentRect.width, height: contentRect.height, pointerEvents: 'none' }}>
+                {regionsOf(findings).map((r) => (
+                  <RegionBox key={r.n} n={r.n} region={r.region} color={r.color} />
+                ))}
               </div>
             ) : null}
+            {contentRect && drawFor != null ? (
+              <div style={{ position: 'absolute', left: contentRect.left, top: contentRect.top, width: contentRect.width, height: contentRect.height }}>
+                <DrawLayer
+                  onCommit={(region) => {
+                    const f = findings[drawFor];
+                    if (f) updateFinding(drawFor, { ...f, region });
+                    setDrawFor(null);
+                  }}
+                  onCancel={() => setDrawFor(null)}
+                />
+              </div>
+            ) : null}
+            {drawFor == null ? (
+              <button
+                type="button"
+                onClick={() => setZoom(true)}
+                title="Phóng to ảnh"
+                style={{ position: 'absolute', right: 10, bottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 7, border: 0, background: 'rgba(15,18,24,0.55)', color: '#fff', cursor: 'zoom-in' }}
+              >
+                <Icon name="zoom-in" size={14} />
+              </button>
+            ) : (
+              <div style={{ position: 'absolute', left: '50%', bottom: 10, transform: 'translateX(-50%)', padding: '5px 12px', borderRadius: 999, background: 'rgba(15,18,24,0.75)', color: '#fff', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', pointerEvents: 'none' }}>
+                Kéo chuột trên ảnh để khoanh vùng #{drawFor + 1} — Esc để hủy
+              </div>
+            )}
           </div>
-          {/* right — editable findings */}
-          <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {zoom ? <Lightbox src={imageUrl} alt={imageAlt} regions={regionsOf(findings)} onClose={() => setZoom(false)} /> : null}
+          {/* bottom — doc excerpt & findings side by side */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: image.feature_text ? 'minmax(0, 5fr) minmax(0, 7fr)' : 'minmax(0, 1fr)',
+              gap: 16,
+              alignItems: 'start',
+            }}
+          >
+            {image.feature_text ? <FeatureTextBox text={image.feature_text} /> : null}
+            <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 11.5 }}>
-              <span style={{ fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: T.faint }}>Đánh giá</span>
-              <span style={{ color: T.red }}>● {counts.blockers} blocker</span>
-              <span style={{ color: T.amber }}>● {counts.majors} major</span>
-              <span style={{ color: T.muted }}>● {counts.minors} minor</span>
+              <span style={{ fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: T.soft }}>Đánh giá</span>
+              <span style={{ color: T.red }}>● {counts.blockers} nghiêm trọng</span>
+              <span style={{ color: T.amber }}>● {counts.majors} nặng</span>
+              <span style={{ color: T.soft }}>● {counts.minors} nhẹ</span>
             </div>
-            {findings.map((f, i) => (
-              <FindingRow key={i} finding={f} onChange={(next) => updateFinding(i, next)} onRemove={() => removeFinding(i)} />
-            ))}
-            <button
-              type="button"
-              onClick={addFinding}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, border: `1px dashed ${T.border}`, borderRadius: 9, padding: '9px 12px', fontSize: 12.5, fontWeight: 600, color: T.accent, background: 'transparent', cursor: 'pointer' }}
-            >
-              <Icon name="plus" size={13} />
-              Thêm nhận xét
-            </button>
+            {findings.length === 0 && !editing ? (
+              <div style={{ border: `1px dashed ${T.border}`, borderRadius: 9, padding: '18px 12px', textAlign: 'center', fontSize: 12.5, color: T.soft }}>
+                Không có vi phạm — mockup này đạt.
+              </div>
+            ) : null}
+            {findings.map((f, i) =>
+              editing ? (
+                <FindingRow
+                  key={i}
+                  finding={f}
+                  index={i + 1}
+                  drawing={drawFor === i}
+                  onChange={(next) => updateFinding(i, next)}
+                  onRemove={() => removeFinding(i)}
+                  onDrawRegion={() => setDrawFor(i)}
+                  onClearRegion={() => updateFinding(i, { ...f, region: undefined })}
+                />
+              ) : (
+                <FindingView key={i} finding={f} index={i + 1} onShowCode={onShowCode} />
+              ),
+            )}
+            {editing ? (
+              <button
+                type="button"
+                onClick={addFinding}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, border: `1px dashed ${T.border}`, borderRadius: 9, padding: '9px 12px', fontSize: 12.5, fontWeight: 600, color: T.accent, background: 'transparent', cursor: 'pointer' }}
+              >
+                <Icon name="plus" size={13} />
+                Thêm nhận xét
+              </button>
+            ) : null}
+            {!editing && image.passes?.length ? (
+              <div style={{ border: `1px solid ${T.border}`, borderRadius: 9, padding: '9px 13px', background: T.subtle, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                {image.passes.map((p, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 12.5, lineHeight: 1.55, color: T.ink }}>
+                    <span style={{ color: T.green, flexShrink: 0, display: 'flex', marginTop: 2 }}>
+                      <Icon name="check" size={12} />
+                    </span>
+                    {p}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            </div>
           </div>
         </div>
       ) : null}
@@ -291,10 +946,41 @@ export function DocsReviewPreview({
   onSaved?: () => void;
 }) {
   const [images, setImages] = useState<MockupReviewImage[]>(report.images ?? []);
+  const [editing, setEditing] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** null = modal chú thích đóng; '' = mở không focus; khác rỗng = focus mã đó. */
+  const [glossary, setGlossary] = useState<string | null>(null);
+  const [uxr, setUxr] = useState<UxrCriterion[] | null>(null);
+  const uxrFetched = useRef(false);
+
+  // Mã UXR-xx là động theo run — đọc từ report ux-research nằm cạnh report
+  // review trong cùng thư mục workflow. Tải MỘT lần, khi modal mở lần đầu;
+  // thiếu file / lỗi mạng thì fail-soft (modal vẫn mở, phần UXR hiện hint).
+  useEffect(() => {
+    if (glossary === null || uxrFetched.current) return;
+    uxrFetched.current = true;
+    void (async () => {
+      try {
+        const url = projectRawUrl(projectId, resolveImagePath(fileName, 'ux-research/report.json'));
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const json = (await resp.json()) as { criteria?: Array<Record<string, unknown>> };
+        const items: UxrCriterion[] = (json.criteria ?? [])
+          .filter((c) => typeof c?.id === 'string' && typeof c?.title === 'string')
+          .map((c) => ({
+            id: c.id as string,
+            title: c.title as string,
+            statement: typeof c.statement === 'string' ? c.statement : undefined,
+          }));
+        if (items.length) setUxr(items);
+      } catch {
+        /* fail-soft — modal hiện hint thay vì crash */
+      }
+    })();
+  }, [glossary, projectId, fileName]);
 
   // A fresh report from disk (re-run, or a reload after Save) replaces local
   // edits — but not while an in-flight edit session is dirty, so a Save that
@@ -327,7 +1013,7 @@ export function DocsReviewPreview({
     setImages((prev) => prev.map((img) => (img.id === id ? next : img)));
   };
 
-  async function save() {
+  async function save(): Promise<boolean> {
     setSaving(true);
     setError(null);
     try {
@@ -348,11 +1034,28 @@ export function DocsReviewPreview({
       }
       setDirty(false);
       onSaved?.();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Lưu thất bại');
+      return false;
     } finally {
       setSaving(false);
     }
+  }
+
+  /** Save (if dirty) then drop back to read mode — stays in edit on failure
+   *  so nothing typed is lost behind an error. */
+  async function saveAndClose() {
+    if (dirty && !(await save())) return;
+    setEditing(false);
+  }
+
+  /** Discard local edits: restore the on-disk report and leave edit mode. */
+  function cancelEditing() {
+    setImages(report.images ?? []);
+    setDirty(false);
+    setError(null);
+    setEditing(false);
   }
 
   async function exportZip() {
@@ -395,38 +1098,80 @@ export function DocsReviewPreview({
         <div>
           <span style={{ fontSize: 11.5, fontWeight: 700, padding: '2px 9px', borderRadius: 999, color: '#fff', background: verdictColor(verdict) }}>{verdictLabel(verdict)}</span>
           <div style={{ marginTop: 6, display: 'flex', gap: 14, fontSize: 12 }}>
-            <span style={{ color: T.red }}>● {counts.blockers} blocker</span>
-            <span style={{ color: T.amber }}>● {counts.majors} major</span>
-            <span style={{ color: T.muted }}>● {counts.minors} minor</span>
+            <span style={{ color: T.red }}>● {counts.blockers} nghiêm trọng</span>
+            <span style={{ color: T.amber }}>● {counts.majors} nặng</span>
+            <span style={{ color: T.soft }}>● {counts.minors} nhẹ</span>
           </div>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
           {error ? <span style={{ fontSize: 12, color: T.red }}>{error}</span> : null}
-          {dirty ? <span style={{ fontSize: 11.5, color: T.faint }}>Chưa lưu</span> : null}
+          {dirty ? <span style={{ fontSize: 11.5, fontWeight: 600, color: T.amber }}>Chưa lưu</span> : null}
           <button
             type="button"
-            onClick={() => void save()}
-            disabled={saving || !dirty}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: dirty ? T.accent : T.faint, background: T.paper, cursor: dirty ? 'pointer' : 'default' }}
+            onClick={() => setGlossary('')}
+            title="Chú thích các mã N.x / D.x / UXR-xx"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: T.soft, background: T.paper, cursor: 'pointer' }}
           >
-            <Icon name={saving ? 'spinner' : 'check'} size={13} />
-            {saving ? 'Đang lưu…' : 'Lưu'}
+            <Icon name="help-circle" size={13} />
+            Chú thích
           </button>
-          <button
-            type="button"
-            onClick={() => void exportZip()}
-            disabled={exporting}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, border: 0, borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: '#fff', background: T.accent, cursor: 'pointer' }}
-          >
-            <Icon name={exporting ? 'spinner' : 'download'} size={13} />
-            {exporting ? 'Đang xuất…' : 'Xuất file review'}
-          </button>
+          {editing ? (
+            <>
+              <button
+                type="button"
+                onClick={cancelEditing}
+                disabled={saving}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: T.soft, background: T.paper, cursor: 'pointer' }}
+              >
+                <Icon name="close" size={13} />
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveAndClose()}
+                disabled={saving}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, border: 0, borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: '#fff', background: T.accent, cursor: 'pointer' }}
+              >
+                <Icon name={saving ? 'spinner' : 'check'} size={13} />
+                {saving ? 'Đang lưu…' : 'Lưu'}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: T.accent, background: T.paper, cursor: 'pointer' }}
+              >
+                <Icon name="edit" size={13} />
+                Chỉnh sửa
+              </button>
+              <button
+                type="button"
+                onClick={() => void exportZip()}
+                disabled={exporting}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, border: 0, borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: '#fff', background: T.accent, cursor: 'pointer' }}
+              >
+                <Icon name={exporting ? 'spinner' : 'download'} size={13} />
+                {exporting ? 'Đang xuất…' : 'Xuất file review'}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {images.map((img) => (
-        <ImageCard key={img.id} image={img} projectId={projectId} reportFileName={fileName} onChange={(next) => updateImage(img.id, next)} />
+        <ImageCard
+          key={img.id}
+          image={img}
+          projectId={projectId}
+          reportFileName={fileName}
+          editing={editing}
+          onChange={(next) => updateImage(img.id, next)}
+          onShowCode={(code) => setGlossary(code)}
+        />
       ))}
+      {glossary !== null ? <GlossaryModal uxr={uxr} focus={glossary || null} onClose={() => setGlossary(null)} /> : null}
     </div>
   );
 }

@@ -146,7 +146,8 @@ KGS. Write:
           "source": "nielsen",
           "severity": "blocker|major|minor",
           "issue": "…",
-          "recommendation": "…"
+          "recommendation": "…",
+          "region": { "x": 0.62, "y": 0.08, "w": 0.3, "h": 0.12 }
         }
       ],
       "passes": ["N.1", "D4"]
@@ -183,6 +184,15 @@ cosmetic path change.
   read of the text themselves.
 - Cite one heuristic (N.1–N.10 / D1–D6) per `kind: "heuristic"` finding — never
   an ad-hoc rule. `kind: "mismatch"` findings cite no heuristic.
+- `region` marks WHERE on the mockup the finding sits, as a bounding box
+  normalized to the image (`x`/`y` = top-left corner, `w`/`h` = size, all in
+  0–1 fractions of image width/height). Include it whenever the issue is
+  localizable to a control, field, block, or area — the preview draws it as a
+  colored callout box on the image. OMIT the field entirely for whole-screen
+  findings (layout consistency, missing screen states, doc mismatches with no
+  single anchor); never emit a fake full-image box. Estimate honestly from
+  what you see; the reviewer can adjust the box in the preview, so a
+  reasonable approximation beats no region.
 - Severity + scoring come from the `heuristic-eval` craft file for heuristic
   findings; mismatch severities follow the definitions in step 2(a) above.
 - File-only: no KGS push. The pipeline syncs `./review/` like any other stage.
