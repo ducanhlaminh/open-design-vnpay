@@ -252,8 +252,8 @@
   -webkit-app-region: no-drag;
 }
 
-/* --- Token usage meter (session / week) --- */
-.token-usage-chip {
+/* --- Claude account usage meter (5h / 7d quota %) --- */
+.claude-usage-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -269,31 +269,36 @@
   cursor: pointer;
   -webkit-app-region: no-drag;
 }
-.token-usage-chip:hover,
-.token-usage-chip.is-active {
+.claude-usage-chip:hover,
+.claude-usage-chip.is-active {
   color: var(--text);
   background: var(--bg-subtle);
   border-color: color-mix(in srgb, var(--accent, #0066b3) 45%, var(--border));
 }
-.token-usage-chip svg { color: var(--accent, #0066b3); flex: 0 0 auto; }
-.token-usage-chip__nums { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
-.token-usage-chip__sep { color: var(--text-muted); font-weight: 400; }
-.token-usage-chip__week { color: var(--text-muted); }
+.claude-usage-chip svg { color: var(--accent, #0066b3); flex: 0 0 auto; }
+.claude-usage-chip--warn svg { color: #d97706; }
+.claude-usage-chip--crit svg { color: var(--red, #dc2626); }
+.claude-usage-chip__nums { display: inline-flex; align-items: center; gap: 3px; font-weight: 650; }
+.claude-usage-chip__sep { color: var(--text-muted); font-weight: 400; }
+.claude-usage-chip__v--ok { color: var(--text); }
+.claude-usage-chip__v--warn { color: #d97706; }
+.claude-usage-chip__v--crit { color: var(--red, #dc2626); }
+.claude-usage-chip__v--na { color: var(--text-muted); }
 
-.token-usage-popover {
+.claude-usage-popover {
   position: fixed;
-  width: 280px;
-  padding: 12px;
+  width: 260px;
+  padding: 13px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 13px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-panel, #fff);
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
   z-index: 200;
 }
-.token-usage-popover__head {
+.claude-usage-popover__head {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -301,54 +306,58 @@
   font-weight: 650;
   color: var(--text);
 }
-.token-usage-popover__head svg { color: var(--accent, #0066b3); }
-.token-usage-popover__foot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.claude-usage-popover__head svg { color: var(--accent, #0066b3); }
+.claude-usage-plan {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent, #0066b3) 15%, transparent);
+  color: var(--accent, #0066b3);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.claude-usage-popover__foot {
   font-size: 11px;
   color: var(--text-muted);
+  line-height: 1.4;
 }
-.token-usage-dot {
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  border-radius: 3px;
-  margin-left: 6px;
+.claude-usage-popover__foot code {
+  font-size: 10.5px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
 }
-.token-usage-dot--in { background: color-mix(in srgb, var(--accent, #0066b3) 40%, transparent); }
-.token-usage-dot--out { background: var(--accent, #0066b3); }
 
-.token-usage-bucket { display: flex; flex-direction: column; gap: 5px; }
-.token-usage-bucket__top {
+.claude-usage-win { display: flex; flex-direction: column; gap: 5px; }
+.claude-usage-win__top {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
 }
-.token-usage-bucket__label { font-size: 12px; font-weight: 550; color: var(--text); }
-.token-usage-bucket__total {
+.claude-usage-win__label { font-size: 12px; font-weight: 550; color: var(--text); }
+.claude-usage-win__pct {
   font-size: 13px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--text);
 }
-.token-usage-bar {
-  display: flex;
+.claude-usage-win__pct--ok { color: var(--text); }
+.claude-usage-win__pct--warn { color: #d97706; }
+.claude-usage-win__pct--crit { color: var(--red, #dc2626); }
+.claude-usage-win__pct--na { color: var(--text-muted); }
+.claude-usage-bar {
   height: 8px;
   border-radius: 999px;
   overflow: hidden;
   background: var(--bg-subtle);
 }
-.token-usage-bar__in { background: color-mix(in srgb, var(--accent, #0066b3) 40%, transparent); }
-.token-usage-bar__out { background: var(--accent, #0066b3); }
-.token-usage-bucket__meta {
-  display: flex;
-  gap: 10px;
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-.token-usage-bucket__meta span:last-child { margin-left: auto; }
+.claude-usage-bar__fill { display: block; height: 100%; border-radius: 999px; transition: width 0.4s cubic-bezier(0.23, 1, 0.32, 1); }
+.claude-usage-bar__fill--ok { background: var(--accent, #0066b3); }
+.claude-usage-bar__fill--warn { background: #d97706; }
+.claude-usage-bar__fill--crit { background: var(--red, #dc2626); }
+.claude-usage-bar__fill--na { background: var(--border); }
+.claude-usage-win__reset { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .workspace-tabs-popover {
   /* Anchored to the viewport, not to .workspace-tabs-actions, because the
      actions group sits next to the tab strip on the left side of the chrome

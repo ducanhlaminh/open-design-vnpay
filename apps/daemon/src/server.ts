@@ -181,6 +181,7 @@ import {
 import { ingestRoutineConnectorEvolution } from './automation-routine-evolution.js';
 import { createClaudeStreamHandler } from './claude-stream.js';
 import { diagnoseClaudeCliFailure } from './claude-diagnostics.js';
+import { fetchClaudeUsage } from './claude-usage.js';
 import { loadCritiqueConfigFromEnv } from './critique/config.js';
 import { reconcileStaleRuns } from './critique/persistence.js';
 import { runOrchestrator } from './critique/orchestrator.js';
@@ -390,8 +391,6 @@ import {
   updateProject,
   setProjectPipelineStatus,
   getProjectPipelineState,
-  recordTokenUsage,
-  getTokenUsageTotals,
   updateRoutine,
   updateRoutineRun,
   upsertDeployment,
@@ -510,9 +509,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 const DAEMON_CLI_PATH_ENV = 'OD_DAEMON_CLI_PATH';
-// Daemon session floor for the Usage meter's `session` bucket — stamped once
-// when this module loads (i.e. when the daemon process boots).
-const SESSION_STARTED_AT = Date.now();
 export function resolveProjectRoot(moduleDir: string): string {
   const base = path.basename(moduleDir);
   const daemonDir =
@@ -12649,21 +12645,6 @@ export async function startServer({
           inputTokens !== undefined && outputTokens !== undefined
             ? inputTokens + outputTokens
             : undefined;
-        // Persist provider usage for the always-visible Usage meter (session /
-        // week buckets). Best-effort — never let it break run completion.
-        if (haveUsage) {
-          try {
-            recordTokenUsage(db, {
-              projectId: run.projectId,
-              conversationId: run.conversationId,
-              runId: run.id,
-              inputTokens: inputTokens ?? 0,
-              outputTokens: outputTokens ?? 0,
-            });
-          } catch {
-            /* ignore — usage accounting is non-critical */
-          }
-        }
         design.analytics.capture({
           eventName: 'run_finished',
           context: analyticsContext,
@@ -12718,16 +12699,20 @@ export async function startServer({
     res.json(body);
   });
 
-  // Always-visible Usage meter feed: token totals for the current daemon
-  // session (since this handler registered at boot) and the trailing 7 days.
-  app.get('/api/usage/tokens', (_req, res) => {
-    const weekStart = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const totals = getTokenUsageTotals(db, SESSION_STARTED_AT, weekStart);
-    const body: import('@open-design/contracts').TokenUsageResponse = {
-      ...totals,
-      sessionStartedAt: SESSION_STARTED_AT,
-    };
-    res.json(body);
+  // Always-visible Usage meter feed: Claude account quota % (rolling 5-hour
+  // and 7-day subscription limits), the same data Claude Code's `/usage` shows.
+  app.get('/api/usage/claude', async (_req, res) => {
+    try {
+      const body = await fetchClaudeUsage();
+      res.json(body);
+    } catch {
+      res.json({
+        available: false,
+        fiveHour: { utilization: null, resetsAt: null },
+        sevenDay: { utilization: null, resetsAt: null },
+        subscriptionType: null,
+      } satisfies import('@open-design/contracts').ClaudeUsageResponse);
+    }
   });
 
   app.get('/api/runs/:id', (req, res) => {

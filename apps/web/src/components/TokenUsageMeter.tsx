@@ -1,33 +1,46 @@
-// Always-visible token Usage meter, mounted in the workspace chrome so it is
-// reachable from every view. Shows two rolling buckets — the current daemon
-// session and the trailing 7 days — as a compact "session / week" chip that
-// expands into a popover with input/output split bars.
+// Always-visible Claude account usage meter, mounted in the workspace chrome so
+// it is reachable from every view. Shows the rolling 5-hour and 7-day
+// subscription quota as percentages (the same data as Claude Code's `/usage`) —
+// a compact "5h% / 7d%" chip that expands into a popover with % bars and reset
+// countdowns.
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { TokenUsageBucket, TokenUsageResponse } from '@open-design/contracts';
+import type { ClaudeUsageResponse, ClaudeUsageWindow } from '@open-design/contracts';
 import { Icon } from './Icon';
 
-const POLL_MS = 8000;
+const POLL_MS = 60_000;
 
-/** Compact token count: 1234 → "1.2K", 1_234_567 → "1.23M". */
-function formatTokens(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '0';
-  if (n < 1000) return String(Math.round(n));
-  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`;
-  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 2 : 1)}M`;
-  return `${(n / 1_000_000_000).toFixed(2)}B`;
+/** Bucket a utilization % into a severity class for colouring. */
+function level(pct: number | null): 'ok' | 'warn' | 'crit' | 'na' {
+  if (pct === null) return 'na';
+  if (pct >= 90) return 'crit';
+  if (pct >= 70) return 'warn';
+  return 'ok';
 }
 
-function formatFull(n: number): string {
-  return new Intl.NumberFormat('en-US').format(Math.round(n || 0));
+function pctLabel(pct: number | null): string {
+  return pct === null ? '—' : `${Math.round(pct)}%`;
 }
 
-const EMPTY: TokenUsageBucket = { inputTokens: 0, outputTokens: 0, totalTokens: 0, runs: 0 };
+/** "reset sau 2h 15m" from an ISO timestamp; empty when unknown/passed. */
+function resetIn(iso: string | null, now: number): string {
+  if (!iso) return '';
+  const ms = new Date(iso).getTime() - now;
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const mins = Math.round(ms / 60000);
+  const d = Math.floor(mins / 1440);
+  const h = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  if (d > 0) return `reset sau ${d}n ${h}h`;
+  if (h > 0) return `reset sau ${h}h ${m}m`;
+  return `reset sau ${m}m`;
+}
 
 export function TokenUsageMeter() {
-  const [usage, setUsage] = useState<TokenUsageResponse | null>(null);
+  const [usage, setUsage] = useState<ClaudeUsageResponse | null>(null);
   const [open, setOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
   const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
@@ -37,10 +50,13 @@ export function TokenUsageMeter() {
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const res = await fetch('/api/usage/tokens');
+        const res = await fetch('/api/usage/claude');
         if (res.ok) {
-          const data = (await res.json()) as TokenUsageResponse;
-          if (!cancelled) setUsage(data);
+          const data = (await res.json()) as ClaudeUsageResponse;
+          if (!cancelled) {
+            setUsage(data);
+            setNow(Date.now());
+          }
         }
       } catch {
         /* transient — keep the last value */
@@ -54,26 +70,6 @@ export function TokenUsageMeter() {
       if (timer) window.clearTimeout(timer);
     };
   }, []);
-
-  // Refresh faster while the popover is open so the numbers feel live.
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const res = await fetch('/api/usage/tokens');
-        if (res.ok && !cancelled) setUsage((await res.json()) as TokenUsageResponse);
-      } catch {
-        /* ignore */
-      }
-    };
-    const id = window.setInterval(tick, 2500);
-    void tick();
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -93,14 +89,20 @@ export function TokenUsageMeter() {
     };
   }, [open]);
 
-  const session = usage?.session ?? EMPTY;
-  const week = usage?.week ?? EMPTY;
+  // Meter only renders once we know the daemon can read Claude usage. When
+  // unavailable (no OAuth token / non-Claude agent) it stays hidden.
+  if (!usage || !usage.available) return null;
+
+  const five = usage.fiveHour;
+  const seven = usage.sevenDay;
+  const worst = Math.max(five.utilization ?? 0, seven.utilization ?? 0);
 
   const toggle = () => {
     const rect = btnRef.current?.getBoundingClientRect();
     if (rect) {
       setAnchor({ top: rect.bottom + 6, right: Math.max(8, window.innerWidth - rect.right) });
     }
+    setNow(Date.now());
     setOpen((v) => !v);
   };
 
@@ -109,38 +111,44 @@ export function TokenUsageMeter() {
       <button
         ref={btnRef}
         type="button"
-        className={`token-usage-chip${open ? ' is-active' : ''}`}
+        className={`claude-usage-chip claude-usage-chip--${level(worst)}${open ? ' is-active' : ''}`}
         onClick={toggle}
-        title="Token đã dùng — Phiên / Tuần (7 ngày)"
-        aria-label="Token usage"
+        title="Mức dùng tài khoản Claude — 5 giờ / 7 ngày"
+        aria-label="Claude account usage"
         aria-haspopup="dialog"
         aria-expanded={open}
       >
         <Icon name="sliders" size={14} />
-        <span className="token-usage-chip__nums">
-          <span className="token-usage-chip__session">{formatTokens(session.totalTokens)}</span>
-          <span className="token-usage-chip__sep">/</span>
-          <span className="token-usage-chip__week">{formatTokens(week.totalTokens)}</span>
+        <span className="claude-usage-chip__nums">
+          <span className={`claude-usage-chip__v claude-usage-chip__v--${level(five.utilization)}`}>
+            {pctLabel(five.utilization)}
+          </span>
+          <span className="claude-usage-chip__sep">/</span>
+          <span className={`claude-usage-chip__v claude-usage-chip__v--${level(seven.utilization)}`}>
+            {pctLabel(seven.utilization)}
+          </span>
         </span>
       </button>
       {open && anchor && typeof document !== 'undefined'
         ? createPortal(
             <div
               ref={popRef}
-              className="token-usage-popover"
+              className="claude-usage-popover"
               role="dialog"
-              aria-label="Token usage"
+              aria-label="Claude account usage"
               style={{ top: anchor.top, right: anchor.right }}
             >
-              <div className="token-usage-popover__head">
+              <div className="claude-usage-popover__head">
                 <Icon name="sliders" size={15} />
-                <span>Token đã dùng</span>
+                <span>Mức dùng tài khoản Claude</span>
+                {usage.subscriptionType ? (
+                  <span className="claude-usage-plan">{usage.subscriptionType}</span>
+                ) : null}
               </div>
-              <UsageBucketRow label="Phiên hiện tại" bucket={session} />
-              <UsageBucketRow label="7 ngày qua" bucket={week} />
-              <div className="token-usage-popover__foot">
-                <span className="token-usage-dot token-usage-dot--in" /> Nhập
-                <span className="token-usage-dot token-usage-dot--out" /> Xuất
+              <UsageWindowRow label="5 giờ" window={five} now={now} />
+              <UsageWindowRow label="7 ngày" window={seven} now={now} />
+              <div className="claude-usage-popover__foot">
+                % hạn mức gói đã dùng — nguồn giống lệnh <code>/usage</code>.
               </div>
             </div>,
             document.body,
@@ -150,27 +158,28 @@ export function TokenUsageMeter() {
   );
 }
 
-function UsageBucketRow({ label, bucket }: { label: string; bucket: TokenUsageBucket }) {
-  const total = bucket.totalTokens || 1;
-  const inPct = (bucket.inputTokens / total) * 100;
-  const outPct = (bucket.outputTokens / total) * 100;
+function UsageWindowRow({
+  label,
+  window: w,
+  now,
+}: {
+  label: string;
+  window: ClaudeUsageWindow;
+  now: number;
+}) {
+  const pct = w.utilization ?? 0;
+  const lvl = level(w.utilization);
+  const reset = resetIn(w.resetsAt, now);
   return (
-    <div className="token-usage-bucket">
-      <div className="token-usage-bucket__top">
-        <span className="token-usage-bucket__label">{label}</span>
-        <span className="token-usage-bucket__total" title={`${formatFull(bucket.totalTokens)} tokens`}>
-          {formatTokens(bucket.totalTokens)}
-        </span>
+    <div className="claude-usage-win">
+      <div className="claude-usage-win__top">
+        <span className="claude-usage-win__label">{label}</span>
+        <span className={`claude-usage-win__pct claude-usage-win__pct--${lvl}`}>{pctLabel(w.utilization)}</span>
       </div>
-      <div className="token-usage-bar" aria-hidden="true">
-        <span className="token-usage-bar__in" style={{ width: `${inPct}%` }} />
-        <span className="token-usage-bar__out" style={{ width: `${outPct}%` }} />
+      <div className="claude-usage-bar" aria-hidden="true">
+        <span className={`claude-usage-bar__fill claude-usage-bar__fill--${lvl}`} style={{ width: `${pct}%` }} />
       </div>
-      <div className="token-usage-bucket__meta">
-        <span>Nhập {formatTokens(bucket.inputTokens)}</span>
-        <span>Xuất {formatTokens(bucket.outputTokens)}</span>
-        <span>{bucket.runs} run</span>
-      </div>
+      {reset ? <div className="claude-usage-win__reset">{reset}</div> : null}
     </div>
   );
 }
