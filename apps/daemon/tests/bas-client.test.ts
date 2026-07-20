@@ -215,6 +215,47 @@ test('htmlToMarkdown keeps nested list hierarchy instead of flattening it into o
   assert.equal(lines[2], '  - *UI Screen tương ứng*');
 });
 
+// Real shape from wiki body.view: a draw.io macro is a JS mount div + a
+// base64 JSON blob naming the server-rendered PNG preview attachment — no
+// <img> at all, so the converter used to drop the diagram and leak the
+// hidden title div as junk text ("Untitled Diagram-…").
+const DRAWIO_DATA = Buffer.from(
+  JSON.stringify({ previewName: 'Untitled Diagram-1783562766184.png', owningPageId: 992678790, diagramName: '' }),
+).toString('base64');
+const DRAWIO_MACRO =
+  '<div style="display:block;" class="conf-macro output-block" data-hasbody="false" data-macro-name="drawio" data-content-id="992678790">' +
+  '<div style="display:none">Untitled Diagram-1783562766184</div>' +
+  '<div class="drawio-macro" id="drawio-macro-content-x" style="width:1176px;"></div>' +
+  `<div id="drawio-macro-data-x" style="display:none" data-diagramdata="${DRAWIO_DATA}"></div>` +
+  '</div>';
+
+test('inlineDrawioPreviews rewrites a draw.io macro into a same-host <img> for its PNG preview', async () => {
+  const { inlineDrawioPreviews } = await import('../src/bas/bas-client.js');
+  const html = `<p>trước</p>${DRAWIO_MACRO}<p>sau</p>`;
+  const out = inlineDrawioPreviews(html, 'https://wiki.test');
+  assert.match(
+    out,
+    /<img src="https:\/\/wiki\.test\/download\/attachments\/992678790\/Untitled%20Diagram-1783562766184\.png"/,
+  );
+  // The macro block (incl. its hidden junk title) is gone; neighbors survive.
+  assert.doesNotMatch(out, /display:none/);
+  assert.match(out, /<p>trước<\/p>/);
+  assert.match(out, /<p>sau<\/p>/);
+});
+
+test('inlineDrawioPreviews strips an unparsable macro whole instead of leaking its hidden title', async () => {
+  const { inlineDrawioPreviews } = await import('../src/bas/bas-client.js');
+  const broken =
+    '<div class="conf-macro" data-macro-name="drawio">' +
+    '<div style="display:none">Untitled Diagram-999</div>' +
+    '<div class="drawio-macro"></div>' +
+    '</div>';
+  const out = inlineDrawioPreviews(`<p>a</p>${broken}<p>b</p>`, 'https://wiki.test');
+  assert.doesNotMatch(out, /Untitled Diagram-999/);
+  assert.match(out, /<p>a<\/p>/);
+  assert.match(out, /<p>b<\/p>/);
+});
+
 test('htmlToMarkdown numbers ordered-list items', async () => {
   const { htmlToMarkdown } = await import('../src/bas/bas-client.js');
   const md = htmlToMarkdown('<ol><li>Bước một</li><li>Bước hai</li></ol>');

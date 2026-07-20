@@ -620,6 +620,72 @@ async function localizeConfluenceImages(
   return { html: out, count };
 }
 
+/** Confluence draw.io macros render client-side — body.view carries NO <img>,
+ * just a JS mount div plus a base64 JSON blob (`data-diagramdata`) that names
+ * the server-rendered PNG preview attachment (`previewName` under
+ * `owningPageId`). Rewrite each macro block into a real same-host
+ * `<img src="<base>/download/attachments/<pageId>/<previewName>">` BEFORE
+ * image localization, so the normal download-and-rewrite path ships the
+ * diagram into `attachments/` like any other image. A macro whose data can't
+ * be parsed is stripped whole — its hidden title div otherwise leaks junk
+ * text ("Untitled Diagram-…") into the markdown. */
+export function inlineDrawioPreviews(html: string, base: string): string {
+  let out = '';
+  let cursor = 0;
+  for (;;) {
+    const markerIdx = html.indexOf('data-macro-name="drawio"', cursor);
+    if (markerIdx === -1) break;
+    const start = html.lastIndexOf('<div', markerIdx);
+    if (start === -1 || start < cursor) {
+      out += html.slice(cursor, markerIdx + 1);
+      cursor = markerIdx + 1;
+      continue;
+    }
+    // Balanced <div> scan from the macro's opening tag to its matching close —
+    // the block nests several inner divs, a lazy regex would cut it short.
+    const tagRe = /<\/?div\b[^>]*>/gi;
+    tagRe.lastIndex = start;
+    let depth = 0;
+    let end = -1;
+    let m: RegExpExecArray | null;
+    while ((m = tagRe.exec(html))) {
+      depth += m[0].startsWith('</') ? -1 : 1;
+      if (depth === 0) {
+        end = m.index + m[0].length;
+        break;
+      }
+    }
+    if (end === -1) {
+      out += html.slice(cursor, markerIdx + 1);
+      cursor = markerIdx + 1;
+      continue;
+    }
+    out += html.slice(cursor, start) + drawioPreviewImgTag(html.slice(start, end), base);
+    cursor = end;
+  }
+  return out + html.slice(cursor);
+}
+
+function drawioPreviewImgTag(macroBlock: string, base: string): string {
+  try {
+    const b64 = /data-diagramdata="([^"]+)"/.exec(macroBlock)?.[1];
+    if (!b64) return '';
+    const data = JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) as Record<string, unknown>;
+    const previewName = typeof data.previewName === 'string' ? data.previewName : '';
+    const pageId = String(
+      data.owningPageId ?? data.ceoId ?? /data-content-id="(\d+)"/.exec(macroBlock)?.[1] ?? '',
+    ).trim();
+    if (!previewName || !pageId || !/^\d+$/.test(pageId)) return '';
+    const alt =
+      typeof data.diagramName === 'string' && data.diagramName
+        ? data.diagramName
+        : previewName.replace(/\.png$/i, '');
+    return `<img src="${base}/download/attachments/${pageId}/${encodeURIComponent(previewName)}" alt="${alt.replace(/"/g, '&quot;')}"/>`;
+  } catch {
+    return '';
+  }
+}
+
 export function htmlToMarkdown(
   html: string,
   resolveHref?: (href: string) => string,
@@ -920,6 +986,9 @@ export async function fetchConfluencePages(
       // authenticate the image download with.
       let html = p.html;
       let localizedImagePrefix: string | undefined;
+      // draw.io macros become same-host <img> tags first, so the localization
+      // below downloads the diagram PNGs exactly like ordinary page images.
+      if (src.creds) html = inlineDrawioPreviews(html, src.creds.base);
       if (src.creds && opts.attachmentsDir) {
         const localized = await localizeConfluenceImages(
           src.creds,
