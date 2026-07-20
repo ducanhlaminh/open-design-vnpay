@@ -1641,6 +1641,31 @@
   background: var(--bg-subtle);
 }
 
+/* Multi-target tabs at the top of the result rail. */
+.pl-result-rail__targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.pl-result-rail__target {
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+.pl-result-rail__target--active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
 .pl-result-rail__item {
   display: flex;
   align-items: center;

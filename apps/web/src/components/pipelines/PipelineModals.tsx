@@ -8,7 +8,7 @@
 // - PipelineResultModal:     preview a finished pipeline's output files inline
 //                            (file rail + embedded FileViewer), no workspace nav.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   BasDocument,
   BasDocumentsResponse,
@@ -139,8 +139,18 @@ function outputMatches(rel: string, pattern: string): boolean {
 // paths pass through unchanged. MUST be kept in sync with daemon `WORKFLOWS`
 // (pipelines.ts) — every workflow id added there needs its id added here too.
 const WORKFLOW_DIR_RE = /^(docs-to-ui|docs-to-prd|docs-to-html|docs-to-react)\//;
+// Multi-target subfolder (mirrors the daemon's UI_TARGET_DIRS): a per-target
+// build nests post-docs outputs under <workflow>/<target>/, so both this
+// segment and the workflow prefix are stripped before output-pattern matching.
+const UI_TARGET_SEG_RE = /^(mobile|web-user|web-backoffice)\//;
+/** The multi-target segment of a cwd-relative file (`<workflow>/<target>/…`),
+ *  or null when it's a shared (docs) / single-build file. */
+function targetOfFile(rel: string): UiTarget | null {
+  const m = UI_TARGET_SEG_RE.exec(rel.replace(WORKFLOW_DIR_RE, ''));
+  return m ? (m[1] as UiTarget) : null;
+}
 function stripWorkflowDir(rel: string): string {
-  return rel.replace(WORKFLOW_DIR_RE, '');
+  return rel.replace(WORKFLOW_DIR_RE, '').replace(UI_TARGET_SEG_RE, '');
 }
 
 // ── Req 4: Run source (Confluence link or BAS document) ──────────────────────
@@ -1528,6 +1538,9 @@ export function PipelineResultModal({
   const [files, setFiles] = useState<ProjectFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeName, setActiveName] = useState<string | null>(null);
+  // Multi-target: which target's outputs to show (null = this stage produced a
+  // single/shared build). Set to the first available target once files load.
+  const [activeTarget, setActiveTarget] = useState<UiTarget | null>(null);
   const outputs = pipeline.outputs ?? [];
 
   useEffect(() => {
@@ -1548,7 +1561,12 @@ export function PipelineResultModal({
         const shown = ui.length > 0 ? ui : all;
         if (!cancelled) {
           setFiles(shown);
-          setActiveName(shown[0]?.name ?? null);
+          // Default to the first target present (multi-target build); the rail
+          // filters to it so a 3-target run isn't one flat wall of files.
+          const firstTarget = shown.map((f) => targetOfFile(f.name)).find((t): t is UiTarget => t !== null) ?? null;
+          setActiveTarget(firstTarget);
+          const first = shown.find((f) => (firstTarget ? targetOfFile(f.name) === firstTarget : true));
+          setActiveName(first?.name ?? shown[0]?.name ?? null);
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -1561,7 +1579,21 @@ export function PipelineResultModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, pipeline.id]);
 
-  const active = files?.find((f) => f.name === activeName) ?? null;
+  // Targets present across this stage's output files (multi-target build).
+  const availableTargets = useMemo(() => {
+    const set = new Set<UiTarget>();
+    for (const f of files ?? []) {
+      const t = targetOfFile(f.name);
+      if (t) set.add(t);
+    }
+    return UI_TARGET_IDS.filter((t) => set.has(t));
+  }, [files]);
+  // The rail shows the active target's files (plus any shared/null-target file).
+  const visibleFiles = useMemo(
+    () => (activeTarget ? (files ?? []).filter((f) => { const t = targetOfFile(f.name); return t === null || t === activeTarget; }) : (files ?? [])),
+    [files, activeTarget],
+  );
+  const active = visibleFiles.find((f) => f.name === activeName) ?? visibleFiles[0] ?? null;
   const hasFiles = Boolean(files && files.length > 0);
 
   return (
@@ -1608,8 +1640,28 @@ export function PipelineResultModal({
       ) : (
         <div className="pl-result-preview">
           <aside className="pl-result-rail" aria-label="Output files">
-            {files.map((f) => {
-              const isActive = f.name === activeName;
+            {availableTargets.length > 1 ? (
+              <div className="pl-result-rail__targets" role="tablist" aria-label="Target">
+                {availableTargets.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTarget === t}
+                    className={`pl-result-rail__target${activeTarget === t ? ' pl-result-rail__target--active' : ''}`}
+                    onClick={() => {
+                      setActiveTarget(t);
+                      const first = (files ?? []).find((f) => targetOfFile(f.name) === t);
+                      if (first) setActiveName(first.name);
+                    }}
+                  >
+                    {UI_TARGETS[t].label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {visibleFiles.map((f) => {
+              const isActive = f.name === active?.name;
               return (
                 <button
                   key={f.name}
