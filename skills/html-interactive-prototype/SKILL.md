@@ -59,6 +59,13 @@ embeds one-per-frame via `<iframe srcdoc>`.
   per-screen `./prototype/<slug>.states.json` for multistep screens (see 3.5) —
   no `screen.json`, no React, no shared external CSS/JS file.
 
+> **Per-screen fan-out.** When the UX Spec has several screens, the daemon runs
+> this skill ONCE PER screen and your kickoff names the screen id + tells you to
+> write `prototype/<slug>.html` for THAT screen only. In that case: render ONLY
+> that screen (nav links still use each target's `<target-slug>.html` filename)
+> and do NOT write `prototype/index.html` — the daemon builds the hub. Follow the
+> kickoff's slug verbatim.
+
 > This pipeline does NOT emit `screen.json` (the only JSON it may write is a
 > `<slug>.states.json` capture recipe — see 3.5). The deliverable is real `.html`.
 

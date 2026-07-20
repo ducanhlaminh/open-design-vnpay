@@ -459,6 +459,7 @@ import {
 import { buildReactDemo } from './react-demo.js';
 import { listMockupPages, mergePageReports } from './prd-review-fanout.js';
 import { listSections, mergeCjSections, mergeUxrSections, type DocSection } from './section-fanout.js';
+import { listScreens, mergeHeuristicScreens, renderPrototypeIndex, type UiScreen } from './ui-fanout.js';
 import { pushUxKb, resolveUxKbDir } from './ux-kb-sync.js';
 import { appContextDirective, resolveAppId, stageAppContext } from './app-context.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
@@ -13953,6 +13954,170 @@ export async function startServer({
     return { projectId, completion };
   };
 
+  // UX Heuristic Review + UI-Spec (HTML) run PER SCREEN in parallel: reviewing
+  // or rendering one screen never needs another screen, so one agent run per
+  // screen (bounded pool, ONE shared conversation, history commit + clear ONCE
+  // up front). The daemon then assembles the canonical output — a merged
+  // heuristic-review/report.json, or a deterministic prototype/index.html hub.
+  // `kind` picks ux-review vs ui-html (skill, per-screen output, assembly).
+  const SCREEN_FANOUT_CONCURRENCY = 4;
+  const runScreenFanout = (
+    pipelineId: string,
+    projectId: string,
+    wfDir: string | null,
+    resetScope: 'stage' | 'downstream' | undefined,
+    kind: 'ux-review' | 'ui-html',
+    screens: UiScreen[],
+    designSystemId?: string | null,
+  ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
+    const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
+      const def = getPipelineDef(pipelineId)!;
+      const label = kind;
+      try {
+        const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+        let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
+        if (!agentId) {
+          const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+          agentId = agents.find((a) => a.available)?.id ?? null;
+        }
+        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
+
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+
+        const regenIds = new Set(stageRegenSet(pipelineId, resetScope === 'downstream'));
+        await commitHistory(projectRoot, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
+        try {
+          const snap = await snapshotPipelineCwd(projectRoot);
+          for (const rel of snap.keys()) {
+            if (isHistoryArtifact(rel)) continue;
+            if (stagesForOutput(rel).some((d) => regenIds.has(d.id))) {
+              await fs.promises.rm(path.join(projectRoot, rel), { force: true }).catch(() => null);
+            }
+          }
+        } catch (error) {
+          console.warn(`[${label}] re-run clear failed (continuing):`, error);
+        }
+        for (const id of regenIds) {
+          if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
+        }
+
+        const conversationId = `pipeline-conv-${randomUUID()}`;
+        insertConversation(db, { id: conversationId, projectId, title: def.name, createdAt: Date.now(), updatedAt: Date.now() });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+        const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+        const dsId = designSystemId !== undefined ? designSystemId : (appConfig.designSystemId ?? null);
+
+        let done = 0;
+        const outRel = (s: UiScreen) => (kind === 'ux-review' ? `heuristic-review/${s.slug}/report.json` : `prototype/${s.slug}.html`);
+        const runOneScreen = async (s: UiScreen): Promise<void> => {
+          const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
+          const kickoff =
+            kind === 'ux-review'
+              ? `Run the heuristic-eval review for ONE screen of KGS project "${projectId}". ` +
+                `Review ONLY the screen id "${s.id}" (${s.name}) — its wireframe "wireframes/${s.id}.wire.json" and its spec in the UX Spec, against the usability heuristics + UX Research criteria in the cwd. ` +
+                `Write your result to "heuristic-review/${s.slug}/report.json" (the per-screen report schema, screens[] holding just this one screen, screen id VERBATIM). ` +
+                `Do NOT review any other screen, and do NOT write heuristic-review/report.json or summary.md — the pipeline merges those. FILE-ONLY: no KGS push.`
+              : `Run the html-interactive-prototype render for ONE screen of KGS project "${projectId}". ` +
+                `Render ONLY the screen id "${s.id}" (${s.name}) from the UX Spec + its wireframe into a self-contained "prototype/${s.slug}.html" (plus its "prototype/${s.slug}.states.json" if multistep). ` +
+                `Nav links to other screens use their "<target-slug>.html" filename. ` +
+                `Do NOT render any other screen, and do NOT write prototype/index.html — the pipeline builds the hub. FILE-ONLY: no KGS push.`;
+          const run = design.runs.create({
+            projectId,
+            conversationId,
+            assistantMessageId,
+            clientRequestId: `${label}-${s.slug}-${randomUUID()}`,
+            agentId: agentId!,
+          });
+          upsertMessage(db, conversationId, { id: `pipeline-user-${run.id}`, role: 'user', content: kickoff });
+          upsertMessage(db, conversationId, {
+            id: assistantMessageId,
+            role: 'assistant',
+            content: '',
+            agentId: agentId!,
+            agentName: getAgentDef(agentId!)?.name ?? agentId!,
+            runId: run.id,
+            runStatus: 'queued',
+            startedAt: Date.now(),
+          });
+          design.runs.start(run, () =>
+            startChatRun(
+              {
+                agentId: agentId!,
+                projectId,
+                conversationId,
+                assistantMessageId,
+                clientRequestId: run.clientRequestId,
+                skillId: def.skillId,
+                ...(def.extraSkillIds?.length ? { skillIds: def.extraSkillIds } : {}),
+                ...(wfDir ? { cwdSubdir: wfDir } : {}),
+                ...(kind === 'ui-html' ? { designSystemId: dsId } : {}),
+                model: modelPrefs.model ?? null,
+                reasoning: modelPrefs.reasoning ?? null,
+                message: kickoff,
+              },
+              run,
+            ),
+          );
+          const final = await design.runs.wait(run);
+          db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+          done += 1;
+          console.log(`[${label}] screen ${done}/${screens.length} "${s.name}" → ${final.status}`);
+        };
+
+        let cursor = 0;
+        const worker = async () => {
+          for (;;) {
+            const i = cursor++;
+            if (i >= screens.length) break;
+            await runOneScreen(screens[i]!).catch(() => undefined);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(SCREEN_FANOUT_CONCURRENCY, screens.length) }, worker));
+
+        // Assemble the canonical output (daemon-owned, no LLM).
+        let anyOut = false;
+        if (kind === 'ux-review') {
+          const slices = await Promise.all(
+            screens.map(async (s) => {
+              const report = await fs.promises
+                .readFile(path.join(cwd, outRel(s)), 'utf8')
+                .then((t) => JSON.parse(t) as unknown)
+                .catch(() => null);
+              return { id: s.id, name: s.name, report };
+            }),
+          );
+          anyOut = slices.some((s) => s.report);
+          const merged = mergeHeuristicScreens(slices);
+          await fs.promises.mkdir(path.join(cwd, 'heuristic-review'), { recursive: true });
+          await fs.promises.writeFile(path.join(cwd, 'heuristic-review/report.json'), JSON.stringify(merged, null, 2), 'utf8');
+        } else {
+          const rendered: UiScreen[] = [];
+          for (const s of screens) {
+            const exists = await fs.promises.stat(path.join(cwd, outRel(s))).then(() => true).catch(() => false);
+            if (exists) rendered.push(s);
+          }
+          anyOut = rendered.length > 0;
+          await fs.promises.mkdir(path.join(cwd, 'prototype'), { recursive: true });
+          await fs.promises.writeFile(path.join(cwd, 'prototype/index.html'), renderPrototypeIndex(rendered), 'utf8');
+        }
+
+        const next: 'succeeded' | 'failed' = anyOut ? 'succeeded' : 'failed';
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: next });
+        void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
+        console.log(`[${label}] screen fan-out done → ${next}`);
+        return next;
+      } catch (error) {
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        console.warn(`[${label}] screen fan-out failed:`, error);
+        return 'failed' as const;
+      }
+    })();
+    return { projectId, completion };
+  };
+
   const runPipeline = async (
     projectId: string,
     pipelineId: string,
@@ -14029,6 +14194,23 @@ export async function startServer({
           const kind = def.skillId === 'customer-journey-spec' ? 'cj' : 'ux-research';
           console.log(`[${kind}] ${sections.length} module(s) → per-section fan-out`);
           return runSectionFanout(pipelineId, projectId, wfDir, resetScope, kind, sections);
+        }
+      }
+    }
+
+    // UX Heuristic Review + UI-Spec (HTML) → parallel PER-SCREEN fan-out, when
+    // the UX Spec has ≥2 screens (reviewing/rendering one screen is independent
+    // work). A tiny spec (<2 screens) falls through to the normal single-agent
+    // path below.
+    if (def.skillId === 'heuristic-eval' || def.skillId === 'html-interactive-prototype') {
+      const projectRoot = await ensureProject(PROJECTS_DIR, projectId).catch(() => null);
+      if (projectRoot) {
+        const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+        const screens = await listScreens(cwd).catch(() => [] as UiScreen[]);
+        if (screens.length >= 2) {
+          const kind = def.skillId === 'heuristic-eval' ? 'ux-review' : 'ui-html';
+          console.log(`[${kind}] ${screens.length} screen(s) → per-screen fan-out`);
+          return runScreenFanout(pipelineId, projectId, wfDir, resetScope, kind, screens, designSystemId);
         }
       }
     }

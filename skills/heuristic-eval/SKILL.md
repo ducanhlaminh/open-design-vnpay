@@ -117,7 +117,17 @@ verdict = worst screen verdict. Show the subtraction so a reader can re-derive i
 ### 3. Write the report — FILE-ONLY, under `./heuristic-review/`
 
 This is a **file-only** stage: produce files only, do **not** push anything to
-KGS (no `od kg push`, no push_to_kgs.py). Write three things:
+KGS (no `od kg push`, no push_to_kgs.py).
+
+> **Per-screen fan-out.** When the UX Spec has several screens, the daemon runs
+> this skill ONCE PER screen and your kickoff names the screen id + tells you to
+> write your slice to `heuristic-review/<slug>/report.json`. In that case:
+> review ONLY that one screen (its wireframe + spec), put it as the single entry
+> in `screens[]` (screen id VERBATIM), and do NOT write `heuristic-review/report.json`
+> or `summary.md` — the daemon merges every screen's slice into those. Follow the
+> kickoff's output path verbatim when it gives one.
+
+Write three things:
 
 1. **`./heuristic-review/report.json`** — the machine-readable result. Shape:
 
