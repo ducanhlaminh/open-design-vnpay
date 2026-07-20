@@ -433,6 +433,13 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       const skipSucceeded = req.body?.skipSucceeded === true;
       const followLinks = req.body?.followLinks !== false;
       const includeDescendants = req.body?.includeDescendants === true;
+      // UI targets (docs-to-ui): a subset of the fixed enum; invalid entries drop.
+      const targets: import('@open-design/contracts').UiTarget[] = Array.isArray(req.body?.targets)
+        ? (req.body.targets as unknown[]).filter(
+            (t): t is import('@open-design/contracts').UiTarget =>
+              t === 'mobile' || t === 'web-user' || t === 'web-backoffice',
+          )
+        : [];
       // Remember this device's last-used run-all choices (per project) so a
       // later open of the Run-all modal — e.g. after canceling a stage mid-chain
       // — prefills from here instead of forcing the user to re-enter everything.
@@ -446,6 +453,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
             ...(designSystemId !== undefined ? { designSystemId } : {}),
             terminal: (rawTerminal as WorkflowTerminal | undefined) ?? 'ui-html',
             platform: (rawPlatform as TargetPlatform | undefined) ?? 'mobile',
+            ...(targets.length ? { targets } : {}),
             followLinks,
             includeDescendants,
             skipSucceeded,
@@ -459,6 +467,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         ...(source !== undefined ? { source } : {}),
         ...(designSystemId !== undefined ? { designSystemId } : {}),
         ...(rawPlatform !== undefined ? { platform: rawPlatform as TargetPlatform } : {}),
+        ...(targets.length ? { targets } : {}),
         skipSucceeded,
         ...(followLinks ? {} : { followLinks: false }),
         ...(includeDescendants ? { includeDescendants: true } : {}),

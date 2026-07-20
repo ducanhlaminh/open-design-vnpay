@@ -605,6 +605,7 @@ export function PipelinesView() {
         ...(payload.confluencePages?.length ? { confluencePages: payload.confluencePages } : {}),
         terminal: payload.terminal,
         platform: payload.platform,
+        ...(payload.targets?.length ? { targets: payload.targets } : {}),
         designSystemId: payload.designSystemId,
         ...(payload.skipSucceeded ? { skipSucceeded: true } : {}),
         ...(payload.followLinks === false ? { followLinks: false } : {}),
@@ -1647,6 +1648,7 @@ export function PipelinesView() {
             defaultDesignSystemId={runAllDefaults?.designSystemId}
             defaultTerminal={runAllDefaults?.terminal}
             defaultPlatform={runAllDefaults?.platform}
+            defaultTargets={runAllDefaults?.targets}
             defaultFollowLinks={runAllDefaults?.followLinks}
             defaultIncludeDescendants={runAllDefaults?.includeDescendants}
             defaultSkipSucceeded={runAllDefaults?.skipSucceeded}

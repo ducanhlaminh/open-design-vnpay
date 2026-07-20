@@ -7073,6 +7073,15 @@ async function runPipeline(args) {
           ...(terminal !== undefined ? { terminal } : {}),
           ...(designSystemId !== undefined ? { designSystemId } : {}),
           ...(platform !== undefined ? { platform } : {}),
+          // Multi-target build (docs-to-ui): --target mobile,web-user,web-backoffice
+          ...(flags.target
+            ? {
+                targets: String(flags.target)
+                  .split(',')
+                  .map((t) => t.trim())
+                  .filter((t) => t === 'mobile' || t === 'web-user' || t === 'web-backoffice'),
+              }
+            : {}),
           ...(flags['skip-succeeded'] ? { skipSucceeded: true } : {}),
           ...(flags['no-follow-links'] ? { followLinks: false } : {}),
           ...(flags['all-pages'] || flags['include-descendants'] ? { includeDescendants: true } : {}),

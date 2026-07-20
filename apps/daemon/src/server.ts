@@ -14163,6 +14163,10 @@ export async function startServer({
     // Docs stage: also fetch the whole sub-tree under each seed (folder-
     // structured). undefined/false → seeds only. See RunPipelineRequest.
     includeDescendants?: boolean,
+    // Multi-target build: a per-target subfolder appended to the workflow cwd
+    // (`<workflow>/<targetDir>/`), so this stage runs into that target's own
+    // output subtree. undefined → the shared workflow cwd (legacy single build).
+    targetDir?: string,
   ) => {
     const def = getPipelineDef(pipelineId);
     if (!def) throw new Error(`Unknown pipeline ${pipelineId}`);
@@ -14172,7 +14176,10 @@ export async function startServer({
     // Per-workflow output namespace: this pipeline's run + outputs live under
     // <projectDir>/<workflowId>/ so the two workflows never share a cwd (no
     // cross-reads, no clobbering, no status bleed). null → run at the cwd root.
-    const wfDir = workflowDirForPipeline(pipelineId);
+    // A multi-target build appends the target subfolder (<workflowId>/<target>/)
+    // so each target's stages get their own output subtree.
+    const baseWfDir = workflowDirForPipeline(pipelineId);
+    const wfDir = targetDir ? `${baseWfDir ?? ''}${baseWfDir ? '/' : ''}${targetDir}` : baseWfDir;
 
     // Any stage running the jira-ingest skill (docs-to-ui's `docs`, docs-to-prd's
     // `prd-docs` — same skill, independent workflows), Confluence source → the
@@ -14550,6 +14557,7 @@ export async function startServer({
       source?: import('@open-design/contracts').PipelineRunSource;
       designSystemId?: string | null;
       platform?: import('@open-design/contracts').TargetPlatform;
+      targets?: import('@open-design/contracts').UiTarget[];
       skipSucceeded?: boolean;
       followLinks?: boolean;
       includeDescendants?: boolean;
@@ -14577,42 +14585,85 @@ export async function startServer({
     if (stages.length === 0) {
       throw new Error('nothing to run: every stage in the chain has already succeeded');
     }
+    // Multi-target: chosen UI targets (docs-to-ui only). Docs run ONCE (shared);
+    // the post-docs chain runs once per target into <workflow>/<target>/.
+    const targets = (opts.targets ?? []).filter((t): t is import('@open-design/contracts').UiTarget =>
+      t === 'mobile' || t === 'web-user' || t === 'web-backoffice',
+    );
+    // The docs ingest stage is the one taking free-text input (inputPlaceholder);
+    // everything else is post-docs and target-scoped.
+    const docsStageIds = stages.filter((id) => getPipelineDef(id)?.inputPlaceholder);
+    const postStageIds = stages.filter((id) => !getPipelineDef(id)?.inputPlaceholder);
     workflowRunsInFlight.add(projectId);
     void (async () => {
+      // One stage of the chain. `targetDir` scopes it into a target subfolder;
+      // `platform` overrides the UX platform per target. A FRESH full run resets
+      // the whole project up front via the first stage's 'downstream' scope.
+      const runStage = async (
+        id: string,
+        targetDir: string | undefined,
+        platform: import('@open-design/contracts').TargetPlatform | undefined,
+      ): Promise<'succeeded' | 'failed' | 'idle'> => {
+        const def = getPipelineDef(id)!;
+        const start = await runPipeline(
+          projectId,
+          id,
+          def.inputPlaceholder ? opts.input : undefined,
+          def.inputPlaceholder ? opts.source : undefined,
+          def.acceptsDesignSystem ? opts.designSystemId : undefined,
+          def.acceptsPlatform ? platform : undefined,
+          id === stages[0] && !opts.skipSucceeded ? 'downstream' : undefined,
+          def.inputPlaceholder ? opts.followLinks : undefined,
+          def.inputPlaceholder ? opts.includeDescendants : undefined,
+          targetDir,
+        );
+        return start.completion;
+      };
       try {
-        for (const id of stages) {
-          const def = getPipelineDef(id);
-          if (!def) break;
-          // Per-stage args: the free-text input / structured source belong to
-          // the docs stage (inputPlaceholder), the platform to the UX stage,
-          // the design system to the UI terminals — same routing the per-stage
-          // Run dialogs do by only showing each picker on its stage.
-          // A FRESH full run (skipSucceeded off) resets the WHOLE project up
-          // front: the first stage runs with resetScope 'downstream', which
-          // cascade-clears every dependent stage's outputs (snapshotted to
-          // history first) and flips their statuses to idle — without this the
-          // stale downstream stages kept showing "succeeded" until the chain
-          // reached them, and an aborted chain left a new-upstream/old-
-          // downstream mix.
-          const start = await runPipeline(
-            projectId,
-            id,
-            def.inputPlaceholder ? opts.input : undefined,
-            def.inputPlaceholder ? opts.source : undefined,
-            def.acceptsDesignSystem ? opts.designSystemId : undefined,
-            def.acceptsPlatform ? opts.platform : undefined,
-            id === stages[0] && !opts.skipSucceeded ? 'downstream' : undefined,
-            def.inputPlaceholder ? opts.followLinks : undefined,
-            def.inputPlaceholder ? opts.includeDescendants : undefined,
-          );
-          const status = await start.completion;
-          if (status !== 'succeeded') {
-            console.warn(`[pipelines] run-all for ${projectId} stopped at "${id}" (${status})`);
+        // 1) Docs ingest — shared across every target.
+        for (const id of docsStageIds) {
+          if ((await runStage(id, undefined, opts.platform)) !== 'succeeded') {
+            console.warn(`[pipelines] run-all for ${projectId} stopped at docs stage "${id}"`);
             return;
           }
-          console.log(`[pipelines] run-all for ${projectId}: "${id}" succeeded, chaining next`);
         }
-        console.log(`[pipelines] run-all for ${projectId} completed (${stages.length} stage(s))`);
+        if (targets.length > 0) {
+          // 2) Per-target post-docs chain, each in its own <workflow>/<target>/.
+          const { UI_TARGETS } = await import('@open-design/contracts');
+          const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+          const base = workflowDirForPipeline(stages[0]!) ?? '';
+          for (const t of targets) {
+            const dir = UI_TARGETS[t].dir;
+            // Stage the shared docs into this target's cwd so its post-docs
+            // stages find ./docs/confluence (skills read a relative path).
+            try {
+              const srcDocs = path.join(projectRoot, base, 'docs');
+              const dstDocs = path.join(projectRoot, base, dir, 'docs');
+              await fs.promises.rm(dstDocs, { recursive: true, force: true }).catch(() => {});
+              await fs.promises.cp(srcDocs, dstDocs, { recursive: true });
+            } catch (error) {
+              console.warn(`[pipelines] staging docs into target ${dir} failed:`, error);
+            }
+            let ok = true;
+            for (const id of postStageIds) {
+              if ((await runStage(id, dir, UI_TARGETS[t].platform)) !== 'succeeded') {
+                console.warn(`[pipelines] run-all for ${projectId} target "${dir}" stopped at "${id}"`);
+                ok = false;
+                break; // this target aborts; other targets still run
+              }
+            }
+            console.log(`[pipelines] run-all for ${projectId} target "${dir}" ${ok ? 'completed' : 'aborted'}`);
+          }
+        } else {
+          // Single build (legacy): post-docs chain at the shared workflow cwd.
+          for (const id of postStageIds) {
+            if ((await runStage(id, undefined, opts.platform)) !== 'succeeded') {
+              console.warn(`[pipelines] run-all for ${projectId} stopped at "${id}"`);
+              return;
+            }
+          }
+        }
+        console.log(`[pipelines] run-all for ${projectId} completed (${stages.length} stage(s)${targets.length ? `, ${targets.length} target(s)` : ''})`);
       } catch (error) {
         console.warn('[pipelines] run-all chain error:', error);
       } finally {

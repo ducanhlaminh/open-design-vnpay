@@ -13,6 +13,41 @@
  */
 export type TargetPlatform = 'mobile' | 'web';
 
+/**
+ * A UI TARGET — a distinct app the same product docs are turned into. A project
+ * can build several at once (e.g. a mobile app AND a web backoffice), each with
+ * its own audience and screen set, so `docs-to-ui` runs the whole post-docs
+ * chain (cj → ux-research → ux → ux-review → ui) ONCE PER TARGET into a
+ * per-target output subtree. Fixed enum (not free-form) — three shapes cover
+ * the real need: a phone app, a customer-facing website, and a staff/admin
+ * backoffice website.
+ */
+export type UiTarget = 'mobile' | 'web-user' | 'web-backoffice';
+
+/** Static descriptor for each UI target: its platform (drives each screen's
+ *  `layout`), audience (drives which flows/screens the ux-spec authors), the
+ *  human label for the picker, and the output subfolder its stages run under. */
+export interface UiTargetDef {
+  id: UiTarget;
+  platform: TargetPlatform;
+  audience: 'user' | 'backoffice';
+  label: string;
+  /** Per-target cwd subfolder under the workflow dir (`<workflow>/<dir>/…`). */
+  dir: string;
+}
+
+export const UI_TARGETS: Record<UiTarget, UiTargetDef> = {
+  mobile: { id: 'mobile', platform: 'mobile', audience: 'user', label: 'Mobile app', dir: 'mobile' },
+  'web-user': { id: 'web-user', platform: 'web', audience: 'user', label: 'Website (người dùng)', dir: 'web-user' },
+  'web-backoffice': { id: 'web-backoffice', platform: 'web', audience: 'backoffice', label: 'Website (backoffice)', dir: 'web-backoffice' },
+};
+
+export const UI_TARGET_IDS: UiTarget[] = ['mobile', 'web-user', 'web-backoffice'];
+
+export function isUiTarget(v: unknown): v is UiTarget {
+  return v === 'mobile' || v === 'web-user' || v === 'web-backoffice';
+}
+
 export type PipelineStatus =
   | 'idle'
   | 'queued'
@@ -162,6 +197,11 @@ export interface RunAllConfig {
   displayName?: string;
   terminal?: WorkflowTerminal;
   platform?: TargetPlatform;
+  /** UI targets to build (docs-to-ui). When set with ≥1 entry, the post-docs
+   *  chain runs once per target into `<workflow>/<target>/…` and `platform` is
+   *  ignored (each target carries its own). Omitted/empty → single build using
+   *  `platform` (legacy). */
+  targets?: UiTarget[];
   followLinks?: boolean;
   /** Docs stage: also fetch the whole sub-tree under each seed page
    *  (folder-structured), independent of followLinks. Omitted → false. */
@@ -389,8 +429,12 @@ export interface RunWorkflowRequest {
   confluencePages?: ConfluencePageRef[];
   /** Design system for the UI terminal(s) — same semantics as RunPipelineRequest. */
   designSystemId?: string | null;
-  /** Target platform for the UX stage — same semantics as RunPipelineRequest. */
+  /** Target platform for the UX stage — same semantics as RunPipelineRequest.
+   *  Ignored when `targets` is set. */
   platform?: TargetPlatform;
+  /** UI targets to build — same semantics as RunAllConfig.targets. When ≥1,
+   *  the post-docs chain runs once per target into `<workflow>/<target>/`. */
+  targets?: UiTarget[];
   /** Docs stage link-follow — same semantics as RunPipelineRequest.followLinks. */
   followLinks?: boolean;
   /** Docs stage sub-tree scan — same semantics as

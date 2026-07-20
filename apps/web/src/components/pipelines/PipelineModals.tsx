@@ -22,8 +22,10 @@ import type {
   ProjectSyncStatus,
   RemoteProject,
   TargetPlatform,
+  UiTarget,
   Workflow,
 } from '@open-design/contracts';
+import { UI_TARGET_IDS, UI_TARGETS } from '@open-design/contracts';
 import type { TrackingProjectKind } from '@open-design/contracts/analytics';
 
 import { Icon } from '../Icon';
@@ -929,6 +931,9 @@ export interface RunAllPayload {
   confluencePages?: ConfluencePageRefLike[];
   terminal: WorkflowTerminalChoice;
   platform: TargetPlatform;
+  /** UI targets to build (docs-to-ui): mobile / web-user / web-backoffice. When
+   *  ≥1, the post-docs chain runs once per target; empty → single build. */
+  targets?: UiTarget[];
   designSystemId: string | null;
   skipSucceeded: boolean;
   /** false → docs stage fetches ONLY the picked pages (no link-follow). */
@@ -943,6 +948,7 @@ export function RunAllModal({
   defaultDesignSystemId,
   defaultTerminal,
   defaultPlatform,
+  defaultTargets,
   defaultFollowLinks,
   defaultIncludeDescendants,
   defaultSkipSucceeded,
@@ -962,6 +968,8 @@ export function RunAllModal({
   defaultDesignSystemId?: string | null;
   defaultTerminal?: WorkflowTerminalChoice;
   defaultPlatform?: TargetPlatform;
+  /** UI targets prefilled from the last run (docs-to-ui multi-target). */
+  defaultTargets?: UiTarget[];
   defaultFollowLinks?: boolean;
   defaultIncludeDescendants?: boolean;
   defaultSkipSucceeded?: boolean;
@@ -983,7 +991,15 @@ export function RunAllModal({
   const [followLinks, setFollowLinks] = useState(defaultFollowLinks ?? true);
   const [includeDescendants, setIncludeDescendants] = useState(defaultIncludeDescendants ?? false);
   const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(defaultTerminal ?? 'ui-html');
-  const [platform, setPlatform] = useState<TargetPlatform>(defaultPlatform ?? 'mobile');
+  // Legacy single-platform (docs-to-prd has no UI stage / non-target callers).
+  // docs-to-ui uses the `targets` multi-select below; platform is derived from
+  // the first target in submit when targets are set.
+  const [platform] = useState<TargetPlatform>(defaultPlatform ?? 'mobile');
+  // Multi-target build (docs-to-ui): which UI products to generate. Default to
+  // the last run's targets, else a single mobile app (legacy shape).
+  const [targets, setTargets] = useState<UiTarget[]>(defaultTargets && defaultTargets.length ? defaultTargets : ['mobile']);
+  const toggleTarget = (t: UiTarget) =>
+    setTargets((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
   const [systems, setSystems] = useState<DesignSystemSummary[] | null>(null);
   const [designSystemId, setDesignSystemId] = useState<string | null>(
     defaultDesignSystemId === undefined ? null : defaultDesignSystemId,
@@ -1007,7 +1023,8 @@ export function RunAllModal({
     };
   }, []);
 
-  const canRun = confPages.length > 0 || skipSucceeded;
+  // docs-to-ui (hasPlatform) needs ≥1 target chosen; other workflows don't.
+  const canRun = (confPages.length > 0 || skipSucceeded) && (!hasPlatform || targets.length > 0);
   const submit = async () => {
     if (busy || !canRun) return;
     setBusy(true);
@@ -1021,7 +1038,10 @@ export function RunAllModal({
         ...(input ? { input } : {}),
         ...(confPages.length ? { confluencePages: confPages } : {}),
         terminal,
-        platform,
+        // platform kept for legacy/back-compat; per-target platform is derived
+        // daemon-side from `targets` when present.
+        platform: hasPlatform && targets[0] ? UI_TARGETS[targets[0]].platform : platform,
+        ...(hasPlatform ? { targets } : {}),
         designSystemId,
         skipSucceeded,
         ...(followLinks ? {} : { followLinks: false }),
@@ -1100,45 +1120,44 @@ export function RunAllModal({
       </div>
       {hasPlatform ? (
       <div className="pl-modal-field">
-        <span className="pl-modal-field__label">Nền tảng (bước UX Spec)</span>
-        <div className={styles.cards} role="radiogroup" aria-label="Target platform">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={platform === 'mobile'}
-            className={`${styles.card}${platform === 'mobile' ? ' ' + styles.cardSelected : ''}`}
-            onClick={() => setPlatform('mobile')}
-          >
-            <span className={styles.cardTop}>
-              <Icon name="home" size={16} />
-              Mobile app
-              {platform === 'mobile' ? (
-                <span className={styles.cardCheck} aria-hidden="true">
-                  <Icon name="check" size={14} />
+        <span className="pl-modal-field__label">Sản phẩm cần build (chọn ≥1)</span>
+        <div className={styles.cards} role="group" aria-label="UI targets">
+          {UI_TARGET_IDS.map((t) => {
+            const def = UI_TARGETS[t];
+            const on = targets.includes(t);
+            const desc =
+              t === 'mobile'
+                ? 'App điện thoại — màn dọc.'
+                : t === 'web-user'
+                  ? 'Website cho người dùng cuối.'
+                  : 'Website backoffice cho nhân viên/quản trị.';
+            return (
+              <button
+                key={t}
+                type="button"
+                role="checkbox"
+                aria-checked={on}
+                className={`${styles.card}${on ? ' ' + styles.cardSelected : ''}`}
+                onClick={() => toggleTarget(t)}
+              >
+                <span className={styles.cardTop}>
+                  <Icon name={def.platform === 'mobile' ? 'home' : 'grid'} size={16} />
+                  {def.label}
+                  {on ? (
+                    <span className={styles.cardCheck} aria-hidden="true">
+                      <Icon name="check" size={14} />
+                    </span>
+                  ) : null}
                 </span>
-              ) : null}
-            </span>
-            <span className={styles.cardDesc}>Màn hình dọc kiểu điện thoại — mặc định.</span>
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={platform === 'web'}
-            className={`${styles.card}${platform === 'web' ? ' ' + styles.cardSelected : ''}`}
-            onClick={() => setPlatform('web')}
-          >
-            <span className={styles.cardTop}>
-              <Icon name="grid" size={16} />
-              Website
-              {platform === 'web' ? (
-                <span className={styles.cardCheck} aria-hidden="true">
-                  <Icon name="check" size={14} />
-                </span>
-              ) : null}
-            </span>
-            <span className={styles.cardDesc}>Trang web đầy đủ (bảng, sidebar, form nhiều cột).</span>
-          </button>
+                <span className={styles.cardDesc}>{desc}</span>
+              </button>
+            );
+          })}
         </div>
+        <span className="pl-modal-field__hint">
+          Chọn nhiều thì mỗi sản phẩm được build riêng (docs → cj → ux → ui chạy một lần cho mỗi
+          target), output tách thư mục theo target.
+        </span>
       </div>
       ) : null}
       {hasTerminal ? (

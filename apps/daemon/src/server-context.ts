@@ -131,6 +131,9 @@ export interface PipelineDeps {
       source?: PipelineRunSource;
       designSystemId?: string | null;
       platform?: import('@open-design/contracts').TargetPlatform;
+      /** UI targets to build (docs-to-ui) — post-docs chain runs once per
+       *  target into <workflow>/<target>/. Empty/absent → single build. */
+      targets?: import('@open-design/contracts').UiTarget[];
       skipSucceeded?: boolean;
       followLinks?: boolean;
       includeDescendants?: boolean;
