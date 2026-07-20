@@ -13865,17 +13865,78 @@ export async function startServer({
           }),
         );
         const anySlice = slices.some((s) => s.parsed);
+        let canonicalRel: string;
         if (kind === 'cj') {
           const merged = mergeCjSections(slices.map((s) => ({ key: s.key, title: s.title, cj: s.parsed })));
           const project = getProject(db, projectId);
           const nameSlug =
             (project?.name ?? 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'product';
-          await fs.promises.writeFile(path.join(cwd, `${nameSlug}-customer-journey.json`), JSON.stringify(merged, null, 2), 'utf8');
+          canonicalRel = `${nameSlug}-customer-journey.json`;
+          await fs.promises.writeFile(path.join(cwd, canonicalRel), JSON.stringify(merged, null, 2), 'utf8');
         } else {
           const { report, reportMd } = mergeUxrSections(slices.map((s) => ({ key: s.key, title: s.title, uxr: s.parsed })));
           await fs.promises.mkdir(path.join(cwd, 'ux-research'), { recursive: true });
-          await fs.promises.writeFile(path.join(cwd, 'ux-research/report.json'), JSON.stringify(report, null, 2), 'utf8');
+          canonicalRel = 'ux-research/report.json';
+          await fs.promises.writeFile(path.join(cwd, canonicalRel), JSON.stringify(report, null, 2), 'utf8');
           await fs.promises.writeFile(path.join(cwd, 'ux-research/report.md'), reportMd, 'utf8');
+        }
+
+        // RECONCILE PASS (fail-soft): the daemon merge is mechanical — it can't
+        // spot personas/criteria that are the SAME under different wording, or
+        // ids that collide across modules. One small agent run reads ONLY the
+        // merged file (child outputs, not the raw docs, so no context blow-up)
+        // and heals those seams in place. On any error the un-reconciled merge
+        // stays — coverage is already guaranteed by the fan-out above.
+        if (anySlice) {
+          try {
+            const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
+            const reconcileKickoff =
+              kind === 'cj'
+                ? `Reconcile the merged customer journey file "${canonicalRel}" in the cwd. It was assembled by concatenating per-module slices, so it may have seams: ` +
+                  `(1) DUPLICATE PERSONAS — the same role under different names/wording; merge each duplicate set into ONE persona (keep the richest description) and update any references to it. ` +
+                  `(2) COLLIDING IDS — persona/stage/flow ids (PRSN-/STG-/UFLW-/…) reused across modules; make every id UNIQUE while keeping each journey's internal references consistent. ` +
+                  `Keep EVERY journey and its module tag — do not drop or rewrite journey content, only dedup personas and fix ids. Overwrite the SAME file. Do NOT push to KGS.`
+                : `Reconcile the merged UX research file "${canonicalRel}" in the cwd. It was assembled by concatenating per-module slices, so it may have DUPLICATE CRITERIA that state the same requirement under different wording. Merge each duplicate set into ONE criterion (keep the strongest wording, union the sources' used_for), keep criteria ids sequential (UXR-01, UXR-02, …), and recompute the summary counts (criteria/must/should/nice). Keep every distinct criterion — only dedup true duplicates. Overwrite the SAME file. Do NOT push to KGS.`;
+            const rc = design.runs.create({
+              projectId,
+              conversationId,
+              assistantMessageId,
+              clientRequestId: `${label}-reconcile-${randomUUID()}`,
+              agentId: agentId!,
+            });
+            upsertMessage(db, conversationId, { id: `pipeline-user-${rc.id}`, role: 'user', content: reconcileKickoff });
+            upsertMessage(db, conversationId, {
+              id: assistantMessageId,
+              role: 'assistant',
+              content: '',
+              agentId: agentId!,
+              agentName: getAgentDef(agentId!)?.name ?? agentId!,
+              runId: rc.id,
+              runStatus: 'queued',
+              startedAt: Date.now(),
+            });
+            design.runs.start(rc, () =>
+              startChatRun(
+                {
+                  agentId: agentId!,
+                  projectId,
+                  conversationId,
+                  assistantMessageId,
+                  clientRequestId: rc.clientRequestId,
+                  ...(wfDir ? { cwdSubdir: wfDir } : {}),
+                  model: modelPrefs.model ?? null,
+                  reasoning: modelPrefs.reasoning ?? null,
+                  message: reconcileKickoff,
+                },
+                rc,
+              ),
+            );
+            const rcFinal = await design.runs.wait(rc);
+            db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(rcFinal.status, Date.now(), assistantMessageId);
+            console.log(`[${label}] reconcile pass → ${rcFinal.status}`);
+          } catch (error) {
+            console.warn(`[${label}] reconcile pass failed (keeping mechanical merge):`, error);
+          }
         }
 
         const next: 'succeeded' | 'failed' = anySlice ? 'succeeded' : 'failed';
