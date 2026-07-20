@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'vitest';
 
-import { sectionKey, listSections, mergeCjSections, mergeUxrSections } from '../src/section-fanout.js';
+import { sectionKey, listSections, mergeCjSections, mergeUxrSections, mergeUxSpecSections } from '../src/section-fanout.js';
 
 test('sectionKey groups a section overview file and its children under one key', () => {
   assert.equal(sectionKey('docs/confluence/I.-Tai-khoan.md'), 'I.-Tai-khoan');
@@ -58,6 +58,26 @@ test('mergeCjSections unions personas by name and concatenates journeys tagged b
   assert.equal(merged.journeys.length, 2);
   assert.equal(merged.journeys[0].section, 'I. Tài khoản');
   assert.equal(merged.journeys[1].section, 'IV. Mua hàng'); // operational module PRESENT
+});
+
+test('mergeUxSpecSections concatenates module-prefixed screens + unions personas', () => {
+  const merged = mergeUxSpecSections([
+    {
+      key: 'I',
+      title: 'I. Tài khoản',
+      spec: { personas: [{ name: 'Kế toán viên' }], screens: [{ id: 'I__SCR-Login', screen_type: 'form' }] },
+    },
+    {
+      key: 'IV',
+      title: 'IV. Mua hàng',
+      spec: { personas: [{ name: 'Kế toán viên' }], screens: [{ id: 'IV__SCR-PO', screen_type: 'form' }] },
+    },
+    { key: 'V', title: 'V. Bán hàng', spec: null }, // failed module — skipped
+  ]) as any;
+  assert.equal(merged.screens.length, 2);
+  assert.deepEqual(merged.screens.map((s: any) => s.id), ['I__SCR-Login', 'IV__SCR-PO']); // no id collision
+  assert.equal(merged.screens[1].section, 'IV. Mua hàng');
+  assert.equal(merged.personas.length, 1); // deduped by name
 });
 
 test('mergeUxrSections renumbers criteria globally and rewrites reference used_for', () => {

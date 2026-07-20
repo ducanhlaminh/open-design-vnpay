@@ -101,6 +101,43 @@ export async function listSections(cwd: string): Promise<DocSection[]> {
 
 const normName = (s: string): string => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
+/** Merge per-section UX-spec slices into one product spec. Screens are
+ *  concatenated (each section run prefixes its screen ids with the section key
+ *  so ids — and the `wireframes/<id>` files they name — never collide across
+ *  modules). Personas are unioned by name. Wireframes/flows are per-screen /
+ *  per-flow files the section runs already wrote into the shared dirs, so they
+ *  need no merge here. */
+export function mergeUxSpecSections(
+  sections: Array<{ key: string; title: string; spec: any | null }>,
+): object {
+  const screens: any[] = [];
+  const seenScreen = new Set<string>();
+  const personas: any[] = [];
+  const seenPersona = new Set<string>();
+  for (const s of sections) {
+    if (!s.spec) continue;
+    for (const sc of Array.isArray(s.spec.screens) ? s.spec.screens : []) {
+      const id = typeof sc?.id === 'string' ? sc.id : '';
+      const key = id || JSON.stringify(sc);
+      if (seenScreen.has(key)) continue;
+      seenScreen.add(key);
+      screens.push({ ...sc, section: sc?.section ?? s.title });
+    }
+    for (const p of Array.isArray(s.spec.personas) ? s.spec.personas : []) {
+      const name = typeof p?.name === 'string' ? p.name : typeof p?.role === 'string' ? p.role : '';
+      const nkey = normName(name || JSON.stringify(p));
+      if (seenPersona.has(nkey)) continue;
+      seenPersona.add(nkey);
+      personas.push(p);
+    }
+  }
+  return {
+    $comment: 'Merged per-section UX spec (daemon fan-out). Screens concatenated (module-prefixed ids); personas unioned by name.',
+    ...(personas.length ? { personas } : {}),
+    screens,
+  };
+}
+
 /** Merge per-section customer-journey slices into one product journey doc.
  *  Personas are product-wide → unioned deduped by normalized name (first-wins,
  *  so the earliest section's phrasing stays canonical). Journeys are per-module

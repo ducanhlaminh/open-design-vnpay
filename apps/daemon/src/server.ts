@@ -458,7 +458,7 @@ import {
 } from './bas/bas-client.js';
 import { buildReactDemo } from './react-demo.js';
 import { listMockupPages, mergePageReports } from './prd-review-fanout.js';
-import { listSections, mergeCjSections, mergeUxrSections, type DocSection } from './section-fanout.js';
+import { listSections, mergeCjSections, mergeUxrSections, mergeUxSpecSections, type DocSection } from './section-fanout.js';
 import { listScreens, mergeHeuristicScreens, renderPrototypeIndex, type UiScreen } from './ui-fanout.js';
 import { pushUxKb, resolveUxKbDir } from './ux-kb-sync.js';
 import { appContextDirective, resolveAppId, stageAppContext } from './app-context.js';
@@ -13724,12 +13724,13 @@ export async function startServer({
     projectId: string,
     wfDir: string | null,
     resetScope: 'stage' | 'downstream' | undefined,
-    kind: 'cj' | 'ux-research',
+    kind: 'cj' | 'ux-research' | 'ux-spec',
     sections: DocSection[],
+    platform?: import('@open-design/contracts').TargetPlatform,
   ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
     const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
       const def = getPipelineDef(pipelineId)!;
-      const label = kind === 'cj' ? 'cj' : 'ux-research';
+      const label = kind;
       try {
         const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
         let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
@@ -13788,7 +13789,14 @@ export async function startServer({
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
 
         let done = 0;
-        const outRel = (key: string) => (kind === 'cj' ? `cj/${key}/journey.json` : `ux-research/${key}/report.json`);
+        const outRel = (key: string) =>
+          kind === 'cj' ? `cj/${key}/journey.json` : kind === 'ux-research' ? `ux-research/${key}/report.json` : `ux/${key}/ux-spec.json`;
+        const platformDirective =
+          kind === 'ux-spec' && platform === 'web'
+            ? ' Target platform: WEBSITE — every screen sets `layout: "web"` (tables, sidebar/top nav, multi-column forms).'
+            : kind === 'ux-spec' && platform === 'mobile'
+              ? ' Target platform: MOBILE — every screen sets `layout: "mobile"`.'
+              : '';
         const runOneSection = async (sec: DocSection): Promise<void> => {
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const pagesList = sec.mdPaths.map((p) => `"${p}"`).join(', ');
@@ -13799,11 +13807,18 @@ export async function startServer({
                 `Write your result to "${outRel(sec.key)}" (personas + journeys for THIS module only). ` +
                 `Do NOT write any root -customer-journey.json and do NOT cover other modules — the daemon merges every module's slice.` +
                 ` This is a FILE-ONLY stage: do NOT push to KGS.`
-              : `Run the ux-research skill for ONE MODULE of KGS project "${projectId}". ` +
-                `Derive UX criteria ONLY for this module — its pages: ${pagesList} (module: ${sec.title}) plus the module's customer journey in the cwd. ` +
-                `Write your result to "${outRel(sec.key)}" (criteria + references for THIS module only). ` +
-                `Do NOT write ux-research/report.json (top-level) and do NOT cover other modules — the daemon merges every module's slice.${kbDirective}` +
-                ` This is a FILE-ONLY stage: do NOT push to KGS.`;
+              : kind === 'ux-research'
+                ? `Run the ux-research skill for ONE MODULE of KGS project "${projectId}". ` +
+                  `Derive UX criteria ONLY for this module — its pages: ${pagesList} (module: ${sec.title}) plus the module's customer journey in the cwd. ` +
+                  `Write your result to "${outRel(sec.key)}" (criteria + references for THIS module only). ` +
+                  `Do NOT write ux-research/report.json (top-level) and do NOT cover other modules — the daemon merges every module's slice.${kbDirective}` +
+                  ` This is a FILE-ONLY stage: do NOT push to KGS.`
+                : `Run the ux-spec skill for ONE MODULE of KGS project "${projectId}". ` +
+                  `Author UX Spec screens ONLY for this module — its pages: ${pagesList} (module: ${sec.title}), guided by the module's customer journey + UX research in the cwd. ` +
+                  `EVERY screen id MUST start with "${sec.key}__" so ids (and the wireframes/<id>.wire.json files they name) never collide with other modules. ` +
+                  `Write the module's screens to "${outRel(sec.key)}" AND each screen's "wireframes/<screen-id>.wire.json" + each flow's "flows/<flow-id>.flow.json" into the SHARED wireframes/ and flows/ dirs. ` +
+                  `Do NOT write the root -ux-spec.json and do NOT author other modules' screens — the daemon merges every module's screens.${platformDirective}` +
+                  ` This is a FILE-ONLY stage: do NOT push to KGS.`;
           const run = design.runs.create({
             projectId,
             conversationId,
@@ -13866,20 +13881,24 @@ export async function startServer({
           }),
         );
         const anySlice = slices.some((s) => s.parsed);
+        const project = getProject(db, projectId);
+        const nameSlug =
+          (project?.name ?? 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'product';
         let canonicalRel: string;
         if (kind === 'cj') {
           const merged = mergeCjSections(slices.map((s) => ({ key: s.key, title: s.title, cj: s.parsed })));
-          const project = getProject(db, projectId);
-          const nameSlug =
-            (project?.name ?? 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'product';
           canonicalRel = `${nameSlug}-customer-journey.json`;
           await fs.promises.writeFile(path.join(cwd, canonicalRel), JSON.stringify(merged, null, 2), 'utf8');
-        } else {
+        } else if (kind === 'ux-research') {
           const { report, reportMd } = mergeUxrSections(slices.map((s) => ({ key: s.key, title: s.title, uxr: s.parsed })));
           await fs.promises.mkdir(path.join(cwd, 'ux-research'), { recursive: true });
           canonicalRel = 'ux-research/report.json';
           await fs.promises.writeFile(path.join(cwd, canonicalRel), JSON.stringify(report, null, 2), 'utf8');
           await fs.promises.writeFile(path.join(cwd, 'ux-research/report.md'), reportMd, 'utf8');
+        } else {
+          const merged = mergeUxSpecSections(slices.map((s) => ({ key: s.key, title: s.title, spec: s.parsed })));
+          canonicalRel = `${nameSlug}-ux-spec.json`;
+          await fs.promises.writeFile(path.join(cwd, canonicalRel), JSON.stringify(merged, null, 2), 'utf8');
         }
 
         // RECONCILE PASS (fail-soft): the daemon merge is mechanical — it can't
@@ -13897,7 +13916,9 @@ export async function startServer({
                   `(1) DUPLICATE PERSONAS — the same role under different names/wording; merge each duplicate set into ONE persona (keep the richest description) and update any references to it. ` +
                   `(2) COLLIDING IDS — persona/stage/flow ids (PRSN-/STG-/UFLW-/…) reused across modules; make every id UNIQUE while keeping each journey's internal references consistent. ` +
                   `Keep EVERY journey and its module tag — do not drop or rewrite journey content, only dedup personas and fix ids. Overwrite the SAME file. Do NOT push to KGS.`
-                : `Reconcile the merged UX research file "${canonicalRel}" in the cwd. It was assembled by concatenating per-module slices, so it may have DUPLICATE CRITERIA that state the same requirement under different wording. Merge each duplicate set into ONE criterion (keep the strongest wording, union the sources' used_for), keep criteria ids sequential (UXR-01, UXR-02, …), and recompute the summary counts (criteria/must/should/nice). Keep every distinct criterion — only dedup true duplicates. Overwrite the SAME file. Do NOT push to KGS.`;
+                : kind === 'ux-research'
+                  ? `Reconcile the merged UX research file "${canonicalRel}" in the cwd. It was assembled by concatenating per-module slices, so it may have DUPLICATE CRITERIA that state the same requirement under different wording. Merge each duplicate set into ONE criterion (keep the strongest wording, union the sources' used_for), keep criteria ids sequential (UXR-01, UXR-02, …), and recompute the summary counts (criteria/must/should/nice). Keep every distinct criterion — only dedup true duplicates. Overwrite the SAME file. Do NOT push to KGS.`
+                  : `Reconcile the merged UX Spec file "${canonicalRel}" in the cwd (screens from per-module slices; ids are module-prefixed so they don't collide). Seams to heal: (1) DUPLICATE PERSONAS — merge same-role personas into one. (2) DANGLING NAV — every component's \`navigates_to\` must point at a screen id that EXISTS in \`screens\`; fix or drop targets that don't resolve (a CTA that crosses modules should point at the real target screen's id). (3) DUPLICATE SCREENS — if two modules authored the same screen, keep one. Do NOT rename screen ids (their wireframes/<id>.wire.json files depend on them) and do NOT drop distinct screens. Overwrite the SAME file. Do NOT push to KGS.`;
             const rc = design.runs.create({
               projectId,
               conversationId,
@@ -14185,15 +14206,16 @@ export async function startServer({
     // when the docs form a multi-section tree (sub-tree scan). A whole-product
     // tree overwhelms one synthesis; a handful of flat pages does not, so a
     // <2-section source falls through to the normal single-agent path below.
-    if (def.skillId === 'customer-journey-spec' || def.skillId === 'ux-research') {
+    if (def.skillId === 'customer-journey-spec' || def.skillId === 'ux-research' || def.skillId === 'ux-spec') {
       const projectRoot = await ensureProject(PROJECTS_DIR, projectId).catch(() => null);
       if (projectRoot) {
         const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
         const sections = await listSections(cwd).catch(() => [] as DocSection[]);
         if (sections.length >= 2) {
-          const kind = def.skillId === 'customer-journey-spec' ? 'cj' : 'ux-research';
+          const kind =
+            def.skillId === 'customer-journey-spec' ? 'cj' : def.skillId === 'ux-research' ? 'ux-research' : 'ux-spec';
           console.log(`[${kind}] ${sections.length} module(s) → per-section fan-out`);
-          return runSectionFanout(pipelineId, projectId, wfDir, resetScope, kind, sections);
+          return runSectionFanout(pipelineId, projectId, wfDir, resetScope, kind, sections, def.acceptsPlatform ? platform : undefined);
         }
       }
     }

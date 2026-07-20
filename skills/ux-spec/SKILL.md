@@ -147,6 +147,18 @@ project is chosen at PUSH time (conversation binding / Push to KG dropdown /
 Write the file under the project (e.g. `./<feature>-ux-spec.json`).
 See `assets/example-ux-spec.json` for a complete, valid example.
 
+> **Per-module fan-out.** When the docs are a multi-section tree, the daemon
+> runs this skill ONCE PER top-level module and your kickoff names the module +
+> its pages + tells you to write your slice to `ux/<module-key>/ux-spec.json`.
+> In that case: author screens ONLY for your module, and **prefix EVERY screen
+> id with `<module-key>__`** (the kickoff gives the exact prefix) so ids — and
+> the `wireframes/<screen-id>.wire.json` files that name them — never collide
+> across modules. Still write each screen's wireframe + each flow's flowchart
+> into the SHARED `wireframes/` and `flows/` dirs. Do NOT write the root
+> `-ux-spec.json` — the daemon merges every module's screens (and reconciles
+> personas + cross-module navigation). Follow the kickoff's output path + id
+> prefix verbatim.
+
 ### 1b. Author one wireframe per screen (layout tree)
 For EVERY screen, also write `./wireframes/<SCREEN-ID>.wire.json` following
 `references/wireframe.md`. Describe the screen as a **layout TREE** (`stack` /
