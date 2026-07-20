@@ -739,3 +739,24 @@ test('parseRunSource rejects a bas source with no documentId', () => {
 test('parseRunSource rejects an unknown source kind', () => {
   assert.throws(() => parseRunSource({ kind: 'sharepoint', ref: 'x' }), /must be "confluence" or "bas"/);
 });
+
+// --- Multi-page draw.io splitting (drawio-render.ts) ----------------------
+import { splitMxfilePages } from '../src/bas/drawio-render.js';
+
+test('splitMxfilePages: one single-page mxfile per <diagram>, header preserved', () => {
+  const xml =
+    '<mxfile host="wiki" pages="3"><diagram id="a" name="Page-1"><data>A</data></diagram>' +
+    '<diagram id="b" name="Page-2"><data>B</data></diagram>' +
+    '<diagram id="c" name="Page-3"><data>C</data></diagram></mxfile>';
+  const pages = splitMxfilePages(xml);
+  assert.equal(pages.length, 3);
+  assert.ok(pages[0]!.startsWith('<mxfile host="wiki" pages="3">'));
+  assert.ok(pages[0]!.includes('name="Page-1"') && pages[0]!.endsWith('</mxfile>'));
+  assert.ok(pages[1]!.includes('name="Page-2"') && !pages[1]!.includes('Page-1'));
+  assert.ok(pages[2]!.includes('name="Page-3"') && !pages[2]!.includes('Page-2'));
+});
+
+test('splitMxfilePages: single-page diagram → one page', () => {
+  const xml = '<mxfile><diagram id="only">X</diagram></mxfile>';
+  assert.equal(splitMxfilePages(xml).length, 1);
+});

@@ -34,6 +34,7 @@ import type {
 } from '@open-design/contracts';
 
 import { readMcpConfig } from '../mcp-config.js';
+import { renderDrawioPages, splitMxfilePages } from './drawio-render.js';
 
 export interface BasEndpoint {
   /** Full MCP endpoint URL, e.g. https://host/api/mcp/ */
@@ -695,6 +696,10 @@ async function localizeConfluenceImages(
   let count = 0;
   for (const src of rawSrcs) {
     if (src.startsWith('data:')) continue;
+    // Skip already-local refs (e.g. multi-page draw.io pages rendered straight
+    // into attachments/): only absolute URLs and root-relative Confluence paths
+    // (`/download/…`) get downloaded.
+    if (!/^https?:\/\//i.test(src) && !src.startsWith('/')) continue;
     const url = resolveImgUrl(creds.base, src);
     if (!isSameHost(creds.base, url)) continue;
     let localName = downloadedByUrl.get(url);
@@ -783,23 +788,131 @@ export function inlineDrawioPreviews(html: string, base: string): string {
   return out + html.slice(cursor);
 }
 
-function drawioPreviewImgTag(macroBlock: string, base: string): string {
+interface DrawioMacroMeta {
+  previewName: string;
+  pageId: string;
+  /** The `.drawio` attachment name (the XML file — preview name without .png). */
+  diagramName: string;
+}
+
+/** Parse a drawio macro block's base64 blob into the fields needed to fetch its
+ *  preview PNG and its source XML attachment. Returns null when unparseable. */
+function parseDrawioMacro(macroBlock: string): DrawioMacroMeta | null {
   try {
     const b64 = /data-diagramdata="([^"]+)"/.exec(macroBlock)?.[1];
-    if (!b64) return '';
+    if (!b64) return null;
     const data = JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) as Record<string, unknown>;
     const previewName = typeof data.previewName === 'string' ? data.previewName : '';
     const pageId = String(
       data.owningPageId ?? data.ceoId ?? /data-content-id="(\d+)"/.exec(macroBlock)?.[1] ?? '',
     ).trim();
-    if (!previewName || !pageId || !/^\d+$/.test(pageId)) return '';
-    const alt =
+    if (!previewName || !pageId || !/^\d+$/.test(pageId)) return null;
+    const diagramName =
       typeof data.diagramName === 'string' && data.diagramName
         ? data.diagramName
         : previewName.replace(/\.png$/i, '');
-    return `<img src="${base}/download/attachments/${pageId}/${encodeURIComponent(previewName)}" alt="${alt.replace(/"/g, '&quot;')}"/>`;
+    return { previewName, pageId, diagramName };
   } catch {
-    return '';
+    return null;
+  }
+}
+
+function drawioPreviewImgTag(macroBlock: string, base: string): string {
+  const meta = parseDrawioMacro(macroBlock);
+  if (!meta) return '';
+  return `<img src="${base}/download/attachments/${meta.pageId}/${encodeURIComponent(meta.previewName)}" alt="${meta.diagramName.replace(/"/g, '&quot;')}"/>`;
+}
+
+/** Async variant of inlineDrawioPreviews that recovers EVERY page of a
+ *  multi-page diagram. Confluence only stores a preview PNG for page 1, so for a
+ *  diagram with >1 `<diagram>` page we download its source `.drawio` XML and
+ *  render each page to a local PNG in `attachmentsDir` (headless Chromium),
+ *  emitting one local `<img>` per page. Single-page diagrams — and any diagram
+ *  we can't download or render — fall back to the stored page-1 preview `<img>`,
+ *  which the caller's image localization then downloads as usual. */
+async function inlineDrawioPreviewsRendered(
+  html: string,
+  creds: ConfluenceCreds,
+  attachmentsDir: string,
+  relPrefix: string,
+  runtimeDataDir: string,
+): Promise<string> {
+  let out = '';
+  let cursor = 0;
+  for (;;) {
+    const markerIdx = html.indexOf('data-macro-name="drawio"', cursor);
+    if (markerIdx === -1) break;
+    const start = html.lastIndexOf('<div', markerIdx);
+    if (start === -1 || start < cursor) {
+      out += html.slice(cursor, markerIdx + 1);
+      cursor = markerIdx + 1;
+      continue;
+    }
+    const tagRe = /<\/?div\b[^>]*>/gi;
+    tagRe.lastIndex = start;
+    let depth = 0;
+    let end = -1;
+    let m: RegExpExecArray | null;
+    while ((m = tagRe.exec(html))) {
+      depth += m[0].startsWith('</') ? -1 : 1;
+      if (depth === 0) {
+        end = m.index + m[0].length;
+        break;
+      }
+    }
+    if (end === -1) {
+      out += html.slice(cursor, markerIdx + 1);
+      cursor = markerIdx + 1;
+      continue;
+    }
+    const block = html.slice(start, end);
+    out += html.slice(cursor, start) + (await renderDrawioMacroBlock(block, creds, attachmentsDir, relPrefix, runtimeDataDir));
+    cursor = end;
+  }
+  return out + html.slice(cursor);
+}
+
+/** Render one drawio macro block into its markdown-ready `<img>`(s). Multi-page
+ *  → one local `<img>` per rendered page; otherwise the single stored preview. */
+async function renderDrawioMacroBlock(
+  block: string,
+  creds: ConfluenceCreds,
+  attachmentsDir: string,
+  relPrefix: string,
+  runtimeDataDir: string,
+): Promise<string> {
+  const meta = parseDrawioMacro(block);
+  if (!meta) return '';
+  const fallback = () => drawioPreviewImgTag(block, creds.base);
+  let xml: string;
+  try {
+    const buf = await downloadConfluenceBinary(
+      creds,
+      `${creds.base}/download/attachments/${meta.pageId}/${encodeURIComponent(meta.diagramName)}`,
+    );
+    xml = buf.toString('utf8');
+  } catch {
+    return fallback(); // can't read the source → keep the page-1 preview
+  }
+  const pages = splitMxfilePages(xml);
+  if (pages.length <= 1) return fallback(); // single page → the stored preview is complete
+  const stem = (sanitizeImageFileName(meta.diagramName).replace(/\.png$/i, '') || 'diagram').replace(/\s+/g, '_');
+  const outPaths = pages.map((_, i) => path.join(attachmentsDir, `${stem}-p${i + 1}.png`));
+  try {
+    await fs.mkdir(attachmentsDir, { recursive: true });
+    const written = new Set(await renderDrawioPages(xml, outPaths, runtimeDataDir));
+    const imgs = outPaths
+      .map((p, i) =>
+        written.has(p)
+          ? `<img src="${relPrefix}/${path.basename(p)}" alt="${meta.diagramName.replace(/"/g, '&quot;')} — trang ${i + 1}"/>`
+          : '',
+      )
+      .filter(Boolean);
+    console.log(`[bas] drawio "${meta.diagramName}": rendered ${imgs.length}/${pages.length} pages`);
+    return imgs.length ? imgs.join('\n') : fallback();
+  } catch (err) {
+    console.warn(`[bas] drawio multi-page render failed for "${meta.diagramName}" (keeping page-1 preview):`, err);
+    return fallback();
   }
 }
 
@@ -1010,7 +1123,14 @@ const FOLLOW_MAX_TOTAL = 15;
 export async function fetchConfluencePages(
   src: ConfluenceFetchSource,
   refs: string[],
-  opts: { followLinks?: boolean; attachmentsDir?: string; treePages?: DescendantPage[] } = {},
+  opts: {
+    followLinks?: boolean;
+    attachmentsDir?: string;
+    treePages?: DescendantPage[];
+    /** Enables headless rendering of multi-page draw.io diagrams (needs a
+     *  writable runtime dir for the chromium runner). */
+    runtimeDataDir?: string;
+  } = {},
 ): Promise<ConfluenceDocPage[]> {
   if (!src.creds && !src.ep) throw new Error('no Confluence credential (PAT) and no BAS gateway configured');
   const followLinks = opts.followLinks !== false;
@@ -1156,9 +1276,24 @@ export async function fetchConfluencePages(
       // authenticate the image download with.
       let html = p.html;
       let localizedImagePrefix: string | undefined;
-      // draw.io macros become same-host <img> tags first, so the localization
-      // below downloads the diagram PNGs exactly like ordinary page images.
-      if (src.creds) html = inlineDrawioPreviews(html, src.creds.base);
+      // draw.io macros become <img> tags first, so localization below ships the
+      // diagram PNGs like any page image. Multi-page diagrams are rendered
+      // page-by-page into attachments/ (headless) when a runtime dir is given;
+      // otherwise (and for single-page) we emit the stored page-1 preview URL.
+      if (src.creds && opts.attachmentsDir && opts.runtimeDataDir) {
+        html = await inlineDrawioPreviewsRendered(
+          html,
+          src.creds,
+          opts.attachmentsDir,
+          attachmentsPrefix,
+          opts.runtimeDataDir,
+        ).catch((err) => {
+          console.warn(`[bas] drawio render pass failed for page ${p.pageId} (falling back):`, err);
+          return inlineDrawioPreviews(html, src.creds!.base);
+        });
+      } else if (src.creds) {
+        html = inlineDrawioPreviews(html, src.creds.base);
+      }
       if (src.creds && opts.attachmentsDir) {
         const localized = await localizeConfluenceImages(
           src.creds,

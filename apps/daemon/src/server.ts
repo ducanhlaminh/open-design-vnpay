@@ -13525,6 +13525,7 @@ export async function startServer({
         const pages = await fetchConfluencePages({ creds, ep }, refs, {
           followLinks: followLinks !== false,
           attachmentsDir: path.join(cwd, 'docs/confluence/attachments'),
+          runtimeDataDir: RUNTIME_DATA_DIR,
           ...(treePages.length ? { treePages } : {}),
         });
         for (const p of pages) {
