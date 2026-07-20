@@ -1415,11 +1415,23 @@ export function PipelineStatusModal({
   const tasks = pipeline.subConversations ?? [];
   const doneCount = tasks.filter((t) => t.status === 'succeeded' || t.status === 'failed').length;
   const failedCount = tasks.filter((t) => t.status === 'failed').length;
+  const taskCounts = {
+    all: tasks.length,
+    running: tasks.filter((t) => t.status === 'running').length,
+    queued: tasks.filter((t) => t.status === 'queued').length,
+    succeeded: tasks.filter((t) => t.status === 'succeeded').length,
+    failed: tasks.filter((t) => t.status === 'failed').length,
+  };
   const runId = pipeline.lastRunId ?? null;
   const [run, setRun] = useState<ChatRunStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [canceling, setCanceling] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [taskTab, setTaskTab] = useState<'all' | 'running' | 'queued' | 'succeeded' | 'failed'>('all');
+  // A status tab that has emptied out (e.g. all "running" finished) falls back
+  // to "all" so the list is never blank while tasks still exist.
+  const effectiveTab = taskTab === 'all' || taskCounts[taskTab] > 0 ? taskTab : 'all';
+  const visibleTasks = effectiveTab === 'all' ? tasks : tasks.filter((t) => t.status === effectiveTab);
 
   useEffect(() => {
     if (!runId) return;
@@ -1508,8 +1520,31 @@ export function PipelineStatusModal({
             </span>
             <span className="pl-fanout-summary__hint">Các tác vụ chạy song song — bấm để mở hội thoại từng cái.</span>
           </div>
+          <div className="pl-fanout-tabs" role="tablist">
+            {([
+              { key: 'all', label: 'Tất cả' },
+              { key: 'running', label: 'Đang chạy' },
+              { key: 'queued', label: 'Đang chờ' },
+              { key: 'succeeded', label: 'Xong' },
+              { key: 'failed', label: 'Lỗi' },
+            ] as const)
+              .filter((t) => t.key === 'all' || taskCounts[t.key] > 0)
+              .map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={effectiveTab === t.key}
+                  className={`pl-fanout-tab pl-fanout-tab--${t.key}${effectiveTab === t.key ? ' is-active' : ''}`}
+                  onClick={() => setTaskTab(t.key)}
+                >
+                  <span>{t.label}</span>
+                  <span className="pl-fanout-tab__count">{taskCounts[t.key]}</span>
+                </button>
+              ))}
+          </div>
           <ul className="pl-fanout-list">
-            {tasks.map((task) => {
+            {visibleTasks.map((task) => {
               const meta = TASK_STATUS_META[task.status] ?? TASK_STATUS_META.queued!;
               return (
                 <li key={task.id}>
