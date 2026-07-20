@@ -283,11 +283,19 @@ export function workflowDirForPipeline(pipelineId: string): string | null {
   return workflowForPipeline(pipelineId)?.id ?? null;
 }
 
+// Multi-target build subfolders (must match packages/contracts UI_TARGETS[].dir).
+// Hardcoded to keep this pure registry dependency-free; a mismatch would only
+// mean a target's outputs stop attributing to their stage, which the
+// per-target-attribution test catches.
+const UI_TARGET_DIRS = new Set(['mobile', 'web-user', 'web-backoffice']);
+
 // Split a cwd-relative output path into [workflow, rest] when it is namespaced
 // under a workflow folder (`<workflowId>/...`) — including the retired twin
-// workflows' folders, which resolve to the merged workflow. Returns
-// [undefined, rel] for a legacy unprefixed path (produced before per-workflow
-// folders existed).
+// workflows' folders, which resolve to the merged workflow. A multi-target
+// build nests the post-docs outputs one level deeper (`<workflowId>/<target>/…`);
+// that target segment is stripped here so `<workflow>/mobile/cj/…` attributes
+// to the same stage as `<workflow>/cj/…` (status, sync, and exclude all key off
+// this split). Returns [undefined, rel] for a legacy unprefixed path.
 function splitWorkflowPath(rel: string): [Workflow | undefined, string] {
   const slash = rel.indexOf('/');
   if (slash > 0) {
@@ -295,7 +303,14 @@ function splitWorkflowPath(rel: string): [Workflow | undefined, string] {
     const wf =
       WORKFLOWS.find((w) => w.id === head) ??
       (LEGACY_WORKFLOW_DIRS[head] ? getWorkflow(LEGACY_WORKFLOW_DIRS[head]!) : undefined);
-    if (wf) return [wf, rel.slice(slash + 1)];
+    if (wf) {
+      let sub = rel.slice(slash + 1);
+      const nextSlash = sub.indexOf('/');
+      if (nextSlash > 0 && UI_TARGET_DIRS.has(sub.slice(0, nextSlash))) {
+        sub = sub.slice(nextSlash + 1);
+      }
+      return [wf, sub];
+    }
   }
   return [undefined, rel];
 }

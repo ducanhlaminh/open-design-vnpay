@@ -174,6 +174,18 @@ test('stagesForOutput: workflow-namespaced files attribute to the owning stage',
   assert.deepEqual(stagesForOutput('docs-to-ui/react/dist/index.html').map((d) => d.id), ['ui-react']);
 });
 
+test('stagesForOutput: multi-target subfolder outputs attribute to the same stage', () => {
+  // <workflow>/<target>/… nests post-docs outputs one level deeper; the target
+  // segment is stripped so a per-target file lights the same stage as the flat
+  // one (otherwise multi-target outputs orphan — no status, no sync).
+  assert.deepEqual(stagesForOutput('docs-to-ui/mobile/cj/journey.json').map((d) => d.id), ['cj']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/web-backoffice/heuristic-review/report.json').map((d) => d.id), ['ux-review']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/web-user/prototype/index.html').map((d) => d.id), ['ui-html']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/mobile/app-ux-spec.json').map((d) => d.id), ['ux']);
+  // A non-target second segment is NOT stripped (only the 3 known target dirs).
+  assert.deepEqual(stagesForOutput('docs-to-ui/cj/journey.json').map((d) => d.id), ['cj']);
+});
+
 test('stagesForOutput: RETIRED workflow folders keep lighting the merged stages (no migration)', () => {
   // Old projects hold docs-to-html/… and docs-to-react/… trees on disk and on
   // the media store; the legacy-dir shim maps both onto the merged workflow.
