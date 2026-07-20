@@ -457,6 +457,7 @@ import {
   searchConfluencePages,
 } from './bas/bas-client.js';
 import { buildReactDemo } from './react-demo.js';
+import { listMockupPages, mergePageReports } from './prd-review-fanout.js';
 import { pushUxKb, resolveUxKbDir } from './ux-kb-sync.js';
 import { appContextDirective, resolveAppId, stageAppContext } from './app-context.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
@@ -13536,6 +13537,178 @@ export async function startServer({
     return { projectId, completion };
   };
 
+  // PRD Mockup Review runs PER PAGE in parallel: one agent run per doc page
+  // (bounded pool), each writing review/<slug>/report.json, then the daemon
+  // merges them into review/index.json + summary.md. All page runs share ONE
+  // conversation (one entry in the list, per-page messages for transcripts);
+  // history commit + re-run clear happen ONCE up front so the concurrent runs
+  // never race the git history. A page whose run fails is marked failed in the
+  // index but never fails the whole stage — the rest still ship.
+  const PRD_REVIEW_FANOUT_CONCURRENCY = 4;
+  const runDocsMockupReviewFanout = (
+    pipelineId: string,
+    projectId: string,
+    wfDir: string | null,
+    resetScope?: 'stage' | 'downstream',
+  ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
+    const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
+      const def = getPipelineDef(pipelineId)!;
+      try {
+        const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+        let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
+        if (!agentId) {
+          const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+          agentId = agents.find((a) => a.available)?.id ?? null;
+        }
+        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
+
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+
+        // ONE-TIME fence + re-run clear (concurrent page runs must NOT each do
+        // this): snapshot manual edits, then wipe this stage's (and, on cascade,
+        // downstream) outputs so the fan-out regenerates a clean review/ tree.
+        const regenIds = new Set(stageRegenSet(pipelineId, resetScope === 'downstream'));
+        await commitHistory(projectRoot, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
+        try {
+          const snap = await snapshotPipelineCwd(projectRoot);
+          for (const rel of snap.keys()) {
+            if (isHistoryArtifact(rel)) continue;
+            if (stagesForOutput(rel).some((d) => regenIds.has(d.id))) {
+              await fs.promises.rm(path.join(projectRoot, rel), { force: true }).catch(() => null);
+            }
+          }
+        } catch (error) {
+          console.warn('[prd-review] re-run clear failed (continuing):', error);
+        }
+        for (const id of regenIds) {
+          if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
+        }
+
+        const pages = await listMockupPages(cwd);
+        if (pages.length === 0) {
+          // Nothing to review — write an empty manifest and succeed (an empty
+          // source is not a failure; the preview shows "no pages").
+          const { index, summaryMd } = mergePageReports([]);
+          await fs.promises.mkdir(path.join(cwd, 'review'), { recursive: true });
+          await fs.promises.writeFile(path.join(cwd, 'review/index.json'), JSON.stringify(index, null, 2), 'utf8');
+          await fs.promises.writeFile(path.join(cwd, 'review/summary.md'), summaryMd, 'utf8');
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
+          return 'succeeded' as const;
+        }
+
+        // Shared conversation for every page run (one list entry; a message per
+        // page for its transcript).
+        const conversationId = `pipeline-conv-${randomUUID()}`;
+        insertConversation(db, { id: conversationId, projectId, title: def.name, createdAt: Date.now(), updatedAt: Date.now() });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: 'running',
+          lastConversationId: conversationId,
+        });
+        const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+        const graphNote =
+          ' This is a FILE-ONLY stage: produce the report file only, do NOT push anything to KGS.';
+
+        // Bounded-concurrency pool: at most K page runs in flight at once.
+        let done = 0;
+        const runOnePage = async (pg: (typeof pages)[number]): Promise<'succeeded' | 'failed' | 'idle'> => {
+          const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
+          const kickoff =
+            `Run the "docs-mockup-review" review for ONE page of KGS project "${projectId}". ` +
+            `Review ONLY the mockups embedded in "${pg.mdPath}" (title: ${pg.page}) against that page's own text, ` +
+            `plus the shared Customer Journey + UX Research context in this cwd. ` +
+            `Write your result to "review/${pg.slug}/report.json" using the per-image schema. ` +
+            `Do NOT review any other page, and do NOT write review/index.json or review/summary.md — the pipeline aggregates those from every page's report.${graphNote}`;
+          const run = design.runs.create({
+            projectId,
+            conversationId,
+            assistantMessageId,
+            clientRequestId: `prd-review-${pg.slug}-${randomUUID()}`,
+            agentId: agentId!,
+          });
+          upsertMessage(db, conversationId, { id: `pipeline-user-${run.id}`, role: 'user', content: kickoff });
+          upsertMessage(db, conversationId, {
+            id: assistantMessageId,
+            role: 'assistant',
+            content: '',
+            agentId: agentId!,
+            agentName: getAgentDef(agentId!)?.name ?? agentId!,
+            runId: run.id,
+            runStatus: 'queued',
+            startedAt: Date.now(),
+          });
+          design.runs.start(run, () =>
+            startChatRun(
+              {
+                agentId: agentId!,
+                projectId,
+                conversationId,
+                assistantMessageId,
+                clientRequestId: run.clientRequestId,
+                skillId: def.skillId,
+                ...(wfDir ? { cwdSubdir: wfDir } : {}),
+                model: modelPrefs.model ?? null,
+                reasoning: modelPrefs.reasoning ?? null,
+                message: kickoff,
+              },
+              run,
+            ),
+          );
+          const final = await design.runs.wait(run);
+          db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+          done += 1;
+          console.log(`[prd-review] page ${done}/${pages.length} "${pg.page}" → ${final.status}`);
+          return final.status === 'succeeded' ? 'succeeded' : final.status === 'canceled' ? 'idle' : 'failed';
+        };
+
+        let cursor = 0;
+        const worker = async () => {
+          for (;;) {
+            const i = cursor++;
+            if (i >= pages.length) break;
+            await runOnePage(pages[i]!).catch(() => 'failed' as const);
+          }
+        };
+        await Promise.all(
+          Array.from({ length: Math.min(PRD_REVIEW_FANOUT_CONCURRENCY, pages.length) }, worker),
+        );
+
+        // Merge: read each page's report.json (null if its run wrote nothing),
+        // then write the manifest + human summary. Daemon-owned, no LLM.
+        const perPage = await Promise.all(
+          pages.map(async (pg) => {
+            const rel = `review/${pg.slug}/report.json`;
+            const report = await fs.promises
+              .readFile(path.join(cwd, rel), 'utf8')
+              .then((t) => JSON.parse(t) as unknown)
+              .catch(() => null);
+            return { slug: pg.slug, page: pg.page, mdPath: pg.mdPath, report };
+          }),
+        );
+        const { index, summaryMd } = mergePageReports(perPage);
+        await fs.promises.mkdir(path.join(cwd, 'review'), { recursive: true });
+        await fs.promises.writeFile(path.join(cwd, 'review/index.json'), JSON.stringify(index, null, 2), 'utf8');
+        await fs.promises.writeFile(path.join(cwd, 'review/summary.md'), summaryMd, 'utf8');
+
+        // Don't-fail-the-whole-stage-for-one-page: succeed as long as at least
+        // one page produced a report; fail only if every page run came back empty.
+        const anyReport = perPage.some((p) => p.report);
+        const next: 'succeeded' | 'failed' = anyReport ? 'succeeded' : 'failed';
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: next });
+        void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
+        console.log(`[prd-review] fan-out done: ${perPage.filter((p) => p.report).length}/${pages.length} pages reported → ${next}`);
+        return next;
+      } catch (error) {
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        console.warn('[prd-review] fan-out failed:', error);
+        return 'failed' as const;
+      }
+    })();
+    return { projectId, completion };
+  };
+
   const runPipeline = async (
     projectId: string,
     pipelineId: string,
@@ -13590,6 +13763,13 @@ export async function startServer({
             ? inputRefs
             : null;
       if (refs) return runDocsDeterministic(pipelineId, projectId, wfDir, refs, input, source, resetScope, followLinks, includeDescendants);
+    }
+
+    // PRD Mockup Review → parallel per-page fan-out (its own runner, one agent
+    // run per doc page, daemon-merged into review/index.json). Not a normal
+    // single-agent stage.
+    if (def.skillId === 'docs-mockup-review') {
+      return runDocsMockupReviewFanout(pipelineId, projectId, wfDir, resetScope);
     }
 
     const appConfig = await readAppConfig(RUNTIME_DATA_DIR);

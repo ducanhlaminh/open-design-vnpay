@@ -114,25 +114,27 @@ Verdict: **fail** if any blocker or score < 60; **warn** if 60–84; **pass** if
 ≥ 85. Project score = mean of image scores (rounded); project verdict = worst
 image verdict. Show the subtraction so a reader can re-derive it.
 
-### 4. Write the report — FILE-ONLY, under `./review/`, ONE REPORT PER PAGE
+### 4. Write the report — FILE-ONLY, ONE PAGE per run
 
-This is a **file-only** stage: produce files only, do **not** push anything to
-KGS.
+This is a **file-only** stage: produce the report file only, do **not** push
+anything to KGS.
 
-**Fan out by page.** Process the doc pages ONE AT A TIME and write each page's
-result to its own report file BEFORE moving to the next page. Do NOT hold every
-page's review in memory to emit one giant file at the end — reviewing a page,
-writing its report, then dropping it from your working set is what keeps this
-stage tractable when the source is a whole sub-tree of dozens of pages.
+**You are scoped to ONE page.** The daemon fans this stage out — it starts a
+SEPARATE run of you per doc page and your kickoff names the exact page (`Review
+ONLY the mockups embedded in "<page>.md" … Write your result to
+"review/<page-slug>/report.json"`). Review ONLY that page's mockups, against
+that page's own text plus the shared Customer Journey + UX Research context in
+the cwd. Do NOT review any other page, and do NOT write `review/index.json` or
+`review/summary.md` — **the daemon merges every page's report into those
+itself** after all page runs finish.
 
-For each doc page `./docs/confluence/<...>/<page>.md` that has ≥1 embedded
-mockup, write:
+Write exactly one file:
 
-**`./review/<page-slug>/report.json`** — the SAME per-image schema as before,
-scoped to THIS page's mockups only. `<page-slug>` = the page's `.md` path under
-`docs/confluence/` with slashes → `__` and the `.md` dropped (e.g.
-`docs/confluence/i-tai-khoan/1-thiet-lap.md` → `i-tai-khoan__1-thiet-lap`), so
-every page gets a unique, stable folder. Shape:
+**`./review/<page-slug>/report.json`** — the per-image schema below, scoped to
+THIS page's mockups only. `<page-slug>` is the folder the kickoff already gave
+you (the page's `.md` path under `docs/confluence/` with slashes → `__` and the
+`.md` dropped, e.g. `docs/confluence/i-tai-khoan/1-thiet-lap.md` →
+`i-tai-khoan__1-thiet-lap`). Use it verbatim. Shape:
 
 ```json
 {
@@ -176,54 +178,24 @@ every page gets a unique, stable folder. Shape:
    Export reconstruct the full path themselves. Never invent, rename, or
    re-encode the path you see.
 
-After all pages are done, write two roll-ups:
+The daemon writes `./review/index.json` (the manifest the preview groups by) and
+`./review/summary.md` itself by reading every page's `report.json` — you do NOT
+write either. Just your one page report.
 
-**`./review/index.json`** — the manifest the preview reads to group by page:
-
-```json
-{
-  "schema_version": "1.1",
-  "kind": "docs-mockup-review-index",
-  "generated_from": ["<cj file>", "<ux-research report>"],
-  "summary": { "images": 0, "score": 0, "verdict": "pass|warn|fail",
-               "blockers": 0, "majors": 0, "minors": 0 },
-  "pages": [
-    {
-      "slug": "<page-slug>",
-      "page": "<doc page title>",
-      "page_path": "docs/confluence/<...>/<page>.md",
-      "report": "<page-slug>/report.json",
-      "images": 0, "score": 0, "verdict": "pass|warn|fail",
-      "blockers": 0, "majors": 0, "minors": 0
-    }
-  ]
-}
-```
-
-   Project `summary` = images summed, score = mean of PAGE scores (rounded),
-   verdict = worst page verdict. List pages worst-verdict first so a reviewer
-   opens the panel on what needs attention.
-
-**`./review/summary.md`** — a human-readable digest: the project verdict +
-score at the top, a table of PAGES (page / images / score / verdict / #blockers
-/ #majors), then every blocker and major across all pages with its
-recommendation. Lead with what must be fixed before the PRD is considered
-reviewed.
-
-Keep `<page-slug>` and each image `id` stable across re-runs (same page path →
-same slug, same image path → same id) so re-runs diff cleanly and a user's
-manual edits to a prior report aren't orphaned by a cosmetic path change.
+Keep each image `id` stable across re-runs (same image path → same id) so
+re-runs diff cleanly and a user's manual edits to a prior report aren't orphaned
+by a cosmetic path change.
 
 ## Hard rules
 
-- Every mockup embedded anywhere under `./docs/confluence/` MUST get an entry
-  in its page's `images[]` — a review that silently skips an image is
-  incomplete. If an image file referenced by the Markdown is missing from disk,
+- Every mockup embedded in YOUR page MUST get an entry in `images[]` — a review
+  that silently skips an image is incomplete. If an image file referenced by the
+  Markdown is missing from disk,
   still emit an entry for it with an empty `findings` array and a `passes` note
   explaining the file was missing (never drop it from the report).
-- Every doc page with ≥1 mockup MUST get its own `./review/<page-slug>/report.json`
-  AND a row in `./review/index.json`. A page listed in index.json but with no
-  report file (or vice-versa) is a broken run.
+- Write your page's `./review/<page-slug>/report.json` and nothing else under
+  `./review/` — the daemon aggregates `index.json`/`summary.md`. Not writing your
+  report file is a broken run (the daemon marks your page failed).
 - `feature_text` must be a real excerpt from the doc, not a paraphrase — the
   editable review UI shows it next to the image so a reviewer can verify your
   read of the text themselves.
