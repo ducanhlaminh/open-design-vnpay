@@ -13601,14 +13601,11 @@ export async function startServer({
           return 'succeeded' as const;
         }
 
-        // Shared conversation for every page run (one list entry; a message per
-        // page for its transcript).
-        const conversationId = `pipeline-conv-${randomUUID()}`;
-        insertConversation(db, { id: conversationId, projectId, title: def.name, createdAt: Date.now(), updatedAt: Date.now() });
-        setProjectPipelineStatus(db, projectId, pipelineId, {
-          status: 'running',
-          lastConversationId: conversationId,
-        });
+        // Each parallel page gets its OWN conversation (titled by page) so the
+        // chat UI shows one readable single-agent transcript per task instead of
+        // N agents interleaved in one log. The stage's "Open chat" lands on the
+        // first; the ConversationsMenu lists the siblings by their shared prefix.
+        let firstConversationId: string | null = null;
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
         const graphNote =
           ' This is a FILE-ONLY stage: produce the report file only, do NOT push anything to KGS.';
@@ -13616,6 +13613,12 @@ export async function startServer({
         // Bounded-concurrency pool: at most K page runs in flight at once.
         let done = 0;
         const runOnePage = async (pg: (typeof pages)[number]): Promise<'succeeded' | 'failed' | 'idle'> => {
+          const conversationId = `pipeline-conv-${randomUUID()}`;
+          insertConversation(db, { id: conversationId, projectId, title: `${def.name} · ${pg.page}`, createdAt: Date.now(), updatedAt: Date.now() });
+          if (!firstConversationId) {
+            firstConversationId = conversationId;
+            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+          }
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const kickoff =
             `Run the "docs-mockup-review" review for ONE page of KGS project "${projectId}". ` +
@@ -13783,9 +13786,9 @@ export async function startServer({
           }
         }
 
-        const conversationId = `pipeline-conv-${randomUUID()}`;
-        insertConversation(db, { id: conversationId, projectId, title: def.name, createdAt: Date.now(), updatedAt: Date.now() });
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+        // Per-MODULE conversation (one readable transcript per parallel module)
+        // instead of one interleaved log. First one is the stage's "Open chat".
+        let firstConversationId: string | null = null;
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
 
         let done = 0;
@@ -13798,6 +13801,12 @@ export async function startServer({
               ? ' Target platform: MOBILE — every screen sets `layout: "mobile"`.'
               : '';
         const runOneSection = async (sec: DocSection): Promise<void> => {
+          const conversationId = `pipeline-conv-${randomUUID()}`;
+          insertConversation(db, { id: conversationId, projectId, title: `${def.name} · ${sec.title}`, createdAt: Date.now(), updatedAt: Date.now() });
+          if (!firstConversationId) {
+            firstConversationId = conversationId;
+            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+          }
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const pagesList = sec.mdPaths.map((p) => `"${p}"`).join(', ');
           const kickoff =
@@ -13909,6 +13918,9 @@ export async function startServer({
         // stays — coverage is already guaranteed by the fan-out above.
         if (anySlice) {
           try {
+            // Its own conversation (the reconcile is a distinct follow-up task).
+            const conversationId = `pipeline-conv-${randomUUID()}`;
+            insertConversation(db, { id: conversationId, projectId, title: `${def.name} · Hợp nhất`, createdAt: Date.now(), updatedAt: Date.now() });
             const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
             const reconcileKickoff =
               kind === 'cj'
@@ -14025,15 +14037,21 @@ export async function startServer({
           if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
         }
 
-        const conversationId = `pipeline-conv-${randomUUID()}`;
-        insertConversation(db, { id: conversationId, projectId, title: def.name, createdAt: Date.now(), updatedAt: Date.now() });
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+        // Per-SCREEN conversation (one readable transcript per parallel screen)
+        // instead of one interleaved log. First one is the stage's "Open chat".
+        let firstConversationId: string | null = null;
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
         const dsId = designSystemId !== undefined ? designSystemId : (appConfig.designSystemId ?? null);
 
         let done = 0;
         const outRel = (s: UiScreen) => (kind === 'ux-review' ? `heuristic-review/${s.slug}/report.json` : `prototype/${s.slug}.html`);
         const runOneScreen = async (s: UiScreen): Promise<void> => {
+          const conversationId = `pipeline-conv-${randomUUID()}`;
+          insertConversation(db, { id: conversationId, projectId, title: `${def.name} · ${s.name}`, createdAt: Date.now(), updatedAt: Date.now() });
+          if (!firstConversationId) {
+            firstConversationId = conversationId;
+            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+          }
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const kickoff =
             kind === 'ux-review'
