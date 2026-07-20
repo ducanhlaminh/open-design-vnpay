@@ -1674,7 +1674,8 @@ export function PipelineResultModal({
                   <span className="pl-result-rail__icon" aria-hidden="true">
                     <Icon name={isScreenFile(f.name) ? 'image' : 'file'} size={14} />
                   </span>
-                  <span className="pl-result-rail__name">{f.name}</span>
+                  {/* File name only — the full path stays as the hover title. */}
+                  <span className="pl-result-rail__name">{f.name.split('/').pop() || f.name}</span>
                 </button>
               );
             })}

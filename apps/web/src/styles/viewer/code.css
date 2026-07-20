@@ -104,6 +104,15 @@
   line-height: 1.25;
 }
 .markdown-rendered p { margin: 10px 0; }
+/* Embedded doc images (Confluence screenshots inlined by inlineMarkdownImages). */
+.markdown-rendered img.md-doc-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
 .markdown-rendered ul,
 .markdown-rendered ol {
   margin: 10px 0;

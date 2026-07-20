@@ -37,6 +37,18 @@ describe('renderMarkdownToSafeHtml', () => {
     expect(out).not.toContain('<script>');
   });
 
+  it('renders a same-origin image (project raw URL) inline as <img>, not a stray "!"', () => {
+    const out = renderMarkdownToSafeHtml('![minh họa](/api/projects/p1/raw/docs/attachments/x.png)');
+    expect(out).toContain('<img src="/api/projects/p1/raw/docs/attachments/x.png" alt="minh họa" class="md-doc-image" loading="lazy">');
+    expect(out).not.toContain('](/api'); // the link pass didn't eat the image
+  });
+
+  it('degrades an unsafe image src (javascript:) to its alt text', () => {
+    const out = renderMarkdownToSafeHtml('![evil](javascript:alert(1))');
+    expect(out).toContain('evil');
+    expect(out).not.toContain('<img');
+  });
+
   it('renders safe links with target attributes', () => {
     const out = renderMarkdownToSafeHtml('[Open](https://example.com)');
     expect(out).toContain('<a href="https://example.com" rel="noreferrer noopener" target="_blank">Open</a>');

@@ -7459,6 +7459,33 @@ function baseDirFor(fileName: string): string {
   return idx >= 0 ? fileName.slice(0, idx + 1) : '';
 }
 
+/** Resolve a `../`-style relative path against a base dir (posix, normalized). */
+function resolveRelativePath(baseDir: string, rel: string): string {
+  const out: string[] = [];
+  for (const seg of (baseDir + rel).split('/')) {
+    if (seg === '..') out.pop();
+    else if (seg && seg !== '.') out.push(seg);
+  }
+  return out.join('/');
+}
+
+/** Rewrite a doc markdown's embedded image refs so they render INLINE in the
+ *  preview. Confluence-export docs (docs/confluence/*.md) reference their
+ *  downloaded screenshots relatively (`![alt](../attachments/x.png)`); a
+ *  browser resolves that against the app URL, not the project file store, so
+ *  the image never loads. Point each LOCAL image ref at the project raw-file
+ *  URL (resolved relative to the .md's own folder). External (http/data) srcs
+ *  and already-absolute `/api/...` srcs are left untouched. */
+function inlineMarkdownImages(text: string, projectId: string, fileName: string): string {
+  const baseDir = baseDirFor(fileName);
+  return text.replace(/(!\[[^\]]*\]\()([^)]+)(\))/g, (full, open: string, src: string, close: string) => {
+    const url = src.trim();
+    if (/^(https?:|data:|\/)/i.test(url)) return full;
+    const abs = resolveRelativePath(baseDir, url.replace(/^\.\//, ''));
+    return `${open}${projectRawUrl(projectId, abs)}${close}`;
+  });
+}
+
 function toOwnerRelativePath(ownerFileName: string, targetPath: string): string {
   const normalize = (value: string) => decodeURIComponent(value).replace(/^\/+/, '');
   const squash = (parts: string[]) => {
@@ -8534,9 +8561,12 @@ function MarkdownViewer({
 
   const html = useMemo(() => {
     if (text === null) return null;
+    // Embedded doc images (docs/confluence/*.md → ../attachments/*.png) resolve
+    // to the project raw-file URL so they render inline instead of broken.
+    const withImages = inlineMarkdownImages(text, projectId, file.name);
     const renderPartial = MarkdownRenderer.renderPartial ?? renderMarkdownToSafeHtml;
-    return decorateMarkdownCodeBlocks(renderPartial(text));
-  }, [text]);
+    return decorateMarkdownCodeBlocks(renderPartial(withImages));
+  }, [text, projectId, file.name]);
 
   useEffect(() => {
     const article = markdownArticleRef.current;

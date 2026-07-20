@@ -22,7 +22,21 @@ function formatInline(raw: string): string {
     return token;
   });
 
-  const withLinkTokens = withCodeTokens.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, text: string, href: string) => {
+  // Images FIRST (before links — `![alt](src)` contains `[alt](src)`, so the
+  // link pass would otherwise eat it and leave a stray `!`). Only same-origin
+  // (`/…`, e.g. the project raw-file URL), http(s), or data:image srcs render;
+  // anything else degrades to its alt text.
+  const withImageTokens = withCodeTokens.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt: string, src: string) => {
+    const url = src.trim();
+    const safeAlt = escapeHtml(alt);
+    const ok = url.startsWith('/') || /^https?:\/\//i.test(url) || /^data:image\//i.test(url);
+    if (!ok) return safeAlt;
+    const token = `${LINK_TOKEN_PREFIX}${linkTokenIndex++}X`;
+    linkTokens.set(token, `<img src="${escapeHtml(url)}" alt="${safeAlt}" class="md-doc-image" loading="lazy">`);
+    return token;
+  });
+
+  const withLinkTokens = withImageTokens.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, text: string, href: string) => {
     const normalizedHref = normalizeSafeHref(href);
     const safeText = escapeHtml(text);
     if (!normalizedHref) return safeText;
