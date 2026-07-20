@@ -183,6 +183,37 @@ export function PipelinesView() {
       hiddenProjectCount: sorted.length - PROJECT_CARD_LIMIT,
     };
   }, [projects, projectSearch, showAllProjects, projectId]);
+  // Nhóm card theo App (Studio: feature link vào app qua project.json.appId,
+  // daemon mirror về `pr.app` lúc pull). Nhóm xuất hiện theo thứ tự relevance
+  // của feature đầu tiên trong nhóm; feature chưa gán app dồn vào nhóm cuối.
+  // Không có app nào → render lưới phẳng như cũ (không header thừa).
+  const projectGroups = useMemo(() => {
+    const order: string[] = [];
+    const byKey = new Map<string, { key: string; name: string; projects: PipelineProject[] }>();
+    for (const pr of visibleProjects) {
+      const key = pr.app?.id ?? '';
+      let g = byKey.get(key);
+      if (!g) {
+        g = { key, name: key ? pr.app?.name || pr.app!.id : 'Chưa gán app', projects: [] };
+        byKey.set(key, g);
+        order.push(key);
+      }
+      g.projects.push(pr);
+    }
+    const groups = order.map((k) => byKey.get(k)!);
+    const loose = groups.findIndex((g) => g.key === '');
+    if (loose >= 0 && groups.length > 1) groups.push(...groups.splice(loose, 1));
+    return groups;
+  }, [visibleProjects]);
+  const groupedByApp = projectGroups.some((g) => g.key !== '');
+  // App groups đóng/mở được — mặc định mở hết; trạng thái theo app id.
+  const [collapsedApps, setCollapsedApps] = useState<Set<string>>(new Set());
+  const toggleAppGroup = (key: string) =>
+    setCollapsedApps((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
   const [pullPlanState, setPullPlanState] = useState<PullPlan | null>(null);
 
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -820,8 +851,8 @@ export function PipelinesView() {
             />
           ) : null}
         </div>
-        <div className="pl-card-grid">
-          {visibleProjects.map((pr) => {
+        {(() => {
+          const projectCard = (pr: PipelineProject) => {
             const complete = pr.total > 0 && pr.done >= pr.total;
             return (
               <button
@@ -860,32 +891,80 @@ export function PipelinesView() {
                 </span>
               </button>
             );
-          })}
-          {hiddenProjectCount > 0 ? (
-            <button
-              type="button"
-              className="pl-proj-card pl-proj-card--more"
-              onClick={() => setShowAllProjects(true)}
-              title="Show every project card"
-            >
-              <span className="pl-proj-more__count">+{hiddenProjectCount}</span>
-              <span>Show all</span>
-            </button>
-          ) : null}
-          {showAllProjects && projects.length > PROJECT_CARD_LIMIT ? (
-            <button
-              type="button"
-              className="pl-proj-card pl-proj-card--more"
-              onClick={() => setShowAllProjects(false)}
-              title="Collapse back to the most relevant projects"
-            >
-              <span className="pl-proj-more__chevron">
-                <Icon name="chevron-down" size={16} />
-              </span>
-              <span>Show less</span>
-            </button>
-          ) : null}
-        </div>
+          };
+          const moreCards = (
+            <>
+              {hiddenProjectCount > 0 ? (
+                <button
+                  type="button"
+                  className="pl-proj-card pl-proj-card--more"
+                  onClick={() => setShowAllProjects(true)}
+                  title="Show every project card"
+                >
+                  <span className="pl-proj-more__count">+{hiddenProjectCount}</span>
+                  <span>Show all</span>
+                </button>
+              ) : null}
+              {showAllProjects && projects.length > PROJECT_CARD_LIMIT ? (
+                <button
+                  type="button"
+                  className="pl-proj-card pl-proj-card--more"
+                  onClick={() => setShowAllProjects(false)}
+                  title="Collapse back to the most relevant projects"
+                >
+                  <span className="pl-proj-more__chevron">
+                    <Icon name="chevron-down" size={16} />
+                  </span>
+                  <span>Show less</span>
+                </button>
+              ) : null}
+            </>
+          );
+          // Chưa gán app nào → lưới phẳng như cũ. Có app → mỗi app một nhóm
+          // đóng/mở được, feature lẻ dồn xuống nhóm "Chưa gán app" cuối cùng.
+          if (!groupedByApp) {
+            return (
+              <div className="pl-card-grid">
+                {visibleProjects.map(projectCard)}
+                {moreCards}
+              </div>
+            );
+          }
+          const hasMoreCards =
+            hiddenProjectCount > 0 || (showAllProjects && projects.length > PROJECT_CARD_LIMIT);
+          return (
+            <>
+              {projectGroups.map((g) => {
+                const collapsed = collapsedApps.has(g.key);
+                const done = g.projects.reduce((n, p) => n + p.done, 0);
+                const total = g.projects.reduce((n, p) => n + p.total, 0);
+                const running = g.projects.reduce((n, p) => n + p.running, 0);
+                return (
+                  <div key={g.key || '(no-app)'} className="pl-app-group">
+                    <button
+                      type="button"
+                      className="pl-app-group__head"
+                      onClick={() => toggleAppGroup(g.key)}
+                      aria-expanded={!collapsed}
+                    >
+                      <span className={`pl-app-group__chevron${collapsed ? '' : ' is-open'}`} aria-hidden="true">
+                        <Icon name="chevron-right" size={14} />
+                      </span>
+                      <Icon name={g.key ? 'blocks' : 'folder'} size={14} />
+                      <span className="pl-app-group__name">{g.name}</span>
+                      <span className="pl-app-group__meta">
+                        {g.projects.length} feature · {done}/{total} done
+                        {running > 0 ? ` · ${running} running` : ''}
+                      </span>
+                    </button>
+                    {!collapsed ? <div className="pl-card-grid">{g.projects.map(projectCard)}</div> : null}
+                  </div>
+                );
+              })}
+              {hasMoreCards ? <div className="pl-card-grid">{moreCards}</div> : null}
+            </>
+          );
+        })()}
         {projectSearch && visibleProjects.length === 0 ? (
           <div className="pl-proj-noresult">No project matches “{projectSearch}”.</div>
         ) : null}

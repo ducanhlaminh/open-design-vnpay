@@ -13972,6 +13972,22 @@ export async function startServer({
       };
       if (legacy.id || legacy.url) confluencePages.push(legacy);
     }
+    // App cha (Studio: feature được link vào App qua project.json.appId).
+    // Mirror cả TÊN app (đọc từ project.json của chính folder app, kind:'app')
+    // để picker nhóm feature theo app mà không phải gọi store mỗi lần list.
+    const appId = typeof cfg.appId === 'string' ? cfg.appId.trim() : '';
+    let appName = '';
+    if (appId) {
+      const appBuf = await media.downloadFile(appId, 'project.json').catch(() => null);
+      if (appBuf) {
+        try {
+          const appCfg = JSON.parse(appBuf.toString('utf8')) as { name?: unknown };
+          if (typeof appCfg.name === 'string') appName = appCfg.name.trim();
+        } catch {
+          /* app config unreadable — keep id-only */
+        }
+      }
+    }
     const studioConfig = {
       ...(confluencePages.length ? { confluencePages } : {}),
       ...(typeof cfg.designSystemId === 'string' && cfg.designSystemId ? { designSystemId: cfg.designSystemId } : {}),
@@ -13980,6 +13996,8 @@ export async function startServer({
         ? { basDocumentTitle: cfg.basDocumentTitle }
         : {}),
       ...(typeof cfg.displayName === 'string' && cfg.displayName ? { displayName: cfg.displayName } : {}),
+      ...(appId ? { appId } : {}),
+      ...(appName ? { appName } : {}),
     };
     updateProject(db, projectId, { metadata: { ...(project.metadata ?? {}), studioConfig } });
   };

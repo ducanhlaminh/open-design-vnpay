@@ -123,6 +123,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         const rac = p.metadata?.runAllConfig;
         const savedRunAll =
           rac && typeof rac === 'object' && !Array.isArray(rac) ? (rac as RunAllConfig) : undefined;
+        // App cha (Studio) — mirror sẵn trong studioConfig lúc pull; picker
+        // nhóm các feature card theo app từ đây.
+        const scRec = (sc && typeof sc === 'object' ? sc : {}) as Record<string, unknown>;
+        const appId = typeof scRec.appId === 'string' ? scRec.appId : '';
+        const appName = typeof scRec.appName === 'string' ? scRec.appName : '';
         return {
           id: p.id,
           name: p.name,
@@ -131,6 +136,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           running,
           ...(config ? { config } : {}),
           ...(savedRunAll ? { savedRunAll } : {}),
+          ...(appId ? { app: { id: appId, ...(appName ? { name: appName } : {}) } } : {}),
         };
       }),
     );

@@ -191,6 +191,10 @@ export interface PipelineProject {
    *  bắt nhập lại. Khi chưa từng chạy lần nào (`undefined`), modal fallback về
    *  `config` (Pipeline Studio). */
   savedRunAll?: RunAllConfig;
+  /** App (project cấp trên bên Pipeline Studio, media folder `app--…`) mà
+   *  feature này thuộc về — mirror từ `project.json.appId` lúc pull. Picker
+   *  dùng nó để nhóm các feature theo app; thiếu = feature chưa gán app. */
+  app?: { id: string; name?: string };
 }
 
 export interface PipelineProjectsResponse {
