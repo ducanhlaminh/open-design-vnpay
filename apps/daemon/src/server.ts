@@ -13563,6 +13563,31 @@ export async function startServer({
   // history commit + re-run clear happen ONCE up front so the concurrent runs
   // never race the git history. A page whose run fails is marked failed in the
   // index but never fails the whole stage — the rest still ship.
+  // Cancel handles for in-flight fan-out stages, keyed `${projectId}::${pipelineId}`.
+  // A fan-out stage registers one when it starts (setting a flag the pool checks
+  // + canceling every live sub-run) and deletes it when it finishes; the
+  // /api/pipelines/:projectId/:pipelineId/cancel endpoint invokes it.
+  const pipelineCancelers = new Map<string, () => void>();
+  const registerPipelineCanceler = (
+    key: string,
+    activeRuns: Set<{ id: string }>,
+    setCanceled: () => void,
+  ) => {
+    pipelineCancelers.set(key, () => {
+      setCanceled();
+      for (const r of activeRuns) {
+        const live = design.runs.get(r.id);
+        if (live) {
+          try {
+            design.runs.cancel(live);
+          } catch {
+            /* already terminal */
+          }
+        }
+      }
+    });
+  };
+
   const PRD_REVIEW_FANOUT_CONCURRENCY = 4;
   const runDocsMockupReviewFanout = (
     pipelineId: string,
@@ -13570,6 +13595,12 @@ export async function startServer({
     wfDir: string | null,
     resetScope?: 'stage' | 'downstream',
   ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
+    const cancelKey = `${projectId}::${pipelineId}`;
+    const activeRuns = new Set<{ id: string }>();
+    let canceled = false;
+    registerPipelineCanceler(cancelKey, activeRuns, () => {
+      canceled = true;
+    });
     const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
       const def = getPipelineDef(pipelineId)!;
       try {
@@ -13659,6 +13690,7 @@ export async function startServer({
             clientRequestId: `prd-review-${pg.slug}-${randomUUID()}`,
             agentId: agentId!,
           });
+          activeRuns.add(run);
           upsertMessage(db, conversationId, { id: `pipeline-user-${run.id}`, role: 'user', content: kickoff });
           upsertMessage(db, conversationId, {
             id: assistantMessageId,
@@ -13688,6 +13720,7 @@ export async function startServer({
             ),
           );
           const final = await design.runs.wait(run);
+          activeRuns.delete(run);
           db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
           task.status = final.status === 'succeeded' ? 'succeeded' : 'failed';
           persistTasks();
@@ -13699,6 +13732,7 @@ export async function startServer({
         let cursor = 0;
         const worker = async () => {
           for (;;) {
+            if (canceled) break;
             const i = cursor++;
             if (i >= pages.length) break;
             await runOnePage(pages[i]!, tasks[i]!).catch(() => {
@@ -13711,6 +13745,12 @@ export async function startServer({
         await Promise.all(
           Array.from({ length: Math.min(PRD_REVIEW_FANOUT_CONCURRENCY, pages.length) }, worker),
         );
+
+        if (canceled) {
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'idle', subConversations: tasks.map((t) => ({ ...t })) });
+          console.log('[prd-review] fan-out canceled by user');
+          return 'idle' as const;
+        }
 
         // Merge: read each page's report.json (null if its run wrote nothing),
         // then write the manifest + human summary. Daemon-owned, no LLM.
@@ -13741,6 +13781,8 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
         console.warn('[prd-review] fan-out failed:', error);
         return 'failed' as const;
+      } finally {
+        pipelineCancelers.delete(cancelKey);
       }
     })();
     return { projectId, completion };
@@ -13763,6 +13805,12 @@ export async function startServer({
     sections: DocSection[],
     platform?: import('@open-design/contracts').TargetPlatform,
   ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
+    const cancelKey = `${projectId}::${pipelineId}`;
+    const activeRuns = new Set<{ id: string }>();
+    let canceled = false;
+    registerPipelineCanceler(cancelKey, activeRuns, () => {
+      canceled = true;
+    });
     const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
       const def = getPipelineDef(pipelineId)!;
       const label = kind;
@@ -13873,6 +13921,7 @@ export async function startServer({
             clientRequestId: `${label}-${sec.key}-${randomUUID()}`,
             agentId: agentId!,
           });
+          activeRuns.add(run);
           upsertMessage(db, conversationId, { id: `pipeline-user-${run.id}`, role: 'user', content: kickoff });
           upsertMessage(db, conversationId, {
             id: assistantMessageId,
@@ -13902,6 +13951,7 @@ export async function startServer({
             ),
           );
           const final = await design.runs.wait(run);
+          activeRuns.delete(run);
           db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
           task.status = final.status === 'succeeded' ? 'succeeded' : 'failed';
           persistTasks();
@@ -13912,6 +13962,7 @@ export async function startServer({
         let cursor = 0;
         const worker = async () => {
           for (;;) {
+            if (canceled) break;
             const i = cursor++;
             if (i >= sections.length) break;
             await runOneSection(sections[i]!, tasks[i]!).catch(() => {
@@ -13921,6 +13972,12 @@ export async function startServer({
           }
         };
         await Promise.all(Array.from({ length: Math.min(SECTION_FANOUT_CONCURRENCY, sections.length) }, worker));
+
+        if (canceled) {
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'idle', subConversations: tasks.map((t) => ({ ...t })) });
+          console.log(`[${label}] fan-out canceled by user`);
+          return 'idle' as const;
+        }
 
         // Merge each module's slice into the canonical output the downstream reads.
         const slices = await Promise.all(
@@ -13984,6 +14041,7 @@ export async function startServer({
               clientRequestId: `${label}-reconcile-${randomUUID()}`,
               agentId: agentId!,
             });
+            activeRuns.add(rc);
             upsertMessage(db, conversationId, { id: `pipeline-user-${rc.id}`, role: 'user', content: reconcileKickoff });
             upsertMessage(db, conversationId, {
               id: assistantMessageId,
@@ -14012,6 +14070,7 @@ export async function startServer({
               ),
             );
             const rcFinal = await design.runs.wait(rc);
+            activeRuns.delete(rc);
             db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(rcFinal.status, Date.now(), assistantMessageId);
             reconcileTask.status = rcFinal.status === 'succeeded' ? 'succeeded' : 'failed';
             persistTasks();
@@ -14032,6 +14091,8 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
         console.warn(`[${label}] section fan-out failed:`, error);
         return 'failed' as const;
+      } finally {
+        pipelineCancelers.delete(cancelKey);
       }
     })();
     return { projectId, completion };
@@ -14053,6 +14114,12 @@ export async function startServer({
     screens: UiScreen[],
     designSystemId?: string | null,
   ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
+    const cancelKey = `${projectId}::${pipelineId}`;
+    const activeRuns = new Set<{ id: string }>();
+    let canceled = false;
+    registerPipelineCanceler(cancelKey, activeRuns, () => {
+      canceled = true;
+    });
     const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
       const def = getPipelineDef(pipelineId)!;
       const label = kind;
@@ -14125,6 +14192,7 @@ export async function startServer({
             clientRequestId: `${label}-${s.slug}-${randomUUID()}`,
             agentId: agentId!,
           });
+          activeRuns.add(run);
           upsertMessage(db, conversationId, { id: `pipeline-user-${run.id}`, role: 'user', content: kickoff });
           upsertMessage(db, conversationId, {
             id: assistantMessageId,
@@ -14156,6 +14224,7 @@ export async function startServer({
             ),
           );
           const final = await design.runs.wait(run);
+          activeRuns.delete(run);
           db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
           task.status = final.status === 'succeeded' ? 'succeeded' : 'failed';
           persistTasks();
@@ -14166,6 +14235,7 @@ export async function startServer({
         let cursor = 0;
         const worker = async () => {
           for (;;) {
+            if (canceled) break;
             const i = cursor++;
             if (i >= screens.length) break;
             await runOneScreen(screens[i]!, tasks[i]!).catch(() => {
@@ -14175,6 +14245,12 @@ export async function startServer({
           }
         };
         await Promise.all(Array.from({ length: Math.min(SCREEN_FANOUT_CONCURRENCY, screens.length) }, worker));
+
+        if (canceled) {
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'idle', subConversations: tasks.map((t) => ({ ...t })) });
+          console.log(`[${label}] screen fan-out canceled by user`);
+          return 'idle' as const;
+        }
 
         // Assemble the canonical output (daemon-owned, no LLM).
         let anyOut = false;
@@ -14212,10 +14288,38 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
         console.warn(`[${label}] screen fan-out failed:`, error);
         return 'failed' as const;
+      } finally {
+        pipelineCancelers.delete(cancelKey);
       }
     })();
     return { projectId, completion };
   };
+
+  // Cancel a running pipeline stage. A fan-out stage has a registered canceler
+  // (stops the pool + cancels every live sub-run); a single-agent stage is
+  // canceled through its lastRunId. Idempotent — a stage that already finished
+  // just returns { canceled: 'none' }.
+  app.post('/api/pipelines/:projectId/:pipelineId/cancel', (req, res) => {
+    const { projectId, pipelineId } = req.params;
+    const cancel = pipelineCancelers.get(`${projectId}::${pipelineId}`);
+    if (cancel) {
+      cancel();
+      return res.json({ ok: true, canceled: 'fanout' });
+    }
+    const st = getProjectPipelineState(db, projectId)[pipelineId] as { lastRunId?: string } | undefined;
+    if (st?.lastRunId) {
+      const run = design.runs.get(st.lastRunId);
+      if (run) {
+        try {
+          design.runs.cancel(run);
+        } catch {
+          /* already terminal */
+        }
+      }
+      return res.json({ ok: true, canceled: 'run' });
+    }
+    return res.json({ ok: true, canceled: 'none' });
+  });
 
   const runPipeline = async (
     projectId: string,

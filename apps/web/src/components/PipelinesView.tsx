@@ -1717,6 +1717,7 @@ export function PipelinesView() {
         <PipelineStatusModal
           // Fresh copy from the polled list so the fan-out task list updates live.
           pipeline={pipelines.find((p) => p.id === statusFor.id) ?? statusFor}
+          projectId={projectId ?? ''}
           onClose={() => setStatusFor(null)}
           onOpenTask={(conversationId) => {
             navigate({ kind: 'project', projectId, conversationId, fileName: null });

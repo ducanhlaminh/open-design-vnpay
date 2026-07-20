@@ -1400,12 +1400,14 @@ const TASK_STATUS_META: Record<string, { icon: IconName; label: string; cls: str
 
 export function PipelineStatusModal({
   pipeline,
+  projectId,
   onClose,
   onOpenChat,
   onOpenTask,
   onRefresh,
 }: {
   pipeline: PipelineView;
+  projectId: string;
   onClose: () => void;
   onOpenChat: (() => void) | null;
   /** Open one fan-out task's conversation (per-task chat). */
@@ -1465,12 +1467,23 @@ export function PipelineStatusModal({
   const status = run?.status ?? pipeline.status;
   const isRunning = status === 'queued' || status === 'running';
   const elapsed = run ? formatElapsed((run.updatedAt || now) - run.createdAt) : null;
+  const isFanout = tasks.length > 0;
 
   const cancel = async () => {
-    if (!runId || canceling) return;
+    if (canceling) return;
     setCanceling(true);
     try {
-      await fetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' });
+      // A fan-out stage has no single lastRunId — cancel it stage-wide (stops
+      // the pool + every live sub-run); a single-agent stage cancels its run.
+      if (isFanout || !runId) {
+        await fetch(
+          `/api/pipelines/${encodeURIComponent(projectId)}/${encodeURIComponent(pipeline.id)}/cancel`,
+          { method: 'POST' },
+        );
+      } else {
+        await fetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' });
+      }
+      onRefresh();
     } catch {
       /* ignore — poll reflects the result */
     } finally {
@@ -1491,7 +1504,7 @@ export function PipelineStatusModal({
               <span>Open chat</span>
             </button>
           ) : null}
-          {isRunning && runId ? (
+          {isRunning && (runId || isFanout) ? (
             <button
               type="button"
               className="pl-btn pl-btn--danger"
