@@ -141,6 +141,15 @@ while the KB is present means this step was skipped — go back and do it:
 
 ### 4. Emit the outputs (FILE-ONLY stage — no KGS push)
 
+> **Per-module fan-out.** When the docs are a multi-section tree (a sub-tree
+> scan), the daemon runs this skill ONCE PER top-level module and your kickoff
+> tells you to write your slice to `ux-research/<module-key>/report.json`
+> instead of the top-level file. In that case: derive criteria ONLY for your
+> module's pages (+ that module's customer journey), write ONLY that slice, and
+> do NOT write `ux-research/report.json` — the daemon merges every module's
+> slice (renumbers criteria ids globally, dedups references) into the canonical
+> file. Follow the kickoff's output path verbatim when it gives one.
+
 Write **`./ux-research/report.json`**:
 
 ```jsonc

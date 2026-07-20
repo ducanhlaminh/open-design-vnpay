@@ -85,6 +85,15 @@ be ignored at best and misleading at worst. Key rules:
 Write the file under the project (e.g. `./<feature>-customer-journey.json`).
 See `assets/example-customer-journey.json` for a complete, valid example.
 
+> **Per-module fan-out.** When the docs are a multi-section tree (a sub-tree
+> scan), the daemon runs this skill ONCE PER top-level module and your kickoff
+> names the module + its pages and tells you to write your slice to
+> `cj/<module-key>/journey.json` instead of the root file. In that case: cover
+> ONLY your module's pages, write ONLY that slice (personas + journeys for this
+> module), and do NOT write the root `-customer-journey.json` — the daemon
+> merges every module's slice (unions personas, concatenates journeys) into the
+> canonical file. Follow the kickoff's output path verbatim when it gives one.
+
 ### 2. Push to KGS
 Two equivalent ways (both write via the KGS graph API → projected to Neo4j):
 

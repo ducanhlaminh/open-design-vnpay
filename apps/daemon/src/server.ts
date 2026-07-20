@@ -458,6 +458,7 @@ import {
 } from './bas/bas-client.js';
 import { buildReactDemo } from './react-demo.js';
 import { listMockupPages, mergePageReports } from './prd-review-fanout.js';
+import { listSections, mergeCjSections, mergeUxrSections, type DocSection } from './section-fanout.js';
 import { pushUxKb, resolveUxKbDir } from './ux-kb-sync.js';
 import { appContextDirective, resolveAppId, stageAppContext } from './app-context.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
@@ -13709,6 +13710,188 @@ export async function startServer({
     return { projectId, completion };
   };
 
+  // Customer Journey + UX Research run PER SECTION in parallel when the docs
+  // came from a sub-tree scan (a whole-product tree overwhelms one synthesis —
+  // it front-loads and drops the back half). One agent run per top-level module
+  // writes its slice; the daemon merges the slices into the canonical output
+  // (union personas / renumber criteria). Shares the review fan-out's shape:
+  // bounded pool, ONE conversation, history commit + clear ONCE up front. `kind`
+  // picks CJ vs UXR (skill, per-section output path, merge).
+  const SECTION_FANOUT_CONCURRENCY = 4;
+  const runSectionFanout = (
+    pipelineId: string,
+    projectId: string,
+    wfDir: string | null,
+    resetScope: 'stage' | 'downstream' | undefined,
+    kind: 'cj' | 'ux-research',
+    sections: DocSection[],
+  ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
+    const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
+      const def = getPipelineDef(pipelineId)!;
+      const label = kind === 'cj' ? 'cj' : 'ux-research';
+      try {
+        const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+        let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
+        if (!agentId) {
+          const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+          agentId = agents.find((a) => a.available)?.id ?? null;
+        }
+        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
+
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+
+        // ONE-TIME fence + re-run clear (concurrent section runs must NOT each
+        // do it) so the fan-out regenerates a clean output tree.
+        const regenIds = new Set(stageRegenSet(pipelineId, resetScope === 'downstream'));
+        await commitHistory(projectRoot, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
+        try {
+          const snap = await snapshotPipelineCwd(projectRoot);
+          for (const rel of snap.keys()) {
+            if (isHistoryArtifact(rel)) continue;
+            if (stagesForOutput(rel).some((d) => regenIds.has(d.id))) {
+              await fs.promises.rm(path.join(projectRoot, rel), { force: true }).catch(() => null);
+            }
+          }
+        } catch (error) {
+          console.warn(`[${label}] re-run clear failed (continuing):`, error);
+        }
+        for (const id of regenIds) {
+          if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
+        }
+
+        // UX Research needs the knowledge base staged into the cwd; do it ONCE
+        // and hand every section run the same relative-path directive.
+        let kbDirective = '';
+        if (kind === 'ux-research') {
+          const kb = await resolveUxKbDir(RUNTIME_DATA_DIR);
+          if (kb.dir) {
+            try {
+              const staged = path.join(cwd, '.ux-kb');
+              await fs.promises.rm(staged, { recursive: true, force: true });
+              await fs.promises.cp(kb.dir, staged, { recursive: true });
+              kbDirective = ` The UX knowledge base IS PRESENT at "./.ux-kb" (staged by the daemon). Use it via relative paths, e.g. \`python3 ./.ux-kb/scripts/search.py <keywords>\`. Criteria must cite its sources.`;
+            } catch {
+              kbDirective = ` The UX knowledge base IS PRESENT at "${kb.dir}". Use that ABSOLUTE path for its scripts. Criteria must cite its sources.`;
+            }
+          } else {
+            kbDirective = ' The daemon verified there is NO UX knowledge base available — produce the fallback report (knowledge_base: "unavailable") for this section.';
+          }
+        }
+
+        const conversationId = `pipeline-conv-${randomUUID()}`;
+        insertConversation(db, { id: conversationId, projectId, title: def.name, createdAt: Date.now(), updatedAt: Date.now() });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+        const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+
+        let done = 0;
+        const outRel = (key: string) => (kind === 'cj' ? `cj/${key}/journey.json` : `ux-research/${key}/report.json`);
+        const runOneSection = async (sec: DocSection): Promise<void> => {
+          const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
+          const pagesList = sec.mdPaths.map((p) => `"${p}"`).join(', ');
+          const kickoff =
+            kind === 'cj'
+              ? `Run the customer-journey-spec skill for ONE MODULE of KGS project "${projectId}". ` +
+                `Cover ONLY this module — its pages: ${pagesList} (module: ${sec.title}). ` +
+                `Write your result to "${outRel(sec.key)}" (personas + journeys for THIS module only). ` +
+                `Do NOT write any root -customer-journey.json and do NOT cover other modules — the daemon merges every module's slice.` +
+                ` This is a FILE-ONLY stage: do NOT push to KGS.`
+              : `Run the ux-research skill for ONE MODULE of KGS project "${projectId}". ` +
+                `Derive UX criteria ONLY for this module — its pages: ${pagesList} (module: ${sec.title}) plus the module's customer journey in the cwd. ` +
+                `Write your result to "${outRel(sec.key)}" (criteria + references for THIS module only). ` +
+                `Do NOT write ux-research/report.json (top-level) and do NOT cover other modules — the daemon merges every module's slice.${kbDirective}` +
+                ` This is a FILE-ONLY stage: do NOT push to KGS.`;
+          const run = design.runs.create({
+            projectId,
+            conversationId,
+            assistantMessageId,
+            clientRequestId: `${label}-${sec.key}-${randomUUID()}`,
+            agentId: agentId!,
+          });
+          upsertMessage(db, conversationId, { id: `pipeline-user-${run.id}`, role: 'user', content: kickoff });
+          upsertMessage(db, conversationId, {
+            id: assistantMessageId,
+            role: 'assistant',
+            content: '',
+            agentId: agentId!,
+            agentName: getAgentDef(agentId!)?.name ?? agentId!,
+            runId: run.id,
+            runStatus: 'queued',
+            startedAt: Date.now(),
+          });
+          design.runs.start(run, () =>
+            startChatRun(
+              {
+                agentId: agentId!,
+                projectId,
+                conversationId,
+                assistantMessageId,
+                clientRequestId: run.clientRequestId,
+                skillId: def.skillId,
+                ...(wfDir ? { cwdSubdir: wfDir } : {}),
+                model: modelPrefs.model ?? null,
+                reasoning: modelPrefs.reasoning ?? null,
+                message: kickoff,
+              },
+              run,
+            ),
+          );
+          const final = await design.runs.wait(run);
+          db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+          done += 1;
+          console.log(`[${label}] module ${done}/${sections.length} "${sec.title}" → ${final.status}`);
+        };
+
+        let cursor = 0;
+        const worker = async () => {
+          for (;;) {
+            const i = cursor++;
+            if (i >= sections.length) break;
+            await runOneSection(sections[i]!).catch(() => undefined);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(SECTION_FANOUT_CONCURRENCY, sections.length) }, worker));
+
+        // Merge each module's slice into the canonical output the downstream reads.
+        const slices = await Promise.all(
+          sections.map(async (sec) => {
+            const parsed = await fs.promises
+              .readFile(path.join(cwd, outRel(sec.key)), 'utf8')
+              .then((t) => JSON.parse(t) as unknown)
+              .catch(() => null);
+            return { key: sec.key, title: sec.title, parsed };
+          }),
+        );
+        const anySlice = slices.some((s) => s.parsed);
+        if (kind === 'cj') {
+          const merged = mergeCjSections(slices.map((s) => ({ key: s.key, title: s.title, cj: s.parsed })));
+          const project = getProject(db, projectId);
+          const nameSlug =
+            (project?.name ?? 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'product';
+          await fs.promises.writeFile(path.join(cwd, `${nameSlug}-customer-journey.json`), JSON.stringify(merged, null, 2), 'utf8');
+        } else {
+          const { report, reportMd } = mergeUxrSections(slices.map((s) => ({ key: s.key, title: s.title, uxr: s.parsed })));
+          await fs.promises.mkdir(path.join(cwd, 'ux-research'), { recursive: true });
+          await fs.promises.writeFile(path.join(cwd, 'ux-research/report.json'), JSON.stringify(report, null, 2), 'utf8');
+          await fs.promises.writeFile(path.join(cwd, 'ux-research/report.md'), reportMd, 'utf8');
+        }
+
+        const next: 'succeeded' | 'failed' = anySlice ? 'succeeded' : 'failed';
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: next });
+        void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
+        console.log(`[${label}] section fan-out done: ${slices.filter((s) => s.parsed).length}/${sections.length} modules → ${next}`);
+        return next;
+      } catch (error) {
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        console.warn(`[${label}] section fan-out failed:`, error);
+        return 'failed' as const;
+      }
+    })();
+    return { projectId, completion };
+  };
+
   const runPipeline = async (
     projectId: string,
     pipelineId: string,
@@ -13770,6 +13953,23 @@ export async function startServer({
     // single-agent stage.
     if (def.skillId === 'docs-mockup-review') {
       return runDocsMockupReviewFanout(pipelineId, projectId, wfDir, resetScope);
+    }
+
+    // Customer Journey + UX Research → parallel PER-SECTION fan-out, but ONLY
+    // when the docs form a multi-section tree (sub-tree scan). A whole-product
+    // tree overwhelms one synthesis; a handful of flat pages does not, so a
+    // <2-section source falls through to the normal single-agent path below.
+    if (def.skillId === 'customer-journey-spec' || def.skillId === 'ux-research') {
+      const projectRoot = await ensureProject(PROJECTS_DIR, projectId).catch(() => null);
+      if (projectRoot) {
+        const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+        const sections = await listSections(cwd).catch(() => [] as DocSection[]);
+        if (sections.length >= 2) {
+          const kind = def.skillId === 'customer-journey-spec' ? 'cj' : 'ux-research';
+          console.log(`[${kind}] ${sections.length} module(s) → per-section fan-out`);
+          return runSectionFanout(pipelineId, projectId, wfDir, resetScope, kind, sections);
+        }
+      }
     }
 
     const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
