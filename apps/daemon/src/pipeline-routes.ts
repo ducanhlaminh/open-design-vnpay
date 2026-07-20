@@ -432,6 +432,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         }));
       const skipSucceeded = req.body?.skipSucceeded === true;
       const followLinks = req.body?.followLinks !== false;
+      const includeDescendants = req.body?.includeDescendants === true;
       // Remember this device's last-used run-all choices (per project) so a
       // later open of the Run-all modal — e.g. after canceling a stage mid-chain
       // — prefills from here instead of forcing the user to re-enter everything.
@@ -446,6 +447,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
             terminal: (rawTerminal as WorkflowTerminal | undefined) ?? 'ui-html',
             platform: (rawPlatform as TargetPlatform | undefined) ?? 'mobile',
             followLinks,
+            includeDescendants,
             skipSucceeded,
           },
         },
@@ -459,6 +461,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         ...(rawPlatform !== undefined ? { platform: rawPlatform as TargetPlatform } : {}),
         skipSucceeded,
         ...(followLinks ? {} : { followLinks: false }),
+        ...(includeDescendants ? { includeDescendants: true } : {}),
       });
       res.status(202).json(result);
     } catch (err: any) {
@@ -529,7 +532,9 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       const resetScope = rawScope as 'stage' | 'downstream' | undefined;
       // Docs link-follow: only an explicit false disables it (default on).
       const followLinks = req.body?.followLinks === false ? false : undefined;
-      const { completion: _completion, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId, platform, resetScope, followLinks);
+      // Docs sub-tree scan: only an explicit true enables it (default off).
+      const includeDescendants = req.body?.includeDescendants === true ? true : undefined;
+      const { completion: _completion, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId, platform, resetScope, followLinks, includeDescendants);
       res.status(202).json(start);
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });

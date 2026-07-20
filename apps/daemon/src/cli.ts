@@ -197,6 +197,10 @@ const PIPELINE_BOOLEAN_FLAGS = new Set([
   'skip-succeeded',
   // docs (deterministic Confluence): do NOT fetch the pages the seeds link to.
   'no-follow-links',
+  // docs (deterministic Confluence): also fetch the whole sub-tree under each
+  // seed page (folder-structured). Aliases: --all-pages / --include-descendants.
+  'all-pages',
+  'include-descendants',
 ]);
 const MEMORY_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'description', 'type', 'body', 'body-file',
@@ -6996,6 +7000,7 @@ async function runPipeline(args) {
           ...(platform !== undefined ? { platform } : {}),
           ...(resetScope !== undefined ? { resetScope } : {}),
           ...(flags['no-follow-links'] ? { followLinks: false } : {}),
+          ...(flags['all-pages'] || flags['include-descendants'] ? { includeDescendants: true } : {}),
         }),
       });
     } catch (err) {
@@ -7070,6 +7075,7 @@ async function runPipeline(args) {
           ...(platform !== undefined ? { platform } : {}),
           ...(flags['skip-succeeded'] ? { skipSucceeded: true } : {}),
           ...(flags['no-follow-links'] ? { followLinks: false } : {}),
+          ...(flags['all-pages'] || flags['include-descendants'] ? { includeDescendants: true } : {}),
         }),
       });
     } catch (err) {

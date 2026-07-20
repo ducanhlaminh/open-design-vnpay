@@ -62,7 +62,14 @@ import { SpecPreview, type SpecDoc } from './SpecPreview';
 import { SpecFlowCanvas, isFlowDoc, type FlowDoc } from './SpecFlowCanvas';
 import { ReviewPreview, type ReviewReport } from './ReviewPreview';
 import { UxResearchPreview, isUxResearchReport, type UxResearchReport } from './UxResearchPreview';
-import { DocsReviewPreview, isDocsMockupReviewReport, type DocsMockupReviewReport } from './DocsReviewPreview';
+import {
+  DocsReviewPreview,
+  DocsReviewIndexPreview,
+  isDocsMockupReviewReport,
+  isDocsMockupReviewIndex,
+  type DocsMockupReviewReport,
+  type DocsMockupReviewIndex,
+} from './DocsReviewPreview';
 import type { WireDoc } from './WireFrameView';
 import {
   exportAsHtml,
@@ -8096,7 +8103,20 @@ function SpecFileViewer({
     if (text == null) return null;
     try {
       const p = JSON.parse(text) as unknown;
+      if (isDocsMockupReviewIndex(p)) return null; // handled by docsMockupIndex below
       return isDocsMockupReviewReport(p) ? (p as DocsMockupReviewReport) : null;
+    } catch {
+      return null;
+    }
+  }, [text]);
+
+  // The per-page fan-out manifest (review/index.json): renders every page's
+  // report grouped, so it's checked BEFORE the single-report shape above.
+  const docsMockupIndex = useMemo<DocsMockupReviewIndex | null>(() => {
+    if (text == null) return null;
+    try {
+      const p = JSON.parse(text) as unknown;
+      return isDocsMockupReviewIndex(p) ? (p as DocsMockupReviewIndex) : null;
     } catch {
       return null;
     }
@@ -8231,6 +8251,8 @@ function SpecFileViewer({
       <div className="viewer-body">
         {text === null || (spec === null && review === null && uxResearch === null && docsMockupReview === null) ? (
           <div className="viewer-empty">{t('fileViewer.loading')}</div>
+        ) : docsMockupIndex && mode === 'preview' ? (
+          <DocsReviewIndexPreview projectId={projectId} fileName={file.name} index={docsMockupIndex} />
         ) : docsMockupReview && mode === 'preview' ? (
           <DocsReviewPreview
             projectId={projectId}

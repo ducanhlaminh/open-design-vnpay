@@ -69,6 +69,35 @@ export function isDocsMockupReviewReport(v: unknown): v is DocsMockupReviewRepor
   return Array.isArray(r.images) && r.images.some((i) => i && typeof i === 'object' && 'path' in (i as object));
 }
 
+/** The per-page fan-out manifest (skill schema_version 1.1): review/index.json
+ *  listing each page's own report.json. Distinct from a single report — the
+ *  `pages[]` array + kind marker. */
+export interface DocsMockupReviewIndex {
+  kind?: string;
+  schema_version?: string;
+  summary?: { images?: number; score?: number; verdict?: Verdict; blockers?: number; majors?: number; minors?: number };
+  pages?: Array<{
+    slug?: string;
+    page?: string;
+    page_path?: string;
+    report?: string;
+    images?: number;
+    score?: number;
+    verdict?: Verdict;
+    blockers?: number;
+    majors?: number;
+    minors?: number;
+  }>;
+}
+
+export function isDocsMockupReviewIndex(v: unknown): v is DocsMockupReviewIndex {
+  if (!v || typeof v !== 'object') return false;
+  const r = v as Record<string, unknown>;
+  if (r.kind === 'docs-mockup-review-index') return true;
+  // Fallback: a pages[] array whose items carry a `report` path.
+  return Array.isArray(r.pages) && r.pages.some((p) => p && typeof p === 'object' && 'report' in (p as object));
+}
+
 const T = {
   ink: 'var(--text, #1a1a1a)',
   soft: 'var(--text-soft, #4b5563)',
@@ -1172,6 +1201,146 @@ export function DocsReviewPreview({
         />
       ))}
       {glossary !== null ? <GlossaryModal uxr={uxr} focus={glossary || null} onClose={() => setGlossary(null)} /> : null}
+    </div>
+  );
+}
+
+/** Resolve a page report path (from index.json's `pages[].report`, relative to
+ *  the index's own dir) to a project-relative path. */
+function resolvePageReportPath(indexFileName: string, report: string): string {
+  const dir = indexFileName.split('/').slice(0, -1).join('/');
+  return dir ? `${dir}/${report}` : report;
+}
+
+const IDX_VERDICT_TONE: Record<Verdict, string> = {
+  pass: 'var(--green, #16a34a)',
+  warn: 'var(--amber, #b45309)',
+  fail: 'var(--red, #dc2626)',
+};
+
+/** Per-page fan-out preview: reads review/index.json, loads each page's own
+ *  report.json, and renders one collapsible section per page — each section is
+ *  the full single-report editor (DocsReviewPreview) scoped to that page's
+ *  report file, so edit/save/region-draw/glossary all work per page. */
+export function DocsReviewIndexPreview({
+  projectId,
+  fileName,
+  index,
+}: {
+  projectId: string;
+  /** review/index.json's project-relative path. */
+  fileName: string;
+  index: DocsMockupReviewIndex;
+}) {
+  const pages = useMemo(
+    () => (index.pages ?? []).filter((p) => p.report),
+    [index],
+  );
+  const [reports, setReports] = useState<Record<string, DocsMockupReviewReport | null>>({});
+  const [open, setOpen] = useState<Set<string>>(() => {
+    const worst = pages.findIndex((p) => p.verdict !== 'pass');
+    const first = pages[worst === -1 ? 0 : worst];
+    return new Set(first?.slug ? [first.slug] : []);
+  });
+
+  const loadReport = (slug: string, reportPath: string) => {
+    if (reports[slug] !== undefined) return;
+    const url = projectRawUrl(projectId, resolvePageReportPath(fileName, reportPath));
+    void fetch(url)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => setReports((prev) => ({ ...prev, [slug]: (json as DocsMockupReviewReport) ?? null })))
+      .catch(() => setReports((prev) => ({ ...prev, [slug]: null })));
+  };
+
+  const toggle = (slug: string, reportPath: string) => {
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(slug)) next.delete(slug);
+      else {
+        next.add(slug);
+        loadReport(slug, reportPath);
+      }
+      return next;
+    });
+  };
+
+  // Auto-load the initially-open page.
+  useEffect(() => {
+    for (const p of pages) if (p.slug && open.has(p.slug) && p.report) loadReport(p.slug, p.report);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pages]);
+
+  const s = index.summary ?? {};
+  const verdict: Verdict = asVerdict(s.verdict);
+
+  if (!pages.length) {
+    return <div style={{ padding: 16, color: T.muted }}>Report review chưa có trang nào để hiển thị.</div>;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16 }}>
+      {/* project roll-up */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 16, border: `1px solid ${T.border}`, borderRadius: T.radius, padding: 14 }}>
+        {typeof s.score === 'number' ? (
+          <div style={{ display: 'grid', width: 48, height: 48, flexShrink: 0, placeItems: 'center', borderRadius: 12, background: verdictColor(verdict), color: '#fff', fontFamily: 'ui-monospace, monospace', fontSize: 17, fontWeight: 700 }}>{s.score}</div>
+        ) : null}
+        <div>
+          <span style={{ fontSize: 11.5, fontWeight: 700, padding: '2px 9px', borderRadius: 999, color: '#fff', background: verdictColor(verdict) }}>{verdictLabel(verdict)}</span>
+          <div style={{ marginTop: 6, display: 'flex', gap: 14, fontSize: 12 }}>
+            <span style={{ color: T.red }}>● {s.blockers ?? 0} nghiêm trọng</span>
+            <span style={{ color: T.amber }}>● {s.majors ?? 0} nặng</span>
+            <span style={{ color: T.soft }}>● {s.minors ?? 0} nhẹ</span>
+          </div>
+        </div>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: T.soft }}>{pages.length} trang · {s.images ?? 0} mockup</span>
+      </div>
+
+      {/* one collapsible section per page */}
+      {pages.map((p) => {
+        const slug = p.slug ?? p.report ?? '';
+        const isOpen = open.has(slug);
+        const pv: Verdict = asVerdict(p.verdict);
+        const rep = reports[slug];
+        return (
+          <div key={slug} style={{ border: `1px solid ${T.border}`, borderRadius: 11, overflow: 'hidden' }}>
+            <button
+              type="button"
+              onClick={() => toggle(slug, p.report!)}
+              style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 10, padding: '11px 14px', background: T.paper, border: 0, cursor: 'pointer', textAlign: 'left' }}
+            >
+              <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={15} />
+              <span style={{ minWidth: 0, fontSize: 13.5, fontWeight: 650, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {p.page ?? slug}
+              </span>
+              <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                {p.images ? <span style={{ fontSize: 11.5, color: T.faint }}>{p.images} mockup</span> : null}
+                <span style={{ display: 'flex', gap: 7, fontSize: 11.5 }}>
+                  {p.blockers ? <span style={{ color: T.red }}>{p.blockers}NT</span> : null}
+                  {p.majors ? <span style={{ color: T.amber }}>{p.majors}N</span> : null}
+                </span>
+                {typeof p.score === 'number' ? <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13, fontWeight: 600, color: T.ink }}>{p.score}</span> : null}
+                <span style={{ fontSize: 11.5, fontWeight: 700, padding: '2px 9px', borderRadius: 999, color: '#fff', background: IDX_VERDICT_TONE[pv] }}>{verdictLabel(pv)}</span>
+              </span>
+            </button>
+            {isOpen ? (
+              rep === undefined ? (
+                <div style={{ padding: 16, color: T.muted, fontSize: 12.5 }}>Đang tải báo cáo trang…</div>
+              ) : rep === null ? (
+                <div style={{ padding: 16, color: T.red, fontSize: 12.5 }}>Không đọc được report của trang này.</div>
+              ) : (
+                <div style={{ borderTop: `1px solid ${T.border}` }}>
+                  <DocsReviewPreview
+                    projectId={projectId}
+                    fileName={resolvePageReportPath(fileName, p.report!)}
+                    report={rep}
+                    onSaved={() => setReports((prev) => ({ ...prev, [slug]: undefined as unknown as DocsMockupReviewReport }))}
+                  />
+                </div>
+              )
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -41,6 +41,8 @@ export interface RunSourcePayload {
   input?: string;
   /** false → docs stage fetches ONLY the picked pages (no link-follow). */
   followLinks?: boolean;
+  /** true → docs stage also scans the whole sub-tree under each seed page. */
+  includeDescendants?: boolean;
 }
 
 /** Shared "fetch cả trang được link" toggle (docs stage, deterministic path). */
@@ -67,6 +69,39 @@ function FollowLinksToggle({
           Trang spec thường dẫn chiếu tài liệu khác (BO spec, logic dùng chung…) — daemon fetch luôn
           các trang mà trang nguồn link tới (cùng wiki, tối đa 15 trang) và rewrite link chéo thành
           link file nội bộ. Bỏ tick nếu chỉ cần đúng các trang đã chọn.
+        </span>
+      </span>
+    </label>
+  );
+}
+
+/** Phạm vi quét cây con: mặc định "chỉ trang này". Bật → daemon quét cả các
+ *  trang con (mọi cấp) dưới trang đã chọn, giữ cấu trúc thư mục theo cây. Độc
+ *  lập với FollowLinksToggle (kia đi theo LINK tham chiếu, cái này đi theo CÂY
+ *  phân cấp trang). > ~100 trang vẫn chạy nhưng daemon ghi cảnh báo. */
+function ScanScopeToggle({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="pl-runall-toggle">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(ev) => onChange(ev.target.checked)}
+        disabled={disabled}
+      />
+      <span className="pl-runall-toggle__body">
+        <span className="pl-runall-toggle__title">Quét cả trang con (theo cây phân cấp)</span>
+        <span className="pl-runall-toggle__desc">
+          Ngoài trang đã chọn, fetch luôn mọi trang con/cháu bên dưới nó trên wiki, giữ đúng cấu
+          trúc thư mục theo cây. Khác với tùy chọn trên (đi theo LINK tham chiếu) — cái này đi theo
+          CÂY trang. Mặc định tắt = chỉ đúng (các) trang đã chọn.
         </span>
       </span>
     </label>
@@ -341,6 +376,7 @@ export function RunInputModal({
   // dán link, tick chọn nhiều). Seeded từ config dự án trên studio.
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
   const [followLinks, setFollowLinks] = useState(true);
+  const [includeDescendants, setIncludeDescendants] = useState(false);
 
   // BAS branch (KG document → feature)
   const [basDocuments, setBasDocuments] = useState<BasDocument[] | null>(null);
@@ -433,7 +469,11 @@ export function RunInputModal({
         // itself via the BAS gateway — no agent); a short-link/opaque URL
         // falls back to the agent path.
         const refs = confPages.map((p) => p.url ?? p.id).filter((x): x is string => Boolean(x));
-        payload = { input: refs.join('\n'), ...(followLinks ? {} : { followLinks: false }) };
+        payload = {
+          input: refs.join('\n'),
+          ...(followLinks ? {} : { followLinks: false }),
+          ...(includeDescendants ? { includeDescendants: true } : {}),
+        };
       } else {
         const featureIds = [...selected];
         payload = {
@@ -560,6 +600,7 @@ export function RunInputModal({
           {kind === 'confluence' ? (
             <>
               <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
+              <ScanScopeToggle checked={includeDescendants} onChange={setIncludeDescendants} disabled={busy} />
               <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
             </>
           ) : (
@@ -892,6 +933,8 @@ export interface RunAllPayload {
   skipSucceeded: boolean;
   /** false → docs stage fetches ONLY the picked pages (no link-follow). */
   followLinks?: boolean;
+  /** true → docs stage also scans the whole sub-tree under each seed page. */
+  includeDescendants?: boolean;
 }
 
 export function RunAllModal({
@@ -901,6 +944,7 @@ export function RunAllModal({
   defaultTerminal,
   defaultPlatform,
   defaultFollowLinks,
+  defaultIncludeDescendants,
   defaultSkipSucceeded,
   anySucceeded,
   onClose,
@@ -916,6 +960,7 @@ export function RunAllModal({
   defaultTerminal?: WorkflowTerminalChoice;
   defaultPlatform?: TargetPlatform;
   defaultFollowLinks?: boolean;
+  defaultIncludeDescendants?: boolean;
   defaultSkipSucceeded?: boolean;
   /** Có bước nào đã xong chưa — quyết định hiện checkbox "chỉ chạy bước còn thiếu". */
   anySucceeded: boolean;
@@ -927,6 +972,7 @@ export function RunAllModal({
   // run input is one page URL/id per line, built from the picked pages.
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
   const [followLinks, setFollowLinks] = useState(defaultFollowLinks ?? true);
+  const [includeDescendants, setIncludeDescendants] = useState(defaultIncludeDescendants ?? false);
   const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(defaultTerminal ?? 'ui-html');
   const [platform, setPlatform] = useState<TargetPlatform>(defaultPlatform ?? 'mobile');
   const [systems, setSystems] = useState<DesignSystemSummary[] | null>(null);
@@ -970,6 +1016,7 @@ export function RunAllModal({
         designSystemId,
         skipSucceeded,
         ...(followLinks ? {} : { followLinks: false }),
+        ...(includeDescendants ? { includeDescendants: true } : {}),
       });
       onClose();
     } catch (err) {
@@ -1034,6 +1081,7 @@ export function RunAllModal({
         {/* Cùng picker với nút Run của riêng bước Docs: tìm trang theo tên,
             tick chọn nhiều, hoặc dán link/page id. */}
         <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
+        <ScanScopeToggle checked={includeDescendants} onChange={setIncludeDescendants} disabled={busy} />
         <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
         <span className="pl-modal-field__hint">
           Điền sẵn từ cấu hình dự án trên Pipeline Studio (nếu có). Link/id Confluence được daemon

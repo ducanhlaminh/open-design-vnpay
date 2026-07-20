@@ -559,6 +559,7 @@ export function PipelinesView() {
     if (payload?.source) body.source = payload.source;
     else if (payload?.input && payload.input.trim()) body.input = payload.input.trim();
     if (payload?.followLinks === false) body.followLinks = false;
+    if (payload?.includeDescendants) body.includeDescendants = true;
     if (designSystemId !== undefined) body.designSystemId = designSystemId;
     if (platform !== undefined) body.platform = platform;
     // Re-run clear scope chosen in the scope modal (default 'stage' when absent —
@@ -607,6 +608,7 @@ export function PipelinesView() {
         designSystemId: payload.designSystemId,
         ...(payload.skipSucceeded ? { skipSucceeded: true } : {}),
         ...(payload.followLinks === false ? { followLinks: false } : {}),
+        ...(payload.includeDescendants ? { includeDescendants: true } : {}),
       }),
     });
     if (!res.ok && res.status !== 202) {
@@ -1646,6 +1648,7 @@ export function PipelinesView() {
             defaultTerminal={runAllDefaults?.terminal}
             defaultPlatform={runAllDefaults?.platform}
             defaultFollowLinks={runAllDefaults?.followLinks}
+            defaultIncludeDescendants={runAllDefaults?.includeDescendants}
             defaultSkipSucceeded={runAllDefaults?.skipSucceeded}
             anySucceeded={pipelines.some((p) => p.status === 'succeeded')}
             onClose={() => setRunAllOpen(false)}

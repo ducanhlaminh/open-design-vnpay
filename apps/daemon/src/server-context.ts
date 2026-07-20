@@ -86,6 +86,9 @@ export interface PipelineDeps {
     // Docs stage, deterministic Confluence path: also fetch link-referenced
     // pages (depth 1, capped). undefined → true. See RunPipelineRequest.
     followLinks?: boolean,
+    // Docs stage: also fetch the whole sub-tree under each seed (folder-
+    // structured). undefined/false → seeds only. See RunPipelineRequest.
+    includeDescendants?: boolean,
   ): Promise<{
     projectId: string;
     /** Absent on a DETERMINISTIC run (docs stage, Confluence source): the
@@ -130,6 +133,7 @@ export interface PipelineDeps {
       platform?: import('@open-design/contracts').TargetPlatform;
       skipSucceeded?: boolean;
       followLinks?: boolean;
+      includeDescendants?: boolean;
     },
   ): Promise<{ projectId: string; workflowId: string; stages: string[] }>;
   // BAS MCP gateway reads for the Pipelines source-selection modal. Each resolves

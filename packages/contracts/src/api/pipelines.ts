@@ -163,6 +163,9 @@ export interface RunAllConfig {
   terminal?: WorkflowTerminal;
   platform?: TargetPlatform;
   followLinks?: boolean;
+  /** Docs stage: also fetch the whole sub-tree under each seed page
+   *  (folder-structured), independent of followLinks. Omitted → false. */
+  includeDescendants?: boolean;
   skipSucceeded?: boolean;
 }
 
@@ -237,6 +240,16 @@ export interface RunPipelineRequest {
    * other stages and by the agent (JIRA/JQL) path.
    */
   followLinks?: boolean;
+  /**
+   * Docs stage, deterministic Confluence path: also fetch the whole SUB-TREE
+   * under each seed page (its child/descendant pages in the space hierarchy),
+   * preserving their folder structure under ./docs/confluence. Independent of
+   * `followLinks` (that follows hyperlink REFERENCES; this walks the page
+   * TREE). Omitted → false (only the seed pages). Soft-capped: a scan whose
+   * tree exceeds the cap still runs but warns. Ignored by other stages and by
+   * the agent (JIRA/JQL) path.
+   */
+  includeDescendants?: boolean;
   /**
    * On a RE-RUN, how much to clear before the agent regenerates (a re-run that
    * left the previous outputs in place made the agent see them and declare the
@@ -380,6 +393,9 @@ export interface RunWorkflowRequest {
   platform?: TargetPlatform;
   /** Docs stage link-follow — same semantics as RunPipelineRequest.followLinks. */
   followLinks?: boolean;
+  /** Docs stage sub-tree scan — same semantics as
+   *  RunPipelineRequest.includeDescendants. */
+  includeDescendants?: boolean;
   /**
    * When true, stages already `succeeded` are SKIPPED (resume: only the
    * missing stages run, each clearing just its own outputs). Default false: a

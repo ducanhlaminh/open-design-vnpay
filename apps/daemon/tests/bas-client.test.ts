@@ -11,6 +11,7 @@ import {
   extractPageId,
   fetchConfluencePages,
   fetchSourceFiles,
+  listDescendantPages,
   looksLikeConfluenceRef,
   renderConfluenceIndex,
   resolveBasEndpoint,
@@ -278,6 +279,97 @@ test('htmlToMarkdown emits REAL GFM tables (separator row, padded cells, escaped
   assert.match(lines[2]!, /^\| x \\\| y \| .*trong.* \|$/);
   // Short row padded to the header width.
   assert.equal(lines[3], '| thiếu ô |  |');
+});
+
+test('listDescendantPages returns the whole sub-tree with folder path relative to the seed', async () => {
+  globalThis.fetch = vi.fn(async (url: any) => {
+    const u = String(url);
+    assert.match(u, /\/rest\/api\/content\/search\?cql=ancestor%3D100/);
+    assert.match(u, /expand=ancestors/);
+    return makeRes(
+      JSON.stringify({
+        results: [
+          {
+            id: '301',
+            title: '1. Thiết lập',
+            // root→page; the seed (100) sits mid-path, and "I. Tài khoản" is
+            // the only ancestor BELOW the seed → the folder segment.
+            ancestors: [
+              { id: '1', title: 'Space' },
+              { id: '100', title: 'B1. PRD' },
+              { id: '200', title: 'I. Tài khoản' },
+            ],
+          },
+          { id: '200', title: 'I. Tài khoản', ancestors: [{ id: '1', title: 'Space' }, { id: '100', title: 'B1. PRD' }] },
+        ],
+        size: 2,
+      }),
+    ) as any;
+  }) as any;
+  const desc = await listDescendantPages({ base: 'https://wiki.test', token: 'pat' }, '100');
+  assert.deepEqual(desc, [
+    { pageId: '301', title: '1. Thiết lập', treePath: ['I. Tài khoản'] },
+    { pageId: '200', title: 'I. Tài khoản', treePath: [] },
+  ]);
+});
+
+test('fetchConfluencePages nests sub-tree pages into folders and depth-corrects the image prefix', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-tree-'));
+  try {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/100?')) {
+        return makeRes(
+          JSON.stringify({ title: 'B1. PRD', body: { view: { value: '<p>seed</p>' } }, _links: { base: 'https://wiki.test', webui: '/x/100' } }),
+        ) as any;
+      }
+      if (u.startsWith('https://wiki.test/rest/api/content/301?')) {
+        return makeRes(
+          JSON.stringify({
+            title: '1. Thiết lập',
+            body: { view: { value: '<p><img src="/download/attachments/301/pic.png" alt="mh"></p>' } },
+            _links: { base: 'https://wiki.test', webui: '/x/301' },
+          }),
+        ) as any;
+      }
+      if (u.startsWith('https://wiki.test/download/attachments/301/pic.png')) {
+        return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode('PNG').buffer } as any;
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    const pages = await fetchConfluencePages(
+      { creds: { base: 'https://wiki.test', token: 'pat' } },
+      ['100'],
+      { attachmentsDir, followLinks: false, treePages: [{ pageId: '301', title: '1. Thiết lập', treePath: ['I. Tài khoản'] }] },
+    );
+    const seed = pages.find((p) => p.pageId === '100')!;
+    const child = pages.find((p) => p.pageId === '301')!;
+    // Seed stays flat; child nests one folder deep by its treePath slug
+    // (slug() collapses non-ASCII accents to '-', so "I. Tài khoản" → "I.-T-i-kho-n").
+    assert.equal(seed.relPath, 'docs/confluence/B1.-PRD.md');
+    assert.equal(child.relPath, 'docs/confluence/I.-T-i-kho-n/1.-Thi-t-l-p.md');
+    assert.equal(child.viaTree, true);
+    // A page one folder deep reaches the shared attachments dir via ../.
+    assert.match(child.content, /!\[mh\]\(\.\.\/attachments\/pic\.png\)/);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('renderConfluenceIndex lists sub-tree pages in their own group with folder-relative links', async () => {
+  const md = renderConfluenceIndex([
+    { pageId: '100', title: 'B1. PRD', url: 'u', relPath: 'docs/confluence/B1.-PRD.md', content: '', linked: false },
+    {
+      pageId: '301',
+      title: '1. Thiết lập',
+      url: 'u',
+      relPath: 'docs/confluence/I.-Tai-khoan/1.-Thiet-lap.md',
+      content: 'tree_path: I. Tài khoản\n',
+      viaTree: true,
+    },
+  ]);
+  assert.match(md, /## Trang con \(quét theo cây phân cấp\)/);
+  assert.match(md, /\[1\. Thiết lập\]\(\.\/I\.-Tai-khoan\/1\.-Thiet-lap\.md\)/);
 });
 
 test('fetchConfluencePages prefers the direct PAT REST fetch and converts body.view HTML', async () => {

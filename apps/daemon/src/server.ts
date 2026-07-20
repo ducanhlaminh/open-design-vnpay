@@ -446,8 +446,10 @@ import {
   basConfluenceMeta,
   basListDocuments,
   basListFeatures,
+  extractPageId,
   fetchConfluencePages,
   fetchSourceFiles,
+  listDescendantPages,
   looksLikeConfluenceRef,
   renderConfluenceIndex,
   resolveBasEndpoint,
@@ -1342,6 +1344,10 @@ const ARTIFACTS_DIR = path.join(RUNTIME_DATA_DIR, 'artifacts');
 // read path so project-membership, size, and CSP guards cannot be bypassed.
 const CRITIQUE_ARTIFACTS_DIR = path.join(RUNTIME_DATA_DIR, 'critique-artifacts');
 const PROJECTS_DIR = path.join(RUNTIME_DATA_DIR, 'projects');
+
+// Docs sub-tree scan (includeDescendants): above this many total pages the run
+// still proceeds but logs a warning — a soft cap, never a hard block.
+const DOCS_SUBTREE_WARN_THRESHOLD = 100;
 const USER_SKILLS_DIR = path.join(RUNTIME_DATA_DIR, 'skills');
 const USER_DESIGN_SYSTEMS_DIR = path.join(RUNTIME_DATA_DIR, 'design-systems');
 const PLUGIN_REGISTRY_ROOTS = registryRootsForDataDir(RUNTIME_DATA_DIR);
@@ -13423,6 +13429,7 @@ export async function startServer({
     source?: import('@open-design/contracts').PipelineRunSource,
     resetScope?: 'stage' | 'downstream',
     followLinks?: boolean,
+    includeDescendants?: boolean,
   ) => {
     const trimmedInput =
       (input ?? '').trim() || (source?.kind === 'confluence' ? source.ref.trim() : '');
@@ -13468,9 +13475,37 @@ export async function startServer({
           );
         }
         const cwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
+        // Sub-tree scan (opt-in): expand each seed into its descendant pages via
+        // CQL, folder-structured. Soft cap — a tree bigger than the threshold
+        // still runs but logs a warning (chỉ cảnh báo, không chặn). PAT-only.
+        let treePages: import('./bas/bas-client.js').DescendantPage[] = [];
+        if (includeDescendants && creds) {
+          const seen = new Set<string>();
+          for (const ref of refs) {
+            const seedId = extractPageId(ref);
+            try {
+              const desc = await listDescendantPages(creds, seedId);
+              for (const d of desc) {
+                if (seen.has(d.pageId)) continue;
+                seen.add(d.pageId);
+                treePages.push(d);
+              }
+            } catch (err) {
+              console.warn(`[pipelines] sub-tree scan for seed ${seedId} failed (continuing):`, err);
+            }
+          }
+          const scanTotal = refs.length + treePages.length;
+          if (scanTotal > DOCS_SUBTREE_WARN_THRESHOLD) {
+            console.warn(
+              `[pipelines] sub-tree scan for ${projectId}/${pipelineId}: ${scanTotal} trang (> ${DOCS_SUBTREE_WARN_THRESHOLD}) — vẫn chạy, có thể lâu.`,
+            );
+          }
+          console.log(`[pipelines] sub-tree scan: ${treePages.length} trang con dưới ${refs.length} seed`);
+        }
         const pages = await fetchConfluencePages({ creds, ep }, refs, {
           followLinks: followLinks !== false,
           attachmentsDir: path.join(cwd, 'docs/confluence/attachments'),
+          ...(treePages.length ? { treePages } : {}),
         });
         for (const p of pages) {
           const abs = path.join(cwd, p.relPath);
@@ -13522,6 +13557,9 @@ export async function startServer({
     // seed links to (depth 1, capped). undefined → true. See
     // RunPipelineRequest.followLinks.
     followLinks?: boolean,
+    // Docs stage: also fetch the whole sub-tree under each seed (folder-
+    // structured). undefined/false → seeds only. See RunPipelineRequest.
+    includeDescendants?: boolean,
   ) => {
     const def = getPipelineDef(pipelineId);
     if (!def) throw new Error(`Unknown pipeline ${pipelineId}`);
@@ -13551,7 +13589,7 @@ export async function startServer({
           : source === undefined && inputRefs.length > 0 && inputRefs.every(looksLikeConfluenceRef)
             ? inputRefs
             : null;
-      if (refs) return runDocsDeterministic(pipelineId, projectId, wfDir, refs, input, source, resetScope, followLinks);
+      if (refs) return runDocsDeterministic(pipelineId, projectId, wfDir, refs, input, source, resetScope, followLinks, includeDescendants);
     }
 
     const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
@@ -13869,6 +13907,7 @@ export async function startServer({
       platform?: import('@open-design/contracts').TargetPlatform;
       skipSucceeded?: boolean;
       followLinks?: boolean;
+      includeDescendants?: boolean;
     },
   ) => {
     const wf = getWorkflow(opts.workflowId ?? DEFAULT_WORKFLOW_ID);
@@ -13919,6 +13958,7 @@ export async function startServer({
             def.acceptsPlatform ? opts.platform : undefined,
             id === stages[0] && !opts.skipSucceeded ? 'downstream' : undefined,
             def.inputPlaceholder ? opts.followLinks : undefined,
+            def.inputPlaceholder ? opts.includeDescendants : undefined,
           );
           const status = await start.completion;
           if (status !== 'succeeded') {

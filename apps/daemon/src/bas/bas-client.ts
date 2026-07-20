@@ -333,6 +333,61 @@ export async function searchConfluencePages(
     .filter((r) => r.id);
 }
 
+/** One descendant page of a scan seed: its id/title plus the folder path
+ *  (ancestor titles BELOW the seed, seed excluded) so the docs stage can mirror
+ *  the wiki hierarchy under ./docs/confluence. */
+export interface DescendantPage {
+  pageId: string;
+  title: string;
+  /** Ancestor titles strictly between the seed and this page, top→down. */
+  treePath: string[];
+}
+
+/** Every page in the sub-tree under `seedPageId` (all levels), via CQL
+ *  `ancestor=<id>` with `expand=ancestors` so each result carries its full
+ *  path (used to rebuild folder structure relative to the seed). Direct-PAT
+ *  only — the gateway has no equivalent subtree query. Paginated; hard-stops
+ *  at `hardCap` results so a pathological tree can't run away (the caller's
+ *  soft warning fires well before this). */
+export async function listDescendantPages(
+  creds: ConfluenceCreds,
+  seedPageId: string,
+  hardCap = 500,
+): Promise<DescendantPage[]> {
+  const out: DescendantPage[] = [];
+  let start = 0;
+  const pageSize = 100;
+  for (;;) {
+    const cql = `ancestor=${seedPageId}`;
+    const url = `${creds.base}/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=${pageSize}&start=${start}&expand=ancestors`;
+    const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` } });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Confluence subtree search HTTP ${res.status} for ${seedPageId}: ${text.slice(0, 200)}`);
+    const body = JSON.parse(text) as {
+      results?: Array<{ id?: string; title?: string; ancestors?: Array<{ id?: string; title?: string }> }>;
+      size?: number;
+    };
+    const results = body.results ?? [];
+    for (const r of results) {
+      const pageId = String(r.id ?? '');
+      if (!pageId) continue;
+      // ancestors is root→page; keep only the segment strictly below the seed.
+      const anc = r.ancestors ?? [];
+      const seedIdx = anc.findIndex((a) => String(a.id ?? '') === seedPageId);
+      const below = seedIdx >= 0 ? anc.slice(seedIdx + 1) : anc;
+      out.push({
+        pageId,
+        title: r.title ?? pageId,
+        treePath: below.map((a) => a.title ?? String(a.id ?? '')).filter(Boolean),
+      });
+      if (out.length >= hardCap) return out;
+    }
+    if (results.length < pageSize) break;
+    start += pageSize;
+  }
+  return out;
+}
+
 // ── high-level reads used by the routes + run-time prefetch ──────────────────
 
 // Top level of the BAS picker: the KG documents (kg_list_documents returns
@@ -499,6 +554,9 @@ export interface ConfluenceDocPage {
   content: string;
   /** true → not user-picked: auto-fetched because a seed page links to it. */
   linked?: boolean;
+  /** true → auto-fetched as a sub-tree page under a seed (folder-structured);
+   *  distinct from `linked` (hyperlink reference). */
+  viaTree?: boolean;
 }
 
 /** Minimal HTML → Markdown for Confluence `body.view` (rendered HTML). No
@@ -880,14 +938,21 @@ const FOLLOW_MAX_TOTAL = 15;
  * FOLLOW_MAX_TOTAL), and cross-page links between FETCHED pages are rewritten
  * to relative `./<file>.md` so the doc set reads as one linked bundle. A
  * linked page that fails to fetch (permissions, deleted) is skipped with a
- * warning — only seeds are load-bearing. */
+ * warning — only seeds are load-bearing.
+ *
+ * `treePages` (opts, PAT path only): sub-tree pages under the seeds (from
+ * listDescendantPages). Fetched best-effort like linked pages (a deleted /
+ * permission-blocked child warns, never fails the run), but each carries a
+ * `treePath` so pass 2 nests it into `docs/confluence/<parent>/<child>.md`,
+ * mirroring the wiki hierarchy. Independent of followLinks. */
 export async function fetchConfluencePages(
   src: ConfluenceFetchSource,
   refs: string[],
-  opts: { followLinks?: boolean; attachmentsDir?: string } = {},
+  opts: { followLinks?: boolean; attachmentsDir?: string; treePages?: DescendantPage[] } = {},
 ): Promise<ConfluenceDocPage[]> {
   if (!src.creds && !src.ep) throw new Error('no Confluence credential (PAT) and no BAS gateway configured');
   const followLinks = opts.followLinks !== false;
+  const treePathById = new Map<string, string[]>((opts.treePages ?? []).map((t) => [t.pageId, t.treePath]));
   const client = src.ep ? new BasClient(src.ep) : null;
   const fetchViaGateway = async (pageId: string, ref: string) => {
     if (!client) throw new Error('BAS gateway not configured');
@@ -910,6 +975,8 @@ export async function fetchConfluencePages(
     /** Pre-converted markdown (gateway fallback path). */
     markdown?: string;
     linked: boolean;
+    /** Folder segments (relative to a scan seed) when this is a sub-tree page. */
+    treePath?: string[];
   }
   const fetched = new Map<string, RawPage>();
   const seedIds: string[] = [];
@@ -959,6 +1026,24 @@ export async function fetchConfluencePages(
       }
     }
   }
+  // Sub-tree pages (opts.treePages) — best-effort, direct-PAT only, each
+  // folder-structured by its treePath. A seed already fetched above keeps its
+  // seed status; a genuinely new sub-page fetches here (deleted/blocked → warn).
+  if (opts.treePages?.length && src.creds) {
+    for (const t of opts.treePages) {
+      if (fetched.has(t.pageId)) {
+        const existing = fetched.get(t.pageId)!;
+        if (!existing.treePath) existing.treePath = t.treePath;
+        continue;
+      }
+      try {
+        const p = await fetchConfluencePageDirect(src.creds, t.pageId);
+        fetched.set(t.pageId, { pageId: t.pageId, ...p, linked: true, treePath: t.treePath });
+      } catch (err) {
+        console.warn(`[bas] sub-tree Confluence page ${t.pageId} skipped:`, err);
+      }
+    }
+  }
 
   // ── Pass 2: assign files, then convert with cross-page links rewritten ────
   const pages: ConfluenceDocPage[] = [];
@@ -966,18 +1051,32 @@ export async function fetchConfluencePages(
   const relByPageId = new Map<string, string>();
   const ordered = [...fetched.values()].sort((a, b) => Number(a.linked) - Number(b.linked));
   for (const p of ordered) {
-    let relPath = `docs/confluence/${slug(p.title)}.md`;
-    if (takenPaths.has(relPath)) relPath = `docs/confluence/${slug(p.title)}-${p.pageId}.md`;
+    // Sub-tree pages nest into folders mirroring the wiki hierarchy; seed and
+    // linked pages stay flat directly under docs/confluence/.
+    const dir = (p.treePath ?? []).map(slug).filter(Boolean);
+    const folder = ['docs', 'confluence', ...dir].join('/');
+    let relPath = `${folder}/${slug(p.title)}.md`;
+    if (takenPaths.has(relPath)) relPath = `${folder}/${slug(p.title)}-${p.pageId}.md`;
     takenPaths.add(relPath);
     relByPageId.set(p.pageId, relPath);
   }
-  const resolveHref = (href: string): string => {
+  // Cross-page link rewrite, folder-aware: a link to another FETCHED page
+  // becomes a path relative to the REFERRING page's own folder (so it resolves
+  // whether both pages are flat or nested at different depths).
+  const makeResolveHref = (fromRel: string) => (href: string): string => {
     const idMatch = /\/pages\/(\d+)/.exec(href) ?? /[?&]pageId=(\d+)/.exec(href);
-    const rel = idMatch ? relByPageId.get(idMatch[1]!) : undefined;
-    return rel ? `./${rel.split('/').pop()}` : href;
+    const toRel = idMatch ? relByPageId.get(idMatch[1]!) : undefined;
+    if (!toRel) return href;
+    const rel = path.posix.relative(path.posix.dirname(fromRel), toRel);
+    return rel.startsWith('.') ? rel : `./${rel}`;
   };
   let totalImages = 0;
   for (const p of ordered) {
+    const relPath = relByPageId.get(p.pageId)!;
+    // Depth below docs/confluence/ → how many `../` a page needs to reach the
+    // shared attachments dir (all images localize into docs/confluence/attachments).
+    const depth = relPath.split('/').length - 3;
+    const attachmentsPrefix = depth > 0 ? `${'../'.repeat(depth)}attachments` : 'attachments';
     let body: string;
     if (p.html !== undefined) {
       // Same-host <img src> download (mirrors the agent-run JIRA-key path's
@@ -994,32 +1093,38 @@ export async function fetchConfluencePages(
           src.creds,
           html,
           opts.attachmentsDir,
-          'attachments',
+          attachmentsPrefix,
         ).catch((err) => {
           console.warn(`[bas] image localization failed for page ${p.pageId}:`, err);
           return { html, count: 0 };
         });
         html = localized.html;
         totalImages += localized.count;
-        localizedImagePrefix = 'attachments';
+        localizedImagePrefix = attachmentsPrefix;
       }
-      body = htmlToMarkdown(html, resolveHref, localizedImagePrefix);
+      body = htmlToMarkdown(html, makeResolveHref(relPath), localizedImagePrefix);
     } else {
       body = p.markdown ?? '';
     }
+    const viaTree = !!p.treePath;
     pages.push({
       pageId: p.pageId,
       title: p.title,
       url: p.url,
-      relPath: relByPageId.get(p.pageId)!,
-      linked: p.linked,
+      relPath,
+      linked: p.linked && !viaTree,
+      viaTree,
       content:
         frontmatter({
           title: p.title,
           page_id: p.pageId,
           url: p.url,
           source: 'confluence',
-          ...(p.linked ? { fetched_via: 'linked-from-seed' } : {}),
+          ...(viaTree
+            ? { fetched_via: 'sub-tree', tree_path: (p.treePath ?? []).join(' / ') }
+            : p.linked
+              ? { fetched_via: 'linked-from-seed' }
+              : {}),
         }) + (body || '> (empty page body)\n'),
     });
   }
@@ -1033,11 +1138,22 @@ export async function fetchConfluencePages(
  * from. Seed pages and link-followed pages list in separate groups so it is
  * obvious what the user picked vs what the crawl pulled in. */
 export function renderConfluenceIndex(pages: ConfluenceDocPage[]): string {
+  // Link relative to docs/confluence/ (keeps folder nesting for sub-tree pages
+  // instead of collapsing every link to a basename).
+  const rel = (p: ConfluenceDocPage) => p.relPath.replace(/^docs\/confluence\//, './');
   const row = (p: ConfluenceDocPage) =>
-    `- [${p.title}](./${p.relPath.split('/').pop()}) — page ${p.pageId} · ${p.url}`;
-  const seeds = pages.filter((p) => !p.linked);
+    `- [${p.title}](${rel(p)}) — page ${p.pageId} · ${p.url}`;
+  const treeRow = (p: ConfluenceDocPage) => {
+    const path = p.content.match(/^tree_path:\s*(.*)$/m)?.[1]?.trim();
+    return `- [${p.title}](${rel(p)})${path ? ` — ${path}` : ''} · page ${p.pageId}`;
+  };
+  const seeds = pages.filter((p) => !p.linked && !p.viaTree);
+  const tree = pages.filter((p) => p.viaTree);
   const linked = pages.filter((p) => p.linked);
   let md = `# Tài liệu nguồn (Confluence)\n\n${seeds.map(row).join('\n')}\n`;
+  if (tree.length) {
+    md += `\n## Trang con (quét theo cây phân cấp)\n\n${tree.map(treeRow).join('\n')}\n`;
+  }
   if (linked.length) {
     md += `\n## Trang liên kết (tự fetch từ link trong trang nguồn)\n\n${linked.map(row).join('\n')}\n`;
   }
