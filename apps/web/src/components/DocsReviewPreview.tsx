@@ -120,16 +120,19 @@ const T = {
  * into the `docs-to-prd/` prefix the daemon namespaces it under. But
  * `/api/projects/:id/raw/*` resolves names relative to the PROJECT ROOT, so
  * a raw path needs that prefix reconstructed before it can load. `fileName`
- * (report.json's own path, e.g. `docs-to-prd/review/report.json`) is always
- * correct — root-relative, from the project's real file listing — so derive
- * the prefix from IT (two path segments up: past `review/report.json`)
- * instead of trusting anything the agent wrote. Idempotent: a path that
- * already carries the prefix (or a legacy unprefixed report with no prefix
- * at all) passes through unchanged.
+ * (report.json's own path) is always correct — root-relative, from the
+ * project's real file listing — so derive the prefix from IT: everything
+ * BEFORE the `review/` segment. This is robust to the per-page fan-out layout
+ * (`docs-to-prd/review/<slug>/report.json`, nested) as well as the flat legacy
+ * one (`docs-to-prd/review/report.json`) — a naive "two segments up" slice
+ * would yield `docs-to-prd/review` for the nested case and 404 every image.
+ * Idempotent: a path that already carries the prefix (or a review-root report
+ * with no prefix at all) passes through unchanged.
  */
 export function resolveImagePath(reportFileName: string, imagePath: string): string {
-  const parts = reportFileName.split('/');
-  const prefix = parts.length > 2 ? parts.slice(0, parts.length - 2).join('/') : '';
+  const norm = reportFileName.replace(/\\/g, '/');
+  const at = norm.indexOf('/review/');
+  const prefix = at > 0 ? norm.slice(0, at) : '';
   if (!prefix || imagePath.startsWith(`${prefix}/`)) return imagePath;
   return `${prefix}/${imagePath}`;
 }

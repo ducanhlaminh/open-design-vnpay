@@ -25,6 +25,17 @@ describe('resolveImagePath', () => {
       'docs/confluence/x/attachments/y.png',
     );
   });
+
+  it('derives the prefix past the review/ segment for per-page fan-out reports', () => {
+    // Nested per-page layout: `docs-to-prd/review/<slug>/report.json`. A naive
+    // two-segments-up slice would give `docs-to-prd/review` and 404 the image.
+    expect(
+      resolveImagePath(
+        'docs-to-prd/review/II.-Danh-muc__2.1.4.-Quan-ly-nhom/report.json',
+        'docs/confluence/attachments/y.png',
+      ),
+    ).toBe('docs-to-prd/docs/confluence/attachments/y.png');
+  });
 });
 
 // The review agent excerpts feature_text as ONE flattened line, joining the
