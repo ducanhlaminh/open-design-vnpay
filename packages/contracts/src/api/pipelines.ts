@@ -95,6 +95,10 @@ export interface PipelineView {
   outputs?: string[];
   lastRunId?: string;
   lastConversationId?: string;
+  /** Per-task conversations when the last run fanned out — the UI lists them
+   *  behind a "Hội thoại (N)" button so you can open each parallel agent's
+   *  transcript. Absent for a single-agent run. */
+  subConversations?: PipelineSubConversation[];
   updatedAt?: number;
   /**
    * Free-text input of the LAST run (Confluence URL / JIRA key / JQL), kept so
@@ -472,6 +476,20 @@ export interface PipelineRunState {
   lastSource?: PipelineRunSource;
   /** Target platform of the last run (stages with `acceptsPlatform`). */
   lastPlatform?: TargetPlatform;
+  /** When the last run FANNED OUT (per-page/module/screen parallel tasks), the
+   *  conversation of each task so the UI can list them individually. Absent /
+   *  empty for a single-agent run (its one conversation is lastConversationId). */
+  subConversations?: PipelineSubConversation[];
+}
+
+export interface PipelineSubConversation {
+  id: string;
+  /** Task label (page / module / screen name) for the list. */
+  title: string;
+  /** Live per-task state — 'queued' (waiting), 'running', 'succeeded' (done),
+   *  'failed' (error). Updated as the fan-out pool progresses so the Status
+   *  modal shows X/N done + each task's state. */
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
 }
 
 export type ProjectPipelineState = Record<string, PipelineRunState>;

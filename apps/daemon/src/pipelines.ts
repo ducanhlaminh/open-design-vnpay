@@ -518,6 +518,13 @@ export function listPipelineStatus(
       ...(def.outputs && def.outputs.length ? { outputs: [...def.outputs] } : {}),
       ...(run?.lastRunId ? { lastRunId: run.lastRunId } : {}),
       ...(run?.lastConversationId ? { lastConversationId: run.lastConversationId } : {}),
+      ...(Array.isArray((run as { subConversations?: unknown })?.subConversations) &&
+      (run as { subConversations: unknown[] }).subConversations.length
+        ? {
+            subConversations: (run as { subConversations: import('@open-design/contracts').PipelineSubConversation[] })
+              .subConversations,
+          }
+        : {}),
       ...(run?.updatedAt ? { updatedAt: run.updatedAt } : {}),
       ...(run?.lastInput ? { lastInput: run.lastInput } : {}),
       ...(run?.lastSource ? { lastSource: run.lastSource } : {}),

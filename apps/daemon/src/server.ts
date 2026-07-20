@@ -13565,7 +13565,7 @@ export async function startServer({
         if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
         if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
 
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
         const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
         const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
 
@@ -13605,20 +13605,29 @@ export async function startServer({
         // chat UI shows one readable single-agent transcript per task instead of
         // N agents interleaved in one log. The stage's "Open chat" lands on the
         // first; the ConversationsMenu lists the siblings by their shared prefix.
-        let firstConversationId: string | null = null;
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
         const graphNote =
           ' This is a FILE-ONLY stage: produce the report file only, do NOT push anything to KGS.';
 
+        // Pre-create one conversation per page (up front, all "queued") so the
+        // Status modal shows X/N done + each task's live state as the pool
+        // progresses. persistTasks() writes the current snapshot on each change.
+        const tasks = pages.map((pg) => {
+          const id = `pipeline-conv-${randomUUID()}`;
+          insertConversation(db, { id, projectId, title: `${def.name} · ${pg.page}`, createdAt: Date.now(), updatedAt: Date.now() });
+          return { id, title: pg.page, status: 'queued' as 'queued' | 'running' | 'succeeded' | 'failed' };
+        });
+        const persistTasks = () =>
+          setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: tasks.map((t) => ({ ...t })) });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: tasks[0]?.id });
+        persistTasks();
+
         // Bounded-concurrency pool: at most K page runs in flight at once.
         let done = 0;
-        const runOnePage = async (pg: (typeof pages)[number]): Promise<'succeeded' | 'failed' | 'idle'> => {
-          const conversationId = `pipeline-conv-${randomUUID()}`;
-          insertConversation(db, { id: conversationId, projectId, title: `${def.name} · ${pg.page}`, createdAt: Date.now(), updatedAt: Date.now() });
-          if (!firstConversationId) {
-            firstConversationId = conversationId;
-            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
-          }
+        const runOnePage = async (pg: (typeof pages)[number], task: (typeof tasks)[number]): Promise<'succeeded' | 'failed' | 'idle'> => {
+          const conversationId = task.id;
+          task.status = 'running';
+          persistTasks();
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const kickoff =
             `Run the "docs-mockup-review" review for ONE page of KGS project "${projectId}". ` +
@@ -13663,6 +13672,8 @@ export async function startServer({
           );
           const final = await design.runs.wait(run);
           db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+          task.status = final.status === 'succeeded' ? 'succeeded' : 'failed';
+          persistTasks();
           done += 1;
           console.log(`[prd-review] page ${done}/${pages.length} "${pg.page}" → ${final.status}`);
           return final.status === 'succeeded' ? 'succeeded' : final.status === 'canceled' ? 'idle' : 'failed';
@@ -13673,7 +13684,11 @@ export async function startServer({
           for (;;) {
             const i = cursor++;
             if (i >= pages.length) break;
-            await runOnePage(pages[i]!).catch(() => 'failed' as const);
+            await runOnePage(pages[i]!, tasks[i]!).catch(() => {
+              tasks[i]!.status = 'failed';
+              persistTasks();
+              return 'failed' as const;
+            });
           }
         };
         await Promise.all(
@@ -13701,7 +13716,7 @@ export async function startServer({
         // one page produced a report; fail only if every page run came back empty.
         const anyReport = perPage.some((p) => p.report);
         const next: 'succeeded' | 'failed' = anyReport ? 'succeeded' : 'failed';
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: next });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: next, subConversations: tasks.map((t) => ({ ...t })) });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[prd-review] fan-out done: ${perPage.filter((p) => p.report).length}/${pages.length} pages reported → ${next}`);
         return next;
@@ -13744,7 +13759,7 @@ export async function startServer({
         if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
         if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
 
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
         const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
         const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
 
@@ -13786,10 +13801,19 @@ export async function startServer({
           }
         }
 
-        // Per-MODULE conversation (one readable transcript per parallel module)
-        // instead of one interleaved log. First one is the stage's "Open chat".
-        let firstConversationId: string | null = null;
+        // Pre-create one conversation per module (all "queued"), plus a trailing
+        // "Hợp nhất" (reconcile) task, so the Status modal shows X/N done + each
+        // module's live state.
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+        const tasks = sections.map((sec) => {
+          const id = `pipeline-conv-${randomUUID()}`;
+          insertConversation(db, { id, projectId, title: `${def.name} · ${sec.title}`, createdAt: Date.now(), updatedAt: Date.now() });
+          return { id, title: sec.title, status: 'queued' as 'queued' | 'running' | 'succeeded' | 'failed' };
+        });
+        const persistTasks = () =>
+          setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: tasks.map((t) => ({ ...t })) });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: tasks[0]?.id });
+        persistTasks();
 
         let done = 0;
         const outRel = (key: string) =>
@@ -13800,13 +13824,10 @@ export async function startServer({
             : kind === 'ux-spec' && platform === 'mobile'
               ? ' Target platform: MOBILE — every screen sets `layout: "mobile"`.'
               : '';
-        const runOneSection = async (sec: DocSection): Promise<void> => {
-          const conversationId = `pipeline-conv-${randomUUID()}`;
-          insertConversation(db, { id: conversationId, projectId, title: `${def.name} · ${sec.title}`, createdAt: Date.now(), updatedAt: Date.now() });
-          if (!firstConversationId) {
-            firstConversationId = conversationId;
-            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
-          }
+        const runOneSection = async (sec: DocSection, task: (typeof tasks)[number]): Promise<void> => {
+          const conversationId = task.id;
+          task.status = 'running';
+          persistTasks();
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const pagesList = sec.mdPaths.map((p) => `"${p}"`).join(', ');
           const kickoff =
@@ -13865,6 +13886,8 @@ export async function startServer({
           );
           const final = await design.runs.wait(run);
           db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+          task.status = final.status === 'succeeded' ? 'succeeded' : 'failed';
+          persistTasks();
           done += 1;
           console.log(`[${label}] module ${done}/${sections.length} "${sec.title}" → ${final.status}`);
         };
@@ -13874,7 +13897,10 @@ export async function startServer({
           for (;;) {
             const i = cursor++;
             if (i >= sections.length) break;
-            await runOneSection(sections[i]!).catch(() => undefined);
+            await runOneSection(sections[i]!, tasks[i]!).catch(() => {
+              tasks[i]!.status = 'failed';
+              persistTasks();
+            });
           }
         };
         await Promise.all(Array.from({ length: Math.min(SECTION_FANOUT_CONCURRENCY, sections.length) }, worker));
@@ -13918,9 +13944,12 @@ export async function startServer({
         // stays — coverage is already guaranteed by the fan-out above.
         if (anySlice) {
           try {
-            // Its own conversation (the reconcile is a distinct follow-up task).
+            // Its own conversation + task (the reconcile is a distinct follow-up).
             const conversationId = `pipeline-conv-${randomUUID()}`;
             insertConversation(db, { id: conversationId, projectId, title: `${def.name} · Hợp nhất`, createdAt: Date.now(), updatedAt: Date.now() });
+            const reconcileTask = { id: conversationId, title: 'Hợp nhất', status: 'running' as 'queued' | 'running' | 'succeeded' | 'failed' };
+            tasks.push(reconcileTask);
+            persistTasks();
             const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
             const reconcileKickoff =
               kind === 'cj'
@@ -13967,14 +13996,18 @@ export async function startServer({
             );
             const rcFinal = await design.runs.wait(rc);
             db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(rcFinal.status, Date.now(), assistantMessageId);
+            reconcileTask.status = rcFinal.status === 'succeeded' ? 'succeeded' : 'failed';
+            persistTasks();
             console.log(`[${label}] reconcile pass → ${rcFinal.status}`);
           } catch (error) {
+            reconcileTask.status = 'failed';
+            persistTasks();
             console.warn(`[${label}] reconcile pass failed (keeping mechanical merge):`, error);
           }
         }
 
         const next: 'succeeded' | 'failed' = anySlice ? 'succeeded' : 'failed';
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: next });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: next, subConversations: tasks.map((t) => ({ ...t })) });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[${label}] section fan-out done: ${slices.filter((s) => s.parsed).length}/${sections.length} modules → ${next}`);
         return next;
@@ -14016,7 +14049,7 @@ export async function startServer({
         if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
         if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
 
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
         const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
         const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
 
@@ -14037,21 +14070,26 @@ export async function startServer({
           if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
         }
 
-        // Per-SCREEN conversation (one readable transcript per parallel screen)
-        // instead of one interleaved log. First one is the stage's "Open chat".
-        let firstConversationId: string | null = null;
+        // Pre-create one conversation per screen (all "queued") so the Status
+        // modal shows X/N done + each screen's live state.
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
         const dsId = designSystemId !== undefined ? designSystemId : (appConfig.designSystemId ?? null);
+        const tasks = screens.map((s) => {
+          const id = `pipeline-conv-${randomUUID()}`;
+          insertConversation(db, { id, projectId, title: `${def.name} · ${s.name}`, createdAt: Date.now(), updatedAt: Date.now() });
+          return { id, title: s.name, status: 'queued' as 'queued' | 'running' | 'succeeded' | 'failed' };
+        });
+        const persistTasks = () =>
+          setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: tasks.map((t) => ({ ...t })) });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: tasks[0]?.id });
+        persistTasks();
 
         let done = 0;
         const outRel = (s: UiScreen) => (kind === 'ux-review' ? `heuristic-review/${s.slug}/report.json` : `prototype/${s.slug}.html`);
-        const runOneScreen = async (s: UiScreen): Promise<void> => {
-          const conversationId = `pipeline-conv-${randomUUID()}`;
-          insertConversation(db, { id: conversationId, projectId, title: `${def.name} · ${s.name}`, createdAt: Date.now(), updatedAt: Date.now() });
-          if (!firstConversationId) {
-            firstConversationId = conversationId;
-            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
-          }
+        const runOneScreen = async (s: UiScreen, task: (typeof tasks)[number]): Promise<void> => {
+          const conversationId = task.id;
+          task.status = 'running';
+          persistTasks();
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const kickoff =
             kind === 'ux-review'
@@ -14102,6 +14140,8 @@ export async function startServer({
           );
           const final = await design.runs.wait(run);
           db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+          task.status = final.status === 'succeeded' ? 'succeeded' : 'failed';
+          persistTasks();
           done += 1;
           console.log(`[${label}] screen ${done}/${screens.length} "${s.name}" → ${final.status}`);
         };
@@ -14111,7 +14151,10 @@ export async function startServer({
           for (;;) {
             const i = cursor++;
             if (i >= screens.length) break;
-            await runOneScreen(screens[i]!).catch(() => undefined);
+            await runOneScreen(screens[i]!, tasks[i]!).catch(() => {
+              tasks[i]!.status = 'failed';
+              persistTasks();
+            });
           }
         };
         await Promise.all(Array.from({ length: Math.min(SCREEN_FANOUT_CONCURRENCY, screens.length) }, worker));
@@ -14144,7 +14187,7 @@ export async function startServer({
         }
 
         const next: 'succeeded' | 'failed' = anyOut ? 'succeeded' : 'failed';
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: next });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: next, subConversations: tasks.map((t) => ({ ...t })) });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[${label}] screen fan-out done → ${next}`);
         return next;
@@ -14443,6 +14486,8 @@ export async function startServer({
       status: 'running',
       lastRunId: run.id,
       lastConversationId: conversationId,
+      // Single-agent run → clear any per-task list left by a prior fan-out run.
+      subConversations: [],
       // Persist WHAT this run was fed (Confluence link / JQL / BAS document)
       // so the stage's "run info" panel can answer "where did this output
       // come from?" long after the run finished.

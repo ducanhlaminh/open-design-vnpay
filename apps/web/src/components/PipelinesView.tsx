@@ -1715,8 +1715,13 @@ export function PipelinesView() {
       ) : null}
       {statusFor ? (
         <PipelineStatusModal
-          pipeline={statusFor}
+          // Fresh copy from the polled list so the fan-out task list updates live.
+          pipeline={pipelines.find((p) => p.id === statusFor.id) ?? statusFor}
           onClose={() => setStatusFor(null)}
+          onOpenTask={(conversationId) => {
+            navigate({ kind: 'project', projectId, conversationId, fileName: null });
+            setStatusFor(null);
+          }}
           onOpenChat={
             statusFor.lastConversationId
               ? () => {

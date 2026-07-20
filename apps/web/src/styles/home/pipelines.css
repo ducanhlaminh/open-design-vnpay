@@ -1550,6 +1550,68 @@
 }
 
 /* Status modal */
+/* Fan-out per-task status list (Status modal). */
+.pl-fanout-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.pl-fanout-summary__hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pl-fanout-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.pl-fanout-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-panel);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.pl-fanout-item:hover {
+  background: var(--bg-subtle);
+}
+.pl-fanout-item__icon {
+  display: flex;
+  flex-shrink: 0;
+}
+.pl-fanout-item__icon--queued { color: var(--text-muted); }
+.pl-fanout-item__icon--running { color: var(--accent, #0066b3); }
+.pl-fanout-item__icon--succeeded { color: var(--green, #16a34a); }
+.pl-fanout-item__icon--failed { color: var(--red, #dc2626); }
+.pl-fanout-item__name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--text);
+}
+.pl-fanout-item__status {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.pl-fanout-item--failed .pl-fanout-item__status { color: var(--red, #dc2626); }
+
 .pl-status-detail {
   display: flex;
   flex-direction: column;

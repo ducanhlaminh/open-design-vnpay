@@ -604,6 +604,8 @@ interface PipelineRunStateRow {
   lastSource?: unknown;
   /** Target platform of the last run (stages with `acceptsPlatform`). */
   lastPlatform?: string;
+  /** Per-task conversations of a fan-out run (list behind a stage button). */
+  subConversations?: Array<{ id: string; title: string; status: string }>;
 }
 
 export function getProjectPipelineState(
@@ -632,6 +634,7 @@ export function setProjectPipelineStatus(
     lastInput?: string;
     lastSource?: unknown;
     lastPlatform?: string;
+    subConversations?: Array<{ id: string; title: string; status: string }>;
   },
 ) {
   const project = getProject(db, projectId);

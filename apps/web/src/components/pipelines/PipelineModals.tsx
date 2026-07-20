@@ -28,7 +28,7 @@ import type {
 import { UI_TARGET_IDS, UI_TARGETS } from '@open-design/contracts';
 import type { TrackingProjectKind } from '@open-design/contracts/analytics';
 
-import { Icon } from '../Icon';
+import { Icon, type IconName } from '../Icon';
 import { FileViewer } from '../FileViewer';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
@@ -1391,17 +1391,30 @@ function formatElapsed(ms: number): string {
   return m > 0 ? `${m}m ${rem}s` : `${rem}s`;
 }
 
+const TASK_STATUS_META: Record<string, { icon: IconName; label: string; cls: string }> = {
+  queued: { icon: 'more-horizontal', label: 'Đang chờ', cls: 'queued' },
+  running: { icon: 'spinner', label: 'Đang chạy', cls: 'running' },
+  succeeded: { icon: 'check', label: 'Xong', cls: 'succeeded' },
+  failed: { icon: 'close', label: 'Lỗi', cls: 'failed' },
+};
+
 export function PipelineStatusModal({
   pipeline,
   onClose,
   onOpenChat,
+  onOpenTask,
   onRefresh,
 }: {
   pipeline: PipelineView;
   onClose: () => void;
   onOpenChat: (() => void) | null;
+  /** Open one fan-out task's conversation (per-task chat). */
+  onOpenTask?: (conversationId: string) => void;
   onRefresh: () => void;
 }) {
+  const tasks = pipeline.subConversations ?? [];
+  const doneCount = tasks.filter((t) => t.status === 'succeeded' || t.status === 'failed').length;
+  const failedCount = tasks.filter((t) => t.status === 'failed').length;
   const runId = pipeline.lastRunId ?? null;
   const [run, setRun] = useState<ChatRunStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1483,7 +1496,42 @@ export function PipelineStatusModal({
         </>
       }
     >
-      {!runId ? (
+      {tasks.length > 0 ? (
+        <div className="pl-status-detail">
+          <div className="pl-fanout-summary">
+            <span className={`pl-status-detail__badge pl-status--${pipeline.status}`}>
+              {pipeline.status === 'running' || pipeline.status === 'queued' ? <Icon name="spinner" size={14} /> : null}
+              <span>
+                {doneCount}/{tasks.length} xong
+                {failedCount ? ` · ${failedCount} lỗi` : ''}
+              </span>
+            </span>
+            <span className="pl-fanout-summary__hint">Các tác vụ chạy song song — bấm để mở hội thoại từng cái.</span>
+          </div>
+          <ul className="pl-fanout-list">
+            {tasks.map((task) => {
+              const meta = TASK_STATUS_META[task.status] ?? TASK_STATUS_META.queued!;
+              return (
+                <li key={task.id}>
+                  <button
+                    type="button"
+                    className={`pl-fanout-item pl-fanout-item--${meta.cls}`}
+                    onClick={() => onOpenTask?.(task.id)}
+                    title={`Mở hội thoại: ${task.title}`}
+                  >
+                    <span className={`pl-fanout-item__icon pl-fanout-item__icon--${meta.cls}`} aria-hidden="true">
+                      <Icon name={meta.icon} size={13} />
+                    </span>
+                    <span className="pl-fanout-item__name">{task.title}</span>
+                    <span className="pl-fanout-item__status">{meta.label}</span>
+                    <Icon name="chevron-right" size={13} />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : !runId ? (
         <p className="pl-modal-empty">No run for this pipeline yet.</p>
       ) : (
         <div className="pl-status-detail">
