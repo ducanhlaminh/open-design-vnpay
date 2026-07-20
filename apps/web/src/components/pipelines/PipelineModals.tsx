@@ -946,6 +946,9 @@ export function RunAllModal({
   defaultFollowLinks,
   defaultIncludeDescendants,
   defaultSkipSucceeded,
+  hasPlatform = true,
+  hasTerminal = true,
+  hasDesignSystem = true,
   anySucceeded,
   onClose,
   onRun,
@@ -962,6 +965,12 @@ export function RunAllModal({
   defaultFollowLinks?: boolean;
   defaultIncludeDescendants?: boolean;
   defaultSkipSucceeded?: boolean;
+  /** Whether the active workflow HAS a stage that uses each picker — a
+   *  workflow with no UX/UI stages (e.g. Docs → PRD Review) hides them so the
+   *  modal only shows config it actually consumes. Default true (docs-to-ui). */
+  hasPlatform?: boolean;
+  hasTerminal?: boolean;
+  hasDesignSystem?: boolean;
   /** Có bước nào đã xong chưa — quyết định hiện checkbox "chỉ chạy bước còn thiếu". */
   anySucceeded: boolean;
   onClose: () => void;
@@ -1089,6 +1098,7 @@ export function RunAllModal({
           Nguồn BAS đang bảo trì.
         </span>
       </div>
+      {hasPlatform ? (
       <div className="pl-modal-field">
         <span className="pl-modal-field__label">Nền tảng (bước UX Spec)</span>
         <div className={styles.cards} role="radiogroup" aria-label="Target platform">
@@ -1130,6 +1140,8 @@ export function RunAllModal({
           </button>
         </div>
       </div>
+      ) : null}
+      {hasTerminal ? (
       <div className="pl-modal-field">
         <span className="pl-modal-field__label">Kết quả UI-Spec (bước cuối)</span>
         <div className={styles.cards} role="radiogroup" aria-label="UI-Spec terminal">
@@ -1138,6 +1150,8 @@ export function RunAllModal({
           {terminalCard('both', 'Cả hai', 'HTML trước, React sau.')}
         </div>
       </div>
+      ) : null}
+      {hasDesignSystem ? (
       <div className="pl-modal-field pl-modal-field--ds">
         <span className="pl-modal-field__label">Design system (tùy chọn)</span>
         <ProjectDesignSystemPicker
@@ -1148,6 +1162,7 @@ export function RunAllModal({
           popoverZIndex={1100}
         />
       </div>
+      ) : null}
       {anySucceeded ? (
         // Checkbox hardening lives in .pl-runall-toggle (pipelines.css) — the
         // app's global input pill styles would otherwise stretch it full-width

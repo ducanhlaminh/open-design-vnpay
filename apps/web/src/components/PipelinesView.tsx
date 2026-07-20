@@ -1650,6 +1650,12 @@ export function PipelinesView() {
             defaultFollowLinks={runAllDefaults?.followLinks}
             defaultIncludeDescendants={runAllDefaults?.includeDescendants}
             defaultSkipSucceeded={runAllDefaults?.skipSucceeded}
+            // Only show a picker when the active workflow HAS a stage using it —
+            // Docs → PRD Review has no UX/UI/design-system stage, so it shows
+            // just the Confluence source + scan toggles.
+            hasPlatform={pipelines.some((p) => p.acceptsPlatform)}
+            hasTerminal={pipelines.some((p) => p.id === 'ui-html' || p.id === 'ui-react')}
+            hasDesignSystem={pipelines.some((p) => p.acceptsDesignSystem)}
             anySucceeded={pipelines.some((p) => p.status === 'succeeded')}
             onClose={() => setRunAllOpen(false)}
             onRun={startRunAll}
