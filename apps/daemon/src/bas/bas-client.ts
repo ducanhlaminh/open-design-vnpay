@@ -590,7 +590,16 @@ const NAMED_ENTITIES: Record<string, string> = {
 // The agent-run JIRA-key path has its own, separate image-download logic
 // (skills/jira-ingest/scripts/confluence_export.py's localize_images) — the
 // two never share code, so both need the same fix independently.
-const IMG_SRC_RE = /(<img\b[^>]*\bsrc=["'])([^"']+)(["'])/gi;
+// Match the REAL `src=` attribute, NOT `data-image-src=`. Confluence renders an
+// embedded screenshot as `<img … src="/download/attachments/…" data-image-src=
+// "/download/attachments/…">` — a GREEDY `[^>]*` would let `\bsrc=` bind to the
+// LAST occurrence (`data-image-src`), so localization rewrote that attribute and
+// left the real `src` pointing at the un-localized Confluence URL → htmlToMarkdown
+// then dropped the image (prefix mismatch). Non-greedy `[^>]*?` + a negative
+// lookbehind (`src` not preceded by `-`/word char, i.e. not `data-image-src`)
+// binds to the real, first `src`. draw.io previews (single-`src` <img>) were
+// unaffected, which is why only they survived before this fix.
+const IMG_SRC_RE = /(<img\b[^>]*?(?<![-\w])src=["'])([^"']+)(["'])/gi;
 
 function resolveImgUrl(base: string, src: string): string {
   if (/^https?:\/\//i.test(src)) return src;
@@ -851,7 +860,10 @@ export function htmlToMarkdown(
   // (no creds, or a same-host download that failed) still degrades to the
   // alt-text-only / stripped behavior, same as before this fix.
   s = s.replace(/<img\b([^>]*)\/?>/gi, (_m, attrs: string) => {
-    const srcMatch = /\bsrc=["']([^"']+)["']/i.exec(attrs);
+    // Real `src`, not `data-image-src` (see IMG_SRC_RE) — the negative
+    // lookbehind keeps this reading the localized attribute, not the leftover
+    // Confluence URL sitting in `data-image-src`.
+    const srcMatch = /(?<![-\w])src=["']([^"']+)["']/i.exec(attrs);
     const altMatch = /\balt=["']([^"']*)["']/i.exec(attrs);
     const src = srcMatch?.[1];
     const alt = altMatch?.[1] ?? '';

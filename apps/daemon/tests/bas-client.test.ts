@@ -372,6 +372,53 @@ test('renderConfluenceIndex lists sub-tree pages in their own group with folder-
   assert.match(md, /\[1\. Thiết lập\]\(\.\/I\.-Tai-khoan\/1\.-Thiet-lap\.md\)/);
 });
 
+test('fetchConfluencePages localizes a real Confluence screenshot (src + data-image-src) — not the data attr', async () => {
+  // Regression: body.view renders embedded screenshots with BOTH src and
+  // data-image-src. A greedy IMG_SRC_RE bound to data-image-src, so the real
+  // src stayed a Confluence URL and htmlToMarkdown dropped the image — only
+  // single-src draw.io previews survived. Here the REAL src must be localized.
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-embed-'));
+  try {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/12')) {
+        return makeRes(
+          JSON.stringify({
+            title: 'Màn hình',
+            body: {
+              view: {
+                value:
+                  '<p>Xem <img class="confluence-embedded-image" width="1000" ' +
+                  'src="/download/attachments/12/shot.png?version=1&amp;api=v2" ' +
+                  'data-image-src="/download/attachments/12/shot.png?version=1&amp;api=v2" ' +
+                  'data-linked-resource-id="99" alt="màn hình"></p>',
+              },
+            },
+            _links: { base: 'https://wiki.test', webui: '/spaces/X/pages/12/T' },
+          }),
+        ) as any;
+      }
+      if (u.startsWith('https://wiki.test/download/attachments/12/shot.png')) {
+        return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode('PNG').buffer } as any;
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    const pages = await fetchConfluencePages(
+      { creds: { base: 'https://wiki.test', token: 'pat' } },
+      ['12'],
+      { attachmentsDir, followLinks: false },
+    );
+    assert.equal(pages.length, 1);
+    // The real screenshot survives as a localized markdown image (not dropped).
+    assert.match(pages[0]!.content, /!\[màn hình\]\(attachments\/shot\.png\)/);
+    // And the file was actually downloaded.
+    const files = await readdir(attachmentsDir);
+    assert.ok(files.includes('shot.png'), `expected shot.png in ${files.join(', ')}`);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
 test('fetchConfluencePages prefers the direct PAT REST fetch and converts body.view HTML', async () => {
   globalThis.fetch = vi.fn(async (url: any) => {
     const u = String(url);
