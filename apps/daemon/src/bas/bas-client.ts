@@ -1119,6 +1119,15 @@ export async function fetchConfluencePages(
       body = p.markdown ?? '';
     }
     const viaTree = !!p.treePath;
+    // Drop empty-body pages that were auto-fetched (sub-tree / link-follow) —
+    // section-overview stubs and TOC-only pages carry no content or images, so
+    // they're pure noise in the docs listing + downstream. A user-PICKED seed
+    // is always kept even if empty (respect the explicit choice).
+    const isSeed = !p.linked && !viaTree;
+    if (!isSeed && !body.trim()) {
+      console.log(`[bas] skipping empty ${viaTree ? 'sub-tree' : 'linked'} page ${p.pageId} (${p.title})`);
+      continue;
+    }
     pages.push({
       pageId: p.pageId,
       title: p.title,

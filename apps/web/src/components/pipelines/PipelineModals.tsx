@@ -1515,6 +1515,10 @@ function isUiPreviewFile(name: string): boolean {
   }
   // Prototype auto-demo recording (Playwright walkthrough video).
   if (/(^|\/)prototype-demo\/.*\.webm$/.test(lower)) return true;
+  // Ingested doc PAGES (docs/**/*.md) — the readable content. NOT the _index
+  // companion (a table of contents) and NOT the image files (those render
+  // INLINE inside each page now, so listing them as separate entries is noise).
+  if (/(^|\/)docs\/.+\.md$/.test(lower)) return base !== '_index.md';
   // Primary visual spec docs (UX Spec / Customer Journey).
   if (/-ux-spec\.json$/.test(base) || /-(customer-journey|journey|cj)\.json$/.test(base)) return true;
   // Visual report previews — UX Heuristic Review + UX Research + docs-to-prd's

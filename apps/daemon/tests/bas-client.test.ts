@@ -419,6 +419,32 @@ test('fetchConfluencePages localizes a real Confluence screenshot (src + data-im
   }
 });
 
+test('fetchConfluencePages drops empty-body sub-tree pages but keeps an empty SEED', async () => {
+  globalThis.fetch = vi.fn(async (url: any) => {
+    const u = String(url);
+    if (u.startsWith('https://wiki.test/rest/api/content/10')) {
+      // seed — empty body, but explicitly picked → kept.
+      return makeRes(JSON.stringify({ title: 'Seed', body: { view: { value: '<p></p>' } }, _links: { base: 'https://wiki.test', webui: '/x/10' } })) as any;
+    }
+    if (u.startsWith('https://wiki.test/rest/api/content/20')) {
+      // sub-tree child — empty overview stub → dropped.
+      return makeRes(JSON.stringify({ title: 'IV. Overview', body: { view: { value: '<p>&nbsp;</p>' } }, _links: { base: 'https://wiki.test', webui: '/x/20' } })) as any;
+    }
+    if (u.startsWith('https://wiki.test/rest/api/content/21')) {
+      // sub-tree child WITH content → kept.
+      return makeRes(JSON.stringify({ title: 'IV.1 Detail', body: { view: { value: '<p>Nội dung thật</p>' } }, _links: { base: 'https://wiki.test', webui: '/x/21' } })) as any;
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  }) as any;
+  const pages = await fetchConfluencePages(
+    { creds: { base: 'https://wiki.test', token: 'pat' } },
+    ['10'],
+    { followLinks: false, treePages: [{ pageId: '20', title: 'IV. Overview', treePath: ['IV'] }, { pageId: '21', title: 'IV.1 Detail', treePath: ['IV'] }] },
+  );
+  const ids = pages.map((p) => p.pageId).sort();
+  assert.deepEqual(ids, ['10', '21']); // empty seed kept, empty sub-tree dropped, real sub-tree kept
+});
+
 test('fetchConfluencePages prefers the direct PAT REST fetch and converts body.view HTML', async () => {
   globalThis.fetch = vi.fn(async (url: any) => {
     const u = String(url);
