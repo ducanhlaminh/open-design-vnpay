@@ -5,6 +5,7 @@ import { navigate, type EntryHomeView, type Route } from '../router';
 import type { Project } from '../types';
 import { Icon, type IconName } from './Icon';
 import { SsoUserChip } from './SsoUserChip';
+import { TokenUsageMeter } from './TokenUsageMeter';
 
 type WorkspaceChromeTab =
   | {
@@ -613,6 +614,8 @@ export function WorkspaceTabsBar({ route, projects }: Props) {
         >
           <Icon name="search" size={15} />
         </button>
+        {/* Always-visible token usage meter (session / trailing 7 days). */}
+        <TokenUsageMeter />
         {/* Google SSO avatar — renders nothing when auth is off. */}
         <SsoUserChip />
         {tabsMenuOpen && typeof document !== 'undefined'

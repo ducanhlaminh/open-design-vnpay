@@ -205,6 +205,19 @@ function migrate(db: SqliteDb): void {
 
     CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
       ON routine_runs(routine_id, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS token_usage (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      conversation_id TEXT,
+      run_id TEXT,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_token_usage_created
+      ON token_usage(created_at DESC);
   `);
   // Forward-compatible column add for databases created before metadata_json.
   // SQLite has no IF NOT EXISTS for ALTER, so we check pragma_table_info.
@@ -1640,4 +1653,77 @@ export function setTabs(db: SqliteDb, projectId: string, names: string[], active
   });
   tx();
   return listTabs(db, projectId);
+}
+
+// --- Token usage -----------------------------------------------------------
+//
+// One row per finished run that reported provider usage. `getTokenUsageTotals`
+// aggregates over rolling windows (session = since daemon start, week =
+// trailing 7d) for the always-visible Usage meter in the workspace chrome.
+
+export function recordTokenUsage(
+  db: SqliteDb,
+  entry: {
+    projectId?: string | null;
+    conversationId?: string | null;
+    runId?: string | null;
+    inputTokens: number;
+    outputTokens: number;
+    createdAt?: number;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO token_usage (id, project_id, conversation_id, run_id, input_tokens, output_tokens, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    `tok_${randomUUID()}`,
+    entry.projectId ?? null,
+    entry.conversationId ?? null,
+    entry.runId ?? null,
+    Math.max(0, Math.round(entry.inputTokens || 0)),
+    Math.max(0, Math.round(entry.outputTokens || 0)),
+    entry.createdAt ?? Date.now(),
+  );
+}
+
+interface TokenBucketRow {
+  input: number;
+  output: number;
+  runs: number;
+}
+
+function sumTokenUsageSince(db: SqliteDb, sinceMs: number): TokenBucketRow {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(input_tokens), 0) AS input,
+              COALESCE(SUM(output_tokens), 0) AS output,
+              COUNT(*) AS runs
+       FROM token_usage
+       WHERE created_at >= ?`,
+    )
+    .get(sinceMs) as DbRow;
+  return {
+    input: Number(row?.input ?? 0),
+    output: Number(row?.output ?? 0),
+    runs: Number(row?.runs ?? 0),
+  };
+}
+
+/** Aggregate usage into a `session` bucket (since `sessionStartMs`) and a
+ *  `week` bucket (since `weekStartMs`), shaped for TokenUsageResponse. */
+export function getTokenUsageTotals(
+  db: SqliteDb,
+  sessionStartMs: number,
+  weekStartMs: number,
+) {
+  const toBucket = (r: TokenBucketRow) => ({
+    inputTokens: r.input,
+    outputTokens: r.output,
+    totalTokens: r.input + r.output,
+    runs: r.runs,
+  });
+  return {
+    session: toBucket(sumTokenUsageSince(db, sessionStartMs)),
+    week: toBucket(sumTokenUsageSince(db, weekStartMs)),
+  };
 }

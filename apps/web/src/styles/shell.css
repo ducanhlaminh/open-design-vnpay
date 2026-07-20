@@ -251,6 +251,104 @@
   z-index: 35;
   -webkit-app-region: no-drag;
 }
+
+/* --- Token usage meter (session / week) --- */
+.token-usage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel, transparent);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.token-usage-chip:hover,
+.token-usage-chip.is-active {
+  color: var(--text);
+  background: var(--bg-subtle);
+  border-color: color-mix(in srgb, var(--accent, #0066b3) 45%, var(--border));
+}
+.token-usage-chip svg { color: var(--accent, #0066b3); flex: 0 0 auto; }
+.token-usage-chip__nums { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
+.token-usage-chip__sep { color: var(--text-muted); font-weight: 400; }
+.token-usage-chip__week { color: var(--text-muted); }
+
+.token-usage-popover {
+  position: fixed;
+  width: 280px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel, #fff);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
+  z-index: 200;
+}
+.token-usage-popover__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+.token-usage-popover__head svg { color: var(--accent, #0066b3); }
+.token-usage-popover__foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.token-usage-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  margin-left: 6px;
+}
+.token-usage-dot--in { background: color-mix(in srgb, var(--accent, #0066b3) 40%, transparent); }
+.token-usage-dot--out { background: var(--accent, #0066b3); }
+
+.token-usage-bucket { display: flex; flex-direction: column; gap: 5px; }
+.token-usage-bucket__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.token-usage-bucket__label { font-size: 12px; font-weight: 550; color: var(--text); }
+.token-usage-bucket__total {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.token-usage-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-subtle);
+}
+.token-usage-bar__in { background: color-mix(in srgb, var(--accent, #0066b3) 40%, transparent); }
+.token-usage-bar__out { background: var(--accent, #0066b3); }
+.token-usage-bucket__meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.token-usage-bucket__meta span:last-child { margin-left: auto; }
 .workspace-tabs-popover {
   /* Anchored to the viewport, not to .workspace-tabs-actions, because the
      actions group sits next to the tab strip on the left side of the chrome
