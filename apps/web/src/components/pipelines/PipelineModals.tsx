@@ -153,6 +153,51 @@ function stripWorkflowDir(rel: string): string {
   return rel.replace(WORKFLOW_DIR_RE, '').replace(UI_TARGET_SEG_RE, '');
 }
 
+// ── Source-order sort for doc pages ───────────────────────────────────────
+// Confluence pages are numbered like "I. …" (roman sections) / "1.", "2.2.3."
+// (arabic sub-pages); a plain string sort mangles that (IX before V, "10"
+// before "2"). Compare each path segment by its LEADING numbering token so the
+// listing matches the wiki's sidebar order.
+function romanToInt(s: string): number {
+  const map: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+  let total = 0;
+  let prev = 0;
+  for (let i = s.length - 1; i >= 0; i--) {
+    const v = map[s[i]!] ?? 0;
+    if (v < prev) total -= v;
+    else { total += v; prev = v; }
+  }
+  return total;
+}
+/** Leading numbering of a path segment → number tuple, or null if unnumbered. */
+function segNumbering(seg: string): number[] | null {
+  const m = /^([IVXLCDM]+|\d+(?:\.\d+)*)(?=[.\-\s]|$)/.exec(seg.trim());
+  if (!m) return null;
+  const tok = m[1]!;
+  return /^[IVXLCDM]+$/.test(tok) ? [romanToInt(tok)] : tok.split('.').map(Number);
+}
+function naturalPathCompare(a: string, b: string): number {
+  const as = a.split('/');
+  const bs = b.split('/');
+  for (let i = 0; i < Math.max(as.length, bs.length); i++) {
+    const sa = as[i] ?? '';
+    const sb = bs[i] ?? '';
+    if (sa === sb) continue;
+    const ka = segNumbering(sa);
+    const kb = segNumbering(sb);
+    if (ka && kb) {
+      for (let j = 0; j < Math.max(ka.length, kb.length); j++) {
+        const d = (ka[j] ?? 0) - (kb[j] ?? 0);
+        if (d !== 0) return d;
+      }
+    } else if (ka && !kb) return -1; // numbered pages before unnumbered
+    else if (!ka && kb) return 1;
+    const c = sa.localeCompare(sb);
+    if (c !== 0) return c;
+  }
+  return 0;
+}
+
 // ── Req 4: Run source (Confluence link or BAS document) ──────────────────────
 // Pipeline 1 (jira-ingest) ingests its source docs from the BAS MCP gateway. The
 // user picks ONE of two cards:
@@ -1562,7 +1607,8 @@ export function PipelineResultModal({
         // Non-tech listing: UI-previewable files only, falling back to the full
         // set when a stage ships none (so doc/cj stages still show something).
         const ui = all.filter((f) => isUiPreviewFile(f.name));
-        const shown = ui.length > 0 ? ui : all;
+        // Source order (wiki sidebar): sort by the numbering in each path segment.
+        const shown = (ui.length > 0 ? ui : all).slice().sort((x, y) => naturalPathCompare(x.name, y.name));
         if (!cancelled) {
           setFiles(shown);
           // Default to the first target present (multi-target build); the rail

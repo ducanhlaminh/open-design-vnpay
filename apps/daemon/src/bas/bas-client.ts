@@ -466,8 +466,58 @@ export interface SourceFile {
   content: string;
 }
 
+/** Strip Vietnamese diacritics to ASCII so a title slugs to readable words
+ *  ("Danh mục" → "Danh muc") instead of dash-shredding each accented letter
+ *  ("Danh-m-c"). NFD decomposes tone marks off the base letter; đ/Đ don't
+ *  decompose so they're mapped explicitly. */
+function deaccentVietnamese(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
+}
+
 function slug(s: string): string {
-  return s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'doc';
+  return deaccentVietnamese(s).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'doc';
+}
+
+// Source-order comparison for doc titles/segments. Confluence pages are
+// numbered "I. …" (roman sections) / "1.", "2.2.3." (arabic sub-pages); a plain
+// string sort mangles that (IX before V, "10" before "2"). Compare each segment
+// by its leading numbering token so the file order + _index match the sidebar.
+function romanToInt(s: string): number {
+  const map: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+  let total = 0;
+  let prev = 0;
+  for (let i = s.length - 1; i >= 0; i--) {
+    const v = map[s[i]!] ?? 0;
+    if (v < prev) total -= v;
+    else { total += v; prev = v; }
+  }
+  return total;
+}
+function segNumbering(seg: string): number[] | null {
+  const m = /^([IVXLCDM]+|\d+(?:\.\d+)*)(?=[.\-\s]|$)/.exec(seg.trim());
+  if (!m) return null;
+  const tok = m[1]!;
+  return /^[IVXLCDM]+$/.test(tok) ? [romanToInt(tok)] : tok.split('.').map(Number);
+}
+/** Compare two segment lists (folder path + title) in wiki source order. */
+export function naturalSegsCompare(a: string[], b: string[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const sa = a[i] ?? '';
+    const sb = b[i] ?? '';
+    if (sa === sb) continue;
+    const ka = segNumbering(sa);
+    const kb = segNumbering(sb);
+    if (ka && kb) {
+      for (let j = 0; j < Math.max(ka.length, kb.length); j++) {
+        const d = (ka[j] ?? 0) - (kb[j] ?? 0);
+        if (d !== 0) return d;
+      }
+    } else if (ka && !kb) return -1;
+    else if (!ka && kb) return 1;
+    const c = sa.localeCompare(sb);
+    if (c !== 0) return c;
+  }
+  return 0;
 }
 
 function frontmatter(fields: Record<string, string>): string {
@@ -1061,7 +1111,16 @@ export async function fetchConfluencePages(
   const pages: ConfluenceDocPage[] = [];
   const takenPaths = new Set<string>();
   const relByPageId = new Map<string, string>();
-  const ordered = [...fetched.values()].sort((a, b) => Number(a.linked) - Number(b.linked));
+  // Source order: seeds first, then sub-tree pages in wiki-hierarchy order
+  // (treePath + title, numbered naturally: roman "VII." sections, arabic
+  // "2.2.3." sub-pages), then link-followed pages. This drives both the file
+  // order and the _index.md listing.
+  const ordered = [...fetched.values()].sort((a, b) => {
+    const band = (p: RawPage) => (p.treePath ? 0 : p.linked ? 2 : 0); // linked-only pages last
+    const bd = band(a) - band(b);
+    if (bd) return bd;
+    return naturalSegsCompare([...(a.treePath ?? []), a.title], [...(b.treePath ?? []), b.title]);
+  });
   for (const p of ordered) {
     // Sub-tree pages nest into folders mirroring the wiki hierarchy; seed and
     // linked pages stay flat directly under docs/confluence/.

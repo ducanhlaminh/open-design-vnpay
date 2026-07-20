@@ -12,6 +12,7 @@ import {
   fetchConfluencePages,
   fetchSourceFiles,
   listDescendantPages,
+  naturalSegsCompare,
   looksLikeConfluenceRef,
   renderConfluenceIndex,
   resolveBasEndpoint,
@@ -345,9 +346,9 @@ test('fetchConfluencePages nests sub-tree pages into folders and depth-corrects 
     const seed = pages.find((p) => p.pageId === '100')!;
     const child = pages.find((p) => p.pageId === '301')!;
     // Seed stays flat; child nests one folder deep by its treePath slug
-    // (slug() collapses non-ASCII accents to '-', so "I. Tài khoản" → "I.-T-i-kho-n").
+    // (slug() de-accents Vietnamese, so "I. Tài khoản" → "I.-Tai-khoan").
     assert.equal(seed.relPath, 'docs/confluence/B1.-PRD.md');
-    assert.equal(child.relPath, 'docs/confluence/I.-T-i-kho-n/1.-Thi-t-l-p.md');
+    assert.equal(child.relPath, 'docs/confluence/I.-Tai-khoan/1.-Thiet-lap.md');
     assert.equal(child.viaTree, true);
     // A page one folder deep reaches the shared attachments dir via ../.
     assert.match(child.content, /!\[mh\]\(\.\.\/attachments\/pic\.png\)/);
@@ -417,6 +418,32 @@ test('fetchConfluencePages localizes a real Confluence screenshot (src + data-im
   } finally {
     await rm(attachmentsDir, { recursive: true, force: true });
   }
+});
+
+test('naturalSegsCompare orders roman sections + arabic sub-pages like the wiki sidebar', () => {
+  const paths = [
+    ['X. Lập báo cáo'],
+    ['I. Tài khoản', '10. Cuối'],
+    ['I. Tài khoản', '2. Đăng nhập'],
+    ['I. Tài khoản', '1. Thiết lập'],
+    ['II. Danh mục', '2.2.3. Nhóm'],
+    ['II. Danh mục', '2.2.10. Khác'],
+    ['II. Danh mục', '2.2.3. Nhóm', 'a. con'],
+    ['IX. Tạm ứng'],
+    ['V. Bán hàng'],
+  ];
+  const sorted = paths.slice().sort(naturalSegsCompare).map((p) => p.join('/'));
+  assert.deepEqual(sorted, [
+    'I. Tài khoản/1. Thiết lập',
+    'I. Tài khoản/2. Đăng nhập',
+    'I. Tài khoản/10. Cuối', // 10 AFTER 2 (numeric, not "10" < "2")
+    'II. Danh mục/2.2.3. Nhóm',
+    'II. Danh mục/2.2.3. Nhóm/a. con', // child under its parent
+    'II. Danh mục/2.2.10. Khác', // 2.2.10 AFTER 2.2.3
+    'V. Bán hàng', // V(5) before IX(9) — roman-aware, not "IX" < "V"
+    'IX. Tạm ứng',
+    'X. Lập báo cáo',
+  ]);
 });
 
 test('fetchConfluencePages drops empty-body sub-tree pages but keeps an empty SEED', async () => {
