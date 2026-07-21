@@ -205,6 +205,85 @@
   border-color: var(--accent, #0066b3);
 }
 
+.checkboxPartial {
+  background: color-mix(in srgb, var(--accent, #0066b3) 45%, transparent);
+  border-color: var(--accent, #0066b3);
+}
+
+/* --- Compact Confluence page tree --- */
+.tree {
+  display: flex;
+  flex-direction: column;
+  max-height: 300px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.treeRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 29px;
+  padding: 1px 8px 1px 2px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.treeRow:hover {
+  background: color-mix(in srgb, var(--accent, #0066b3) 8%, transparent);
+}
+.treeGuide {
+  flex-shrink: 0;
+  width: 15px;
+  align-self: stretch;
+  border-left: 1px solid var(--pl-border, rgba(120, 120, 130, 0.22));
+}
+.treeChevron {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--pl-muted, rgba(120, 120, 130, 0.95));
+  cursor: pointer;
+}
+.treeChevron:hover {
+  background: var(--pl-border, rgba(120, 120, 130, 0.25));
+}
+.treeSpacer {
+  flex-shrink: 0;
+  width: 18px;
+}
+.treeName {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.treeNameFolder {
+  font-weight: 650;
+}
+.treeAdded {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--green, #16a34a);
+}
+.treeMsg {
+  font-size: 12px;
+  opacity: 0.62;
+  padding: 4px 2px;
+}
+.treeHint {
+  font-size: 11.5px;
+  opacity: 0.6;
+  margin: 7px 2px 0;
+}
+
 .sectionLabel {
   font-size: 11px;
   text-transform: uppercase;

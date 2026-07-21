@@ -365,45 +365,43 @@ export function ConfluencePagePicker({
     // A hit shows a chevron until we know whether it has children; inner nodes
     // show one only when they actually do.
     const hasKids = node.children.length > 0 || (isHit && !hitLoaded);
+    const committed = committedIds.has(node.id);
     return (
       <div key={node.id || node.title}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: depth * 18 }}>
+        <div className={styles.treeRow} onClick={() => toggleSubtree(node)}>
+          {Array.from({ length: depth }).map((_, i) => (
+            <span key={i} className={styles.treeGuide} aria-hidden="true" />
+          ))}
           {hasKids ? (
             <button
               type="button"
-              onClick={() => (isHit ? toggleExpand(hit, node.id) : setExpanded((s) => { const n = new Set(s); n.has(node.id) ? n.delete(node.id) : n.add(node.id); return n; }))}
+              className={styles.treeChevron}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (isHit) toggleExpand(hit, node.id);
+                else setExpanded((s) => { const n = new Set(s); n.has(node.id) ? n.delete(node.id) : n.add(node.id); return n; });
+              }}
               title={isExp ? 'Thu gọn' : 'Mở rộng'}
-              style={{ display: 'flex', flexShrink: 0, border: 0, background: 'transparent', cursor: 'pointer', padding: 2, color: 'var(--text-muted)' }}
             >
-              <Icon name={isHit && treeLoading.has(hit.id) ? 'spinner' : isExp ? 'chevron-down' : 'chevron-right'} size={14} />
+              <Icon name={isHit && treeLoading.has(hit.id) ? 'spinner' : isExp ? 'chevron-down' : 'chevron-right'} size={13} />
             </button>
           ) : (
-            <span style={{ width: 18, flexShrink: 0 }} />
+            <span className={styles.treeSpacer} aria-hidden="true" />
           )}
-          <button
-            type="button"
-            className={`${styles.row}${cs !== 'off' ? ' ' + styles.rowSelected : ''}`}
-            style={{ flex: 1, minWidth: 0 }}
-            onClick={() => toggleSubtree(node)}
-            aria-pressed={cs === 'on'}
+          <span
+            className={`${styles.checkbox}${cs === 'on' ? ' ' + styles.checkboxOn : ''}${cs === 'partial' ? ' ' + styles.checkboxPartial : ''}`}
           >
-            <span className={`${styles.checkbox}${cs === 'on' ? ' ' + styles.checkboxOn : ''}`} style={cs === 'partial' ? { background: 'color-mix(in srgb, var(--accent, #0066b3) 45%, transparent)', color: '#fff' } : undefined}>
-              {cs === 'on' ? <Icon name="check" size={12} /> : cs === 'partial' ? <Icon name="minus" size={12} /> : null}
-            </span>
-            <span className={styles.rowBody}>
-              <span className={styles.rowName}>{node.title}</span>
-            </span>
-            {committedIds.has(node.id) ? (
-              <span className={styles.rowSummary} style={{ flexShrink: 0, color: 'var(--green, #16a34a)' }}>đã thêm</span>
-            ) : null}
-          </button>
+            {cs === 'on' ? <Icon name="check" size={11} /> : cs === 'partial' ? <Icon name="minus" size={11} /> : null}
+          </span>
+          <span className={`${styles.treeName}${hasKids ? ' ' + styles.treeNameFolder : ''}`}>{node.title}</span>
+          {committed ? <span className={styles.treeAdded}>đã thêm</span> : null}
         </div>
         {isExp && isHit && treeErr[hit.id] ? (
-          <p className={styles.empty} style={{ paddingLeft: (depth + 1) * 18 }}>{treeErr[hit.id]}</p>
+          <div className={styles.treeMsg} style={{ paddingLeft: (depth + 1) * 15 + 6 }}>{treeErr[hit.id]}</div>
         ) : null}
         {isExp && node.children.length ? node.children.map((c) => renderConfNode(c, hit, depth + 1)) : null}
         {isExp && isHit && hitLoaded && node.children.length === 0 ? (
-          <p className={styles.empty} style={{ paddingLeft: (depth + 1) * 18, margin: 0 }}>Không có trang con.</p>
+          <div className={styles.treeMsg} style={{ paddingLeft: (depth + 1) * 15 + 6 }}>Không có trang con.</div>
         ) : null}
       </div>
     );
@@ -506,14 +504,16 @@ export function ConfluencePagePicker({
             hits.length === 0 ? (
               <p className={styles.empty}>Không trang nào khớp “{query}”.</p>
             ) : (
-              <div className={styles.list}>
-                {hits.map((h) =>
-                  renderConfNode(treeByHit[h.id] ?? { id: h.id, title: h.title, ...(h.url ? { url: h.url } : {}), children: [] }, h, 0),
-                )}
-                <p className={styles.empty} style={{ margin: '2px 0 0' }}>
+              <>
+                <div className={styles.tree}>
+                  {hits.map((h) =>
+                    renderConfNode(treeByHit[h.id] ?? { id: h.id, title: h.title, ...(h.url ? { url: h.url } : {}), children: [] }, h, 0),
+                  )}
+                </div>
+                <p className={styles.treeHint}>
                   Bấm ▸ để xem trang con · tick thư mục cha để chọn cả nhánh · rồi bấm “Thêm”.
                 </p>
-              </div>
+              </>
             )
           ) : null}
           {stagedList.length > 0 ? (
