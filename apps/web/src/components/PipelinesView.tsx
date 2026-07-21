@@ -1650,7 +1650,6 @@ export function PipelinesView() {
             defaultPlatform={runAllDefaults?.platform}
             defaultTargets={runAllDefaults?.targets}
             defaultFollowLinks={runAllDefaults?.followLinks}
-            defaultIncludeDescendants={runAllDefaults?.includeDescendants}
             defaultSkipSucceeded={runAllDefaults?.skipSucceeded}
             // Only show a picker when the active workflow HAS a stage using it —
             // Docs → PRD Review has no UX/UI/design-system stage, so it shows

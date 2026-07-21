@@ -152,6 +152,9 @@ export interface PipelineDeps {
     // tiếp (CONFLUENCE_URL/_PERSONAL_TOKEN) ưu tiên, else gateway
     // confluence_search. Wired in server.ts.
     searchConfluencePages(q: string): Promise<import('@open-design/contracts').ConfluencePageHit[]>;
+    /** All descendant pages (every level, flat + treePath) under one page — the
+     *  tree picker expands a search hit into its sub-tree. Wired in server.ts. */
+    confluenceDescendants(ref: string): Promise<import('./bas/bas-client.js').DescendantPage[]>;
   };
   // Regenerate the project's pipeline files from the KGS file store into the
   // local project cwd (cross-device "pull to continue"). `stages` narrows to

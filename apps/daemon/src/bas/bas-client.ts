@@ -1052,8 +1052,8 @@ export function htmlToMarkdown(
 async function fetchConfluencePageDirect(
   creds: ConfluenceCreds,
   pageId: string,
-): Promise<{ title: string; url: string; html: string }> {
-  const res = await fetch(`${creds.base}/rest/api/content/${pageId}?expand=body.view,space`, {
+): Promise<{ title: string; url: string; html: string; ancestors: Array<{ id: string; title: string }> }> {
+  const res = await fetch(`${creds.base}/rest/api/content/${pageId}?expand=body.view,space,ancestors`, {
     headers: { authorization: `Bearer ${creds.token}` },
   });
   const text = await res.text();
@@ -1061,6 +1061,7 @@ async function fetchConfluencePageDirect(
   const p = JSON.parse(text) as {
     title?: string;
     body?: { view?: { value?: string } };
+    ancestors?: Array<{ id?: string; title?: string }>;
     _links?: { base?: string; webui?: string };
   };
   const url = p._links?.webui
@@ -1069,6 +1070,10 @@ async function fetchConfluencePageDirect(
   return {
     title: p.title ?? `Confluence page ${pageId}`,
     url,
+    // Root→page ancestor chain (used to fold a multi-page selection into folders).
+    ancestors: (p.ancestors ?? [])
+      .map((a) => ({ id: String(a.id ?? ''), title: a.title ?? '' }))
+      .filter((a) => a.id),
     html: p.body?.view?.value ?? '',
   };
 }
@@ -1164,6 +1169,8 @@ export async function fetchConfluencePages(
     linked: boolean;
     /** Folder segments (relative to a scan seed) when this is a sub-tree page. */
     treePath?: string[];
+    /** Root→page ancestor chain (direct-PAT seeds) — folds a multi-page pick. */
+    ancestors?: Array<{ id: string; title: string }>;
   }
   const fetched = new Map<string, RawPage>();
   const seedIds: string[] = [];
@@ -1229,6 +1236,31 @@ export async function fetchConfluencePages(
       } catch (err) {
         console.warn(`[bas] sub-tree Confluence page ${t.pageId} skipped:`, err);
       }
+    }
+  }
+
+  // Fold a MULTI-page selection into folders: when ≥2 seed pages were picked
+  // (e.g. from the tree picker), nest each under the ancestor titles it does NOT
+  // share with the others — so a checkbox pick of pages across a Confluence tree
+  // lands folder-structured (docs/confluence/<module>/…/<page>.md) exactly like
+  // the old sub-tree scan, driving the module grouping in the review UI. A
+  // single seed (or a treePage that already carries its path) stays as-is.
+  const seedPages = seedIds.map((id) => fetched.get(id)).filter((p): p is RawPage => !!p && !p.treePath);
+  if (seedPages.length >= 2) {
+    const chains = seedPages.map((p) => (p.ancestors ?? []).map((a) => a.id));
+    // Longest common leading ancestor prefix shared by EVERY seed.
+    let commonLen = Math.min(...chains.map((c) => c.length));
+    for (let i = 0; i < commonLen; i += 1) {
+      const id = chains[0]![i];
+      if (!chains.every((c) => c[i] === id)) {
+        commonLen = i;
+        break;
+      }
+    }
+    for (const p of seedPages) {
+      const anc = p.ancestors ?? [];
+      const below = anc.slice(commonLen).map((a) => a.title).filter(Boolean);
+      if (below.length) p.treePath = below;
     }
   }
 

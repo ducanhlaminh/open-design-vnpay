@@ -15038,6 +15038,18 @@ export async function startServer({
         25,
         await resolveConfluenceCreds(RUNTIME_DATA_DIR),
       ),
+    // Descendant pages (all levels, flat + treePath) of one page — the tree
+    // picker expands a search hit into its sub-tree so the user checks exactly
+    // which pages to ingest. PAT-only (needs Confluence REST ancestors).
+    confluenceDescendants: async (ref: string) => {
+      const creds = await resolveConfluenceCreds(RUNTIME_DATA_DIR);
+      if (!creds) {
+        throw new Error(
+          'Chưa có credential Confluence (CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN) — cần PAT để đọc cây trang con.',
+        );
+      }
+      return listDescendantPages(creds, extractPageId(ref));
+    },
   };
   // Build (or rebuild) the ui-react app ON DEMAND — the Build button /
   // `od pipelines build`. `react/dist/` is deliberately not synced

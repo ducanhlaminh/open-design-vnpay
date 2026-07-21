@@ -77,39 +77,6 @@ function FollowLinksToggle({
   );
 }
 
-/** Phạm vi quét cây con: mặc định "chỉ trang này". Bật → daemon quét cả các
- *  trang con (mọi cấp) dưới trang đã chọn, giữ cấu trúc thư mục theo cây. Độc
- *  lập với FollowLinksToggle (kia đi theo LINK tham chiếu, cái này đi theo CÂY
- *  phân cấp trang). > ~100 trang vẫn chạy nhưng daemon ghi cảnh báo. */
-function ScanScopeToggle({
-  checked,
-  onChange,
-  disabled,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <label className="pl-runall-toggle">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(ev) => onChange(ev.target.checked)}
-        disabled={disabled}
-      />
-      <span className="pl-runall-toggle__body">
-        <span className="pl-runall-toggle__title">Quét cả trang con (theo cây phân cấp)</span>
-        <span className="pl-runall-toggle__desc">
-          Ngoài trang đã chọn, fetch luôn mọi trang con/cháu bên dưới nó trên wiki, giữ đúng cấu
-          trúc thư mục theo cây. Khác với tùy chọn trên (đi theo LINK tham chiếu) — cái này đi theo
-          CÂY trang. Mặc định tắt = chỉ đúng (các) trang đã chọn.
-        </span>
-      </span>
-    </label>
-  );
-}
-
 const RUN_STATUS_LABEL: Record<string, string> = {
   queued: 'Queued',
   running: 'Running',
@@ -216,6 +183,58 @@ export interface ConfluencePageRefLike {
 
 const confPageKey = (p: ConfluencePageRefLike) => p.id ?? p.url ?? '';
 
+/** A node in the Confluence page tree the picker renders. */
+interface ConfTreeNode {
+  id: string;
+  title: string;
+  url?: string;
+  children: ConfTreeNode[];
+}
+interface ConfDescendant {
+  pageId: string;
+  title: string;
+  /** Ancestor titles between the search hit (root) and this page, top→down. */
+  treePath: string[];
+}
+
+/** Build a nested tree for a search hit from the flat descendant list (each
+ *  carrying its treePath of ancestor titles). Intermediate folder nodes are
+ *  created from the title path and back-filled with their real pageId when
+ *  their own descendant entry is processed (every ancestor is itself a
+ *  descendant of the hit, so all nodes get an id). */
+function buildConfTree(
+  hit: { id: string; title: string; url?: string },
+  descendants: ConfDescendant[],
+): ConfTreeNode {
+  const root: ConfTreeNode = { id: hit.id, title: hit.title, ...(hit.url ? { url: hit.url } : {}), children: [] };
+  const childByTitle = (parent: ConfTreeNode, title: string): ConfTreeNode => {
+    let n = parent.children.find((c) => c.title === title);
+    if (!n) {
+      n = { id: '', title, children: [] };
+      parent.children.push(n);
+    }
+    return n;
+  };
+  for (const d of descendants) {
+    let node = root;
+    for (const seg of d.treePath) node = childByTitle(node, seg);
+    const leaf = childByTitle(node, d.title);
+    leaf.id = d.pageId;
+  }
+  // Drop any node that never got a real id (shouldn't happen, but keep it safe).
+  const prune = (n: ConfTreeNode): void => {
+    n.children = n.children.filter((c) => c.id);
+    n.children.forEach(prune);
+  };
+  prune(root);
+  return root;
+}
+
+/** All ids in a subtree (the node + every descendant). */
+function confSubtreeIds(node: ConfTreeNode): string[] {
+  return [node.id, ...node.children.flatMap(confSubtreeIds)];
+}
+
 /** Picker trang Confluence DÙNG CHUNG (modal Run bước Docs + modal Chạy full
  * workflow): tìm trang theo tên qua GET /api/pipelines/confluence/pages (tick
  * chọn nhiều), hoặc dán link/page id (mỗi dòng một trang — tự thêm vào danh
@@ -235,6 +254,66 @@ export function ConfluencePagePicker({
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState<string | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout>>();
+  // Tree state: a search hit expands into its Confluence sub-tree (fetched once),
+  // rendered as a checkbox tree so a parent folder can be checked wholesale.
+  const [treeByHit, setTreeByHit] = useState<Record<string, ConfTreeNode>>({});
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [treeLoading, setTreeLoading] = useState<Set<string>>(new Set());
+  const [treeErr, setTreeErr] = useState<Record<string, string>>({});
+
+  const loadTree = (hit: { id: string; title: string; url?: string }) => {
+    if (treeByHit[hit.id] || treeLoading.has(hit.id)) return;
+    setTreeLoading((s) => new Set(s).add(hit.id));
+    void (async () => {
+      try {
+        const res = await fetch(`/api/pipelines/confluence/descendants?ref=${encodeURIComponent(hit.id)}`);
+        const j = (await res.json().catch(() => ({}))) as { pages?: ConfDescendant[]; error?: string };
+        if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+        setTreeByHit((m) => ({ ...m, [hit.id]: buildConfTree(hit, j.pages ?? []) }));
+      } catch (err) {
+        setTreeErr((m) => ({ ...m, [hit.id]: err instanceof Error ? err.message : String(err) }));
+      } finally {
+        setTreeLoading((s) => {
+          const n = new Set(s);
+          n.delete(hit.id);
+          return n;
+        });
+      }
+    })();
+  };
+  const toggleExpand = (hit: { id: string; title: string; url?: string }, nodeId: string) => {
+    if (nodeId === hit.id) loadTree(hit);
+    setExpanded((s) => {
+      const n = new Set(s);
+      if (n.has(nodeId)) n.delete(nodeId);
+      else n.add(nodeId);
+      return n;
+    });
+  };
+  // Tristate for a node from the selected `pages`: on = whole subtree selected,
+  // off = none, partial = some.
+  const nodeCheck = (node: ConfTreeNode): 'on' | 'off' | 'partial' => {
+    const ids = confSubtreeIds(node);
+    const sel = new Set(pages.map((p) => p.id).filter(Boolean) as string[]);
+    const on = ids.filter((id) => sel.has(id)).length;
+    return on === 0 ? 'off' : on === ids.length ? 'on' : 'partial';
+  };
+  // Checking a node selects its whole subtree; unchecking clears it.
+  const toggleSubtree = (node: ConfTreeNode) => {
+    const collect = (n: ConfTreeNode): ConfTreeNode[] => [n, ...n.children.flatMap(collect)];
+    const nodes = collect(node);
+    const ids = new Set(nodes.map((n) => n.id));
+    const sel = new Set(pages.map((p) => p.id).filter(Boolean) as string[]);
+    const allOn = nodes.every((n) => sel.has(n.id));
+    if (allOn) {
+      onPagesChange(pages.filter((p) => !p.id || !ids.has(p.id)));
+    } else {
+      const add = nodes
+        .filter((n) => !sel.has(n.id))
+        .map((n) => ({ id: n.id, title: n.title, ...(n.url ? { url: n.url } : {}) }));
+      onPagesChange([...pages, ...add]);
+    }
+  };
 
   useEffect(() => {
     if (manual) return;
@@ -263,13 +342,59 @@ export function ConfluencePagePicker({
     return () => clearTimeout(debounce.current);
   }, [query, manual]);
 
-  const togglePage = (p: { id: string; title: string; url?: string }) => {
-    onPagesChange(
-      pages.some((x) => x.id === p.id)
-        ? pages.filter((x) => x.id !== p.id)
-        : [...pages, { id: p.id, title: p.title, ...(p.url ? { url: p.url } : {}) }],
+  const renderConfNode = (
+    node: ConfTreeNode,
+    hit: { id: string; title: string; url?: string },
+    depth: number,
+  ): JSX.Element => {
+    const cs = nodeCheck(node);
+    const isHit = node.id === hit.id;
+    const isExp = expanded.has(node.id);
+    const hitLoaded = Boolean(treeByHit[hit.id]);
+    // A hit shows a chevron until we know whether it has children; inner nodes
+    // show one only when they actually do.
+    const hasKids = node.children.length > 0 || (isHit && !hitLoaded);
+    return (
+      <div key={node.id || node.title}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: depth * 18 }}>
+          {hasKids ? (
+            <button
+              type="button"
+              onClick={() => (isHit ? toggleExpand(hit, node.id) : setExpanded((s) => { const n = new Set(s); n.has(node.id) ? n.delete(node.id) : n.add(node.id); return n; }))}
+              title={isExp ? 'Thu gọn' : 'Mở rộng'}
+              style={{ display: 'flex', flexShrink: 0, border: 0, background: 'transparent', cursor: 'pointer', padding: 2, color: 'var(--text-muted)' }}
+            >
+              <Icon name={isHit && treeLoading.has(hit.id) ? 'spinner' : isExp ? 'chevron-down' : 'chevron-right'} size={14} />
+            </button>
+          ) : (
+            <span style={{ width: 18, flexShrink: 0 }} />
+          )}
+          <button
+            type="button"
+            className={`${styles.row}${cs !== 'off' ? ' ' + styles.rowSelected : ''}`}
+            style={{ flex: 1, minWidth: 0 }}
+            onClick={() => toggleSubtree(node)}
+            aria-pressed={cs === 'on'}
+          >
+            <span className={`${styles.checkbox}${cs === 'on' ? ' ' + styles.checkboxOn : ''}`} style={cs === 'partial' ? { background: 'color-mix(in srgb, var(--accent, #0066b3) 45%, transparent)', color: '#fff' } : undefined}>
+              {cs === 'on' ? <Icon name="check" size={12} /> : cs === 'partial' ? <Icon name="minus" size={12} /> : null}
+            </span>
+            <span className={styles.rowBody}>
+              <span className={styles.rowName}>{node.title}</span>
+            </span>
+          </button>
+        </div>
+        {isExp && isHit && treeErr[hit.id] ? (
+          <p className={styles.empty} style={{ paddingLeft: (depth + 1) * 18 }}>{treeErr[hit.id]}</p>
+        ) : null}
+        {isExp && node.children.length ? node.children.map((c) => renderConfNode(c, hit, depth + 1)) : null}
+        {isExp && isHit && hitLoaded && node.children.length === 0 ? (
+          <p className={styles.empty} style={{ paddingLeft: (depth + 1) * 18, margin: 0 }}>Không có trang con.</p>
+        ) : null}
+      </div>
     );
   };
+
   // Dán tay: commit khi blur HOẶC bấm Thêm — không bắt user nhớ bấm nút để
   // khỏi mất text khi chuyển thẳng sang Run.
   const commitManual = (backToSearch: boolean) => {
@@ -368,29 +493,12 @@ export function ConfluencePagePicker({
               <p className={styles.empty}>Không trang nào khớp “{query}”.</p>
             ) : (
               <div className={styles.list}>
-                {hits.map((p) => {
-                  const on = pages.some((x) => x.id === p.id);
-                  return (
-                    <button
-                      key={p.id}
-                      type="button"
-                      className={`${styles.row}${on ? ' ' + styles.rowSelected : ''}`}
-                      onClick={() => togglePage(p)}
-                      aria-pressed={on}
-                    >
-                      <span className={`${styles.checkbox}${on ? ' ' + styles.checkboxOn : ''}`}>
-                        {on ? <Icon name="check" size={12} /> : null}
-                      </span>
-                      <span className={styles.rowBody}>
-                        <span className={styles.rowName}>{p.title}</span>
-                        <span className={styles.rowSummary}>
-                          {p.space ? `${p.space} · ` : ''}
-                          {p.id}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
+                {hits.map((h) =>
+                  renderConfNode(treeByHit[h.id] ?? { id: h.id, title: h.title, ...(h.url ? { url: h.url } : {}), children: [] }, h, 0),
+                )}
+                <p className={styles.empty} style={{ margin: '2px 0 0' }}>
+                  Bấm ▸ để xem trang con · tick thư mục cha để chọn cả nhánh.
+                </p>
               </div>
             )
           ) : null}
@@ -433,7 +541,6 @@ export function RunInputModal({
   // dán link, tick chọn nhiều). Seeded từ config dự án trên studio.
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
   const [followLinks, setFollowLinks] = useState(true);
-  const [includeDescendants, setIncludeDescendants] = useState(false);
 
   // BAS branch (KG document → feature)
   const [basDocuments, setBasDocuments] = useState<BasDocument[] | null>(null);
@@ -529,7 +636,6 @@ export function RunInputModal({
         payload = {
           input: refs.join('\n'),
           ...(followLinks ? {} : { followLinks: false }),
-          ...(includeDescendants ? { includeDescendants: true } : {}),
         };
       } else {
         const featureIds = [...selected];
@@ -657,7 +763,6 @@ export function RunInputModal({
           {kind === 'confluence' ? (
             <>
               <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
-              <ScanScopeToggle checked={includeDescendants} onChange={setIncludeDescendants} disabled={busy} />
               <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
             </>
           ) : (
@@ -1005,7 +1110,6 @@ export function RunAllModal({
   defaultPlatform,
   defaultTargets,
   defaultFollowLinks,
-  defaultIncludeDescendants,
   defaultSkipSucceeded,
   hasPlatform = true,
   hasTerminal = true,
@@ -1026,7 +1130,6 @@ export function RunAllModal({
   /** UI targets prefilled from the last run (docs-to-ui multi-target). */
   defaultTargets?: UiTarget[];
   defaultFollowLinks?: boolean;
-  defaultIncludeDescendants?: boolean;
   defaultSkipSucceeded?: boolean;
   /** Whether the active workflow HAS a stage that uses each picker — a
    *  workflow with no UX/UI stages (e.g. Docs → PRD Review) hides them so the
@@ -1044,7 +1147,6 @@ export function RunAllModal({
   // run input is one page URL/id per line, built from the picked pages.
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
   const [followLinks, setFollowLinks] = useState(defaultFollowLinks ?? true);
-  const [includeDescendants, setIncludeDescendants] = useState(defaultIncludeDescendants ?? false);
   const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(defaultTerminal ?? 'ui-html');
   // Legacy single-platform (docs-to-prd has no UI stage / non-target callers).
   // docs-to-ui uses the `targets` multi-select below; platform is derived from
@@ -1100,7 +1202,6 @@ export function RunAllModal({
         designSystemId,
         skipSucceeded,
         ...(followLinks ? {} : { followLinks: false }),
-        ...(includeDescendants ? { includeDescendants: true } : {}),
       });
       onClose();
     } catch (err) {
@@ -1165,7 +1266,6 @@ export function RunAllModal({
         {/* Cùng picker với nút Run của riêng bước Docs: tìm trang theo tên,
             tick chọn nhiều, hoặc dán link/page id. */}
         <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
-        <ScanScopeToggle checked={includeDescendants} onChange={setIncludeDescendants} disabled={busy} />
         <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
         <span className="pl-modal-field__hint">
           Điền sẵn từ cấu hình dự án trên Pipeline Studio (nếu có). Link/id Confluence được daemon

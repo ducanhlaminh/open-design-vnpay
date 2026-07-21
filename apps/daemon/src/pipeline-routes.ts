@@ -590,6 +590,19 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
   });
 
+  // GET /api/pipelines/confluence/descendants?ref=… — the sub-tree (all levels,
+  // flat + treePath) under one page, so the picker renders a checkbox tree.
+  app.get('/api/pipelines/confluence/descendants', async (req, res) => {
+    const ref = typeof req.query.ref === 'string' ? req.query.ref.trim() : '';
+    if (!ref) return res.status(400).json({ error: 'ref (Confluence URL/id) is required' });
+    try {
+      const pages = await ctx.pipelines.bas.confluenceDescendants(ref);
+      res.json({ pages });
+    } catch (err: any) {
+      res.status(502).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   // GET /api/pipelines/bas/confluence/page?ref=… — link metadata for the preview.
   app.get('/api/pipelines/bas/confluence/page', async (req, res) => {
     const ref = typeof req.query.ref === 'string' ? req.query.ref.trim() : '';
