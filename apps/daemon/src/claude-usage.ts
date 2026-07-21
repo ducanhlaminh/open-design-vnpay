@@ -78,14 +78,26 @@ function isoOf(v: unknown): string | null {
  *  `sandboxCreds` is an optional fallback that returns the raw credentials JSON
  *  from the Docker sandbox auth volume — used when the sandbox owns Claude runs
  *  (Windows / Docker-only), where the token is NOT on the host keychain/file. */
-export async function fetchClaudeUsage(
-  sandboxCreds?: () => Promise<string | null>,
-): Promise<ClaudeUsageResponse> {
+export async function fetchClaudeUsage(opts?: {
+  /** Reads the raw credentials JSON out of the Docker sandbox auth volume. */
+  sandboxCreds?: () => Promise<string | null>;
+  /** True when the sandbox OWNS Claude runs (Docker-only): read the token ONLY
+   *  from the sandbox volume, never the host — otherwise the meter would show
+   *  the host account's quota, which is not what this app actually spends. Not
+   *  logged into the sandbox → unavailable (meter hidden). */
+  sandboxOnly?: boolean;
+}): Promise<ClaudeUsageResponse> {
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.value;
-  let oauth = await readOAuth();
-  if (!oauth?.accessToken && sandboxCreds) {
-    const raw = await sandboxCreds().catch(() => null);
+  let oauth: OAuthBlob | null = null;
+  if (opts?.sandboxOnly) {
+    const raw = opts.sandboxCreds ? await opts.sandboxCreds().catch(() => null) : null;
     if (raw) oauth = parseOAuth(raw);
+  } else {
+    oauth = await readOAuth();
+    if (!oauth?.accessToken && opts?.sandboxCreds) {
+      const raw = await opts.sandboxCreds().catch(() => null);
+      if (raw) oauth = parseOAuth(raw);
+    }
   }
   if (!oauth?.accessToken) {
     cache = { at: Date.now(), value: UNAVAILABLE };
