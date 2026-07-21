@@ -74,10 +74,19 @@ function isoOf(v: unknown): string | null {
   return typeof v === 'string' && v ? v : null;
 }
 
-/** Fetch Claude account usage, cached ~60s to avoid hammering the endpoint. */
-export async function fetchClaudeUsage(): Promise<ClaudeUsageResponse> {
+/** Fetch Claude account usage, cached ~60s to avoid hammering the endpoint.
+ *  `sandboxCreds` is an optional fallback that returns the raw credentials JSON
+ *  from the Docker sandbox auth volume — used when the sandbox owns Claude runs
+ *  (Windows / Docker-only), where the token is NOT on the host keychain/file. */
+export async function fetchClaudeUsage(
+  sandboxCreds?: () => Promise<string | null>,
+): Promise<ClaudeUsageResponse> {
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.value;
-  const oauth = await readOAuth();
+  let oauth = await readOAuth();
+  if (!oauth?.accessToken && sandboxCreds) {
+    const raw = await sandboxCreds().catch(() => null);
+    if (raw) oauth = parseOAuth(raw);
+  }
   if (!oauth?.accessToken) {
     cache = { at: Date.now(), value: UNAVAILABLE };
     return UNAVAILABLE;

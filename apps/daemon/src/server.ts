@@ -306,6 +306,7 @@ import {
   dockerAvailable,
   dockerImagePresent,
   ensureSandboxImage,
+  readSandboxClaudeCredentials,
   resolveSandboxConfig,
   sandboxImageTag,
   sandboxPreflight,
@@ -12726,7 +12727,17 @@ export async function startServer({
   // and 7-day subscription limits), the same data Claude Code's `/usage` shows.
   app.get('/api/usage/claude', async (_req, res) => {
     try {
-      const body = await fetchClaudeUsage();
+      // When the sandbox owns Claude runs (Windows / Docker-only), the OAuth
+      // token lives in the od-claude-auth volume, not on the host — fall back to
+      // reading it from there.
+      const body = await fetchClaudeUsage(async () => {
+        try {
+          const image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
+          return await readSandboxClaudeCredentials(image);
+        } catch {
+          return null;
+        }
+      });
       res.json(body);
     } catch {
       res.json({

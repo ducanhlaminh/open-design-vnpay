@@ -256,6 +256,29 @@ export async function dockerVolumePresent(volume: string): Promise<boolean> {
  * short-lived container to look inside the volume, so callers should treat
  * this as a slow probe (status command), not a per-spawn check.
  */
+/**
+ * Read the Claude CLI credentials JSON from the shared auth volume (where
+ * `od sandbox login` stored them). Used by the usage meter when the sandbox
+ * owns Claude runs — the OAuth token lives in the container volume, not on the
+ * host keychain/file. Returns the raw file content, or null if unreadable.
+ */
+export async function readSandboxClaudeCredentials(image: string): Promise<string | null> {
+  try {
+    return await docker(
+      [
+        'run', '--rm',
+        '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}:ro`,
+        '--entrypoint', 'cat',
+        image,
+        `${CONTAINER_AUTH_DIR}/.credentials.json`,
+      ],
+      30_000,
+    );
+  } catch {
+    return null;
+  }
+}
+
 export async function sandboxAuthLoggedIn(image: string): Promise<boolean> {
   try {
     await docker(
