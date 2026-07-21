@@ -9,7 +9,7 @@
 // Clicking a mockup opens it full-screen (lightbox). Export bundles the
 // (possibly edited) report + every image it references into one .zip so a
 // reviewer always gets the full picture, never a report with missing images.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Icon } from './Icon';
 import { projectRawUrl } from '../providers/registry';
 import { triggerDownload } from '../runtime/exports';
@@ -642,16 +642,46 @@ function Lightbox({
   regions?: Array<{ n: number; region: FindingRegion; color: string }>;
   onClose: () => void;
 }) {
+  // Pan + zoom: wheel/±buttons scale 1–8×, drag to pan when zoomed in. Regions
+  // sit inside the transformed wrapper so callouts track the image.
+  const [scale, setScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const drag = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const clampScale = (v: number) => Math.min(8, Math.max(1, v));
+  const zoomBy = (factor: number) =>
+    setScale((s) => {
+      const next = clampScale(s * factor);
+      if (next === 1) setPan({ x: 0, y: 0 });
+      return next;
+    });
+  const reset = () => {
+    setScale(1);
+    setPan({ x: 0, y: 0 });
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
         onClose();
+      } else if (e.key === '+' || e.key === '=') {
+        zoomBy(1.25);
+      } else if (e.key === '-') {
+        zoomBy(1 / 1.25);
+      } else if (e.key === '0') {
+        reset();
       }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose]);
+
+  const ctrlBtn: CSSProperties = {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32,
+    border: 0, borderRadius: 8, background: 'rgba(255,255,255,0.14)', color: '#fff', cursor: 'pointer',
+  };
+
   return (
     <div
       onClick={(e) => {
@@ -663,25 +693,61 @@ function Lightbox({
       aria-label={alt}
       style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 10, padding: 28, background: 'rgba(15, 18, 24, 0.85)', cursor: 'zoom-out' }}
     >
-      <button
-        type="button"
-        onClick={onClose}
-        title="Đóng (Esc)"
-        style={{ position: 'absolute', top: 14, right: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', width: 34, height: 34, border: 0, borderRadius: 999, background: 'rgba(255,255,255,0.14)', color: '#fff', cursor: 'pointer' }}
+      {/* zoom controls */}
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ position: 'absolute', top: 14, right: 14, display: 'flex', alignItems: 'center', gap: 8 }}
       >
-        <Icon name="close" size={16} />
-      </button>
-      <div onClick={(e) => e.stopPropagation()} style={{ position: 'relative', cursor: 'default' }}>
+        <button type="button" onClick={() => zoomBy(1 / 1.25)} title="Thu nhỏ (−)" style={ctrlBtn}><Icon name="zoom-out" size={15} /></button>
+        <span style={{ minWidth: 44, textAlign: 'center', fontSize: 12.5, fontVariantNumeric: 'tabular-nums', color: '#fff' }}>{Math.round(scale * 100)}%</span>
+        <button type="button" onClick={() => zoomBy(1.25)} title="Phóng to (+)" style={ctrlBtn}><Icon name="zoom-in" size={15} /></button>
+        <button type="button" onClick={reset} title="Về 100% (0)" style={ctrlBtn}><Icon name="refresh" size={15} /></button>
+        <button type="button" onClick={onClose} title="Đóng (Esc)" style={{ ...ctrlBtn, background: 'rgba(255,255,255,0.14)' }}><Icon name="close" size={16} /></button>
+      </div>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onWheel={(e) => {
+          e.stopPropagation();
+          zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+        }}
+        onMouseDown={(e) => {
+          if (scale <= 1) return;
+          e.preventDefault();
+          drag.current = { px: e.clientX, py: e.clientY, ox: pan.x, oy: pan.y };
+          setDragging(true);
+        }}
+        onMouseMove={(e) => {
+          if (!drag.current) return;
+          setPan({ x: drag.current.ox + (e.clientX - drag.current.px), y: drag.current.oy + (e.clientY - drag.current.py) });
+        }}
+        onMouseUp={() => {
+          drag.current = null;
+          setDragging(false);
+        }}
+        onMouseLeave={() => {
+          drag.current = null;
+          setDragging(false);
+        }}
+        onDoubleClick={() => (scale > 1 ? reset() : zoomBy(2))}
+        style={{
+          position: 'relative',
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
+          transformOrigin: 'center center',
+          transition: dragging ? 'none' : 'transform 0.12s ease-out',
+          cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-in',
+        }}
+      >
         <img
           src={src}
           alt={alt}
-          style={{ display: 'block', maxWidth: '94vw', maxHeight: '88vh', borderRadius: 10, background: '#fff', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
+          draggable={false}
+          style={{ display: 'block', maxWidth: '94vw', maxHeight: '84vh', borderRadius: 10, background: '#fff', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
         />
         {regions?.map((r) => (
           <RegionBox key={r.n} n={r.n} region={r.region} color={r.color} />
         ))}
       </div>
-      <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.75)' }}>{alt}</div>
+      <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.75)' }}>{alt} · cuộn để phóng to, kéo để di chuyển, nhấp đúp để zoom</div>
     </div>
   );
 }
