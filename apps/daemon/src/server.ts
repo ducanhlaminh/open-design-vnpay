@@ -182,6 +182,7 @@ import { ingestRoutineConnectorEvolution } from './automation-routine-evolution.
 import { createClaudeStreamHandler } from './claude-stream.js';
 import { diagnoseClaudeCliFailure } from './claude-diagnostics.js';
 import { fetchClaudeUsage } from './claude-usage.js';
+import { renderHtmlToPdf } from './bas/drawio-render.js';
 import { loadCritiqueConfigFromEnv } from './critique/config.js';
 import { reconcileStaleRuns } from './critique/persistence.js';
 import { runOrchestrator } from './critique/orchestrator.js';
@@ -12697,6 +12698,28 @@ export async function startServer({
     /** @type {import('@open-design/contracts').ChatRunListResponse} */
     const body = { runs: runs.map(design.runs.statusBody) };
     res.json(body);
+  });
+
+  // Render a self-contained HTML document (inline CSS + data-URI images) to a
+  // PDF via headless Chromium. Runtime-agnostic (spawns its own chromium), so
+  // the review exporter gets a real downloadable .pdf in web AND desktop.
+  app.post('/api/render/pdf', async (req, res) => {
+    const html = typeof req.body?.html === 'string' ? req.body.html : '';
+    const filename =
+      typeof req.body?.filename === 'string' && req.body.filename ? req.body.filename : 'document.pdf';
+    if (!html.trim()) return sendApiError(res, 400, 'BAD_REQUEST', 'html is required');
+    try {
+      const pdf = await renderHtmlToPdf(html, RUNTIME_DATA_DIR);
+      const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '_') || 'document.pdf';
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      );
+      res.send(pdf);
+    } catch (err) {
+      sendApiError(res, 500, 'RENDER_FAILED', err instanceof Error ? err.message : String(err));
+    }
   });
 
   // Always-visible Usage meter feed: Claude account quota % (rolling 5-hour
