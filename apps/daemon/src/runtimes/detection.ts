@@ -241,9 +241,20 @@ async function safeProbe(
 
 export async function detectAgents(
   configuredEnvByAgent: Record<string, Record<string, string>> = {},
+  // Runtime ids whose HOST binary must NOT be probed (`*` = all) — used when the
+  // Docker sandbox OWNS a runtime's runs, so the daemon never touches the host
+  // `claude` CLI (no `--version`, no `status`); the caller supplies the real
+  // availability from the sandbox. Skipped runtimes return an unavailable entry.
+  skipProbe: readonly string[] = [],
 ) {
+  const skipAll = skipProbe.includes('*');
+  const skip = new Set(skipProbe);
   const results = await Promise.all(
-    AGENT_DEFS.map((def) => safeProbe(def, configuredEnvByAgent?.[def.id] ?? {})),
+    AGENT_DEFS.map((def) =>
+      skipAll || skip.has(def.id)
+        ? Promise.resolve(unavailableAgent(def))
+        : safeProbe(def, configuredEnvByAgent?.[def.id] ?? {}),
+    ),
   );
   // Refresh the validation cache from whatever we just surfaced to the UI
   // so /api/chat can accept any model the user could have just picked,

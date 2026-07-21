@@ -511,6 +511,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 const DAEMON_CLI_PATH_ENV = 'OD_DAEMON_CLI_PATH';
+
+/** Runtime ids whose HOST CLI must NOT be probed because the Docker sandbox OWNS
+ *  their runs (enabled + skills '*'). Passed to detectAgents so a Docker-only
+ *  app never touches the host `claude` binary — availability comes from the
+ *  sandbox instead. Empty when the sandbox isn't owning runs. */
+function sandboxSkipProbe(config: { sandbox?: unknown } | null | undefined): string[] {
+  const cfg = resolveSandboxConfig(
+    config?.sandbox as Parameters<typeof resolveSandboxConfig>[0],
+    process.env,
+  );
+  return cfg.enabled && cfg.skills.includes('*') ? cfg.runtimes : [];
+}
 export function resolveProjectRoot(moduleDir: string): string {
   const base = path.basename(moduleDir);
   const daemonDir =
@@ -4085,7 +4097,7 @@ export async function startServer({
   void readAppConfig(RUNTIME_DATA_DIR)
     .then((config) => {
       orbitService.configure(config.orbit);
-      return detectAgents(config.agentCliEnv ?? {});
+      return detectAgents(config.agentCliEnv ?? {}, sandboxSkipProbe(config));
     })
     .catch(() => detectAgents().catch(() => {}));
 
@@ -5886,7 +5898,7 @@ export async function startServer({
   app.get('/api/agents', async (_req, res) => {
     try {
       const config = await readAppConfig(RUNTIME_DATA_DIR);
-      const list = await detectAgents(config.agentCliEnv ?? {});
+      const list = await detectAgents(config.agentCliEnv ?? {}, sandboxSkipProbe(config));
       // When the sandbox OWNS a runtime's runs (enabled + skills '*'), "Local
       // CLI" availability is the SANDBOX's: docker + image + auth volume. The
       // host binary is irrelevant then — a machine with no host claude is
@@ -12167,7 +12179,7 @@ export async function startServer({
       ? appConfig.agentId
       : null;
     if (!agentId) {
-      const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+      const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
       agentId = agents.find((agent) => agent.available)?.id ?? null;
     }
     // Host detection found nothing, but the sandbox may still provide claude
@@ -12475,6 +12487,7 @@ export async function startServer({
       );
       const detectedAgentsForAnalytics = await detectAgents(
         (appCfgForAnalytics as { agentCliEnv?: Record<string, unknown> }).agentCliEnv ?? {},
+        sandboxSkipProbe(appCfgForAnalytics),
       ).catch(() => [] as Array<{ id: string; available: boolean }>);
       // BYOK credentials live in the web client (localStorage / store) and
       // are not visible to the daemon at this layer, so we pass
@@ -12847,7 +12860,7 @@ export async function startServer({
     let agentId = routine.agentId
       || (typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null);
     if (!agentId) {
-      const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+      const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
       agentId = agents.find((agent) => agent.available)?.id ?? null;
     }
     // Volume-only machines: no host install, but the sandbox provides claude.
@@ -13654,7 +13667,7 @@ export async function startServer({
         const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
         let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
         if (!agentId) {
-          const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+          const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
           agentId = agents.find((a) => a.available)?.id ?? null;
         }
         if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
@@ -13865,7 +13878,7 @@ export async function startServer({
         const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
         let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
         if (!agentId) {
-          const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+          const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
           agentId = agents.find((a) => a.available)?.id ?? null;
         }
         if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
@@ -14174,7 +14187,7 @@ export async function startServer({
         const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
         let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
         if (!agentId) {
-          const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+          const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
           agentId = agents.find((a) => a.available)?.id ?? null;
         }
         if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
@@ -14478,7 +14491,7 @@ export async function startServer({
       ? appConfig.agentId
       : null;
     if (!agentId) {
-      const agents = await detectAgents(appConfig.agentCliEnv ?? {}).catch(() => []);
+      const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
       agentId = agents.find((agent) => agent.available)?.id ?? null;
     }
     // Volume-only machines: no host install, but the sandbox provides claude.
