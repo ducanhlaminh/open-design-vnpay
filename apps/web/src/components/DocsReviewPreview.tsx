@@ -1522,6 +1522,40 @@ export function DocsReviewIndexPreview({
     const first = pages[worst === -1 ? 0 : worst];
     return new Set(first?.slug ? [first.slug] : []);
   });
+  // Group pages by top-level module (the slug's first `__` segment, e.g.
+  // `II.-Danh-muc__…` → `II.-Danh-muc`) so a 37-page sub-tree review reads as a
+  // handful of modules instead of one flat wall. Groups keep the index's order
+  // (worst-first); a whole module can be collapsed.
+  const groups = useMemo(() => {
+    const m = new Map<string, typeof pages>();
+    for (const p of pages) {
+      const key = (p.slug ?? p.report ?? '').split('__')[0] || '(khác)';
+      const arr = m.get(key);
+      if (arr) arr.push(p);
+      else m.set(key, [p]);
+    }
+    return [...m.entries()].map(([key, ps]) => ({
+      key,
+      label: key.replace(/-/g, ' ').replace(/\s*\.\s*/, '. ').trim() || key,
+      pages: ps,
+      blockers: ps.reduce((n, p) => n + (p.blockers ?? 0), 0),
+      majors: ps.reduce((n, p) => n + (p.majors ?? 0), 0),
+      worst: (ps.some((p) => asVerdict(p.verdict) === 'fail')
+        ? 'fail'
+        : ps.some((p) => asVerdict(p.verdict) === 'warn')
+          ? 'warn'
+          : 'pass') as Verdict,
+    }));
+  }, [pages]);
+  // A group is expanded unless explicitly collapsed (default: all open).
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (key: string) =>
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   /** Combined PDF of EVERY page's review (one section per page, images inlined)
    *  — the whole review as a single file to hand off. */
@@ -1614,52 +1648,81 @@ export function DocsReviewIndexPreview({
         </div>
       </div>
 
-      {/* one collapsible section per page */}
-      {pages.map((p) => {
-        const slug = p.slug ?? p.report ?? '';
-        const isOpen = open.has(slug);
-        const pv: Verdict = asVerdict(p.verdict);
-        const rep = reports[slug];
-        return (
-          <div key={slug} style={{ border: `1px solid ${T.border}`, borderRadius: 11, overflow: 'hidden' }}>
-            <button
-              type="button"
-              onClick={() => toggle(slug, p.report!)}
-              style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 10, padding: '11px 14px', background: T.paper, border: 0, cursor: 'pointer', textAlign: 'left' }}
-            >
-              <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={15} />
-              <span style={{ minWidth: 0, fontSize: 13.5, fontWeight: 650, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {p.page ?? slug}
-              </span>
-              <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-                {p.images ? <span style={{ fontSize: 11.5, color: T.faint }}>{p.images} mockup</span> : null}
-                <span style={{ display: 'flex', gap: 7, fontSize: 11.5 }}>
-                  {p.blockers ? <span style={{ color: T.red }}>{p.blockers}NT</span> : null}
-                  {p.majors ? <span style={{ color: T.amber }}>{p.majors}N</span> : null}
-                </span>
-                {typeof p.score === 'number' ? <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13, fontWeight: 600, color: T.ink }}>{p.score}</span> : null}
-                <span style={{ fontSize: 11.5, fontWeight: 700, padding: '2px 9px', borderRadius: 999, color: '#fff', background: IDX_VERDICT_TONE[pv] }}>{verdictLabel(pv)}</span>
-              </span>
-            </button>
-            {isOpen ? (
-              rep === undefined ? (
-                <div style={{ padding: 16, color: T.muted, fontSize: 12.5 }}>Đang tải báo cáo trang…</div>
-              ) : rep === null ? (
-                <div style={{ padding: 16, color: T.red, fontSize: 12.5 }}>Không đọc được report của trang này.</div>
-              ) : (
-                <div style={{ borderTop: `1px solid ${T.border}` }}>
-                  <DocsReviewPreview
-                    projectId={projectId}
-                    fileName={resolvePageReportPath(fileName, p.report!)}
-                    report={rep}
-                    onSaved={() => setReports((prev) => ({ ...prev, [slug]: undefined as unknown as DocsMockupReviewReport }))}
-                  />
-                </div>
-              )
-            ) : null}
-          </div>
-        );
-      })}
+      {/* Pages grouped by module (flat when there's only one module). */}
+      {groups.length > 1
+        ? groups.map((g) => {
+            const groupOpen = !collapsedGroups.has(g.key);
+            return (
+              <div key={g.key} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(g.key)}
+                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 9, padding: '9px 12px', background: T.subtle, border: `1px solid ${T.border}`, borderRadius: 10, cursor: 'pointer', textAlign: 'left' }}
+                >
+                  <Icon name={groupOpen ? 'chevron-down' : 'chevron-right'} size={15} />
+                  <span style={{ minWidth: 0, fontSize: 13.5, fontWeight: 750, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.label}</span>
+                  <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, fontSize: 11.5 }}>
+                    <span style={{ color: T.faint }}>{g.pages.length} trang</span>
+                    {g.blockers ? <span style={{ color: T.red }}>{g.blockers}NT</span> : null}
+                    {g.majors ? <span style={{ color: T.amber }}>{g.majors}N</span> : null}
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, color: '#fff', background: IDX_VERDICT_TONE[g.worst] }}>{verdictLabel(g.worst)}</span>
+                  </span>
+                </button>
+                {groupOpen ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 14 }}>
+                    {g.pages.map((p) => renderPageRow(p))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })
+        : pages.map((p) => renderPageRow(p))}
     </div>
   );
+
+  function renderPageRow(p: NonNullable<DocsMockupReviewIndex['pages']>[number]) {
+    const slug = p.slug ?? p.report ?? '';
+    const isOpen = open.has(slug);
+    const pv: Verdict = asVerdict(p.verdict);
+    const rep = reports[slug];
+    return (
+      <div key={slug} style={{ border: `1px solid ${T.border}`, borderRadius: 11, overflow: 'hidden' }}>
+        <button
+          type="button"
+          onClick={() => toggle(slug, p.report!)}
+          style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 10, padding: '11px 14px', background: T.paper, border: 0, cursor: 'pointer', textAlign: 'left' }}
+        >
+          <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={15} />
+          <span style={{ minWidth: 0, fontSize: 13.5, fontWeight: 650, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {p.page ?? slug}
+          </span>
+          <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+            {p.images ? <span style={{ fontSize: 11.5, color: T.faint }}>{p.images} mockup</span> : null}
+            <span style={{ display: 'flex', gap: 7, fontSize: 11.5 }}>
+              {p.blockers ? <span style={{ color: T.red }}>{p.blockers}NT</span> : null}
+              {p.majors ? <span style={{ color: T.amber }}>{p.majors}N</span> : null}
+            </span>
+            {typeof p.score === 'number' ? <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13, fontWeight: 600, color: T.ink }}>{p.score}</span> : null}
+            <span style={{ fontSize: 11.5, fontWeight: 700, padding: '2px 9px', borderRadius: 999, color: '#fff', background: IDX_VERDICT_TONE[pv] }}>{verdictLabel(pv)}</span>
+          </span>
+        </button>
+        {isOpen ? (
+          rep === undefined ? (
+            <div style={{ padding: 16, color: T.muted, fontSize: 12.5 }}>Đang tải báo cáo trang…</div>
+          ) : rep === null ? (
+            <div style={{ padding: 16, color: T.red, fontSize: 12.5 }}>Không đọc được report của trang này.</div>
+          ) : (
+            <div style={{ borderTop: `1px solid ${T.border}` }}>
+              <DocsReviewPreview
+                projectId={projectId}
+                fileName={resolvePageReportPath(fileName, p.report!)}
+                report={rep}
+                onSaved={() => setReports((prev) => ({ ...prev, [slug]: undefined as unknown as DocsMockupReviewReport }))}
+              />
+            </div>
+          )
+        ) : null}
+      </div>
+    );
+  }
 }
