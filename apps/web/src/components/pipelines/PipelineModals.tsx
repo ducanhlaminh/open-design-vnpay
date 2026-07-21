@@ -260,6 +260,10 @@ export function ConfluencePagePicker({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [treeLoading, setTreeLoading] = useState<Set<string>>(new Set());
   const [treeErr, setTreeErr] = useState<Record<string, string>>({});
+  // STAGING: ticks in the tree collect here first — nothing enters the "Đã chọn"
+  // list until the user presses "Thêm". Keyed by page id → the ref to commit.
+  const [staged, setStaged] = useState<Record<string, ConfluencePageRefLike>>({});
+  const committedIds = useMemo(() => new Set(pages.map((p) => p.id).filter(Boolean) as string[]), [pages]);
 
   const loadTree = (hit: { id: string; title: string; url?: string }) => {
     if (treeByHit[hit.id] || treeLoading.has(hit.id)) return;
@@ -290,29 +294,36 @@ export function ConfluencePagePicker({
       return n;
     });
   };
-  // Tristate for a node from the selected `pages`: on = whole subtree selected,
-  // off = none, partial = some.
+  // A node counts as "on" if already committed (in Đã chọn) OR staged (ticked,
+  // pending Thêm). Tristate over the whole subtree.
+  const isOn = (id: string) => committedIds.has(id) || Boolean(staged[id]);
   const nodeCheck = (node: ConfTreeNode): 'on' | 'off' | 'partial' => {
     const ids = confSubtreeIds(node);
-    const sel = new Set(pages.map((p) => p.id).filter(Boolean) as string[]);
-    const on = ids.filter((id) => sel.has(id)).length;
+    const on = ids.filter(isOn).length;
     return on === 0 ? 'off' : on === ids.length ? 'on' : 'partial';
   };
-  // Checking a node selects its whole subtree; unchecking clears it.
+  // Ticking a node STAGES its whole subtree (already-committed pages are left as
+  // is — remove those from the Đã chọn list instead).
   const toggleSubtree = (node: ConfTreeNode) => {
     const collect = (n: ConfTreeNode): ConfTreeNode[] => [n, ...n.children.flatMap(collect)];
-    const nodes = collect(node);
-    const ids = new Set(nodes.map((n) => n.id));
-    const sel = new Set(pages.map((p) => p.id).filter(Boolean) as string[]);
-    const allOn = nodes.every((n) => sel.has(n.id));
-    if (allOn) {
-      onPagesChange(pages.filter((p) => !p.id || !ids.has(p.id)));
-    } else {
-      const add = nodes
-        .filter((n) => !sel.has(n.id))
-        .map((n) => ({ id: n.id, title: n.title, ...(n.url ? { url: n.url } : {}) }));
-      onPagesChange([...pages, ...add]);
-    }
+    const stageable = collect(node).filter((n) => !committedIds.has(n.id));
+    if (!stageable.length) return;
+    const allStaged = stageable.every((n) => staged[n.id]);
+    setStaged((prev) => {
+      const next = { ...prev };
+      for (const n of stageable) {
+        if (allStaged) delete next[n.id];
+        else next[n.id] = { id: n.id, title: n.title, ...(n.url ? { url: n.url } : {}) };
+      }
+      return next;
+    });
+  };
+  const stagedList = Object.values(staged);
+  const addStaged = () => {
+    if (!stagedList.length) return;
+    const existing = new Set(pages.map(confPageKey));
+    onPagesChange([...pages, ...stagedList.filter((s) => !existing.has(confPageKey(s)))]);
+    setStaged({});
   };
 
   useEffect(() => {
@@ -382,6 +393,9 @@ export function ConfluencePagePicker({
             <span className={styles.rowBody}>
               <span className={styles.rowName}>{node.title}</span>
             </span>
+            {committedIds.has(node.id) ? (
+              <span className={styles.rowSummary} style={{ flexShrink: 0, color: 'var(--green, #16a34a)' }}>đã thêm</span>
+            ) : null}
           </button>
         </div>
         {isExp && isHit && treeErr[hit.id] ? (
@@ -479,7 +493,7 @@ export function ConfluencePagePicker({
             <input
               type="text"
               className="pl-input"
-              placeholder="Gõ tên trang để tìm — tick chọn nhiều trang…"
+              placeholder="Gõ tên trang để tìm — tick trang/thư mục rồi bấm Thêm…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -497,10 +511,21 @@ export function ConfluencePagePicker({
                   renderConfNode(treeByHit[h.id] ?? { id: h.id, title: h.title, ...(h.url ? { url: h.url } : {}), children: [] }, h, 0),
                 )}
                 <p className={styles.empty} style={{ margin: '2px 0 0' }}>
-                  Bấm ▸ để xem trang con · tick thư mục cha để chọn cả nhánh.
+                  Bấm ▸ để xem trang con · tick thư mục cha để chọn cả nhánh · rồi bấm “Thêm”.
                 </p>
               </div>
             )
+          ) : null}
+          {stagedList.length > 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
+              <button type="button" className="pl-btn pl-btn--primary" onClick={addStaged}>
+                <Icon name="plus" size={13} />
+                <span>Thêm {stagedList.length} trang vào danh sách</span>
+              </button>
+              <button type="button" className={styles.linkBtn} onClick={() => setStaged({})}>
+                Bỏ tick
+              </button>
+            </div>
           ) : null}
           <div className={styles.footerLinks}>
             <button type="button" className={styles.linkBtn} onClick={() => setManual(true)}>
