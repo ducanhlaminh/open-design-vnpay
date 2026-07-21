@@ -343,12 +343,18 @@ export function buildPackagedDaemonSpawnEnv(
     ...(options.atlassianConfluenceToken == null || options.atlassianConfluenceToken.length === 0
       ? {}
       : { OD_ATLASSIAN_CONFLUENCE_TOKEN: options.atlassianConfluenceToken }),
-    // Agent-in-sandbox defaults baked by tools/pack: the daemon applies them
-    // only while the user has no persisted sandbox prefs (agent-sandbox.ts
-    // resolveSandboxConfig), so `od sandbox disable` still wins.
-    ...(options.sandboxDefault == null || options.sandboxDefault.length === 0
-      ? {}
-      : { OD_SANDBOX_DEFAULT: options.sandboxDefault }),
+    // Agent-in-sandbox bake from tools/pack. `"1"` means this build is
+    // Docker-ONLY, so FORCE the sandbox on (OD_SANDBOX=1, unconditional in
+    // resolveSandboxConfig) rather than OD_SANDBOX_DEFAULT — the latter only
+    // applies when the user has NO persisted sandbox pref, and a persisted
+    // `enabled:false` (or a default-written config) silently left the sandbox
+    // off, so the host CLI showed 0 agents. Any other value keeps the old
+    // opt-out-respecting default behaviour.
+    ...(options.sandboxDefault === '1'
+      ? { OD_SANDBOX: '1' }
+      : options.sandboxDefault == null || options.sandboxDefault.length === 0
+        ? {}
+        : { OD_SANDBOX_DEFAULT: options.sandboxDefault }),
     ...(options.sandboxSkills == null || options.sandboxSkills.length === 0
       ? {}
       : { OD_SANDBOX_SKILLS: options.sandboxSkills }),
