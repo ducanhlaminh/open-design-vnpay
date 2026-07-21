@@ -34,6 +34,14 @@ on:
 permissions:
   contents: write
 
+# Serialize builds: a newer push cancels an in-flight one. Two builds racing (a
+# quick double-push) both resolve the SAME next version and the second collides
+# on `gh release create` (tag already exists) — cancel-in-progress keeps only the
+# latest, so the tag is computed once against the real latest release.
+concurrency:
+  group: release-unsigned-manual
+  cancel-in-progress: true
+
 # Bake "Claude runs ONLY through the Docker sandbox" into every build. tools-pack
 # reads these at packaging time and bakes them into the packaged config
 # (sandboxDefault / sandboxSkills → forwarded to the daemon as
