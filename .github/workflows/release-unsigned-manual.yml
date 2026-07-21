@@ -34,6 +34,16 @@ on:
 permissions:
   contents: write
 
+# Bake "Claude runs ONLY through the Docker sandbox" into every build. tools-pack
+# reads these at packaging time and bakes them into the packaged config
+# (sandboxDefault / sandboxSkills → forwarded to the daemon as
+# OD_SANDBOX_DEFAULT / OD_SANDBOX_SKILLS), so a fresh install defaults to the
+# sandbox owning all Claude runs and the host CLI is never used. Users can still
+# turn it off in Settings → Sandbox.
+env:
+  OD_SANDBOX_DEFAULT: "1"
+  OD_SANDBOX_SKILLS: "*"
+
 jobs:
   verify:
     name: Verify (typecheck + guard)
