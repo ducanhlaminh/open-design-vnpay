@@ -194,8 +194,6 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-          OD_SANDBOX_DEFAULT: ${{ secrets.OD_SANDBOX_DEFAULT }}
-          OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
           OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
           OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
           KGS_URL: ${{ secrets.KGS_URL }}
@@ -284,8 +282,6 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-          OD_SANDBOX_DEFAULT: ${{ secrets.OD_SANDBOX_DEFAULT }}
-          OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
           OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
           OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
           KGS_URL: ${{ secrets.KGS_URL }}
@@ -388,8 +384,6 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-          OD_SANDBOX_DEFAULT: ${{ secrets.OD_SANDBOX_DEFAULT }}
-          OD_SANDBOX_SKILLS: ${{ secrets.OD_SANDBOX_SKILLS }}
           OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
           OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
           KGS_URL: ${{ secrets.KGS_URL }}
