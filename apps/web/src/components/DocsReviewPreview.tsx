@@ -142,6 +142,82 @@ const verdictColor = (v: Verdict) => (v === 'fail' ? T.red : v === 'warn' ? T.am
 const verdictLabel = (v: Verdict) => (v === 'fail' ? 'Chưa đạt' : v === 'warn' ? 'Cảnh báo' : 'Đạt');
 const sevColor = (s?: string) => (s === 'blocker' ? T.red : s === 'major' ? T.amber : T.muted);
 const sevLabel = (s?: string) => (s === 'blocker' ? 'Nghiêm trọng' : s === 'major' ? 'Nặng' : 'Nhẹ');
+const sevEmoji = (s?: string) => (s === 'blocker' ? '🔴' : s === 'major' ? '🟠' : '⚪');
+
+/** Fetch an image and inline it as a base64 data URI so an exported .md is
+ *  self-contained — one file the reader's editor renders with images, no
+ *  sidecar folder to keep together. Returns null on any fetch/read error. */
+async function imageToDataUri(url: string): Promise<string | null> {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const blob = await resp.blob();
+    return await new Promise<string | null>((resolve) => {
+      const r = new FileReader();
+      r.onloadend = () => resolve(typeof r.result === 'string' ? r.result : null);
+      r.onerror = () => resolve(null);
+      r.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Human-readable Markdown for ONE page's review — findings as prose per mockup
+ *  with each image inlined as base64 (self-contained). `level` sets the top
+ *  heading depth so a single-page export leads with `#` while a combined export
+ *  nests each page under `##`. Shared by the per-page and index exporters. */
+async function buildReviewMdForReport(
+  projectId: string,
+  reportFileName: string,
+  images: MockupReviewImage[],
+  level: 1 | 2 = 1,
+): Promise<string> {
+  const h = (extra: number) => '#'.repeat(level + extra);
+  let blockers = 0, majors = 0, minors = 0;
+  const scores: number[] = [];
+  let worst: Verdict = 'pass';
+  for (const img of images) {
+    const { score: s, verdict: v } = scoreImage(img.findings ?? []);
+    scores.push(s);
+    if (v === 'fail') worst = 'fail';
+    else if (v === 'warn' && worst !== 'fail') worst = 'warn';
+    for (const f of img.findings ?? []) {
+      if (f.severity === 'blocker') blockers += 1;
+      else if (f.severity === 'major') majors += 1;
+      else if (f.severity === 'minor') minors += 1;
+    }
+  }
+  const score = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : undefined;
+  const pageTitle = images.find((i) => i.page)?.page || reportFileName.split('/').filter(Boolean).slice(-2, -1)[0] || 'Review';
+  const lines: string[] = [];
+  lines.push(`${h(0)} ${pageTitle}`, '');
+  if (typeof score === 'number') lines.push(`**Điểm:** ${score}/100 · **Kết luận:** ${verdictLabel(worst)}`, '');
+  lines.push(`🔴 ${blockers} nghiêm trọng · 🟠 ${majors} nặng · ⚪ ${minors} nhẹ`, '');
+  for (const img of images) {
+    const { score: s, verdict: v } = scoreImage(img.findings ?? []);
+    const title = img.page || img.id;
+    lines.push(`${h(1)} ${title} — ${verdictLabel(v)}${typeof s === 'number' ? ` (${s}/100)` : ''}`, '');
+    const dataUri = await imageToDataUri(projectRawUrl(projectId, resolveImagePath(reportFileName, img.path)));
+    lines.push(dataUri ? `![${title}](${dataUri})` : `_(không tải được ảnh: ${img.path})_`, '');
+    if (img.feature_text) lines.push('**Nội dung màn hình theo tài liệu:**', '', formatFeatureText(img.feature_text), '');
+    const findings = img.findings ?? [];
+    if (findings.length) {
+      lines.push(`${h(2)} Vấn đề phát hiện`, '');
+      for (const f of findings) {
+        lines.push(`- ${sevEmoji(f.severity)} **[${sevLabel(f.severity)}]** ${f.issue ?? ''}`);
+        if (f.recommendation) lines.push(`  - 💡 **Đề xuất:** ${f.recommendation}`);
+      }
+      lines.push('');
+    }
+    if (img.passes?.length) {
+      lines.push(`${h(2)} Điểm đạt`, '');
+      for (const p of img.passes) lines.push(`- ✅ ${p}`);
+      lines.push('');
+    }
+  }
+  return lines.join('\n');
+}
 
 /** Same arithmetic as the docs-mockup-review skill's step 3 — recomputed
  *  client-side so an edit's score impact shows immediately, no re-run needed. */
@@ -1090,25 +1166,17 @@ export function DocsReviewPreview({
     setEditing(false);
   }
 
-  async function exportZip() {
+  async function exportMd() {
     setExporting(true);
     setError(null);
     try {
-      // Always export the SAVED file list — if there are unsaved edits, save
-      // first so the exported zip never silently ships a stale report.
+      // Export what's on screen — save unsaved edits first so the .md never
+      // ships a stale review.
       if (dirty) await save();
-      const files = [fileName, ...images.map((img) => resolveImagePath(fileName, img.path))];
-      const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/archive/batch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files }),
-      });
-      if (!resp.ok) {
-        const payload = (await resp.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(payload?.error || `Xuất file thất bại (${resp.status})`);
-      }
-      const blob = await resp.blob();
-      triggerDownload(blob, 'review.zip');
+      const header = '> Báo cáo rà soát mockup theo tài liệu. Dùng để đọc & chỉnh sửa lại tài liệu nguồn.\n\n';
+      const md = header + (await buildReviewMdForReport(projectId, fileName, images, 1));
+      const slug = fileName.split('/').filter(Boolean).slice(-2, -1)[0] || 'review';
+      triggerDownload(new Blob([md], { type: 'text/markdown;charset=utf-8' }), `review-${slug}.md`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Xuất file thất bại');
     } finally {
@@ -1180,12 +1248,13 @@ export function DocsReviewPreview({
               </button>
               <button
                 type="button"
-                onClick={() => void exportZip()}
+                onClick={() => void exportMd()}
                 disabled={exporting}
+                title="Xuất báo cáo review dạng Markdown, ảnh nhúng sẵn — đưa phòng ban khác đọc & sửa docs"
                 style={{ display: 'flex', alignItems: 'center', gap: 6, border: 0, borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: '#fff', background: T.accent, cursor: 'pointer' }}
               >
                 <Icon name={exporting ? 'spinner' : 'download'} size={13} />
-                {exporting ? 'Đang xuất…' : 'Xuất file review'}
+                {exporting ? 'Đang xuất…' : 'Xuất review (.md)'}
               </button>
             </>
           )}
@@ -1240,11 +1309,43 @@ export function DocsReviewIndexPreview({
     [index],
   );
   const [reports, setReports] = useState<Record<string, DocsMockupReviewReport | null>>({});
+  const [exporting, setExporting] = useState(false);
+  const [exportErr, setExportErr] = useState<string | null>(null);
   const [open, setOpen] = useState<Set<string>>(() => {
     const worst = pages.findIndex((p) => p.verdict !== 'pass');
     const first = pages[worst === -1 ? 0 : worst];
     return new Set(first?.slug ? [first.slug] : []);
   });
+
+  /** Combined Markdown of EVERY page's review (one section per page, images
+   *  inlined) — the whole review as a single self-contained file to hand off. */
+  async function exportAllMd() {
+    setExporting(true);
+    setExportErr(null);
+    try {
+      const parts: string[] = [
+        '# Báo cáo review mockup (toàn bộ)',
+        '',
+        '> Rà soát mockup theo tài liệu. Dùng để đọc & chỉnh sửa lại tài liệu nguồn.',
+        '',
+      ];
+      for (const p of pages) {
+        if (!p.report) continue;
+        const reportFileName = resolvePageReportPath(fileName, p.report);
+        const url = projectRawUrl(projectId, reportFileName);
+        const report = (await fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null)) as
+          | DocsMockupReviewReport
+          | null;
+        if (!report?.images?.length) continue;
+        parts.push('---', '', await buildReviewMdForReport(projectId, reportFileName, report.images, 2), '');
+      }
+      triggerDownload(new Blob([parts.join('\n')], { type: 'text/markdown;charset=utf-8' }), 'review-tong-hop.md');
+    } catch (err) {
+      setExportErr(err instanceof Error ? err.message : 'Xuất file thất bại');
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const loadReport = (slug: string, reportPath: string) => {
     if (reports[slug] !== undefined) return;
@@ -1295,7 +1396,20 @@ export function DocsReviewIndexPreview({
             <span style={{ color: T.soft }}>● {s.minors ?? 0} nhẹ</span>
           </div>
         </div>
-        <span style={{ marginLeft: 'auto', fontSize: 12, color: T.soft }}>{pages.length} trang · {s.images ?? 0} mockup</span>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 12, color: T.soft }}>{pages.length} trang · {s.images ?? 0} mockup</span>
+          {exportErr ? <span style={{ fontSize: 12, color: T.red }}>{exportErr}</span> : null}
+          <button
+            type="button"
+            onClick={() => void exportAllMd()}
+            disabled={exporting}
+            title="Xuất toàn bộ review thành 1 file Markdown (ảnh nhúng sẵn) — đưa phòng ban khác đọc & sửa docs"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, border: 0, borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, color: '#fff', background: T.accent, cursor: 'pointer' }}
+          >
+            <Icon name={exporting ? 'spinner' : 'download'} size={13} />
+            {exporting ? 'Đang xuất…' : 'Xuất toàn bộ (.md)'}
+          </button>
+        </div>
       </div>
 
       {/* one collapsible section per page */}
