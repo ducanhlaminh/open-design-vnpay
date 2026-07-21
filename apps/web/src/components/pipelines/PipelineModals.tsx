@@ -368,10 +368,7 @@ export function ConfluencePagePicker({
     const committed = committedIds.has(node.id);
     return (
       <div key={node.id || node.title}>
-        <div className={styles.treeRow} onClick={() => toggleSubtree(node)}>
-          {Array.from({ length: depth }).map((_, i) => (
-            <span key={i} className={styles.treeGuide} aria-hidden="true" />
-          ))}
+        <div className={styles.treeRow} style={{ paddingLeft: 10 + depth * 22 }} onClick={() => toggleSubtree(node)}>
           {hasKids ? (
             <button
               type="button"
@@ -388,20 +385,18 @@ export function ConfluencePagePicker({
           ) : (
             <span className={styles.treeSpacer} aria-hidden="true" />
           )}
-          <span
-            className={`${styles.checkbox}${cs === 'on' ? ' ' + styles.checkboxOn : ''}${cs === 'partial' ? ' ' + styles.checkboxPartial : ''}`}
-          >
-            {cs === 'on' ? <Icon name="check" size={11} /> : cs === 'partial' ? <Icon name="minus" size={11} /> : null}
+          <span className={`${styles.treeCheck}${cs === 'on' ? ' ' + styles.treeCheckOn : ''}${cs === 'partial' ? ' ' + styles.treeCheckPartial : ''}`}>
+            {cs === 'on' ? <Icon name="check" size={12} /> : cs === 'partial' ? <Icon name="minus" size={12} /> : null}
           </span>
           <span className={`${styles.treeName}${hasKids ? ' ' + styles.treeNameFolder : ''}`}>{node.title}</span>
           {committed ? <span className={styles.treeAdded}>đã thêm</span> : null}
         </div>
         {isExp && isHit && treeErr[hit.id] ? (
-          <div className={styles.treeMsg} style={{ paddingLeft: (depth + 1) * 15 + 6 }}>{treeErr[hit.id]}</div>
+          <div className={styles.treeMsg} style={{ paddingLeft: 10 + (depth + 1) * 22 }}>{treeErr[hit.id]}</div>
         ) : null}
         {isExp && node.children.length ? node.children.map((c) => renderConfNode(c, hit, depth + 1)) : null}
         {isExp && isHit && hitLoaded && node.children.length === 0 ? (
-          <div className={styles.treeMsg} style={{ paddingLeft: (depth + 1) * 15 + 6 }}>Không có trang con.</div>
+          <div className={styles.treeMsg} style={{ paddingLeft: 10 + (depth + 1) * 22 }}>Không có trang con.</div>
         ) : null}
       </div>
     );
