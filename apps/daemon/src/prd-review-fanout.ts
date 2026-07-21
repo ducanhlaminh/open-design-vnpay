@@ -105,7 +105,10 @@ export function scorePageReport(report: unknown): {
   score: number;
   verdict: Verdict;
 } {
-  const images = Array.isArray((report as any)?.images) ? (report as any).images : [];
+  // Score SCREEN mockups only — 'diagram' images (draw.io / flowcharts) are flow
+  // reference context, never graded, so they don't enter the count or the mean.
+  const all = Array.isArray((report as any)?.images) ? (report as any).images : [];
+  const images = all.filter((im: any) => im?.kind !== 'diagram');
   let blockers = 0;
   let majors = 0;
   let minors = 0;

@@ -817,10 +817,15 @@ function parseDrawioMacro(macroBlock: string): DrawioMacroMeta | null {
   }
 }
 
+// Marker prefixed on every draw.io image's alt text so the docs-mockup-review
+// skill knows it's a FLOW DIAGRAM (sequence/flowchart), not a UI mockup to
+// score — it reviews screens, and uses diagrams only as flow context.
+const DIAGRAM_ALT_MARKER = '[flow-diagram]';
+
 function drawioPreviewImgTag(macroBlock: string, base: string): string {
   const meta = parseDrawioMacro(macroBlock);
   if (!meta) return '';
-  return `<img src="${base}/download/attachments/${meta.pageId}/${encodeURIComponent(meta.previewName)}" alt="${meta.diagramName.replace(/"/g, '&quot;')}"/>`;
+  return `<img src="${base}/download/attachments/${meta.pageId}/${encodeURIComponent(meta.previewName)}" alt="${DIAGRAM_ALT_MARKER} ${meta.diagramName.replace(/"/g, '&quot;')}"/>`;
 }
 
 /** Async variant of inlineDrawioPreviews that recovers EVERY page of a
@@ -904,7 +909,7 @@ async function renderDrawioMacroBlock(
     const imgs = outPaths
       .map((p, i) =>
         written.has(p)
-          ? `<img src="${relPrefix}/${path.basename(p)}" alt="${meta.diagramName.replace(/"/g, '&quot;')} — trang ${i + 1}"/>`
+          ? `<img src="${relPrefix}/${path.basename(p)}" alt="${DIAGRAM_ALT_MARKER} ${meta.diagramName.replace(/"/g, '&quot;')} — trang ${i + 1}"/>`
           : '',
       )
       .filter(Boolean);

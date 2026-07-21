@@ -77,9 +77,29 @@ description of what that screen/flow must do. Keep this excerpt short (a few
 sentences) but complete enough that the "match" verdict below is defensible from
 it alone.
 
-### 2. Evaluate — adversarial, image by image
+### 1b. Classify each image — screen (mockup) vs flow diagram
 
-For each mockup, answer two separate questions and record both:
+Not every image is a UI mockup. Some are **flow diagrams** — sequence diagrams,
+flowcharts, architecture/context diagrams — that document how the app *flows*,
+not what a *screen* looks like. Reviewing a diagram as a mockup produces
+nonsense ("màn thiếu nút X" on a sequence diagram), so diagrams are NOT scored:
+they exist so you (and the reader) understand the flow behind the screens.
+
+Set each image's **`kind`**:
+- **`diagram`** if EITHER (a) its Markdown alt text starts with `[flow-diagram]`
+  — a draw.io diagram the ingest already tagged, authoritative — OR (b) you open
+  it and it is clearly a diagram (boxes + arrows, swimlanes, sequence lifelines,
+  a flowchart — not a rendered UI screen). A `diagram` entry carries NO
+  `score` / `verdict` / `findings`; instead a one-line **`summary`** of what flow
+  it shows. **Use diagrams as context** when judging the screens on the page.
+- **`screen`** otherwise (the default) — a UI mockup; review it in steps 2–3.
+
+The project score + roll-up (step 3) are computed over `screen` images ONLY.
+
+### 2. Evaluate — adversarial, image by image (SCREENS only)
+
+For each **screen** mockup (skip `diagram` images here), answer two separate
+questions and record both:
 
 **(a) Feature match** — does the mockup actually show what its paired feature
 text describes? Walk the text's claims one by one (fields it says must exist,
@@ -109,10 +129,11 @@ bug list.
 
 ### 3. Score (apply the craft arithmetic exactly)
 
-Per image: start 100, subtract blocker −25 / major −10 / minor −3, floor 0.
-Verdict: **fail** if any blocker or score < 60; **warn** if 60–84; **pass** if
-≥ 85. Project score = mean of image scores (rounded); project verdict = worst
-image verdict. Show the subtraction so a reader can re-derive it.
+Per **screen** image: start 100, subtract blocker −25 / major −10 / minor −3,
+floor 0. Verdict: **fail** if any blocker or score < 60; **warn** if 60–84;
+**pass** if ≥ 85. Project score = mean of **screen** image scores (rounded);
+project verdict = worst screen verdict. `diagram` images are not scored and do
+NOT enter the mean. Show the subtraction so a reader can re-derive it.
 
 ### 4. Write the report — FILE-ONLY, ONE PAGE per run
 
@@ -149,6 +170,7 @@ you (the page's `.md` path under `docs/confluence/` with slashes → `__` and th
     {
       "id": "docs/confluence/<...>/attachments/<file>.png",
       "path": "docs/confluence/<...>/attachments/<file>.png",
+      "kind": "screen",
       "page": "<doc page title>",
       "feature_text": "<the paired excerpt from step 1, VERBATIM>",
       "score": 0,
@@ -166,10 +188,23 @@ you (the page's `.md` path under `docs/confluence/` with slashes → `__` and th
         }
       ],
       "passes": ["N.1", "D4"]
+    },
+    {
+      "id": "docs/confluence/<...>/attachments/<flow>.png",
+      "path": "docs/confluence/<...>/attachments/<flow>.png",
+      "kind": "diagram",
+      "page": "<doc page title>",
+      "feature_text": "<the excerpt this diagram sits in>",
+      "summary": "Sơ đồ tuần tự luồng đăng ký: User → PMKT Portal → IDSafe → BO Quản trị"
     }
   ]
 }
 ```
+
+A `diagram` entry has `kind: "diagram"` + a one-line `summary` and NOTHING else
+graded — no `score`, `verdict`, or `findings`. A `screen` entry is the full form
+above. (`kind` on an IMAGE — `screen`/`diagram` — is distinct from `kind` on a
+FINDING — `mismatch`/`heuristic`.)
 
    `id` and `path` MUST be the image's path exactly as YOU see it relative to
    YOUR OWN working directory (the folder-nested path when the docs came from a
@@ -188,11 +223,12 @@ by a cosmetic path change.
 
 ## Hard rules
 
-- Every mockup embedded in YOUR page MUST get an entry in `images[]` — a review
-  that silently skips an image is incomplete. If an image file referenced by the
-  Markdown is missing from disk,
-  still emit an entry for it with an empty `findings` array and a `passes` note
-  explaining the file was missing (never drop it from the report).
+- Every image embedded in YOUR page MUST get an entry in `images[]` — screens
+  reviewed, diagrams tagged `kind: "diagram"` with a `summary`. A review that
+  silently skips an image is incomplete. If a `screen` image file referenced by
+  the Markdown is missing from disk, still emit an entry for it with an empty
+  `findings` array and a `passes` note explaining the file was missing (never
+  drop it from the report).
 - Write your page's `./review/<page-slug>/report.json` and nothing else under
   `./review/` — the daemon aggregates `index.json`/`summary.md`. Not writing your
   report file is a broken run (the daemon marks your page failed).

@@ -59,6 +59,19 @@ test('scorePageReport recomputes counts/score/verdict from images (skill arithme
   assert.equal(r.verdict, 'fail'); // any image fail → page fail
 });
 
+test('scorePageReport ignores diagram images (flow reference, never scored)', () => {
+  const r = scorePageReport({
+    images: [
+      { kind: 'screen', findings: [{ severity: 'major' }] }, // 90 pass
+      { kind: 'diagram', summary: 'sequence flow' }, // must NOT count or inflate the mean
+    ],
+  });
+  assert.equal(r.images, 1); // only the screen
+  assert.equal(r.score, 90); // diagram's implicit 100 must not enter the mean
+  assert.equal(r.majors, 1);
+  assert.equal(r.verdict, 'pass');
+});
+
 test('mergePageReports builds a worst-first index + summary, and marks a failed page', () => {
   const { index, summaryMd } = mergePageReports([
     {

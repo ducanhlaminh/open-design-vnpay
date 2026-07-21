@@ -43,13 +43,22 @@ export interface MockupFinding {
 export interface MockupReviewImage {
   id: string;
   path: string;
+  /** 'screen' (a UI mockup, reviewed + scored) vs 'diagram' (a flow diagram —
+   *  sequence/flowchart — shown as reference context, never scored). Missing =
+   *  'screen' for back-compat with reports written before classification. */
+  kind?: 'screen' | 'diagram';
   page?: string;
   feature_text?: string;
+  /** One-line description of the flow (diagram images only). */
+  summary?: string;
   score?: number;
   verdict?: Verdict;
   findings?: MockupFinding[];
   passes?: string[];
 }
+
+/** A diagram image is flow-reference context, not a mockup to score. */
+const isDiagram = (img: MockupReviewImage) => img.kind === 'diagram';
 
 export interface DocsMockupReviewReport {
   schema_version?: string;
@@ -177,10 +186,12 @@ async function buildReviewHtmlForReport(
   images: MockupReviewImage[],
   level: 2 | 3 = 2,
 ): Promise<string> {
+  const screens = images.filter((i) => !isDiagram(i));
+  const diagrams = images.filter(isDiagram);
   let blockers = 0, majors = 0, minors = 0;
   const scores: number[] = [];
   let worst: Verdict = 'pass';
-  for (const img of images) {
+  for (const img of screens) {
     const { score: s, verdict: v } = scoreImage(img.findings ?? []);
     scores.push(s);
     if (v === 'fail') worst = 'fail';
@@ -205,7 +216,7 @@ async function buildReviewHtmlForReport(
   out.push(
     `<p class="counts"><span style="color:#dc2626">● ${blockers} nghiêm trọng</span> · <span style="color:#b45309">● ${majors} nặng</span> · <span style="color:#6b7280">● ${minors} nhẹ</span></p>`,
   );
-  for (const img of images) {
+  for (const img of screens) {
     const { score: s, verdict: v } = scoreImage(img.findings ?? []);
     const title = img.page || img.id;
     out.push(`<div class="mk">`);
@@ -232,6 +243,17 @@ async function buildReviewHtmlForReport(
     }
     out.push(`</div>`);
   }
+  if (diagrams.length) {
+    out.push(`<h${HM} class="diag-h">Sơ đồ luồng (tham khảo)</h${HM}>`);
+    for (const img of diagrams) {
+      const title = img.page || img.id;
+      out.push(`<div class="mk diag">`);
+      const dataUri = await imageToDataUri(projectRawUrl(projectId, resolveImagePath(reportFileName, img.path)));
+      if (img.summary) out.push(`<p class="dsum">${esc(img.summary)}</p>`);
+      out.push(dataUri ? `<img class="shot" src="${dataUri}" alt="${esc(title)}"/>` : `<p class="warn">(không tải được ảnh: ${esc(img.path)})</p>`);
+      out.push(`</div>`);
+    }
+  }
   out.push(`</section>`);
   return out.join('\n');
 }
@@ -257,6 +279,9 @@ const REVIEW_PDF_CSS = `
   .rec { color: #374151; margin: 2px 0 0 2px; }
   .ft { margin: 6px 0; }
   .warn { color: #dc2626; }
+  .diag-h { color: #6b7280; border-bottom: 1px dashed #cbd5e1; }
+  .diag { border-left: 3px solid #cbd5e1; padding-left: 10px; }
+  .dsum { color: #374151; font-style: italic; margin: 4px 0; }
 `;
 
 /** Wrap review fragments into a print-ready HTML doc, then render it to a PDF
@@ -1099,6 +1124,46 @@ function ImageCard({
   );
 }
 
+/** A flow diagram (draw.io / flowchart) rendered as read-only reference — the
+ *  image + its one-line summary, no score/findings/edit. Click to zoom. */
+function DiagramCard({
+  image,
+  projectId,
+  reportFileName,
+}: {
+  image: MockupReviewImage;
+  projectId: string;
+  reportFileName: string;
+}) {
+  const [zoom, setZoom] = useState(false);
+  const imageUrl = projectRawUrl(projectId, resolveImagePath(reportFileName, image.path));
+  const title = image.page || image.id.split('/').pop() || 'Sơ đồ';
+  return (
+    <div style={{ border: `1px solid ${T.border}`, borderRadius: T.radius, overflow: 'hidden', background: T.paper }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 13px', borderBottom: `1px solid ${T.border}` }}>
+        <Icon name="pipeline" size={14} />
+        <span style={{ fontSize: 13, fontWeight: 650, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 600, color: T.faint, letterSpacing: 0.3, textTransform: 'uppercase' }}>Sơ đồ luồng</span>
+      </div>
+      <button
+        type="button"
+        onClick={() => setZoom(true)}
+        title="Bấm để phóng to"
+        style={{ display: 'block', width: '100%', padding: 12, border: 0, background: T.subtle, cursor: 'zoom-in' }}
+      >
+        <img src={imageUrl} alt={title} style={{ display: 'block', maxWidth: '100%', margin: '0 auto', objectFit: 'contain' }} />
+      </button>
+      {image.summary || image.feature_text ? (
+        <div style={{ padding: '10px 13px', fontSize: 12.5, lineHeight: 1.55, color: T.soft, borderTop: `1px solid ${T.border}` }}>
+          {image.summary ? <div style={{ color: T.ink }}>{image.summary}</div> : null}
+          {image.feature_text ? <FeatureTextBox text={image.feature_text} /> : null}
+        </div>
+      ) : null}
+      {zoom ? <Lightbox src={imageUrl} alt={title} regions={[]} onClose={() => setZoom(false)} /> : null}
+    </div>
+  );
+}
+
 export function DocsReviewPreview({
   projectId,
   fileName,
@@ -1158,11 +1223,14 @@ export function DocsReviewPreview({
     if (!dirty) setImages(report.images ?? []);
   }, [report, dirty]);
 
+  // Screens are scored mockups; diagrams are flow references shown separately.
+  const screens = useMemo(() => images.filter((i) => !isDiagram(i)), [images]);
+  const diagrams = useMemo(() => images.filter(isDiagram), [images]);
   const { verdict, score, counts } = useMemo(() => {
     let blockers = 0, majors = 0, minors = 0;
     const scores: number[] = [];
     let worst: Verdict = 'pass';
-    for (const img of images) {
+    for (const img of screens) {
       const { score: s, verdict: v } = scoreImage(img.findings ?? []);
       scores.push(s);
       if (v === 'fail') worst = 'fail';
@@ -1175,7 +1243,7 @@ export function DocsReviewPreview({
     }
     const avg = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : undefined;
     return { verdict: worst, score: avg, counts: { blockers, majors, minors } };
-  }, [images]);
+  }, [screens]);
 
   const updateImage = (id: string, next: MockupReviewImage) => {
     setDirty(true);
@@ -1189,7 +1257,7 @@ export function DocsReviewPreview({
       const nextReport: DocsMockupReviewReport = {
         ...report,
         kind: 'docs-mockup-review',
-        summary: { images: images.length, score, verdict, ...counts },
+        summary: { images: screens.length, score, verdict, ...counts },
         images,
       };
       const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, {
@@ -1322,7 +1390,7 @@ export function DocsReviewPreview({
         </div>
       </div>
 
-      {images.map((img) => (
+      {screens.map((img) => (
         <ImageCard
           key={img.id}
           image={img}
@@ -1333,6 +1401,17 @@ export function DocsReviewPreview({
           onShowCode={(code) => setGlossary(code)}
         />
       ))}
+      {diagrams.length ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, fontWeight: 700, color: T.soft }}>
+            <Icon name="pipeline" size={15} />
+            Sơ đồ luồng (tham khảo — không chấm điểm)
+          </div>
+          {diagrams.map((img) => (
+            <DiagramCard key={img.id} image={img} projectId={projectId} reportFileName={fileName} />
+          ))}
+        </div>
+      ) : null}
       {glossary !== null ? <GlossaryModal uxr={uxr} focus={glossary || null} onClose={() => setGlossary(null)} /> : null}
     </div>
   );
