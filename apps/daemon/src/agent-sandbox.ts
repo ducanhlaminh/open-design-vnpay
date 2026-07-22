@@ -18,6 +18,8 @@ import { readFileSync } from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { SandboxConfigPrefs } from './app-config.js';
+import type { SandboxAccount, SandboxAccountsResponse } from '@open-design/contracts';
+import { SANDBOX_ACCOUNT_LABEL_RE } from '@open-design/contracts';
 
 const execFileAsync = promisify(execFile);
 
@@ -68,8 +70,11 @@ export function resolveSandboxConfig(
   prefs: SandboxConfigPrefs | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedSandboxConfig {
-  let enabled = prefs?.enabled === true;
-  if (prefs?.enabled === undefined && env.OD_SANDBOX_DEFAULT === '1') enabled = true;
+  // Default ON: this fork runs Claude through the Docker sandbox by default (no
+  // enable toggle in the UI). Disabled only by an EXPLICIT opt-out —
+  // prefs.enabled === false, or OD_SANDBOX=0 (escape hatch for a machine with no
+  // Docker). OD_SANDBOX=1 still force-enables regardless of prefs.
+  let enabled = prefs?.enabled !== false;
   if (env.OD_SANDBOX === '1') enabled = true;
   else if (env.OD_SANDBOX === '0') enabled = false;
   const envSkills = (env.OD_SANDBOX_SKILLS ?? '')
@@ -294,6 +299,165 @@ export async function sandboxAuthLoggedIn(image: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+// ── Claude account switching ────────────────────────────────────────────────
+// Several Claude logins live side by side in the SAME `od-claude-auth` volume:
+// each saved login is `accounts/<label>.json`; the ACTIVE one is the volume's
+// `.credentials.json` (what the Claude CLI reads). "Active account" is derived
+// by byte-comparing each saved file against `.credentials.json` — robust even
+// when someone re-ran `od sandbox login` without saving. All ops run a
+// short-lived container mounting the volume read-write.
+
+/** Validate a label; throws with a user-facing message on a bad one. */
+function assertAccountLabel(label: string): void {
+  if (!SANDBOX_ACCOUNT_LABEL_RE.test(label)) {
+    throw new Error(
+      'Tên account chỉ gồm chữ/số/gạch (_ -), 1–40 ký tự, không khoảng trắng.',
+    );
+  }
+}
+
+/** List saved accounts + which one is active (byte-match against the live creds). */
+export async function listSandboxAccounts(image: string): Promise<SandboxAccountsResponse> {
+  const script = [
+    `cd ${CONTAINER_AUTH_DIR} 2>/dev/null || exit 0`,
+    'loggedin=0; [ -s .credentials.json ] && loggedin=1',
+    'active=""',
+    'if [ "$loggedin" = 1 ]; then',
+    '  for f in accounts/*.json; do [ -f "$f" ] || continue;',
+    '    if cmp -s "$f" .credentials.json; then active=$(basename "$f" .json); fi; done',
+    'fi',
+    'echo "LOGGEDIN:$loggedin"',
+    'echo "ACTIVE:$active"',
+    'for f in accounts/*.json; do [ -f "$f" ] && basename "$f" .json; done',
+    // Force a 0 exit: with no saved accounts the loop's last `[ -f ] && …`
+    // evaluates false → exit 1 → docker() would throw and we'd wrongly report
+    // "not logged in" even when .credentials.json exists.
+    'exit 0',
+  ].join('\n');
+  let out = '';
+  try {
+    out = await docker(
+      ['run', '--rm', '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}`, '--entrypoint', 'sh', image, '-c', script],
+      30_000,
+    );
+  } catch {
+    return { supported: true, loggedIn: false, activeUnsaved: false, accounts: [] };
+  }
+  const lines = out.split('\n').map((l) => l.trim());
+  const loggedIn = lines.some((l) => l === 'LOGGEDIN:1');
+  const active = (lines.find((l) => l.startsWith('ACTIVE:')) ?? 'ACTIVE:').slice('ACTIVE:'.length);
+  const labels = lines.filter((l) => l && !l.startsWith('LOGGEDIN:') && !l.startsWith('ACTIVE:'));
+  const accounts: SandboxAccount[] = labels.map((label) => ({ label, active: label === active && active !== '' }));
+  const activeUnsaved = loggedIn && active === '';
+  return { supported: true, loggedIn, activeUnsaved, accounts };
+}
+
+/** Snapshot the CURRENT active login into accounts/<label>.json. */
+export async function saveSandboxAccount(image: string, label: string): Promise<SandboxAccountsResponse> {
+  assertAccountLabel(label);
+  const script = [
+    `cd ${CONTAINER_AUTH_DIR}`,
+    '[ -s .credentials.json ] || { echo "NO_ACTIVE" >&2; exit 3; }',
+    'mkdir -p accounts',
+    `cp .credentials.json "accounts/${label}.json"`,
+  ].join('\n');
+  await docker(
+    ['run', '--rm', '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}`, '--entrypoint', 'sh', image, '-c', script],
+    30_000,
+  ).catch(() => {
+    throw new Error('Chưa đăng nhập Claude nào để lưu — chạy: od sandbox login trước.');
+  });
+  return listSandboxAccounts(image);
+}
+
+/** Make accounts/<label>.json the active login (copy over .credentials.json). */
+export async function switchSandboxAccount(image: string, label: string): Promise<SandboxAccountsResponse> {
+  assertAccountLabel(label);
+  const script = [
+    `cd ${CONTAINER_AUTH_DIR}`,
+    `[ -f "accounts/${label}.json" ] || { echo "NO_SUCH" >&2; exit 4; }`,
+    `cp "accounts/${label}.json" .credentials.json`,
+  ].join('\n');
+  await docker(
+    ['run', '--rm', '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}`, '--entrypoint', 'sh', image, '-c', script],
+    30_000,
+  ).catch(() => {
+    throw new Error(`Không tìm thấy account "${label}".`);
+  });
+  return listSandboxAccounts(image);
+}
+
+/** The interactive Claude OAuth login command (runs the TUI inside the sandbox,
+ *  writing credentials into the shared volume). Shared by the CLI and the
+ *  "add account" terminal launcher. */
+export function sandboxLoginCommand(image: string): string {
+  return `docker run -it --rm -v ${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR} ${image} claude /login`;
+}
+
+/**
+ * Best-effort: open a HOST terminal window running the interactive Claude login
+ * (a full-screen TUI that can't be embedded in the web UI). Returns whether a
+ * window was opened; the caller shows the raw command as a copy-paste fallback.
+ */
+export function openSandboxLoginTerminal(image: string): { launched: boolean; command: string; message?: string } {
+  const command = sandboxLoginCommand(image);
+  try {
+    if (process.platform === 'darwin') {
+      // osascript opens a fresh Terminal window and runs the command there.
+      const script = `tell application "Terminal" to do script ${JSON.stringify(command)}\ntell application "Terminal" to activate`;
+      spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore' }).unref();
+      return { launched: true, command, message: 'Đã mở Terminal — hoàn tất đăng nhập ở đó rồi quay lại Lưu.' };
+    }
+    if (process.platform === 'win32') {
+      spawn('cmd', ['/c', 'start', 'cmd', '/k', command], { detached: true, stdio: 'ignore' }).unref();
+      return { launched: true, command, message: 'Đã mở cửa sổ lệnh — hoàn tất đăng nhập rồi quay lại Lưu.' };
+    }
+    // Linux: try the common terminal emulators, first hit wins.
+    for (const term of ['x-terminal-emulator', 'gnome-terminal', 'konsole', 'xterm']) {
+      try {
+        spawn(term, ['-e', 'sh', '-c', `${command}; exec sh`], { detached: true, stdio: 'ignore' }).unref();
+        return { launched: true, command, message: 'Đã mở terminal — hoàn tất đăng nhập rồi quay lại Lưu.' };
+      } catch {
+        /* try the next emulator */
+      }
+    }
+    return { launched: false, command, message: 'Không mở được terminal — chạy lệnh này thủ công rồi quay lại Lưu.' };
+  } catch {
+    return { launched: false, command, message: 'Không mở được terminal — chạy lệnh này thủ công rồi quay lại Lưu.' };
+  }
+}
+
+/** Delete a saved account (does NOT touch the active login). */
+export async function removeSandboxAccount(image: string, label: string): Promise<SandboxAccountsResponse> {
+  assertAccountLabel(label);
+  const script = `rm -f ${CONTAINER_AUTH_DIR}/accounts/${label}.json`;
+  await docker(
+    ['run', '--rm', '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}`, '--entrypoint', 'sh', image, '-c', script],
+    30_000,
+  );
+  return listSandboxAccounts(image);
+}
+
+/** Read a SAVED account's credentials JSON (accounts/<label>.json) from the auth
+ *  volume, or null if missing/unreadable — used to probe that account's token. */
+export async function readSandboxAccountCredentials(image: string, label: string): Promise<string | null> {
+  assertAccountLabel(label);
+  try {
+    return await docker(
+      [
+        'run', '--rm',
+        '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}:ro`,
+        '--entrypoint', 'cat',
+        image,
+        `${CONTAINER_AUTH_DIR}/accounts/${label}.json`,
+      ],
+      30_000,
+    );
+  } catch {
+    return null;
   }
 }
 

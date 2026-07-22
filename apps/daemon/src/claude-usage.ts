@@ -66,6 +66,19 @@ const UNAVAILABLE: ClaudeUsageResponse = {
 };
 
 let cache: { at: number; value: ClaudeUsageResponse } | null = null;
+// Last successful reading. Kept so a TRANSIENT failure (HTTP 429 rate limit,
+// 5xx, network blip) doesn't blank the quota meter — the token is still valid,
+// the endpoint just refused this one call. Cleared on switch (different account)
+// and on a definitive auth failure (401/403 = token dead).
+let lastAvailable: ClaudeUsageResponse | null = null;
+
+/** Drop the cached usage so the NEXT fetch re-reads the (possibly switched)
+ *  credentials — called after `od sandbox account switch` so the quota meter
+ *  reflects the new account instead of the previous one for up to a minute. */
+export function invalidateClaudeUsageCache(): void {
+  cache = null;
+  lastAvailable = null;
+}
 
 function pctOf(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : null;
@@ -112,8 +125,13 @@ export async function fetchClaudeUsage(opts?: {
       },
     });
     if (!res.ok) {
-      cache = { at: Date.now(), value: UNAVAILABLE };
-      return UNAVAILABLE;
+      // 401/403 = token actually dead → blank the meter (and forget the stale
+      // reading). 429/5xx = transient → keep showing the last good reading so a
+      // rate-limit blip doesn't make the quota vanish for a minute.
+      if (res.status === 401 || res.status === 403) lastAvailable = null;
+      const value = lastAvailable ?? UNAVAILABLE;
+      cache = { at: Date.now(), value };
+      return value;
     }
     const d = (await res.json()) as Record<string, Record<string, unknown>>;
     const value: ClaudeUsageResponse = {
@@ -129,9 +147,40 @@ export async function fetchClaudeUsage(opts?: {
       subscriptionType: oauth.subscriptionType ?? null,
     };
     cache = { at: Date.now(), value };
+    lastAvailable = value;
     return value;
   } catch {
-    cache = { at: Date.now(), value: UNAVAILABLE };
-    return UNAVAILABLE;
+    // Network blip — transient, keep the last good reading rather than blanking.
+    const value = lastAvailable ?? UNAVAILABLE;
+    cache = { at: Date.now(), value };
+    return value;
+  }
+}
+
+/** Probe a raw Claude credentials JSON against the usage endpoint to tell if its
+ *  OAuth token is still valid. NOT cached — used per-account by the account
+ *  status check. 401/403 → the token was revoked/expired (e.g. password change). */
+export async function probeClaudeCredentials(raw: string): Promise<{ ok: boolean; error?: string }> {
+  const oauth = parseOAuth(raw);
+  if (!oauth?.accessToken) return { ok: false, error: 'Không đọc được token trong credentials' };
+  try {
+    const res = await fetch(USAGE_URL, {
+      headers: {
+        authorization: `Bearer ${oauth.accessToken}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'user-agent': 'claude-cli',
+      },
+    });
+    if (res.ok) return { ok: true };
+    // ONLY 401/403 means the token was rejected (revoked/expired). 429 (rate
+    // limited), 5xx, etc. are inconclusive — the token wasn't refused, so DON'T
+    // flag the account dead (that turned a rate-limit into a false red).
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: `HTTP ${res.status} — token hết hạn / bị thu hồi (đăng nhập lại)` };
+    }
+    return { ok: true };
+  } catch {
+    // Network/transient failure — can't prove the token is dead, so leave it be.
+    return { ok: true };
   }
 }

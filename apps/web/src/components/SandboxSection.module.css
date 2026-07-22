@@ -1,5 +1,27 @@
 /* Agent-in-sandbox settings card — component-owned styles.
    Shared card chrome (.settings-section, .section-head, .field) stays global. */
+
+/* Enable toggle: keep the native checkbox its intrinsic size (a global input
+   rule otherwise stretches it into a full-width white bar) and inline the label. */
+.enableRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 2px;
+  cursor: pointer;
+}
+.enableRow input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.enableRow span {
+  font-size: 13px;
+}
+
 .statusList {
   list-style: none;
   margin: 8px 0 0;
@@ -32,4 +54,60 @@
 
 .missing code {
   white-space: nowrap;
+}
+
+/* "Build image" button — accent-tinted, sits at the right of the image row. */
+.buildBtn {
+  flex: none;
+  padding: 4px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s var(--pl-ease, ease);
+}
+.buildBtn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.buildBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.buildPanel {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.buildHint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.buildErr {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger, #c0392b);
+}
+.buildLog {
+  display: block;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-soft);
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-soft);
 }

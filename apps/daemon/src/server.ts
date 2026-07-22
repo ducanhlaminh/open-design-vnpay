@@ -5898,18 +5898,23 @@ export async function startServer({
   app.get('/api/agents', async (_req, res) => {
     try {
       const config = await readAppConfig(RUNTIME_DATA_DIR);
-      const list = await detectAgents(config.agentCliEnv ?? {}, sandboxSkipProbe(config));
-      // When the sandbox OWNS a runtime's runs (enabled + skills '*'), "Local
-      // CLI" availability is the SANDBOX's: docker + image + auth volume. The
-      // host binary is irrelevant then — a machine with no host claude is
-      // fully usable, and a host claude with no docker is not.
       const sandboxCfg = resolveSandboxConfig(config.sandbox, process.env);
-      if (sandboxCfg.enabled && sandboxCfg.skills.includes('*')) {
+      // Docker-only (sandbox owns Claude): the sandbox is the ONLY runtime
+      // source. Do NOT scan the host at all (skip probing EVERY runtime — no
+      // host codex/gemini/claude touched), and surface just the sandbox-owned
+      // runtime(s). Availability there is the SANDBOX's (docker + image + auth
+      // volume), never a host binary.
+      const dockerOnly = sandboxCfg.enabled && sandboxCfg.skills.includes('*');
+      const list = await detectAgents(
+        config.agentCliEnv ?? {},
+        dockerOnly ? ['*'] : sandboxSkipProbe(config),
+      );
+      if (dockerOnly) {
         let image: string | null = null;
         try {
           image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
         } catch {
-          image = null; // unreadable version pin → leave host detection as-is
+          image = null; // unreadable version pin
         }
         if (image) {
           const status = await cachedSandboxStatus(image);
@@ -5929,6 +5934,11 @@ export async function startServer({
             }
           }
         }
+        // Hide host CLIs entirely: only the sandbox-owned runtime(s) remain in a
+        // Docker-only install, so the picker/rescan shows just "Claude · Docker".
+        const owned = (id: string) => sandboxCfg.runtimes.includes('*') || sandboxCfg.runtimes.includes(id);
+        res.json({ agents: list.filter((a) => owned(a.id)) });
+        return;
       }
       res.json({ agents: list });
     } catch (err) {

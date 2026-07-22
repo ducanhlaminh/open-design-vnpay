@@ -64,10 +64,18 @@ export function TokenUsageMeter() {
         if (!cancelled) timer = window.setTimeout(poll, POLL_MS);
       }
     };
+    // Switching Claude account (ClaudeAccountSwitcher) fires this so the meter
+    // re-reads the new account's quota now instead of waiting a poll cycle.
+    const refreshNow = () => {
+      if (timer) window.clearTimeout(timer);
+      void poll();
+    };
     void poll();
+    window.addEventListener('od:claude-usage-refresh', refreshNow);
     return () => {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
+      window.removeEventListener('od:claude-usage-refresh', refreshNow);
     };
   }, []);
 

@@ -67,6 +67,7 @@ describe('/api/chat', () => {
   let originalMemoryConfig: Awaited<ReturnType<typeof readMemoryConfig>> | null = null;
   const originalPath = process.env.PATH;
   const originalAgentHome = process.env.OD_AGENT_HOME;
+  const originalSandboxEnv = process.env.OD_SANDBOX;
   const tempDirs: string[] = [];
 
   async function createPluginFixture(args: {
@@ -103,6 +104,10 @@ describe('/api/chat', () => {
   }
 
   beforeAll(async () => {
+    // These tests exercise the HOST claude path (a fake `claude` on PATH). The
+    // sandbox now defaults ON, so opt out explicitly or every run would try
+    // Docker and fail with AGENT_SANDBOX_UNAVAILABLE.
+    process.env.OD_SANDBOX = '0';
     if (process.env.OD_DATA_DIR) {
       originalMemoryConfig = await readMemoryConfig(process.env.OD_DATA_DIR);
       await writeMemoryConfig(process.env.OD_DATA_DIR, {
@@ -132,6 +137,8 @@ describe('/api/chat', () => {
   });
 
   afterAll(async () => {
+    if (originalSandboxEnv === undefined) delete process.env.OD_SANDBOX;
+    else process.env.OD_SANDBOX = originalSandboxEnv;
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }

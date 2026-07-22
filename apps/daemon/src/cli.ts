@@ -5711,6 +5711,11 @@ const SANDBOX_USAGE = `Usage:
   od sandbox login                            Claude CLI OAuth login into the shared
                                               auth volume (interactive, needs a TTY).
   od sandbox logout --yes                     Delete the auth volume (credentials!).
+  od sandbox account list [--json]            List saved Claude accounts (* = active).
+  od sandbox account save <label>             Save the CURRENT login as <label>.
+  od sandbox account switch <label>           Make <label> the active Claude login.
+  od sandbox account remove <label>           Delete a saved account.
+  od sandbox account check [label] [--json]   Probe token health (one account, or all).
   od sandbox ps [--json]                      Live sandboxed-run containers.
   od sandbox kill <runId> | --all             Kill sandbox container(s).
 
@@ -5895,6 +5900,87 @@ async function runSandbox(args) {
     const name = runId.startsWith('od-sbx-') ? runId : `od-sbx-${runId}`;
     const result = runDocker(['kill', name]);
     process.exit(result.status ?? 1);
+  }
+
+  if (sub === 'account') {
+    const action = args[1] ?? 'list';
+    const base = await cliDaemonBaseUrl(flags);
+    const label = args.slice(2).find((a) => !a.startsWith('-'));
+    const printList = (data) => {
+      if (flags.json) {
+        console.log(JSON.stringify(data, null, 2));
+        return;
+      }
+      if (!data.supported) {
+        console.log('Chuyển account chỉ áp dụng khi Docker-only (sandbox sở hữu Claude).');
+        return;
+      }
+      if (!data.accounts.length) {
+        console.log(
+          data.loggedIn
+            ? 'Đã đăng nhập nhưng chưa lưu account nào — lưu: od sandbox account save <label>'
+            : 'Chưa có account — đăng nhập: od sandbox login',
+        );
+        return;
+      }
+      for (const a of data.accounts) console.log(`${a.active ? '* ' : '  '}${a.label}`);
+      if (data.activeUnsaved) console.log('  (login hiện tại chưa được lưu — od sandbox account save <label>)');
+    };
+    if (action === 'list') {
+      const resp = await fetch(`${base}/api/sandbox/accounts`);
+      if (!resp.ok) await structuredHttpFailure(resp);
+      printList(await resp.json());
+      return;
+    }
+    if (action === 'save' || action === 'switch') {
+      if (!label) {
+        console.error(`usage: od sandbox account ${action} <label>`);
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/sandbox/accounts/${action}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ label }),
+      });
+      if (!resp.ok) await structuredHttpFailure(resp);
+      printList(await resp.json());
+      return;
+    }
+    if (action === 'remove') {
+      if (!label) {
+        console.error('usage: od sandbox account remove <label>');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/sandbox/accounts/${encodeURIComponent(label)}`, {
+        method: 'DELETE',
+      });
+      if (!resp.ok) await structuredHttpFailure(resp);
+      printList(await resp.json());
+      return;
+    }
+    if (action === 'check') {
+      const resp = await fetch(`${base}/api/sandbox/accounts/check`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(label ? { label } : {}),
+      });
+      if (!resp.ok) await structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) {
+        console.log(JSON.stringify(data, null, 2));
+        return;
+      }
+      if (!data.statuses?.length) {
+        console.log('Chưa có account nào để kiểm tra.');
+        return;
+      }
+      for (const s of data.statuses) {
+        console.log(`${s.ok ? '✓' : '✗'} ${s.label}${s.error ? ` — ${s.error}` : ''}`);
+      }
+      return;
+    }
+    console.error('usage: od sandbox account <list|save|switch|remove|check> [label]');
+    process.exit(2);
   }
 
   console.error(`unknown subcommand: od sandbox ${sub}\n\n${SANDBOX_USAGE}`);

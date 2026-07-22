@@ -10,9 +10,11 @@ import {
 const cfg = resolveSandboxConfig({ enabled: true }, {});
 
 describe('resolveSandboxConfig', () => {
-  it('defaults to disabled, claude runtime, and EVERY run in scope (skills *)', () => {
+  it('defaults to ENABLED, claude runtime, and EVERY run in scope (skills *)', () => {
+    // This fork runs Claude through the Docker sandbox by default (no UI toggle);
+    // only an explicit prefs.enabled=false or OD_SANDBOX=0 opts out.
     const resolved = resolveSandboxConfig(undefined, {});
-    expect(resolved.enabled).toBe(false);
+    expect(resolved.enabled).toBe(true);
     expect(resolved.runtimes).toEqual(['claude']);
     // The sandbox owns ALL runs of gated runtimes by default — pipeline
     // steps AND general chat / Orbit / routine turns.
