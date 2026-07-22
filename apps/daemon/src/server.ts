@@ -13715,7 +13715,7 @@ export async function startServer({
         // first; the ConversationsMenu lists the siblings by their shared prefix.
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
         const graphNote =
-          ' This is a FILE-ONLY stage: produce the report file only, do NOT push anything to KGS.';
+          ' This is a FILE-ONLY stage: produce the report file only — do not push anything anywhere.';
 
         // Pre-create one conversation per page (up front, all "queued") so the
         // Status modal shows X/N done + each task's live state as the pool
@@ -13738,7 +13738,7 @@ export async function startServer({
           persistTasks();
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const kickoff =
-            `Run the "docs-mockup-review" review for ONE page of KGS project "${projectId}". ` +
+            `Run the "docs-mockup-review" review for ONE page of feature "${projectId}". ` +
             `Review ONLY the mockups embedded in "${pg.mdPath}" (title: ${pg.page}) against that page's own text, ` +
             `plus the shared Customer Journey + UX Research context in this cwd. ` +
             `Write your result to "review/${pg.slug}/report.json" using the per-image schema. ` +
@@ -13957,23 +13957,23 @@ export async function startServer({
           const pagesList = sec.mdPaths.map((p) => `"${p}"`).join(', ');
           const kickoff =
             kind === 'cj'
-              ? `Run the customer-journey-spec skill for ONE MODULE of KGS project "${projectId}". ` +
+              ? `Run the customer-journey-spec skill for ONE MODULE of feature "${projectId}". ` +
                 `Cover ONLY this module — its pages: ${pagesList} (module: ${sec.title}). ` +
                 `Write your result to "${outRel(sec.key)}" (personas + journeys for THIS module only). ` +
                 `Do NOT write any root -customer-journey.json and do NOT cover other modules — the daemon merges every module's slice.` +
-                ` This is a FILE-ONLY stage: do NOT push to KGS.`
+                ` This is a FILE-ONLY stage: do not push anything.`
               : kind === 'ux-research'
-                ? `Run the ux-research skill for ONE MODULE of KGS project "${projectId}". ` +
+                ? `Run the ux-research skill for ONE MODULE of feature "${projectId}". ` +
                   `Derive UX criteria ONLY for this module — its pages: ${pagesList} (module: ${sec.title}) plus the module's customer journey in the cwd. ` +
                   `Write your result to "${outRel(sec.key)}" (criteria + references for THIS module only). ` +
                   `Do NOT write ux-research/report.json (top-level) and do NOT cover other modules — the daemon merges every module's slice.${kbDirective}` +
-                  ` This is a FILE-ONLY stage: do NOT push to KGS.`
-                : `Run the ux-spec skill for ONE MODULE of KGS project "${projectId}". ` +
+                  ` This is a FILE-ONLY stage: do not push anything.`
+                : `Run the ux-spec skill for ONE MODULE of feature "${projectId}". ` +
                   `Author UX Spec screens ONLY for this module — its pages: ${pagesList} (module: ${sec.title}), guided by the module's customer journey + UX research in the cwd. ` +
                   `EVERY screen id MUST start with "${sec.key}__" so ids (and the wireframes/<id>.wire.json files they name) never collide with other modules. ` +
                   `Write the module's screens to "${outRel(sec.key)}" AND each screen's "wireframes/<screen-id>.wire.json" + each flow's "flows/<flow-id>.flow.json" into the SHARED wireframes/ and flows/ dirs. ` +
                   `Do NOT write the root -ux-spec.json and do NOT author other modules' screens — the daemon merges every module's screens.${platformDirective}` +
-                  ` This is a FILE-ONLY stage: do NOT push to KGS.`;
+                  ` This is a FILE-ONLY stage: do not push anything.`;
           const run = design.runs.create({
             projectId,
             conversationId,
@@ -14090,10 +14090,10 @@ export async function startServer({
                 ? `Reconcile the merged customer journey file "${canonicalRel}" in the cwd. It was assembled by concatenating per-module slices, so it may have seams: ` +
                   `(1) DUPLICATE PERSONAS — the same role under different names/wording; merge each duplicate set into ONE persona (keep the richest description) and update any references to it. ` +
                   `(2) COLLIDING IDS — persona/stage/flow ids (PRSN-/STG-/UFLW-/…) reused across modules; make every id UNIQUE while keeping each journey's internal references consistent. ` +
-                  `Keep EVERY journey and its module tag — do not drop or rewrite journey content, only dedup personas and fix ids. Overwrite the SAME file. Do NOT push to KGS.`
+                  `Keep EVERY journey and its module tag — do not drop or rewrite journey content, only dedup personas and fix ids. Overwrite the SAME file. Do not push anything.`
                 : kind === 'ux-research'
-                  ? `Reconcile the merged UX research file "${canonicalRel}" in the cwd. It was assembled by concatenating per-module slices, so it may have DUPLICATE CRITERIA that state the same requirement under different wording. Merge each duplicate set into ONE criterion (keep the strongest wording, union the sources' used_for), keep criteria ids sequential (UXR-01, UXR-02, …), and recompute the summary counts (criteria/must/should/nice). Keep every distinct criterion — only dedup true duplicates. Overwrite the SAME file. Do NOT push to KGS.`
-                  : `Reconcile the merged UX Spec file "${canonicalRel}" in the cwd (screens from per-module slices; ids are module-prefixed so they don't collide). Seams to heal: (1) DUPLICATE PERSONAS — merge same-role personas into one. (2) DANGLING NAV — every component's \`navigates_to\` must point at a screen id that EXISTS in \`screens\`; fix or drop targets that don't resolve (a CTA that crosses modules should point at the real target screen's id). (3) DUPLICATE SCREENS — if two modules authored the same screen, keep one. Do NOT rename screen ids (their wireframes/<id>.wire.json files depend on them) and do NOT drop distinct screens. Overwrite the SAME file. Do NOT push to KGS.`;
+                  ? `Reconcile the merged UX research file "${canonicalRel}" in the cwd. It was assembled by concatenating per-module slices, so it may have DUPLICATE CRITERIA that state the same requirement under different wording. Merge each duplicate set into ONE criterion (keep the strongest wording, union the sources' used_for), keep criteria ids sequential (UXR-01, UXR-02, …), and recompute the summary counts (criteria/must/should/nice). Keep every distinct criterion — only dedup true duplicates. Overwrite the SAME file. Do not push anything.`
+                  : `Reconcile the merged UX Spec file "${canonicalRel}" in the cwd (screens from per-module slices; ids are module-prefixed so they don't collide). Seams to heal: (1) DUPLICATE PERSONAS — merge same-role personas into one. (2) DANGLING NAV — every component's \`navigates_to\` must point at a screen id that EXISTS in \`screens\`; fix or drop targets that don't resolve (a CTA that crosses modules should point at the real target screen's id). (3) DUPLICATE SCREENS — if two modules authored the same screen, keep one. Do NOT rename screen ids (their wireframes/<id>.wire.json files depend on them) and do NOT drop distinct screens. Overwrite the SAME file. Do not push anything.`;
             const rc = design.runs.create({
               projectId,
               conversationId,
@@ -14237,14 +14237,14 @@ export async function startServer({
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const kickoff =
             kind === 'ux-review'
-              ? `Run the heuristic-eval review for ONE screen of KGS project "${projectId}". ` +
+              ? `Run the heuristic-eval review for ONE screen of feature "${projectId}". ` +
                 `Review ONLY the screen id "${s.id}" (${s.name}) — its wireframe "wireframes/${s.id}.wire.json" and its spec in the UX Spec, against the usability heuristics + UX Research criteria in the cwd. ` +
                 `Write your result to "heuristic-review/${s.slug}/report.json" (the per-screen report schema, screens[] holding just this one screen, screen id VERBATIM). ` +
-                `Do NOT review any other screen, and do NOT write heuristic-review/report.json or summary.md — the pipeline merges those. FILE-ONLY: no KGS push.`
-              : `Run the html-interactive-prototype render for ONE screen of KGS project "${projectId}". ` +
+                `Do NOT review any other screen, and do NOT write heuristic-review/report.json or summary.md — the pipeline merges those. FILE-ONLY: no push.`
+              : `Run the html-interactive-prototype render for ONE screen of feature "${projectId}". ` +
                 `Render ONLY the screen id "${s.id}" (${s.name}) from the UX Spec + its wireframe into a self-contained "prototype/${s.slug}.html" (plus its "prototype/${s.slug}.states.json" if multistep). ` +
                 `Nav links to other screens use their "<target-slug>.html" filename. ` +
-                `Do NOT render any other screen, and do NOT write prototype/index.html — the pipeline builds the hub. FILE-ONLY: no KGS push.`;
+                `Do NOT render any other screen, and do NOT write prototype/index.html — the pipeline builds the hub. FILE-ONLY: no push.`;
           const run = design.runs.create({
             projectId,
             conversationId,
@@ -14524,8 +14524,9 @@ export async function startServer({
     const now = Date.now();
     const conversationId = `pipeline-conv-${randomUUID()}`;
     const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
-    // projectId here is the KGS project_id (the kg-pull project's id == KGS
-    // project_id). Name it explicitly so the skill pushes to the right KGS app.
+    // projectId is the pipeline project's id. Named in the kickoff only to scope
+    // the run; the post-docs stages are FILE-ONLY (no KGS push) so it is not a
+    // push target.
     const trimmedInput = typeof input === 'string' ? input.trim() : '';
     // A combined pipeline (extraSkillIds) activates several skills in one run; tell
     // the agent to complete EACH skill's workflow and produce ALL their outputs.
@@ -14557,7 +14558,7 @@ export async function startServer({
     // uploadProjectFiles, which also keys off convertToGraph.
     const graphDirective = def.convertToGraph
       ? ` When the skill pushes results to KGS, target project_id "${projectId}".`
-      : " This is a FILE-ONLY stage: produce the output file(s) only and do NOT push anything to KGS (do not run `od kg push` or the skill's push_to_kgs.py). The files are synced separately by the pipeline.";
+      : " This is a FILE-ONLY stage: produce the output file(s) only — the pipeline reads them directly. Do not push anything anywhere.";
     // Target platform (UX stage picker / CLI --platform). Only emitted when the
     // stage opted in AND the caller chose one — no choice keeps the kickoff
     // byte-identical to the legacy one, so existing projects are unaffected.
@@ -14628,7 +14629,17 @@ export async function startServer({
         console.warn('[app-context] staging failed (continuing without it):', error);
       }
     }
-    const kickoff = `Run the "${def.name}" pipeline for KGS project "${projectId}". ${skillDirective}${sourceDirective}${platformDirective}${rerunDirective}${kbDirective}${appCtxDirective}${graphDirective}`;
+    // App > feature scoping: the pipeline runs for a FEATURE; its parent App
+    // (from the Studio config mirrored on pull) is named too when present.
+    const studioCfg = (project.metadata as Record<string, unknown> | undefined)?.studioConfig as
+      | Record<string, unknown>
+      | undefined;
+    const featureAppName =
+      studioCfg && typeof studioCfg.appName === 'string' ? studioCfg.appName : '';
+    const featureScope = featureAppName
+      ? `feature "${projectId}" of app "${featureAppName}"`
+      : `feature "${projectId}"`;
+    const kickoff = `Run the "${def.name}" pipeline for ${featureScope}. ${skillDirective}${sourceDirective}${platformDirective}${rerunDirective}${kbDirective}${appCtxDirective}${graphDirective}`;
 
     // BAS document pre-fetch (BE owns the BAS KG HTTP) — done BEFORE any
     // conversation/run state is created so a fetch failure aborts cleanly with no

@@ -820,7 +820,10 @@ function parseDrawioMacro(macroBlock: string): DrawioMacroMeta | null {
 // Marker prefixed on every draw.io image's alt text so the docs-mockup-review
 // skill knows it's a FLOW DIAGRAM (sequence/flowchart), not a UI mockup to
 // score — it reviews screens, and uses diagrams only as flow context.
-const DIAGRAM_ALT_MARKER = '[flow-diagram]';
+// Bracket-free on purpose: a `[…]` marker inside an image ALT closes the
+// `![alt](src)` syntax early and breaks rendering. "flow-diagram" is still the
+// substring downstream (docs-mockup-review) keys off to tag it a flow diagram.
+const DIAGRAM_ALT_MARKER = 'flow-diagram';
 
 function drawioPreviewImgTag(macroBlock: string, base: string): string {
   const meta = parseDrawioMacro(macroBlock);
@@ -1035,7 +1038,13 @@ export function htmlToMarkdown(
     const altMatch = /\balt=["']([^"']*)["']/i.exec(attrs);
     const src = srcMatch?.[1];
     const alt = altMatch?.[1] ?? '';
-    if (src && localizedImagePrefix && src.startsWith(localizedImagePrefix)) return `![${alt}](${src})`;
+    // Escape `[` / `]` in the alt: a marker like the diagram `[flow-diagram]`
+    // one contains `]`, which closes the `![...]` alt early and breaks the image
+    // (renders as literal text — the PNG is on disk but never shows). Escaping
+    // keeps the image renderable; the `flow-diagram` substring downstream reads
+    // survives intact.
+    const safeAlt = alt.replace(/[[\]]/g, (m) => `\\${m}`);
+    if (src && localizedImagePrefix && src.startsWith(localizedImagePrefix)) return `![${safeAlt}](${src})`;
     return alt ? `(${alt})` : '';
   });
   s = s.replace(/<br\s*\/?>/gi, '\n');

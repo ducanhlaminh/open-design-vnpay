@@ -89,8 +89,8 @@ nonsense ("màn thiếu nút X" on a sequence diagram), so diagrams are NOT scor
 they exist so you (and the reader) understand the flow behind the screens.
 
 Set each image's **`kind`**:
-- **`diagram`** if EITHER (a) its Markdown alt text starts with `[flow-diagram]`
-  — a draw.io diagram the ingest already tagged, authoritative — OR (b) you open
+- **`diagram`** if EITHER (a) its Markdown alt text contains the `flow-diagram`
+  marker — a draw.io diagram the ingest already tagged, authoritative — OR (b) you open
   it and it is clearly a diagram (boxes + arrows, swimlanes, sequence lifelines,
   a flowchart — not a rendered UI screen). A `diagram` entry carries NO
   `score` / `verdict` / `findings`; instead a one-line **`summary`** of what flow

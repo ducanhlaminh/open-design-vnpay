@@ -7,7 +7,7 @@
 // flow file lists only decisions/ends. With no flow files (older ux runs) one
 // implicit flow is derived from the components' `navigates_to` edges so the
 // tab still shows the navigation graph.
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import {
   Background,
   BaseEdge,
@@ -19,6 +19,8 @@ import {
   ReactFlow,
   ReactFlowProvider,
   getSmoothStepPath,
+  useNodesState,
+  useEdgesState,
   type Edge,
   type EdgeProps,
   type Node,
@@ -393,7 +395,7 @@ export function SpecFlowCanvas({
   const [idx, setIdx] = useState(0);
   const flow = effective[Math.min(idx, effective.length - 1)];
 
-  const { nodes, edges } = useMemo(() => {
+  const built = useMemo(() => {
     if (!flow) return { nodes: [] as Node[], edges: [] as Edge[] };
     const { kinds, pos } = layoutFlow(flow, screenIds);
     const nodes: Node[] = [...kinds.entries()].map(([id, kind]) => {
@@ -445,6 +447,18 @@ export function SpecFlowCanvas({
     return { nodes, edges };
   }, [flow, screenIds, nameOf, wireframes, platforms]);
 
+  // React Flow needs STATEFUL nodes/edges + change handlers to apply drag
+  // (position) updates — a controlled `nodes` prop with no `onNodesChange` makes
+  // a dragged node snap straight back. Seed from the computed layout and re-seed
+  // whenever it changes (switching flows / new data), which also resets any
+  // manual drag for the new layout.
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  useEffect(() => {
+    setNodes(built.nodes);
+    setEdges(built.edges);
+  }, [built, setNodes, setEdges]);
+
   if (!flow) {
     return (
       <div style={{ padding: 24, fontSize: 13, color: T.muted }}>
@@ -484,6 +498,8 @@ export function SpecFlowCanvas({
           <ReactFlow
             nodes={nodes}
             edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
             nodeTypes={NODE_TYPES}
             edgeTypes={EDGE_TYPES}
             fitView
