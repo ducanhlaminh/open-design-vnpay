@@ -139,7 +139,9 @@ function LabeledEdge({
               WebkitLineClamp: 2,
               WebkitBoxOrient: 'vertical',
               overflow: 'hidden',
-              pointerEvents: 'all',
+              // Non-interactive so the chip never blocks panning/dragging the
+              // canvas underneath it (labels sit in the middle gutter).
+              pointerEvents: 'none',
             }}
           >
             {label}
@@ -412,20 +414,34 @@ export function SpecFlowCanvas({
         } satisfies FlowNodeData,
       };
     });
-    const edges: Edge[] = (flow.edges ?? [])
-      .filter((e) => e.from && e.to)
-      .map((e, i) => ({
+    // Edges that share a source fan out to the same gutter, so their label
+    // chips land on nearly the same midpoint and pile up. Distribute each
+    // source's labels into vertical slots (~a chip-height apart) so parallel
+    // edges never stack their labels.
+    const filtered = (flow.edges ?? []).filter((e) => e.from && e.to);
+    const srcTotal = new Map<string, number>();
+    for (const e of filtered) srcTotal.set(e.from!, (srcTotal.get(e.from!) ?? 0) + 1);
+    const srcSeen = new Map<string, number>();
+    const LABEL_SLOT = 40; // ~2-line chip height + gap
+    const edges: Edge[] = filtered.map((e, i) => {
+      const from = e.from!;
+      const total = srcTotal.get(from) ?? 1;
+      const k = srcSeen.get(from) ?? 0;
+      srcSeen.set(from, k + 1);
+      const shift = total > 1 ? (k - (total - 1) / 2) * LABEL_SLOT : 0;
+      return {
         id: `e${i}`,
-        source: e.from!,
+        source: from,
         target: e.to!,
         // Orthogonal routing + HTML label chips (LabeledEdge) read as a real
         // flowchart; bezier diagonals with floating one-line SVG labels turned
         // dense graphs into soup.
         type: 'labeled',
-        data: { label: e.label, shift: ((i % 3) - 1) * 18 },
+        data: { label: e.label, shift },
         style: { stroke: T.muted, strokeWidth: 1.3 },
         markerEnd: { type: MarkerType.ArrowClosed, color: T.muted },
-      }));
+      };
+    });
     return { nodes, edges };
   }, [flow, screenIds, nameOf, wireframes, platforms]);
 
@@ -475,6 +491,11 @@ export function SpecFlowCanvas({
             minZoom={0.1}
             proOptions={{ hideAttribution: true }}
             nodesConnectable={false}
+            nodesDraggable
+            elementsSelectable
+            panOnDrag
+            zoomOnScroll
+            panOnScroll={false}
           >
             <Background gap={22} size={1.4} />
             <Controls showInteractive={false} />

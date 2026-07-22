@@ -30,9 +30,9 @@
 
   --text: #1a1916;
   --text-strong: #0d0c0a;
-  --text-muted: #74716b;
-  --text-soft: #989590;
-  --text-faint: #b3b0a8;
+  --text-muted: #57544e;
+  --text-soft: #6b675f;
+  --text-faint: #8a857b;
 
   /* Accent — VNPAY brand action color (VNPAY Blue) for app chrome only. */
   --accent: #0066b3;
@@ -77,7 +77,7 @@
   --selected-soft: rgba(37, 99, 235, 0.16);
 
   --serif: 'Source Serif Pro', 'Source Serif 4', 'Iowan Old Style', 'Apple Garamond', Georgia, 'Times New Roman', serif;
-  --sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -107,9 +107,9 @@
 
   --text: #e8e4dc;
   --text-strong: #f2ede4;
-  --text-muted: #9a9690;
-  --text-soft: #6e6b65;
-  --text-faint: #4e4b46;
+  --text-muted: #aca79f;
+  --text-soft: #8f8a81;
+  --text-faint: #706c64;
 
   --accent: #3d97e0;
   --accent-strong: #5aa9e8;

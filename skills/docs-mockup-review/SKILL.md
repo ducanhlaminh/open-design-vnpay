@@ -64,6 +64,9 @@ that what they drew is itself usable.
   — evidence-based criteria from the upstream stage. A mockup that violates a
   `must` criterion is a finding: name the criterion id + source in the finding's
   prose. Absent report → skip silently, do not fail the run.
+- **Context pages (`./docs/context/`, when present):** link-followed background
+  pages. Read them for domain understanding, but NEVER review or fabricate
+  mockups from them — only `./docs/confluence/` pages are reviewed.
 
 If `./docs/confluence/` has no page with at least one embedded image, stop and
 report that there is nothing to review — do not fabricate images or findings.

@@ -4,7 +4,33 @@
 // push / Pull All needed). Layout, sidebar grouping, emotion curve (SVG line),
 // stage cards and screen wireframe follow those routes; styled with open-design
 // theme tokens.
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from 'react';
+import { createPortal } from 'react-dom';
+import {
+  Angry,
+  Cog,
+  ExternalLink,
+  FileText,
+  Frown,
+  Info,
+  Laugh,
+  LayoutTemplate,
+  Loader2,
+  Map as MapIcon,
+  MapPin,
+  Maximize2,
+  Meh,
+  MessageSquareQuote,
+  Minimize2,
+  Smile,
+  Target,
+  TriangleAlert,
+  User,
+  Users,
+  X,
+} from 'lucide-react';
+import { fetchProjectFileText, fetchProjectFiles } from '../providers/registry';
+import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
 import { WireFrameView, wiretextEditUrl, DEVICES, WEB_DEVICES, type WireDoc, type DeviceKey } from './WireFrameView';
 
 interface SpecComponent {
@@ -142,6 +168,20 @@ const EMOTION: Record<string, Emo> = {
 function emo(e?: string): Emo {
   return EMOTION[(e ?? 'neutral').toLowerCase()] ?? NEUTRAL;
 }
+// Emotion → lucide face (replaces the emoji). Colour still comes from the
+// emotion so the curve/pill read the same "good→bad" gradient as before.
+function faceFor(score: number) {
+  if (score >= 5) return Laugh;
+  if (score >= 4) return Smile;
+  if (score === 3) return Meh;
+  if (score === 2) return Frown;
+  return Angry;
+}
+function EmotionFace({ emotion, size = 18 }: { emotion?: string; size?: number }) {
+  const e = emo(emotion);
+  const Face = faceFor(e.score);
+  return <Face size={size} color={e.color} strokeWidth={2} aria-hidden />;
+}
 function painText(p: PainPoint): string {
   return typeof p === 'string' ? p : p.text ?? p.description ?? '';
 }
@@ -168,11 +208,11 @@ function actorOf(s: { primary_actor?: string; actor_id?: string }): string {
 const S = {
   wrap: {
     display: 'grid',
-    gridTemplateColumns: '240px 1fr',
-    gap: 12,
+    gridTemplateColumns: '256px 1fr',
+    gap: 14,
     height: '100%',
     minHeight: 0,
-    padding: 12,
+    padding: 14,
     color: T.text,
   } as const,
   side: {
@@ -181,7 +221,7 @@ const S = {
     border: `1px solid ${T.border}`,
     borderRadius: T.radius,
     background: T.panel,
-    padding: 8,
+    padding: 10,
   } as const,
   main: {
     minHeight: 0,
@@ -189,7 +229,7 @@ const S = {
     border: `1px solid ${T.border}`,
     borderRadius: T.radius,
     background: T.panel,
-    padding: 16,
+    padding: '20px 24px',
   } as const,
   sideItem: (active: boolean) =>
     ({
@@ -200,17 +240,17 @@ const S = {
       // and the type badge readable. Non-active stays borderless (1.5px
       // transparent so there's no layout shift when it becomes active).
       border: `1.5px solid ${active ? T.accent : 'transparent'}`,
-      background: active ? T.subtle : 'transparent',
+      background: active ? T.accentTint : 'transparent',
       borderRadius: T.radiusSm,
-      padding: '6px 8px',
-      marginBottom: 2,
+      padding: '9px 10px',
+      marginBottom: 3,
       cursor: 'pointer',
       color: T.text,
-      fontSize: 12,
+      fontSize: 13.5,
     }) as const,
   badge: {
-    fontSize: 9,
-    padding: '1px 6px',
+    fontSize: 11,
+    padding: '2px 8px',
     borderRadius: 999,
     background: T.muted,
     color: T.textSoft,
@@ -218,198 +258,919 @@ const S = {
   } as const,
   select: {
     width: '100%',
-    fontSize: 11,
-    padding: '4px 6px',
+    fontSize: 13,
+    padding: '7px 10px',
     borderRadius: T.radiusSm,
     border: `1px solid ${T.border}`,
     background: T.subtle,
     color: T.text,
   } as const,
-  h1: { fontSize: 15, fontWeight: 600, margin: 0, color: T.text } as const,
-  meta: { fontSize: 11, color: T.textMuted, marginTop: 2 } as const,
+  h1: { fontSize: 22, fontWeight: 700, margin: 0, color: T.text, letterSpacing: '-0.01em' } as const,
+  meta: { fontSize: 13, color: T.textSoft, marginTop: 6 } as const,
   sectionTitle: {
-    fontSize: 10,
+    fontSize: 12.5,
     textTransform: 'uppercase' as const,
-    letterSpacing: '0.05em',
-    color: T.textMuted,
-    fontWeight: 600,
-    margin: '18px 0 6px',
+    letterSpacing: '0.06em',
+    color: T.textSoft,
+    fontWeight: 700,
+    margin: '26px 0 12px',
   } as const,
 };
 
-// ── Emotion curve (SVG line chart — mirrors customer-journey-v2 EmotionCurve) ──
+// ── Emotion curve (area chart — dots overlaid as HTML so they stay round while
+//    the SVG stretches full-width; each dot/emoji cell shares one column) ──────
 function EmotionCurve({ stages }: { stages: SpecStage[] }) {
   if (!stages.length) return null;
+  const n = stages.length;
   const pts = stages.map((s) => emo(s.emotion).score);
-  const W = 600;
-  const H = 80;
-  const pad = 12;
-  const step = pts.length > 1 ? (W - 2 * pad) / (pts.length - 1) : 0;
-  const y = (p: number) => H - pad - ((p - 1) / 4) * (H - 2 * pad);
-  const path = pts.map((p, i) => `${i ? 'L' : 'M'} ${pad + i * step} ${y(p)}`).join(' ');
+  const pad = 14; // viewBox units, top/bottom breathing room
+  const xf = (i: number) => ((i + 0.5) / n) * 100; // percent, column-centered
+  const yv = (p: number) => pad + ((5 - p) / 4) * (100 - 2 * pad); // 0..100 viewBox
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'} ${i + 0.5} ${yv(p)}`).join(' ');
+  const area = n > 1 ? `${line} L ${n - 0.5} ${100 - pad} L 0.5 ${100 - pad} Z` : '';
+  const H = 120;
   return (
     <section>
-      <div style={S.sectionTitle}>Emotion curve</div>
-      <div style={{ border: `1px solid ${T.border}`, borderRadius: T.radius, background: T.subtle, padding: 12 }}>
-        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 80 }}>
-          {[1, 2, 3, 4, 5].map((g) => (
-            <line key={g} x1={pad} x2={W - pad} y1={y(g)} y2={y(g)} stroke={T.border} strokeWidth={1} />
-          ))}
-          <path d={path} fill="none" stroke={T.accent} strokeWidth={2} />
-          {pts.map((p, i) => (
-            <circle key={i} cx={pad + i * step} cy={y(p)} r={3.5} fill={stages[i] ? emo(stages[i]!.emotion).color : T.accent} />
-          ))}
-        </svg>
-        <div style={{ display: 'flex', marginTop: 4 }}>
-          {stages.map((s, i) => (
-            <span
-              key={s.id ?? i}
-              style={{ width: `${100 / stages.length}%`, textAlign: 'center', fontSize: 9, color: T.textMuted }}
-            >
-              {i + 1}. {emo(s.emotion).emoji} {emo(s.emotion).label}
-            </span>
-          ))}
+      <SectionHeading hint="Biểu đồ diễn biến cảm xúc của người dùng qua từng bước — điểm càng cao (1→5) là trải nghiệm càng tích cực.">
+        Hành trình cảm xúc
+      </SectionHeading>
+      <div style={{ border: `1px solid ${T.border}`, borderRadius: T.radius, background: T.subtle, padding: 14 }}>
+        <div style={{ position: 'relative', height: H }}>
+          <svg
+            viewBox={`0 0 ${n} 100`}
+            preserveAspectRatio="none"
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+          >
+            {[1, 2, 3, 4, 5].map((g) => (
+              <line
+                key={g}
+                x1={0}
+                x2={n}
+                y1={yv(g)}
+                y2={yv(g)}
+                stroke={T.border}
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+                strokeDasharray={g === 3 ? undefined : '3 4'}
+                opacity={0.7}
+              />
+            ))}
+            {area ? <path d={area} fill={T.accent} fillOpacity={0.12} /> : null}
+            <path
+              d={line}
+              fill="none"
+              stroke={T.accent}
+              strokeWidth={2.5}
+              vectorEffect="non-scaling-stroke"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          </svg>
+          {stages.map((s, i) => {
+            const e = emo(s.emotion);
+            return (
+              <div
+                key={s.id ?? i}
+                title={`Bước ${i + 1}${s.name ? ` · ${s.name}` : ''} — ${e.label} (${e.score}/5)`}
+                style={{
+                  position: 'absolute',
+                  left: `${xf(i)}%`,
+                  top: `${yv(e.score)}%`,
+                  transform: 'translate(-50%,-50%)',
+                  width: 13,
+                  height: 13,
+                  borderRadius: 999,
+                  background: e.color,
+                  border: `2.5px solid ${T.panel}`,
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.18)',
+                }}
+              />
+            );
+          })}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${n}, 1fr)`, gap: 6, marginTop: 12 }}>
+          {stages.map((s, i) => {
+            const e = emo(s.emotion);
+            return (
+              <Tip
+                key={s.id ?? i}
+                block
+                label={`Bước ${i + 1}${s.name ? ` · ${s.name}` : ''} — cảm xúc: ${e.label} (${e.score}/5)`}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 4,
+                  textAlign: 'center',
+                  padding: '8px 4px',
+                  borderRadius: T.radiusSm,
+                  background: T.panel,
+                  border: `1px solid ${T.borderSoft}`,
+                }}
+              >
+                <EmotionFace emotion={s.emotion} size={22} />
+                <span style={{ fontSize: 11.5, fontWeight: 600, color: T.text, lineHeight: 1.2 }}>{e.label}</span>
+                <span style={{ fontSize: 10, color: T.textMuted }}>Bước {i + 1}</span>
+              </Tip>
+            );
+          })}
         </div>
       </div>
     </section>
   );
 }
 
-function DetailList({ title, items, prefix, italic }: { title: string; items?: string[]; prefix: string; italic?: boolean }) {
-  if (!items || items.length === 0) return null;
+// A clearly-labeled block inside a stage card: icon + uppercase title + body.
+// Every stage sub-part (actions, responses, touchpoints, …) uses this so the
+// card reads as distinct sections instead of one run-on column of text.
+// A section title (uppercase) with an optional info tooltip. `hint` explains
+// what the block below represents; shown on hover via a small info glyph.
+function SectionHeading({ children, hint }: { children: ReactNode; hint?: string }) {
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const show = (e: SyntheticEvent<HTMLElement>) => hint && setRect(e.currentTarget.getBoundingClientRect());
+  const hide = () => setRect(null);
   return (
-    <div style={{ marginTop: 8 }}>
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: T.textMuted, marginBottom: 2 }}>
-        {title}
-      </div>
-      <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', fontSize: 11 }}>
-        {items.map((a, i) => (
-          <li key={i} style={{ color: T.textSoft, fontStyle: italic ? 'italic' : 'normal', marginBottom: 1 }}>
-            {prefix} {a}
-          </li>
-        ))}
-      </ul>
+    <div
+      tabIndex={hint ? 0 : undefined}
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
+      style={{ ...S.sectionTitle, display: 'flex', alignItems: 'center', gap: 6, cursor: hint ? 'help' : undefined }}
+    >
+      <span>{children}</span>
+      {hint ? <Info size={12} style={{ opacity: 0.55, flexShrink: 0 }} /> : null}
+      {rect && hint ? <TipBubble rect={rect} label={hint} /> : null}
     </div>
   );
 }
 
-function StageCard({ stage, index }: { stage: SpecStage; index: number }) {
+function StageSection({
+  icon,
+  title,
+  color,
+  hint,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  color?: string;
+  /** Tooltip explaining what this block represents. */
+  hint?: string;
+  children: ReactNode;
+}) {
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const show = (e: SyntheticEvent<HTMLElement>) => hint && setRect(e.currentTarget.getBoundingClientRect());
+  const hide = () => setRect(null);
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div
+        tabIndex={hint ? 0 : undefined}
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 7,
+          marginBottom: 7,
+          color: color ?? T.textSoft, // lucide icon inherits via currentColor
+          cursor: hint ? 'help' : undefined,
+        }}
+      >
+        <span style={{ display: 'inline-flex', lineHeight: 1 }}>{icon}</span>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+          }}
+        >
+          {title}
+        </span>
+        {hint ? <Info size={12} style={{ opacity: 0.5, flexShrink: 0 }} /> : null}
+        {rect && hint ? <TipBubble rect={rect} label={hint} /> : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function BulletList({
+  items,
+  marker,
+  markerColor,
+  italic,
+}: {
+  items: string[];
+  marker: string;
+  markerColor?: string;
+  italic?: boolean;
+}) {
+  return (
+    <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 5 }}>
+      {items.map((a, i) => (
+        <li
+          key={i}
+          style={{
+            display: 'flex',
+            gap: 8,
+            fontSize: 13.5,
+            lineHeight: 1.5,
+            color: T.textSoft,
+            fontStyle: italic ? 'italic' : 'normal',
+          }}
+        >
+          <span style={{ color: markerColor ?? T.accent, flexShrink: 0, fontWeight: 700 }}>{marker}</span>
+          <span>{a}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ── Click a source quote → open the doc, scroll to the passage, highlight it ──
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+// Whitespace-tolerant matcher: the stored quote may differ from the doc by
+// line-wrapping/spacing, so we match its tokens with `\s+` between them.
+function fuzzyRegex(q: string): RegExp | null {
+  const toks = q.trim().split(/\s+/).map(escapeRegExp).filter(Boolean);
+  if (!toks.length) return null;
+  try {
+    return new RegExp(toks.join('\\s+'), 'i');
+  } catch {
+    return null;
+  }
+}
+// Find `re` across the rendered markdown's text nodes and wrap the matched
+// span(s) in <mark class="od-doc-hl">. Works even when the passage straddles
+// several nodes (e.g. bold/links inside it). Returns the first mark for scroll.
+function highlightMatch(container: HTMLElement, re: RegExp): HTMLElement | null {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const nodes: { node: Text; start: number; len: number }[] = [];
+  let full = '';
+  let cur: Node | null = walker.nextNode();
+  while (cur) {
+    const text = cur.nodeValue ?? '';
+    nodes.push({ node: cur as Text, start: full.length, len: text.length });
+    full += text;
+    cur = walker.nextNode();
+  }
+  const m = re.exec(full);
+  if (!m) return null;
+  const ms = m.index;
+  const me = m.index + m[0].length;
+  let first: HTMLElement | null = null;
+  // Wrap back-to-front so earlier offsets stay valid as nodes are split.
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const info = nodes[i]!;
+    const ns = info.start;
+    const ne = info.start + info.len;
+    if (ne <= ms || ns >= me) continue;
+    const localStart = Math.max(ms, ns) - ns;
+    const localEnd = Math.min(me, ne) - ns;
+    try {
+      const range = document.createRange();
+      range.setStart(info.node, localStart);
+      range.setEnd(info.node, localEnd);
+      const mark = document.createElement('mark');
+      mark.className = 'od-doc-hl';
+      range.surroundContents(mark);
+      first = mark; // last wrapped = earliest node (reverse loop)
+    } catch {
+      /* skip a node we can't safely wrap */
+    }
+  }
+  return first;
+}
+
+// Injected once (per mounted spec view) — hover affordance for clickable
+// sources + the highlight flash on the located passage. Inline styles can't
+// express :hover or @keyframes, so this small stylesheet carries them.
+const SPEC_CSS = `
+.od-src-link { cursor: pointer; transition: box-shadow .15s ease, background .15s ease; }
+.od-src-link:hover { box-shadow: inset 0 0 0 2px var(--accent-soft, #d6e7f4); }
+.od-doc-hl {
+  background: var(--accent-tint, #e6f0f8);
+  border-radius: 3px;
+  padding: 1px 2px;
+  animation: odDocHlFlash 1.9s ease-out;
+}
+@keyframes odDocHlFlash {
+  0%, 12% { background: var(--amber-bg, #fde68a); }
+  100% { background: var(--accent-tint, #e6f0f8); }
+}
+.od-spin { animation: odSpin 0.9s linear infinite; }
+@keyframes odSpin { to { transform: rotate(360deg); } }
+
+/* Custom hover tooltip (portal to body → never clipped by card overflow).
+   Resets inherited uppercase/letter-spacing so the hint reads normally. */
+.od-tip-pop {
+  position: fixed;
+  z-index: 10000;
+  max-width: 300px;
+  background: #1f2937;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: normal;
+  text-transform: none;
+  font-style: normal;
+  padding: 8px 11px;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.28);
+  pointer-events: none;
+  white-space: normal;
+  animation: odTipIn .12s ease-out;
+}
+@keyframes odTipIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
+/* Rendered markdown inside the source-doc modal */
+.od-doc-md { font-size: 14px; line-height: 1.65; color: var(--text, #1a1a1a); word-break: break-word; }
+.od-doc-md > :first-child { margin-top: 0; }
+.od-doc-md h1, .od-doc-md h2, .od-doc-md h3, .od-doc-md h4 { line-height: 1.3; margin: 1.3em 0 .5em; font-weight: 650; color: var(--text, #1a1a1a); }
+.od-doc-md h1 { font-size: 1.5em; } .od-doc-md h2 { font-size: 1.3em; } .od-doc-md h3 { font-size: 1.13em; } .od-doc-md h4 { font-size: 1em; }
+.od-doc-md p { margin: .55em 0; }
+.od-doc-md ul, .od-doc-md ol { margin: .5em 0; padding-left: 1.5em; }
+.od-doc-md li { margin: .25em 0; }
+.od-doc-md code { font-family: var(--mono, ui-monospace, monospace); font-size: .88em; background: var(--bg-muted, #e4e8ef); padding: 1px 5px; border-radius: 4px; }
+.od-doc-md pre { background: var(--bg-subtle, #eef1f5); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: .7em 0; }
+.od-doc-md pre code { background: none; padding: 0; }
+.od-doc-md .md-table-wrap { overflow-x: auto; margin: .9em 0; }
+.od-doc-md table { border-collapse: collapse; width: 100%; font-size: .95em; }
+.od-doc-md th, .od-doc-md td { border: 1px solid var(--border, #e1e5eb); padding: 7px 10px; text-align: left; vertical-align: top; }
+.od-doc-md th { background: var(--bg-subtle, #eef1f5); font-weight: 650; }
+.od-doc-md tr:nth-child(even) td { background: color-mix(in srgb, var(--bg-subtle, #eef1f5) 45%, transparent); }
+.od-doc-md blockquote { border-left: 3px solid var(--accent, #0066b3); margin: .7em 0; padding: .3em 0 .3em 12px; color: var(--text-soft, #4b5563); }
+.od-doc-md a { color: var(--accent, #0066b3); text-decoration: none; }
+.od-doc-md a:hover { text-decoration: underline; }
+.od-doc-md hr { border: none; border-top: 1px solid var(--border, #e1e5eb); margin: 1.1em 0; }
+.od-doc-md img { max-width: 100%; }
+.od-doc-md-scroll { overflow: auto; }
+`;
+function SpecStyles() {
+  return <style>{SPEC_CSS}</style>;
+}
+
+// Positions a tooltip bubble under an anchor via a body portal, so it is never
+// clipped by a card's `overflow:hidden` or the scroll container. Returns the
+// hover handlers to spread on the anchor plus the bubble node to render inside.
+function TipBubble({ rect, label }: { rect: DOMRect; label: string }) {
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  const left = Math.max(8, Math.min(rect.left, vw - 308));
+  return createPortal(
+    <div className="od-tip-pop" style={{ top: rect.bottom + 8, left }} role="tooltip">
+      {label}
+    </div>,
+    document.body,
+  );
+}
+// Drop-in tooltip wrapper. Renders a <span> (inline) or <div> (block) that shows
+// `label` on hover/focus. Safe to use inside .map() (it's a component, not a hook).
+function Tip({
+  label,
+  children,
+  block,
+  style,
+  className,
+}: {
+  label: string;
+  children: ReactNode;
+  block?: boolean;
+  style?: CSSProperties;
+  className?: string;
+}) {
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const show = (e: SyntheticEvent<HTMLElement>) => setRect(e.currentTarget.getBoundingClientRect());
+  const hide = () => setRect(null);
+  const Tag = block ? 'div' : 'span';
+  return (
+    <Tag
+      className={className}
+      tabIndex={0}
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
+      style={{ cursor: 'help', ...style }}
+    >
+      {children}
+      {rect ? <TipBubble rect={rect} label={label} /> : null}
+    </Tag>
+  );
+}
+
+interface DocLoadState {
+  loading: boolean;
+  text: string | null;
+  resolvedName: string | null;
+  error: string | null;
+}
+function DocQuoteModal({
+  projectId,
+  source,
+  onClose,
+}: {
+  projectId: string;
+  source: SpecSource;
+  onClose: () => void;
+}) {
+  const [st, setSt] = useState<DocLoadState>({ loading: true, text: null, resolvedName: null, error: null });
+  const [full, setFull] = useState(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  // Rendered (sanitized) markdown HTML for the loaded doc.
+  const html = useMemo(() => (st.text ? renderMarkdownToSafeHtml(st.text) : ''), [st.text]);
+
+  // Resolve the doc file (the stored `file` may be a bare basename) and load it.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const file = source.file ?? '';
+      let name = file;
+      let content = file ? await fetchProjectFileText(projectId, file) : null;
+      if (content == null && file) {
+        try {
+          const files = await fetchProjectFiles(projectId);
+          const base = file.split('/').pop();
+          const hit =
+            files.find((f) => f.name === file) ??
+            files.find((f) => f.name.endsWith(`/${file}`)) ??
+            files.find((f) => f.name.split('/').pop() === base);
+          if (hit) {
+            name = hit.name;
+            content = await fetchProjectFileText(projectId, hit.name);
+          }
+        } catch {
+          /* listing failed → error state below */
+        }
+      }
+      if (cancelled) return;
+      setSt(
+        content == null
+          ? { loading: false, text: null, resolvedName: name, error: 'Không mở được tài liệu nguồn.' }
+          : { loading: false, text: content, resolvedName: name, error: null },
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, source.file]);
+
+  // Esc closes.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // After the markdown renders, locate the quoted passage in the DOM, wrap it
+  // in a highlight, and scroll it into view. Falls back to the heading.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el || !html) return;
+    const q = (source.quote ?? '').trim();
+    let mark: HTMLElement | null = null;
+    const qre = q ? fuzzyRegex(q) : null;
+    if (qre) mark = highlightMatch(el, qre);
+    if (!mark && source.heading) {
+      const hre = fuzzyRegex(source.heading);
+      if (hre) mark = highlightMatch(el, hre);
+    }
+    if (!mark) return;
+    const id = window.setTimeout(() => {
+      mark.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 80);
+    return () => window.clearTimeout(id);
+  }, [html, source.quote, source.heading]);
+
+  return createPortal(
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 9999,
+        background: 'rgba(15,23,42,0.6)',
+        backdropFilter: 'blur(2px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: full ? 0 : 24,
+      }}
+    >
+      <SpecStyles />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        style={{
+          width: full ? '100%' : 'min(880px, 100%)',
+          height: full ? '100%' : undefined,
+          maxHeight: full ? '100%' : '88vh',
+          display: 'flex',
+          flexDirection: 'column',
+          // Opaque surface — the theme's --bg-panel is a translucent glass token,
+          // so use the solid app-canvas colour to stop the page bleeding through.
+          background: 'var(--bg-app, #ffffff)',
+          color: T.text,
+          border: full ? 'none' : `1px solid ${T.border}`,
+          borderRadius: full ? 0 : T.radius,
+          boxShadow: full ? 'none' : '0 24px 60px rgba(0,0,0,0.32)',
+          overflow: 'hidden',
+        }}
+      >
+        {/* header */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '12px 16px',
+            borderBottom: `1px solid ${T.border}`,
+            background: T.subtle,
+          }}
+        >
+          <FileText size={16} color={T.accent} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 650, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {(st.resolvedName ?? source.file ?? '').split('/').pop()}
+            </div>
+            {source.heading ? (
+              <div style={{ fontSize: 11.5, color: T.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {source.heading}
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={() => setFull((v) => !v)}
+            title={full ? 'Thu nhỏ' : 'Phóng to toàn màn hình'}
+            aria-pressed={full}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 30,
+              height: 30,
+              border: `1px solid ${T.border}`,
+              borderRadius: T.radiusSm,
+              background: 'var(--bg-app, #ffffff)',
+              color: T.textSoft,
+              cursor: 'pointer',
+            }}
+          >
+            {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Đóng (Esc)"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 30,
+              height: 30,
+              border: `1px solid ${T.border}`,
+              borderRadius: T.radiusSm,
+              background: 'var(--bg-app, #ffffff)',
+              color: T.textSoft,
+              cursor: 'pointer',
+            }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* body — rendered markdown; highlight injected into the DOM post-render */}
+        <div className="od-doc-md-scroll" style={{ padding: '18px 22px' }}>
+          {st.loading ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: T.textMuted, fontSize: 13, padding: 20 }}>
+              <Loader2 size={16} className="od-spin" />
+              Đang tải tài liệu…
+            </div>
+          ) : st.error ? (
+            <div style={{ color: T.red, fontSize: 13, padding: 20 }}>{st.error}</div>
+          ) : (
+            <div
+              ref={bodyRef}
+              className="od-doc-md"
+              style={full ? { maxWidth: 1000, margin: '0 auto' } : undefined}
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function StageCard({ stage, index, projectId }: { stage: SpecStage; index: number; projectId?: string }) {
   const e = emo(stage.emotion);
   const pains = (stage.pain_points ?? []).map(painText).filter(Boolean);
   const score = typeof stage.emotion_score === 'number' ? stage.emotion_score : e.score;
   const sources = (stage.sources ?? []).filter((s) => (s.quote ?? '').trim());
+  const sc = stageColor(stage.stage_type);
+  const actions = stage.user_actions ?? [];
+  const responses = stage.system_responses ?? [];
+  const touchpoints = stage.touchpoints ?? [];
+  const thoughts = stage.thoughts ?? [];
+  const [openSource, setOpenSource] = useState<SpecSource | null>(null);
   return (
-    <li style={{ listStyle: 'none', border: `1px solid ${T.border}`, borderRadius: T.radius, background: T.subtle, padding: 12 }}>
-      <div style={{ display: 'flex', gap: 12 }}>
-        <div
+    <li
+      style={{
+        listStyle: 'none',
+        border: `1px solid ${T.border}`,
+        borderLeft: `4px solid ${sc}`,
+        borderRadius: T.radius,
+        background: T.panel,
+        boxShadow: T.shadow,
+        overflow: 'hidden',
+      }}
+    >
+      {/* Header bar — number, name + type, emotion pill */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '13px 16px',
+          background: T.subtle,
+          borderBottom: `1px solid ${T.borderSoft}`,
+        }}
+      >
+        <Tip
+          block
+          label={`Bước ${index} trong hành trình`}
           style={{
             flexShrink: 0,
-            width: 26,
-            height: 26,
+            width: 32,
+            height: 32,
             borderRadius: 999,
-            background: T.accentTint,
-            color: T.accent,
-            fontSize: 12,
-            fontWeight: 600,
+            background: sc,
+            color: '#fff',
+            fontSize: 14,
+            fontWeight: 700,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
           }}
         >
           {index}
-        </div>
+        </Tip>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <strong style={{ fontSize: 13 }}>{stage.name ?? stage.id}</strong>
-            <span style={{ ...S.badge, background: 'transparent', border: `1px solid ${stageColor(stage.stage_type)}`, color: stageColor(stage.stage_type) }}>
-              {stage.stage_type ?? '—'}
-            </span>
-            <span style={{ fontSize: 10, color: T.textMuted }}>
-              {e.emoji} {e.label} · {score}/5
-            </span>
-          </div>
-          {stage.goal ? <div style={{ fontSize: 12, color: T.textSoft, marginTop: 4 }}>🎯 {stage.goal}</div> : null}
-          <DetailList title="User actions" items={stage.user_actions} prefix="•" />
-          <DetailList title="System responses" items={stage.system_responses} prefix="▸" italic />
-          {(stage.touchpoints ?? []).length ? (
-            <div style={{ marginTop: 8, display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 10, textTransform: 'uppercase', color: T.textMuted }}>Touchpoints:</span>
-              {stage.touchpoints!.map((tp) => (
-                <span key={tp} style={{ ...S.badge, background: 'var(--blue-bg, #e0edff)', color: T.blue }}>
+          <div style={{ fontSize: 15.5, fontWeight: 650, color: T.text, lineHeight: 1.3 }}>{stage.name ?? stage.id}</div>
+          <Tip
+            label={`Loại bước: ${stage.stage_type ?? '—'} — phân loại hành động (ví dụ: action, decision, confirmation, error…)`}
+            style={{
+              ...S.badge,
+              display: 'inline-block',
+              marginTop: 4,
+              background: 'transparent',
+              border: `1px solid ${sc}`,
+              color: sc,
+            }}
+          >
+            {stage.stage_type ?? '—'}
+          </Tip>
+        </div>
+        <Tip
+          block
+          label={`Cảm xúc dự đoán của người dùng ở bước này: ${e.label} (${score}/5)`}
+          style={{
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            background: T.panel,
+            border: `1px solid ${T.border}`,
+            borderRadius: 999,
+            padding: '4px 12px 4px 9px',
+          }}
+        >
+          <EmotionFace emotion={stage.emotion} size={20} />
+          <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{e.label}</span>
+            <span style={{ fontSize: 10.5, color: T.textMuted }}>{score}/5</span>
+          </span>
+        </Tip>
+      </div>
+
+      {/* Body — each sub-part as its own labeled section */}
+      <div style={{ padding: '2px 16px 16px' }}>
+        {stage.goal ? (
+          <Tip
+            block
+            label="Mục tiêu người dùng muốn đạt được ở bước này."
+            style={{
+              marginTop: 14,
+              display: 'flex',
+              gap: 9,
+              alignItems: 'flex-start',
+              background: T.accentTint,
+              border: `1px solid ${T.accentSoft}`,
+              borderRadius: T.radiusSm,
+              padding: '10px 12px',
+            }}
+          >
+            <Target size={16} color={T.accent} style={{ flexShrink: 0, marginTop: 2 }} />
+            <span style={{ fontSize: 13.5, color: T.text, fontWeight: 500, lineHeight: 1.45 }}>{stage.goal}</span>
+          </Tip>
+        ) : null}
+
+        {actions.length ? (
+          <StageSection
+            icon={<User size={15} />}
+            title="Người dùng thao tác"
+            hint="Những thao tác người dùng chủ động thực hiện ở bước này."
+          >
+            <BulletList items={actions} marker="•" markerColor={T.accent} />
+          </StageSection>
+        ) : null}
+
+        {responses.length ? (
+          <StageSection
+            icon={<Cog size={15} />}
+            title="Hệ thống phản hồi"
+            hint="Cách hệ thống xử lý và phản hồi lại sau thao tác của người dùng."
+          >
+            <BulletList items={responses} marker="▸" markerColor={T.blue} italic />
+          </StageSection>
+        ) : null}
+
+        {touchpoints.length ? (
+          <StageSection
+            icon={<MapPin size={15} />}
+            title="Điểm chạm"
+            hint="Màn hình / điểm tiếp xúc mà người dùng tương tác ở bước này."
+          >
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {touchpoints.map((tp) => (
+                <span
+                  key={tp}
+                  style={{
+                    fontSize: 12,
+                    fontFamily: T.mono,
+                    padding: '3px 9px',
+                    borderRadius: 6,
+                    background: 'var(--blue-bg, #e0edff)',
+                    color: T.blue,
+                    border: `1px solid var(--blue-border, #bcd6ff)`,
+                  }}
+                >
                   {tp}
                 </span>
               ))}
             </div>
-          ) : null}
-          {(stage.thoughts ?? []).length ? (
+          </StageSection>
+        ) : null}
+
+        {thoughts.length ? (
+          <StageSection
+            icon={<MessageSquareQuote size={15} />}
+            title="Suy nghĩ của người dùng"
+            hint="Suy nghĩ, kỳ vọng hoặc băn khoăn trong đầu người dùng khi ở bước này."
+          >
             <blockquote
-              style={{ margin: '8px 0 0', borderLeft: `2px solid ${T.accent}`, paddingLeft: 8, fontSize: 11, fontStyle: 'italic', color: T.textSoft }}
+              style={{
+                margin: 0,
+                borderLeft: `3px solid ${T.accent}`,
+                background: T.subtle,
+                borderRadius: `0 ${T.radiusSm} ${T.radiusSm} 0`,
+                padding: '9px 12px',
+                fontSize: 13,
+                fontStyle: 'italic',
+                color: T.textSoft,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                lineHeight: 1.5,
+              }}
             >
-              {stage.thoughts!.map((th, i) => (
+              {thoughts.map((th, i) => (
                 <div key={i}>&ldquo;{th}&rdquo;</div>
               ))}
             </blockquote>
-          ) : null}
-          {pains.length ? (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ fontSize: 10, textTransform: 'uppercase', color: T.textMuted, marginBottom: 4 }}>
-                ⚠️ Pain points ({pains.length})
-              </div>
+          </StageSection>
+        ) : null}
+
+        {pains.length ? (
+          <StageSection
+            icon={<TriangleAlert size={15} />}
+            title={`Điểm đau (${pains.length})`}
+            color={T.red}
+            hint="Khó khăn, trở ngại hoặc rủi ro người dùng có thể gặp ở bước này."
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {pains.map((p, i) => (
                 <div
                   key={i}
                   style={{
-                    fontSize: 11,
+                    fontSize: 13,
+                    lineHeight: 1.45,
                     borderRadius: T.radiusSm,
                     background: 'var(--red-bg, #fee2e2)',
                     border: `1px solid var(--red-border, #fecaca)`,
                     color: T.text,
-                    padding: '4px 8px',
-                    marginBottom: 4,
+                    padding: '8px 12px',
                   }}
                 >
                   {p}
                 </div>
               ))}
             </div>
-          ) : null}
-          {sources.length ? (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ fontSize: 10, textTransform: 'uppercase', color: T.textMuted, marginBottom: 4 }}>
-                📄 Key text from docs ({sources.length})
-              </div>
-              {sources.map((s, i) => (
-                <div
-                  key={i}
-                  style={{
-                    fontSize: 11,
-                    borderRadius: T.radiusSm,
-                    background: T.muted,
-                    borderLeft: `2px solid ${T.accent}`,
-                    color: T.text,
-                    padding: '5px 8px',
-                    marginBottom: 4,
-                  }}
-                >
-                  <div style={{ fontStyle: 'italic' }}>&ldquo;{s.quote}&rdquo;</div>
-                  {s.file || s.heading ? (
-                    <div style={{ fontSize: 10, color: T.textMuted, marginTop: 3 }}>
-                      {(s.file ?? '').split('/').pop()}
-                      {s.heading ? ` · ${s.heading}` : ''}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
+          </StageSection>
+        ) : null}
+
+        {sources.length ? (
+          <StageSection
+            icon={<FileText size={15} />}
+            title={`Trích từ tài liệu (${sources.length})`}
+            hint="Đoạn trích từ tài liệu nghiệp vụ là căn cứ cho bước này — bấm để mở tài liệu tại đúng đoạn."
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {sources.map((s, i) => {
+                // Clickable when we can open a doc: need a project + a file to load.
+                const clickable = !!projectId && !!(s.file && s.file.trim());
+                return (
+                  <div
+                    key={i}
+                    className={clickable ? 'od-src-link' : undefined}
+                    onClick={clickable ? () => setOpenSource(s) : undefined}
+                    role={clickable ? 'button' : undefined}
+                    tabIndex={clickable ? 0 : undefined}
+                    onKeyDown={
+                      clickable
+                        ? (ev) => {
+                            if (ev.key === 'Enter' || ev.key === ' ') {
+                              ev.preventDefault();
+                              setOpenSource(s);
+                            }
+                          }
+                        : undefined
+                    }
+                    title={clickable ? 'Mở tài liệu tại đúng đoạn này' : undefined}
+                    style={{
+                      fontSize: 13,
+                      borderRadius: T.radiusSm,
+                      background: T.subtle,
+                      borderLeft: `3px solid ${T.accent}`,
+                      color: T.text,
+                      padding: '8px 12px',
+                    }}
+                  >
+                    <div style={{ fontStyle: 'italic', lineHeight: 1.5 }}>&ldquo;{s.quote}&rdquo;</div>
+                    {s.file || s.heading ? (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 5,
+                          fontSize: 11,
+                          color: clickable ? T.accent : T.textMuted,
+                          marginTop: 6,
+                          fontFamily: T.mono,
+                        }}
+                      >
+                        {clickable ? <ExternalLink size={12} style={{ flexShrink: 0 }} /> : null}
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {(s.file ?? '').split('/').pop()}
+                          {s.heading ? ` · ${s.heading}` : ''}
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
-          ) : null}
-        </div>
+          </StageSection>
+        ) : null}
       </div>
+      {openSource && projectId ? (
+        <DocQuoteModal projectId={projectId} source={openSource} onClose={() => setOpenSource(null)} />
+      ) : null}
     </li>
   );
 }
 
 // ── Customer Journey ─────────────────────────────────────────────────────────
-function CustomerJourneyView({ journeys, personas }: { journeys: SpecJourney[]; personas: SpecPersona[] }) {
+function CustomerJourneyView({
+  journeys,
+  personas,
+  projectId,
+}: {
+  journeys: SpecJourney[];
+  personas: SpecPersona[];
+  projectId?: string;
+}) {
   const [actor, setActor] = useState<string>('all');
   const actors = useMemo(() => {
     const set = new Map<string, string>();
@@ -434,10 +1195,23 @@ function CustomerJourneyView({ journeys, personas }: { journeys: SpecJourney[]; 
   if (!journey) return <div style={{ padding: 16, color: T.textMuted }}>No journeys.</div>;
   return (
     <div style={S.wrap}>
+      <SpecStyles />
       <aside style={S.side}>
         <div style={{ padding: '4px 4px 8px' }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>🗺 Customer Journey — {journeys.length}</div>
-          <select style={S.select} value={actor} onChange={(e) => setActor(e.target.value)}>
+          <Tip
+            block
+            label="Danh sách các hành trình (luồng nghiệp vụ) của người dùng trong tính năng này."
+            style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13.5, fontWeight: 700, marginBottom: 8, color: T.text }}
+          >
+            <MapIcon size={16} color={T.accent} />
+            Hành trình — {journeys.length}
+          </Tip>
+          <select
+            style={S.select}
+            value={actor}
+            title="Lọc hành trình theo tác nhân (vai trò người dùng)."
+            onChange={(e) => setActor(e.target.value)}
+          >
             <option value="all">Tất cả ({journeys.length})</option>
             {actors.map((a) => (
               <option key={a} value={a}>
@@ -448,7 +1222,9 @@ function CustomerJourneyView({ journeys, personas }: { journeys: SpecJourney[]; 
         </div>
         {grouped.map(([actorId, items]) => (
           <div key={actorId} style={{ marginBottom: 10 }}>
-            <div
+            <Tip
+              block
+              label={`Tác nhân "${actorId.replace('actor-', '')}" — nhóm các hành trình do vai trò này thực hiện (${items.length}).`}
               style={{
                 fontSize: 10,
                 fontWeight: 700,
@@ -463,14 +1239,25 @@ function CustomerJourneyView({ journeys, personas }: { journeys: SpecJourney[]; 
                 gap: 6,
               }}
             >
-              <span>👥 {actorId.replace('actor-', '')}</span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <Users size={12} />
+                {actorId.replace('actor-', '')}
+              </span>
               <span style={{ marginLeft: 'auto', color: T.textMuted, fontWeight: 400 }}>{items.length}</span>
-            </div>
+            </Tip>
             {items.map((j) => (
-              <button key={j.id} type="button" style={S.sideItem(j.id === journey.id)} onClick={() => setSel(j.id)}>
-                <div style={{ fontWeight: 500 }}>{j.title ?? j.name ?? j.id}</div>
-                <div style={{ fontSize: 10, color: T.textMuted, marginTop: 2 }}>
-                  {(j.stages ?? []).length} stages · <code>{j.id.replace('UFLW-', '')}</code>
+              <button
+                key={j.id}
+                type="button"
+                title={`${j.title ?? j.name ?? j.id} — ${(j.stages ?? []).length} giai đoạn. Bấm để xem chi tiết hành trình này.`}
+                style={S.sideItem(j.id === journey.id)}
+                onClick={() => setSel(j.id)}
+              >
+                <div style={{ fontWeight: j.id === journey.id ? 700 : 500, color: j.id === journey.id ? T.accent : T.text, lineHeight: 1.35 }}>
+                  {j.title ?? j.name ?? j.id}
+                </div>
+                <div style={{ fontSize: 11, color: T.textMuted, marginTop: 3 }}>
+                  {(j.stages ?? []).length} giai đoạn · <code>{j.id.replace('UFLW-', '')}</code>
                 </div>
               </button>
             ))}
@@ -481,19 +1268,53 @@ function CustomerJourneyView({ journeys, personas }: { journeys: SpecJourney[]; 
         <header>
           <h1 style={S.h1}>{journey.title ?? journey.name ?? journey.id}</h1>
           <div style={S.meta}>
-            <code style={{ fontSize: 10 }}>{journey.id}</code> · actor=
-            <span style={{ color: T.text }}>{journey.actor_id ?? '—'}</span> · mode={journey.journey_mode ?? 'to_be'}
-            {journey.flow_type ? ` · ${journey.flow_type}` : ''}
+            <Tip label="Mã định danh của hành trình (unique flow id)." style={{ fontFamily: T.mono, fontSize: 11.5 }}>
+              {journey.id}
+            </Tip>{' '}
+            · actor=
+            <Tip label="Tác nhân: vai trò người dùng thực hiện hành trình này." style={{ color: T.text }}>
+              {journey.actor_id ?? '—'}
+            </Tip>{' '}
+            · mode=
+            <Tip label="Chế độ mô tả: to_be = quy trình mong muốn (thiết kế lại); as_is = hiện trạng.">
+              {journey.journey_mode ?? 'to_be'}
+            </Tip>
+            {journey.flow_type ? (
+              <>
+                {' '}·{' '}
+                <Tip label="Loại luồng nghiệp vụ.">{journey.flow_type}</Tip>
+              </>
+            ) : null}
           </div>
-          {journey.goal ? <p style={{ fontSize: 12, color: T.textSoft, marginTop: 6 }}>🎯 {journey.goal}</p> : null}
+          {journey.goal ? (
+            <Tip
+              block
+              label="Mục tiêu tổng thể của cả hành trình — điều người dùng cuối cùng muốn hoàn thành."
+              style={{
+                display: 'flex',
+                gap: 9,
+                alignItems: 'flex-start',
+                marginTop: 12,
+                background: T.accentTint,
+                border: `1px solid ${T.accentSoft}`,
+                borderRadius: T.radiusSm,
+                padding: '11px 14px',
+              }}
+            >
+              <Target size={17} color={T.accent} style={{ flexShrink: 0, marginTop: 2 }} />
+              <span style={{ fontSize: 14, color: T.text, fontWeight: 500, lineHeight: 1.5 }}>{journey.goal}</span>
+            </Tip>
+          ) : null}
         </header>
 
         <EmotionCurve stages={stages} />
 
-        <div style={S.sectionTitle}>Stages ({stages.length})</div>
-        <ol style={{ margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <SectionHeading hint="Các bước tuần tự người dùng trải qua trong hành trình. Mỗi thẻ là một bước với thao tác, phản hồi hệ thống, cảm xúc và điểm đau.">
+          Các giai đoạn ({stages.length})
+        </SectionHeading>
+        <ol style={{ margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
           {stages.map((st, i) => (
-            <StageCard key={st.id ?? i} stage={st} index={i + 1} />
+            <StageCard key={st.id ?? i} stage={st} index={i + 1} projectId={projectId} />
           ))}
         </ol>
 
@@ -535,7 +1356,10 @@ function UxSpecView({
     <div style={S.wrap}>
       <aside style={S.side}>
         <div style={{ padding: '4px 4px 8px' }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>📐 UX Spec — {screens.length} màn</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13.5, fontWeight: 700, marginBottom: 8, color: T.text }}>
+            <LayoutTemplate size={16} color={T.accent} />
+            UX Spec — {screens.length} màn
+          </div>
           <select style={S.select} value={actor} onChange={(e) => setActor(e.target.value)}>
             <option value="all">Tất cả ({screens.length})</option>
             {actors.map((a) => (
@@ -638,7 +1462,7 @@ function UxSpecView({
         <div style={S.sectionTitle}>Components ({comps.length})</div>
         <div style={{ border: `1px solid ${T.border}`, borderRadius: T.radius, overflow: 'hidden' }}>
           {comps.length === 0 ? (
-            <div style={{ color: T.textMuted, fontSize: 12, padding: 10 }}>(màn chưa có component)</div>
+            <div style={{ color: T.textMuted, fontSize: 13, padding: 12 }}>(màn chưa có component)</div>
           ) : (
             comps.map((c, i) => (
               <div
@@ -646,23 +1470,23 @@ function UxSpecView({
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 10,
-                  padding: '8px 10px',
-                  fontSize: 12.5,
+                  gap: 11,
+                  padding: '10px 12px',
+                  fontSize: 13.5,
                   borderTop: i ? `1px solid ${T.borderSoft}` : 'none',
                   background: T.panel,
                 }}
               >
                 {/* order index */}
-                <span style={{ flexShrink: 0, width: 18, textAlign: 'right', fontFamily: T.mono, fontSize: 11, color: T.textMuted }}>
+                <span style={{ flexShrink: 0, width: 18, textAlign: 'right', fontFamily: T.mono, fontSize: 12, color: T.textMuted }}>
                   {i + 1}
                 </span>
                 {/* glyph in a tinted square */}
                 <span
                   style={{
                     flexShrink: 0,
-                    width: 26,
-                    height: 26,
+                    width: 28,
+                    height: 28,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -670,7 +1494,7 @@ function UxSpecView({
                     background: T.accentTint,
                     color: T.accent,
                     fontFamily: T.mono,
-                    fontSize: 13,
+                    fontSize: 14,
                   }}
                 >
                   {glyph(c.component_type)}
@@ -681,7 +1505,7 @@ function UxSpecView({
                     {c.label || c.component_type || c.id}
                   </span>
                   {c.semantic_type ? (
-                    <span style={{ fontSize: 10.5, color: T.textMuted }}>{c.semantic_type}</span>
+                    <span style={{ fontSize: 12, color: T.textMuted }}>{c.semantic_type}</span>
                   ) : null}
                 </span>
                 {/* type + required chips */}
@@ -893,10 +1717,14 @@ export function specToMermaid(doc: SpecDoc): string {
 export function SpecPreview({
   doc,
   wireframes,
+  projectId,
 }: {
   doc: SpecDoc;
   /** Wireframe bố cục tự do per screen id (wireframes/<id>.wire.json, cạnh file spec). */
   wireframes?: Record<string, WireDoc> | null;
+  /** Project the spec belongs to — enables clicking a source quote to open the
+   *  underlying doc, scroll to the passage, and highlight it. Omit to disable. */
+  projectId?: string;
 }) {
   const screens = Array.isArray(doc.screens) ? doc.screens : [];
   const journeys = Array.isArray(doc.journeys) ? doc.journeys : [];
@@ -920,7 +1748,7 @@ export function SpecPreview({
     active === 'ux' ? (
       <UxSpecView screens={screens} personas={personas} wireframes={wireframes} />
     ) : (
-      <CustomerJourneyView journeys={journeys} personas={personas} />
+      <CustomerJourneyView journeys={journeys} personas={personas} projectId={projectId} />
     );
 
   if (!(hasUx && hasCj)) return body;

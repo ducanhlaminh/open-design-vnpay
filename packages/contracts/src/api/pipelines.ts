@@ -48,6 +48,43 @@ export function isUiTarget(v: unknown): v is UiTarget {
   return v === 'mobile' || v === 'web-user' || v === 'web-backoffice';
 }
 
+/**
+ * Project target config written by the docs→UI run into `docs-to-ui/targets.json`
+ * when ≥1 UI target is chosen. It replaces the old "clone docs + fork a
+ * `<workflow>/<target>/` folder per target" scheme: docs are ingested ONCE and
+ * this single file records which targets to build for. The post-docs stages read
+ * it as input (platform drives each screen's `layout`; audience drives which
+ * flows/screens get authored) instead of the daemon physically forking a folder
+ * per target. `platform`/`audience` are derived from `UI_TARGETS` so the file is
+ * self-describing for any consumer that doesn't import the enum.
+ */
+export interface TargetsConfig {
+  /** Schema marker so a reader can recognize the file without inferring shape. */
+  kind: 'od-targets';
+  version: 1;
+  /** UI targets to build, in pick order. */
+  targets: UiTarget[];
+  /** Per-target platform (drives each screen's `layout`). */
+  platformByTarget: Record<UiTarget, TargetPlatform>;
+  /** Per-target audience (drives which flows/screens the ux-spec authors). */
+  audienceByTarget: Record<UiTarget, 'user' | 'backoffice'>;
+}
+
+/** Build the `targets.json` payload from a target selection (platform/audience
+ *  resolved from the static `UI_TARGETS` descriptor). */
+export function buildTargetsConfig(targets: UiTarget[]): TargetsConfig {
+  const platformByTarget = {} as Record<UiTarget, TargetPlatform>;
+  const audienceByTarget = {} as Record<UiTarget, 'user' | 'backoffice'>;
+  for (const t of targets) {
+    platformByTarget[t] = UI_TARGETS[t].platform;
+    audienceByTarget[t] = UI_TARGETS[t].audience;
+  }
+  return { kind: 'od-targets', version: 1, targets, platformByTarget, audienceByTarget };
+}
+
+/** Canonical relative path (under the docs-to-ui workflow dir) of the config. */
+export const TARGETS_CONFIG_BASENAME = 'targets.json';
+
 export type PipelineStatus =
   | 'idle'
   | 'queued'

@@ -8,7 +8,7 @@
 // - PipelineResultModal:     preview a finished pipeline's output files inline
 //                            (file rail + embedded FileViewer), no workspace nav.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   BasDocument,
   BasDocumentsResponse,
@@ -45,6 +45,10 @@ export interface RunSourcePayload {
   followLinks?: boolean;
   /** true → docs stage also scans the whole sub-tree under each seed page. */
   includeDescendants?: boolean;
+  /** UI targets picked at the docs step (docs-to-ui): the daemon records them
+   *  as docs-to-ui/targets.json so the post-docs stages know which products to
+   *  build. Empty/omitted → single build (legacy). */
+  targets?: UiTarget[];
 }
 
 /** Shared "fetch cả trang được link" toggle (docs stage, deterministic path). */
@@ -106,6 +110,26 @@ function outputMatches(rel: string, pattern: string): boolean {
 // paths pass through unchanged. MUST be kept in sync with daemon `WORKFLOWS`
 // (pipelines.ts) — every workflow id added there needs its id added here too.
 const WORKFLOW_DIR_RE = /^(docs-to-ui|docs-to-prd|docs-to-html|docs-to-react)\//;
+// Every folder head the daemon may prefix an output with. A file whose first
+// segment is NOT one of these has no workflow prefix (legacy flat output).
+const KNOWN_WORKFLOW_DIRS = new Set(['docs-to-ui', 'docs-to-prd', 'docs-to-html', 'docs-to-react']);
+// A workflow's outputs may live under its own id OR a retired twin's folder head
+// (LEGACY_WORKFLOW_DIRS in pipelines.ts): docs-to-html / docs-to-react were
+// merged into docs-to-ui and old projects keep those prefixes on disk.
+const WORKFLOW_DIR_ALIASES: Record<string, string[]> = {
+  'docs-to-ui': ['docs-to-ui', 'docs-to-html', 'docs-to-react'],
+};
+/** Whether a cwd-relative file belongs to the given workflow's output tree.
+ *  Files with a foreign workflow prefix (e.g. docs-to-prd docs when the open
+ *  Quick result is a docs-to-ui stage) are excluded so the rail shows only the
+ *  workflow you opened; unprefixed legacy files stay (can't be attributed). */
+function fileInWorkflow(rel: string, workflowId: string | undefined): boolean {
+  if (!workflowId) return true;
+  const head = rel.split('/')[0] ?? '';
+  if (!KNOWN_WORKFLOW_DIRS.has(head)) return true;
+  const allowed = WORKFLOW_DIR_ALIASES[workflowId] ?? [workflowId];
+  return allowed.includes(head);
+}
 // Multi-target subfolder (mirrors the daemon's UI_TARGET_DIRS): a per-target
 // build nests post-docs outputs under <workflow>/<target>/, so both this
 // segment and the workflow prefix are stripped before output-pattern matching.
@@ -118,6 +142,21 @@ function targetOfFile(rel: string): UiTarget | null {
 }
 function stripWorkflowDir(rel: string): string {
   return rel.replace(WORKFLOW_DIR_RE, '').replace(UI_TARGET_SEG_RE, '');
+}
+
+/** Drop the per-target COPIES of shared docs. A multi-target build stages a
+ *  byte-identical copy of the shared docs into every target's cwd
+ *  (`<workflow>/<target>/docs/…`) so target-scoped skills can read `./docs`
+ *  (see apps/daemon/src/server.ts run-all). Those copies double the rail. When
+ *  a shared root-level original exists (target === null) we keep ONLY it and
+ *  drop the copies. Genuine per-target outputs (screens) have NO root twin, so
+ *  every target's file is kept and the target tabs still work. */
+function dropSharedTargetCopies(list: ProjectFile[]): ProjectFile[] {
+  const sharedKeys = new Set(
+    list.filter((f) => targetOfFile(f.name) === null).map((f) => stripWorkflowDir(f.name)),
+  );
+  if (sharedKeys.size === 0) return list;
+  return list.filter((f) => targetOfFile(f.name) === null || !sharedKeys.has(stripWorkflowDir(f.name)));
 }
 
 // ── Source-order sort for doc pages ───────────────────────────────────────
@@ -533,11 +572,55 @@ export function ConfluencePagePicker({
   );
 }
 
+// UI-target selector cards, shared by the docs-step Run modal and the Run-all
+// modal. Multi-select (mobile / web-user / web-backoffice).
+const TARGET_DESC: Record<UiTarget, string> = {
+  mobile: 'App điện thoại — màn dọc.',
+  'web-user': 'Website cho người dùng cuối.',
+  'web-backoffice': 'Website backoffice cho nhân viên/quản trị.',
+};
+export function toggleTargetIn(list: UiTarget[], t: UiTarget): UiTarget[] {
+  return list.includes(t) ? list.filter((x) => x !== t) : [...list, t];
+}
+function TargetCards({ targets, onToggle }: { targets: UiTarget[]; onToggle: (t: UiTarget) => void }) {
+  return (
+    <div className={styles.cards} role="group" aria-label="UI targets">
+      {UI_TARGET_IDS.map((t) => {
+        const def = UI_TARGETS[t];
+        const on = targets.includes(t);
+        return (
+          <button
+            key={t}
+            type="button"
+            role="checkbox"
+            aria-checked={on}
+            className={`${styles.card}${on ? ' ' + styles.cardSelected : ''}`}
+            onClick={() => onToggle(t)}
+          >
+            <span className={styles.cardTop}>
+              <Icon name={def.platform === 'mobile' ? 'home' : 'grid'} size={16} />
+              {def.label}
+              {on ? (
+                <span className={styles.cardCheck} aria-hidden="true">
+                  <Icon name="check" size={14} />
+                </span>
+              ) : null}
+            </span>
+            <span className={styles.cardDesc}>{TARGET_DESC[t]}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function RunInputModal({
   pipelineName,
   placeholder,
   defaultConfluencePages,
   defaultBasDocumentId,
+  showTargets = false,
+  defaultTargets,
   onClose,
   onRun,
 }: {
@@ -548,6 +631,10 @@ export function RunInputModal({
    *  sẵn nhánh BAS với tài liệu đó được chọn. */
   defaultConfluencePages?: ConfluencePageRefLike[];
   defaultBasDocumentId?: string;
+  /** docs-to-ui only: show the UI-target multi-select on the docs step so the
+   *  daemon can write targets.json when the docs run starts. */
+  showTargets?: boolean;
+  defaultTargets?: UiTarget[];
   onClose: () => void;
   onRun: (payload: RunSourcePayload) => Promise<void>;
 }) {
@@ -561,6 +648,11 @@ export function RunInputModal({
   // dán link, tick chọn nhiều). Seeded từ config dự án trên studio.
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
   const [followLinks, setFollowLinks] = useState(true);
+  // docs-to-ui: which UI products to build. Recorded as targets.json when the
+  // docs run starts. Default to the last run's targets, else a single mobile app.
+  const [targets, setTargets] = useState<UiTarget[]>(
+    defaultTargets && defaultTargets.length ? defaultTargets : ['mobile'],
+  );
 
   // BAS branch (KG document → feature)
   const [basDocuments, setBasDocuments] = useState<BasDocument[] | null>(null);
@@ -667,6 +759,9 @@ export function RunInputModal({
           },
         };
       }
+      // docs-to-ui docs step: carry the chosen UI targets so the daemon writes
+      // targets.json for the post-docs stages.
+      if (showTargets && targets.length) payload.targets = targets;
       await onRun(payload);
       onClose();
     } catch (err) {
@@ -699,6 +794,16 @@ export function RunInputModal({
         </>
       }
     >
+      {showTargets ? (
+        <div className="pl-modal-field">
+          <span className="pl-modal-field__label">Sản phẩm cần build (chọn ≥1)</span>
+          <TargetCards targets={targets} onToggle={(t) => setTargets((cur) => toggleTargetIn(cur, t))} />
+          <span className="pl-modal-field__hint">
+            Ghi vào <code>targets.json</code> khi chạy bước Docs. Mỗi sản phẩm được build riêng
+            (output tách thư mục theo target); build per-target chạy qua “Chạy full workflow”.
+          </span>
+        </div>
+      ) : null}
       {advanced ? (
         <>
           <label className="pl-modal-field">
@@ -1296,39 +1401,7 @@ export function RunAllModal({
       {hasPlatform ? (
       <div className="pl-modal-field">
         <span className="pl-modal-field__label">Sản phẩm cần build (chọn ≥1)</span>
-        <div className={styles.cards} role="group" aria-label="UI targets">
-          {UI_TARGET_IDS.map((t) => {
-            const def = UI_TARGETS[t];
-            const on = targets.includes(t);
-            const desc =
-              t === 'mobile'
-                ? 'App điện thoại — màn dọc.'
-                : t === 'web-user'
-                  ? 'Website cho người dùng cuối.'
-                  : 'Website backoffice cho nhân viên/quản trị.';
-            return (
-              <button
-                key={t}
-                type="button"
-                role="checkbox"
-                aria-checked={on}
-                className={`${styles.card}${on ? ' ' + styles.cardSelected : ''}`}
-                onClick={() => toggleTarget(t)}
-              >
-                <span className={styles.cardTop}>
-                  <Icon name={def.platform === 'mobile' ? 'home' : 'grid'} size={16} />
-                  {def.label}
-                  {on ? (
-                    <span className={styles.cardCheck} aria-hidden="true">
-                      <Icon name="check" size={14} />
-                    </span>
-                  ) : null}
-                </span>
-                <span className={styles.cardDesc}>{desc}</span>
-              </button>
-            );
-          })}
-        </div>
+        <TargetCards targets={targets} onToggle={toggleTarget} />
         <span className="pl-modal-field__hint">
           Chọn nhiều thì mỗi sản phẩm được build riêng (docs → cj → ux → ui chạy một lần cho mỗi
           target), output tách thư mục theo target.
@@ -1787,19 +1860,13 @@ function isUiPreviewFile(name: string): boolean {
   return /(^|\/)(heuristic-review|ux-research|review)\/[^/]*\.json$/.test(lower);
 }
 
-export function PipelineResultModal({
-  projectId,
-  projectKind,
-  pipeline,
-  onClose,
-  onViewFile,
-}: {
-  projectId: string;
-  projectKind: TrackingProjectKind;
-  pipeline: PipelineView;
-  onClose: () => void;
-  onViewFile: (fileName: string) => void;
-}) {
+// Shared data layer for the Quick-result surfaces (modal + full-page route).
+// Fetches the project's files, filters to this stage's previewable outputs, and
+// tracks the active file / target. Both PipelineResultModal and
+// PipelineResultView render the SAME rail + FileViewer from this state.
+type PipelineResultState = ReturnType<typeof usePipelineResultFiles>;
+
+function usePipelineResultFiles(projectId: string, pipeline: PipelineView, workflowId?: string) {
   const [files, setFiles] = useState<ProjectFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeName, setActiveName] = useState<string | null>(null);
@@ -1819,12 +1886,17 @@ export function PipelineResultModal({
           // Normalize name to a clean relative path but keep every ProjectFile
           // field (kind/mime/mtime/size) — FileViewer needs them to dispatch.
           .map((f) => ({ ...f, name: (f.name ?? f.path ?? '').replace(/^\/+/, '') }))
+          // Scope to the workflow the Quick result was opened in — two workflows
+          // that both emit docs/** must not bleed into each other's rail.
+          .filter((f) => fileInWorkflow(f.name, workflowId))
           .filter((f) => f.name && outputs.some((o) => outputMatches(stripWorkflowDir(f.name), o)));
         // Non-tech listing: UI-previewable files only, falling back to the full
         // set when a stage ships none (so doc/cj stages still show something).
         const ui = all.filter((f) => isUiPreviewFile(f.name));
+        // Collapse the per-target docs copies down to the shared original.
+        const deduped = dropSharedTargetCopies(ui.length > 0 ? ui : all);
         // Source order (wiki sidebar): sort by the numbering in each path segment.
-        const shown = (ui.length > 0 ? ui : all).slice().sort((x, y) => naturalPathCompare(x.name, y.name));
+        const shown = deduped.slice().sort((x, y) => naturalPathCompare(x.name, y.name));
         if (!cancelled) {
           setFiles(shown);
           // Default to the first target present (multi-target build); the rail
@@ -1843,7 +1915,7 @@ export function PipelineResultModal({
     };
     // outputs derives from pipeline; pipeline.id is the stable key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, pipeline.id]);
+  }, [projectId, pipeline.id, workflowId]);
 
   // Targets present across this stage's output files (multi-target build).
   const availableTargets = useMemo(() => {
@@ -1861,6 +1933,282 @@ export function PipelineResultModal({
   );
   const active = visibleFiles.find((f) => f.name === activeName) ?? visibleFiles[0] ?? null;
   const hasFiles = Boolean(files && files.length > 0);
+
+  return {
+    files,
+    error,
+    activeName,
+    setActiveName,
+    activeTarget,
+    setActiveTarget,
+    availableTargets,
+    visibleFiles,
+    active,
+    hasFiles,
+    outputs,
+  };
+}
+
+// ── Rail file tree ──────────────────────────────────────────────────────────
+// Pipeline 1 (docs → Markdown) writes each page folder-structured by its
+// Confluence parent/child tree (docs/confluence/<parent>/<child>.md — see
+// apps/daemon/src/bas/bas-client.ts), so the file rail nests by path segments to
+// mirror that wiki hierarchy instead of a flat wall. Generalizes: any set nests
+// by its shared folders; a single-folder set (e.g. dist/screens/*) stays flat.
+type RailNode =
+  | { kind: 'file'; file: ProjectFile }
+  | { kind: 'dir'; label: string; children: RailNode[] };
+
+function buildRailTree(files: ProjectFile[]): RailNode[] {
+  const rows = files.map((f) => ({ f, segs: f.name.split('/').filter(Boolean) }));
+  // Drop leading segments shared by EVERY file (workflow dir + docs/confluence/…)
+  // so the tree starts at the first level where the pages actually branch. Never
+  // consume a file's own filename (last segment).
+  let common = 0;
+  if (rows.length > 0) {
+    const first = rows[0]!.segs;
+    const maxCommon = Math.min(...rows.map((r) => r.segs.length - 1));
+    while (common < maxCommon && rows.every((r) => r.segs[common] === first[common])) common += 1;
+  }
+  const roots: RailNode[] = [];
+  const dirIndex = new Map<string, RailNode & { kind: 'dir' }>();
+  for (const { f, segs } of rows) {
+    const rest = segs.slice(common);
+    const folders = rest.slice(0, -1);
+    let level = roots;
+    let keyPath = '';
+    for (const folder of folders) {
+      keyPath += `/${folder}`;
+      let dir = dirIndex.get(keyPath);
+      if (!dir) {
+        dir = { kind: 'dir', label: folder, children: [] };
+        dirIndex.set(keyPath, dir);
+        level.push(dir);
+      }
+      level = dir.children;
+    }
+    level.push({ kind: 'file', file: f });
+  }
+  return compactRailTree(roots);
+}
+
+// VS-Code-style compact folders: a folder whose only child is another folder
+// collapses into one row ("docs / confluence") so a deep single-child chain
+// doesn't waste three indented rows on nothing branching.
+function compactRailTree(nodes: RailNode[]): RailNode[] {
+  return nodes.map((n) => {
+    if (n.kind !== 'dir') return n;
+    let label = n.label;
+    let children = n.children;
+    while (children.length === 1 && children[0]!.kind === 'dir') {
+      const only = children[0] as RailNode & { kind: 'dir' };
+      label = `${label} / ${only.label}`;
+      children = only.children;
+    }
+    return { kind: 'dir', label, children: compactRailTree(children) };
+  });
+}
+
+function railKey(n: RailNode, i: number): string {
+  return n.kind === 'file' ? n.file.name : `dir:${n.label}:${i}`;
+}
+
+// Link-followed pages land under docs/context/ (see bas-client.ts) — they are
+// CONTEXT ONLY (agent reads them for domain understanding; no screens/mockups
+// are built from them). The rail marks them so they read distinctly from the
+// main pages the pipeline actually builds.
+function isContextPage(name: string): boolean {
+  return /(^|\/)docs\/context\//.test(name);
+}
+function isContextLabel(label: string): boolean {
+  return label === 'context' || /(^|\s\/\s|\/)context$/.test(label);
+}
+
+// Active-file + pick handler, shared down the tree so nodes don't thread props.
+const RailCtx = createContext<{ activeName: string | null; onPick: (name: string) => void }>({
+  activeName: null,
+  onPick: () => {},
+});
+
+function RailNodeView({ node }: { node: RailNode }) {
+  return node.kind === 'dir' ? (
+    <RailFolder label={node.label} nodes={node.children} />
+  ) : (
+    <RailFile file={node.file} />
+  );
+}
+
+function RailFolder({ label, nodes }: { label: string; nodes: RailNode[] }) {
+  const [open, setOpen] = useState(true);
+  const context = isContextLabel(label);
+  return (
+    <div className="pl-result-rail__group">
+      <button
+        type="button"
+        className={`pl-result-rail__folder${context ? ' pl-result-rail__folder--context' : ''}`}
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        title={context ? `${label} — trang ngữ cảnh (chỉ để hiểu nghiệp vụ)` : label}
+      >
+        <span className="pl-result-rail__caret" aria-hidden="true">
+          <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} />
+        </span>
+        <span className="pl-result-rail__folder-icon" aria-hidden="true">
+          <Icon name="folder" size={15} />
+        </span>
+        <span className="pl-result-rail__folder-name">{label}</span>
+        {context ? <span className="pl-result-rail__ctx-badge">Context</span> : null}
+      </button>
+      {/* Indented children with a left guide line so nesting reads at a glance. */}
+      {open ? (
+        <div className="pl-result-rail__children">
+          {nodes.map((n, i) => (
+            <RailNodeView key={railKey(n, i)} node={n} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RailFile({ file }: { file: ProjectFile }) {
+  const { activeName, onPick } = useContext(RailCtx);
+  const isActive = file.name === activeName;
+  const context = isContextPage(file.name);
+  return (
+    <button
+      type="button"
+      className={`pl-result-rail__item${isActive ? ' pl-result-rail__item--active' : ''}${context ? ' pl-result-rail__item--context' : ''}`}
+      onClick={() => onPick(file.name)}
+      aria-current={isActive}
+      title={context ? `${file.name} — trang ngữ cảnh (chỉ để hiểu nghiệp vụ, không dựng màn)` : file.name}
+    >
+      <span className="pl-result-rail__icon" aria-hidden="true">
+        <Icon name={context ? 'info' : isScreenFile(file.name) ? 'image' : 'file'} size={14} />
+      </span>
+      {/* File name only — the full path stays as the hover title. */}
+      <span className="pl-result-rail__name">{file.name.split('/').pop() || file.name}</span>
+      {context ? <span className="pl-result-rail__ctx-badge">Context</span> : null}
+    </button>
+  );
+}
+
+// The rail + embedded FileViewer, shared by the modal and the route page.
+function PipelineResultBody({
+  projectId,
+  projectKind,
+  state,
+}: {
+  projectId: string;
+  projectKind: TrackingProjectKind;
+  state: PipelineResultState;
+}) {
+  const {
+    files,
+    error,
+    activeName,
+    setActiveName,
+    activeTarget,
+    setActiveTarget,
+    availableTargets,
+    visibleFiles,
+    active,
+    outputs,
+  } = state;
+  if (error) {
+    return (
+      <div className="pl-modal-error" role="alert">
+        <Icon name="info" size={14} />
+        <span>{error}</span>
+      </div>
+    );
+  }
+  if (files === null) {
+    return <p className="pl-modal-empty">Loading files…</p>;
+  }
+  if (files.length === 0) {
+    return (
+      <p className="pl-modal-empty">
+        No output files yet for this stage. Run it (or <strong>Pull all</strong> from KGS) to
+        produce its {outputs.join(', ') || 'outputs'}.
+      </p>
+    );
+  }
+  // A single output file (e.g. a cj/ux-spec/review JSON) makes the file rail
+  // pointless — there's nothing to switch between. Drop it and let the viewer
+  // take the whole width. The rail only earns its keep with multiple files or
+  // multiple build targets to page through.
+  const showRail = visibleFiles.length > 1 || availableTargets.length > 1;
+  if (!showRail) {
+    return (
+      <div className="pl-result-preview pl-result-preview--solo">
+        <div className="pl-result-stage">
+          {active ? (
+            <FileViewer key={active.name} projectId={projectId} projectKind={projectKind} file={active} />
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="pl-result-preview">
+      <aside className="pl-result-rail" aria-label="Output files">
+        {availableTargets.length > 1 ? (
+          <div className="pl-result-rail__targets" role="tablist" aria-label="Target">
+            {availableTargets.map((t) => (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                aria-selected={activeTarget === t}
+                className={`pl-result-rail__target${activeTarget === t ? ' pl-result-rail__target--active' : ''}`}
+                onClick={() => {
+                  setActiveTarget(t);
+                  const first = (files ?? []).find((f) => targetOfFile(f.name) === t);
+                  if (first) setActiveName(first.name);
+                }}
+              >
+                {UI_TARGETS[t].label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <RailCtx.Provider value={{ activeName: active?.name ?? null, onPick: setActiveName }}>
+          {buildRailTree(visibleFiles).map((n, i) => (
+            <RailNodeView key={railKey(n, i)} node={n} />
+          ))}
+        </RailCtx.Provider>
+      </aside>
+      <div className="pl-result-stage">
+        {active ? (
+          <FileViewer
+            // Remount the viewer per file so each renderer resets cleanly.
+            key={active.name}
+            projectId={projectId}
+            projectKind={projectKind}
+            file={active}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function PipelineResultModal({
+  projectId,
+  projectKind,
+  pipeline,
+  onClose,
+  onViewFile,
+}: {
+  projectId: string;
+  projectKind: TrackingProjectKind;
+  pipeline: PipelineView;
+  onClose: () => void;
+  onViewFile: (fileName: string) => void;
+}) {
+  const state = usePipelineResultFiles(projectId, pipeline);
+  const { active, hasFiles } = state;
 
   return (
     <PlModal
@@ -1891,75 +2239,66 @@ export function PipelineResultModal({
         </>
       }
     >
-      {error ? (
-        <div className="pl-modal-error" role="alert">
-          <Icon name="info" size={14} />
-          <span>{error}</span>
-        </div>
-      ) : files === null ? (
-        <p className="pl-modal-empty">Loading files…</p>
-      ) : files.length === 0 ? (
-        <p className="pl-modal-empty">
-          No output files yet for this stage. Run it (or <strong>Pull all</strong> from KGS) to
-          produce its {outputs.join(', ') || 'outputs'}.
-        </p>
-      ) : (
-        <div className="pl-result-preview">
-          <aside className="pl-result-rail" aria-label="Output files">
-            {availableTargets.length > 1 ? (
-              <div className="pl-result-rail__targets" role="tablist" aria-label="Target">
-                {availableTargets.map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTarget === t}
-                    className={`pl-result-rail__target${activeTarget === t ? ' pl-result-rail__target--active' : ''}`}
-                    onClick={() => {
-                      setActiveTarget(t);
-                      const first = (files ?? []).find((f) => targetOfFile(f.name) === t);
-                      if (first) setActiveName(first.name);
-                    }}
-                  >
-                    {UI_TARGETS[t].label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {visibleFiles.map((f) => {
-              const isActive = f.name === active?.name;
-              return (
-                <button
-                  key={f.name}
-                  type="button"
-                  className={`pl-result-rail__item${isActive ? ' pl-result-rail__item--active' : ''}`}
-                  onClick={() => setActiveName(f.name)}
-                  aria-current={isActive}
-                  title={f.name}
-                >
-                  <span className="pl-result-rail__icon" aria-hidden="true">
-                    <Icon name={isScreenFile(f.name) ? 'image' : 'file'} size={14} />
-                  </span>
-                  {/* File name only — the full path stays as the hover title. */}
-                  <span className="pl-result-rail__name">{f.name.split('/').pop() || f.name}</span>
-                </button>
-              );
-            })}
-          </aside>
-          <div className="pl-result-stage">
-            {active ? (
-              <FileViewer
-                // Remount the viewer per file so each renderer resets cleanly.
-                key={active.name}
-                projectId={projectId}
-                projectKind={projectKind}
-                file={active}
-              />
-            ) : null}
-          </div>
-        </div>
-      )}
+      <PipelineResultBody projectId={projectId} projectKind={projectKind} state={state} />
     </PlModal>
+  );
+}
+
+// Full-page Quick result — same rail + FileViewer as the modal, but rendered
+// as its own route (`/pipelines/:projectId/result/:pipelineId`) so the preview
+// gets the whole viewport instead of a cramped xl modal. `onBack` returns to
+// the pipelines stepper; `onViewFile` still opens the file in the full
+// workspace for power users.
+export function PipelineResultView({
+  projectId,
+  projectKind,
+  pipeline,
+  workflowId,
+  onBack,
+  onViewFile,
+}: {
+  projectId: string;
+  projectKind: TrackingProjectKind;
+  pipeline: PipelineView;
+  /** Scope the rail to this workflow's output tree (docs-to-ui vs docs-to-prd). */
+  workflowId?: string;
+  onBack: () => void;
+  onViewFile: (fileName: string) => void;
+}) {
+  const state = usePipelineResultFiles(projectId, pipeline, workflowId);
+  const { active } = state;
+
+  return (
+    <section className="pl-result-page" aria-label={`Quick result · ${pipeline.name}`}>
+      <header className="pl-result-page__header">
+        <button type="button" className="pl-btn pl-result-page__back" onClick={onBack}>
+          <Icon name="arrow-left" size={14} />
+          <span>Pipelines</span>
+        </button>
+        <div className="pl-result-page__title">
+          <Icon name="file-code" size={16} />
+          <span>
+            Quick result · <strong>{pipeline.name}</strong>
+          </span>
+        </div>
+        <div className="pl-result-page__actions">
+          {active ? (
+            <button
+              type="button"
+              className="pl-btn"
+              onClick={() => onViewFile(active.name)}
+              title="Mở file này trong workspace đầy đủ (hội thoại + cây thư mục)"
+            >
+              <Icon name="external-link" size={13} />
+              <span>Mở trong workspace</span>
+            </button>
+          ) : null}
+        </div>
+      </header>
+      <div className="pl-result-page__body">
+        <PipelineResultBody projectId={projectId} projectKind={projectKind} state={state} />
+      </div>
+    </section>
   );
 }
 

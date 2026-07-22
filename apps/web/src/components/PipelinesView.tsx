@@ -27,14 +27,14 @@ import type {
 
 import { Icon, type IconName } from './Icon';
 import { Toast } from './Toast';
-import { navigate } from '../router';
+import { navigate, useRoute } from '../router';
 import {
   DesignSystemRunModal,
   PlatformRunModal,
   RerunScopeModal,
   PullAllModal,
   PushAllModal,
-  PipelineResultModal,
+  PipelineResultView,
   PipelineStatusModal,
   RunAllModal,
   RunInputModal,
@@ -231,9 +231,19 @@ export function PipelinesView() {
   // it survives the intermediate modals without re-render churn; consumed once.
   const pendingResetScopeRef = useRef<'stage' | 'downstream' | undefined>(undefined);
   const [statusFor, setStatusFor] = useState<PipelineView | null>(null);
-  const [resultFor, setResultFor] = useState<PipelineView | null>(null);
+  // Quick result is now a full-page route (/pipelines/:projectId/result/:pipelineId)
+  // instead of an xl modal — read it from the URL so back/forward + deep links work.
+  const route = useRoute();
 
   const pushToast = useCallback((t: ToastState) => setToast(t), []);
+
+  // Deep-link into a Quick result: align the selected project with the routed
+  // one so `load` fetches the pipeline list that owns route.pipelineId.
+  useEffect(() => {
+    if (route.kind === 'pipeline-result' && route.projectId && route.projectId !== projectId) {
+      setProjectId(route.projectId);
+    }
+  }, [route, projectId]);
 
   // Load the available workflows once; default-select the first.
   useEffect(() => {
@@ -560,6 +570,8 @@ export function PipelinesView() {
     else if (payload?.input && payload.input.trim()) body.input = payload.input.trim();
     if (payload?.followLinks === false) body.followLinks = false;
     if (payload?.includeDescendants) body.includeDescendants = true;
+    // docs-to-ui docs step: chosen UI targets → daemon writes targets.json.
+    if (payload?.targets && payload.targets.length) body.targets = payload.targets;
     if (designSystemId !== undefined) body.designSystemId = designSystemId;
     if (platform !== undefined) body.platform = platform;
     // Re-run clear scope chosen in the scope modal (default 'stage' when absent —
@@ -688,10 +700,6 @@ export function PipelinesView() {
     navigate({ kind: 'project', projectId, conversationId: p.lastConversationId, fileName: null });
   };
 
-  const viewFile = (fileName: string) => {
-    navigate({ kind: 'project', projectId, conversationId: null, fileName });
-  };
-
   const hasProjects = projects.length > 0;
 
   // UI-Spec option picker (the merged terminal step's Run): choose HTML or
@@ -724,6 +732,43 @@ export function PipelinesView() {
     ? feedbackPipeline.lastRunId
       ?? `legacy:${projectId}:${workflowId}:${feedbackPipeline.id}:${feedbackPipeline.updatedAt ?? 'existing'}`
     : null;
+
+  // Full-page Quick result route: swap the whole stepper for the output preview
+  // so it owns the viewport (the old modal was too cramped). The pipeline comes
+  // from the already-loaded list; `back` returns to the stepper.
+  if (route.kind === 'pipeline-result') {
+    const target = pipelines.find((p) => p.id === route.pipelineId);
+    const backToStepper = () => navigate({ kind: 'home', view: 'pipelines' });
+    if (target) {
+      return (
+        <PipelineResultView
+          projectId={route.projectId}
+          projectKind="other"
+          pipeline={target}
+          workflowId={workflowId}
+          onBack={backToStepper}
+          onViewFile={(fileName) =>
+            navigate({ kind: 'project', projectId: route.projectId, conversationId: null, fileName })
+          }
+        />
+      );
+    }
+    return (
+      <section className="pl-result-page pl-result-page--gate" aria-label="Quick result">
+        <header className="pl-result-page__header">
+          <button type="button" className="pl-btn pl-result-page__back" onClick={backToStepper}>
+            <Icon name="arrow-left" size={14} />
+            <span>Pipelines</span>
+          </button>
+        </header>
+        <div className="pl-result-page__body">
+          <p className="pl-modal-empty">
+            {loading || !projectsLoaded ? 'Đang tải kết quả…' : 'Không tìm thấy pipeline này.'}
+          </p>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="pipelines-page" aria-labelledby="pipelines-title" data-testid="pipelines-view">
@@ -1248,7 +1293,9 @@ export function PipelinesView() {
                         <button
                           type="button"
                           className="pl-btn pl-btn--run"
-                          onClick={() => setResultFor(p)}
+                          onClick={() =>
+                            navigate({ kind: 'pipeline-result', projectId, pipelineId: p.id })
+                          }
                         >
                           <Icon name="file-code" size={14} />
                           <span>Quick result</span>
@@ -1521,7 +1568,7 @@ export function PipelinesView() {
                               className="pl-btn"
                               onClick={() => {
                                 setUiSpecPickerOpen(false);
-                                setResultFor(o);
+                                navigate({ kind: 'pipeline-result', projectId, pipelineId: o.id });
                               }}
                             >
                               <Icon name="file-code" size={14} />
@@ -1663,19 +1710,27 @@ export function PipelinesView() {
           />
         );
       })() : null}
-      {runInputFor ? (
+      {runInputFor ? (() => {
+        const runInputProject = projects.find((pr) => pr.id === projectId);
+        const runInputDefaults = runInputProject?.savedRunAll ?? runInputProject?.config;
+        return (
         <RunInputModal
           pipelineName={runInputFor.name}
           placeholder={runInputFor.inputPlaceholder ?? ''}
-          defaultConfluencePages={projects.find((pr) => pr.id === projectId)?.config?.confluencePages}
-          defaultBasDocumentId={projects.find((pr) => pr.id === projectId)?.config?.basDocumentId}
+          defaultConfluencePages={runInputProject?.config?.confluencePages}
+          defaultBasDocumentId={runInputProject?.config?.basDocumentId}
+          // Docs step of docs-to-ui: offer the UI-target picker so targets.json
+          // is written from the docs run (Docs → PRD Review has no such stage).
+          showTargets={pipelines.some((p) => p.acceptsPlatform)}
+          defaultTargets={runInputDefaults?.targets}
           onClose={() => setRunInputFor(null)}
           onRun={async (payload) => {
             await startRun(runInputFor.id, payload);
             pushToast({ message: `Started “${runInputFor.name}” — running in background` });
           }}
         />
-      ) : null}
+        );
+      })() : null}
       {designSystemFor ? (
         <DesignSystemRunModal
           pipelineName={designSystemFor.name}
@@ -1733,15 +1788,6 @@ export function PipelinesView() {
           onRefresh={() => {
             if (projectId) void load(projectId, { background: true });
           }}
-        />
-      ) : null}
-      {resultFor ? (
-        <PipelineResultModal
-          projectId={projectId}
-          projectKind="other"
-          pipeline={resultFor}
-          onClose={() => setResultFor(null)}
-          onViewFile={viewFile}
         />
       ) : null}
       {pullPlanState ? (

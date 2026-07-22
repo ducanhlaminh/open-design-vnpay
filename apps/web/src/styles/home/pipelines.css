@@ -1779,6 +1779,96 @@
   color: var(--accent);
 }
 
+/* Nested file tree (Confluence parent/child hierarchy). Each folder's children
+   sit in a group with a left guide line so the nesting reads at a glance. */
+.pl-result-rail__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pl-result-rail__children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 15px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.pl-result-rail__folder {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.16s var(--pl-ease);
+}
+
+.pl-result-rail__folder:hover {
+  background: var(--bg-app);
+}
+
+/* Collapse/expand caret — muted so the folder icon reads as the anchor. */
+.pl-result-rail__caret {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--text-soft);
+}
+
+/* Folder icon in a warm accent so folders are instantly distinct from files. */
+.pl-result-rail__folder-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.pl-result-rail__folder-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Context pages (docs/context/, link-followed): background-only, so they read
+   dimmer than the main pages and carry a "Context" badge. */
+.pl-result-rail__folder--context .pl-result-rail__folder-icon,
+.pl-result-rail__folder--context .pl-result-rail__folder-name {
+  color: var(--text-soft);
+}
+.pl-result-rail__item--context {
+  opacity: 0.72;
+}
+.pl-result-rail__item--context .pl-result-rail__name {
+  font-style: italic;
+  font-family: var(--sans);
+}
+.pl-result-rail__ctx-badge {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-soft);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
 .pl-result-rail__item {
   display: flex;
   align-items: center;
@@ -1848,6 +1938,72 @@
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+}
+
+/* ── Full-page Quick result (route: /pipelines/:id/result/:pid).
+   Replaces the cramped xl modal — the preview now owns the whole panel. */
+.pl-result-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Fill the entry-main inner column; the 128px accounts for the app header
+     + page padding so the FileViewer gets a tall, near-viewport stage. */
+  height: calc(100vh - 128px);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-sm);
+}
+
+.pl-result-page__header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-subtle);
+}
+
+.pl-result-page__back {
+  flex: none;
+}
+
+.pl-result-page__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.pl-result-page__title strong {
+  color: var(--text-strong);
+  font-weight: 650;
+}
+
+.pl-result-page__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pl-result-page__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+/* Empty / loading / error states get comfortable padding on the page. */
+.pl-result-page__body > .pl-modal-empty,
+.pl-result-page__body > .pl-modal-error {
+  margin: auto;
+  padding: 32px;
 }
 
 @keyframes pl-fade-in {

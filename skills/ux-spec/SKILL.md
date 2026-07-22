@@ -58,6 +58,11 @@ domain and derive the screens — each doc section that needs a UI becomes a
 screen. Only when no docs are present at all, take the screens from the user's
 request.
 
+**Context pages — `./docs/context/` (do NOT build from these):** link-followed
+background pages. Read for domain understanding only; NEVER turn them into
+screens. Every screen must come from `./docs/confluence/` (or `./docs/jira/`) —
+never from `./docs/context/`.
+
 **Customer journey (primary input, produced by the upstream `cj` stage):** the
 journey file on disk — `./*-customer-journey.json` / `./*-cj.json` or under
 `./customer-journey/`. Read it and let it shape the screens: every USER_FLOW

@@ -543,7 +543,15 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       const followLinks = req.body?.followLinks === false ? false : undefined;
       // Docs sub-tree scan: only an explicit true enables it (default off).
       const includeDescendants = req.body?.includeDescendants === true ? true : undefined;
-      const { completion: _completion, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId, platform, resetScope, followLinks, includeDescendants);
+      // UI targets picked at the docs step (docs-to-ui) → daemon writes
+      // targets.json. Invalid entries drop; empty/absent → no file (single build).
+      const rawTargets = req.body?.targets;
+      const targets = Array.isArray(rawTargets)
+        ? (rawTargets.filter(
+            (t: unknown) => t === 'mobile' || t === 'web-user' || t === 'web-backoffice',
+          ) as import('@open-design/contracts').UiTarget[])
+        : undefined;
+      const { completion: _completion, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId, platform, resetScope, followLinks, includeDescendants, undefined, targets);
       res.status(202).json(start);
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });

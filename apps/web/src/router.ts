@@ -37,7 +37,11 @@ export type Route =
       fileName: string | null;
     }
   | { kind: 'marketplace' }
-  | { kind: 'marketplace-detail'; pluginId: string };
+  | { kind: 'marketplace-detail'; pluginId: string }
+  // Full-page "Quick result" for a pipeline stage. Replaces the old xl modal
+  // so a finished stage's output preview gets the whole viewport. Rendered by
+  // PipelinesView (which owns the loaded pipeline list) under the pipelines shell.
+  | { kind: 'pipeline-result'; projectId: string; pipelineId: string };
 
 export function parseRoute(pathname: string): Route {
   const parts = pathname.replace(/\/+$/, '').split('/').filter(Boolean);
@@ -87,6 +91,14 @@ export function parseRoute(pathname: string): Route {
     return { kind: 'home', view: 'tasks' };
   }
   if (parts[0] === 'pipelines') {
+    // /pipelines/:projectId/result/:pipelineId → full-page Quick result.
+    if (parts[1] && parts[2] === 'result' && parts[3]) {
+      return {
+        kind: 'pipeline-result',
+        projectId: decodeURIComponent(parts[1]),
+        pipelineId: decodeURIComponent(parts[3]),
+      };
+    }
     return { kind: 'home', view: 'pipelines' };
   }
   if (parts[0] === 'plugins' && !parts[1]) {
@@ -119,6 +131,9 @@ export function buildPath(route: Route): string {
     if (route.view === 'design-systems') return '/design-systems';
     if (route.view === 'integrations') return '/integrations';
     return '/';
+  }
+  if (route.kind === 'pipeline-result') {
+    return `/pipelines/${encodeURIComponent(route.projectId)}/result/${encodeURIComponent(route.pipelineId)}`;
   }
   if (route.kind === 'marketplace') return '/marketplace';
   if (route.kind === 'marketplace-detail') return `/marketplace/${encodeURIComponent(route.pluginId)}`;

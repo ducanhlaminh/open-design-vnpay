@@ -1279,10 +1279,14 @@ export async function fetchConfluencePages(
     return naturalSegsCompare([...(a.treePath ?? []), a.title], [...(b.treePath ?? []), b.title]);
   });
   for (const p of ordered) {
-    // Sub-tree pages nest into folders mirroring the wiki hierarchy; seed and
-    // linked pages stay flat directly under docs/confluence/.
+    // Link-followed pages are CONTEXT ONLY: they nest under docs/context/ (not
+    // docs/confluence/) so downstream skills read them for domain understanding
+    // but do NOT build screens/mockups from them, and the rail renders them
+    // distinctly from the main pages. Seeds + sub-tree pages stay under
+    // docs/confluence/ (sub-tree nested by wiki hierarchy, seeds flat).
+    const isContext = !!p.linked && !p.treePath;
     const dir = (p.treePath ?? []).map(slug).filter(Boolean);
-    const folder = ['docs', 'confluence', ...dir].join('/');
+    const folder = ['docs', isContext ? 'context' : 'confluence', ...dir].join('/');
     let relPath = `${folder}/${slug(p.title)}.md`;
     if (takenPaths.has(relPath)) relPath = `${folder}/${slug(p.title)}-${p.pageId}.md`;
     takenPaths.add(relPath);
@@ -1301,10 +1305,14 @@ export async function fetchConfluencePages(
   let totalImages = 0;
   for (const p of ordered) {
     const relPath = relByPageId.get(p.pageId)!;
-    // Depth below docs/confluence/ → how many `../` a page needs to reach the
-    // shared attachments dir (all images localize into docs/confluence/attachments).
-    const depth = relPath.split('/').length - 3;
-    const attachmentsPrefix = depth > 0 ? `${'../'.repeat(depth)}attachments` : 'attachments';
+    // Relative path from THIS page's folder to the shared attachments dir (all
+    // images localize into docs/confluence/attachments, regardless of whether
+    // the page itself lives under confluence/ or context/). Using a real
+    // relative path keeps context pages' images resolving (../confluence/…).
+    const attachmentsPrefix = path.posix.relative(
+      path.posix.dirname(relPath),
+      'docs/confluence/attachments',
+    );
     let body: string;
     if (p.html !== undefined) {
       // Same-host <img src> download (mirrors the agent-run JIRA-key path's
@@ -1390,9 +1398,13 @@ export async function fetchConfluencePages(
  * from. Seed pages and link-followed pages list in separate groups so it is
  * obvious what the user picked vs what the crawl pulled in. */
 export function renderConfluenceIndex(pages: ConfluenceDocPage[]): string {
-  // Link relative to docs/confluence/ (keeps folder nesting for sub-tree pages
-  // instead of collapsing every link to a basename).
-  const rel = (p: ConfluenceDocPage) => p.relPath.replace(/^docs\/confluence\//, './');
+  // Link relative to docs/confluence/ (where _index.md lives). Keeps folder
+  // nesting for sub-tree pages and resolves context pages up-and-over to
+  // ../context/… instead of collapsing to a basename.
+  const rel = (p: ConfluenceDocPage) => {
+    const r = path.posix.relative('docs/confluence', p.relPath);
+    return r.startsWith('.') ? r : `./${r}`;
+  };
   const row = (p: ConfluenceDocPage) =>
     `- [${p.title}](${rel(p)}) — page ${p.pageId} · ${p.url}`;
   const treeRow = (p: ConfluenceDocPage) => {
@@ -1407,7 +1419,10 @@ export function renderConfluenceIndex(pages: ConfluenceDocPage[]): string {
     md += `\n## Trang con (quét theo cây phân cấp)\n\n${tree.map(treeRow).join('\n')}\n`;
   }
   if (linked.length) {
-    md += `\n## Trang liên kết (tự fetch từ link trong trang nguồn)\n\n${linked.map(row).join('\n')}\n`;
+    md +=
+      `\n## Trang ngữ cảnh (link từ trang nguồn — CHỈ để hiểu nghiệp vụ)\n\n` +
+      `> Các trang dưới đây ở \`docs/context/\`. Đọc để nắm nghiệp vụ, **KHÔNG** dựng màn/mockup từ chúng.\n\n` +
+      `${linked.map(row).join('\n')}\n`;
   }
   return md;
 }

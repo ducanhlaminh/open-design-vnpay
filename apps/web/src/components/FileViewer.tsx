@@ -8292,7 +8292,7 @@ function SpecFileViewer({
         ) : uxResearch && mode === 'preview' ? (
           <UxResearchPreview report={uxResearch} />
         ) : spec && mode === 'preview' ? (
-          <SpecPreview doc={spec} wireframes={wireframes} />
+          <SpecPreview doc={spec} wireframes={wireframes} projectId={projectId} />
         ) : spec && mode === 'flow' ? (
           <SpecFlowCanvas flows={flows ?? []} spec={spec} wireframes={wireframes} platforms={platforms} />
         ) : displayText !== null && lineCount > 0 ? (

@@ -89,6 +89,12 @@ export interface PipelineDeps {
     // Docs stage: also fetch the whole sub-tree under each seed (folder-
     // structured). undefined/false → seeds only. See RunPipelineRequest.
     includeDescendants?: boolean,
+    // Multi-target build: per-target output subfolder (`<workflow>/<targetDir>/`).
+    // undefined → shared workflow cwd. Internal to run-all; routes pass undefined.
+    targetDir?: string,
+    // UI targets picked at the docs step (docs-to-ui) → daemon writes
+    // targets.json. Empty/absent → single build.
+    targets?: readonly import('@open-design/contracts').UiTarget[],
   ): Promise<{
     projectId: string;
     /** Absent on a DETERMINISTIC run (docs stage, Confluence source): the

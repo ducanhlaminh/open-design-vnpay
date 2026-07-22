@@ -376,7 +376,10 @@ export function EntryShell({
   // to /design-systems lands on that section. We derive the active
   // view from the route rather than keeping it in component state.
   const route = useRoute();
-  const view: EntryViewKind = route.kind === 'home' ? route.view : 'home';
+  // The full-page Quick result route lives under the pipelines shell — render
+  // the pipelines view so PipelinesView can swap in PipelineResultView.
+  const view: EntryViewKind =
+    route.kind === 'home' ? route.view : route.kind === 'pipeline-result' ? 'pipelines' : 'home';
   const [previewSystemId, setPreviewSystemId] = useState<string | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectInitialTab, setNewProjectInitialTab] =

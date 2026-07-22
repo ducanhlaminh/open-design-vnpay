@@ -14409,6 +14409,11 @@ export async function startServer({
     // (`<workflow>/<targetDir>/`), so this stage runs into that target's own
     // output subtree. undefined → the shared workflow cwd (legacy single build).
     targetDir?: string,
+    // UI targets picked at the docs step (docs-to-ui). When the DOCS stage runs
+    // with these, the daemon records them as docs-to-ui/targets.json — the
+    // post-docs stages' config for which products to build. Ignored on other
+    // stages (they inherit the file already on disk).
+    targets?: readonly import('@open-design/contracts').UiTarget[],
   ) => {
     const def = getPipelineDef(pipelineId);
     if (!def) throw new Error(`Unknown pipeline ${pipelineId}`);
@@ -14422,6 +14427,24 @@ export async function startServer({
     // so each target's stages get their own output subtree.
     const baseWfDir = workflowDirForPipeline(pipelineId);
     const wfDir = targetDir ? `${baseWfDir ?? ''}${baseWfDir ? '/' : ''}${targetDir}` : baseWfDir;
+
+    // Docs step run with UI targets picked (docs-to-ui): record targets.json
+    // next to the shared docs so the post-docs stages know which products to
+    // build. Written up front, independent of the docs fetch itself.
+    if (def.inputPlaceholder && targets && targets.length > 0) {
+      try {
+        const { buildTargetsConfig, TARGETS_CONFIG_BASENAME } = await import('@open-design/contracts');
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        await fs.promises.mkdir(path.join(projectRoot, baseWfDir ?? ''), { recursive: true });
+        await fs.promises.writeFile(
+          path.join(projectRoot, baseWfDir ?? '', TARGETS_CONFIG_BASENAME),
+          `${JSON.stringify(buildTargetsConfig([...targets]), null, 2)}\n`,
+          'utf8',
+        );
+      } catch (error) {
+        console.warn('[pipelines] writing targets.json (docs run) failed:', error);
+      }
+    }
 
     // Any stage running the jira-ingest skill (docs-to-ui's `docs`, docs-to-prd's
     // `prd-docs` — same skill, independent workflows), Confluence source → the
@@ -14873,18 +14896,45 @@ export async function startServer({
         }
         if (targets.length > 0) {
           // 2) Per-target post-docs chain, each in its own <workflow>/<target>/.
-          const { UI_TARGETS } = await import('@open-design/contracts');
+          const { UI_TARGETS, buildTargetsConfig, TARGETS_CONFIG_BASENAME } = await import(
+            '@open-design/contracts'
+          );
           const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
           const base = workflowDirForPipeline(stages[0]!) ?? '';
+          // Record the chosen targets as ONE config file next to the shared docs
+          // (docs-to-ui/targets.json). Downloaded docs stay a single copy; this
+          // file is the post-docs stages' input for which targets to build —
+          // replacing the "clone docs per target" scheme. Written once up front.
+          try {
+            const cfg = buildTargetsConfig(targets);
+            await fs.promises.writeFile(
+              path.join(projectRoot, base, TARGETS_CONFIG_BASENAME),
+              `${JSON.stringify(cfg, null, 2)}\n`,
+              'utf8',
+            );
+          } catch (error) {
+            console.warn('[pipelines] writing targets.json failed:', error);
+          }
           for (const t of targets) {
             const dir = UI_TARGETS[t].dir;
-            // Stage the shared docs into this target's cwd so its post-docs
-            // stages find ./docs/confluence (skills read a relative path).
+            // Make the shared docs visible in this target's cwd as ./docs so its
+            // post-docs stages find ./docs/confluence (skills read a relative
+            // path). SYMLINK to the single copy at <workflow>/docs instead of
+            // cloning — the docs bytes live exactly once (no per-target
+            // duplication). Junction on Windows (no admin needed); dir symlink
+            // elsewhere. If the FS rejects symlinks, fall back to a copy so runs
+            // never break.
             try {
               const srcDocs = path.join(projectRoot, base, 'docs');
-              const dstDocs = path.join(projectRoot, base, dir, 'docs');
+              const targetRoot = path.join(projectRoot, base, dir);
+              const dstDocs = path.join(targetRoot, 'docs');
+              await fs.promises.mkdir(targetRoot, { recursive: true });
               await fs.promises.rm(dstDocs, { recursive: true, force: true }).catch(() => {});
-              await fs.promises.cp(srcDocs, dstDocs, { recursive: true });
+              const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+              const linkTarget = process.platform === 'win32' ? srcDocs : path.relative(targetRoot, srcDocs);
+              await fs.promises.symlink(linkTarget, dstDocs, linkType).catch(async () => {
+                await fs.promises.cp(srcDocs, dstDocs, { recursive: true });
+              });
             } catch (error) {
               console.warn(`[pipelines] staging docs into target ${dir} failed:`, error);
             }

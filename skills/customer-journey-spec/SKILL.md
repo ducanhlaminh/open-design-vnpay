@@ -57,6 +57,11 @@ look for one.
 2. **Ad-hoc:** if no docs are present at all, take the journey from the user's
    request.
 
+**Context pages — `./docs/context/` (do NOT build from these):** link-followed
+pages fetched ONLY as background. Read them to understand the domain / business
+rules, but do NOT derive any actor, journey, or stage from them. Build the
+journeys strictly from `./docs/confluence/` and `./docs/jira/`.
+
 Whichever input you use, you MUST capture the **key source text** for each stage
 in its `sources[]` (next section) — short verbatim excerpts from the MD that
 justify that stage. This is what the Customer Journey preview surfaces.

@@ -155,58 +155,146 @@ function Illustration({ img }: { img: UxResearchImage }) {
   );
 }
 
-function CriterionCard({ c }: { c: UxResearchCriterion }) {
+function CriterionCard({ c, defaultOpen }: { c: UxResearchCriterion; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const images = (c.images ?? []).filter((i) => i.url);
+  const hasDetail = Boolean(
+    c.rationale || c.applies_to?.length || c.psychology?.length || images.length || c.sources?.length,
+  );
   return (
-    <div style={{ border: `1px solid ${T.border}`, borderRadius: 11, background: T.paper, padding: '13px 15px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
-        <PriorityChip p={c.priority} />
-        {c.id ? <span style={{ fontSize: 11.5, fontWeight: 700, color: T.muted }}>{c.id}</span> : null}
-        <strong style={{ fontSize: 13.5, color: T.ink }}>{c.title ?? '—'}</strong>
-      </div>
-      {c.statement ? <p style={{ margin: 0, fontSize: 13, color: T.ink, lineHeight: 1.55 }}>{c.statement}</p> : null}
-      {c.rationale ? (
-        <p style={{ margin: 0, fontSize: 12.5, color: T.soft, lineHeight: 1.5 }}>
-          <span style={{ fontWeight: 700 }}>Vì sao: </span>
-          {c.rationale}
-        </p>
-      ) : null}
-      {(c.applies_to?.length || c.psychology?.length) ? (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {(c.applies_to ?? []).map((a) => (
-            <TagChip key={`a-${a}`} text={a} />
-          ))}
-          {(c.psychology ?? []).map((p) => (
-            <TagChip key={`p-${p}`} text={`🧠 ${p}`} />
-          ))}
-        </div>
-      ) : null}
-      {images.length ? (
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          {images.map((img, i) => (
-            <Illustration key={img.url ?? i} img={img} />
-          ))}
-        </div>
-      ) : null}
-      {c.sources?.length ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, borderTop: `1px dashed ${T.border}`, paddingTop: 7 }}>
-          {c.sources.map((s, i) => (
-            <SourceLink key={s.url ?? i} s={s} />
-          ))}
+    <div style={{ border: `1px solid ${T.border}`, borderLeft: `3px solid ${priorityColor(c.priority)}`, borderRadius: 12, background: T.paper, overflow: 'hidden' }}>
+      {/* Header row — always visible, click to expand the evidence/rationale. */}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        style={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 5, padding: '13px 15px', background: 'transparent', border: 0, cursor: 'pointer', textAlign: 'left' }}
+      >
+        {/* Top line — arrow, priority chip, id and title all vertically centred. */}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%' }}>
+          <span style={{ flexShrink: 0, fontSize: 12, color: T.muted, transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▸</span>
+          <PriorityChip p={c.priority} />
+          {c.id ? <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, color: T.muted }}>{c.id}</span> : null}
+          <strong style={{ flex: 1, minWidth: 0, fontSize: 15, color: T.ink, lineHeight: 1.4 }}>{c.title ?? '—'}</strong>
+        </span>
+        {/* Collapsed → statement preview (2 lines) so the row stays scannable. */}
+        {!open && c.statement ? (
+          <span
+            style={{
+              fontSize: 13,
+              color: T.muted,
+              lineHeight: 1.5,
+              paddingLeft: 22,
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+          >
+            {c.statement}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '0 15px 14px 40px' }}>
+          {c.statement ? <p style={{ margin: 0, fontSize: 14, color: T.ink, lineHeight: 1.6 }}>{c.statement}</p> : null}
+          {c.rationale ? (
+            <p style={{ margin: 0, fontSize: 13.5, color: T.soft, lineHeight: 1.6 }}>
+              <span style={{ fontWeight: 700 }}>Vì sao: </span>
+              {c.rationale}
+            </p>
+          ) : null}
+          {(c.applies_to?.length || c.psychology?.length) ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {(c.applies_to ?? []).map((a) => (
+                <TagChip key={`a-${a}`} text={a} />
+              ))}
+              {(c.psychology ?? []).map((p) => (
+                <TagChip key={`p-${p}`} text={`🧠 ${p}`} />
+              ))}
+            </div>
+          ) : null}
+          {images.length ? (
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {images.map((img, i) => (
+                <Illustration key={img.url ?? i} img={img} />
+              ))}
+            </div>
+          ) : null}
+          {c.sources?.length ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, borderTop: `1px dashed ${T.border}`, paddingTop: 8 }}>
+              {c.sources.map((s, i) => (
+                <SourceLink key={s.url ?? i} s={s} />
+              ))}
+            </div>
+          ) : null}
+          {!hasDetail && !c.statement ? (
+            <p style={{ margin: 0, fontSize: 13, color: T.muted }}>Không có chi tiết bổ sung.</p>
+          ) : null}
         </div>
       ) : null}
     </div>
   );
 }
 
+// Toggle chip for the priority filter strip. Off → dimmed outline.
+function PriorityFilterChip({ active, color, label, count, onClick }: { active: boolean; color: string; label: string; count: number; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        fontSize: 12.5,
+        fontWeight: 600,
+        padding: '4px 11px',
+        borderRadius: 999,
+        cursor: 'pointer',
+        border: `1px solid ${active ? color : T.border}`,
+        background: active ? `color-mix(in srgb, ${color} 12%, transparent)` : 'transparent',
+        color: active ? color : T.muted,
+        opacity: active ? 1 : 0.65,
+      }}
+    >
+      <i style={{ width: 8, height: 8, borderRadius: '50%', background: active ? color : T.muted }} />
+      {label} {count}
+    </button>
+  );
+}
+
 export function UxResearchPreview({ report }: { report: UxResearchReport }) {
-  const criteria = useMemo(
+  type Prio = 'must' | 'should' | 'nice';
+  const prioOf = (c: UxResearchCriterion): Prio =>
+    c.priority === 'must' ? 'must' : c.priority === 'should' ? 'should' : 'nice';
+  const allCriteria = useMemo(
     () =>
       [...(report.criteria ?? [])].sort(
         (a, b) => (priorityOrder[a.priority ?? 'nice'] ?? 2) - (priorityOrder[b.priority ?? 'nice'] ?? 2),
       ),
     [report.criteria],
   );
+  const counts = {
+    must: allCriteria.filter((c) => prioOf(c) === 'must').length,
+    should: allCriteria.filter((c) => prioOf(c) === 'should').length,
+    nice: allCriteria.filter((c) => prioOf(c) === 'nice').length,
+  };
+  // Priority filter — all on by default; min 1 active so the list never empties.
+  const [prios, setPrios] = useState<Set<Prio>>(() => new Set<Prio>(['must', 'should', 'nice']));
+  const togglePrio = (k: Prio) =>
+    setPrios((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) {
+        if (next.size === 1) return prev;
+        next.delete(k);
+      } else {
+        next.add(k);
+      }
+      return next;
+    });
+  const criteria = useMemo(() => allCriteria.filter((c) => prios.has(prioOf(c))), [allCriteria, prios]);
   // Group by topic (keeps the priority sort inside each group; groups ordered
   // by their most important criterion).
   const groups = useMemo(() => {
@@ -220,34 +308,35 @@ export function UxResearchPreview({ report }: { report: UxResearchReport }) {
     return [...map.entries()];
   }, [criteria]);
   const [refsOpen, setRefsOpen] = useState(false);
-  const counts = {
-    must: criteria.filter((c) => c.priority === 'must').length,
-    should: criteria.filter((c) => c.priority === 'should').length,
-    nice: criteria.filter((c) => c.priority !== 'must' && c.priority !== 'should').length,
-  };
 
   return (
-    <div style={{ padding: '14px 18px 28px', display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 860 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <strong style={{ fontSize: 15, color: T.ink }}>Báo cáo UX Research{report.domain ? ` · ${report.domain}` : ''}</strong>
-        <span style={{ fontSize: 12, color: T.muted }}>
-          {criteria.length} tiêu chí — <span style={{ color: T.red, fontWeight: 700 }}>{counts.must} bắt buộc</span>,{' '}
-          <span style={{ color: T.amber, fontWeight: 700 }}>{counts.should} nên có</span>, {counts.nice} điểm cộng
+    <div style={{ padding: '16px 20px 32px', display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 900, margin: '0 auto' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, border: `1px solid ${T.border}`, borderRadius: 12, background: T.paper, padding: '16px 18px' }}>
+        <strong style={{ fontSize: 17, color: T.ink }}>Báo cáo UX Research{report.domain ? ` · ${report.domain}` : ''}</strong>
+        {/* Priority FILTER — click a chip to focus on that tier. */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 12.5, color: T.muted }}>{allCriteria.length} tiêu chí · lọc:</span>
+          <PriorityFilterChip active={prios.has('must')} color={T.red} label="Bắt buộc" count={counts.must} onClick={() => togglePrio('must')} />
+          <PriorityFilterChip active={prios.has('should')} color={T.amber} label="Nên có" count={counts.should} onClick={() => togglePrio('should')} />
+          <PriorityFilterChip active={prios.has('nice')} color={T.green} label="Điểm cộng" count={counts.nice} onClick={() => togglePrio('nice')} />
+        </div>
+        <span style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
+          Tiêu chí bắt buộc mở sẵn; các tiêu chí khác thu gọn — bấm để xem lý do, nguồn, minh hoạ.
         </span>
       </div>
       {report.knowledge_base === 'unavailable' ? (
-        <div style={{ fontSize: 12.5, color: T.amber, border: `1px solid ${T.border}`, borderRadius: 8, padding: '8px 12px', background: T.subtle }}>
+        <div style={{ fontSize: 13, color: T.amber, border: `1px solid ${T.border}`, borderRadius: 8, padding: '10px 14px', background: T.subtle, lineHeight: 1.5 }}>
           Knowledge base không có trên máy chạy stage này — tiêu chí sinh từ kiến thức nền của agent,
           không có trích dẫn nguồn.
         </div>
       ) : null}
       {groups.map(([topic, list]) => (
         <section key={topic} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <h3 style={{ margin: 0, fontSize: 12.5, fontWeight: 700, color: T.muted, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+          <h3 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: T.muted, textTransform: 'uppercase', letterSpacing: 0.4 }}>
             {topic}
           </h3>
           {list.map((c, i) => (
-            <CriterionCard key={c.id ?? `${topic}-${i}`} c={c} />
+            <CriterionCard key={c.id ?? `${topic}-${i}`} c={c} defaultOpen={prioOf(c) === 'must'} />
           ))}
         </section>
       ))}
