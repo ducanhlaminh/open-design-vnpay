@@ -1,16 +1,14 @@
 ---
 name: customer-journey-spec
 description: |
-  Generate a Customer Journey map (as a JSON file) for an EXISTING SimStudio
-  project, then push it into the Knowledge Graph (KGS open-design app) so it can
-  be pulled back and viewed on SimStudio's /customer-journey screen. open-design
-  is the UX PRODUCER: this skill authors USER_FLOW (to-be customer journeys),
-  STAGE (journey steps with emotion + pain points), and optionally
-  UX_PERSONA_PROFILE, scoped to a project_id. Activate when the user asks to
-  "design a customer journey", "tạo customer journey", "user flow", "to-be
-  journey", "journey map", or to push journey data into KGS / SimStudio for a
-  given project. For per-screen UX specs (S_SCREEN_SPEC + components on /ux-spec)
-  use the sibling `ux-spec` skill instead.
+  Author a Customer Journey map as a JSON file from the ingested product docs.
+  open-design is the UX PRODUCER: this skill writes USER_FLOW (to-be customer
+  journeys), STAGE (journey steps with emotion + pain points), and optionally
+  personas. The docs→UI pipeline reads the file DIRECTLY (the Customer Journey
+  preview / `/customer-journey`) — it is not pushed anywhere. Activate when the
+  user asks to "design a customer journey", "tạo customer journey", "user flow",
+  "to-be journey", or "journey map". For per-screen UX specs (S_SCREEN_SPEC +
+  components on /ux-spec) use the sibling `ux-spec` skill instead.
 triggers:
   - "customer journey"
   - "customer journey map"
@@ -18,31 +16,31 @@ triggers:
   - "user flow"
   - "to-be journey"
   - "journey map"
-  - "push journey to kgs"
   - "tạo customer journey"
 od:
   mode: utility
   category: ux-research
 ---
 
-# customer-journey-spec — author Customer Journey → KGS → SimStudio
+# customer-journey-spec — author a Customer Journey (JSON file)
 
-open-design is the **UX producer** in a 3-app Knowledge Graph:
-- **design-v3 app** — UI (screens / components / themes).
-- **open-design app** — UX (this skill writes here): journeys, stages, personas.
-- **vnp-platform / SimStudio** — the consumer that pulls and renders.
+open-design produces **UX** for an App's features. This skill authors the
+Customer Journey for the feature described by the ingested docs and writes it as
+a **JSON file** that the docs→UI pipeline reads directly — the open-design
+Customer Journey preview (`/customer-journey`) renders it, and the downstream
+`ux-spec` stage reads the journeys/personas to derive screens.
 
-This skill produces a JSON file of Customer Journeys and pushes it to the
-open-design KGS app. SimStudio's **Pull All** then materialises it and shows it
-on `/customer-journey`, scoped to the project.
+> Sibling skill: `ux-spec` authors the per-screen UX Spec for `/ux-spec`. Use
+> that one for screen specs; use this one for journey maps. A persona can appear
+> in either.
 
-> Sibling skill: `ux-spec` authors the per-screen UX Spec (S_SCREEN_SPEC +
-> DP_UI_COMPONENT) for `/ux-spec`. Use that one for screen specs; use this one
-> for journey maps. A persona can appear in either.
+> **MCP note.** The project may have `mcp-atlassian` (Confluence/Jira) enabled —
+> that is for the **docs ingest** step, NOT this one. Do NOT call any Confluence/
+> Jira MCP tool here: your source is the already-ingested Markdown under `./docs/`.
 
 ## When to use
-- The user wants to design / generate a customer journey to appear in
-  SimStudio's `/customer-journey`.
+- The user wants to design / generate a customer journey for the feature whose
+  docs have been ingested, to appear in the Customer Journey preview.
 
 ## Workflow (do these in order)
 
@@ -66,28 +64,25 @@ Whichever input you use, you MUST capture the **key source text** for each stage
 in its `sources[]` (next section) — short verbatim excerpts from the MD that
 justify that stage. This is what the Customer Journey preview surfaces.
 
-### 1. Generate the JSON (content only — no project_id)
-Author a journey file following `references/schema.md`. **Do NOT put a
-`project_id` in the file** — you are authoring CONTENT only. The target KGS
-project is chosen at PUSH time (from the conversation's bound project, the
-Push to KG dropdown, or `--project-id`), so inventing a `project_id` here would
-be ignored at best and misleading at worst. Key rules:
+### 1. Generate the JSON
+Author a journey file following `references/schema.md`. Key rules:
 - One or more **journeys** (USER_FLOW). Each has an `actor_id`, a `goal`, and an
-  ordered list of **stages** (STAGE).
+  ordered list of **stages** (STAGE) nested inside it.
 - Each stage carries `emotion` (frustrated/anxious/neutral/satisfied/delighted),
   `user_actions`, `system_responses`, `touchpoints`, `pain_points` — this drives
-  the emotion curve + pain markers on SimStudio's customer-journey view.
+  the emotion curve + pain markers on the customer-journey view.
 - **Each stage MUST carry `sources[]`** — the key source-text excerpts that
-  justify it: `{ "file": "docs/confluence/<name>.md", "heading": "<section>",
+  justify it: `{ "file": "docs/confluence/<slug>.md", "heading": "<section>",
   "quote": "<short verbatim snippet from that MD>" }`. Keep quotes short (1–3
-  sentences), copied VERBATIM from the doc (do not paraphrase), and reference the
-  cwd-relative `file`. 1–3 sources per stage is ideal; this powers the preview's
-  "key text from MD" panel and keeps every stage traceable to its doc.
+  sentences), copied VERBATIM (do not paraphrase). **`file` MUST be the exact
+  SLUGIFIED path of the file you actually read on disk** (kebab-cased, deaccented
+  — e.g. `docs/confluence/Hoan-tien-don-hang.md`), NOT the human page title with
+  spaces/diacritics — otherwise the preview's "Mở tài liệu nguồn" can't find it.
+  1–3 sources per stage is ideal.
 - Optional **personas** (UX_PERSONA_PROFILE) — shared UX context / actor filter.
-- Use stable, human-readable ids (`UFLW-…`, `STG-…`, `PRSN-…`). The same id
-  re-pushed updates the same node.
+- Use stable, human-readable ids (`UFLW-…`, `STG-…`, `PRSN-…`).
 
-Write the file under the project (e.g. `./<feature>-customer-journey.json`).
+Write the file under the feature's cwd (e.g. `./<feature>-customer-journey.json`).
 See `assets/example-customer-journey.json` for a complete, valid example.
 
 > **Per-module fan-out.** When the docs are a multi-section tree (a sub-tree
@@ -99,51 +94,12 @@ See `assets/example-customer-journey.json` for a complete, valid example.
 > merges every module's slice (unions personas, concatenates journeys) into the
 > canonical file. Follow the kickoff's output path verbatim when it gives one.
 
-### 2. Push to KGS
-Two equivalent ways (both write via the KGS graph API → projected to Neo4j):
-
-**a) open-design-vnpay button (recommended for users).** Open the generated JSON
-file in the open-design-vnpay FileViewer. A **"Push to KG"** button appears with
-a **project dropdown** (the list of SimStudio projects). Pick the target project
-and click — no env/CLI needed (the daemon holds the KGS credentials).
-
-**b) CLI / script.** Run the push script with the open-design app credentials:
-```bash
-KGS_URL=http://localhost:28001 \
-KGS_API_KEY=<open-design app key> \
-KGS_APP_ID=open-design-app \
-python3 scripts/push_to_kgs.py <your-journey>.json --project-id <project_id>
-# or, against a running daemon:  od kg push <your-journey>.json --project-id <project_id>
-# list targets:                  od kg projects
-```
-- Use `--dry-run` first to preview what will be written.
-- Writes via the KGS **graph write API** (`POST /v1/graph/nodes`), NOT a DB
-  insert — required so KGS projects the nodes to Neo4j, which is what SimStudio's
-  pull reads. Do NOT insert into Postgres/Neo4j directly.
-- 409 (already exists) is fine — re-pushing is idempotent per id.
-
-### 3. View in SimStudio
-Tell the user: open SimStudio → select the project → click **Pull All** in the
-header → open `/customer-journey`. The new journeys appear, filtered to that
-project.
-
-## Mapping (why labels/props matter)
-SimStudio's `preview-content` maps KGS labels to its DB; keep these exact:
-| KGS label | → SimStudio | required props |
-|---|---|---|
-| `USER_FLOW` | journeys | `id, name, actor(=actor_id), project_id` |
-| `STAGE` | journey_steps | `id, user_flow_id, order, name, project_id` |
-| `UX_PERSONA_PROFILE` | ux_personas | `id, name, project_id` |
-
-Full field reference: `references/schema.md`.
-
 ## Hard rules
-- **Never put `project_id` in the file.** It is filled at push time (conversation
-  binding / dropdown / `--project-id`) and applied to every node by the pusher.
-  A `project_id` you invent here is ignored by the Push to KG button and only
-  causes confusion.
-- **Stages link to the journey by the `user_flow_id` PROP**, not a graph edge.
-- **Push only via `scripts/push_to_kgs.py` / `od kg push` / the Push to KG
-  button** (graph write API) — never edit KGS Postgres/Neo4j directly (the node
-  would not be projected → invisible to Pull All).
-- Target the **open-design app** (UX producer), never the design-v3 app.
+- **File-only.** Produce the JSON file(s) ONLY. Do NOT push anything anywhere
+  (no `od kg push`, no KGS) — the pipeline reads the file on disk directly.
+- **`sources[].file` must match the on-disk slug**, copied verbatim from the file
+  you read (see §1) — this is the single most common cause of a broken "Mở tài
+  liệu nguồn".
+- **Stages are NESTED inside their journey's `stages[]`** — there is no flat
+  `user_flow_id` link and no graph edge.
+- Keep quotes VERBATIM (never paraphrase) so the highlight locates them in the doc.

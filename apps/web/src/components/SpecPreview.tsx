@@ -492,6 +492,16 @@ function BulletList({
 }
 
 // ── Click a source quote → open the doc, scroll to the passage, highlight it ──
+// The stored `sources[].file` often carries the human PAGE TITLE (spaces + VN
+// diacritics, e.g. "docs/confluence/Hoàn tiền đơn hàng.md") while the ingested
+// file on disk is SLUGIFIED ("…/Hoan-tien-don-hang.md" — see bas-client.ts
+// `slug()`). Slugify both basenames the same way so the doc still resolves.
+function deaccentVi(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
+}
+function docSlug(basename: string): string {
+  return deaccentVi(basename).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+}
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -697,10 +707,20 @@ function DocQuoteModal({
         try {
           const files = await fetchProjectFiles(projectId);
           const base = file.split('/').pop();
+          // Slug of the wanted basename, so a title-cased `file` still matches
+          // the slugified file on disk (and a file under docs/context/ too).
+          const wantSlug = base ? docSlug(base) : '';
           const hit =
             files.find((f) => f.name === file) ??
             files.find((f) => f.name.endsWith(`/${file}`)) ??
-            files.find((f) => f.name.split('/').pop() === base);
+            files.find((f) => f.name.split('/').pop() === base) ??
+            (wantSlug
+              ? files.find(
+                  (f) =>
+                    /(^|\/)docs\//.test(f.name) &&
+                    docSlug(f.name.split('/').pop() ?? '') === wantSlug,
+                )
+              : undefined);
           if (hit) {
             name = hit.name;
             content = await fetchProjectFileText(projectId, hit.name);

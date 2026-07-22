@@ -574,7 +574,13 @@ export function App() {
   useEffect(() => {
     if (!daemonConfigLoaded || agentsLoading) return;
     if (config.agentId) return;
-    const firstAvailable = agents.find((a) => a.available);
+    // Prefer an available agent; but on a Docker-only install (the sandbox OWNS
+    // a runtime) fall back to that sandbox agent even if its status probe is
+    // momentarily not-ok — otherwise no agent is ever picked and chat blocks on
+    // "Pick a local agent first", while the sandbox can actually run. A genuine
+    // sandbox-down state then surfaces as a clear run error, not a dead picker.
+    const firstAvailable =
+      agents.find((a) => a.available) ?? agents.find((a) => a.sandbox?.owns);
     if (!firstAvailable) return;
     setConfig((prev) => {
       if (prev.agentId) return prev;

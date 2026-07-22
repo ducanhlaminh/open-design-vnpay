@@ -55,6 +55,10 @@ export function AgentPicker({
             {agents.map((a) => (
               <option key={a.id} value={a.id} disabled={!a.available}>
                 {a.name}
+                {/* Docker-only: this runtime is provided by the sandbox, not a
+                    host binary — label it so it's clear the detected CLI is the
+                    one running in Docker (matches the quota meter's source). */}
+                {a.sandbox?.owns ? ' · Docker' : ''}
                 {a.available ? '' : ` · ${t('agentPicker.notInstalled')}`}
               </option>
             ))}

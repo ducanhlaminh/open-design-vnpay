@@ -32,6 +32,19 @@ export interface AgentInfo {
     | 'claude-mcp-json'
     | 'acp-merge'
     | 'opencode-env-content';
+  /**
+   * Set when the Docker sandbox OWNS this runtime's runs (Docker-only install).
+   * Then `available` reflects the SANDBOX (docker + image + auth volume), not the
+   * host binary, and the UI must treat this agent as selectable even with no
+   * host CLI. `owns` distinguishes "sandbox drives it" from a plain host agent.
+   */
+  sandbox?: {
+    owns: boolean;
+    dockerRunning?: boolean;
+    imagePresent?: boolean;
+    authLoggedIn?: boolean;
+    version?: string | null;
+  };
 }
 
 export interface AgentsResponse {

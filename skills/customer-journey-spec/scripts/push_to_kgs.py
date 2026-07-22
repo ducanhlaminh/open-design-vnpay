@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-push_to_kgs.py — push Customer Journey + UX Spec JSON into KGS (open-design app).
+push_to_kgs.py — [LEGACY / DISABLED] push Customer Journey + UX Spec JSON into KGS.
+
+DISABLED by default: the docs→UI pipeline is FILE-ONLY (the Customer Journey JSON
+is read directly by the open-design preview + the ux-spec stage), so nothing is
+pushed to KGS. This script no-ops unless OD_ALLOW_LEGACY_KGS_PUSH=1. Kept for
+reference only. Everything below describes the retired KGS→SimStudio path.
 
 This is the WRITE half of the `customer-journey-spec` skill. The agent generates
 a JSON file (see references/schema.md), then this script materialises it as KGS
@@ -170,6 +175,20 @@ def validate_doc(doc):
 
 
 def main():
+    # ── LEGACY / DISABLED ─────────────────────────────────────────────────────
+    # The docs→UI pipeline is FILE-ONLY: the Customer Journey JSON is read
+    # straight off disk by the open-design preview (/customer-journey) and by the
+    # ux-spec stage — it is NOT pushed to KGS. This KGS→SimStudio push path
+    # (Pull All) is retired. The processing below is kept for reference only and
+    # is disabled by default; set OD_ALLOW_LEGACY_KGS_PUSH=1 to force-run it.
+    if os.environ.get("OD_ALLOW_LEGACY_KGS_PUSH") != "1":
+        print(
+            "push_to_kgs.py is disabled (legacy KGS/SimStudio path). The docs→UI "
+            "pipeline reads the Customer Journey JSON directly — no push needed. "
+            "Set OD_ALLOW_LEGACY_KGS_PUSH=1 to override.",
+            file=sys.stderr,
+        )
+        return 0
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     dry_run = "--dry-run" in sys.argv
     project_cli = None

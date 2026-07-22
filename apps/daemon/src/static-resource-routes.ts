@@ -1,7 +1,6 @@
 import type { Express } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
-import { detectAgents } from './agents.js';
 import {
   SkillImportError,
   deleteUserSkill,
@@ -22,7 +21,6 @@ import { importGitHubDesignSystemProject } from './design-system-github-import.j
 import { renderDesignSystemPreview } from './design-system-preview.js';
 import { renderDesignSystemShowcase } from './design-system-showcase.js';
 import { listPromptTemplates, readPromptTemplate } from './prompt-templates.js';
-import { readAppConfig } from './app-config.js';
 import { installFromTarget, uninstallById } from './library-install.js';
 import type { RouteDeps } from './server-context.js';
 
@@ -56,15 +54,12 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     return false;
   };
 
-  app.get('/api/agents', async (_req, res) => {
-    try {
-      const config = await readAppConfig(RUNTIME_DATA_DIR);
-      const list = await detectAgents(config.agentCliEnv ?? {});
-      res.json({ agents: list });
-    } catch (err: any) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
+  // NOTE: `/api/agents` is served by the sandbox-AWARE handler in server.ts —
+  // it merges the sandbox's Claude availability so Docker-only installs (no host
+  // CLI) still surface an available agent. A second, non-sandbox handler here
+  // would register FIRST and shadow it (Express runs handlers in registration
+  // order), making Docker-only chat report "Pick a local agent first" even
+  // though the sandbox can run. Do NOT re-add a `/api/agents` route here.
 
   app.get('/api/skills', async (_req, res) => {
     try {

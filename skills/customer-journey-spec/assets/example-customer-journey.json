@@ -1,5 +1,5 @@
 {
-  "$comment": "Example Customer Journey (content only). Do NOT include project_id — it is filled at PUSH time from the conversation's bound KGS project (or the Push to KG dropdown / --project-id). The agent generates a file like this; the open-design-vnpay 'Push to KG' button or scripts/push_to_kgs.py then materialises it into the KGS open-design app under the chosen project.",
+  "$comment": "Example Customer Journey. The docs→UI pipeline reads this FILE directly (SpecPreview /customer-journey view) — it is NOT pushed to KGS. Each stage's sources[].file must be the SLUGIFIED path of the ingested doc on disk (e.g. docs/confluence/Hoan-tien-don-hang.md), NOT the human page title with spaces/diacritics — otherwise 'Mở tài liệu nguồn' can't locate it.",
   "personas": [
     {
       "name": "Chủ cửa hàng",
@@ -34,7 +34,7 @@
           "pain_points": ["Khó tìm nếu nhiều đơn"],
           "sources": [
             {
-              "file": "docs/confluence/Hoàn tiền đơn hàng.md",
+              "file": "docs/confluence/Hoan-tien-don-hang.md",
               "heading": "Tìm đơn",
               "quote": "Chủ shop tìm đơn cần hoàn theo mã đơn hoặc số điện thoại khách trong màn Lịch sử đơn hàng."
             }
@@ -52,7 +52,7 @@
           "pain_points": ["Sợ hoàn nhầm số tiền"],
           "sources": [
             {
-              "file": "docs/confluence/Hoàn tiền đơn hàng.md",
+              "file": "docs/confluence/Hoan-tien-don-hang.md",
               "heading": "Quy tắc hoàn tiền",
               "quote": "Số tiền hoàn phải nhỏ hơn hoặc bằng giá trị đơn; hỗ trợ hoàn toàn phần và hoàn một phần kèm lý do."
             }

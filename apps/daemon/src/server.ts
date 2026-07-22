@@ -14917,24 +14917,19 @@ export async function startServer({
           }
           for (const t of targets) {
             const dir = UI_TARGETS[t].dir;
-            // Make the shared docs visible in this target's cwd as ./docs so its
+            // Stage the shared docs INTO this target's cwd as ./docs so its
             // post-docs stages find ./docs/confluence (skills read a relative
-            // path). SYMLINK to the single copy at <workflow>/docs instead of
-            // cloning — the docs bytes live exactly once (no per-target
-            // duplication). Junction on Windows (no admin needed); dir symlink
-            // elsewhere. If the FS rejects symlinks, fall back to a copy so runs
-            // never break.
+            // path). This MUST be a real COPY, not a symlink: the agent sandbox
+            // bind-mounts ONLY the run cwd at /work/app (agent-sandbox.ts), so a
+            // `../docs` symlink points OUTSIDE the mount and dangles inside the
+            // container — the docs would be unreadable and stages fall back to
+            // wrong inputs. The copy keeps docs inside the mounted cwd. (Rail
+            // dedupe hides these per-target copies from Quick result.)
             try {
               const srcDocs = path.join(projectRoot, base, 'docs');
-              const targetRoot = path.join(projectRoot, base, dir);
-              const dstDocs = path.join(targetRoot, 'docs');
-              await fs.promises.mkdir(targetRoot, { recursive: true });
+              const dstDocs = path.join(projectRoot, base, dir, 'docs');
               await fs.promises.rm(dstDocs, { recursive: true, force: true }).catch(() => {});
-              const linkType = process.platform === 'win32' ? 'junction' : 'dir';
-              const linkTarget = process.platform === 'win32' ? srcDocs : path.relative(targetRoot, srcDocs);
-              await fs.promises.symlink(linkTarget, dstDocs, linkType).catch(async () => {
-                await fs.promises.cp(srcDocs, dstDocs, { recursive: true });
-              });
+              await fs.promises.cp(srcDocs, dstDocs, { recursive: true });
             } catch (error) {
               console.warn(`[pipelines] staging docs into target ${dir} failed:`, error);
             }
