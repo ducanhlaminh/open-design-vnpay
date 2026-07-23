@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import {
   access,
   chmod,
@@ -25,10 +25,13 @@ import {
   type ManagedDownloadProgress,
 } from "@open-design/download";
 import {
+  DESKTOP_INSTALL_KINDS,
+  DESKTOP_PORTABLE_MARKER_FILE,
   DESKTOP_UPDATE_CHANNELS,
   DESKTOP_UPDATE_MODES,
   DESKTOP_UPDATE_STATES,
   SIDECAR_SOURCES,
+  type DesktopInstallKind,
   type DesktopUpdateAction,
   type DesktopUpdateArtifactSnapshot,
   type DesktopUpdateChannel,
@@ -61,6 +64,7 @@ export const DESKTOP_UPDATE_ENV = Object.freeze({
   CURRENT_VERSION: "OD_UPDATE_CURRENT_VERSION",
   DOWNLOAD_ROOT: "OD_UPDATE_DOWNLOAD_ROOT",
   ENABLED: "OD_UPDATE_ENABLED",
+  INSTALL_KIND: "OD_UPDATE_INSTALL_KIND",
   METADATA_URL: "OD_UPDATE_METADATA_URL",
   MODE: "OD_UPDATE_MODE",
   OPEN_DRY_RUN: "OD_UPDATE_OPEN_DRY_RUN",
@@ -94,6 +98,9 @@ export type DesktopUpdaterConfigInput = {
   currentVersion?: string | null;
   downloadRoot?: string | null;
   env?: NodeJS.ProcessEnv;
+  /** Path of the running executable — the portable marker is looked up next to
+   *  it. Defaults to `process.execPath`. */
+  executablePath?: string | null;
   installerObservationRoot?: string | null;
   mode?: DesktopUpdateMode;
   namespace?: string | null;
@@ -115,6 +122,9 @@ export type DesktopUpdaterConfig = {
   currentVersion: string;
   downloadRoot: string;
   enabled: boolean;
+  /** Installed (platform installer) vs portable (extracted zip folder). Decides
+   *  which update artifact this copy can use. */
+  installKind: DesktopInstallKind;
   installerObservationRoot?: string;
   metadataUrl: string;
   mode: DesktopUpdateMode;
@@ -294,6 +304,40 @@ function defaultPollIntervalMs(channel: DesktopUpdateChannel): number {
   return channel === DESKTOP_UPDATE_CHANNELS.STABLE ? STABLE_POLL_INTERVAL_MS : BETA_POLL_INTERVAL_MS;
 }
 
+function isDesktopInstallKind(value: unknown): value is DesktopInstallKind {
+  return value === DESKTOP_INSTALL_KINDS.INSTALLED || value === DESKTOP_INSTALL_KINDS.PORTABLE;
+}
+
+/**
+ * Is this copy of the app a PORTABLE folder rather than an installed one?
+ *
+ * The portable zip carries a marker file at its archive root (written by
+ * tools/pack/src/win/zip.ts), so it sits next to the executable once the user
+ * extracts the folder. Its presence is the whole signal — nothing else about a
+ * portable copy is reliably distinguishable, and probing the registry or
+ * guessing from the install path both break under the locked-down machines this
+ * exists for.
+ *
+ * Detection is deliberately one-directional: a missing marker means "installed",
+ * which keeps every existing NSIS install on exactly the path it has today.
+ */
+function detectInstallKind(input: {
+  env: NodeJS.ProcessEnv;
+  executablePath?: string | null;
+}): DesktopInstallKind {
+  const override = input.env[DESKTOP_UPDATE_ENV.INSTALL_KIND];
+  if (isDesktopInstallKind(override)) return override;
+  const executablePath = input.executablePath;
+  if (executablePath == null || executablePath.length === 0) return DESKTOP_INSTALL_KINDS.INSTALLED;
+  try {
+    return existsSync(join(dirname(executablePath), DESKTOP_PORTABLE_MARKER_FILE))
+      ? DESKTOP_INSTALL_KINDS.PORTABLE
+      : DESKTOP_INSTALL_KINDS.INSTALLED;
+  } catch {
+    return DESKTOP_INSTALL_KINDS.INSTALLED;
+  }
+}
+
 export function resolveDesktopUpdaterConfig(input: DesktopUpdaterConfigInput): DesktopUpdaterConfig {
   const env = input.env ?? process.env;
   const mode = normalizeMode(env[DESKTOP_UPDATE_ENV.MODE], input.mode ?? DESKTOP_UPDATE_MODES.PACKAGE_LAUNCHER);
@@ -354,6 +398,7 @@ export function resolveDesktopUpdaterConfig(input: DesktopUpdaterConfigInput): D
     currentVersion,
     downloadRoot,
     enabled,
+    installKind: detectInstallKind({ env, executablePath: input.executablePath ?? process.execPath }),
     ...(installerObservationRoot == null ? {} : { installerObservationRoot }),
     metadataUrl: env[DESKTOP_UPDATE_ENV.METADATA_URL] ?? defaultMetadataUrl(channel),
     mode,
@@ -767,8 +812,8 @@ function selectedWinPlatformKey(arch: string): string {
 }
 
 function selectedPackageLauncherArtifact(config: DesktopUpdaterConfig): {
-  artifactKey: "dmg" | "installer";
-  artifactType: "dmg" | "installer";
+  artifactKey: "dmg" | "installer" | "zip";
+  artifactType: "dmg" | "installer" | "zip";
   description: string;
   platformKey: string;
 } | null {
@@ -781,6 +826,17 @@ function selectedPackageLauncherArtifact(config: DesktopUpdaterConfig): {
     };
   }
   if (config.platform === "win32") {
+    // A portable copy takes the zip, never the installer: the machines that
+    // need portable are exactly the ones whose policy blocks running an
+    // installer, so offering one would leave them stuck on an old version.
+    if (config.installKind === DESKTOP_INSTALL_KINDS.PORTABLE) {
+      return {
+        artifactKey: "zip",
+        artifactType: "zip",
+        description: "Windows portable zip",
+        platformKey: selectedWinPlatformKey(config.arch),
+      };
+    }
     return {
       artifactKey: "installer",
       artifactType: "installer",
@@ -1005,6 +1061,13 @@ async function fetchPreviewMetadataFromGithubReleases(fetchImpl: typeof globalTh
   const macArtifact = githubAssetArtifact(assets, `open-design-${newest.version}-mac-arm64.dmg`);
   const macIntelArtifact = githubAssetArtifact(assets, `open-design-${newest.version}-mac-x64.dmg`);
   const winArtifact = githubAssetArtifact(assets, `open-design-${newest.version}-win-x64-installer.exe`);
+  // Both Windows artifacts are published side by side: an installed copy picks
+  // `installer`, a portable copy picks `zip` (selectedPackageLauncherArtifact).
+  const winZipArtifact = githubAssetArtifact(assets, `open-design-${newest.version}-win-x64-portable.zip`);
+  const winArtifacts = {
+    ...(winArtifact == null ? {} : { installer: winArtifact }),
+    ...(winZipArtifact == null ? {} : { zip: winZipArtifact }),
+  };
 
   return {
     channel: DESKTOP_UPDATE_CHANNELS.PREVIEW,
@@ -1013,7 +1076,9 @@ async function fetchPreviewMetadataFromGithubReleases(fetchImpl: typeof globalTh
       ...(macIntelArtifact == null
         ? {}
         : { macIntel: { arch: "x64", artifacts: { dmg: macIntelArtifact }, enabled: true } }),
-      ...(winArtifact == null ? {} : { win: { arch: "x64", artifacts: { installer: winArtifact }, enabled: true } }),
+      ...(Object.keys(winArtifacts).length === 0
+        ? {}
+        : { win: { arch: "x64", artifacts: winArtifacts, enabled: true } }),
     },
     previewVersion: newest.version,
   };
@@ -1932,6 +1997,13 @@ export function createDesktopUpdater(
   }
 
   async function requestInstallerOpen(resolvedDownload: string, updateRoot: string): Promise<string> {
+    // Portable: there is no installer to run and nothing to quit for. Hand the
+    // user the downloaded zip in Explorer so they extract it over their folder
+    // themselves — the app keeps running, and quitting first would just make
+    // the new version harder to find.
+    if (config.installKind === DESKTOP_INSTALL_KINDS.PORTABLE) {
+      return await openPath(dirname(resolvedDownload));
+    }
     if (config.platform !== "darwin" && config.platform !== "win32") return await openPath(resolvedDownload);
     return await launchInstallerAfterQuit({
       appPid: processPid,

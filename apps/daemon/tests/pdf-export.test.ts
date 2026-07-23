@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import type { DesktopExportPdfInput, DesktopExportPdfResult } from '@open-design/sidecar-proto';
+
 import { buildDesktopPdfExportInput } from '../src/pdf-export.js';
 import { startServer } from '../src/server.js';
 
@@ -110,7 +112,7 @@ describe('POST /api/projects/:id/export/pdf', () => {
 // no Node installed used to 500 here because the fallback was the only path.
 describe('POST /api/render/pdf', () => {
   async function withServer<T>(
-    exporter: ((input: unknown) => Promise<unknown>) | undefined,
+    exporter: ((input: DesktopExportPdfInput) => Promise<DesktopExportPdfResult>) | undefined,
     run: (url: string) => Promise<T>,
   ): Promise<T> {
     const started = (await startServer({
@@ -135,7 +137,7 @@ describe('POST /api/render/pdf', () => {
   it('renders through the desktop exporter and answers the saved path as JSON', async () => {
     const calls: unknown[] = [];
     await withServer(
-      async (input) => {
+      async (input: DesktopExportPdfInput) => {
         calls.push(input);
         return { ok: true, path: 'C:\\Users\\me\\review.pdf' };
       },

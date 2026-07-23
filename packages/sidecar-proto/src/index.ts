@@ -104,6 +104,26 @@ export const DESKTOP_UPDATE_CHANNELS = Object.freeze({
 
 export type DesktopUpdateChannel = (typeof DESKTOP_UPDATE_CHANNELS)[keyof typeof DESKTOP_UPDATE_CHANNELS];
 
+/** How this copy of the app got onto the machine — it decides which update
+ *  artifact the app can actually use.
+ *  - `installed`: put down by the platform installer (Windows NSIS, mac DMG
+ *    drag-install). Updates through the installer artifact.
+ *  - `portable`: a folder the user extracted from the Windows portable zip.
+ *    Updates through the zip artifact, since a machine whose policy blocks
+ *    installers can still replace a folder. */
+export const DESKTOP_INSTALL_KINDS = Object.freeze({
+  INSTALLED: "installed",
+  PORTABLE: "portable",
+} as const);
+
+export type DesktopInstallKind = (typeof DESKTOP_INSTALL_KINDS)[keyof typeof DESKTOP_INSTALL_KINDS];
+
+/** Marker file the portable zip carries at its archive root. Written by
+ *  tools-pack (`tools/pack/src/win/zip.ts`) and read by the desktop updater
+ *  next to the running executable — its presence IS the portable signal, so
+ *  both sides must agree on the name. */
+export const DESKTOP_PORTABLE_MARKER_FILE = ".open-design-portable.json";
+
 export const DESKTOP_UPDATE_STATES = Object.freeze({
   AVAILABLE: "available",
   CHECKING: "checking",

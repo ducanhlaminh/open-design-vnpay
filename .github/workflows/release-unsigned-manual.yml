@@ -373,10 +373,11 @@ jobs:
           choco install nsis -y --no-progress
 
       # --to all builds both the NSIS installer and the portable zip in one
-      # pass. The installer is what the in-app "Check for updates" auto-
-      # download+install pipeline uses (apps/desktop/src/main/updater.ts only
-      # knows how to run a Windows installer, not swap a portable folder) —
-      # the zip stays for people who prefer a manual, no-install download.
+      # pass. BOTH are in-app update artifacts: an installed copy downloads the
+      # installer and runs it, a portable copy downloads the zip and is shown it
+      # in Explorer to extract over its own folder. The running app tells the
+      # two apart through the marker file tools-pack writes into the zip
+      # (tools/pack/src/win/zip.ts, DESKTOP_PORTABLE_MARKER_FILE).
       - name: Build windows installer + portable zip
         shell: pwsh
         env:
@@ -478,9 +479,13 @@ jobs:
           path: ${{ runner.temp }}/assets
 
       # apps/desktop/src/main/updater.ts's checksum verification requires a
-      # sha256 for every auto-update-relevant asset (the two mac DMGs + the
-      # win installer — not the portable zip, which the updater never
-      # downloads). Uploading "<asset>.sha256" alongside each one lets the
+      # sha256 for every auto-update-relevant asset: the two mac DMGs, the win
+      # installer, AND the win portable zip. The zip is an update artifact in
+      # its own right — a copy extracted from it updates through the zip,
+      # because the machines that need portable are the ones whose policy
+      # blocks running an installer. Without its .sha256 the updater fails
+      # that download with "checksum-missing".
+      # Uploading "<asset>.sha256" alongside each one lets the
       # preview channel's GitHub-releases-list metadata fetch
       # (fetchPreviewMetadataFromGithubReleases) point sha256Url at it and
       # reuse the exact same verify path the stable channel already uses.
@@ -491,7 +496,8 @@ jobs:
           for f in \
             "open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg" \
             "open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg" \
-            "open-design-${{ needs.verify.outputs.app_version }}-win-x64-installer.exe"; do
+            "open-design-${{ needs.verify.outputs.app_version }}-win-x64-installer.exe" \
+            "open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip"; do
             sha256sum "$f" > "$f.sha256"
           done
 
@@ -507,6 +513,7 @@ jobs:
           node --experimental-strip-types scripts/release-github.ts \
             --arm64-dmg "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg" \
             --x64-dmg "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg" \
+            --win-portable-zip "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip" \
             --version "${{ needs.verify.outputs.app_version }}"
 
       - name: "[stable] Upload windows portable zip + installer to release"
@@ -515,6 +522,7 @@ jobs:
           set -euo pipefail
           gh release upload "${{ needs.verify.outputs.release_tag }}" \
             "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip" \
+            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip.sha256" \
             "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-installer.exe" \
             --clobber
 
@@ -535,5 +543,6 @@ jobs:
             "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg" \
             "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg.sha256" \
             "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip" \
+            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip.sha256" \
             "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-installer.exe" \
             "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-installer.exe.sha256"

@@ -35,13 +35,17 @@ type CliArgs = {
   arm64Dmg: string | null;
   x64Dmg: string | null;
   winInstaller: string | null;
+  winPortableZip: string | null;
   notes: string | null;
   signed: boolean;
   dryRun: boolean;
 };
 
 type PlatformKey = "mac" | "macIntel" | "win";
-type ArtifactKind = "dmg" | "installer";
+// `zip` is the Windows PORTABLE build. It ships alongside `installer` under the
+// same `win` platform key: an installed copy updates through the installer, a
+// portable copy through the zip (apps/desktop/src/main/updater.ts).
+type ArtifactKind = "dmg" | "installer" | "zip";
 
 type ArtifactInput = {
   arch: Arch;
@@ -74,6 +78,7 @@ function parseArgs(argv: string[]): CliArgs {
     arm64Dmg: null,
     x64Dmg: null,
     winInstaller: null,
+    winPortableZip: null,
     notes: null,
     signed: false,
     dryRun: false,
@@ -98,6 +103,9 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "--win-installer":
         args.winInstaller = takeValue();
+        break;
+      case "--win-portable-zip":
+        args.winPortableZip = takeValue();
         break;
       case "--notes":
         args.notes = takeValue();
@@ -141,7 +149,9 @@ function prepareArtifact(input: ArtifactInput, version: string, workDir: string)
   const assetName =
     input.artifactKind === "installer"
       ? `open-design-${version}-win-${input.arch}-setup.exe`
-      : `open-design-${version}-mac-${input.arch}.dmg`;
+      : input.artifactKind === "zip"
+        ? `open-design-${version}-win-${input.arch}-portable.zip`
+        : `open-design-${version}-mac-${input.arch}.dmg`;
   const assetPath = join(workDir, assetName);
   copyFileSync(input.sourcePath, assetPath);
   const sha256 = sha256Hex(assetPath);
@@ -165,22 +175,19 @@ function prepareArtifact(input: ArtifactInput, version: string, workDir: string)
 }
 
 function buildMetadata(version: string, signed: boolean, generatedAt: string, artifacts: PreparedArtifact[]): unknown {
-  const platforms: Record<string, unknown> = {};
+  // One platform key can carry SEVERAL artifact kinds (win = installer + zip),
+  // so merge into the existing entry instead of replacing it.
+  const platforms: Record<string, { artifacts: Record<string, unknown> } & Record<string, unknown>> = {};
   for (const artifact of artifacts) {
-    platforms[artifact.platformKey] = {
-      enabled: true,
-      arch: artifact.arch,
-      signed,
-      artifacts: {
-        [artifact.artifactKind]: {
-          name: artifact.assetName,
-          url: artifact.url,
-          size: artifact.size,
-          sha256: artifact.sha256,
-          sha256Url: artifact.sha256Url,
-        },
-      },
+    const entry = platforms[artifact.platformKey] ?? { enabled: true, arch: artifact.arch, signed, artifacts: {} };
+    entry.artifacts[artifact.artifactKind] = {
+      name: artifact.assetName,
+      url: artifact.url,
+      size: artifact.size,
+      sha256: artifact.sha256,
+      sha256Url: artifact.sha256Url,
     };
+    platforms[artifact.platformKey] = entry;
   }
   return {
     version: 1,
@@ -228,8 +235,9 @@ const inputs: ArtifactInput[] = [];
 if (args.arm64Dmg != null) inputs.push({ arch: "arm64", platformKey: "mac", artifactKind: "dmg", sourcePath: args.arm64Dmg });
 if (args.x64Dmg != null) inputs.push({ arch: "x64", platformKey: "macIntel", artifactKind: "dmg", sourcePath: args.x64Dmg });
 if (args.winInstaller != null) inputs.push({ arch: "x64", platformKey: "win", artifactKind: "installer", sourcePath: args.winInstaller });
+if (args.winPortableZip != null) inputs.push({ arch: "x64", platformKey: "win", artifactKind: "zip", sourcePath: args.winPortableZip });
 if (inputs.length === 0) {
-  fail("provide at least one of --arm64-dmg / --x64-dmg / --win-installer");
+  fail("provide at least one of --arm64-dmg / --x64-dmg / --win-installer / --win-portable-zip");
 }
 
 const workDir = mkdtempSync(join(tmpdir(), "od-release-github-"));

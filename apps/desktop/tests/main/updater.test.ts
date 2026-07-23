@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  DESKTOP_INSTALL_KINDS,
+  DESKTOP_PORTABLE_MARKER_FILE,
   DESKTOP_UPDATE_CHANNELS,
   DESKTOP_UPDATE_STATES,
   SIDECAR_SOURCES,
@@ -99,6 +101,8 @@ async function createUpdaterFixture(options: {
     ? `open-design-${version}-win-x64-setup.exe`
     : `open-design-${version}-mac-arm64.dmg`;
   const artifactPath = `/artifact.${artifactExt}`;
+  const portableZipName = `open-design-${version}-win-x64-portable.zip`;
+  const portableZipPath = "/artifact-portable.zip";
   const artifactBody = Buffer.from(options.artifactBody ?? "open design updater fixture");
   const digest = createHash("sha256").update(artifactBody).digest("hex");
   const artifactRanges: string[] = [];
@@ -123,6 +127,18 @@ async function createUpdaterFixture(options: {
                 size: artifactBody.byteLength,
                 url: `http://${serverAddress(server)}${artifactPath}`,
               },
+              // Windows publishes BOTH kinds side by side — an installed copy
+              // takes `installer`, a portable one takes `zip`.
+              ...(platform === "win"
+                ? {
+                    zip: {
+                      name: portableZipName,
+                      sha256Url: `http://${serverAddress(server)}${portableZipPath}.sha256`,
+                      size: artifactBody.byteLength,
+                      url: `http://${serverAddress(server)}${portableZipPath}`,
+                    },
+                  }
+                : {}),
             },
           },
         },
@@ -156,6 +172,17 @@ async function createUpdaterFixture(options: {
     }
     if (url === `${artifactPath}.sha256`) {
       response.end(`${digest}  ${artifactName}\n`);
+      return;
+    }
+    if (url === portableZipPath) {
+      artifactRequests += 1;
+      response.setHeader("accept-ranges", "bytes");
+      response.setHeader("content-length", String(artifactBody.byteLength));
+      response.end(artifactBody);
+      return;
+    }
+    if (url === `${portableZipPath}.sha256`) {
+      response.end(`${digest}  ${portableZipName}\n`);
       return;
     }
     response.statusCode = 404;
@@ -315,6 +342,89 @@ describe("desktop updater", () => {
       expect(installed.installResult?.path).toBe(checked.downloadPath);
     } finally {
       await fixture.close();
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  // A Windows copy extracted from the portable zip must update through the ZIP,
+  // never the installer: the machines that need portable are exactly the ones
+  // whose policy blocks running an installer, so offering one strands them on
+  // an old version. The portable marker file (written into the zip by
+  // tools/pack/src/win/zip.ts) is what tells the two apart.
+  it("updates a portable Windows copy through the zip artifact, not the installer", async () => {
+    const root = makeRoot();
+    const fixture = await createUpdaterFixture({ platform: "win" });
+    const opened: string[] = [];
+    const launches: unknown[] = [];
+    try {
+      const updater = createDesktopUpdater(
+        {
+          arch: "x64",
+          downloadRoot: root,
+          env: {
+            ...updaterEnv(fixture.metadataUrl, "win32"),
+            [DESKTOP_UPDATE_ENV.INSTALL_KIND]: DESKTOP_INSTALL_KINDS.PORTABLE,
+            [DESKTOP_UPDATE_ENV.OPEN_DRY_RUN]: "0",
+          },
+          source: SIDECAR_SOURCES.TOOLS_PACK,
+        },
+        {
+          launchInstallerAfterQuit: async (input) => {
+            launches.push(input);
+            return "";
+          },
+          openPath: async (target) => {
+            opened.push(target);
+            return "";
+          },
+        },
+      );
+
+      const checked = await updater.checkForUpdates();
+      expect(checked.state).toBe(DESKTOP_UPDATE_STATES.DOWNLOADED);
+      expect(checked.artifact?.type).toBe("zip");
+      expect(checked.downloadPath).toEqual(expect.stringMatching(/\.zip$/));
+      expect(checked.capabilities.canDownload).toBe(true);
+      expect(checked.capabilities.requiresManualInstall).toBe(true);
+
+      const installed = await updater.installUpdate();
+      expect(installed.state).toBe(DESKTOP_UPDATE_STATES.DOWNLOADED);
+      // Reveals the CONTAINING FOLDER so the user extracts it over their own
+      // copy; nothing is launched and the app is not asked to quit.
+      expect(opened).toEqual([dirname(installed.installResult?.path ?? "")]);
+      expect(launches).toEqual([]);
+    } finally {
+      await fixture.close();
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it("detects a portable install from the marker file sitting next to the executable", () => {
+    const root = makeRoot();
+    try {
+      const portableDir = join(root, "portable");
+      const installedDir = join(root, "installed");
+      mkdirSync(portableDir, { recursive: true });
+      mkdirSync(installedDir, { recursive: true });
+      writeFileSync(join(portableDir, DESKTOP_PORTABLE_MARKER_FILE), "{}\n");
+
+      const portable = resolveDesktopUpdaterConfig({
+        downloadRoot: root,
+        env: {},
+        executablePath: join(portableDir, "Open Design.exe"),
+        source: SIDECAR_SOURCES.PACKAGED,
+      });
+      const installed = resolveDesktopUpdaterConfig({
+        downloadRoot: root,
+        env: {},
+        executablePath: join(installedDir, "Open Design.exe"),
+        source: SIDECAR_SOURCES.PACKAGED,
+      });
+
+      expect(portable.installKind).toBe(DESKTOP_INSTALL_KINDS.PORTABLE);
+      // No marker → installed. Every existing NSIS install keeps its behaviour.
+      expect(installed.installKind).toBe(DESKTOP_INSTALL_KINDS.INSTALLED);
+    } finally {
       rmSync(root, { force: true, recursive: true });
     }
   });
