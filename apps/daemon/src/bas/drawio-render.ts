@@ -19,19 +19,45 @@ import { execFile } from 'node:child_process';
 const PLAYWRIGHT_VERSION = '1.54.2';
 const VIEWER_URL = 'https://viewer.diagrams.net/js/viewer-static.min.js';
 
+const IS_WINDOWS = process.platform === 'win32';
+
 function execBuffered(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; timeout?: number },
+  opts: { cwd?: string; timeout?: number; shell?: boolean },
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     execFile(
       cmd,
       args,
-      { cwd: opts.cwd, timeout: opts.timeout ?? 120_000, maxBuffer: 16 * 1024 * 1024, env: process.env },
-      (err, stdout, stderr) => resolve({ ok: !err, stdout: String(stdout), stderr: String(stderr) }),
+      {
+        cwd: opts.cwd,
+        timeout: opts.timeout ?? 120_000,
+        maxBuffer: 16 * 1024 * 1024,
+        // ELECTRON_RUN_AS_NODE: in the packaged app `process.execPath` is the
+        // Electron binary, so a child that must behave like `node` needs this.
+        // The packaged sidecar already sets it, but a spawn must not DEPEND on
+        // inheriting it.
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        shell: opts.shell === true,
+      },
+      (err, stdout, stderr) => resolve({
+        ok: !err,
+        stdout: String(stdout),
+        // execFile's error (ENOENT / EINVAL) never reaches stderr — without it
+        // a missing `npm` on Windows surfaced as an empty "failed" message.
+        stderr: `${String(stderr)}${err ? `\n${err.message}` : ''}`,
+      }),
     );
   });
+}
+
+/** Run a Node script with whatever runtime this daemon is (node, or Electron in
+ *  node mode). Never goes through a `.bin` shim — those are `.cmd` files on
+ *  Windows, which `execFile` cannot launch (Node ≥18.20 rejects .bat/.cmd
+ *  without a shell). */
+function execNodeScript(script: string, args: string[], opts: { cwd?: string; timeout?: number }) {
+  return execBuffered(process.execPath, [script, ...args], opts);
 }
 
 let ensured: Promise<string> | null = null;
@@ -46,11 +72,27 @@ function ensureRunner(runtimeDataDir: string): Promise<string> {
       JSON.stringify({ name: 'od-drawio-render-runner', private: true, dependencies: { playwright: PLAYWRIGHT_VERSION } }, null, 2),
     );
     if (!fs.existsSync(path.join(runnerDir, 'node_modules', 'playwright', 'package.json'))) {
-      const r = await execBuffered('npm', ['install', '--no-audit', '--no-fund', '--loglevel=error'], { cwd: runnerDir, timeout: 5 * 60_000 });
-      if (!r.ok) throw new Error(`npm install playwright failed:\n${(r.stderr || r.stdout).split('\n').slice(-6).join('\n')}`);
+      // `npm` is `npm.cmd` on Windows — execFile cannot launch it directly, so
+      // the command must go through a shell there (the shell also resolves the
+      // PATHEXT extension). No argument contains a space, so shell quoting is
+      // not a concern; `cwd` is applied by the process API, not the shell.
+      const r = await execBuffered('npm', ['install', '--no-audit', '--no-fund', '--loglevel=error'], {
+        cwd: runnerDir,
+        timeout: 5 * 60_000,
+        shell: IS_WINDOWS,
+      });
+      if (!r.ok) {
+        const tail = (r.stderr || r.stdout).split('\n').slice(-6).join('\n');
+        const hint = /ENOENT|not recognized|not found/i.test(tail)
+          ? '\n\nKhông tìm thấy `npm`. Máy này cần cài Node.js (kèm npm) thì bước render PDF/draw.io mới provision được Chromium.'
+          : '';
+        throw new Error(`npm install playwright failed:\n${tail}${hint}`);
+      }
     }
-    const pwBin = path.join(runnerDir, 'node_modules', '.bin', 'playwright');
-    const r2 = await execBuffered(pwBin, ['install', 'chromium'], { cwd: runnerDir, timeout: 10 * 60_000 });
+    // playwright's own CLI entry, NOT `node_modules/.bin/playwright` — that shim
+    // is `playwright.cmd` on Windows and execFile refuses `.cmd`.
+    const pwCli = path.join(runnerDir, 'node_modules', 'playwright', 'cli.js');
+    const r2 = await execNodeScript(pwCli, ['install', 'chromium'], { cwd: runnerDir, timeout: 10 * 60_000 });
     if (!r2.ok) throw new Error(`playwright install chromium failed:\n${(r2.stderr || r2.stdout).split('\n').slice(-6).join('\n')}`);
     return runnerDir;
   })().catch((err) => {
@@ -141,7 +183,7 @@ export async function renderDrawioPages(
     cfgPath,
     JSON.stringify({ viewerUrl: VIEWER_URL, mxfiles, outPaths, resultPath }),
   );
-  const r = await execBuffered(process.execPath, [runnerMjs, cfgPath], { cwd: runnerDir, timeout: 4 * 60_000 });
+  const r = await execNodeScript(runnerMjs, [cfgPath], { cwd: runnerDir, timeout: 4 * 60_000 });
   if (!r.ok) throw new Error(`drawio render runner failed:\n${(r.stderr || r.stdout).split('\n').slice(-8).join('\n')}`);
   let flags: boolean[] = [];
   try {
@@ -187,7 +229,7 @@ export async function renderHtmlToPdf(html: string, runtimeDataDir: string): Pro
   const outPath = path.join(tmp, 'out.pdf');
   await fs.promises.writeFile(htmlPath, html, 'utf8');
   await fs.promises.writeFile(path.join(tmp, 'cfg.json'), JSON.stringify({ htmlPath, outPath }));
-  const r = await execBuffered(process.execPath, [runnerMjs, path.join(tmp, 'cfg.json')], { cwd: runnerDir, timeout: 4 * 60_000 });
+  const r = await execNodeScript(runnerMjs, [path.join(tmp, 'cfg.json')], { cwd: runnerDir, timeout: 4 * 60_000 });
   if (!r.ok) throw new Error(`pdf render runner failed:\n${(r.stderr || r.stdout).split('\n').slice(-8).join('\n')}`);
   return fs.promises.readFile(outPath);
 }

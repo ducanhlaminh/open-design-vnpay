@@ -65,6 +65,12 @@ frames it as that layer over the dimmed base screen.
                                                //   edge — back/cancel/close actions)
 }
 ```
+- `component_type` is the **KGS / SimStudio** vocabulary (it lands in
+  `DP_UI_COMPONENT.component_type` and drives the `/ux-spec` box-text mockup) —
+  it is NOT the wireframe leaf slug. The same control appears twice, once per
+  vocabulary: `component_type: "input"` here, `c: "shadcn:Input"` in the
+  `wire.json`. Keep the two consistent in MEANING (same control, same label,
+  same order); do not put a `shadcn:*` slug in `component_type`.
 - The component links to its screen by the **`screen_id` PROP** (the script sets
   it from the parent screen id) — NOT a graph edge.
 - Components render the per-screen box-text mockup on `/ux-spec`. A screen with

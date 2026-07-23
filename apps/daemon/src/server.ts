@@ -460,6 +460,7 @@ import {
   searchConfluencePages,
 } from './bas/bas-client.js';
 import { buildReactDemo } from './react-demo.js';
+import { checkWireframes, wireframeCheckMessage } from './wireframe-check.js';
 import { listMockupPages, mergePageReports } from './prd-review-fanout.js';
 import { listSections, mergeCjSections, mergeUxrSections, mergeUxSpecSections, type DocSection } from './section-fanout.js';
 import { listScreens, mergeHeuristicScreens, renderPrototypeIndex, type UiScreen } from './ui-fanout.js';
@@ -12727,11 +12728,43 @@ export async function startServer({
   // Render a self-contained HTML document (inline CSS + data-URI images) to a
   // PDF via headless Chromium. Runtime-agnostic (spawns its own chromium), so
   // the review exporter gets a real downloadable .pdf in web AND desktop.
+  // Two backends, in preference order:
+  //   1. DESKTOP — Electron's own `webContents.printToPDF` via the sidecar
+  //      bridge. The app IS a browser, so there is nothing to provision: no
+  //      npm, no ~150MB Chromium download, works offline. It saves through a
+  //      native dialog and answers `RenderPdfSavedResponse` (JSON).
+  //   2. Browser / CLI — headless Chromium provisioned on first use, answering
+  //      the PDF bytes. Only reachable when there is no desktop runtime, or
+  //      when the desktop bridge itself failed.
   app.post('/api/render/pdf', async (req, res) => {
     const html = typeof req.body?.html === 'string' ? req.body.html : '';
     const filename =
       typeof req.body?.filename === 'string' && req.body.filename ? req.body.filename : 'document.pdf';
     if (!html.trim()) return sendApiError(res, 400, 'BAD_REQUEST', 'html is required');
+
+    if (typeof desktopPdfExporter === 'function') {
+      try {
+        const saved = await desktopPdfExporter({
+          deck: false,
+          defaultFilename: filename,
+          html,
+          title: filename.replace(/\.pdf$/i, '') || 'document',
+        });
+        // A user who dismisses the Save dialog is NOT an error — answer 200 so
+        // the caller stays quiet instead of showing a failure toast.
+        const body: import('@open-design/contracts').RenderPdfSavedResponse = {
+          saved: true,
+          ok: saved.ok === true,
+          ...(saved.canceled ? { canceled: true } : {}),
+          ...(saved.path ? { path: saved.path } : {}),
+        };
+        if (saved.ok === true || saved.canceled) return res.json(body);
+        console.warn('[render/pdf] desktop exporter failed, falling back to headless Chromium:', saved.error);
+      } catch (err) {
+        console.warn('[render/pdf] desktop exporter unavailable, falling back to headless Chromium:', err);
+      }
+    }
+
     try {
       const pdf = await renderHtmlToPdf(html, RUNTIME_DATA_DIR);
       const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '_') || 'document.pdf';
@@ -12742,6 +12775,10 @@ export async function startServer({
       );
       res.send(pdf);
     } catch (err) {
+      // Log it: this path provisions npm + Chromium, so its failures are
+      // environment-specific (missing npm, offline, blocked download) and the
+      // 500 body is the only other place the reason appears.
+      console.warn('[render/pdf] failed:', err);
       sendApiError(res, 500, 'RENDER_FAILED', err instanceof Error ? err.message : String(err));
     }
   });
@@ -14799,10 +14836,31 @@ export async function startServer({
           : finalStatus.status === 'canceled'
             ? 'idle'
             : 'failed';
+        // Wireframe gate (ux only): the skill asks the agent to validate its
+        // wireframes; this is what makes sure it happened. Errors mean unknown
+        // component slugs / mistyped props, which render as `?slug` badges and
+        // give ui-react a broken layout contract — so the stage does NOT go
+        // green on them. Never throws; a missing validator just skips.
+        let wireframeGate: 'ok' | 'errors' = 'ok';
+        if (next === 'succeeded' && pipelineId === 'ux' && pipelineCwd) {
+          const check = await checkWireframes(pipelineCwd, SKILLS_DIR).catch(() => null);
+          if (check && (check.errors > 0 || check.warnings > 0)) {
+            if (check.errors > 0) wireframeGate = 'errors';
+            upsertMessage(db, conversationId, {
+              id: randomUUID(),
+              role: 'assistant',
+              content: wireframeCheckMessage(check),
+              runStatus: check.errors > 0 ? 'failed' : 'succeeded',
+              createdAt: Date.now(),
+            });
+          }
+        }
         // Upload to KGS is now MANUAL (the "Upload to KGS" button /
         // POST /api/pipelines/upload). The run only produces files locally and
         // updates the gate; the user uploads when ready.
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: next });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: wireframeGate === 'errors' ? 'failed' : next,
+        });
         // History snapshot: this run's outputs become one .odhistory commit —
         // re-running the stage overwrites files but never erases this state.
         if (pipelineCwd) {
@@ -14815,7 +14873,9 @@ export async function startServer({
             ...(agentInput ? { input: agentInput } : {}),
           }).catch(() => null);
         }
-        return next;
+        // A failed wireframe gate also stops the run-all chain — ux-review and
+        // the UI terminals would otherwise build on a broken layout contract.
+        return wireframeGate === 'errors' ? 'failed' : next;
       } catch (error) {
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
         console.warn('[pipelines] run failed:', error);

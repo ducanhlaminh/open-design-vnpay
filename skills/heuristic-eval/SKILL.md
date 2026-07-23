@@ -60,8 +60,10 @@ score is computed with its arithmetic. Do NOT invent heuristics or severities.
   `screen_intent`, `primary_actor`, `layout` (`mobile`|`web`), and an ordered
   list of **components** (DP_UI_COMPONENT: the inputs/buttons/lists/labels).
 - **Wireframes (primary, when present):** `./wireframes/<SCREEN-ID>.wire.json`
-  (wiretext schema — objects placed freely on a character grid), authored by the
-  same ux run. This IS the screen's composed LAYOUT, so judge it too: visual
+  (a flexbox layout TREE — `stack`/`row` containers + leaves whose `c` is a slug
+  from the closed registry `skills/ux-spec/references/wire-components.md`),
+  authored by the same ux run. This IS the screen's composed LAYOUT, so judge it
+  too: visual
   hierarchy and grouping (proximity — related fields adjacent?), primary-action
   placement (reachable, not buried), navigation consistency ACROSS screens (same
   sidebar/topbar skeleton?), and web/mobile idiom fit (a `layout: "web"` screen

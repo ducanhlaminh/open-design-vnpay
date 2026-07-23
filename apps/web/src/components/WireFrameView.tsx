@@ -16,10 +16,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { compressToEncodedURIComponent } from 'lz-string';
 import { Icon } from './Icon';
+import { resolveWireKind, normalizeWireLeaf } from './wire-slug-map.generated';
 
 /* ── Layout-tree shape (preferred) ───────────────────────────────────────── */
 export interface WireLeaf {
-  /** One of the component/text/box kinds below (see LeafBody). */
+  /** DSL v2: a slug from the closed registry (`shadcn:Input`, `mobile:AppBar`, …)
+   *  — see skills/ux-spec/references/wire-components.md. */
+  c?: string;
+  /** DSL v2: the leaf's props bag. v1 files keep them flat on the node. */
+  props?: Record<string, unknown>;
+  /** DSL v1 (still accepted, mapped through the registry aliases). */
   componentType?: string;
   type?: string; // 'text' | 'box' | 'component' (optional; inferred from componentType)
   label?: string;
@@ -28,7 +34,9 @@ export interface WireLeaf {
   hint?: string;
   checked?: boolean;
   required?: boolean;
-  active?: boolean;
+  /** v1: `false` renders a button as secondary. v2: the selected INDEX of a
+   *  tabs/chips/radio/sidebar leaf (normalised into activeTab / activeStep). */
+  active?: boolean | number;
   columns?: string[];
   rows?: string[][];
   navItems?: string[];
@@ -42,6 +50,12 @@ export interface WireLeaf {
   maxValue?: number;
   icon?: string;
   alertType?: string;
+  variant?: string;
+  size?: string;
+  options?: string[];
+  navigatesTo?: string;
+  /** v2: full-width primary action (normalised into grow: 1). */
+  block?: boolean;
   /** flex-grow (fill remaining space in a row). */
   grow?: number;
   /** fixed width in px (a sidebar column, a chip). */
@@ -92,6 +106,9 @@ export interface WireObject {
   [key: string]: unknown;
 }
 export interface WireDoc {
+  /** 2 = closed shadcn-named vocabulary (`c` + `props`). Absent = v1 free-text
+   *  `componentType`, still rendered through the registry aliases. */
+  dslVersion?: number;
   /** Base flexbox layout tree. For a mobile app screen this is the only tree;
    *  for a web screen it is the DESKTOP design (and the fallback for any device
    *  in `layouts` that wasn't authored). */
@@ -147,9 +164,28 @@ function Skel({ w = '60%' }: { w?: string }) {
   return <i style={{ display: 'inline-block', height: 8, width: w, borderRadius: 999, background: T.lineSoft }} />;
 }
 
+/* ── Unknown slug — LOUD, never a silent empty box ────────────────────────── */
+function UnknownSlug({ raw }: { raw: string }) {
+  return (
+    <div
+      title="Slug không có trong wire-registry.json — chạy scripts/validate-wire.mjs"
+      style={{ ...box, ...rowMid, gap: 6, minHeight: 34, padding: '0 10px', borderColor: '#d14343', borderStyle: 'dashed', color: '#d14343', fontSize: 11.5, fontFamily: T.mono }}
+    >
+      ?{raw}
+    </div>
+  );
+}
+
 /* ── Leaf renderer (natural height, fills its flex box width) ─────────────── */
-function LeafBody({ o }: { o: WireLeaf }) {
-  const kind = (o.componentType ?? o.type ?? 'text').toLowerCase();
+// The component vocabulary is CLOSED — `resolveWireKind` comes from the generated
+// registry map (skills/ux-spec/references/wire-registry.json), which also accepts
+// the v1 `componentType` names so old wireframes keep rendering.
+function LeafBody({ o: node }: { o: WireLeaf }) {
+  const raw = node.c ?? node.componentType ?? node.type;
+  const resolved = resolveWireKind(raw ?? (node.label ?? node.content ? 'text' : null));
+  if (!resolved) return <UnknownSlug raw={String(raw ?? '—')} />;
+  const kind = resolved.kind;
+  const o = normalizeWireLeaf(node) as WireLeaf;
   const label = o.label ?? o.content ?? '';
   const field = (inner: ReactNode): ReactNode => (
     <div style={{ ...box, ...rowMid, gap: 8, minHeight: 40, padding: '0 12px', fontSize: 12.5, color: T.muted }}>
@@ -429,8 +465,110 @@ function LeafBody({ o }: { o: WireLeaf }) {
     }
     case 'spacer':
       return <div style={{ flex: 1 }} />;
+    case 'slider': {
+      const pct = Math.min(100, Math.max(0, ((o.value ?? 40) / (o.maxValue ?? 100)) * 100));
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {label ? <span style={{ fontSize: 11.5, color: T.muted }}>{label}</span> : null}
+          <div style={{ ...rowMid, height: 16 }}>
+            <div style={{ height: 4, flex: 1, borderRadius: 999, background: T.lineSoft, position: 'relative' }}>
+              <div style={{ position: 'absolute', inset: 0, width: `${pct}%`, background: T.ink, borderRadius: 999 }} />
+              <i style={{ position: 'absolute', top: -5, left: `calc(${pct}% - 7px)`, width: 14, height: 14, borderRadius: '50%', background: T.paper, border: `1.5px solid ${T.ink}` }} />
+            </div>
+          </div>
+        </div>
+      );
+    }
+    case 'otp':
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {label ? <span style={{ fontSize: 11.5, color: T.muted }}>{label}</span> : null}
+          <div style={{ display: 'flex', gap: 8 }}>
+            {Array.from({ length: Math.min(8, (o.length as number) ?? 6) }).map((_, i) => (
+              <i key={i} style={{ ...box, width: 34, height: 42, display: 'block' }} />
+            ))}
+          </div>
+        </div>
+      );
+    case 'accordion': {
+      const items = o.items ?? ['Mục 1', 'Mục 2', 'Mục 3'];
+      const open = o.activeStep ?? 0;
+      return (
+        <div style={{ ...box, overflow: 'hidden' }}>
+          {items.map((it, i) => (
+            <div key={i} style={{ borderTop: i ? `1px solid ${T.lineSoft}` : undefined }}>
+              <div style={{ ...rowMid, justifyContent: 'space-between', gap: 8, padding: '10px 12px', fontSize: 12.5, fontWeight: i === open ? 700 : 400, color: T.ink }}>
+                <span style={trunc}>{it}</span>
+                <span style={{ color: T.faint }}>{i === open ? '⌃' : '⌄'}</span>
+              </div>
+              {i === open ? <div style={{ padding: '0 12px 12px' }}><Skel w="85%" /></div> : null}
+            </div>
+          ))}
+        </div>
+      );
+    }
+    case 'breadcrumb':
+      return (
+        <div style={{ ...rowMid, gap: 6, fontSize: 11.5, color: T.muted, flexWrap: 'wrap' }}>
+          {(o.items ?? ['Trang chủ', 'Mục']).map((it, i, arr) => (
+            <span key={i} style={{ ...rowMid, gap: 6, color: i === arr.length - 1 ? T.ink : T.muted }}>
+              {it}{i < arr.length - 1 && <span style={{ color: T.faint }}>›</span>}
+            </span>
+          ))}
+        </div>
+      );
+    case 'pagination': {
+      const n = Math.min(6, (o.pages as number) ?? 3);
+      const active = o.activeStep ?? 0;
+      return (
+        <div style={{ ...rowMid, gap: 6, justifyContent: 'center', fontSize: 12 }}>
+          <span style={{ color: T.faint, padding: '0 4px' }}>‹</span>
+          {Array.from({ length: n }).map((_, i) => (
+            <span key={i} style={{ ...box, ...rowMid, justifyContent: 'center', width: 26, height: 26, fontWeight: i === active ? 700 : 400, background: i === active ? T.ink : T.paper, color: i === active ? T.paper : T.ink }}>{i + 1}</span>
+          ))}
+          <span style={{ color: T.faint, padding: '0 4px' }}>›</span>
+        </div>
+      );
+    }
+    case 'sidebar': {
+      const items = o.items ?? ['Tổng quan', 'Giao dịch', 'Báo cáo'];
+      const active = o.activeStep ?? 0;
+      return (
+        <div style={{ ...box, padding: 8, display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {label ? <div style={{ padding: '4px 8px 8px', fontSize: 12.5, fontWeight: 700, color: T.ink }}>{label}</div> : null}
+          {items.map((it, i) => (
+            <div key={i} style={{ ...rowMid, gap: 8, padding: '8px 10px', borderRadius: 6, fontSize: 12.5, background: i === active ? T.fill : 'transparent', fontWeight: i === active ? 700 : 400, color: T.ink }}>
+              <i style={{ width: 14, height: 14, flexShrink: 0, borderRadius: 4, background: T.lineSoft }} />
+              <span style={trunc}>{it}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    case 'skeleton':
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {Array.from({ length: Math.min(6, (o.lines as number) ?? 3) }).map((_, i, arr) => (
+            <Skel key={i} w={i === arr.length - 1 ? '55%' : '100%'} />
+          ))}
+        </div>
+      );
+    case 'empty':
+      return (
+        <div style={{ ...box, borderStyle: 'dashed', padding: '24px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, textAlign: 'center' }}>
+          <i style={{ width: 32, height: 32, borderRadius: 8, background: T.fill }} />
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: T.ink }}>{label || 'Chưa có dữ liệu'}</span>
+          {o.hint ? <span style={{ fontSize: 11.5, color: T.muted }}>{o.hint}</span> : null}
+        </div>
+      );
     default:
-      return <div style={{ fontSize: 12.5, color: T.soft }}>{label || kind}</div>;
+      // Slug hợp lệ nhưng renderer chưa vẽ riêng — hộp có nhãn, vẫn nhìn thấy được.
+      return (
+        <div style={{ ...box, borderStyle: 'dashed', ...rowMid, gap: 8, minHeight: 38, padding: '0 12px', fontSize: 12, color: T.muted }}>
+          <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.faint }}>{resolved.slug}</span>
+          <span style={trunc}>{label}</span>
+        </div>
+      );
   }
 }
 
@@ -521,13 +659,18 @@ function LegacyView({ objects }: { objects: WireObject[] }) {
 }
 
 /* ── Export to wiretext.app (kept working for both shapes) ────────────────── */
+// Resolve any leaf (v1 or v2) to its render kind — the export speaks the v1
+// character-grid vocabulary, so v2 slugs are mapped down through the registry.
+const wireKindOf = (n: WireLeaf): string => resolveWireKind(n.c ?? n.componentType ?? n.type)?.kind ?? 'text';
+
 // Flatten a layout tree into wiretext objects on the character grid (best-effort
 // flow layout — the editor is for manual polish, so approximate cells are fine).
 function treeToObjects(node: WireNode, col: number, row: number, widthCells: number): { objects: WireObject[]; rows: number } {
   const objects: WireObject[] = [];
-  const leafRows = (n: WireLeaf): number => {
-    const k = (n.componentType ?? n.type ?? 'text').toLowerCase();
-    if (['input', 'search', 'select', 'dropdown', 'button', 'cta', 'chip'].includes(k)) return 3;
+  const leafRows = (raw: WireLeaf): number => {
+    const k = wireKindOf(raw);
+    const n = normalizeWireLeaf(raw) as WireLeaf;
+    if (['input', 'search', 'select', 'button', 'chip'].includes(k)) return 3;
     if (k === 'textarea') return 4;
     if (k === 'list') return (n.items?.length ?? 3) + 1;
     if (k === 'table') return (n.rows?.length ?? 3) + 2;
@@ -560,19 +703,21 @@ function treeToObjects(node: WireNode, col: number, row: number, widthCells: num
     return { objects, rows: cursorRow - row };
   }
   const h = leafRows(node);
-  const k = (node.componentType ?? node.type ?? 'text').toLowerCase();
+  const k = wireKindOf(node);
+  const flat = normalizeWireLeaf(node) as WireLeaf;
+  const isText = k === 'text' || k === 'heading' || k === 'section';
   objects.push({
-    type: k === 'text' || k === 'label' || k === 'heading' || k === 'section' ? 'text' : 'component',
-    ...(k === 'text' || k === 'label' || k === 'heading' || k === 'section'
-      ? { content: node.label ?? node.content ?? '' }
-      : { componentType: k, label: node.label }),
+    type: isText ? 'text' : 'component',
+    ...(isText
+      ? { content: flat.label ?? flat.content ?? '' }
+      : { componentType: k, label: flat.label }),
     position: { col, row },
     width: widthCells,
     height: h,
-    ...(node.items ? { items: node.items } : {}),
-    ...(node.columns ? { columns: node.columns } : {}),
-    ...(node.rows ? { rows: node.rows } : {}),
-    ...(node.tabs ? { tabs: node.tabs } : {}),
+    ...(flat.items ? { items: flat.items } : {}),
+    ...(flat.columns ? { columns: flat.columns } : {}),
+    ...(flat.rows ? { rows: flat.rows } : {}),
+    ...(flat.tabs ? { tabs: flat.tabs } : {}),
   });
   return { objects, rows: h };
 }

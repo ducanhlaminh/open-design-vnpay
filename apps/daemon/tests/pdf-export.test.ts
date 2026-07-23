@@ -102,3 +102,87 @@ describe('POST /api/projects/:id/export/pdf', () => {
     }
   });
 });
+
+// POST /api/render/pdf has two backends. In the DESKTOP app the PDF comes from
+// Electron's own printToPDF (nothing to provision — no npm, no ~150MB Chromium
+// download, works offline); only a browser/CLI caller falls back to headless
+// Chromium. These specs pin the desktop branch: a packaged Windows build with
+// no Node installed used to 500 here because the fallback was the only path.
+describe('POST /api/render/pdf', () => {
+  async function withServer<T>(
+    exporter: ((input: unknown) => Promise<unknown>) | undefined,
+    run: (url: string) => Promise<T>,
+  ): Promise<T> {
+    const started = (await startServer({
+      port: 0,
+      returnServer: true,
+      ...(exporter ? { desktopPdfExporter: exporter } : {}),
+    })) as { server: { close(cb: () => void): void }; url: string };
+    try {
+      return await run(started.url);
+    } finally {
+      await new Promise<void>((resolve) => started.server.close(resolve));
+    }
+  }
+
+  const post = (url: string, body: unknown) =>
+    fetch(`${url}/api/render/pdf`, {
+      body: JSON.stringify(body),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+
+  it('renders through the desktop exporter and answers the saved path as JSON', async () => {
+    const calls: unknown[] = [];
+    await withServer(
+      async (input) => {
+        calls.push(input);
+        return { ok: true, path: 'C:\\Users\\me\\review.pdf' };
+      },
+      async (url) => {
+        const response = await post(url, { html: '<h1>hi</h1>', filename: 'review-tong-hop.pdf' });
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get('content-type')).toContain('application/json');
+        expect(await response.json()).toEqual({
+          ok: true,
+          path: 'C:\\Users\\me\\review.pdf',
+          saved: true,
+        });
+        expect(calls).toEqual([
+          {
+            deck: false,
+            defaultFilename: 'review-tong-hop.pdf',
+            html: '<h1>hi</h1>',
+            title: 'review-tong-hop',
+          },
+        ]);
+      },
+    );
+  });
+
+  it('treats a dismissed Save dialog as success, not an error', async () => {
+    await withServer(
+      async () => ({ canceled: true, ok: false }),
+      async (url) => {
+        const response = await post(url, { html: '<h1>hi</h1>', filename: 'x.pdf' });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ canceled: true, ok: false, saved: true });
+      },
+    );
+  });
+
+  it('rejects an empty document before reaching any backend', async () => {
+    await withServer(
+      async () => {
+        throw new Error('exporter must not run for an empty document');
+      },
+      async (url) => {
+        const response = await post(url, { html: '   ' });
+
+        expect(response.status).toBe(400);
+      },
+    );
+  });
+});

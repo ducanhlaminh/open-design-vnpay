@@ -10,6 +10,7 @@
 // (possibly edited) report + every image it references into one .zip so a
 // reviewer always gets the full picture, never a report with missing images.
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import type { RenderPdfSavedResponse } from '@open-design/contracts';
 import { Icon } from './Icon';
 import { projectRawUrl } from '../providers/registry';
 import { triggerDownload } from '../runtime/exports';
@@ -301,6 +302,15 @@ async function exportReviewPdf(titleText: string, fragments: string[], filename:
   if (!resp.ok) {
     const payload = (await resp.json().catch(() => null)) as { error?: string } | null;
     throw new Error(payload?.error || `Xuất PDF thất bại (${resp.status})`);
+  }
+  // Desktop answers JSON (`RenderPdfSavedResponse`): Electron already wrote the
+  // file through a native Save dialog, so there is nothing to download here —
+  // and a dismissed dialog is a silent no-op, not a failure. The browser path
+  // answers `application/pdf` bytes.
+  if (resp.headers.get('content-type')?.includes('application/json')) {
+    const saved = (await resp.json()) as RenderPdfSavedResponse;
+    if (!saved.ok && !saved.canceled) throw new Error('Xuất PDF thất bại');
+    return;
   }
   triggerDownload(await resp.blob(), filename);
 }

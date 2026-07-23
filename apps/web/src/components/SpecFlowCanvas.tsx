@@ -381,7 +381,14 @@ export function SpecFlowCanvas({
   wireframes: Record<string, WireDoc> | null;
   platforms: Record<string, string> | null;
 }) {
-  const screens = ((spec as { screens?: Array<Record<string, any>> }).screens ?? []) as Array<Record<string, any>>;
+  // MUST be memoized: `?? []` mints a new array on every render when the spec
+  // has no `screens`, which changes `screenIds`/`nameOf` → `built` → the
+  // seeding effect below → setState → render again. That self-sustaining loop
+  // is what throws "Maximum update depth exceeded" on this canvas.
+  const screens = useMemo(
+    () => ((spec as { screens?: Array<Record<string, any>> }).screens ?? []) as Array<Record<string, any>>,
+    [spec],
+  );
   const screenIds = useMemo(() => new Set(screens.map((s) => String(s.id ?? ''))), [screens]);
   const nameOf = useMemo(
     () => new Map(screens.map((s) => [String(s.id ?? ''), String(s.name ?? s.title ?? s.id ?? '')])),

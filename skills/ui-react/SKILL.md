@@ -147,6 +147,32 @@ ordered screen list (respect `components[].order`). If a customer journey is
 present, derive the click-flow (e.g. `login → home → detail`) from its
 USER_FLOW / STAGE order so routes link sensibly.
 
+### 1b. The wireframe IS the layout contract — do NOT re-derive it
+The `ux` stage emits `./wireframes/<SCREEN-ID>.wire.json` for every screen: a
+flexbox layout tree whose leaves carry a **slug from a closed registry named
+after this very component set** (`shadcn:Input`, `shadcn:Table`, `mobile:AppBar`,
+…). That is a handoff, not a sketch — read it for each screen and honor it:
+
+- **Structure**: the container tree (`stack`/`row`, `card`, section `label`,
+  `grow`/`w`) is the intended composition — section order, what is grouped in a
+  card, what sits side by side, where the primary action lands. Keep it. If you
+  deviate, it must be a deliberate craft improvement, not because you skipped
+  reading the file.
+- **Components**: each leaf's `c` maps 1:1 to a primitive under
+  `@/components/ui/`. `shadcn:Select` → `Select`, `shadcn:Item` → `Item` rows,
+  `shadcn:InputOTP` → `InputOTP`, `shadcn:ToggleGroup` → `ToggleGroup`, and so
+  on. The mapping table (including the `mobile:*` slugs, which have no shadcn
+  primitive and tell you what to compose instead) is
+  `skills/ux-spec/references/wire-components.md`.
+- **Props carry intent**: `block: true` = full-width primary action;
+  `active: <n>` = the selected tab/step; `navigatesTo` = the target screen id,
+  which must match the `data-flow-action` / route you wire in step 4.
+- **`layouts.tablet` / `layouts.mobile`** on a web screen are the responsive
+  redesigns — see the breakpoint rules below.
+
+Your job is the layer the wireframe cannot express: the app composite layer,
+real content, states, motion, and craft. Not re-inventing the bones.
+
 ### 2. Design the app component layer (`src/components/app/`)
 **Before writing any screen**, derive a small library of DOMAIN composites from
 the use cases — this is what lifts the output from "wireframe assembled from

@@ -164,15 +164,34 @@ See `assets/example-ux-spec.json` for a complete, valid example.
 > personas + cross-module navigation). Follow the kickoff's output path + id
 > prefix verbatim.
 
-### 1b. Author one wireframe per screen (layout tree)
+### 1b. Author one wireframe per screen (layout tree, DSL v2)
 For EVERY screen, also write `./wireframes/<SCREEN-ID>.wire.json` following
 `references/wireframe.md`. Describe the screen as a **layout TREE** (`stack` /
 `row` containers + component leaves) — like writing HTML/JSX structure, NOT pixel
 coordinates. The host lays it out with flexbox so it never overlaps. Compose a
 real screen (mobile → one vertical stack of full-width fields, sections, chips,
-a primary CTA; web → navbar + a row of sidebar + main), matching the archetype
-and worked example in `references/wireframe.md`. The Wireframe view renders it and
-it opens in wiretext.app for hand-tweaks.
+a primary CTA; web → nav + a row of sidebar + main), matching the archetype and
+worked example in `references/wireframe.md`.
+
+Two hard requirements:
+
+- **`"dslVersion": 2`** and every leaf is `{ "c": "<slug>", "props": { … } }`,
+  where `<slug>` comes from the CLOSED registry in
+  **`references/wire-components.md`** (generated from `wire-registry.json`).
+  Slugs are named after shadcn/ui because the `ui-react` terminal builds with
+  exactly that set — the slug you pick IS the component it builds. Anything not
+  in the registry is an error, not a free-text hint.
+- **Validate before you finish** (zero errors is the bar). `<SKILL-ROOT>` is the
+  `.od-skills/…` path in the preamble at the top of this skill — the script and
+  its registry live there, your wireframes live in the working directory:
+  ```bash
+  node <SKILL-ROOT>/scripts/validate-wire.mjs ./wireframes --spec ./<feature>-ux-spec.json
+  ```
+  It catches unknown slugs, wrong prop types, missing required props, screens
+  with no wireframe, wireframes with no screen, and web screens missing their
+  `layouts.tablet` / `layouts.mobile` redesign.
+
+The Wireframe view renders it, and it still exports to wiretext.app for hand-tweaks.
 
 ### 1c. Author one RULE FLOWCHART per user flow (`flows/<FLOW-ID>.flow.json`)
 The wireframes are the SCREENS; the user flow is expressed as wireframes + a
@@ -222,12 +241,14 @@ file in the open-design-vnpay FileViewer. A **"Push to KG"** button appears with
 a **project dropdown** (the list of SimStudio projects). Pick the target project
 and click — no env/CLI needed (the daemon holds the KGS credentials).
 
-**b) CLI / script.** Run the push script with the open-design app credentials:
+**b) CLI / script.** Run the push script with the open-design app credentials
+(`<SKILL-ROOT>` = the `.od-skills/…` path from the preamble above — the script
+ships with this skill, it is NOT in your working directory):
 ```bash
 KGS_URL=http://localhost:28001 \
 KGS_API_KEY=<open-design app key> \
 KGS_APP_ID=open-design-app \
-python3 scripts/push_to_kgs.py <your-ux-spec>.json --project-id <project_id>
+python3 <SKILL-ROOT>/scripts/push_to_kgs.py <your-ux-spec>.json --project-id <project_id>
 # or, against a running daemon:  od kg push <your-ux-spec>.json --project-id <project_id>
 # list targets:                  od kg projects
 ```

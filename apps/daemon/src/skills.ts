@@ -457,7 +457,7 @@ function withSkillRootPreamble(body: string, dir: string): string {
 
 function collectReferencedSideFiles(body: string): string[] {
   const files = new Set<string>();
-  const matches = body.matchAll(/\b(?:assets|references)\/[A-Za-z0-9._-]+\b/g);
+  const matches = body.matchAll(/\b(?:assets|references|scripts)\/[A-Za-z0-9._-]+\b/g);
   for (const match of matches) files.add(match[0]);
   if (/\bexample\.html\b/.test(body)) files.add("example.html");
   return Array.from(files).sort();

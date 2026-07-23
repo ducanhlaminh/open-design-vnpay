@@ -6,6 +6,7 @@ import { checkDesignSystemPackageQuality } from "./check-design-system-package-q
 import { checkDesignSystemComponentFixtureReport } from "./check-components-fixtures.ts";
 import { checkDesignSystemFlagParity } from "./check-design-system-flag-parity.ts";
 import { checkComponentsManifestExtraction } from "./check-components-manifest-extraction.ts";
+import { checkWireRegistrySync } from "./check-wire-registry-sync.ts";
 import {
   checkDesignSystemA1RequiredTokens,
   checkDesignSystemA2DefaultsParity,
@@ -933,6 +934,7 @@ const checks: GuardCheck[] = [
   { name: "design system A2 defaults parity", run: checkDesignSystemA2DefaultsParity },
   { name: "design system flag parity", run: checkDesignSystemFlagParity },
   { name: "design system component manifest extraction", run: checkComponentsManifestExtraction },
+  { name: "wire registry sync", run: checkWireRegistrySync },
 ];
 
 const results: boolean[] = [];
