@@ -22,6 +22,24 @@ case "$(uname -m)" in
 esac
 platform="${OD_DOCKER_PLATFORM:-$native}"
 
+# Pull-first: the image is published multi-arch on a public registry (pin file
+# `registry`, pushed by push-ghcr.sh). OD_SANDBOX_REGISTRY overrides the pin;
+# `off` disables. Any pull failure falls through to the local build.
+registry="${OD_SANDBOX_REGISTRY:-}"
+if [ -z "$registry" ] && [ -f "$here/registry" ]; then
+  registry="$(tr -d '[:space:]' < "$here/registry")"
+fi
+if [ -n "$registry" ] && [ "$registry" != "off" ]; then
+  echo "[uireact] pulling $registry/$image ($platform)…"
+  if docker pull --platform "$platform" "$registry/$image"; then
+    docker tag "$registry/$image" "$image"
+    docker tag "$registry/$image" "uireact-base:latest"
+    echo "[uireact] pulled $image from $registry"
+    exit 0
+  fi
+  echo "[uireact] pull failed — building locally…" >&2
+fi
+
 echo "[uireact] building $image ($platform, installs the full toolkit — a few minutes)…"
 docker build \
   --platform "$platform" \

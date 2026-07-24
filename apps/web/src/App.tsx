@@ -36,6 +36,7 @@ import {
 } from './components/SettingsDialog';
 import { PrivacyConsentModal } from './components/PrivacyConsentModal';
 import { FeedbackUsernameGate } from './components/FeedbackUsernameGate';
+import { InfraSetupGate } from './components/InfraSetupGate';
 import {
   daemonIsLive,
   fetchAppVersionInfo,
@@ -1566,6 +1567,11 @@ export function App() {
         />
       ) : null}
       <MemoryToast onOpenMemory={() => openSettings('memory')} />
+      {/* First-run infra wizard (Docker → sandbox image → Claude login). It
+          evaluates silently and only renders on machines with missing infra;
+          rendered BEFORE the privacy/username gates so those (same z-index,
+          later siblings) stay on top when they coexist on a fresh install. */}
+      <InfraSetupGate daemonLive={daemonLive} onOpenSettings={() => openSettings('execution')} />
       {/* First-run privacy consent banner. It waits for daemon config
           hydration because privacyDecisionAt is daemon-owned and stripped
           from localStorage. It waits for `onboardingCompleted` so first-run

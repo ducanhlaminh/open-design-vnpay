@@ -18,7 +18,10 @@
 #   docker run -it --rm -v od-claude-auth:/home/node/.claude \
 #     od-agent-sandbox:<ver> claude /login
 ARG TOOLKIT_VERSION
-FROM uireact-base:${TOOLKIT_VERSION}
+# BASE_IMAGE defaults to the locally-built base; push-ghcr.sh overrides it to
+# the registry ref so buildx can resolve a multi-arch base during cross-builds.
+ARG BASE_IMAGE=uireact-base:${TOOLKIT_VERSION}
+FROM ${BASE_IMAGE}
 
 USER root
 # git: skills that init a local repo; ripgrep: Claude Code's search backend;
@@ -51,6 +54,18 @@ USER node
 # build time: the container filesystem is throwaway, so without this every
 # jira-ingest run would re-download the Python package tree at cold start.
 # Keep the pin in sync with buildAtlassianServer in apps/daemon/src/mcp-config.ts.
-RUN uvx mcp-atlassian@0.21.1 --help > /dev/null
+#
+# SKIPPED on cross-arch builds (BUILDARCH≠TARGETARCH, e.g. the amd64 half of a
+# push-ghcr.sh run on Apple Silicon): Python segfaults under QEMU emulation
+# here. Those images just re-download the package tree on their first
+# jira-ingest run — a one-time cold start, not a functional loss. BuildKit
+# auto-fills these ARGs; legacy builders leave them empty → pre-warm runs.
+ARG BUILDARCH
+ARG TARGETARCH
+RUN if [ -z "${BUILDARCH:-}" ] || [ "${BUILDARCH}" = "${TARGETARCH}" ]; then \
+      uvx mcp-atlassian@0.21.1 --help > /dev/null; \
+    else \
+      echo "[sandbox] skip mcp-atlassian pre-warm (cross-build ${BUILDARCH}→${TARGETARCH}, QEMU segfault)"; \
+    fi
 
 WORKDIR /work/app

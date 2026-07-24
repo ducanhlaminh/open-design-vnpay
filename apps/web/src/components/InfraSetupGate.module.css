@@ -1,0 +1,255 @@
+/* First-run infra setup gate — same overlay chrome as FeedbackUsernameGate,
+   wider card to fit the step list. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.card {
+  width: min(600px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: infra-gate-in 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@keyframes infra-gate-in {
+  from { opacity: 0; transform: scale(0.96) translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+.kicker {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
+.desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.steps {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg-subtle);
+}
+
+.stepOk {
+  border-color: color-mix(in srgb, var(--success, #16a34a) 35%, var(--border-soft));
+}
+
+.stepBlocked {
+  opacity: 0.6;
+}
+
+.stepBadge {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+}
+
+.stepOk .stepBadge {
+  color: #fff;
+  background: var(--success, #16a34a);
+  border-color: var(--success, #16a34a);
+}
+
+.stepBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.stepTitle {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stepDone {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--success, #16a34a);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.stepHint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.stepErr {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--danger, #c0392b);
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.primaryBtn {
+  padding: 7px 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 150ms;
+}
+.primaryBtn:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+.primaryBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.linkBtn {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 150ms;
+}
+.linkBtn:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.inlineLink {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.buildLog {
+  display: block;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-soft);
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-soft);
+}
+
+.cmd {
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.skipBtn {
+  border: none;
+  background: none;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.skipBtn:hover {
+  color: var(--text);
+}
+
+.doneBtn {
+  padding: 10px 18px;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 150ms, filter 150ms;
+}
+.doneBtn:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+.doneBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

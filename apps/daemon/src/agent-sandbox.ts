@@ -572,20 +572,59 @@ function nativeDockerPlatform(): string {
   return process.arch === 'arm64' ? 'linux/arm64' : 'linux/amd64';
 }
 
-// One `docker build` streamed line-by-line to `onLog` (builds take minutes, so
-// no capture-with-timeout). Rejects on a non-zero exit.
-function dockerBuildStream(args: string[], onLog?: (line: string) => void): Promise<void> {
+// One long docker command (build/pull) streamed line-by-line to `onLog`
+// (these take minutes, so no capture-with-timeout). Rejects on non-zero exit.
+function dockerStream(argv: string[], onLog?: (line: string) => void): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn('docker', ['build', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('docker', argv, { stdio: ['ignore', 'pipe', 'pipe'] });
     const pipe = (buf: Buffer) => onLog?.(buf.toString());
     child.stdout?.on('data', pipe);
     child.stderr?.on('data', pipe);
     child.on('error', reject);
     child.on('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`docker build exited ${code}`));
+      else reject(new Error(`docker ${argv[0]} exited ${code}`));
     });
   });
+}
+
+// ── Registry pull-first ──────────────────────────────────────────────────────
+// The sandbox images are published multi-arch to a PUBLIC registry (GHCR, see
+// skills/ui-react/builder/push-ghcr.sh) so a fresh machine downloads them
+// instead of running a 10-minute local docker build. The registry lives in the
+// `registry` pin file next to the version pins; OD_SANDBOX_REGISTRY overrides
+// it, and the value `off` (or an empty/missing pin) disables pulls entirely.
+function resolveSandboxRegistry(builderDir: string): string | null {
+  const override = (process.env.OD_SANDBOX_REGISTRY ?? '').trim();
+  if (override) return override.toLowerCase() === 'off' ? null : override.replace(/\/+$/, '');
+  try {
+    const pinned = readFileSync(path.join(builderDir, 'registry'), 'utf8').trim();
+    return pinned ? pinned.replace(/\/+$/, '') : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `docker pull` a published image and re-tag it under the local names the
+ *  rest of the sandbox code expects. Any failure (offline, package private,
+ *  tag not pushed yet) returns false — the caller falls back to building. */
+async function tryPullRemoteImage(
+  remoteRef: string,
+  platform: string,
+  localTags: string[],
+  onLog?: (line: string) => void,
+): Promise<boolean> {
+  try {
+    onLog?.(`[sandbox] pulling ${remoteRef} (${platform})…\n`);
+    await dockerStream(['pull', '--platform', platform, remoteRef], onLog);
+    for (const tag of localTags) await docker(['tag', remoteRef, tag]);
+    return true;
+  } catch (err) {
+    onLog?.(
+      `[sandbox] pull ${remoteRef} failed (${err instanceof Error ? err.message : String(err)}) — falling back to a local build.\n`,
+    );
+    return false;
+  }
 }
 
 // Single-flight per image so concurrent spawns (run-all, parallel runs) don't
@@ -593,14 +632,16 @@ function dockerBuildStream(args: string[], onLog?: (line: string) => void): Prom
 const sandboxBuildInFlight = new Map<string, Promise<SandboxPreflightResult>>();
 
 /**
- * Ensure the sandbox image exists, BUILDING it in-process (direct `docker
- * build`, no bash — works on Windows without Git Bash) when missing. This is
- * the first-run auto-build so a fresh machine doesn't hard-fail preflight with
- * "image is missing". Requires Docker to be running (caller checks / build
- * fails loudly otherwise). Builds `uireact-base:<toolkit>` first when absent,
- * then the sandbox image, both at the host's NATIVE arch. Returns ok when the
- * image is present after the attempt. The auth volume (interactive OAuth) is
- * NOT auto-created — that stays a manual `od sandbox login`.
+ * Ensure the sandbox image exists: PULL the published image from the pinned
+ * public registry first (seconds-to-minutes, no toolchain needed), and only
+ * fall back to BUILDING it in-process (direct `docker build`, no bash — works
+ * on Windows without Git Bash) when the pull fails. This is the first-run
+ * auto-provision so a fresh machine doesn't hard-fail preflight with "image is
+ * missing". Requires Docker to be running (caller checks / build fails loudly
+ * otherwise). The build path creates `uireact-base:<toolkit>` first when
+ * absent, then the sandbox image, both at the host's NATIVE arch. Returns ok
+ * when the image is present after the attempt. The auth volume (interactive
+ * OAuth) is NOT auto-created — that stays a manual `od sandbox login`.
  */
 export async function ensureSandboxImage(
   builderDir: string,
@@ -616,16 +657,41 @@ export async function ensureSandboxImage(
       const toolkit = readFileSync(path.join(builderDir, 'base', 'toolkit.version'), 'utf8').trim();
       const claude = readFileSync(path.join(builderDir, 'sandbox', 'claude.version'), 'utf8').trim();
       const baseImage = `uireact-base:${toolkit}`;
+
+      // Pull-first: grab the published images off the public registry. The
+      // base image is best-effort (ui-react per-project builds want it, but
+      // the sandbox image alone unblocks agent runs — build.sh builds the
+      // base lazily if it's still missing when first needed).
+      const registry = resolveSandboxRegistry(builderDir);
+      if (registry) {
+        await tryPullRemoteImage(
+          `${registry}/${image}`,
+          platform,
+          [image, `${SANDBOX_IMAGE_NAME}:latest`],
+          onLog,
+        );
+        if (!(await dockerImagePresent(baseImage))) {
+          await tryPullRemoteImage(
+            `${registry}/${baseImage}`,
+            platform,
+            [baseImage, 'uireact-base:latest'],
+            onLog,
+          );
+        }
+        if (await dockerImagePresent(image)) return { ok: true };
+      }
+
       if (!(await dockerImagePresent(baseImage))) {
         onLog?.(`[sandbox] auto-building ${baseImage} (${platform}) — first run, a few minutes…\n`);
-        await dockerBuildStream(
-          ['--platform', platform, '-t', baseImage, '-t', 'uireact-base:latest', '-f', path.join(builderDir, 'Dockerfile'), builderDir],
+        await dockerStream(
+          ['build', '--platform', platform, '-t', baseImage, '-t', 'uireact-base:latest', '-f', path.join(builderDir, 'Dockerfile'), builderDir],
           onLog,
         );
       }
       onLog?.(`[sandbox] auto-building ${image} (${platform})…\n`);
-      await dockerBuildStream(
+      await dockerStream(
         [
+          'build',
           '--platform', platform,
           '--build-arg', `TOOLKIT_VERSION=${toolkit}`,
           '--build-arg', `CLAUDE_CODE_VERSION=${claude}`,
