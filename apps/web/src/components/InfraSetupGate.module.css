@@ -181,8 +181,12 @@
   cursor: pointer;
   transition: background 150ms;
 }
-.linkBtn:hover {
+.linkBtn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.linkBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .inlineLink {
@@ -220,6 +224,12 @@
   align-items: center;
   gap: 12px;
   margin-top: 4px;
+}
+
+.footerLeft {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 
 .skipBtn {

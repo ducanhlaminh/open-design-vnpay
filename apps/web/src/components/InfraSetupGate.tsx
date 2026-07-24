@@ -56,26 +56,23 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
 
   const active = daemonLive && !dismissed;
 
+  const refreshStatus = useCallback(async () => {
+    try {
+      const r = await fetch('/api/sandbox/status');
+      if (r.ok) setStatus((await r.json()) as SandboxStatusResponse);
+    } catch {
+      // Daemon unreachable — keep the last snapshot.
+    }
+  }, []);
+
   // ── Cheap infra poll (docker version / image inspect / volume inspect).
   // 4s while the gate is relevant, so finishing a step flips it green live.
   useEffect(() => {
     if (!active) return;
-    let cancelled = false;
-    const tick = async (): Promise<void> => {
-      try {
-        const r = await fetch('/api/sandbox/status');
-        if (r.ok && !cancelled) setStatus((await r.json()) as SandboxStatusResponse);
-      } catch {
-        // Daemon unreachable — keep the last snapshot.
-      }
-    };
-    void tick();
-    const id = window.setInterval(() => void tick(), 4000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [active]);
+    void refreshStatus();
+    const id = window.setInterval(() => void refreshStatus(), 4000);
+    return () => window.clearInterval(id);
+  }, [active, refreshStatus]);
 
   // ── Login-state fetch. Each call spins a short-lived container, so it runs
   // only when it can answer (docker + image up) and only polls while a login
@@ -137,6 +134,19 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
     }
   }, []);
 
+  // Manual "Kiểm tra lại": one immediate re-probe of everything the gate
+  // shows, for users who don't want to wait out the 4s poll (or whose login
+  // just finished in the terminal). Accounts re-probe only when it can answer.
+  const [rechecking, setRechecking] = useState(false);
+  const recheck = useCallback(async () => {
+    setRechecking(true);
+    try {
+      await Promise.all([refreshStatus(), ready ? refreshAccounts() : Promise.resolve()]);
+    } finally {
+      setRechecking(false);
+    }
+  }, [refreshStatus, refreshAccounts, ready]);
+
   const startLogin = useCallback(async () => {
     setLoginBusy(true);
     try {
@@ -185,8 +195,8 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
 
   if (!active || !evaluated || !status) return null;
 
-  // OrbStack is macOS-only — on Windows show Docker Desktop alone (with the
-  // WSL2 note), so a no-code user can't pick an installer that won't run.
+  // One installer only (Docker Desktop, the cross-platform choice) so a
+  // no-code user never has to pick; Windows additionally gets the WSL2 note.
   const isWindows = /Windows/i.test(navigator.userAgent);
 
   const steps: Array<{
@@ -206,19 +216,9 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
           <p className={styles.stepHint}>
             {isWindows
               ? 'Cần Docker để chạy agent thiết kế trong môi trường cách ly. Cài Docker Desktop (trình cài sẽ tự bật WSL2 — đồng ý khi được hỏi và khởi động lại máy nếu nó yêu cầu), mở app lên rồi chờ vài giây — trạng thái sẽ tự cập nhật.'
-              : 'Cần Docker để chạy agent thiết kế trong môi trường cách ly. Cài một trong hai (khuyên dùng OrbStack cho Mac — nhẹ hơn), mở app lên rồi chờ vài giây — trạng thái sẽ tự cập nhật.'}
+              : 'Cần Docker để chạy agent thiết kế trong môi trường cách ly. Cài Docker Desktop, mở app lên rồi chờ vài giây — trạng thái sẽ tự cập nhật.'}
           </p>
           <div className={styles.actionRow}>
-            {isWindows ? null : (
-              <a
-                className={styles.linkBtn}
-                href="https://orbstack.dev/download"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Tải OrbStack
-              </a>
-            )}
             <a
               className={styles.linkBtn}
               href="https://www.docker.com/products/docker-desktop/"
@@ -363,9 +363,19 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
           ))}
         </ol>
         <div className={styles.footer}>
-          <button type="button" className={styles.skipBtn} onClick={dismiss}>
-            Để sau (mở lại trong Cài đặt)
-          </button>
+          <div className={styles.footerLeft}>
+            <button
+              type="button"
+              className={styles.linkBtn}
+              disabled={rechecking}
+              onClick={() => void recheck()}
+            >
+              {rechecking ? 'Đang kiểm tra…' : 'Kiểm tra lại'}
+            </button>
+            <button type="button" className={styles.skipBtn} onClick={dismiss}>
+              Để sau (mở lại trong Cài đặt)
+            </button>
+          </div>
           <button
             type="button"
             className={styles.doneBtn}
