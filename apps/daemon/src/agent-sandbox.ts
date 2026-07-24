@@ -14,6 +14,7 @@
 //     host process env is never forwarded wholesale.
 //   - probe/kill/sweep helpers for preflight, cancel, and orphan cleanup.
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { readFileSync } from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -397,19 +398,64 @@ export function sandboxLoginCommand(image: string): string {
   return `docker run -it --rm -v ${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR} ${image} claude /login`;
 }
 
+// The login TUI runs INSIDE the container, so its own "open browser" step
+// can't reach the host — it only prints the OAuth URL in the terminal. On
+// macOS we wrap the terminal session in `script -q <log>` (keeps the TTY,
+// mirrors output to a host file), then poll that log, extract the OAuth URL
+// (strip ANSI codes, re-join the 80-column line wrapping) and `open` it in
+// the host browser — the user just approves there and pastes the code back
+// into the terminal.
+function watchLoginLogForOauthUrl(logPath: string): void {
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    if (Date.now() - startedAt > 5 * 60_000) {
+      clearInterval(timer);
+      return;
+    }
+    let raw: string;
+    try {
+      raw = readFileSync(logPath, 'utf8');
+    } catch {
+      return; // log not written yet
+    }
+    const plain = raw
+      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+      .replace(/\x1b[()][0-9A-B]/g, '')
+      .replace(/\x1b[78]/g, '')
+      .replace(/\r/g, '');
+    const url = (plain.match(/https:\/\/[^\s]+(?:\n[^\s]+)*/g) ?? [])
+      .map((m) => m.replace(/\n/g, ''))
+      .find((u) => /oauth/i.test(u));
+    if (!url) return;
+    clearInterval(timer);
+    spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+  }, 1000);
+  timer.unref();
+}
+
 /**
  * Best-effort: open a HOST terminal window running the interactive Claude login
  * (a full-screen TUI that can't be embedded in the web UI). Returns whether a
  * window was opened; the caller shows the raw command as a copy-paste fallback.
+ * On macOS the session is mirrored to a log so the daemon can auto-open the
+ * OAuth URL in the host browser (see watchLoginLogForOauthUrl).
  */
 export function openSandboxLoginTerminal(image: string): { launched: boolean; command: string; message?: string } {
   const command = sandboxLoginCommand(image);
   try {
     if (process.platform === 'darwin') {
+      const logPath = path.join(tmpdir(), `od-sandbox-login-${Date.now()}.log`);
+      const wrapped = `script -q ${JSON.stringify(logPath)} ${command}`;
       // osascript opens a fresh Terminal window and runs the command there.
-      const script = `tell application "Terminal" to do script ${JSON.stringify(command)}\ntell application "Terminal" to activate`;
+      const script = `tell application "Terminal" to do script ${JSON.stringify(wrapped)}\ntell application "Terminal" to activate`;
       spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore' }).unref();
-      return { launched: true, command, message: 'Đã mở Terminal — hoàn tất đăng nhập ở đó rồi quay lại Lưu.' };
+      watchLoginLogForOauthUrl(logPath);
+      return {
+        launched: true,
+        command,
+        message:
+          'Đã mở Terminal — trình duyệt sẽ tự bật trang đăng nhập sau vài giây; xác nhận ở đó rồi dán mã vào Terminal, xong quay lại Lưu.',
+      };
     }
     if (process.platform === 'win32') {
       spawn('cmd', ['/c', 'start', 'cmd', '/k', command], { detached: true, stdio: 'ignore' }).unref();
