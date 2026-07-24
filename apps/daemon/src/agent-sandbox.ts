@@ -500,7 +500,28 @@ function teardownEmbeddedLogin(session: EmbeddedLoginSession): void {
   if (session.settleTimer) clearTimeout(session.settleTimer);
   if (session.verifyTimer) clearInterval(session.verifyTimer);
   clearTimeout(session.deadline);
-  void docker(['kill', session.containerName], 10_000).catch(() => {});
+  // Kill BOTH sides: the docker CLI child (frees stdio) and the container by
+  // name with `rm -f` — a plain `kill` no-ops when the container hasn't
+  // finished creating yet, which leaked zombies on rapid restart clicks.
+  try {
+    session.child.kill('SIGKILL');
+  } catch {
+    /* already gone */
+  }
+  void docker(['rm', '-f', session.containerName], 10_000).catch(() => {});
+}
+
+/** rm -f every od.sandbox.login.* container. There is only ever ONE valid
+ *  session, so at start-time anything matching the prefix is a leftover. */
+async function sweepEmbeddedLoginContainers(): Promise<void> {
+  try {
+    const out = await docker(['ps', '-a', '--filter', 'name=od.sandbox.login.', '--format', '{{.Names}}']);
+    for (const name of out.split('\n').filter(Boolean)) {
+      await docker(['rm', '-f', name], 10_000).catch(() => {});
+    }
+  } catch {
+    /* docker down — nothing to sweep */
+  }
 }
 
 export function cancelEmbeddedLogin(): SandboxEmbeddedLoginStatus {
@@ -513,6 +534,7 @@ export function cancelEmbeddedLogin(): SandboxEmbeddedLoginStatus {
 
 export function startEmbeddedLogin(image: string): SandboxEmbeddedLoginStatus {
   cancelEmbeddedLogin();
+  void sweepEmbeddedLoginContainers();
   const containerName = `od.sandbox.login.${Date.now()}`;
   const child = spawn(
     'docker',
@@ -622,11 +644,17 @@ export function submitEmbeddedLoginCode(code: string): SandboxEmbeddedLoginStatu
   session.phase = 'verifying';
   session.child.stdin?.write(`${trimmed}\r`);
   // Success criterion is the volume, not the TUI: poll for .credentials.json
-  // (what /login persists). Rejected code → drop back to awaiting-code with
-  // an error so the user can re-paste without restarting the session.
+  // (what /login persists). Post-code screens ("Login successful — press
+  // Enter", security notes) can sit between token exchange and persistence,
+  // so a few blind Enters walk past them (harmless at a re-prompt: they just
+  // submit empty input). Rejected/stale code → drop back to awaiting-code
+  // with an error so the user can re-paste without restarting the session.
   const startedAt = Date.now();
+  let ticks = 0;
   session.verifyTimer = setInterval(() => {
     if (embeddedLogin !== session) return;
+    ticks += 1;
+    if (ticks % 2 === 0 && ticks <= 10) session.child.stdin?.write('\r');
     void sandboxAuthLoggedIn(session.image).then((ok) => {
       if (embeddedLogin !== session || session.phase !== 'verifying') return;
       if (ok) {
@@ -634,11 +662,12 @@ export function submitEmbeddedLoginCode(code: string): SandboxEmbeddedLoginStatu
         teardownEmbeddedLogin(session);
         return;
       }
-      if (Date.now() - startedAt > 60_000) {
+      if (Date.now() - startedAt > 90_000) {
         if (session.verifyTimer) clearInterval(session.verifyTimer);
         session.verifyTimer = null;
         session.phase = 'awaiting-code';
-        session.error = 'Mã chưa được chấp nhận — kiểm tra và dán lại mã mới nhất.';
+        session.error =
+          'Mã chưa được chấp nhận. Lưu ý: mã phải lấy từ trang đăng nhập MỚI NHẤT vừa mở (mỗi lần bấm Đăng nhập lại là mã cũ hết hiệu lực) — mở lại trang bằng link ở trên rồi dán mã mới.';
       }
     });
   }, 2000);
