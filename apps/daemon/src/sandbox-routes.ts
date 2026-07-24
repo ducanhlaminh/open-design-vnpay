@@ -26,6 +26,10 @@ import {
   removeSandboxAccount,
   readSandboxAccountCredentials,
   openSandboxLoginTerminal,
+  startEmbeddedLogin,
+  getEmbeddedLoginStatus,
+  submitEmbeddedLoginCode,
+  cancelEmbeddedLogin,
   ensureSandboxImage,
   resolveSandboxConfig,
   sandboxAuthLoggedIn,
@@ -267,5 +271,41 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
       return sendApiError(res, 503, 'SANDBOX_UNAVAILABLE', 'Docker/sandbox image chưa sẵn sàng.');
     }
     res.json(openSandboxLoginTerminal(image));
+  });
+
+  // ── Embedded (no-terminal) login: the daemon drives `claude /login` in the
+  // container and the web collects the OAuth code (see agent-sandbox.ts).
+  // GET = poll state; POST = start session; POST /code = submit pasted code;
+  // DELETE = cancel. One session at a time.
+  app.get('/api/sandbox/accounts/embedded-login', (_req, res) => {
+    res.json(getEmbeddedLoginStatus());
+  });
+
+  app.post('/api/sandbox/accounts/embedded-login', async (_req, res) => {
+    const { supported, image, ready } = await accountsContext();
+    if (!supported) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi Docker-only (sandbox sở hữu Claude).');
+    }
+    if (!ready || !image) {
+      return sendApiError(res, 503, 'SANDBOX_UNAVAILABLE', 'Docker/sandbox image chưa sẵn sàng.');
+    }
+    res.json(startEmbeddedLogin(image));
+  });
+
+  app.post('/api/sandbox/accounts/embedded-login/code', (req, res) => {
+    const code = typeof req.body?.code === 'string' ? req.body.code : '';
+    try {
+      const status = submitEmbeddedLoginCode(code);
+      // Fresh credentials may land within seconds — drop the usage cache so
+      // the quota meter picks up the new login promptly.
+      invalidateClaudeUsageCache();
+      res.json(status);
+    } catch (err) {
+      sendApiError(res, 400, 'BAD_REQUEST', (err as Error).message);
+    }
+  });
+
+  app.delete('/api/sandbox/accounts/embedded-login', (_req, res) => {
+    res.json(cancelEmbeddedLogin());
   });
 }

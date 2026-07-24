@@ -96,6 +96,28 @@ export interface SandboxLoginLaunchResponse {
   message?: string;
 }
 
+// ── Embedded (no-terminal) Claude login ─────────────────────────────────────
+// The daemon drives `claude /login` inside the sandbox container through a
+// faked TTY: it auto-answers the onboarding prompts, extracts the OAuth URL,
+// opens it in the HOST browser, and the web UI collects the pasted code —
+// no terminal window involved. One session at a time.
+
+export type SandboxEmbeddedLoginPhase =
+  | 'idle' // no session running
+  | 'starting' // container spawning / walking the TUI prompts
+  | 'awaiting-code' // OAuth URL extracted (browser opened) — waiting for the pasted code
+  | 'verifying' // code submitted — waiting for credentials to land in the volume
+  | 'done' // credentials present; container cleaned up
+  | 'error';
+
+export interface SandboxEmbeddedLoginStatus {
+  phase: SandboxEmbeddedLoginPhase;
+  /** OAuth URL once extracted (also auto-opened in the host browser). */
+  url: string | null;
+  /** Human error (also set alongside awaiting-code on a rejected code retry). */
+  error: string | null;
+}
+
 /**
  * Live state of an in-daemon `docker build` of the sandbox image, driven from
  * the Settings "Build image" button (and pollable by the CLI). Builds take
