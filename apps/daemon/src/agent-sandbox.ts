@@ -15,7 +15,7 @@
 //   - probe/kill/sweep helpers for preflight, cancel, and orphan cleanup.
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { SandboxConfigPrefs } from './app-config.js';
@@ -444,11 +444,21 @@ export function openSandboxLoginTerminal(image: string): { launched: boolean; co
   const command = sandboxLoginCommand(image);
   try {
     if (process.platform === 'darwin') {
-      const logPath = path.join(tmpdir(), `od-sandbox-login-${Date.now()}.log`);
+      const id = Date.now();
+      const logPath = path.join(tmpdir(), `od-sandbox-login-${id}.log`);
       const wrapped = `script -q ${JSON.stringify(logPath)} ${command}`;
-      // osascript opens a fresh Terminal window and runs the command there.
-      const script = `tell application "Terminal" to do script ${JSON.stringify(wrapped)}\ntell application "Terminal" to activate`;
-      spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore' }).unref();
+      // Launch via a .command file + open(1), NOT osascript: AppleEvents
+      // automation ("control Terminal") needs a privacy permission, and when
+      // it's denied the Terminal window opens EMPTY with no command run —
+      // silently. Terminal executes an opened .command file without any
+      // automation permission.
+      const cmdPath = path.join(tmpdir(), `od-sandbox-login-${id}.command`);
+      writeFileSync(
+        cmdPath,
+        `#!/bin/zsh\nclear\necho "Đăng nhập Claude — làm theo hướng dẫn bên dưới; trình duyệt sẽ tự mở."\n${wrapped}\n`,
+        { mode: 0o755 },
+      );
+      spawn('open', [cmdPath], { detached: true, stdio: 'ignore' }).unref();
       watchLoginLogForOauthUrl(logPath);
       return {
         launched: true,
