@@ -277,11 +277,11 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   // container and the web collects the OAuth code (see agent-sandbox.ts).
   // GET = poll state; POST = start session; POST /code = submit pasted code;
   // DELETE = cancel. One session at a time.
-  app.get('/api/sandbox/accounts/embedded-login', (_req, res) => {
+  app.get('/api/sandbox/embedded-login', (_req, res) => {
     res.json(getEmbeddedLoginStatus());
   });
 
-  app.post('/api/sandbox/accounts/embedded-login', async (_req, res) => {
+  app.post('/api/sandbox/embedded-login', async (_req, res) => {
     const { supported, image, ready } = await accountsContext();
     if (!supported) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi Docker-only (sandbox sở hữu Claude).');
@@ -292,7 +292,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
     res.json(startEmbeddedLogin(image));
   });
 
-  app.post('/api/sandbox/accounts/embedded-login/code', (req, res) => {
+  app.post('/api/sandbox/embedded-login/code', (req, res) => {
     const code = typeof req.body?.code === 'string' ? req.body.code : '';
     try {
       const status = submitEmbeddedLoginCode(code);
@@ -305,7 +305,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
     }
   });
 
-  app.delete('/api/sandbox/accounts/embedded-login', (_req, res) => {
+  app.delete('/api/sandbox/embedded-login', (_req, res) => {
     res.json(cancelEmbeddedLogin());
   });
 }

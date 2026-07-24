@@ -1,5 +1,5 @@
 // Embedded (no-terminal) Claude login — shared by the first-run wizard and
-// the Settings account switcher. Talks to /api/sandbox/accounts/embedded-login:
+// the Settings account switcher. Talks to /api/sandbox/embedded-login:
 // start → daemon walks the container login TUI and opens the OAuth page in the
 // host browser → the user pastes the confirmation code HERE → done when the
 // credentials land in the auth volume. A terminal-window fallback stays one
@@ -74,7 +74,7 @@ export function EmbeddedClaudeLogin({ onSuccess, startLabel }: Props): JSX.Eleme
   useEffect(() => {
     if (!live) return;
     const id = window.setInterval(() => {
-      void fetch('/api/sandbox/accounts/embedded-login')
+      void fetch('/api/sandbox/embedded-login')
         .then((r) => (r.ok ? (r.json() as Promise<SandboxEmbeddedLoginStatus>) : null))
         .then((j) => {
           if (j) applyStatus(j);
@@ -88,12 +88,12 @@ export function EmbeddedClaudeLogin({ onSuccess, startLabel }: Props): JSX.Eleme
     successFired.current = false;
     setCode('');
     setTerminalFallback(null);
-    void call('/api/sandbox/accounts/embedded-login', { method: 'POST' });
+    void call('/api/sandbox/embedded-login', { method: 'POST' });
   }, [call]);
 
   const submitCode = useCallback(() => {
     if (!code.trim()) return;
-    void call('/api/sandbox/accounts/embedded-login/code', {
+    void call('/api/sandbox/embedded-login/code', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code: code.trim() }),
@@ -103,7 +103,7 @@ export function EmbeddedClaudeLogin({ onSuccess, startLabel }: Props): JSX.Eleme
   const openTerminalFallback = useCallback(() => {
     void (async () => {
       // Cancel the embedded session first so two logins don't fight over stdin.
-      await fetch('/api/sandbox/accounts/embedded-login', { method: 'DELETE' }).catch(() => {});
+      await fetch('/api/sandbox/embedded-login', { method: 'DELETE' }).catch(() => {});
       setStatus({ phase: 'idle', url: null, error: null });
       try {
         const r = await fetch('/api/sandbox/accounts/login', { method: 'POST' });
