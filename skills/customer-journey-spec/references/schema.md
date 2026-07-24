@@ -42,6 +42,16 @@ renders it. It is NOT pushed to KGS and carries no `project_id`.
   "touchpoints":      ["…"],          // screens / channels
   "pain_points":      ["…"],          // surfaced as pain markers
   "thoughts":         ["…"],          // optional inner monologue
+  // BRANCHES — omit for a plain "next stage in order" step. Fill it when the
+  // documented flow forks, which is what a `stage_type: "decision"` means: one
+  // entry per outgoing branch, `condition` copied from the flow diagram's arrow
+  // label. This is what the Flow tab draws, and what stops a downstream stage
+  // from flattening three documented outcomes into one happy path.
+  "next": [
+    { "to": "STG-CHON-DN", "condition": "Từ 2 DN" },
+    { "to": "STG-KHAI-BAO", "condition": "Chưa có DN" },
+    { "to": "STG-HOME",     "condition": "Đúng 1 DN" }
+  ],
   "sources": [                        // key source-text excerpts (from docs MD)
     {
       "file":    "docs/confluence/Dang-nhap-SSO.md",   // SLUGIFIED path on disk (see below)
@@ -51,6 +61,13 @@ renders it. It is NOT pushed to KGS and carries no `project_id`.
   ]
 }
 ```
+- **`next[]`** is optional. Without it a journey reads as a straight line
+  (stage 1 → 2 → 3 by `order`), which is right for a linear flow. With it the
+  Flow tab shows the real shape: a `decision` stage fanning out to its branches,
+  each labelled with the condition. `to` must be a stage id inside the SAME
+  journey. When the docs embed a flow diagram, the arrows' labels ARE these
+  conditions — copy them, do not invent wording.
+
 - **`sources[]`** carries the verbatim doc text that justifies the stage. The
   Customer Journey preview reads it straight from the JSON and renders a "key
   text from MD" panel under each stage card. Keep quotes short (1–3 sentences)

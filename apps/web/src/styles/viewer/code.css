@@ -113,6 +113,64 @@
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+/* Multi-page draw.io diagram → one paged viewer (ensureMarkdownDiagramPagers).
+   Confluence stores a preview for page 1 only, so the pipeline renders each
+   page to its own PNG; without this they stack and bury the surrounding text. */
+.markdown-rendered .md-diagram-pager {
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.markdown-rendered .md-diagram-pager__stage {
+  display: flex;
+  justify-content: center;
+  background: var(--bg-subtle);
+  /* Flow diagrams are far wider than the pane; scroll rather than crop. */
+  overflow: auto;
+}
+.markdown-rendered .md-diagram-pager img.md-doc-image {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  max-width: 100%;
+  object-fit: contain;
+}
+/* Beats `img.md-doc-image { display: block }` — same specificity plus a class. */
+.markdown-rendered .md-diagram-pager img.md-diagram-pager__page--off {
+  display: none;
+}
+.markdown-rendered .md-diagram-pager__bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+.markdown-rendered .md-diagram-pager__label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.markdown-rendered .md-diagram-pager__nav {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.markdown-rendered .md-diagram-pager__nav:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.markdown-rendered .md-diagram-pager__nav:not(:disabled):hover {
+  background: var(--bg-subtle);
+}
 .markdown-rendered ul,
 .markdown-rendered ol {
   margin: 10px 0;

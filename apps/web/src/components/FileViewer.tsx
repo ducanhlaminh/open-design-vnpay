@@ -62,6 +62,7 @@ import { SpecPreview, type SpecDoc } from './SpecPreview';
 import { SpecFlowCanvas, isFlowDoc, type FlowDoc } from './SpecFlowCanvas';
 import { ReviewPreview, type ReviewReport } from './ReviewPreview';
 import { UxResearchPreview, isUxResearchReport, type UxResearchReport } from './UxResearchPreview';
+import { SystemMapPreview, isSystemMapDoc, type SystemMapDoc } from './SystemMapPreview';
 import {
   DocsReviewPreview,
   DocsReviewIndexPreview,
@@ -611,6 +612,101 @@ function ensureMarkdownCodeBlockControls(root: HTMLElement, t: TranslateFn) {
       block.prepend(button);
     }
     setMarkdownCodeBlockCopiedState(block, false, t);
+  }
+}
+
+const DIAGRAM_PAGER_CLASS = 'md-diagram-pager';
+const DIAGRAM_ALT_RE = /^flow-diagram\s+(.*?)\s+—\s+trang\s+(\d+)\s*$/;
+
+/**
+ * Turn a run of per-page diagram images into ONE paged viewer, the way
+ * Confluence shows a multi-page draw.io diagram.
+ *
+ * The docs pipeline renders each page of a multi-page diagram to its own PNG
+ * (Confluence only stores a preview for page 1), so the markdown holds N
+ * consecutive images that otherwise stack up and bury the surrounding text.
+ * They are recognised by the alt text the pipeline writes —
+ * `flow-diagram <name> — trang <n>` — and grouped by that name.
+ *
+ * Runs on the rendered DOM rather than the markdown source so the stored
+ * document stays plain markdown: readable in any other viewer, and still N
+ * images when a human opens the .md file directly.
+ */
+function ensureMarkdownDiagramPagers(root: HTMLElement) {
+  const images = [...root.querySelectorAll<HTMLImageElement>('img.md-doc-image')];
+  const seen = new Set<HTMLImageElement>();
+  for (const img of images) {
+    if (seen.has(img) || img.closest(`.${DIAGRAM_PAGER_CLASS}`)) continue;
+    const match = DIAGRAM_ALT_RE.exec(img.getAttribute('alt') ?? '');
+    if (!match) continue;
+    const name = match[1];
+
+    // Collect the sibling images that belong to the SAME diagram. They are
+    // emitted back to back, so stop at the first element that is not one.
+    const group: HTMLImageElement[] = [];
+    let node: Element | null = img;
+    while (node) {
+      const candidate =
+        node instanceof HTMLImageElement ? node : node.querySelector<HTMLImageElement>('img.md-doc-image');
+      const m = candidate ? DIAGRAM_ALT_RE.exec(candidate.getAttribute('alt') ?? '') : null;
+      if (!candidate || !m || m[1] !== name) break;
+      group.push(candidate);
+      seen.add(candidate);
+      node = node.nextElementSibling;
+    }
+    if (group.length < 2) continue; // one page → nothing to page through
+
+    const anchorEl = group[0]!.parentElement === root ? group[0]! : (group[0]!.closest('p') ?? group[0]!);
+    const pager = document.createElement('div');
+    pager.className = DIAGRAM_PAGER_CLASS;
+
+    const stage = document.createElement('div');
+    stage.className = 'md-diagram-pager__stage';
+    for (const [i, image] of group.entries()) {
+      image.classList.add('md-diagram-pager__page');
+      // A CLASS, not the `hidden` attribute: `.markdown-rendered img.md-doc-image`
+      // sets `display: block`, and an author rule beats the user-agent
+      // `[hidden] { display: none }` — so `hidden` alone left every page visible.
+      image.classList.toggle('md-diagram-pager__page--off', i > 0);
+      stage.append(image);
+    }
+
+    const bar = document.createElement('div');
+    bar.className = 'md-diagram-pager__bar';
+    const prev = document.createElement('button');
+    const next = document.createElement('button');
+    const label = document.createElement('span');
+    prev.type = 'button';
+    next.type = 'button';
+    prev.className = 'md-diagram-pager__nav';
+    next.className = 'md-diagram-pager__nav';
+    prev.textContent = '‹';
+    next.textContent = '›';
+    label.className = 'md-diagram-pager__label';
+
+    let index = 0;
+    const show = (to: number) => {
+      index = Math.max(0, Math.min(group.length - 1, to));
+      group.forEach((image, i) => {
+        image.classList.toggle('md-diagram-pager__page--off', i !== index);
+      });
+      label.textContent = `${name} — trang ${index + 1}/${group.length}`;
+      prev.disabled = index === 0;
+      next.disabled = index === group.length - 1;
+    };
+    prev.addEventListener('click', () => show(index - 1));
+    next.addEventListener('click', () => show(index + 1));
+
+    bar.append(prev, label, next);
+    pager.append(stage, bar);
+    anchorEl.parentElement?.insertBefore(pager, anchorEl);
+    // Drop the now-empty wrappers the images were lifted out of.
+    for (const image of group) {
+      const wrapper = image.parentElement;
+      if (wrapper && wrapper !== stage && !wrapper.textContent?.trim() && wrapper.children.length === 0) wrapper.remove();
+    }
+    if (anchorEl.isConnected && !anchorEl.textContent?.trim() && anchorEl.querySelector('img') === null) anchorEl.remove();
+    show(0);
   }
 }
 
@@ -8175,21 +8271,38 @@ function SpecFileViewer({
     }
   }, [text, file.name, docsMockupReview]);
 
+  // The system map (docs-map stage, `docs/system-map.json`): apps + hand-offs +
+  // the document classification. Detected by PATH first — the canonical location
+  // is fixed and a hand-edited file may drift from the shape sniff — then by
+  // shape, so a copy sitting elsewhere still renders as a map.
+  const systemMap = useMemo<SystemMapDoc | null>(() => {
+    if (text == null) return null;
+    try {
+      const p = JSON.parse(text) as unknown;
+      if (/(^|\/)system-map\.json$/i.test(file.name)) {
+        return p && typeof p === 'object' && !Array.isArray(p) ? (p as SystemMapDoc) : null;
+      }
+      return isSystemMapDoc(p) ? p : null;
+    } catch {
+      return null;
+    }
+  }, [text, file.name]);
+
   // A UX Research report (ux-research stage): the explicit `kind` marker or the
   // criteria[]-with-sources shape — neither a spec (screens) nor a review
   // (findings/verdict), so it gets its own preview.
   const uxResearch = useMemo<UxResearchReport | null>(() => {
-    if (text == null || review || docsMockupReview) return null;
+    if (text == null || review || docsMockupReview || systemMap) return null;
     try {
       const p = JSON.parse(text) as unknown;
       return isUxResearchReport(p) ? p : null;
     } catch {
       return null;
     }
-  }, [text, review, docsMockupReview]);
+  }, [text, review, docsMockupReview, systemMap]);
 
   const spec = useMemo<SpecDoc | null>(() => {
-    if (text == null || review || uxResearch || docsMockupReview) return null; // a review/research report is not a spec
+    if (text == null || review || uxResearch || docsMockupReview || systemMap) return null; // a review/research/map report is not a spec
     try {
       const parsed = JSON.parse(text) as SpecDoc;
       const hasJourneys = Array.isArray(parsed.journeys) && parsed.journeys.length > 0;
@@ -8199,7 +8312,7 @@ function SpecFileViewer({
     } catch {
       return null;
     }
-  }, [text, review, uxResearch, docsMockupReview]);
+  }, [text, review, uxResearch, docsMockupReview, systemMap]);
 
   const displayText = useMemo(
     () => (text == null ? null : formatJsonFileTextForDisplay(file, text)),
@@ -8207,9 +8320,9 @@ function SpecFileViewer({
   );
   const lineCount = displayText ? displayText.split('\n').length : 0;
 
-  // A plain (non-spec, non-review, non-research, non-mockup-review) JSON file
-  // behaves like the generic text viewer.
-  if (text !== null && !spec && !review && !uxResearch && !docsMockupReview) {
+  // A plain (non-spec, non-review, non-research, non-mockup-review, non-map)
+  // JSON file behaves like the generic text viewer.
+  if (text !== null && !spec && !review && !uxResearch && !docsMockupReview && !systemMap) {
     return <TextViewer projectId={projectId} file={file} />;
   }
 
@@ -8276,8 +8389,11 @@ function SpecFileViewer({
         </div>
       </div>
       <div className="viewer-body">
-        {text === null || (spec === null && review === null && uxResearch === null && docsMockupReview === null) ? (
+        {text === null ||
+        (spec === null && review === null && uxResearch === null && docsMockupReview === null && systemMap === null) ? (
           <div className="viewer-empty">{t('fileViewer.loading')}</div>
+        ) : systemMap && mode === 'preview' ? (
+          <SystemMapPreview doc={systemMap} />
         ) : docsMockupIndex && mode === 'preview' ? (
           <DocsReviewIndexPreview projectId={projectId} fileName={file.name} index={docsMockupIndex} />
         ) : docsMockupReview && mode === 'preview' ? (
@@ -8572,6 +8688,7 @@ function MarkdownViewer({
     const article = markdownArticleRef.current;
     if (!article) return;
     ensureMarkdownCodeBlockControls(article, t);
+    ensureMarkdownDiagramPagers(article);
     if (copiedMarkdownBlockRef.current?.isConnected) {
       setMarkdownCodeBlockCopiedState(copiedMarkdownBlockRef.current, true, t);
     }

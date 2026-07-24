@@ -1236,6 +1236,97 @@
   color: var(--red);
 }
 
+/* ---- Bỏ qua (chế độ Tiết kiệm) ----------------------------
+   KHÁC "khóa": bước không nằm trong chuỗi của chế độ này, không chặn ai và vẫn
+   chạy lẻ được. Nên nó lùi về sau về mặt thị giác (mờ, nét đứt, không màu) chứ
+   không mang sắc thái cảnh báo — và card vẫn giữ nguyên chiều cao/vị trí để đổi
+   chế độ không làm stepper nhảy. */
+.pl-step[data-skipped='yes'] .pl-step__card {
+  background: var(--bg-app);
+  border-style: dashed;
+  opacity: 0.72;
+}
+.pl-step[data-skipped='yes'] .pl-step__name {
+  color: var(--text-muted);
+  font-weight: 560;
+}
+.pl-step[data-skipped='yes'] .pl-step__icon {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-faint);
+}
+.pl-step[data-skipped='yes'] .pl-step__node {
+  background: var(--bg-app);
+  border-style: dashed;
+  color: var(--text-faint);
+}
+.pl-step[data-skipped='yes'] .pl-step__connector {
+  background: none;
+  border-left: 1px dashed var(--border-strong);
+  width: 0;
+}
+/* Hover trả lại độ rõ: bước bỏ qua vẫn là thứ bấm được. */
+.pl-step[data-skipped='yes']:hover .pl-step__card {
+  opacity: 1;
+}
+
+.pl-status--skipped {
+  background: var(--bg-app);
+  color: var(--text-faint);
+  border-color: var(--border-strong);
+  border-style: dashed;
+}
+
+/* "ngoài chế độ" — bước bị bỏ qua NHƯNG đã có kết quả từ lần chạy Đầy đủ
+   trước. Kết quả thật không bao giờ bị giấu; chỉ ghi chú là nó nằm ngoài
+   chuỗi hiện tại. */
+.pl-status--offmode {
+  background: transparent;
+  color: var(--text-faint);
+  border-color: var(--border);
+  border-style: dashed;
+  font-weight: 560;
+}
+
+.pl-step__skipnote,
+.pl-step__stale {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+.pl-step__stale {
+  color: var(--amber);
+}
+
+/* Chip chế độ chạy trên toolbar — trạng thái, không phải nút chính. */
+.pl-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg-app);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 200ms var(--pl-ease), color 200ms var(--pl-ease);
+}
+.pl-mode-chip:hover {
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+.pl-mode-chip__count {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
 /* Locked — gated by an unfinished dependency */
 .pl-step[data-active='no'] .pl-step__card {
   background: var(--bg-app);

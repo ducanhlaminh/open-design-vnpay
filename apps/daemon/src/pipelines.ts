@@ -72,6 +72,29 @@ export interface PipelineDef {
    */
   localOnly?: boolean;
   /**
+   * A stage the LEAN run-all skips. The chain's job is docs → a UI spec → UI;
+   * the stages marked here sharpen that (a journey, research criteria, a
+   * heuristic gate) but nothing downstream hard-requires them — `ux-spec`
+   * explicitly says to carry on when the journey or the research report is
+   * absent. Skipping them trades depth for a much shorter, cheaper run.
+   *
+   * LEAN IS A docs-to-ui-ONLY CONCEPT (product decision 2026-07): docs-to-prd
+   * always runs its full chain — its journey/research ARE the review's
+   * evidence, not optional sharpening — so no docs-to-prd stage may set this.
+   * A workflow with no flagged stage ignores the lean toggle entirely
+   * (resolveRunMode reports `full` regardless of the saved flag).
+   */
+  skippedInLeanRun?: boolean;
+  /**
+   * Runs ONCE per project, not once per UI target. Everything after the docs
+   * ingest normally runs per target into `<workflow>/<target>/`; a stage marked
+   * here describes the PROJECT rather than one product, so a per-target copy
+   * would be N conflicting answers to the same question. Shared stages must sit
+   * before the per-target ones in the workflow order — the run-all chain runs
+   * them all up front, then forks per target.
+   */
+  sharedAcrossTargets?: boolean;
+  /**
    * Path patterns (same syntax as `outputs`, workflow-dir-relative) that are
    * NEVER synced to the media file store — in BOTH directions. Push skips
    * (and prunes previously-pushed copies of) them; pull ignores them even
@@ -99,14 +122,32 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // Confluence sources run DETERMINISTICALLY (daemon fetches via the BAS
   // gateway — no agent, see runDocsDeterministic in server.ts); the skill/agent
   // path remains only for JIRA key / JQL input. BAS source: locked (maintenance).
-  { id: 'docs',             name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
+  // `docs/context/` holds the LINK-FOLLOWED pages (bas-client.ts): background
+  // reading the ux stage is told to understand but never to build screens from.
+  // They are a real output of this stage and must be declared as one — the same
+  // list drives Quick result's file rail, the stage-scoped push, and the
+  // stage-scoped pull, so leaving it out hid them from the rail AND kept them
+  // off the media store, which left a second machine's ux run with none of the
+  // domain background it is told to read.
+  { id: 'docs',             name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
   // Customer Journey built straight from the ingested docs MD (no feature-analysis
   // upstream). Each STAGE carries `sources[]` — the key text excerpts from the
   // source MD — which the SpecPreview surfaces under each stage card.
   // FILE-ONLY (no `convertToGraph`): every stage produces local file
   // deliverables synced to the media store; nothing is projected into the
   // KGS graph anymore (that was the removed react-shadcn workflow's job).
-  { id: 'cj',               name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['docs'], outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
+  // ── System map: which APPS the docs describe, and where they hand off ─────
+  // Multi-app projects (a customer web app + a backoffice, say) are ONE system:
+  // the docs describe flows that cross between them. Everything downstream runs
+  // per target from a SHARED docs folder, so without this each target guesses
+  // which material is its own — and the hand-off points, the part that makes it
+  // one system rather than two products, get lost on both sides.
+  // Runs once (sharedAcrossTargets); the file lands INSIDE docs/ so the existing
+  // per-target docs copy carries it into every target's cwd for free.
+  // Hand-editable by design: a wrong classification is corrected in the file,
+  // and only a re-run of THIS stage overwrites it.
+  { id: 'docs-map',         name: 'Bản đồ hệ thống',           skillId: 'docs-system-map',       dependsOn: ['docs'], outputs: ['docs/system-map.json'], sharedAcrossTargets: true },
+  { id: 'cj',               name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['docs-map'], outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'], skippedInLeanRun: true },
   // ── UX Research (desk research from the local UX knowledge base) ───────────
   // BETWEEN cj and ux: reads the docs + customer journey to know the domain and
   // key flows, searches the local UX knowledge base (Growth.Design / NN/g /
@@ -118,7 +159,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // heuristic gate may also cite them. FILE-ONLY, synced like other outputs.
   // When the knowledge base is absent on this machine the skill emits a
   // minimal report from its built-in fundamentals instead of failing the gate.
-  { id: 'ux-research',      name: 'UX Research',               skillId: 'ux-research',           dependsOn: ['cj'], outputs: ['ux-research/'] },
+  { id: 'ux-research',      name: 'UX Research',               skillId: 'ux-research',           dependsOn: ['cj'], outputs: ['ux-research/'], skippedInLeanRun: true },
   // The UX stage decides each screen's target platform (`layout: mobile|web`),
   // which both UI-Spec terminals follow — so the platform picker lives here.
   // Besides the spec JSON it emits one free-layout wireframe per screen
@@ -139,7 +180,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // built — one gate protects both html + react. FILE-ONLY (convertToGraph
   // unset): the report is a local deliverable synced to the media store, never
   // projected into KGS. WCAG pixel gates are judged later, post-render.
-  { id: 'ux-review',        name: 'UX Heuristic Review',       skillId: 'heuristic-eval',        dependsOn: ['ux'], outputs: ['heuristic-review/'] },
+  { id: 'ux-review',        name: 'UX Heuristic Review',       skillId: 'heuristic-eval',        dependsOn: ['ux'], outputs: ['heuristic-review/'], skippedInLeanRun: true },
   // ── Terminal option A: UI-Spec (HTML prototype) ────────────────────────────
   // ui-html also activates `frontend-design` (UI/UX craft) so the agent designs
   // boldly + well, not just structurally. The prototype skill additionally opts
@@ -200,7 +241,12 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // field here in sync with the `docs`/`cj`/`ux-research` defs above by hand;
   // there is no shared base def to factor out because `PipelineDef.dependsOn`
   // and `outputs` must each point at THIS workflow's own sibling ids.
-  { id: 'prd-docs',         name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
+  { id: 'prd-docs',         name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
+  // NO skippedInLeanRun anywhere in docs-to-prd: lean is a docs-to-ui-only
+  // concept. The journey + research here are the review's evidence base — a
+  // mockup review without them is not a cheaper review, it is a different and
+  // weaker product. The Run-all lean toggle is therefore inert for this
+  // workflow (and the UI hides it).
   { id: 'prd-cj',           name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['prd-docs'],    outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
   { id: 'prd-ux-research',  name: 'UX Research',               skillId: 'ux-research',           dependsOn: ['prd-cj'],      outputs: ['ux-research/'] },
   // PRD Mockup Review: reviews the MOCKUP IMAGES embedded in the source
@@ -231,7 +277,7 @@ export const WORKFLOWS: readonly Workflow[] = [
     name: 'Docs → UI-Spec',
     description:
       'Product docs → UX Research (evidence-based criteria) → UX Spec → a heuristic review gate → UI-Spec: an interactive HTML prototype or a real Vite + React 19 app — pick either (or both) at the final stage.',
-    pipelineIds: ['docs', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react'],
+    pipelineIds: ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react'],
   },
   {
     id: 'docs-to-prd',
@@ -384,9 +430,51 @@ function statusOf(state: ProjectPipelineState, id: string): PipelineStatus {
   return state[id]?.status ?? 'idle';
 }
 
-// A pipeline is runnable only when every dependency has succeeded.
-export function computeActive(state: ProjectPipelineState, def: PipelineDef): boolean {
-  return def.dependsOn.every((dep) => statusOf(state, dep) === 'succeeded');
+/** Which stages a project's chain actually runs: `lean` drops every stage
+ *  marked `skippedInLeanRun`, `full` runs them all. */
+export type PipelineRunMode = 'full' | 'lean';
+
+/** Whether `mode` drops this stage from the chain entirely. */
+export function isStageSkipped(def: PipelineDef, mode: PipelineRunMode): boolean {
+  return mode === 'lean' && def.skippedInLeanRun === true;
+}
+
+/**
+ * The dependencies that actually gate `def` under `mode`. A lean run NEVER runs
+ * the `skippedInLeanRun` stages, so gating on them would lock everything below
+ * forever — the lean chain reaches a UI, then the stepper claims the UI step is
+ * waiting on a review that by definition will never happen. Each skipped
+ * dependency is therefore replaced by ITS OWN dependencies, transitively, so
+ * the gate lands on the nearest ancestor this mode does run. `full` returns the
+ * static list unchanged.
+ */
+export function effectiveDependsOn(def: PipelineDef, mode: PipelineRunMode = 'full'): string[] {
+  if (mode === 'full') return [...def.dependsOn];
+  const gates: string[] = [];
+  const seen = new Set<string>([def.id]);
+  const walk = (ids: readonly string[]): void => {
+    for (const id of ids) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const dep = PIPELINE_DEFS.find((p) => p.id === id);
+      // Unknown ids stay as-is: an id we cannot resolve is not one we can prove
+      // the mode skips, so it keeps gating.
+      if (dep && isStageSkipped(dep, mode)) walk(dep.dependsOn);
+      else gates.push(id);
+    }
+  };
+  walk(def.dependsOn);
+  return gates;
+}
+
+// A pipeline is runnable only when every dependency THIS MODE RUNS has
+// succeeded (see effectiveDependsOn).
+export function computeActive(
+  state: ProjectPipelineState,
+  def: PipelineDef,
+  mode: PipelineRunMode = 'full',
+): boolean {
+  return effectiveDependsOn(def, mode).every((dep) => statusOf(state, dep) === 'succeeded');
 }
 
 // The set of stages to CLEAR + regenerate when `pipelineId` is re-run. Without
@@ -493,25 +581,72 @@ export function mergePipelineState(
   return merged;
 }
 
+/**
+ * The project's run mode. `savedLean` is `RunAllConfig.lean` persisted by the
+ * last run-all trigger; when it is absent (legacy: runs before the mode was
+ * persisted never wrote it) the mode is INFERRED from the state shape only a
+ * lean chain can produce — a non-skipped stage succeeded while a lean-skipped
+ * stage it (transitively) depends on never ran. Nothing but a lean run-all can
+ * reach that state: the single-stage route 409s on unmet gates, and a full
+ * chain runs the analysis stages before anything downstream of them.
+ */
+export function resolveRunMode(
+  savedLean: boolean | undefined,
+  state: ProjectPipelineState,
+  pipelineIds: readonly string[],
+): PipelineRunMode {
+  // A workflow with no lean-skippable stage has no lean concept at all — the
+  // saved flag is a PROJECT-level record written by whichever workflow ran
+  // last, so checking it first would leak a docs-to-ui lean run into the
+  // docs-to-prd tab (its analysis stages suddenly reading "Bỏ qua").
+  const skipped = pipelineIds.filter((id) => getPipelineDef(id)?.skippedInLeanRun);
+  if (skipped.length === 0) return 'full';
+  if (savedLean !== undefined) return savedLean ? 'lean' : 'full';
+  // Any analysis stage with a recorded run (running/failed/succeeded — anything
+  // but untouched-idle) means the chain included it: that is a full run.
+  if (skipped.some((id) => state[id] && state[id]!.status !== 'idle')) return 'full';
+  const skippedSet = new Set(skipped);
+  for (const id of pipelineIds) {
+    if (skippedSet.has(id)) continue;
+    if (state[id]?.status !== 'succeeded') continue;
+    if (upstreamStages(id).some((up) => skippedSet.has(up))) return 'lean';
+  }
+  return 'full';
+}
+
 // Merge the static registry with this project's persisted run state into the
 // client-facing view list. When `pipelineIds` is given (a workflow's ids), only
 // those pipelines are returned, in the order listed (so the stepper follows the
 // workflow). Otherwise every pipeline is returned in registry order.
+//
+// `mode` is the project's run mode (resolveRunMode): under `lean` the stages it
+// drops are flagged `skipped` and the mode's gate is reported in
+// `effectiveDependsOn`, so a client can never render a lock naming a stage the
+// mode will never run. `dependsOn` itself stays the STATIC registry list —
+// clients use its identity as structure (the stepper fuses consecutive
+// pipelines sharing one list into a single option-group step), so rewriting it
+// per mode fused unrelated stages into phantom "UI-Spec" groups.
 export function listPipelineStatus(
   state: ProjectPipelineState,
   pipelineIds?: readonly string[],
+  mode: PipelineRunMode = 'full',
 ): PipelineView[] {
   const defs = pipelineIds
     ? pipelineIds.map((id) => PIPELINE_DEFS.find((p) => p.id === id)).filter((d): d is PipelineDef => !!d)
     : PIPELINE_DEFS;
   return defs.map((def) => {
     const run = state[def.id];
+    const effective = effectiveDependsOn(def, mode);
+    const gateDiffers =
+      effective.length !== def.dependsOn.length || effective.some((id, i) => id !== def.dependsOn[i]);
     return {
       id: def.id,
       name: def.name,
       dependsOn: [...def.dependsOn],
+      ...(gateDiffers ? { effectiveDependsOn: effective } : {}),
       status: run?.status ?? 'idle',
-      active: computeActive(state, def),
+      active: computeActive(state, def, mode),
+      ...(isStageSkipped(def, mode) ? { skipped: true as const } : {}),
       ...(def.inputPlaceholder ? { inputPlaceholder: def.inputPlaceholder } : {}),
       ...(def.acceptsDesignSystem ? { acceptsDesignSystem: true } : {}),
       ...(def.acceptsPlatform ? { acceptsPlatform: true } : {}),

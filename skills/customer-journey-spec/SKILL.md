@@ -60,6 +60,69 @@ pages fetched ONLY as background. Read them to understand the domain / business
 rules, but do NOT derive any actor, journey, or stage from them. Build the
 journeys strictly from `./docs/confluence/` and `./docs/jira/`.
 
+3. **Flow diagrams (AUTHORITATIVE for the order of steps):** the ingest saves
+   every draw.io diagram embedded in the docs as its SOURCE file next to the
+   page — `./docs/confluence/attachments/<name>.drawio` — and marks it in the
+   Markdown with a line reading `flow-diagram — nguồn sơ đồ (đọc file này để
+   lấy luồng): …`. Where a diagram exists, IT is the documented flow. Read it
+   and follow it; do not invent an order the diagram contradicts, and do not
+   quietly drop a branch it shows.
+
+   The file is mxGraph XML. You do not need to read all of it — the meaning is
+   in the box labels and the arrows between them:
+   ```bash
+   # boxes and edge labels
+   grep -o 'value="[^"]*"' docs/confluence/attachments/<name>.drawio
+   # arrows: which box leads to which
+   grep -o '<mxCell[^>]*edge="1"[^>]*>' docs/confluence/attachments/<name>.drawio
+   ```
+   An arrow's own `value` is the CONDITION on that branch ("Từ 2 DN", "Chưa có
+   DN"), and a box with several outgoing labelled arrows is a decision point.
+   Those conditions are exactly the branches a journey must not flatten away.
+
+   The rendered PNGs beside it (`<name>-p1.png`, …) are the same diagram for a
+   human to look at — the `.drawio` is the one to read.
+
+   **Transcribe the branches into the journey.** A box with several labelled
+   arrows leaving it is a decision: give that stage `stage_type: "decision"` and
+   list every outgoing branch in its `next[]`, with the arrow's label as the
+   `condition` (see `references/schema.md`). Three documented outcomes must not
+   collapse into one happy path — that flattening is exactly how a journey ends
+   up describing a flow the product does not have, and the Flow tab draws
+   `next[]`, so a flattened journey shows as a straight line that is visibly
+   wrong.
+
+**System map — `./docs/system-map.json` (when present).** The upstream `docs-map`
+stage classified every document by the APP it describes and recorded where flows
+HAND OFF between apps. Read it first:
+
+- `documents[]` tells you which files are yours. A file listing your app in its
+  `apps` is in scope; one that lists only another app is not — even if it reads
+  well.
+- `handoffs[]` is what stops your journey from describing a closed world. Where
+  a flow leaves your app ("hồ sơ chờ backoffice duyệt"), model the hand-off as a
+  stage from YOUR actor's point of view — what they submit, what they wait for,
+  what comes back — and stop there. Do NOT invent the other app's internals, and
+  do NOT quietly end the journey as if the flow finished.
+- `apps[]` includes systems this project does not build (an identity provider, a
+  core service). Those are touchpoints, never actors of your journey.
+
+The file is hand-editable, so treat it as decided: do not re-derive a
+classification you disagree with — flag it in the stage's `sources[]`.
+
+**One audience per run (multi-target projects).** When the kickoff names an
+audience — END CUSTOMER or BACKOFFICE — the docs folder you are reading is
+SHARED with the other targets: it holds material for all of them. Build journeys
+ONLY for your audience and leave the rest alone. A backoffice run has internal
+operators as its actor (approve, configure, reconcile, audit); an end-customer
+run never does. A doc section that plainly belongs to the other audience is not
+yours to model, however well written it is. No audience named → single build,
+cover the docs as a whole.
+
+**Docs are the source of truth.** When your reading of the prose and the diagram
+disagree, say so in the stage's `sources[]` rather than picking one silently —
+an invented step is worse than a flagged contradiction.
+
 Whichever input you use, you MUST capture the **key source text** for each stage
 in its `sources[]` (next section) — short verbatim excerpts from the MD that
 justify that stage. This is what the Customer Journey preview surfaces.
@@ -103,3 +166,7 @@ See `assets/example-customer-journey.json` for a complete, valid example.
 - **Stages are NESTED inside their journey's `stages[]`** — there is no flat
   `user_flow_id` link and no graph edge.
 - Keep quotes VERBATIM (never paraphrase) so the highlight locates them in the doc.
+- **Never invent a step the docs do not show.** Every stage must trace to prose
+  or to a flow diagram (§0.3). A journey that reads well but describes a flow
+  the documents never specified is the failure this stage exists to avoid —
+  every downstream stage builds on it.

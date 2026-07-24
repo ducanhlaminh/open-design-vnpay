@@ -14456,6 +14456,12 @@ export async function startServer({
     // (`<workflow>/<targetDir>/`), so this stage runs into that target's own
     // output subtree. undefined → the shared workflow cwd (legacy single build).
     targetDir?: string,
+    // Who this target is FOR. The docs are staged into every target's cwd as one
+    // shared copy, so without this two web targets (web-user / web-backoffice)
+    // get identical inputs, identical `platform`, and produce near-identical
+    // output in two folders — the audience is the only thing telling them apart,
+    // so it has to reach the agent.
+    audience?: import('@open-design/contracts').UiTargetAudience,
     // UI targets picked at the docs step (docs-to-ui). When the DOCS stage runs
     // with these, the daemon records them as docs-to-ui/targets.json — the
     // post-docs stages' config for which products to build. Ignored on other
@@ -14615,6 +14621,16 @@ export async function startServer({
       : effectivePlatform === 'mobile'
         ? ' Target platform for this run: MOBILE — every screen in the UX spec MUST set `layout: "mobile"`.'
         : '';
+    // Audience (multi-target runs only), paired with the platform directive: two
+    // WEB targets differ ONLY here, and the docs folder is shared across every
+    // target — so the agent is told both who it is building for and to leave the
+    // other audience's material alone.
+    const audienceDirective =
+      !audience
+        ? ''
+        : audience === 'backoffice'
+          ? ' Audience for this run: BACKOFFICE (internal operators / admins) — build ONLY the screens the docs describe for internal staff. The docs folder is SHARED across targets, so skip end-customer material entirely; prefer dense tables, bulk actions, filters, and audit/permission affordances.'
+          : ' Audience for this run: END CUSTOMER — build ONLY the screens the docs describe for the end user. The docs folder is SHARED across targets, so skip internal/backoffice-only material entirely.';
     // RE-RUN nudge: if this stage already succeeded once, its old outputs are
     // being cleared below — tell the agent to regenerate from scratch instead
     // of seeing leftover files and declaring the work already done.
@@ -14686,7 +14702,7 @@ export async function startServer({
     const featureScope = featureAppName
       ? `feature "${projectId}" of app "${featureAppName}"`
       : `feature "${projectId}"`;
-    const kickoff = `Run the "${def.name}" pipeline for ${featureScope}. ${skillDirective}${sourceDirective}${platformDirective}${rerunDirective}${kbDirective}${appCtxDirective}${graphDirective}`;
+    const kickoff = `Run the "${def.name}" pipeline for ${featureScope}. ${skillDirective}${sourceDirective}${platformDirective}${audienceDirective}${rerunDirective}${kbDirective}${appCtxDirective}${graphDirective}`;
 
     // BAS document pre-fetch (BE owns the BAS KG HTTP) — done BEFORE any
     // conversation/run state is created so a fetch failure aborts cleanly with no
@@ -14907,6 +14923,7 @@ export async function startServer({
       platform?: import('@open-design/contracts').TargetPlatform;
       targets?: import('@open-design/contracts').UiTarget[];
       skipSucceeded?: boolean;
+      lean?: boolean;
       followLinks?: boolean;
       includeDescendants?: boolean;
     },
@@ -14921,6 +14938,14 @@ export async function startServer({
     const wanted = new Set(terminal === 'both' ? ['ui-html', 'ui-react'] : [terminal]);
     // Workflow order, minus the UI terminal(s) not chosen for this run.
     let stages = wf.pipelineIds.filter((id) => !UI_TERMINAL_IDS.has(id) || wanted.has(id));
+    // LEAN: drop the analysis stages (see PipelineDef.skippedInLeanRun). Nothing
+    // downstream hard-requires them — ux-spec is told to carry on without a
+    // journey or a research report — so the chain still reaches a UI, just from
+    // the docs alone. Gating is not consulted here: run-all drives runPipeline
+    // directly, so a skipped dependency does not block its successor.
+    if (opts.lean) {
+      stages = stages.filter((id) => !getPipelineDef(id)?.skippedInLeanRun);
+    }
     if (opts.skipSucceeded) {
       // Same "done" signal the routes use: local run metadata merged with
       // on-disk outputs (deriveStateFromLocalFiles) — store state is not
@@ -14940,8 +14965,17 @@ export async function startServer({
     );
     // The docs ingest stage is the one taking free-text input (inputPlaceholder);
     // everything else is post-docs and target-scoped.
-    const docsStageIds = stages.filter((id) => getPipelineDef(id)?.inputPlaceholder);
-    const postStageIds = stages.filter((id) => !getPipelineDef(id)?.inputPlaceholder);
+    // SHARED stages run once for the project: the docs ingest (it takes the
+    // free-text input) plus anything marked sharedAcrossTargets — the system
+    // map describes the project, so one answer, not one per target. Everything
+    // else forks per target. Shared stages come first in workflow order, so
+    // running them up front preserves the chain.
+    const isShared = (id: string) => {
+      const def = getPipelineDef(id);
+      return !!def && (!!def.inputPlaceholder || def.sharedAcrossTargets === true);
+    };
+    const docsStageIds = stages.filter(isShared);
+    const postStageIds = stages.filter((id) => !isShared(id));
     workflowRunsInFlight.add(projectId);
     void (async () => {
       // One stage of the chain. `targetDir` scopes it into a target subfolder;
@@ -14951,6 +14985,7 @@ export async function startServer({
         id: string,
         targetDir: string | undefined,
         platform: import('@open-design/contracts').TargetPlatform | undefined,
+        audience?: import('@open-design/contracts').UiTargetAudience,
       ): Promise<'succeeded' | 'failed' | 'idle'> => {
         const def = getPipelineDef(id)!;
         const start = await runPipeline(
@@ -14964,6 +14999,7 @@ export async function startServer({
           def.inputPlaceholder ? opts.followLinks : undefined,
           def.inputPlaceholder ? opts.includeDescendants : undefined,
           targetDir,
+          audience,
         );
         return start.completion;
       };
@@ -15016,7 +15052,7 @@ export async function startServer({
             }
             let ok = true;
             for (const id of postStageIds) {
-              if ((await runStage(id, dir, UI_TARGETS[t].platform)) !== 'succeeded') {
+              if ((await runStage(id, dir, UI_TARGETS[t].platform, UI_TARGETS[t].audience)) !== 'succeeded') {
                 console.warn(`[pipelines] run-all for ${projectId} target "${dir}" stopped at "${id}"`);
                 ok = false;
                 break; // this target aborts; other targets still run

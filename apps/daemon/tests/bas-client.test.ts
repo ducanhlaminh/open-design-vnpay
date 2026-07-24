@@ -496,6 +496,96 @@ test('fetchConfluencePages prefers the direct PAT REST fetch and converts body.v
   assert.match(pages[0]!.content, /- Bước 1/);
 });
 
+// `body.export_view` is the STATIC-EXPORT rendering — the one Confluence's own
+// "Export to Markdown" reads, and the only one where macros that render
+// client-side (table of contents, …) are already expanded. Measured on four
+// real pages, every metric was equal or better than `body.view`.
+test('fetchConfluencePages prefers body.export_view and falls back to body.view', async () => {
+  const asked: string[] = [];
+  globalThis.fetch = vi.fn(async (url: any) => {
+    asked.push(String(url));
+    return makeRes(
+      JSON.stringify({
+        title: 'Trang',
+        body: {
+          view: { value: '<p>bản trình duyệt</p>' },
+          export_view: { value: '<p>bản xuất file</p>' },
+        },
+        _links: { base: 'https://wiki.test', webui: '/x/12' },
+      }),
+    ) as any;
+  }) as any;
+  const pages = await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['12']);
+  assert.match(asked[0]!, /expand=body\.export_view,body\.view/);
+  assert.match(pages[0]!.content, /bản xuất file/);
+  assert.doesNotMatch(pages[0]!.content, /bản trình duyệt/);
+
+  // A deployment that serves no export_view must still work.
+  globalThis.fetch = vi.fn(async () =>
+    makeRes(
+      JSON.stringify({
+        title: 'Trang',
+        body: { view: { value: '<p>chỉ có view</p>' } },
+        _links: { base: 'https://wiki.test', webui: '/x/13' },
+      }),
+    ) as any,
+  ) as any;
+  const fallback = await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['13']);
+  assert.match(fallback[0]!.content, /chỉ có view/);
+});
+
+// Confluence emits plenty of `<strong> </strong>` / `<strong><br></strong>`.
+// Wrapping nothing in emphasis markers leaves literal `** **` mid-sentence
+// ("Tham** **chiếu tài liệu") — 43 such runs across four real pages. Asterisks
+// that are page CONTENT (masked numbers) must survive untouched.
+test('htmlToMarkdown drops emphasis markers around blank content, keeps literal asterisks', async () => {
+  const { htmlToMarkdown } = await import('../src/bas/bas-client.js');
+  assert.equal(htmlToMarkdown('<p>Tham<strong> </strong>chiếu tài liệu</p>'), 'Tham chiếu tài liệu');
+  // The blank run is emitted verbatim — markers dropped, spacing untouched.
+  assert.equal(htmlToMarkdown('<p>a<em>  </em>b</p>'), 'a  b');
+  assert.equal(htmlToMarkdown('<p><strong><br></strong></p>'), '');
+  // Real emphasis is untouched.
+  assert.equal(htmlToMarkdown('<p>Số <strong>bắt buộc</strong></p>'), 'Số **bắt buộc**');
+  // Masking asterisks are content, not markup.
+  assert.equal(htmlToMarkdown('<p>ví dụ 094****000</p>'), 'ví dụ 094****000');
+});
+
+// A GFM table row must stay on ONE line, so block boundaries inside a cell
+// become `<br>`. Collapsing them to a space ran opposite branches of a flow
+// step together — "Hoàn tất xác thực trên webview ĐÓNG webview giữa chừng" —
+// which a downstream agent then reads as a single instruction.
+test('fetchConfluencePages keeps line breaks inside a table cell as <br>, on one row', async () => {
+  globalThis.fetch = vi.fn(async () =>
+    makeRes(
+      JSON.stringify({
+        title: 'Luồng',
+        body: {
+          export_view: {
+            value:
+              '<table><tr><th>Bước</th><th>Mô tả</th></tr>' +
+              '<tr><td>5</td><td><p>Điều hướng theo số doanh nghiệp</p>' +
+              '<ul><li>ĐÚNG 1 doanh nghiệp: vào thẳng. KẾT THÚC.</li>' +
+              '<li>CHƯA có doanh nghiệp nào: tiếp Bước 6</li></ul></td></tr></table>',
+          },
+        },
+        _links: { base: 'https://wiki.test', webui: '/x/14' },
+      }),
+    ) as any,
+  ) as any;
+  const [page] = await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['14']);
+  const rows = page!.content.split('\n').filter((l) => l.startsWith('|'));
+
+  // Every row is closed — a stray newline inside a cell would split the row and
+  // silently destroy the table.
+  for (const r of rows) assert.match(r, /\|\s*$/, `hàng bảng chưa đóng: ${r}`);
+  const dataRow = rows.find((r) => r.includes('Điều hướng'))!;
+  assert.match(dataRow, /Điều hướng theo số doanh nghiệp<br>/);
+  assert.match(dataRow, /<br>• ĐÚNG 1 doanh nghiệp/);
+  assert.match(dataRow, /<br>• CHƯA có doanh nghiệp nào/);
+  // The two branches must NOT read as one sentence.
+  assert.doesNotMatch(dataRow, /doanh nghiệp ĐÚNG 1/);
+});
+
 test('fetchConfluencePages downloads a same-host <img> into attachmentsDir and rewrites src to a Markdown image', async () => {
   const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-img-'));
   try {

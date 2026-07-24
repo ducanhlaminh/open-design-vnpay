@@ -27,10 +27,15 @@ export type UiTarget = 'mobile' | 'web-user' | 'web-backoffice';
 /** Static descriptor for each UI target: its platform (drives each screen's
  *  `layout`), audience (drives which flows/screens the ux-spec authors), the
  *  human label for the picker, and the output subfolder its stages run under. */
+/** Who a UI target is built FOR. Two web targets share a platform and a docs
+ *  folder, so this is the only thing that distinguishes them — it reaches the
+ *  agent as a kickoff directive (see runPipeline's audienceDirective). */
+export type UiTargetAudience = 'user' | 'backoffice';
+
 export interface UiTargetDef {
   id: UiTarget;
   platform: TargetPlatform;
-  audience: 'user' | 'backoffice';
+  audience: UiTargetAudience;
   label: string;
   /** Per-target cwd subfolder under the workflow dir (`<workflow>/<dir>/…`). */
   dir: string;
@@ -97,11 +102,30 @@ export type PipelineStatus =
 export interface PipelineView {
   id: string;
   name: string;
-  /** Pipeline ids that must be `succeeded` before this one is `active`. */
+  /** Pipeline ids that must be `succeeded` before this one is `active` — the
+   *  STATIC registry list, independent of run mode. Clients use its identity as
+   *  structure (the stepper fuses consecutive pipelines sharing the same list
+   *  into one option-group step, and computes downstream sets from it), so it
+   *  must never be rewritten per mode — that fuses unrelated stages. The gate
+   *  the current mode actually enforces is `effectiveDependsOn`. */
   dependsOn: string[];
+  /** The gate the project's run mode ACTUALLY enforces, when it differs from
+   *  `dependsOn`: under `lean`, a dependency the mode never runs is replaced by
+   *  its own dependencies (transitively), so lock messages only ever name a
+   *  stage that can reach `succeeded`. Absent = same as `dependsOn`. */
+  effectiveDependsOn?: string[];
   status: PipelineStatus;
-  /** Derived: every dependsOn pipeline is `succeeded`. */
+  /** Derived: every pipeline in the mode's effective gate is `succeeded`. */
   active: boolean;
+  /**
+   * The project's run mode drops this stage from the chain (today: the LEAN
+   * run-all skipping the journey / research / heuristic-review stages). It is
+   * NOT locked and NOT failed — it simply is not part of what this project
+   * runs, and nothing downstream waits on it. Clients render it muted with a
+   * "bỏ qua" badge and keep its Run button live so it can be run on demand.
+   * Absent = a normal stage of the current mode.
+   */
+  skipped?: boolean;
   /**
    * When set, this pipeline accepts a free-text run input (e.g. a Confluence
    * page URL / id, a JIRA project key or JQL). The UI renders an input box with
@@ -154,7 +178,19 @@ export interface PipelinesResponse {
   /** Which workflow these pipelines belong to (echoed back from the query). */
   workflowId: string;
   pipelines: PipelineView[];
+  /** The project's run mode: `RunAllConfig.lean` saved by the last run-all —
+   *  or, for legacy projects that ran lean before the mode was persisted,
+   *  INFERRED from the state shape only a lean chain leaves behind (a UI
+   *  terminal succeeded while the analysis stages never ran). Gating,
+   *  `effectiveDependsOn` and `skipped` in `pipelines` are all computed for
+   *  THIS mode; the UI also shows it so the reason a stage is greyed out is
+   *  visible on the stepper instead of hidden in a modal chosen an hour ago. */
+  runMode: PipelineRunMode;
 }
+
+/** Which stages a project's chain runs: `lean` drops the analysis stages
+ *  (journey / research / heuristic review), `full` runs everything. */
+export type PipelineRunMode = 'full' | 'lean';
 
 export type PipelinePulseRating = 'ready' | 'minor_edits' | 'major_edits' | 'unusable';
 
@@ -248,6 +284,14 @@ export interface RunAllConfig {
    *  (folder-structured), independent of followLinks. Omitted → false. */
   includeDescendants?: boolean;
   skipSucceeded?: boolean;
+  /**
+   * LEAN run: drop the analysis stages (customer journey, UX research, the
+   * heuristic review) and run only docs → UX Spec → UI. Much shorter and
+   * cheaper; the spec is written from the docs alone rather than from a journey
+   * and research criteria, so use it to get something on screen fast, not for
+   * the run you hand over. Omitted → the full chain.
+   */
+  lean?: boolean;
 }
 
 // A KGS app/project available for pipelines. These are projects pulled from the
@@ -489,6 +533,7 @@ export interface RunWorkflowRequest {
    * history, wiped, and their statuses flip to idle) before the chain rebuilds
    * stage by stage.
    */
+  lean?: boolean;
   skipSucceeded?: boolean;
 }
 

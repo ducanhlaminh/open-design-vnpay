@@ -69,12 +69,80 @@ export function deriveFlowFromSpec(spec: SpecDoc): FlowDoc | null {
   return { id: 'FLOW-NAV', name: 'Điều hướng (từ navigates_to)', edges };
 }
 
+/** Derive one flow PER JOURNEY from a Customer Journey document.
+ *
+ * A CJ file has `journeys[].stages[]` and no screens, so the screen-graph
+ * derivation above finds nothing and the Flow tab renders empty — which is what
+ * it did for every customer journey.
+ *
+ * Stages are an ORDERED list, so the default shape is a chain (1 → 2 → 3). A
+ * stage that documents a fork carries `next[]` (one entry per branch, each with
+ * the `condition` copied off the source flow diagram's arrow); when it is
+ * present it REPLACES the implicit "next by order" edge, so a three-way branch
+ * draws as three labelled edges out of a decision node instead of a straight
+ * line that hides two of the outcomes.
+ */
+export function deriveFlowsFromJourneys(spec: SpecDoc): FlowDoc[] {
+  const journeys = (spec as { journeys?: Array<Record<string, any>> }).journeys ?? [];
+  const flows: FlowDoc[] = [];
+  for (const journey of journeys) {
+    const stages = [...((journey.stages ?? []) as Array<Record<string, any>>)].sort(
+      (a, b) => Number(a.order ?? 0) - Number(b.order ?? 0),
+    );
+    if (stages.length === 0) continue;
+    const ids = new Set(stages.map((st) => String(st.id ?? '')));
+    const nodes: FlowDocNode[] = [];
+    const edges: FlowDoc['edges'] = [];
+
+    for (const [i, stage] of stages.entries()) {
+      const id = String(stage.id ?? '');
+      if (!id) continue;
+      const kind: FlowDocNode['kind'] = stage.stage_type === 'decision' ? 'decision' : 'end';
+      nodes.push({ id, kind, label: String(stage.name ?? id) });
+
+      const branches = (Array.isArray(stage.next) ? stage.next : []) as Array<Record<string, any>>;
+      const declared = branches
+        .map((b) => ({ to: String(b?.to ?? ''), label: String(b?.condition ?? '') }))
+        .filter((b) => b.to && ids.has(b.to));
+      if (declared.length > 0) {
+        for (const b of declared) edges.push({ from: id, to: b.to, ...(b.label ? { label: b.label } : {}) });
+        continue;
+      }
+      const nextStage = stages[i + 1];
+      const to = nextStage ? String(nextStage.id ?? '') : '';
+      if (to) edges.push({ from: id, to });
+    }
+    if (!edges.length) continue;
+    flows.push({
+      id: String(journey.id ?? `UFLW-${flows.length + 1}`),
+      name: String(journey.name ?? journey.goal ?? 'Hành trình'),
+      entry: String(stages[0]?.id ?? ''),
+      nodes,
+      edges,
+    });
+  }
+  return flows;
+}
+
+// A branch that ends badly — cancel, error, "No", a rejected validation. Drawn
+// RED + DASHED so the happy path is legible at a glance in a dense chart; every
+// other edge stays solid black. Matching is on the edge LABEL, which is the
+// condition copied off the source flow diagram ("Chưa có DN", "KẾT THÚC nhánh
+// hủy", "Dữ liệu không hợp lệ").
+const NEGATIVE_BRANCH_RE =
+  /\b(no|not|invalid|fail(ed|ure)?|error|cancel(l?ed)?|reject(ed)?|deny|denied|timeout)\b|không|kh\.|hủy|huỷ|thoát|lỗi|sai|thất bại|từ chối|chưa |hết hạn|quá hạn/i;
+
+function isNegativeBranch(label: string | undefined): boolean {
+  return !!label && NEGATIVE_BRANCH_RE.test(label);
+}
+
 const T = {
   ink: 'var(--text, #1a1a1a)',
   muted: 'var(--text-muted, #6b7280)',
   border: 'var(--border, #e1e5eb)',
   paper: 'var(--bg-panel, #fff)',
   accent: 'var(--accent, #0066b3)',
+  danger: 'var(--danger, #d14343)',
 };
 
 // Node box sizes (layout uses these; React Flow nodes are absolutely placed).
@@ -84,9 +152,12 @@ const DECISION_W = 170;
 const DECISION_H = 150;
 const END_W = 170;
 const END_H = 56;
-const NODE_GAP = 48;
+// Vertical breathing room between nodes in a column. It also sets the ceiling on
+// how many label chips a gutter can stack without the ladder running past its
+// neighbours, so it is deliberately generous.
+const NODE_GAP = 64;
 // Wide gutters so smoothstep edges + their labels have room between columns.
-const COL_W = SCREEN_W + 190;
+const COL_W = SCREEN_W + 230;
 
 // Edge with an HTML label chip: React Flow's default SVG labels are single-line
 // (no wrapping), so long agent-authored labels overflow across the chart. The
@@ -116,6 +187,9 @@ function LabeledEdge({
   });
   const label = (data as { label?: string } | undefined)?.label;
   const shift = (data as { shift?: number } | undefined)?.shift ?? 0;
+  // A negative branch's chip is tinted to match its red dashed edge, so the
+  // condition and the line it belongs to read as one thing in a dense chart.
+  const negative = (data as { negative?: boolean } | undefined)?.negative === true;
   return (
     <>
       <BaseEdge id={id} path={edgePath} style={style} markerEnd={markerEnd as string | undefined} />
@@ -129,12 +203,12 @@ function LabeledEdge({
               maxWidth: 170,
               padding: '2px 8px',
               borderRadius: 7,
-              border: `1px solid ${T.border}`,
+              border: `1px solid ${negative ? T.danger : T.border}`,
               background: 'var(--bg-panel, #fff)',
               boxShadow: '0 1px 2px rgba(0,0,0,.06)',
               fontSize: 10.5,
               fontWeight: 600,
-              color: T.ink,
+              color: negative ? T.danger : T.ink,
               lineHeight: 1.3,
               textAlign: 'center',
               display: '-webkit-box',
@@ -396,6 +470,11 @@ export function SpecFlowCanvas({
   );
   const effective = useMemo(() => {
     if (flows.length) return flows;
+    // A Customer Journey has journeys, not screens — derive one flow per
+    // journey. Without this the tab was empty for every CJ document, because
+    // both other sources (flow files, `navigates_to`) are ux-stage artifacts.
+    const fromJourneys = deriveFlowsFromJourneys(spec);
+    if (fromJourneys.length) return fromJourneys;
     const derived = deriveFlowFromSpec(spec);
     return derived ? [derived] : [];
   }, [flows, spec]);
@@ -428,16 +507,22 @@ export function SpecFlowCanvas({
     // source's labels into vertical slots (~a chip-height apart) so parallel
     // edges never stack their labels.
     const filtered = (flow.edges ?? []).filter((e) => e.from && e.to);
-    const srcTotal = new Map<string, number>();
-    for (const e of filtered) srcTotal.set(e.from!, (srcTotal.get(e.from!) ?? 0) + 1);
-    const srcSeen = new Map<string, number>();
+    // Label chips land near the midpoint of their edge, so every edge crossing
+    // the SAME gutter (the empty column between two node columns) competes for
+    // the same strip of space. Staggering per SOURCE only — what this did
+    // before — still let two different sources drop their chips on top of each
+    // other. Slot them per gutter instead: one shared ladder of vertical slots,
+    // so no two chips in a gutter share a row.
+    const gutterOf = (id: string) => Math.round((pos.get(id)?.x ?? 0) / COL_W);
+    const byGutter = new Map<number, number>();
     const LABEL_SLOT = 40; // ~2-line chip height + gap
     const edges: Edge[] = filtered.map((e, i) => {
       const from = e.from!;
-      const total = srcTotal.get(from) ?? 1;
-      const k = srcSeen.get(from) ?? 0;
-      srcSeen.set(from, k + 1);
-      const shift = total > 1 ? (k - (total - 1) / 2) * LABEL_SLOT : 0;
+      const gutter = gutterOf(from);
+      const seen = byGutter.get(gutter) ?? 0;
+      byGutter.set(gutter, seen + 1);
+      const negative = isNegativeBranch(e.label);
+      const stroke = negative ? T.danger : T.ink;
       return {
         id: `e${i}`,
         source: from,
@@ -446,11 +531,22 @@ export function SpecFlowCanvas({
         // flowchart; bezier diagonals with floating one-line SVG labels turned
         // dense graphs into soup.
         type: 'labeled',
-        data: { label: e.label, shift },
-        style: { stroke: T.muted, strokeWidth: 1.3 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: T.muted },
+        data: { label: e.label, slot: seen, negative },
+        style: {
+          stroke,
+          strokeWidth: negative ? 1.4 : 1.6,
+          ...(negative ? { strokeDasharray: '6 4' } : {}),
+        },
+        markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
       };
     });
+    // Centre each gutter's ladder on the edges' own midpoints.
+    const gutterTotal = new Map(byGutter);
+    for (const edge of edges) {
+      const d = edge.data as { slot: number };
+      const total = gutterTotal.get(gutterOf(edge.source)) ?? 1;
+      (edge.data as { shift?: number }).shift = total > 1 ? (d.slot - (total - 1) / 2) * LABEL_SLOT : 0;
+    }
     return { nodes, edges };
   }, [flow, screenIds, nameOf, wireframes, platforms]);
 
@@ -498,6 +594,30 @@ export function SpecFlowCanvas({
               {f.name ?? f.id}
             </button>
           ))}
+        </div>
+      ) : null}
+      {/* Without a key, the red dashed edges read as "something is broken"
+          rather than "this is the branch that does not go well". */}
+      {built.edges.some((e) => (e.data as { negative?: boolean } | undefined)?.negative) ? (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 14,
+            padding: '6px 12px',
+            borderBottom: `1px solid ${T.border}`,
+            fontSize: 11.5,
+            color: T.muted,
+          }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 22, height: 0, borderTop: `2px solid ${T.ink}` }} />
+            Luồng thuận
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: T.danger }}>
+            <span style={{ width: 22, height: 0, borderTop: `2px dashed ${T.danger}` }} />
+            Nhánh lỗi / hủy / không hợp lệ
+          </span>
         </div>
       ) : null}
       <div style={{ flex: 1, minHeight: 440 }}>

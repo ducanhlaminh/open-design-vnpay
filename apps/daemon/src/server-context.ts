@@ -141,6 +141,8 @@ export interface PipelineDeps {
        *  target into <workflow>/<target>/. Empty/absent → single build. */
       targets?: import('@open-design/contracts').UiTarget[];
       skipSucceeded?: boolean;
+      /** Lean run: drop the analysis stages (PipelineDef.skippedInLeanRun). */
+      lean?: boolean;
       followLinks?: boolean;
       includeDescendants?: boolean;
     },

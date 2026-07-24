@@ -882,6 +882,147 @@ async function inlineDrawioPreviewsRendered(
 
 /** Render one drawio macro block into its markdown-ready `<img>`(s). Multi-page
  *  → one local `<img>` per rendered page; otherwise the single stored preview. */
+/** HTML entity decode (numeric + the named set this wiki actually emits).
+ *  Shared by the Markdown converter and the draw.io label reader. */
+function decodeEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) => {
+      try { return String.fromCodePoint(parseInt(h, 16)); } catch { return _m; }
+    })
+    .replace(/&#(\d+);/g, (_m, d: string) => {
+      try { return String.fromCodePoint(Number(d)); } catch { return _m; }
+    })
+    .replace(/&([a-zA-Z]+);/g, (m, name: string) => NAMED_ENTITIES[name] ?? m);
+}
+
+/** File-name stem for a diagram's derived files, PREFIXED WITH ITS PAGE ID.
+ *
+ * An attachment name is unique only WITHIN a Confluence page — two pages happily
+ * hold different diagrams both called "Untitled Diagram-1783562766184". Every
+ * page in a run writes into ONE shared `attachments/` folder, so an unprefixed
+ * name lets the last page written win: the `.drawio` a page points at ends up
+ * being some other page's diagram, and an agent told the diagram is
+ * authoritative then transcribes the wrong flow with full confidence.
+ *
+ * The page id is how Confluence itself scopes an attachment
+ * (`/download/attachments/<pageId>/<name>`), so it is the natural key.
+ */
+function diagramFileStem(meta: DrawioMacroMeta): string {
+  const base = (sanitizeImageFileName(meta.diagramName).replace(/\.png$/i, '') || 'diagram').replace(/\s+/g, '_');
+  return `${meta.pageId}-${base}`;
+}
+
+/** Expand every draw.io diagram in an `export_view` body to ONE IMAGE PER PAGE.
+ *
+ * `export_view` already flattens each draw.io macro to a single `<img>` — the
+ * page-1 preview PNG Confluence stores. That is precisely where Confluence's own
+ * "Export to Markdown" loses pages 2..N of a multi-page diagram.
+ *
+ * The macro (with the `data-diagramdata` blob naming the diagram's SOURCE
+ * mxfile) survives in the `view` rendering, so we read the diagram list from
+ * THERE, render every page from the source, and splice the results into the
+ * export_view body by matching the preview file name. A diagram we cannot read
+ * or render keeps its page-1 `<img>` untouched — never worse than the export.
+ */
+async function expandDrawioPagesInExportView(
+  html: string,
+  macroHtml: string,
+  creds: ConfluenceCreds,
+  attachmentsDir: string,
+  relPrefix: string,
+  runtimeDataDir: string,
+): Promise<string> {
+  const metas: DrawioMacroMeta[] = [];
+  for (let i = macroHtml.indexOf('data-macro-name="drawio"'); i !== -1; i = macroHtml.indexOf('data-macro-name="drawio"', i + 1)) {
+    const start = macroHtml.lastIndexOf('<div', i);
+    if (start === -1) continue;
+    const meta = parseDrawioMacro(macroHtml.slice(start, i + 4000));
+    if (meta && !metas.some((m) => m.previewName === meta.previewName)) metas.push(meta);
+  }
+  if (!metas.length) return html;
+
+  let out = html;
+  for (const meta of metas) {
+    let xml: string;
+    try {
+      const buf = await downloadConfluenceBinary(
+        creds,
+        `${creds.base}/download/attachments/${meta.pageId}/${encodeURIComponent(meta.diagramName)}`,
+      );
+      xml = buf.toString('utf8');
+    } catch {
+      continue; // source unreadable → keep the page-1 preview export_view gave us
+    }
+    const pages = splitMxfilePages(xml);
+    const stem = diagramFileStem(meta);
+
+    // The PNG is what a HUMAN reads; the diagram SOURCE is what the next stage
+    // reads. Saved verbatim — an agent working from the source can recover
+    // every branch label and condition, which it cannot do reliably from a
+    // picture. Written for EVERY diagram, single-page included.
+    const sourceRel = `${stem}.drawio`;
+    let sourceSaved = false;
+    try {
+      await fs.mkdir(attachmentsDir, { recursive: true });
+      await fs.writeFile(path.join(attachmentsDir, sourceRel), xml, 'utf8');
+      sourceSaved = true;
+    } catch (err) {
+      console.warn(`[bas] could not save drawio source for "${meta.diagramName}":`, err);
+    }
+    // A reference the agent meets right where the diagram is, rather than a
+    // file on disk it has to know to look for.
+    const refHtml = sourceSaved
+      ? `<br/><em>${DIAGRAM_ALT_MARKER} — nguồn sơ đồ (đọc file này để lấy luồng): <a href="${relPrefix}/${encodeURI(sourceRel)}">${sourceRel}</a></em><br/>`
+      : '';
+
+    if (pages.length <= 1) {
+      // Stored preview already shows the whole diagram; only the reference is
+      // new, so append it after the existing <img> instead of replacing it.
+      if (refHtml) out = appendAfterImage(out, meta.previewName, refHtml);
+      continue;
+    }
+    const outPaths = pages.map((_, i) => path.join(attachmentsDir, `${stem}-p${i + 1}.png`));
+    let written: Set<string>;
+    try {
+      written = new Set(await renderDrawioPages(xml, outPaths, runtimeDataDir));
+    } catch (err) {
+      console.warn(`[bas] drawio multi-page render failed for "${meta.diagramName}" (keeping page-1 preview):`, err);
+      if (refHtml) out = appendAfterImage(out, meta.previewName, refHtml);
+      continue;
+    }
+    const imgs = outPaths
+      .map((abs, i) =>
+        written.has(abs)
+          ? `<img src="${relPrefix}/${path.basename(abs)}" alt="${DIAGRAM_ALT_MARKER} ${meta.diagramName.replace(/"/g, '&quot;')} — trang ${i + 1}"/>`
+          : '',
+      )
+      .filter(Boolean);
+    if (!imgs.length) continue;
+    // Swap the single preview <img> for the per-page set. The src carries the
+    // preview file name (percent-encoded or not), which is what identifies it.
+    const enc = encodeURIComponent(meta.previewName);
+    const imgRe = new RegExp(`<img\\b[^>]*\\bsrc="[^"]*(?:${escapeForRegExp(meta.previewName)}|${escapeForRegExp(enc)})[^"]*"[^>]*>`, 'i');
+    if (!imgRe.test(out)) continue;
+    out = out.replace(imgRe, `${imgs.join('\n')}${refHtml}`);
+    console.log(`[bas] drawio "${meta.diagramName}": ${imgs.length}/${pages.length} trang (export_view)`);
+  }
+  return out;
+}
+
+/** Insert `extra` right after the <img> whose src carries `previewName`. */
+function appendAfterImage(html: string, previewName: string, extra: string): string {
+  const re = new RegExp(
+    `<img\\b[^>]*\\bsrc="[^"]*(?:${escapeForRegExp(previewName)}|${escapeForRegExp(encodeURIComponent(previewName))})[^"]*"[^>]*>`,
+    'i',
+  );
+  const m = re.exec(html);
+  return m ? html.replace(re, `${m[0]}${extra}`) : html;
+}
+
+function escapeForRegExp(v: string): string {
+  return v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function renderDrawioMacroBlock(
   block: string,
   creds: ConfluenceCreds,
@@ -904,7 +1045,7 @@ async function renderDrawioMacroBlock(
   }
   const pages = splitMxfilePages(xml);
   if (pages.length <= 1) return fallback(); // single page → the stored preview is complete
-  const stem = (sanitizeImageFileName(meta.diagramName).replace(/\.png$/i, '') || 'diagram').replace(/\s+/g, '_');
+  const stem = diagramFileStem(meta);
   const outPaths = pages.map((_, i) => path.join(attachmentsDir, `${stem}-p${i + 1}.png`));
   try {
     await fs.mkdir(attachmentsDir, { recursive: true });
@@ -932,24 +1073,22 @@ export function htmlToMarkdown(
    *  alt-text-only, same as before images were downloaded at all. */
   localizedImagePrefix?: string,
 ): string {
-  const decode = (s: string) =>
-    s
-      .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) => {
-        try { return String.fromCodePoint(parseInt(h, 16)); } catch { return _m; }
-      })
-      .replace(/&#(\d+);/g, (_m, d: string) => {
-        try { return String.fromCodePoint(Number(d)); } catch { return _m; }
-      })
-      .replace(/&([a-zA-Z]+);/g, (m, name: string) => NAMED_ENTITIES[name] ?? m);
+  const decode = decodeEntities;
   let s = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '');
   // Code blocks first so their contents survive untouched.
   s = s.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_m, code: string) => `\n\`\`\`\n${decode(code.replace(/<[^>]+>/g, ''))}\n\`\`\`\n`);
   // Inline marks before block handling (block handlers strip remaining tags).
-  s = s.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, '**$2**');
-  s = s.replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, '*$2*');
-  s = s.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`');
+  // An emphasis tag wrapping only whitespace/markup (Confluence emits plenty of
+  // `<strong> </strong>` and `<strong><br></strong>`) must NOT get markers: the
+  // pair has nothing to emphasise, so it survives into the Markdown as literal
+  // `** **` mid-sentence ("Tham** **chiếu tài liệu"). Emit the inner run as-is.
+  const hasText = (inner: string) => inner.replace(/<[^>]+>/g, '').trim().length > 0;
+  const emphasize = (inner: string, delim: string) => (hasText(inner) ? `${delim}${inner}${delim}` : inner);
+  s = s.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, (_m, _tag: string, inner: string) => emphasize(inner, '**'));
+  s = s.replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, (_m, _tag: string, inner: string) => emphasize(inner, '*'));
+  s = s.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_m, inner: string) => emphasize(inner, '`'));
   s = s.replace(/<a [^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, t: string) => {
     const label = t.replace(/<[^>]+>/g, '').trim();
     const target = resolveHref ? resolveHref(href) : href;
@@ -965,12 +1104,41 @@ export function htmlToMarkdown(
   // them as tables instead of literal pipe text. Innermost-first loop handles
   // Confluence's nested tables: each pass converts tables with no <table>
   // inside, so an outer table sees its inner one already flattened to text.
+  // Emitted for a line break inside a table cell; swapped for a literal `<br>`
+  // once every other transformation (including `<br>` → newline) has run.
+  const CELL_BREAK = '\u0002';
+  // A GFM cell cannot contain a real newline, so block boundaries INSIDE a cell
+  // (`</p>`, `</li>`, `<br>`) become `<br>` — which markdown renderers honour.
+  // Collapsing them to a space instead (the old behaviour) ran separate items
+  // together: a flow-step table cell read as "Hoàn tất xác thực trên webview
+  // ĐÓNG webview giữa chừng…", i.e. two opposite branches as one sentence. That
+  // is the failure a downstream agent silently inherits.
+  // A GFM cell cannot contain a real newline, so block boundaries INSIDE a cell
+  // (`</p>`, `</li>`, `<br>`) are emitted as `<br>`, which renderers honour.
+  // BREAK is a sentinel that survives the tag-stripping and whitespace collapse
+  // below without ever colliding with page text; it becomes `<br>` at the end.
+  const BREAK = '\u0001';
+  const cellToMd = (cell: string): string =>
+    cell
+      .replace(/<br\s*\/?>/gi, BREAK)
+      .replace(/<\/(p|li|div|h[1-6])\s*>/gi, BREAK)
+      // Keep the bullet so a list inside a cell still reads as a list.
+      .replace(/<li[^>]*>/gi, `${BREAK}\u2022 `)
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\|/g, '\\|')
+      .replace(/[ \t\r\n]+/g, ' ')
+      .split(BREAK)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      // Stays a sentinel until the very end of htmlToMarkdown: the global
+      // `<br>` → newline pass below runs AFTER tables, and a real `<br>` here
+      // would be turned into a newline that splits the GFM row across lines.
+      .join(CELL_BREAK);
+
   const tableToMd = (tbl: string): string => {
     const rows: string[][] = [];
     for (const tr of tbl.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
-      const cells = [...tr[1]!.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((c) =>
-        c[1]!.replace(/<[^>]+>/g, ' ').replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim(),
-      );
+      const cells = [...tr[1]!.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((c) => cellToMd(c[1]!));
       if (cells.length) rows.push(cells);
     }
     if (!rows.length) return '\n';
@@ -1051,25 +1219,42 @@ export function htmlToMarkdown(
   s = s.replace(/<\/(p|div|ul|ol|table|section|article|blockquote)>/gi, '\n\n');
   s = s.replace(/<[^>]+>/g, '');
   s = decode(s);
-  return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return s
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .split(CELL_BREAK)
+    .join('<br>')
+    .trim();
 }
 
 /** Direct-PAT page fetch (Data Center REST, same creds the page SEARCH uses —
- * verified live with wiki.servicehub.vn). Returns the RAW rendered HTML
- * (`body.view`) — conversion happens later so cross-page links can be
- * rewritten once every fetched page is known. */
+ * verified live with wiki.servicehub.vn). Returns the RAW rendered HTML —
+ * conversion happens later so cross-page links can be rewritten once every
+ * fetched page is known.
+ *
+ * `body.export_view` is the STATIC-EXPORT rendering, and it is what Confluence's
+ * own "Export to Markdown" reads. It differs from `body.view` (the browser
+ * rendering) in exactly the ways that matter here: macros that render
+ * client-side in `view` are already expanded server-side. Measured on four real
+ * pages of this wiki, every metric was equal or better and none regressed — the
+ * table of contents alone went from an empty `<div>` to 9 nested entries.
+ *
+ * `view` is still fetched because the draw.io macro survives there with its
+ * `data-diagramdata` blob, which is the only way to reach a diagram's SOURCE
+ * mxfile and render pages 2..N. `export_view` flattens that macro to the
+ * page-1 preview PNG — the same limitation the browser export ships with. */
 async function fetchConfluencePageDirect(
   creds: ConfluenceCreds,
   pageId: string,
-): Promise<{ title: string; url: string; html: string; ancestors: Array<{ id: string; title: string }> }> {
-  const res = await fetch(`${creds.base}/rest/api/content/${pageId}?expand=body.view,space,ancestors`, {
+): Promise<{ title: string; url: string; html: string; macroHtml: string; ancestors: Array<{ id: string; title: string }> }> {
+  const res = await fetch(`${creds.base}/rest/api/content/${pageId}?expand=body.export_view,body.view,space,ancestors`, {
     headers: { authorization: `Bearer ${creds.token}` },
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`Confluence REST ${res.status} for page ${pageId}: ${text.slice(0, 160)}`);
   const p = JSON.parse(text) as {
     title?: string;
-    body?: { view?: { value?: string } };
+    body?: { view?: { value?: string }; export_view?: { value?: string } };
     ancestors?: Array<{ id?: string; title?: string }>;
     _links?: { base?: string; webui?: string };
   };
@@ -1083,7 +1268,10 @@ async function fetchConfluencePageDirect(
     ancestors: (p.ancestors ?? [])
       .map((a) => ({ id: String(a.id ?? ''), title: a.title ?? '' }))
       .filter((a) => a.id),
-    html: p.body?.view?.value ?? '',
+    // Prefer export_view; fall back to view if a deployment doesn't serve it.
+    html: p.body?.export_view?.value || p.body?.view?.value || '',
+    // Kept ONLY to recover multi-page draw.io diagrams (see the docblock).
+    macroHtml: p.body?.view?.value ?? '',
   };
 }
 
@@ -1171,8 +1359,10 @@ export async function fetchConfluencePages(
     pageId: string;
     title: string;
     url: string;
-    /** Raw body.view HTML (direct fetch) — converted in pass 2. */
+    /** Raw `body.export_view` HTML (direct fetch) — converted in pass 2. */
     html?: string;
+    /** Raw `body.view` HTML — kept ONLY to recover multi-page draw.io sources. */
+    macroHtml?: string;
     /** Pre-converted markdown (gateway fallback path). */
     markdown?: string;
     linked: boolean;
@@ -1330,23 +1520,24 @@ export async function fetchConfluencePages(
       // authenticate the image download with.
       let html = p.html;
       let localizedImagePrefix: string | undefined;
-      // draw.io macros become <img> tags first, so localization below ships the
-      // diagram PNGs like any page image. Multi-page diagrams are rendered
-      // page-by-page into attachments/ (headless) when a runtime dir is given;
-      // otherwise (and for single-page) we emit the stored page-1 preview URL.
-      if (src.creds && opts.attachmentsDir && opts.runtimeDataDir) {
-        html = await inlineDrawioPreviewsRendered(
+      // draw.io: the body is `export_view`, which already flattened each macro
+      // to its page-1 preview <img>. Expand those to one <img> PER PAGE using
+      // the diagram SOURCE named by the macro in the `view` body — this is the
+      // one place we beat Confluence's own Markdown export, which ships page 1
+      // only. Without a runtime dir (no headless renderer) the page-1 <img>
+      // stands, and localization below downloads it like any page image.
+      if (src.creds && opts.attachmentsDir && opts.runtimeDataDir && p.macroHtml) {
+        html = await expandDrawioPagesInExportView(
           html,
+          p.macroHtml,
           src.creds,
           opts.attachmentsDir,
           attachmentsPrefix,
           opts.runtimeDataDir,
         ).catch((err) => {
-          console.warn(`[bas] drawio render pass failed for page ${p.pageId} (falling back):`, err);
-          return inlineDrawioPreviews(html, src.creds!.base);
+          console.warn(`[bas] drawio multi-page pass failed for page ${p.pageId} (keeping page-1 previews):`, err);
+          return html;
         });
-      } else if (src.creds) {
-        html = inlineDrawioPreviews(html, src.creds.base);
       }
       if (src.creds && opts.attachmentsDir) {
         const localized = await localizeConfluenceImages(

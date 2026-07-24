@@ -1221,6 +1221,8 @@ export interface RunAllPayload {
   targets?: UiTarget[];
   designSystemId: string | null;
   skipSucceeded: boolean;
+  /** true → run only docs → UX Spec → UI, dropping the analysis stages. */
+  lean?: boolean;
   /** false → docs stage fetches ONLY the picked pages (no link-follow). */
   followLinks?: boolean;
   /** true → docs stage also scans the whole sub-tree under each seed page. */
@@ -1236,9 +1238,11 @@ export function RunAllModal({
   defaultTargets,
   defaultFollowLinks,
   defaultSkipSucceeded,
+  defaultLean,
   hasPlatform = true,
   hasTerminal = true,
   hasDesignSystem = true,
+  supportsLean = true,
   anySucceeded,
   onClose,
   onRun,
@@ -1256,12 +1260,18 @@ export function RunAllModal({
   defaultTargets?: UiTarget[];
   defaultFollowLinks?: boolean;
   defaultSkipSucceeded?: boolean;
+  defaultLean?: boolean;
   /** Whether the active workflow HAS a stage that uses each picker — a
    *  workflow with no UX/UI stages (e.g. Docs → PRD Review) hides them so the
    *  modal only shows config it actually consumes. Default true (docs-to-ui). */
   hasPlatform?: boolean;
   hasTerminal?: boolean;
   hasDesignSystem?: boolean;
+  /** Lean là khái niệm CHỈ của docs-to-ui (bỏ hành trình/research/rà soát để
+   *  tới UI nhanh hơn). docs-to-prd không có bước nào bỏ được — hành trình +
+   *  research chính là bằng chứng của bài review — nên workflow đó ẩn hẳn
+   *  section "Chế độ chạy" và không bao giờ gửi lean lên daemon. */
+  supportsLean?: boolean;
   /** Có bước nào đã xong chưa — quyết định hiện checkbox "chỉ chạy bước còn thiếu". */
   anySucceeded: boolean;
   onClose: () => void;
@@ -1287,6 +1297,9 @@ export function RunAllModal({
     defaultDesignSystemId === undefined ? null : defaultDesignSystemId,
   );
   const [skipSucceeded, setSkipSucceeded] = useState(defaultSkipSucceeded ?? false);
+  // Workflow không hỗ trợ lean thì bỏ qua cả default đã lưu (cờ đó là của lần
+  // chạy docs-to-ui trên cùng project, không phải của workflow này).
+  const [lean, setLean] = useState(supportsLean ? (defaultLean ?? false) : false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1326,6 +1339,7 @@ export function RunAllModal({
         ...(hasPlatform ? { targets } : {}),
         designSystemId,
         skipSucceeded,
+        ...(supportsLean && lean ? { lean: true } : {}),
         ...(followLinks ? {} : { followLinks: false }),
       });
       onClose();
@@ -1347,6 +1361,29 @@ export function RunAllModal({
         <Icon name={value === 'ui-react' ? 'blocks' : value === 'both' ? 'sparkles' : 'file-code'} size={16} />
         {label}
         {terminal === value ? (
+          <span className={styles.cardCheck} aria-hidden="true">
+            <Icon name="check" size={14} />
+          </span>
+        ) : null}
+      </span>
+      <span className={styles.cardDesc}>{desc}</span>
+    </button>
+  );
+
+  // Same card shape as the terminal picker so the two choices read as one set.
+  const modeCard = (value: boolean, label: string, desc: string, icon: IconName) => (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={lean === value}
+      className={`${styles.card}${lean === value ? ' ' + styles.cardSelected : ''}`}
+      onClick={() => setLean(value)}
+      disabled={busy}
+    >
+      <span className={styles.cardTop}>
+        <Icon name={icon} size={16} />
+        {label}
+        {lean === value ? (
           <span className={styles.cardCheck} aria-hidden="true">
             <Icon name="check" size={14} />
           </span>
@@ -1406,6 +1443,21 @@ export function RunAllModal({
           Chọn nhiều thì mỗi sản phẩm được build riêng (docs → cj → ux → ui chạy một lần cho mỗi
           target), output tách thư mục theo target.
         </span>
+      </div>
+      ) : null}
+      {supportsLean ? (
+      <div className="pl-modal-field">
+        <span className="pl-modal-field__label">Chế độ chạy</span>
+        <div className={styles.cards} role="radiogroup" aria-label="Chế độ chạy">
+          {modeCard(false, 'Đầy đủ', 'Chạy mọi bước: hành trình, UX research, và bước rà soát heuristic.', 'sparkles')}
+          {modeCard(true, 'Tiết kiệm', 'Chỉ docs → UX Spec → UI. Bỏ hành trình, research và rà soát.', 'file-code')}
+        </div>
+        {lean ? (
+          <span className="pl-modal-field__hint">
+            Nhanh và rẻ hơn, nhưng UX Spec viết từ tài liệu thôi — không có hành trình, tiêu chí
+            research hay bước rà soát. Hợp để xem nhanh, chưa hợp để bàn giao.
+          </span>
+        ) : null}
       </div>
       ) : null}
       {hasTerminal ? (

@@ -87,6 +87,36 @@ Downstream UI-Spec stages (`ui-html`, `ui-react`) read each screen's `layout`
 and render it as a phone screen or a full web page — so the value you set here
 decides what the user ultimately gets.
 
+### 0b0. System map — `./docs/system-map.json` (when present)
+The `docs-map` stage classified each document by the app it describes and
+recorded where flows hand off between apps. It decides your SCOPE:
+
+- Spec screens only from documents whose `apps` include the app you are building.
+- `handoffs[]` marks the seams. A flow leaving your app needs the screen that
+  hands it off (a submitted state, a "chờ duyệt" state) and the screen that
+  receives the result — but never the other app's own screens.
+- `apps[]` with `"external": true` (an identity provider, a partner service) are
+  touchpoints: spec the screen that launches or returns from them, not the
+  external screens themselves.
+
+Hand-edited by design — take its classification as decided. Absent → work from
+the docs as a whole.
+
+### 0b1. Audience (multi-target runs)
+The kickoff may name an AUDIENCE alongside the platform — END CUSTOMER or
+BACKOFFICE. Two web targets share the same `layout: "web"` AND the same docs
+folder, so the audience is the only thing that separates them: spec ONLY the
+screens the docs describe for your audience.
+
+- **BACKOFFICE**: internal operators/admins. Dense tables over card lists, bulk
+  actions, filters and saved views, audit trail / permission affordances,
+  multi-column forms. Never spec end-customer marketing or onboarding screens.
+- **END CUSTOMER**: the public-facing product. Never spec internal
+  configuration, approval queues, or admin-only tooling.
+
+A doc section belonging to the other audience is not yours to build. No audience
+named → single build; cover the docs as a whole.
+
 ### 0b2. Read the UX Research criteria (produced by the upstream `ux-research` stage)
 The docs→UI workflow runs `ux-research` BEFORE this stage; its report is at
 `./ux-research/report.json` (criteria: id, statement, priority, applies_to —
@@ -197,7 +227,31 @@ The Wireframe view renders it, and it still exports to wiretext.app for hand-twe
 The wireframes are the SCREENS; the user flow is expressed as wireframes + a
 **rule flowchart** (decision diamonds with Yes/No branches — like a classic
 troubleshooting flowchart). For EVERY journey flow (each cj USER_FLOW that the
-screens serve), write `./flows/<FLOW-ID>.flow.json`:
+screens serve), write `./flows/<FLOW-ID>.flow.json`.
+
+> **The documented diagram outranks your reconstruction.** When the docs embed a
+> flow diagram, the ingest saved its SOURCE at
+> `./docs/confluence/attachments/<name>.drawio` and marked it in the Markdown
+> (`flow-diagram — nguồn sơ đồ …`). That diagram IS the specified flow: read it
+> and TRANSCRIBE it. Do not redraw it from the prose, and do not drop a branch
+> because the screens you designed have no home for it — a branch with nowhere
+> to go is a missing screen, not a branch to delete.
+>
+> Read it without loading the whole XML (it is mostly geometry):
+> ```bash
+> grep -o 'value="[^"]*"' docs/confluence/attachments/<name>.drawio          # box + edge labels
+> grep -o '<mxCell[^>]*edge="1"[^>]*>' docs/confluence/attachments/<name>.drawio  # arrows
+> ```
+> It maps onto this file almost one-to-one:
+>
+> | draw.io | `flow.json` |
+> |---|---|
+> | box with ≥2 outgoing labelled arrows | `{"kind": "decision"}` node |
+> | the arrow's own label ("Từ 2 DN") | that edge's `label` — the CONDITION |
+> | box naming a screen (`MH-DN-03`) | the matching `screens[].id` |
+> | terminal box ("KẾT THÚC") | `{"kind": "end"}` node |
+>
+> No diagram for a flow → build it from the prose as before.
 
 ```jsonc
 {
@@ -274,6 +328,11 @@ SimStudio's `preview-content` maps KGS labels to its DB; keep these exact:
 Full field reference: `references/schema.md`.
 
 ## Hard rules
+- **Docs are the source of truth; a flow diagram is the flow.** Where the ingest
+  saved a `.drawio` (§1c), the flowchart transcribes it — screens exist to serve
+  the documented flow, not the other way round. Inventing a branch the documents
+  never specified, or silently dropping one they do, corrupts every stage built
+  on this one.
 - **Never put `project_id` in the file.** It is filled at push time (conversation
   binding / dropdown / `--project-id`) and applied to every node by the pusher.
   A `project_id` you invent here is ignored by the Push to KG button.

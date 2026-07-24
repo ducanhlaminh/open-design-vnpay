@@ -1,5 +1,5 @@
 import type { Express, Response } from 'express';
-import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunSource, ProjectPipelineState, RunAllConfig, TargetPlatform, WorkflowTerminal } from '@open-design/contracts';
+import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, ProjectPipelineState, RunAllConfig, TargetPlatform, WorkflowTerminal } from '@open-design/contracts';
 
 import { getProject, getProjectPipelineState, insertProject, listProjects, updateProject } from './db.js';
 import {
@@ -9,8 +9,11 @@ import {
   deriveStateFromLocalFiles,
   getPipelineDef,
   getWorkflow,
+  isStageSkipped,
   listPipelineStatus,
   mergePipelineState,
+  resolveRunMode,
+  workflowForPipeline,
 } from './pipelines.js';
 import type { RouteDeps } from './server-context.js';
 import { readAppConfig } from './app-config.js';
@@ -25,6 +28,25 @@ function isKgsProject(project: { metadata?: unknown } | null | undefined): boole
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
   const m = metadata as Record<string, unknown>;
   return m.source === 'kg-pull' || m.kind === 'pipeline';
+}
+
+// The project's run mode. `POST /api/pipelines/run-all` persists the modal's
+// choices into `metadata.runAllConfig`, so `lean` there is the record of "this
+// project runs the short chain". Legacy projects ran lean BEFORE the mode was
+// persisted, so when the saved config carries no `lean` field the mode is
+// inferred from the run state instead (resolveRunMode) — otherwise those
+// projects would keep showing UI terminals locked behind a review that their
+// chain never runs. Gating, the stepper's badges and the single-stage 409 all
+// read the mode from here.
+function runModeFor(
+  project: { metadata?: Record<string, unknown> } | null | undefined,
+  state: ProjectPipelineState,
+  pipelineIds: readonly string[],
+): PipelineRunMode {
+  const raw = project?.metadata?.runAllConfig;
+  const saved =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as RunAllConfig).lean : undefined;
+  return resolveRunMode(typeof saved === 'boolean' ? saved : undefined, state, pipelineIds);
 }
 
 // Validate the optional structured run source from the request body. Returns
@@ -96,7 +118,6 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     // Progress badges are scoped to the active workflow's pipelines.
     const wf = getWorkflow(typeof req.query.workflowId === 'string' ? req.query.workflowId : '')
       ?? getWorkflow(DEFAULT_WORKFLOW_ID)!;
-    const total = wf.pipelineIds.length;
     const kgsProjects = listProjects(db).filter((p: { metadata?: unknown }) => isKgsProject(p));
     // Compute the merged (local + KGS) state per project. KGS calls run in
     // parallel and fall back to local-only on failure (loadMergedState swallows
@@ -104,11 +125,20 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     const projects = await Promise.all(
       kgsProjects.map(async (p: { id: string; name: string; metadata?: Record<string, unknown> }) => {
         const state = await loadMergedState(p.id);
-        const done = wf.pipelineIds.reduce(
+        // Progress counts the stages THIS PROJECT'S MODE runs: a finished lean
+        // chain is 5/5, not 5/8 — a "done" project must not read as unfinished
+        // because of stages it deliberately skips.
+        const mode = runModeFor(p, state, wf.pipelineIds);
+        const countedIds = wf.pipelineIds.filter((id) => {
+          const def = getPipelineDef(id);
+          return !def || !isStageSkipped(def, mode);
+        });
+        const total = countedIds.length;
+        const done = countedIds.reduce(
           (n, id) => (state[id]?.status === 'succeeded' ? n + 1 : n),
           0,
         );
-        const running = wf.pipelineIds.reduce(
+        const running = countedIds.reduce(
           (n, id) => (state[id]?.status === 'running' || state[id]?.status === 'queued' ? n + 1 : n),
           0,
         );
@@ -168,7 +198,13 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     const wf = getWorkflow(typeof req.query.workflowId === 'string' ? req.query.workflowId : '')
       ?? getWorkflow(DEFAULT_WORKFLOW_ID)!;
     const state = await loadMergedState(projectId);
-    res.json({ projectId, workflowId: wf.id, pipelines: listPipelineStatus(state, wf.pipelineIds) });
+    const runMode = runModeFor(project, state, wf.pipelineIds);
+    res.json({
+      projectId,
+      workflowId: wf.id,
+      pipelines: listPipelineStatus(state, wf.pipelineIds, runMode),
+      runMode,
+    });
   });
 
   app.get('/api/pipelines/feedback', (req, res) => {
@@ -431,6 +467,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           ...(typeof p.url === 'string' && p.url ? { url: p.url } : {}),
         }));
       const skipSucceeded = req.body?.skipSucceeded === true;
+      const lean = req.body?.lean === true;
       const followLinks = req.body?.followLinks !== false;
       const includeDescendants = req.body?.includeDescendants === true;
       // UI targets (docs-to-ui): a subset of the fixed enum; invalid entries drop.
@@ -457,6 +494,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
             followLinks,
             includeDescendants,
             skipSucceeded,
+            lean,
           },
         },
       });
@@ -469,6 +507,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         ...(rawPlatform !== undefined ? { platform: rawPlatform as TargetPlatform } : {}),
         ...(targets.length ? { targets } : {}),
         skipSucceeded,
+        lean,
         ...(followLinks ? {} : { followLinks: false }),
         ...(includeDescendants ? { includeDescendants: true } : {}),
       });
@@ -501,7 +540,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         });
       }
       const state = await loadMergedState(projectId);
-      if (!computeActive(state, def)) {
+      // Gate against the stages this project's mode actually runs: on a LEAN
+      // project the UI terminals must stay runnable even though the heuristic
+      // review they statically depend on was never part of the chain.
+      const wf = workflowForPipeline(def.id);
+      if (!computeActive(state, def, runModeFor(project, state, wf?.pipelineIds ?? []))) {
         return res.status(409).json({
           error: `pipeline "${def.id}" is not active yet; finish its prerequisites first`,
         });

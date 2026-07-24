@@ -12,10 +12,15 @@
 // have succeeded.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+// How long a just-triggered stage may report "running" before the daemon's own
+// status is trusted again. Covers the pre-run pull of a slow agent stage.
+const PENDING_START_GRACE_MS = 60_000;
 import type {
   PipelineProject,
   PipelinePulseFeedbackListResponse,
   PipelineProjectsResponse,
+  PipelineRunMode,
   PipelineView,
   PipelinesResponse,
   PullPlan,
@@ -41,6 +46,7 @@ import {
   type RunAllPayload,
   type RunSourcePayload,
 } from './pipelines/PipelineModals';
+import { applyPendingStarts } from '../runtime/pipeline-pending-starts';
 import { PullConflictModal } from './pipelines/PullConflictModal';
 import { PlModal } from './pipelines/PlModal';
 import { PipelineEvaluationStep } from './pipelines/PipelineEvaluationStep';
@@ -68,6 +74,7 @@ const PIPELINE_META: Record<string, { icon: IconName; blurb: string }> = {
   'jira-ingest': { icon: 'import', blurb: 'Pull Confluence / JIRA sources into clean Markdown docs.' },
   'feature-analysis': { icon: 'search', blurb: 'Extract the feature set and requirements from the ingested docs.' },
   'ux-spec': { icon: 'draw', blurb: 'Generate UX specifications from the features and customer journey.' },
+  'docs-map': { icon: 'blocks', blurb: 'Phân loại tài liệu theo app và ghi lại các điểm bàn giao giữa chúng — một hệ thống nhiều app, không phải nhiều sản phẩm rời. Chạy một lần cho cả dự án; sửa tay được ở docs/system-map.json.' },
   'ux-research': { icon: 'search', blurb: 'Desk research từ UX knowledge base (Growth.Design, NN/g, Baymard): tiêu chí UX kèm nguồn + hình minh hoạ, làm chuẩn cho UX Spec.' },
   'ux-review': { icon: 'eye', blurb: 'Heuristic review gate: judge the UX Spec against Nielsen + Norman usability heuristics before any UI is built.' },
   'customer-journey': { icon: 'orbit', blurb: 'Map the end-to-end customer journey from the docs, with key source text per stage.' },
@@ -121,6 +128,10 @@ export function PipelinesView() {
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [projectId, setProjectId] = useState<string>('');
   const [pipelines, setPipelines] = useState<PipelineView[]>([]);
+  // Chế độ chạy của DỰ ÁN (lưu từ lần Run-all gần nhất). Quyết định bước nào bị
+  // bỏ qua, nên nó phải hiện trên stepper — nếu không, người dùng nhìn một bước
+  // xám mà không hiểu vì sao (lựa chọn nằm trong modal đã đóng từ lâu).
+  const [runMode, setRunMode] = useState<PipelineRunMode>('full');
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -283,6 +294,12 @@ export function PipelinesView() {
     void loadProjects();
   }, [loadProjects]);
 
+  // Stages this device just asked to run → deadline. See applyPendingStarts.
+  const pendingStartsRef = useRef<Map<string, number>>(new Map());
+  const markPendingStart = useCallback((pipelineId: string) => {
+    pendingStartsRef.current.set(pipelineId, Date.now() + PENDING_START_GRACE_MS);
+  }, []);
+
   const load = useCallback(async (pid: string, opts?: { background?: boolean }) => {
     if (!pid || !workflowId) {
       setPipelines([]);
@@ -308,7 +325,8 @@ export function PipelinesView() {
         throw new Error(j.error || `load failed: ${res.status}`);
       }
       const data = (await res.json()) as PipelinesResponse;
-      setPipelines(data.pipelines ?? []);
+      setPipelines(applyPendingStarts(data.pipelines ?? [], pendingStartsRef.current, Date.now()));
+      setRunMode(data.runMode ?? 'full');
       if (feedbackRes.ok) {
         const feedbackData = (await feedbackRes.json()) as PipelinePulseFeedbackListResponse;
         setRatedRunIds(new Set(feedbackData.feedback.map((item) => item.runId)));
@@ -588,6 +606,7 @@ export function PipelinesView() {
       throw new Error(j.error || `run failed: ${res.status}`);
     }
     const j = (await res.json().catch(() => null)) as RunPipelineResponse | null;
+    markPendingStart(pipelineId);
     setPipelines((prev) =>
       prev.map((p) =>
         p.id === pipelineId
@@ -620,6 +639,7 @@ export function PipelinesView() {
         ...(payload.targets?.length ? { targets: payload.targets } : {}),
         designSystemId: payload.designSystemId,
         ...(payload.skipSucceeded ? { skipSucceeded: true } : {}),
+        ...(payload.lean ? { lean: true } : {}),
         ...(payload.followLinks === false ? { followLinks: false } : {}),
         ...(payload.includeDescendants ? { includeDescendants: true } : {}),
       }),
@@ -631,9 +651,18 @@ export function PipelinesView() {
     const j = (await res.json().catch(() => null)) as { stages?: string[] } | null;
     const first = j?.stages?.[0];
     if (first) {
+      markPendingStart(first);
       setPipelines((prev) => prev.map((p) => (p.id === first ? { ...p, status: 'running' } : p)));
     }
-    void load(projectId, { background: true });
+    // NO immediate reload here — same as startRun. The daemon kicks the chain
+    // off fire-and-forget and answers 202 before any stage is marked running, so
+    // a reload fired now races it and almost always wins: the fetched (still
+    // idle) rows replace the optimistic "running" one, `anyRunning` goes false,
+    // and the 2.5s poller therefore never starts — the board sits frozen until
+    // something else forces a load, e.g. leaving the route and coming back.
+    // Worst with "skip succeeded", where the first stage is an agent stage whose
+    // pre-run pull delays the status flip by seconds.
+    // The optimistic flip alone starts the poller, which owns the rest.
     pushToast({
       message: `Đã khởi động full workflow — ${j?.stages?.length ?? 0} bước chạy nối tiếp trong nền`,
       details: (j?.stages ?? []).join(' → '),
@@ -706,18 +735,20 @@ export function PipelinesView() {
   // React, then hand off to the normal per-pipeline run flow.
   const [uiSpecPickerOpen, setUiSpecPickerOpen] = useState(false);
 
-  // Group the flat pipeline list into stepper entries. Adjacent stages with
-  // the SAME non-empty dependsOn are alternative OPTIONS of one step (the
-  // UI-Spec terminals: ui-html | ui-react) — they render as ONE card whose
-  // Run opens an option-picker modal, so the flow never reads as "HTML first,
-  // React after".
+  // Group the flat pipeline list into stepper entries. The UI-Spec terminals
+  // (ui-html | ui-react) are alternative OPTIONS of one step — they render as
+  // ONE card whose Run opens an option-picker modal, so the flow never reads
+  // as "HTML first, React after". Membership is by EXPLICIT id (mirror of the
+  // daemon's UI_TERMINAL_IDS), NOT by comparing dependsOn: dependsOn identity
+  // is server-derived data, and a daemon reporting mode-adjusted lists once
+  // fused cj/ux-research/ux into a phantom three-badge "UI-Spec" card. Ids
+  // cannot drift per mode, so this grouping is stable no matter what the
+  // daemon reports.
+  const UI_TERMINAL_IDS = new Set(['ui-html', 'ui-react']);
   const stepEntries: PipelineView[][] = [];
   for (const p of pipelines) {
     const last = stepEntries[stepEntries.length - 1];
-    const sibling =
-      !!last &&
-      p.dependsOn.length > 0 &&
-      JSON.stringify(last[0]!.dependsOn) === JSON.stringify(p.dependsOn);
+    const sibling = !!last && UI_TERMINAL_IDS.has(p.id) && UI_TERMINAL_IDS.has(last[0]!.id);
     if (sibling) last!.push(p);
     else stepEntries.push([p]);
   }
@@ -850,6 +881,23 @@ export function PipelinesView() {
             <Icon name="play" size={14} />
             <span>Chạy full workflow</span>
           </button>
+          {/* Chế độ đang lưu của dự án. Chỉ hiện khi Tiết kiệm — ở chế độ Đầy
+              đủ không có bước nào bị bỏ nên không có gì phải giải thích. Bấm
+              vào mở đúng modal đã chọn ra nó. */}
+          {runMode === 'lean' && pipelines.some((p) => p.skipped) ? (
+            <button
+              type="button"
+              className="pl-mode-chip"
+              onClick={() => setRunAllOpen(true)}
+              title="Dự án đang chạy ở chế độ Tiết kiệm — các bước phân tích bị bỏ qua. Bấm để đổi chế độ ở modal Chạy full workflow."
+            >
+              <Icon name="file-code" size={12} />
+              <span>Tiết kiệm</span>
+              <span className="pl-mode-chip__count">
+                bỏ {pipelines.filter((p) => p.skipped).length} bước
+              </span>
+            </button>
+          ) : null}
         </div>
         <div className="pipelines-toolbar__group pipelines-toolbar__group--actions">
           <span className="pipelines-toolbar__label">Đồng bộ</span>
@@ -1102,14 +1150,20 @@ export function PipelinesView() {
                         Bước cuối — sinh UI-Spec từ UX Spec. Bấm Run để chọn định dạng: HTML
                         prototype hoặc React app (chạy một hoặc cả hai).
                       </p>
-                      {!active && opts[0]!.dependsOn.length > 0 ? (
-                        <p className="pl-step__lock">
-                          <Icon name="eye-off" size={12} />
-                          Locked — finish{' '}
-                          {opts[0]!.dependsOn
+                      {/* Một card không được vừa tick xanh vừa báo "khóa". Đã có
+                          option chạy xong nghĩa là bước này ĐÃ mở khóa; nếu giờ
+                          gate không còn thỏa thì đó là bước trên vừa bị reset —
+                          nói đúng chuyện đó thay vì gọi là khóa. Gate lấy theo
+                          effectiveDependsOn để không bao giờ nêu tên một bước
+                          mà chế độ hiện tại bỏ qua. */}
+                      {!active && (opts[0]!.effectiveDependsOn ?? opts[0]!.dependsOn).length > 0 ? (
+                        <p className={anyDone ? 'pl-step__stale' : 'pl-step__lock'}>
+                          <Icon name={anyDone ? 'info' : 'eye-off'} size={12} />
+                          {anyDone ? 'Bản hiện tại dựng từ kết quả cũ — chạy lại ' : 'Cần xong '}
+                          {(opts[0]!.effectiveDependsOn ?? opts[0]!.dependsOn)
                             .map((dep) => pipelines.find((x) => x.id === dep)?.name ?? dep)
-                            .join(', ')}{' '}
-                          first
+                            .join(', ')}
+                          {anyDone ? ' để đồng bộ lại' : ' trước'}
                         </p>
                       ) : null}
                     </div>
@@ -1138,12 +1192,18 @@ export function PipelinesView() {
             const hasRunInfo = Boolean(p.updatedAt || p.lastInput || p.lastSource || p.lastRunId);
             const infoOpen = infoForId === p.id;
             const histOpen = historyForId === p.id;
+            // BỎ QUA ≠ BỊ KHÓA: chế độ Tiết kiệm không chạy bước này, nhưng nó
+            // không chặn ai cả và vẫn bấm chạy lẻ được. Chỉ tính là "bỏ qua"
+            // khi bước CHƯA có kết quả — đã có output (từ lần chạy Đầy đủ
+            // trước) thì vẫn là Done, không bao giờ giấu kết quả thật.
+            const isSkipped = p.skipped === true && p.status !== 'succeeded' && !isRunning;
             return (
               <li
                 key={p.id}
                 className="pl-step"
                 data-status={p.status}
                 data-active={p.active ? 'yes' : 'no'}
+                data-skipped={isSkipped ? 'yes' : 'no'}
               >
                 <div className="pl-step__spine" aria-hidden="true">
                   <span className="pl-step__node">
@@ -1151,6 +1211,8 @@ export function PipelinesView() {
                       <Icon name="check" size={14} />
                     ) : isRunning ? (
                       <Icon name="spinner" size={14} />
+                    ) : isSkipped ? (
+                      <Icon name="minus" size={13} />
                     ) : !p.active ? (
                       <Icon name="eye-off" size={13} />
                     ) : (
@@ -1167,9 +1229,14 @@ export function PipelinesView() {
                   <div className="pl-step__body">
                     <div className="pl-step__heading">
                       <span className="pl-step__name">{p.name}</span>
-                      <span className={`pl-status pl-status--${p.status}`}>
-                        {STATUS_LABEL[p.status] ?? p.status}
+                      <span className={`pl-status pl-status--${isSkipped ? 'skipped' : p.status}`}>
+                        {isSkipped ? 'Bỏ qua' : (STATUS_LABEL[p.status] ?? p.status)}
                       </span>
+                      {p.skipped && p.status === 'succeeded' ? (
+                        <span className="pl-status pl-status--offmode" title="Bước này không nằm trong chế độ Tiết kiệm — kết quả còn lại từ lần chạy trước">
+                          ngoài chế độ
+                        </span>
+                      ) : null}
                       {hasRunInfo ? (
                         <button
                           type="button"
@@ -1183,7 +1250,15 @@ export function PipelinesView() {
                       ) : null}
                     </div>
                     {meta.blurb ? <p className="pl-step__desc">{meta.blurb}</p> : null}
-                    {p.updatedAt ? (
+                    {/* `updatedAt` là dấu thời gian của LẦN GHI STATE gần nhất,
+                        không phải lần chạy: reset downstream lúc bắt đầu
+                        run-all cũng đóng dấu nó — và vì reset MERGE metadata
+                        (db giữ nguyên lastRunId cũ), lastRunId không chứng minh
+                        được gì. Chỉ status mới đáng tin: idle (kể cả "Bỏ qua")
+                        thì không có dòng "Last run" — nếu không sẽ ra "Bỏ qua ·
+                        Last run: 35m ago", tự mâu thuẫn. Chi tiết lần chạy cũ
+                        vẫn xem được ở nút (i) và Lịch sử. */}
+                    {p.updatedAt && (isRunning || p.status === 'succeeded' || p.status === 'failed') ? (
                       <p className="pl-step__lastrun">Last run: {relativeTimeLong(p.updatedAt, t)}</p>
                     ) : null}
                     {infoOpen ? (
@@ -1252,14 +1327,23 @@ export function PipelinesView() {
                         ) : null}
                       </dl>
                     ) : null}
-                    {!p.active && p.dependsOn.length > 0 ? (
+                    {/* Bước bỏ qua mà đầu vào của nó CHƯA xong thì vẫn chưa chạy
+                        được — lúc đó nói lý do thật (thiếu đầu vào) thay vì mời
+                        chạy bổ sung một thứ đang bấm không được. */}
+                    {isSkipped && p.active ? (
+                      <p className="pl-step__skipnote">
+                        <Icon name="minus" size={12} />
+                        Bỏ qua ở chế độ Tiết kiệm — không chặn bước nào; chạy bổ sung nếu cần bàn
+                        giao.
+                      </p>
+                    ) : !p.active && (p.effectiveDependsOn ?? p.dependsOn).length > 0 ? (
                       <p className="pl-step__lock">
                         <Icon name="eye-off" size={12} />
-                        Locked — finish{' '}
-                        {p.dependsOn
+                        Cần xong{' '}
+                        {(p.effectiveDependsOn ?? p.dependsOn)
                           .map((dep) => pipelines.find((x) => x.id === dep)?.name ?? dep)
                           .join(', ')}{' '}
-                        first
+                        trước
                       </p>
                     ) : null}
 
@@ -1344,15 +1428,22 @@ export function PipelinesView() {
                         </button>
                       </>
                     ) : (
+                      // Bước bị bỏ qua vẫn chạy được: nút chuyển sang thứ cấp
+                      // (không phải hành động chính của chế độ này) nhưng KHÔNG
+                      // bao giờ disable — bỏ qua là mặc định, không phải cấm.
                       <button
                         type="button"
-                        className="pl-btn pl-btn--run"
+                        className={isSkipped ? 'pl-btn' : 'pl-btn pl-btn--run'}
                         onClick={() => onRunClick(p)}
                         disabled={isBusy}
-                        title="Run this pipeline in the background"
+                        title={
+                          isSkipped
+                            ? 'Chạy riêng bước này dù chế độ Tiết kiệm bỏ qua nó'
+                            : 'Run this pipeline in the background'
+                        }
                       >
                         <Icon name={isBusy ? 'spinner' : 'play'} size={14} />
-                        <span>{isBusy ? 'Starting…' : 'Run'}</span>
+                        <span>{isBusy ? 'Starting…' : isSkipped ? 'Chạy bổ sung' : 'Run'}</span>
                       </button>
                     )}
                     <button
@@ -1477,8 +1568,12 @@ export function PipelinesView() {
       {uiSpecPickerOpen
         ? (() => {
             // Live options from the current pipeline list (statuses keep
-            // refreshing while the modal is open).
-            const options = stepEntries.find((e) => e.length > 1);
+            // refreshing while the modal is open). Matched by terminal id, not
+            // "any multi-entry group" — this modal is specifically the
+            // HTML-vs-React picker.
+            const options = stepEntries.find(
+              (e) => e.length > 1 && e.every((o) => UI_TERMINAL_IDS.has(o.id)),
+            );
             if (!options) return null;
             return (
               <PlModal
@@ -1521,7 +1616,10 @@ export function PipelinesView() {
                             ? 'App Vite + React 19 + Tailwind v4 thật, build trong Docker — preview như app chạy thật, có luồng điều hướng.'
                             : 'HTML/CSS prototype tương tác — mỗi màn một file tự chứa, mở xem ngay không cần build.'}
                         </p>
-                        {o.updatedAt ? (
+                        {/* Cùng luật với card trên stepper: idle không có "Last
+                            run" — updatedAt của bước idle là dấu reset, không
+                            phải dấu lần chạy. */}
+                        {o.updatedAt && (oRunning || o.status === 'succeeded' || o.status === 'failed') ? (
                           <p style={{ fontSize: 11.5, opacity: 0.6, margin: 0 }}>
                             Last run: {relativeTimeLong(o.updatedAt, t)}
                           </p>
@@ -1698,12 +1796,16 @@ export function PipelinesView() {
             defaultTargets={runAllDefaults?.targets}
             defaultFollowLinks={runAllDefaults?.followLinks}
             defaultSkipSucceeded={runAllDefaults?.skipSucceeded}
+            defaultLean={runAllDefaults?.lean}
             // Only show a picker when the active workflow HAS a stage using it —
             // Docs → PRD Review has no UX/UI/design-system stage, so it shows
             // just the Confluence source + scan toggles.
             hasPlatform={pipelines.some((p) => p.acceptsPlatform)}
             hasTerminal={pipelines.some((p) => p.id === 'ui-html' || p.id === 'ui-react')}
             hasDesignSystem={pipelines.some((p) => p.acceptsDesignSystem)}
+            // Lean chỉ là khái niệm của docs-to-ui — các workflow khác (Docs →
+            // PRD Review) chạy đủ chuỗi, ẩn hẳn section "Chế độ chạy".
+            supportsLean={workflowId === 'docs-to-ui'}
             anySucceeded={pipelines.some((p) => p.status === 'succeeded')}
             onClose={() => setRunAllOpen(false)}
             onRun={startRunAll}

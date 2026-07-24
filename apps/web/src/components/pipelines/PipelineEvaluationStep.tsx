@@ -6,17 +6,18 @@ import styles from './PipelineEvaluationStep.module.css';
 
 type Answers = Record<string, string | string[]>;
 
-// Khớp với pipeline docs-to-ui hiện tại: docs → cj → ux-research → ux →
-// ux-review → ui-html → ui-react (id trùng pipeline.id để A5 auto-tick đúng),
+// Khớp với pipeline docs-to-ui hiện tại: docs → docs-map → cj → ux-research →
+// ux → ux-review → ui-html → ui-react (id trùng pipeline.id để A5 auto-tick đúng),
 // + hai hành động phái sinh người dùng vẫn đánh giá (Figma / chỉ xem).
 const PIPELINE_OPTIONS = [
-  ['docs', '① Docs → Markdown'], ['cj', '② Customer Journey'], ['ux-research', '③ UX Research'],
-  ['ux', '④ UX Spec'], ['ux-review', '⑤ UX Heuristic Review'],
-  ['ui-html', '⑥ UI-Spec (HTML)'], ['ui-react', '⑦ UI-Spec (React)'],
-  ['figma', '⑧ Đẩy sang Figma'], ['viewer', '⑨ Chỉ xem kết quả'],
+  ['docs', '① Docs → Markdown'], ['docs-map', '② Bản đồ hệ thống'],
+  ['cj', '③ Customer Journey'], ['ux-research', '④ UX Research'],
+  ['ux', '⑤ UX Spec'], ['ux-review', '⑥ UX Heuristic Review'],
+  ['ui-html', '⑦ UI-Spec (HTML)'], ['ui-react', '⑧ UI-Spec (React)'],
+  ['figma', '⑨ Đẩy sang Figma'], ['viewer', '⑩ Chỉ xem kết quả'],
 ] as const;
 
-const VIEWER_LABEL = '⑨ Chỉ xem kết quả';
+const VIEWER_LABEL = '⑩ Chỉ xem kết quả';
 
 const SECTIONS = [
   ['A', 'Thông tin'], ['B', 'Từng pipeline'], ['C', 'Đầu ra UX'], ['D', 'Figma'],

@@ -6,6 +6,8 @@ import {
   PIPELINE_DEFS,
   WORKFLOWS,
   computeActive,
+  effectiveDependsOn,
+  resolveRunMode,
   stageRegenSet,
   hasDownstream,
   upstreamStages,
@@ -33,7 +35,7 @@ function viewOf(views: PipelineView[], id: string): PipelineView {
 
 test('docs-to-ui: terminal step offers two UI-Spec options', () => {
   assert.equal(WORKFLOWS[0]!.id, 'docs-to-ui');
-  assert.deepEqual(WORKFLOWS[0]!.pipelineIds, ['docs', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react']);
+  assert.deepEqual(WORKFLOWS[0]!.pipelineIds, ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react']);
   // Both terminals are OPTIONS of the same step: same dependency, run either or both.
   // That dependency is the heuristic-review gate (not `ux` directly), so the
   // review must run once before either UI terminal unlocks.
@@ -94,11 +96,16 @@ test('docs has no prerequisites and is active from an empty state', () => {
   assert.equal(computeActive({}, def('docs')), true);
 });
 
-test('cj is gated until docs has succeeded', () => {
+test('cj is gated until the system map has succeeded', () => {
+  // cj classifies journeys per app, so it waits on docs-map (which itself waits
+  // on docs) rather than on the ingest directly.
+  assert.deepEqual(def('cj').dependsOn, ['docs-map']);
   assert.equal(computeActive({}, def('cj')), false);
-  const running: ProjectPipelineState = { docs: { status: 'running' } };
+  const ingestOnly: ProjectPipelineState = { docs: { status: 'succeeded' } };
+  assert.equal(computeActive(ingestOnly, def('cj')), false);
+  const running: ProjectPipelineState = { 'docs-map': { status: 'running' } };
   assert.equal(computeActive(running, def('cj')), false);
-  const done: ProjectPipelineState = { docs: { status: 'succeeded' } };
+  const done: ProjectPipelineState = { 'docs-map': { status: 'succeeded' } };
   assert.equal(computeActive(done, def('cj')), true);
 });
 
@@ -135,10 +142,12 @@ test('listPipelineStatus returns every stage in registry order with derived acti
   );
   assert.equal(viewOf(views, 'docs').status, 'succeeded');
   assert.equal(viewOf(views, 'docs').active, true);
-  // cj is still idle but unlocked because docs succeeded.
-  assert.equal(viewOf(views, 'cj').status, 'idle');
-  assert.equal(viewOf(views, 'cj').active, true);
-  // ux stays locked until cj succeeds.
+  // docs-map is idle but unlocked — the ingest is its only dependency.
+  assert.equal(viewOf(views, 'docs-map').status, 'idle');
+  assert.equal(viewOf(views, 'docs-map').active, true);
+  // cj waits on the system map, not on the ingest.
+  assert.equal(viewOf(views, 'cj').active, false);
+  // ux stays locked further down the chain.
   assert.equal(viewOf(views, 'ux').active, false);
 });
 
@@ -172,6 +181,71 @@ test('stagesForOutput: workflow-namespaced files attribute to the owning stage',
   assert.deepEqual(stagesForOutput('docs-to-ui/app-journey.json').map((d) => d.id), ['cj']);
   assert.deepEqual(stagesForOutput('docs-to-ui/prototype/index.html').map((d) => d.id), ['ui-html']);
   assert.deepEqual(stagesForOutput('docs-to-ui/react/dist/index.html').map((d) => d.id), ['ui-react']);
+});
+
+// Link-followed background pages land in `docs/context/` (bas-client.ts). The
+// docs stage must DECLARE that folder: the same `outputs` list drives Quick
+// result's file rail, the stage-scoped push and the stage-scoped pull, so an
+// undeclared folder is invisible in the UI, never reaches the media store, and
+// never pulls down — leaving a second machine's ux run without the domain
+// background the ux-spec skill tells it to read.
+// The LEAN run-all trades depth for speed: it drops the analysis stages and runs
+// docs → UX Spec → UI. Which stages those are must stay a property of the stage
+// itself, so a workflow change cannot silently leave the lean chain broken.
+// The system map describes the PROJECT, not one product, so it must run once —
+// a per-target copy would be N conflicting answers to the same question, and the
+// hand-off points between apps would be recorded differently on each side.
+test('the system map is a shared stage: one run per project, before the per-target fork', () => {
+  assert.equal(def('docs-map').sharedAcrossTargets, true);
+  assert.deepEqual(def('docs-map').outputs, ['docs/system-map.json']);
+
+  // It lands INSIDE docs/, so the existing per-target docs copy carries it into
+  // every target's cwd — no separate staging step.
+  assert.deepEqual(stagesForOutput('docs-to-ui/docs/system-map.json').map((d) => d.id), ['docs-map']);
+  // …and it does NOT collide with the ingest's own docs/ patterns.
+  assert.deepEqual(stagesForOutput('docs-to-ui/docs/confluence/x.md').map((d) => d.id), ['docs']);
+
+  // Shared stages must precede the per-target ones, or run-all's "run shared
+  // first, then fork" would drop them.
+  const ids = WORKFLOWS[0]!.pipelineIds;
+  const lastShared = Math.max(...ids.map((id, i) => (def(id).sharedAcrossTargets || def(id).inputPlaceholder ? i : -1)));
+  const firstPerTarget = ids.findIndex((id) => !def(id).sharedAcrossTargets && !def(id).inputPlaceholder);
+  assert.ok(lastShared < firstPerTarget, 'mọi bước dùng chung phải đứng trước các bước theo target');
+});
+
+test('lean run-all skips the docs-to-ui analysis stages — and ONLY docs-to-ui', () => {
+  const lean = (wfId: string) =>
+    WORKFLOWS.find((w) => w.id === wfId)!.pipelineIds.filter((id) => !def(id).skippedInLeanRun);
+
+  // docs-to-ui keeps the spec + both UI terminals; journey / research / review go.
+  // docs-map stays: it is what keeps a multi-app project from being built as
+  // several unrelated products, and a lean run still builds every target.
+  assert.deepEqual(lean('docs-to-ui'), ['docs', 'docs-map', 'ux', 'ui-html', 'ui-react']);
+
+  // docs-to-prd is UNTOUCHED by lean (product decision 2026-07): its journey +
+  // research are the review's evidence base, not optional sharpening. The lean
+  // toggle is inert here — the chain is identical in either mode.
+  assert.deepEqual(lean('docs-to-prd'), ['prd-docs', 'prd-cj', 'prd-ux-research', 'prd-review']);
+
+  // Every skipped stage must be one a downstream stage tolerates missing.
+  for (const id of ['cj', 'ux-research', 'ux-review']) {
+    assert.equal(def(id).skippedInLeanRun, true, `${id} phải bỏ được ở chế độ tiết kiệm`);
+  }
+  for (const id of ['docs', 'docs-map', 'ux', 'ui-html', 'ui-react', 'prd-docs', 'prd-cj', 'prd-ux-research', 'prd-review']) {
+    assert.notEqual(def(id).skippedInLeanRun, true, `${id} KHÔNG được bỏ`);
+  }
+});
+
+test('stagesForOutput: link-followed context pages attribute to the docs stage', () => {
+  assert.deepEqual(stagesForOutput('docs-to-ui/docs/context/x.md').map((d) => d.id), ['docs']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/docs/context/nested/x.md').map((d) => d.id), ['docs']);
+  // Inline images travel with their page.
+  assert.deepEqual(stagesForOutput('docs-to-ui/docs/context/images/x.png').map((d) => d.id), ['docs']);
+  // docs-to-prd runs the same ingest and needs the same attribution.
+  assert.deepEqual(stagesForOutput('docs-to-prd/docs/context/x.md').map((d) => d.id), ['prd-docs']);
+  // Both ingest stages declare all three ingest folders.
+  assert.deepEqual(def('docs').outputs, ['docs/jira/', 'docs/confluence/', 'docs/context/']);
+  assert.deepEqual(def('prd-docs').outputs, ['docs/jira/', 'docs/confluence/', 'docs/context/']);
 });
 
 test('stagesForOutput: multi-target subfolder outputs attribute to the same stage', () => {
@@ -243,7 +317,7 @@ test('stageRegenSet: re-run clear scope — self only, or self + transitive down
   // prd-docs/prd-cj/prd-ux-research/prd-review never light up from this.
   assert.deepEqual(
     [...stageRegenSet('docs', true)].sort(),
-    ['docs', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react'].sort(),
+    ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react'].sort(),
   );
   // And prd-docs cascades to its own 4-stage workflow only.
   assert.deepEqual(
@@ -263,9 +337,9 @@ test('hasDownstream: only terminals lack downstream (scope choice hidden there)'
 test('upstreamStages: pre-run pull scope is inputs only — never self, never downstream', () => {
   // ux-review pulls its inputs (docs/cj/ux) but NOT the UI terminals, so running
   // it can't resurrect ui-html/ui-react outputs into the local cwd.
-  assert.deepEqual([...upstreamStages('ux-review')].sort(), ['cj', 'docs', 'ux', 'ux-research']);
+  assert.deepEqual([...upstreamStages('ux-review')].sort(), ['cj', 'docs', 'docs-map', 'ux', 'ux-research']);
   assert.deepEqual(upstreamStages('docs'), []); // head stage has no inputs
-  assert.deepEqual([...upstreamStages('ux')].sort(), ['cj', 'docs', 'ux-research']);
+  assert.deepEqual([...upstreamStages('ux')].sort(), ['cj', 'docs', 'docs-map', 'ux-research']);
   // A terminal pulls the whole chain above it, but not the sibling terminal.
   const uiHtmlUp = upstreamStages('ui-html');
   assert.ok(uiHtmlUp.includes('ux-review') && uiHtmlUp.includes('ux'));
@@ -324,8 +398,9 @@ test('mergePipelineState: KGS done is authoritative, local fills transient state
   assert.equal(merged['docs']?.status, 'succeeded');
   // No KGS files for cj → keep this device's in-flight 'running'.
   assert.equal(merged['cj']?.status, 'running');
-  // After merge, cj is active (docs done per KGS).
-  assert.equal(computeActive(merged, def('cj')), true);
+  // After merge, cj still waits on docs-map — the ingest alone no longer unlocks it.
+  assert.equal(computeActive(merged, def('cj')), false);
+  assert.equal(computeActive({ ...merged, 'docs-map': { status: 'succeeded' } }, def('cj')), true);
 });
 
 test('mergePipelineState: a local in-flight re-run (running) shows over old KGS files', () => {
@@ -417,4 +492,136 @@ test('syncExclude never bars a stage-gating source: react/ still lights ui-react
   // Legacy folder derives the same stage.
   const legacy = deriveStateFromKgsFiles([{ path: 'docs-to-react/react/flow.json' }]);
   assert.equal(legacy['ui-react']?.status, 'succeeded');
+});
+
+// ── Lean run mode ───────────────────────────────────────────────────────────
+// Regression: run-all in LEAN mode never runs the `skippedInLeanRun` stages,
+// but `active` was derived from the STATIC dependsOn — so the UI terminals,
+// which depend on `ux-review`, stayed locked FOREVER after a lean run. The
+// stepper showed "Locked — finish UX Heuristic Review first" (and
+// POST /api/pipelines/:id/run answered 409) even though the same lean chain had
+// just produced a React app. Gating must follow the stages the mode runs.
+function leanDoneState(): ProjectPipelineState {
+  // What a finished LEAN chain leaves behind: docs → docs-map → ux → ui-react.
+  return {
+    docs: { status: 'succeeded' },
+    'docs-map': { status: 'succeeded' },
+    ux: { status: 'succeeded' },
+    'ui-react': { status: 'succeeded' },
+  };
+}
+
+test('lean mode: a dependency the mode skips collapses to the nearest stage it runs', () => {
+  assert.equal(def('ux-review').skippedInLeanRun, true);
+  assert.deepEqual(effectiveDependsOn(def('ui-react'), 'full'), ['ux-review']);
+  assert.deepEqual(effectiveDependsOn(def('ui-react'), 'lean'), ['ux']);
+  // A RUN of skipped stages collapses too: cj and ux-research are both skipped,
+  // so under lean the UX Spec gates on the system map.
+  assert.deepEqual(effectiveDependsOn(def('ux'), 'lean'), ['docs-map']);
+});
+
+test('lean is a docs-to-ui-only concept: docs-to-prd is untouched by it', () => {
+  // Product decision: the PRD review's journey + research ARE its evidence
+  // base, not optional sharpening — no docs-to-prd stage may be lean-skippable,
+  // and lean must not change its gating in any way.
+  const prd = WORKFLOWS.find((w) => w.id === 'docs-to-prd')!;
+  for (const id of prd.pipelineIds) {
+    assert.equal(def(id).skippedInLeanRun, undefined, `${id} must not be lean-skippable`);
+    assert.deepEqual(effectiveDependsOn(def(id), 'lean'), def(id).dependsOn, `${id} gate must not change`);
+  }
+  // The saved flag is PROJECT-level (written by whichever workflow ran last):
+  // a lean docs-to-ui run on the same project must not flip the docs-to-prd
+  // tab to lean.
+  assert.equal(resolveRunMode(true, {}, prd.pipelineIds), 'full');
+  const leanPrd = listPipelineStatus({}, prd.pipelineIds, 'lean');
+  for (const id of prd.pipelineIds) {
+    assert.equal(viewOf(leanPrd, id).skipped, undefined, `${id} must never read "Bỏ qua"`);
+  }
+});
+
+test('lean mode: a finished lean chain leaves the UI terminals runnable', () => {
+  const state = leanDoneState();
+  // The bug's exact shape: ux-review idle → locked under full-mode gating.
+  assert.equal(computeActive(state, def('ui-html'), 'full'), false);
+  assert.equal(computeActive(state, def('ui-html'), 'lean'), true);
+  assert.equal(computeActive(state, def('ui-react'), 'lean'), true);
+  // A skipped stage stays runnable on its own — "chạy bổ sung" must work.
+  assert.equal(computeActive(state, def('ux-review'), 'lean'), true);
+});
+
+test('listPipelineStatus flags the lean-skipped stages and unlocks their dependants', () => {
+  const ids = WORKFLOWS[0]!.pipelineIds;
+  const lean = listPipelineStatus(leanDoneState(), ids, 'lean');
+  for (const id of ['cj', 'ux-research', 'ux-review']) {
+    assert.equal(viewOf(lean, id).skipped, true, `${id} should be flagged skipped`);
+  }
+  assert.equal(viewOf(lean, 'docs').skipped, undefined);
+  assert.equal(viewOf(lean, 'ux').skipped, undefined);
+  assert.equal(viewOf(lean, 'ui-html').active, true);
+  // The mode's real gate lands in effectiveDependsOn, so the lock copy can only
+  // ever name a stage this mode actually runs.
+  assert.deepEqual(viewOf(lean, 'ui-html').effectiveDependsOn, ['ux']);
+  assert.deepEqual(viewOf(lean, 'ui-react').effectiveDependsOn, ['ux']);
+  // A stage whose gate is unchanged by the mode omits the field entirely.
+  assert.equal(viewOf(lean, 'docs-map').effectiveDependsOn, undefined);
+});
+
+test('lean mode must NOT rewrite dependsOn — its identity is the stepper grouping key', () => {
+  // Regression: the stepper fuses CONSECUTIVE pipelines sharing an identical
+  // dependsOn list into one option-group "UI-Spec" step. An earlier fix
+  // rewrote dependsOn to the effective gate, which collapsed cj/ux-research/ux
+  // onto ['docs-map'] and ux-review/ui-html/ui-react onto ['ux'] — the stepper
+  // rendered two phantom three-option "UI-Spec" cards. dependsOn must stay the
+  // STATIC registry list in every mode; the effective gate travels separately.
+  const lean = listPipelineStatus(leanDoneState(), WORKFLOWS[0]!.pipelineIds, 'lean');
+  for (const id of WORKFLOWS[0]!.pipelineIds) {
+    assert.deepEqual(viewOf(lean, id).dependsOn, def(id).dependsOn, `${id} dependsOn must stay static`);
+  }
+  // The one legitimate group survives: both UI terminals share ['ux-review'].
+  assert.deepEqual(viewOf(lean, 'ui-html').dependsOn, ['ux-review']);
+  assert.deepEqual(viewOf(lean, 'ui-react').dependsOn, ['ux-review']);
+});
+
+test('full mode is untouched: no skipped flags, gating still runs through ux-review', () => {
+  const full = listPipelineStatus(leanDoneState(), WORKFLOWS[0]!.pipelineIds);
+  assert.equal(viewOf(full, 'ux-review').skipped, undefined);
+  assert.equal(viewOf(full, 'ui-html').active, false);
+  assert.deepEqual(viewOf(full, 'ui-html').dependsOn, ['ux-review']);
+  assert.equal(viewOf(full, 'ui-html').effectiveDependsOn, undefined);
+});
+
+test('resolveRunMode: saved flag wins; legacy lean runs are inferred from state', () => {
+  const ids = WORKFLOWS[0]!.pipelineIds;
+  // Saved mode is authoritative in both directions.
+  assert.equal(resolveRunMode(true, {}, ids), 'lean');
+  assert.equal(resolveRunMode(false, leanDoneState(), ids), 'full');
+  // Legacy (nothing saved): a UI terminal succeeded while the analysis stages
+  // never ran — only a lean chain can produce that, so infer lean. This is the
+  // exact "React: Done yet Locked — finish UX Heuristic Review first" screen.
+  assert.equal(resolveRunMode(undefined, leanDoneState(), ids), 'lean');
+  // Fresh project → full.
+  assert.equal(resolveRunMode(undefined, {}, ids), 'full');
+  // Full chain done → full.
+  const fullDone: ProjectPipelineState = Object.fromEntries(
+    ids.map((id) => [id, { status: 'succeeded' as const }]),
+  );
+  assert.equal(resolveRunMode(undefined, fullDone, ids), 'full');
+  // Mid-full-run (analysis stage running) → full, even before anything downstream.
+  assert.equal(
+    resolveRunMode(
+      undefined,
+      { docs: { status: 'succeeded' }, 'docs-map': { status: 'succeeded' }, cj: { status: 'running' } },
+      ids,
+    ),
+    'full',
+  );
+  // An analysis stage that FAILED also proves the chain included it → full.
+  assert.equal(
+    resolveRunMode(
+      undefined,
+      { docs: { status: 'succeeded' }, 'docs-map': { status: 'succeeded' }, cj: { status: 'failed' } },
+      ids,
+    ),
+    'full',
+  );
 });

@@ -195,6 +195,7 @@ const PIPELINE_BOOLEAN_FLAGS = new Set([
   'reset-downstream',
   // run-all: resume — skip stages that already succeeded (default re-runs all).
   'skip-succeeded',
+  'lean',
   // docs (deterministic Confluence): do NOT fetch the pages the seeds link to.
   'no-follow-links',
   // docs (deterministic Confluence): also fetch the whole sub-tree under each
@@ -6804,6 +6805,9 @@ Commands:
                          --platform <mobile|web>              UX-stage target platform
                          --design-system <id|none>            for the UI terminal(s)
                          --skip-succeeded                     resume: only run the missing stages
+                         --lean                               chỉ docs → UX Spec → UI (bỏ cj,
+                                                              ux-research, ux-review) — riêng
+                                                              docs-to-ui; workflow khác bỏ qua cờ này
   upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
   pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
   build                Build/rebuild the ui-react app from synced sources (react/dist/ never
@@ -7014,13 +7018,17 @@ async function runPipeline(args) {
     const data = await resp.json();
     if (flags.json) return writeJson(data);
     const pipelines = data.pipelines ?? [];
-    console.log('# id\tname\tstatus\tactive\tdependsOn');
+    // `runMode` quyết định bước nào bị bỏ và `dependsOn` gate ở đâu — in ra
+    // đầu bảng để `od pipeline list` giải thích được vì sao một bước "skipped".
+    console.log(`# run mode: ${data.runMode ?? 'full'}`);
+    console.log('# id\tname\tstatus\tactive\tskipped\tdependsOn');
     for (const p of pipelines) {
       console.log([
         p.id,
         p.name,
         p.status,
         p.active ? 'yes' : 'no',
+        p.skipped ? 'yes' : '-',
         (p.dependsOn ?? []).join(',') || '-',
       ].join('\t'));
     }
@@ -7169,6 +7177,7 @@ async function runPipeline(args) {
               }
             : {}),
           ...(flags['skip-succeeded'] ? { skipSucceeded: true } : {}),
+          ...(flags['lean'] ? { lean: true } : {}),
           ...(flags['no-follow-links'] ? { followLinks: false } : {}),
           ...(flags['all-pages'] || flags['include-descendants'] ? { includeDescendants: true } : {}),
         }),
