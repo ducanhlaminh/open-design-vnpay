@@ -1517,6 +1517,7 @@ export function PipelinesView() {
           })}
           {feedbackPipeline && feedbackRunId ? (
             <PipelineEvaluationStep
+              key={workflowId}
               projectId={projectId}
               workflowId={workflowId}
               pipeline={feedbackPipeline}
