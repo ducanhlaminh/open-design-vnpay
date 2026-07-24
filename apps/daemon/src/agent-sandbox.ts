@@ -16,10 +16,14 @@
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { SandboxConfigPrefs } from './app-config.js';
-import type { SandboxAccount, SandboxAccountsResponse } from '@open-design/contracts';
+import type {
+  SandboxAccount,
+  SandboxAccountsResponse,
+  SandboxEmbeddedLoginStatus,
+} from '@open-design/contracts';
 import { SANDBOX_ACCOUNT_LABEL_RE } from '@open-design/contracts';
 
 const execFileAsync = promisify(execFile);
@@ -399,12 +403,42 @@ export function sandboxLoginCommand(image: string): string {
 }
 
 // The login TUI runs INSIDE the container, so its own "open browser" step
-// can't reach the host — it only prints the OAuth URL in the terminal. On
-// macOS we wrap the terminal session in `script -q <log>` (keeps the TTY,
-// mirrors output to a host file), then poll that log, extract the OAuth URL
-// (strip ANSI codes, re-join the 80-column line wrapping) and `open` it in
-// the host browser — the user just approves there and pastes the code back
-// into the terminal.
+// can't reach the host — it only prints the OAuth URL. These helpers strip
+// the TUI's ANSI codes, re-join the 80-column line wrapping and find the
+// OAuth URL in raw pty output.
+function stripAnsi(raw: string): string {
+  return raw
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    .replace(/\x1b[()][0-9A-B]/g, '')
+    .replace(/\x1b[78]/g, '')
+    .replace(/\r/g, '');
+}
+
+function extractOauthUrl(plain: string): string | null {
+  return (
+    (plain.match(/https:\/\/[^\s]+(?:\n[^\s]+)*/g) ?? [])
+      .map((m) => m.replace(/\n/g, ''))
+      .find((u) => /oauth/i.test(u)) ?? null
+  );
+}
+
+function openHostBrowser(url: string): void {
+  try {
+    if (process.platform === 'darwin') {
+      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    } else if (process.platform === 'win32') {
+      // `start` is a cmd builtin; the empty '' is its window-title slot.
+      spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+    }
+  } catch {
+    // Best-effort — the UI always shows the URL as a clickable fallback.
+  }
+}
+
+// Terminal-login helper: poll the `script -q` mirror log of the login session
+// and auto-open the OAuth URL in the host browser once it appears.
 function watchLoginLogForOauthUrl(logPath: string): void {
   const startedAt = Date.now();
   const timer = setInterval(() => {
@@ -418,19 +452,198 @@ function watchLoginLogForOauthUrl(logPath: string): void {
     } catch {
       return; // log not written yet
     }
-    const plain = raw
-      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-      .replace(/\x1b[()][0-9A-B]/g, '')
-      .replace(/\x1b[78]/g, '')
-      .replace(/\r/g, '');
-    const url = (plain.match(/https:\/\/[^\s]+(?:\n[^\s]+)*/g) ?? [])
-      .map((m) => m.replace(/\n/g, ''))
-      .find((u) => /oauth/i.test(u));
+    const url = extractOauthUrl(stripAnsi(raw));
     if (!url) return;
     clearInterval(timer);
-    spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    openHostBrowser(url);
   }, 1000);
   timer.unref();
+}
+
+// ── Embedded (no-terminal) Claude login ─────────────────────────────────────
+// Drives `claude /login` in the sandbox container through a container-side
+// faked TTY (`script -qec`): the CLI pinned in the image renders a fixed
+// prompt sequence (theme picker → login-method menu → OAuth URL → paste
+// code), so the daemon walks it by sending Enter whenever the output settles
+// with no URL yet, extracts the URL, opens the HOST browser, and pipes the
+// user-pasted code back over stdin. Success = `.credentials.json` appears in
+// the auth volume (same file the interactive flow writes), which the /login
+// TUI persists — so accounts/switching keep working unchanged.
+
+interface EmbeddedLoginSession {
+  phase: SandboxEmbeddedLoginStatus['phase'];
+  url: string | null;
+  error: string | null;
+  image: string;
+  containerName: string;
+  child: ChildProcess;
+  buf: string;
+  promptsSent: number;
+  settleTimer: NodeJS.Timeout | null;
+  verifyTimer: NodeJS.Timeout | null;
+  deadline: NodeJS.Timeout;
+}
+
+let embeddedLogin: EmbeddedLoginSession | null = null;
+
+const EMBEDDED_LOGIN_TIMEOUT_MS = 10 * 60_000;
+const EMBEDDED_LOGIN_MAX_PROMPTS = 6;
+const EMBEDDED_LOGIN_BUF_MAX = 256 * 1024;
+
+export function getEmbeddedLoginStatus(): SandboxEmbeddedLoginStatus {
+  if (!embeddedLogin) return { phase: 'idle', url: null, error: null };
+  const { phase, url, error } = embeddedLogin;
+  return { phase, url, error };
+}
+
+function teardownEmbeddedLogin(session: EmbeddedLoginSession): void {
+  if (session.settleTimer) clearTimeout(session.settleTimer);
+  if (session.verifyTimer) clearInterval(session.verifyTimer);
+  clearTimeout(session.deadline);
+  void docker(['kill', session.containerName], 10_000).catch(() => {});
+}
+
+export function cancelEmbeddedLogin(): SandboxEmbeddedLoginStatus {
+  if (embeddedLogin) {
+    teardownEmbeddedLogin(embeddedLogin);
+    embeddedLogin = null;
+  }
+  return getEmbeddedLoginStatus();
+}
+
+export function startEmbeddedLogin(image: string): SandboxEmbeddedLoginStatus {
+  cancelEmbeddedLogin();
+  const containerName = `od.sandbox.login.${Date.now()}`;
+  const child = spawn(
+    'docker',
+    [
+      'run', '-i', '--rm',
+      '--name', containerName,
+      '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}`,
+      '--entrypoint', 'sh',
+      image,
+      '-c', 'script -qec "claude /login" /dev/null',
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  const session: EmbeddedLoginSession = {
+    phase: 'starting',
+    url: null,
+    error: null,
+    image,
+    containerName,
+    child,
+    buf: '',
+    promptsSent: 0,
+    settleTimer: null,
+    verifyTimer: null,
+    deadline: setTimeout(() => {
+      if (embeddedLogin === session && session.phase !== 'done') {
+        session.phase = 'error';
+        session.error = 'Quá thời gian đăng nhập (10 phút) — thử lại.';
+        teardownEmbeddedLogin(session);
+      }
+    }, EMBEDDED_LOGIN_TIMEOUT_MS),
+  };
+  session.deadline.unref();
+  embeddedLogin = session;
+
+  // The TUI redraws constantly; treat 1.5s of output silence BEFORE the URL
+  // as "a prompt is waiting" and answer it with Enter (theme picker and
+  // login-method menu both take the default). Capped so an unexpected screen
+  // can't be Enter-spammed forever.
+  const scheduleNudge = () => {
+    if (session.settleTimer) clearTimeout(session.settleTimer);
+    session.settleTimer = setTimeout(() => {
+      if (embeddedLogin !== session || session.phase !== 'starting') return;
+      if (session.promptsSent >= EMBEDDED_LOGIN_MAX_PROMPTS) {
+        session.phase = 'error';
+        session.error = 'Không đi hết được các bước của trình đăng nhập — dùng cách mở Terminal.';
+        teardownEmbeddedLogin(session);
+        return;
+      }
+      session.promptsSent += 1;
+      session.child.stdin?.write('\r');
+      scheduleNudge();
+    }, 1500);
+    session.settleTimer.unref();
+  };
+
+  const onData = (chunk: Buffer) => {
+    if (embeddedLogin !== session) return;
+    session.buf = (session.buf + chunk.toString()).slice(-EMBEDDED_LOGIN_BUF_MAX);
+    if (session.phase !== 'starting') return;
+    const url = extractOauthUrl(stripAnsi(session.buf));
+    if (url) {
+      if (session.settleTimer) clearTimeout(session.settleTimer);
+      session.phase = 'awaiting-code';
+      session.url = url;
+      openHostBrowser(url);
+      return;
+    }
+    scheduleNudge();
+  };
+  child.stdout?.on('data', onData);
+  child.stderr?.on('data', onData);
+  child.on('error', (err) => {
+    if (embeddedLogin !== session) return;
+    session.phase = 'error';
+    session.error = `Không chạy được docker: ${err.message}`;
+    teardownEmbeddedLogin(session);
+  });
+  child.on('close', () => {
+    if (embeddedLogin !== session) return;
+    if (session.phase === 'done' || session.phase === 'error') return;
+    // Container gone before we confirmed credentials — one last check (the
+    // user may have finished right as the TUI exited).
+    void sandboxAuthLoggedIn(session.image).then((ok) => {
+      if (embeddedLogin !== session) return;
+      if (ok) {
+        session.phase = 'done';
+      } else {
+        session.phase = 'error';
+        session.error = 'Phiên đăng nhập kết thúc trước khi hoàn tất — thử lại.';
+      }
+      teardownEmbeddedLogin(session);
+    });
+  });
+  scheduleNudge();
+  return getEmbeddedLoginStatus();
+}
+
+export function submitEmbeddedLoginCode(code: string): SandboxEmbeddedLoginStatus {
+  const session = embeddedLogin;
+  if (!session || session.phase !== 'awaiting-code') {
+    throw new Error('Chưa ở bước dán mã — bấm Đăng nhập trước.');
+  }
+  const trimmed = code.trim();
+  if (!trimmed) throw new Error('Mã trống.');
+  session.error = null;
+  session.phase = 'verifying';
+  session.child.stdin?.write(`${trimmed}\r`);
+  // Success criterion is the volume, not the TUI: poll for .credentials.json
+  // (what /login persists). Rejected code → drop back to awaiting-code with
+  // an error so the user can re-paste without restarting the session.
+  const startedAt = Date.now();
+  session.verifyTimer = setInterval(() => {
+    if (embeddedLogin !== session) return;
+    void sandboxAuthLoggedIn(session.image).then((ok) => {
+      if (embeddedLogin !== session || session.phase !== 'verifying') return;
+      if (ok) {
+        session.phase = 'done';
+        teardownEmbeddedLogin(session);
+        return;
+      }
+      if (Date.now() - startedAt > 60_000) {
+        if (session.verifyTimer) clearInterval(session.verifyTimer);
+        session.verifyTimer = null;
+        session.phase = 'awaiting-code';
+        session.error = 'Mã chưa được chấp nhận — kiểm tra và dán lại mã mới nhất.';
+      }
+    });
+  }, 2000);
+  session.verifyTimer.unref();
+  return getEmbeddedLoginStatus();
 }
 
 /**

@@ -13,9 +13,9 @@ import { useCallback, useEffect, useState } from 'react';
 import type {
   SandboxAccountsResponse,
   SandboxBuildResponse,
-  SandboxLoginLaunchResponse,
   SandboxStatusResponse,
 } from '@open-design/contracts';
+import { EmbeddedClaudeLogin } from './EmbeddedClaudeLogin';
 import styles from './InfraSetupGate.module.css';
 
 const DISMISS_KEY = 'od-infra-setup-done';
@@ -48,8 +48,6 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   const [status, setStatus] = useState<SandboxStatusResponse | null>(null);
   const [accounts, setAccounts] = useState<SandboxAccountsResponse | null>(null);
   const [build, setBuild] = useState<SandboxBuildResponse | null>(null);
-  const [login, setLogin] = useState<SandboxLoginLaunchResponse | null>(null);
-  const [loginBusy, setLoginBusy] = useState(false);
   // True once the FIRST full evaluation decided the gate must show. Before
   // that we render nothing, so fully-provisioned machines never see a flash.
   const [evaluated, setEvaluated] = useState(false);
@@ -92,12 +90,6 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
     if (!active || !ready) return;
     void refreshAccounts();
   }, [active, ready, status?.authVolumeOk, refreshAccounts]);
-
-  useEffect(() => {
-    if (!active || !ready || !login || loggedIn) return;
-    const id = window.setInterval(() => void refreshAccounts(), 6000);
-    return () => window.clearInterval(id);
-  }, [active, ready, login, loggedIn, refreshAccounts]);
 
   // ── Build progress: resume a possibly-running build on mount, poll while
   // running, refresh the status list when it lands (same flow as Settings).
@@ -146,19 +138,6 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
       setRechecking(false);
     }
   }, [refreshStatus, refreshAccounts, ready]);
-
-  const startLogin = useCallback(async () => {
-    setLoginBusy(true);
-    try {
-      const r = await fetch('/api/sandbox/accounts/login', { method: 'POST' });
-      const j = (await r.json().catch(() => null)) as SandboxLoginLaunchResponse | null;
-      if (r.ok && j) setLogin(j);
-    } catch {
-      // Daemon unreachable — leave the button for a retry.
-    } finally {
-      setLoginBusy(false);
-    }
-  }, []);
 
   // Auth step is N/A when the sandbox doesn't own Claude (host CLI handles
   // login there); until /accounts answers, assume it applies.
@@ -291,35 +270,15 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
             ) : (
               <>
                 <p className={styles.stepHint}>
-                  Bấm nút bên dưới — một cửa sổ terminal sẽ mở ra kèm trình duyệt để đăng nhập tài
-                  khoản Claude. Làm theo hướng dẫn trong đó rồi quay lại đây, trạng thái sẽ tự
-                  chuyển xanh.
+                  Bấm nút bên dưới — trình duyệt sẽ mở trang đăng nhập Claude; cho phép xong, dán mã
+                  xác nhận vào ô ngay tại đây.
                 </p>
-                <div className={styles.actionRow}>
-                  <button
-                    type="button"
-                    className={styles.primaryBtn}
-                    disabled={loginBusy}
-                    onClick={() => void startLogin()}
-                  >
-                    {login ? 'Mở lại cửa sổ đăng nhập' : 'Đăng nhập Claude'}
-                  </button>
-                  {login ? (
-                    <button
-                      type="button"
-                      className={styles.linkBtn}
-                      onClick={() => void refreshAccounts()}
-                    >
-                      Kiểm tra lại
-                    </button>
-                  ) : null}
-                </div>
-                {login && !login.launched ? (
-                  <p className={styles.stepHint}>
-                    {login.message ?? 'Không mở được terminal — chạy lệnh này thủ công:'}{' '}
-                    <code className={styles.cmd}>{login.command}</code>
-                  </p>
-                ) : null}
+                <EmbeddedClaudeLogin
+                  onSuccess={() => {
+                    void refreshAccounts();
+                    void refreshStatus();
+                  }}
+                />
               </>
             ),
           },

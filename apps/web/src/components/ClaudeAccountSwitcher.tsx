@@ -7,8 +7,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type {
   SandboxAccountsResponse,
   SandboxAccountsCheckResponse,
-  SandboxLoginLaunchResponse,
 } from '@open-design/contracts';
+import { EmbeddedClaudeLogin } from './EmbeddedClaudeLogin';
 import styles from './ClaudeAccountSwitcher.module.css';
 
 type AccStatus = { ok: boolean; error?: string };
@@ -24,7 +24,8 @@ export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
   const [busy, setBusy] = useState(false);
   const [saveLabel, setSaveLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [login, setLogin] = useState<SandboxLoginLaunchResponse | null>(null);
+  // True after a fresh embedded login completes — opens the name-and-save row.
+  const [justLoggedIn, setJustLoggedIn] = useState(false);
   const [statuses, setStatuses] = useState<Record<string, AccStatus>>({});
   const [checkingLabel, setCheckingLabel] = useState<string | null>(null);
 
@@ -104,27 +105,6 @@ export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
     },
     [call],
   );
-
-  // "Add account" = a fresh Claude OAuth login. It's an interactive terminal TUI
-  // (can't run inside the web), so the daemon opens a host terminal; the user
-  // finishes there and Saves. Falls back to a copyable command if it can't open.
-  const addAccount = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await fetch('/api/sandbox/accounts/login', { method: 'POST' });
-      const j = await r.json().catch(() => null);
-      if (!r.ok) {
-        setError(j?.error?.message ?? j?.error ?? `Lỗi ${r.status}`);
-        return;
-      }
-      setLogin(j as SandboxLoginLaunchResponse);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }, []);
 
   // Hidden unless the sandbox owns Claude (Docker-only) — no account concept otherwise.
   if (!daemonLive || !data || !data.supported) return null;
@@ -206,8 +186,8 @@ export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
       ) : null}
 
       {/* Name-and-save the current login — only when there's an UNSAVED login to
-          name: right after "+ Thêm tài khoản" (login flow) or an activeUnsaved. */}
-      {login || data.activeUnsaved ? (
+          name: right after an embedded login completes or an activeUnsaved. */}
+      {justLoggedIn || data.activeUnsaved ? (
         <div className={styles.saveRow}>
           <input
             type="text"
@@ -225,7 +205,7 @@ export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
               void (async () => {
                 await call('/api/sandbox/accounts/save', JSON_POST(saveLabel.trim()));
                 setSaveLabel('');
-                setLogin(null); // saved → close the add/name flow
+                setJustLoggedIn(false); // saved → close the add/name flow
               })();
             }}
           >
@@ -234,36 +214,16 @@ export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
         </div>
       ) : null}
 
-      <button
-        type="button"
-        className={`${styles.btn} ${styles.addBtn}`}
-        disabled={busy}
-        onClick={() => void addAccount()}
-      >
-        + Thêm tài khoản mới (đăng nhập)
-      </button>
-
-      {login ? (
-        <div className={styles.loginPanel}>
-          <p className={styles.hint}>
-            {login.message ??
-              (login.launched
-                ? 'Hoàn tất đăng nhập ở cửa sổ terminal vừa mở, rồi đặt tên + Lưu bên trên.'
-                : 'Chạy lệnh này ở terminal để đăng nhập tài khoản mới, rồi quay lại đặt tên + Lưu.')}
-          </p>
-          <div className={styles.cmdRow}>
-            <code className={styles.cmd}>{login.command}</code>
-            <button
-              type="button"
-              className={styles.btn}
-              onClick={() => void navigator.clipboard?.writeText(login.command).catch(() => {})}
-              title="Copy lệnh"
-            >
-              Copy
-            </button>
-          </div>
-        </div>
-      ) : null}
+      {/* Add account = embedded no-terminal login: browser OAuth + paste the
+          code right here, then name + Save above. */}
+      <EmbeddedClaudeLogin
+        startLabel="+ Thêm tài khoản mới (đăng nhập)"
+        onSuccess={() => {
+          setJustLoggedIn(true);
+          void refresh();
+          window.dispatchEvent(new Event('od:claude-usage-refresh'));
+        }}
+      />
 
       {error ? <p className={styles.error}>{error}</p> : null}
     </div>
