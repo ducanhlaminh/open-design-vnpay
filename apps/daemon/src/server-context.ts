@@ -184,6 +184,19 @@ export interface PipelineDeps {
   // video + per-step screenshots under react/prototype-demo/ (deterministic,
   // no agent). Wired in server.ts (react-demo.ts).
   buildReactDemo(projectId: string): Promise<{ cases: number; output: string }>;
+  // Captures the BUILT ui-react-ds app into Figma screen JSON (figma-h2d IR
+  // with component-instance markers) under react-ds/figma-screens/ for the
+  // Fig Pipeline plugin's "Screen JSON → Figma" tab. Wired in server.ts
+  // (figma-capture.ts).
+  figmaCapture(projectId: string): Promise<{
+    screens: number;
+    markers: number;
+    outDir: string;
+    screensJson: string;
+    /** cwd-relative path servable via GET /api/projects/:id/raw/<rawPath>. */
+    rawPath: string;
+    output: string;
+  }>;
   // List the project cwd's output file paths (cwd-relative). Used to derive
   // "done" stage state from on-disk outputs, offline-safe. Wired in server.ts.
   localOutputs(projectId: string): Promise<string[]>;

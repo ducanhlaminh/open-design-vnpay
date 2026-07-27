@@ -44,6 +44,8 @@ export type DesignSystemSummary = {
   updatedAt?: string;
   provenance?: DesignSystemProvenance;
   projectId?: string;
+  /** True when the system ships a compiled React source bundle (react/). */
+  hasReactBundle?: boolean;
 };
 
 export type DesignSystemFileKind =
@@ -143,6 +145,16 @@ type DesignSystemProjectManifest = {
     applies?: string[];
     suggested?: string[];
     exemptions?: string[];
+  };
+  /** React-source bundle marker written by the Figma IR importer. */
+  react?: {
+    dir: string;
+    componentsDir?: string;
+    iconsDir?: string;
+    stylesheet?: string;
+    catalog?: string;
+    components?: number;
+    icons?: number;
   };
 };
 
@@ -287,6 +299,7 @@ export async function listDesignSystems(
         ...(metadata.updatedAt ? { updatedAt: metadata.updatedAt } : {}),
         ...(metadata.provenance ? { provenance: metadata.provenance } : {}),
         ...(metadata.projectId ? { projectId: metadata.projectId } : {}),
+        ...(manifest?.react ? { hasReactBundle: true } : {}),
       });
     } catch {
       // Skip.

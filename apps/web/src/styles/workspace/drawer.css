@@ -1190,6 +1190,33 @@
 .ds-card-thumb:focus-visible .ds-card-thumb-overlay {
   opacity: 1;
 }
+/* Corner "Fullscreen" action on react-bundle cards — same reveal-on-hover
+   treatment as the Preview pill, pinned to the opposite corner. */
+.ds-card-thumb-fullscreen {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(15, 15, 18, 0.78);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.ds-card-thumb-fullscreen svg {
+  width: 14px;
+  height: 14px;
+}
+.ds-card:hover .ds-card-thumb-fullscreen,
+.ds-card-thumb-fullscreen:focus-visible {
+  opacity: 1;
+}
 .ds-card-meta {
   display: flex;
   flex-direction: column;

@@ -231,6 +231,29 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
       '*.artifact.json',
     ] },
 
+  // ── Terminal option C: UI-Spec (React DS) ──────────────────────────────────
+  // Like ui-react, but the component vocabulary IS the imported design system:
+  // before the run the daemon stages the selected system's compiled react
+  // bundle (a Figma IR import — components/ui + lib/runtime + tk-* token
+  // classes) into <workflow>/react-ds/src/ds/ (Phase C of the design-system
+  // import spec), and the skill composes screens exclusively from it — no
+  // Tailwind, no shadcn. Requires a design system that ships a react bundle
+  // (hasReactBundle); the daemon refuses the run otherwise. The staged src/ds/
+  // and public/ (icon SVGs) are excluded from sync — they are re-staged from
+  // the design system on every run, and the assets tree is far too heavy for
+  // the media store.
+  { id: 'ui-react-ds',      name: 'UI-Spec (React DS)',        skillId: 'ui-react-ds',           extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill', 'wcag-lint'], dependsOn: ['ux-review'], outputs: ['react-ds/'], acceptsDesignSystem: true,
+    syncExclude: [
+      'react-ds/screens/',
+      'react-ds/package.json',
+      'react-ds/vite.config.ts',
+      'react-ds/tsconfig.json',
+      'react-ds/index.html',
+      'react-ds/src/ds/',
+      'react-ds/public/',
+      '*.artifact.json',
+    ] },
+
   // ── `docs-to-prd` workflow — fully INDEPENDENT of docs-to-ui ───────────────
   // Same three ingredient skills as docs-to-ui's docs/cj/ux-research (jira-ingest,
   // customer-journey-spec, ux-research — identical skills, so identical
@@ -277,7 +300,7 @@ export const WORKFLOWS: readonly Workflow[] = [
     name: 'Docs → UI-Spec',
     description:
       'Product docs → UX Research (evidence-based criteria) → UX Spec → a heuristic review gate → UI-Spec: an interactive HTML prototype or a real Vite + React 19 app — pick either (or both) at the final stage.',
-    pipelineIds: ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react'],
+    pipelineIds: ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react', 'ui-react-ds'],
   },
   {
     id: 'docs-to-prd',

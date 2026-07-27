@@ -407,6 +407,23 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
   });
 
+  // POST /api/pipelines/figma-capture { projectId } — capture the BUILT
+  // UI-Spec (React DS) app into Figma screen JSON (figma-h2d IR with component
+  // instance markers) under react-ds/figma-screens/. The output feeds the
+  // design-v3 Fig Pipeline plugin's "Screen JSON → Figma" tab, which rebuilds
+  // the screens with REAL component instances. 422 with the runner tail on
+  // failure (missing dist, playwright env, dead click selector).
+  app.post('/api/pipelines/figma-capture', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const result = await ctx.pipelines.figmaCapture(projectId);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(422).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   // POST /api/pipelines/run-all — run the WHOLE workflow sequentially with no
   // per-stage review (the "Run full workflow" button / `od pipeline run-all`).
   // The daemon chains the stages in the background — each stage is a normal
@@ -430,9 +447,10 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         rawTerminal !== undefined &&
         rawTerminal !== 'ui-html' &&
         rawTerminal !== 'ui-react' &&
+        rawTerminal !== 'ui-react-ds' &&
         rawTerminal !== 'both'
       ) {
-        return res.status(400).json({ error: "terminal must be 'ui-html', 'ui-react' or 'both'" });
+        return res.status(400).json({ error: "terminal must be 'ui-html', 'ui-react', 'ui-react-ds' or 'both'" });
       }
       const input = typeof req.body?.input === 'string' ? req.body.input : undefined;
       let source: PipelineRunSource | undefined;

@@ -392,6 +392,11 @@ export interface Dict {
   'settings.designSystemsSource': string;
   'settings.designSystemsSourceLocal': string;
   'settings.designSystemsSourceGithub': string;
+  'settings.designSystemsSourceFigma': string;
+  'settings.designSystemsFigmaFiles': string;
+  'settings.designSystemsFigmaFilesHelp': string;
+  'settings.designSystemsImportFigma': string;
+  'settings.designSystemsImportWarnings': string;
   'settings.designSystemsStructure': string;
   'settings.designSystemsModeHybrid': string;
   'settings.designSystemsModeNormalized': string;
@@ -1619,6 +1624,9 @@ export interface Dict {
   'ds.tokens': string;
   'ds.specToggle': string;
   'ds.specLoading': string;
+  'ds.reactStats': string;
+  'ds.reactDetailToggle': string;
+  'ds.reactDetailLoading': string;
 
   // Avatar menu (project topbar)
   'avatar.title': string;

@@ -186,11 +186,23 @@ export interface DesignSystemSummary {
   updatedAt?: string;
   provenance?: DesignSystemProvenance;
   projectId?: string;
+  /** True when the system ships a compiled React source bundle (react/). */
+  hasReactBundle?: boolean;
 }
 
 export interface DesignSystemDetail extends DesignSystemSummary {
   body: string;
   packageInfo?: DesignSystemPackageInfo;
+}
+
+/** GET /api/design-systems/:id/react-info — react-bundle detail payload. */
+export interface DesignSystemReactInfo {
+  components: number;
+  icons: number;
+  /** STYLE-GUIDE.md — the compiler's token-contract rules + token listings. */
+  styleGuide: string;
+  /** docs/catalog.md — per-component props/variants reference tables. */
+  catalog: string;
 }
 
 export interface DesignSystemPackageInfo {
@@ -407,6 +419,46 @@ export interface ImportGitHubDesignSystemRequest {
 
 export interface ImportGitHubDesignSystemResponse {
   designSystem: DesignSystemSummary;
+}
+
+/**
+ * POST /api/design-systems/import/figma is multipart/form-data, not JSON:
+ * repeated `files` entries carry Fig Pipeline exports — raw `.ir.json` files
+ * and/or the `.zip` bundle downloaded from the plugin (its ir.json is
+ * extracted server-side). Merge is last-writer-wins in natural filename order
+ * (prefix files 01-, 02-, … with the foundation/token export first), plus
+ * optional text fields `name` and repeated `craftApplies`. This interface
+ * documents those fields for typed FormData builders.
+ */
+export interface ImportFigmaDesignSystemFields {
+  /** Optional display name override; defaults to the Figma file name. */
+  name?: string;
+  /** Craft sections that should actively apply when this system is used. */
+  craftApplies?: string[];
+}
+
+export interface ImportFigmaDesignSystemSummary {
+  componentSets: number;
+  components: number;
+  icons: number;
+  variables: number;
+  tokenClasses: number;
+  assets: number;
+  /** IMAGE fills embedded with real bytes (assets/images/ + data URIs). */
+  images: number;
+  /** IMAGE fills the IR had no bytes for (old plugin export) — dropped. */
+  missingImages: number;
+  /** Per-component-set compile errors (the rest of the bundle still built). */
+  errors: string[];
+  /** One entry per uploaded IR file, in merge order. */
+  sources: Array<{ filename: string; figmaFile: string }>;
+}
+
+export interface ImportFigmaDesignSystemResponse {
+  designSystem: DesignSystemSummary;
+  /** Merge/token-link warnings (duplicate tokens, unresolved bindings, …). */
+  warnings: string[];
+  summary: ImportFigmaDesignSystemSummary;
 }
 
 export interface HealthResponse {

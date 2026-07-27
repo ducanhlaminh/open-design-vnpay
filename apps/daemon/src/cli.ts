@@ -5643,6 +5643,7 @@ async function runCraft(args)         { return runLibraryList('craft', args); }
 
 async function runDesignSystems(args) {
   if (args[0] === 'rename') return runDesignSystemRename(args.slice(1));
+  if (args[0] === 'import-figma') return runDesignSystemImportFigma(args.slice(1));
   if (!args[0] || isDesignSystemsHelpArg(args[0])) {
     console.log(DESIGN_SYSTEMS_USAGE);
     process.exit(isDesignSystemsHelpArg(args[0]) ? 0 : 2);
@@ -5684,6 +5685,80 @@ Renames an editable (user-created) design system. Built-in systems are read-only
   if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
   const renamed = data.designSystem ?? data;
   console.log(`Renamed ${parsed.id} -> ${renamed.title ?? parsed.title}`);
+}
+
+// od design-systems import-figma <file.ir.json...> [--name <name>] [--json]
+// Uploads fig-export IR JSON files to POST /api/design-systems/import/figma in
+// argument order (merge order — the merge is last-writer-wins, so the
+// foundation/token export comes first) and prints the imported catalog entry
+// plus compile errors and merge warnings.
+async function runDesignSystemImportFigma(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od design-systems import-figma <file.ir.json|bundle.zip ...> [--name <name>] [--json] [--daemon-url <url>]
+
+Imports Fig Pipeline exports (raw .ir.json and/or the plugin's .zip bundle) as
+a React design system. Merge order follows natural filename order — prefix
+files 01-, 02-, … with the foundation (token) export first.`);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const stringFlags = new Set([...LIBRARY_STRING_FLAGS, 'name']);
+  const flags = parseFlags(args, { string: stringFlags, boolean: LIBRARY_BOOLEAN_FLAGS });
+  const filePaths = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (typeof a === 'string' && a.startsWith('--')) {
+      // A string flag written as `--name value` consumes the next token.
+      if (!a.includes('=') && stringFlags.has(a.slice(2))) i++;
+      continue;
+    }
+    filePaths.push(a);
+  }
+  if (filePaths.length === 0) {
+    console.error('Usage: od design-systems import-figma <file.ir.json...>');
+    process.exit(2);
+  }
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const form = new FormData();
+  for (const filePath of filePaths) {
+    let buf;
+    try {
+      buf = fs.readFileSync(filePath);
+    } catch (err) {
+      console.error(`cannot read ${filePath}: ${err?.message ?? err}`);
+      process.exit(2);
+    }
+    form.append(
+      'files',
+      new Blob([new Uint8Array(buf)], {
+        type: filePath.toLowerCase().endsWith('.zip') ? 'application/zip' : 'application/json',
+      }),
+      path.basename(filePath),
+    );
+  }
+  if (typeof flags.name === 'string' && flags.name.trim()) form.append('name', flags.name);
+  const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
+  const resp = await fetch(`${base}/api/design-systems/import/figma`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  const ds = data.designSystem ?? {};
+  const summary = data.summary ?? {};
+  console.log(`Imported ${ds.title ?? ds.id ?? '?'} (${ds.id ?? '?'})`);
+  console.log(
+    `  ${summary.components ?? 0}/${summary.componentSets ?? 0} component sets, ${summary.icons ?? 0} icons, ${summary.variables ?? 0} tokens, ${summary.tokenClasses ?? 0} token classes${summary.images ? `, ${summary.images} images` : ''}`,
+  );
+  for (const err of summary.errors ?? []) console.error(`  x ${err}`);
+  const warnings = data.warnings ?? [];
+  if (warnings.length > 0) {
+    console.log(`  ${warnings.length} warning(s):`);
+    for (const warning of warnings.slice(0, 20)) console.log(`  ! ${warning}`);
+    if (warnings.length > 20) console.log(`  ... ${warnings.length - 20} more`);
+  }
 }
 
 async function runStatus(args) {
@@ -6774,7 +6849,7 @@ Common options:
 }
 
 function printPipelineHelp() {
-  console.log(`Usage: od pipeline <projects|list|run|run-all|feedback|upload|pull|build|demo|history|restore> [options]
+  console.log(`Usage: od pipeline <projects|list|run|run-all|feedback|upload|pull|build|demo|figma-capture|history|restore> [options]
 
 Dự án khai sinh ở Pipeline Studio (kèm link Confluence + design system + phân
 quyền); kéo về máy bằng \`od kg pull-all\` rồi chạy pipeline tại đây.
@@ -6801,7 +6876,7 @@ Commands:
                        every stage (docs → cj → ux-research → ux → ux-review → UI-Spec)
                        automatically as each one succeeds. Takes the same source flags as
                        'run' (--input / --source ...) plus:
-                         --terminal <ui-html|ui-react|both>   final UI-Spec option (default ui-html)
+                         --terminal <ui-html|ui-react|ui-react-ds|both>  final UI-Spec option (default ui-html)
                          --platform <mobile|web>              UX-stage target platform
                          --design-system <id|none>            for the UI terminal(s)
                          --skip-succeeded                     resume: only run the missing stages
@@ -6816,6 +6891,10 @@ Commands:
                        flow.json use cases and records video + per-step screenshots into
                        react/prototype-demo/ (deterministic — no agent/LLM). First run installs
                        a pinned Playwright + Chromium into the daemon data dir (one-time).
+  figma-capture        Capture the BUILT UI-Spec (React DS) app into Figma screen JSON
+                       (react-ds/figma-screens/): one figma-h2d IR per screen/state with
+                       component-instance markers. Paste the screens.json into the Fig
+                       Pipeline plugin's "Screen JSON → Figma" tab (UI Lib file open).
   history              Changelog: published versions (store _v/) + local .odhistory commits.
   restore              Rewind outputs: --version v3 (store snapshot) or --commit <sha> [--path <p>].
                        --stage <pipeline-id> limits a version-restore to one pipeline's files.
@@ -7136,8 +7215,8 @@ async function runPipeline(args) {
     let terminal;
     if (flags.terminal !== undefined) {
       const t = String(flags.terminal).trim().toLowerCase();
-      if (t !== 'ui-html' && t !== 'ui-react' && t !== 'both') {
-        console.error('Invalid --terminal; expected "ui-html", "ui-react" or "both".');
+      if (t !== 'ui-html' && t !== 'ui-react' && t !== 'ui-react-ds' && t !== 'both') {
+        console.error('Invalid --terminal; expected "ui-html", "ui-react", "ui-react-ds" or "both".');
         process.exit(2);
       }
       terminal = t;
@@ -7286,6 +7365,36 @@ async function runPipeline(args) {
     }
     if (flags.json) return writeJson(data);
     console.log(`Đã dựng ${data.cases ?? 0} kịch bản demo → react/prototype-demo/ (video + screenshot từng bước)`);
+    if (data.output) console.log(String(data.output).split('\n').slice(-6).join('\n'));
+    return;
+  }
+
+  // od pipeline figma-capture — capture the BUILT UI-Spec (React DS) app into
+  // Figma screen JSON (react-ds/figma-screens/): full figma-h2d IR per
+  // screen/state with component-instance markers, ready for the Fig Pipeline
+  // plugin's "Screen JSON → Figma" tab.
+  if (sub === 'figma-capture') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/figma-capture`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      console.error(`figma-capture failed:\n${data.error ?? resp.statusText}`);
+      process.exit(1);
+    }
+    if (flags.json) return writeJson(data);
+    console.log(
+      `Đã capture ${data.screens ?? 0} màn (${data.markers ?? 0} instance marker) → react-ds/${data.screensJson ?? 'figma-screens/'}`,
+    );
+    console.log('Mở file UI Lib trong Figma → plugin Fig Pipeline → tab "Screen JSON → Figma" → dán nội dung file screens.json.');
     if (data.output) console.log(String(data.output).split('\n').slice(-6).join('\n'));
     return;
   }

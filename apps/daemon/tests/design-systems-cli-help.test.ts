@@ -23,5 +23,6 @@ describe('od design-systems help surface', () => {
     expect(DESIGN_SYSTEMS_USAGE).toContain('list');
     expect(DESIGN_SYSTEMS_USAGE).toContain('show');
     expect(DESIGN_SYSTEMS_USAGE).toContain('rename');
+    expect(DESIGN_SYSTEMS_USAGE).toContain('import-figma');
   });
 });

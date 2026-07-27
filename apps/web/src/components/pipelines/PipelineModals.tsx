@@ -988,6 +988,7 @@ export function RunInputModal({
 export function DesignSystemRunModal({
   pipelineName,
   defaultId,
+  requireReactBundle,
   onClose,
   onRun,
 }: {
@@ -995,6 +996,10 @@ export function DesignSystemRunModal({
   /** Design system cấu hình sẵn từ Pipeline Studio (project.json) — chọn sẵn
    *  trong danh sách, user vẫn đổi được cho từng lần chạy. */
   defaultId?: string;
+  /** UI-Spec (React DS): chỉ liệt kê design system có bộ React (import từ
+   *  Figma IR) — KỂ CẢ bản draft (DS import mặc định là draft), và bắt buộc
+   *  chọn một cái mới cho Run. */
+  requireReactBundle?: boolean;
   onClose: () => void;
   onRun: (designSystemId: string | null) => Promise<void>;
 }) {
@@ -1009,7 +1014,11 @@ export function DesignSystemRunModal({
       try {
         const all = await fetchDesignSystems();
         if (cancelled) return;
-        setSystems(all.filter((s) => s.status !== 'draft'));
+        setSystems(
+          requireReactBundle
+            ? all.filter((s) => s.hasReactBundle)
+            : all.filter((s) => s.status !== 'draft'),
+        );
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
@@ -1020,7 +1029,7 @@ export function DesignSystemRunModal({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [requireReactBundle]);
 
   const submit = async () => {
     if (busy) return;
@@ -1050,7 +1059,7 @@ export function DesignSystemRunModal({
             type="button"
             className="pl-btn pl-btn--run"
             onClick={() => void submit()}
-            disabled={busy || systems === null}
+            disabled={busy || systems === null || (requireReactBundle && !selected)}
           >
             <Icon name={busy ? 'spinner' : 'play'} size={14} />
             <span>{busy ? 'Starting…' : 'Run pipeline'}</span>
@@ -1059,7 +1068,9 @@ export function DesignSystemRunModal({
       }
     >
       <div className="pl-modal-field pl-modal-field--ds">
-        <span className="pl-modal-field__label">Design system (optional)</span>
+        <span className="pl-modal-field__label">
+          {requireReactBundle ? 'Design system (bắt buộc — bộ React từ Figma)' : 'Design system (optional)'}
+        </span>
         {/* Same swatch + live-theme-preview picker as the chat composer. It
             portals its popover to <body>; popoverZIndex lifts it above the
             modal backdrop (z 1000) so it isn't hidden behind the overlay. The
@@ -1073,13 +1084,26 @@ export function DesignSystemRunModal({
           popoverZIndex={1100}
         />
         <span className="pl-modal-field__hint">
-          Applies a brand's <code>DESIGN.md</code> + tokens to the generated HTML. Leave as{' '}
-          <strong>None</strong> for a generic, design-led prototype. Only published systems
-          appear — publish a draft (e.g. one created from a <code>.fig</code>) to use it here.
+          {requireReactBundle ? (
+            <>
+              Chỉ liệt kê design system có bộ React (import từ Figma IR trong Settings →
+              Design systems) — màn hình sẽ được ghép từ đúng component + token của bộ này.
+            </>
+          ) : (
+            <>
+              Applies a brand's <code>DESIGN.md</code> + tokens to the generated HTML. Leave as{' '}
+              <strong>None</strong> for a generic, design-led prototype. Only published systems
+              appear — publish a draft (e.g. one created from a <code>.fig</code>) to use it here.
+            </>
+          )}
         </span>
       </div>
       {systems !== null && systems.length === 0 ? (
-        <p className="pl-modal-empty">No published design systems yet — running with None.</p>
+        <p className="pl-modal-empty">
+          {requireReactBundle
+            ? 'Chưa có design system nào có bộ React — import file .ir.json từ plugin fig-export trong Settings → Design systems trước.'
+            : 'No published design systems yet — running with None.'}
+        </p>
       ) : null}
       {error ? (
         <div className="pl-modal-error" role="alert">
@@ -1207,7 +1231,7 @@ export function PlatformRunModal({
 // UI-Spec step), then the daemon chains all stages automatically — each one
 // starts as its predecessor succeeds, no user review in between. Progress
 // shows on the normal stepper.
-export type WorkflowTerminalChoice = 'ui-html' | 'ui-react' | 'both';
+export type WorkflowTerminalChoice = 'ui-html' | 'ui-react' | 'ui-react-ds' | 'both';
 
 export interface RunAllPayload {
   input?: string;
@@ -1307,8 +1331,10 @@ export function RunAllModal({
     let cancelled = false;
     void (async () => {
       try {
+        // Keep the FULL list; the picker filters per terminal below (React DS
+        // needs react-bundle systems, which default to draft after import).
         const all = await fetchDesignSystems();
-        if (!cancelled) setSystems(all.filter((s) => s.status !== 'draft'));
+        if (!cancelled) setSystems(all);
       } catch {
         if (!cancelled) setSystems([]);
       }
@@ -1358,7 +1384,7 @@ export function RunAllModal({
       onClick={() => setTerminal(value)}
     >
       <span className={styles.cardTop}>
-        <Icon name={value === 'ui-react' ? 'blocks' : value === 'both' ? 'sparkles' : 'file-code'} size={16} />
+        <Icon name={value === 'ui-react' ? 'blocks' : value === 'ui-react-ds' ? 'palette' : value === 'both' ? 'sparkles' : 'file-code'} size={16} />
         {label}
         {terminal === value ? (
           <span className={styles.cardCheck} aria-hidden="true">
@@ -1466,15 +1492,22 @@ export function RunAllModal({
         <div className={styles.cards} role="radiogroup" aria-label="UI-Spec terminal">
           {terminalCard('ui-html', 'HTML prototype', 'Prototype HTML tương tác, mỗi màn một file.')}
           {terminalCard('ui-react', 'React app', 'App Vite + React 19 thật (cần Docker).')}
+          {terminalCard('ui-react-ds', 'React DS', 'App React ghép từ bộ design system đã import (cần DS Figma).')}
           {terminalCard('both', 'Cả hai', 'HTML trước, React sau.')}
         </div>
       </div>
       ) : null}
       {hasDesignSystem ? (
       <div className="pl-modal-field pl-modal-field--ds">
-        <span className="pl-modal-field__label">Design system (tùy chọn)</span>
+        <span className="pl-modal-field__label">
+          {terminal === 'ui-react-ds'
+            ? 'Design system (bắt buộc — bộ React từ Figma)'
+            : 'Design system (tùy chọn)'}
+        </span>
         <ProjectDesignSystemPicker
-          designSystems={systems ?? []}
+          designSystems={(systems ?? []).filter((s) =>
+            terminal === 'ui-react-ds' ? s.hasReactBundle : s.status !== 'draft',
+          )}
           selectedId={designSystemId}
           loading={systems === null}
           onChange={setDesignSystemId}

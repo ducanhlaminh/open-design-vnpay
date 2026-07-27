@@ -460,6 +460,7 @@ import {
   searchConfluencePages,
 } from './bas/bas-client.js';
 import { buildReactDemo } from './react-demo.js';
+import { runFigmaCapture } from './figma-capture.js';
 import { checkWireframes, wireframeCheckMessage } from './wireframe-check.js';
 import { listMockupPages, mergePageReports } from './prd-review-fanout.js';
 import { listSections, mergeCjSections, mergeUxrSections, mergeUxSpecSections, type DocSection } from './section-fanout.js';
@@ -3684,6 +3685,86 @@ export async function startServer({
       (await readDesignSystem(DESIGN_SYSTEMS_DIR, id))
       ?? (await readDesignSystem(USER_DESIGN_SYSTEMS_DIR, id))
     );
+  }
+
+  // Figma-imported systems carry a real compiled showcase under
+  // react/showcase/ (rendered from the imported component source). Serve it
+  // over the DESIGN.md-derived marketing page. showcase-data.js and the token
+  // stylesheet are inlined because the web app displays this HTML through a
+  // srcDoc iframe, where relative URLs cannot resolve.
+  async function readCompiledShowcaseHtml(id) {
+    const slug = typeof id === 'string' && id.startsWith('user:') ? id.slice('user:'.length) : id;
+    if (typeof slug !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) return null;
+    const reactDir = path.join(USER_DESIGN_SYSTEMS_DIR, slug, 'react');
+    let html;
+    try {
+      html = await fs.promises.readFile(path.join(reactDir, 'showcase', 'index.html'), 'utf8');
+    } catch {
+      return null;
+    }
+    try {
+      const data = await fs.promises.readFile(path.join(reactDir, 'showcase', 'showcase-data.js'), 'utf8');
+      html = html.replace(
+        '<script src="showcase-data.js"></script>',
+        () => `<script>${data.replace(/<\/script/gi, '<\\/script')}</script>`,
+      );
+    } catch {
+      // Older bundles inline the data into index.html — nothing to splice.
+    }
+    try {
+      const css = await fs.promises.readFile(path.join(reactDir, 'styles', 'globals.css'), 'utf8');
+      html = html.replace(
+        '<link rel="stylesheet" href="../styles/globals.css" />',
+        () => `<style>${css.replace(/<\/style/gi, '<\\/style')}</style>`,
+      );
+    } catch {
+      // No stylesheet next to the bundle — leave the link for a served copy.
+    }
+    // Icon/asset fetches default to the bundle-relative "../assets/", which
+    // only resolves when the page is opened from the bundle folder itself.
+    // Point window.__FIG_ASSET_BASE__ at the react-assets route instead
+    // (relative /api path: the modal loads this page as a same-origin
+    // iframe, so cookies/auth flow through). Newer bundles hard-set the
+    // global in a head script — rewrite that assignment; older bundles only
+    // read it, so a head injection is enough.
+    const assetBaseScript = `<script>window.__FIG_ASSET_BASE__ = ${JSON.stringify(
+      `/api/design-systems/${encodeURIComponent(id)}/react-assets/`,
+    )};</script>`;
+    const hardSet = '<script>window.__FIG_ASSET_BASE__ = "../assets/";</script>';
+    html = html.includes(hardSet)
+      ? html.replace(hardSet, () => assetBaseScript)
+      : html.replace('<head>', () => `<head>${assetBaseScript}`);
+    return html;
+  }
+
+  // Detail payload for a react-bundle design system (Figma IR import): the
+  // inventory counts from the manifest's react block plus the two compiler
+  // artifacts the detail modal renders — the token-contract style guide and
+  // the per-component API catalog.
+  async function readReactBundleInfo(id) {
+    const slug = typeof id === 'string' && id.startsWith('user:') ? id.slice('user:'.length) : id;
+    if (typeof slug !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) return null;
+    const brandRoot = path.join(USER_DESIGN_SYSTEMS_DIR, slug);
+    let manifest;
+    try {
+      manifest = JSON.parse(await fs.promises.readFile(path.join(brandRoot, 'manifest.json'), 'utf8'));
+    } catch {
+      return null;
+    }
+    const react = manifest?.react;
+    if (!react || typeof react.dir !== 'string') return null;
+    const readOptional = (rel) =>
+      fs.promises.readFile(path.join(brandRoot, react.dir, rel), 'utf8').catch(() => '');
+    const [styleGuide, catalog] = await Promise.all([
+      readOptional('STYLE-GUIDE.md'),
+      readOptional('docs/catalog.md'),
+    ]);
+    return {
+      components: Number(react.components ?? 0),
+      icons: Number(react.icons ?? 0),
+      styleGuide,
+      catalog,
+    };
   }
 
   async function readAvailableDesignSystemPackageInfo(id) {
@@ -7941,6 +8022,8 @@ export async function startServer({
   // /preview: built at request time, no caching.
   app.get('/api/design-systems/:id/showcase', async (req, res) => {
     try {
+      const compiledHtml = await readCompiledShowcaseHtml(req.params.id);
+      if (compiledHtml !== null) return res.type('text/html').send(compiledHtml);
       const body = await readAvailableDesignSystem(req.params.id);
       if (body === null)
         return res.status(404).type('text/plain').send('not found');
@@ -7948,6 +8031,92 @@ export async function startServer({
       res.type('text/html').send(html);
     } catch (err) {
       res.status(500).type('text/plain').send(String(err));
+    }
+  });
+
+  // Static assets of a react-bundle design system (icon/vector SVGs the
+  // compiled showcase lazy-fetches). express res.sendFile with a root pins
+  // reads inside the bundle's assets dir (traversal rejected).
+  app.get('/api/design-systems/:id/react-assets/*assetPath', async (req, res) => {
+    const id = req.params.id;
+    const slug = typeof id === 'string' && id.startsWith('user:') ? id.slice('user:'.length) : id;
+    if (typeof slug !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+      return res.status(404).type('text/plain').send('not found');
+    }
+    const assetsDir = path.join(USER_DESIGN_SYSTEMS_DIR, slug, 'react', 'assets');
+    const rel = [req.params.assetPath ?? []].flat().join('/');
+    res.sendFile(rel, { root: assetsDir }, (err) => {
+      if (err && !res.headersSent) res.status(404).type('text/plain').send('not found');
+    });
+  });
+
+  // Phase C of the design-system-import spec: stage a react-bundle design
+  // system's compiled source into a UI-Spec (React DS) run cwd. The bundle
+  // lands under react-ds/ exactly where the ui-react-ds template expects it —
+  // component/lib/style source at src/ds/**, lazy-fetched icon SVGs at
+  // public/assets/ (vite copies them into dist/assets/, which is where the
+  // bundle runtime's relative ASSET_BASE resolves). Re-staged wholesale on
+  // every run so a re-imported design system propagates.
+  async function stageReactDsBundle(id, projectId, wfDir) {
+    const slug = typeof id === 'string' && id.startsWith('user:') ? id.slice('user:'.length) : id;
+    const bundleRoot = path.join(USER_DESIGN_SYSTEMS_DIR, slug, 'react');
+    const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+    const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+    const target = path.join(runCwd, 'react-ds');
+    const copies = [
+      ['components', path.join('src', 'ds', 'components')],
+      ['lib', path.join('src', 'ds', 'lib')],
+      ['styles', path.join('src', 'ds', 'styles')],
+      ['docs', path.join('src', 'ds', 'docs')],
+      ['STYLE-GUIDE.md', path.join('src', 'ds', 'docs', 'STYLE-GUIDE.md')],
+      ['assets', path.join('public', 'assets')],
+    ];
+    for (const [from, to] of copies) {
+      const src = path.join(bundleRoot, from);
+      const exists = await fs.promises.access(src).then(() => true, () => false);
+      if (!exists) continue;
+      const dest = path.join(target, to);
+      await fs.promises.rm(dest, { recursive: true, force: true });
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.cp(src, dest, { recursive: true });
+    }
+    // The bundle is machine-generated and carries minor strict-mode gaps
+    // (variant props missing from the Props type, untyped window globals).
+    // The build gate must fail on AGENT code only — mute the checker inside
+    // the staged ds tree; its exported prop types still flow to consumers.
+    await prependTsNocheck(path.join(target, 'src', 'ds'));
+  }
+
+  async function prependTsNocheck(dir) {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await prependTsNocheck(p);
+      } else if (/\.tsx?$/.test(entry.name)) {
+        const text = await fs.promises.readFile(p, 'utf8');
+        if (!text.startsWith('// @ts-nocheck')) {
+          await fs.promises.writeFile(p, `// @ts-nocheck\n${text}`, 'utf8');
+        }
+      }
+    }
+  }
+
+  // React-bundle detail for a Figma-imported design system: inventory counts
+  // plus the style-guide and component-catalog markdown for the detail modal.
+  app.get('/api/design-systems/:id/react-info', async (req, res) => {
+    try {
+      const info = await readReactBundleInfo(req.params.id);
+      if (info === null)
+        return res.status(404).json({ error: 'not a react-bundle design system' });
+      res.json(info);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
     }
   });
 
@@ -14563,6 +14732,31 @@ export async function startServer({
     }
 
     const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+
+    // UI-Spec (React DS): hard gate (Phase C). This stage only makes sense
+    // against a design system that ships a compiled react bundle (a Figma IR
+    // import) — refuse the run otherwise. The actual staging into
+    // <cwd>/react-ds/ happens further down, AFTER the re-run clear (which
+    // would otherwise wipe the freshly staged files as stage outputs).
+    let reactDsDirective = '';
+    let reactDsStageId: string | null = null;
+    if (def.skillId === 'ui-react-ds') {
+      const effectiveDsId =
+        designSystemId !== undefined ? designSystemId : (appConfig.designSystemId ?? null);
+      const reactInfo =
+        typeof effectiveDsId === 'string' && effectiveDsId
+          ? await readReactBundleInfo(effectiveDsId)
+          : null;
+      if (!reactInfo) {
+        throw new Error(
+          'Stage "UI-Spec (React DS)" cần một design system có bộ React (import từ Figma IR). Hãy chọn design system dạng đó trong picker của stage trước khi chạy.',
+        );
+      }
+      reactDsStageId = effectiveDsId as string;
+      reactDsDirective =
+        ` The selected design system's react bundle IS STAGED at "./react-ds/src/ds/" (components/ui + components/icons + lib/runtime + styles/globals.css + docs/catalog.md — ${reactInfo.components} components, ${reactInfo.icons} icons) and its icon SVGs at "./react-ds/public/assets/". Compose screens from it per the active skill; never edit or regenerate anything under src/ds/ or public/.`;
+    }
+
     let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId
       ? appConfig.agentId
       : null;
@@ -14702,7 +14896,7 @@ export async function startServer({
     const featureScope = featureAppName
       ? `feature "${projectId}" of app "${featureAppName}"`
       : `feature "${projectId}"`;
-    const kickoff = `Run the "${def.name}" pipeline for ${featureScope}. ${skillDirective}${sourceDirective}${platformDirective}${audienceDirective}${rerunDirective}${kbDirective}${appCtxDirective}${graphDirective}`;
+    const kickoff = `Run the "${def.name}" pipeline for ${featureScope}. ${skillDirective}${sourceDirective}${platformDirective}${audienceDirective}${rerunDirective}${kbDirective}${appCtxDirective}${reactDsDirective}${graphDirective}`;
 
     // BAS document pre-fetch (BE owns the BAS KG HTTP) — done BEFORE any
     // conversation/run state is created so a fetch failure aborts cleanly with no
@@ -14820,6 +15014,12 @@ export async function startServer({
         console.warn('[pipelines] pull KGS files failed (continuing):', error);
       }
     }
+    // Stage the react bundle AFTER the re-run clear above — react-ds/** is this
+    // stage's own output tree, so a clear running later would wipe the freshly
+    // staged bundle (empty src/ds skeleton, agent reports it missing).
+    if (def.skillId === 'ui-react-ds' && reactDsStageId) {
+      await stageReactDsBundle(reactDsStageId, projectId, wfDir);
+    }
     const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
     design.runs.start(run, () => startChatRun({
       agentId,
@@ -14911,7 +15111,7 @@ export async function startServer({
   // statuses, so the stepper animates without any new state plumbing. One
   // chain per project at a time (in-flight guard).
   const workflowRunsInFlight = new Set<string>();
-  const UI_TERMINAL_IDS = new Set(['ui-html', 'ui-react']);
+  const UI_TERMINAL_IDS = new Set(['ui-html', 'ui-react', 'ui-react-ds']);
   const runWorkflowAll = async (
     projectId: string,
     opts: {
@@ -15261,27 +15461,36 @@ export async function startServer({
     const cwd = await ensureProject(PROJECTS_DIR, projectId);
     // The react/ sources live under the ui-react stage's workflow folder; old
     // projects predate the workflow merge and keep the retired docs-to-react
-    // folder, so probe that as a fallback.
-    const candidateDirs = [workflowDirForPipeline('ui-react'), 'docs-to-react']
-      .filter((d): d is string => Boolean(d))
-      .map((d) => path.join(cwd, d, 'react'));
+    // folder, so probe that as a fallback. The ui-react-ds stage keeps its own
+    // react-ds/ tree with its own builder — probed last so an existing react/
+    // project keeps its build target unchanged.
+    const candidates = [
+      ...[workflowDirForPipeline('ui-react'), 'docs-to-react']
+        .filter((d): d is string => Boolean(d))
+        .map((d) => ({ dir: path.join(cwd, d, 'react'), skill: 'ui-react' })),
+      ...[workflowDirForPipeline('ui-react-ds')]
+        .filter((d): d is string => Boolean(d))
+        .map((d) => ({ dir: path.join(cwd, d, 'react-ds'), skill: 'ui-react-ds' })),
+    ];
     let reactDir: string | null = null;
-    for (const dir of candidateDirs) {
-      const hasSrc = await fs.promises.access(path.join(dir, 'src')).then(
+    let builderSkill = 'ui-react';
+    for (const candidate of candidates) {
+      const hasSrc = await fs.promises.access(path.join(candidate.dir, 'src')).then(
         () => true,
         () => false,
       );
       if (hasSrc) {
-        reactDir = dir;
+        reactDir = candidate.dir;
+        builderSkill = candidate.skill;
         break;
       }
     }
     if (!reactDir) {
       throw new Error(
-        'no <workflow>/react/src in this project — run the "UI-Spec (React)" pipeline (or pull files) first',
+        'no <workflow>/react/src (or react-ds/src) in this project — run the "UI-Spec (React)" / "UI-Spec (React DS)" pipeline (or pull files) first',
       );
     }
-    const script = path.join(SKILLS_DIR, 'ui-react', 'builder', 'build.sh');
+    const script = path.join(SKILLS_DIR, builderSkill, 'builder', 'build.sh');
     const r = await execFileBuffered('bash', [script, reactDir], {
       cwd,
       timeout: 15 * 60_000,
@@ -15310,9 +15519,14 @@ export async function startServer({
     projectId: string,
   ): Promise<{ cases: number; output: string }> => {
     const cwd = await ensureProject(PROJECTS_DIR, projectId);
-    const candidateDirs = [workflowDirForPipeline('ui-react'), 'docs-to-react']
-      .filter((d): d is string => Boolean(d))
-      .map((d) => path.join(cwd, d, 'react'));
+    const candidateDirs = [
+      ...[workflowDirForPipeline('ui-react'), 'docs-to-react']
+        .filter((d): d is string => Boolean(d))
+        .map((d) => path.join(cwd, d, 'react')),
+      ...[workflowDirForPipeline('ui-react-ds')]
+        .filter((d): d is string => Boolean(d))
+        .map((d) => path.join(cwd, d, 'react-ds')),
+    ];
     let reactDir: string | null = null;
     for (const dir of candidateDirs) {
       const hasDist = await fs.promises.access(path.join(dir, 'dist')).then(
@@ -15336,6 +15550,38 @@ export async function startServer({
       by: historyActor(),
     }).catch(() => null);
     return result;
+  };
+
+  // Capture the BUILT UI-Spec (React DS) app into Figma screen JSON
+  // (react-ds/figma-screens/): full figma-h2d IR per screen/state with
+  // component-instance markers, rebuilt as real instances by the design-v3
+  // Fig Pipeline plugin's "Screen JSON → Figma" tab. React-DS ONLY — a
+  // generic ui-react app has no markers and no matching UI-Lib Figma file.
+  const figmaCaptureForProject = async (projectId: string) => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const wfDir = workflowDirForPipeline('ui-react-ds');
+    const reactDsDir = wfDir ? path.join(cwd, wfDir, 'react-ds') : null;
+    const hasDist =
+      reactDsDir !== null &&
+      (await fs.promises.access(path.join(reactDsDir, 'dist', 'index.html')).then(
+        () => true,
+        () => false,
+      ));
+    if (!reactDsDir || !hasDist) {
+      throw new Error(
+        'no <workflow>/react-ds/dist in this project — run the "UI-Spec (React DS)" pipeline and Build app first',
+      );
+    }
+    const result = await runFigmaCapture(reactDsDir, RUNTIME_DATA_DIR, projectId);
+    await commitHistory(cwd, {
+      kind: 'build',
+      note: `figma capture (${result.screens} màn, ${result.markers} instance)`,
+      by: historyActor(),
+    }).catch(() => null);
+    // cwd-relative path of the merged screens.json — the web UI copies its
+    // content to the clipboard via GET /api/projects/:id/raw/<rawPath>.
+    const rawPath = [wfDir, 'react-ds', ...result.screensJson.split(path.sep)].join('/');
+    return { ...result, rawPath };
   };
 
   // Project history: published versions (store) + machine-local commits,
@@ -15437,6 +15683,7 @@ export async function startServer({
     syncStatus: syncStatusForProject,
     buildReact: buildReactAppForProject,
     buildReactDemo: buildReactDemoForProject,
+    figmaCapture: figmaCaptureForProject,
     localOutputs: localOutputsForProject,
     history: projectHistoryForProject,
     restoreHistory: restoreHistoryForProject,

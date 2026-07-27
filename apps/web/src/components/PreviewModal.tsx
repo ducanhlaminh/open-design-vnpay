@@ -190,6 +190,9 @@ interface Props {
   // chrome-level affordances (fullscreen, share trigger, sidebar
   // toggle). Callers wire these to their surface's tracking helper.
   onFullscreenClick?: () => void;
+  // Open already expanded to the viewport (CSS fullscreen, no native
+  // requestFullscreen — that needs a user gesture on the modal itself).
+  initialFullscreen?: boolean;
   onShareClick?: () => void;
   onSidebarToggleClick?: (open: boolean) => void;
   // Fires when the user picks a share-menu item ("pdf" / "zip" / "html"
@@ -218,6 +221,7 @@ export function PreviewModal({
   headerExtras,
   shareTarget,
   onFullscreenClick,
+  initialFullscreen,
   onShareClick,
   onSidebarToggleClick,
   onSharePopoverItemClick,
@@ -232,7 +236,7 @@ export function PreviewModal({
     key: string;
     ok: boolean;
   } | null>(null);
-  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreen, setFullscreen] = useState(initialFullscreen ?? false);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(
     sidebar?.defaultOpen ?? false,
   );

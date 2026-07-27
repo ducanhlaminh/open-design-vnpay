@@ -55,6 +55,9 @@ importers:
       '@open-design/diagnostics':
         specifier: workspace:*
         version: link:../../packages/diagnostics
+      '@open-design/figma-h2d':
+        specifier: workspace:*
+        version: link:../../packages/figma-h2d
       '@open-design/platform':
         specifier: workspace:*
         version: link:../../packages/platform

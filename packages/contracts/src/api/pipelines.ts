@@ -490,8 +490,10 @@ export interface RunPipelineResponse {
 // idle). Progress surfaces through the existing per-stage statuses
 // (GET /api/pipelines) — the stepper animates through the chain.
 
-/** Which UI-Spec terminal(s) the full run ends with. */
-export type WorkflowTerminal = 'ui-html' | 'ui-react' | 'both';
+/** Which UI-Spec terminal(s) the full run ends with. `both` = html + react
+ *  (legacy pair); `ui-react-ds` is always an explicit single choice since it
+ *  hard-requires a react-bundle design system. */
+export type WorkflowTerminal = 'ui-html' | 'ui-react' | 'ui-react-ds' | 'both';
 
 export interface RunWorkflowRequest {
   projectId: string;
@@ -648,4 +650,29 @@ export interface RestoreHistoryResponse {
   commit?: string;
   /** Files written (version restore) / touched (commit restore). */
   files: number;
+}
+
+/**
+ * POST /api/pipelines/figma-capture — capture the built UI-Spec (React DS)
+ * app into Figma screen JSON (figma-h2d IR with component-instance markers)
+ * under `react-ds/figma-screens/`. The `screensJson` file feeds the design-v3
+ * Fig Pipeline plugin's "Screen JSON → Figma" tab, which rebuilds the screens
+ * with real component instances bound to Figma variables by token name.
+ */
+export interface FigmaCaptureRequest {
+  projectId: string;
+}
+
+export interface FigmaCaptureResponse {
+  ok: boolean;
+  /** Screens/states captured (one Figma frame each). */
+  screens: number;
+  /** Component-instance markers captured across all screens. */
+  markers: number;
+  /** Stage-relative path of the merged screens.json (under react-ds/). */
+  screensJson: string;
+  /** Project-cwd-relative path — fetch via GET /api/projects/:id/raw/<rawPath>. */
+  rawPath: string;
+  /** Runner log tail (per-screen node/marker counts). */
+  output: string;
 }

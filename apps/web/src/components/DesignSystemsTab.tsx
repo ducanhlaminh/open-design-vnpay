@@ -29,6 +29,9 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onPreview: (id: string) => void;
+  // Open a react-bundle system's detail modal already expanded to the
+  // viewport (card corner "Fullscreen" action; react-bundle cards only).
+  onPreviewFullscreen?: (id: string) => void;
   onCreate?: () => void;
   onOpenSystem?: (id: string) => void;
   onSystemsRefresh?: () => Promise<void> | void;
@@ -105,6 +108,7 @@ export function DesignSystemsTab({
   selectedId,
   onSelect,
   onPreview,
+  onPreviewFullscreen,
   onCreate,
   onOpenSystem,
   onSystemsRefresh,
@@ -681,6 +685,20 @@ export function DesignSystemsTab({
                   });
                   onPreview(s.id);
                 }}
+                onPreviewFullscreen={
+                  s.hasReactBundle && onPreviewFullscreen
+                    ? () => {
+                        trackDesignSystemsTemplateCardClick(analytics.track, {
+                          page_name: 'design_systems',
+                          area: 'templates_card',
+                          element: 'templates_card',
+                          templates_id: s.id,
+                          templates_type: s.source ?? 'library',
+                        });
+                        onPreviewFullscreen(s.id);
+                      }
+                    : undefined
+                }
               />
             ))}
           </div>
@@ -765,6 +783,7 @@ interface CardProps {
   onIntersect: () => void;
   onSelect: () => void;
   onPreview: () => void;
+  onPreviewFullscreen?: () => void;
 }
 
 function DesignSystemCard({
@@ -774,6 +793,7 @@ function DesignSystemCard({
   onIntersect,
   onSelect,
   onPreview,
+  onPreviewFullscreen,
 }: CardProps) {
   const { locale, t } = useI18n();
   const ref = useRef<HTMLDivElement | null>(null);
@@ -870,6 +890,20 @@ function DesignSystemCard({
         <span className="ds-card-thumb-overlay" aria-hidden>
           {t('ds.preview')}
         </span>
+        {onPreviewFullscreen ? (
+          <button
+            type="button"
+            className="ds-card-thumb-fullscreen"
+            aria-label={t('common.fullscreen')}
+            title={t('common.fullscreen')}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPreviewFullscreen();
+            }}
+          >
+            <Icon name="maximize" />
+          </button>
+        ) : null}
       </div>
       <div className="ds-card-meta" data-testid={`design-system-select-${system.id}`}>
         <div className="ds-card-title-row">

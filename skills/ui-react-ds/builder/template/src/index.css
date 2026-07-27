@@ -1,0 +1,27 @@
+/* Design-system tokens + tk-* utility classes — staged by the daemon from the
+ * imported design system's react bundle. This is the ONLY stylesheet import:
+ * no Tailwind, no ad-hoc global CSS. Theme/brand switching is class-driven
+ * (`.dark`, `.mode-*` on a root element), never hand-written colors. */
+@import './ds/styles/globals.css';
+
+/* The compiled Figma bundle sizes boxes the way Figma does: width/height are
+ * the TOTAL box, padding included. Without border-box, every ds component
+ * that sets width + padding overflows (e.g. iOS-status-bar: 390px + 71px of
+ * padding → a 462px page with horizontal scroll). Same reset as the upstream
+ * design-v3 scaffold. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}

@@ -6,6 +6,8 @@ import type {
   ConnectorDetailResponse,
   ConnectorListResponse,
   ConnectorStatusResponse,
+  ImportFigmaDesignSystemFields,
+  ImportFigmaDesignSystemResponse,
   ImportGitHubDesignSystemRequest,
   ImportGitHubDesignSystemResponse,
   OpenDesignGithubLatestReleaseResponse,
@@ -41,6 +43,7 @@ import type {
   DesignSystemRevision,
   DesignSystemRevisionJobRequest,
   DesignSystemRevisionStatus,
+  DesignSystemReactInfo,
   DesignSystemSummary,
   LiveArtifact,
   LiveArtifactRefreshLogEntry,
@@ -604,6 +607,31 @@ export async function importGitHubDesignSystem(
     });
     if (!resp.ok) return { error: await readImportError(resp) };
     return (await resp.json()) as ImportGitHubDesignSystemResponse;
+  } catch (err) {
+    return {
+      error: {
+        message: err instanceof Error ? err.message : 'Import request failed.',
+      },
+    };
+  }
+}
+
+export async function importFigmaDesignSystem(
+  input: ImportFigmaDesignSystemFields & { files: File[] },
+): Promise<ImportFigmaDesignSystemResponse | { error: SkillImportError }> {
+  try {
+    // Multipart, not JSON: file order is merge order (foundation/token file
+    // first) — see ImportFigmaDesignSystemFields in contracts.
+    const form = new FormData();
+    for (const file of input.files) form.append('files', file, file.name);
+    if (input.name) form.append('name', input.name);
+    for (const slug of input.craftApplies ?? []) form.append('craftApplies', slug);
+    const resp = await fetch('/api/design-systems/import/figma', {
+      method: 'POST',
+      body: form,
+    });
+    if (!resp.ok) return { error: await readImportError(resp) };
+    return (await resp.json()) as ImportFigmaDesignSystemResponse;
   } catch (err) {
     return {
       error: {
@@ -1859,6 +1887,18 @@ export async function fetchDesignSystemShowcase(id: string): Promise<string | nu
     const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/showcase`);
     if (!resp.ok) return null;
     return await resp.text();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchDesignSystemReactInfo(
+  id: string,
+): Promise<DesignSystemReactInfo | null> {
+  try {
+    const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/react-info`);
+    if (!resp.ok) return null;
+    return (await resp.json()) as DesignSystemReactInfo;
   } catch {
     return null;
   }

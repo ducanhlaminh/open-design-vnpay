@@ -1,0 +1,4 @@
+/* Placeholder — the daemon stages the imported design system's real
+ * styles/globals.css over this file when the UI-Spec (React DS) stage runs.
+ * If you are reading this inside a run, the staging step did not happen:
+ * stop and report it instead of authoring styles here. */

@@ -649,6 +649,9 @@ export const it: Dict = {
   'ds.tokens': 'Token',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'Caricamento di DESIGN.md…',
+  'ds.reactStats': '{components} componenti · {icons} icone',
+  'ds.reactDetailToggle': 'Libreria di componenti',
+  'ds.reactDetailLoading': 'Caricamento della libreria di componenti…',
 
   'avatar.title': 'Account e impostazioni',
   'avatar.localCli': 'CLI locale',

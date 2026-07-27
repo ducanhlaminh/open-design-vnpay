@@ -35,12 +35,18 @@ function viewOf(views: PipelineView[], id: string): PipelineView {
 
 test('docs-to-ui: terminal step offers two UI-Spec options', () => {
   assert.equal(WORKFLOWS[0]!.id, 'docs-to-ui');
-  assert.deepEqual(WORKFLOWS[0]!.pipelineIds, ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react']);
+  assert.deepEqual(WORKFLOWS[0]!.pipelineIds, ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react', 'ui-react-ds']);
   // Both terminals are OPTIONS of the same step: same dependency, run either or both.
   // That dependency is the heuristic-review gate (not `ux` directly), so the
   // review must run once before either UI terminal unlocks.
   assert.deepEqual(def('ui-html').dependsOn, ['ux-review']);
   assert.deepEqual(def('ui-react').dependsOn, ['ux-review']);
+  assert.deepEqual(def('ui-react-ds').dependsOn, ['ux-review']);
+  // The React-DS terminal keeps its own output tree (react-ds/) so it can run
+  // alongside ui-react in one project, and hard-requires a design system with
+  // a react bundle at run time (gated in runPipeline, not here).
+  assert.deepEqual(def('ui-react-ds').outputs, ['react-ds/']);
+  assert.equal(def('ui-react-ds').acceptsDesignSystem, true);
 });
 
 test('docs-to-prd: fully independent of docs-to-ui — its own docs/cj/ux-research + review terminal', () => {
@@ -220,7 +226,7 @@ test('lean run-all skips the docs-to-ui analysis stages — and ONLY docs-to-ui'
   // docs-to-ui keeps the spec + both UI terminals; journey / research / review go.
   // docs-map stays: it is what keeps a multi-app project from being built as
   // several unrelated products, and a lean run still builds every target.
-  assert.deepEqual(lean('docs-to-ui'), ['docs', 'docs-map', 'ux', 'ui-html', 'ui-react']);
+  assert.deepEqual(lean('docs-to-ui'), ['docs', 'docs-map', 'ux', 'ui-html', 'ui-react', 'ui-react-ds']);
 
   // docs-to-prd is UNTOUCHED by lean (product decision 2026-07): its journey +
   // research are the review's evidence base, not optional sharpening. The lean
@@ -303,12 +309,12 @@ test('stageRegenSet: re-run clear scope — self only, or self + transitive down
   // Cascade from ux: ux + everything that (transitively) depends on it.
   assert.deepEqual(
     [...stageRegenSet('ux', true)].sort(),
-    ['ui-html', 'ui-react', 'ux', 'ux-review'].sort(),
+    ['ui-html', 'ui-react', 'ui-react-ds', 'ux', 'ux-review'].sort(),
   );
   // Cascade from the gate: gate + both terminals (not ux, which is upstream).
   assert.deepEqual(
     [...stageRegenSet('ux-review', true)].sort(),
-    ['ui-html', 'ui-react', 'ux-review'].sort(),
+    ['ui-html', 'ui-react', 'ui-react-ds', 'ux-review'].sort(),
   );
   // Terminals have no downstream — cascade == self.
   assert.deepEqual(stageRegenSet('ui-html', true), ['ui-html']);
@@ -317,7 +323,7 @@ test('stageRegenSet: re-run clear scope — self only, or self + transitive down
   // prd-docs/prd-cj/prd-ux-research/prd-review never light up from this.
   assert.deepEqual(
     [...stageRegenSet('docs', true)].sort(),
-    ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react'].sort(),
+    ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react', 'ui-react-ds'].sort(),
   );
   // And prd-docs cascades to its own 4-stage workflow only.
   assert.deepEqual(

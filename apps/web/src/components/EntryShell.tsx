@@ -63,6 +63,7 @@ import type {
 import { CenteredLoader } from './Loading';
 import { DesignsTab } from './DesignsTab';
 import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
+import { FigmaDesignSystemDetailModal } from './FigmaDesignSystemDetailModal';
 import { DesignSystemsTab } from './DesignSystemsTab';
 import { EntryNavRail, type EntryView as EntryViewKind } from './EntryNavRail';
 import { UpdaterPopup } from './UpdaterPopup';
@@ -381,6 +382,9 @@ export function EntryShell({
   const view: EntryViewKind =
     route.kind === 'home' ? route.view : route.kind === 'pipeline-result' ? 'pipelines' : 'home';
   const [previewSystemId, setPreviewSystemId] = useState<string | null>(null);
+  // Card corner "Fullscreen" action: open the react-bundle detail modal
+  // already expanded to the viewport.
+  const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectInitialTab, setNewProjectInitialTab] =
     useState<CreateTab>('prototype');
@@ -720,7 +724,14 @@ export function EntryShell({
                     onCreate={onCreateDesignSystem}
                     onOpenSystem={onOpenDesignSystem}
                     onSystemsRefresh={onDesignSystemsRefresh}
-                    onPreview={(id) => setPreviewSystemId(id)}
+                    onPreview={(id) => {
+                      setPreviewFullscreen(false);
+                      setPreviewSystemId(id);
+                    }}
+                    onPreviewFullscreen={(id) => {
+                      setPreviewFullscreen(true);
+                      setPreviewSystemId(id);
+                    }}
                   />
                 </div>
               )
@@ -737,10 +748,18 @@ export function EntryShell({
         </main>
       </div>
       {previewSystem ? (
-        <DesignSystemPreviewModal
-          system={previewSystem}
-          onClose={() => setPreviewSystemId(null)}
-        />
+        previewSystem.hasReactBundle ? (
+          <FigmaDesignSystemDetailModal
+            system={previewSystem}
+            initialFullscreen={previewFullscreen}
+            onClose={() => setPreviewSystemId(null)}
+          />
+        ) : (
+          <DesignSystemPreviewModal
+            system={previewSystem}
+            onClose={() => setPreviewSystemId(null)}
+          />
+        )
       ) : null}
       <NewProjectModal
         open={newProjectOpen}

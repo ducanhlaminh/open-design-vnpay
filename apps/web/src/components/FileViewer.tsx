@@ -7989,7 +7989,7 @@ function isPipelineReactBuiltFile(file: ProjectFile): boolean {
     n >= 3 &&
     p[n - 1]!.toLowerCase() === 'index.html' &&
     p[n - 2] === 'dist' &&
-    p[n - 3] === 'react'
+    (p[n - 3] === 'react' || p[n - 3] === 'react-ds')
   );
 }
 
@@ -8003,7 +8003,7 @@ function isPipelineReactScreenFile(file: ProjectFile): boolean {
     /\.html?$/i.test(p[n - 1]!) &&
     p[n - 2] === 'screens' &&
     p[n - 3] === 'dist' &&
-    p[n - 4] === 'react'
+    (p[n - 4] === 'react' || p[n - 4] === 'react-ds')
   );
 }
 

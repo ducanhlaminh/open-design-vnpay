@@ -87,6 +87,10 @@ const PIPELINE_META: Record<string, { icon: IconName; blurb: string }> = {
     icon: 'blocks',
     blurb: 'Option B — Prototype: app Vite + React 19 thật (Docker build) — nền cho mô phỏng thao tác + demo Playwright.',
   },
+  'ui-react-ds': {
+    icon: 'palette',
+    blurb: 'Option C — React DS: app React ghép màn từ đúng bộ design system đã import từ Figma (component + token thật).',
+  },
 };
 
 // The merged workflow's stages reuse the upstream skills under short ids; map
@@ -104,7 +108,7 @@ function metaFor(id: string): { icon: IconName; blurb: string } {
 // Short format label for a UI-Spec terminal option (the picker's card title
 // and the merged step's status chips).
 function uiSpecOptionLabel(p: { id: string }): string {
-  return p.id === 'ui-react' ? 'React' : 'HTML';
+  return p.id === 'ui-react' ? 'React' : p.id === 'ui-react-ds' ? 'React DS' : 'HTML';
 }
 
 interface ToastState {
@@ -151,6 +155,7 @@ export function PipelinesView() {
   const [restoreBusy, setRestoreBusy] = useState<string | null>(null);
   const [buildBusy, setBuildBusy] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
+  const [figmaCaptureBusy, setFigmaCaptureBusy] = useState(false);
   // Project picker controls — with many KGS projects the raw card grid became
   // a wall pushing the actual pipeline flow below the fold.
   const [projectSearch, setProjectSearch] = useState('');
@@ -537,6 +542,51 @@ export function PipelinesView() {
     }
   };
 
+  // Capture the BUILT React-DS app into Figma screen JSON (figma-h2d IR with
+  // component-instance markers) — the file the Fig Pipeline plugin's
+  // "Screen JSON → Figma" tab rebuilds with real component instances.
+  const runFigmaCapture = async () => {
+    if (!projectId) return;
+    setFigmaCaptureBusy(true);
+    try {
+      const res = await fetch('/api/pipelines/figma-capture', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || `figma-capture failed: ${res.status}`);
+      // Download the merged screens.json as a file (the deliverable also
+      // stays in the stage outputs at react-ds/figma-screens/).
+      const fileName = (typeof j.screensJson === 'string' && j.screensJson.split('/').pop()) || 'screens.json';
+      if (typeof j.rawPath === 'string' && j.rawPath) {
+        const rawUrl = `/api/projects/${encodeURIComponent(projectId)}/raw/${j.rawPath
+          .split('/')
+          .map(encodeURIComponent)
+          .join('/')}`;
+        const a = document.createElement('a');
+        a.href = rawUrl;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      pushToast({
+        message: `Đã capture ${j.screens ?? 0} màn (${j.markers ?? 0} instance) — đã tải ${fileName}`,
+        details:
+          'Mở file UI Lib trong Figma → plugin Fig Pipeline → tab "Screen JSON → Figma" → dán nội dung file vừa tải. File cũng nằm trong outputs của stage (react-ds/figma-screens/).',
+      });
+    } catch (err) {
+      pushToast({
+        message: 'Không capture được Figma screens',
+        details: err instanceof Error ? err.message : String(err),
+        code: 'error',
+      });
+    } finally {
+      setFigmaCaptureBusy(false);
+    }
+  };
+
   // Conflict-aware pull of ONE project's files (PLAN → RESOLVE → APPLY).
   // 0 conflicts → apply straight through (keep-local default, no modal); else open
   // PullConflictModal so the user resolves each differing file. Reached from the
@@ -744,7 +794,7 @@ export function PipelinesView() {
   // fused cj/ux-research/ux into a phantom three-badge "UI-Spec" card. Ids
   // cannot drift per mode, so this grouping is stable no matter what the
   // daemon reports.
-  const UI_TERMINAL_IDS = new Set(['ui-html', 'ui-react']);
+  const UI_TERMINAL_IDS = new Set(['ui-html', 'ui-react', 'ui-react-ds']);
   const stepEntries: PipelineView[][] = [];
   for (const p of pipelines) {
     const last = stepEntries[stepEntries.length - 1];
@@ -1603,7 +1653,7 @@ export function PipelinesView() {
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <Icon name={o.id === 'ui-react' ? 'blocks' : 'file-code'} size={18} />
+                          <Icon name={o.id === 'ui-react' ? 'blocks' : o.id === 'ui-react-ds' ? 'palette' : 'file-code'} size={18} />
                           <span style={{ fontWeight: 700, fontSize: 13.5 }}>
                             {uiSpecOptionLabel(o)}
                           </span>
@@ -1614,7 +1664,9 @@ export function PipelinesView() {
                         <p style={{ fontSize: 12, opacity: 0.75, margin: 0, flex: 1 }}>
                           {o.id === 'ui-react'
                             ? 'App Vite + React 19 + Tailwind v4 thật, build trong Docker — preview như app chạy thật, có luồng điều hướng.'
-                            : 'HTML/CSS prototype tương tác — mỗi màn một file tự chứa, mở xem ngay không cần build.'}
+                            : o.id === 'ui-react-ds'
+                              ? 'App React ghép màn từ bộ design system đã import từ Figma — component + token thật, cần chọn DS dạng đó.'
+                              : 'HTML/CSS prototype tương tác — mỗi màn một file tự chứa, mở xem ngay không cần build.'}
                         </p>
                         {/* Cùng luật với card trên stepper: idle không có "Last
                             run" — updatedAt của bước idle là dấu reset, không
@@ -1696,7 +1748,7 @@ export function PipelinesView() {
                               <span>Open chat</span>
                             </button>
                           ) : null}
-                          {o.id === 'ui-react' && o.status === 'succeeded' ? (
+                          {(o.id === 'ui-react' || o.id === 'ui-react-ds') && o.status === 'succeeded' ? (
                             <button
                               type="button"
                               className="pl-btn"
@@ -1708,7 +1760,7 @@ export function PipelinesView() {
                               <span>{buildBusy ? 'Đang build…' : 'Build app'}</span>
                             </button>
                           ) : null}
-                          {o.id === 'ui-react' && o.status === 'succeeded' ? (
+                          {(o.id === 'ui-react' || o.id === 'ui-react-ds') && o.status === 'succeeded' ? (
                             <button
                               type="button"
                               className="pl-btn"
@@ -1718,6 +1770,18 @@ export function PipelinesView() {
                             >
                               <Icon name={demoBusy ? 'spinner' : 'present'} size={14} />
                               <span>{demoBusy ? 'Đang quay…' : 'Dựng demo'}</span>
+                            </button>
+                          ) : null}
+                          {o.id === 'ui-react-ds' && o.status === 'succeeded' ? (
+                            <button
+                              type="button"
+                              className="pl-btn"
+                              onClick={() => void runFigmaCapture()}
+                              disabled={figmaCaptureBusy || buildBusy || demoBusy || !projectId}
+                              title="Capture app đã build thành Figma screen JSON (instance component thật + token). Kết quả vào react-ds/figma-screens/ — dán screens.json vào plugin Fig Pipeline tab 'Screen JSON → Figma' (mở đúng file UI Lib). Lần đầu sẽ cài Playwright + Chromium (một lần)."
+                            >
+                              <Icon name={figmaCaptureBusy ? 'spinner' : 'share'} size={14} />
+                              <span>{figmaCaptureBusy ? 'Đang capture…' : 'Capture Figma'}</span>
                             </button>
                           ) : null}
                           <button
@@ -1836,6 +1900,7 @@ export function PipelinesView() {
       {designSystemFor ? (
         <DesignSystemRunModal
           pipelineName={designSystemFor.name}
+          requireReactBundle={designSystemFor.id === 'ui-react-ds'}
           defaultId={projects.find((pr) => pr.id === projectId)?.config?.designSystemId ?? undefined}
           onClose={() => setDesignSystemFor(null)}
           onRun={async (designSystemId) => {
