@@ -1624,7 +1624,19 @@ export function DocsReviewIndexPreview({
   const verdict: Verdict = asVerdict(s.verdict);
 
   if (!pages.length) {
-    return <div style={{ padding: 16, color: T.muted }}>Report review chưa có trang nào để hiển thị.</div>;
+    // An empty index means the fan-out found no page carrying a mockup — the
+    // stage never reviewed anything. Say WHY and what to check instead of a
+    // bare "no pages", which reads like the review simply had nothing to flag.
+    return (
+      <div style={{ padding: 16, color: T.muted, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 620 }}>
+        <div style={{ fontWeight: 600, color: T.ink }}>Chưa review được trang nào</div>
+        <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+          Không tìm thấy mockup nào trong <code>docs/confluence/</code>. Một trang chỉ được chấm khi file{' '}
+          <code>.md</code> của nó có tham chiếu ảnh <code>![](attachments/…)</code>. Kiểm tra bước{' '}
+          <b>Docs → Markdown</b> đã chạy chưa, và trang nguồn có ảnh mockup nhúng thật không — rồi chạy lại bước này.
+        </div>
+      </div>
+    );
   }
 
   return (
