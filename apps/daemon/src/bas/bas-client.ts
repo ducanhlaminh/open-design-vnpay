@@ -35,6 +35,7 @@ import type {
 
 import { readMcpConfig } from '../mcp-config.js';
 import { renderDrawioPages, splitMxfilePages } from './drawio-render.js';
+import { htmlToMarkdown } from './html-to-markdown.js';
 
 export interface BasEndpoint {
   /** Full MCP endpoint URL, e.g. https://host/api/mcp/ */
@@ -610,37 +611,14 @@ export interface ConfluenceDocPage {
   viaTree?: boolean;
 }
 
-/** Minimal HTML → Markdown for Confluence `body.view` (rendered HTML). No
- * dependency on purpose: headings, lists, tables (pipe rows), links, inline
- * code/bold/italic, code blocks; everything else strips to text. Downstream
- * consumers are agents + the studio doc viewer — rough-but-clean markdown is
- * exactly enough. */
-// Named entities Confluence actually emits (Latin-1 letters cover the bulk of
-// Vietnamese accents — ê/à/ó/…; everything beyond Latin-1 arrives as numeric
-// entities, handled generically below).
-const NAMED_ENTITIES: Record<string, string> = {
-  nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
-  agrave: 'à', aacute: 'á', acirc: 'â', atilde: 'ã', auml: 'ä', aring: 'å',
-  egrave: 'è', eacute: 'é', ecirc: 'ê', euml: 'ë',
-  igrave: 'ì', iacute: 'í', icirc: 'î', iuml: 'ï',
-  ograve: 'ò', oacute: 'ó', ocirc: 'ô', otilde: 'õ', ouml: 'ö',
-  ugrave: 'ù', uacute: 'ú', ucirc: 'û', uuml: 'ü',
-  yacute: 'ý', yuml: 'ÿ', ccedil: 'ç', ntilde: 'ñ',
-  Agrave: 'À', Aacute: 'Á', Acirc: 'Â', Atilde: 'Ã', Auml: 'Ä', Aring: 'Å',
-  Egrave: 'È', Eacute: 'É', Ecirc: 'Ê', Euml: 'Ë',
-  Igrave: 'Ì', Iacute: 'Í', Icirc: 'Î', Iuml: 'Ï',
-  Ograve: 'Ò', Oacute: 'Ó', Ocirc: 'Ô', Otilde: 'Õ', Ouml: 'Ö',
-  Ugrave: 'Ù', Uacute: 'Ú', Ucirc: 'Û', Uuml: 'Ü', Yacute: 'Ý', Ccedil: 'Ç', Ntilde: 'Ñ',
-  ldquo: '“', rdquo: '”', lsquo: '‘', rsquo: '’', hellip: '…', ndash: '–', mdash: '—',
-  rarr: '→', larr: '←', bull: '•', middot: '·', deg: '°', times: '×', divide: '÷',
-  copy: '©', reg: '®', trade: '™', laquo: '«', raquo: '»', sect: '§', para: '¶',
-};
-
 // VNPAY fork: this is the DETERMINISTIC docs path (a Confluence page URL
 // pasted directly into the docs stage — runDocsDeterministic in server.ts).
-// The agent-run JIRA-key path has its own, separate image-download logic
-// (skills/jira-ingest/scripts/confluence_export.py's localize_images) — the
-// two never share code, so both need the same fix independently.
+// The agent-run JIRA-key path keeps its own image-download logic
+// (skills/jira-ingest/scripts/confluence_export.py's localize_images) because
+// it runs in the agent's shell, not in this process — it carries a copy of the
+// regex below, and the two must be fixed together. That path is now the
+// fallback for mixed free-text input only; anything that looks like a
+// Confluence ref is fetched here (see runDocsDeterministic in server.ts).
 // Match the REAL `src=` attribute, NOT `data-image-src=`. Confluence renders an
 // embedded screenshot as `<img … src="/download/attachments/…" data-image-src=
 // "/download/attachments/…">` — a GREEDY `[^>]*` would let `\bsrc=` bind to the
@@ -880,21 +858,6 @@ async function inlineDrawioPreviewsRendered(
   return out + html.slice(cursor);
 }
 
-/** Render one drawio macro block into its markdown-ready `<img>`(s). Multi-page
- *  → one local `<img>` per rendered page; otherwise the single stored preview. */
-/** HTML entity decode (numeric + the named set this wiki actually emits).
- *  Shared by the Markdown converter and the draw.io label reader. */
-function decodeEntities(value: string): string {
-  return value
-    .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) => {
-      try { return String.fromCodePoint(parseInt(h, 16)); } catch { return _m; }
-    })
-    .replace(/&#(\d+);/g, (_m, d: string) => {
-      try { return String.fromCodePoint(Number(d)); } catch { return _m; }
-    })
-    .replace(/&([a-zA-Z]+);/g, (m, name: string) => NAMED_ENTITIES[name] ?? m);
-}
-
 /** File-name stem for a diagram's derived files, PREFIXED WITH ITS PAGE ID.
  *
  * An attachment name is unique only WITHIN a Confluence page — two pages happily
@@ -1065,167 +1028,10 @@ async function renderDrawioMacroBlock(
   }
 }
 
-export function htmlToMarkdown(
-  html: string,
-  resolveHref?: (href: string) => string,
-  /** Prefix a src must start with to be treated as already-localized
-   *  (localizeConfluenceImages ran first) — anything else degrades to
-   *  alt-text-only, same as before images were downloaded at all. */
-  localizedImagePrefix?: string,
-): string {
-  const decode = decodeEntities;
-  let s = html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '');
-  // Code blocks first so their contents survive untouched.
-  s = s.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_m, code: string) => `\n\`\`\`\n${decode(code.replace(/<[^>]+>/g, ''))}\n\`\`\`\n`);
-  // Inline marks before block handling (block handlers strip remaining tags).
-  // An emphasis tag wrapping only whitespace/markup (Confluence emits plenty of
-  // `<strong> </strong>` and `<strong><br></strong>`) must NOT get markers: the
-  // pair has nothing to emphasise, so it survives into the Markdown as literal
-  // `** **` mid-sentence ("Tham** **chiếu tài liệu"). Emit the inner run as-is.
-  const hasText = (inner: string) => inner.replace(/<[^>]+>/g, '').trim().length > 0;
-  const emphasize = (inner: string, delim: string) => (hasText(inner) ? `${delim}${inner}${delim}` : inner);
-  s = s.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, (_m, _tag: string, inner: string) => emphasize(inner, '**'));
-  s = s.replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, (_m, _tag: string, inner: string) => emphasize(inner, '*'));
-  s = s.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_m, inner: string) => emphasize(inner, '`'));
-  s = s.replace(/<a [^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, t: string) => {
-    const label = t.replace(/<[^>]+>/g, '').trim();
-    const target = resolveHref ? resolveHref(href) : href;
-    return `[${label || target}](${target})`;
-  });
-  // Pure-inline formatting tags (Confluence highlight <span>s, underline, …)
-  // vanish with NO replacement text. They must go BEFORE the <li>/table-cell
-  // handlers, whose generic tag→space strip would otherwise split words in
-  // half whenever a highlight starts or ends mid-word ("t oàn bộ hồ sơ N CC").
-  s = s.replace(/<\/?(?:span|u|s|sub|sup|small|mark|font|abbr|time|ins|del)\b[^>]*>/gi, '');
-  // Tables → REAL GFM tables (header row + `| --- |` separator, cells padded
-  // to a uniform width, pipes escaped) so react-markdown/remark-gfm render
-  // them as tables instead of literal pipe text. Innermost-first loop handles
-  // Confluence's nested tables: each pass converts tables with no <table>
-  // inside, so an outer table sees its inner one already flattened to text.
-  // Emitted for a line break inside a table cell; swapped for a literal `<br>`
-  // once every other transformation (including `<br>` → newline) has run.
-  const CELL_BREAK = '\u0002';
-  // A GFM cell cannot contain a real newline, so block boundaries INSIDE a cell
-  // (`</p>`, `</li>`, `<br>`) become `<br>` — which markdown renderers honour.
-  // Collapsing them to a space instead (the old behaviour) ran separate items
-  // together: a flow-step table cell read as "Hoàn tất xác thực trên webview
-  // ĐÓNG webview giữa chừng…", i.e. two opposite branches as one sentence. That
-  // is the failure a downstream agent silently inherits.
-  // A GFM cell cannot contain a real newline, so block boundaries INSIDE a cell
-  // (`</p>`, `</li>`, `<br>`) are emitted as `<br>`, which renderers honour.
-  // BREAK is a sentinel that survives the tag-stripping and whitespace collapse
-  // below without ever colliding with page text; it becomes `<br>` at the end.
-  const BREAK = '\u0001';
-  const cellToMd = (cell: string): string =>
-    cell
-      .replace(/<br\s*\/?>/gi, BREAK)
-      .replace(/<\/(p|li|div|h[1-6])\s*>/gi, BREAK)
-      // Keep the bullet so a list inside a cell still reads as a list.
-      .replace(/<li[^>]*>/gi, `${BREAK}\u2022 `)
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\|/g, '\\|')
-      .replace(/[ \t\r\n]+/g, ' ')
-      .split(BREAK)
-      .map((part) => part.trim())
-      .filter(Boolean)
-      // Stays a sentinel until the very end of htmlToMarkdown: the global
-      // `<br>` → newline pass below runs AFTER tables, and a real `<br>` here
-      // would be turned into a newline that splits the GFM row across lines.
-      .join(CELL_BREAK);
-
-  const tableToMd = (tbl: string): string => {
-    const rows: string[][] = [];
-    for (const tr of tbl.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
-      const cells = [...tr[1]!.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((c) => cellToMd(c[1]!));
-      if (cells.length) rows.push(cells);
-    }
-    if (!rows.length) return '\n';
-    const width = Math.max(...rows.map((r) => r.length));
-    const pad = (r: string[]) => [...r, ...Array<string>(Math.max(0, width - r.length)).fill('')];
-    const line = (r: string[]) => `| ${pad(r).join(' | ')} |`;
-    const sep = `| ${Array<string>(width).fill('---').join(' | ')} |`;
-    return `\n${line(rows[0]!)}\n${sep}\n${rows.slice(1).map(line).join('\n')}\n\n`;
-  };
-  // Fixed-point loop (no .test(): a /g regex's lastIndex would desync).
-  for (;;) {
-    const next = s.replace(/<table(?:(?!<table)[\s\S])*?<\/table>/gi, (tbl) => tableToMd(tbl));
-    if (next === s) break;
-    s = next;
-  }
-  s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, l: string, t: string) => `\n${'#'.repeat(Number(l))} ${t.replace(/<[^>]+>/g, '').trim()}\n`);
-  // Lists → markdown that KEEPS the nesting (Confluence specs lean on
-  // bullet-under-heading structure). Innermost-first fixed-point, same trick
-  // as the tables above: each pass converts lists containing no nested
-  // <ul>/<ol>, so an outer <li> sees its inner list already as markdown
-  // lines and indents them 2 more spaces — depth accumulates per pass. The
-  // old single flat `<li>` regex collapsed a nested list into its parent's
-  // line, flattening the whole hierarchy.
-  const liItemToMd = (inner: string, marker: string): string => {
-    // Continuation lines keep their leading indent as-is — it carries the
-    // accumulated nesting depth from earlier passes; only the item's own
-    // first line gets whitespace-collapsed.
-    const lines = inner
-      .replace(/<[^>]+>/g, ' ')
-      .split('\n')
-      .map((l) => l.trimEnd())
-      .filter((l) => l.trim().length > 0);
-    const first = (lines.shift() ?? '').replace(/\s+/g, ' ').trim();
-    const rest = lines.map((l) => `  ${l}`);
-    return [`${marker}${first}`, ...rest].join('\n');
-  };
-  const listToMd = (listHtml: string, ordered: boolean): string => {
-    const items: string[] = [];
-    let n = 0;
-    for (const li of listHtml.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
-      n += 1;
-      items.push(liItemToMd(li[1]!, ordered ? `${n}. ` : '- '));
-    }
-    return items.length ? `\n${items.join('\n')}\n\n` : '\n';
-  };
-  for (;;) {
-    const next = s.replace(/<(ul|ol)\b(?:(?!<ul\b|<ol\b)[\s\S])*?<\/\1>/gi, (list, tag: string) =>
-      listToMd(list, tag.toLowerCase() === 'ol'),
-    );
-    if (next === s) break;
-    s = next;
-  }
-  // Orphan <li> with no surviving parent list (malformed markup) — old flat behavior.
-  s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_m, t: string) => `- ${t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()}\n`);
-  // src has already been localized (localizeConfluenceImages) before this
-  // function runs, when the caller has Confluence creds to download with —
-  // emit a real Markdown image instead of dropping it. An unlocalized src
-  // (no creds, or a same-host download that failed) still degrades to the
-  // alt-text-only / stripped behavior, same as before this fix.
-  s = s.replace(/<img\b([^>]*)\/?>/gi, (_m, attrs: string) => {
-    // Real `src`, not `data-image-src` (see IMG_SRC_RE) — the negative
-    // lookbehind keeps this reading the localized attribute, not the leftover
-    // Confluence URL sitting in `data-image-src`.
-    const srcMatch = /(?<![-\w])src=["']([^"']+)["']/i.exec(attrs);
-    const altMatch = /\balt=["']([^"']*)["']/i.exec(attrs);
-    const src = srcMatch?.[1];
-    const alt = altMatch?.[1] ?? '';
-    // Escape `[` / `]` in the alt: a marker like the diagram `[flow-diagram]`
-    // one contains `]`, which closes the `![...]` alt early and breaks the image
-    // (renders as literal text — the PNG is on disk but never shows). Escaping
-    // keeps the image renderable; the `flow-diagram` substring downstream reads
-    // survives intact.
-    const safeAlt = alt.replace(/[[\]]/g, (m) => `\\${m}`);
-    if (src && localizedImagePrefix && src.startsWith(localizedImagePrefix)) return `![${safeAlt}](${src})`;
-    return alt ? `(${alt})` : '';
-  });
-  s = s.replace(/<br\s*\/?>/gi, '\n');
-  s = s.replace(/<\/(p|div|ul|ol|table|section|article|blockquote)>/gi, '\n\n');
-  s = s.replace(/<[^>]+>/g, '');
-  s = decode(s);
-  return s
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .split(CELL_BREAK)
-    .join('<br>')
-    .trim();
-}
+// The HTML → Markdown conversion itself now lives in html-to-markdown.ts (a
+// DOM walk, see that module for why). Re-exported here because every caller
+// and test reaches it through bas-client.
+export { htmlToMarkdown };
 
 /** Direct-PAT page fetch (Data Center REST, same creds the page SEARCH uses —
  * verified live with wiki.servicehub.vn). Returns the RAW rendered HTML —

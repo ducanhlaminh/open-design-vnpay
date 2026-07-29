@@ -35,6 +35,20 @@ text snapshot rather than live Jira calls.
   `./docs/jira/_index.md`. These are what the next stage (`cj`) reads.
 - **No KGS push here.** This stage only writes local Markdown.
 
+## Confluence: the daemon fetches it — you usually do NOT
+
+A Confluence link (or a page id) given to the **Docs → Markdown** stage is
+fetched by the daemon itself, before you are ever started: it writes
+`./docs/confluence/` and downloads every embedded image, and it does several
+things this script cannot — real GFM tables, draw.io macros expanded to one
+image PER PAGE, sub-tree scan by wiki hierarchy, and cross-page links rewritten
+to local `.md` paths. **If `./docs/confluence/` already exists, read it — do not
+re-fetch.**
+
+The script below is the fallback for the one case that still reaches you: a
+Confluence URL arriving inside a mixed free-text input (e.g. a JIRA key AND a
+wiki link), which routes the whole run to the agent.
+
 ## Confluence page trees — use the export script (do NOT hand-recurse children)
 
 Confluence index pages contain nested child pages, and fetching only direct

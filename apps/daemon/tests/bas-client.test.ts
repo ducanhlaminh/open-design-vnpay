@@ -420,6 +420,73 @@ test('fetchConfluencePages localizes a real Confluence screenshot (src + data-im
   }
 });
 
+test('htmlToMarkdown keeps a localized image that sits INSIDE a table cell', async () => {
+  // Regression (prod, PRD Mockup Review no-op): a Confluence spec page embeds
+  // its mockups inside table cells. The table pass strips tags to build the GFM
+  // row and ran BEFORE the <img> handler, so every in-cell screenshot vanished —
+  // the PNGs were downloaded but the markdown had zero `![](attachments/…)`
+  // refs, listMockupPages found no pages, and the review stage finished in
+  // seconds with an empty report.
+  const { htmlToMarkdown } = await import('../src/bas/bas-client.js');
+  const md = htmlToMarkdown(
+    '<table><tr><th>Mô tả</th><th>Giao diện</th></tr>' +
+      '<tr><td>Màn danh sách</td><td><img src="attachments/shot.png" alt="ds khách hàng"></td></tr></table>',
+    undefined,
+    'attachments',
+  );
+  assert.match(md, /!\[ds khách hàng\]\(attachments\/shot\.png\)/);
+  // Still ONE table row — the image must not break the row across lines.
+  assert.match(md, /\|[^\n|]*!\[ds khách hàng\]\(attachments\/shot\.png\)[^\n|]*\|/);
+  // And an unlocalized in-cell image still degrades to alt text only.
+  const noPrefix = htmlToMarkdown('<table><tr><td><img src="https://wiki/x.png" alt="ảnh"></td></tr></table>');
+  assert.ok(!noPrefix.includes(']('), noPrefix);
+  assert.match(noPrefix, /\(ảnh\)/);
+});
+
+test('fetchConfluencePages localizes a screenshot embedded in a TABLE cell', async () => {
+  // End-to-end twin of the converter test above: download + markdown ref, for
+  // the exact shape wiki.servicehub.vn ships (mockups in a table).
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-cell-'));
+  try {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith('https://wiki.test/rest/api/content/33')) {
+        return makeRes(
+          JSON.stringify({
+            title: 'URD Quản lý khách hàng',
+            body: {
+              view: {
+                value:
+                  '<table><tr><th>Bước</th><th>Giao diện</th></tr><tr><td>1</td><td>' +
+                  '<img class="confluence-embedded-image" height="400" ' +
+                  'src="/download/attachments/33/mockup.png?version=1&amp;api=v2" ' +
+                  'data-image-src="/download/attachments/33/mockup.png?version=1&amp;api=v2" ' +
+                  'alt="màn danh sách"></td></tr></table>',
+              },
+            },
+            _links: { base: 'https://wiki.test', webui: '/spaces/X/pages/33/T' },
+          }),
+        ) as any;
+      }
+      if (u.startsWith('https://wiki.test/download/attachments/33/mockup.png')) {
+        return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode('PNG').buffer } as any;
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as any;
+    const pages = await fetchConfluencePages(
+      { creds: { base: 'https://wiki.test', token: 'pat' } },
+      ['33'],
+      { attachmentsDir, followLinks: false },
+    );
+    assert.equal(pages.length, 1);
+    assert.match(pages[0]!.content, /!\[màn danh sách\]\(attachments\/mockup\.png\)/);
+    const files = await readdir(attachmentsDir);
+    assert.ok(files.includes('mockup.png'), `expected mockup.png in ${files.join(', ')}`);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
 test('naturalSegsCompare orders roman sections + arabic sub-pages like the wiki sidebar', () => {
   const paths = [
     ['X. Lập báo cáo'],
@@ -541,8 +608,10 @@ test('fetchConfluencePages prefers body.export_view and falls back to body.view'
 test('htmlToMarkdown drops emphasis markers around blank content, keeps literal asterisks', async () => {
   const { htmlToMarkdown } = await import('../src/bas/bas-client.js');
   assert.equal(htmlToMarkdown('<p>Tham<strong> </strong>chiếu tài liệu</p>'), 'Tham chiếu tài liệu');
-  // The blank run is emitted verbatim — markers dropped, spacing untouched.
-  assert.equal(htmlToMarkdown('<p>a<em>  </em>b</p>'), 'a  b');
+  // The blank run collapses to a single space — markers dropped, the words
+  // still separated. (The regex converter echoed the run verbatim, `a  b`;
+  // a DOM converter collapses runs of whitespace the way HTML itself does.)
+  assert.equal(htmlToMarkdown('<p>a<em>  </em>b</p>'), 'a b');
   assert.equal(htmlToMarkdown('<p><strong><br></strong></p>'), '');
   // Real emphasis is untouched.
   assert.equal(htmlToMarkdown('<p>Số <strong>bắt buộc</strong></p>'), 'Số **bắt buộc**');

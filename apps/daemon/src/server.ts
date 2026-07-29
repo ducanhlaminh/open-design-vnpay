@@ -13986,14 +13986,38 @@ export async function startServer({
 
         const pages = await listMockupPages(cwd);
         if (pages.length === 0) {
-          // Nothing to review — write an empty manifest and succeed (an empty
-          // source is not a failure; the preview shows "no pages").
-          const { index, summaryMd } = mergePageReports([]);
+          // Nothing to review — the stage ran no agent, so it did NOT succeed.
+          // Reporting 'succeeded' here (the old behavior) was indistinguishable
+          // from a real pass: Run went green in ~5s, the preview was blank and
+          // the summary read "Đạt 0/100". A review with no mockups in it is a
+          // broken input, not a clean bill of health — fail loudly and say what
+          // to check, so the docs stage gets re-run instead of trusted.
+          const { index } = mergePageReports([]);
           await fs.promises.mkdir(path.join(cwd, 'review'), { recursive: true });
           await fs.promises.writeFile(path.join(cwd, 'review/index.json'), JSON.stringify(index, null, 2), 'utf8');
-          await fs.promises.writeFile(path.join(cwd, 'review/summary.md'), summaryMd, 'utf8');
-          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
-          return 'succeeded' as const;
+          await fs.promises.writeFile(
+            path.join(cwd, 'review/summary.md'),
+            [
+              '# PRD Mockup Review — không chạy được',
+              '',
+              'Không tìm thấy mockup nào trong `docs/confluence/` nên không có gì để review.',
+              '',
+              'Một trang chỉ được review khi file `.md` của nó có tham chiếu ảnh dạng',
+              '`![...](attachments/...)`. Cần kiểm tra:',
+              '',
+              '- Bước **Docs → Markdown** đã chạy cho workflow này chưa (thư mục `docs/confluence/` có trang không).',
+              '- Trang nguồn có ảnh mockup nhúng thật không (trang rỗng / chỉ mục lục thì không có gì để chấm).',
+              '- Ảnh đã tải về `docs/confluence/attachments/` chưa — nếu thư mục có ảnh mà file `.md` không có',
+              '  tham chiếu `![](attachments/...)` nào thì bước Docs đã nuốt ảnh: chạy lại bước Docs.',
+              '',
+              'Sau khi khắc phục, chạy lại bước này.',
+              '',
+            ].join('\n'),
+            'utf8',
+          );
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', subConversations: [] });
+          console.warn(`[prd-review] no mockup pages under ${cwd}/docs/confluence — nothing to review`);
+          return 'failed' as const;
         }
 
         // Each parallel page gets its OWN conversation (titled by page) so the
