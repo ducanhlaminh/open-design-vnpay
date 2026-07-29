@@ -17,6 +17,7 @@
     "./global": "./dist/figma-h2d.global.js"
   },
   "scripts": {
+    "prepare": "pnpm run build",
     "build": "node ./esbuild.config.mjs && tsc -p tsconfig.json --emitDeclarationOnly",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
