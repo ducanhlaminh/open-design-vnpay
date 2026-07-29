@@ -99,7 +99,18 @@ def filename_from_url(url):
     return sanitize(name)
 
 
-IMG_SRC_RE = re.compile(r'(<img\b[^>]*\bsrc=["\'])([^"\']+)(["\'])', re.IGNORECASE)
+# Match the REAL `src=` attribute, NOT `data-image-src=`. Confluence renders an
+# embedded screenshot as `<img … src="/download/attachments/…" data-image-src=
+# "/download/attachments/…">` (that shape appears in `body.view`, which this
+# script falls back to when `export_view` is empty). A GREEDY `[^>]*` lets
+# `\bsrc=` bind to the LAST occurrence — `data-image-src` — so localization
+# rewrote the data attribute and left the real src pointing at an
+# authenticated Confluence URL: the image downloaded, then rendered nowhere.
+# Non-greedy plus a negative lookbehind (`src` not preceded by `-`/word char)
+# binds to the real, first `src`.
+# The daemon's deterministic path carries the same fix in bas-client.ts's
+# IMG_SRC_RE — keep the two in step.
+IMG_SRC_RE = re.compile(r'(<img\b[^>]*?(?<![-\w])src=["\'])([^"\']+)(["\'])', re.IGNORECASE)
 
 
 def localize_images(base, token, html, attachments_dir, rel_prefix, page_label=""):
