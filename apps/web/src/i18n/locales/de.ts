@@ -584,6 +584,7 @@ export const de: Dict = {
   'ds.categoryAll': 'Alle',
   'ds.categoryUncategorized': 'Nicht kategorisiert',
   'ds.showcase': 'Showcase',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Tokens',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'DESIGN.md wird geladen…',

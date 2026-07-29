@@ -289,22 +289,25 @@ export async function readSandboxClaudeCredentials(image: string): Promise<strin
   }
 }
 
-export async function sandboxAuthLoggedIn(image: string): Promise<boolean> {
+/**
+ * A credentials file counts as a login only when it actually carries a token.
+ * The Claude CLI writes the `claudeAiOauth` skeleton with EMPTY strings before
+ * the code exchange completes, so a size test (`test -s`) calls a failed login
+ * a success — and then every later attempt "succeeds" instantly against that
+ * hollow file, which is the shape of the stuck-login report.
+ */
+export function credentialsCarryToken(raw: string | null): boolean {
+  if (!raw) return false;
   try {
-    await docker(
-      [
-        'run', '--rm',
-        '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}:ro`,
-        '--entrypoint', 'sh',
-        image,
-        '-c', `test -s ${CONTAINER_AUTH_DIR}/.credentials.json`,
-      ],
-      30_000,
-    );
-    return true;
+    const oauth = (JSON.parse(raw) as { claudeAiOauth?: { accessToken?: unknown } }).claudeAiOauth;
+    return typeof oauth?.accessToken === 'string' && oauth.accessToken.length > 0;
   } catch {
     return false;
   }
+}
+
+export async function sandboxAuthLoggedIn(image: string): Promise<boolean> {
+  return credentialsCarryToken(await readSandboxClaudeCredentials(image));
 }
 
 // ── Claude account switching ────────────────────────────────────────────────
@@ -328,7 +331,8 @@ function assertAccountLabel(label: string): void {
 export async function listSandboxAccounts(image: string): Promise<SandboxAccountsResponse> {
   const script = [
     `cd ${CONTAINER_AUTH_DIR} 2>/dev/null || exit 0`,
-    'loggedin=0; [ -s .credentials.json ] && loggedin=1',
+    // Cùng luật với credentialsCarryToken(): file rỗng token = CHƯA đăng nhập.
+    'loggedin=0; grep -q \'"accessToken"[[:space:]]*:[[:space:]]*"[^"]\' .credentials.json 2>/dev/null && loggedin=1',
     'active=""',
     'if [ "$loggedin" = 1 ]; then',
     '  for f in accounts/*.json; do [ -f "$f" ] || continue;',
@@ -365,7 +369,8 @@ export async function saveSandboxAccount(image: string, label: string): Promise<
   assertAccountLabel(label);
   const script = [
     `cd ${CONTAINER_AUTH_DIR}`,
-    '[ -s .credentials.json ] || { echo "NO_ACTIVE" >&2; exit 3; }',
+    // Không lưu bản rỗng token — đó là cách accounts/<label>.json thành rác.
+    'grep -q \'"accessToken"[[:space:]]*:[[:space:]]*"[^"]\' .credentials.json 2>/dev/null || { echo "NO_ACTIVE" >&2; exit 3; }',
     'mkdir -p accounts',
     `cp .credentials.json "accounts/${label}.json"`,
   ].join('\n');

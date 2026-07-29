@@ -111,6 +111,11 @@ export async function importFigmaIRDesignSystem(
     throw new LocalDesignSystemImportError('INTERNAL_ERROR', `IR compile failed: ${String(err?.message ?? err)}`);
   }
   enrichShowcaseIconAssets(compiled.files, merged.ir);
+  // Wireframe mapping first, then scaffolding — each inserts before the first
+  // component heading, so the LAST call ends up on top (Screen scaffolding →
+  // Wireframe mapping → per-component tables).
+  injectWireframeMappingSection(compiled.files);
+  injectScaffoldingCatalogSection(compiled.files);
   const { summary } = compiled;
 
   const displayName = cleanDisplayName(options.name ?? defaultDisplayName(merged.ir));
@@ -267,6 +272,230 @@ function enrichShowcaseIconAssets(files: Array<{ path: string; content: string }
   }
   if (added === 0) return;
   dataFile.content = `window.__FIG_ASSETS__ = ${JSON.stringify(assets)};\nwindow.__FIG_ICONS__ = ${JSON.stringify(icons)};\n`;
+}
+
+// Scaffold role → normalized-substring keys matched against the compiled
+// component slugs. Mirrors the family keys in
+// skills/ui-react-ds/builder/verify.mjs — keep the two lists in sync so what
+// the catalog advertises is exactly what the gate enforces.
+const SCAFFOLD_ROLES: Array<{ role: string; keys: string[] }> = [
+  { role: 'App bar / top navigation', keys: ['appbar', 'topnavigationbar', 'topbar'] },
+  { role: 'Tab bar / bottom navigation', keys: ['tabbar', 'tabs', 'tabitem', 'bottomnavigation'] },
+  { role: 'Dialog', keys: ['dialog', 'modal'] },
+  { role: 'Bottom sheet / drawer', keys: ['bottomsheet', 'actionsheet', 'drawer'] },
+  { role: 'Snackbar / toast', keys: ['snackbar', 'toast'] },
+  { role: 'Card', keys: ['card'] },
+  { role: 'List item', keys: ['listitem'] },
+  { role: 'Button', keys: ['button'] },
+  { role: 'Input / form field', keys: ['input', 'textfield'] },
+];
+
+// The ui-react-ds SKILL sends the agent to a "Screen scaffolding" section at
+// the top of catalog.md to map screen-frame roles (dialog, sheet, app bar…)
+// onto THIS design system's own component names — Figma imports never use the
+// generic names, so without the map the agent hand-rolls frames the DS already
+// ships. compile-core does not generate the section; inject it right after the
+// catalog header. No-ops if upstream ever ships its own.
+function injectScaffoldingCatalogSection(files: Array<{ path: string; content: string }>): void {
+  const catalog = files.find((file) => file.path === 'docs/catalog.md');
+  if (!catalog || catalog.content.includes('## Screen scaffolding')) return;
+  const slugs = files
+    .filter((file) => /^components\/ui\/[^/]+\.tsx$/.test(file.path))
+    .map((file) => file.path.slice('components/ui/'.length, -'.tsx'.length));
+  if (slugs.length === 0) return;
+  const lines: string[] = [
+    '## Screen scaffolding',
+    '',
+    'Trước khi tự dựng khung màn bằng `<div>`, tra bảng này — mỗi vai trò liệt kê',
+    'các component CÓ SẴN của bộ DS (import từ `ds/components/ui/<tên>`). Tự dựng',
+    'lại khung khi DS đã có component = mất instance khi capture sang Figma',
+    '(cổng verify của build.sh sẽ chặn).',
+    '',
+  ];
+  for (const { role, keys } of SCAFFOLD_ROLES) {
+    const matches = slugs.filter((slug) => {
+      const normalized = slug.replace(/-/g, '').toLowerCase();
+      return keys.some((key) => normalized.includes(key));
+    });
+    const listed = matches.slice(0, 10).map((slug) => `\`${slug}\``);
+    if (matches.length > 10) listed.push(`+${matches.length - 10} nữa`);
+    lines.push(
+      matches.length > 0
+        ? `- **${role}**: ${listed.join(', ')}`
+        : `- **${role}**: (không có trong bộ DS này — được phép tự dựng, mọi giá trị style vẫn phải qua class \`tk-*\`)`,
+    );
+  }
+  const section = `${lines.join('\n')}\n`;
+  const firstComponentHeading = catalog.content.indexOf('\n## ');
+  catalog.content =
+    firstComponentHeading >= 0
+      ? `${catalog.content.slice(0, firstComponentHeading + 1)}${section}\n${catalog.content.slice(firstComponentHeading + 1)}`
+      : `${catalog.content}\n${section}`;
+}
+
+// ── Wireframe mapping (Mức 1) ───────────────────────────────────────────────
+// The ux-spec wireframes speak the CLOSED DSL-v2 vocabulary
+// (skills/ux-spec/references/wire-registry.json — shadcn:*/mobile:*/…); this
+// table mirrors those slugs and maps each onto THIS bundle's own components by
+// normalized-substring role matching, so the UI stage builds every wireframe
+// node from the right ds component instead of guessing across 200+ Figma
+// names. A slug missing here (registry drift) is simply not listed — never an
+// error. `none` marks slugs that are deliberately unmapped (plain markup +
+// tk-* classes), `token` keys match whole hyphen-separated words ("stat" must
+// not hit "state"/"status").
+const WIRE_EXCLUDE = /^(ic-|emoji-|d-e-s-|pd-|ipay-illustration|illus-)/;
+const WIREFRAME_ROLES: Array<{
+  slug: string;
+  keys?: string[];
+  token?: string;
+  none?: string;
+}> = [
+  { slug: 'shadcn:Heading', keys: ['title'] },
+  { slug: 'shadcn:Text', none: 'text thuần — markup + class tk-*' },
+  { slug: 'shadcn:Label', none: 'label thuần — markup + class tk-*' },
+  { slug: 'layout:SectionLabel', none: 'text + class tk-*' },
+  { slug: 'shadcn:Link', none: 'thẻ <a>/<button> + class tk-*' },
+  { slug: 'shadcn:Input', keys: ['textfield', 'input'] },
+  { slug: 'shadcn:InputSearch', keys: ['search'] },
+  { slug: 'shadcn:Textarea', keys: ['textarea'] },
+  { slug: 'shadcn:Select', keys: ['selection', 'select', 'dropdown'] },
+  { slug: 'shadcn:Checkbox', keys: ['checkbox'] },
+  { slug: 'shadcn:RadioGroup', keys: ['radio'] },
+  { slug: 'shadcn:Switch', keys: ['toggle', 'switch'] },
+  { slug: 'shadcn:Slider', keys: ['slider'] },
+  { slug: 'shadcn:InputOTP', keys: ['otp', 'codeinput'] },
+  { slug: 'shadcn:Button', keys: ['button'] },
+  { slug: 'shadcn:Badge', keys: ['badge', 'chip'] },
+  { slug: 'shadcn:ToggleGroup', keys: ['togglegroup', 'segmented'] },
+  { slug: 'shadcn:Tabs', keys: ['tabs', 'tabitem'] },
+  { slug: 'shadcn:NavigationMenu', keys: ['topnavigationbar', 'navigationbar', 'navbar'] },
+  { slug: 'shadcn:Breadcrumb', keys: ['breadcrumb'] },
+  { slug: 'shadcn:Pagination', keys: ['pagination', 'pageindicator'] },
+  { slug: 'shadcn:Sidebar', keys: ['sidebar'] },
+  { slug: 'shadcn:Accordion', keys: ['accordion', 'expand'] },
+  { slug: 'shadcn:Item', keys: ['listitem', 'optiontile', 'dataitem'] },
+  { slug: 'shadcn:Table', keys: ['table'] },
+  { slug: 'shadcn:Card', keys: ['card'] },
+  { slug: 'data:Stat', token: 'stat', keys: ['datarow', 'balance'] },
+  { slug: 'shadcn:Progress', keys: ['progress'] },
+  { slug: 'data:Stepper', keys: ['stepper'] },
+  { slug: 'shadcn:Skeleton', keys: ['skeleton'] },
+  { slug: 'shadcn:Empty', keys: ['emptystate', 'empty', 'nodata'] },
+  { slug: 'shadcn:Avatar', keys: ['avatar'] },
+  { slug: 'media:Image', keys: ['imageratio', 'image'] },
+  { slug: 'shadcn:Separator', keys: ['divider', 'separator'] },
+  { slug: 'shadcn:Alert', keys: ['alertbanner', 'alert'] },
+  { slug: 'layout:Spacer', none: 'khoảng trống — inline style layout' },
+  { slug: 'mobile:AppBar', keys: ['topnavigationbar', 'appbar'] },
+  { slug: 'mobile:BottomNav', keys: ['bottomnavigation', 'tabbar'] },
+  { slug: 'mobile:Fab', keys: ['fab', 'floatingbutton'] },
+  { slug: 'mobile:NavDrawer', keys: ['drawer', 'sidemenu'] },
+  { slug: 'mobile:ActionSheet', keys: ['bottomsheet', 'actionsheet'] },
+];
+
+/** Machine-readable side of the wireframe mapping — the ux-spec preview's
+ *  component-assignment UI consumes this (served via
+ *  GET /api/design-systems/:id/wireframe-map). Same data the markdown section
+ *  renders from. */
+export type WireframeMap = {
+  kind: 'od-wireframe-map';
+  version: 1;
+  slugs: Array<{ slug: string; candidates?: string[]; none?: string }>;
+  specials: { templates: string[]; charts: string[]; other: string[] };
+  components: string[];
+};
+
+function computeWireframeMap(slugs: string[]): WireframeMap {
+  const usable = slugs.filter((slug) => !WIRE_EXCLUDE.test(slug));
+  const normalized = (slug: string) => slug.replace(/-/g, '').toLowerCase();
+  const matched = new Set<string>();
+  const rankHits = (hits: string[]) =>
+    [...new Set(hits)].sort(
+      (a, b) => (a.startsWith('i-pay') ? 0 : 1) - (b.startsWith('i-pay') ? 0 : 1) || a.length - b.length,
+    );
+  const out: WireframeMap['slugs'] = [];
+  for (const role of WIREFRAME_ROLES) {
+    if (role.none) {
+      out.push({ slug: role.slug, none: role.none });
+      continue;
+    }
+    let hits: string[] = [];
+    if (role.token) {
+      const re = new RegExp(`(^|-)${role.token}(-|$)`);
+      hits = hits.concat(usable.filter((slug) => re.test(slug)));
+    }
+    for (const key of role.keys ?? []) {
+      hits = hits.concat(usable.filter((slug) => normalized(slug).includes(key)));
+    }
+    const ranked = rankHits(hits);
+    for (const hit of ranked) matched.add(hit);
+    out.push({ slug: role.slug, candidates: ranked });
+  }
+  const leftovers = usable.filter((slug) => !matched.has(slug));
+  const templates = leftovers.filter((slug) => /^i-pay-template|template/.test(slug));
+  const charts = leftovers.filter((slug) => /chart/.test(slug) && !templates.includes(slug));
+  const other = leftovers.filter((slug) => !templates.includes(slug) && !charts.includes(slug));
+  return {
+    kind: 'od-wireframe-map',
+    version: 1,
+    slugs: out,
+    specials: { templates, charts, other },
+    components: usable,
+  };
+}
+
+function injectWireframeMappingSection(files: Array<{ path: string; content: string }>): void {
+  const catalog = files.find((file) => file.path === 'docs/catalog.md');
+  if (!catalog || catalog.content.includes('## Wireframe mapping')) return;
+  const slugs = files
+    .filter((file) => /^components\/ui\/[^/]+\.tsx$/.test(file.path))
+    .map((file) => file.path.slice('components/ui/'.length, -'.tsx'.length));
+  if (slugs.length === 0) return;
+  const map = computeWireframeMap(slugs);
+  // Machine-readable twin for the preview's component-assignment UI.
+  files.push({
+    path: 'wireframe-map.json',
+    content: `${JSON.stringify(map, null, 2)}\n`,
+  });
+  const rows: string[] = map.slugs.map((entry) => {
+    if (entry.none) return `| \`${entry.slug}\` | (không có — ${entry.none}) |`;
+    return entry.candidates && entry.candidates.length > 0
+      ? `| \`${entry.slug}\` | ${entry.candidates.slice(0, 3).map((slug) => `\`${slug}\``).join(', ')} |`
+      : `| \`${entry.slug}\` | (không có trong bộ DS này — tự dựng bằng markup + class \`tk-*\`) |`;
+  });
+  // DS-specific components no wireframe slug covers: the ux wireframe points
+  // at them via `note`, the UI stage picks them from here.
+  const { templates, charts, other } = map.specials;
+  const listOf = (items: string[], cap: number) => {
+    const listed = items.slice(0, cap).map((slug) => `\`${slug}\``);
+    if (items.length > cap) listed.push(`+${items.length - cap} nữa`);
+    return listed.join(', ');
+  };
+  const lines: string[] = [
+    '## Wireframe mapping',
+    '',
+    'Wireframe của UX spec nói từ vựng chung (DSL v2: `shadcn:*`/`mobile:*`/…).',
+    'Bảng này là NGUỒN SỰ THẬT khi dựng màn từ wireframe: slug có component thì',
+    'PHẢI dựng bằng đúng component đó (API xem bảng props của nó bên dưới);',
+    'slug "(không có)" thì tự dựng bằng markup + class `tk-*`.',
+    '',
+    '| Wireframe slug | Component của bộ DS này |',
+    '|---|---|',
+    ...rows,
+  ];
+  if (templates.length > 0 || charts.length > 0 || other.length > 0) {
+    lines.push('', '### Component đặc thù ngoài từ vựng wireframe', '');
+    lines.push('Wireframe tham chiếu các component này qua prop `note`; bước UI chọn đúng:');
+    if (templates.length > 0) lines.push(`- **Template màn nguyên con**: ${listOf(templates, 10)}`);
+    if (charts.length > 0) lines.push(`- **Charts**: ${listOf(charts, 10)}`);
+    if (other.length > 0) lines.push(`- **Khác**: ${listOf(other, 20)}`);
+  }
+  const section = `${lines.join('\n')}\n`;
+  const firstComponentHeading = catalog.content.indexOf('\n## ');
+  catalog.content =
+    firstComponentHeading >= 0
+      ? `${catalog.content.slice(0, firstComponentHeading + 1)}${section}\n${catalog.content.slice(firstComponentHeading + 1)}`
+      : `${catalog.content}\n${section}`;
 }
 
 const ZIP_LOCAL_HEADER = 0x04034b50;

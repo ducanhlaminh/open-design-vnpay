@@ -429,6 +429,8 @@ export interface DesignSystemDraftInput {
   body?: string;
   sourceNotes?: string;
   provenance?: DesignSystemProvenance;
+  /** Product-family tag (Mobile/Web filter + per-target pickers). `null` clears. */
+  platform?: 'mobile' | 'web' | null;
 }
 
 export async function createDesignSystemDraft(

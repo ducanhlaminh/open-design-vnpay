@@ -47,7 +47,10 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
   // moved on cannot clobber a newer session's modal state.
   const renameSessionRef = useRef(0);
   const [importPath, setImportPath] = useState('');
-  const [importSource, setImportSource] = useState<'local' | 'github' | 'figma'>('local');
+  // Figma là đường import CHÍNH (zip từ plugin Fig Pipeline) — mặc định luôn,
+  // chọn file là bấm Import được ngay. Local/GitHub là nguồn phụ cho DS dạng
+  // CSS/token (ui-html), giữ sau nút Figma.
+  const [importSource, setImportSource] = useState<'local' | 'github' | 'figma'>('figma');
   // Figma IR uploads: .ir.json and/or plugin .zip bundles. The daemon merges
   // in NATURAL FILENAME ORDER (01-, 02-, … — foundation/token export first),
   // so selection order here does not matter.
@@ -317,6 +320,16 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                 <div className="seg-control library-import-source-control">
                   <button
                     type="button"
+                    className={importSource === 'figma' ? 'active' : ''}
+                    onClick={() => {
+                      setImportSource('figma');
+                      clearImportFeedback();
+                    }}
+                  >
+                    {t('settings.designSystemsSourceFigma')}
+                  </button>
+                  <button
+                    type="button"
                     className={importSource === 'local' ? 'active' : ''}
                     onClick={() => {
                       setImportSource('local');
@@ -334,16 +347,6 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                     }}
                   >
                     {t('settings.designSystemsSourceGithub')}
-                  </button>
-                  <button
-                    type="button"
-                    className={importSource === 'figma' ? 'active' : ''}
-                    onClick={() => {
-                      setImportSource('figma');
-                      clearImportFeedback();
-                    }}
-                  >
-                    {t('settings.designSystemsSourceFigma')}
                   </button>
                 </div>
               </div>
@@ -377,7 +380,10 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                   </button>
                 </div>
               </div>
-              <div className="library-import-row">
+              {/* Craft rules chỉ có nghĩa cho DS dạng CSS/token (ui-html) —
+                  đường Figma react-ds đã gắn craft theo SKILL, checkbox ở đây
+                  là bước thừa nên ẩn: chọn zip là Import được ngay. */}
+              <div className="library-import-row" hidden={importSource === 'figma'}>
                 <span className="library-import-option-label">
                   {t('settings.designSystemsCraft')}
                 </span>

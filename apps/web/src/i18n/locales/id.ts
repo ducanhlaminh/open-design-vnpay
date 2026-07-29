@@ -809,6 +809,7 @@ export const id: Dict = {
   'ds.categoryAll': 'Semua',
   'ds.categoryUncategorized': 'Tanpa kategori',
   'ds.showcase': 'Showcase',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Token',
   'ds.specToggle': 'Spesifikasi',
   'ds.specLoading': 'Memuat spesifikasi...',

@@ -435,7 +435,7 @@ import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { registerPipelineRoutes } from './pipeline-routes.js';
-import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isExportArtifact, isHistoryArtifact, isSyncExcluded, mergePipelineState, stageForOutput, stagesForOutput, stageRegenSet, upstreamStages, workflowDirForPipeline } from './pipelines.js';
+import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isExportArtifact, isHistoryArtifact, isSyncExcluded, isTargetScopedWfDir, mergePipelineState, pickRunTarget, relClearedByRegen, stageForOutput, stagesForOutput, stageRegenSet, upstreamStages, workflowDirForPipeline } from './pipelines.js';
 import { generateProjectExports } from './pipeline-exports.js';
 import {
   historyKeepCount,
@@ -460,7 +460,8 @@ import {
   searchConfluencePages,
 } from './bas/bas-client.js';
 import { buildReactDemo } from './react-demo.js';
-import { runFigmaCapture } from './figma-capture.js';
+import { iconNameMapFromIrDir, rewriteIconMarkersInDir, runFigmaCapture } from './figma-capture.js';
+import { runFigmaAudit } from './figma-audit.js';
 import { checkWireframes, wireframeCheckMessage } from './wireframe-check.js';
 import { listMockupPages, mergePageReports } from './prd-review-fanout.js';
 import { listSections, mergeCjSections, mergeUxrSections, mergeUxSpecSections, type DocSection } from './section-fanout.js';
@@ -8037,6 +8038,57 @@ export async function startServer({
   // Static assets of a react-bundle design system (icon/vector SVGs the
   // compiled showcase lazy-fetches). express res.sendFile with a root pins
   // reads inside the bundle's assets dir (traversal rejected).
+  // Machine-readable wireframe→component map of a Figma-imported design
+  // system (written by figma-ds-import at import time). The ux-spec preview's
+  // component-assignment UI reads it to offer per-slug candidates.
+  app.get('/api/design-systems/:id/wireframe-map', async (req, res) => {
+    const id = req.params.id;
+    const slug = typeof id === 'string' && id.startsWith('user:') ? id.slice('user:'.length) : id;
+    if (typeof slug !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+      return res.status(404).json({ error: 'not found' });
+    }
+    try {
+      const raw = await fs.promises.readFile(
+        path.join(USER_DESIGN_SYSTEMS_DIR, slug, 'react', 'wireframe-map.json'),
+        'utf8',
+      );
+      res.type('application/json').send(raw);
+    } catch {
+      res.status(404).json({ error: 'design system has no wireframe map — re-import it from the Figma zips' });
+    }
+  });
+
+  // Persist a component assignment made in the wireframe preview: overwrite
+  // ONE wireframes/<id>.wire.json with the edited tree. Deliberately narrow —
+  // this is NOT a general raw-file writer; the path shape is pinned so the
+  // browser can only touch wireframe files inside the project sandbox.
+  app.put('/api/projects/:id/wireframe', async (req, res) => {
+    try {
+      const projectId = req.params.id;
+      const project = getProject(db, projectId);
+      if (!project) return res.status(404).json({ error: 'project not found' });
+      const rel = typeof req.body?.path === 'string' ? req.body.path : '';
+      if (!/^(?:[A-Za-z0-9._-]+\/)*wireframes\/[A-Za-z0-9._-]+\.wire\.json$/.test(rel) || rel.includes('..')) {
+        return res.status(400).json({ error: 'path must be <…>/wireframes/<id>.wire.json' });
+      }
+      const tree = req.body?.tree;
+      if (!tree || typeof tree !== 'object') {
+        return res.status(400).json({ error: 'tree (the wireframe JSON) is required' });
+      }
+      await writeProjectFile(
+        PROJECTS_DIR,
+        projectId,
+        rel,
+        Buffer.from(`${JSON.stringify(tree, null, 2)}\n`, 'utf8'),
+        {},
+        project.metadata,
+      );
+      res.json({ ok: true, path: rel });
+    } catch (err) {
+      res.status(500).json({ error: String((err as Error)?.message ?? err) });
+    }
+  });
+
   app.get('/api/design-systems/:id/react-assets/*assetPath', async (req, res) => {
     const id = req.params.id;
     const slug = typeof id === 'string' && id.startsWith('user:') ? id.slice('user:'.length) : id;
@@ -8085,6 +8137,25 @@ export async function startServer({
     // The build gate must fail on AGENT code only — mute the checker inside
     // the staged ds tree; its exported prop types still flow to consumers.
     await prependTsNocheck(path.join(target, 'src', 'ds'));
+    // Target marker for the builder/verify gate: WHICH target this staged
+    // bundle serves and whether the app must be responsive (websites) or a
+    // fixed phone viewport (mobile app — media queries forbidden). Dot-file →
+    // invisible to snapshot/push/re-run-clear; rewritten on every staging.
+    // Legacy single-build runs (no target segment) mark target null,
+    // responsive false — today's single builds are the fixed mobile layout.
+    const segments = (wfDir ?? '').split('/');
+    const { UI_TARGETS, UI_TARGET_IDS } = await import('@open-design/contracts');
+    const markerTarget = UI_TARGET_IDS.map((t) => UI_TARGETS[t]).find((d) => d.dir === segments[1]);
+    await fs.promises.mkdir(target, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(target, '.od-target.json'),
+      `${JSON.stringify(
+        { target: markerTarget?.id ?? null, responsive: markerTarget?.responsive ?? false },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
   }
 
   async function prependTsNocheck(dir) {
@@ -13738,13 +13809,12 @@ export async function startServer({
     if (pipelineCwd) {
       // Same fence + re-run clear as the agent path: manual edits get their own
       // history commit, then this stage's (and, on cascade, downstream) outputs
-      // are wiped so the fetch regenerates a clean set.
+      // are wiped so the fetch regenerates a clean set (target-fenced).
       await commitHistory(pipelineCwd, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
       try {
         const snap = await snapshotPipelineCwd(pipelineCwd);
         for (const rel of snap.keys()) {
-          if (isHistoryArtifact(rel)) continue;
-          if (stagesForOutput(rel).some((d) => regenIds.has(d.id))) {
+          if (relClearedByRegen(rel, regenIds, wfDir)) {
             await fs.promises.rm(path.join(pipelineCwd, rel), { force: true }).catch(() => null);
           }
         }
@@ -13901,8 +13971,9 @@ export async function startServer({
         try {
           const snap = await snapshotPipelineCwd(projectRoot);
           for (const rel of snap.keys()) {
-            if (isHistoryArtifact(rel)) continue;
-            if (stagesForOutput(rel).some((d) => regenIds.has(d.id))) {
+            // Target fence included: a target-scoped fan-out clears only its
+            // own <wf>/<target>/ subtree (see relClearedByRegen).
+            if (relClearedByRegen(rel, regenIds, wfDir)) {
               await fs.promises.rm(path.join(projectRoot, rel), { force: true }).catch(() => null);
             }
           }
@@ -14111,8 +14182,9 @@ export async function startServer({
         try {
           const snap = await snapshotPipelineCwd(projectRoot);
           for (const rel of snap.keys()) {
-            if (isHistoryArtifact(rel)) continue;
-            if (stagesForOutput(rel).some((d) => regenIds.has(d.id))) {
+            // Target fence included: a target-scoped fan-out clears only its
+            // own <wf>/<target>/ subtree (see relClearedByRegen).
+            if (relClearedByRegen(rel, regenIds, wfDir)) {
               await fs.promises.rm(path.join(projectRoot, rel), { force: true }).catch(() => null);
             }
           }
@@ -14161,9 +14233,10 @@ export async function startServer({
           kind === 'cj' ? `cj/${key}/journey.json` : kind === 'ux-research' ? `ux-research/${key}/report.json` : `ux/${key}/ux-spec.json`;
         const platformDirective =
           kind === 'ux-spec' && platform === 'web'
-            ? ' Target platform: WEBSITE — every screen sets `layout: "web"` (tables, sidebar/top nav, multi-column forms).'
+            ? ' Target platform: WEBSITE — every screen sets `layout: "web"` (tables, sidebar/top nav, multi-column forms).' +
+              ' The website is RESPONSIVE: give every screen a `responsive_notes` field (desktop ~1440px ↔ mobile ≤768px adaptation; wireframes stay desktop-first).'
             : kind === 'ux-spec' && platform === 'mobile'
-              ? ' Target platform: MOBILE — every screen sets `layout: "mobile"`.'
+              ? ' Target platform: MOBILE — every screen sets `layout: "mobile"` (fixed phone viewport, no responsive behavior).'
               : '';
         const runOneSection = async (sec: DocSection, task: (typeof tasks)[number]): Promise<void> => {
           const conversationId = task.id;
@@ -14418,8 +14491,9 @@ export async function startServer({
         try {
           const snap = await snapshotPipelineCwd(projectRoot);
           for (const rel of snap.keys()) {
-            if (isHistoryArtifact(rel)) continue;
-            if (stagesForOutput(rel).some((d) => regenIds.has(d.id))) {
+            // Target fence included: a target-scoped fan-out clears only its
+            // own <wf>/<target>/ subtree (see relClearedByRegen).
+            if (relClearedByRegen(rel, regenIds, wfDir)) {
               await fs.promises.rm(path.join(projectRoot, rel), { force: true }).catch(() => null);
             }
           }
@@ -14460,7 +14534,8 @@ export async function startServer({
               : `Run the html-interactive-prototype render for ONE screen of feature "${projectId}". ` +
                 `Render ONLY the screen id "${s.id}" (${s.name}) from the UX Spec + its wireframe into a self-contained "prototype/${s.slug}.html" (plus its "prototype/${s.slug}.states.json" if multistep). ` +
                 `Nav links to other screens use their "<target-slug>.html" filename. ` +
-                `Do NOT render any other screen, and do NOT write prototype/index.html — the pipeline builds the hub. FILE-ONLY: no push.`;
+                `Do NOT render any other screen, and do NOT write prototype/index.html — the pipeline builds the hub. FILE-ONLY: no push.` +
+                (await uiTargetDirective(wfDir));
           const run = design.runs.create({
             projectId,
             conversationId,
@@ -14597,50 +14672,120 @@ export async function startServer({
     return res.json({ ok: true, canceled: 'none' });
   });
 
+  // Viewport/responsive kickoff directive for a UI-terminal run, derived from
+  // the run cwd's target segment. '' outside multi-target runs so legacy
+  // single builds keep a byte-identical kickoff. All targets ship web tech —
+  // the difference is responsive (websites) vs fixed phone viewport (the app).
+  const uiTargetDirective = async (wfDir: string | null | undefined): Promise<string> => {
+    if (!isTargetScopedWfDir(wfDir)) return '';
+    const seg = wfDir!.split('/')[1]!;
+    const { UI_TARGETS, UI_TARGET_IDS } = await import('@open-design/contracts');
+    const t = UI_TARGET_IDS.map((id) => UI_TARGETS[id]).find((d) => d.dir === seg);
+    if (!t) return '';
+    return t.responsive
+      ? ` Build target "${t.label}": a RESPONSIVE website. Every screen must adapt from desktop (~1440px) down to mobile (≤768px), following each screen's responsive_notes in the UX spec — navigation collapse, tables degrading to cards/lists, grid column count. A desktop-only layout is NOT done.`
+      : ` Build target "${t.label}": a mobile APP rendered in a FIXED phone viewport (390px wide). Do NOT add responsive breakpoints or media queries — the layout is single-viewport by design.`;
+  };
+
+  // Resolve WHICH configured target a SINGLE-stage run builds (contract:
+  // RunPipelineRequest.target). Shared stages (docs ingest, sharedAcrossTargets)
+  // and single-build projects (no targets.json) resolve to null — run at the
+  // workflow root, the legacy behavior. On a multi-target project the caller's
+  // target (or the only configured one) maps through UI_TARGETS to the same
+  // dir/platform/audience scoping the run-all orchestrator applies, and the
+  // shared docs are refreshed into that target's cwd so relative ./docs inputs
+  // resolve.
+  const resolveRunTargetDir = async (
+    projectId: string,
+    def: NonNullable<ReturnType<typeof getPipelineDef>>,
+    requested: import('@open-design/contracts').UiTarget | undefined,
+  ): Promise<{
+    dir: string;
+    platform: import('@open-design/contracts').TargetPlatform;
+    audience: import('@open-design/contracts').UiTargetAudience;
+    /** targets.json v2 per-target design system, when configured. */
+    designSystemId?: string;
+  } | null> => {
+    if (def.inputPlaceholder || def.sharedAcrossTargets === true) return null;
+    const baseWfDir = workflowDirForPipeline(def.id);
+    if (!baseWfDir) return null;
+    const { UI_TARGETS, TARGETS_CONFIG_BASENAME, isUiTarget } = await import('@open-design/contracts');
+    const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+    let cfg: any = null;
+    try {
+      const raw = await fs.promises.readFile(
+        path.join(projectRoot, baseWfDir, TARGETS_CONFIG_BASENAME),
+        'utf8',
+      );
+      cfg = JSON.parse(raw);
+    } catch {
+      /* no targets.json → single build */
+    }
+    const configured: import('@open-design/contracts').UiTarget[] = Array.isArray(cfg?.targets)
+      ? cfg.targets.filter(isUiTarget)
+      : [];
+    const target = pickRunTarget(configured, requested);
+    if (!target) return null;
+    const targetDef = UI_TARGETS[target];
+    const dsForTarget =
+      typeof cfg?.designSystemByTarget?.[target] === 'string' && cfg.designSystemByTarget[target]
+        ? (cfg.designSystemByTarget[target] as string)
+        : undefined;
+    // Same docs copy run-all performs (a real COPY — the sandbox bind-mounts
+    // only the run cwd, a ../docs symlink would dangle inside the container).
+    try {
+      const srcDocs = path.join(projectRoot, baseWfDir, 'docs');
+      const hasDocs = await fs.promises.access(srcDocs).then(() => true, () => false);
+      if (hasDocs) {
+        const dstDocs = path.join(projectRoot, baseWfDir, targetDef.dir, 'docs');
+        await fs.promises.rm(dstDocs, { recursive: true, force: true }).catch(() => {});
+        await fs.promises.cp(srcDocs, dstDocs, { recursive: true });
+      }
+    } catch (error) {
+      console.warn(`[pipelines] staging docs into target ${targetDef.dir} failed:`, error);
+    }
+    return {
+      dir: targetDef.dir,
+      platform: targetDef.platform,
+      audience: targetDef.audience,
+      ...(dsForTarget ? { designSystemId: dsForTarget } : {}),
+    };
+  };
+
   const runPipeline = async (
     projectId: string,
     pipelineId: string,
-    input?: string,
-    source?: import('@open-design/contracts').PipelineRunSource,
-    // Per-run design system for UI-generating stages (`ui-html`). `undefined`
-    // → inherit the app-config default (legacy behavior); a string id or `null`
-    // (explicit "none") overrides it for THIS run only. See RunPipelineRequest.
-    designSystemId?: string | null,
-    // Target platform for `acceptsPlatform` stages (the UX stage). Folded into
-    // the kickoff as an explicit layout directive; `undefined` → no directive,
-    // so the skill's own default (mobile) applies — the legacy behavior.
-    platform?: import('@open-design/contracts').TargetPlatform,
-    // RE-RUN clear scope: 'stage' (default) clears only this stage's outputs;
-    // 'downstream' also clears every stage that depends on it (they go stale).
-    // See RunPipelineRequest.resetScope.
-    resetScope?: 'stage' | 'downstream',
-    // Docs stage, deterministic Confluence path: also fetch the pages each
-    // seed links to (depth 1, capped). undefined → true. See
-    // RunPipelineRequest.followLinks.
-    followLinks?: boolean,
-    // Docs stage: also fetch the whole sub-tree under each seed (folder-
-    // structured). undefined/false → seeds only. See RunPipelineRequest.
-    includeDescendants?: boolean,
-    // Multi-target build: a per-target subfolder appended to the workflow cwd
-    // (`<workflow>/<targetDir>/`), so this stage runs into that target's own
-    // output subtree. undefined → the shared workflow cwd (legacy single build).
-    targetDir?: string,
-    // Who this target is FOR. The docs are staged into every target's cwd as one
-    // shared copy, so without this two web targets (web-user / web-backoffice)
-    // get identical inputs, identical `platform`, and produce near-identical
-    // output in two folders — the audience is the only thing telling them apart,
-    // so it has to reach the agent.
-    audience?: import('@open-design/contracts').UiTargetAudience,
-    // UI targets picked at the docs step (docs-to-ui). When the DOCS stage runs
-    // with these, the daemon records them as docs-to-ui/targets.json — the
-    // post-docs stages' config for which products to build. Ignored on other
-    // stages (they inherit the file already on disk).
-    targets?: readonly import('@open-design/contracts').UiTarget[],
+    opts: import('./server-context.js').RunPipelineOptions = {},
   ) => {
+    // One options object end-to-end (see RunPipelineOptions): the previous
+    // positional tail silently desynced between the PipelineDeps interface and
+    // this implementation — a route's `targets` argument landed in the
+    // impl-only `audience` slot with no type error.
+    const { input, source, resetScope, followLinks, includeDescendants, targets } = opts;
+    let { designSystemId, platform, targetDir, audience } = opts;
     const def = getPipelineDef(pipelineId);
     if (!def) throw new Error(`Unknown pipeline ${pipelineId}`);
     const project = getProject(db, projectId);
     if (!project) throw new Error(`Project ${projectId} not found`);
+
+    // Multi-target single-stage run (routes/CLI name a target — or the project
+    // has exactly one configured): scope it exactly like run-all would. Without
+    // this, a re-run of one stage lands at the workflow ROOT while run-all's
+    // outputs live under <workflow>/<target>/ — two diverging output trees.
+    if (!targetDir) {
+      const resolved = await resolveRunTargetDir(projectId, def, opts.target);
+      if (resolved) {
+        targetDir = resolved.dir;
+        platform = platform ?? resolved.platform;
+        audience = audience ?? resolved.audience;
+        // Per-target design system (targets.json v2): an explicit per-run id
+        // (or explicit null = "none") always wins; otherwise the target's own
+        // library applies before the app-config default.
+        if (designSystemId === undefined && def.acceptsDesignSystem && resolved.designSystemId) {
+          designSystemId = resolved.designSystemId;
+        }
+      }
+    }
 
     // Per-workflow output namespace: this pipeline's run + outputs live under
     // <projectDir>/<workflowId>/ so the two workflows never share a cwd (no
@@ -14660,7 +14805,7 @@ export async function startServer({
         await fs.promises.mkdir(path.join(projectRoot, baseWfDir ?? ''), { recursive: true });
         await fs.promises.writeFile(
           path.join(projectRoot, baseWfDir ?? '', TARGETS_CONFIG_BASENAME),
-          `${JSON.stringify(buildTargetsConfig([...targets]), null, 2)}\n`,
+          `${JSON.stringify(buildTargetsConfig([...targets], opts.designSystemByTarget), null, 2)}\n`,
           'utf8',
         );
       } catch (error) {
@@ -14755,6 +14900,29 @@ export async function startServer({
       reactDsStageId = effectiveDsId as string;
       reactDsDirective =
         ` The selected design system's react bundle IS STAGED at "./react-ds/src/ds/" (components/ui + components/icons + lib/runtime + styles/globals.css + docs/catalog.md — ${reactInfo.components} components, ${reactInfo.icons} icons) and its icon SVGs at "./react-ds/public/assets/". Compose screens from it per the active skill; never edit or regenerate anything under src/ds/ or public/.`;
+      // Human-locked components (the ux-spec preview's "Gán component" UI
+      // writes them into the wireframes' `comp` prop): surface the list in the
+      // kickoff so the agent treats them as a CONTRACT up front instead of
+      // discovering them file by file — the verify gate hard-fails on any
+      // locked component that isn't used.
+      try {
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+        const wireDir = path.join(runCwd, 'wireframes');
+        const locked = new Set<string>();
+        for (const entry of await fs.promises.readdir(wireDir).catch(() => [] as string[])) {
+          if (!entry.endsWith('.wire.json')) continue;
+          const raw = await fs.promises.readFile(path.join(wireDir, entry), 'utf8').catch(() => null);
+          if (!raw) continue;
+          for (const m of raw.matchAll(/"comp"\s*:\s*"([^"]+)"/g)) locked.add(m[1]!);
+        }
+        if (locked.size > 0) {
+          const listed = [...locked].slice(0, 24).join(', ');
+          reactDsDirective += ` ${locked.size} component(s) are HUMAN-LOCKED in ../wireframes/*.wire.json via the \`comp\` prop (${listed}${locked.size > 24 ? ', …' : ''}) — every locked wireframe node MUST be built with exactly that ds component (the verify gate fails otherwise); read each wire file to see which node locks which component.`;
+        }
+      } catch {
+        /* best-effort — no wireframes yet is fine */
+      }
     }
 
     let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId
@@ -14810,10 +14978,14 @@ export async function startServer({
     // stage opted in AND the caller chose one — no choice keeps the kickoff
     // byte-identical to the legacy one, so existing projects are unaffected.
     const effectivePlatform = def.acceptsPlatform ? platform : undefined;
+    // Platform encodes viewport semantics (all targets ship web tech, there is
+    // no native track): WEBSITE = RESPONSIVE (desktop ↔ ≤768px), MOBILE = a
+    // fixed phone viewport with no adaptive behavior.
     const platformDirective = effectivePlatform === 'web'
-      ? ' Target platform for this run: WEBSITE — every screen in the UX spec MUST set `layout: "web"` and use web-appropriate patterns (tables over card lists where fitting, sidebar/top navigation instead of bottom tabs, wider multi-column forms).'
+      ? ' Target platform for this run: WEBSITE — every screen in the UX spec MUST set `layout: "web"` and use web-appropriate patterns (tables over card lists where fitting, sidebar/top navigation instead of bottom tabs, wider multi-column forms).' +
+        ' The website is RESPONSIVE: give every screen a `responsive_notes` field describing how its layout adapts from desktop (~1440px) down to mobile (≤768px) — navigation collapse, tables degrading to cards/lists, grid column count, which controls move where. Wireframes stay desktop-first (one wireframe per screen, no separate mobile wireframe).'
       : effectivePlatform === 'mobile'
-        ? ' Target platform for this run: MOBILE — every screen in the UX spec MUST set `layout: "mobile"`.'
+        ? ' Target platform for this run: MOBILE — every screen in the UX spec MUST set `layout: "mobile"`. The app renders in a FIXED phone viewport: no responsive/adaptive behavior, no `responsive_notes`.'
         : '';
     // Audience (multi-target runs only), paired with the platform directive: two
     // WEB targets differ ONLY here, and the docs folder is shared across every
@@ -14896,7 +15068,10 @@ export async function startServer({
     const featureScope = featureAppName
       ? `feature "${projectId}" of app "${featureAppName}"`
       : `feature "${projectId}"`;
-    const kickoff = `Run the "${def.name}" pipeline for ${featureScope}. ${skillDirective}${sourceDirective}${platformDirective}${audienceDirective}${rerunDirective}${kbDirective}${appCtxDirective}${reactDsDirective}${graphDirective}`;
+    // UI terminals (ui-html / ui-react / ui-react-ds) get the target-viewport
+    // directive on multi-target runs (responsive website vs fixed-viewport app).
+    const uiDirective = def.id.startsWith('ui-') ? await uiTargetDirective(wfDir) : '';
+    const kickoff = `Run the "${def.name}" pipeline for ${featureScope}. ${skillDirective}${sourceDirective}${platformDirective}${audienceDirective}${uiDirective}${rerunDirective}${kbDirective}${appCtxDirective}${reactDsDirective}${graphDirective}`;
 
     // BAS document pre-fetch (BE owns the BAS KG HTTP) — done BEFORE any
     // conversation/run state is created so a fetch failure aborts cleanly with no
@@ -14981,13 +15156,13 @@ export async function startServer({
       // RE-RUN clear: delete the local output files of every stage in regenIds
       // so the agent regenerates instead of finding leftovers and stopping. The
       // manual-edits commit above already snapshotted them → recoverable via the
-      // project history. Path-derived ownership (stagesForOutput) so it matches
-      // the workflow-namespaced tree exactly and never touches upstream inputs.
+      // project history. relClearedByRegen = path-derived ownership PLUS the
+      // target fence: a target-scoped run clears ONLY its own <wf>/<target>/
+      // subtree, never a sibling target's outputs of the same stage.
       try {
         const snap = await snapshotPipelineCwd(pipelineCwd);
         for (const rel of snap.keys()) {
-          if (isHistoryArtifact(rel)) continue;
-          if (stagesForOutput(rel).some((d) => regenIds.has(d.id))) {
+          if (relClearedByRegen(rel, regenIds, wfDir)) {
             await fs.promises.rm(path.join(pipelineCwd, rel), { force: true }).catch(() => null);
           }
         }
@@ -15186,21 +15361,24 @@ export async function startServer({
         targetDir: string | undefined,
         platform: import('@open-design/contracts').TargetPlatform | undefined,
         audience?: import('@open-design/contracts').UiTargetAudience,
+        // Per-target design system (multi-target run): overrides the run-wide
+        // opts.designSystemId for THIS target's UI stages.
+        designSystemOverride?: string,
       ): Promise<'succeeded' | 'failed' | 'idle'> => {
         const def = getPipelineDef(id)!;
-        const start = await runPipeline(
-          projectId,
-          id,
-          def.inputPlaceholder ? opts.input : undefined,
-          def.inputPlaceholder ? opts.source : undefined,
-          def.acceptsDesignSystem ? opts.designSystemId : undefined,
-          def.acceptsPlatform ? platform : undefined,
-          id === stages[0] && !opts.skipSucceeded ? 'downstream' : undefined,
-          def.inputPlaceholder ? opts.followLinks : undefined,
-          def.inputPlaceholder ? opts.includeDescendants : undefined,
+        const start = await runPipeline(projectId, id, {
+          input: def.inputPlaceholder ? opts.input : undefined,
+          source: def.inputPlaceholder ? opts.source : undefined,
+          designSystemId: def.acceptsDesignSystem
+            ? (designSystemOverride ?? opts.designSystemId)
+            : undefined,
+          platform: def.acceptsPlatform ? platform : undefined,
+          resetScope: id === stages[0] && !opts.skipSucceeded ? 'downstream' : undefined,
+          followLinks: def.inputPlaceholder ? opts.followLinks : undefined,
+          includeDescendants: def.inputPlaceholder ? opts.includeDescendants : undefined,
           targetDir,
           audience,
-        );
+        });
         return start.completion;
       };
       try {
@@ -15223,7 +15401,7 @@ export async function startServer({
           // file is the post-docs stages' input for which targets to build —
           // replacing the "clone docs per target" scheme. Written once up front.
           try {
-            const cfg = buildTargetsConfig(targets);
+            const cfg = buildTargetsConfig(targets, opts.designSystemByTarget);
             await fs.promises.writeFile(
               path.join(projectRoot, base, TARGETS_CONFIG_BASENAME),
               `${JSON.stringify(cfg, null, 2)}\n`,
@@ -15252,7 +15430,7 @@ export async function startServer({
             }
             let ok = true;
             for (const id of postStageIds) {
-              if ((await runStage(id, dir, UI_TARGETS[t].platform, UI_TARGETS[t].audience)) !== 'succeeded') {
+              if ((await runStage(id, dir, UI_TARGETS[t].platform, UI_TARGETS[t].audience, opts.designSystemByTarget?.[t])) !== 'succeeded') {
                 console.warn(`[pipelines] run-all for ${projectId} target "${dir}" stopped at "${id}"`);
                 ok = false;
                 break; // this target aborts; other targets still run
@@ -15455,22 +15633,63 @@ export async function startServer({
   // dist from the synced src/ through the SAME builder the agent used:
   // build.sh reseeds the template scaffold (cp -Rn) then runs tsc+vite in the
   // shared toolkit container. Requires Docker on this machine.
+  // Configured multi-target list of the ui workflow (targets.json). [] when
+  // single-build (or unreadable) — best-effort, used only for artifact probing.
+  const configuredUiTargets = async (
+    cwd: string,
+  ): Promise<import('@open-design/contracts').UiTarget[]> => {
+    const wf = workflowDirForPipeline('ui-react-ds');
+    if (!wf) return [];
+    const { TARGETS_CONFIG_BASENAME, isUiTarget } = await import('@open-design/contracts');
+    try {
+      const raw = await fs.promises.readFile(path.join(cwd, wf, TARGETS_CONFIG_BASENAME), 'utf8');
+      const cfg = JSON.parse(raw);
+      return Array.isArray(cfg?.targets) ? cfg.targets.filter(isUiTarget) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  // Candidate roots for a per-target build artifact (`react` / `react-ds`)
+  // under one workflow dir. Multi-target projects nest the artifact per target
+  // (<wf>/<target>/<leaf>): a requested target probes ONLY its own dir; no
+  // request probes every configured target (targets.json order) and keeps the
+  // legacy shared root (<wf>/<leaf>) as the single-build fallback.
+  const targetArtifactDirs = async (
+    cwd: string,
+    wf: string | null,
+    leaf: string,
+    target: import('@open-design/contracts').UiTarget | undefined,
+  ): Promise<string[]> => {
+    if (!wf) return [];
+    const { UI_TARGETS } = await import('@open-design/contracts');
+    if (target) return [path.join(cwd, wf, UI_TARGETS[target].dir, leaf)];
+    const configured = await configuredUiTargets(cwd);
+    return [
+      ...configured.map((t) => path.join(cwd, wf, UI_TARGETS[t].dir, leaf)),
+      path.join(cwd, wf, leaf),
+    ];
+  };
+
   const buildReactAppForProject = async (
     projectId: string,
+    target?: import('@open-design/contracts').UiTarget,
   ): Promise<{ built: boolean; output: string }> => {
     const cwd = await ensureProject(PROJECTS_DIR, projectId);
-    // The react/ sources live under the ui-react stage's workflow folder; old
-    // projects predate the workflow merge and keep the retired docs-to-react
-    // folder, so probe that as a fallback. The ui-react-ds stage keeps its own
-    // react-ds/ tree with its own builder — probed last so an existing react/
-    // project keeps its build target unchanged.
+    // The react/ sources live under the ui-react stage's workflow folder
+    // (target-scoped on multi-target projects); old projects predate the
+    // workflow merge and keep the retired docs-to-react folder, so probe that
+    // as a fallback. The ui-react-ds stage keeps its own react-ds/ tree with
+    // its own builder — probed last so an existing react/ project keeps its
+    // build target unchanged.
     const candidates = [
-      ...[workflowDirForPipeline('ui-react'), 'docs-to-react']
-        .filter((d): d is string => Boolean(d))
-        .map((d) => ({ dir: path.join(cwd, d, 'react'), skill: 'ui-react' })),
-      ...[workflowDirForPipeline('ui-react-ds')]
-        .filter((d): d is string => Boolean(d))
-        .map((d) => ({ dir: path.join(cwd, d, 'react-ds'), skill: 'ui-react-ds' })),
+      ...(await targetArtifactDirs(cwd, workflowDirForPipeline('ui-react'), 'react', target)).map(
+        (dir) => ({ dir, skill: 'ui-react' }),
+      ),
+      ...(target ? [] : [{ dir: path.join(cwd, 'docs-to-react', 'react'), skill: 'ui-react' }]),
+      ...(await targetArtifactDirs(cwd, workflowDirForPipeline('ui-react-ds'), 'react-ds', target)).map(
+        (dir) => ({ dir, skill: 'ui-react-ds' }),
+      ),
     ];
     let reactDir: string | null = null;
     let builderSkill = 'ui-react';
@@ -15517,15 +15736,13 @@ export async function startServer({
   // react/prototype-demo/ (see react-demo.ts). Deterministic — no agent.
   const buildReactDemoForProject = async (
     projectId: string,
+    target?: import('@open-design/contracts').UiTarget,
   ): Promise<{ cases: number; output: string }> => {
     const cwd = await ensureProject(PROJECTS_DIR, projectId);
     const candidateDirs = [
-      ...[workflowDirForPipeline('ui-react'), 'docs-to-react']
-        .filter((d): d is string => Boolean(d))
-        .map((d) => path.join(cwd, d, 'react')),
-      ...[workflowDirForPipeline('ui-react-ds')]
-        .filter((d): d is string => Boolean(d))
-        .map((d) => path.join(cwd, d, 'react-ds')),
+      ...(await targetArtifactDirs(cwd, workflowDirForPipeline('ui-react'), 'react', target)),
+      ...(target ? [] : [path.join(cwd, 'docs-to-react', 'react')]),
+      ...(await targetArtifactDirs(cwd, workflowDirForPipeline('ui-react-ds'), 'react-ds', target)),
     ];
     let reactDir: string | null = null;
     for (const dir of candidateDirs) {
@@ -15557,30 +15774,115 @@ export async function startServer({
   // component-instance markers, rebuilt as real instances by the design-v3
   // Fig Pipeline plugin's "Screen JSON → Figma" tab. React-DS ONLY — a
   // generic ui-react app has no markers and no matching UI-Lib Figma file.
-  const figmaCaptureForProject = async (projectId: string) => {
+  const figmaCaptureForProject = async (
+    projectId: string,
+    target?: import('@open-design/contracts').UiTarget,
+  ) => {
     const cwd = await ensureProject(PROJECTS_DIR, projectId);
-    const wfDir = workflowDirForPipeline('ui-react-ds');
-    const reactDsDir = wfDir ? path.join(cwd, wfDir, 'react-ds') : null;
-    const hasDist =
-      reactDsDir !== null &&
-      (await fs.promises.access(path.join(reactDsDir, 'dist', 'index.html')).then(
+    // Multi-target projects keep one built react-ds/ per target — capture the
+    // requested one (or the first configured target that has a build).
+    const candidates = await targetArtifactDirs(
+      cwd,
+      workflowDirForPipeline('ui-react-ds'),
+      'react-ds',
+      target,
+    );
+    let reactDsDir: string | null = null;
+    for (const dir of candidates) {
+      const hasDist = await fs.promises.access(path.join(dir, 'dist', 'index.html')).then(
         () => true,
         () => false,
-      ));
-    if (!reactDsDir || !hasDist) {
+      );
+      if (hasDist) {
+        reactDsDir = dir;
+        break;
+      }
+    }
+    if (!reactDsDir) {
       throw new Error(
-        'no <workflow>/react-ds/dist in this project — run the "UI-Spec (React DS)" pipeline and Build app first',
+        target
+          ? `no built react-ds for target "${target}" — run the "UI-Spec (React DS)" pipeline for that target and Build app first`
+          : 'no <workflow>/react-ds/dist in this project — run the "UI-Spec (React DS)" pipeline and Build app first',
       );
     }
     const result = await runFigmaCapture(reactDsDir, RUNTIME_DATA_DIR, projectId);
+    // Icon markers mang SLUG (compile-core) còn plugin Figma match theo TÊN
+    // NGUYÊN VĂN → viết lại marker bằng tên thật từ IR của DS target (map
+    // designSystemByTarget trong targets.json). Best-effort — thiếu DS/IR thì
+    // giữ nguyên slug (plugin sẽ unmatched như cũ và audit vẫn cảnh báo).
+    try {
+      const wf = workflowDirForPipeline('ui-react-ds');
+      const seg = path.relative(cwd, reactDsDir).split(path.sep)[1] ?? '';
+      const { UI_TARGETS, UI_TARGET_IDS, TARGETS_CONFIG_BASENAME } = await import('@open-design/contracts');
+      const t = UI_TARGET_IDS.find((id) => UI_TARGETS[id].dir === seg);
+      if (wf && t) {
+        const cfg = JSON.parse(
+          await fs.promises.readFile(path.join(cwd, wf, TARGETS_CONFIG_BASENAME), 'utf8'),
+        ) as { designSystemByTarget?: Record<string, string> };
+        const dsId = cfg.designSystemByTarget?.[t];
+        if (dsId) {
+          const irDir = path.join(
+            USER_DESIGN_SYSTEMS_DIR,
+            dsId.startsWith('user:') ? dsId.slice('user:'.length) : dsId,
+            'ir',
+          );
+          const map = await iconNameMapFromIrDir(irDir);
+          const rewritten = await rewriteIconMarkersInDir(path.join(reactDsDir, 'figma-screens'), map);
+          if (rewritten > 0) console.log(`[figma-capture] rewrote ${rewritten} icon marker(s) slug → real Figma name`);
+        }
+      }
+    } catch {
+      /* best-effort */
+    }
     await commitHistory(cwd, {
       kind: 'build',
       note: `figma capture (${result.screens} màn, ${result.markers} instance)`,
       by: historyActor(),
     }).catch(() => null);
     // cwd-relative path of the merged screens.json — the web UI copies its
-    // content to the clipboard via GET /api/projects/:id/raw/<rawPath>.
-    const rawPath = [wfDir, 'react-ds', ...result.screensJson.split(path.sep)].join('/');
+    // content to the clipboard via GET /api/projects/:id/raw/<rawPath>. Derived
+    // from the ACTUAL captured dir so the target segment survives.
+    const rawPath = [
+      ...path.relative(cwd, reactDsDir).split(path.sep),
+      ...result.screensJson.split(path.sep),
+    ].join('/');
+    return { ...result, rawPath };
+  };
+
+  // Lớp 1 audit "Preview ↔ Figma": soi tĩnh figma-screens/*.capture.json đối
+  // chiếu bộ DS đã stage, báo trước unmatched/variant-fallback/oversize-layer
+  // TRƯỚC khi người dùng dán vào Figma. Ghi figma-screens/audit.json.
+  const figmaAuditForProject = async (
+    projectId: string,
+    target?: import('@open-design/contracts').UiTarget,
+  ) => {
+    const cwd = await ensureProject(PROJECTS_DIR, projectId);
+    const candidates = await targetArtifactDirs(
+      cwd,
+      workflowDirForPipeline('ui-react-ds'),
+      'react-ds',
+      target,
+    );
+    let reactDsDir: string | null = null;
+    for (const dir of candidates) {
+      const has = await fs.promises
+        .access(path.join(dir, 'figma-screens', 'screens'))
+        .then(() => true, () => false);
+      if (has) {
+        reactDsDir = dir;
+        break;
+      }
+    }
+    if (!reactDsDir) {
+      throw new Error(
+        'chưa có figma-screens nào — bấm "Capture Figma" (hoặc `od pipeline figma-capture`) trước khi audit.',
+      );
+    }
+    const result = await runFigmaAudit(reactDsDir);
+    const rawPath = [
+      ...path.relative(cwd, reactDsDir).split(path.sep),
+      ...result.auditJson.split(path.sep),
+    ].join('/');
     return { ...result, rawPath };
   };
 
@@ -15684,6 +15986,7 @@ export async function startServer({
     buildReact: buildReactAppForProject,
     buildReactDemo: buildReactDemoForProject,
     figmaCapture: figmaCaptureForProject,
+    figmaAudit: figmaAuditForProject,
     localOutputs: localOutputsForProject,
     history: projectHistoryForProject,
     restoreHistory: restoreHistoryForProject,

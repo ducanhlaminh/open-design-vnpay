@@ -1283,6 +1283,7 @@ export const zhCN: Dict = {
   'ds.categoryAll': '全部',
   'ds.categoryUncategorized': '未分类',
   'ds.showcase': '展示',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Token',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': '正在加载 DESIGN.md…',

@@ -696,6 +696,7 @@ export const ko: Dict = {
   'ds.categoryAll': '전체',
   'ds.categoryUncategorized': '미분류',
   'ds.showcase': '쇼케이스',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': '토큰',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'DESIGN.md 불러오는 중…',

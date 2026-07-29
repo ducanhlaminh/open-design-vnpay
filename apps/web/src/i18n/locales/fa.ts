@@ -718,6 +718,7 @@ export const fa: Dict = {
   'ds.categoryAll': 'همه',
   'ds.categoryUncategorized': 'دسته‌بندی نشده',
   'ds.showcase': 'ویترین',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'توکن‌ها',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'بارگذاری DESIGN.md…',

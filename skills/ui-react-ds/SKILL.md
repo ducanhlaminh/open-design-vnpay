@@ -81,11 +81,13 @@ your feedback loop: build → read errors → fix `src/` → build again, until 
 green.**
 
 Sau khi `vite build` xanh, script chạy tiếp **`builder/verify.mjs`** — cổng
-design-system: nó soi `src/screens/` + `src/components/app/` và **fail build**
-khi bạn inline token thay vì dùng class `tk-*`, viết hex/rgb, hay dựng tay
-khung màn mà DS đã có component. Lỗi in ra kèm class `tk-*` / tên component
-thay thế — sửa theo đúng gợi ý rồi chạy lại. Muốn xem báo cáo mà không chặn:
-`UIREACT_VERIFY_SOFT=1`.
+design-system: nó soi `src/screens/` + `src/components/` và **fail build**
+khi bạn inline token thay vì dùng class `tk-*`, viết hex/rgb, viết GIÁ TRỊ
+literal cho thuộc tính styling (`fontSize: 14`, `color: 'white'`,
+`borderRadius: 8`…), hay dựng tay khung màn mà DS đã có component cùng nhóm
+(khớp mờ theo tên: `i-pay-dialog`, `dialog-action` đều thuộc nhóm Dialog).
+Lỗi in ra kèm class `tk-*` / tên component thay thế — sửa theo đúng gợi ý rồi
+chạy lại. Muốn xem báo cáo mà không chặn: `UIREACT_VERIFY_SOFT=1`.
 
 ## LUẬT token & styling (bắt buộc — đây là điểm khác ui-react)
 
@@ -118,10 +120,37 @@ thay thế — sửa theo đúng gợi ý rồi chạy lại. Muốn xem báo c�
    "Screen scaffolding" ở đầu `catalog.md` trước khi viết `components/app/`:
    app bar / header, bottom sheet, dialog, tab bar & navigation bar, card,
    list item, snackbar/note. Tự dựng lại = mất instance khi sang Figma.
+
+   Nếu component của nhóm đó **thật sự không dùng được** (text cứng không có
+   prop override, không nhận handler…), khai báo ngoại lệ NGAY TRONG file tự
+   dựng — verify sẽ cho qua nhưng in cảnh báo để reviewer thấy:
+
+   ```
+   // od-verify-allow: scaffold — <lý do cụ thể, ví dụ: i-pay-dialog label cứng "Label", không nhận onClick>
+   ```
+
+   Đây là lối thoát CUỐI CÙNG cho đúng file đó — không phải cách né luật;
+   composite tự dựng vẫn phải bọc tối đa các atom DS (overlay, button…) và
+   style 100% qua class `tk-*`.
 4. Layout thuần (`display` / `flex*` / `gap` / `position` / `inset` / `zIndex`
    / `width` / `height` / padding-margin số) được phép viết inline `style` —
    đó là cấu trúc, không phải styling giá trị.
-5. **Dark mode / brand theme**: đổi class `.dark` / `.mode-*` trên root — token
+5. **`src/styles/layout.css` — file CSS DUY NHẤT bạn được sửa, và CHỈ chứa
+   layout.** Dùng cho (a) breakpoint responsive và (b) class layout tái dùng
+   mà inline style không tả được. Quy tắc:
+   - Mọi class định nghĩa ở đó phải prefix **`ly-`**; dùng class `ly-*` chưa
+     định nghĩa trong file = lỗi verify.
+   - CHỈ thuộc tính layout (display/flex*/grid*/gap/position/inset/z-index/
+     size/min-max/padding/margin/overflow/order/aspect-ratio). Màu / chữ /
+     radius / shadow trong file này = **verify FAIL** — styling giá trị vẫn
+     phải qua class `tk-*` trong markup.
+   - **Target website (responsive)**: breakpoint khai ở đây, desktop-first,
+     adapt tại `@media (max-width: 768px)` theo đúng `responsive_notes` của
+     từng màn trong UX spec. Không có `@media` nào = verify FAIL.
+   - **Target mobile-app (fixed viewport 390px)**: CẤM `@media` — một layout
+     duy nhất. (Daemon ghi target của run vào `./react-ds/.od-target.json`;
+     verify đọc file đó, bạn không cần khai gì.)
+6. **Dark mode / brand theme**: đổi class `.dark` / `.mode-*` trên root — token
    tự đổi. KHÔNG viết màu dark thủ công. Không tự chế theme provider.
 
 ## Workflow (do these in order)
@@ -129,8 +158,20 @@ thay thế — sửa theo đúng gợi ý rồi chạy lại. Muốn xem báo c�
 ### 1. Seed + read the spec
 Run the build script once so the scaffold exists green, then read the UX Spec
 (`../ux/*-ux-spec.json` + `../wireframes/` + `../flows/` from the ux stage) and
-`src/ds/docs/catalog.md`. Map every spec screen → the ds components that build
-it. The wireframe IS the layout contract — do NOT re-derive layout from prose.
+`src/ds/docs/catalog.md`. The wireframe IS the layout contract — do NOT
+re-derive layout from prose.
+
+**Map wireframe → component qua mục "Wireframe mapping" của `catalog.md`** —
+đó là NGUỒN SỰ THẬT, không tự đoán trong 200+ tên component: mỗi slug wireframe
+(`shadcn:Button`, `mobile:ActionSheet`…) có sẵn component DS phải dùng; slug
+ghi "(không có)" mới được tự dựng bằng markup + class `tk-*`. Wireframe nhắc
+component đặc thù (chart, template màn…) qua prop `note` — tra mục "Component
+đặc thù" ngay dưới bảng map.
+
+**Node wireframe có prop `comp` = lựa chọn ĐÃ ĐƯỢC NGƯỜI CHỐT** (gán trong
+preview ux-spec): node đó PHẢI dựng bằng đúng component ấy — `comp` override
+bảng map, không thương lượng. Verify sẽ fail nếu một component đã chốt không
+được dùng.
 
 ### 2. Design the app component layer (`src/components/app/`)
 Derive the recurring patterns across screens (screen shell with AppBar/BottomBar,
@@ -207,15 +248,19 @@ lost. Rules (mirrors design-v3's `fig-playwright`):
   entry) or for hover-only affordances.
 - Selectors: prefer `text=<nhãn hiển thị>`; fall back to a stable attribute you
   rendered (e.g. `[data-flow-action="<label>"]`).
+- **Viewports**: KHÔNG cần khai — target responsive tự capture mỗi màn/state ở
+  cả 1440 lẫn 390 (frame Figma `<tên> · <width>`), target mobile-app chỉ 390.
+  Chỉ thêm `"viewports": [<width>…]` khi muốn override danh sách đó.
 
 ## Hard rules
 - **Author only `./react-ds/src/`** (screens, `src/components/app/`, `App.tsx`,
-  `main.tsx`) **+ `./react-ds/flow.json` + `./react-ds/layout.json`**. Do NOT
-  edit `package.json` / `vite.config.ts` (keep `base: './'`) / `tsconfig.json`
-  / `index.html` / anything under `src/ds/` or `public/` / the generated
-  `screens/` entries.
-- `src/index.css` stays as shipped (it only imports the ds globals) — theming
-  is mode classes, not CSS edits.
+  `main.tsx`, `src/styles/layout.css`) **+ `./react-ds/flow.json` +
+  `./react-ds/layout.json`**. Do NOT edit `package.json` / `vite.config.ts`
+  (keep `base: './'`) / `tsconfig.json` / `index.html` / anything under
+  `src/ds/` or `public/` / the generated `screens/` entries.
+- `src/index.css` stays as shipped (it imports the ds globals + layout.css) —
+  theming is mode classes; the ONLY editable stylesheet is
+  `src/styles/layout.css` (layout-only, rule 5 above).
 - **Dependencies:** `react`, `react-dom`, `react-router-dom` only. Do NOT run
   `npm`/`pnpm install`; do NOT import anything else — the ds components are
   dependency-free by construction.
@@ -231,10 +276,16 @@ lost. Rules (mirrors design-v3's `fig-playwright`):
   `./react-ds/layout.json` reflect it, AND
 - every `flow.json` edge has its `data-flow-action="<label>"` element on the
   `from` screen, AND
-- screens use ONLY ds components + `tk-*` classes — **`builder/verify.mjs` exits
-  0** (nó chặn: inline `style` mang `var(--token)` cho màu/chữ/radius/shadow,
-  hex/rgb literal, class utility tự chế / Tailwind, và khung màn dựng tay khi
-  DS đã có component). Verify đỏ = chưa xong; đừng bypass bằng
-  `UIREACT_VERIFY_SOFT`.
+- screens use ONLY ds components + `tk-*`/`ly-*` classes — **`builder/verify.mjs`
+  exits 0** (nó chặn: inline `style` mang `var(--token)` cho màu/chữ/radius/
+  shadow, hex/rgb literal, giá trị literal cho thuộc tính styling — `fontSize:
+  14`, `color: 'white'`, `borderRadius: 8`…, class utility tự chế / Tailwind,
+  class `ly-*` chưa định nghĩa, giá trị styling hay class không-`ly-` trong
+  `layout.css`, thiếu `@media` khi target responsive / có `@media` khi target
+  mobile-app, khung màn dựng tay khi DS đã có component cùng nhóm — check TỪNG
+  FILE, file nào dựng tay phải tự import component nhóm đó hoặc khai
+  `// od-verify-allow: scaffold — <lý do>`, và file render markup mà KHÔNG
+  tham chiếu token tk-* / component DS / app-layer nào). Verify đỏ = chưa xong;
+  đừng bypass bằng `UIREACT_VERIFY_SOFT`.
 
 Report the number of screens built + the app-layer component list, and stop.

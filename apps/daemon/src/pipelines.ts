@@ -435,6 +435,68 @@ export function stageForOutput(rel: string): PipelineDef | undefined {
 }
 
 /**
+ * Which configured target a SINGLE-stage run builds (multi-target projects,
+ * contract: RunPipelineRequest.target). Pure decision half of the daemon's
+ * resolveRunTargetDir — kept here so the rules are unit-testable:
+ *   no targets configured + no request  → null (single build, legacy);
+ *   no targets configured + a request   → error (not a multi-target project);
+ *   one target configured + no request  → that target (auto);
+ *   several configured + no request     → error (caller must pick);
+ *   requested not in the configured set → error.
+ */
+export function pickRunTarget<T extends string>(configured: readonly T[], requested: T | undefined): T | null {
+  if (configured.length === 0) {
+    if (requested) {
+      throw new Error(
+        `target "${requested}" chỉ dùng được trên dự án multi-target — dự án này chưa có targets.json (chạy bước docs với lựa chọn target trước).`,
+      );
+    }
+    return null;
+  }
+  const target = requested ?? (configured.length === 1 ? configured[0]! : null);
+  if (!target) {
+    throw new Error(
+      `Dự án này build ${configured.length} target (${configured.join(', ')}) — chỉ định target cho lần chạy stage này (CLI: --target <id>).`,
+    );
+  }
+  if (!configured.includes(target)) {
+    throw new Error(`target "${target}" không nằm trong targets.json (${configured.join(', ')}).`);
+  }
+  return target;
+}
+
+/** Whether a run cwd (`wfDir`, project-relative) is scoped to one multi-target
+ *  subfolder (`<workflow>/<target>`), as opposed to the shared workflow root. */
+export function isTargetScopedWfDir(wfDir: string | null | undefined): boolean {
+  if (!wfDir) return false;
+  const segments = wfDir.split('/');
+  return segments.length >= 2 && UI_TARGET_DIRS.has(segments[1]!);
+}
+
+/**
+ * The RE-RUN clear predicate every runner shares: should `rel` (project-cwd-
+ * relative) be deleted before re-running the stages in `regenIds`?
+ *
+ * Ownership is path-derived (stagesForOutput) so the clear matches the
+ * workflow-namespaced tree exactly and never touches upstream inputs. TARGET
+ * FENCE: stagesForOutput deliberately STRIPS the multi-target segment for
+ * attribution (`<wf>/mobile/ux/…` and `<wf>/web-user/ux/…` both attribute to
+ * `ux`), so a target-scoped run (wfDir = `<workflow>/<target>`) must
+ * additionally confine deletions to its own subtree — without the fence,
+ * re-running a stage for ONE target would wipe the same stage's outputs of
+ * EVERY other target.
+ */
+export function relClearedByRegen(
+  rel: string,
+  regenIds: ReadonlySet<string>,
+  wfDir: string | null | undefined,
+): boolean {
+  if (isHistoryArtifact(rel)) return false;
+  if (isTargetScopedWfDir(wfDir) && !rel.startsWith(`${wfDir}/`)) return false;
+  return stagesForOutput(rel).some((d) => regenIds.has(d.id));
+}
+
+/**
  * Whether a project-cwd-relative path is barred from media-store sync by its
  * stage's `syncExclude` patterns (both directions: push skip/prune AND pull
  * ignore). Workflow-namespaced paths are matched against the workflow-relative

@@ -718,6 +718,7 @@ export const uk: Dict = {
   'ds.categoryAll': 'Все',
   'ds.categoryUncategorized': 'Без категорії',
   'ds.showcase': 'Витрина',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Токени',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'Завантаження DESIGN.md…',

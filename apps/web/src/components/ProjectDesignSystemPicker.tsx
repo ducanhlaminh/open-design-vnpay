@@ -21,6 +21,8 @@ interface PopoverAnchor {
   top: number;
   left: number;
   width: number;
+  /** Viewport-clamped cap — the popover must never spill past the screen edge. */
+  maxHeight: number;
 }
 
 interface Props {
@@ -92,7 +94,33 @@ export function ProjectDesignSystemPicker({
       const popoverWidth = Math.min(640, Math.max(300, window.innerWidth * 0.86));
       const viewport = window.innerWidth;
       const left = Math.max(8, Math.min(viewport - popoverWidth - 8, rect.left));
-      setAnchor({ top: rect.bottom + 6, left, width: popoverWidth });
+      // Vertical clamp: `rect.bottom + 6` alone let the (up to 60vh tall)
+      // popover spill past the bottom of the screen whenever the trigger sat
+      // in the lower half — e.g. the DS field of the run modal. Prefer below;
+      // flip ABOVE when below is cramped and above has more room; either way
+      // cap maxHeight to the space actually available (floored so tiny
+      // windows still get a usable list instead of a sliver).
+      const MARGIN = 12;
+      const GAP = 6;
+      const desired = Math.min(window.innerHeight * 0.6, 560);
+      const spaceBelow = window.innerHeight - rect.bottom - GAP - MARGIN;
+      const spaceAbove = rect.top - GAP - MARGIN;
+      if (spaceBelow >= Math.min(desired, 320) || spaceBelow >= spaceAbove) {
+        setAnchor({
+          top: rect.bottom + GAP,
+          left,
+          width: popoverWidth,
+          maxHeight: Math.max(260, Math.min(desired, spaceBelow)),
+        });
+      } else {
+        const maxHeight = Math.max(260, Math.min(desired, spaceAbove));
+        setAnchor({
+          top: Math.max(MARGIN, rect.top - GAP - maxHeight),
+          left,
+          width: popoverWidth,
+          maxHeight,
+        });
+      }
     }
     updateAnchor();
     window.addEventListener('resize', updateAnchor);
@@ -150,16 +178,29 @@ export function ProjectDesignSystemPicker({
     };
   }, [previewTarget?.id]);
 
+  // Tab lọc theo thẻ platform của DS (gắn ở /design-systems). Chỉ hiện khi
+  // catalog này có ít nhất một DS gắn thẻ — picker của catalog chưa phân loại
+  // không cần thêm nhiễu. DS chưa gắn thẻ chỉ nằm ở "All".
+  const [platformTab, setPlatformTab] = useState<'all' | 'mobile' | 'web'>('all');
+  const hasPlatformTags = useMemo(
+    () => designSystems.some((d) => d.platform === 'mobile' || d.platform === 'web'),
+    [designSystems],
+  );
+
   const filtered = useMemo(() => {
+    const base =
+      hasPlatformTags && platformTab !== 'all'
+        ? designSystems.filter((d) => d.platform === platformTab)
+        : designSystems;
     const q = query.trim().toLowerCase();
-    if (q.length === 0) return designSystems;
-    return designSystems.filter((d) => {
+    if (q.length === 0) return base;
+    return base.filter((d) => {
       const localizedSummary = localizeDesignSystemSummary(locale, d);
       const localizedCategory = localizeDesignSystemCategory(locale, d.category);
       const haystack = `${d.title} ${d.category} ${d.summary} ${localizedCategory} ${localizedSummary}`.toLowerCase();
       return haystack.includes(q);
     });
-  }, [query, designSystems, locale]);
+  }, [query, designSystems, locale, hasPlatformTags, platformTab]);
 
   return (
     <div
@@ -206,6 +247,7 @@ export function ProjectDesignSystemPicker({
                 top: anchor.top,
                 left: anchor.left,
                 width: anchor.width,
+                maxHeight: anchor.maxHeight,
                 ...(popoverZIndex != null ? { zIndex: popoverZIndex } : {}),
               }}
             >
@@ -220,6 +262,22 @@ export function ProjectDesignSystemPicker({
                   data-testid="project-ds-picker-search"
                 />
               </div>
+              {hasPlatformTags ? (
+                <div className="project-ds-picker-platform" role="tablist" aria-label="Platform filter">
+                  {(['all', 'mobile', 'web'] as const).map((tab) => (
+                    <button
+                      key={tab}
+                      type="button"
+                      role="tab"
+                      aria-selected={platformTab === tab}
+                      className={platformTab === tab ? 'active' : ''}
+                      onClick={() => setPlatformTab(tab)}
+                    >
+                      {tab === 'all' ? 'All' : tab === 'mobile' ? 'Mobile' : 'Web'}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <div className="project-ds-picker-body">
                 <div className="project-ds-picker-list" role="listbox">
                   <button
@@ -270,6 +328,11 @@ export function ProjectDesignSystemPicker({
                       >
                         <div className="project-ds-picker-option-head">
                           <span className="project-ds-picker-option-title">{d.title}</span>
+                          {d.platform ? (
+                            <span className="project-ds-picker-option-cat">
+                              {d.platform === 'mobile' ? 'Mobile' : 'Web'}
+                            </span>
+                          ) : null}
                           {d.category ? (
                             <span className="project-ds-picker-option-cat">{localizedCategory}</span>
                           ) : null}

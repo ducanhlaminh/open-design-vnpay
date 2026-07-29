@@ -712,6 +712,7 @@ export const fr: Dict = {
   'ds.categoryAll': 'Tout',
   'ds.categoryUncategorized': 'Non catégorisé',
   'ds.showcase': 'Vitrine',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Jetons',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'Chargement du DESIGN.md…',

@@ -4,6 +4,7 @@ import { fetchDesignSystemReactInfo } from '../providers/registry';
 import type { DesignSystemReactInfo, DesignSystemSummary } from '../types';
 import { DesignSpecView } from './DesignSpecView';
 import { PreviewModal } from './PreviewModal';
+import { WireframeMapView } from './WireframeMapView';
 
 interface Props {
   system: DesignSystemSummary;
@@ -58,6 +59,11 @@ export function FigmaDesignSystemDetailModal({ system, onClose, initialFullscree
               src={`/api/design-systems/${encodeURIComponent(system.id)}/showcase`}
             />
           ),
+        },
+        {
+          id: 'wireframe-map',
+          label: t('ds.wireframeMap'),
+          custom: <WireframeMapView systemId={system.id} />,
         },
       ]}
       initialViewId="showcase"

@@ -24,6 +24,7 @@ SimStudio's `/ux-spec` after Pull All.
   "screen_type":   "list",                     // list | form | detail | confirmation | dialog | drawer | sheet | …
   "screen_intent": "Tìm và chọn đơn để hoàn",  // shown on the UX Spec header
   "layout":        "mobile",                   // "mobile" | "web" — this screen's target platform
+  "responsive_notes": "…",                     // web screens only: desktop→mobile adaptation contract (see SKILL 0b)
                                                //   (from the run's platform choice, see SKILL.md 0b;
                                                //   no choice → "mobile"). ui-html/ui-react render per this.
   "primary_actor": "actor-owner",              // accepts "actor_id" as an alias

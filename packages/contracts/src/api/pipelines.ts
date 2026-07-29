@@ -39,12 +39,21 @@ export interface UiTargetDef {
   label: string;
   /** Per-target cwd subfolder under the workflow dir (`<workflow>/<dir>/…`). */
   dir: string;
+  /**
+   * Whether this target's generated UI must be RESPONSIVE. Every target ships
+   * web tech (HTML/React — there is no native/RN track); the difference is
+   * viewport semantics: the mobile app renders in a FIXED phone viewport (no
+   * media queries), the two website targets must adapt across breakpoints
+   * (mobile ≤768px ↔ desktop). Drives the ux/ui kickoff directives, the
+   * ui-react-ds verify gate, and the Figma-capture viewport set.
+   */
+  responsive: boolean;
 }
 
 export const UI_TARGETS: Record<UiTarget, UiTargetDef> = {
-  mobile: { id: 'mobile', platform: 'mobile', audience: 'user', label: 'Mobile app', dir: 'mobile' },
-  'web-user': { id: 'web-user', platform: 'web', audience: 'user', label: 'Website (người dùng)', dir: 'web-user' },
-  'web-backoffice': { id: 'web-backoffice', platform: 'web', audience: 'backoffice', label: 'Website (backoffice)', dir: 'web-backoffice' },
+  mobile: { id: 'mobile', platform: 'mobile', audience: 'user', label: 'Mobile app', dir: 'mobile', responsive: false },
+  'web-user': { id: 'web-user', platform: 'web', audience: 'user', label: 'Website (người dùng)', dir: 'web-user', responsive: true },
+  'web-backoffice': { id: 'web-backoffice', platform: 'web', audience: 'backoffice', label: 'Website (backoffice)', dir: 'web-backoffice', responsive: true },
 };
 
 export const UI_TARGET_IDS: UiTarget[] = ['mobile', 'web-user', 'web-backoffice'];
@@ -66,25 +75,54 @@ export function isUiTarget(v: unknown): v is UiTarget {
 export interface TargetsConfig {
   /** Schema marker so a reader can recognize the file without inferring shape. */
   kind: 'od-targets';
-  version: 1;
+  /** 1 = targets/platform/audience only; 2 adds responsiveByTarget +
+   *  designSystemByTarget. Readers must tolerate missing v2 fields. */
+  version: 1 | 2;
   /** UI targets to build, in pick order. */
   targets: UiTarget[];
   /** Per-target platform (drives each screen's `layout`). */
   platformByTarget: Record<UiTarget, TargetPlatform>;
   /** Per-target audience (drives which flows/screens the ux-spec authors). */
   audienceByTarget: Record<UiTarget, 'user' | 'backoffice'>;
+  /** Per-target responsive requirement (see UiTargetDef.responsive). v2+. */
+  responsiveByTarget?: Partial<Record<UiTarget, boolean>>;
+  /**
+   * Per-target design system id (v2+). Each target picks its OWN library —
+   * the mobile app and the websites come from different Figma libs, so one
+   * project-wide id cannot serve a multi-target build. Resolution order for a
+   * UI stage run: explicit per-run designSystemId → this map → the app-config
+   * default. Missing entries simply fall through.
+   */
+  designSystemByTarget?: Partial<Record<UiTarget, string>>;
 }
 
-/** Build the `targets.json` payload from a target selection (platform/audience
- *  resolved from the static `UI_TARGETS` descriptor). */
-export function buildTargetsConfig(targets: UiTarget[]): TargetsConfig {
+/** Build the `targets.json` payload from a target selection (platform/
+ *  audience/responsive resolved from the static `UI_TARGETS` descriptor;
+ *  `designSystemByTarget` recorded when the caller picked per-target DS). */
+export function buildTargetsConfig(
+  targets: UiTarget[],
+  designSystemByTarget?: Partial<Record<UiTarget, string>>,
+): TargetsConfig {
   const platformByTarget = {} as Record<UiTarget, TargetPlatform>;
   const audienceByTarget = {} as Record<UiTarget, 'user' | 'backoffice'>;
+  const responsiveByTarget: Partial<Record<UiTarget, boolean>> = {};
   for (const t of targets) {
     platformByTarget[t] = UI_TARGETS[t].platform;
     audienceByTarget[t] = UI_TARGETS[t].audience;
+    responsiveByTarget[t] = UI_TARGETS[t].responsive;
   }
-  return { kind: 'od-targets', version: 1, targets, platformByTarget, audienceByTarget };
+  const dsEntries = Object.entries(designSystemByTarget ?? {}).filter(
+    ([t, id]) => typeof id === 'string' && id && targets.includes(t as UiTarget),
+  );
+  return {
+    kind: 'od-targets',
+    version: 2,
+    targets,
+    platformByTarget,
+    audienceByTarget,
+    responsiveByTarget,
+    ...(dsEntries.length > 0 ? { designSystemByTarget: Object.fromEntries(dsEntries) } : {}),
+  };
 }
 
 /** Canonical relative path (under the docs-to-ui workflow dir) of the config. */
@@ -186,6 +224,16 @@ export interface PipelinesResponse {
    *  THIS mode; the UI also shows it so the reason a stage is greyed out is
    *  visible on the stepper instead of hidden in a modal chosen an hour ago. */
   runMode: PipelineRunMode;
+  /** Multi-target project: the configured targets (targets.json order). Absent
+   *  → single build. Clients use it for the target switcher and to send
+   *  `RunPipelineRequest.target` on stage runs / build / capture. */
+  targets?: UiTarget[];
+  /** Per-target, FILE-derived stage statuses (the DB run state is
+   *  stage-global): which stages have outputs under `<wf>/<target>/`. Only the
+   *  states a file scan can prove (succeeded) appear; missing = no outputs. */
+  statusByTarget?: Partial<Record<UiTarget, Record<string, PipelineStatus>>>;
+  /** targets.json v2 per-target design systems, when configured. */
+  designSystemByTarget?: Partial<Record<UiTarget, string>>;
 }
 
 /** Which stages a project's chain runs: `lean` drops the analysis stages
@@ -279,6 +327,13 @@ export interface RunAllConfig {
    *  ignored (each target carries its own). Omitted/empty → single build using
    *  `platform` (legacy). */
   targets?: UiTarget[];
+  /**
+   * Per-target design system ids (multi-target run): each target's UI stages
+   * run against its OWN library. Recorded into `targets.json` so later
+   * single-stage re-runs resolve the same DS. Falls back per target to
+   * `designSystemId`, then the app-config default.
+   */
+  designSystemByTarget?: Partial<Record<UiTarget, string>>;
   followLinks?: boolean;
   /** Docs stage: also fetch the whole sub-tree under each seed page
    *  (folder-structured), independent of followLinks. Omitted → false. */
@@ -358,6 +413,24 @@ export interface RunPipelineRequest {
    * skill's default (mobile), preserving pre-existing behavior.
    */
   platform?: TargetPlatform;
+  /**
+   * Multi-target project (`targets.json` present): WHICH target this single
+   * stage run builds. The daemon resolves it to the per-target subfolder
+   * (`<workflow>/<target>/`) plus that target's platform/audience — the same
+   * scoping the run-all orchestrator applies. Rules on a multi-target project:
+   * omitted + exactly one configured target → that target is used
+   * automatically; omitted + several targets → the run is rejected (the caller
+   * must say which product to build); a target not in `targets.json` → rejected.
+   * Ignored by the shared stages (docs ingest & sharedAcrossTargets) and by
+   * single-build (no `targets.json`) projects.
+   */
+  target?: UiTarget;
+  /**
+   * Docs stage of a multi-target run: per-target design system ids, recorded
+   * into `targets.json` alongside the chosen targets so every later stage run
+   * (and re-run) resolves each target's OWN library. Ignored on other stages.
+   */
+  designSystemByTarget?: Partial<Record<UiTarget, string>>;
   /**
    * Docs stage, deterministic Confluence path: also fetch the pages each seed
    * page LINKS to (same wiki, depth 1, capped) so referenced sibling docs (BO

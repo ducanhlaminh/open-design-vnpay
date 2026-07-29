@@ -2157,3 +2157,79 @@
   font-size: 11px;
   color: var(--text-muted, #6b7280);
 }
+
+/* ── Multi-target switcher + per-stage target dots ─────────────────────────
+   Chip row picks the ACTIVE target (stage runs / Build / Demo / Capture all
+   scope to it); the dots on a stage card show which targets already have that
+   stage's outputs on disk. */
+.pl-target-switch {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pl-target-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 200ms cubic-bezier(0.23, 1, 0.32, 1), color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.pl-target-chip:hover {
+  color: var(--foreground);
+}
+.pl-target-chip--on {
+  background: var(--accent);
+  color: var(--accent-foreground, #fff);
+}
+.pl-target-chip__count {
+  font-size: 11px;
+  opacity: 0.75;
+}
+.pl-target-dots {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 2px;
+}
+.pl-target-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+}
+.pl-target-dot--done {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+/* Run-all modal: one DS picker row per selected target (multi-target). */
+.pl-modal-field__dsrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.pl-modal-field__dsrow-label {
+  flex: 0 0 150px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.pl-modal-field__dsrow > :last-child {
+  flex: 1;
+  min-width: 0;
+}

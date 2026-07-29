@@ -69,7 +69,7 @@ im lặng ra hộp rỗng như DSL v1.
 Prop có dấu **\\*** là **bắt buộc**. Mọi leaf còn nhận thêm prop chung:
 ${Object.entries(REGISTRY.commonProps).map(([k, v]) => `\`${k}\` (${v})`).join(' · ')}.
 
-Cột **→ ui-react / ui-html / ui-rn** là hợp đồng bàn giao: bước UI dựng đúng
+Cột **→ ui-react / ui-html** là hợp đồng bàn giao: bước UI dựng đúng
 component đó, không tự chọn lại.
 
 `;
@@ -78,10 +78,10 @@ for (const [prefix, title] of GROUPS) {
   const rows = REGISTRY.slugs.filter((s) => s.slug.startsWith(prefix));
   if (!rows.length) continue;
   out += `## ${title}\n\n`;
-  out += `| Slug | Props | Từ vựng v1 (cũ) | → ui-react | → ui-html | → ui-rn |\n`;
-  out += `|---|---|---|---|---|---|\n`;
+  out += `| Slug | Props | Từ vựng v1 (cũ) | → ui-react | → ui-html |\n`;
+  out += `|---|---|---|---|---|\n`;
   for (const s of rows) {
-    out += `| \`${s.slug}\` | ${propsCell(s.props)} | ${(s.aliases ?? []).map((a) => `\`${a}\``).join(' ') || '—'} | ${code(s.map?.uiReact)} | ${code(s.map?.uiHtml)} | ${code(s.map?.uiRn)} |\n`;
+    out += `| \`${s.slug}\` | ${propsCell(s.props)} | ${(s.aliases ?? []).map((a) => `\`${a}\``).join(' ') || '—'} | ${code(s.map?.uiReact)} | ${code(s.map?.uiHtml)} |\n`;
   }
   out += `\n`;
 }

@@ -116,6 +116,11 @@ Full field reference: `references/schema.md`. Shape:
   explaining what is unclear — never omit it, or nobody will notice it was
   skipped.
 - **Do not invent apps.** Only what the docs and diagrams actually name.
+- **`handoffs` array order IS the business sequence.** The viewer draws a
+  sequence/swimlane diagram straight from the array (arrow per entry, top to
+  bottom), so list the hand-offs in the order the use case actually flows
+  (e.g. mobile gửi yêu cầu → backoffice duyệt → mobile nhận kết quả), not in
+  discovery order.
 - Diagrams outrank prose for the ORDER and the SEAMS; prose outranks diagrams
   for rules and detail. When they disagree, say so in the `why`.
 

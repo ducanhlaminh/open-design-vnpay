@@ -685,6 +685,7 @@ export const tr: Dict = {
   'ds.categoryAll': 'Tümü',
   'ds.categoryUncategorized': 'Kategorilendirilmemiş',
   'ds.showcase': 'Tanıtım',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Tokenler',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'DESIGN.md yükleniyor…',

@@ -1621,6 +1621,7 @@ export interface Dict {
   'ds.categoryAll': string;
   'ds.categoryUncategorized': string;
   'ds.showcase': string;
+  'ds.wireframeMap': string;
   'ds.tokens': string;
   'ds.specToggle': string;
   'ds.specLoading': string;

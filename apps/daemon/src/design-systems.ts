@@ -46,6 +46,9 @@ export type DesignSystemSummary = {
   projectId?: string;
   /** True when the system ships a compiled React source bundle (react/). */
   hasReactBundle?: boolean;
+  /** Product-family tag: fixed-viewport mobile app vs responsive websites.
+   *  User-set via PATCH; absent = untagged (offered to every target). */
+  platform?: 'mobile' | 'web';
 };
 
 export type DesignSystemFileKind =
@@ -178,6 +181,7 @@ type UserDesignSystemMetadata = {
   updatedAt?: string;
   provenance?: DesignSystemProvenance;
   projectId?: string;
+  platform?: 'mobile' | 'web';
 };
 
 export const LEGACY_DESIGN_SYSTEM_ARTIFACTS = [
@@ -218,6 +222,8 @@ export type UserDesignSystemInput = {
   body?: string;
   sourceNotes?: string;
   provenance?: DesignSystemProvenance;
+  /** Product-family tag; `null` clears it, invalid values are ignored. */
+  platform?: 'mobile' | 'web' | null;
 };
 
 export type UserDesignSystemRevisionInput = {
@@ -300,6 +306,9 @@ export async function listDesignSystems(
         ...(metadata.provenance ? { provenance: metadata.provenance } : {}),
         ...(metadata.projectId ? { projectId: metadata.projectId } : {}),
         ...(manifest?.react ? { hasReactBundle: true } : {}),
+        ...(metadata.platform === 'mobile' || metadata.platform === 'web'
+          ? { platform: metadata.platform }
+          : {}),
       });
     } catch {
       // Skip.
@@ -841,6 +850,45 @@ export async function updateUserDesignSystem(
   }
   const existingMeta = await readUserMetadata(root, dirId);
   const now = new Date().toISOString();
+  // METADATA-ONLY updates (platform tag, status flip) must not touch the
+  // content files: rewriting DESIGN.md + regenerating the scaffold is only
+  // meaningful when the CONTENT changed, and on a Figma-imported system it
+  // actively damages the compiled files (header rewrite mangles the title,
+  // the generic scaffold overwrites nothing useful). Fast path: update
+  // metadata.json alone and return.
+  const contentTouched =
+    input.title !== undefined ||
+    input.category !== undefined ||
+    input.surface !== undefined ||
+    input.body !== undefined ||
+    input.summary !== undefined ||
+    input.sourceNotes !== undefined ||
+    input.provenance !== undefined ||
+    input.artifactMode !== undefined;
+  if (!contentTouched) {
+    const platform =
+      input.platform === null
+        ? undefined
+        : input.platform === 'mobile' || input.platform === 'web'
+          ? input.platform
+          : existingMeta.platform;
+    const metaOnly: UserDesignSystemMetadata = {
+      ...existingMeta,
+      status: input.status ?? existingMeta.status ?? 'draft',
+      createdAt: existingMeta.createdAt ?? now,
+      updatedAt: now,
+    };
+    if (platform) metaOnly.platform = platform;
+    else delete metaOnly.platform;
+    await writeUserMetadata(root, dirId, metaOnly);
+    const listed = await listDesignSystems(root, {
+      idPrefix: 'user:',
+      source: 'user',
+      isEditable: true,
+      defaultStatus: 'draft',
+    });
+    return listed.find((s) => s.id === `user:${dirId}`) ?? null;
+  }
   const title = normalizeTitle(input.title ?? existingMeta.title ?? firstHeading(existingBody) ?? dirId);
   const category = cleanText(input.category) || existingMeta.category || extractCategory(existingBody) || 'Custom';
   const surface = input.surface ?? existingMeta.surface ?? extractSurface(existingBody) ?? 'web';
@@ -853,7 +901,15 @@ export async function updateUserDesignSystem(
     normalizeBody(input.body)
     ?? withDesignSystemHeader(existingBody, { title, category, surface });
   await writeFile(designPath, body, 'utf8');
-  await writeUserMetadata(root, dirId, {
+  // Platform tag: explicit null clears it, a valid value sets it, anything
+  // else keeps the existing tag.
+  const platform =
+    input.platform === null
+      ? undefined
+      : input.platform === 'mobile' || input.platform === 'web'
+        ? input.platform
+        : existingMeta.platform;
+  const nextMeta: UserDesignSystemMetadata = {
     ...existingMeta,
     title,
     category,
@@ -863,7 +919,10 @@ export async function updateUserDesignSystem(
     createdAt: existingMeta.createdAt ?? now,
     updatedAt: now,
     ...(provenance ? { provenance } : {}),
-  });
+  };
+  if (platform) nextMeta.platform = platform;
+  else delete nextMeta.platform;
+  await writeUserMetadata(root, dirId, nextMeta);
   const sourceNotes = provenanceToNotes(provenance) || cleanMultiline(input.sourceNotes);
   if (artifactMode !== 'agent-managed') {
     await writeGeneratedDesignSystemFiles(root, dirId, {
@@ -1856,6 +1915,9 @@ async function readUserMetadata(root: string, id: string): Promise<UserDesignSys
       ...(typeof parsed.updatedAt === 'string' ? { updatedAt: parsed.updatedAt } : {}),
       ...(provenance ? { provenance } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(parsed.platform === 'mobile' || parsed.platform === 'web'
+        ? { platform: parsed.platform }
+        : {}),
     };
   } catch {
     return {};

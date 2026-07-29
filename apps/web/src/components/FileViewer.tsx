@@ -8116,6 +8116,9 @@ function SpecFileViewer({
   // Wireframe bố cục tự do cạnh file spec (`<dir>/wireframes/<SCREEN-ID>.wire.json`,
   // bước ux emit) — key theo screen id để SpecPreview render tab Wireframe.
   const [wireframes, setWireframes] = useState<Record<string, WireDoc> | null>(null);
+  // Project-relative dir of the wire files — the SpecPreview "Gán component"
+  // panel saves edited trees back to `${wireframeDir}<id>.wire.json`.
+  const [wireframeDir, setWireframeDir] = useState<string | null>(null);
   // Rule flowcharts cạnh file spec (`<dir>/flows/<FLOW-ID>.flow.json`, bước ux
   // emit) — tab Flow render wireframe + flowchart (thay Mermaid đã gỡ).
   const [flows, setFlows] = useState<FlowDoc[] | null>(null);
@@ -8147,6 +8150,7 @@ function SpecFileViewer({
       // trailing `heuristic-review/` so the review preview finds them too.
       dir = dir.replace(/heuristic-review\/$/i, '');
       const prefix = `${dir}wireframes/`;
+      if (!cancelled) setWireframeDir(prefix);
       const flowPrefix = `${dir}flows/`;
       try {
         const files = await fetchProjectFiles(projectId);
@@ -8408,7 +8412,7 @@ function SpecFileViewer({
         ) : uxResearch && mode === 'preview' ? (
           <UxResearchPreview report={uxResearch} />
         ) : spec && mode === 'preview' ? (
-          <SpecPreview doc={spec} wireframes={wireframes} projectId={projectId} />
+          <SpecPreview doc={spec} wireframes={wireframes} projectId={projectId} wireframeDir={wireframeDir} />
         ) : spec && mode === 'flow' ? (
           <SpecFlowCanvas flows={flows ?? []} spec={spec} wireframes={wireframes} platforms={platforms} />
         ) : displayText !== null && lineCount > 0 ? (

@@ -15,8 +15,11 @@ import {
   deriveStateFromLocalFiles,
   getPipelineDef,
   isSyncExcluded,
+  isTargetScopedWfDir,
   listPipelineStatus,
   mergePipelineState,
+  pickRunTarget,
+  relClearedByRegen,
   stagesForOutput,
   workflowDirForPipeline,
 } from '../src/pipelines.js';
@@ -630,4 +633,76 @@ test('resolveRunMode: saved flag wins; legacy lean runs are inferred from state'
     ),
     'full',
   );
+});
+
+test('isTargetScopedWfDir: only <workflow>/<known-target> counts as target-scoped', () => {
+  assert.equal(isTargetScopedWfDir(null), false);
+  assert.equal(isTargetScopedWfDir(undefined), false);
+  assert.equal(isTargetScopedWfDir('docs-to-ui'), false);
+  assert.equal(isTargetScopedWfDir('docs-to-ui/mobile'), true);
+  assert.equal(isTargetScopedWfDir('docs-to-ui/web-user'), true);
+  assert.equal(isTargetScopedWfDir('docs-to-ui/web-backoffice'), true);
+  // A non-target second segment (a stage output folder) is NOT a target scope.
+  assert.equal(isTargetScopedWfDir('docs-to-ui/react-ds'), false);
+});
+
+// THE multi-target data-loss invariant: stagesForOutput strips the target
+// segment for attribution, so without the fence a re-run of one target's stage
+// would also delete every OTHER target's outputs of the same stage.
+test('relClearedByRegen: a target-scoped run clears only its own target subtree', () => {
+  const regen = new Set(['ui-react-ds']);
+  // Own target subtree → cleared.
+  assert.equal(
+    relClearedByRegen('docs-to-ui/mobile/react-ds/src/App.tsx', regen, 'docs-to-ui/mobile'),
+    true,
+  );
+  // A SIBLING target's outputs of the same stage → NEVER cleared by this run.
+  assert.equal(
+    relClearedByRegen('docs-to-ui/web-user/react-ds/src/App.tsx', regen, 'docs-to-ui/mobile'),
+    false,
+  );
+  // Legacy shared-root outputs stay untouched by a target-scoped run too.
+  assert.equal(
+    relClearedByRegen('docs-to-ui/react-ds/dist/index.html', regen, 'docs-to-ui/mobile'),
+    false,
+  );
+  // Upstream inputs are never cleared regardless of fence.
+  assert.equal(
+    relClearedByRegen('docs-to-ui/mobile/ux/foo-ux-spec.json', regen, 'docs-to-ui/mobile'),
+    false,
+  );
+  // Cascade: the target run with downstream scope clears its own ux + react-ds.
+  const cascade = new Set(['ux', 'ux-review', 'ui-react-ds']);
+  assert.equal(
+    relClearedByRegen('docs-to-ui/mobile/ux/foo-ux-spec.json', cascade, 'docs-to-ui/mobile'),
+    true,
+  );
+  assert.equal(
+    relClearedByRegen('docs-to-ui/web-user/ux/foo-ux-spec.json', cascade, 'docs-to-ui/mobile'),
+    false,
+  );
+});
+
+test('relClearedByRegen: legacy single-build behavior is unchanged', () => {
+  const regen = new Set(['ui-react-ds']);
+  // Workflow-root run (no target segment) clears the workflow-root outputs…
+  assert.equal(
+    relClearedByRegen('docs-to-ui/react-ds/src/App.tsx', regen, 'docs-to-ui'),
+    true,
+  );
+  // …and history snapshots are always exempt.
+  assert.equal(relClearedByRegen('_v/v3/docs-to-ui/react-ds/x.tsx', regen, 'docs-to-ui'), false);
+});
+
+test('pickRunTarget: single-stage target resolution rules', () => {
+  // Single build (no targets.json): no target, and requesting one is an error.
+  assert.equal(pickRunTarget([], undefined), null);
+  assert.throws(() => pickRunTarget([], 'mobile'), /multi-target/);
+  // Exactly one configured target → auto-selected.
+  assert.equal(pickRunTarget(['mobile'], undefined), 'mobile');
+  // Several configured → the caller must pick one.
+  assert.throws(() => pickRunTarget(['mobile', 'web-user'], undefined), /chỉ định target/);
+  assert.equal(pickRunTarget(['mobile', 'web-user'], 'web-user'), 'web-user');
+  // A target outside the configured set is rejected.
+  assert.throws(() => pickRunTarget(['mobile'], 'web-user'), /không nằm trong/);
 });

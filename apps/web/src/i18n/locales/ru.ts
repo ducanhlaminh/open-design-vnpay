@@ -717,6 +717,7 @@ export const ru: Dict = {
   'ds.categoryAll': 'Все',
   'ds.categoryUncategorized': 'Без категории',
   'ds.showcase': 'Витрина',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Токены',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'Загрузка DESIGN.md…',

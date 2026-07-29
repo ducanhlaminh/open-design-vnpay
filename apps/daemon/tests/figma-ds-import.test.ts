@@ -52,6 +52,19 @@ const uiLibIR = {
         },
       ],
     },
+    {
+      // Real-world names never say plain "Dialog" — the scaffolding section
+      // must still map this into the Dialog family by normalized substring.
+      name: 'IPay Dialog',
+      id: '1:2',
+      props: {},
+      variants: [
+        {
+          props: {},
+          tree: { name: 'IPay Dialog', type: 'FRAME', w: 343, h: 200, fills: [] },
+        },
+      ],
+    },
   ],
   variables: [],
   components: [],
@@ -79,8 +92,8 @@ describe('importFigmaIRDesignSystem', () => {
 
     // Shared "[Acme] " prefix wins over the synthetic merged meta.file name.
     expect(result.id).toBe('acme-design-system');
-    expect(result.summary.componentSets).toBe(1);
-    expect(result.summary.components).toBe(1);
+    expect(result.summary.componentSets).toBe(2);
+    expect(result.summary.components).toBe(2);
     expect(result.summary.variables).toBe(1);
     expect(result.summary.errors).toEqual([]);
     expect(result.summary.sources.map((s) => s.figmaFile)).toEqual([
@@ -126,6 +139,39 @@ describe('importFigmaIRDesignSystem', () => {
     const badge = await readFile(path.join(dir, 'react/components/ui/badge.tsx'), 'utf8');
     expect(badge).toContain('tk-bg-color-bg');
     expect(globalsCss).toContain('var(--color-bg');
+
+    // catalog.md gets the injected "Screen scaffolding" section the ui-react-ds
+    // SKILL points the agent at: family roles mapped onto THIS bundle's real
+    // component names (fuzzy: "IPay Dialog" → Dialog), empty roles marked as
+    // legitimately hand-rollable. Injected before the first component heading.
+    const catalogMd = await readFile(path.join(dir, 'react/docs/catalog.md'), 'utf8');
+    expect(catalogMd).toContain('## Screen scaffolding');
+    expect(catalogMd).toMatch(/- \*\*Dialog\*\*:.*`i-pay-dialog`/);
+    expect(catalogMd).toMatch(/- \*\*Bottom sheet \/ drawer\*\*: \(không có/);
+    expect(catalogMd.indexOf('## Screen scaffolding')).toBeLessThan(catalogMd.indexOf('## Badge'));
+    // …and flows into DESIGN.md through the embedded catalog body.
+    expect(designMd).toContain('## Screen scaffolding');
+
+    // Wireframe mapping: the DSL-v2 slugs resolved onto THIS bundle's real
+    // component names (badge → shadcn:Badge), unmatched slugs marked
+    // hand-rollable, deliberate non-mappings carry their tk-* note. Section
+    // order: Screen scaffolding → Wireframe mapping → component tables.
+    expect(catalogMd).toContain('## Wireframe mapping');
+    expect(catalogMd).toMatch(/\| `shadcn:Badge` \| `badge` \|/);
+    expect(catalogMd).toMatch(/\| `shadcn:Table` \| \(không có trong bộ DS này/);
+    expect(catalogMd).toMatch(/\| `shadcn:Text` \| \(không có — text thuần/);
+    expect(catalogMd.indexOf('## Screen scaffolding')).toBeLessThan(
+      catalogMd.indexOf('## Wireframe mapping'),
+    );
+    expect(catalogMd.indexOf('## Wireframe mapping')).toBeLessThan(catalogMd.indexOf('## Badge'));
+
+    // Machine-readable twin for the ux-spec preview's assignment UI.
+    const wireMap = JSON.parse(
+      await readFile(path.join(dir, 'react/wireframe-map.json'), 'utf8'),
+    ) as { kind: string; slugs: Array<{ slug: string; candidates?: string[] }>; components: string[] };
+    expect(wireMap.kind).toBe('od-wireframe-map');
+    expect(wireMap.components).toContain('badge');
+    expect(wireMap.slugs.find((s) => s.slug === 'shadcn:Badge')?.candidates).toContain('badge');
 
     // Showcase gallery must resolve EVERY icon by name — including icons no
     // component references (backfilled into showcase-data.js on import).
@@ -205,7 +251,7 @@ describe('importFigmaIRDesignSystem', () => {
       ],
       root,
     );
-    expect(result.summary.componentSets).toBe(1);
+    expect(result.summary.componentSets).toBe(2);
     expect(result.summary.sources.map((s) => s.figmaFile)).toEqual([
       '[Acme] Foundation',
       '[Acme] UI Lib',

@@ -891,6 +891,7 @@ export const zhTW: Dict = {
   'ds.categoryAll': '全部',
   'ds.categoryUncategorized': '未分類',
   'ds.showcase': '展示',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Token',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': '正在載入 DESIGN.md…',

@@ -585,6 +585,7 @@ export const esES: Dict = {
   'ds.categoryAll': 'Todos',
   'ds.categoryUncategorized': 'Sin categoría',
   'ds.showcase': 'Vitrina',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Tokens',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'Cargando DESIGN.md…',

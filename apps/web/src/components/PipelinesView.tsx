@@ -26,9 +26,11 @@ import type {
   PullPlan,
   RunPipelineResponse,
   TargetPlatform,
+  UiTarget,
   Workflow,
   WorkflowsResponse,
 } from '@open-design/contracts';
+import { UI_TARGETS } from '@open-design/contracts';
 
 import { Icon, type IconName } from './Icon';
 import { Toast } from './Toast';
@@ -136,6 +138,15 @@ export function PipelinesView() {
   // bỏ qua, nên nó phải hiện trên stepper — nếu không, người dùng nhìn một bước
   // xám mà không hiểu vì sao (lựa chọn nằm trong modal đã đóng từ lâu).
   const [runMode, setRunMode] = useState<PipelineRunMode>('full');
+  // Multi-target (targets.json): các target của dự án + trạng thái từng bước
+  // THEO TARGET (suy từ file outputs dưới <wf>/<target>/). `activeTarget` là
+  // target đang thao tác: chạy stage lẻ / Build / Demo / Capture Figma đều gửi
+  // nó xuống daemon để chạy vào đúng cây <wf>/<target>/.
+  const [projTargets, setProjTargets] = useState<UiTarget[]>([]);
+  const [statusByTarget, setStatusByTarget] = useState<
+    NonNullable<PipelinesResponse['statusByTarget']>
+  >({});
+  const [activeTarget, setActiveTarget] = useState<UiTarget | null>(null);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -156,6 +167,7 @@ export function PipelinesView() {
   const [buildBusy, setBuildBusy] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
   const [figmaCaptureBusy, setFigmaCaptureBusy] = useState(false);
+  const [figmaAuditBusy, setFigmaAuditBusy] = useState(false);
   // Project picker controls — with many KGS projects the raw card grid became
   // a wall pushing the actual pipeline flow below the fold.
   const [projectSearch, setProjectSearch] = useState('');
@@ -332,6 +344,11 @@ export function PipelinesView() {
       const data = (await res.json()) as PipelinesResponse;
       setPipelines(applyPendingStarts(data.pipelines ?? [], pendingStartsRef.current, Date.now()));
       setRunMode(data.runMode ?? 'full');
+      const nextTargets = data.targets ?? [];
+      setProjTargets(nextTargets);
+      setStatusByTarget(data.statusByTarget ?? {});
+      // Giữ lựa chọn còn hợp lệ; dự án đổi cấu hình → về target đầu tiên.
+      setActiveTarget((cur) => (cur && nextTargets.includes(cur) ? cur : nextTargets[0] ?? null));
       if (feedbackRes.ok) {
         const feedbackData = (await feedbackRes.json()) as PipelinePulseFeedbackListResponse;
         setRatedRunIds(new Set(feedbackData.feedback.map((item) => item.runId)));
@@ -497,7 +514,7 @@ export function PipelinesView() {
       const res = await fetch('/api/pipelines/react-build', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({ projectId, ...(activeTarget ? { target: activeTarget } : {}) }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || `build failed: ${res.status}`);
@@ -523,7 +540,7 @@ export function PipelinesView() {
       const res = await fetch('/api/pipelines/react-demo', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({ projectId, ...(activeTarget ? { target: activeTarget } : {}) }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || `demo failed: ${res.status}`);
@@ -545,6 +562,62 @@ export function PipelinesView() {
   // Capture the BUILT React-DS app into Figma screen JSON (figma-h2d IR with
   // component-instance markers) — the file the Fig Pipeline plugin's
   // "Screen JSON → Figma" tab rebuilds with real component instances.
+  // Lớp 1 audit "Preview ↔ Figma": chạy trên capture đã có, báo trước những gì
+  // sẽ hỏng khi dán vào Figma (icon unmatched / variant fallback / layer tràn).
+  const runFigmaAuditFe = async () => {
+    if (!projectId) return;
+    setFigmaAuditBusy(true);
+    try {
+      const res = await fetch('/api/pipelines/figma-audit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, ...(activeTarget ? { target: activeTarget } : {}) }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || `figma-audit failed: ${res.status}`);
+      const findings = (j.findings ?? []) as Array<{
+        level: string;
+        rule: string;
+        comp?: string;
+        screens?: string[];
+        detail: string;
+        fix: string;
+      }>;
+      const errors = findings.filter((f) => f.level === 'error').length;
+      const summaryText = Object.entries((j.summary ?? {}) as Record<string, number>)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(' · ');
+      pushToast({
+        message:
+          findings.length === 0
+            ? `Audit sạch — ${j.screens} frame, ${j.markers} instance marker: dán vào Figma sẽ khớp preview.`
+            : `Audit ${j.screens} frame: ${findings.length} component/vấn đề (${errors} error) — ${summaryText}`,
+        details:
+          findings.length === 0
+            ? undefined
+            : `${findings
+                .slice(0, 6)
+                .map(
+                  (f) =>
+                    `[${f.level}] ${f.comp ?? f.rule}${
+                      (f.screens?.length ?? 0) > 1 ? ` (${f.screens!.length} màn/state)` : ''
+                    } — ${f.fix}`,
+                )
+                .join('\n')}${findings.length > 6 ? `\n… đầy đủ trong ${j.rawPath}` : `\nBáo cáo: ${j.rawPath}`}`,
+        ...(errors > 0 ? { code: 'error' as const } : {}),
+      });
+      void load(projectId, { background: true });
+    } catch (err) {
+      pushToast({
+        message: 'Không audit được',
+        details: err instanceof Error ? err.message : String(err),
+        code: 'error',
+      });
+    } finally {
+      setFigmaAuditBusy(false);
+    }
+  };
+
   const runFigmaCapture = async () => {
     if (!projectId) return;
     setFigmaCaptureBusy(true);
@@ -552,7 +625,7 @@ export function PipelinesView() {
       const res = await fetch('/api/pipelines/figma-capture', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({ projectId, ...(activeTarget ? { target: activeTarget } : {}) }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || `figma-capture failed: ${res.status}`);
@@ -642,6 +715,9 @@ export function PipelinesView() {
     if (payload?.targets && payload.targets.length) body.targets = payload.targets;
     if (designSystemId !== undefined) body.designSystemId = designSystemId;
     if (platform !== undefined) body.platform = platform;
+    // Multi-target: chạy stage lẻ vào target đang chọn. Stage shared (docs,
+    // system-map) daemon tự bỏ qua field này nên gửi luôn không hại.
+    if (activeTarget) body.target = activeTarget;
     // Re-run clear scope chosen in the scope modal (default 'stage' when absent —
     // still clears this stage's own outputs so the agent regenerates).
     if (pendingResetScopeRef.current) body.resetScope = pendingResetScopeRef.current;
@@ -688,6 +764,7 @@ export function PipelinesView() {
         platform: payload.platform,
         ...(payload.targets?.length ? { targets: payload.targets } : {}),
         designSystemId: payload.designSystemId,
+        ...(payload.designSystemByTarget ? { designSystemByTarget: payload.designSystemByTarget } : {}),
         ...(payload.skipSucceeded ? { skipSucceeded: true } : {}),
         ...(payload.lean ? { lean: true } : {}),
         ...(payload.followLinks === false ? { followLinks: false } : {}),
@@ -947,6 +1024,30 @@ export function PipelinesView() {
                 bỏ {pipelines.filter((p) => p.skipped).length} bước
               </span>
             </button>
+          ) : null}
+          {/* Multi-target: chọn target đang thao tác. Mọi lần chạy stage lẻ /
+              Build / Demo / Capture Figma đều đi vào cây <wf>/<target>/ của
+              chip đang bật; số ✓ = số bước target đó đã có output. */}
+          {projTargets.length >= 2 ? (
+            <div className="pl-target-switch" role="group" aria-label="Build target">
+              {projTargets.map((t) => {
+                const st = statusByTarget[t] ?? {};
+                const done = Object.values(st).filter((s) => s === 'succeeded').length;
+                const on = activeTarget === t;
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    className={`pl-target-chip${on ? ' pl-target-chip--on' : ''}`}
+                    onClick={() => setActiveTarget(t)}
+                    title={`Thao tác theo target này — outputs ở ${workflowId}/${UI_TARGETS[t].dir}/ (${done} bước có output)`}
+                  >
+                    <span>{UI_TARGETS[t].label}</span>
+                    <span className="pl-target-chip__count">{done}✓</span>
+                  </button>
+                );
+              })}
+            </div>
           ) : null}
         </div>
         <div className="pipelines-toolbar__group pipelines-toolbar__group--actions">
@@ -1282,6 +1383,27 @@ export function PipelinesView() {
                       <span className={`pl-status pl-status--${isSkipped ? 'skipped' : p.status}`}>
                         {isSkipped ? 'Bỏ qua' : (STATUS_LABEL[p.status] ?? p.status)}
                       </span>
+                      {/* Multi-target: chấm trạng thái THEO TARGET của riêng
+                          bước này (suy từ file outputs dưới <wf>/<target>/).
+                          Bước shared (docs, bản đồ hệ thống) không có entry
+                          target nào → không hiện chấm. */}
+                      {projTargets.length >= 2 &&
+                      projTargets.some((t) => statusByTarget[t]?.[p.id] !== undefined) ? (
+                        <span className="pl-target-dots" aria-label="Trạng thái theo target">
+                          {projTargets.map((t) => {
+                            const st = statusByTarget[t]?.[p.id];
+                            return (
+                              <span
+                                key={t}
+                                className={`pl-target-dot${st === 'succeeded' ? ' pl-target-dot--done' : ''}`}
+                                title={`${UI_TARGETS[t].label}: ${st === 'succeeded' ? 'đã có output' : 'chưa có output'}`}
+                              >
+                                {UI_TARGETS[t].label.charAt(0)}
+                              </span>
+                            );
+                          })}
+                        </span>
+                      ) : null}
                       {p.skipped && p.status === 'succeeded' ? (
                         <span className="pl-status pl-status--offmode" title="Bước này không nằm trong chế độ Tiết kiệm — kết quả còn lại từ lần chạy trước">
                           ngoài chế độ
@@ -1785,6 +1907,18 @@ export function PipelinesView() {
                               <span>{figmaCaptureBusy ? 'Đang capture…' : 'Capture Figma'}</span>
                             </button>
                           ) : null}
+                          {o.id === 'ui-react-ds' && o.status === 'succeeded' ? (
+                            <button
+                              type="button"
+                              className="pl-btn"
+                              onClick={() => void runFigmaAuditFe()}
+                              disabled={figmaAuditBusy || figmaCaptureBusy || !projectId}
+                              title="Audit 'Preview ↔ Figma' (Lớp 1): soi tĩnh các file capture đối chiếu bộ DS — báo trước icon sẽ unmatched, variant sẽ fallback, layer tràn khung TRƯỚC khi dán vào Figma. Kết quả: react-ds/figma-screens/audit.json."
+                            >
+                              <Icon name={figmaAuditBusy ? 'spinner' : 'info'} size={14} />
+                              <span>{figmaAuditBusy ? 'Đang audit…' : 'Audit Figma'}</span>
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="pl-btn"
@@ -1856,6 +1990,7 @@ export function PipelinesView() {
             workflowName={workflows.find((w) => w.id === workflowId)?.name ?? 'Docs → UI-Spec'}
             defaultConfluencePages={runAllDefaults?.confluencePages}
             defaultDesignSystemId={runAllDefaults?.designSystemId}
+            defaultDesignSystemByTarget={runAllDefaults?.designSystemByTarget}
             defaultTerminal={runAllDefaults?.terminal}
             defaultPlatform={runAllDefaults?.platform}
             defaultTargets={runAllDefaults?.targets}

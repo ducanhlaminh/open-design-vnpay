@@ -1244,6 +1244,10 @@ export interface RunAllPayload {
    *  ≥1, the post-docs chain runs once per target; empty → single build. */
   targets?: UiTarget[];
   designSystemId: string | null;
+  /** Multi-target run (≥2 targets): each target's OWN design system — mobile
+   *  and web come from different Figma libs. Recorded into targets.json so
+   *  later single-stage re-runs resolve the same DS per target. */
+  designSystemByTarget?: Partial<Record<UiTarget, string>>;
   skipSucceeded: boolean;
   /** true → run only docs → UX Spec → UI, dropping the analysis stages. */
   lean?: boolean;
@@ -1257,6 +1261,7 @@ export function RunAllModal({
   workflowName,
   defaultConfluencePages,
   defaultDesignSystemId,
+  defaultDesignSystemByTarget,
   defaultTerminal,
   defaultPlatform,
   defaultTargets,
@@ -1278,6 +1283,8 @@ export function RunAllModal({
    *  modal chỉ biết "đây là giá trị khởi tạo". */
   defaultConfluencePages?: ConfluencePageRefLike[];
   defaultDesignSystemId?: string | null;
+  /** DS RIÊNG từng target, prefilled từ lần chạy trước (multi-target). */
+  defaultDesignSystemByTarget?: Partial<Record<UiTarget, string>>;
   defaultTerminal?: WorkflowTerminalChoice;
   defaultPlatform?: TargetPlatform;
   /** UI targets prefilled from the last run (docs-to-ui multi-target). */
@@ -1319,6 +1326,11 @@ export function RunAllModal({
   const [systems, setSystems] = useState<DesignSystemSummary[] | null>(null);
   const [designSystemId, setDesignSystemId] = useState<string | null>(
     defaultDesignSystemId === undefined ? null : defaultDesignSystemId,
+  );
+  // DS RIÊNG từng target (≥2 target): mobile và web đến từ lib Figma khác
+  // nhau nên một id chung không phục vụ được multi-target build.
+  const [dsByTarget, setDsByTarget] = useState<Partial<Record<UiTarget, string>>>(
+    defaultDesignSystemByTarget ?? {},
   );
   const [skipSucceeded, setSkipSucceeded] = useState(defaultSkipSucceeded ?? false);
   // Workflow không hỗ trợ lean thì bỏ qua cả default đã lưu (cờ đó là của lần
@@ -1364,6 +1376,14 @@ export function RunAllModal({
         platform: hasPlatform && targets[0] ? UI_TARGETS[targets[0]].platform : platform,
         ...(hasPlatform ? { targets } : {}),
         designSystemId,
+        // DS per target: only entries for the SELECTED targets go up.
+        ...(() => {
+          if (!hasPlatform || targets.length < 2) return {};
+          const picked = Object.fromEntries(
+            targets.flatMap((t) => (dsByTarget[t] ? [[t, dsByTarget[t]!]] : [])),
+          ) as Partial<Record<UiTarget, string>>;
+          return Object.keys(picked).length > 0 ? { designSystemByTarget: picked } : {};
+        })(),
         skipSucceeded,
         ...(supportsLean && lean ? { lean: true } : {}),
         ...(followLinks ? {} : { followLinks: false }),
@@ -1497,7 +1517,48 @@ export function RunAllModal({
         </div>
       </div>
       ) : null}
-      {hasDesignSystem ? (
+      {hasDesignSystem && hasPlatform && targets.length >= 2 ? (
+        // ≥2 target: DS RIÊNG từng target — mobile và web đến từ lib Figma
+        // khác nhau. Ghi vào targets.json để re-run stage lẻ resolve đúng DS.
+        <div className="pl-modal-field pl-modal-field--ds">
+          <span className="pl-modal-field__label">
+            {terminal === 'ui-react-ds'
+              ? 'Design system TỪNG TARGET (bắt buộc — bộ React từ Figma)'
+              : 'Design system TỪNG TARGET (tùy chọn)'}
+          </span>
+          {targets.map((t) => (
+            <div key={t} className="pl-modal-field__dsrow">
+              <span className="pl-modal-field__dsrow-label">{UI_TARGETS[t].label}</span>
+              <ProjectDesignSystemPicker
+                designSystems={(systems ?? []).filter(
+                  (s) =>
+                    (terminal === 'ui-react-ds' ? s.hasReactBundle : s.status !== 'draft') &&
+                    // Thẻ platform của DS phải khớp target (DS chưa gắn thẻ
+                    // hiện ở mọi target): app mobile không nhận lib web và
+                    // ngược lại.
+                    (UI_TARGETS[t].platform === 'mobile'
+                      ? s.platform !== 'web'
+                      : s.platform !== 'mobile'),
+                )}
+                selectedId={dsByTarget[t] ?? null}
+                loading={systems === null}
+                onChange={(id) =>
+                  setDsByTarget((cur) => {
+                    const next = { ...cur };
+                    if (id) next[t] = id;
+                    else delete next[t];
+                    return next;
+                  })
+                }
+                popoverZIndex={1100}
+              />
+            </div>
+          ))}
+          <span className="pl-modal-field__hint">
+            Target chưa chọn DS sẽ dùng DS chung/mặc định của dự án.
+          </span>
+        </div>
+      ) : hasDesignSystem ? (
       <div className="pl-modal-field pl-modal-field--ds">
         <span className="pl-modal-field__label">
           {terminal === 'ui-react-ds'

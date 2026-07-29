@@ -32,6 +32,7 @@ import {
 import { fetchProjectFileText, fetchProjectFiles } from '../providers/registry';
 import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
 import { WireFrameView, wiretextEditUrl, DEVICES, WEB_DEVICES, type WireDoc, type DeviceKey } from './WireFrameView';
+import { WireCompAssign } from './WireCompAssign';
 
 interface SpecComponent {
   id?: string;
@@ -1349,11 +1350,16 @@ function UxSpecView({
   screens,
   personas,
   wireframes,
+  projectId,
+  wireframeDir,
 }: {
   screens: SpecScreen[];
   personas: SpecPersona[];
   /** Wireframe bố cục tự do per screen id (wireframes/<id>.wire.json). */
   wireframes?: Record<string, WireDoc> | null;
+  projectId?: string;
+  /** Project-relative dir of the wire files — enables the component-assignment panel. */
+  wireframeDir?: string | null;
 }) {
   const [actor, setActor] = useState<string>('all');
   const actors = useMemo(() => {
@@ -1465,12 +1471,21 @@ function UxSpecView({
           </div>
         </div>
         {wireframes?.[screen.id] ? (
-          <WireFrameView
-            doc={wireframes[screen.id]!}
-            platform={screen.layout}
-            device={device}
-            base={wireframes[screen.id]!.overlayOf ? wireframes[wireframes[screen.id]!.overlayOf!] ?? undefined : undefined}
-          />
+          <>
+            <WireFrameView
+              doc={wireframes[screen.id]!}
+              platform={screen.layout}
+              device={device}
+              base={wireframes[screen.id]!.overlayOf ? wireframes[wireframes[screen.id]!.overlayOf!] ?? undefined : undefined}
+            />
+            {projectId && wireframeDir ? (
+              <WireCompAssign
+                projectId={projectId}
+                wirePath={`${wireframeDir}${screen.id}.wire.json`}
+                doc={wireframes[screen.id]!}
+              />
+            ) : null}
+          </>
         ) : (
           <p style={{ border: `1px dashed ${T.border}`, borderRadius: 9, background: T.subtle, padding: '20px 14px', textAlign: 'center', fontSize: 12, color: T.textMuted, margin: 0 }}>
             Màn này chưa có wireframe — chạy lại bước <strong>UX Spec</strong> để agent soạn bố cục
@@ -1738,6 +1753,7 @@ export function SpecPreview({
   doc,
   wireframes,
   projectId,
+  wireframeDir,
 }: {
   doc: SpecDoc;
   /** Wireframe bố cục tự do per screen id (wireframes/<id>.wire.json, cạnh file spec). */
@@ -1745,6 +1761,9 @@ export function SpecPreview({
   /** Project the spec belongs to — enables clicking a source quote to open the
    *  underlying doc, scroll to the passage, and highlight it. Omit to disable. */
   projectId?: string;
+  /** Project-relative dir the wire files live in (`<wf>/<target>/wireframes/`)
+   *  — enables the per-screen "Gán component" panel (WireCompAssign). */
+  wireframeDir?: string | null;
 }) {
   const screens = Array.isArray(doc.screens) ? doc.screens : [];
   const journeys = Array.isArray(doc.journeys) ? doc.journeys : [];
@@ -1766,7 +1785,13 @@ export function SpecPreview({
 
   const body =
     active === 'ux' ? (
-      <UxSpecView screens={screens} personas={personas} wireframes={wireframes} />
+      <UxSpecView
+        screens={screens}
+        personas={personas}
+        wireframes={wireframes}
+        projectId={projectId}
+        wireframeDir={wireframeDir}
+      />
     ) : (
       <CustomerJourneyView journeys={journeys} personas={personas} projectId={projectId} />
     );

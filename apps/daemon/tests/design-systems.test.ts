@@ -348,3 +348,48 @@ describe('design systems registry', () => {
     expect(generatedFiles?.map((file) => file.path)).not.toEqual(expect.arrayContaining(['README.md']));
   });
 });
+
+describe('platform tag (metadata-only updates)', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'od-design-systems-'));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('a platform-only PATCH round-trips into the listing and NEVER touches content files', async () => {
+    // Hand-authored system standing in for a Figma import: compiled files the
+    // generic scaffold regeneration must never rewrite.
+    const dir = path.join(root, 'figma-ds');
+    await mkdir(dir, { recursive: true });
+    const figmaDesignMd = '# [MB Lib v1.0] iPay 2025\n\n## Token contract\n\ncompiled — do not regenerate\n';
+    await writeFile(path.join(dir, 'DESIGN.md'), figmaDesignMd, 'utf8');
+    await writeFile(path.join(dir, 'tokens.css'), ':root { --x: 1px; }\n', 'utf8');
+
+    // Tag mobile → listed summary carries the tag (readUserMetadata must not
+    // drop it) and DESIGN.md stays byte-identical (no header rewrite, no
+    // generated scaffold).
+    const updated = await updateUserDesignSystem(root, 'user:figma-ds', { platform: 'mobile' });
+    expect(updated?.platform).toBe('mobile');
+    const listed = await listDesignSystems(root, {
+      idPrefix: 'user:',
+      source: 'user',
+      isEditable: true,
+      defaultStatus: 'draft',
+    });
+    expect(listed.find((s) => s.id === 'user:figma-ds')?.platform).toBe('mobile');
+    // The core invariant: the compiled DESIGN.md is byte-identical — the
+    // metadata-only path never rewrites the header or regenerates content.
+    // (The listing's own scaffold backfill for missing README/SKILL is
+    // pre-existing behavior, covered by its own test above.)
+    const designAfter = await readUserDesignSystemFile(root, 'user:figma-ds', 'DESIGN.md');
+    expect(designAfter?.content).toBe(figmaDesignMd);
+
+    // Re-tag web, then clear with null.
+    await updateUserDesignSystem(root, 'user:figma-ds', { platform: 'web' });
+    expect((await updateUserDesignSystem(root, 'user:figma-ds', { platform: null }))?.platform).toBeUndefined();
+  });
+});

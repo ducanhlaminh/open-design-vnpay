@@ -6849,7 +6849,7 @@ Common options:
 }
 
 function printPipelineHelp() {
-  console.log(`Usage: od pipeline <projects|list|run|run-all|feedback|upload|pull|build|demo|figma-capture|history|restore> [options]
+  console.log(`Usage: od pipeline <projects|list|run|run-all|feedback|target-ds|upload|pull|build|demo|figma-capture|figma-audit|history|restore> [options]
 
 Dự án khai sinh ở Pipeline Studio (kèm link Confluence + design system + phân
 quyền); kéo về máy bằng \`od kg pull-all\` rồi chạy pipeline tại đây.
@@ -6870,6 +6870,9 @@ Commands:
                        --design-system none forces no design system; omit to use the default.
                        For the UX stage: --platform <mobile|web> sets the target platform of
                        every screen (its layout field); omit for the default (mobile).
+                       Multi-target project (targets.json): --target <mobile|web-user|web-backoffice>
+                       chọn target cho lần chạy stage này — chạy vào <workflow>/<target>/.
+                       Bỏ qua khi dự án chỉ có 1 target (tự chọn) hoặc chưa chia target.
                        Re-run: --reset-downstream also clears the stale downstream stages
                        (default clears only this stage's outputs so the agent regenerates).
   run-all              Run the WHOLE workflow with no per-stage review: the daemon chains
@@ -6878,19 +6881,29 @@ Commands:
                        'run' (--input / --source ...) plus:
                          --terminal <ui-html|ui-react|ui-react-ds|both>  final UI-Spec option (default ui-html)
                          --platform <mobile|web>              UX-stage target platform
-                         --design-system <id|none>            for the UI terminal(s)
+                         --design-system <id|none>            for the UI terminal(s); multi-target:
+                                                              mobile=<id>,web-user=<id>,… (DS RIÊNG
+                                                              từng target, ghi vào targets.json)
                          --skip-succeeded                     resume: only run the missing stages
                          --lean                               chỉ docs → UX Spec → UI (bỏ cj,
                                                               ux-research, ux-review) — riêng
                                                               docs-to-ui; workflow khác bỏ qua cờ này
+  target-ds            Gán design system cho MỘT target (multi-target): --target <id>
+                       --design-system <dsId|none>. Ghi targets.json.designSystemByTarget;
+                       panel "Gán component" của preview ux-spec dùng DS này.
   upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
   pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
   build                Build/rebuild the ui-react app from synced sources (react/dist/ never
                        syncs — after a pull, run this to make the app previewable). Needs Docker.
+                       Multi-target: --target <id> builds THAT target's tree (mặc định: target
+                       đầu tiên có source theo targets.json; build/demo/figma-capture giống nhau).
   demo                 Prototype auto-demo: Playwright drives the BUILT react app through the
                        flow.json use cases and records video + per-step screenshots into
                        react/prototype-demo/ (deterministic — no agent/LLM). First run installs
                        a pinned Playwright + Chromium into the daemon data dir (one-time).
+  figma-audit          Audit "Preview ↔ Figma" (Lớp 1): soi tĩnh capture đối chiếu bộ DS,
+                       báo trước icon sẽ unmatched / variant sẽ fallback / layer tràn khung
+                       TRƯỚC khi dán JSON vào Figma. Ghi figma-screens/audit.json.
   figma-capture        Capture the BUILT UI-Spec (React DS) app into Figma screen JSON
                        (react-ds/figma-screens/): one figma-h2d IR per screen/state with
                        component-instance markers. Paste the screens.json into the Fig
@@ -6989,6 +7002,20 @@ Options:
   }
   console.error(`Unknown od kb subcommand "${sub}" — dùng status|push.`);
   process.exit(2);
+}
+
+// Multi-target flag shared by run/build/demo/figma-capture: which configured
+// target (targets.json) the command addresses. Exits on an invalid value;
+// undefined when the flag is absent (daemon auto-resolves single-target
+// projects and probes all targets for build/demo/capture).
+function parseUiTargetFlag(raw) {
+  if (raw === undefined) return undefined;
+  const t = String(raw).trim();
+  if (t !== 'mobile' && t !== 'web-user' && t !== 'web-backoffice') {
+    console.error('Invalid --target; expected "mobile", "web-user" or "web-backoffice".');
+    process.exit(2);
+  }
+  return t;
 }
 
 async function runPipeline(args) {
@@ -7161,6 +7188,10 @@ async function runPipeline(args) {
     // Re-run scope: `--reset-downstream` also clears every stage that depends on
     // this one (they go stale); default clears only this stage's own outputs.
     const resetScope = flags['reset-downstream'] ? 'downstream' : undefined;
+    // Multi-target project: `--target <mobile|web-user|web-backoffice>` picks
+    // WHICH configured target this stage run builds; omit when the project has
+    // exactly one target (auto) or is single-build.
+    const target = parseUiTargetFlag(flags.target);
     let resp;
     try {
       resp = await fetch(`${base}/api/pipelines/${encodeURIComponent(pipelineId)}/run`, {
@@ -7171,6 +7202,7 @@ async function runPipeline(args) {
           ...(source ? { source } : flags.input ? { input: flags.input } : {}),
           ...(designSystemId !== undefined ? { designSystemId } : {}),
           ...(platform !== undefined ? { platform } : {}),
+          ...(target !== undefined ? { target } : {}),
           ...(resetScope !== undefined ? { resetScope } : {}),
           ...(flags['no-follow-links'] ? { followLinks: false } : {}),
           ...(flags['all-pages'] || flags['include-descendants'] ? { includeDescendants: true } : {}),
@@ -7221,10 +7253,27 @@ async function runPipeline(args) {
       }
       terminal = t;
     }
+    // --design-system takes either ONE id for every target ("<id>" | "none"),
+    // or a per-target map for multi-target runs:
+    //   --design-system mobile=<id>,web-user=<id>,web-backoffice=<id>
+    // (each target's UI stages then run against its OWN library).
     let designSystemId;
+    let designSystemByTarget;
     if (flags['design-system'] !== undefined) {
       const ds = String(flags['design-system']).trim();
-      designSystemId = ds && ds.toLowerCase() !== 'none' ? ds : null;
+      if (ds.includes('=')) {
+        designSystemByTarget = {};
+        for (const pair of ds.split(',')) {
+          const [t, id] = pair.split('=').map((s) => s.trim());
+          if (!id || (t !== 'mobile' && t !== 'web-user' && t !== 'web-backoffice')) {
+            console.error(`Invalid --design-system entry "${pair}"; expected <mobile|web-user|web-backoffice>=<dsId>.`);
+            process.exit(2);
+          }
+          designSystemByTarget[t] = id;
+        }
+      } else {
+        designSystemId = ds && ds.toLowerCase() !== 'none' ? ds : null;
+      }
     }
     let platform;
     if (flags.platform !== undefined) {
@@ -7245,6 +7294,7 @@ async function runPipeline(args) {
           ...(source ? { source } : flags.input ? { input: flags.input } : {}),
           ...(terminal !== undefined ? { terminal } : {}),
           ...(designSystemId !== undefined ? { designSystemId } : {}),
+          ...(designSystemByTarget !== undefined ? { designSystemByTarget } : {}),
           ...(platform !== undefined ? { platform } : {}),
           // Multi-target build (docs-to-ui): --target mobile,web-user,web-backoffice
           ...(flags.target
@@ -7320,13 +7370,51 @@ async function runPipeline(args) {
   // from synced sources. dist/ never syncs (syncExclude), so this is the
   // cross-device "make it previewable" step. Requires Docker on the daemon
   // machine.
+  // od pipeline target-ds — gán/đổi design system cho MỘT target của dự án
+  // multi-target (ghi targets.json.designSystemByTarget). --design-system none
+  // để gỡ gán. Mirror của PUT /api/pipelines/target-design-system (UI: panel
+  // "Gán component" trong preview ux-spec).
+  if (sub === 'target-ds') {
+    const target = parseUiTargetFlag(flags.target);
+    if (!target) {
+      console.error('Usage: od pipeline target-ds --project <id> --target <mobile|web-user|web-backoffice> --design-system <dsId|none>');
+      process.exit(2);
+    }
+    const rawDs = String(flags['design-system'] ?? '').trim();
+    if (!rawDs) {
+      console.error('--design-system <dsId|none> là bắt buộc.');
+      process.exit(2);
+    }
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/target-design-system`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          target,
+          designSystemId: rawDs.toLowerCase() === 'none' ? null : rawDs,
+        }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Target "${target}" → design system: ${data.designSystemId ?? '(đã gỡ)'}.`);
+    return;
+  }
+
   if (sub === 'build') {
+    const target = parseUiTargetFlag(flags.target);
     let resp;
     try {
       resp = await fetch(`${base}/api/pipelines/react-build`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({ projectId, ...(target !== undefined ? { target } : {}) }),
       });
     } catch (err) {
       surfaceFetchError(err, base);
@@ -7347,12 +7435,13 @@ async function runPipeline(args) {
   // cases from flow.json, drive the real app, record video + step screenshots
   // under react/prototype-demo/ (deterministic, no agent).
   if (sub === 'demo') {
+    const target = parseUiTargetFlag(flags.target);
     let resp;
     try {
       resp = await fetch(`${base}/api/pipelines/react-demo`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({ projectId, ...(target !== undefined ? { target } : {}) }),
       });
     } catch (err) {
       surfaceFetchError(err, base);
@@ -7373,13 +7462,51 @@ async function runPipeline(args) {
   // Figma screen JSON (react-ds/figma-screens/): full figma-h2d IR per
   // screen/state with component-instance markers, ready for the Fig Pipeline
   // plugin's "Screen JSON → Figma" tab.
+  // od pipeline figma-audit — Lớp 1 audit "Preview ↔ Figma": soi tĩnh capture
+  // đối chiếu bộ DS, báo trước những gì sẽ hỏng khi dán vào Figma.
+  if (sub === 'figma-audit') {
+    const target = parseUiTargetFlag(flags.target);
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/figma-audit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, ...(target !== undefined ? { target } : {}) }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      console.error(`figma-audit failed:\n${data.error ?? resp.statusText}`);
+      process.exit(1);
+    }
+    if (flags.json) return writeJson(data);
+    const findings = data.findings ?? [];
+    console.log(
+      `Audit ${data.screens ?? 0} frame (${data.markers ?? 0} instance marker) → ${findings.length} phát hiện (${
+        Object.entries(data.summary ?? {}).map(([k, v]) => `${k}: ${v}`).join(', ') || 'sạch'
+      })`,
+    );
+    for (const f of findings) {
+      const where = (f.screens ?? []).length > 1 ? `${f.screens.length} màn/state` : (f.screens ?? [])[0] ?? '';
+      console.log(`  [${f.level}] ${f.rule}${f.comp ? ` · ${f.comp}` : ''}${where ? ` · ${where}` : ''}`);
+      console.log(`      ${f.detail}`);
+      console.log(`      → ${f.fix}`);
+    }
+    console.log(`Báo cáo: ${data.rawPath ?? 'figma-screens/audit.json'}`);
+    return;
+  }
+
   if (sub === 'figma-capture') {
+    const target = parseUiTargetFlag(flags.target);
     let resp;
     try {
       resp = await fetch(`${base}/api/pipelines/figma-capture`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({ projectId, ...(target !== undefined ? { target } : {}) }),
       });
     } catch (err) {
       surfaceFetchError(err, base);

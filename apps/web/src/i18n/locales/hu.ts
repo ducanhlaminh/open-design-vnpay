@@ -696,6 +696,7 @@ export const hu: Dict = {
   'ds.categoryAll': 'Mind',
   'ds.categoryUncategorized': 'Kategorizálatlan',
   'ds.showcase': 'Bemutató',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Tokenek',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'DESIGN.md betöltése…',

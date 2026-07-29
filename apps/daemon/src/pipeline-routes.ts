@@ -1,5 +1,9 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import type { Express, Response } from 'express';
-import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, ProjectPipelineState, RunAllConfig, TargetPlatform, WorkflowTerminal } from '@open-design/contracts';
+import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
+import { TARGETS_CONFIG_BASENAME, UI_TARGETS, isUiTarget } from '@open-design/contracts';
 
 import { getProject, getProjectPipelineState, insertProject, listProjects, updateProject } from './db.js';
 import {
@@ -16,6 +20,39 @@ import {
   workflowForPipeline,
 } from './pipelines.js';
 import type { RouteDeps } from './server-context.js';
+
+// `{ target: dsId }` request field → validated map. Unknown targets and
+// non-string/empty ids drop silently (same tolerance as the `targets` list);
+// undefined when nothing valid remains.
+// The project's configured UI targets + per-target DS map ([] single-build) —
+// read from `<project>/<workflow>/targets.json` (v1 files simply lack the map).
+async function readProjectTargets(
+  projectsDir: string,
+  projectId: string,
+  workflowId: string,
+): Promise<{ targets: UiTarget[]; designSystemByTarget?: Partial<Record<UiTarget, string>> }> {
+  try {
+    const raw = await fs.promises.readFile(
+      path.join(projectsDir, projectId, workflowId, TARGETS_CONFIG_BASENAME),
+      'utf8',
+    );
+    const cfg = JSON.parse(raw);
+    const targets: UiTarget[] = Array.isArray(cfg?.targets) ? cfg.targets.filter(isUiTarget) : [];
+    const designSystemByTarget = parseDesignSystemByTarget(cfg?.designSystemByTarget);
+    return { targets, ...(designSystemByTarget ? { designSystemByTarget } : {}) };
+  } catch {
+    return { targets: [] };
+  }
+}
+
+function parseDesignSystemByTarget(raw: unknown): Partial<Record<UiTarget, string>> | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const out: Partial<Record<UiTarget, string>> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (isUiTarget(key) && typeof value === 'string' && value) out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 import { readAppConfig } from './app-config.js';
 import { publishPipelineEvaluation, readPipelineEvaluations } from './feedback.js';
 
@@ -199,12 +236,85 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       ?? getWorkflow(DEFAULT_WORKFLOW_ID)!;
     const state = await loadMergedState(projectId);
     const runMode = runModeFor(project, state, wf.pipelineIds);
+    // Multi-target: configured targets + a FILE-derived per-target status
+    // (which stages have outputs under <wf>/<target>/) — the DB run state is
+    // stage-global, so this is what tells "mobile done, web-user not yet".
+    const { targets, designSystemByTarget } = await readProjectTargets(
+      ctx.paths.PROJECTS_DIR,
+      projectId,
+      wf.id,
+    );
+    let statusByTarget: Partial<Record<UiTarget, Record<string, PipelineStatus>>> | undefined;
+    if (targets.length > 0) {
+      const localPaths = await ctx.pipelines.localOutputs(projectId).catch(() => [] as string[]);
+      statusByTarget = {};
+      for (const t of targets) {
+        const prefix = `${wf.id}/${UI_TARGETS[t].dir}/`;
+        const derived = deriveStateFromLocalFiles(localPaths.filter((p) => p.startsWith(prefix)));
+        statusByTarget[t] = Object.fromEntries(
+          Object.entries(derived).map(([id, v]) => [id, v.status]),
+        ) as Record<string, PipelineStatus>;
+      }
+    }
     res.json({
       projectId,
       workflowId: wf.id,
       pipelines: listPipelineStatus(state, wf.pipelineIds, runMode),
       runMode,
+      ...(targets.length > 0 ? { targets } : {}),
+      ...(statusByTarget ? { statusByTarget } : {}),
+      ...(designSystemByTarget ? { designSystemByTarget } : {}),
     });
+  });
+
+  // Gán/đổi design system cho MỘT target sau khi docs đã chạy — run-all là nơi
+  // duy nhất ghi designSystemByTarget lúc đầu, nên thiếu route này thì panel
+  // "Gán component" của preview ux-spec (và mọi re-run stage lẻ) không có cách
+  // nào cấu hình DS cho target nữa.
+  app.put('/api/pipelines/target-design-system', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const project = getProject(db, projectId);
+      if (!project) return res.status(404).json({ error: 'project not found' });
+      const target = req.body?.target;
+      if (!isUiTarget(target)) return res.status(400).json({ error: 'invalid target' });
+      const designSystemId =
+        typeof req.body?.designSystemId === 'string' && req.body.designSystemId
+          ? (req.body.designSystemId as string)
+          : null; // null = gỡ gán
+      const wf =
+        getWorkflow(typeof req.body?.workflowId === 'string' ? req.body.workflowId : '')
+        ?? getWorkflow(DEFAULT_WORKFLOW_ID)!;
+      const cfgPath = path.join(ctx.paths.PROJECTS_DIR, projectId, wf.id, TARGETS_CONFIG_BASENAME);
+      let cfg: Record<string, unknown>;
+      try {
+        cfg = JSON.parse(await fs.promises.readFile(cfgPath, 'utf8')) as Record<string, unknown>;
+      } catch {
+        return res.status(400).json({
+          error: 'dự án chưa chia target (không có targets.json) — chạy bước Docs với lựa chọn target trước',
+        });
+      }
+      const targets: UiTarget[] = Array.isArray(cfg.targets)
+        ? (cfg.targets as unknown[]).filter(isUiTarget)
+        : [];
+      if (!targets.includes(target)) {
+        return res.status(400).json({ error: `target "${target}" không nằm trong targets.json (${targets.join(', ')})` });
+      }
+      const map = (cfg.designSystemByTarget && typeof cfg.designSystemByTarget === 'object'
+        ? { ...(cfg.designSystemByTarget as Record<string, string>) }
+        : {}) as Record<string, string>;
+      if (designSystemId) map[target] = designSystemId;
+      else delete map[target];
+      cfg.designSystemByTarget = map;
+      if (Object.keys(map).length === 0) delete cfg.designSystemByTarget;
+      // File cũ version 1 vẫn hợp lệ; có map thì nâng lên 2 cho tự mô tả.
+      if (cfg.designSystemByTarget && cfg.version === 1) cfg.version = 2;
+      await fs.promises.writeFile(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
+      res.json({ ok: true, target, designSystemId, designSystemByTarget: cfg.designSystemByTarget ?? {} });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
   });
 
   app.get('/api/pipelines/feedback', (req, res) => {
@@ -360,7 +470,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       if (!projectId) return res.status(400).json({ error: 'projectId is required' });
       const project = getProject(db, projectId);
       if (!project) return res.status(404).json({ error: 'project not found' });
-      const result = await ctx.pipelines.buildReact(projectId);
+      const buildTarget = req.body?.target;
+      if (buildTarget !== undefined && !isUiTarget(buildTarget)) {
+        return res.status(400).json({ error: 'invalid target' });
+      }
+      const result = await ctx.pipelines.buildReact(projectId, buildTarget);
       res.json({ ok: true, ...result });
     } catch (err: any) {
       // Build failures carry the tsc/vite tail — surface it so the UI/CLI can
@@ -400,7 +514,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     try {
       const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
       if (!projectId) return res.status(400).json({ error: 'projectId is required' });
-      const result = await ctx.pipelines.buildReactDemo(projectId);
+      const demoTarget = req.body?.target;
+      if (demoTarget !== undefined && !isUiTarget(demoTarget)) {
+        return res.status(400).json({ error: 'invalid target' });
+      }
+      const result = await ctx.pipelines.buildReactDemo(projectId, demoTarget);
       res.json({ ok: true, ...result });
     } catch (err: any) {
       res.status(422).json({ error: String(err?.message ?? err) });
@@ -413,11 +531,34 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // design-v3 Fig Pipeline plugin's "Screen JSON → Figma" tab, which rebuilds
   // the screens with REAL component instances. 422 with the runner tail on
   // failure (missing dist, playwright env, dead click selector).
+  // POST /api/pipelines/figma-audit { projectId, target? } — Lớp 1 audit
+  // "Preview ↔ Figma": soi tĩnh các file capture đối chiếu bộ DS, báo trước
+  // unmatched icon / variant fallback / layer tràn khung TRƯỚC khi dán vào
+  // Figma. Ghi figma-screens/audit.json.
+  app.post('/api/pipelines/figma-audit', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const auditTarget = req.body?.target;
+      if (auditTarget !== undefined && !isUiTarget(auditTarget)) {
+        return res.status(400).json({ error: 'invalid target' });
+      }
+      const result = await ctx.pipelines.figmaAudit(projectId, auditTarget);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(422).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.post('/api/pipelines/figma-capture', async (req, res) => {
     try {
       const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
       if (!projectId) return res.status(400).json({ error: 'projectId is required' });
-      const result = await ctx.pipelines.figmaCapture(projectId);
+      const captureTarget = req.body?.target;
+      if (captureTarget !== undefined && !isUiTarget(captureTarget)) {
+        return res.status(400).json({ error: 'invalid target' });
+      }
+      const result = await ctx.pipelines.figmaCapture(projectId, captureTarget);
       res.json({ ok: true, ...result });
     } catch (err: any) {
       res.status(422).json({ error: String(err?.message ?? err) });
@@ -495,6 +636,9 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
               t === 'mobile' || t === 'web-user' || t === 'web-backoffice',
           )
         : [];
+      // Per-target design systems: `{ target: dsId }` entries; unknown targets
+      // and non-string ids drop silently (same tolerance as `targets`).
+      const designSystemByTarget = parseDesignSystemByTarget(req.body?.designSystemByTarget);
       // Remember this device's last-used run-all choices (per project) so a
       // later open of the Run-all modal — e.g. after canceling a stage mid-chain
       // — prefills from here instead of forcing the user to re-enter everything.
@@ -509,6 +653,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
             terminal: (rawTerminal as WorkflowTerminal | undefined) ?? 'ui-html',
             platform: (rawPlatform as TargetPlatform | undefined) ?? 'mobile',
             ...(targets.length ? { targets } : {}),
+            ...(designSystemByTarget ? { designSystemByTarget } : {}),
             followLinks,
             includeDescendants,
             skipSucceeded,
@@ -524,6 +669,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         ...(designSystemId !== undefined ? { designSystemId } : {}),
         ...(rawPlatform !== undefined ? { platform: rawPlatform as TargetPlatform } : {}),
         ...(targets.length ? { targets } : {}),
+        ...(designSystemByTarget ? { designSystemByTarget } : {}),
         skipSucceeded,
         lean,
         ...(followLinks ? {} : { followLinks: false }),
@@ -593,6 +739,16 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         return res.status(400).json({ error: "platform must be 'mobile' or 'web'" });
       }
       const platform = rawPlatform as TargetPlatform | undefined;
+      // Multi-target single-stage run: WHICH configured target this run builds.
+      // The daemon resolves the target subfolder + platform/audience from
+      // targets.json (see RunPipelineRequest.target).
+      const rawTarget = req.body?.target;
+      if (rawTarget !== undefined && !isUiTarget(rawTarget)) {
+        return res
+          .status(400)
+          .json({ error: "target must be 'mobile', 'web-user' or 'web-backoffice'" });
+      }
+      const target = rawTarget as UiTarget | undefined;
       // RE-RUN clear scope (UI re-run dialog / CLI --reset-downstream). Only
       // 'stage' | 'downstream' pass; absent → 'stage' (clear this stage only).
       const rawScope = req.body?.resetScope;
@@ -612,7 +768,18 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
             (t: unknown) => t === 'mobile' || t === 'web-user' || t === 'web-backoffice',
           ) as import('@open-design/contracts').UiTarget[])
         : undefined;
-      const { completion: _completion, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId, platform, resetScope, followLinks, includeDescendants, undefined, targets);
+      const { completion: _completion, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, {
+        input,
+        source,
+        designSystemId,
+        platform,
+        resetScope,
+        followLinks,
+        includeDescendants,
+        target,
+        targets,
+        designSystemByTarget: parseDesignSystemByTarget(req.body?.designSystemByTarget),
+      });
       res.status(202).json(start);
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });

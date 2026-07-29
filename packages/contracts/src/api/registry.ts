@@ -188,6 +188,13 @@ export interface DesignSystemSummary {
   projectId?: string;
   /** True when the system ships a compiled React source bundle (react/). */
   hasReactBundle?: boolean;
+  /**
+   * Which product family this library serves: the fixed-viewport mobile app
+   * or the responsive websites. User-tagged (PATCH `platform`), not inferred —
+   * drives the Mobile/Web filter tabs and the per-target DS pickers. Absent =
+   * untagged (shows under "All", offered to every target).
+   */
+  platform?: 'mobile' | 'web';
 }
 
 export interface DesignSystemDetail extends DesignSystemSummary {

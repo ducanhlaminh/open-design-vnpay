@@ -717,6 +717,7 @@ export const ptBR: Dict = {
   'ds.categoryAll': 'Todos',
   'ds.categoryUncategorized': 'Sem categoria',
   'ds.showcase': 'Vitrine',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Tokens',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'Carregando DESIGN.md…',

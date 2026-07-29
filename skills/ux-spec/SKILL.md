@@ -78,8 +78,18 @@ The kickoff message may name a **target platform** for this run:
   web-appropriate patterns: data **tables** instead of card lists where the
   content is tabular, **sidebar or top navigation** instead of bottom tab bars,
   wider **multi-column forms**, hover-revealed row actions.
+
+  Websites are **RESPONSIVE**: give every screen a `responsive_notes` string
+  field describing how its layout adapts from desktop (~1440px) down to mobile
+  (≤768px) — navigation collapse (sidebar → drawer/hamburger), tables degrading
+  to cards or stacked lists, grid column count, which actions move into menus.
+  The wireframe stays **desktop-first** (ONE wireframe per screen — never a
+  second mobile wireframe); `responsive_notes` is the contract the UI stages
+  implement the breakpoints from.
 - **MOBILE** (`platform: mobile`) → set `layout: "mobile"` on every screen, with
-  mobile patterns (bottom action bars, single-column forms, list rows).
+  mobile patterns (bottom action bars, single-column forms, list rows). The app
+  renders in a FIXED phone viewport — no responsive behavior, no
+  `responsive_notes`.
 - **No platform named** → default to `layout: "mobile"` (the legacy behavior —
   do not guess web from the docs' content).
 
@@ -202,6 +212,11 @@ coordinates. The host lays it out with flexbox so it never overlaps. Compose a
 real screen (mobile → one vertical stack of full-width fields, sections, chips,
 a primary CTA; web → nav + a row of sidebar + main), matching the archetype and
 worked example in `references/wireframe.md`.
+
+Prop chung `comp` (string) là chỗ **NGƯỜI REVIEW** gán component design-system
+cho node đó qua UI gán component trong preview — bạn **KHÔNG tự điền** (không
+biết DS nào sẽ chạy) và **KHÔNG xóa** khi file đã có sẵn giá trị (re-edit giữ
+nguyên lựa chọn của người).
 
 Two hard requirements:
 

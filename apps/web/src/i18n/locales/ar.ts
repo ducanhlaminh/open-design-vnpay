@@ -696,6 +696,7 @@ export const ar: Dict = {
   'ds.categoryAll': 'الكل',
   'ds.categoryUncategorized': 'غير مصنف',
   'ds.showcase': 'عرض',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'الرموز',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'جاري تحميل DESIGN.md...',

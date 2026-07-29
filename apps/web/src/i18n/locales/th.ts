@@ -670,6 +670,7 @@ export const th: Dict = {
   'ds.categoryAll': 'ทั้งหมด',
   'ds.categoryUncategorized': 'ไม่มีหมวดหมู่',
   'ds.showcase': 'โชว์เคส',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'โทเค็น',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'กำลังโหลด…',

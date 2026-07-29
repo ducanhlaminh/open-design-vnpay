@@ -583,6 +583,7 @@ export const ja: Dict = {
   'ds.categoryAll': 'すべて',
   'ds.categoryUncategorized': '未分類',
   'ds.showcase': 'ショーケース',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'トークン',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'DESIGN.md を読み込み中…',
