@@ -896,24 +896,42 @@ function AppDocsTreePicker({
 // PICKS from it). Only `.md` paths are selectable — non-.md attachments
 // (images etc. the daemon auto-pairs alongside a page) are hidden from the
 // tree entirely rather than shown muted, per spec's either/or.
+//
+// Confluence-export filenames are lossy slugs (e.g. `bao-mat-api.md`) — the
+// daemon's `title` (first Markdown heading) is the real page name. `label` is
+// what renders as the PRIMARY text; `path`/`slug` become the muted secondary
+// + tooltip. Folders inherit their sibling page's title too: an export pairs
+// `x.md` with a same-level `x/` folder holding x's children/attachments.
 interface AppFilesNode {
   kind: 'folder' | 'file';
   key: string;
-  title: string;
+  /** Primary label — real title when known, filename/folder-name fallback. */
+  label: string;
+  /** Filename (file rows only) — muted secondary text next to `label` when
+   *  it differs from it (i.e. a real title was found). */
+  slug?: string;
   path?: string;
   children: AppFilesNode[];
 }
 
 function buildAppFilesTree(files: AppDocsFile[]): AppFilesNode {
-  const root: AppFilesNode = { kind: 'folder', key: '', title: '', children: [] };
+  const root: AppFilesNode = { kind: 'folder', key: '', label: '', children: [] };
   const folders = new Map<string, AppFilesNode>();
+  // path-without-extension → title, for every titled .md file — lets a
+  // FOLDER borrow its sibling page's title (see file header).
+  const titleByMdPath = new Map<string, string>();
+  for (const f of files) {
+    if (f.title && /\.md$/i.test(f.path)) titleByMdPath.set(f.path.replace(/\.md$/i, ''), f.title);
+  }
   const ensureFolder = (segs: string[]): AppFilesNode => {
     if (segs.length === 0) return root;
     const key = segs.join(' ');
     const hit = folders.get(key);
     if (hit) return hit;
     const parent = ensureFolder(segs.slice(0, -1));
-    const node: AppFilesNode = { kind: 'folder', key, title: segs[segs.length - 1]!, children: [] };
+    const folderName = segs[segs.length - 1]!;
+    const siblingTitle = titleByMdPath.get(segs.join('/'));
+    const node: AppFilesNode = { kind: 'folder', key, label: siblingTitle || folderName, children: [] };
     parent.children.push(node);
     folders.set(key, node);
     return node;
@@ -922,7 +940,17 @@ function buildAppFilesTree(files: AppDocsFile[]): AppFilesNode {
     if (!/\.md$/i.test(f.path)) continue; // attachment — hidden (BE auto-pairs it with its page)
     const segs = f.path.split('/');
     const parent = ensureFolder(segs.slice(0, -1));
-    parent.children.push({ kind: 'file', key: `f:${f.path}`, title: segs[segs.length - 1]!, path: f.path, children: [] });
+    const filename = segs[segs.length - 1]!;
+    parent.children.push({
+      kind: 'file',
+      key: `f:${f.path}`,
+      label: f.title || filename,
+      // Only shown as a secondary when it actually adds information — a
+      // file with no real title already shows the filename as `label`.
+      slug: f.title ? filename : undefined,
+      path: f.path,
+      children: [],
+    });
   }
   return root;
 }
@@ -945,13 +973,15 @@ function renderAppFilesNode(
         key={node.key}
         className={styles.treeRow}
         style={{ paddingLeft: 10 + depth * 22 }}
+        title={node.path}
         onClick={() => node.path && onToggle([node.path], !on)}
       >
         <span className={styles.treeSpacer} aria-hidden="true" />
         <span className={`${styles.treeCheck}${on ? ' ' + styles.treeCheckOn : ''}`}>
           {on ? <Icon name="check" size={12} /> : null}
         </span>
-        <span className={styles.treeName}>{node.title}</span>
+        <span className={styles.treeName}>{node.label}</span>
+        {node.slug ? <span className={styles.treeMuted}>{node.slug}</span> : null}
       </div>
     );
   }
@@ -966,7 +996,7 @@ function renderAppFilesNode(
           <span className={`${styles.treeCheck}${cs === 'on' ? ' ' + styles.treeCheckOn : ''}${cs === 'partial' ? ' ' + styles.treeCheckPartial : ''}`}>
             {cs === 'on' ? <Icon name="check" size={12} /> : cs === 'partial' ? <Icon name="minus" size={12} /> : null}
           </span>
-          <span className={`${styles.treeName} ${styles.treeNameFolder}`}>{node.title}</span>
+          <span className={`${styles.treeName} ${styles.treeNameFolder}`}>{node.label}</span>
         </div>
       ) : null}
       {node.children.map((c) => renderAppFilesNode(c, selected, onToggle, node.key ? depth + 1 : depth))}

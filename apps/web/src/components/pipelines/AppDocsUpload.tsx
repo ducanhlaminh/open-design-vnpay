@@ -264,6 +264,12 @@ async function filesFromFolderDrop(dataTransfer: DataTransfer): Promise<File[]> 
 export interface AppDocsFile {
   path: string;
   size: number;
+  /** Real title extracted from the file's first Markdown heading (daemon,
+   *  GET .../docs-files) — Confluence-export filenames are lossy slugs, so
+   *  consumers (AppFilesPicker) prefer this for the visible label when
+   *  present. Undefined for binaries (no heading to read) or an older
+   *  daemon that doesn't send it yet — callers fall back to the filename. */
+  title?: string;
 }
 
 /** Fetches the App's current uploaded-docs corpus — used both by this

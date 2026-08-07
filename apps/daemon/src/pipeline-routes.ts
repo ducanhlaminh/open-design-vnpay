@@ -1175,7 +1175,62 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // GET /api/pipelines/apps/:appId/docs-files — recursive listing of the
   // App's uploaded doc corpus, for the run-config source picker (which PICKS
   // files out of this list rather than re-uploading per feature).
-  const walkDocsFiles = async (dir: string, relDir: string, out: Array<{ path: string; size: number }>) => {
+  const DOCS_FILE_TITLE_EXTENSIONS = new Set(['.md', '.markdown']);
+  // Only the HEAD of a doc file matters for a display title — a 2KB read
+  // comfortably covers any real front-matter/heading without paying for a
+  // full-file read across a few hundred markdown files per request.
+  const DOCS_FILE_TITLE_HEAD_BYTES = 2048;
+  // A line that's ENTIRELY one markdown image/link and nothing else — never a
+  // usable title (e.g. a lone `![Diagram](attachments/x.png)` as the first
+  // line of an export).
+  const IMAGE_OR_LINK_ONLY_LINE = /^!?\[[^\]]*\]\([^)]*\)$/;
+
+  // Confluence's "export to MD" slugifies filenames (diacritics dropped,
+  // spaces→hyphens — "1-tng-quan-h-thng..."), but the real title survives
+  // INSIDE the file as the first heading. Never renamed on disk: other
+  // exported .md files cross-reference these exact slug paths, and renaming
+  // would break every such link. This is purely a DISPLAY title layered onto
+  // the listing.
+  //   1. First ATX heading (`#`..`######`) anywhere in the head chunk, its
+  //      captured text with trailing `#`s/whitespace stripped.
+  //   2. Else the first non-empty line, IF it's short (<200 chars) and not an
+  //      image/link-only line — otherwise no title (undefined), not a worse
+  //      guess.
+  const extractMdTitle = async (fullPath: string): Promise<string | undefined> => {
+    let handle: fs.promises.FileHandle | null = null;
+    try {
+      handle = await fs.promises.open(fullPath, 'r');
+      const buf = Buffer.alloc(DOCS_FILE_TITLE_HEAD_BYTES);
+      const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+      const lines = buf.toString('utf8', 0, bytesRead).split(/\r?\n/);
+      for (const raw of lines) {
+        const line = raw.trim();
+        const m = /^#{1,6}\s+(.+)$/.exec(line);
+        if (m) {
+          const title = m[1]!.replace(/\s*#+\s*$/, '').trim();
+          if (title) return title;
+        }
+      }
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line) continue;
+        if (line.length >= 200) return undefined;
+        if (IMAGE_OR_LINK_ONLY_LINE.test(line)) return undefined;
+        return line;
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+  };
+
+  const walkDocsFiles = async (
+    dir: string,
+    relDir: string,
+    out: Array<{ path: string; size: number; title?: string }>,
+  ) => {
     let entries: fs.Dirent[];
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true });
@@ -1192,7 +1247,9 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       }
       if (!entry.isFile()) continue;
       const st = await fs.promises.stat(full);
-      out.push({ path: rel, size: st.size });
+      const ext = path.extname(entry.name).toLowerCase();
+      const title = DOCS_FILE_TITLE_EXTENSIONS.has(ext) ? await extractMdTitle(full) : undefined;
+      out.push({ path: rel, size: st.size, ...(title ? { title } : {}) });
     }
   };
 
@@ -1202,7 +1259,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       return res.status(404).json({ error: `app "${appId}" not found` });
     }
     const docsDir = path.join(ctx.paths.PROJECTS_DIR, appId, 'docs');
-    const files: Array<{ path: string; size: number }> = [];
+    const files: Array<{ path: string; size: number; title?: string }> = [];
     await walkDocsFiles(docsDir, '', files);
     files.sort((a, b) => a.path.localeCompare(b.path));
     res.json({ files });

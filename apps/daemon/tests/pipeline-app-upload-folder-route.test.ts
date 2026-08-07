@@ -235,7 +235,7 @@ describe('App-level doc corpus upload (POST .../upload-folder, GET .../docs-file
       expect(res.status).toBe(404);
     });
 
-    it('lists every uploaded file recursively, relative to docs/, sorted by path', async () => {
+    it('lists every uploaded file recursively, relative to docs/, sorted by path, with a fallback title on short .md content', async () => {
       await createApp('XPOS');
       await uploadFolder('XPOS', [
         { path: 'overview.md', text: '12345' },
@@ -244,11 +244,15 @@ describe('App-level doc corpus upload (POST .../upload-folder, GET .../docs-file
       ]);
       const res = await docsFiles('XPOS');
       expect(res.status).toBe(200);
+      // Both .md files' single-line content qualifies as a fallback title
+      // (non-empty, <200 chars, not image/link-only) — see the dedicated
+      // "docs-files title extraction" describe block below for the heading
+      // and no-title cases.
       expect(res.body).toEqual({
         files: [
           { path: 'attachments/img.png', size: 3 },
-          { path: 'nested/sub/page.md', size: 10 },
-          { path: 'overview.md', size: 5 },
+          { path: 'nested/sub/page.md', size: 10, title: '1234567890' },
+          { path: 'overview.md', size: 5, title: '12345' },
         ],
       });
     });
@@ -258,6 +262,88 @@ describe('App-level doc corpus upload (POST .../upload-folder, GET .../docs-file
       const res = await docsFiles('XPOS');
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ files: [] });
+    });
+
+    // Confluence's "export to MD" slugifies filenames (diacritics dropped) —
+    // the real title survives INSIDE the file as its first heading. Files are
+    // never renamed on disk (other exported .md files cross-reference the
+    // slug paths); `title` is a display-only field layered onto the listing.
+    describe('title extraction (.md/.markdown only, first ~2KB)', () => {
+      async function titleOf(appId: string, relPath: string): Promise<string | undefined> {
+        const res = await docsFiles(appId);
+        expect(res.status).toBe(200);
+        const entry = res.body.files.find((f: any) => f.path === relPath);
+        expect(entry, `${relPath} should be listed`).toBeDefined();
+        return entry.title;
+      }
+
+      it('extracts the first ATX heading, stripping trailing #s/whitespace', async () => {
+        await createApp('XPOS');
+        await uploadFolder('XPOS', [
+          { path: '1-tng-quan-h-thng.md', text: '# Tổng quan hệ thống\n\nNội dung...' },
+        ]);
+        expect(await titleOf('XPOS', '1-tng-quan-h-thng.md')).toBe('Tổng quan hệ thống');
+      });
+
+      it('strips a closing-hash ATX heading (## Title ##)', async () => {
+        await createApp('XPOS');
+        await uploadFolder('XPOS', [{ path: 'closed.md', text: '## Nguyên tắc chung ##\n\nbody' }]);
+        expect(await titleOf('XPOS', 'closed.md')).toBe('Nguyên tắc chung');
+      });
+
+      it('finds a heading that is not on the very first line (blank/front-matter lines before it)', async () => {
+        await createApp('XPOS');
+        await uploadFolder('XPOS', [{ path: 'delayed.md', text: '\n\n### Luồng chung\ntext' }]);
+        expect(await titleOf('XPOS', 'delayed.md')).toBe('Luồng chung');
+      });
+
+      it('falls back to the first non-empty text line when there is no heading', async () => {
+        await createApp('XPOS');
+        await uploadFolder('XPOS', [{ path: 'noheading.md', text: '\nJust a plain first line\nmore text' }]);
+        expect(await titleOf('XPOS', 'noheading.md')).toBe('Just a plain first line');
+      });
+
+      it('no title when the fallback first line is image/link-only', async () => {
+        await createApp('XPOS');
+        await uploadFolder('XPOS', [
+          { path: 'imageonly.md', text: '![Diagram](attachments/diagram.png)\n\nmore text below' },
+        ]);
+        expect(await titleOf('XPOS', 'imageonly.md')).toBeUndefined();
+      });
+
+      it('no title when the fallback first line is too long (>=200 chars)', async () => {
+        await createApp('XPOS');
+        const longLine = 'x'.repeat(200);
+        await uploadFolder('XPOS', [{ path: 'toolong.md', text: `${longLine}\nshort second line` }]);
+        expect(await titleOf('XPOS', 'toolong.md')).toBeUndefined();
+      });
+
+      it('no title for a file with no heading and no non-empty line at all', async () => {
+        await createApp('XPOS');
+        await uploadFolder('XPOS', [{ path: 'blank.md', text: '\n\n\n' }]);
+        expect(await titleOf('XPOS', 'blank.md')).toBeUndefined();
+      });
+
+      it('.markdown extension also gets a title; binary/other entries never do', async () => {
+        await createApp('XPOS');
+        await uploadFolder('XPOS', [
+          { path: 'page.markdown', text: '# Markdown ext title' },
+          { path: 'image.png', base64: Buffer.from('binary-bytes').toString('base64') },
+          { path: 'notes.txt', text: '# Looks like a heading but .txt is not covered' },
+        ]);
+        expect(await titleOf('XPOS', 'page.markdown')).toBe('Markdown ext title');
+        expect(await titleOf('XPOS', 'image.png')).toBeUndefined();
+        expect(await titleOf('XPOS', 'notes.txt')).toBeUndefined();
+      });
+
+      it('only reads the head — a heading beyond ~2KB is not found (fallback also misses, first line too long)', async () => {
+        await createApp('XPOS');
+        // Push the heading past the 2KB head-read window with an oversized
+        // (but still no-title-worthy, since it's > 200 chars) first line.
+        const padding = 'a'.repeat(2100);
+        await uploadFolder('XPOS', [{ path: 'farheading.md', text: `${padding}\n# Too far to see` }]);
+        expect(await titleOf('XPOS', 'farheading.md')).toBeUndefined();
+      });
     });
   });
 });
