@@ -295,7 +295,10 @@ export async function searchConfluencePages(
 ): Promise<ConfluencePageHit[]> {
   if (creds) {
     const cql = `type=page AND title~"${q.replace(/["\\]/g, ' ').trim()}" order by lastmodified desc`;
-    const url = `${creds.base}/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=${Math.min(Math.max(limit, 1), 50)}&expand=space`;
+    // `children.page` with NO size override rides Confluence's default child
+    // limit (small) — enough to tell existence apart from emptiness without
+    // fetching more than we need (we only read presence, never the list).
+    const url = `${creds.base}/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=${Math.min(Math.max(limit, 1), 50)}&expand=space,ancestors,children.page`;
     const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` } });
     const text = await res.text();
     if (!res.ok) throw new Error(`Confluence search HTTP ${res.status}: ${text.slice(0, 200)}`);
@@ -305,15 +308,38 @@ export async function searchConfluencePages(
         title?: string;
         space?: { key?: string };
         _links?: { webui?: string };
+        // Confluence returns these root→down, page itself excluded — the
+        // App-root combobox needs this to tell apart same-titled pages that
+        // live under different dự án.
+        ancestors?: Array<{ title?: string }>;
+        // Existence-only signal for the App-root search dropdown's expand
+        // arrow — `size` is Confluence's own child COUNT (preferred, doesn't
+        // depend on how many child rows the default page limit returned);
+        // `results` is the fallback when `size` is absent.
+        children?: { page?: { size?: number; results?: unknown[] } };
       }>;
     };
     return (body.results ?? [])
-      .map((r) => ({
-        id: String(r.id ?? ''),
-        title: r.title ?? String(r.id ?? ''),
-        ...(r._links?.webui ? { url: `${creds.base}${r._links.webui}` } : {}),
-        ...(r.space?.key ? { space: r.space.key } : {}),
-      }))
+      .map((r) => {
+        const ancestors = (r.ancestors ?? []).map((a) => a.title ?? '').filter(Boolean);
+        const childPage = r.children?.page;
+        const hasChildren =
+          childPage === undefined
+            ? undefined
+            : typeof childPage.size === 'number'
+              ? childPage.size > 0
+              : Array.isArray(childPage.results)
+                ? childPage.results.length > 0
+                : undefined;
+        return {
+          id: String(r.id ?? ''),
+          title: r.title ?? String(r.id ?? ''),
+          ...(r._links?.webui ? { url: `${creds.base}${r._links.webui}` } : {}),
+          ...(r.space?.key ? { space: r.space.key } : {}),
+          ...(ancestors.length ? { ancestors } : {}),
+          ...(hasChildren !== undefined ? { hasChildren } : {}),
+        };
+      })
       .filter((r) => r.id);
   }
   if (!ep) {
@@ -1049,7 +1075,11 @@ export { htmlToMarkdown };
  * `data-diagramdata` blob, which is the only way to reach a diagram's SOURCE
  * mxfile and render pages 2..N. `export_view` flattens that macro to the
  * page-1 preview PNG — the same limitation the browser export ships with. */
-async function fetchConfluencePageDirect(
+// Exported (in addition to the internal fetch pipeline above) so callers that
+// only need page METADATA — the docs-tree route's best-effort root title —
+// can reuse the same direct-PAT REST call without pulling in the whole
+// fetchConfluencePages machinery.
+export async function fetchConfluencePageDirect(
   creds: ConfluenceCreds,
   pageId: string,
 ): Promise<{ title: string; url: string; html: string; macroHtml: string; ancestors: Array<{ id: string; title: string }> }> {

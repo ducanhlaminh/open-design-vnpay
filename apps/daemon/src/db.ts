@@ -38,9 +38,44 @@ export function openDatabase(projectRoot: string, { dataDir }: { dataDir?: strin
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   migrate(db);
+  sweepOrphanedPipelineRuns(db);
   dbInstance = db;
   dbFile = file;
   return db;
+}
+
+// Pipeline run là tiến trình con IN-MEMORY của daemon — daemon chết/restart
+// thì không run nào sống sót, nhưng status 'running'/'queued' trong
+// metadata.pipelines nằm lại vĩnh viễn: feature hiện "Đang chạy" mãi dù không
+// có gì chạy. Mở DB = một tiến trình daemon mới toanh, nên mọi trạng thái
+// đang-chạy còn sót đều là run mồ côi → đánh 'failed' cho trung thực.
+function sweepOrphanedPipelineRuns(db: SqliteDb): void {
+  const rows = db
+    .prepare(`SELECT id, metadata_json AS metadataJson FROM projects WHERE metadata_json LIKE '%"pipelines"%'`)
+    .all() as Array<{ id: string; metadataJson: string | null }>;
+  const update = db.prepare(`UPDATE projects SET metadata_json = ? WHERE id = ?`);
+  for (const row of rows) {
+    if (!row.metadataJson) continue;
+    let metadata: unknown;
+    try {
+      metadata = JSON.parse(row.metadataJson);
+    } catch {
+      continue;
+    }
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) continue;
+    const pipelines = (metadata as Record<string, unknown>).pipelines;
+    if (!pipelines || typeof pipelines !== 'object' || Array.isArray(pipelines)) continue;
+    let changed = false;
+    for (const entry of Object.values(pipelines as Record<string, unknown>)) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const state = entry as { status?: unknown };
+      if (state.status === 'running' || state.status === 'queued') {
+        state.status = 'failed';
+        changed = true;
+      }
+    }
+    if (changed) update.run(JSON.stringify(metadata), row.id);
+  }
 }
 
 export function closeDatabase() {
@@ -205,6 +240,12 @@ function migrate(db: SqliteDb): void {
 
     CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
       ON routine_runs(routine_id, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS pipeline_apps (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
   // Forward-compatible column add for databases created before metadata_json.
   // SQLite has no IF NOT EXISTS for ALTER, so we check pragma_table_info.
@@ -282,6 +323,13 @@ function migrate(db: SqliteDb): void {
   }
   if (routineCols.length > 0 && !routineCols.some((c: DbRow) => c.name === 'context_json')) {
     db.exec(`ALTER TABLE routines ADD COLUMN context_json TEXT`);
+  }
+  // The App's declared Confluence root page (docs-tree picker spec). Nullable —
+  // most Apps predate this field, and it stays unset until the user configures
+  // it on the App form.
+  const pipelineAppCols = db.prepare(`PRAGMA table_info(pipeline_apps)`).all() as DbRow[];
+  if (pipelineAppCols.length > 0 && !pipelineAppCols.some((c: DbRow) => c.name === 'confluence_root')) {
+    db.exec(`ALTER TABLE pipeline_apps ADD COLUMN confluence_root TEXT`);
   }
   migrateCritique(db);
   migrateMediaTasks(db);
@@ -689,6 +737,106 @@ function normalizeProjectRunStatus(status: unknown) {
     return status;
   }
   return 'not_started';
+}
+
+// ---------- pipeline apps ----------
+// App container (cha của các feature) tạo cục bộ mà CHƯA có feature nào. Một App
+// có feature không cần row ở đây: nó đã tồn tại dưới dạng {appId, appName}
+// denormalize trong metadata.studioConfig của từng feature (xem
+// GET /api/pipelines/apps). Bảng này chỉ để App 0 feature không biến mất.
+
+const PIPELINE_APP_SELECT_COLS = `id, name, created_at AS createdAt, confluence_root AS confluenceRootRaw`;
+
+// An App's Confluence scope is MULTIPLE roots (docs-tree picker spec, multi-
+// root revision). SAME column (`confluence_root TEXT`) stores BOTH shapes so
+// pre-multi-root rows (e.g. app--Ke_toan's bare "1001423450") keep reading:
+//   - 0 roots            → NULL
+//   - exactly 1 root     → the bare id string (back-compat, no JSON quoting)
+//   - 2+ roots           → a JSON array string `["id1","id2"]`
+// Centralized here so every read/write path (list/get/insert/upsert) agrees
+// on the shape without re-deriving it.
+export function parseConfluenceRoots(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+      }
+    } catch {
+      /* not valid JSON — fall through to the bare-id path below */
+    }
+  }
+  return [trimmed];
+}
+
+export function serializeConfluenceRoots(roots: string[] | null | undefined): string | null {
+  if (!roots || roots.length === 0) return null;
+  if (roots.length === 1) return roots[0]!;
+  return JSON.stringify(roots);
+}
+
+function mapPipelineAppRow(r: DbRow) {
+  const confluenceRoots = parseConfluenceRoots(r.confluenceRootRaw as string | null);
+  return {
+    id: r.id as string,
+    name: r.name as string,
+    createdAt: Number(r.createdAt),
+    ...(confluenceRoots.length ? { confluenceRoots } : {}),
+  };
+}
+
+export function listPipelineApps(db: SqliteDb) {
+  return (db
+    .prepare(`SELECT ${PIPELINE_APP_SELECT_COLS} FROM pipeline_apps ORDER BY created_at ASC`)
+    .all() as DbRow[])
+    .map(mapPipelineAppRow);
+}
+
+export function getPipelineApp(db: SqliteDb, id: string) {
+  const r = db
+    .prepare(`SELECT ${PIPELINE_APP_SELECT_COLS} FROM pipeline_apps WHERE id = ?`)
+    .get(id) as DbRow | undefined;
+  return r ? mapPipelineAppRow(r) : null;
+}
+
+export function insertPipelineApp(
+  db: SqliteDb,
+  a: { id: string; name: string; createdAt: number; confluenceRoots?: string[] },
+) {
+  db.prepare(`INSERT INTO pipeline_apps (id, name, created_at, confluence_root) VALUES (?, ?, ?, ?)`)
+    .run(a.id, a.name, a.createdAt, serializeConfluenceRoots(a.confluenceRoots));
+  return getPipelineApp(db, a.id);
+}
+
+// Đổi tên hiển thị của App (và, khi truyền kèm, confluenceRoots). UPSERT vì
+// App có feature KHÔNG có row ở đây (tên chỉ nằm denormalize trên feature) —
+// sửa nó phải tạo row shadow để giá trị mới sống được cả khi feature cuối bị
+// gỡ khỏi app. `confluenceRoots` chỉ được ghi khi khóa này THỰC SỰ có mặt
+// trên `a` (kể cả [] = xóa hết) — vắng mặt nghĩa là "không đổi", giữ nguyên
+// giá trị cũ trên conflict (không đưa confluence_root vào SET clause).
+export function upsertPipelineAppName(
+  db: SqliteDb,
+  a: { id: string; name: string; createdAt: number; confluenceRoots?: string[] },
+) {
+  if (Object.prototype.hasOwnProperty.call(a, 'confluenceRoots')) {
+    db.prepare(
+      `INSERT INTO pipeline_apps (id, name, created_at, confluence_root) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, confluence_root = excluded.confluence_root`,
+    ).run(a.id, a.name, a.createdAt, serializeConfluenceRoots(a.confluenceRoots));
+  } else {
+    db.prepare(
+      `INSERT INTO pipeline_apps (id, name, created_at) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name`,
+    ).run(a.id, a.name, a.createdAt);
+  }
+  return getPipelineApp(db, a.id);
+}
+
+export function deletePipelineApp(db: SqliteDb, id: string) {
+  db.prepare(`DELETE FROM pipeline_apps WHERE id = ?`).run(id);
 }
 
 // ---------- templates ----------

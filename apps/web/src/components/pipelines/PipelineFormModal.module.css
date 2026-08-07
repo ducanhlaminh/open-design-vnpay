@@ -1,0 +1,532 @@
+/* Fresh modal shell + form primitives for the Pipelines drill-down. Same
+   visual family as PipelineNavViews.module.css (radii, spacing rhythm,
+   border/surface tokens, focus-ring treatment) — read that file before
+   touching this one. Everything here comes from styles/tokens.css; no
+   hardcoded hex. See AGENTS.md "Web CSS ownership": new component styles
+   default to a CSS Module, not the legacy global styles/home/pipelines.css
+   (pl-modal / pl-btn / pl-input), which this shell intentionally replaces
+   for NEW pipeline dialogs. */
+
+:root {
+  --pfm-ease: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* ---- Overlay + dialog ------------------------------------------------- */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  /* No dedicated scrim token exists yet; this literal mirrors the same
+     overlay already used by .pl-modal-backdrop / .task-modal-backdrop. */
+  background: rgba(20, 18, 16, 0.42);
+  backdrop-filter: blur(2px);
+  animation: pfmFadeIn 0.16s var(--pfm-ease);
+}
+
+.dialog {
+  width: 100%;
+  max-width: 460px;
+  max-height: min(86vh, 720px);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  animation: pfmPopIn 0.2s var(--pfm-ease);
+}
+
+.dialog:focus-visible {
+  outline: none;
+}
+
+@keyframes pfmFadeIn {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes pfmPopIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backdrop,
+  .dialog {
+    animation: none;
+  }
+}
+
+/* ---- Header ------------------------------------------------------------ */
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.title {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
+.title > svg {
+  color: var(--accent-strong);
+}
+
+.close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: background 0.16s var(--pfm-ease), color 0.16s var(--pfm-ease);
+}
+
+.close:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+
+.close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- Body ---------------------------------------------------------------- */
+.body {
+  padding: 18px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Scrolling the form body must not scroll the page behind the dialog. */
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* ---- Field -------------------------------------------------------------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.fieldLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.fieldHint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+
+.fieldError {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--red);
+}
+
+/* ---- Text input / combo input -------------------------------------------- */
+.input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-app);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.16s var(--pfm-ease), box-shadow 0.16s var(--pfm-ease);
+}
+
+.input::placeholder {
+  color: var(--text-faint);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ---- Confluence root combobox (App forms, multi-root) --------------------- */
+.comboWrap {
+  position: relative;
+}
+
+/* Selected roots — chips below the input. A prefilled root (existing App
+   root, no title known yet) shows its bare id as the chip's only label; once
+   re-resolved via search/browse it upgrades to title + a small id badge. */
+.comboChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.comboChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 5px 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-subtle);
+  font-size: 12px;
+}
+
+.comboChipTitle {
+  max-width: 220px;
+  color: var(--text-strong);
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.comboChipId {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.comboChipRemove {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: background 0.12s var(--pfm-ease), color 0.12s var(--pfm-ease);
+}
+
+.comboChipRemove:hover {
+  background: var(--red-bg);
+  color: var(--red);
+}
+
+/* Rendered through a portal into document.body (position: fixed, top/left/
+   width/maxHeight set inline in JS via the same getBoundingClientRect +
+   flip-above math as CustomSelect.tsx's `updatePosition` — that component is
+   this repo's existing portal-dropdown precedent, reused rather than
+   reinvented) so it's a true floating overlay: no modal-body
+   `overflow-y: auto` / footer to clip or get clipped by, and no ancestor
+   stacking context (the modal's own backdrop/dialog) can trap it behind
+   themselves. z-index MATCHES `.od-select-menu` (styles/primitives.css,
+   the same precedent) — this repo's established value for "portal dropdown
+   above any modal", well clear of `.backdrop`'s 1000. Background is TWO
+   layers on purpose: `--bg-panel` is an intentionally translucent glass tint
+   (meant to frost over the app's blurred gradient canvas) — stacked here
+   over a solid `--bg-app` base so the combined result reads fully opaque
+   regardless of what's underneath (previously other modal rows bled
+   through it). */
+.comboDropdown {
+  position: fixed;
+  z-index: 9000;
+  max-height: 260px;
+  overflow-y: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-app);
+  background-image: linear-gradient(var(--bg-panel), var(--bg-panel));
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+}
+
+/* One-row "Thêm: <pasted ref>" affordance — the paste path's floating panel
+   content when the query already resolves as a URL/bare id. */
+.comboAddRefRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent-strong);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s var(--pfm-ease);
+}
+
+.comboAddRefRow:hover {
+  background: var(--bg-subtle);
+}
+
+.comboAddRefRow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Top-level search-hit row: chevron (expand/fetch sub-tree) + checkbox (add/
+   remove as root, does not close the dropdown — multi-add) + title/meta. */
+.comboHitRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s var(--pfm-ease);
+}
+
+.comboHitRow:hover {
+  background: var(--bg-subtle);
+}
+
+/* Nested descendant row (inside an expanded hit's sub-tree) — same
+   chevron+checkbox shape, single-line title, indented per depth (inline
+   `paddingLeft`). */
+.comboNodeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s var(--pfm-ease);
+}
+
+.comboNodeRow:hover {
+  background: var(--bg-subtle);
+}
+
+.comboChevron {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.comboChevron:hover {
+  color: var(--accent);
+}
+
+.comboChevronSpacer {
+  flex: none;
+  width: 16px;
+}
+
+.comboCheckbox {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  border-radius: 4px;
+  border: 1.5px solid var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.comboCheckboxOn {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.comboOptionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.comboOptionTitle {
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.comboOptionMeta {
+  font-size: 11px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.comboMsg {
+  margin: 0;
+  padding: 7px 9px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+/* ---- Buttons -------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 580;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.16s var(--pfm-ease), border-color 0.16s var(--pfm-ease),
+    transform 0.12s var(--pfm-ease), box-shadow 0.16s var(--pfm-ease), color 0.16s var(--pfm-ease);
+}
+
+.btn > svg {
+  color: var(--text-soft);
+  transition: color 0.16s var(--pfm-ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btnPrimary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btnPrimary > svg {
+  color: #fff;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* Hành động phá hủy (xóa App/Feature). Cùng hình dáng .btnPrimary nhưng nền
+   đỏ, để nút xác nhận trong hộp thoại xóa không trông giống nút "Lưu". */
+.btnDanger {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+
+.btnDanger > svg {
+  color: #fff;
+}
+
+.btnDanger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 84%, #000);
+  border-color: color-mix(in srgb, var(--red) 84%, #000);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition: none;
+  }
+  .btn:hover:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* ---- Body text (hộp thoại xác nhận) ------------------------------------- */
+.text {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* ---- Error banner ---------------------------------------------------------- */
+.error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--red-bg);
+  border: 1px solid var(--red-border);
+  color: var(--red);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.error > svg {
+  flex: none;
+  margin-top: 1px;
+}

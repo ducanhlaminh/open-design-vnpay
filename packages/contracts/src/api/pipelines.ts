@@ -185,6 +185,16 @@ export interface PipelineView {
    */
   acceptsPlatform?: boolean;
   /**
+   * When true, this stage accepts a MANUAL file upload from the UI — a
+   * secondary "Tải file lên" button next to Run (not folded into the Run
+   * flow: a stage can also have `inputPlaceholder`, and Run's dispatch is
+   * mutually exclusive on those fields, so upload needs its own affordance).
+   * The upload itself goes through the existing project-files route; this
+   * flag only controls whether the button renders. Today only the
+   * `docs-review` workflow's `dr-docs` stage sets it.
+   */
+  acceptsUpload?: boolean;
+  /**
    * Output path patterns this pipeline produces in the project cwd (from the
    * daemon registry). The UI surfaces a stage's result files ("Quick result")
    * by matching these against `GET /api/projects/:id/files`. Patterns:
@@ -293,6 +303,19 @@ export interface Workflow {
   description?: string;
   /** Ordered pipeline ids that make up this workflow's DAG. */
   pipelineIds: string[];
+  /**
+   * Human-readable name for each id in `pipelineIds`, in the SAME order. Both
+   * fields exist because they serve different readers: `pipelineIds` is the
+   * bare-id list every gating/filtering/ordering call site already keys off
+   * (stepper grouping, output attribution, sync scoping — see
+   * apps/daemon/src/pipelines.ts) and must stay a plain `string[]` for that;
+   * `stages` is purely a display lookup so a client (e.g. the Pull/Push stage
+   * picker) can render "UX Spec" instead of the raw id "ux" without hand-
+   * mirroring the daemon's `PipelineDef.name` registry. Optional so existing
+   * consumers built before this field keep working; a client reading it should
+   * still fall back to the raw id when a name is missing.
+   */
+  stages?: Array<{ id: string; name: string }>;
 }
 
 export interface WorkflowsResponse {
@@ -338,6 +361,9 @@ export interface RunAllConfig {
   /** Docs stage: also fetch the whole sub-tree under each seed page
    *  (folder-structured), independent of followLinks. Omitted → false. */
   includeDescendants?: boolean;
+  /** Last run started from HAND-UPLOADED documents rather than a Confluence
+   *  fetch (see RunWorkflowRequest.docsFromUpload). */
+  docsFromUpload?: boolean;
   skipSucceeded?: boolean;
   /**
    * LEAN run: drop the analysis stages (customer journey, UX research, the
@@ -347,6 +373,26 @@ export interface RunAllConfig {
    * the run you hand over. Omitted → the full chain.
    */
   lean?: boolean;
+  /**
+   * Danh sách id bước sẽ chạy, do người dùng tick trong panel cấu hình. Có mặt
+   * và KHÔNG rỗng → chạy ĐÚNG các bước này theo thứ tự của workflow, bỏ qua
+   * `lean` và `skipSucceeded` (người dùng đã chọn tay thì lựa chọn đó thắng —
+   * kể cả khi họ tick lại một bước đã succeeded để chạy lại).
+   * Vắng mặt → giữ nguyên hành vi cũ (`lean` + `skipSucceeded`), nên mọi cấu
+   * hình đã lưu và mọi lệnh CLI hiện có vẫn chạy y như trước.
+   */
+  stageIds?: string[];
+}
+
+/** Tiến độ của MỘT workflow trên một feature (`PipelineProject.workflows`).
+ *  `done`/`total`/`running` đếm y như các field cùng tên ở cấp project, chỉ
+ *  khác là theo workflow này chứ không theo workflow của query. */
+export interface PipelineWorkflowSummary {
+  id: string;
+  name: string;
+  done: number;
+  total: number;
+  running: number;
 }
 
 // A KGS app/project available for pipelines. These are projects pulled from the
@@ -378,10 +424,54 @@ export interface PipelineProject {
    *  feature này thuộc về — mirror từ `project.json.appId` lúc pull. Picker
    *  dùng nó để nhóm các feature theo app; thiếu = feature chưa gán app. */
   app?: { id: string; name?: string };
+  /** Trạng thái của TỪNG workflow trong registry — `done`/`total`/`running` ở
+   *  trên chỉ nói về MỘT workflow (cái của query, mặc định là workflow đầu
+   *  tiên), nên một feature đang chạy workflow khác vẫn đọc thành "Chưa chạy".
+   *  Row feature xổ ra dùng mảng này. Optional: client cũ / server cũ vẫn phải
+   *  chạy được, nên nơi đọc phải fallback về các field ở trên khi nó vắng. */
+  workflows?: PipelineWorkflowSummary[];
 }
 
 export interface PipelineProjectsResponse {
   projects: PipelineProject[];
+}
+
+// Request body for `POST /api/pipelines/projects` (Phase B: local
+// Project/feature creation). `appId`/`appName` are optional — when set the
+// new project is mirrored under that App in the picker (see `PipelineApp`).
+export interface CreatePipelineProjectRequest {
+  projectId: string;
+  name?: string;
+  appId?: string;
+  appName?: string;
+}
+
+export interface CreatePipelineProjectResponse {
+  id: string;
+  name: string;
+}
+
+// One App container offered as the parent of a new feature (`GET
+// /api/pipelines/apps`). `local` Apps only exist denormalized on local
+// features' `PipelineProject.app`; `remote` Apps come from the central
+// KGS/media registry's `{isApp: true}` rows.
+export interface PipelineApp {
+  id: string;
+  name?: string;
+  /** An App's declared Confluence scope (docs-tree picker spec, multi-root
+   *  revision) — page ids, in the order the App configured them. Local
+   *  Apps only (remote/studio Apps have none yet); omitted when the App has
+   *  no root configured. */
+  confluenceRoots?: string[];
+  /** `confluenceRoots[0]`, kept for one release of back-compat with clients
+   *  still reading the pre-multi-root singular field. Omitted alongside
+   *  `confluenceRoots` when the App has no root configured. */
+  confluenceRoot?: string;
+  origin: 'local' | 'remote';
+}
+
+export interface PipelineAppsResponse {
+  apps: PipelineApp[];
 }
 
 export interface RunPipelineRequest {
@@ -504,6 +594,18 @@ export interface ConfluencePageHit {
   title: string;
   url?: string;
   space?: string;
+  /** Ancestor page TITLES, top→down, excluding this page itself — lets a
+   *  search result with a title shared by pages in different dự án be told
+   *  apart (App-root combobox). Optional: the direct-PAT search path can
+   *  supply it (CQL `expand=ancestors`); the BAS-gateway fallback path
+   *  cannot, so it stays undefined there rather than guessing. */
+  ancestors?: string[];
+  /** Whether this page has at least one child page — lets the App-root search
+   *  dropdown only render an expand arrow on pages that actually have
+   *  children. `undefined` = unknown (the BAS-gateway fallback path has no
+   *  equivalent field, and the direct-PAT path leaves it undefined too when
+   *  Confluence's response omits the children block for a result). */
+  hasChildren?: boolean;
 }
 
 export interface ConfluencePagesResponse {
@@ -601,6 +703,15 @@ export interface RunWorkflowRequest {
    *  RunPipelineRequest.includeDescendants. */
   includeDescendants?: boolean;
   /**
+   * The workflow's DOCS INGEST stage is skipped because its documents were
+   * uploaded by hand (`acceptsUpload` stages — Docs → Review tài liệu): the
+   * files already sit in `<workflow>/docs/`, which IS that stage's declared
+   * output, so running it would clear them and then fetch nothing. The chain
+   * therefore starts at the stage after the ingest. Ignored by workflows whose
+   * first stage has no upload affordance.
+   */
+  docsFromUpload?: boolean;
+  /**
    * When true, stages already `succeeded` are SKIPPED (resume: only the
    * missing stages run, each clearing just its own outputs). Default false: a
    * full fresh run — the project RESETS up front (the first stage runs with a
@@ -610,6 +721,15 @@ export interface RunWorkflowRequest {
    */
   lean?: boolean;
   skipSucceeded?: boolean;
+  /**
+   * Danh sách id bước sẽ chạy — cùng ngữ nghĩa với `RunAllConfig.stageIds`:
+   * có mặt và KHÔNG rỗng → chạy ĐÚNG các bước này theo thứ tự của workflow và
+   * bỏ qua `lean` + `skipSucceeded`. Vắng mặt → hành vi cũ. Daemon TỪ CHỐI
+   * (400) khi danh sách chứa id không thuộc workflow, hoặc khi một bước được
+   * chọn có phụ thuộc vừa không được chọn vừa chưa `succeeded` — run-all không
+   * hỏi gating, nên bước thiếu input sẽ chạy thật và cho ra kết quả rác.
+   */
+  stageIds?: string[];
 }
 
 export interface RunWorkflowResponse {

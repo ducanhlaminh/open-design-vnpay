@@ -3,9 +3,20 @@ import path from 'node:path';
 
 import type { Express, Response } from 'express';
 import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
-import { TARGETS_CONFIG_BASENAME, UI_TARGETS, isUiTarget } from '@open-design/contracts';
+import { TARGETS_CONFIG_BASENAME, UI_TARGETS, buildTargetsConfig, isUiTarget } from '@open-design/contracts';
 
-import { getProject, getProjectPipelineState, insertProject, listProjects, updateProject } from './db.js';
+import {
+  deletePipelineApp,
+  getPipelineApp,
+  getProject,
+  getProjectPipelineState,
+  insertPipelineApp,
+  insertProject,
+  listPipelineApps,
+  listProjects,
+  updateProject,
+  upsertPipelineAppName,
+} from './db.js';
 import {
   DEFAULT_WORKFLOW_ID,
   WORKFLOWS,
@@ -17,6 +28,7 @@ import {
   listPipelineStatus,
   mergePipelineState,
   resolveRunMode,
+  validateRunStageSelection,
   workflowForPipeline,
 } from './pipelines.js';
 import type { RouteDeps } from './server-context.js';
@@ -53,8 +65,98 @@ function parseDesignSystemByTarget(raw: unknown): Partial<Record<UiTarget, strin
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
+
+// Body của `POST /api/pipelines/run-all` và `PUT .../run-config` → các field
+// của `metadata.runAllConfig`. MỘT nơi duy nhất quyết định shape đã lưu để hai
+// đường ghi không lệch nhau:
+//  - `withDefaults` (run-all): ghi CẢ BỘ lựa chọn của lần chạy, field thiếu lấy
+//    default — đúng shape route này vẫn ghi từ trước.
+//  - mặc định (run-config): merge từng section, nên CHỈ field có mặt trong body
+//    được ghi. `designSystemId: null` ghi đè thành null ("Không dùng"),
+//    `confluencePages: []` xóa hết trang; field không gửi giữ nguyên giá trị cũ.
+function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean }): Partial<RunAllConfig> {
+  const all = opts?.withDefaults === true;
+  const body = (input && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
+  const has = (key: string) => all || Object.prototype.hasOwnProperty.call(body, key);
+  const out: Partial<RunAllConfig> = {};
+  if (has('confluencePages')) {
+    const pages = (Array.isArray(body.confluencePages) ? body.confluencePages : ([] as unknown[]))
+      .filter(
+        (p: unknown): p is { id?: string; title?: string; url?: string } =>
+          !!p && typeof p === 'object' && (typeof (p as any).id === 'string' || typeof (p as any).url === 'string'),
+      )
+      .map((p: { id?: string; title?: string; url?: string }) => ({
+        ...(typeof p.id === 'string' && p.id ? { id: p.id } : {}),
+        ...(typeof p.title === 'string' && p.title ? { title: p.title } : {}),
+        ...(typeof p.url === 'string' && p.url ? { url: p.url } : {}),
+      }));
+    // run-all không ghi danh sách rỗng (giữ shape cũ); patch thì rỗng = xóa hết.
+    if (pages.length > 0 || !all) out.confluencePages = pages;
+  }
+  // designSystemId là field ba trạng thái: id / null (không dùng) / vắng mặt.
+  const dsId = body.designSystemId;
+  if (typeof dsId === 'string') out.designSystemId = dsId;
+  else if (dsId === null) out.designSystemId = null;
+  if (has('terminal')) {
+    const t = body.terminal;
+    if (t === 'ui-html' || t === 'ui-react' || t === 'ui-react-ds' || t === 'both') out.terminal = t as WorkflowTerminal;
+    else if (all) out.terminal = 'ui-html';
+  }
+  if (has('platform')) {
+    const pf = body.platform;
+    if (pf === 'mobile' || pf === 'web') out.platform = pf as TargetPlatform;
+    else if (all) out.platform = 'mobile';
+  }
+  if (has('targets')) {
+    const targets = Array.isArray(body.targets) ? (body.targets as unknown[]).filter(isUiTarget) : [];
+    if (targets.length > 0 || !all) out.targets = targets;
+  }
+  if (has('designSystemByTarget')) {
+    const map = parseDesignSystemByTarget(body.designSystemByTarget);
+    if (map) out.designSystemByTarget = map;
+    else if (!all) out.designSystemByTarget = {};
+  }
+  if (has('followLinks')) out.followLinks = body.followLinks !== false;
+  if (has('includeDescendants')) out.includeDescendants = body.includeDescendants === true;
+  if (has('docsFromUpload')) {
+    // run-all chỉ ghi khi true (shape cũ); patch ghi cả false để đổi nguồn từ
+    // nhánh upload về Confluence xóa được cờ.
+    const fromUpload = body.docsFromUpload === true;
+    if (fromUpload || !all) out.docsFromUpload = fromUpload;
+  }
+  if (has('skipSucceeded')) out.skipSucceeded = body.skipSucceeded === true;
+  if (has('lean')) out.lean = body.lean === true;
+  if (has('stageIds')) {
+    // Bước người dùng tick tay. Chỉ nhận chuỗi không rỗng, khử trùng lặp, GIỮ
+    // NGUYÊN thứ tự gửi lên — server sắp lại theo thứ tự workflow lúc chạy
+    // (selectRunStages), nên thứ tự ở đây chỉ là dữ liệu người dùng đã chọn.
+    const ids = [
+      ...new Set(
+        (Array.isArray(body.stageIds) ? (body.stageIds as unknown[]) : []).filter(
+          (id): id is string => typeof id === 'string' && id.trim().length > 0,
+        ),
+      ),
+    ];
+    // run-all không ghi danh sách rỗng (giữ shape cũ: vắng mặt = hành vi cũ);
+    // patch thì rỗng = bỏ chọn tay, quay về `lean` + `skipSucceeded`.
+    if (ids.length > 0 || !all) out.stageIds = ids;
+  }
+  return out;
+}
+
+import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
+import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
+import { loadRemoteProjects } from './kg-sync/remote-registry.js';
+import { StagingBlockedError } from './kg-sync/push-dest.js';
 import { readAppConfig } from './app-config.js';
 import { publishPipelineEvaluation, readPipelineEvaluations } from './feedback.js';
+import {
+  extractPageId,
+  fetchConfluencePageDirect,
+  listDescendantPages,
+  resolveConfluenceCreds,
+} from './bas/bas-client.js';
+import type { ConfluenceCreds } from './bas/bas-client.js';
 
 // A pipeline's "project" is a KGS app: either pulled from the central KGS
 // (`od kg pull`, metadata.source === 'kg-pull') OR created fresh for pipelines
@@ -84,6 +186,31 @@ function runModeFor(
   const saved =
     raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as RunAllConfig).lean : undefined;
   return resolveRunMode(typeof saved === 'boolean' ? saved : undefined, state, pipelineIds);
+}
+
+// Tiến độ của MỘT workflow trên state đã nạp: đếm đúng các stage mà MODE của
+// project này thật sự chạy (một chuỗi lean xong là 5/5, không phải 5/8 — một
+// project "xong" không được đọc thành dở dang vì các stage nó cố tình bỏ).
+// Tách ra khỏi route vì giờ có hai người gọi: badge tổng (theo workflow của
+// query) và mảng `workflows` (mọi workflow trong registry).
+function countWorkflowProgress(
+  project: { metadata?: Record<string, unknown> } | null | undefined,
+  state: ProjectPipelineState,
+  pipelineIds: readonly string[],
+): { done: number; total: number; running: number } {
+  const mode = runModeFor(project, state, pipelineIds);
+  const countedIds = pipelineIds.filter((id) => {
+    const def = getPipelineDef(id);
+    return !def || !isStageSkipped(def, mode);
+  });
+  return {
+    total: countedIds.length,
+    done: countedIds.reduce((n, id) => (state[id]?.status === 'succeeded' ? n + 1 : n), 0),
+    running: countedIds.reduce(
+      (n, id) => (state[id]?.status === 'running' || state[id]?.status === 'queued' ? n + 1 : n),
+      0,
+    ),
+  };
 }
 
 // Validate the optional structured run source from the request body. Returns
@@ -162,23 +289,16 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     const projects = await Promise.all(
       kgsProjects.map(async (p: { id: string; name: string; metadata?: Record<string, unknown> }) => {
         const state = await loadMergedState(p.id);
-        // Progress counts the stages THIS PROJECT'S MODE runs: a finished lean
-        // chain is 5/5, not 5/8 — a "done" project must not read as unfinished
-        // because of stages it deliberately skips.
-        const mode = runModeFor(p, state, wf.pipelineIds);
-        const countedIds = wf.pipelineIds.filter((id) => {
-          const def = getPipelineDef(id);
-          return !def || !isStageSkipped(def, mode);
-        });
-        const total = countedIds.length;
-        const done = countedIds.reduce(
-          (n, id) => (state[id]?.status === 'succeeded' ? n + 1 : n),
-          0,
-        );
-        const running = countedIds.reduce(
-          (n, id) => (state[id]?.status === 'running' || state[id]?.status === 'queued' ? n + 1 : n),
-          0,
-        );
+        const { done, total, running } = countWorkflowProgress(p, state, wf.pipelineIds);
+        // Trạng thái của TỪNG workflow, đếm trên CÙNG state vừa nạp (không nạp
+        // lại lần nào): badge một-workflow ở trên không nói được workflow nào
+        // đang chạy, nên một feature đang chạy workflow khác vẫn báo "Chưa
+        // chạy". Row feature xổ ra đọc mảng này.
+        const workflows = WORKFLOWS.map((w) => ({
+          id: w.id,
+          name: w.name,
+          ...countWorkflowProgress(p, state, w.pipelineIds),
+        }));
         // Studio config (mirrored into metadata on pull): Run prefills the
         // Confluence link + design system from it (per-run override allowed).
         const sc = p.metadata?.studioConfig;
@@ -201,6 +321,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           done,
           total,
           running,
+          workflows,
           ...(config ? { config } : {}),
           ...(savedRunAll ? { savedRunAll } : {}),
           ...(appId ? { app: { id: appId, ...(appName ? { name: appName } : {}) } } : {}),
@@ -215,14 +336,571 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     res.json({ workflows: WORKFLOWS, defaultWorkflowId: DEFAULT_WORKFLOW_ID });
   });
 
-  // POST /api/pipelines/projects đã GỠ (2026-07): dự án khai sinh ở Pipeline
-  // Studio (identity + media project.json + workspace KGS); open-design chỉ
-  // pull về (`od kg pull-all` tạo project row với source kg-pull). Trả 410 để
-  // client cũ nhận thông báo rõ thay vì 404 mù.
-  app.post('/api/pipelines/projects', (_req, res) => {
-    res.status(410).json({
-      error: 'tạo dự án đã chuyển sang Pipeline Studio — tạo ở đó rồi dùng `od kg pull-all` để kéo về',
+  // POST /api/pipelines/projects { projectId, name, appId?, appName? } —
+  // Phase B: mở lại tạo dự án CỤC BỘ (trước đây route này trả 410 và bắt
+  // buộc khai sinh ở Pipeline Studio). Giờ user dựng cấu trúc
+  // Project(App)/feature ngay trong open-design; project được đánh dấu
+  // metadata.kind='pipeline' như trước. Trên Push, đích được chọn sau (ghi
+  // đè project đã tồn tại trên studio, hoặc đi qua thư mục staging/approval —
+  // xem apps/daemon/src/kg-sync/push-dest.ts) — route này KHÔNG chạm tới
+  // studio/KGS, chỉ tạo project row cục bộ.
+  app.post('/api/pipelines/projects', (req, res) => {
+    const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId.trim() : '';
+    const name = typeof req.body?.name === 'string' && req.body.name.trim()
+      ? req.body.name.trim()
+      : projectId;
+    // Regex của pipeline-studio (khác regex cũ, rộng hơn, của route này
+    // trước khi bị gỡ): một id dài quá 63 ký tự hoặc mở đầu bằng ký tự không
+    // phải chữ/số sẽ KHÔNG BAO GIỜ được studio duyệt — chấp nhận nó ở đây chỉ
+    // trì hoãn một lỗi chắc chắn xảy ra, tới tận lúc Push mới lộ ra.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(projectId)) {
+      return res.status(400).json({
+        error:
+          'invalid project id (must start with a letter/digit, then A-Z a-z 0-9 . _ - , max 64 chars total — matches pipeline-studio\'s id rule). This is the KGS project_id.',
+      });
+    }
+    if (getProject(db, projectId)) {
+      return res.status(409).json({ error: `project "${projectId}" already exists` });
+    }
+    // App cha (optional): khi có, mirror denormalized vào metadata.studioConfig
+    // — GET /api/pipelines/projects (trên) đọc thẳng appId/appName từ đây để
+    // nhóm feature theo app, nên không cần thêm gì ở đó cho project mới này.
+    const appId = typeof req.body?.appId === 'string' ? req.body.appId.trim() : '';
+    const appName = typeof req.body?.appName === 'string' ? req.body.appName.trim() : '';
+    const now = Date.now();
+    insertProject(db, {
+      id: projectId,
+      name,
+      skillId: null,
+      designSystemId: null,
+      pendingPrompt: null,
+      metadata: appId
+        ? { kind: 'pipeline', studioConfig: { appId, ...(appName ? { appName } : {}) } }
+        : { kind: 'pipeline' },
+      createdAt: now,
+      updatedAt: now,
     });
+    res.status(201).json({ id: projectId, name });
+  });
+
+  // Các App CỤC BỘ thấy được: {appId, appName} denormalize trên feature +
+  // row bảng pipeline_apps (App 0 feature). Dùng cho cả picker (GET) và check
+  // trùng khi tạo (POST).
+  type AppEntry = { id: string; name?: string; confluenceRoots?: string[]; origin: 'local' | 'remote' };
+  const collectLocalApps = (): Map<string, AppEntry> => {
+    const byId = new Map<string, AppEntry>();
+    const mergeName = (entry: AppEntry, name: string | undefined) => {
+      if (!entry.name && name) entry.name = name;
+    };
+    for (const p of listProjects(db).filter((p: { metadata?: unknown }) => isKgsProject(p))) {
+      const sc = (p as { metadata?: Record<string, unknown> }).metadata?.studioConfig;
+      const scRec =
+        sc && typeof sc === 'object' && !Array.isArray(sc) ? (sc as Record<string, unknown>) : undefined;
+      const appId = typeof scRec?.appId === 'string' ? scRec.appId.trim() : '';
+      if (!appId) continue;
+      const appName = typeof scRec?.appName === 'string' && scRec.appName.trim() ? scRec.appName.trim() : undefined;
+      const existing = byId.get(appId);
+      if (existing) {
+        mergeName(existing, appName);
+      } else {
+        byId.set(appId, { id: appId, ...(appName ? { name: appName } : {}), origin: 'local' });
+      }
+    }
+    // App 0 feature (POST /api/pipelines/apps): chưa có feature nào mirror
+    // {appId, appName} nên nguồn duy nhất là bảng pipeline_apps. confluenceRoots
+    // CŨNG chỉ sống ở đây (không denormalize trên feature — xem docs-tree spec).
+    for (const a of listPipelineApps(db)) {
+      const existing = byId.get(a.id);
+      if (existing) {
+        mergeName(existing, a.name && a.name !== a.id ? a.name : undefined);
+        if (!existing.confluenceRoots?.length && a.confluenceRoots?.length) {
+          existing.confluenceRoots = a.confluenceRoots;
+        }
+      } else {
+        byId.set(a.id, {
+          id: a.id,
+          ...(a.name && a.name !== a.id ? { name: a.name } : {}),
+          ...(a.confluenceRoots?.length ? { confluenceRoots: a.confluenceRoots } : {}),
+          origin: 'local',
+        });
+      }
+    }
+    return byId;
+  };
+
+  // Các App có trên registry trung tâm (KGS/media). Ném lỗi khi store không
+  // với tới được — nơi gọi tự quyết định degrade (picker: local-only; tạo mới:
+  // bỏ qua check trùng remote).
+  const loadRemoteApps = async (): Promise<Array<{ id: string; name?: string }>> => {
+    const remote = await loadRemoteProjects(
+      new KgsClient(kgsConfigFromEnv()),
+      new MediaClient(mediaConfigFromEnv()),
+    );
+    return remote
+      .filter((r) => r.isApp)
+      .map((r) => ({
+        id: r.projectId,
+        ...(r.name && r.name !== r.projectId ? { name: r.name } : {}),
+      }));
+  };
+
+  // Optional `confluenceRoots`/`confluenceRoot` field (POST create / PATCH
+  // update, docs-tree spec — multi-root revision): an App's Confluence scope
+  // is now MULTIPLE roots.
+  //   - `confluenceRoots: string[]` (NEW, plural) — each entry normalized via
+  //     extractPageId (a URL that doesn't resolve throws → 400); `[]` clears.
+  //     Must be an array of non-empty strings, else 400.
+  //   - `confluenceRoot: string` (LEGACY, singular) — kept accepting so
+  //     existing callers don't break: normalizes to a 1-element array; ''
+  //     clears. A present-but-non-string value 400s rather than silently
+  //     falling through to the clear branch.
+  //   - Both present → `confluenceRoots` wins.
+  //   - Neither present → caller leaves the stored roots untouched.
+  const parseConfluenceRootsField = (
+    body: Record<string, unknown>,
+  ): { present: boolean; value: string[] } => {
+    if (Object.prototype.hasOwnProperty.call(body, 'confluenceRoots')) {
+      const raw = body.confluenceRoots;
+      if (!Array.isArray(raw)) {
+        throw new Error('confluenceRoots must be an array of Confluence URLs/page ids');
+      }
+      const seen = new Set<string>();
+      const value: string[] = [];
+      for (const entry of raw) {
+        if (typeof entry !== 'string') {
+          throw new Error('confluenceRoots entries must be strings (Confluence URL or page id)');
+        }
+        const trimmed = entry.trim();
+        if (!trimmed) {
+          throw new Error('confluenceRoots entries must not be empty');
+        }
+        const pageId = extractPageId(trimmed);
+        if (!seen.has(pageId)) {
+          seen.add(pageId);
+          value.push(pageId);
+        }
+      }
+      return { present: true, value };
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'confluenceRoot')) {
+      const raw = body.confluenceRoot;
+      if (typeof raw !== 'string') {
+        throw new Error('confluenceRoot must be a string (Confluence URL, page id, or "" to clear)');
+      }
+      const trimmed = raw.trim();
+      return { present: true, value: trimmed ? [extractPageId(trimmed)] : [] };
+    }
+    return { present: false, value: [] };
+  };
+
+  // POST /api/pipelines/apps { appId, name, confluenceRoots?, confluenceRoot? }
+  // — tạo App container 0 feature. Form "App mới" trên UI chỉ tạo App;
+  // feature thêm sau qua POST /api/pipelines/projects (khi đó {appId,
+  // appName} được mirror vào metadata.studioConfig của feature). App 0
+  // feature không có gì để chạy/push nên route này là LOCAL-ONLY: không chạm
+  // KGS/studio/media. `confluenceRoots` (docs-tree spec) là danh sách URL
+  // hoặc page id Confluence — chuẩn hóa từng phần tử về pageId.
+  app.post('/api/pipelines/apps', async (req, res) => {
+    const appId = typeof req.body?.appId === 'string' ? req.body.appId.trim() : '';
+    const name = typeof req.body?.name === 'string' && req.body.name.trim()
+      ? req.body.name.trim()
+      : appId;
+    // Cùng regex với POST /api/pipelines/projects: id App cũng là project_id
+    // trên KGS, id studio không duyệt thì chặn ngay tại đây.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(appId)) {
+      return res.status(400).json({
+        error:
+          'invalid app id (must start with a letter/digit, then A-Z a-z 0-9 . _ - , max 64 chars total — matches pipeline-studio\'s id rule). This is the KGS project_id.',
+      });
+    }
+    let confluenceRoots: string[] = [];
+    try {
+      const parsed = parseConfluenceRootsField((req.body ?? {}) as Record<string, unknown>);
+      if (parsed.present) confluenceRoots = parsed.value;
+    } catch (err: any) {
+      return res.status(400).json({ error: String(err?.message ?? err) });
+    }
+    if (collectLocalApps().has(appId)) {
+      return res.status(409).json({ error: `app "${appId}" already exists` });
+    }
+    // Trùng với App đã có trên studio cũng là trùng (picker đã offer nó,
+    // origin 'remote'). Best-effort: store chết thì cứ cho tạo cục bộ.
+    try {
+      if ((await loadRemoteApps()).some((r) => r.id === appId)) {
+        return res.status(409).json({ error: `app "${appId}" already exists` });
+      }
+    } catch {
+      /* stores unreachable → chỉ dựa vào check cục bộ ở trên */
+    }
+    insertPipelineApp(db, { id: appId, name, createdAt: Date.now(), ...(confluenceRoots.length ? { confluenceRoots } : {}) });
+    res.status(201).json({
+      id: appId,
+      name,
+      ...(confluenceRoots.length ? { confluenceRoot: confluenceRoots[0], confluenceRoots } : {}),
+    });
+  });
+
+  // GET /api/pipelines/apps — App containers a user can pick as the parent of
+  // a NEW feature (Phase B local creation picker). Union of:
+  //   - local: distinct {appId, appName} pairs denormalized onto existing
+  //     local pipeline projects' metadata.studioConfig, PLUS `pipeline_apps`
+  //     rows (Apps created locally that have no feature yet).
+  //   - remote: {isApp: true} rows from the KGS/media registry, so the picker
+  //     can also parent a new feature under an App that already exists on
+  //     Pipeline Studio (that is case 1 — the feature gets created there on
+  //     approval, the App is reused as-is). Best-effort: the remote stores
+  //     being unreachable degrades the picker to local-only rather than 500ing
+  //     a user out of creating anything.
+  //
+  // An App with features deliberately does NOT get a local `projects` row of
+  // its own: it has no cwd, no stages, nothing to run, and isKgsProject() would
+  // then try to push it like a real feature. It only ever exists as this
+  // denormalized {appId, appName} mirrored onto each of its features; the
+  // `pipeline_apps` row exists solely so a 0-feature App survives.
+  app.get('/api/pipelines/apps', async (_req, res) => {
+    const byId = collectLocalApps();
+    // Remote Apps come second so a local name (typed by this user) wins over
+    // the store's, but an App that only exists remotely still shows up.
+    try {
+      for (const r of await loadRemoteApps()) {
+        const existing = byId.get(r.id);
+        if (existing) {
+          if (!existing.name && r.name) existing.name = r.name;
+        } else {
+          byId.set(r.id, { id: r.id, ...(r.name ? { name: r.name } : {}), origin: 'remote' });
+        }
+      }
+    } catch {
+      /* stores unreachable → local-only picker */
+    }
+    // `confluenceRoot` (singular, first root) rides along `confluenceRoots`
+    // for one release of back-compat — a client reading the old field never
+    // sees an app with roots go silently blank.
+    const apps = Array.from(byId.values())
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((e) => ({
+        id: e.id,
+        ...(e.name ? { name: e.name } : {}),
+        ...(e.confluenceRoots?.length
+          ? { confluenceRoot: e.confluenceRoots[0], confluenceRoots: e.confluenceRoots }
+          : {}),
+        origin: e.origin,
+      }));
+    res.json({ apps });
+  });
+
+  // ---- Sửa/xóa App và feature (Phase 2) — tất cả LOCAL-ONLY: không chạm
+  // KGS/studio/media, chỉ ghi row cục bộ + metadata denormalize.
+
+  // {appId, appName} denormalize trên một feature; bản copy để sửa tự do.
+  const studioConfigOf = (
+    project: { metadata?: Record<string, unknown> } | null | undefined,
+  ): Record<string, unknown> => {
+    const sc = project?.metadata?.studioConfig;
+    return sc && typeof sc === 'object' && !Array.isArray(sc)
+      ? { ...(sc as Record<string, unknown>) }
+      : {};
+  };
+
+  // Các feature CỤC BỘ đang thuộc app này (nguồn duy nhất: studioConfig.appId).
+  type LocalFeature = { id: string; name: string; metadata?: Record<string, unknown> };
+  const featuresOfApp = (appId: string): LocalFeature[] =>
+    (listProjects(db) as LocalFeature[])
+      .filter((p) => isKgsProject(p))
+      .filter((p) => studioConfigOf(p).appId === appId);
+
+  // metadata của feature sau khi gỡ App cha. studioConfig rỗng thì bỏ hẳn key
+  // để GET /api/pipelines/projects không trả về `config: {}`.
+  const detachApp = (feature: LocalFeature): Record<string, unknown> => {
+    const metadata = { ...(feature.metadata ?? {}) };
+    const sc = studioConfigOf(feature);
+    delete sc.appId;
+    delete sc.appName;
+    if (Object.keys(sc).length > 0) metadata.studioConfig = sc;
+    else delete metadata.studioConfig;
+    return metadata;
+  };
+
+  // Id các App trên registry trung tâm; null khi store không với tới được —
+  // caller phân biệt "chắc chắn không remote" với "không biết".
+  const remoteAppIds = async (): Promise<Set<string> | null> => {
+    try {
+      return new Set((await loadRemoteApps()).map((r) => r.id));
+    } catch {
+      return null;
+    }
+  };
+
+  // PATCH /api/pipelines/apps/:id { name, confluenceRoots?, confluenceRoot? }
+  // — đổi TÊN HIỂN THỊ của App (id giữ nguyên vì nó là project_id trên KGS)
+  // và, khi gửi kèm, confluenceRoots (docs-tree spec, multi-root revision —
+  // [] xóa hết, phần tử không hợp lệ → 400; `confluenceRoot` singular vẫn
+  // được chấp nhận cho back-compat, '' xóa, và thua `confluenceRoots` khi cả
+  // hai cùng có mặt). Ghi hai chỗ vì tên App sống ở hai nguồn: row
+  // pipeline_apps (UPSERT — App có feature chưa chắc có row) và appName
+  // denormalize trên từng feature (GET /api/pipelines/projects đọc ở đó);
+  // confluenceRoots chỉ sống ở pipeline_apps (không denormalize).
+  app.patch('/api/pipelines/apps/:id', async (req, res) => {
+    const appId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    // Rename được cả App remote: row local chỉ là cái tên phủ lên (picker cho
+    // tên local thắng), không đổi gì trên studio.
+    if (!collectLocalApps().has(appId) && !(await remoteAppIds())?.has(appId)) {
+      return res.status(404).json({ error: `app "${appId}" not found` });
+    }
+    let confluenceRootsPatch: { present: boolean; value: string[] };
+    try {
+      confluenceRootsPatch = parseConfluenceRootsField((req.body ?? {}) as Record<string, unknown>);
+    } catch (err: any) {
+      return res.status(400).json({ error: String(err?.message ?? err) });
+    }
+    upsertPipelineAppName(db, {
+      id: appId,
+      name,
+      createdAt: Date.now(),
+      ...(confluenceRootsPatch.present ? { confluenceRoots: confluenceRootsPatch.value } : {}),
+    });
+    for (const f of featuresOfApp(appId)) {
+      updateProject(db, f.id, {
+        metadata: {
+          ...(f.metadata ?? {}),
+          studioConfig: { ...studioConfigOf(f), appId, appName: name },
+        },
+      });
+    }
+    const finalConfluenceRoots = confluenceRootsPatch.present
+      ? confluenceRootsPatch.value
+      : (getPipelineApp(db, appId)?.confluenceRoots ?? []);
+    res.json({
+      id: appId,
+      name,
+      ...(finalConfluenceRoots.length
+        ? { confluenceRoot: finalConfluenceRoots[0], confluenceRoots: finalConfluenceRoots }
+        : {}),
+    });
+  });
+
+  // DELETE /api/pipelines/apps/:id — xóa App CỤC BỘ. Feature KHÔNG bị xóa: chỉ
+  // gỡ {appId, appName} nên nó về nhóm "Chưa gán app" (xóa dự án là việc của
+  // DELETE /api/projects/:id). App có trên studio thì máy này không có quyền
+  // xóa — 409 để user xử lý trên studio.
+  app.delete('/api/pipelines/apps/:id', async (req, res) => {
+    const appId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    const remote = await remoteAppIds();
+    if (remote?.has(appId)) {
+      return res.status(409).json({
+        error:
+          `App "${appId}" tồn tại trên Pipeline Studio — xóa trên studio; máy này chỉ xóa được App local.`,
+      });
+    }
+    if (!collectLocalApps().has(appId)) {
+      return res.status(404).json({ error: `app "${appId}" not found` });
+    }
+    deletePipelineApp(db, appId);
+    const features = featuresOfApp(appId);
+    for (const f of features) {
+      updateProject(db, f.id, { metadata: detachApp(f) });
+    }
+    res.json({ ok: true, detached: features.length });
+  });
+
+  // ---- App docs-tree browse (docs-tree picker spec §2, multi-root revision) ─
+  // GET /api/pipelines/apps/:appId/docs-tree — the MERGED Confluence sub-tree
+  // under ALL of the App's declared `confluence_root`s, for the run-source
+  // modal's "Tài liệu App" tab. Ingest stages that record a page selection here.
+  const INGEST_STAGE_IDS = ['docs', 'prd-docs', 'dr-docs'] as const;
+  // listDescendantPages' own default is the same 500; named locally so the
+  // truncation check below reads as intent, not a magic re-derivation of the
+  // library's default.
+  const DOCS_TREE_HARD_CAP = 500;
+
+  // pageId -> which sibling features (same App) already ingested it, per
+  // ingest-stage `lastInput`/`lastSource`. In-memory over the projects list,
+  // best-effort: a ref that doesn't parse as a Confluence page id (a JIRA
+  // key/JQL run) is skipped rather than surfaced as an error — this is a
+  // hint, not a ledger (see spec's "Risks / edge cases").
+  const collectDocsTreeUsedBy = (
+    appId: string,
+  ): Map<string, Array<{ projectId: string; pipelineId: string }>> => {
+    const map = new Map<string, Array<{ projectId: string; pipelineId: string }>>();
+    const add = (pageId: string, projectId: string, pipelineId: string) => {
+      const arr = map.get(pageId) ?? [];
+      if (!arr.some((e) => e.projectId === projectId && e.pipelineId === pipelineId)) {
+        arr.push({ projectId, pipelineId });
+        map.set(pageId, arr);
+      }
+    };
+    for (const p of listProjects(db) as LocalFeature[]) {
+      if (!isKgsProject(p)) continue;
+      if (studioConfigOf(p).appId !== appId) continue;
+      const pipelines = (p.metadata?.pipelines ?? {}) as Record<
+        string,
+        { lastInput?: unknown; lastSource?: unknown }
+      >;
+      for (const stageId of INGEST_STAGE_IDS) {
+        const run = pipelines[stageId];
+        if (!run) continue;
+        const refs: string[] = [];
+        if (typeof run.lastInput === 'string') {
+          refs.push(...run.lastInput.split('\n').map((l) => l.trim()).filter(Boolean));
+        }
+        if (
+          run.lastSource &&
+          typeof run.lastSource === 'object' &&
+          (run.lastSource as Record<string, unknown>).kind === 'confluence' &&
+          typeof (run.lastSource as Record<string, unknown>).ref === 'string'
+        ) {
+          refs.push((run.lastSource as Record<string, unknown>).ref as string);
+        }
+        for (const ref of refs) {
+          try {
+            add(extractPageId(ref), p.id, stageId);
+          } catch {
+            /* not a Confluence ref (JIRA key/JQL) — best-effort, skip */
+          }
+        }
+      }
+    }
+    return map;
+  };
+
+  // Best-effort root page title: id fallback keeps the response usable when
+  // the PAT can't read the root page's metadata (permissions) even though
+  // listDescendantPages (CQL `ancestor=`) still succeeds.
+  const bestEffortPageTitle = async (creds: ConfluenceCreds, pageId: string): Promise<string> => {
+    try {
+      return (await fetchConfluencePageDirect(creds, pageId)).title || pageId;
+    } catch {
+      return pageId;
+    }
+  };
+
+  app.get('/api/pipelines/apps/:appId/docs-tree', async (req, res) => {
+    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
+    // Local `pipeline_apps` only — an App that only exists denormalized on
+    // features (no row yet) has never had a confluence_root configured.
+    const appRow = getPipelineApp(db, appId);
+    if (!appRow) {
+      return res.status(404).json({ error: `app "${appId}" not found` });
+    }
+    const roots = appRow.confluenceRoots ?? [];
+    if (roots.length === 0) {
+      return res.status(400).json({ error: `app "${appId}" has no confluence_root configured` });
+    }
+    const creds = await resolveConfluenceCreds(ctx.paths.RUNTIME_DATA_DIR);
+    if (!creds) {
+      return res.status(502).json({
+        error:
+          'Chưa có credential Confluence (CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN) — cần PAT để đọc cây trang.',
+      });
+    }
+    const usedByMap = collectDocsTreeUsedBy(appId);
+    type PageOut = {
+      pageId: string;
+      title: string;
+      treePath: string[];
+      rootPageId: string;
+      usedBy: Array<{ projectId: string; pipelineId: string }>;
+    };
+    // Merge every root's sub-tree into one page list. Insertion order = roots
+    // order; a page reachable from TWO overlapping roots keeps the FIRST
+    // root's entry (Map.set is a no-op on an existing key below).
+    const pagesById = new Map<string, PageOut>();
+    const rootsOut: Array<{ pageId: string; title: string }> = [];
+    let truncated = false;
+    for (const root of roots) {
+      const rootTitle = await bestEffortPageTitle(creds, root);
+      rootsOut.push({ pageId: root, title: rootTitle });
+      // The root page ITSELF is a legitimate, selectable ingest target (the
+      // old single-root shape excluded it) — treePath [] marks it as top-level.
+      if (!pagesById.has(root)) {
+        pagesById.set(root, {
+          pageId: root,
+          title: rootTitle,
+          treePath: [],
+          rootPageId: root,
+          usedBy: usedByMap.get(root) ?? [],
+        });
+      }
+      let fetched: Awaited<ReturnType<typeof listDescendantPages>>;
+      try {
+        // Ask for ONE more than the cap: listDescendantPages itself hard-stops
+        // at its `hardCap` arg (returns exactly that many when the tree is
+        // bigger OR exactly that size), so capping the request at
+        // DOCS_TREE_HARD_CAP can't tell "exactly 500 pages" apart from "more
+        // than 500, cut short". The +1 sentinel disambiguates; sliced back
+        // down to DOCS_TREE_HARD_CAP for the response either way.
+        fetched = await listDescendantPages(creds, root, DOCS_TREE_HARD_CAP + 1);
+      } catch (err: any) {
+        return res.status(502).json({ error: String(err?.message ?? err) });
+      }
+      const rootTruncated = fetched.length > DOCS_TREE_HARD_CAP;
+      if (rootTruncated) truncated = true;
+      const descendants = rootTruncated ? fetched.slice(0, DOCS_TREE_HARD_CAP) : fetched;
+      for (const p of descendants) {
+        if (pagesById.has(p.pageId)) continue; // dedupe overlap — keep first
+        pagesById.set(p.pageId, {
+          pageId: p.pageId,
+          title: p.title,
+          treePath: p.treePath,
+          rootPageId: root,
+          usedBy: usedByMap.get(p.pageId) ?? [],
+        });
+      }
+    }
+    res.json({
+      // Singular `root` kept for one release of back-compat with the
+      // single-root response shape — first root, same {pageId, title} shape.
+      root: rootsOut[0],
+      roots: rootsOut,
+      pages: Array.from(pagesById.values()),
+      truncated,
+    });
+  });
+
+  // PATCH /api/pipelines/projects/:id { name?, appId?, appName? } — sửa một
+  // feature: đổi tên hiển thị và/hoặc chuyển sang App khác (`appId: null` = gỡ
+  // về "Chưa gán app"). Id/thư mục cwd giữ nguyên — nó là project_id trên KGS.
+  app.patch('/api/pipelines/projects/:id', (req, res) => {
+    const projectId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    const project = getProject(db, projectId) as LocalFeature | null;
+    if (!project || !isKgsProject(project)) {
+      return res.status(404).json({ error: 'project not found' });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const hasName = Object.prototype.hasOwnProperty.call(body, 'name');
+    const hasAppId = Object.prototype.hasOwnProperty.call(body, 'appId');
+    if (!hasName && !hasAppId) {
+      return res.status(400).json({ error: 'name or appId is required' });
+    }
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (hasName && !name) return res.status(400).json({ error: 'name must not be empty' });
+    const patch: Record<string, unknown> = {};
+    if (hasName) patch.name = name;
+    if (hasAppId) {
+      const appId = typeof body.appId === 'string' ? body.appId.trim() : '';
+      if (!appId) {
+        patch.metadata = detachApp(project);
+      } else {
+        // appName do client gửi (đang hiện trên picker); thiếu thì lấy tên đang
+        // biết của App để card không tụt về hiển thị id trần.
+        const known = collectLocalApps().get(appId)?.name;
+        const appName = typeof body.appName === 'string' && body.appName.trim()
+          ? body.appName.trim()
+          : known;
+        patch.metadata = {
+          ...(project.metadata ?? {}),
+          studioConfig: {
+            ...studioConfigOf(project),
+            appId,
+            ...(appName ? { appName } : {}),
+          },
+        };
+      }
+    }
+    const updated = updateProject(db, projectId, patch);
+    res.json({ id: projectId, name: updated?.name ?? project.name });
   });
 
   // GET /api/pipelines?projectId=... — the docs→UI pipeline list for a project,
@@ -414,6 +1092,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       const result = await ctx.pipelines.uploadFiles(projectId);
       res.json({ ok: true, ...result });
     } catch (err: any) {
+      // "Chưa đăng nhập" là điều kiện người dùng sửa được trong 10 giây, không
+      // phải lỗi máy chủ — 400 kèm code để UI nói đúng việc phải làm.
+      if (err instanceof StagingBlockedError) {
+        return res.status(400).json({ error: err.message, code: err.code });
+      }
       res.status(500).json({ error: String(err?.message ?? err) });
     }
   });
@@ -565,6 +1248,50 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
   });
 
+  // PUT /api/pipelines/projects/:id/run-config — LƯU cấu hình chạy mà KHÔNG
+  // chạy gì cả. Rail cấu hình trên màn Chạy có nút "Đổi" từng dòng, mở modal chỉ
+  // chứa section đó; bấm Lưu đi vào đây. Body là một RunAllConfig PARTIAL (chỉ
+  // các field của section vừa sửa) và được merge shallow vào
+  // `metadata.runAllConfig` — trước route này, đổi một lựa chọn phải chạy lại cả
+  // workflow (`POST /api/pipelines/run-all`) mới lưu được.
+  app.put('/api/pipelines/projects/:id/run-config', (req, res) => {
+    const projectId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    const project = getProject(db, projectId);
+    if (!project || !isKgsProject(project)) {
+      return res.status(404).json({ error: 'project not found' });
+    }
+    const prev = project.metadata?.runAllConfig;
+    const saved = (prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {}) as RunAllConfig;
+    const patch = runAllConfigFromBody(req.body);
+    const merged: RunAllConfig = { ...saved, ...patch };
+    updateProject(db, projectId, {
+      metadata: {
+        ...(project.metadata ?? {}),
+        runAllConfig: merged,
+      },
+    });
+    // Đổi "Sản phẩm cần build" phải ăn NGAY cả với chạy-lẻ-từng-bước: các stage
+    // chạy lẻ đọc target từ `<workflow>/targets.json` — file này trước đây chỉ
+    // được ghi lúc run-all khởi động, nên lưu target mới xong mà chạy lẻ vẫn
+    // build target CŨ (đã chọn web vẫn ra mobile). targets là khái niệm riêng
+    // của docs-to-ui (workflow duy nhất có stage acceptsPlatform) nên ghi thẳng
+    // vào thư mục đó; best-effort — dự án chưa có thư mục thì tạo.
+    if (patch.targets !== undefined || patch.designSystemByTarget !== undefined) {
+      const targets = (merged.targets ?? []).filter(isUiTarget);
+      if (targets.length > 0) {
+        try {
+          const wfDir = path.join(ctx.paths.PROJECTS_DIR, projectId, 'docs-to-ui');
+          fs.mkdirSync(wfDir, { recursive: true });
+          const cfg = buildTargetsConfig(targets, merged.designSystemByTarget);
+          fs.writeFileSync(path.join(wfDir, TARGETS_CONFIG_BASENAME), `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
+        } catch (error) {
+          console.warn('[pipelines] run-config: writing targets.json failed:', error);
+        }
+      }
+    }
+    res.json({ ok: true });
+  });
+
   // POST /api/pipelines/run-all — run the WHOLE workflow sequentially with no
   // per-stage review (the "Run full workflow" button / `od pipeline run-all`).
   // The daemon chains the stages in the background — each stage is a normal
@@ -629,6 +1356,10 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       const lean = req.body?.lean === true;
       const followLinks = req.body?.followLinks !== false;
       const includeDescendants = req.body?.includeDescendants === true;
+      // Docs came from the modal's own upload, not from a fetch: the ingest
+      // stage is dropped from the chain (its output IS the folder they landed
+      // in, so re-running it would delete them).
+      const docsFromUpload = req.body?.docsFromUpload === true;
       // UI targets (docs-to-ui): a subset of the fixed enum; invalid entries drop.
       const targets: import('@open-design/contracts').UiTarget[] = Array.isArray(req.body?.targets)
         ? (req.body.targets as unknown[]).filter(
@@ -639,6 +1370,34 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       // Per-target design systems: `{ target: dsId }` entries; unknown targets
       // and non-string ids drop silently (same tolerance as `targets`).
       const designSystemByTarget = parseDesignSystemByTarget(req.body?.designSystemByTarget);
+      // Bước người dùng tick tay. Dùng CHUNG parser với cấu hình đã lưu để hai
+      // đường (chạy ngay / lưu rồi chạy sau) không bao giờ hiểu khác nhau.
+      const stageIds = runAllConfigFromBody(req.body).stageIds;
+      if (stageIds && stageIds.length > 0) {
+        // CHẶN NGAY một lựa chọn thiếu phụ thuộc, thay vì để nó chạy rồi hỏng:
+        // run-all gọi thẳng runPipeline và KHÔNG hỏi gating (xem runWorkflowAll
+        // trong server.ts), nên một bước thiếu input sẽ không bị chặn ở đâu cả —
+        // nó chạy thật, đọc thư mục input rỗng, và cho ra một kết quả trông như
+        // thành công. Hỏng ồn ào ngay từ đầu rẻ hơn nhiều so với một bản spec
+        // rác mà người dùng chỉ phát hiện ở bước cuối.
+        const wf = getWorkflow(workflowId ?? DEFAULT_WORKFLOW_ID);
+        // Workflow lạ: để runWorkflowAll ném "Unknown workflow" → 404 như cũ.
+        if (wf) {
+          // Cùng nguồn "đã xong" mà mọi route khác dùng (local run metadata +
+          // output trên đĩa), và cùng MODE mà `POST /api/pipelines/:id/run`
+          // gate theo: trên một project từng chạy lean, phụ thuộc mà chế độ đó
+          // không bao giờ chạy phải thu về bước gần nhất nó có chạy, nếu không
+          // các terminal UI sẽ bị khoá vĩnh viễn (xem effectiveDependsOn).
+          // Đọc TRƯỚC khi ghi runAllConfig bên dưới — ghi trước thì mode của
+          // lần chạy này sẽ tự trả lời chính nó.
+          const state = await loadMergedState(projectId);
+          const check = validateRunStageSelection(stageIds, wf.pipelineIds, state, {
+            workflowName: wf.name,
+            mode: runModeFor(project, state, wf.pipelineIds),
+          });
+          if (!check.ok) return res.status(400).json({ error: check.error });
+        }
+      }
       // Remember this device's last-used run-all choices (per project) so a
       // later open of the Run-all modal — e.g. after canceling a stage mid-chain
       // — prefills from here instead of forcing the user to re-enter everything.
@@ -647,18 +1406,8 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       updateProject(db, projectId, {
         metadata: {
           ...(project.metadata ?? {}),
-          runAllConfig: {
-            ...(confluencePages.length ? { confluencePages } : {}),
-            ...(designSystemId !== undefined ? { designSystemId } : {}),
-            terminal: (rawTerminal as WorkflowTerminal | undefined) ?? 'ui-html',
-            platform: (rawPlatform as TargetPlatform | undefined) ?? 'mobile',
-            ...(targets.length ? { targets } : {}),
-            ...(designSystemByTarget ? { designSystemByTarget } : {}),
-            followLinks,
-            includeDescendants,
-            skipSucceeded,
-            lean,
-          },
+          // Cùng builder với `PUT .../run-config` để hai đường ghi không lệch shape.
+          runAllConfig: runAllConfigFromBody(req.body, { withDefaults: true }),
         },
       });
       const result = await ctx.pipelines.runWorkflowAll(projectId, {
@@ -672,8 +1421,10 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         ...(designSystemByTarget ? { designSystemByTarget } : {}),
         skipSucceeded,
         lean,
+        ...(stageIds && stageIds.length > 0 ? { stageIds } : {}),
         ...(followLinks ? {} : { followLinks: false }),
         ...(includeDescendants ? { includeDescendants: true } : {}),
+        ...(docsFromUpload ? { docsFromUpload: true } : {}),
       });
       res.status(202).json(result);
     } catch (err: any) {
