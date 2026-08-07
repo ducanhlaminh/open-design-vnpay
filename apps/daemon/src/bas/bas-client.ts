@@ -1481,6 +1481,14 @@ export async function fetchSourceFiles(ep: BasEndpoint, source: PipelineRunSourc
     return [{ relPath: `docs/source/confluence/${slug(title)}.md`, content }];
   }
 
+  // app-files is handled deterministically (runAppFilesDeterministic in
+  // server.ts — a plain filesystem copy from the App's doc corpus, no BAS
+  // gateway call) BEFORE runPipeline ever reaches a source-fetch helper like
+  // this one; a caller that reaches here with it is a wiring bug.
+  if (source.kind === 'app-files') {
+    throw new Error('fetchSourceFiles does not support source.kind "app-files" (handled deterministically upstream)');
+  }
+
   // BAS: KG document → selected feature(s), else the whole document subgraph.
   const files: SourceFile[] = [];
   const featIds = source.featureIds ?? [];

@@ -16,6 +16,7 @@ import {
   QuietButton,
   TextInput,
 } from './PipelineFormModal';
+import { AppDocsUploadSection } from './AppDocsUpload';
 import { appConfluenceRoots, appLabelOf, useAppOptions } from './newProjectForm';
 
 /** Order-insensitive array equality — used to detect whether the roots
@@ -132,6 +133,8 @@ export function EditAppModal({
           />
         )}
       </FormField>
+
+      <AppDocsUploadSection appId={app.id} />
 
       {error ? <FormError>{error}</FormError> : null}
     </PipelineFormModal>

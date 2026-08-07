@@ -999,7 +999,18 @@ test('parseRunSource rejects a bas source with no documentId', () => {
 });
 
 test('parseRunSource rejects an unknown source kind', () => {
-  assert.throws(() => parseRunSource({ kind: 'sharepoint', ref: 'x' }), /must be "confluence" or "bas"/);
+  assert.throws(() => parseRunSource({ kind: 'sharepoint', ref: 'x' }), /must be "confluence", "bas", or "app-files"/);
+});
+
+test('parseRunSource accepts an app-files source and rejects a malformed one', () => {
+  assert.deepEqual(parseRunSource({ kind: 'app-files', appId: 'XPOS', paths: ['A.md', ' B.md '] }), {
+    kind: 'app-files',
+    appId: 'XPOS',
+    paths: ['A.md', 'B.md'],
+  });
+  assert.throws(() => parseRunSource({ kind: 'app-files', paths: ['A.md'] }), /source\.appId is required/);
+  assert.throws(() => parseRunSource({ kind: 'app-files', appId: 'XPOS', paths: [] }), /source\.paths/);
+  assert.throws(() => parseRunSource({ kind: 'app-files', appId: 'XPOS' }), /source\.paths/);
 });
 
 // --- Multi-page draw.io splitting (drawio-render.ts) ----------------------

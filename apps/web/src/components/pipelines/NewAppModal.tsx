@@ -21,6 +21,7 @@ import {
   QuietButton,
   TextInput,
 } from './PipelineFormModal';
+import { AppDocsUploadSection } from './AppDocsUpload';
 import { appLabelOf, toSlugId, useAppOptions } from './newProjectForm';
 
 export function NewAppModal({
@@ -124,6 +125,8 @@ export function NewAppModal({
           />
         )}
       </FormField>
+
+      <AppDocsUploadSection appId={null} />
 
       {error ? <FormError>{error}</FormError> : null}
     </PipelineFormModal>

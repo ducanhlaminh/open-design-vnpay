@@ -117,19 +117,17 @@ test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -
   assert.equal(workflowDirForPipeline('prd-docs'), 'docs-to-prd');
 });
 
-test('every workflow\'s docs-ingest stage accepts a manual file/folder upload (acceptsUpload), no other stage does, and the flag reaches clients through listPipelineStatus', () => {
-  // The three ingest stages — one per workflow — let a user drop in doc(s)
-  // directly from the UI (single file, or a bulk folder via
-  // POST /api/pipelines/upload-folder) instead of a Confluence/JIRA run.
-  // Downstream/other stages only ever get input from a run.
-  assert.equal(getPipelineDef('docs')?.acceptsUpload, true);
-  assert.equal(getPipelineDef('prd-docs')?.acceptsUpload, true);
+test('dr-docs accepts a manual file upload (acceptsUpload), and the flag reaches clients through listPipelineStatus', () => {
+  // dr-docs is the only stage that lets a user drop in a doc / criteria file
+  // directly from the UI — everything else only ever gets input from a run.
+  // (App-level doc uploads — POST /api/pipelines/apps/:appId/upload-folder —
+  // are a separate, App-scoped corpus, not a per-stage acceptsUpload flag.)
   assert.equal(getPipelineDef('dr-docs')?.acceptsUpload, true);
   assert.equal(getPipelineDef('dr-comp')?.acceptsUpload, undefined);
   assert.equal(getPipelineDef('dr-review')?.acceptsUpload, undefined);
   assert.equal(getPipelineDef('dr-flow')?.acceptsUpload, undefined);
-  assert.equal(getPipelineDef('cj')?.acceptsUpload, undefined);
-  assert.equal(getPipelineDef('prd-cj')?.acceptsUpload, undefined);
+  assert.equal(getPipelineDef('docs')?.acceptsUpload, undefined);
+  assert.equal(getPipelineDef('prd-docs')?.acceptsUpload, undefined);
   // …and the flag reaches clients through the pipeline view list, same as
   // acceptsDesignSystem / acceptsPlatform.
   const views = listPipelineStatus({}, ['dr-docs', 'dr-review', 'dr-flow']);

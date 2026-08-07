@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import multer from 'multer';
+import JSZip from 'jszip';
 import type { Express, Response } from 'express';
 import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
 import { TARGETS_CONFIG_BASENAME, UI_TARGETS, buildTargetsConfig, isUiTarget } from '@open-design/contracts';
@@ -69,17 +71,20 @@ function parseDesignSystemByTarget(raw: unknown): Partial<Record<UiTarget, strin
 
 // A workflow's docs-ingest cwd prefix, relative to the project root — the
 // SAME cwd a real run of that workflow's ingest stage (`docs`/`prd-docs`/
-// `dr-docs`, all `acceptsUpload: true`) resolves via `workflowDirForPipeline`
-// (server.ts's `runPipeline` computes its `wfDir` the identical way). NEVER
-// hand-roll this as the literal `${workflowId}` string — `workflowDirForPipeline`
-// returns null for a pipeline outside any workflow (cwd root), and while every
-// REAL workflow today happens to resolve to its own id (verified: `docs`,
-// `prd-docs`, `dr-docs` each belong to exactly one workflow, and none of
-// them are target-scoped — `def.inputPlaceholder` short-circuits
-// `resolveRunTargetDir` to null for all three, so no `<target>/` nesting
-// ever applies to the ingest stage itself), going through the canonical
-// helper keeps this correct if that ever changes instead of silently
-// drifting from the real run path.
+// `dr-docs`) resolves via `workflowDirForPipeline` (server.ts's `runPipeline`
+// computes its `wfDir` the identical way). NEVER hand-roll this as the
+// literal `${workflowId}` string — `workflowDirForPipeline` returns null for
+// a pipeline outside any workflow (cwd root), and while every REAL workflow
+// today happens to resolve to its own id (verified: `docs`, `prd-docs`,
+// `dr-docs` each belong to exactly one workflow, and none of them are
+// target-scoped — `def.inputPlaceholder` short-circuits `resolveRunTargetDir`
+// to null for all three, so no `<target>/` nesting ever applies to the
+// ingest stage itself), going through the canonical helper keeps this
+// correct if that ever changes instead of silently drifting from the real
+// run path. Exposed on GET /api/workflows (docsDir) for the FE; NOT used by
+// the App-level doc uploads below — an App's doc corpus lives at
+// `<appId>/docs/`, independent of any workflow (see the docs-tree spec's
+// multi-root App-level design).
 function docsDirForWorkflow(workflow: { pipelineIds: readonly string[] }): string {
   const firstStageId = workflow.pipelineIds[0];
   const wfDir = firstStageId ? workflowDirForPipeline(firstStageId) : null;
@@ -94,6 +99,13 @@ function docsDirForWorkflow(workflow: { pipelineIds: readonly string[] }): strin
 //  - mặc định (run-config): merge từng section, nên CHỈ field có mặt trong body
 //    được ghi. `designSystemId: null` ghi đè thành null ("Không dùng"),
 //    `confluencePages: []` xóa hết trang; field không gửi giữ nguyên giá trị cũ.
+//
+// `appFiles` is the ONE field here that THROWS on a malformed shape (every
+// other field silently drops a bad entry) — it's picked from a real list
+// (GET /api/pipelines/apps/:appId/docs-files), so a malformed shape is a
+// genuine client bug worth a 400, not a silent no-op. Both call sites
+// (PUT .../run-config, POST /api/pipelines/run-all) must catch this and map
+// it to 400 — see each route.
 function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean }): Partial<RunAllConfig> {
   const all = opts?.withDefaults === true;
   const body = (input && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
@@ -112,6 +124,41 @@ function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean })
       }));
     // run-all không ghi danh sách rỗng (giữ shape cũ); patch thì rỗng = xóa hết.
     if (pages.length > 0 || !all) out.confluencePages = pages;
+  }
+  // App-corpus selection for the docs-ingest stage (docs-tree/App-corpus
+  // "Nguồn tài liệu" rail). Three states: absent (has()===false in patch
+  // mode, or key genuinely missing in withDefaults mode) → untouched/omitted;
+  // `null` → explicit clear (patch mode only — withDefaults never persists an
+  // empty selection, same convention as confluencePages above); an object →
+  // validated { appId: non-empty string, paths: non-empty string[] }.
+  if (has('appFiles')) {
+    const raw = body.appFiles;
+    if (raw === undefined) {
+      // withDefaults mode, key genuinely absent from the request → omit,
+      // mirroring confluencePages' "don't persist an empty selection".
+    } else if (raw === null) {
+      // Explicit key-present-but-undefined so `{ ...saved, ...patch }` at the
+      // call site overrides a previously-saved value (JSON.stringify then
+      // drops the key entirely) — `exactOptionalPropertyTypes` forbids this
+      // assignment through `out`'s own optional-field type, hence the local cast.
+      if (!all) (out as { appFiles?: { appId: string; paths: string[] } | undefined }).appFiles = undefined;
+    } else {
+      if (typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error('appFiles must be an object { appId, paths } or null to clear');
+      }
+      const rec = raw as Record<string, unknown>;
+      const appId = typeof rec.appId === 'string' ? rec.appId.trim() : '';
+      const rawPaths = Array.isArray(rec.paths) ? rec.paths : null;
+      if (
+        !appId ||
+        !rawPaths ||
+        rawPaths.length === 0 ||
+        !rawPaths.every((p) => typeof p === 'string' && p.trim() !== '')
+      ) {
+        throw new Error('appFiles must be { appId: non-empty string, paths: non-empty string[] }');
+      }
+      out.appFiles = { appId, paths: rawPaths.map((p) => (p as string).trim()) };
+    }
   }
   // designSystemId là field ba trạng thái: id / null (không dùng) / vắng mặt.
   const dsId = body.designSystemId;
@@ -258,7 +305,16 @@ export function parseRunSource(raw: unknown): PipelineRunSource | undefined {
       ...(featureIds.length ? { featureIds } : {}),
     };
   }
-  throw new Error('source.kind must be "confluence" or "bas"');
+  if (s.kind === 'app-files') {
+    const appId = typeof s.appId === 'string' ? s.appId.trim() : '';
+    if (!appId) throw new Error('source.appId is required for an app-files source');
+    const paths = Array.isArray(s.paths)
+      ? s.paths.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim())
+      : [];
+    if (paths.length === 0) throw new Error('source.paths (at least one) is required for an app-files source');
+    return { kind: 'app-files', appId, paths };
+  }
+  throw new Error('source.kind must be "confluence", "bas", or "app-files"');
 }
 
 // Nguồn BAS (KG document) của pipeline 1 đang KHÓA BẢO TRÌ (2026-07): card
@@ -274,7 +330,9 @@ const BAS_LOCKED_MSG =
 // runs are manual and one-shot. The route layer validates project + gating and
 // delegates the actual conversation-seeding run to `ctx.pipelines.runPipeline`,
 // a closure wired in server.ts that has access to design.runs + startChatRun.
-export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines' | 'paths'> {}
+// 'http' added for sendMulterError — POST /api/pipelines/apps/:appId/upload-zip
+// reuses the SAME multer-error responder /api/plugins/upload-zip uses.
+export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines' | 'paths' | 'http'> {}
 
 export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutesDeps) {
   const { db } = ctx;
@@ -886,31 +944,45 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     });
   });
 
-  // ── Bulk folder upload (docs ingest, no-API Confluence "export to MD") ─────
-  // POST /api/pipelines/upload-folder — Confluence's manual "export to MD"
-  // produces a whole folder tree (.md + images, no API to hit), so the docs
-  // stages' single-file upload (UploadFilesModal → JSON POST
-  // /api/projects/:id/files, preserving multi-segment names — multipart is
-  // NOT an option there, its route strips every '/' out of the name) doesn't
-  // scale to it. This route is that same JSON write path's BATCH sibling:
-  // reuses `writeProjectFile` (project.ts) — the exact helper
-  // /api/projects/:id/files calls — so target-dir resolution, overwrite
-  // semantics, and (transitively, through the daemon's run-time pre-run
-  // "manual-edits" `.odhistory` fence — project-history.ts) attribution stay
-  // identical between a single manual upload and a bulk folder upload.
+  // ── App-level doc corpus upload (no-API Confluence "export to MD") ─────────
+  // The App (`pipeline_apps`) owns the docs corpus, not any one pipeline run:
+  // a feature's run-config later PICKS files out of what the App already
+  // loaded (see the `app-files` deterministic run source in server.ts's
+  // `runPipeline`) — uploading is a one-time App-level load, independent of
+  // any workflow. Two upload shapes land in the SAME place,
+  // `<PROJECTS_DIR>/<appId>/docs/`:
+  //   - POST .../upload-folder — JSON batch (files[].text|base64), for a
+  //     browser folder-picker that can't produce one multipart request
+  //     without re-flattening every path (see UploadFilesModal's header
+  //     comment on why multipart strips '/' out of names).
+  //   - POST .../upload-zip — one multipart zip (raw bytes, no base64
+  //     inflation) for a Confluence "export to MD" delivered as an archive.
+  // Both funnel through the SAME per-entry validate core (validateUploadPath)
+  // and the SAME write pass (writeValidatedUploadEntries) — reusing
+  // `writeProjectFile` (project.ts), the exact helper /api/projects/:id/files
+  // calls, so target-dir resolution and overwrite semantics stay identical to
+  // every other project-file write path in the daemon.
   const UPLOAD_MAX_FILES = 300;
   const UPLOAD_MAX_FILE_BYTES = 10 * 1024 * 1024;
   const UPLOAD_MAX_REQUEST_BYTES = 80 * 1024 * 1024;
-  const UPLOAD_ALLOWED_EXTENSIONS = new Set([
-    '.md', '.markdown', '.txt', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.pdf', '.drawio', '.csv',
-  ]);
+  const UPLOAD_ZIP_MAX_BYTES = 200 * 1024 * 1024;
+  const UPLOAD_ZIP_MAX_EXTRACTED_BYTES = 300 * 1024 * 1024;
+  // NO extension allowlist: a real Confluence "export to MD" folder mixes
+  // genuine extensionless documents (Confluence attachment names sometimes
+  // carry none) with export-tool artifacts (.tmp/.html/.render/.tfss) the
+  // user still wants preserved verbatim — a real 590-file export lost 117
+  // files (57 of them extensionless, real documents) to a prior allowlist
+  // here. Path safety + size caps are the only gate; content type is not
+  // this route's concern.
 
-  // Path safety for one entry of the batch: absolute / '..' / backslash /
+  // Path safety for one entry of a batch: absolute / '..' / backslash /
   // empty-segment paths are REJECTED (skip that entry, never trust a client-
   // supplied path enough to hand it to writeProjectFile's own sanitizer
   // un-checked) — distinct from writeProjectFile's own `sanitizePath`, which
   // silently NORMALIZES backslashes into separators; this route's contract
-  // is stricter: backslashes are a hard skip, not a normalize.
+  // is stricter: backslashes are a hard skip, not a normalize. Doubles as the
+  // zip-slip guard for upload-zip (a zip entry name is just another
+  // client-supplied path).
   const validateUploadRelPath = (
     raw: unknown,
   ): { ok: true; relPath: string } | { ok: false; reason: string } => {
@@ -926,17 +998,46 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     return { ok: true, relPath: segments.join('/') };
   };
 
-  app.post('/api/pipelines/upload-folder', async (req, res) => {
-    const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId.trim() : '';
-    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
-    const workflowId = typeof req.body?.workflowId === 'string' ? req.body.workflowId.trim() : '';
-    if (!workflowId) return res.status(400).json({ error: 'workflowId is required' });
-    const workflow = getWorkflow(workflowId);
-    if (!workflow) {
-      return res.status(400).json({ error: `unknown workflowId "${workflowId}"` });
+  // Shared per-entry CORE for both upload routes: path safety ONLY — no
+  // extension gate (see the note above). A problem here is a per-entry SKIP —
+  // one malformed path must never fail the rest of a real folder/zip export.
+  // (The per-file BYTE-SIZE cap is intentionally NOT folded in here — it 400s
+  // the WHOLE request in both callers, so each keeps that check inline where
+  // it can `return` immediately.)
+  const validateUploadPath = (
+    rawPath: unknown,
+  ): { ok: true; relPath: string } | { ok: false; path: string; reason: string } => {
+    const pathCheck = validateUploadRelPath(rawPath);
+    if (!pathCheck.ok) {
+      return { ok: false, path: typeof rawPath === 'string' ? rawPath : '(invalid)', reason: pathCheck.reason };
     }
-    const project = getProject(db, projectId);
-    if (!project) return res.status(404).json({ error: `project "${projectId}" not found` });
+    return { ok: true, relPath: pathCheck.relPath };
+  };
+
+  // Shared write pass for both upload routes: <PROJECTS_DIR>/<appId>/docs/<relPath>.
+  const writeValidatedUploadEntries = async (
+    appId: string,
+    toWrite: Array<{ relPath: string; buf: Buffer }>,
+  ): Promise<{ written: number; skipped: Array<{ path: string; reason: string }> }> => {
+    let written = 0;
+    const writeFailures: Array<{ path: string; reason: string }> = [];
+    for (const { relPath, buf } of toWrite) {
+      try {
+        await writeProjectFile(ctx.paths.PROJECTS_DIR, appId, `docs/${relPath}`, buf, {}, undefined);
+        written += 1;
+      } catch (err: any) {
+        writeFailures.push({ path: relPath, reason: String(err?.message ?? err) });
+      }
+    }
+    return { written, skipped: writeFailures };
+  };
+
+  // POST /api/pipelines/apps/:appId/upload-folder { files: [{path, text?, base64?}] }
+  app.post('/api/pipelines/apps/:appId/upload-folder', async (req, res) => {
+    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
+    if (!getPipelineApp(db, appId)) {
+      return res.status(404).json({ error: `app "${appId}" not found` });
+    }
 
     const files = Array.isArray(req.body?.files) ? (req.body.files as unknown[]) : [];
     if (files.length === 0) return res.status(400).json({ error: 'files are required' });
@@ -946,45 +1047,38 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       });
     }
 
-    // Pass 1: validate path + extension + content shape, decode to a Buffer,
-    // and enforce the per-file / total-request byte caps — ALL before a
-    // single byte hits disk, so a cap violation 400s the whole request with
-    // nothing partially written (the FE is expected to chunk under these
-    // caps; hitting one here is a client bug, not something to silently
-    // truncate). Bad PATH/EXTENSION/SHAPE, by contrast, are per-file skips —
-    // one malformed entry must never fail the rest of a real folder export.
+    // Pass 1: validate path + content shape, decode to a Buffer, and enforce
+    // the per-file / total-request byte caps — ALL before a single byte hits
+    // disk, so a cap violation 400s the whole request with nothing partially
+    // written (the FE is expected to chunk under these caps; hitting one
+    // here is a client bug, not something to silently truncate).
     const skipped: Array<{ path: string; reason: string }> = [];
     const toWrite: Array<{ relPath: string; buf: Buffer }> = [];
     let totalBytes = 0;
     for (const raw of files) {
       const entry = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-      const pathCheck = validateUploadRelPath(entry.path);
-      if (!pathCheck.ok) {
-        skipped.push({ path: typeof entry.path === 'string' ? entry.path : '(invalid)', reason: pathCheck.reason });
-        continue;
-      }
-      const ext = path.extname(pathCheck.relPath).toLowerCase();
-      if (!UPLOAD_ALLOWED_EXTENSIONS.has(ext)) {
-        skipped.push({ path: pathCheck.relPath, reason: `extension not allowed: ${ext || '(none)'}` });
+      const pe = validateUploadPath(entry.path);
+      if (!pe.ok) {
+        skipped.push({ path: pe.path, reason: pe.reason });
         continue;
       }
       const hasText = typeof entry.text === 'string';
       const hasBase64 = typeof entry.base64 === 'string';
       if (hasText === hasBase64) {
         // Both present or neither — same "not exactly one" rejection either way.
-        skipped.push({ path: pathCheck.relPath, reason: 'exactly one of text or base64 is required' });
+        skipped.push({ path: pe.relPath, reason: 'exactly one of text or base64 is required' });
         continue;
       }
       let buf: Buffer;
       try {
         buf = hasText ? Buffer.from(entry.text as string, 'utf8') : Buffer.from(entry.base64 as string, 'base64');
       } catch {
-        skipped.push({ path: pathCheck.relPath, reason: 'invalid base64 content' });
+        skipped.push({ path: pe.relPath, reason: 'invalid base64 content' });
         continue;
       }
       if (buf.length > UPLOAD_MAX_FILE_BYTES) {
         return res.status(400).json({
-          error: `file too large (max ${UPLOAD_MAX_FILE_BYTES} bytes): ${pathCheck.relPath}`,
+          error: `file too large (max ${UPLOAD_MAX_FILE_BYTES} bytes): ${pe.relPath}`,
         });
       }
       totalBytes += buf.length;
@@ -993,32 +1087,125 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           error: `request exceeds ${UPLOAD_MAX_REQUEST_BYTES} bytes total — chunk the upload into smaller batches`,
         });
       }
-      toWrite.push({ relPath: pathCheck.relPath, buf });
+      toWrite.push({ relPath: pe.relPath, buf });
     }
 
-    // Pass 2: write. Target = <projectDir>/<docsDir>/<relPath>, `docsDir`
-    // resolved via the SAME `workflowDirForPipeline` helper the real run path
-    // uses (docsDirForWorkflow) — NOT a hand-rolled `${workflowId}/docs/`
-    // literal — so a docs stage sees uploaded files exactly where its own
-    // run would look, on every workflow (not just docs-review).
-    const docsDir = docsDirForWorkflow(workflow);
-    let written = 0;
-    for (const { relPath, buf } of toWrite) {
-      try {
-        await writeProjectFile(
-          ctx.paths.PROJECTS_DIR,
-          projectId,
-          `${docsDir}/${relPath}`,
-          buf,
-          {},
-          project.metadata,
-        );
-        written += 1;
-      } catch (err: any) {
-        skipped.push({ path: relPath, reason: String(err?.message ?? err) });
+    const result = await writeValidatedUploadEntries(appId, toWrite);
+    res.json({ written: result.written, skipped: [...skipped, ...result.skipped] });
+  });
+
+  // Multipart zip upload — raw bytes, NO base64 (avoids the ~1.33× inflation
+  // the JSON upload-folder path pays). Memory storage: the extraction below
+  // needs the whole buffer for JSZip anyway, and the 200MB cap keeps this
+  // bounded. Mirrors `pluginUpload` (server.ts's POST /api/plugins/upload-zip)
+  // in shape, sized for this route's own cap.
+  const pipelineZipUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: UPLOAD_ZIP_MAX_BYTES, files: 1 },
+  });
+
+  // POST /api/pipelines/apps/:appId/upload-zip — multipart, field "file".
+  app.post('/api/pipelines/apps/:appId/upload-zip', (req, res) => {
+    pipelineZipUpload.single('file')(req, res, async (err) => {
+      if (err) return ctx.http.sendMulterError(res, err);
+      const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
+      if (!getPipelineApp(db, appId)) {
+        return res.status(404).json({ error: `app "${appId}" not found` });
       }
+      const file = (req as any).file as { buffer: Buffer } | undefined;
+      if (!file || !file.buffer) {
+        return res.status(400).json({ error: 'file is required' });
+      }
+
+      let zip: JSZip;
+      try {
+        zip = await JSZip.loadAsync(file.buffer);
+      } catch (err2: any) {
+        return res.status(400).json({ error: `not a valid zip file: ${String(err2?.message ?? err2)}` });
+      }
+      const entries = Object.values(zip.files);
+      if (entries.length === 0) {
+        return res.status(400).json({ error: 'zip contains no files' });
+      }
+
+      // Same validate-then-write two-pass shape as upload-folder: a per-file
+      // size violation or the total-extracted cap 400s the whole request
+      // before anything is written; a bad path is a per-entry skip.
+      const skipped: Array<{ path: string; reason: string }> = [];
+      const toWrite: Array<{ relPath: string; buf: Buffer }> = [];
+      let totalBytes = 0;
+      for (const entry of entries) {
+        if (entry.dir) continue;
+        // Zip-safety (reused from /api/plugins/upload-zip's extractPluginZipToFolder):
+        // a zip entry can encode a symlink via its unix permission bits in
+        // the external file attributes — reject it outright rather than
+        // trusting the path check alone, since a symlink can point outside
+        // the write target even when its OWN zip-entry name is safe.
+        const unixMode = typeof entry.unixPermissions === 'number' ? entry.unixPermissions : 0;
+        if ((unixMode & 0o170000) === 0o120000) {
+          skipped.push({ path: entry.name, reason: 'zip entry is a symbolic link' });
+          continue;
+        }
+        // Entry paths = paths inside the zip, top folder kept (no stripping).
+        const pe = validateUploadPath(entry.name);
+        if (!pe.ok) {
+          skipped.push({ path: pe.path, reason: pe.reason });
+          continue;
+        }
+        const buf = await entry.async('nodebuffer');
+        if (buf.length > UPLOAD_MAX_FILE_BYTES) {
+          return res.status(400).json({
+            error: `file too large (max ${UPLOAD_MAX_FILE_BYTES} bytes): ${pe.relPath}`,
+          });
+        }
+        totalBytes += buf.length;
+        if (totalBytes > UPLOAD_ZIP_MAX_EXTRACTED_BYTES) {
+          return res.status(400).json({
+            error: `extracted content exceeds ${UPLOAD_ZIP_MAX_EXTRACTED_BYTES} bytes total`,
+          });
+        }
+        toWrite.push({ relPath: pe.relPath, buf });
+      }
+
+      const result = await writeValidatedUploadEntries(appId, toWrite);
+      res.json({ written: result.written, skipped: [...skipped, ...result.skipped] });
+    });
+  });
+
+  // GET /api/pipelines/apps/:appId/docs-files — recursive listing of the
+  // App's uploaded doc corpus, for the run-config source picker (which PICKS
+  // files out of this list rather than re-uploading per feature).
+  const walkDocsFiles = async (dir: string, relDir: string, out: Array<{ path: string; size: number }>) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') return;
+      throw err;
     }
-    res.json({ written, skipped });
+    for (const entry of entries) {
+      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walkDocsFiles(full, rel, out);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const st = await fs.promises.stat(full);
+      out.push({ path: rel, size: st.size });
+    }
+  };
+
+  app.get('/api/pipelines/apps/:appId/docs-files', async (req, res) => {
+    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
+    if (!getPipelineApp(db, appId)) {
+      return res.status(404).json({ error: `app "${appId}" not found` });
+    }
+    const docsDir = path.join(ctx.paths.PROJECTS_DIR, appId, 'docs');
+    const files: Array<{ path: string; size: number }> = [];
+    await walkDocsFiles(docsDir, '', files);
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    res.json({ files });
   });
 
   // PATCH /api/pipelines/projects/:id { name?, appId?, appName? } — sửa một
@@ -1424,7 +1611,12 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
     const prev = project.metadata?.runAllConfig;
     const saved = (prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {}) as RunAllConfig;
-    const patch = runAllConfigFromBody(req.body);
+    let patch: Partial<RunAllConfig>;
+    try {
+      patch = runAllConfigFromBody(req.body);
+    } catch (err: any) {
+      return res.status(400).json({ error: String(err?.message ?? err) });
+    }
     const merged: RunAllConfig = { ...saved, ...patch };
     updateProject(db, projectId, {
       metadata: {
@@ -1595,7 +1787,9 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         ? 409
         : /Unknown workflow/i.test(msg)
           ? 404
-          : 500;
+          : /^appFiles/.test(msg) // runAllConfigFromBody's appFiles validation (see there)
+            ? 400
+            : 500;
       res.status(status).json({ error: msg });
     }
   });

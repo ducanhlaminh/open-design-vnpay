@@ -308,6 +308,21 @@ export function resolveStageRunConfig(
 ): StageRunDecision {
   if (p.inputPlaceholder) {
     const uploading = cfg?.docsFromUpload === true;
+    // App-corpus rail pick (RunAllModal's "Tài liệu App" card) — takes
+    // precedence over `confluencePages` per RunAllConfig.appFiles' own
+    // docblock ("confluencePages has no server-side fallback of its own —
+    // the FE always resolves it into an explicit input before a run", so a
+    // saved appFiles selection is checked FIRST, ahead of that fallback).
+    // Structured `source`, not `input`: the daemon copies these
+    // deterministically from the App's own corpus, same shape RunInputModal
+    // already sends for the same pick.
+    const appFiles = !uploading ? cfg?.appFiles : undefined;
+    if (appFiles && appFiles.paths.length > 0) {
+      return {
+        ok: true,
+        payload: { source: { kind: 'app-files', appId: appFiles.appId, paths: appFiles.paths } },
+      };
+    }
     const pages = cfg?.confluencePages ?? [];
     if (!uploading && pages.length === 0) return { ok: false, missing: 'Nguồn tài liệu' };
     const input = uploading
@@ -2859,7 +2874,9 @@ export function PipelinesView() {
         return (
           <RunAllModal
             workflowName={workflows.find((w) => w.id === workflowId)?.name ?? 'Docs → UI-Spec'}
+            appId={runAllProject?.app?.id}
             defaultConfluencePages={runAllDefaults?.confluencePages}
+            defaultAppFiles={runAllDefaults?.appFiles}
             defaultDesignSystemId={runAllDefaults?.designSystemId}
             defaultDesignSystemByTarget={runAllDefaults?.designSystemByTarget}
             defaultTerminal={runAllDefaults?.terminal}

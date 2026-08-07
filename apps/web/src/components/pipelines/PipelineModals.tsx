@@ -36,6 +36,7 @@ import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { PlModal } from './PlModal';
 import { appConfluenceRoots, useAppOptions } from './newProjectForm';
+import { useAppDocsFiles, type AppDocsFile } from './AppDocsUpload';
 import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzone';
 import styles from './PipelineSourceModal.module.css';
 import sp from './StagePicker.module.css';
@@ -791,6 +792,8 @@ function AppDocsTreePicker({
   selected,
   onSelectedChange,
   onUseConfluenceInstead,
+  disabled,
+  onTreeLoaded,
 }: {
   appId: string;
   selected: Set<string>;
@@ -798,6 +801,14 @@ function AppDocsTreePicker({
   /** Fetch failed (spec §3 fallback) — link-style hint back to the paste tab,
    *  which "works exactly as today" regardless of this tab's state. */
   onUseConfluenceInstead: () => void;
+  /** The sibling "File đã nạp" section has a selection — cross-section
+   *  mixing is out of scope (spec), so this tree stops accepting clicks
+   *  until that selection is cleared. Browsing/expanding still works. */
+  disabled?: boolean;
+  /** Fires once when the tree successfully loads — lets a caller that needs
+   *  page TITLES (the rail config's `confluencePages` needs `{id, title}`,
+   *  not bare ids) look them up without duplicating the fetch. */
+  onTreeLoaded?: (tree: AppDocsTreeResponse) => void;
 }) {
   const [tree, setTree] = useState<AppDocsTreeResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -812,7 +823,9 @@ function AppDocsTreePicker({
         const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/docs-tree`);
         const j = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(j?.error || `docs-tree: ${res.status}`);
-        setTree(j as AppDocsTreeResponse);
+        const loaded = j as AppDocsTreeResponse;
+        setTree(loaded);
+        onTreeLoaded?.(loaded);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -825,6 +838,7 @@ function AppDocsTreePicker({
   }, []);
 
   const toggle = (ids: string[], nextOn: boolean) => {
+    if (disabled) return;
     const next = new Set(selected);
     for (const id of ids) {
       if (nextOn) next.add(id);
@@ -856,8 +870,11 @@ function AppDocsTreePicker({
       ? tree.roots[0]!.title || tree.roots[0]!.pageId
       : `${tree.roots.length} gốc tài liệu`;
   return (
-    <div className={styles.panel}>
+    <div className={styles.panel} style={disabled ? { opacity: 0.5 } : undefined}>
       <span className={styles.sectionLabel}>{sectionLabel}</span>
+      {disabled ? (
+        <p className={styles.hint}>Đã chọn ở "File đã nạp" bên dưới — bỏ chọn ở đó để dùng lại mục này.</p>
+      ) : null}
       {tree.pages.length === 0 ? (
         <p className={styles.empty}>Cây tài liệu chưa có trang con.</p>
       ) : (
@@ -869,6 +886,138 @@ function AppDocsTreePicker({
           Confluence trên App nếu cần đầy đủ.
         </p>
       ) : null}
+    </div>
+  );
+}
+
+// ── "File đã nạp" — the App's uploaded-docs corpus tree ──────────────────────
+// Second, independent section of the SAME "Tài liệu App" tab (App forms'
+// AppDocsUpload.tsx is where the corpus is UPLOADED; this is where a feature
+// PICKS from it). Only `.md` paths are selectable — non-.md attachments
+// (images etc. the daemon auto-pairs alongside a page) are hidden from the
+// tree entirely rather than shown muted, per spec's either/or.
+interface AppFilesNode {
+  kind: 'folder' | 'file';
+  key: string;
+  title: string;
+  path?: string;
+  children: AppFilesNode[];
+}
+
+function buildAppFilesTree(files: AppDocsFile[]): AppFilesNode {
+  const root: AppFilesNode = { kind: 'folder', key: '', title: '', children: [] };
+  const folders = new Map<string, AppFilesNode>();
+  const ensureFolder = (segs: string[]): AppFilesNode => {
+    if (segs.length === 0) return root;
+    const key = segs.join(' ');
+    const hit = folders.get(key);
+    if (hit) return hit;
+    const parent = ensureFolder(segs.slice(0, -1));
+    const node: AppFilesNode = { kind: 'folder', key, title: segs[segs.length - 1]!, children: [] };
+    parent.children.push(node);
+    folders.set(key, node);
+    return node;
+  };
+  for (const f of files) {
+    if (!/\.md$/i.test(f.path)) continue; // attachment — hidden (BE auto-pairs it with its page)
+    const segs = f.path.split('/');
+    const parent = ensureFolder(segs.slice(0, -1));
+    parent.children.push({ kind: 'file', key: `f:${f.path}`, title: segs[segs.length - 1]!, path: f.path, children: [] });
+  }
+  return root;
+}
+
+function appFilesPathsUnder(node: AppFilesNode): string[] {
+  if (node.kind === 'file') return node.path ? [node.path] : [];
+  return node.children.flatMap(appFilesPathsUnder);
+}
+
+function renderAppFilesNode(
+  node: AppFilesNode,
+  selected: Set<string>,
+  onToggle: (paths: string[], nextOn: boolean) => void,
+  depth: number,
+): JSX.Element {
+  if (node.kind === 'file') {
+    const on = node.path ? selected.has(node.path) : false;
+    return (
+      <div
+        key={node.key}
+        className={styles.treeRow}
+        style={{ paddingLeft: 10 + depth * 22 }}
+        onClick={() => node.path && onToggle([node.path], !on)}
+      >
+        <span className={styles.treeSpacer} aria-hidden="true" />
+        <span className={`${styles.treeCheck}${on ? ' ' + styles.treeCheckOn : ''}`}>
+          {on ? <Icon name="check" size={12} /> : null}
+        </span>
+        <span className={styles.treeName}>{node.title}</span>
+      </div>
+    );
+  }
+  const paths = appFilesPathsUnder(node);
+  const onCount = paths.filter((p) => selected.has(p)).length;
+  const cs: 'on' | 'off' | 'partial' = onCount === 0 ? 'off' : onCount === paths.length ? 'on' : 'partial';
+  return (
+    <div key={node.key || 'root'}>
+      {node.key ? (
+        <div className={styles.treeRow} style={{ paddingLeft: 10 + depth * 22 }} onClick={() => onToggle(paths, cs !== 'on')}>
+          <span className={styles.treeSpacer} aria-hidden="true" />
+          <span className={`${styles.treeCheck}${cs === 'on' ? ' ' + styles.treeCheckOn : ''}${cs === 'partial' ? ' ' + styles.treeCheckPartial : ''}`}>
+            {cs === 'on' ? <Icon name="check" size={12} /> : cs === 'partial' ? <Icon name="minus" size={12} /> : null}
+          </span>
+          <span className={`${styles.treeName} ${styles.treeNameFolder}`}>{node.title}</span>
+        </div>
+      ) : null}
+      {node.children.map((c) => renderAppFilesNode(c, selected, onToggle, node.key ? depth + 1 : depth))}
+    </div>
+  );
+}
+
+/** "File đã nạp" picker — the App's uploaded corpus (AppDocsUpload.tsx),
+ *  checkbox tree over `.md` paths, folder-toggles-subtree same as the
+ *  Confluence tree above. Submits as a structured `source: {kind:
+ *  'app-files', appId, paths}` (NOT the newline `input` path — the daemon
+ *  copies these deterministically from the App's own corpus, no Confluence
+ *  fetch involved). */
+function AppFilesPicker({
+  appId,
+  selected,
+  onSelectedChange,
+  disabled,
+}: {
+  appId: string;
+  selected: Set<string>;
+  onSelectedChange: (next: Set<string>) => void;
+  /** The sibling Confluence tree has a selection — see AppDocsTreePicker's
+   *  matching prop; same cross-section-mixing guard, mirrored. */
+  disabled?: boolean;
+}) {
+  const { files, loading, error } = useAppDocsFiles(appId);
+
+  const toggle = (paths: string[], nextOn: boolean) => {
+    if (disabled) return;
+    const next = new Set(selected);
+    for (const p of paths) {
+      if (nextOn) next.add(p);
+      else next.delete(p);
+    }
+    onSelectedChange(next);
+  };
+
+  if (loading) return <p className={styles.empty}>Đang tải danh sách file…</p>;
+  if (error) return <p className={styles.empty}>{error}</p>;
+  if (!files || files.length === 0) return null;
+  const mdFiles = files.filter((f) => /\.md$/i.test(f.path));
+  if (mdFiles.length === 0) return <p className={styles.empty}>Kho tài liệu App chưa có file .md nào.</p>;
+  const root = buildAppFilesTree(files);
+  return (
+    <div className={styles.panel} style={disabled ? { opacity: 0.5 } : undefined}>
+      <span className={styles.sectionLabel}>File đã nạp ({mdFiles.length})</span>
+      {disabled ? (
+        <p className={styles.hint}>Đã chọn trang Confluence ở trên — bỏ chọn để dùng lại mục này.</p>
+      ) : null}
+      <div className={styles.tree}>{renderAppFilesNode(root, selected, toggle, 0)}</div>
     </div>
   );
 }
@@ -952,13 +1101,24 @@ export function RunInputModal({
   const [kind, setKind] = useState<SourceKind>('confluence');
   const [advanced, setAdvanced] = useState(false);
 
-  // App-docs branch (spec §3, multi-root) — App list chỉ để tra
-  // confluenceRoots; picker thật (fetch docs-tree) sống trong
-  // AppDocsTreePicker, mount theo appId.
+  // App-docs branch (spec §3, multi-root + uploaded corpus) — App list chỉ
+  // để tra confluenceRoots; picker thật (fetch docs-tree) sống trong
+  // AppDocsTreePicker, mount theo appId. `useAppDocsFiles` fetches the
+  // App's uploaded corpus (AppDocsUpload.tsx) the moment this modal mounts
+  // ("fetch docs-files lazily when modal opens") — tab visibility is now
+  // EITHER source being non-empty, not just confluenceRoots.
   const apps = useAppOptions();
   const appDocsRoots = appId ? appConfluenceRoots(apps.find((a) => a.id === appId) ?? {}) : [];
-  const hasAppDocs = appDocsRoots.length > 0;
+  const { files: appCorpusFiles } = useAppDocsFiles(appId ?? null);
+  const hasCorpus = Boolean(appCorpusFiles && appCorpusFiles.length > 0);
+  const hasAppDocs = appDocsRoots.length > 0 || hasCorpus;
   const [appDocsSelected, setAppDocsSelected] = useState<Set<string>>(new Set());
+  // Uploaded-corpus picker's own selection (AppFilesPicker, "File đã nạp") —
+  // separate Set from the Confluence tree's `appDocsSelected` since they
+  // submit through different payload shapes (structured `source` vs plain
+  // `input`) and cross-section mixing is out of scope (spec): whichever has
+  // a selection disables the other.
+  const [appFilesSelected, setAppFilesSelected] = useState<Set<string>>(new Set());
 
   // Confluence branch — dùng picker chung ConfluencePagePicker (tìm theo tên +
   // dán link, tick chọn nhiều). Seeded từ config dự án trên studio.
@@ -1062,7 +1222,7 @@ export function RunInputModal({
     : kind === 'confluence'
       ? confPages.length > 0
       : kind === 'app-docs'
-        ? appDocsSelected.size > 0
+        ? appDocsSelected.size > 0 || appFilesSelected.size > 0
         : basDocumentId.length > 0; // features optional → whole document
 
   const submit = async () => {
@@ -1085,11 +1245,26 @@ export function RunInputModal({
           ...(includeDescendants ? { includeDescendants: true } : {}),
         };
       } else if (kind === 'app-docs') {
-        // Same deterministic multi-ref path as 'confluence' — newline-joined
-        // pageIds, no structured `source` (spec §3: "that shape is
-        // single-ref"). No followLinks/includeDescendants override here: the
-        // tab only offers the checkbox picker, so the daemon's defaults apply.
-        payload = { input: [...appDocsSelected].join('\n') };
+        if (appFilesSelected.size > 0) {
+          // Uploaded-corpus pick ("File đã nạp") — structured source, the
+          // daemon copies these deterministically from the App's own corpus
+          // (no Confluence fetch). Cross-section mixing is disabled in the
+          // UI, so appDocsSelected is empty whenever this branch runs.
+          payload = {
+            // AppFilesRunSource ('app-files') is a contract addition landing
+            // alongside this UI change (BE task, in parallel) — PipelineRunSource
+            // doesn't list it yet, so this is built outside that type and cast
+            // at the edge; `startRun` (PipelinesView.tsx) forwards `source`
+            // verbatim with no structural check of its own.
+            source: { kind: 'app-files', appId, paths: [...appFilesSelected] } as unknown as PipelineRunSource,
+          };
+        } else {
+          // Same deterministic multi-ref path as 'confluence' — newline-joined
+          // pageIds, no structured `source` (spec §3: "that shape is
+          // single-ref"). No followLinks/includeDescendants override here: the
+          // tab only offers the checkbox picker, so the daemon's defaults apply.
+          payload = { input: [...appDocsSelected].join('\n') };
+        }
       } else {
         const featureIds = [...selected];
         payload = {
@@ -1266,16 +1441,34 @@ export function RunInputModal({
             </>
           ) : kind === 'app-docs' ? (
             hasAppDocs && appId ? (
-              <AppDocsTreePicker
-                key={appId}
-                appId={appId}
-                selected={appDocsSelected}
-                onSelectedChange={setAppDocsSelected}
-                onUseConfluenceInstead={() => {
-                  userPickedKind.current = true;
-                  setKind('confluence');
-                }}
-              />
+              <>
+                {/* Both sections can coexist (spec §3): Confluence tree
+                    (App's declared root(s)) and the uploaded corpus tree are
+                    independent sources — each disables the OTHER once it has
+                    a selection, so a single run never mixes both. */}
+                {appDocsRoots.length > 0 ? (
+                  <AppDocsTreePicker
+                    key={appId}
+                    appId={appId}
+                    selected={appDocsSelected}
+                    onSelectedChange={setAppDocsSelected}
+                    onUseConfluenceInstead={() => {
+                      userPickedKind.current = true;
+                      setKind('confluence');
+                    }}
+                    disabled={appFilesSelected.size > 0}
+                  />
+                ) : null}
+                {hasCorpus ? (
+                  <AppFilesPicker
+                    key={`${appId}-files`}
+                    appId={appId}
+                    selected={appFilesSelected}
+                    onSelectedChange={setAppFilesSelected}
+                    disabled={appDocsSelected.size > 0}
+                  />
+                ) : null}
+              </>
             ) : null
           ) : (
             <div className={styles.panel}>
@@ -1778,7 +1971,9 @@ const STAGE_BADGES: Record<string, string> = {
 
 export function RunAllModal({
   workflowName,
+  appId,
   defaultConfluencePages,
+  defaultAppFiles,
   defaultDesignSystemId,
   defaultDesignSystemByTarget,
   defaultTerminal,
@@ -1803,11 +1998,18 @@ export function RunAllModal({
   onUploadDocs,
 }: {
   workflowName: string;
+  /** App (studio) của feature đang chạy — `PipelineProject.app.id`. Dùng để
+   *  tra `confluenceRoots`/kho tài liệu (docs-files) của App và bật/tắt thẻ
+   *  nguồn "Tài liệu App" bên dưới. Thiếu → thẻ đó ẩn (như RunInputModal). */
+  appId?: string;
   /** Nguồn điền sẵn — ưu tiên cấu hình Run-all ĐÃ LƯU từ lần chạy gần nhất
    *  trên máy này; chưa từng chạy lần nào thì fallback về cấu hình Pipeline
    *  Studio (project.json). Caller (PipelinesView) chọn cái nào truyền vào,
    *  modal chỉ biết "đây là giá trị khởi tạo". */
   defaultConfluencePages?: ConfluencePageRefLike[];
+  /** Lựa chọn đã lưu từ kho tài liệu App (`RunAllConfig.appFiles`) — có mặt
+   *  (paths không rỗng) → mở sẵn thẻ "Tài liệu App" ở nhánh "File đã nạp". */
+  defaultAppFiles?: { appId: string; paths: string[] };
   defaultDesignSystemId?: string | null;
   /** DS RIÊNG từng target, prefilled từ lần chạy trước (multi-target). */
   defaultDesignSystemByTarget?: Partial<Record<UiTarget, string>>;
@@ -1870,14 +2072,48 @@ export function RunAllModal({
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
   const [followLinks, setFollowLinks] = useState(defaultFollowLinks ?? true);
   const [includeDescendants, setIncludeDescendants] = useState(defaultIncludeDescendants ?? false);
-  // Nguồn tài liệu cho bước ingest: fetch từ Confluence, hay các file `.md` tự
-  // tải lên. Hai nhánh loại trừ nhau — 'upload' còn khiến daemon BỎ HẲN bước
-  // ingest khỏi chuỗi (docsFromUpload), vì chạy nó sẽ xóa đúng file vừa nạp.
-  const [docsSource, setDocsSource] = useState<'confluence' | 'upload'>(
-    defaultDocsFromUpload ? 'upload' : 'confluence',
+  // Nguồn tài liệu cho bước ingest: fetch từ Confluence, tự tải file `.md`
+  // lên, hay PICK từ kho tài liệu của App ('app' — docs/app-docs-tree-picker-
+  // spec.md, phần "Nguồn tài liệu" rail). Ba nhánh loại trừ nhau — 'upload'
+  // còn khiến daemon BỎ HẲN bước ingest khỏi chuỗi (docsFromUpload), vì chạy
+  // nó sẽ xóa đúng file vừa nạp.
+  const [docsSource, setDocsSource] = useState<'confluence' | 'upload' | 'app'>(
+    defaultAppFiles?.paths.length ? 'app' : defaultDocsFromUpload ? 'upload' : 'confluence',
   );
   const [pendingDocs, setPendingDocs] = useState<PendingFile[]>([]);
   const uploading = docsSource === 'upload' && hasUpload;
+
+  // App-source branch ('app'): same two pickers RunInputModal's "Tài liệu
+  // App" tab uses (AppDocsTreePicker + AppFilesPicker, defined above), same
+  // coexistence + no-cross-mixing rule. `appDocsSelected` (Confluence-tree
+  // pick) is NOT prefilled from `defaultConfluencePages` — that field is
+  // shared with the plain Confluence card and the daemon can't tell which
+  // picker originally wrote it, so re-opening this modal can't reliably
+  // attribute existing pages back to the App tree. `appFilesSelected`
+  // (uploaded-corpus pick) has its own dedicated field (`appFiles`) and DOES
+  // prefill from it.
+  const apps = useAppOptions();
+  const appDocsRoots = appId ? appConfluenceRoots(apps.find((a) => a.id === appId) ?? {}) : [];
+  const { files: appCorpusFiles } = useAppDocsFiles(appId ?? null);
+  const hasCorpus = Boolean(appCorpusFiles && appCorpusFiles.length > 0);
+  const hasAppSource = appDocsRoots.length > 0 || hasCorpus;
+  const [appDocsSelected, setAppDocsSelected] = useState<Set<string>>(new Set());
+  const [appDocsTree, setAppDocsTree] = useState<AppDocsTreeResponse | null>(null);
+  const [appFilesSelected, setAppFilesSelected] = useState<Set<string>>(
+    () => new Set(defaultAppFiles?.paths ?? []),
+  );
+  // Auto-select the App-source card the first time it resolves available —
+  // but only on a truly fresh (never-configured) source, and never after the
+  // user has touched a card this session. Mirrors RunInputModal's
+  // autoSelectedAppDocs/userPickedKind pattern exactly.
+  const userPickedDocsSource = useRef(false);
+  const autoSelectedAppSource = useRef(false);
+  useEffect(() => {
+    if (autoSelectedAppSource.current || userPickedDocsSource.current) return;
+    if (!hasAppSource || defaultDocsFromUpload || confPages.length > 0) return;
+    autoSelectedAppSource.current = true;
+    setDocsSource('app');
+  }, [hasAppSource, defaultDocsFromUpload, confPages.length]);
   const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(defaultTerminal ?? 'ui-html');
   // Legacy single-platform (docs-to-prd has no UI stage / non-target callers).
   // docs-to-ui uses the `targets` multi-select below; platform is derived from
@@ -1946,8 +2182,13 @@ export function RunAllModal({
     };
   }, []);
 
-  // Nguồn: nhánh upload cần ≥1 file, nhánh Confluence cần ≥1 trang.
-  const hasSource = uploading ? pendingDocs.length > 0 : confPages.length > 0;
+  // Nguồn: nhánh upload cần ≥1 file, nhánh App cần ≥1 trang/file đã tick (từ
+  // MỘT trong hai picker con), nhánh Confluence cần ≥1 trang.
+  const hasSource = uploading
+    ? pendingDocs.length > 0
+    : docsSource === 'app'
+      ? appDocsSelected.size > 0 || appFilesSelected.size > 0
+      : confPages.length > 0;
   // Nhánh upload ĐANG là nguồn đã lưu: file cũ vẫn nằm trong `docs/` nên không
   // bắt tải lại — Lưu khi đó chỉ xác nhận lại lựa chọn nguồn.
   const sourceOk = hasSource || (uploading && defaultDocsFromUpload === true);
@@ -1972,14 +2213,45 @@ export function RunAllModal({
       targets.flatMap((t) => (dsByTarget[t] ? [[t, dsByTarget[t]!]] : [])),
     ) as Partial<Record<UiTarget, string>>;
 
+  // Tick từ AppDocsTreePicker chỉ mang pageId — `confluencePages` (rail field
+  // tái dùng, xem docblock `appFiles` ở RunAllConfig) cần TITLE để hiện đúng
+  // trên rail/trong modal lần mở sau. `appDocsTree` (từ AppDocsTreePicker's
+  // onTreeLoaded) có title của MỌI trang trong cây; tra lại từ đó thay vì
+  // fetch riêng.
+  const appDocsRefsFromSelected = (): ConfluencePageRefLike[] =>
+    [...appDocsSelected].map((id) => ({
+      id,
+      title: appDocsTree?.pages.find((p) => p.pageId === id)?.title,
+    }));
+
   // Patch config của MỘT section — field ngoài section giữ nguyên giá trị đã
   // lưu (daemon merge shallow vào `metadata.runAllConfig`).
   const configPatchFor = (section: RunAllFocus): Partial<RunAllConfig> => {
     switch (section) {
       case 'source':
-        return uploading
-          ? { docsFromUpload: true, confluencePages: [] }
-          : { confluencePages: confPages, followLinks, includeDescendants, docsFromUpload: false };
+        if (uploading) return { docsFromUpload: true, confluencePages: [], appFiles: { appId: appId ?? '', paths: [] } };
+        if (docsSource === 'app') {
+          return appFilesSelected.size > 0
+            ? {
+                appFiles: { appId: appId ?? '', paths: [...appFilesSelected] },
+                confluencePages: [],
+                docsFromUpload: false,
+              }
+            : {
+                confluencePages: appDocsRefsFromSelected(),
+                followLinks: true,
+                includeDescendants: false,
+                docsFromUpload: false,
+                appFiles: { appId: appId ?? '', paths: [] },
+              };
+        }
+        return {
+          confluencePages: confPages,
+          followLinks,
+          includeDescendants,
+          docsFromUpload: false,
+          appFiles: { appId: appId ?? '', paths: [] },
+        };
       case 'designSystem':
         return {
           designSystemId,
@@ -2152,15 +2424,21 @@ export function RunAllModal({
         <span className="pl-modal-field__label">Nguồn tài liệu (bước Docs)</span>
         {/* Workflow có bước ingest nhận file tay (`acceptsUpload`, ví dụ Docs →
             Review tài liệu) thì cho chọn nguồn ngay tại đây — trước đây chỉ nút
-            Run của riêng bước đó mới có, nên cấu hình chung khóa cứng Confluence. */}
-        {hasUpload ? (
+            Run của riêng bước đó mới có, nên cấu hình chung khóa cứng Confluence.
+            App có nguồn riêng (Confluence root và/hoặc kho tài liệu đã nạp) thì
+            thêm thẻ "Tài liệu App" cạnh đó — cùng một rail, không cần mở modal
+            Run riêng của bước Docs mới thấy được. */}
+        {hasUpload || hasAppSource ? (
           <div className={styles.cards} role="radiogroup" aria-label="Nguồn tài liệu">
             <button
               type="button"
               role="radio"
               aria-checked={docsSource === 'confluence'}
               className={`${styles.card}${docsSource === 'confluence' ? ' ' + styles.cardSelected : ''}`}
-              onClick={() => setDocsSource('confluence')}
+              onClick={() => {
+                userPickedDocsSource.current = true;
+                setDocsSource('confluence');
+              }}
               disabled={busy}
             >
               <span className={styles.cardTop}>
@@ -2174,25 +2452,54 @@ export function RunAllModal({
               </span>
               <span className={styles.cardDesc}>Daemon tự fetch các trang đã chọn về Markdown.</span>
             </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={docsSource === 'upload'}
-              className={`${styles.card}${docsSource === 'upload' ? ' ' + styles.cardSelected : ''}`}
-              onClick={() => setDocsSource('upload')}
-              disabled={busy}
-            >
-              <span className={styles.cardTop}>
-                <Icon name="upload" size={16} />
-                Tải file .md lên
-                {docsSource === 'upload' ? (
-                  <span className={styles.cardCheck} aria-hidden="true">
-                    <Icon name="check" size={14} />
-                  </span>
-                ) : null}
-              </span>
-              <span className={styles.cardDesc}>Có sẵn tài liệu — bỏ luôn bước fetch, chạy thẳng từ bước sau.</span>
-            </button>
+            {hasUpload ? (
+              <button
+                type="button"
+                role="radio"
+                aria-checked={docsSource === 'upload'}
+                className={`${styles.card}${docsSource === 'upload' ? ' ' + styles.cardSelected : ''}`}
+                onClick={() => {
+                  userPickedDocsSource.current = true;
+                  setDocsSource('upload');
+                }}
+                disabled={busy}
+              >
+                <span className={styles.cardTop}>
+                  <Icon name="upload" size={16} />
+                  Tải file .md lên
+                  {docsSource === 'upload' ? (
+                    <span className={styles.cardCheck} aria-hidden="true">
+                      <Icon name="check" size={14} />
+                    </span>
+                  ) : null}
+                </span>
+                <span className={styles.cardDesc}>Có sẵn tài liệu — bỏ luôn bước fetch, chạy thẳng từ bước sau.</span>
+              </button>
+            ) : null}
+            {hasAppSource ? (
+              <button
+                type="button"
+                role="radio"
+                aria-checked={docsSource === 'app'}
+                className={`${styles.card}${docsSource === 'app' ? ' ' + styles.cardSelected : ''}`}
+                onClick={() => {
+                  userPickedDocsSource.current = true;
+                  setDocsSource('app');
+                }}
+                disabled={busy}
+              >
+                <span className={styles.cardTop}>
+                  <Icon name="file" size={16} />
+                  Tài liệu App
+                  {docsSource === 'app' ? (
+                    <span className={styles.cardCheck} aria-hidden="true">
+                      <Icon name="check" size={14} />
+                    </span>
+                  ) : null}
+                </span>
+                <span className={styles.cardDesc}>Tick trang/file từ nguồn chung của App — không cần dán link.</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
         {uploading ? (
@@ -2212,6 +2519,39 @@ export function RunAllModal({
               bước ấy, chạy nó sẽ xóa sạch file bạn vừa nạp.
             </span>
           </>
+        ) : docsSource === 'app' ? (
+          appId ? (
+            <>
+              {appDocsRoots.length > 0 ? (
+                <AppDocsTreePicker
+                  key={appId}
+                  appId={appId}
+                  selected={appDocsSelected}
+                  onSelectedChange={setAppDocsSelected}
+                  onUseConfluenceInstead={() => {
+                    userPickedDocsSource.current = true;
+                    setDocsSource('confluence');
+                  }}
+                  disabled={appFilesSelected.size > 0}
+                  onTreeLoaded={setAppDocsTree}
+                />
+              ) : null}
+              {hasCorpus ? (
+                <AppFilesPicker
+                  key={`${appId}-files`}
+                  appId={appId}
+                  selected={appFilesSelected}
+                  onSelectedChange={setAppFilesSelected}
+                  disabled={appDocsSelected.size > 0}
+                />
+              ) : null}
+              <span className="pl-modal-field__hint">
+                Trang/file được tick sẽ COPY (kho tài liệu đã nạp) hoặc FETCH (cây Confluence của App)
+                vào <code>{'<workflow>'}/docs/</code> ngay khi bước Docs chạy — không cần dán link mỗi
+                lần, và không đụng tới kho gốc của App.
+              </span>
+            </>
+          ) : null
         ) : (
           <>
             {/* Cùng picker với nút Run của riêng bước Docs: tìm trang theo tên,
