@@ -37,7 +37,6 @@ import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { PlModal } from './PlModal';
 import { appConfluenceRoots, useAppOptions } from './newProjectForm';
 import { useAppDocsFiles, type AppDocsFile } from './AppDocsUpload';
-import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzone';
 import styles from './PipelineSourceModal.module.css';
 import sp from './StagePicker.module.css';
 import { PipelineFlowCanvas } from './PipelineFlowCanvas';
@@ -2147,7 +2146,6 @@ export function RunAllModal({
   defaultTargets,
   defaultFollowLinks,
   defaultIncludeDescendants,
-  defaultDocsFromUpload,
   defaultSkipSucceeded,
   defaultLean,
   stages = [],
@@ -2155,13 +2153,11 @@ export function RunAllModal({
   hasPlatform = true,
   hasTerminal = true,
   hasDesignSystem = true,
-  hasUpload = false,
   supportsLean = true,
   anySucceeded,
   focus,
   onClose,
   onSaveConfig,
-  onUploadDocs,
 }: {
   workflowName: string;
   /** App (studio) của feature đang chạy — `PipelineProject.app.id`. Dùng để
@@ -2187,9 +2183,6 @@ export function RunAllModal({
   /** Chỉ caller ở chế độ focus truyền: modal khi đó đang SỬA giá trị đã lưu nên
    *  checkbox phải hiện đúng trạng thái cũ. Luồng chạy full để trống (không tick). */
   defaultIncludeDescendants?: boolean;
-  /** Cũng chỉ dành cho chế độ focus: mở sẵn đúng nhánh nguồn đang lưu, để dòng
-   *  rail "File tải lên" không mở ra một modal trông như đang dùng Confluence. */
-  defaultDocsFromUpload?: boolean;
   defaultSkipSucceeded?: boolean;
   defaultLean?: boolean;
   /** Mọi bước của workflow đang mở, ĐÚNG thứ tự stepper — nguồn của section
@@ -2206,10 +2199,6 @@ export function RunAllModal({
   hasPlatform?: boolean;
   hasTerminal?: boolean;
   hasDesignSystem?: boolean;
-  /** Bước ingest của workflow có affordance "Tải file lên" (`acceptsUpload`)
-   *  không — có thì modal mở thêm nhánh nguồn "Tải file .md lên" bên cạnh
-   *  Confluence, đúng như nút Run của riêng bước đó. */
-  hasUpload?: boolean;
   /** Lean là khái niệm CHỈ của docs-to-ui (bỏ hành trình/research/rà soát để
    *  tới UI nhanh hơn). docs-to-prd không có bước nào bỏ được — hành trình +
    *  research chính là bằng chứng của bài review — nên workflow đó ẩn hẳn
@@ -2226,11 +2215,6 @@ export function RunAllModal({
    *  chế độ đầy đủ gửi mọi section modal đang hiện. Reject → modal hiện lỗi,
    *  không đóng. */
   onSaveConfig?: (patch: Partial<RunAllConfig>) => Promise<void>;
-  /** Ghi các file `.md` đã chọn vào `<workflow>/docs/` ngay khi bấm Lưu (nguồn
-   *  "Tải file lên" chỉ có nghĩa khi file đã nằm trong `docs/`). Owner là
-   *  PipelinesView (nó giữ projectId/workflowId); modal chỉ gom file. Bắt buộc
-   *  có khi `hasUpload`. Reject → modal hiện lỗi, không lưu. */
-  onUploadDocs?: (files: File[]) => Promise<void>;
 }) {
   // Same shared Confluence picker as the per-stage Docs modal (search by name
   // + paste links, multi-select); prefill from the studio project config. The
@@ -2238,16 +2222,18 @@ export function RunAllModal({
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
   const [followLinks, setFollowLinks] = useState(defaultFollowLinks ?? true);
   const [includeDescendants, setIncludeDescendants] = useState(defaultIncludeDescendants ?? false);
-  // Nguồn tài liệu cho bước ingest: fetch từ Confluence, tự tải file `.md`
-  // lên, hay PICK từ kho tài liệu của App ('app' — docs/app-docs-tree-picker-
-  // spec.md, phần "Nguồn tài liệu" rail). Ba nhánh loại trừ nhau — 'upload'
-  // còn khiến daemon BỎ HẲN bước ingest khỏi chuỗi (docsFromUpload), vì chạy
-  // nó sẽ xóa đúng file vừa nạp.
-  const [docsSource, setDocsSource] = useState<'confluence' | 'upload' | 'app'>(
-    defaultAppFiles?.paths.length ? 'app' : defaultDocsFromUpload ? 'upload' : 'confluence',
+  // Nguồn tài liệu cho bước ingest: fetch từ Confluence, hay PICK từ kho tài
+  // liệu của App ('app' — docs/app-docs-tree-picker-spec.md, phần "Nguồn tài
+  // liệu" rail). Tự tải file `.md` lên KHÔNG còn là một nhánh ở đây — tài
+  // liệu tự tải giờ thuộc về App (AppDocsUpload.tsx), rail chỉ PICK từ nguồn
+  // có sẵn. Một cấu hình `docsFromUpload: true` đã lưu TỪ TRƯỚC (khi nhánh
+  // này còn tồn tại) không có gì để hiện lại ở đây — daemon vẫn đọc được nó
+  // (BE giữ nguyên, xem resolveStageRunConfig ở PipelinesView.tsx), nhưng
+  // modal mặc định về 'confluence' như chưa từng cấu hình; Lưu một nguồn MỚI
+  // ở đây (Confluence hoặc App) ghi `docsFromUpload: false`, tự xóa cờ cũ.
+  const [docsSource, setDocsSource] = useState<'confluence' | 'app'>(
+    defaultAppFiles?.paths.length ? 'app' : 'confluence',
   );
-  const [pendingDocs, setPendingDocs] = useState<PendingFile[]>([]);
-  const uploading = docsSource === 'upload' && hasUpload;
 
   // App-source branch ('app'): same two pickers RunInputModal's "Tài liệu
   // App" tab uses (AppDocsTreePicker + AppFilesPicker, defined above), same
@@ -2271,15 +2257,18 @@ export function RunAllModal({
   // Auto-select the App-source card the first time it resolves available —
   // but only on a truly fresh (never-configured) source, and never after the
   // user has touched a card this session. Mirrors RunInputModal's
-  // autoSelectedAppDocs/userPickedKind pattern exactly.
+  // autoSelectedAppDocs/userPickedKind pattern exactly. A stale saved
+  // `docsFromUpload: true` (the removed upload card's flag) does NOT bail
+  // this out — that flag has no UI representation anymore, so it shouldn't
+  // suppress auto-selecting a real source that IS available.
   const userPickedDocsSource = useRef(false);
   const autoSelectedAppSource = useRef(false);
   useEffect(() => {
     if (autoSelectedAppSource.current || userPickedDocsSource.current) return;
-    if (!hasAppSource || defaultDocsFromUpload || confPages.length > 0) return;
+    if (!hasAppSource || confPages.length > 0) return;
     autoSelectedAppSource.current = true;
     setDocsSource('app');
-  }, [hasAppSource, defaultDocsFromUpload, confPages.length]);
+  }, [hasAppSource, confPages.length]);
   const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(defaultTerminal ?? 'ui-html');
   // Legacy single-platform (docs-to-prd has no UI stage / non-target callers).
   // docs-to-ui uses the `targets` multi-select below; platform is derived from
@@ -2348,16 +2337,11 @@ export function RunAllModal({
     };
   }, []);
 
-  // Nguồn: nhánh upload cần ≥1 file, nhánh App cần ≥1 trang/file đã tick (từ
-  // MỘT trong hai picker con), nhánh Confluence cần ≥1 trang.
-  const hasSource = uploading
-    ? pendingDocs.length > 0
-    : docsSource === 'app'
-      ? appDocsSelected.size > 0 || appFilesSelected.size > 0
-      : confPages.length > 0;
-  // Nhánh upload ĐANG là nguồn đã lưu: file cũ vẫn nằm trong `docs/` nên không
-  // bắt tải lại — Lưu khi đó chỉ xác nhận lại lựa chọn nguồn.
-  const sourceOk = hasSource || (uploading && defaultDocsFromUpload === true);
+  // Nguồn: nhánh App cần ≥1 trang/file đã tick (từ MỘT trong hai picker con),
+  // nhánh Confluence cần ≥1 trang.
+  const hasSource =
+    docsSource === 'app' ? appDocsSelected.size > 0 || appFilesSelected.size > 0 : confPages.length > 0;
+  const sourceOk = hasSource;
   // Validate theo ĐÚNG các section đang hiện: chế độ focus chỉ đòi section đó
   // hợp lệ, chế độ đầy đủ đòi nguồn tài liệu + (docs-to-ui) ≥1 target.
   const canSave = focus
@@ -2395,7 +2379,11 @@ export function RunAllModal({
   const configPatchFor = (section: RunAllFocus): Partial<RunAllConfig> => {
     switch (section) {
       case 'source':
-        if (uploading) return { docsFromUpload: true, confluencePages: [], appFiles: { appId: appId ?? '', paths: [] } };
+        // Every branch below writes `docsFromUpload: false` — the removed
+        // upload card's own flag — so saving ANY source here (Confluence or
+        // App) clears a stale `docsFromUpload: true` left over from before
+        // that card existed, even though this modal no longer has a way to
+        // SET it back to true.
         if (docsSource === 'app') {
           return appFilesSelected.size > 0
             ? {
@@ -2477,12 +2465,6 @@ export function RunAllModal({
     setBusy(true);
     setError(null);
     try {
-      // Nhánh upload: file vẫn phải nằm trong `<workflow>/docs/` — chỉ lưu cờ
-      // docsFromUpload mà không ghi file thì bước sau không có gì để đọc.
-      if (uploading && pendingDocs.length > 0) {
-        if (!onUploadDocs) throw new Error('Chưa có handler tải file lên');
-        await onUploadDocs(pendingDocs.map((p) => p.file));
-      }
       if (!onSaveConfig) throw new Error('Chưa có handler lưu cấu hình');
       await onSaveConfig(configPatch());
       onClose();
@@ -2562,8 +2544,6 @@ export function RunAllModal({
                   ? 'Chọn ít nhất một sản phẩm cần build'
                   : focus === 'stages' || (!focus && stages.length > 0 && stageIds.size === 0)
                     ? 'Tick ít nhất một bước sẽ chạy'
-                  : uploading
-                    ? 'Chọn ít nhất một file .md'
                     : focus
                       ? 'Chọn ít nhất một trang Confluence'
                       : 'Chọn ít nhất một trang Confluence (hoặc tick "chỉ chạy bước còn thiếu" khi Docs đã xong)'
@@ -2588,13 +2568,15 @@ export function RunAllModal({
       {shows('source') ? (
       <div className="pl-modal-field">
         <span className="pl-modal-field__label">Nguồn tài liệu (bước Docs)</span>
-        {/* Workflow có bước ingest nhận file tay (`acceptsUpload`, ví dụ Docs →
-            Review tài liệu) thì cho chọn nguồn ngay tại đây — trước đây chỉ nút
-            Run của riêng bước đó mới có, nên cấu hình chung khóa cứng Confluence.
-            App có nguồn riêng (Confluence root và/hoặc kho tài liệu đã nạp) thì
-            thêm thẻ "Tài liệu App" cạnh đó — cùng một rail, không cần mở modal
-            Run riêng của bước Docs mới thấy được. */}
-        {hasUpload || hasAppSource ? (
+        {/* Upload trực tiếp ở rail này đã BỎ — tài liệu tự tải lên giờ thuộc về
+            App (AppDocsUpload.tsx, "Tài liệu dự án"); rail chỉ còn PICK từ
+            nguồn có sẵn (Confluence, hoặc kho/App root khi App có). App có
+            nguồn riêng (Confluence root và/hoặc kho tài liệu đã nạp) thì thêm
+            thẻ "Tài liệu App" cạnh Confluence — cùng một rail, không cần mở
+            modal Run riêng của bước Docs mới thấy được. Không có nguồn App
+            nào thì rail chỉ có Confluence, y hệt trước khi thẻ App ra đời —
+            không hiện dãy thẻ trơ trọi một lựa chọn. */}
+        {hasAppSource ? (
           <div className={styles.cards} role="radiogroup" aria-label="Nguồn tài liệu">
             <button
               type="button"
@@ -2618,74 +2600,31 @@ export function RunAllModal({
               </span>
               <span className={styles.cardDesc}>Daemon tự fetch các trang đã chọn về Markdown.</span>
             </button>
-            {hasUpload ? (
-              <button
-                type="button"
-                role="radio"
-                aria-checked={docsSource === 'upload'}
-                className={`${styles.card}${docsSource === 'upload' ? ' ' + styles.cardSelected : ''}`}
-                onClick={() => {
-                  userPickedDocsSource.current = true;
-                  setDocsSource('upload');
-                }}
-                disabled={busy}
-              >
-                <span className={styles.cardTop}>
-                  <Icon name="upload" size={16} />
-                  Tải file .md lên
-                  {docsSource === 'upload' ? (
-                    <span className={styles.cardCheck} aria-hidden="true">
-                      <Icon name="check" size={14} />
-                    </span>
-                  ) : null}
-                </span>
-                <span className={styles.cardDesc}>Có sẵn tài liệu — bỏ luôn bước fetch, chạy thẳng từ bước sau.</span>
-              </button>
-            ) : null}
-            {hasAppSource ? (
-              <button
-                type="button"
-                role="radio"
-                aria-checked={docsSource === 'app'}
-                className={`${styles.card}${docsSource === 'app' ? ' ' + styles.cardSelected : ''}`}
-                onClick={() => {
-                  userPickedDocsSource.current = true;
-                  setDocsSource('app');
-                }}
-                disabled={busy}
-              >
-                <span className={styles.cardTop}>
-                  <Icon name="file" size={16} />
-                  Tài liệu App
-                  {docsSource === 'app' ? (
-                    <span className={styles.cardCheck} aria-hidden="true">
-                      <Icon name="check" size={14} />
-                    </span>
-                  ) : null}
-                </span>
-                <span className={styles.cardDesc}>Tick trang/file từ nguồn chung của App — không cần dán link.</span>
-              </button>
-            ) : null}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={docsSource === 'app'}
+              className={`${styles.card}${docsSource === 'app' ? ' ' + styles.cardSelected : ''}`}
+              onClick={() => {
+                userPickedDocsSource.current = true;
+                setDocsSource('app');
+              }}
+              disabled={busy}
+            >
+              <span className={styles.cardTop}>
+                <Icon name="file" size={16} />
+                Tài liệu App
+                {docsSource === 'app' ? (
+                  <span className={styles.cardCheck} aria-hidden="true">
+                    <Icon name="check" size={14} />
+                  </span>
+                ) : null}
+              </span>
+              <span className={styles.cardDesc}>Tick trang/file từ nguồn chung của App — không cần dán link.</span>
+            </button>
           </div>
         ) : null}
-        {uploading ? (
-          <>
-            <UploadDropzone
-              pending={pendingDocs}
-              onAdd={(files) => {
-                const next = toPendingFiles(files);
-                if (next.length) setPendingDocs((cur) => [...cur, ...next]);
-              }}
-              onRemove={(id) => setPendingDocs((cur) => cur.filter((p) => p.id !== id))}
-              disabled={busy}
-            />
-            <span className="pl-modal-field__hint">
-              File được ghi vào <code>{'<workflow>'}/docs/</code> ngay khi bấm Lưu, và bước "Tài liệu
-              → Markdown" bị <strong>bỏ khỏi chuỗi</strong> khi chạy — thư mục đó chính là output của
-              bước ấy, chạy nó sẽ xóa sạch file bạn vừa nạp.
-            </span>
-          </>
-        ) : docsSource === 'app' ? (
+        {docsSource === 'app' ? (
           appId ? (
             <>
               {appDocsRoots.length > 0 ? (

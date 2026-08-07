@@ -56,7 +56,7 @@ import {
 } from './pipelines/PipelineModals';
 import { UploadFilesModal } from './pipelines/UploadFilesModal';
 import { appConfluenceRoots, useAppOptions } from './pipelines/newProjectForm';
-import { fetchDesignSystems, writeProjectTextFileDetailed } from '../providers/registry';
+import { fetchDesignSystems } from '../providers/registry';
 import { applyPendingStarts } from '../runtime/pipeline-pending-starts';
 import { PullConflictModal } from './pipelines/PullConflictModal';
 import { PlModal } from './pipelines/PlModal';
@@ -1281,24 +1281,6 @@ export function PipelinesView() {
     // Chế độ chạy đổi thì stepper phải vẽ lại (bước nào bị bỏ qua đọc từ daemon).
     await load(projectId, { background: true });
     pushToast({ message: 'Đã lưu cấu hình' });
-  };
-
-  // Nhánh nguồn "Tải file lên" của modal cấu hình: ghi các file `.md` đã chọn
-  // vào docsDir của workflow đang mở (docsDirOf — không còn giả định
-  // `<workflowId>/docs/`, một số workflow ghi thẳng `docs/` ở gốc dự án) ngay
-  // khi bấm Lưu. Same route and reasoning as UploadFilesModal — the JSON
-  // write endpoint keeps a multi-segment name verbatim, while the multipart
-  // one strips every `/` and would flatten the file to the project root.
-  // Throws on the first failure so RunAllModal can surface it instead of
-  // saving a source that points at a half-written folder.
-  const uploadRunAllDocs = async (files: File[]) => {
-    if (!projectId || !workflowId) throw new Error('Chưa chọn dự án/workflow');
-    const dir = docsDirOf(workflows, workflowId);
-    for (const file of files) {
-      const content = await file.text();
-      const result = await writeProjectTextFileDetailed(projectId, `${dir}/${file.name}`, content);
-      if (!result.ok) throw new Error(`${file.name}: ${result.message}`);
-    }
   };
 
   const runDirect = async (
@@ -2885,8 +2867,13 @@ export function PipelinesView() {
             defaultFollowLinks={runAllDefaults?.followLinks}
             // Mọi chế độ đều là SỬA cấu hình đã lưu, nên prefill đầy đủ — bỏ
             // trống sẽ âm thầm tắt lựa chọn cũ khi bấm Lưu.
+            // KHÔNG còn defaultDocsFromUpload: rail hết nhánh nguồn "Tải file
+            // lên" (upload giờ thuộc App — AppDocsUpload.tsx) nên không còn gì
+            // để mở sẵn theo cờ đó; một cấu hình `docsFromUpload: true` đã lưu
+            // TỪ TRƯỚC vẫn chạy được (resolveStageRunConfig/BE đọc thẳng từ
+            // savedRunAll/config, không qua modal này) cho tới khi người dùng
+            // Lưu một nguồn MỚI ở đây, việc đó tự ghi `docsFromUpload: false`.
             defaultIncludeDescendants={runAllDefaults?.includeDescendants}
-            defaultDocsFromUpload={runAllDefaults?.docsFromUpload}
             defaultSkipSucceeded={runAllDefaults?.skipSucceeded}
             defaultLean={runAllDefaults?.lean}
             // Bước của workflow đang mở + lựa chọn đã lưu — cùng dữ liệu dòng
@@ -2901,9 +2888,6 @@ export function PipelinesView() {
             hasPlatform={pipelines.some((p) => p.acceptsPlatform)}
             hasTerminal={pipelines.some((p) => p.id === 'ui-html' || p.id === 'ui-react')}
             hasDesignSystem={pipelines.some((p) => p.acceptsDesignSystem)}
-            // Ingest step nhận file tay (Docs → Review tài liệu) → modal mở thêm
-            // nhánh nguồn "Tải file .md lên" thay vì khóa cứng Confluence.
-            hasUpload={pipelines.some((p) => p.acceptsUpload)}
             // Lean chỉ là khái niệm của docs-to-ui — các workflow khác (Docs →
             // PRD Review) chạy đủ chuỗi, ẩn hẳn section "Chế độ chạy".
             supportsLean={workflowId === 'docs-to-ui'}
@@ -2911,7 +2895,6 @@ export function PipelinesView() {
             focus={runAllFocus}
             onClose={() => setRunAllOpen(false)}
             onSaveConfig={saveRunConfig}
-            onUploadDocs={uploadRunAllDocs}
           />
         );
       })() : null}

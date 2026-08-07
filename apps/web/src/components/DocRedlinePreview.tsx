@@ -58,6 +58,7 @@ export interface DocRedlineChange {
    *  shape để không phải parse lại khi màn hình có chỗ hiển thị. */
   doc_refs?: string[];
   reason: string;
+  status?: 'dismissed' | 'edited';
 }
 
 /** Mirrors apps/daemon/src/docs-review.ts's `DocNote` — cùng lý do như
@@ -78,6 +79,7 @@ export interface DocRedlineNote {
   doc_refs?: string[];
   finding: string;
   suggestion: string;
+  status?: 'dismissed' | 'edited';
 }
 
 /** Nội dung một rule đang hiện trong popover. `html` đã qua
@@ -140,7 +142,7 @@ function claimUniqueId(id: string, seen: Set<string>): string {
  *  the whole preview behind a strict schema a hand-edited file could easily
  *  break. Returns null only when the file as a whole is unusable (not JSON,
  *  or not an array). */
-function parseDocChanges(raw: string): DocRedlineChange[] | null {
+export function parseDocChanges(raw: string): DocRedlineChange[] | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -169,6 +171,7 @@ function parseDocChanges(raw: string): DocRedlineChange[] | null {
         ? c.doc_refs.filter((ref): ref is string => typeof ref === 'string' && !!ref.trim())
         : undefined,
       reason: c.reason,
+      status: c.status === 'dismissed' || c.status === 'edited' ? c.status : undefined,
     });
   }
   return out;
@@ -176,7 +179,7 @@ function parseDocChanges(raw: string): DocRedlineChange[] | null {
 
 /** Cùng tinh thần khoan dung như parseDocChanges: phần tử hỏng bị bỏ qua chứ
  *  không đánh hỏng cả khung nhìn. Trả null khi file nói chung không dùng được. */
-function parseDocNotes(raw: string): DocRedlineNote[] | null {
+export function parseDocNotes(raw: string): DocRedlineNote[] | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -204,6 +207,7 @@ function parseDocNotes(raw: string): DocRedlineNote[] | null {
         : undefined,
       finding: n.finding,
       suggestion: typeof n.suggestion === 'string' ? n.suggestion : '',
+      status: n.status === 'dismissed' ? 'dismissed' : n.status === 'edited' ? 'edited' : undefined,
     });
   }
   return out;
@@ -214,6 +218,30 @@ function parseDocNotes(raw: string): DocRedlineNote[] | null {
  *  thứ hai field kia đã nói là mở đường cho dữ liệu tự mâu thuẫn.
  *  Có cả hai = viết lại (`edit`); chỉ `quote` = chữ mới xuất hiện (`add`); chỉ
  *  `before` = chữ cũ bị bỏ (`del`). */
+/** Thay đúng lần xuất hiện đầu tiên, không đụng các đoạn trùng phía sau. */
+export function replaceOneOccurrence(source: string, quote: string, replacement: string): string | null {
+  const index = source.indexOf(quote);
+  return index < 0 ? null : `${source.slice(0, index)}${replacement}${source.slice(index + quote.length)}`;
+}
+
+export function editDocText(source: string, quote: string, next: string): string | null {
+  return replaceOneOccurrence(source, quote, next);
+}
+
+export function revertDocText(source: string, change: Pick<DocRedlineChange, 'before' | 'quote' | 'anchor'>): string | null {
+  if (change.before && change.quote) return replaceOneOccurrence(source, change.quote, change.before);
+  if (change.quote) return replaceOneOccurrence(source, change.quote, '');
+  if (change.before && change.anchor) return insertAfterUniqueAnchor(source, change.anchor, change.before);
+  return null;
+}
+
+export function insertAfterUniqueAnchor(source: string, anchor: string, insertion: string): string | null {
+  const first = source.indexOf(anchor);
+  if (first < 0 || source.indexOf(anchor, first + anchor.length) >= 0) return null;
+  const end = first + anchor.length;
+  return `${source.slice(0, end)}${insertion}${source.slice(end)}`;
+}
+
 function changeOp(c: DocRedlineChange): 'add' | 'del' | 'edit' {
   if (c.before && c.quote) return 'edit';
   if (c.quote) return 'add';
@@ -434,6 +462,14 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
   const [editedText, setEditedText] = useState<string | null>(null);
   const [changesState, setChangesState] = useState<ChangesState>({ status: 'loading' });
   const [notes, setNotes] = useState<DocRedlineNote[]>(NO_NOTES);
+  const [notesRaw, setNotesRaw] = useState<string | null>(null);
+  const [changesRaw, setChangesRaw] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  const [errorById, setErrorById] = useState<Record<string, string>>({});
+  // Chỉ những lần bỏ không đụng markdown mới được hoàn tác trong phiên này.
+  const [undoableIds, setUndoableIds] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const docColRef = useRef<HTMLDivElement | null>(null);
   // Mọi <mark> của một change: một quote trải trên nhiều text node (ví dụ băng
@@ -508,7 +544,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     void fetchProjectFileText(projectId, notesName).then((raw) => {
       if (cancelled || raw == null) return;
       const parsed = parseDocNotes(raw);
-      if (parsed && parsed.length > 0) setNotes(parsed);
+      setNotesRaw(raw); if (parsed && parsed.length > 0) setNotes(parsed);
     });
     return () => {
       cancelled = true;
@@ -582,6 +618,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     // bôi trong CÙNG một lượt, vì lượt sau luôn dò trên HTML đã có mark của
     // lượt trước và một đoạn nằm sát chỗ đã bôi sẽ trượt.
     const requests = changes.flatMap((c) => {
+      if (c.status === 'dismissed') return [];
       const raw = (c.quote ?? '').trim();
       if (!raw) return [];
       const add = changeOp(c) === 'add';
@@ -600,6 +637,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     // tiền tố `note:` để không đụng id của change — cả hai loại mark dùng
     // chung `data-change-id`, chung cơ chế click/cuộn.
     const noteRequests = notes.flatMap((n) => {
+      if (n.status === 'dismissed') return [];
       const raw = (n.anchor ?? '').trim();
       if (!raw) return [];
       return quoteSegments(raw).map((text) => ({
@@ -615,6 +653,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     // liệu (đoạn đã bị xoá) — chạy trước thì hai lượt kia phải dò qua chữ không
     // thuộc bản đã sửa và có thể khớp bừa vào đó.
     const delRequests = changes.flatMap((c) => {
+      if (c.status === 'dismissed') return [];
       if (changeOp(c) !== 'del') return [];
       // `anchor` là nguyên văn mã nguồn markdown, y như `quote`, nên phải cắt
       // qua quoteSegments. Lấy segment ĐẦU: một chỗ xoá chỉ cần một điểm neo,
@@ -681,7 +720,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
   // đọc kỹ tới đâu.
   const opCounts = useMemo(() => {
     const out = { add: 0, del: 0, edit: 0 };
-    for (const c of changes) out[changeOp(c)] += 1;
+    for (const c of changes) if (c.status !== 'dismissed') out[changeOp(c)] += 1;
     return out;
   }, [changes]);
   // Khai báo ở ĐÂY chứ không ở gần chỗ render, vì effect uỷ quyền click ở dưới
@@ -835,6 +874,65 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
   // (injectDeletedRuns), nên thẻ của nó là button nhảy tới được như mọi thẻ
   // khác; chỗ xoá KHÔNG có `anchor` (dữ liệu từ trước khi có field này) thì
   // không có gì để neo vào — đó là đúng chứ không phải lỗi.
+  async function saveAction(id: string, action: () => { text?: string; changes?: DocRedlineChange[]; notes?: DocRedlineNote[]; changedMd: boolean }) {
+    if (busyId) return;
+    setBusyId(id); setErrorById((prev) => ({ ...prev, [id]: '' }));
+    const beforeChanges = changesState; const beforeNotes = notes; const beforeText = editedText;
+    try {
+      const result = action();
+      const writes: Array<[string, string]> = [];
+      if (result.changedMd && result.text != null) writes.push([file.name, result.text]);
+      if (result.changes) writes.push([file.name.replace(/\.md$/i, '.changes.json'), JSON.stringify(result.changes, null, 2)]);
+      if (result.notes) writes.push([file.name.replace(/\.md$/i, '.notes.json'), JSON.stringify(result.notes, null, 2)]);
+      for (const [name, content] of writes) {
+        const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, content }) });
+        if (!response.ok) throw new Error('Không ghi được file');
+      }
+      if (result.text != null) setEditedText(result.text);
+      if (result.changes) { setChangesRaw(JSON.stringify(result.changes)); setChangesState({ status: 'ok', changes: result.changes }); }
+      if (result.notes) { setNotesRaw(JSON.stringify(result.notes)); setNotes(result.notes); }
+      setEditingId(null);
+    } catch (error) { setChangesState(beforeChanges); setNotes(beforeNotes); setEditedText(beforeText); setErrorById((prev) => ({ ...prev, [id]: error instanceof Error ? error.message : 'Lỗi ghi file' })); }
+    finally { setBusyId(null); }
+  }
+
+  function updateChange(c: DocRedlineChange, next: Partial<DocRedlineChange>, changedMd: boolean, text?: string) {
+    const list = changes.map((item) => item.id === c.id ? { ...item, ...next } : item);
+    return { changes: list, changedMd, text };
+  }
+
+  async function editChange(c: DocRedlineChange) {
+    const next = editDocText(editedText ?? '', c.quote ?? '', editText);
+    if (next == null) throw new Error('Không tìm thấy vùng sửa trong tài liệu');
+    await saveAction(c.id, () => updateChange(c, { quote: editText, status: 'edited' }, true, next));
+  }
+
+  async function dismissChange(c: DocRedlineChange) {
+    if (c.status === 'dismissed') {
+      if (!undoableIds.has(c.id)) return;
+      await saveAction(c.id, () => updateChange(c, { status: undefined }, false, editedText ?? undefined));
+      setUndoableIds((prev) => { const next = new Set(prev); next.delete(c.id); return next; });
+      return;
+    }
+    const changedMd = Boolean(c.quote || c.before);
+    const next = changedMd ? revertDocText(editedText ?? '', c) : editedText;
+    if (changedMd && next == null) throw new Error(c.before && !c.quote ? 'Không tìm thấy anchor duy nhất để chèn lại.' : 'Không tìm thấy vùng sửa trong tài liệu');
+    await saveAction(c.id, () => updateChange(c, { status: 'dismissed' }, changedMd, next ?? undefined));
+    if (!changedMd) setUndoableIds((prev) => new Set(prev).add(c.id));
+  }
+
+  async function dismissNote(n: DocRedlineNote) {
+    const id = `${NOTE_ID_PREFIX}${n.id}`;
+    if (n.status === 'dismissed') {
+      if (!undoableIds.has(id)) return;
+      await saveAction(id, () => ({ notes: notes.map((item) => item.id === n.id ? { ...item, status: undefined } : item), changedMd: false }));
+      setUndoableIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+      return;
+    }
+    await saveAction(id, () => ({ notes: notes.map((item) => item.id === n.id ? { ...item, status: 'dismissed' } : item), changedMd: false }));
+    setUndoableIds((prev) => new Set(prev).add(id));
+  }
+
   const isAnchored = (c: DocRedlineChange) => anchored.has(c.id);
 
   return (
@@ -847,13 +945,14 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
             {changesState.status === 'ok' ? (
               <div className={styles.strip}>
                 <span>
-                  {opCounts.edit} sửa · {opCounts.add} thêm · {opCounts.del} xoá · {notes.length} nhận xét ·{' '}
+                  {opCounts.edit} sửa · {opCounts.add} thêm · {opCounts.del} xoá · {notes.filter((n) => n.status !== 'dismissed').length} nhận xét · {changes.filter((c) => c.status === 'dismissed').length} đã bỏ ·{' '}
                   {markCount} vùng bôi
                 </span>
+                <button type="button" className={styles.printButton} onClick={() => { const old = document.title; document.title = `review-${file.name.split('/').pop()?.replace(/\.md$/i, '') ?? 'document'}`; window.print(); window.setTimeout(() => { document.title = old; }, 1000); }}>Xuất PDF</button>
                 <HighlightFilters
                   paint={paint}
                   onChange={setPaintKind}
-                  counts={{ add: opCounts.add, edit: opCounts.edit, del: opCounts.del, note: notes.length }}
+                  counts={{ add: opCounts.add, edit: opCounts.edit, del: opCounts.del, note: notes.filter((n) => n.status !== 'dismissed').length }}
                 />
               </div>
             ) : (
@@ -893,6 +992,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                         onJumpRef={(i) =>
                           openRefModal(`${REF_ID_PREFIX}${c.id}:${i}`, (c.doc_refs ?? [])[i] ?? '')
                         }
+                        busy={busyId === c.id} error={errorById[c.id]} showActions undoable={undoableIds.has(c.id)} editing={editingId === c.id} editText={editText} onEditText={setEditText} onEdit={() => { setEditingId(c.id); setEditText(c.quote ?? ''); }} onSaveEdit={() => { if (!editText.trim()) { setErrorById((p) => ({ ...p, [c.id]: 'Nội dung sửa không được để trống' })); return; } void editChange(c); }} onCancelEdit={() => setEditingId(null)} onDismiss={() => { if (c.status === 'dismissed') { void dismissChange(c); } else if (window.confirm('Hành động này sẽ sửa tài liệu và không thể hoàn tác trong phiên. Tiếp tục?')) void dismissChange(c); }}
                       />
                     );
                     // `div role="button"` chứ không phải `<button>` thật: thẻ
@@ -959,6 +1059,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                               onJumpRef={(i) =>
                                 openRefModal(`${REF_ID_PREFIX}${markId}:${i}`, (n.doc_refs ?? [])[i] ?? '')
                               }
+                              busy={busyId === markId} error={errorById[markId]} undoable={undoableIds.has(markId)} onDismiss={() => void dismissNote(n)}
                             />
                           );
                           if (anchored.has(markId)) {
@@ -1115,6 +1216,9 @@ interface RefProps {
   onToggleRule: () => void;
   isRefAnchored: (index: number) => boolean;
   onJumpRef: (index: number) => void;
+  busy?: boolean;
+  error?: string;
+  undoable?: boolean;
 }
 
 /** Chip `rule_id` bấm được: nhãn dễ hiểu ngoài, mã kỹ thuật + giải thích trong.
@@ -1214,7 +1318,7 @@ function RefRow({ refs, isRefAnchored, onJumpRef }: { refs: string[] } & Pick<Re
 /** Một khối chi tiết của một NOTE: nhóm, mức độ, rule_id, phát hiện, đề xuất.
  *  Không có `before → quote` vì note không sửa gì — đó là điểm phân biệt với
  *  ChangeDetail, và cũng là lý do thẻ mang nhãn riêng. */
-function NoteDetail({ note: n, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef }: { note: DocRedlineNote } & RefProps) {
+function NoteDetail({ note: n, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, undoable, onDismiss }: { note: DocRedlineNote; onDismiss: () => void } & RefProps) {
   return (
     <div className={`${styles.card} ${styles.noteCard} ${SEV_CLASS[n.severity]}`}>
       <div className={styles.cardHead}>
@@ -1229,6 +1333,8 @@ function NoteDetail({ note: n, ruleOpen, ruleBody, onToggleRule, isRefAnchored, 
         </p>
       ) : null}
       <RefRow refs={n.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
+      <div className={styles.actions}><button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>{n.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Bỏ'}</button>{n.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}</div>
+      {error ? <p className={styles.error}>{error}</p> : null}
     </div>
   );
 }
@@ -1236,13 +1342,13 @@ function NoteDetail({ note: n, ruleOpen, ruleBody, onToggleRule, isRefAnchored, 
 /** Một khối chi tiết của một change: nhóm, mức độ, rule_id, lý do, và phần
  *  chữ cũ/chữ mới tuỳ theo phép sửa. Đây là nơi trường `before` (chữ cũ) tiếp
  *  tục sống sau khi cột tài liệu gốc bị bỏ. */
-function ChangeDetail({ change: c, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef }: { change: DocRedlineChange } & RefProps) {
+function ChangeDetail({ change: c, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, showActions, undoable, editing, editText, onEditText, onEdit, onSaveEdit, onCancelEdit, onDismiss }: { change: DocRedlineChange; showActions: boolean; undoable?: boolean; editing: boolean; editText: string; onEditText: (value: string) => void; onEdit: () => void; onSaveEdit: () => void; onCancelEdit: () => void; onDismiss: () => void } & RefProps) {
   const op = changeOp(c);
   return (
-    <div className={`${styles.card} ${SEV_CLASS[c.severity]}`}>
+    <div className={`${styles.card} ${SEV_CLASS[c.severity]} ${c.status === 'dismissed' ? styles.dismissed : ''}`}>
       <div className={styles.cardHead}>
         <span className={styles.cardKind}>{KIND_LABEL[c.kind]}</span>
-        <span className={styles.sevBadge}>{SEV_LABEL[c.severity]}</span>
+        <span className={styles.sevBadge}>{SEV_LABEL[c.severity]}</span>{c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : c.status === 'edited' ? <span className={styles.badgeEdited}>Đã sửa tay</span> : null}
       </div>
       {c.rule_id ? <RuleChip ruleId={c.rule_id} open={ruleOpen} body={ruleBody} onToggle={onToggleRule} /> : null}
       <p className={styles.reason}>{c.reason}</p>
@@ -1260,6 +1366,8 @@ function ChangeDetail({ change: c, ruleOpen, ruleBody, onToggleRule, isRefAnchor
           <span className={styles.badgeDeleted}>Đã xoá</span>
         </p>
       ) : null}
+      {showActions && (editing ? <div className={styles.editBox}><textarea value={editText} onChange={(ev) => onEditText(ev.target.value)} aria-label="Nội dung sửa" /><div className={styles.actions}><button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onSaveEdit(); }}>Lưu</button><button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onCancelEdit(); }}>Hủy</button></div></div> : <div className={styles.actions}><button type="button" disabled={busy || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); onEdit(); }}>Sửa</button><button type="button" disabled={busy || (c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor)} title={c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor ? 'Không có anchor duy nhất để chèn lại' : undefined} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>{c.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Bỏ chỗ sửa'}</button>{c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}</div>)}
+      {showActions && (error ? <p className={styles.error}>{error}</p> : null)}
     </div>
   );
 }
