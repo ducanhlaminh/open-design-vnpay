@@ -1,7 +1,13 @@
-// POST /api/pipelines/upload-folder — bulk folder upload for docs stages
-// (Confluence's manual "export to MD" produces a whole folder tree, no API).
-// Writes go through the SAME `writeProjectFile` (projects.ts) helper
-// /api/projects/:id/files uses, into `<projectDir>/<workflowId>/docs/<path>`.
+// POST /api/pipelines/upload-folder — bulk folder upload for docs stages, now
+// on EVERY workflow (docs-to-ui/docs-to-prd/docs-review, all three ingest
+// stages `acceptsUpload: true`), not just docs-review. Writes go through the
+// SAME `writeProjectFile` (projects.ts) helper /api/projects/:id/files uses,
+// into `<projectDir>/<docsDir>/<path>` where `docsDir` is resolved via the
+// canonical `workflowDirForPipeline` helper (`docsDirForWorkflow` in
+// pipeline-routes.ts) — the SAME resolution the real run path uses — not a
+// hand-rolled `${workflowId}/docs/` literal. Also covers GET /api/workflows'
+// new `docsDir` field, which the FE's single-file upload path needs to build
+// the right target name per workflow.
 //
 // Same harness as tests/pipeline-app-docs-tree-routes.test.ts: fake express
 // app that records handlers by "METHOD path", real SQLite + real filesystem
@@ -274,5 +280,52 @@ describe('POST /api/pipelines/upload-folder', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/80.*bytes total|exceeds/i);
     expect(() => readWrittenFile('xpos-checkout', 'docs-review', 'part0.md')).toThrow();
+  });
+
+  // The critical fix: the route resolves the REAL wfDir via
+  // workflowDirForPipeline (docsDirForWorkflow) instead of assuming
+  // `${workflowId}/docs/`. Traced against server.ts's `runPipeline`: `docs`
+  // (docs-to-ui) and `prd-docs` (docs-to-prd) both carry `inputPlaceholder`,
+  // which short-circuits `resolveRunTargetDir` to null (no `<target>/`
+  // nesting ever applies to an ingest stage) — so `wfDir` for all three real
+  // workflows' own pipelines is `workflowDirForPipeline(pipelineId)`, which is
+  // ALWAYS that pipeline's own workflow id (workflowForPipeline(...)?.id).
+  // None of the three resolve to the cwd root; these tests assert the
+  // resolved dir explicitly rather than assuming it.
+  it('lands an upload to docs-to-ui at <projectDir>/docs-to-ui/docs/ (workflowDirForPipeline("docs") === "docs-to-ui")', async () => {
+    insertPipelineProject('xpos-checkout');
+    const res = await uploadFolder({
+      projectId: 'xpos-checkout',
+      workflowId: 'docs-to-ui',
+      files: [{ path: 'overview.md', text: '# UI docs' }],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ written: 1, skipped: [] });
+    expect(readWrittenFile('xpos-checkout', 'docs-to-ui', 'overview.md')).toBe('# UI docs');
+  });
+
+  it('lands an upload to docs-to-prd at <projectDir>/docs-to-prd/docs/ (workflowDirForPipeline("prd-docs") === "docs-to-prd")', async () => {
+    insertPipelineProject('xpos-checkout');
+    const res = await uploadFolder({
+      projectId: 'xpos-checkout',
+      workflowId: 'docs-to-prd',
+      files: [{ path: 'overview.md', text: '# PRD docs' }],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ written: 1, skipped: [] });
+    expect(readWrittenFile('xpos-checkout', 'docs-to-prd', 'overview.md')).toBe('# PRD docs');
+  });
+
+  describe('GET /api/workflows', () => {
+    it('carries docsDir per workflow, matching the real wfDir the upload-folder route writes into', async () => {
+      const res = await call('GET /api/workflows');
+      expect(res.status).toBe(200);
+      const byId = Object.fromEntries(res.body.workflows.map((w: any) => [w.id, w.docsDir]));
+      expect(byId).toEqual({
+        'docs-to-ui': 'docs-to-ui/docs',
+        'docs-to-prd': 'docs-to-prd/docs',
+        'docs-review': 'docs-review/docs',
+      });
+    });
   });
 });

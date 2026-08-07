@@ -29,6 +29,7 @@ import {
   mergePipelineState,
   resolveRunMode,
   validateRunStageSelection,
+  workflowDirForPipeline,
   workflowForPipeline,
 } from './pipelines.js';
 import type { RouteDeps } from './server-context.js';
@@ -64,6 +65,25 @@ function parseDesignSystemByTarget(raw: unknown): Partial<Record<UiTarget, strin
     if (isUiTarget(key) && typeof value === 'string' && value) out[key] = value;
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// A workflow's docs-ingest cwd prefix, relative to the project root — the
+// SAME cwd a real run of that workflow's ingest stage (`docs`/`prd-docs`/
+// `dr-docs`, all `acceptsUpload: true`) resolves via `workflowDirForPipeline`
+// (server.ts's `runPipeline` computes its `wfDir` the identical way). NEVER
+// hand-roll this as the literal `${workflowId}` string — `workflowDirForPipeline`
+// returns null for a pipeline outside any workflow (cwd root), and while every
+// REAL workflow today happens to resolve to its own id (verified: `docs`,
+// `prd-docs`, `dr-docs` each belong to exactly one workflow, and none of
+// them are target-scoped — `def.inputPlaceholder` short-circuits
+// `resolveRunTargetDir` to null for all three, so no `<target>/` nesting
+// ever applies to the ingest stage itself), going through the canonical
+// helper keeps this correct if that ever changes instead of silently
+// drifting from the real run path.
+function docsDirForWorkflow(workflow: { pipelineIds: readonly string[] }): string {
+  const firstStageId = workflow.pipelineIds[0];
+  const wfDir = firstStageId ? workflowDirForPipeline(firstStageId) : null;
+  return wfDir ? `${wfDir}/docs` : 'docs';
 }
 
 // Body của `POST /api/pipelines/run-all` và `PUT .../run-config` → các field
@@ -333,8 +353,14 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   });
 
   // GET /api/workflows — the named docs→output flows the picker offers.
+  // `docsDir` (additive; not yet in packages/contracts' `Workflow` type — this
+  // route intentionally widens past it) is the workflow's docs-ingest cwd
+  // prefix — see `docsDirForWorkflow` — so the FE's single-file upload path
+  // (UploadFilesModal's `${workflowId}/docs/` name-building) can target the
+  // REAL on-disk folder for every workflow, not just docs-review.
   app.get('/api/workflows', (_req, res) => {
-    res.json({ workflows: WORKFLOWS, defaultWorkflowId: DEFAULT_WORKFLOW_ID });
+    const workflows = WORKFLOWS.map((w) => ({ ...w, docsDir: docsDirForWorkflow(w) }));
+    res.json({ workflows, defaultWorkflowId: DEFAULT_WORKFLOW_ID });
   });
 
   // POST /api/pipelines/projects { projectId, name, appId?, appName? } —
@@ -905,7 +931,8 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     if (!projectId) return res.status(400).json({ error: 'projectId is required' });
     const workflowId = typeof req.body?.workflowId === 'string' ? req.body.workflowId.trim() : '';
     if (!workflowId) return res.status(400).json({ error: 'workflowId is required' });
-    if (!getWorkflow(workflowId)) {
+    const workflow = getWorkflow(workflowId);
+    if (!workflow) {
       return res.status(400).json({ error: `unknown workflowId "${workflowId}"` });
     }
     const project = getProject(db, projectId);
@@ -969,16 +996,19 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       toWrite.push({ relPath: pathCheck.relPath, buf });
     }
 
-    // Pass 2: write. Target = <projectDir>/<workflowId>/docs/<relPath> — the
-    // SAME `<workflowId>/docs/` convention UploadFilesModal's single-file path
-    // uses, so a docs stage sees uploaded files identically either way.
+    // Pass 2: write. Target = <projectDir>/<docsDir>/<relPath>, `docsDir`
+    // resolved via the SAME `workflowDirForPipeline` helper the real run path
+    // uses (docsDirForWorkflow) — NOT a hand-rolled `${workflowId}/docs/`
+    // literal — so a docs stage sees uploaded files exactly where its own
+    // run would look, on every workflow (not just docs-review).
+    const docsDir = docsDirForWorkflow(workflow);
     let written = 0;
     for (const { relPath, buf } of toWrite) {
       try {
         await writeProjectFile(
           ctx.paths.PROJECTS_DIR,
           projectId,
-          `${workflowId}/docs/${relPath}`,
+          `${docsDir}/${relPath}`,
           buf,
           {},
           project.metadata,

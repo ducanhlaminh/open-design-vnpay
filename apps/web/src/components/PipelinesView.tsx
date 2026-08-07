@@ -122,6 +122,24 @@ function metaFor(id: string): { icon: IconName; blurb: string } {
   return PIPELINE_META[META_ALIAS[id] ?? id] ?? { icon: 'sparkles', blurb: '' };
 }
 
+// `docsDir` (GET /api/workflows) — a contract addition landing alongside this
+// UI change (BE task, in parallel): declared locally so this file can code
+// against the exact field ahead of/independent from `packages/contracts`
+// picking it up; safe to drop once `Workflow` itself carries it.
+type WorkflowWithDocsDir = Workflow & { docsDir?: string };
+
+/** Where a workflow's `acceptsUpload` stage(s) actually write docs, relative
+ *  to the project root. Most workflows nest under their own id
+ *  (`docs-review/docs/`); "root-dir" workflows (docs-to-ui's `docs`,
+ *  docs-to-prd's `prd-docs`) write straight to `docs/` — `docsDir` is the
+ *  daemon's authoritative answer either way. Falls back to the old
+ *  `<workflowId>/docs` guess (this file's ONLY prior behavior) for an older
+ *  daemon that doesn't send the field yet — graceful, not a hard error. */
+function docsDirOf(workflows: Workflow[], workflowId: string): string {
+  const hit = (workflows as WorkflowWithDocsDir[]).find((w) => w.id === workflowId);
+  return hit?.docsDir || `${workflowId}/docs`;
+}
+
 // Short format label for a UI-Spec terminal option (the picker's card title
 // and the merged step's status chips).
 function uiSpecOptionLabel(p: { id: string }): string {
@@ -1251,20 +1269,19 @@ export function PipelinesView() {
   };
 
   // Nhánh nguồn "Tải file lên" của modal cấu hình: ghi các file `.md` đã chọn
-  // vào `<workflow>/docs/` ngay khi bấm Lưu. Same route and reasoning as
-  // UploadFilesModal — the JSON write endpoint keeps a multi-segment name
-  // verbatim, while the multipart one strips every `/` and would flatten the
-  // file to the project root. Throws on the first failure so RunAllModal can
-  // surface it instead of saving a source that points at a half-written folder.
+  // vào docsDir của workflow đang mở (docsDirOf — không còn giả định
+  // `<workflowId>/docs/`, một số workflow ghi thẳng `docs/` ở gốc dự án) ngay
+  // khi bấm Lưu. Same route and reasoning as UploadFilesModal — the JSON
+  // write endpoint keeps a multi-segment name verbatim, while the multipart
+  // one strips every `/` and would flatten the file to the project root.
+  // Throws on the first failure so RunAllModal can surface it instead of
+  // saving a source that points at a half-written folder.
   const uploadRunAllDocs = async (files: File[]) => {
     if (!projectId || !workflowId) throw new Error('Chưa chọn dự án/workflow');
+    const dir = docsDirOf(workflows, workflowId);
     for (const file of files) {
       const content = await file.text();
-      const result = await writeProjectTextFileDetailed(
-        projectId,
-        `${workflowId}/docs/${file.name}`,
-        content,
-      );
+      const result = await writeProjectTextFileDetailed(projectId, `${dir}/${file.name}`, content);
       if (!result.ok) throw new Error(`${file.name}: ${result.message}`);
     }
   };
@@ -2929,6 +2946,7 @@ export function PipelinesView() {
         <UploadFilesModal
           projectId={projectId}
           workflowId={workflowId}
+          docsDir={docsDirOf(workflows, workflowId)}
           pipelineName={uploadFor.name}
           onClose={() => setUploadFor(null)}
           onUploaded={() => {
