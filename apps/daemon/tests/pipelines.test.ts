@@ -240,6 +240,21 @@ test('listPipelineStatus returns every stage in registry order with derived acti
   assert.equal(viewOf(views, 'ux').active, false);
 });
 
+test('listPipelineStatus surfaces error ONLY alongside a failed status — a stale error on a non-failed row never leaks through', () => {
+  const views = listPipelineStatus({
+    docs: { status: 'failed', error: 'Chưa cấu hình Nguồn tài liệu' },
+    // Defensive: even if a row somehow carries a leftover `error` value
+    // while its status is NOT 'failed' (e.g. a hand-crafted/legacy row),
+    // the view must not surface it — the invariant is enforced by
+    // setProjectPipelineStatus (db.ts) on write, and mirrored here on read.
+    'ux-research': { status: 'succeeded', error: 'stale, should never show' } as any,
+  });
+  assert.equal(viewOf(views, 'docs').error, 'Chưa cấu hình Nguồn tài liệu');
+  assert.equal(viewOf(views, 'ux-research').error, undefined);
+  // A normal idle row (no error ever set) stays absent, not null/empty string.
+  assert.equal(viewOf(views, 'docs-map').error, undefined);
+});
+
 test('deriveStateFromKgsFiles marks a stage succeeded when it has ≥1 KGS file', () => {
   const state = deriveStateFromKgsFiles([
     { stage: 'docs', path: 'docs-to-ui/docs/jira/A.md', status: 'ACTIVE' },

@@ -219,6 +219,14 @@ export interface PipelineView {
   lastSource?: PipelineRunSource;
   /** Target platform of the LAST run (stages with `acceptsPlatform`). */
   lastPlatform?: TargetPlatform;
+  /**
+   * Short human-readable reason the stage's LAST run failed — a fail-fast
+   * validation message (e.g. no docs-ingest source configured), the
+   * underlying agent run's own error, or a generic fallback when neither is
+   * available. Only present when `status === 'failed'`; the FE's "Xem lỗi"
+   * renders this instead of an empty panel. Absent for every other status.
+   */
+  error?: string;
 }
 
 export interface PipelinesResponse {
@@ -780,6 +788,9 @@ export interface PipelineRunState {
    *  conversation of each task so the UI can list them individually. Absent /
    *  empty for a single-agent run (its one conversation is lastConversationId). */
   subConversations?: PipelineSubConversation[];
+  /** Short reason the last run failed — only meaningful alongside
+   *  `status: 'failed'`; a later succeeded/running/idle status clears it. */
+  error?: string;
 }
 
 export interface PipelineSubConversation {

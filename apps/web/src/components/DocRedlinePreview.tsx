@@ -22,6 +22,7 @@
 // đó phụ thuộc ref đã gắn chưa và React có dựng lại nút hay không, cả hai đều
 // đã thực sự làm vùng bôi biến mất.
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ProjectFile } from '../types';
 import { fetchProjectFileText } from '../providers/registry';
 import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
@@ -287,7 +288,9 @@ const PAINT_ITEMS: ReadonlyArray<{ kind: PaintKind; label: string; swatch: strin
 /** Kiểu vùng bôi khi người dùng TẮT tô màu: mark vẫn còn trong DOM (bấm được,
  *  vẫn neo được thẻ bên phải) nhưng không sơn gì — chỉ giữ con trỏ để người
  *  dùng biết chỗ đó bấm được. */
-const HL_OFF_INLINE_STYLE = 'cursor:pointer';
+// Cùng lý do reset nền như HL_REF_INLINE_STYLE bên dưới: mark "tắt màu" mà
+// không reset thì lại ăn nền vàng chói mặc định — tắt hoá ra bật.
+const HL_OFF_INLINE_STYLE = 'background-color:transparent;color:inherit;cursor:pointer';
 /** Chỗ xoá khi tắt tô màu: bỏ nền đỏ nhưng GIỮ gạch ngang (do `<del>` lo), vì
  *  gạch ngang là thứ duy nhất phân biệt chữ đã bị bỏ với chữ đang có thật. */
 const HL_DEL_OFF_INLINE_STYLE = 'cursor:pointer;opacity:.65';
@@ -303,7 +306,10 @@ const REF_ID_PREFIX = 'ref:';
 /** Vùng viện dẫn KHÔNG có nền, chỉ gạch chấm dưới chữ: nó không phải chỗ sửa
  *  mà là bằng chứng cho một chỗ sửa ở nơi khác. Cho nó nền như ba loại kia thì
  *  người đọc đếm nhầm số chỗ đã đụng vào tài liệu. */
-const HL_REF_INLINE_STYLE = 'border-bottom:1px dotted rgba(59,130,246,.85);cursor:pointer';
+// PHẢI reset background: <mark> có nền VÀNG CHÓI mặc định của trình duyệt —
+// không reset thì vùng tham chiếu (vốn chỉ là gạch chân chấm xanh) trông y hệt
+// một vùng bôi lỗi, người đọc đi tìm số thứ tự không bao giờ có.
+const HL_REF_INLINE_STYLE = 'background-color:transparent;color:inherit;border-bottom:1px dotted rgba(59,130,246,.85);cursor:pointer';
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
 /** Nhãn dễ hiểu + lời giải thích của một tiêu chí. Chip hiện `label`, rê chuột
@@ -935,6 +941,28 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
 
   const isAnchored = (c: DocRedlineChange) => anchored.has(c.id);
 
+  // Số thứ tự map LỖI ↔ VÙNG BÔI: chỗ sửa đánh 1..N theo thứ tự rail, nhận xét
+  // đánh N1..Nk (namespace riêng để không lẫn với chỗ sửa). Cùng một map dùng
+  // cho badge trên thẻ, con số trên vùng bôi, và cột STT trong phụ lục in.
+  const idxById = useMemo(() => {
+    const map = new Map<string, string>();
+    changes.forEach((c, i) => map.set(c.id, String(i + 1)));
+    notes.forEach((n, i) => map.set(`${NOTE_ID_PREFIX}${n.id}`, `N${i + 1}`));
+    return map;
+  }, [changes, notes]);
+
+  // Dán số lên MỌI vùng bôi đang có trong DOM (cột chính + modal tham chiếu +
+  // sheet in đều render mark[data-change-id]); CSS ::after đọc data-od-idx ra
+  // badge. Chạy mỗi render — đếm mark là việc rẻ, còn deps-chính-xác thì phải
+  // đuổi theo cả docHtml lẫn thời điểm modal/portal mount.
+  useEffect(() => {
+    document.querySelectorAll<HTMLElement>('mark[data-change-id]').forEach((m) => {
+      const idx = idxById.get(m.dataset.changeId ?? '');
+      if (idx) m.dataset.odIdx = idx;
+      else delete m.dataset.odIdx;
+    });
+  });
+
   return (
     <div className="viewer">
       <div className={`viewer-body ${styles.viewerBody}`}>
@@ -945,10 +973,31 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
             {changesState.status === 'ok' ? (
               <div className={styles.strip}>
                 <span>
-                  {opCounts.edit} sửa · {opCounts.add} thêm · {opCounts.del} xoá · {notes.filter((n) => n.status !== 'dismissed').length} nhận xét · {changes.filter((c) => c.status === 'dismissed').length} đã bỏ ·{' '}
+                  {opCounts.edit} sửa · {opCounts.add} thêm · {opCounts.del} xoá · {notes.filter((n) => n.status !== 'dismissed').length} nhận xét · {changes.filter((c) => c.status === 'dismissed').length + notes.filter((n) => n.status === 'dismissed').length} đã bỏ ·{' '}
                   {markCount} vùng bôi
                 </span>
-                <button type="button" className={styles.printButton} onClick={() => { const old = document.title; document.title = `review-${file.name.split('/').pop()?.replace(/\.md$/i, '') ?? 'document'}`; window.print(); window.setTimeout(() => { document.title = old; }, 1000); }}>Xuất PDF</button>
+                <button
+                  type="button"
+                  className={styles.printButton}
+                  onClick={() => {
+                    // Bật cờ trên <body> để CSS in chỉ hiện tấm sheet portal;
+                    // dọn bằng afterprint + timeout dự phòng (Safari cũ không
+                    // bắn afterprint đều).
+                    const old = document.title;
+                    document.title = `review-${file.name.split('/').pop()?.replace(/\.md$/i, '') ?? 'document'}`;
+                    document.body.dataset.odPrint = 'redline';
+                    const cleanup = () => {
+                      document.title = old;
+                      delete document.body.dataset.odPrint;
+                      window.removeEventListener('afterprint', cleanup);
+                    };
+                    window.addEventListener('afterprint', cleanup);
+                    window.print();
+                    window.setTimeout(cleanup, 1500);
+                  }}
+                >
+                  Xuất PDF
+                </button>
                 <HighlightFilters
                   paint={paint}
                   onChange={setPaintKind}
@@ -976,7 +1025,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                   <p className={styles.empty}>Không có chỗ sửa nào.</p>
                 ) : (
                   <>
-                    {changes.map((c) => {
+                    {changes.map((c, changeIdx) => {
                     const setItemRef = (el: HTMLElement | null) => {
                       if (el) itemsByChangeRef.current.set(c.id, el);
                       else itemsByChangeRef.current.delete(c.id);
@@ -984,6 +1033,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                     const activeClass = selectedId === c.id ? styles.itemActive ?? '' : '';
                     const detail = (
                       <ChangeDetail
+                        idx={String(changeIdx + 1)}
                         change={c}
                         ruleOpen={openRule?.ownerId === c.id}
                         ruleBody={ruleBody}
@@ -992,7 +1042,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                         onJumpRef={(i) =>
                           openRefModal(`${REF_ID_PREFIX}${c.id}:${i}`, (c.doc_refs ?? [])[i] ?? '')
                         }
-                        busy={busyId === c.id} error={errorById[c.id]} showActions undoable={undoableIds.has(c.id)} editing={editingId === c.id} editText={editText} onEditText={setEditText} onEdit={() => { setEditingId(c.id); setEditText(c.quote ?? ''); }} onSaveEdit={() => { if (!editText.trim()) { setErrorById((p) => ({ ...p, [c.id]: 'Nội dung sửa không được để trống' })); return; } void editChange(c); }} onCancelEdit={() => setEditingId(null)} onDismiss={() => { if (c.status === 'dismissed') { void dismissChange(c); } else if (window.confirm('Hành động này sẽ sửa tài liệu và không thể hoàn tác trong phiên. Tiếp tục?')) void dismissChange(c); }}
+                        busy={busyId === c.id} error={errorById[c.id]} showActions={isAnchored(c)} undoable={undoableIds.has(c.id)} editing={editingId === c.id} editText={editText} onEditText={setEditText} onEdit={() => { setEditingId(c.id); setEditText(c.quote ?? ''); }} onSaveEdit={() => { if (!editText.trim()) { setErrorById((p) => ({ ...p, [c.id]: 'Nội dung sửa không được để trống' })); return; } void editChange(c); }} onCancelEdit={() => setEditingId(null)} onDismiss={() => { if (c.status === 'dismissed') { void dismissChange(c); } else if (window.confirm('Hành động này sẽ sửa tài liệu và không thể hoàn tác trong phiên. Tiếp tục?')) void dismissChange(c); }}
                       />
                     );
                     // `div role="button"` chứ không phải `<button>` thật: thẻ
@@ -1042,7 +1092,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                     {notes.length > 0 ? (
                       <>
                         <h3 className={styles.railHeading}>Nhận xét (không sửa trực tiếp)</h3>
-                        {notes.map((n) => {
+                        {notes.map((n, noteIdx) => {
                           const markId = `${NOTE_ID_PREFIX}${n.id}`;
                           const setItemRef = (el: HTMLElement | null) => {
                             if (el) itemsByChangeRef.current.set(markId, el);
@@ -1051,6 +1101,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                           const activeClass = selectedId === markId ? styles.itemActive ?? '' : '';
                           const detail = (
                             <NoteDetail
+                            idx={`N${noteIdx + 1}`}
                               note={n}
                               ruleOpen={openRule?.ownerId === markId}
                               ruleBody={ruleBody}
@@ -1107,6 +1158,36 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
           </div>
         )}
       </div>
+
+      {/* BẢN IN qua portal thẳng vào <body>: cây app bọc viewer trong nhiều
+          container cao-cố-định + overflow hidden (khung Quick result, panel,
+          entry-main…), in tại chỗ là bị cắt còn đúng một trang khung rỗng.
+          Portal là lối thoát duy nhất khỏi mọi clipping đó; khi in, CSS ẩn hết
+          body > * trừ tấm sheet này (gate bằng data-od-print để không phá lệnh
+          in của màn khác). */}
+      {typeof document === 'undefined'
+        ? null
+        : createPortal(
+            <div className={styles.printSheet} data-od-print-sheet="true" aria-hidden="true">
+              <section className={styles.printCover}>
+                <h1>Báo cáo review tài liệu</h1>
+                <p><strong>{file.name.split('/').pop()?.replace(/\.md$/i, '') ?? 'Tài liệu'}</strong></p>
+                <p>{file.name}</p>
+                <p>{new Date().toLocaleString('vi-VN')}</p>
+                <p>{opCounts.edit + opCounts.add + opCounts.del} chỗ sửa còn hiệu lực · {notes.filter((n) => n.status !== 'dismissed').length} nhận xét còn hiệu lực · {changes.filter((c) => c.status === 'dismissed').length + notes.filter((n) => n.status === 'dismissed').length} đã bỏ</p>
+              </section>
+              {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML. */}
+              <article className="markdown-rendered" dangerouslySetInnerHTML={{ __html: docHtml ?? '' }} />
+              <section className={styles.printAppendix}>
+                <h2>Phụ lục — các chỗ review</h2>
+                <table><thead><tr><th>STT</th><th>Loại / rule</th><th>Mức độ</th><th>Thay đổi / nhận xét</th><th>Lý do</th></tr></thead><tbody>
+                  {changes.map((c, i) => <tr key={`print-${c.id}`} className={c.status === 'dismissed' ? styles.printDismissed : undefined}><td>{i + 1}</td><td>{KIND_LABEL[c.kind]}{c.rule_id ? ` — ${ruleChipMeta(c.rule_id).label}` : ''}</td><td>{SEV_LABEL[c.severity]}</td><td>{c.before ?? '—'} → {c.quote ?? '—'}{c.status === 'dismissed' ? ' (Đã bỏ)' : ''}</td><td>{c.reason}</td></tr>)}
+                  {notes.map((n, i) => <tr key={`print-${NOTE_ID_PREFIX}${n.id}`} className={n.status === 'dismissed' ? styles.printDismissed : undefined}><td>N{i + 1}</td><td>Nhận xét — {KIND_LABEL[n.kind]}{n.rule_id ? ` — ${ruleChipMeta(n.rule_id).label}` : ''}</td><td>{SEV_LABEL[n.severity]}</td><td>{n.finding}{n.status === 'dismissed' ? ' (Đã bỏ)' : ''}</td><td>{n.suggestion}</td></tr>)}
+                </tbody></table>
+              </section>
+            </div>,
+            document.body,
+          )}
 
       {refModal ? (
         <div
@@ -1318,10 +1399,11 @@ function RefRow({ refs, isRefAnchored, onJumpRef }: { refs: string[] } & Pick<Re
 /** Một khối chi tiết của một NOTE: nhóm, mức độ, rule_id, phát hiện, đề xuất.
  *  Không có `before → quote` vì note không sửa gì — đó là điểm phân biệt với
  *  ChangeDetail, và cũng là lý do thẻ mang nhãn riêng. */
-function NoteDetail({ note: n, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, undoable, onDismiss }: { note: DocRedlineNote; onDismiss: () => void } & RefProps) {
+function NoteDetail({ note: n, idx, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, undoable, onDismiss }: { note: DocRedlineNote; idx?: string; onDismiss: () => void } & RefProps) {
   return (
-    <div className={`${styles.card} ${styles.noteCard} ${SEV_CLASS[n.severity]}`}>
+    <div className={`${styles.card} ${styles.noteCard} ${SEV_CLASS[n.severity]} ${n.status === 'dismissed' ? styles.dismissed : ''}`}>
       <div className={styles.cardHead}>
+        {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
         <span className={styles.cardKind}>{KIND_LABEL[n.kind]}</span>
         <span className={styles.sevBadge}>{SEV_LABEL[n.severity]}</span>
       </div>
@@ -1342,11 +1424,12 @@ function NoteDetail({ note: n, ruleOpen, ruleBody, onToggleRule, isRefAnchored, 
 /** Một khối chi tiết của một change: nhóm, mức độ, rule_id, lý do, và phần
  *  chữ cũ/chữ mới tuỳ theo phép sửa. Đây là nơi trường `before` (chữ cũ) tiếp
  *  tục sống sau khi cột tài liệu gốc bị bỏ. */
-function ChangeDetail({ change: c, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, showActions, undoable, editing, editText, onEditText, onEdit, onSaveEdit, onCancelEdit, onDismiss }: { change: DocRedlineChange; showActions: boolean; undoable?: boolean; editing: boolean; editText: string; onEditText: (value: string) => void; onEdit: () => void; onSaveEdit: () => void; onCancelEdit: () => void; onDismiss: () => void } & RefProps) {
+function ChangeDetail({ change: c, idx, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, showActions, undoable, editing, editText, onEditText, onEdit, onSaveEdit, onCancelEdit, onDismiss }: { change: DocRedlineChange; idx?: string; showActions: boolean; undoable?: boolean; editing: boolean; editText: string; onEditText: (value: string) => void; onEdit: () => void; onSaveEdit: () => void; onCancelEdit: () => void; onDismiss: () => void } & RefProps) {
   const op = changeOp(c);
   return (
     <div className={`${styles.card} ${SEV_CLASS[c.severity]} ${c.status === 'dismissed' ? styles.dismissed : ''}`}>
       <div className={styles.cardHead}>
+        {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
         <span className={styles.cardKind}>{KIND_LABEL[c.kind]}</span>
         <span className={styles.sevBadge}>{SEV_LABEL[c.severity]}</span>{c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : c.status === 'edited' ? <span className={styles.badgeEdited}>Đã sửa tay</span> : null}
       </div>

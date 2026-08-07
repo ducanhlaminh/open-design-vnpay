@@ -812,11 +812,77 @@
 .dismissed { opacity: .58; }
 .badgeEdited { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10.5px; font-weight: 650; background: rgba(37, 99, 235, .12); color: #1d4ed8; }
 
+/* ── Đánh số map lỗi ↔ vùng bôi ─────────────────────────────────────────────
+   Cùng một số hiện ở BA nơi: badge đầu thẻ lý do, con số nhỏ dính vào vùng bôi
+   trong tài liệu (mark[data-od-idx] — component dán attr, CSS vẽ), và cột STT
+   của phụ lục in. Nhận xét mang tiền tố N để không lẫn với chỗ sửa. */
+.cardIdx {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--text-strong, #1a1a1a);
+  color: var(--bg-panel, #fff);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.docCol mark[data-od-idx]::after,
+.modalBody mark[data-od-idx]::after,
+.printSheet mark[data-od-idx]::after {
+  content: attr(data-od-idx);
+  display: inline-block;
+  margin-left: 3px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.82);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.6;
+  vertical-align: super;
+  font-variant-numeric: tabular-nums;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+/* ── Bản in (nút "Xuất PDF") ─────────────────────────────────────────────────
+   Sheet là PORTAL con trực tiếp của <body> (xem DocRedlinePreview.tsx): in tại
+   chỗ trong cây app là bị các container cao-cố-định + overflow hidden (khung
+   Quick result, panel, entry-main…) cắt còn một trang khung rỗng. Trên màn
+   hình sheet luôn ẩn; khi in — và CHỈ khi cờ body[data-od-print='redline'] do
+   nút Xuất PDF bật — mọi thứ khác trong body bị ẩn, còn lại đúng tấm sheet. */
+.printSheet {
+  display: none;
+}
+
 @media print {
-  .strip, .filters, .actions, .ruleHelpBtn, .rulePop, .refBtn, .modalBackdrop { display: none !important; }
-  .grid { display: block; }
-  .docCol { height: auto; overflow: visible; padding: 12mm; }
-  .rail { display: block; height: auto; overflow: visible; border: 0; padding: 12mm; }
-  .card { break-inside: avoid; }
-  .hl, .hlAdd, .hlDel, .hlNote { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  :global(body[data-od-print='redline']) > :global(*:not([data-od-print-sheet])) {
+    display: none !important;
+  }
+  :global(body[data-od-print='redline']) .printSheet {
+    display: block;
+    background: #fff;
+    color: #111;
+    font-size: 12px;
+  }
+  /* Vùng bôi trong bản in giữ nguyên màu (mark mang style nội tuyến sẵn). */
+  .printSheet :global(mark) {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .printCover { padding: 12mm 12mm 8mm; border-bottom: 1px solid #999; break-after: page; }
+  .printCover h1 { margin: 0 0 8mm; font-size: 20px; }
+  .printCover p { margin: 2mm 0; }
+  .printSheet :global(article) { padding: 0 12mm; }
+  .printAppendix { padding: 12mm; break-before: page; }
+  .printAppendix h2 { margin-top: 0; }
+  .printAppendix table { width: 100%; border-collapse: collapse; font-size: 10px; }
+  .printAppendix th, .printAppendix td { border: 1px solid #999; padding: 4px; text-align: left; vertical-align: top; }
+  .printAppendix th { background: #eee; }
+  .printDismissed { opacity: 0.6; }
 }

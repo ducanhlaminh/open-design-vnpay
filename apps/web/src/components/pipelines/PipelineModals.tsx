@@ -3040,6 +3040,22 @@ const TASK_STATUS_META: Record<string, { icon: IconName; label: string; cls: str
   failed: { icon: 'close', label: 'Lỗi', cls: 'failed' },
 };
 
+/** `PipelineView.error` — a contract addition landing alongside this UI
+ *  change (BE task, in parallel): a short, human fail-fast/failure reason
+ *  per stage on `GET /api/pipelines` (an unconfigured-source ingest run's
+ *  fail-fast message, or a short agent-failure summary) — the thing "Xem
+ *  lỗi" is supposed to show but couldn't when the run row itself was gone
+ *  (e.g. after a daemon restart) or never carried an error string. Declared
+ *  locally so this modal can read it ahead of/independent from
+ *  packages/contracts picking it up; safe to drop once `PipelineView` itself
+ *  carries it. */
+type PipelineViewWithError = PipelineView & { error?: string };
+
+/** Fallback when the daemon has genuinely lost every trace of why a stage
+ *  failed (old run row gone, and BE hasn't sent a fail-fast `error` either)
+ *  — "Xem lỗi" must never render a blank dialog for a failed stage. */
+const NO_ERROR_DETAIL_FALLBACK = 'Không còn chi tiết lỗi (daemon có thể đã khởi động lại). Chạy lại bước để tái hiện.';
+
 export function PipelineStatusModal({
   pipeline,
   projectId,
@@ -3048,7 +3064,7 @@ export function PipelineStatusModal({
   onOpenTask,
   onRefresh,
 }: {
-  pipeline: PipelineView;
+  pipeline: PipelineViewWithError;
   projectId: string;
   onClose: () => void;
   onOpenChat: (() => void) | null;
@@ -3222,7 +3238,25 @@ export function PipelineStatusModal({
           </ul>
         </div>
       ) : !runId ? (
-        <p className="pl-modal-empty">No run for this pipeline yet.</p>
+        // No run row to poll (never run, OR the old run's state is gone —
+        // e.g. a daemon restart between the run and opening this dialog).
+        // That second case is exactly why "Xem lỗi" could render blank: a
+        // failed stage with no runId had NOTHING to show. `pipeline.error`
+        // (BE fail-fast/failure reason, independent of any run row) is now
+        // the primary content whenever it's there; a genuinely lost failure
+        // still gets the explicit fallback instead of silence.
+        pipeline.error ? (
+          <div className="pl-status-detail">
+            <div className={`pl-status-detail__badge pl-status--${pipeline.status}`}>
+              <span>{RUN_STATUS_LABEL[pipeline.status] ?? pipeline.status}</span>
+            </div>
+            <pre className="pl-status-detail__error">{pipeline.error}</pre>
+          </div>
+        ) : pipeline.status === 'failed' ? (
+          <p className="pl-modal-empty">{NO_ERROR_DETAIL_FALLBACK}</p>
+        ) : (
+          <p className="pl-modal-empty">No run for this pipeline yet.</p>
+        )
       ) : (
         <div className="pl-status-detail">
           <div className={`pl-status-detail__badge pl-status--${status}`}>
@@ -3241,7 +3275,14 @@ export function PipelineStatusModal({
               <dd className="pl-mono">{runId}</dd>
             </div>
           </dl>
-          {run?.error ? (
+          {/* `pipeline.error` (BE fail-fast/failure reason) is the PRIMARY
+              error content when present; the run's own `error` (agent stdout
+              summary from GET /api/runs/:id) stays visible too, as secondary
+              detail, unless it's the exact same string. Neither existing is
+              the "legitimately empty" case this whole fix is for — a failed
+              stage never shows a blank body once BE sends anything at all. */}
+          {pipeline.error ? <pre className="pl-status-detail__error">{pipeline.error}</pre> : null}
+          {run?.error && run.error !== pipeline.error ? (
             <pre className="pl-status-detail__error">{run.error}</pre>
           ) : null}
           {error ? (
@@ -3249,6 +3290,9 @@ export function PipelineStatusModal({
               <Icon name="info" size={14} />
               <span>{error}</span>
             </div>
+          ) : null}
+          {!pipeline.error && !run?.error && !error && status === 'failed' ? (
+            <p className="pl-modal-empty">{NO_ERROR_DETAIL_FALLBACK}</p>
           ) : null}
           {isRunning ? (
             <p className="pl-status-detail__hint">

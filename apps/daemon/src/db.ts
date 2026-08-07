@@ -654,6 +654,13 @@ interface PipelineRunStateRow {
   lastPlatform?: string;
   /** Per-task conversations of a fan-out run (list behind a stage button). */
   subConversations?: Array<{ id: string; title: string; status: string }>;
+  /** Short human-readable reason the LAST run failed (fail-fast validation,
+   *  the underlying agent run's own error, or a generic fallback) — so the
+   *  FE's "Xem lỗi" has something to show instead of an empty failed status.
+   *  `| undefined` (not just optional) so setProjectPipelineStatus can
+   *  explicitly clear a stale error on a later succeeded/running patch under
+   *  `exactOptionalPropertyTypes`. */
+  error?: string | undefined;
 }
 
 export function getProjectPipelineState(
@@ -683,6 +690,9 @@ export function setProjectPipelineStatus(
     lastSource?: unknown;
     lastPlatform?: string;
     subConversations?: Array<{ id: string; title: string; status: string }>;
+    /** Short reason THIS patch's failure happened — only meaningful alongside
+     *  `status: 'failed'`. See the invariant note on PipelineRunStateRow.error. */
+    error?: string;
   },
 ) {
   const project = getProject(db, projectId);
@@ -696,7 +706,19 @@ export function setProjectPipelineStatus(
       ? { ...(metadata.pipelines as Record<string, PipelineRunStateRow>) }
       : {};
   const prev = pipelines[pipelineId] ?? { status: 'idle' };
-  pipelines[pipelineId] = { ...prev, ...patch, updatedAt: Date.now() };
+  // A status transition to anything OTHER than 'failed' implicitly clears a
+  // previously-stored error — a stale "why did it fail" from an earlier run
+  // must never survive onto a later succeeded/running/idle status. A caller
+  // setting `status: 'failed'` is expected to pass `error` itself; when it
+  // doesn't (a handful of legacy call sites), this leaves any prior error in
+  // place rather than inventing one.
+  const clearsError = patch.status !== undefined && patch.status !== 'failed' && patch.error === undefined;
+  pipelines[pipelineId] = {
+    ...prev,
+    ...patch,
+    ...(clearsError ? { error: undefined } : {}),
+    updatedAt: Date.now(),
+  };
   metadata.pipelines = pipelines;
   return updateProject(db, projectId, { metadata });
 }

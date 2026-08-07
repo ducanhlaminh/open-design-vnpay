@@ -14052,7 +14052,10 @@ export async function startServer({
         }).catch(() => null);
         return 'succeeded' as const;
       } catch (error) {
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: 'failed',
+          error: String(error?.message ?? error),
+        });
         console.warn('[pipelines] deterministic docs run failed:', error);
         return 'failed' as const;
       }
@@ -14174,7 +14177,10 @@ export async function startServer({
         }).catch(() => null);
         return 'succeeded' as const;
       } catch (error) {
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: 'failed',
+          error: String(error?.message ?? error),
+        });
         console.warn('[pipelines] app-files deterministic run failed:', error);
         return 'failed' as const;
       }
@@ -14295,7 +14301,11 @@ export async function startServer({
             ].join('\n'),
             'utf8',
           );
-          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', subConversations: [] });
+          setProjectPipelineStatus(db, projectId, pipelineId, {
+            status: 'failed',
+            subConversations: [],
+            error: 'Không tìm thấy mockup nào trong docs/confluence/ — chạy bước Docs → Markdown (JIRA) trước, rồi chạy lại bước này.',
+          });
           console.warn(`[prd-review] no mockup pages under ${cwd}/docs/confluence — nothing to review`);
           return 'failed' as const;
         }
@@ -14424,12 +14434,19 @@ export async function startServer({
         // one page produced a report; fail only if every page run came back empty.
         const anyReport = perPage.some((p) => p.report);
         const next: 'succeeded' | 'failed' = anyReport ? 'succeeded' : 'failed';
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: next, subConversations: tasks.map((t) => ({ ...t })) });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: next,
+          subConversations: tasks.map((t) => ({ ...t })),
+          ...(next === 'failed' ? { error: 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' } : {}),
+        });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[prd-review] fan-out done: ${perPage.filter((p) => p.report).length}/${pages.length} pages reported → ${next}`);
         return next;
       } catch (error) {
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: 'failed',
+          error: String(error?.message ?? error),
+        });
         console.warn('[prd-review] fan-out failed:', error);
         return 'failed' as const;
       } finally {
@@ -14592,7 +14609,11 @@ export async function startServer({
               '',
             ].join('\n'),
           );
-          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', subConversations: [] });
+          setProjectPipelineStatus(db, projectId, pipelineId, {
+            status: 'failed',
+            subConversations: [],
+            error: 'Không tìm thấy trang tài liệu nào dưới docs/ — chạy bước Tài liệu → Markdown trước, rồi chạy lại bước này.',
+          });
           console.warn(`[docs-comp] no doc pages under ${cwd}/docs — nothing to audit`);
           return 'failed' as const;
         }
@@ -14870,7 +14891,11 @@ export async function startServer({
           // summary đó được chuyển ra file ngang hàng.
           await writeDocsComponentFailureNote(cwd, summaryWithFailures);
         }
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: next, subConversations: tasks.map((t) => ({ ...t })) });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: next,
+          subConversations: tasks.map((t) => ({ ...t })),
+          ...(next === 'failed' ? { error: 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' } : {}),
+        });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[docs-comp] fan-out done: ${okReports.length}/${pages.length} pages audited → ${next}`);
         return next;
@@ -14901,7 +14926,10 @@ export async function startServer({
               );
           }
         }
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: 'failed',
+          error: String(error?.message ?? error),
+        });
         console.warn('[docs-comp] fan-out failed:', error);
         return 'failed' as const;
       } finally {
@@ -15148,7 +15176,11 @@ export async function startServer({
               '',
             ].join('\n'),
           );
-          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', subConversations: [] });
+          setProjectPipelineStatus(db, projectId, pipelineId, {
+            status: 'failed',
+            subConversations: [],
+            error: 'Không tìm thấy trang tài liệu nào dưới docs/ — chạy bước Tài liệu → Markdown trước, rồi chạy lại bước này.',
+          });
           console.warn(`[docs-review] no doc pages under ${cwd}/docs — nothing to review`);
           return 'failed' as const;
         }
@@ -15571,7 +15603,11 @@ export async function startServer({
           // instead of losing it outright.
           await writeDocsReviewFailureNote(cwd, summaryMd);
         }
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: next, subConversations: tasks.map((t) => ({ ...t })) });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: next,
+          subConversations: tasks.map((t) => ({ ...t })),
+          ...(next === 'failed' ? { error: 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' } : {}),
+        });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[docs-review] fan-out done: ${results.filter((r) => r.status === 'succeeded').length}/${pages.length} pages reviewed → ${next}`);
         return next;
@@ -15610,7 +15646,10 @@ export async function startServer({
               );
           }
         }
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: 'failed',
+          error: String(error?.message ?? error),
+        });
         console.warn('[docs-review] fan-out failed:', error);
         return 'failed' as const;
       } finally {
@@ -15917,12 +15956,19 @@ export async function startServer({
         }
 
         const next: 'succeeded' | 'failed' = anySlice ? 'succeeded' : 'failed';
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: next, subConversations: tasks.map((t) => ({ ...t })) });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: next,
+          subConversations: tasks.map((t) => ({ ...t })),
+          ...(next === 'failed' ? { error: 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' } : {}),
+        });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[${label}] section fan-out done: ${slices.filter((s) => s.parsed).length}/${sections.length} modules → ${next}`);
         return next;
       } catch (error) {
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: 'failed',
+          error: String(error?.message ?? error),
+        });
         console.warn(`[${label}] section fan-out failed:`, error);
         return 'failed' as const;
       } finally {
@@ -16116,12 +16162,19 @@ export async function startServer({
         }
 
         const next: 'succeeded' | 'failed' = anyOut ? 'succeeded' : 'failed';
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: next, subConversations: tasks.map((t) => ({ ...t })) });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: next,
+          subConversations: tasks.map((t) => ({ ...t })),
+          ...(next === 'failed' ? { error: 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' } : {}),
+        });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[${label}] screen fan-out done → ${next}`);
         return next;
       } catch (error) {
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: 'failed',
+          error: String(error?.message ?? error),
+        });
         console.warn(`[${label}] screen fan-out failed:`, error);
         return 'failed' as const;
       } finally {
@@ -16237,6 +16290,21 @@ export async function startServer({
     };
   };
 
+  // Whether a jira-ingest stage's own declared output (`<wfDir>/docs/`)
+  // already has ANY content — the docsFromUpload case: the user manually
+  // uploaded via POST /api/pipelines/apps/:appId/upload-folder|upload-zip.
+  // Shallow (one readdir) is enough — any entry at all means something was
+  // uploaded, regardless of nesting.
+  const hasPopulatedDocsDir = async (projectId: string, wfDir: string | null): Promise<boolean> => {
+    const dir = path.join(PROJECTS_DIR, projectId, wfDir ?? '', 'docs');
+    try {
+      const entries = await fs.promises.readdir(dir);
+      return entries.length > 0;
+    } catch {
+      return false;
+    }
+  };
+
   const runPipeline = async (
     projectId: string,
     pipelineId: string,
@@ -16347,6 +16415,28 @@ export async function startServer({
             ? inputRefs
             : null;
       if (refs) return runDocsDeterministic(pipelineId, projectId, wfDir, refs, input, source, resetScope, followLinks, includeDescendants);
+
+      // FAIL-FAST: nothing to ingest. No Confluence ref, no app-files
+      // selection (explicit OR the saved-runAllConfig fallback above), and
+      // the free-text input (if any) isn't a JIRA key/JQL worth handing to
+      // the agent either — AND the stage's own docs/ isn't already populated
+      // (docsFromUpload: uploaded by hand, then run directly on this one
+      // stage). Seeding an agent run here gives it NOTHING to work with; it
+      // politely no-ops and the stage flips 'succeeded' with an empty docs/,
+      // which then cascades into a downstream stage failing with NO error
+      // text — the exact incident this guards against. Do not seed a
+      // conversation; fail the stage immediately with a clear message
+      // instead, exactly like any other stage failure (run-all's runStage
+      // sees this 'failed' completion and stops the chain the same way).
+      if (inputRefs.length === 0 && source === undefined && !(await hasPopulatedDocsDir(projectId, wfDir))) {
+        const message =
+          'Chưa cấu hình Nguồn tài liệu — chọn trang Confluence hoặc Tài liệu App ở panel cấu hình rồi chạy lại.';
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+        console.warn(
+          `[pipelines] ${pipelineId} for ${projectId}: no input/source/appFiles and docs/ empty — failing fast (no agent seeded)`,
+        );
+        return { projectId, completion: Promise.resolve('failed' as const) };
+      }
     }
 
     // PRD Mockup Review → parallel per-page fan-out (its own runner, one agent
@@ -16764,10 +16854,14 @@ export async function startServer({
         // give ui-react a broken layout contract — so the stage does NOT go
         // green on them. Never throws; a missing validator just skips.
         let wireframeGate: 'ok' | 'errors' = 'ok';
+        let wireframeErrorCount = 0;
         if (next === 'succeeded' && pipelineId === 'ux' && pipelineCwd) {
           const check = await checkWireframes(pipelineCwd, SKILLS_DIR).catch(() => null);
           if (check && (check.errors > 0 || check.warnings > 0)) {
-            if (check.errors > 0) wireframeGate = 'errors';
+            if (check.errors > 0) {
+              wireframeGate = 'errors';
+              wireframeErrorCount = check.errors;
+            }
             upsertMessage(db, conversationId, {
               id: randomUUID(),
               role: 'assistant',
@@ -16782,6 +16876,16 @@ export async function startServer({
         // updates the gate; the user uploads when ready.
         setProjectPipelineStatus(db, projectId, pipelineId, {
           status: wireframeGate === 'errors' ? 'failed' : next,
+          // Agent-run failure: prefer the run's OWN error (design.runs' error
+          // text — see extractErrorDetails in runs.ts, e.g. an agent CLI
+          // crash or an MCP/tool failure), then the wireframe-gate-specific
+          // reason, then the generic fallback — never leave a failed status
+          // with nothing for "Xem lỗi" to show.
+          ...(wireframeGate === 'errors'
+            ? { error: `Wireframe có ${wireframeErrorCount} lỗi (component/props không hợp lệ) — xem hội thoại của bước để biết chi tiết.` }
+            : next === 'failed'
+              ? { error: finalStatus.error || 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' }
+              : {}),
         });
         // History snapshot: this run's outputs become one .odhistory commit —
         // re-running the stage overwrites files but never erases this state.
@@ -16799,7 +16903,10 @@ export async function startServer({
         // the UI terminals would otherwise build on a broken layout contract.
         return wireframeGate === 'errors' ? 'failed' : next;
       } catch (error) {
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed' });
+        setProjectPipelineStatus(db, projectId, pipelineId, {
+          status: 'failed',
+          error: String(error?.message ?? error),
+        });
         console.warn('[pipelines] run failed:', error);
         return 'failed' as const;
       }
