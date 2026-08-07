@@ -1216,6 +1216,9 @@ export function PipelinesView() {
       ...(cfg?.followLinks === false ? { followLinks: false } : {}),
       ...(!uploading && cfg?.includeDescendants ? { includeDescendants: true } : {}),
       ...(uploading ? { docsFromUpload: true } : {}),
+      // Nguồn "Tài liệu App" đã lưu: PHẢI gửi kèm — run-all persist lại config
+      // từ body, thiếu field này là lần chạy sau xoá luôn nguồn đã cấu hình.
+      ...(cfg?.appFiles?.paths?.length ? { appFiles: cfg.appFiles } : {}),
     };
   };
 
@@ -1228,7 +1231,9 @@ export function PipelinesView() {
     const cfg = proj?.savedRunAll ?? proj?.config;
     // Cùng điều kiện modal vẫn validate: có nguồn tài liệu, HOẶC "chỉ chạy bước
     // còn thiếu" khi bước Docs đã xong từ trước (chạy lẻ) nên không cần nguồn.
-    const hasSource = Boolean(cfg?.confluencePages?.length || cfg?.docsFromUpload);
+    const hasSource = Boolean(
+      cfg?.confluencePages?.length || cfg?.docsFromUpload || cfg?.appFiles?.paths?.length,
+    );
     // …HOẶC lựa chọn bước đã lưu KHÔNG có bước nạp tài liệu nào. Nguồn tài liệu
     // là input của đúng bước ingest; một lựa chọn kiểu "chỉ chạy lại ux + ui"
     // không đọc tới nó, nên đòi cấu hình nguồn ở đây chỉ dựng lên một cánh cửa
