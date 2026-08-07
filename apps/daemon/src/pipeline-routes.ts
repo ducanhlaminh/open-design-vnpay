@@ -157,6 +157,7 @@ import {
   resolveConfluenceCreds,
 } from './bas/bas-client.js';
 import type { ConfluenceCreds } from './bas/bas-client.js';
+import { writeProjectFile } from './projects.js';
 
 // A pipeline's "project" is a KGS app: either pulled from the central KGS
 // (`od kg pull`, metadata.source === 'kg-pull') OR created fresh for pipelines
@@ -857,6 +858,137 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       pages: Array.from(pagesById.values()),
       truncated,
     });
+  });
+
+  // ── Bulk folder upload (docs ingest, no-API Confluence "export to MD") ─────
+  // POST /api/pipelines/upload-folder — Confluence's manual "export to MD"
+  // produces a whole folder tree (.md + images, no API to hit), so the docs
+  // stages' single-file upload (UploadFilesModal → JSON POST
+  // /api/projects/:id/files, preserving multi-segment names — multipart is
+  // NOT an option there, its route strips every '/' out of the name) doesn't
+  // scale to it. This route is that same JSON write path's BATCH sibling:
+  // reuses `writeProjectFile` (project.ts) — the exact helper
+  // /api/projects/:id/files calls — so target-dir resolution, overwrite
+  // semantics, and (transitively, through the daemon's run-time pre-run
+  // "manual-edits" `.odhistory` fence — project-history.ts) attribution stay
+  // identical between a single manual upload and a bulk folder upload.
+  const UPLOAD_MAX_FILES = 300;
+  const UPLOAD_MAX_FILE_BYTES = 10 * 1024 * 1024;
+  const UPLOAD_MAX_REQUEST_BYTES = 80 * 1024 * 1024;
+  const UPLOAD_ALLOWED_EXTENSIONS = new Set([
+    '.md', '.markdown', '.txt', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.pdf', '.drawio', '.csv',
+  ]);
+
+  // Path safety for one entry of the batch: absolute / '..' / backslash /
+  // empty-segment paths are REJECTED (skip that entry, never trust a client-
+  // supplied path enough to hand it to writeProjectFile's own sanitizer
+  // un-checked) — distinct from writeProjectFile's own `sanitizePath`, which
+  // silently NORMALIZES backslashes into separators; this route's contract
+  // is stricter: backslashes are a hard skip, not a normalize.
+  const validateUploadRelPath = (
+    raw: unknown,
+  ): { ok: true; relPath: string } | { ok: false; reason: string } => {
+    if (typeof raw !== 'string' || raw.trim() === '') return { ok: false, reason: 'empty path' };
+    if (raw.includes('\\')) return { ok: false, reason: 'backslashes are not allowed in path' };
+    if (raw.includes('\0')) return { ok: false, reason: 'invalid path' };
+    if (raw.startsWith('/') || /^[A-Za-z]:/.test(raw)) {
+      return { ok: false, reason: 'absolute paths are not allowed' };
+    }
+    const segments = raw.split('/');
+    if (segments.some((s) => s === '')) return { ok: false, reason: 'empty path segment' };
+    if (segments.some((s) => s === '..')) return { ok: false, reason: 'path traversal (..) is not allowed' };
+    return { ok: true, relPath: segments.join('/') };
+  };
+
+  app.post('/api/pipelines/upload-folder', async (req, res) => {
+    const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId.trim() : '';
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+    const workflowId = typeof req.body?.workflowId === 'string' ? req.body.workflowId.trim() : '';
+    if (!workflowId) return res.status(400).json({ error: 'workflowId is required' });
+    if (!getWorkflow(workflowId)) {
+      return res.status(400).json({ error: `unknown workflowId "${workflowId}"` });
+    }
+    const project = getProject(db, projectId);
+    if (!project) return res.status(404).json({ error: `project "${projectId}" not found` });
+
+    const files = Array.isArray(req.body?.files) ? (req.body.files as unknown[]) : [];
+    if (files.length === 0) return res.status(400).json({ error: 'files are required' });
+    if (files.length > UPLOAD_MAX_FILES) {
+      return res.status(400).json({
+        error: `too many files in one request (max ${UPLOAD_MAX_FILES}) — chunk the upload`,
+      });
+    }
+
+    // Pass 1: validate path + extension + content shape, decode to a Buffer,
+    // and enforce the per-file / total-request byte caps — ALL before a
+    // single byte hits disk, so a cap violation 400s the whole request with
+    // nothing partially written (the FE is expected to chunk under these
+    // caps; hitting one here is a client bug, not something to silently
+    // truncate). Bad PATH/EXTENSION/SHAPE, by contrast, are per-file skips —
+    // one malformed entry must never fail the rest of a real folder export.
+    const skipped: Array<{ path: string; reason: string }> = [];
+    const toWrite: Array<{ relPath: string; buf: Buffer }> = [];
+    let totalBytes = 0;
+    for (const raw of files) {
+      const entry = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+      const pathCheck = validateUploadRelPath(entry.path);
+      if (!pathCheck.ok) {
+        skipped.push({ path: typeof entry.path === 'string' ? entry.path : '(invalid)', reason: pathCheck.reason });
+        continue;
+      }
+      const ext = path.extname(pathCheck.relPath).toLowerCase();
+      if (!UPLOAD_ALLOWED_EXTENSIONS.has(ext)) {
+        skipped.push({ path: pathCheck.relPath, reason: `extension not allowed: ${ext || '(none)'}` });
+        continue;
+      }
+      const hasText = typeof entry.text === 'string';
+      const hasBase64 = typeof entry.base64 === 'string';
+      if (hasText === hasBase64) {
+        // Both present or neither — same "not exactly one" rejection either way.
+        skipped.push({ path: pathCheck.relPath, reason: 'exactly one of text or base64 is required' });
+        continue;
+      }
+      let buf: Buffer;
+      try {
+        buf = hasText ? Buffer.from(entry.text as string, 'utf8') : Buffer.from(entry.base64 as string, 'base64');
+      } catch {
+        skipped.push({ path: pathCheck.relPath, reason: 'invalid base64 content' });
+        continue;
+      }
+      if (buf.length > UPLOAD_MAX_FILE_BYTES) {
+        return res.status(400).json({
+          error: `file too large (max ${UPLOAD_MAX_FILE_BYTES} bytes): ${pathCheck.relPath}`,
+        });
+      }
+      totalBytes += buf.length;
+      if (totalBytes > UPLOAD_MAX_REQUEST_BYTES) {
+        return res.status(400).json({
+          error: `request exceeds ${UPLOAD_MAX_REQUEST_BYTES} bytes total — chunk the upload into smaller batches`,
+        });
+      }
+      toWrite.push({ relPath: pathCheck.relPath, buf });
+    }
+
+    // Pass 2: write. Target = <projectDir>/<workflowId>/docs/<relPath> — the
+    // SAME `<workflowId>/docs/` convention UploadFilesModal's single-file path
+    // uses, so a docs stage sees uploaded files identically either way.
+    let written = 0;
+    for (const { relPath, buf } of toWrite) {
+      try {
+        await writeProjectFile(
+          ctx.paths.PROJECTS_DIR,
+          projectId,
+          `${workflowId}/docs/${relPath}`,
+          buf,
+          {},
+          project.metadata,
+        );
+        written += 1;
+      } catch (err: any) {
+        skipped.push({ path: relPath, reason: String(err?.message ?? err) });
+      }
+    }
+    res.json({ written, skipped });
   });
 
   // PATCH /api/pipelines/projects/:id { name?, appId?, appName? } — sửa một
