@@ -78,6 +78,11 @@ export interface ChatSseStartPayload {
    * badge on the assistant message header.
    */
   sandboxed?: boolean;
+  /**
+   * True when this run was spawned inside the Seatbelt write-isolation tier
+   * (docs/run-write-isolation-spec.md). Mutually exclusive with `sandboxed`.
+   */
+  writeIsolated?: boolean;
 }
 
 export interface ChatSseChunkPayload {
