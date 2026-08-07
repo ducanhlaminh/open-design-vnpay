@@ -342,6 +342,20 @@
   background: var(--bg-subtle);
 }
 
+/* Cascade-check: a row implied-checked by an ancestor elsewhere in `value`
+   (docs/app-docs-tree-picker-spec.md) — same checked look (comboCheckboxOn)
+   but the row itself reads as non-interactive (muted, no hover, default
+   cursor) since clicking it is a no-op; the "why" surfaces via the row's
+   `title` tooltip ("Đã bao gồm trong <ancestor title>"). */
+.comboRowImplied {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.comboRowImplied:hover {
+  background: transparent;
+}
+
 .comboChevron {
   flex: none;
   display: inline-flex;

@@ -17,6 +17,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type InputHTMLAttributes,
@@ -349,6 +350,62 @@ function buildConfluenceDescTree(
   return root;
 }
 
+/** Every node id in a subtree that HAS children (the node itself, if it's
+ *  not a leaf, plus every non-leaf descendant) — auto-expand target: a
+ *  freshly loaded subtree opens fully by default (every level), so this
+ *  seeds `expandedNode` with every id a chevron could collapse. */
+function collectExpandableIds(node: ConfluenceDescNode): string[] {
+  if (node.children.length === 0) return [];
+  return [node.id, ...node.children.flatMap(collectExpandableIds)];
+}
+
+/** Every descendant id under a node, NOT including the node itself —
+ *  "what does checking this page as a root imply is already covered". */
+function collectDescendantIds(node: ConfluenceDescNode): string[] {
+  return node.children.flatMap((c) => [c.id, ...collectDescendantIds(c)]);
+}
+
+/** Indexes every node (top-level hit AND every nested descendant) across
+ *  every subtree we've fetched so far, by pageId — the cascade-check
+ *  coverage computation below needs to resolve ANY checked id (not just
+ *  top-level hit ids) to its node, since the user can check a page nested
+ *  several levels deep inside an already-expanded hit. */
+function buildConfluenceNodeIndex(
+  descByHit: Record<string, ConfluenceDescNode | 'loading' | 'error'>,
+): Map<string, ConfluenceDescNode> {
+  const idx = new Map<string, ConfluenceDescNode>();
+  const walk = (n: ConfluenceDescNode) => {
+    idx.set(n.id, n);
+    n.children.forEach(walk);
+  };
+  for (const tree of Object.values(descByHit)) {
+    if (tree && tree !== 'loading' && tree !== 'error') walk(tree);
+  }
+  return idx;
+}
+
+/** Cascade-check coverage (docs/app-docs-tree-picker-spec.md multi-root, "a
+ *  checked ancestor implies its whole subtree"): for every id currently in
+ *  `value` that we have subtree data for (via `nodeIndex` — a pasted ref or
+ *  a not-yet-fetched id has none and is exempt, per spec), every descendant
+ *  page id maps to the covering ancestor's id+title. First covering
+ *  ancestor found wins (iteration order of `value`) when subtrees nest or
+ *  overlap — an edge case the spec doesn't otherwise define. */
+function computeConfluenceCoverage(
+  value: string[],
+  nodeIndex: Map<string, ConfluenceDescNode>,
+): Map<string, { ancestorId: string; ancestorTitle: string }> {
+  const covered = new Map<string, { ancestorId: string; ancestorTitle: string }>();
+  for (const rootId of value) {
+    const node = nodeIndex.get(rootId);
+    if (!node) continue;
+    for (const descId of collectDescendantIds(node)) {
+      if (!covered.has(descId)) covered.set(descId, { ancestorId: rootId, ancestorTitle: node.title });
+    }
+  }
+  return covered;
+}
+
 export interface ConfluenceRootFieldProps extends FormFieldControlProps {
   /** What the form submits: `App.confluenceRoots` — every selected root
    *  pageId (multi-root, docs/app-docs-tree-picker-spec.md). `[]` clears. */
@@ -473,40 +530,97 @@ export function ConfluenceRootField({
     setQuery('');
   };
 
-  // First expand of a hit fetches its whole sub-tree once; re-expanding
-  // (already fetched, or collapsing) is just the local Set toggle below.
-  const toggleExpand = (nodeId: string, fetchFrom?: ConfluenceHitWithAncestors) => {
+  // Fetch dedupe is tracked in a REF (not derived from `descByHit` state) so
+  // dispatching fetches doesn't need `descByHit` as an effect dependency —
+  // that would re-run the eager-load effect below on every fetch resolving,
+  // not just when the hit list itself changes. Persists across searches: a
+  // page seen again under a different query is never re-fetched.
+  const dispatchedFetch = useRef<Set<string>>(new Set());
+  const fetchHitSubtree = useCallback((hit: ConfluenceHitWithAncestors) => {
+    if (dispatchedFetch.current.has(hit.id)) return;
+    dispatchedFetch.current.add(hit.id);
+    setDescByHit((m) => ({ ...m, [hit.id]: 'loading' }));
+    // Eager-load auto-expands from the moment the fetch is dispatched (the
+    // loading row IS the "lightweight per-hit loading" indicator) — no
+    // waiting for a chevron click.
+    setExpandedNode((s) => new Set(s).add(hit.id));
+    void (async () => {
+      try {
+        const res = await fetch(`/api/pipelines/confluence/descendants?ref=${encodeURIComponent(hit.id)}`);
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j?.error || `HTTP ${res.status}`);
+        const flat = (j.pages ?? []) as Array<{ pageId: string; title: string; treePath: string[] }>;
+        const tree = buildConfluenceDescTree(hit.id, hit.title, flat);
+        setDescByHit((m) => ({ ...m, [hit.id]: tree }));
+        // "All levels open by default": expand every internal node the fetch
+        // just revealed, not only the hit's own top level.
+        const ids = collectExpandableIds(tree);
+        if (ids.length) setExpandedNode((s) => new Set([...s, ...ids]));
+      } catch {
+        setDescByHit((m) => ({ ...m, [hit.id]: 'error' }));
+      }
+    })();
+  }, []);
+
+  // Eager load: every rendered hit that isn't a confirmed leaf (hasChildren
+  // !== false) gets its sub-tree fetched in parallel as soon as the hit list
+  // renders — bounded by the search result size (≤50), no extra throttling
+  // needed. `fetchHitSubtree` no-ops for ids already dispatched/cached.
+  useEffect(() => {
+    if (!hits) return;
+    for (const h of hits) {
+      if (h.hasChildren === false) continue;
+      fetchHitSubtree(h);
+    }
+  }, [hits, fetchHitSubtree]);
+
+  // Pure UI toggle (collapse/re-expand) — no fetch. Eager load already
+  // guarantees a hit's data is fetching/fetched by the time its chevron is
+  // ever clickable; descendant nodes are always local (one fetch covers the
+  // whole subtree).
+  const toggleExpandedNode = (nodeId: string) => {
     setExpandedNode((s) => {
       const n = new Set(s);
       if (n.has(nodeId)) n.delete(nodeId);
       else n.add(nodeId);
       return n;
     });
-    if (!fetchFrom || descByHit[fetchFrom.id]) return;
-    setDescByHit((m) => ({ ...m, [fetchFrom.id]: 'loading' }));
-    void (async () => {
-      try {
-        const res = await fetch(`/api/pipelines/confluence/descendants?ref=${encodeURIComponent(fetchFrom.id)}`);
-        const j = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(j?.error || `HTTP ${res.status}`);
-        const flat = (j.pages ?? []) as Array<{ pageId: string; title: string; treePath: string[] }>;
-        setDescByHit((m) => ({ ...m, [fetchFrom.id]: buildConfluenceDescTree(fetchFrom.id, fetchFrom.title, flat) }));
-      } catch {
-        setDescByHit((m) => ({ ...m, [fetchFrom.id]: 'error' }));
-      }
-    })();
   };
 
+  // Cascade-check coverage (spec: "checking a parent checks its whole
+  // subtree"). `nodeIndex` covers every node from every subtree fetched so
+  // far (top-level hits AND nested descendants — eager load means this is
+  // populated well before the user checks anything). `coveredBy` re-derives
+  // on every `value`/index change; a chip whose id ends up in `coveredBy`
+  // (i.e. some OTHER `value` entry is its ancestor) is redundant — the
+  // effect below removes it, satisfying "checking an ancestor auto-removes
+  // covered chips" from EITHER check order (parent-then-child or
+  // child-then-parent) without extra bookkeeping.
+  const nodeIndex = useMemo(() => buildConfluenceNodeIndex(descByHit), [descByHit]);
+  const coveredBy = useMemo(() => computeConfluenceCoverage(value, nodeIndex), [value, nodeIndex]);
+  useEffect(() => {
+    const redundant = value.some((v) => coveredBy.has(v));
+    if (!redundant) return;
+    onValueChange(value.filter((v) => !coveredBy.has(v)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, coveredBy]);
+
   const renderDescNode = (node: ConfluenceDescNode, depth: number): JSX.Element => {
-    const on = value.includes(node.id);
+    const directlyOn = value.includes(node.id);
+    const impliedBy = !directlyOn ? coveredBy.get(node.id) : undefined;
+    const on = directlyOn || Boolean(impliedBy);
     const isExpanded = expandedNode.has(node.id);
     const hasKids = node.children.length > 0;
     return (
       <div key={node.id}>
         <div
-          className={styles.comboNodeRow}
+          className={`${styles.comboNodeRow}${impliedBy ? ' ' + styles.comboRowImplied : ''}`}
           style={{ paddingLeft: 8 + depth * 16 }}
-          onClick={() => toggleRoot(node.id, node.title)}
+          title={impliedBy ? `Đã bao gồm trong ${impliedBy.ancestorTitle}` : undefined}
+          onClick={() => {
+            if (impliedBy) return; // no-op — uncheck the ancestor to exclude this page
+            toggleRoot(node.id, node.title);
+          }}
         >
           {hasKids ? (
             <button
@@ -514,7 +628,7 @@ export function ConfluenceRootField({
               className={styles.comboChevron}
               onClick={(e) => {
                 e.stopPropagation();
-                toggleExpand(node.id);
+                toggleExpandedNode(node.id);
               }}
             >
               <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
@@ -547,20 +661,30 @@ export function ConfluenceRootField({
 
   const renderHitRow = (h: ConfluenceHitWithAncestors): JSX.Element => {
     const meta = confluenceHitMeta(h);
-    const on = value.includes(h.id);
+    const directlyOn = value.includes(h.id);
+    const impliedBy = !directlyOn ? coveredBy.get(h.id) : undefined;
+    const on = directlyOn || Boolean(impliedBy);
     const isExpanded = expandedNode.has(h.id);
     const desc = descByHit[h.id];
     const showChevron = hitShowsChevron(h);
+    const rowTitle = impliedBy ? `Đã bao gồm trong ${impliedBy.ancestorTitle}` : meta.fullPath ?? undefined;
     return (
       <div key={h.id}>
-        <div className={styles.comboHitRow} title={meta.fullPath ?? undefined} onClick={() => toggleRoot(h.id, h.title)}>
+        <div
+          className={`${styles.comboHitRow}${impliedBy ? ' ' + styles.comboRowImplied : ''}`}
+          title={rowTitle}
+          onClick={() => {
+            if (impliedBy) return; // no-op — uncheck the ancestor to exclude this page
+            toggleRoot(h.id, h.title);
+          }}
+        >
           {showChevron ? (
             <button
               type="button"
               className={styles.comboChevron}
               onClick={(e) => {
                 e.stopPropagation();
-                toggleExpand(h.id, h);
+                toggleExpandedNode(h.id);
               }}
             >
               <Icon name={desc === 'loading' ? 'spinner' : isExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
@@ -576,6 +700,11 @@ export function ConfluenceRootField({
             <span className={styles.comboOptionMeta}>{meta.text}</span>
           </span>
         </div>
+        {isExpanded && desc === 'loading' ? (
+          <p className={styles.comboMsg} style={{ paddingLeft: 30 }}>
+            Đang tải…
+          </p>
+        ) : null}
         {isExpanded && desc === 'error' ? (
           <p className={styles.comboMsg} style={{ paddingLeft: 30 }}>
             Không tải được trang con.
