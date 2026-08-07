@@ -900,29 +900,34 @@ function AppDocsTreePicker({
 // Confluence-export filenames are lossy slugs (e.g. `bao-mat-api.md`) — the
 // daemon's `title` (first Markdown heading) is the real page name. `label` is
 // what renders as the PRIMARY text; `path`/`slug` become the muted secondary
-// + tooltip. Folders inherit their sibling page's title too: an export pairs
-// `x.md` with a same-level `x/` folder holding x's children/attachments.
+// + tooltip. An export ALSO pairs page `x.md` with a same-level `x/` folder
+// holding x's children/attachments — left as two build-time siblings (a file
+// leaf "x.md" and a folder "x") and then MERGED by `mergeAppFilesSiblings`
+// below into one expandable, selectable row (else the same page renders
+// twice: once as the leaf, once as the folder that inherited its title).
 interface AppFilesNode {
   kind: 'folder' | 'file';
   key: string;
+  /** Raw path segment — folder name, or a file's basename WITHOUT the `.md`
+   *  extension. Used ONLY to detect the x.md/x/ merge pairing below; never
+   *  rendered (`label` is the display text). */
+  name: string;
   /** Primary label — real title when known, filename/folder-name fallback. */
   label: string;
-  /** Filename (file rows only) — muted secondary text next to `label` when
-   *  it differs from it (i.e. a real title was found). */
+  /** Filename (file rows, or a folder MERGED with its page — see above) —
+   *  muted secondary text next to `label` when it differs from it (i.e. a
+   *  real title was found). */
   slug?: string;
+  /** Own selectable `.md` path — set for a plain file leaf AND for a folder
+   *  merged with its sibling page (that page's own path). Unset for a plain
+   *  (unmerged) folder, which has nothing of its own to select. */
   path?: string;
   children: AppFilesNode[];
 }
 
 function buildAppFilesTree(files: AppDocsFile[]): AppFilesNode {
-  const root: AppFilesNode = { kind: 'folder', key: '', label: '', children: [] };
+  const root: AppFilesNode = { kind: 'folder', key: '', name: '', label: '', children: [] };
   const folders = new Map<string, AppFilesNode>();
-  // path-without-extension → title, for every titled .md file — lets a
-  // FOLDER borrow its sibling page's title (see file header).
-  const titleByMdPath = new Map<string, string>();
-  for (const f of files) {
-    if (f.title && /\.md$/i.test(f.path)) titleByMdPath.set(f.path.replace(/\.md$/i, ''), f.title);
-  }
   const ensureFolder = (segs: string[]): AppFilesNode => {
     if (segs.length === 0) return root;
     const key = segs.join(' ');
@@ -930,8 +935,11 @@ function buildAppFilesTree(files: AppDocsFile[]): AppFilesNode {
     if (hit) return hit;
     const parent = ensureFolder(segs.slice(0, -1));
     const folderName = segs[segs.length - 1]!;
-    const siblingTitle = titleByMdPath.get(segs.join('/'));
-    const node: AppFilesNode = { kind: 'folder', key, label: siblingTitle || folderName, children: [] };
+    // Label starts as the plain segment name — mergeAppFilesSiblings (below)
+    // overwrites it with the sibling page's title/slug once merged. No
+    // pre-emptive title guess here: that duplicated the merge logic and, for
+    // an UNTITLED sibling page, missed the merge entirely (see review fix).
+    const node: AppFilesNode = { kind: 'folder', key, name: folderName, label: folderName, children: [] };
     parent.children.push(node);
     folders.set(key, node);
     return node;
@@ -944,6 +952,7 @@ function buildAppFilesTree(files: AppDocsFile[]): AppFilesNode {
     parent.children.push({
       kind: 'file',
       key: `f:${f.path}`,
+      name: filename.replace(/\.md$/i, ''),
       label: f.title || filename,
       // Only shown as a secondary when it actually adds information — a
       // file with no real title already shows the filename as `label`.
@@ -952,12 +961,93 @@ function buildAppFilesTree(files: AppDocsFile[]): AppFilesNode {
       children: [],
     });
   }
-  return root;
+  return mergeAppFilesSiblings(root);
 }
 
+/** Within one level's children, merge each file leaf "x" (from "x.md") with
+ *  its sibling folder "x" (from "x/…") into ONE expandable + selectable
+ *  node — computed for ALL matches at this level FIRST (order-independent),
+ *  then applied, so it doesn't matter whether the file or the folder was
+ *  appended first while building. */
+function mergeSiblingsAtLevel(children: AppFilesNode[]): AppFilesNode[] {
+  const folderByName = new Map<string, AppFilesNode>();
+  for (const c of children) if (c.kind === 'folder') folderByName.set(c.name, c);
+  const replacementForFile = new Map<AppFilesNode, AppFilesNode>();
+  const consumedFolders = new Set<AppFilesNode>();
+  for (const c of children) {
+    if (c.kind !== 'file') continue;
+    const folder = folderByName.get(c.name);
+    if (!folder || consumedFolders.has(folder)) continue; // x.md without x/, or already claimed
+    consumedFolders.add(folder);
+    replacementForFile.set(c, {
+      kind: 'folder',
+      key: c.key,
+      name: c.name,
+      label: c.label,
+      slug: c.slug,
+      path: c.path,
+      children: folder.children,
+    });
+  }
+  const result: AppFilesNode[] = [];
+  for (const c of children) {
+    if (consumedFolders.has(c)) continue; // the folder half of a merged pair — dropped
+    result.push(replacementForFile.get(c) ?? c);
+  }
+  return result;
+}
+
+/** A pure path-segment wrapper — a folder with no page of its own (never
+ *  merged with a sibling) and exactly one child that's itself a folder or a
+ *  merged page — collapses by hoisting that one child up in its place.
+ *  Deliberately NOT applied inside a node's OWN recursive call (see
+ *  `mergeAppFilesSiblings`): a folder that WILL merge with a sibling file
+ *  one level up (nested x.md/x/y.md/y/… pairs) must keep its own `name`
+ *  intact for that outer merge to find it by — collapsing it prematurely,
+ *  before its parent has had a chance to pair it, would silently swap its
+ *  identity for its lone child's and break that pairing. Applying this to
+ *  CHILDREN only, from the parent's already-merged children list, sidesteps
+ *  that entirely: by the time a node is collapse-checked, its own possible
+ *  merge (at ITS parent's level) has already happened. */
+function collapseIfWrapper(node: AppFilesNode): AppFilesNode {
+  if (node.kind === 'file') return node;
+  if (!node.path && node.children.length === 1 && node.children[0]!.kind === 'folder') {
+    return node.children[0]!;
+  }
+  return node;
+}
+
+/** Bottom-up: for every folder node — recurse into children first (deepest
+ *  merges/collapses resolve before their ancestors), merge x.md/x/ sibling
+ *  pairs at this level, then collapse any pure wrapper among the (now
+ *  resolved) children. Root (empty `key`) goes through the same pipeline
+ *  like any other folder — its own children get merged/collapsed exactly
+ *  the same way — but is never ITSELF a collapse candidate (nothing above
+ *  it to hoist it into). */
+function mergeAppFilesSiblings(node: AppFilesNode): AppFilesNode {
+  if (node.kind === 'file') return node;
+  const recursedChildren = node.children.map(mergeAppFilesSiblings);
+  const mergedChildren = mergeSiblingsAtLevel(recursedChildren).map(collapseIfWrapper);
+  return { ...node, children: mergedChildren };
+}
+
+/** Every selectable path in a node's subtree — its OWN path (a file leaf, or
+ *  a folder merged with its sibling page) PLUS every descendant's, so a
+ *  merged page's checkbox toggles "itself + everything beneath it" in one
+ *  click, same semantics a plain folder already had for its descendants. */
 function appFilesPathsUnder(node: AppFilesNode): string[] {
-  if (node.kind === 'file') return node.path ? [node.path] : [];
-  return node.children.flatMap(appFilesPathsUnder);
+  const own = node.path ? [node.path] : [];
+  if (node.kind === 'file') return own;
+  return [...own, ...node.children.flatMap(appFilesPathsUnder)];
+}
+
+/** Expand state: per-node override keyed by `AppFilesNode.key`, layered over
+ *  a depth-based default (depth 0 open, deeper closed) — same "the root page
+ *  opens showing its section pages, sections stay closed" shape a fresh
+ *  corpus tree should have. Local UI state only (AppFilesPicker), never
+ *  persisted. */
+function isAppFilesNodeExpanded(expandOverride: Record<string, boolean>, node: AppFilesNode, depth: number): boolean {
+  return expandOverride[node.key] ?? depth === 0;
 }
 
 function renderAppFilesNode(
@@ -965,6 +1055,8 @@ function renderAppFilesNode(
   selected: Set<string>,
   onToggle: (paths: string[], nextOn: boolean) => void,
   depth: number,
+  expandOverride: Record<string, boolean>,
+  onToggleExpand: (key: string, depth: number) => void,
 ): JSX.Element {
   if (node.kind === 'file') {
     const on = node.path ? selected.has(node.path) : false;
@@ -985,21 +1077,55 @@ function renderAppFilesNode(
       </div>
     );
   }
+  // `paths` includes the node's OWN path when it's a merged folder (page +
+  // its children in one row) — see appFilesPathsUnder — so `cs` already
+  // covers "own page selected?" alongside "how many descendants". Existing
+  // tri-state visual (checked/indeterminate) is reused as-is; no separate
+  // "partial because only the page itself is off" state was asked for.
   const paths = appFilesPathsUnder(node);
   const onCount = paths.filter((p) => selected.has(p)).length;
   const cs: 'on' | 'off' | 'partial' = onCount === 0 ? 'off' : onCount === paths.length ? 'on' : 'partial';
+  const hasKids = node.children.length > 0;
+  // Root (empty key) has no row of its own and always shows its children —
+  // its "expand state" doesn't exist. A real folder's children only show
+  // while it's expanded.
+  const isRoot = !node.key;
+  const expanded = isRoot || isAppFilesNodeExpanded(expandOverride, node, depth);
   return (
     <div key={node.key || 'root'}>
       {node.key ? (
-        <div className={styles.treeRow} style={{ paddingLeft: 10 + depth * 22 }} onClick={() => onToggle(paths, cs !== 'on')}>
-          <span className={styles.treeSpacer} aria-hidden="true" />
+        <div
+          className={styles.treeRow}
+          style={{ paddingLeft: 10 + depth * 22 }}
+          title={node.path}
+          onClick={() => onToggle(paths, cs !== 'on')}
+        >
+          {hasKids ? (
+            <button
+              type="button"
+              className={styles.treeChevron}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleExpand(node.key, depth);
+              }}
+            >
+              <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={13} />
+            </button>
+          ) : (
+            <span className={styles.treeSpacer} aria-hidden="true" />
+          )}
           <span className={`${styles.treeCheck}${cs === 'on' ? ' ' + styles.treeCheckOn : ''}${cs === 'partial' ? ' ' + styles.treeCheckPartial : ''}`}>
             {cs === 'on' ? <Icon name="check" size={12} /> : cs === 'partial' ? <Icon name="minus" size={12} /> : null}
           </span>
           <span className={`${styles.treeName} ${styles.treeNameFolder}`}>{node.label}</span>
+          {node.slug ? <span className={styles.treeMuted}>{node.slug}</span> : null}
         </div>
       ) : null}
-      {node.children.map((c) => renderAppFilesNode(c, selected, onToggle, node.key ? depth + 1 : depth))}
+      {expanded
+        ? node.children.map((c) =>
+            renderAppFilesNode(c, selected, onToggle, node.key ? depth + 1 : depth, expandOverride, onToggleExpand),
+          )
+        : null}
     </div>
   );
 }
@@ -1024,6 +1150,11 @@ function AppFilesPicker({
   disabled?: boolean;
 }) {
   const { files, loading, error } = useAppDocsFiles(appId);
+  // Expand overrides only — see isAppFilesNodeExpanded's default-by-depth
+  // rule. Local to this picker instance; never sent anywhere.
+  const [expandOverride, setExpandOverride] = useState<Record<string, boolean>>({});
+  const toggleExpand = (key: string, depth: number) =>
+    setExpandOverride((prev) => ({ ...prev, [key]: !(prev[key] ?? depth === 0) }));
 
   const toggle = (paths: string[], nextOn: boolean) => {
     if (disabled) return;
@@ -1047,7 +1178,12 @@ function AppFilesPicker({
       {disabled ? (
         <p className={styles.hint}>Đã chọn trang Confluence ở trên — bỏ chọn để dùng lại mục này.</p>
       ) : null}
-      <div className={styles.tree}>{renderAppFilesNode(root, selected, toggle, 0)}</div>
+      {/* Section header stays outside this scroll area — a 68+-row corpus
+          must not stretch the modal; ~320px keeps roughly a dozen rows
+          visible before it scrolls internally. */}
+      <div className={styles.tree} style={{ maxHeight: 320 }}>
+        {renderAppFilesNode(root, selected, toggle, 0, expandOverride, toggleExpand)}
+      </div>
     </div>
   );
 }
