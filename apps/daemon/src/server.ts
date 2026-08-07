@@ -16417,19 +16417,53 @@ export async function startServer({
             : null;
       if (refs) return runDocsDeterministic(pipelineId, projectId, wfDir, refs, input, source, resetScope, followLinks, includeDescendants);
 
-      // FAIL-FAST: nothing to ingest. No Confluence ref, no app-files
-      // selection (explicit OR the saved-runAllConfig fallback above), and
-      // the free-text input (if any) isn't a JIRA key/JQL worth handing to
-      // the agent either — AND the stage's own docs/ isn't already populated
-      // (docsFromUpload: uploaded by hand, then run directly on this one
-      // stage). Seeding an agent run here gives it NOTHING to work with; it
-      // politely no-ops and the stage flips 'succeeded' with an empty docs/,
-      // which then cascades into a downstream stage failing with NO error
-      // text — the exact incident this guards against. Do not seed a
-      // conversation; fail the stage immediately with a clear message
-      // instead, exactly like any other stage failure (run-all's runStage
-      // sees this 'failed' completion and stops the chain the same way).
-      if (inputRefs.length === 0 && source === undefined && !(await hasPopulatedDocsDir(projectId, wfDir))) {
+      // Reached only with NO Confluence ref, NO app-files selection (explicit
+      // OR the saved-runAllConfig fallback above), and free-text input (if
+      // any) that ISN'T JIRA-shaped either — i.e. nothing this daemon knows
+      // how to fetch. Evaluated HERE, before this function's own re-run-clear
+      // block runs (that block sits further down, after readAppConfig/agent
+      // detection — every branch below either `return`s out through a
+      // sibling deterministic runner with its OWN internal clear, or through
+      // one of the two branches right here, neither of which clears
+      // anything) — so `hasPopulatedDocsDir` always sees the PRE-clear state
+      // and this decision can never race a wipe of the very docs/ it is
+      // about to read or bless.
+      if (inputRefs.length === 0 && source === undefined) {
+        const docsPopulated = await hasPopulatedDocsDir(projectId, wfDir);
+        if (docsPopulated) {
+          // SUCCESS shortcut (docsFromUpload semantics): the docs are
+          // already there (uploaded by hand — via the run-all modal's
+          // docsFromUpload flag the ingest stage would simply be DROPPED
+          // from the chain, and `deriveStateFromLocalFiles` alone marks it
+          // 'succeeded' purely from file presence, no DB write, no
+          // lastInput/lastSource; a DIRECT single-stage run on this exact
+          // stage doesn't go through that filtering, so it must reach the
+          // same outcome itself). NOTHING to fetch — seeding an agent here
+          // is the other half of the same ghost-run bug the fail-fast below
+          // closes (the agent inspects the project, finds docs/ already
+          // populated, and either no-ops or worse "helpfully" edits them).
+          // Mirrors the file-derived shape as closely as an explicit write
+          // reasonably can: bare 'succeeded', plus one honest lastInput
+          // marker (no fabricated lastSource — there is no real source to
+          // describe structurally). No history commit, no downstream reset:
+          // nothing was actually regenerated, so nothing downstream is stale.
+          setProjectPipelineStatus(db, projectId, pipelineId, {
+            status: 'succeeded',
+            lastInput: '(docs/ đã có sẵn — không fetch nguồn nào lần này)',
+          });
+          console.log(
+            `[pipelines] ${pipelineId} for ${projectId}: docs/ already populated, no input/source — marking succeeded without a fetch (docsFromUpload semantics, no agent seeded)`,
+          );
+          return { projectId, completion: Promise.resolve('succeeded' as const) };
+        }
+        // FAIL-FAST: nothing to ingest AND nothing already there either.
+        // Seeding an agent run here gives it NOTHING to work with; it
+        // politely no-ops and the stage flips 'succeeded' with an empty
+        // docs/, which then cascades into a downstream stage failing with NO
+        // error text — the exact incident this guards against. Do not seed a
+        // conversation; fail the stage immediately with a clear message
+        // instead, exactly like any other stage failure (run-all's runStage
+        // sees this 'failed' completion and stops the chain the same way).
         const message =
           'Chưa cấu hình Nguồn tài liệu — chọn trang Confluence hoặc Tài liệu App ở panel cấu hình rồi chạy lại.';
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });

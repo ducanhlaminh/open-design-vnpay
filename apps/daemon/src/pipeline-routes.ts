@@ -1814,11 +1814,30 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       // — prefills from here instead of forcing the user to re-enter everything.
       // Only Pipeline-Studio's config seeds the FIRST run (no saved config yet);
       // every trigger after that overwrites this with the latest choices.
+      const nextRunAllConfig = runAllConfigFromBody(req.body, { withDefaults: true });
+      // `appFiles` is NOT part of the Run-all modal's own state — it's set
+      // through a SEPARATE, independent surface (the "Nguồn tài liệu" rail's
+      // App-corpus picker, PUT .../run-config). Every OTHER field here is
+      // correctly a full replace (withDefaults mode — the modal always
+      // resends its complete current state, so "the latest choices" IS
+      // everything), but a run-all trigger whose caller doesn't know about
+      // `appFiles` (an older/stale client, a CLI invocation, run-all fired
+      // from a flow that only sets the fields IT owns) must not silently
+      // wipe a previously-saved selection — that is local run config, not
+      // Pipeline-Studio-owned state, and this exact wipe is what live users
+      // hit (a saved appFiles disappearing while terminal/stageIds survived
+      // a later run-all trigger). Preserve it unless THIS request explicitly
+      // sent `appFiles` (present, including `null` to clear — see
+      // runAllConfigFromBody's own three-state handling above).
+      if (!Object.prototype.hasOwnProperty.call((req.body ?? {}) as Record<string, unknown>, 'appFiles')) {
+        const savedAppFiles = (project.metadata?.runAllConfig as RunAllConfig | undefined)?.appFiles;
+        if (savedAppFiles) nextRunAllConfig.appFiles = savedAppFiles;
+      }
       updateProject(db, projectId, {
         metadata: {
           ...(project.metadata ?? {}),
           // Cùng builder với `PUT .../run-config` để hai đường ghi không lệch shape.
-          runAllConfig: runAllConfigFromBody(req.body, { withDefaults: true }),
+          runAllConfig: nextRunAllConfig,
         },
       });
       const result = await ctx.pipelines.runWorkflowAll(projectId, {

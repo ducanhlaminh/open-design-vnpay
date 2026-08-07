@@ -3,7 +3,7 @@
 // do — the agent politely no-op'd and the stage flipped 'succeeded' with an
 // empty docs/. The downstream stage then failed correctly but with NO error
 // text (GET /api/pipelines' per-stage payload had nothing for "Xem lỗi" to
-// show). Three fixes exercised here, all via the real server (real HTTP
+// show). Four fixes exercised here, all via the real server (real HTTP
 // round-trip — the deterministic-vs-agent branching and the conversation
 // seeding live deep inside server.ts's runPipeline, not reachable through a
 // fake-express harness):
@@ -19,11 +19,21 @@
 //      (looksLikeJiraInput — see bas-client.test.ts for the heuristic's own
 //      unit coverage). Everything else (corpus file paths, plain text, a
 //      stale web bundle's leftover value) fails immediately instead.
+//   4. SUCCESS shortcut (the OTHER half of the ghost-run this incident kept
+//      surfacing — "cần Atlassian MCP" on a project whose docs/ was already
+//      populated by hand): empty input/source/saved-appFiles but the
+//      stage's own docs/ ALREADY has files → mark the stage succeeded
+//      immediately (docsFromUpload semantics — see server.ts's runPipeline),
+//      no fetch, no agent, docs left untouched.
 
 import type http from 'node:http';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { startServer } from '../src/server.js';
+
+const dataDir = process.env.OD_DATA_DIR as string;
 
 describe('jira-ingest fail-fast + persisted stage error', () => {
   let server: http.Server;
@@ -102,7 +112,7 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     await fetch(`${baseUrl}/api/runs/${agentRunId}/cancel`, { method: 'POST' }).catch(() => null);
   }
 
-  it('does NOT fail fast when the stage\'s own docs/ is already populated (docsFromUpload case) — falls through to the normal agent path instead', async () => {
+  it('empty input/source + populated docs/ (docsFromUpload case) marks the stage succeeded immediately — no fetch, no agent, docs left intact', async () => {
     const projectId = uniqueId('docsfromupload');
     await createProject(projectId);
 
@@ -119,12 +129,24 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     const res = await runDocs(projectId);
     expect(res.status).toBe(202);
     const start = (await res.json()) as { projectId: string; conversationId?: string; agentRunId?: string };
-    // The fail-fast path's response is ONLY { projectId } (see the previous
-    // test) — a real conversationId/agentRunId here proves it fell through to
-    // the normal agent-seeding path instead of taking the fail-fast shortcut.
-    expect(start.conversationId).toBeTruthy();
-    expect(start.agentRunId).toBeTruthy();
-    await cancelRun(start.agentRunId);
+    // Same response shape as the fail-fast path — {projectId} only — proving
+    // no conversation/agent was seeded either way.
+    expect(start).toEqual({ projectId });
+    expect(start.conversationId).toBeUndefined();
+    expect(start.agentRunId).toBeUndefined();
+
+    const view = await stageView(projectId, 'docs');
+    expect(view.status).toBe('succeeded');
+    expect(view.error).toBeUndefined();
+
+    // The docs that made this branch fire are untouched — no re-run clear
+    // ran (this branch returns before runPipeline's own clear block, and
+    // never calls into a runner that clears docs/ itself).
+    const content = await readFile(
+      path.join(dataDir, 'projects', projectId, 'docs-to-ui', 'docs', 'manual.md'),
+      'utf8',
+    );
+    expect(content).toBe('# Manually uploaded');
   });
 
   it('a real JIRA-key input STILL reaches agent seeding (the one legitimate route left open)', async () => {
