@@ -455,6 +455,7 @@ import {
   fetchSourceFiles,
   listDescendantPages,
   looksLikeConfluenceRef,
+  looksLikeJiraInput,
   renderConfluenceIndex,
   resolveBasEndpoint,
   resolveConfluenceCreds,
@@ -16434,6 +16435,27 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
         console.warn(
           `[pipelines] ${pipelineId} for ${projectId}: no input/source/appFiles and docs/ empty — failing fast (no agent seeded)`,
+        );
+        return { projectId, completion: Promise.resolve('failed' as const) };
+      }
+
+      // HARD GATE: reached only with NON-empty input that isn't Confluence-
+      // shaped (the fail-fast above already caught the all-empty case). The
+      // ONLY thing worth handing to the legacy Atlassian-MCP agent path is
+      // input that's actually JIRA-shaped (looksLikeJiraInput — an issue key,
+      // a bare project key, or a JQL query). Anything else — a corpus file
+      // path pasted by mistake, plain text, a stale web bundle's leftover
+      // value — must NEVER reach the agent: it "looks around the project
+      // directory", finds nothing to act on, and succeeds empty. That is the
+      // exact ghost-run class of bug this closes (the live incident
+      // continued even after the previous fail-fast round because THIS
+      // fallthrough was still open).
+      if (inputRefs.length > 0 && source === undefined && !looksLikeJiraInput(input ?? '')) {
+        const message =
+          'Input không nhận dạng được (không phải link/id Confluence, không phải JIRA key/JQL). Chọn nguồn ở panel Nguồn tài liệu (Tài liệu App hoặc Confluence) rồi chạy lại.';
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+        console.warn(
+          `[pipelines] ${pipelineId} for ${projectId}: input matches neither Confluence refs nor JIRA key/JQL — failing fast (no agent seeded): ${JSON.stringify(input)}`,
         );
         return { projectId, completion: Promise.resolve('failed' as const) };
       }

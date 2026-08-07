@@ -14,6 +14,7 @@ import {
   listDescendantPages,
   naturalSegsCompare,
   looksLikeConfluenceRef,
+  looksLikeJiraInput,
   renderConfluenceIndex,
   resolveBasEndpoint,
   searchConfluencePages,
@@ -154,6 +155,32 @@ test('looksLikeConfluenceRef gates the deterministic docs path (page id resolvab
   assert.equal(looksLikeConfluenceRef('https://wiki.test/x/AbCd'), false);
   assert.equal(looksLikeConfluenceRef('PROJ-123'), false);
   assert.equal(looksLikeConfluenceRef('project = PROJ ORDER BY created'), false);
+});
+
+test('looksLikeJiraInput gates the LEGACY agent path — only real JIRA keys/JQL pass, everything else (incl. corpus paths, plain text) is rejected', () => {
+  // Issue key, one per line, and a bare project key ("give me the whole project").
+  assert.equal(looksLikeJiraInput('PROJ-123'), true);
+  assert.equal(looksLikeJiraInput('PROJ-123\nABC-9'), true);
+  assert.equal(looksLikeJiraInput('PROJ'), true);
+  assert.equal(looksLikeJiraInput('  PROJ-123  \n\n'), true); // surrounding blank lines tolerated
+  // JQL: any of the three documented hints, anywhere in the (possibly
+  // multi-line) input.
+  assert.equal(looksLikeJiraInput('project = PROJ'), true);
+  assert.equal(looksLikeJiraInput('project = PROJ ORDER BY created DESC'), true);
+  assert.equal(looksLikeJiraInput('assignee = currentUser()'), true);
+  assert.equal(looksLikeJiraInput('status = "In Progress" ORDER BY updated'), true);
+
+  // Ghost-run vectors this heuristic exists to reject — corpus file paths,
+  // plain text, a stray non-key uppercase word, an empty/whitespace string.
+  assert.equal(looksLikeJiraInput('Overview.md'), false);
+  assert.equal(looksLikeJiraInput('nested/sub/dir/page.md'), false);
+  assert.equal(looksLikeJiraInput('Đây là văn bản tiếng Việt bình thường'), false);
+  assert.equal(looksLikeJiraInput('random text pasted by mistake'), false);
+  assert.equal(looksLikeJiraInput(''), false);
+  assert.equal(looksLikeJiraInput('   \n  '), false);
+  // A MIX of one real key + one non-key line must NOT pass — every line
+  // must qualify, matching looksLikeConfluenceRef's own "every line" gate.
+  assert.equal(looksLikeJiraInput('PROJ-123\nOverview.md'), false);
 });
 
 test('fetchConfluencePages (gateway fallback) fetches every ref as a final docs/confluence/ deliverable', async () => {

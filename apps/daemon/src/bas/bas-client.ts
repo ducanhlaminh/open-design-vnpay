@@ -621,6 +621,39 @@ export function looksLikeConfluenceRef(ref: string): boolean {
   }
 }
 
+// A JIRA issue key ("PROJ-123") or a bare project key ("PROJ" — "give me the
+// whole project"). Deliberately requires 2+ letters/digits after the leading
+// letter in the bare-key form so a stray short uppercase word (an acronym
+// pasted by mistake) doesn't misfire; JIRA project keys are conventionally
+// 2-10 chars.
+const JIRA_ISSUE_KEY_RE = /^[A-Z][A-Z0-9]+-\d+$/;
+const JIRA_BARE_PROJECT_KEY_RE = /^[A-Z][A-Z0-9]{1,9}$/;
+// JQL query hint: `project =`, an `ORDER BY` clause, or any bare ` = `
+// comparison (JQL's own field=value syntax) — matches across the whole
+// (possibly multi-line) input, not per line.
+const JQL_HINT_RE = /\bproject\s*=|\bORDER\s+BY\b|\s=\s/i;
+
+/** Whether `input` is JIRA-shaped: the ONLY route the jira-ingest stage's
+ * legacy agent path (Atlassian MCP) is for. Deliberately conservative — the
+ * jira-ingest dispatch (server.ts's runPipeline) must NEVER hand the agent
+ * input it can't act on: a corpus file path, random text, or anything else
+ * that isn't a real JIRA key/JQL makes the agent "look around, find
+ * nothing, and succeed empty" (the ghost-run class of bug this heuristic
+ * closes). A JQL hint anywhere in the input wins outright (JQL is normally
+ * one query, not line-oriented); otherwise EVERY non-empty line must be a
+ * JIRA issue key or a bare project key. */
+export function looksLikeJiraInput(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) return false;
+  if (JQL_HINT_RE.test(trimmed)) return true;
+  const lines = trimmed
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return false;
+  return lines.every((l) => JIRA_ISSUE_KEY_RE.test(l) || JIRA_BARE_PROJECT_KEY_RE.test(l));
+}
+
 /** One deterministically-fetched Confluence page, ready to write into the docs
  * stage's output tree. `relPath` is unique across the batch (slug collisions
  * get the page id suffixed). */

@@ -3,15 +3,22 @@
 // do — the agent politely no-op'd and the stage flipped 'succeeded' with an
 // empty docs/. The downstream stage then failed correctly but with NO error
 // text (GET /api/pipelines' per-stage payload had nothing for "Xem lỗi" to
-// show). Two fixes exercised here, both via the real server (real HTTP round-
-// trip — the deterministic-vs-agent branching and the conversation seeding
-// live deep inside server.ts's runPipeline, not reachable through a fake-
-// express harness):
+// show). Three fixes exercised here, all via the real server (real HTTP
+// round-trip — the deterministic-vs-agent branching and the conversation
+// seeding live deep inside server.ts's runPipeline, not reachable through a
+// fake-express harness):
 //   1. FAIL-FAST: no explicit input/source, no saved runAllConfig.appFiles,
 //      and the stage's own docs/ isn't already populated → fail the stage
 //      immediately, no conversation created.
 //   2. The 'failed' status now carries a short `error` string, round-tripped
 //      through GET /api/pipelines.
+//   3. HARD GATE (follow-up hardening — the incident continued after (1)
+//      because non-empty, non-Confluence, non-JIRA input still fell through
+//      to the legacy agent path): the ONLY route to the agent for a
+//      jira-ingest stage is input that's genuinely JIRA-shaped
+//      (looksLikeJiraInput — see bas-client.test.ts for the heuristic's own
+//      unit coverage). Everything else (corpus file paths, plain text, a
+//      stale web bundle's leftover value) fails immediately instead.
 
 import type http from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -120,7 +127,7 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     await cancelRun(start.agentRunId);
   });
 
-  it('does NOT fail fast when free-text input is present (even a non-Confluence JIRA-key-shaped value) — falls through to the agent path', async () => {
+  it('a real JIRA-key input STILL reaches agent seeding (the one legitimate route left open)', async () => {
     const projectId = uniqueId('jirakey');
     await createProject(projectId);
 
@@ -130,6 +137,45 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     expect(start.conversationId).toBeTruthy();
     expect(start.agentRunId).toBeTruthy();
     await cancelRun(start.agentRunId);
+  });
+
+  it('a JQL-shaped input also reaches agent seeding', async () => {
+    const projectId = uniqueId('jql');
+    await createProject(projectId);
+
+    const res = await runDocs(projectId, { input: 'project = PROJ ORDER BY created DESC' });
+    expect(res.status).toBe(202);
+    const start = (await res.json()) as { projectId: string; conversationId?: string; agentRunId?: string };
+    expect(start.conversationId).toBeTruthy();
+    expect(start.agentRunId).toBeTruthy();
+    await cancelRun(start.agentRunId);
+  });
+
+  // The hardening this round adds: HARD GATE — non-empty input that is
+  // neither Confluence-shaped nor JIRA-shaped must fail immediately, not
+  // fall through to the agent (the exact ghost-run vector that kept the
+  // incident alive after the first fail-fast round).
+  it.each([
+    ['a corpus file path', 'Overview.md'],
+    ['a nested corpus file path', 'nested/sub/dir/page.md'],
+    ['plain text pasted by mistake', 'random text pasted by mistake'],
+    ['a mix of one real JIRA key and one non-key line', 'PROJ-123\nOverview.md'],
+  ])('garbage input (%s) fails immediately — no conversation created', async (_label, garbageInput) => {
+    const projectId = uniqueId('garbage');
+    await createProject(projectId);
+
+    const res = await runDocs(projectId, { input: garbageInput });
+    expect(res.status).toBe(202);
+    const start = (await res.json()) as { projectId: string; conversationId?: string; agentRunId?: string };
+    expect(start).toEqual({ projectId });
+    expect(start.conversationId).toBeUndefined();
+    expect(start.agentRunId).toBeUndefined();
+
+    const view = await stageView(projectId, 'docs');
+    expect(view.status).toBe('failed');
+    expect(view.error).toBe(
+      'Input không nhận dạng được (không phải link/id Confluence, không phải JIRA key/JQL). Chọn nguồn ở panel Nguồn tài liệu (Tài liệu App hoặc Confluence) rồi chạy lại.',
+    );
   });
 
   it('a deterministic-ingest run failure (agent-adjacent tool-only path) persists the run\'s own error, which round-trips through GET /api/pipelines', async () => {
