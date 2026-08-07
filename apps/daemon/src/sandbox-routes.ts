@@ -21,6 +21,7 @@ import {
   dockerVolumePresent,
   listSandboxContainers,
   listSandboxAccounts,
+  autoSaveSandboxLogin,
   saveSandboxAccount,
   switchSandboxAccount,
   removeSandboxAccount,
@@ -140,6 +141,29 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
     }
   };
 
+  // `loggedIn` as of the previous listing, so we can spot the moment it turns
+  // on. `null` = never observed yet (a first listing that is already logged in
+  // must still invalidate: the daemon may have cached a signed-out verdict
+  // before the user logged in through a terminal).
+  let lastLoggedIn: boolean | null = null;
+
+  /**
+   * Drop the cached Claude usage the moment this listing reports a login that
+   * the previous one did not. This listing IS the signal behind the green
+   * "đã đăng nhập" check, so tying invalidation to it keeps the quota meter and
+   * the check in step no matter HOW the login happened — embedded flow,
+   * terminal fallback, or a `claude /login` run outside the app entirely.
+   *
+   * Invalidating when the *code is submitted* is too early and was the original
+   * bug: the credentials land a few seconds later, so any usage read in that
+   * window re-cached "signed out" and the meter stayed hidden for a further
+   * minute after the check had already gone green.
+   */
+  const noteLoginState = (loggedIn: boolean): void => {
+    if (loggedIn && lastLoggedIn !== true) invalidateClaudeUsageCache();
+    lastLoggedIn = loggedIn;
+  };
+
   app.get('/api/sandbox/accounts', async (_req, res) => {
     try {
       const { supported, image, ready } = await accountsContext();
@@ -147,7 +171,28 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
         res.json(emptyAccounts(supported));
         return;
       }
-      res.json(await listSandboxAccounts(image));
+      let accounts = await listSandboxAccounts(image);
+      const isNewLogin = accounts.loggedIn === true && lastLoggedIn !== true;
+      noteLoginState(accounts.loggedIn === true);
+
+      // A login that just appeared gets filed into the account list under a name
+      // derived from its own email, so the user never has to invent one. Runs
+      // BEFORE responding so the very first listing after a login already shows
+      // the account, and never throws — a failed auto-save just leaves the
+      // existing "name this login" prompt in place.
+      if (isNewLogin) {
+        const result = await autoSaveSandboxLogin(image);
+        if (result.saved) {
+          console.log(
+            `[sandbox] auto-saved Claude login as "${result.label}"` +
+              (result.reused ? ' (refreshed existing account)' : ''),
+          );
+          accounts = await listSandboxAccounts(image);
+        } else if (result.reason !== 'already-saved') {
+          console.warn(`[sandbox] auto-save skipped: ${result.reason}`);
+        }
+      }
+      res.json(accounts);
     } catch (err) {
       return sendApiError(res, 500, 'INTERNAL_ERROR', `list accounts failed: ${(err as Error).message}`);
     }
@@ -295,10 +340,11 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   app.post('/api/sandbox/embedded-login/code', (req, res) => {
     const code = typeof req.body?.code === 'string' ? req.body.code : '';
     try {
+      // No usage-cache invalidation here on purpose: submitting the code only
+      // STARTS the exchange, and the credentials appear seconds later. The
+      // cache is dropped by `noteLoginState` once a listing actually reports
+      // the login — see the comment there.
       const status = submitEmbeddedLoginCode(code);
-      // Fresh credentials may land within seconds — drop the usage cache so
-      // the quota meter picks up the new login promptly.
-      invalidateClaudeUsageCache();
       res.json(status);
     } catch (err) {
       sendApiError(res, 400, 'BAD_REQUEST', (err as Error).message);

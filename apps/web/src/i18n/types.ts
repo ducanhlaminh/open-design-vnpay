@@ -240,6 +240,7 @@ export interface Dict {
   'settings.agentInstallGroup': string;
   'settings.agentAuthRequired': string;
   'settings.agentAuthUnknown': string;
+  'settings.agentAuthOk': string;
   'settings.advanced': string;
   'settings.apiSection': string;
   'settings.quickFillProvider': string;
@@ -1820,6 +1821,19 @@ export interface Dict {
   'workspace.openFromDesignFiles': string;
   'workspace.designFilesLink': string;
   'workspace.loadingSketch': string;
+  'workspace.previewMenu': string;
+  'workspace.reloadPreview': string;
+  'workspace.previewNotReady': string;
+  'workspace.previewStage.docsMap': string;
+  'workspace.previewStage.cj': string;
+  'workspace.previewStage.uxResearch': string;
+  'workspace.previewStage.ux': string;
+  'workspace.previewStage.uxReview': string;
+  'workspace.previewStage.uiHtml': string;
+  'workspace.previewStage.uiReact': string;
+  'workspace.previewStage.uiReactDs': string;
+  'workspace.previewStage.prdReview': string;
+  'workspace.previewStage.drReview': string;
   'designFiles.title': string;
   'designFiles.upload': string;
   'designFiles.pasteText': string;

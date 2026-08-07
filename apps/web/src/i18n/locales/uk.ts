@@ -226,6 +226,7 @@ export const uk: Dict = {
   'settings.agentInstallGroup': 'Доступні для встановлення ({count})',
   'settings.agentAuthRequired': 'Потрібна автентифікація',
   'settings.agentAuthUnknown': 'Стан автентифікації невідомий',
+  'settings.agentAuthOk': 'Вхід виконано',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'Швидко заповнити провайдера',
   'settings.customProvider': 'Власний провайдер',

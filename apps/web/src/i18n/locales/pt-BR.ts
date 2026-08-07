@@ -225,6 +225,7 @@ export const ptBR: Dict = {
   'settings.agentInstallGroup': 'Disponíveis para instalar ({count})',
   'settings.agentAuthRequired': 'Autenticação necessária',
   'settings.agentAuthUnknown': 'Status de autenticação desconhecido',
+  'settings.agentAuthOk': 'Conectado',
   'settings.apiSection': 'API da Anthropic',
   'settings.quickFillProvider': 'Preencher provedor',
   'settings.customProvider': 'Provedor personalizado',

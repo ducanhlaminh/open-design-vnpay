@@ -21,10 +21,14 @@ import { promisify } from 'node:util';
 import type { SandboxConfigPrefs } from './app-config.js';
 import type {
   SandboxAccount,
+  SandboxAccountIdentity,
   SandboxAccountsResponse,
   SandboxEmbeddedLoginStatus,
 } from '@open-design/contracts';
-import { SANDBOX_ACCOUNT_LABEL_RE } from '@open-design/contracts';
+import {
+  SANDBOX_ACCOUNT_LABEL_RE,
+  sandboxAccountLabelFromEmail,
+} from '@open-design/contracts';
 
 const execFileAsync = promisify(execFile);
 
@@ -310,6 +314,86 @@ export async function sandboxAuthLoggedIn(image: string): Promise<boolean> {
   return credentialsCarryToken(await readSandboxClaudeCredentials(image));
 }
 
+/**
+ * How recent `oauthAccount.profileFetchedAt` must be for the profile to be
+ * trusted as describing the login we just detected. See the guard note on
+ * `readSandboxClaudeIdentity`.
+ */
+export const SANDBOX_IDENTITY_MAX_AGE_MS = 15 * 60_000;
+
+/**
+ * Who the ACTIVE login belongs to, read from the volume's `.claude.json`
+ * (`oauthAccount`) — email + a stable `accountUuid`. This is what lets a login
+ * be saved under a meaningful name without asking the user to invent one.
+ *
+ * The trap: `.claude.json` is ONE file for the whole volume, not one per
+ * account. Switching accounts only swaps `.credentials.json`, so the profile
+ * keeps describing the PREVIOUS account until the CLI refreshes it — and a
+ * naive read would file a login under someone else's name.
+ *
+ * The guard is a freshness window on `profileFetchedAt`, NOT a comparison
+ * against `.credentials.json`'s mtime. Measured on a real volume, those two
+ * clocks legitimately drift far apart: `profileFetchedAt` is when the profile
+ * was last fetched FROM THE SERVER (it moves on login), while the credentials
+ * file is rewritten on every token refresh — observed 04:06 vs 08:41 for one
+ * healthy, correctly-identified account. Comparing them rejects the ordinary
+ * steady state.
+ *
+ * Callers only ask right after observing a login, and a login is exactly when
+ * the CLI re-fetches the profile — so "fetched within the last few minutes"
+ * means "fetched for the login in front of us". Anything older returns null and
+ * the caller falls back to asking the user for a name; mislabelling someone
+ * else's account is worse than one naming prompt.
+ */
+export async function readSandboxClaudeIdentity(
+  image: string,
+  nowMs: number = Date.now(),
+): Promise<SandboxAccountIdentity | null> {
+  let out: string;
+  try {
+    out = await docker(
+      [
+        'run', '--rm',
+        '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}:ro`,
+        '--entrypoint', 'cat',
+        image,
+        `${CONTAINER_AUTH_DIR}/.claude.json`,
+      ],
+      30_000,
+    );
+  } catch {
+    return null;
+  }
+  return parseSandboxIdentity(out, nowMs);
+}
+
+/** Parse `.claude.json` and apply the freshness guard. Exported for tests. */
+export function parseSandboxIdentity(
+  raw: string,
+  nowMs: number = Date.now(),
+): SandboxAccountIdentity | null {
+  let account: Record<string, unknown> | undefined;
+  try {
+    account = (JSON.parse(raw) as { oauthAccount?: Record<string, unknown> }).oauthAccount;
+  } catch {
+    return null; // missing, truncated, or not JSON
+  }
+  const accountUuid = typeof account?.accountUuid === 'string' ? account.accountUuid : '';
+  const emailAddress = typeof account?.emailAddress === 'string' ? account.emailAddress : '';
+  if (!accountUuid || !emailAddress) return null;
+
+  const fetchedAt = typeof account?.profileFetchedAt === 'number' ? account.profileFetchedAt : 0;
+  if (fetchedAt <= 0) return null; // profile never fetched — cannot vouch for it
+  if (nowMs - fetchedAt > SANDBOX_IDENTITY_MAX_AGE_MS) return null; // predates this login
+
+  return {
+    accountUuid,
+    emailAddress,
+    organizationType:
+      typeof account?.organizationType === 'string' ? account.organizationType : null,
+  };
+}
+
 // ── Claude account switching ────────────────────────────────────────────────
 // Several Claude logins live side by side in the SAME `od-claude-auth` volume:
 // each saved login is `accounts/<label>.json`; the ACTIVE one is the volume's
@@ -340,7 +424,13 @@ export async function listSandboxAccounts(image: string): Promise<SandboxAccount
     'fi',
     'echo "LOGGEDIN:$loggedin"',
     'echo "ACTIVE:$active"',
-    'for f in accounts/*.json; do [ -f "$f" ] && basename "$f" .json; done',
+    // Identity sidecars use the `.meta` extension ON PURPOSE: `accounts/*.json`
+    // is the account glob, so a `<label>.meta.json` would be listed as an
+    // account of its own named "<label>.meta".
+    'for f in accounts/*.json; do [ -f "$f" ] || continue;',
+    '  l=$(basename "$f" .json); echo "ACC:$l";',
+    '  [ -f "accounts/$l.meta" ] && echo "META:$l:$(tr -d "\\n" < "accounts/$l.meta")";',
+    'done',
     // Force a 0 exit: with no saved accounts the loop's last `[ -f ] && …`
     // evaluates false → exit 1 → docker() would throw and we'd wrongly report
     // "not logged in" even when .credentials.json exists.
@@ -355,17 +445,69 @@ export async function listSandboxAccounts(image: string): Promise<SandboxAccount
   } catch {
     return { supported: true, loggedIn: false, activeUnsaved: false, accounts: [] };
   }
+  return parseSandboxAccountListing(out);
+}
+
+/** Parse the listing probe's line protocol. Exported for tests. */
+export function parseSandboxAccountListing(out: string): SandboxAccountsResponse {
   const lines = out.split('\n').map((l) => l.trim());
   const loggedIn = lines.some((l) => l === 'LOGGEDIN:1');
   const active = (lines.find((l) => l.startsWith('ACTIVE:')) ?? 'ACTIVE:').slice('ACTIVE:'.length);
-  const labels = lines.filter((l) => l && !l.startsWith('LOGGEDIN:') && !l.startsWith('ACTIVE:'));
-  const accounts: SandboxAccount[] = labels.map((label) => ({ label, active: label === active && active !== '' }));
+
+  const meta = new Map<string, { identity: SandboxAccountIdentity | null; auto: boolean }>();
+  for (const line of lines) {
+    if (!line.startsWith('META:')) continue;
+    // META:<label>:<json> — split on the FIRST colon after the label only, the
+    // JSON payload contains colons of its own.
+    const rest = line.slice('META:'.length);
+    const sep = rest.indexOf(':');
+    if (sep < 0) continue;
+    const label = rest.slice(0, sep);
+    try {
+      const parsed = JSON.parse(rest.slice(sep + 1)) as {
+        accountUuid?: unknown;
+        emailAddress?: unknown;
+        organizationType?: unknown;
+        auto?: unknown;
+      };
+      const identity =
+        typeof parsed.accountUuid === 'string' && typeof parsed.emailAddress === 'string'
+          ? {
+              accountUuid: parsed.accountUuid,
+              emailAddress: parsed.emailAddress,
+              organizationType:
+                typeof parsed.organizationType === 'string' ? parsed.organizationType : null,
+            }
+          : null;
+      meta.set(label, { identity, auto: parsed.auto === true });
+    } catch {
+      // Corrupt sidecar — the account itself is still usable, just unnamed.
+    }
+  }
+
+  const accounts: SandboxAccount[] = lines
+    .filter((l) => l.startsWith('ACC:'))
+    .map((l) => l.slice('ACC:'.length))
+    .map((label) => {
+      const m = meta.get(label);
+      return {
+        label,
+        active: label === active && active !== '',
+        identity: m?.identity ?? null,
+        auto: m?.auto === true,
+      };
+    });
   const activeUnsaved = loggedIn && active === '';
   return { supported: true, loggedIn, activeUnsaved, accounts };
 }
 
-/** Snapshot the CURRENT active login into accounts/<label>.json. */
-export async function saveSandboxAccount(image: string, label: string): Promise<SandboxAccountsResponse> {
+/** Snapshot the CURRENT active login into accounts/<label>.json, plus an
+ *  optional `<label>.meta` sidecar recording whose account it is. */
+export async function saveSandboxAccount(
+  image: string,
+  label: string,
+  meta?: { identity: SandboxAccountIdentity; auto: boolean },
+): Promise<SandboxAccountsResponse> {
   assertAccountLabel(label);
   const script = [
     `cd ${CONTAINER_AUTH_DIR}`,
@@ -373,6 +515,22 @@ export async function saveSandboxAccount(image: string, label: string): Promise<
     'grep -q \'"accessToken"[[:space:]]*:[[:space:]]*"[^"]\' .credentials.json 2>/dev/null || { echo "NO_ACTIVE" >&2; exit 3; }',
     'mkdir -p accounts',
     `cp .credentials.json "accounts/${label}.json"`,
+    // The sidecar is written from a base64 literal rather than interpolated
+    // JSON: the email is attacker-influenced-ish free text and this string ends
+    // up inside `sh -c`, so no quoting scheme in the payload can escape.
+    ...(meta
+      ? [
+          `echo '${Buffer.from(
+            JSON.stringify({
+              accountUuid: meta.identity.accountUuid,
+              emailAddress: meta.identity.emailAddress,
+              organizationType: meta.identity.organizationType ?? null,
+              auto: meta.auto,
+            }),
+            'utf8',
+          ).toString('base64')}' | base64 -d > "accounts/${label}.meta"`,
+        ]
+      : []),
   ].join('\n');
   await docker(
     ['run', '--rm', '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}`, '--entrypoint', 'sh', image, '-c', script],
@@ -381,6 +539,80 @@ export async function saveSandboxAccount(image: string, label: string): Promise<
     throw new Error('Chưa đăng nhập Claude nào để lưu — chạy: od sandbox login trước.');
   });
   return listSandboxAccounts(image);
+}
+
+/** Outcome of an auto-save attempt, for logging and for the caller's decision
+ *  to re-list. `skipped` carries WHY so a silent no-op is never a mystery. */
+export type SandboxAutoSaveResult =
+  | { saved: true; label: string; reused: boolean }
+  | { saved: false; reason: 'already-saved' | 'no-identity' | 'no-label' | 'failed' };
+
+/**
+ * Save the freshly-detected login into the account list under a name derived
+ * from its email, so a login shows up as a real account without the user having
+ * to invent a label.
+ *
+ * Only called on a false→true login transition. Two things keep it from
+ * creating duplicates or mislabelled entries:
+ *
+ *   - It does nothing when the active credentials already byte-match a saved
+ *     account. That is also what makes an account SWITCH safe: switching makes
+ *     the active file identical to a saved one, so there is nothing to add —
+ *     and the stale-`.claude.json` trap never gets a chance to mislabel it.
+ *   - Duplicates are resolved on `accountUuid`, not on the credentials bytes:
+ *     re-logging into the same account mints new tokens, so a byte comparison
+ *     would file it as a brand-new account every time. A matching UUID updates
+ *     that account's stored credentials in place, keeping its existing label.
+ */
+export async function autoSaveSandboxLogin(image: string): Promise<SandboxAutoSaveResult> {
+  try {
+    const listing = await listSandboxAccounts(image);
+    if (!listing.loggedIn || !listing.activeUnsaved) return { saved: false, reason: 'already-saved' };
+
+    const identity = await readSandboxClaudeIdentity(image);
+    if (!identity) return { saved: false, reason: 'no-identity' };
+
+    const decision = chooseAutoSaveLabel(listing.accounts, identity);
+    if (decision.label === null) return { saved: false, reason: decision.reason };
+
+    await saveSandboxAccount(image, decision.label, { identity, auto: true });
+    return { saved: true, label: decision.label, reused: decision.reused };
+  } catch {
+    // Auto-save is a convenience layered on top of login detection; if it fails
+    // the user still has the manual "name this login" flow.
+    return { saved: false, reason: 'failed' };
+  }
+}
+
+/**
+ * Which label a freshly-detected login should be filed under. Pure so the
+ * dedup rules are testable without a Docker volume.
+ *
+ * `reused: true` means "this is the same account signing in again" — matched on
+ * `accountUuid`, never on the credentials bytes, which change on every login.
+ */
+export function chooseAutoSaveLabel(
+  accounts: readonly SandboxAccount[],
+  identity: SandboxAccountIdentity,
+): { label: string; reused: boolean } | { label: null; reason: 'no-label' } {
+  // Same account, new tokens → refresh that entry in place, keeping whatever
+  // name it already has (possibly one the user renamed it to).
+  const existing = accounts.find((a) => a.identity?.accountUuid === identity.accountUuid);
+  if (existing) return { label: existing.label, reused: true };
+
+  const base = sandboxAccountLabelFromEmail(identity.emailAddress);
+  if (!base) return { label: null, reason: 'no-label' };
+
+  const taken = new Set(accounts.map((a) => a.label));
+  if (!taken.has(base)) return { label: base, reused: false };
+  // Two different people whose emails slugify the same (work vs personal
+  // domain), or a legacy label that happens to collide: keep both rather than
+  // overwriting someone else's saved login.
+  for (let n = 2; n < 100; n += 1) {
+    const candidate = `${base}-${n}`.slice(0, 40);
+    if (!taken.has(candidate)) return { label: candidate, reused: false };
+  }
+  return { label: null, reason: 'no-label' };
 }
 
 /** Make accounts/<label>.json the active login (copy over .credentials.json). */
@@ -736,7 +968,10 @@ export function openSandboxLoginTerminal(image: string): { launched: boolean; co
 /** Delete a saved account (does NOT touch the active login). */
 export async function removeSandboxAccount(image: string, label: string): Promise<SandboxAccountsResponse> {
   assertAccountLabel(label);
-  const script = `rm -f ${CONTAINER_AUTH_DIR}/accounts/${label}.json`;
+  // Drop the identity sidecar too: leaving it behind would let a later account
+  // that happens to reuse this label inherit the removed account's identity.
+  const script =
+    `rm -f ${CONTAINER_AUTH_DIR}/accounts/${label}.json ${CONTAINER_AUTH_DIR}/accounts/${label}.meta`;
   await docker(
     ['run', '--rm', '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}`, '--entrypoint', 'sh', image, '-c', script],
     30_000,

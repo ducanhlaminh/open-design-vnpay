@@ -225,6 +225,7 @@ export const tr: Dict = {
   'settings.agentInstallGroup': 'Kurulabilir ({count})',
   'settings.agentAuthRequired': 'Kimlik doğrulama gerekli',
   'settings.agentAuthUnknown': 'Kimlik doğrulama durumu bilinmiyor',
+  'settings.agentAuthOk': 'Oturum açıldı',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'Sağlayıcıyı hızlı doldur',
   'settings.customProvider': 'Özel sağlayıcı',

@@ -225,6 +225,7 @@ export const ar: Dict = {
   'settings.agentInstallGroup': 'متاحة للتثبيت ({count})',
   'settings.agentAuthRequired': 'المصادقة مطلوبة',
   'settings.agentAuthUnknown': 'حالة المصادقة غير معروفة',
+  'settings.agentAuthOk': 'تم تسجيل الدخول',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'ملء المزوّد سريعًا',
   'settings.customProvider': 'مزوّد مخصص',

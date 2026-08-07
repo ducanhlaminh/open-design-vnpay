@@ -67,7 +67,6 @@ import { FigmaDesignSystemDetailModal } from './FigmaDesignSystemDetailModal';
 import { DesignSystemsTab } from './DesignSystemsTab';
 import { EntryNavRail, type EntryView as EntryViewKind } from './EntryNavRail';
 import { UpdaterPopup } from './UpdaterPopup';
-import { GithubStarBadge } from './GithubStarBadge';
 import { HomeView } from './HomeView';
 import {
   createPluginAuthoringHandoff,
@@ -88,7 +87,7 @@ import type {
   PluginShareProjectOutcome,
 } from '../state/projects';
 import { TasksView } from './TasksView';
-import { PipelinesView } from './PipelinesView';
+import { PipelinesRoute } from './pipelines/PipelinesRoute';
 import {
   API_KEY_PLACEHOLDERS,
   API_PROTOCOL_TABS,
@@ -379,8 +378,18 @@ export function EntryShell({
   const route = useRoute();
   // The full-page Quick result route lives under the pipelines shell — render
   // the pipelines view so PipelinesView can swap in PipelineResultView.
+  // Mọi cấp của drill-down Pipelines (App → Feature → Pipeline → Chạy) và
+  // route Quick result đều sống dưới cùng một shell; PipelinesView tự đọc
+  // route để quyết định render cấp nào.
   const view: EntryViewKind =
-    route.kind === 'home' ? route.view : route.kind === 'pipeline-result' ? 'pipelines' : 'home';
+    route.kind === 'home'
+      ? route.view
+      : route.kind === 'pipeline-result' ||
+          route.kind === 'pipelines-app' ||
+          route.kind === 'pipelines-feature' ||
+          route.kind === 'pipelines-run'
+        ? 'pipelines'
+        : 'home';
   const [previewSystemId, setPreviewSystemId] = useState<string | null>(null);
   // Card corner "Fullscreen" action: open the react-bundle detail modal
   // already expanded to the viewport.
@@ -578,17 +587,9 @@ export function EntryShell({
         <main className="entry-main entry-main--scroll">
           <div className="entry-main__topbar">
             <div className="entry-main__topbar-chips">
-              <GithubStarBadge />
-              <a
-                className="entry-discord-badge"
-                href="https://discord.gg/mHAjSMV6gz"
-                aria-label="Join the Open Design Discord"
-                title="Join the Open Design Discord"
-                data-testid="entry-discord-badge"
-              >
-                <Icon name="discord" size={14} className="entry-discord-badge__icon" />
-                <span className="entry-discord-badge__label">Join Discord</span>
-              </a>
+              {/* Chrome marketing của upstream (GitHub Star / Discord / Use
+                  everywhere) đã gỡ — đây là nền tảng nội bộ, topbar chỉ giữ
+                  những gì thao tác được: switcher model, updater, settings. */}
               <InlineModelSwitcher
                 config={config}
                 agents={agents}
@@ -600,28 +601,6 @@ export function EntryShell({
                 onApiModelChange={onApiModelChange}
                 onOpenSettings={onOpenSettings}
               />
-              <button
-                type="button"
-                className="use-everywhere-chip"
-                onClick={() => {
-                  trackHomeToolbarClick(analytics.track, {
-                    page_name: 'home',
-                    area: 'toolbar',
-                    element: 'use_everywhere',
-                  });
-                  openIntegrationTab('use-everywhere');
-                }}
-                title={t('entry.useEverywhereTitle')}
-                aria-label={t('entry.useEverywhereAria')}
-                data-testid="entry-use-everywhere-button"
-              >
-                <span className="use-everywhere-chip__icon" aria-hidden>
-                  <Icon name="hammer" size={13} />
-                </span>
-                <span className="use-everywhere-chip__label">
-                  {t('entry.useEverywhereTitle')}
-                </span>
-              </button>
             </div>
             <UpdaterPopup />
             {avatarMenu}
@@ -700,7 +679,7 @@ export function EntryShell({
                 connectorsLoading={connectorsLoading}
               />
             ) : null}
-            {view === 'pipelines' ? <PipelinesView /> : null}
+            {view === 'pipelines' ? <PipelinesRoute /> : null}
             {view === 'plugins' ? (
               <PluginsView
                 onCreatePlugin={startPluginAuthoring}

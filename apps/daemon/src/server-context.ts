@@ -107,6 +107,23 @@ export interface RunPipelineOptions {
     | undefined;
 }
 
+/** Outcome of a manual/push-all file upload.
+ *
+ *  `staged` is the important half: a push for a project that does not exist on
+ *  Pipeline Studio yet does NOT land in the main list — it lands in an approval
+ *  folder (`destId`, prefixed `pending--`) that a studio user with
+ *  `projects:approve` admits. Callers must surface that, otherwise "pushed N
+ *  files" reads as done when the work is actually waiting on a human. */
+export interface UploadFilesResult {
+  uploaded: number;
+  converted: number;
+  /** Where the files actually went — equals the project id unless staged. */
+  destId: string;
+  staged: boolean;
+  /** 1 = App exists, feature new · 2 = neither exists · 3 = overwrite origin. */
+  case: 1 | 2 | 3;
+}
+
 export interface PipelineDeps {
   // Seed a new conversation in `projectId` with `pipelineId`'s skill active and
   // start the agent run. Wired in server.ts (needs design.runs + startChatRun).
@@ -169,6 +186,9 @@ export interface PipelineDeps {
       lean?: boolean;
       followLinks?: boolean;
       includeDescendants?: boolean;
+      /** Docs were uploaded by hand → drop the `acceptsUpload` ingest stage
+       *  from the chain (running it would clear the uploaded files). */
+      docsFromUpload?: boolean;
     },
   ): Promise<{ projectId: string; workflowId: string; stages: string[] }>;
   // BAS MCP gateway reads for the Pipelines source-selection modal. Each resolves
@@ -194,8 +214,14 @@ export interface PipelineDeps {
   pullFiles(projectId: string, stages?: string[]): Promise<{ pulled: number }>;
   // Manual upload: push the project's current output files to the KGS file
   // store (+ B2 convert for convertToGraph stages). `stages` narrows to those
-  // pipelines' outputs (Push all modal); absent → all. Wired in server.ts.
-  uploadFiles(projectId: string, stages?: string[]): Promise<{ uploaded: number; converted: number }>;
+  // pipelines' outputs (Push all modal); absent → all. `plan` lets push-all
+  // resolve the destination once per project and hand it down; omitted → this
+  // call resolves it. Wired in server.ts.
+  uploadFiles(
+    projectId: string,
+    stages?: string[],
+    plan?: import('./kg-sync/push-plan.js').PushPlan,
+  ): Promise<UploadFilesResult>;
   // Per-stage local↔remote file diff (badges in the Pull all / Push all modals
   // + `od kg diff`). Wired in server.ts.
   syncStatus(projectId: string): Promise<import('@open-design/contracts').ProjectSyncStatus>;

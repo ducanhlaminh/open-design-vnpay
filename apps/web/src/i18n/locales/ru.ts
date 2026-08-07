@@ -225,6 +225,7 @@ export const ru: Dict = {
   'settings.agentInstallGroup': 'Доступно для установки ({count})',
   'settings.agentAuthRequired': 'Требуется аутентификация',
   'settings.agentAuthUnknown': 'Статус аутентификации неизвестен',
+  'settings.agentAuthOk': 'Вход выполнен',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'Быстро заполнить провайдера',
   'settings.customProvider': 'Пользовательский провайдер',

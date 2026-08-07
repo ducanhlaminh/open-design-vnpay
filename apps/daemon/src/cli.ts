@@ -175,6 +175,9 @@ const AUTOMATION_BOOLEAN_FLAGS = new Set([
 ]);
 const PIPELINE_STRING_FLAGS = new Set([
   'daemon-url', 'project', 'name', 'input',
+  // `od pipeline new`: optional parent App to mirror onto the new project's
+  // metadata.studioConfig (Phase B local creation) — --app <appId> --app-name <name>
+  'app', 'app-name',
   // history/restore (version hóa output): --version v3 | --commit <sha> [--path <p>] [--stage <id>]
   'version', 'commit', 'path', 'stage',
   // Pipeline-1 structured source (Confluence/BAS via the BAS gateway):
@@ -202,6 +205,9 @@ const PIPELINE_BOOLEAN_FLAGS = new Set([
   // seed page (folder-structured). Aliases: --all-pages / --include-descendants.
   'all-pages',
   'include-descendants',
+  // run-all: the workflow's docs were uploaded by hand, so DROP its ingest
+  // stage (running it would clear <workflow>/docs/ — its declared output).
+  'docs-from-upload',
 ]);
 const MEMORY_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'description', 'type', 'body', 'body-file',
@@ -405,6 +411,19 @@ Common options:
     console.log(`pushed ${d.pushed ?? 0} project(s) to KGS`);
     for (const r of d.results ?? []) {
       console.log(`  • ${r.projectId}: ${r.status} (${r.nodesPushed ?? 0} nodes, ${r.edgesPushed ?? 0} edges, ${r.filesUploaded ?? 0} files, ws:${r.workspace ?? '?'})${r.error ? ` — ${r.error}` : ''}`);
+      // Một dự án chưa có trên Pipeline Studio KHÔNG vào thẳng danh sách chính:
+      // nó nằm ở folder chờ duyệt. Không in ra thì dòng "pushed" ở trên đọc
+      // như đã xong, trong khi kết quả chưa ai ngoài người push nhìn thấy.
+      if (r.staged) {
+        console.log(`      ⏳ chờ duyệt (case ${r.case}) → ${r.pendingId}`);
+      }
+      if (r.reconciled) {
+        console.log(
+          r.reconciled.status === 'approved'
+            ? `      ✓ yêu cầu trước đã được duyệt → ${r.reconciled.finalId}`
+            : `      ✗ yêu cầu trước bị từ chối${r.reconciled.reason ? `: ${r.reconciled.reason}` : ''}`,
+        );
+      }
     }
     return;
   }
@@ -597,6 +616,7 @@ const SUBCOMMAND_MAP = {
   conversation: runConversation,
   daemon: runDaemon,
   atoms: runAtoms,
+  agents: runAgents,
   skills: runSkills,
   'design-systems': runDesignSystems,
   craft: runCraft,
@@ -708,6 +728,11 @@ function printRootHelp() {
 
   od ui <list|show|respond|revoke|prefill> [args]
       Read and answer GenUI surfaces (form / choice / confirmation / oauth-prompt) headlessly.
+
+  od agents [--json]
+      List the code-agent CLIs detected on this machine and whether each one
+      is signed in. Same listing as Settings → Local CLI; exits 4 when an
+      installed CLI needs a sign-in.
 
   od diagnostics export [<path>] [--json]
       Bundle daemon/web/desktop logs, machine info, and recent crash reports
@@ -5641,6 +5666,61 @@ async function runLibraryList(name, args) {
 async function runSkills(args)        { return runLibraryList('skills', args); }
 async function runCraft(args)         { return runLibraryList('craft', args); }
 
+// od agents [--json]
+//
+// CLI mirror of `GET /api/agents` — the same listing Settings → Local CLI
+// renders, including each detected CLI's login state (`authStatus`). External
+// agents driving Open Design through `od` need this to tell "no CLI installed"
+// apart from "CLI installed but signed out", which are different fixes.
+//
+// Exit code 4 when a detected CLI is signed out, so a script can gate a run on
+// it without parsing the table.
+async function runAgents(args) {
+  const flags = parseFlags(args, {
+    string: LIBRARY_STRING_FLAGS,
+    boolean: LIBRARY_BOOLEAN_FLAGS,
+  });
+  if (flags.help || flags.h) {
+    console.log(`Usage:
+  od agents [--json] [--daemon-url <url>]   List detected code-agent CLIs.
+
+Prints one row per runtime: id, availability, login state, and version.
+Login state is 'ok' (signed in), 'missing' (needs sign-in), 'unknown'
+(could not verify), or '-' when the runtime has no login probe.
+
+Exit codes:
+  0  every available CLI is signed in (or has no login probe)
+  4  an available CLI is signed out`);
+    process.exit(0);
+  }
+  const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
+  const resp = await fetch(`${base}/api/agents`);
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  const agents = data?.agents ?? [];
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  } else if (agents.length === 0) {
+    console.log('no code-agent CLI detected on PATH');
+  } else {
+    for (const agent of agents) {
+      const auth = agent.authStatus ?? '-';
+      const where = agent.sandbox?.owns ? 'docker' : (agent.path ?? '-');
+      console.log(
+        [
+          agent.id,
+          agent.available ? 'available' : 'not-installed',
+          `login=${auth}`,
+          agent.version ?? '-',
+          where,
+        ].join('\t'),
+      );
+      if (agent.authMessage && auth !== 'ok') console.log(`  ${agent.authMessage}`);
+    }
+  }
+  if (agents.some((a) => a.available && a.authStatus === 'missing')) process.exit(4);
+}
+
 async function runDesignSystems(args) {
   if (args[0] === 'rename') return runDesignSystemRename(args.slice(1));
   if (args[0] === 'import-figma') return runDesignSystemImportFigma(args.slice(1));
@@ -5999,7 +6079,11 @@ async function runSandbox(args) {
         );
         return;
       }
-      for (const a of data.accounts) console.log(`${a.active ? '* ' : '  '}${a.label}`);
+      for (const a of data.accounts) {
+        const who = a.identity?.emailAddress ? ` — ${a.identity.emailAddress}` : '';
+        const plan = a.identity?.organizationType ? ` [${a.identity.organizationType}]` : '';
+        console.log(`${a.active ? '* ' : '  '}${a.label}${who}${plan}${a.auto ? ' (tự lưu)' : ''}`);
+      }
       if (data.activeUnsaved) console.log('  (login hiện tại chưa được lưu — od sandbox account save <label>)');
     };
     if (action === 'list') {
@@ -6849,13 +6933,18 @@ Common options:
 }
 
 function printPipelineHelp() {
-  console.log(`Usage: od pipeline <projects|list|run|run-all|feedback|target-ds|upload|pull|build|demo|figma-capture|figma-audit|history|restore> [options]
+  console.log(`Usage: od pipeline <new|apps|projects|list|run|run-all|feedback|target-ds|upload|pull|build|demo|figma-capture|figma-audit|history|restore> [options]
 
-Dự án khai sinh ở Pipeline Studio (kèm link Confluence + design system + phân
-quyền); kéo về máy bằng \`od kg pull-all\` rồi chạy pipeline tại đây.
+Dự án tạo cục bộ ngay tại đây (kind: pipeline) HOẶC pull về từ Pipeline Studio
+(\`od kg pull-all\`) — cả hai chạy pipeline giống nhau tại đây; Push mới chọn
+đích (ghi đè project studio đã có, hoặc qua staging/approval).
 
 Commands:
-  projects             List the KGS apps available for pipelines (pulled via od kg pull).
+  new <projectId>      Create a NEW pipeline project locally (projectId IS the KGS
+                       project_id). [--name "<name>"] [--app <appId>] [--app-name "<name>"]
+  apps                 List the App containers (local + remote) a new feature can be
+                       grouped under.
+  projects             List the KGS apps available for pipelines (created here or pulled via od kg pull).
   list                 List the docs→UI pipelines for a KGS project (status + gating).
   run <pipelineId>     Run one pipeline — seeds a conversation with its skill active.
                        Source for pipeline 1 (docs), one of:
@@ -6888,6 +6977,9 @@ Commands:
                          --lean                               chỉ docs → UX Spec → UI (bỏ cj,
                                                               ux-research, ux-review) — riêng
                                                               docs-to-ui; workflow khác bỏ qua cờ này
+                         --docs-from-upload                   tài liệu đã nạp tay vào
+                                                              <workflow>/docs/ → BỎ bước ingest khỏi
+                                                              chuỗi (chạy nó sẽ xóa đúng file đó)
   target-ds            Gán design system cho MỘT target (multi-target): --target <id>
                        --design-system <dsId|none>. Ghi targets.json.designSystemByTarget;
                        panel "Gán component" của preview ux-spec dùng DS này.
@@ -7076,12 +7168,53 @@ async function runPipeline(args) {
   }
 
   if (sub === 'new' || sub === 'create') {
-    // Dự án giờ khai sinh ở Pipeline Studio (kèm link Confluence + design
-    // system + phân quyền) — open-design chỉ pull về làm.
-    console.error(
-      'od pipeline new đã bị gỡ: tạo dự án trên Pipeline Studio (nút "Dự án mới"), rồi `od kg pull-all` để kéo về.',
-    );
-    process.exit(2);
+    const id = positional[0];
+    if (!id) {
+      console.error('Usage: od pipeline new <projectId> [--name "<name>"] [--app <appId>] [--app-name "<name>"]   (projectId IS the KGS project_id)');
+      process.exit(2);
+    }
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/projects`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          projectId: id,
+          name: flags.name || id,
+          ...(flags.app ? { appId: flags.app } : {}),
+          ...(flags['app-name'] ? { appName: flags['app-name'] } : {}),
+        }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Created pipeline project "${data.id ?? id}".`);
+    return;
+  }
+
+  if (sub === 'apps') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/apps`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    const list = data.apps ?? [];
+    if (list.length === 0) {
+      console.log('No apps yet. Create a project with an app: od pipeline new <id> --app <appId> --app-name "<name>".');
+      return;
+    }
+    console.log('# id\tname\torigin');
+    for (const a of list) console.log([a.id, a.name ?? '', a.origin].join('\t'));
+    return;
   }
 
   const projectId = flags.project || process.env.OD_PROJECT_ID;
@@ -7309,6 +7442,11 @@ async function runPipeline(args) {
           ...(flags['lean'] ? { lean: true } : {}),
           ...(flags['no-follow-links'] ? { followLinks: false } : {}),
           ...(flags['all-pages'] || flags['include-descendants'] ? { includeDescendants: true } : {}),
+          // Docs already uploaded by hand (`od files upload`, or the Run-all
+          // modal's upload branch): drop the ingest stage from the chain rather
+          // than let it clear <workflow>/docs/ — its own declared output — and
+          // then fetch nothing.
+          ...(flags['docs-from-upload'] ? { docsFromUpload: true } : {}),
         }),
       });
     } catch (err) {

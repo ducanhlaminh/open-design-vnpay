@@ -2398,12 +2398,23 @@ export function SettingsDialog({
                                   </div>
                                   <div className="agent-card-meta">
                                     {a.authStatus === 'missing' ? (
-                                      <span title={a.authMessage ?? a.path ?? ''}>
+                                      <span
+                                        className="agent-card-auth-missing"
+                                        title={a.authMessage ?? a.path ?? ''}
+                                      >
                                         {t('settings.agentAuthRequired')}
                                       </span>
                                     ) : a.authStatus === 'unknown' ? (
                                       <span title={a.authMessage ?? a.path ?? ''}>
                                         {t('settings.agentAuthUnknown')}
+                                      </span>
+                                    ) : a.authStatus === 'ok' ? (
+                                      <span
+                                        className="agent-card-auth-ok"
+                                        title={a.authMessage ?? a.path ?? ''}
+                                      >
+                                        {t('settings.agentAuthOk')}
+                                        {versionLabel ? ` · ${versionLabel}` : ''}
                                       </span>
                                     ) : versionLabel ? (
                                       <span title={a.path ?? ''}>

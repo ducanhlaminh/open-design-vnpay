@@ -41,7 +41,20 @@ export type Route =
   // Full-page "Quick result" for a pipeline stage. Replaces the old xl modal
   // so a finished stage's output preview gets the whole viewport. Rendered by
   // PipelinesView (which owns the loaded pipeline list) under the pipelines shell.
-  | { kind: 'pipeline-result'; projectId: string; pipelineId: string };
+  | { kind: 'pipeline-result'; projectId: string; pipelineId: string }
+  // Pipelines drill-down: App → Feature → Pipeline → Chạy. Mỗi cấp một màn,
+  // một việc. Cấp đang xem sống trong URL (không phải useState) nên F5 không
+  // mất chỗ và link dán được cho đồng nghiệp.
+  //
+  // Segment literal `app/` tách hẳn nhánh này khỏi route Quick result cũ
+  // (`/pipelines/:projectId/result/:pipelineId`) — thông báo và link cũ vẫn
+  // phải mở được, nên nhánh đó được kiểm TRƯỚC trong parseRoute.
+  | { kind: 'pipelines-app'; appId: string }
+  | { kind: 'pipelines-feature'; appId: string; featureId: string }
+  | { kind: 'pipelines-run'; appId: string; featureId: string; pipelineId: string };
+
+/** Rổ chứa feature chưa gắn app nào (mirror pipeline-studio's bucket id). */
+export const UNASSIGNED_APP = '__unassigned';
 
 export function parseRoute(pathname: string): Route {
   const parts = pathname.replace(/\/+$/, '').split('/').filter(Boolean);
@@ -92,12 +105,31 @@ export function parseRoute(pathname: string): Route {
   }
   if (parts[0] === 'pipelines') {
     // /pipelines/:projectId/result/:pipelineId → full-page Quick result.
+    // Kiểm TRƯỚC nhánh drill-down: link cũ trong thông báo phải mở được, kể cả
+    // khi một dự án tình cờ tên là "app".
     if (parts[1] && parts[2] === 'result' && parts[3]) {
       return {
         kind: 'pipeline-result',
         projectId: decodeURIComponent(parts[1]),
         pipelineId: decodeURIComponent(parts[3]),
       };
+    }
+    // /pipelines/app/:appId[/:featureId[/:pipelineId]] → drill-down.
+    if (parts[1] === 'app' && parts[2]) {
+      const appId = decodeURIComponent(parts[2]);
+      if (parts[3]) {
+        const featureId = decodeURIComponent(parts[3]);
+        if (parts[4]) {
+          return {
+            kind: 'pipelines-run',
+            appId,
+            featureId,
+            pipelineId: decodeURIComponent(parts[4]),
+          };
+        }
+        return { kind: 'pipelines-feature', appId, featureId };
+      }
+      return { kind: 'pipelines-app', appId };
     }
     return { kind: 'home', view: 'pipelines' };
   }
@@ -134,6 +166,18 @@ export function buildPath(route: Route): string {
   }
   if (route.kind === 'pipeline-result') {
     return `/pipelines/${encodeURIComponent(route.projectId)}/result/${encodeURIComponent(route.pipelineId)}`;
+  }
+  if (route.kind === 'pipelines-app') {
+    return `/pipelines/app/${encodeURIComponent(route.appId)}`;
+  }
+  if (route.kind === 'pipelines-feature') {
+    return `/pipelines/app/${encodeURIComponent(route.appId)}/${encodeURIComponent(route.featureId)}`;
+  }
+  if (route.kind === 'pipelines-run') {
+    return (
+      `/pipelines/app/${encodeURIComponent(route.appId)}` +
+      `/${encodeURIComponent(route.featureId)}/${encodeURIComponent(route.pipelineId)}`
+    );
   }
   if (route.kind === 'marketplace') return '/marketplace';
   if (route.kind === 'marketplace-detail') return `/marketplace/${encodeURIComponent(route.pluginId)}`;

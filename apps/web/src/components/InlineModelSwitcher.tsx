@@ -14,6 +14,7 @@ import { KNOWN_PROVIDERS } from '../state/config';
 import type { AgentInfo, ApiProtocol, AppConfig, ExecMode } from '../types';
 import { apiProtocolLabel } from '../utils/apiProtocol';
 import { AgentIcon } from './AgentIcon';
+import { ClaudeUsagePanel } from './ClaudeUsagePanel';
 import { Icon } from './Icon';
 import { renderModelOptions } from './modelOptions';
 
@@ -244,6 +245,10 @@ export function InlineModelSwitcher({
                   >
                     {installedAgents.map((a) => {
                       const active = config.agentId === a.id;
+                      // An installed-but-signed-out CLI fails at run time with
+                      // an opaque error, so flag it here — where the CLI is
+                      // picked — instead of only in Settings.
+                      const signedOut = a.authStatus === 'missing';
                       return (
                         <button
                           key={a.id}
@@ -252,16 +257,31 @@ export function InlineModelSwitcher({
                           aria-checked={active}
                           className={
                             'inline-switcher__agent' +
-                            (active ? ' is-active' : '')
+                            (active ? ' is-active' : '') +
+                            (signedOut ? ' is-signed-out' : '')
                           }
                           data-testid={`inline-model-switcher-agent-${a.id}`}
                           onClick={() => onAgentChange?.(a.id)}
-                          title={a.version ? `${a.name} · ${a.version}` : a.name}
+                          title={
+                            signedOut
+                              ? (a.authMessage ?? t('settings.agentAuthRequired'))
+                              : a.version
+                                ? `${a.name} · ${a.version}`
+                                : a.name
+                          }
                         >
                           <AgentIcon id={a.id} size={20} />
                           <span className="inline-switcher__agent-name">
                             {a.name}
                           </span>
+                          {signedOut ? (
+                            <span
+                              className="inline-switcher__agent-warn"
+                              aria-label={t('settings.agentAuthRequired')}
+                            >
+                              !
+                            </span>
+                          ) : null}
                         </button>
                       );
                     })}
@@ -296,6 +316,11 @@ export function InlineModelSwitcher({
                   </select>
                 </div>
               ) : null}
+
+              {/* Quota is a Claude-account concept, so it only shows when Claude
+                  is the selected CLI. Mounted only while this popover is open,
+                  which is what makes the read lazy. */}
+              {currentAgent?.id === 'claude' ? <ClaudeUsagePanel /> : null}
             </>
           ) : (
             <>

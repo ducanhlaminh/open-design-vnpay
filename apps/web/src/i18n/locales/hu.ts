@@ -225,6 +225,7 @@ export const hu: Dict = {
   'settings.agentInstallGroup': 'Telepíthető ({count})',
   'settings.agentAuthRequired': 'Hitelesítés szükséges',
   'settings.agentAuthUnknown': 'A hitelesítési állapot ismeretlen',
+  'settings.agentAuthOk': 'Bejelentkezve',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'Szolgáltató gyors kitöltése',
   'settings.customProvider': 'Egyéni szolgáltató',

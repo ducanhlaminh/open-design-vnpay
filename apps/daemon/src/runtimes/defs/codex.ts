@@ -1,3 +1,4 @@
+import { agentCapabilities } from '../capabilities.js';
 import { DEFAULT_MODEL_OPTION, clampCodexReasoning } from './shared.js';
 import type { RuntimeModelOption } from '../types.js';
 import type { RuntimeAgentDef } from '../types.js';
@@ -49,6 +50,18 @@ export const codexAgentDef = {
     name: 'Codex CLI',
     bin: 'codex',
     versionArgs: ['--version'],
+    // The MCP-profile flag lives under the `exec` subcommand, so probe
+    // `codex exec --help` rather than global help. Older CLIs spell it
+    // `--profile-v2`; current ones spell it `--profile` and reject the old
+    // name outright. Both substrings are probed because `--profile` is a
+    // prefix of `--profile-v2` — on an old CLI BOTH match, and buildArgs
+    // resolves that ambiguity by preferring `--profile-v2` only when the
+    // bare `--profile` spelling is absent.
+    helpArgs: ['exec', '--help'],
+    capabilityFlags: {
+      '--profile-v2 ': 'profileFlagIsV2',
+      '--profile <': 'profileFlag',
+    },
     // Codex exposes its installed model catalog through `debug models` on
     // recent CLIs. Older builds fall back to these static hints.
     listModels: {
@@ -140,8 +153,18 @@ export const codexAgentDef = {
       // `$CODEX_HOME/<name>.config.toml` BEFORE buildArgs is called
       // (see the `codex-profile-v2` dispatch branch in server.ts) and
       // surfaces the profile name through runtimeContext.
+      //
+      // The flag was renamed `--profile-v2` -> `--profile` (the argument is
+      // still a profile-v2 name: `-p, --profile <CONFIG_PROFILE_V2>`). Passing
+      // the wrong one is fatal — Codex rejects the unknown argument and exits
+      // 2 before reading the prompt — so the spelling is chosen from the
+      // probed `--help` text rather than assumed.
       if (runtimeContext.codexProfileName) {
-        args.push('--profile-v2', runtimeContext.codexProfileName);
+        const caps = agentCapabilities.get('codex') || {};
+        args.push(
+          caps.profileFlagIsV2 && !caps.profileFlag ? '--profile-v2' : '--profile',
+          runtimeContext.codexProfileName,
+        );
       }
       const dirs = (extraAllowedDirs || []).filter(
         (d) => typeof d === 'string' && d.length > 0,

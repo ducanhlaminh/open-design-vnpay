@@ -29,6 +29,8 @@ import {
   projectIdFromWorkspace,
 } from './kg-sync/remote-registry.js';
 import { pullScopeFor } from './kg-sync/identity-registry.js';
+import { planPush } from './kg-sync/push-plan.js';
+import { StagingBlockedError } from './kg-sync/push-dest.js';
 import { resolveAppId } from './app-context.js';
 import { WORKFLOWS } from './pipelines.js';
 import { listProjects } from './db.js';
@@ -225,23 +227,40 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
         .filter((p: { metadata?: unknown }) => isKgsProject(p))
         .filter((p: { id: string }) => !requested || requested.has(p.id));
       const results = [];
+      const media = new MediaClient(mediaConfigFromEnv());
       for (const p of projects as Array<{ id: string; name?: string }>) {
         try {
-          // Ensure the project's DP_UI_WORKSPACE node exists so another device's
-          // pull-all (which discovers projects by enumerating DP_UI_WORKSPACE) can
-          // find it. A locally-created project has no workspace node until now.
           // Owner attribution = the machine's last Google login (may be null).
           const machine = getMachineUser();
           const owner = machine && !machine.sub.startsWith('google:')
             ? { id: machine.sub, email: machine.email, name: machine.name }
             : null;
-          let workspace: 'created' | 'exists' | 'error' = 'exists';
-          try {
-            workspace = await client.ensureWorkspace(p.id, p.name ?? p.id, owner);
-          } catch {
-            workspace = 'error';
+          // Resolve the destination ONCE per project and hand the same plan to
+          // uploadFiles — the route and the upload core must not decide
+          // independently, or a re-resolve between them could send the graph to
+          // the real project while the files go to a staging folder.
+          const plan = await planPush({ db, projectId: p.id, kgs: client, media, submitter: owner });
+          // A project that isn't on the studio yet goes through approval: its
+          // files land in a `pending--…` folder and NOTHING is written to KGS.
+          // Skipping the graph push here is the route-level half of that rule —
+          // pushProject would otherwise write rows under an id that can never
+          // be renamed (KGS has no node-update API). Both halves run again, for
+          // real, on the first push after approval.
+          let workspace: 'created' | 'exists' | 'error' | 'staged' = 'exists';
+          let r = { nodesPushed: 0, edgesPushed: 0, status: 'ok' as string };
+          if (plan.staged) {
+            workspace = 'staged';
+          } else {
+            // Ensure the project's DP_UI_WORKSPACE node exists so another device's
+            // pull-all (which discovers projects by enumerating DP_UI_WORKSPACE) can
+            // find it. A locally-created project has no workspace node until now.
+            try {
+              workspace = await client.ensureWorkspace(plan.destId, p.name ?? p.id, owner);
+            } catch {
+              workspace = 'error';
+            }
+            r = await pushProject(db, p.id, cfg, Date.now(), randomId());
           }
-          const r = await pushProject(db, p.id, cfg, Date.now(), randomId());
           // Also upload the project's current output files to the KGS file store
           // (and B2-convert convertToGraph stages), so push-all sends graph +
           // files. Best-effort: a file-upload failure must not fail the
@@ -250,7 +269,7 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
           let filesConverted = 0;
           let filesError: string | undefined;
           try {
-            const u = await pipelines.uploadFiles(p.id, stages);
+            const u = await pipelines.uploadFiles(p.id, stages, plan);
             filesUploaded = u.uploaded;
             filesConverted = u.converted;
           } catch (err) {
@@ -264,10 +283,21 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
             filesUploaded,
             filesConverted,
             status: r.status,
+            staged: plan.staged,
+            ...(plan.staged ? { pendingId: plan.destId, case: plan.case } : {}),
+            ...(plan.reconciled ? { reconciled: plan.reconciled } : {}),
             ...(filesError ? { filesError } : {}),
           });
         } catch (err) {
-          results.push({ projectId: p.id, status: 'error', error: (err as Error).message });
+          // STAGING_NO_SUBMITTER is a user-actionable precondition (log in
+          // first), not a transport failure — carry the code so the UI can say
+          // so instead of showing a raw stack-shaped message.
+          results.push({
+            projectId: p.id,
+            status: 'error',
+            error: (err as Error).message,
+            ...(err instanceof StagingBlockedError ? { code: err.code } : {}),
+          });
         }
       }
       res.json({ ok: true, data: { pushed: results.length, results } });

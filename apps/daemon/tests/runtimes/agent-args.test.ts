@@ -1,4 +1,5 @@
 import { test } from 'vitest';
+import { agentCapabilities } from '../../src/runtimes/capabilities.js';
 import {
   aider, assert, claude, codex, copilot, cursorAgent, deepseek, devin, detectAgents, gemini, join, kilo, kiro, mkdtempSync, opencode, pi, qoder, qwen, rmSync, spawnEnvForAgent, tmpdir, vibe, writeFileSync, chmodSync,
 } from './helpers/test-helpers.js';
@@ -727,4 +728,48 @@ test('promptInputFormat is a string property (or undefined) on every promptViaSt
       `${name}.promptInputFormat must equal ${JSON.stringify(expected)}`,
     );
   }
+});
+
+// The MCP-profile flag was renamed `--profile-v2` -> `--profile` in the Codex
+// CLI (0.146.x rejects the old spelling outright: "error: unexpected argument
+// '--profile-v2' found", exit 2 before the prompt is ever read). buildArgs
+// therefore picks the spelling from the probed `codex exec --help` text
+// instead of hardcoding one. `--profile` is a PREFIX of `--profile-v2`, so on
+// an old CLI both substrings match — the old spelling wins only when the bare
+// `--profile <` form is absent.
+test('codex buildArgs picks the MCP profile flag the installed CLI advertises', () => {
+  const argsFor = (caps: Record<string, boolean>): string[] => {
+    agentCapabilities.set('codex', caps);
+    try {
+      return codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project', codexProfileName: 'od-injected' });
+    } finally {
+      agentCapabilities.delete('codex');
+    }
+  };
+
+  // Current CLI: only the bare `--profile <` form is in help.
+  assert.deepEqual(
+    argsFor({ profileFlag: true, profileFlagIsV2: false }).slice(-2),
+    ['--profile', 'od-injected'],
+  );
+
+  // Legacy CLI: help spells it `--profile-v2 ` (and `--profile` matches only
+  // as its prefix, so both probe hits are true).
+  assert.deepEqual(
+    argsFor({ profileFlag: false, profileFlagIsV2: true }).slice(-2),
+    ['--profile-v2', 'od-injected'],
+  );
+
+  // `--help` failed / never probed: fall back to the spelling current CLIs
+  // accept rather than the one they hard-reject.
+  assert.deepEqual(argsFor({}).slice(-2), ['--profile', 'od-injected']);
+});
+
+test('codex buildArgs passes no profile flag when no MCP profile was written', () => {
+  const args = codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project' });
+  assert.equal(
+    args.some((a) => typeof a === 'string' && a.startsWith('--profile')),
+    false,
+    'a run with no enabled MCP servers must not reference a profile file that was never written',
+  );
 });

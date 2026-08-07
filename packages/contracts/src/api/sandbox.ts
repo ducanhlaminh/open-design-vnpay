@@ -47,11 +47,48 @@ export interface SandboxStatusResponse {
  *  filesystem-safe (no spaces/slashes) since the label IS the stored filename. */
 export const SANDBOX_ACCOUNT_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
 
+/**
+ * Turn a Claude account email into a label satisfying SANDBOX_ACCOUNT_LABEL_RE,
+ * so a login can be saved without asking the user to invent a name.
+ *
+ * The label becomes a FILENAME that the daemon interpolates into a shell
+ * command, so this must never widen what the regex allows: everything outside
+ * `[A-Za-z0-9_-]` collapses to `-`, and the caller still validates the result.
+ * Returns null when nothing usable survives (e.g. an all-symbol local part) —
+ * callers then fall back to asking the user.
+ */
+export function sandboxAccountLabelFromEmail(email: string): string | null {
+  const localPart = String(email || '').split('@')[0] ?? '';
+  const slug = localPart
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
+    .slice(0, 40);
+  // The regex additionally demands an alphanumeric FIRST character.
+  const label = slug.replace(/^[^A-Za-z0-9]+/, '');
+  return label && SANDBOX_ACCOUNT_LABEL_RE.test(label) ? label : null;
+}
+
+/** Who a saved login belongs to, read from the volume's `.claude.json`. */
+export interface SandboxAccountIdentity {
+  /** Stable per-account id — the dedup key, since tokens change every login. */
+  accountUuid: string;
+  emailAddress: string;
+  /** e.g. "claude_max" — shown next to the account so plans are tellable apart. */
+  organizationType?: string | null;
+}
+
 export interface SandboxAccount {
-  /** User-chosen label, e.g. "Personal" / "Work". */
+  /** Label, e.g. "Personal" / "Work"; auto-derived from the email when saved
+   *  automatically on login. */
   label: string;
   /** True when this account's saved credentials match the active ones. */
   active: boolean;
+  /** Identity recorded when the account was saved; absent for accounts saved
+   *  before auto-save existed (label-only). */
+  identity?: SandboxAccountIdentity | null;
+  /** True when this entry was added automatically on login detection. */
+  auto?: boolean;
 }
 
 export interface SandboxAccountsResponse {

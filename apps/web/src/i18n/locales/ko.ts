@@ -225,6 +225,7 @@ export const ko: Dict = {
   'settings.agentInstallGroup': '설치 가능 ({count})',
   'settings.agentAuthRequired': '인증 필요',
   'settings.agentAuthUnknown': '인증 상태를 알 수 없음',
+  'settings.agentAuthOk': '로그인됨',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': '제공자 빠른 입력',
   'settings.customProvider': '사용자 지정 제공자',

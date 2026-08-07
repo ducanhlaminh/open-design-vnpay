@@ -225,6 +225,7 @@ export const esES: Dict = {
   'settings.agentInstallGroup': 'Disponibles para instalar ({count})',
   'settings.agentAuthRequired': 'Autenticación requerida',
   'settings.agentAuthUnknown': 'Estado de autenticación desconocido',
+  'settings.agentAuthOk': 'Sesión iniciada',
   'settings.apiSection': 'API de Anthropic',
   'settings.quickFillProvider': 'Rellenar proveedor',
   'settings.customProvider': 'Proveedor personalizado',

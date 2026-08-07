@@ -36,6 +36,8 @@ export function EmbeddedClaudeLogin({ onSuccess, startLabel }: Props): JSX.Eleme
       setStatus(next);
       if (next.phase === 'done' && !successFired.current) {
         successFired.current = true;
+        // No quota nudge needed: the usage panel lives in the Local CLI
+        // dropdown and reads on open, so the next open already sees this login.
         onSuccess();
       }
     },

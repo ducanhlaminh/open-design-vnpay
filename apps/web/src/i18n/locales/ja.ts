@@ -225,6 +225,7 @@ export const ja: Dict = {
   'settings.agentInstallGroup': 'インストール可能（{count}）',
   'settings.agentAuthRequired': '認証が必要です',
   'settings.agentAuthUnknown': '認証状態は不明です',
+  'settings.agentAuthOk': 'ログイン済み',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'プロバイダーをクイック入力',
   'settings.customProvider': 'カスタムプロバイダー',

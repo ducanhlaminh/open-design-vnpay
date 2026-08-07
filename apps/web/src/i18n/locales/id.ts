@@ -225,6 +225,7 @@ export const id: Dict = {
   'settings.agentInstallGroup': 'Tersedia untuk dipasang ({count})',
   'settings.agentAuthRequired': 'Autentikasi diperlukan',
   'settings.agentAuthUnknown': 'Status autentikasi tidak diketahui',
+  'settings.agentAuthOk': 'Sudah masuk',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'Provider isi cepat',
   'settings.customProvider': 'Provider kustom',

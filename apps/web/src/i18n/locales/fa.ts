@@ -225,6 +225,7 @@ export const fa: Dict = {
   'settings.agentInstallGroup': 'آماده نصب ({count})',
   'settings.agentAuthRequired': 'احراز هویت لازم است',
   'settings.agentAuthUnknown': 'وضعیت احراز هویت نامشخص است',
+  'settings.agentAuthOk': 'وارد شده‌اید',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'پر کردن سریع ارائه‌دهنده',
   'settings.customProvider': 'ارائه‌دهنده سفارشی',

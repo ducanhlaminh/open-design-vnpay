@@ -20,7 +20,10 @@ import {
   mergePipelineState,
   pickRunTarget,
   relClearedByRegen,
+  missingDependencies,
+  selectRunStages,
   stagesForOutput,
+  validateRunStageSelection,
   workflowDirForPipeline,
 } from '../src/pipelines.js';
 
@@ -75,6 +78,80 @@ test('docs-to-prd: fully independent of docs-to-ui — its own docs/cj/ux-resear
   // And docs-to-ui's own ids are untouched, still resolving to docs-to-ui.
   assert.equal(workflowDirForPipeline('docs'), 'docs-to-ui');
   assert.equal(workflowDirForPipeline('ux-research'), 'docs-to-ui');
+});
+
+test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -> dr-comp -> dr-flow -> dr-review, docs-to-ui stays WORKFLOWS[0]', () => {
+  // docs-to-ui must remain the default workflow — appending docs-review must
+  // not disturb WORKFLOWS[0] or DEFAULT_WORKFLOW_ID.
+  assert.equal(WORKFLOWS[0]!.id, 'docs-to-ui');
+  const wf = WORKFLOWS.find((w) => w.id === 'docs-review');
+  assert.ok(wf, 'docs-review workflow should exist');
+  assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review']);
+  assert.equal(def('dr-docs').skillId, 'jira-ingest');
+  assert.equal(def('dr-comp').skillId, 'docs-component-audit');
+  assert.equal(def('dr-review').skillId, 'docs-spec-review');
+  assert.equal(def('dr-flow').skillId, 'docs-flow-extract');
+  assert.deepEqual(def('dr-docs').dependsOn, []);
+  // dr-comp đọc bản GỐC nên chỉ cần dr-docs; dr-review phải chờ CẢ HAI vì nhóm
+  // `component` của nó giờ là đọc lại kết quả dr-comp chứ không tự suy.
+  assert.deepEqual(def('dr-comp').dependsOn, ['dr-docs']);
+  assert.deepEqual(def('dr-flow').dependsOn, ['dr-docs']);
+  // Review là bước CHỐT cuối — chờ đủ cả comp lẫn flow.
+  assert.deepEqual(def('dr-review').dependsOn, ['dr-docs', 'dr-comp', 'dr-flow']);
+  assert.deepEqual(def('dr-docs').outputs, ['docs/']);
+  // comp/ nằm ở gốc workflow-dir, KHÔNG lồng trong review/ — cùng lý do như
+  // flows/: lồng vào đó thì re-run dr-review xoá mất, và stagesForOutput chấm
+  // hai stage cho cùng một file.
+  assert.deepEqual(def('dr-comp').outputs, ['comp/']);
+  assert.deepEqual(def('dr-review').outputs, ['review/']);
+  // flows/ sits at the workflow-dir root, NOT under review/ — see
+  // tests/docs-flow-stage.test.ts for why that placement is load-bearing.
+  assert.deepEqual(def('dr-flow').outputs, ['flows/']);
+  // Each id resolves to docs-review's OWN folder namespace.
+  assert.equal(workflowDirForPipeline('dr-docs'), 'docs-review');
+  assert.equal(workflowDirForPipeline('dr-comp'), 'docs-review');
+  assert.equal(workflowDirForPipeline('dr-review'), 'docs-review');
+  assert.equal(workflowDirForPipeline('dr-flow'), 'docs-review');
+  // And the other two workflows' own ids are untouched.
+  assert.equal(workflowDirForPipeline('docs'), 'docs-to-ui');
+  assert.equal(workflowDirForPipeline('prd-docs'), 'docs-to-prd');
+});
+
+test('dr-docs accepts a manual file upload (acceptsUpload), and the flag reaches clients through listPipelineStatus', () => {
+  // dr-docs is the only stage that lets a user drop in a doc / criteria file
+  // directly from the UI — everything else only ever gets input from a run.
+  assert.equal(getPipelineDef('dr-docs')?.acceptsUpload, true);
+  assert.equal(getPipelineDef('dr-comp')?.acceptsUpload, undefined);
+  assert.equal(getPipelineDef('dr-review')?.acceptsUpload, undefined);
+  assert.equal(getPipelineDef('dr-flow')?.acceptsUpload, undefined);
+  assert.equal(getPipelineDef('docs')?.acceptsUpload, undefined);
+  // …and the flag reaches clients through the pipeline view list, same as
+  // acceptsDesignSystem / acceptsPlatform.
+  const views = listPipelineStatus({}, ['dr-docs', 'dr-review', 'dr-flow']);
+  assert.equal(viewOf(views, 'dr-docs').acceptsUpload, true);
+  assert.equal(viewOf(views, 'dr-review').acceptsUpload, undefined);
+  assert.equal(viewOf(views, 'dr-flow').acceptsUpload, undefined);
+});
+
+test('docs-review attribution: review/docs clone belongs only to dr-review, docs/ belongs only to dr-docs, criteria/ belongs to no stage and never gets cleared by a re-run', () => {
+  // 'docs-review/review/docs/confluence/x.md' → dr-review ONLY (outputs 'review/').
+  assert.deepEqual(
+    stagesForOutput('docs-review/review/docs/confluence/x.md').map((d) => d.id),
+    ['dr-review'],
+  );
+  // 'docs-review/docs/confluence/x.md' → dr-docs ONLY (outputs 'docs/').
+  assert.deepEqual(
+    stagesForOutput('docs-review/docs/confluence/x.md').map((d) => d.id),
+    ['dr-docs'],
+  );
+  // 'docs-review/criteria/rules.md' matches NO stage's declared outputs.
+  assert.deepEqual(stagesForOutput('docs-review/criteria/rules.md'), []);
+  // …so a re-run of dr-review never clears it, even though it lives in the
+  // same project cwd the fan-out otherwise sweeps.
+  assert.equal(
+    relClearedByRegen('docs-review/criteria/rules.md', new Set(['dr-review']), 'docs-review'),
+    false,
+  );
 });
 
 test('the ux-review gate sits between ux and the terminals (Gate 1: heuristic review)', () => {
@@ -284,12 +361,13 @@ test('stagesForOutput: RETIRED workflow folders keep lighting the merged stages 
 test('stagesForOutput: unprefixed legacy paths still match (back-compat)', () => {
   // Files produced before per-workflow folders existed have no prefix; they
   // must still derive status so old projects don't break. An unprefixed path
-  // is ambiguous between docs-to-ui's `docs` and docs-to-prd's `prd-docs`
-  // (same relative output pattern, independent workflows) — but no legacy
-  // unprefixed file can actually be a docs-to-prd one (that workflow was
-  // introduced after per-workflow folders already existed), and
-  // stageForOutput's first-match still resolves to `docs` (declared first).
-  assert.deepEqual(stagesForOutput('docs/confluence/x.md').map((d) => d.id), ['docs', 'prd-docs']);
+  // is ambiguous between docs-to-ui's `docs`, docs-to-prd's `prd-docs`, and
+  // docs-review's `dr-docs` (same relative output pattern, independent
+  // workflows) — but no legacy unprefixed file can actually be a
+  // docs-to-prd/docs-review one (both workflows were introduced after
+  // per-workflow folders already existed), and stageForOutput's first-match
+  // still resolves to `docs` (declared first).
+  assert.deepEqual(stagesForOutput('docs/confluence/x.md').map((d) => d.id), ['docs', 'prd-docs', 'dr-docs']);
 });
 
 test('ui-html prototype output round-trips cross-device (not localOnly)', () => {
@@ -705,4 +783,200 @@ test('pickRunTarget: single-stage target resolution rules', () => {
   assert.equal(pickRunTarget(['mobile', 'web-user'], 'web-user'), 'web-user');
   // A target outside the configured set is rejected.
   assert.throws(() => pickRunTarget(['mobile'], 'web-user'), /không nằm trong/);
+});
+
+// ── Workflow.stages regression ──────────────────────────────────────────────
+// The web stage picker (apps/web/src/components/pipelines/PipelineModals.tsx)
+// used to hand-mirror PIPELINE_DEFS' names into a static
+// PIPELINE_STAGE_NAMES map, which could silently rot the moment this registry
+// changed. `Workflow.stages` replaces it — this test is the regression that
+// keeps the two lists from drifting apart again: every workflow must expose a
+// name for EVERY one of its pipelineIds, in the same order.
+test('every workflow exposes a Workflow.stages entry (id + name) for every pipelineId, in order', () => {
+  for (const wf of WORKFLOWS) {
+    assert.ok(wf.stages, `workflow ${wf.id} should carry a stages list`);
+    assert.deepEqual(
+      wf.stages!.map((s) => s.id),
+      wf.pipelineIds,
+      `workflow ${wf.id}: stages ids must match pipelineIds, in order`,
+    );
+    for (const s of wf.stages!) {
+      const registryName = def(s.id).name;
+      assert.equal(s.name, registryName, `workflow ${wf.id} stage ${s.id}: name must come from PIPELINE_DEFS`);
+      assert.ok(s.name && s.name.length > 0, `workflow ${wf.id} stage ${s.id} should have a non-empty name`);
+    }
+  }
+});
+
+// ── Chọn BƯỚC để chạy (`stageIds`) ──────────────────────────────────────────
+// Người dùng tick tay từng bước trong panel cấu hình. Đây là phạm vi được NÊU
+// THẲNG, khác hẳn `lean`/`skipSucceeded` vốn là hai cách SUY RA phạm vi — nên
+// khi có nó, hai cái kia không được nói thêm câu nào.
+//
+// Rủi ro chính mà bộ test này canh: run-all gọi thẳng runPipeline và KHÔNG hỏi
+// gating (chú thích trong runWorkflowAll, server.ts), nên một lựa chọn thiếu
+// phụ thuộc KHÔNG bị chặn ở tầng chạy — nó chạy thật với input rỗng và cho ra
+// rác trông như thành công. `missingDependencies` là chỗ duy nhất chặn được.
+
+const UI_IDS = WORKFLOWS[0]!.pipelineIds;
+
+function succeededState(...ids: string[]): ProjectPipelineState {
+  return Object.fromEntries(ids.map((id) => [id, { status: 'succeeded' as const }]));
+}
+
+test('stageIds: chạy đúng các bước được tick, theo THỨ TỰ WORKFLOW chứ không theo thứ tự gửi', () => {
+  // Người dùng tick lộn xộn (ui-html trước docs) — chuỗi run-all chạy tuần tự,
+  // nên giữ thứ tự gửi sẽ cho bước sau chạy trước input của nó.
+  assert.deepEqual(
+    selectRunStages(UI_IDS, { stageIds: ['ui-html', 'ux', 'docs'] }),
+    ['docs', 'ux', 'ui-html'],
+  );
+  // Trùng lặp / thứ tự đảo không đổi kết quả.
+  assert.deepEqual(
+    selectRunStages(UI_IDS, { stageIds: ['ux-review', 'docs-map', 'ux-review'] }),
+    ['docs-map', 'ux-review'],
+  );
+});
+
+test('stageIds THẮNG lean: bước lean-skipped vẫn chạy khi được tick', () => {
+  // `cj` và `ux-research` đều là skippedInLeanRun — lean một mình sẽ bỏ chúng.
+  assert.deepEqual(
+    selectRunStages(UI_IDS, { lean: true }),
+    ['docs', 'docs-map', 'ux', 'ui-html', 'ui-react', 'ui-react-ds'],
+  );
+  // Tick tay đúng hai bước đó + lean bật → vẫn chạy cả hai.
+  assert.deepEqual(
+    selectRunStages(UI_IDS, { stageIds: ['cj', 'ux-research'], lean: true }),
+    ['cj', 'ux-research'],
+  );
+});
+
+test('stageIds THẮNG skipSucceeded: tick lại một bước đã xong nghĩa là muốn CHẠY LẠI nó', () => {
+  const state = succeededState('docs', 'docs-map', 'cj');
+  // skipSucceeded một mình bỏ ba bước đã xong…
+  assert.deepEqual(
+    selectRunStages(['docs', 'docs-map', 'cj', 'ux-research'], { skipSucceeded: true, state }),
+    ['ux-research'],
+  );
+  // …nhưng khi người dùng tự tick, lựa chọn tường minh của họ thắng.
+  assert.deepEqual(
+    selectRunStages(UI_IDS, { stageIds: ['docs', 'cj'], skipSucceeded: true, state }),
+    ['docs', 'cj'],
+  );
+  // Cả hai cờ cùng bật cũng không nói thêm được gì.
+  assert.deepEqual(
+    selectRunStages(UI_IDS, { stageIds: ['cj'], lean: true, skipSucceeded: true, state }),
+    ['cj'],
+  );
+});
+
+test('docsFromUpload VẪN lọc bước ingest kể cả khi người dùng tick đúng nó', () => {
+  const dr = WORKFLOWS.find((w) => w.id === 'docs-review')!.pipelineIds;
+  assert.equal(def('dr-docs').acceptsUpload, true, 'dr-docs là bước ingest nhận upload');
+  // Nhánh cũ (không stageIds).
+  assert.deepEqual(
+    selectRunStages(dr, { docsFromUpload: true }),
+    ['dr-comp', 'dr-flow', 'dr-review'],
+  );
+  // Nhánh tick tay: chạy lại ingest sẽ XOÁ SẠCH tài liệu vừa tải lên (output
+  // khai báo của nó chính là docs/), nên việc người dùng lỡ tick không làm điều
+  // đó bớt phá hoại — bước ingest vẫn bị loại.
+  assert.deepEqual(
+    selectRunStages(dr, { stageIds: ['dr-docs', 'dr-comp', 'dr-flow'], docsFromUpload: true }),
+    ['dr-comp', 'dr-flow'],
+  );
+  // Không có cờ upload thì bước ingest được tick vẫn chạy bình thường.
+  assert.deepEqual(
+    selectRunStages(dr, { stageIds: ['dr-docs', 'dr-comp'] }),
+    ['dr-docs', 'dr-comp'],
+  );
+});
+
+test('stageIds vắng mặt → hành vi cũ KHÔNG đổi (lưới an toàn cho tương thích ngược)', () => {
+  // Không cờ nào: cả workflow, nguyên thứ tự.
+  assert.deepEqual(selectRunStages(UI_IDS, {}), [...UI_IDS]);
+  // stageIds rỗng cũng là "vắng mặt" — không được hiểu thành "không chạy gì".
+  assert.deepEqual(selectRunStages(UI_IDS, { stageIds: [] }), [...UI_IDS]);
+  assert.deepEqual(
+    selectRunStages(UI_IDS, { stageIds: [], lean: true }),
+    ['docs', 'docs-map', 'ux', 'ui-html', 'ui-react', 'ui-react-ds'],
+  );
+  // lean + skipSucceeded vẫn cộng dồn như trước.
+  assert.deepEqual(
+    selectRunStages(UI_IDS, { lean: true, skipSucceeded: true, state: succeededState('docs', 'docs-map') }),
+    ['ux', 'ui-html', 'ui-react', 'ui-react-ds'],
+  );
+});
+
+test('missingDependencies: bước được tick mà phụ thuộc vừa không được chọn vừa chưa chạy', () => {
+  // Chọn mỗi UI-Spec trên một project trắng: run-all sẽ chạy nó thật, đọc thư
+  // mục ux rỗng, và trả về "thành công" — đây là chỗ duy nhất chặn được.
+  assert.deepEqual(missingDependencies(['ui-html'], {}), [{ stage: 'ui-html', missing: ['ux-review'] }]);
+  // Chuỗi thiếu ở giữa: ux được chọn nhưng ux-research thì không.
+  assert.deepEqual(
+    missingDependencies(['docs', 'ux'], succeededState('docs')),
+    [{ stage: 'ux', missing: ['ux-research'] }],
+  );
+  // dr-review có BA phụ thuộc — báo đủ cả ba, không dừng ở cái đầu.
+  assert.deepEqual(
+    missingDependencies(['dr-review'], {}),
+    [{ stage: 'dr-review', missing: ['dr-docs', 'dr-comp', 'dr-flow'] }],
+  );
+});
+
+test('missingDependencies: phụ thuộc ĐÃ succeeded hoặc được chọn cùng → hợp lệ', () => {
+  // (a) đã chạy xong từ trước.
+  assert.deepEqual(missingDependencies(['ui-html'], succeededState('ux-review')), []);
+  // (b) được tick cùng trong lần chạy này — cả một chuỗi liền mạch.
+  assert.deepEqual(
+    missingDependencies(['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html'], {}),
+    [],
+  );
+  // Trộn cả hai nguồn: docs/docs-map đã xong, phần còn lại tick tay.
+  assert.deepEqual(
+    missingDependencies(['cj', 'ux-research', 'ux'], succeededState('docs', 'docs-map')),
+    [],
+  );
+  // Bước không có phụ thuộc luôn hợp lệ.
+  assert.deepEqual(missingDependencies(['docs'], {}), []);
+});
+
+test('missingDependencies: chế độ lean thu cổng về bước gần nhất chế độ đó CÓ chạy', () => {
+  // Một project chạy lean xong: ux đã succeeded, ux-review thì KHÔNG BAO GIỜ
+  // chạy. Nếu gate theo dependsOn thô, tick ui-html sẽ bị từ chối vĩnh viễn vì
+  // một bước mà chế độ này không bao giờ chạy (đúng lỗi effectiveDependsOn sửa).
+  const state = succeededState('docs', 'docs-map', 'ux');
+  assert.deepEqual(missingDependencies(['ui-html'], state, 'lean'), []);
+  assert.deepEqual(missingDependencies(['ui-html'], state, 'full'), [
+    { stage: 'ui-html', missing: ['ux-review'] },
+  ]);
+});
+
+test('validateRunStageSelection: id lạ bị từ chối, nêu đích danh id sai', () => {
+  const bogus = validateRunStageSelection(['docs', 'khong-co-that'], UI_IDS, {});
+  assert.equal(bogus.ok, false);
+  assert.match((bogus as { error: string }).error, /khong-co-that/);
+  // Id CÓ THẬT nhưng thuộc workflow khác cũng là id lạ ở đây: docs-to-prd hoàn
+  // toàn độc lập, không bước nào của nó chạy được trong docs-to-ui.
+  const foreign = validateRunStageSelection(['prd-cj'], UI_IDS, {}, { workflowName: 'Docs → UI-Spec' });
+  assert.equal(foreign.ok, false);
+  assert.match((foreign as { error: string }).error, /prd-cj/);
+  assert.match((foreign as { error: string }).error, /Docs → UI-Spec/);
+});
+
+test('validateRunStageSelection: thiếu phụ thuộc → lỗi tiếng Việt nêu rõ bước nào thiếu bước nào', () => {
+  const res = validateRunStageSelection(['ux'], UI_IDS, succeededState('docs', 'docs-map', 'cj'));
+  assert.equal(res.ok, false);
+  // Thông báo phải dùng TÊN người dùng nhìn thấy trên stepper, không phải id trần.
+  assert.equal(
+    (res as { error: string }).error,
+    'Bước "UX Spec" cần "UX Research" chạy xong trước, nhưng bước đó không được chọn và cũng chưa chạy.',
+  );
+  // Phụ thuộc đã xong → qua.
+  assert.deepEqual(
+    validateRunStageSelection(['ux'], UI_IDS, succeededState('docs', 'docs-map', 'cj', 'ux-research')),
+    { ok: true },
+  );
+  // …và chọn kèm phụ thuộc trong cùng lần chạy cũng qua.
+  assert.deepEqual(validateRunStageSelection(['ux-research', 'ux'], UI_IDS, succeededState('cj')), { ok: true });
 });

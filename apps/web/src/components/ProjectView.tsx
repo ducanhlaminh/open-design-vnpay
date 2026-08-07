@@ -4414,6 +4414,13 @@ export function ProjectView({
           onRefreshFiles={() => {
             void refreshWorkspaceItems();
           }}
+          onReloadPreview={async () => {
+            // Both halves are needed: refreshWorkspaceItems refetches the file
+            // list, but only filesRefresh flows down as filesRefreshKey to
+            // FileViewer, which is what changes the preview iframe's src.
+            await refreshWorkspaceItems();
+            setFilesRefresh((n) => n + 1);
+          }}
           isDeck={isDeck}
           onExportAsPptx={handleExportAsPptx}
           streaming={currentConversationActionDisabled}

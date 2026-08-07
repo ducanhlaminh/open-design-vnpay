@@ -227,6 +227,7 @@ export const zhTW: Dict = {
   'settings.agentInstallGroup': '可安裝（{count}）',
   'settings.agentAuthRequired': '需要認證',
   'settings.agentAuthUnknown': '認證狀態未知',
+  'settings.agentAuthOk': '已登入',
   'settings.apiSection': 'API 設定',
   'settings.quickFillProvider': '快速填入提供方',
   'settings.customProvider': '自訂提供方',

@@ -12,8 +12,26 @@
   --pl-ease: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
+/* CỘT NỘI DUNG CHÍNH — một con số duy nhất cho cả bốn màn của Pipelines.
+   PipelineNavViews.module.css (màn Apps / Features / chọn Pipeline) đọc đúng
+   biến này, nên không màn nào có thể trôi width mà không ai thấy.
+
+   `--pl-page-width-full` = 100%: mọi route lấp đầy đúng bằng chiều ngang cột
+   nội dung của shell (`.entry-main__inner`), không còn giới hạn theo px riêng
+   của Pipelines nữa — nên bốn màn Apps/Features/Picker/Chạy luôn cùng khổ.
+   `.page`/`.pipelines-page` khoá cả `min-width` lẫn `max-width` vào biến này
+   để không mục nào co hẹp hơn/rộng hơn mục khác. Ở màn Chạy, `--pl-rail-width`
+   + `--pl-rail-gap` vẫn dùng để trừ ra bề ngang cột bước trong `.pl-run-layout`. */
+:root {
+  --pl-rail-width: 280px;
+  --pl-rail-gap: 24px;
+  --pl-page-width-full: 100%;
+}
+
 .pipelines-page {
-  max-width: 980px;
+  width: 100%;
+  max-width: var(--pl-page-width-full);
+  min-width: min(var(--pl-page-width-full), 100%);
   margin: 0 auto;
   padding: 40px 32px 96px;
   display: flex;
@@ -153,9 +171,29 @@
   color: var(--text-soft);
 }
 
+/* Breadcrumb màn Chạy: dùng chung navStyles.breadcrumb* từ
+   PipelineNavViews.module.css (xem PipelinesView.tsx) — không còn CSS riêng
+   ở đây, để "Apps ›" trông giống hệt các màn Apps/Features/Picker trước đó. */
+
 /* ---- Workflow tabs --------------------------------------- */
 /* One row, equal-width cards — content-sized widths made the second card
-   wrap under the first on narrower panes. */
+   wrap under the first on narrower panes.
+   Mô tả tách khỏi thẻ tab và chỉ render cho tab đang chọn (xem
+   .pl-workflow-picker__desc): ba đoạn mô tả cạnh nhau ăn gần hết màn hình đầu,
+   đẩy stepper — nội dung thật — xuống dưới fold. */
+.pl-workflow-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pl-workflow-picker__desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
 .pl-workflow-tabs {
   display: flex;
   gap: 10px;
@@ -1099,6 +1137,28 @@
 .pl-step__card:hover {
   border-color: var(--border-strong);
   box-shadow: var(--shadow-sm);
+}
+
+/* BƯỚC TIẾP THEO — bước đầu tiên đã mở khoá mà chưa chạy.
+   Không có nó, stepper là 7 thẻ giống hệt nhau, mỗi thẻ tới 5 nút cùng kiểu:
+   người mới không có cách nào biết bấm cái nào trước. Đây là điểm neo thị giác
+   DUY NHẤT trên stepper — cố tình không thêm nhấn mạnh nào khác, thêm nữa là
+   mất tác dụng. */
+.pl-step[data-next='yes'] .pl-step__card {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-sm);
+}
+
+.pl-step__next {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 
 .pl-step__icon {
@@ -2233,3 +2293,213 @@
   flex: 1;
   min-width: 0;
 }
+
+/* ── Overflow menu (⋯) — dùng chung cho hàng bước (Task 1) + toolbar đầu
+   trang (Task 3). Icon-only trigger + <ul role="menu"> định vị tuyệt đối
+   ngay dưới nút, tự viết (không thêm dependency). ────────────────────────── */
+.pl-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Bước đang mở menu phải NỔI TRÊN các bước đứng sau nó: .pl-step là positioned
+   sibling nên bước sau paint sau — popover z-index cao đến đâu cũng bị thẻ kế
+   tiếp đè nếu không nâng CẢ bước chứa nó lên một tầng. */
+.pl-step:has(.pl-menu__trigger[aria-expanded='true']) {
+  z-index: 45;
+}
+
+.pl-btn--icon {
+  width: 34px;
+  padding: 0;
+  justify-content: center;
+}
+
+.pl-menu__trigger[aria-expanded='true'] {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+}
+
+.pl-menu__list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  margin: 0;
+  padding: 6px;
+  min-width: 192px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-lg);
+  animation: pl-pop-in 0.14s var(--pl-ease);
+}
+
+.pl-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 3px);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 540;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s var(--pl-ease), color 0.14s var(--pl-ease);
+}
+
+.pl-menu__item > svg {
+  flex: none;
+  color: var(--text-soft);
+}
+
+.pl-menu__item:hover:not(:disabled),
+.pl-menu__item:focus-visible {
+  background: var(--bg-subtle);
+  outline: none;
+}
+
+.pl-menu__item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Task 5: đỏ = hành động này PHÁ dữ liệu đã có (ví dụ "Chạy lại" khi có bước
+   sau phụ thuộc) — không dùng cho hành động chỉ đọc như "Xem lỗi". */
+.pl-menu__item--danger {
+  color: var(--red);
+}
+
+.pl-menu__item--danger > svg {
+  color: var(--red);
+}
+
+.pl-menu__item--danger:hover:not(:disabled),
+.pl-menu__item--danger:focus-visible {
+  background: var(--red-bg);
+}
+
+/* ── Rail cấu hình (Task 2) — thay modal Run-all 9 câu hỏi khỏi đường mặc
+   định: hiện SẴN giá trị đang dùng cạnh stepper, "Đổi" mới mở lại modal.
+   Dưới 1100px sập thành nút "Cấu hình" mở cùng nội dung trong drawer. ────── */
+.pl-run-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--pl-rail-width);
+  align-items: start;
+  gap: var(--pl-rail-gap);
+}
+
+.pl-config-rail {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
+}
+
+.pl-config-rail--drawer {
+  position: static;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.pl-rail-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 2px 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.pl-rail-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.pl-rail-row__label {
+  grid-column: 1 / -1;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.pl-rail-row__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--text-strong);
+}
+
+.pl-rail-row__change {
+  flex: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--selected);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.pl-rail-row__change:hover {
+  color: var(--accent-strong);
+}
+
+.pl-rail-row--sync .pl-rail-row__value {
+  white-space: normal;
+}
+
+.pl-rail-row__sync-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.pl-rail-row__sync-actions .pl-btn {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.pl-config-trigger {
+  align-self: flex-start;
+}
+
+@media (max-width: 1100px) {
+  .pl-run-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* `hidden` bị display của chính phần tử ghi đè — stepper vẫn hiện chồng lên
+   canvas nếu chỉ dựa vào thuộc tính. */
+.pipelines-flow[hidden] {
+  display: none;
+}
+

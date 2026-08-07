@@ -1,0 +1,1369 @@
+/* Shared CSS Module for the Pipelines drill-down (App → Feature → Pipeline).
+   Used by PipelinesAppsView, PipelinesFeaturesView, PipelinePickerView. Every
+   color/radius/shadow comes from the neutral product tokens in
+   styles/tokens.css so light/dark both work with zero extra rules — see
+   AGENTS.md "Web CSS ownership": new component styles default to a CSS
+   Module, not the legacy global styles/home/pipelines.css. */
+
+:root {
+  --pnv-ease: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* Cùng một cột nội dung với màn Chạy. `--pl-page-width-full` được khai báo ở
+   styles/home/pipelines.css — cố tình KHÔNG lặp lại con số ở đây, vì hai bản
+   sao của cùng một chiều rộng là hai thứ sẽ trôi khỏi nhau. */
+.page {
+  width: 100%;
+  max-width: var(--pl-page-width-full, 1284px);
+  min-width: min(var(--pl-page-width-full, 1284px), 100%);
+  margin: 0 auto;
+  padding: 40px 32px 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* ---- Header ------------------------------------------------ */
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.headerCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.15;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+}
+
+.lede {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.headerActions {
+  flex: none;
+  margin-left: auto;
+  /* Ngang hàng dòng mô tả thay vì treo sát mép trên cạnh title (lựa chọn
+     người dùng đã chốt từ trước). */
+  align-self: flex-end;
+  margin-bottom: 2px;
+}
+
+/* ---- Panel bọc cả màn Apps: header → Gần đây → toolbar → thân ------------
+   overflow để visible (KHÔNG hidden) vì popover kebab của card cần thò ra
+   ngoài mép panel; các vùng con tự ngăn cách bằng viền nên không có nền nào
+   tràn khỏi bo góc. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-sm);
+}
+
+.panelRecent {
+  padding: 16px 24px;
+}
+
+/* Thanh toolbar "dính" dưới header: hai viền mảnh + nền lệch nhẹ khỏi panel
+   để đọc ra một dải công cụ riêng. */
+.panelToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 24px;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-subtle) 55%, transparent);
+}
+
+.panelBody {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px 24px 24px;
+}
+
+/* Header ra ngoài rồi thì phần tử đầu tiên trong panel có thể là toolbar —
+   viền trên của nó chạm viền panel thành hai vạch chồng nhau, bỏ đi + trả bo
+   góc trên cho khớp panel. */
+.panelToolbar:first-child {
+  border-top: 0;
+  border-top-left-radius: var(--radius-lg);
+  border-top-right-radius: var(--radius-lg);
+}
+
+/* Card cùng màu nền với panel thì chìm mất — nâng một nấc elevated cho nổi
+   khối (cả light lẫn dark đều đã là màu đặc sau khi bỏ glass ở dark). */
+.panelBody .card {
+  background: var(--bg-elevated);
+}
+
+/* ---- Breadcrumb ---------------------------------------------- */
+.breadcrumb {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 10px;
+  margin: 0;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-xs);
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.breadcrumbLink {
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.16s var(--pnv-ease), background 0.16s var(--pnv-ease);
+}
+
+.breadcrumbLink:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.breadcrumbLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.breadcrumbSep {
+  color: var(--text-faint);
+}
+
+.breadcrumbCurrent {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+/* Lối tắt "về đúng 1 cấp trước" — đứng đầu hàng breadcrumb, tách biệt khỏi
+   các link cấp (Apps/App/Feature) vốn nhảy tới TỪNG cấp một, không phải lùi
+   tương đối. Có nền chip ngay ở trạng thái nghỉ (không chỉ lúc hover) để rõ
+   là một nút bấm được, không phải icon trang trí — nhưng KHÔNG kẻ viền như
+   .breadcrumb ngoài, tránh khung lồng khung. Một dải phân cách mảnh sau nó
+   tách nó khỏi các link cấp đi kèm. */
+.backBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-right: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+  position: relative;
+  transition: color 0.16s var(--pnv-ease), background 0.16s var(--pnv-ease);
+}
+
+.backBtn::after {
+  content: '';
+  position: absolute;
+  right: -4px;
+  top: 15%;
+  bottom: 15%;
+  width: 1px;
+  background: var(--border);
+}
+
+.backBtn svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+}
+
+.backBtn:hover {
+  color: var(--accent-strong);
+  background: var(--accent-tint);
+}
+
+.backBtn:active {
+  background: color-mix(in srgb, var(--text-muted) 20%, transparent);
+}
+
+.backBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- Sub-header (App / Feature name + muted sub-line) -------- */
+.subHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.subHeaderTop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.subHeaderName {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text-strong);
+}
+
+.subHeaderSub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ---- Gần đây strip -------------------------------------------- */
+.recent {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recentLabel {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.recentList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recentChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: border-color 0.16s var(--pnv-ease), background 0.16s var(--pnv-ease),
+    transform 0.16s var(--pnv-ease);
+}
+
+.recentChip:hover {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+  transform: translateY(-1px);
+}
+
+.recentChip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.recentChipSep {
+  color: var(--text-faint);
+}
+
+/* ---- Search / toolbar ----------------------------------------- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.filterChips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filterChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: border-color 0.16s var(--pnv-ease), background 0.16s var(--pnv-ease),
+    color 0.16s var(--pnv-ease);
+}
+
+.filterChip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.filterChip[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+}
+
+.filterChip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.filterChipCount {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.filterChip[aria-pressed='true'] .filterChipCount {
+  color: var(--accent-strong);
+}
+
+/* ---- Tiêu đề danh sách — nói thẳng lưới/bảng bên dưới là gì ------------- */
+.listHead {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.listHeadTitle {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: var(--text-strong);
+}
+
+.listHeadHint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+/* Cụm công cụ bên phải toolbar panel (chips lọc + ô tìm…), tự xuống dòng khi
+   hẹp. */
+.toolbarGroup {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* Ô tìm + số đếm kết quả đứng liền nhau, thành một cụm bên trái toolbar. */
+.toolbarSearch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.toolbarCount {
+  flex: none;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.search {
+  flex: 0 1 240px;
+  min-width: 140px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.16s var(--pnv-ease), box-shadow 0.16s var(--pnv-ease);
+}
+
+.search::placeholder {
+  color: var(--text-faint);
+}
+
+.search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ---- Buttons ---------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 580;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.16s var(--pnv-ease), border-color 0.16s var(--pnv-ease),
+    transform 0.12s var(--pnv-ease), box-shadow 0.16s var(--pnv-ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btnPrimary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btnSmall {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+/* ---- Card grid (Screen 1 — Apps) -------------------------------- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
+  gap: 14px;
+}
+
+/* Card App giờ có hai phần tử anh em: <button> điều hướng (.card) và kebab
+   (.actionsMenu). Không lồng nút trong nút được, nên shell này giữ vị trí
+   tương đối cho kebab neo vào góc trên phải. */
+.cardShell {
+  position: relative;
+  display: flex;
+  transition: transform 0.2s var(--pnv-ease);
+}
+
+/* Nhấc CẢ shell, không chỉ .card: kebab neo vào shell nên nếu chỉ .card nhấc
+   thì card trượt lên 1px còn kebab đứng yên. */
+.cardShell:hover {
+  transform: translateY(-1px);
+}
+
+.cardShell > .card {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* Card giờ có monogram + tên + meta + thanh tiến độ; chiều cao tối thiểu
+     giữ hàng thẳng khi một app chưa có feature nào (không có thanh). */
+  min-height: 118px;
+  text-align: left;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  transition: border-color 0.2s var(--pnv-ease), box-shadow 0.2s var(--pnv-ease);
+}
+
+/* Hover đọc từ shell, không từ .card: kebab nằm đè lên góc card nhưng là phần
+   tử anh em, nên trỏ chuột vào nó sẽ làm .card:hover tắt và card nhấp nháy. */
+.cardShell:hover > .card {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cardUnassigned {
+  border-style: dashed;
+  background: var(--bg-app);
+}
+
+.cardUnassigned .monogram {
+  background: var(--bg-muted);
+  color: var(--text-faint);
+}
+
+/* Đầu card: monogram bên trái, tên + meta xếp dọc bên phải. */
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Ô chữ cái đầu — thứ duy nhất phân biệt được hai card ở tầm nhìn liếc qua,
+   nên nó dùng màu nhấn chứ không phải nền xám. */
+.monogram {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+.cardHeadText {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.cardName {
+  /* Chừa chỗ cho kebab ở góc trên phải. */
+  padding-right: 26px;
+  font-size: 15px;
+  font-weight: 640;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cardMeta {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thanh segments + nhãn % trên cùng một dòng; thanh co giãn, nhãn giữ chỗ cố
+   định để các card không so le nhau ở mốc 100%. */
+.cardProgress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.cardProgress > .segments {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Chip "N đang chạy" — chỉ hiện khi có tiến trình chạy; chấm accent nhấp
+   nháy để liếc qua lưới là thấy app nào đang bận. */
+.cardRunning {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent-soft);
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+  font-size: 11.5px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cardRunningDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pnv-running-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pnv-running-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.cardUpdated {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+/* ---- Segmented progress bar (shared: app card / feature row / pipeline card) */
+.segments {
+  display: flex;
+  gap: 3px;
+}
+
+.segment {
+  flex: 1 1 0;
+  min-width: 4px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-muted);
+}
+
+.segment[data-state='done'] {
+  background: var(--green);
+}
+
+.segment[data-state='running'] {
+  background: var(--accent);
+  animation: pnv-pulse 1.6s var(--pnv-ease) infinite;
+}
+
+@keyframes pnv-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ---- Skeleton loading -------------------------------------------- */
+.skeletonCard {
+  height: 96px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-soft);
+  background: linear-gradient(90deg, var(--bg-subtle) 0%, var(--bg-muted) 50%, var(--bg-subtle) 100%);
+  background-size: 200% 100%;
+  animation: pnv-shimmer 1.4s linear infinite;
+}
+
+.skeletonRow {
+  height: 52px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: linear-gradient(90deg, var(--bg-subtle) 0%, var(--bg-muted) 50%, var(--bg-subtle) 100%);
+  background-size: 200% 100%;
+  animation: pnv-shimmer 1.4s linear infinite;
+}
+
+@keyframes pnv-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* ---- Empty state --------------------------------------------------- */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 56px 24px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  border: 1px dashed var(--border-strong);
+  text-align: center;
+}
+
+.emptyIcon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+}
+
+.emptyBody {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 52ch;
+}
+
+.emptyTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 640;
+  color: var(--text-strong);
+}
+
+.emptyText {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.emptyActions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+/* Generic "not found" block (unknown appId/featureId). */
+.notFound {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 24px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 13.5px;
+}
+
+/* ---- Feature rows (Screen 2 — Features of one app) ------------------ */
+.rowList {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+/* Row cũng là <button> điều hướng, nên kebab là phần tử ANH EM bên phải nó
+   (HTML cấm button lồng button) — shell này gom hai thứ thành một hàng.
+   Nền hover nằm ở shell chứ không ở .row: nếu để ở .row thì trỏ chuột sang
+   kebab là hàng tắt sáng, trông như con trỏ đã rời khỏi hàng. */
+.rowShell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* Nút xổ + row + kebab nằm cùng một dòng, phần xổ (.wfPanel, flex-basis
+     100%) tự rơi xuống dòng dưới — nên shell vừa là hàng vừa là vỏ của phần
+     xổ, không cần thêm một tầng bọc nữa. */
+  flex-wrap: wrap;
+  transition: background 0.14s var(--pnv-ease);
+}
+
+.rowShell:hover,
+.rowShell:focus-within {
+  background: var(--bg-subtle);
+}
+
+/* Trước đây `overflow: hidden` của .rowList lo phần bo góc, nhưng nó cắt luôn
+   popover của kebab. Bo góc chuyển sang hàng đầu/cuối. */
+.rowShell:first-child {
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.rowShell:last-child {
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.rowShell > .row {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rowShell + .rowShell {
+  border-top: 1px solid var(--border-soft);
+}
+
+.rowShell > .actionsMenu {
+  flex: none;
+  margin-right: 10px;
+}
+
+.row {
+  display: grid;
+  /* Cột: key • tên • segments • done/total • chip trạng thái. Không còn
+     chevron-phải — click row giờ là xổ/đóng, vào chi tiết đi qua kebab. */
+  grid-template-columns: auto 1fr 140px auto auto;
+  align-items: center;
+  gap: 14px;
+  /* Shell là flex-wrap (nút xổ + row + kebab một dòng, .wfPanel rơi xuống
+     dưới) — row phải CO GIÃN chiếm phần còn lại chứ không phải width:100%,
+     nếu không nó chiếm nguyên một dòng và đẩy hai nút văng khỏi hàng. */
+  flex: 1 1 0%;
+  min-width: 0;
+  padding: 12px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.rowKey {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.rowName {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowProgress {
+  min-width: 0;
+}
+
+.rowCount {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rowChevron {
+  flex: none;
+  display: flex;
+  color: var(--text-faint);
+}
+
+/* ---- Nút xổ trạng thái từng workflow (đầu row) ----------------------- */
+/* Luôn hiện (khác kebab): nó là chỗ duy nhất đọc được feature đang chạy
+   workflow nào, nên không được chờ hover mới lộ ra. */
+.rowExpand {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: color 0.16s var(--pnv-ease), background 0.16s var(--pnv-ease),
+    transform 0.16s var(--pnv-ease);
+}
+
+.rowExpand:hover {
+  background: var(--bg-muted);
+  color: var(--text-strong);
+}
+
+.rowExpand:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.rowExpand[data-open='true'] {
+  color: var(--text-soft);
+  transform: rotate(-180deg);
+}
+
+/* Server cũ không trả `workflows` → không có nút, nhưng cột đầu vẫn phải thẳng
+   với các row khác. */
+.rowExpandSpacer {
+  flex: none;
+  width: 24px;
+  margin-left: 8px;
+}
+
+/* Nút "Xem chi tiết" — hành động chính của row nên đứng ngoài kebab, ngay
+   trước nó, cùng cỡ ghost-button 24px cho thẳng hàng. */
+.rowDetailBtn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: color 0.16s var(--pnv-ease), background 0.16s var(--pnv-ease);
+}
+
+.rowDetailBtn:hover {
+  color: var(--accent-strong);
+  background: var(--accent-tint);
+}
+
+.rowDetailBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- Phần xổ: trạng thái TỪNG workflow của một feature --------------- */
+/* Chuyển động do cặp class global .accordion-collapsible /
+   -inner lo (grid-template-rows 0fr→1fr) — ở đây chỉ có chỗ đứng và nền. */
+.wfPanel {
+  flex: 0 0 100%;
+  width: 100%;
+}
+
+.wfList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 2px 10px 10px 46px;
+  list-style: none;
+  border-top: 1px solid var(--border-soft);
+}
+
+.wfRow {
+  display: grid;
+  grid-template-columns: 1fr 110px auto 96px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.14s var(--pnv-ease);
+}
+
+.wfRow:hover {
+  background: var(--bg-muted);
+}
+
+.wfRow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.wfName {
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wfProgress {
+  min-width: 0;
+}
+
+/* Chip trong phần xổ có thêm spinner nên cần khoảng cách giữa icon và chữ;
+   chip ngoài row (chỉ có chữ) không đổi. */
+.wfRow .statusChip {
+  gap: 5px;
+  justify-self: end;
+}
+
+/* ---- Kebab "…" (đổi tên / xóa) --------------------------------------- */
+/* Ẩn ở trạng thái nghỉ để lưới card và danh sách row không bị nhiễu; hiện khi
+   hover, khi có gì đó bên trong đang focus, và khi menu đang mở. Ẩn bằng
+   opacity (không phải display) nên Tab vẫn tới được nút. */
+.actionsMenu {
+  position: relative;
+  display: flex;
+}
+
+.cardShell > .actionsMenu {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+.actionsTrigger {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s var(--pnv-ease), background 0.16s var(--pnv-ease),
+    color 0.16s var(--pnv-ease);
+}
+
+.cardShell:hover .actionsTrigger,
+.rowShell:hover .actionsTrigger,
+.cardShell:focus-within .actionsTrigger,
+.rowShell:focus-within .actionsTrigger,
+.actionsMenu[data-open='true'] .actionsTrigger {
+  opacity: 1;
+}
+
+.actionsTrigger:hover {
+  background: var(--bg-subtle);
+  color: var(--text-strong);
+}
+
+.actionsTrigger:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.actionsList {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+  margin: 0;
+  padding: 5px;
+  list-style: none;
+  min-width: 150px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-md);
+}
+
+.actionsItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.14s var(--pnv-ease), color 0.14s var(--pnv-ease);
+}
+
+.actionsItem:hover {
+  background: var(--bg-subtle);
+  color: var(--text-strong);
+}
+
+.actionsItem:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.actionsItemDanger {
+  color: var(--red);
+}
+
+.actionsItemDanger:hover {
+  background: var(--red-bg);
+  color: var(--red);
+}
+
+/* ---- Status chip (Screen 2 row / Screen 3 header + card) -------------- */
+.statusChip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.statusChip[data-status='idle'] {
+  background: var(--bg-muted);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.statusChip[data-status='running'] {
+  background: var(--amber-bg);
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 28%, transparent);
+}
+
+.statusChip[data-status='done'] {
+  background: var(--green-bg);
+  color: var(--green);
+  border-color: var(--green-border);
+}
+
+/* ---- Pipeline cards (Screen 3 — pick a pipeline) ------------------------ */
+.pipelineGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.pipelineCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
+}
+
+.pipelineCardAccent {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.pipelineCardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pipelineCardName {
+  font-size: 15px;
+  font-weight: 640;
+  color: var(--text-strong);
+  min-width: 0;
+}
+
+.pipelineCardDesc {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.pipelineCardFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.pipelineCardCount {
+  font-size: 11.5px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Phân trang lưới App -------------------------------------------- */
+/* Nút pill ghost cùng cỡ/cùng bo với .filterChip để hai dải nút trên cùng một
+   màn không đọc thành hai hệ. */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.pagerRange {
+  font-size: 12.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.pagerControls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.pagerNums {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pagerBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  min-width: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: border-color 0.2s var(--pnv-ease), background 0.2s var(--pnv-ease),
+    color 0.2s var(--pnv-ease);
+}
+
+.pagerBtn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.pagerBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pagerBtn[aria-current='page'] {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+}
+
+.pagerBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.pagerGap {
+  padding: 0 2px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+/* ---- Error banner --------------------------------------------------- */
+.error {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--red-bg);
+  border: 1px solid var(--red-border);
+  color: var(--red);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+/* ---- Responsive ------------------------------------------------------ */
+@media (max-width: 760px) {
+  .page {
+    padding: 28px 18px 72px;
+  }
+  .header {
+    flex-direction: column;
+  }
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .row {
+    grid-template-columns: auto 1fr auto;
+  }
+  .rowProgress,
+  .rowCount {
+    display: none;
+  }
+  .pager {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pagerControls {
+    margin-left: 0;
+    justify-content: center;
+  }
+}

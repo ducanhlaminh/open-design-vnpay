@@ -63,6 +63,16 @@ export interface PipelineDef {
    */
   acceptsPlatform?: boolean;
   /**
+   * When true, this stage accepts a MANUAL file upload from the UI (a
+   * secondary "Tải file lên" button, separate from Run) instead of only ever
+   * receiving input from an agent run. The daemon does not gate anything on
+   * this flag itself — it is purely a client-side affordance flag; the actual
+   * write goes through the normal `POST /api/projects/:id/files` route. Today
+   * only `dr-docs` sets it: a user drops in a `.md` doc directly, or a
+   * `criteria/` file the dr-review stage should judge against.
+   */
+  acceptsUpload?: boolean;
+  /**
    * When true, this stage's outputs stay LOCAL — they are never pushed to the
    * media file store nor graph-converted on upload, so they do NOT round-trip to
    * another device via push-all/pull-all. Reserve this for genuinely
@@ -279,6 +289,47 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // one report keyed by image (not by screen — there is no UX Spec here, this
   // workflow never reaches `ux`/`ux-review`).
   { id: 'prd-review',       name: 'PRD Mockup Review',         skillId: 'docs-mockup-review',    dependsOn: ['prd-ux-research'], outputs: ['review/'] },
+
+  // ── `docs-review` workflow — fully INDEPENDENT of docs-to-ui AND docs-to-prd ─
+  // Three stages: ingest (same jira-ingest skill, its own dr-docs id/folder —
+  // the independence rule above applies here too, so a docs-to-ui or
+  // docs-to-prd ingest never counts as "already done" for this workflow), then
+  // a review stage that clones every ingested page into `review/docs/` and edits
+  // the CLONE against an optional `criteria/` folder the user drops in via
+  // `od files upload --as docs-review/criteria/<name>.md` (criteria/ is not a
+  // stage output of anything — see stagesForOutput — so it survives every
+  // re-run of dr-review untouched). skillId MUST stay 'jira-ingest' for
+  // dr-docs: runDocsDeterministic (server.ts) only takes the tool-only
+  // Confluence path for that exact skillId.
+  { id: 'dr-docs',          name: 'Tài liệu → Markdown',       skillId: 'jira-ingest',           dependsOn: [],                   outputs: ['docs/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL', acceptsUpload: true },
+  // Bước GIỮA: đối chiếu component. Đọc `docs/` (bản GỐC, chưa review) và với
+  // MỖI màn hình trong tài liệu, liệt kê phần tử nào dùng component nào rồi
+  // đối chiếu với danh mục hợp lệ `criteria/components.md`, ghi ra
+  // `comp/<page-slug>.components.json`.
+  //
+  // Vì sao tách thành một bước riêng thay vì để dr-review tự làm: nhóm
+  // `component` là nhóm DUY NHẤT bắt buộc phải NHÌN ảnh mockup mới phán được.
+  // Mà dr-review fan-out theo SECTION, nên cùng một trang 9 section sẽ mở lại
+  // đúng những ảnh đó 9 lần — và mỗi lượt có thể ra một kết luận khác lượt
+  // trước ("Combobox" hay "Select"?). Làm một lần cho cả trang ở đây biến việc
+  // đó thành DỮ LIỆU: dr-review chỉ đọc file và chép sang note.
+  //
+  // `comp/` nằm ở GỐC workflow-dir, KHÔNG lồng trong `review/` — cùng lý do đã
+  // ghi cho `flows/` bên dưới: lồng vào đó thì mỗi lần re-run dr-review sẽ xoá
+  // sạch kết quả, và stagesForOutput sẽ chấm hai stage cho cùng một file.
+  { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-component-audit',  dependsOn: ['dr-docs'],          outputs: ['comp/'] },
+  // Rút SƠ ĐỒ LUỒNG MÀN HÌNH từ tài liệu GỐC (`docs/`): mỗi luồng nghiệp vụ
+  // thành một `flows/<FLOW-ID>.flowchart.json` (node start/end/action/decision
+  // + edge có nhãn) để viewer vẽ lại. Chạy TRƯỚC dr-review — review là bước
+  // chốt cuối của workflow, soát cả tài liệu lẫn sơ đồ đã rút.
+  // `flows/` nằm ở GỐC workflow-dir, KHÔNG lồng trong `review/`: `review/` là
+  // output của dr-review, nên lồng vào đó thì (a) mỗi lần re-run dr-review sẽ
+  // xoá sạch sơ đồ vừa dựng và (b) stagesForOutput chấm CẢ HAI stage cho cùng
+  // một file, làm dr-review hiện xanh chỉ vì dr-flow đã chạy. Trùng tên với
+  // `flows/` của stage `ux` bên docs-to-ui là vô hại: attribution có namespace
+  // theo workflow nên `docs-review/flows/…` chỉ khớp stage của workflow này.
+  { id: 'dr-flow',          name: 'Sơ đồ luồng màn hình',      skillId: 'docs-flow-extract',     dependsOn: ['dr-docs'],          outputs: ['flows/'] },
+  { id: 'dr-review',        name: 'Review tài liệu',           skillId: 'docs-spec-review',      dependsOn: ['dr-docs', 'dr-comp', 'dr-flow'], outputs: ['review/'] },
 ];
 
 // Named docs→output flows. Each is an ordered subset of PIPELINE_DEFS. The
@@ -294,7 +345,10 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
 // output reused across workflows, that is a DIFFERENT, deliberate case (like
 // the retired `docs-html`/`docs-react` folder merge) — this repo has decided
 // against it here on purpose, keep it that way.
-export const WORKFLOWS: readonly Workflow[] = [
+// Static workflow definitions WITHOUT `stages` — `WORKFLOWS` below derives it
+// from each entry's own `pipelineIds` so the two lists can never drift apart
+// (no hand-duplicated id array to keep in sync).
+const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
   {
     id: 'docs-to-ui',
     name: 'Docs → UI-Spec',
@@ -309,7 +363,25 @@ export const WORKFLOWS: readonly Workflow[] = [
       'Product docs (Confluence, with embedded mockup images) → Customer Journey → UX Research → a review of every mockup against the feature text next to it — editable in the preview, exportable with all its images. Independent of Docs → UI-Spec: its own docs/journey/research run.',
     pipelineIds: ['prd-docs', 'prd-cj', 'prd-ux-research', 'prd-review'],
   },
+  {
+    id: 'docs-review',
+    name: 'Docs → Review tài liệu',
+    description:
+      'Độc lập hoàn toàn với Docs → UI-Spec và Docs → PRD Review: nạp tài liệu (Confluence hoặc file .md) riêng cho workflow này, đối chiếu component của từng màn hình với danh mục hợp lệ, review theo bộ tiêu chí của bạn (đặt trong criteria/, tuỳ chọn — thiếu thì dùng bộ mặc định của skill) và trả về bản sao đã sửa kèm chú giải từng chỗ sửa, rồi rút sơ đồ luồng màn hình của từng nghiệp vụ từ bản đã review.',
+    pipelineIds: ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review'],
+  },
 ];
+
+// Workflow.stages — the per-stage display-name carrier — is derived HERE from
+// each workflow's OWN pipelineIds, resolving each id's human name against
+// PIPELINE_DEFS (the single source of truth for a stage's name; never a
+// second hand-mirrored list). An id missing from PIPELINE_DEFS falls back to
+// itself so a registry typo surfaces as a raw id in the UI rather than a
+// crash.
+export const WORKFLOWS: readonly Workflow[] = WORKFLOW_DEFS.map((w) => ({
+  ...w,
+  stages: w.pipelineIds.map((id) => ({ id, name: PIPELINE_DEFS.find((d) => d.id === id)?.name ?? id })),
+}));
 
 // Folder heads of the RETIRED twin workflows (merged into docs-to-ui 2026-07).
 // Old projects' outputs keep these prefixes on disk and on the media store;
@@ -385,13 +457,19 @@ function splitWorkflowPath(rel: string): [Workflow | undefined, string] {
 }
 
 // STORE METADATA (not pipeline outputs): published version snapshots + their
-// changelog index, and `project.json` — the project config Pipeline Studio
-// writes at create/config time (dự án khai sinh ở studio: link Confluence +
-// design system). None of these may light a stage, sync, or pull as an
-// output. Mirrors kg-sync/published-versions.ts isHistoryPath (kept local
-// here so the pure registry stays dependency-free).
+// changelog index, `project.json` — the project config Pipeline Studio writes
+// at create/config time (dự án khai sinh ở studio: link Confluence + design
+// system) — and `request.json`, the approval ticket a staged push leaves in
+// its `pending--…` folder (kg-sync/staging.ts). None of these may light a
+// stage, sync, or pull as an output. Mirrors kg-sync/published-versions.ts
+// isHistoryPath (kept local here so the pure registry stays dependency-free).
 export function isHistoryArtifact(rel: string): boolean {
-  return rel === 'changelog.json' || rel === 'project.json' || rel.startsWith('_v/');
+  return (
+    rel === 'changelog.json' ||
+    rel === 'project.json' ||
+    rel === 'request.json' ||
+    rel.startsWith('_v/')
+  );
 }
 
 // DOWNLOAD-READY MD EXPORTS (`exports/…`): regenerated from the local outputs
@@ -560,6 +638,136 @@ export function computeActive(
   mode: PipelineRunMode = 'full',
 ): boolean {
   return effectiveDependsOn(def, mode).every((dep) => statusOf(state, dep) === 'succeeded');
+}
+
+/**
+ * Lựa chọn phạm vi chạy của MỘT lần run-all: từ danh sách bước ứng viên của
+ * workflow (đã bỏ các terminal UI không chọn) ra danh sách bước sẽ chạy thật.
+ *
+ * Hai NHÁNH loại trừ nhau, và đó là toàn bộ ý nghĩa của hàm này:
+ *  - `stageIds` có mặt và không rỗng → người dùng đã tick tay từng bước, nên
+ *    chạy ĐÚNG các bước đó. `lean` và `skipSucceeded` bị bỏ qua: cả hai là cách
+ *    SUY RA phạm vi, còn đây là phạm vi được nêu thẳng — suy tiếp trên một lựa
+ *    chọn đã tường minh chỉ có thể làm nó khác đi ngoài ý muốn (tick lại một
+ *    bước đã `succeeded` nghĩa là muốn CHẠY LẠI nó, không phải muốn bỏ qua nó).
+ *  - vắng mặt → hành vi cũ y nguyên: `lean` bỏ các bước `skippedInLeanRun`,
+ *    rồi `skipSucceeded` bỏ các bước đã xong.
+ *
+ * `docsFromUpload` áp cho CẢ HAI nhánh (kể cả khi người dùng tự tick đúng bước
+ * ingest): output khai báo của bước ingest CHÍNH LÀ `<workflow>/docs/`, nên
+ * chạy lại nó sẽ xoá sạch tài liệu người dùng vừa tải lên rồi fetch về rỗng.
+ *
+ * Thứ tự trả về LUÔN là thứ tự của workflow (`all`), không phải thứ tự người
+ * dùng gửi — chuỗi run-all chạy tuần tự nên một thứ tự khác sẽ cho bước sau
+ * chạy trước input của nó.
+ */
+export function selectRunStages(
+  all: readonly string[],
+  opts: {
+    /** Bước người dùng tick tay (thứ tự gửi lên không quan trọng). */
+    stageIds?: readonly string[];
+    lean?: boolean;
+    skipSucceeded?: boolean;
+    docsFromUpload?: boolean;
+    /** State đã merge — chỉ dùng cho `skipSucceeded`. */
+    state?: ProjectPipelineState;
+  },
+): string[] {
+  let stages = [...all];
+  if (opts.stageIds && opts.stageIds.length > 0) {
+    const picked = new Set(opts.stageIds);
+    stages = stages.filter((id) => picked.has(id));
+  } else {
+    if (opts.lean) stages = stages.filter((id) => !getPipelineDef(id)?.skippedInLeanRun);
+    if (opts.skipSucceeded) {
+      const state = opts.state ?? {};
+      stages = stages.filter((id) => state[id]?.status !== 'succeeded');
+    }
+  }
+  if (opts.docsFromUpload) stages = stages.filter((id) => !getPipelineDef(id)?.acceptsUpload);
+  return stages;
+}
+
+/** Một bước được chọn mà thiếu phụ thuộc: `stage` thiếu các bước trong `missing`. */
+export interface MissingStageDependency {
+  stage: string;
+  missing: string[];
+}
+
+/**
+ * Các bước được chọn mà phụ thuộc của chúng KHÔNG được chọn và cũng CHƯA
+ * `succeeded`. Rỗng = lựa chọn hợp lệ.
+ *
+ * Vì sao luật này phải tồn tại: run-all gọi thẳng `runPipeline`, KHÔNG hỏi
+ * gating (xem `runWorkflowAll` trong server.ts), nên một bước thiếu phụ thuộc
+ * sẽ không bị chặn — nó chạy thật, đọc input rỗng, và cho ra một kết quả trông
+ * như thành công. Chặn ngay lúc nhận yêu cầu rẻ hơn nhiều so với một bản spec
+ * rác mà người dùng chỉ phát hiện ở bước cuối.
+ *
+ * Cổng được tính theo `effectiveDependsOn(def, mode)` chứ không theo
+ * `def.dependsOn` thô: ở chế độ `lean`, một phụ thuộc mà chính chế độ đó KHÔNG
+ * BAO GIỜ chạy sẽ khoá vĩnh viễn mọi bước dưới nó (đúng lỗi mà
+ * `effectiveDependsOn` đã được viết ra để sửa). `full` (mặc định) trả về đúng
+ * danh sách `dependsOn` tĩnh.
+ */
+export function missingDependencies(
+  selected: readonly string[],
+  state: ProjectPipelineState,
+  mode: PipelineRunMode = 'full',
+): MissingStageDependency[] {
+  const picked = new Set(selected);
+  const out: MissingStageDependency[] = [];
+  for (const id of selected) {
+    const def = getPipelineDef(id);
+    if (!def) continue; // id lạ là việc của validateRunStageSelection
+    const missing = effectiveDependsOn(def, mode).filter(
+      (dep) => !picked.has(dep) && statusOf(state, dep) !== 'succeeded',
+    );
+    if (missing.length > 0) out.push({ stage: id, missing });
+  }
+  return out;
+}
+
+/** Tên hiển thị của một bước (id trần khi id không có trong registry). */
+function stageName(id: string): string {
+  return getPipelineDef(id)?.name ?? id;
+}
+
+/**
+ * Kiểm tra trọn vẹn một lựa chọn bước thủ công trước khi chạy: id phải thuộc
+ * workflow đang chạy, và mọi phụ thuộc phải được chọn cùng hoặc đã chạy xong.
+ * Trả về câu tiếng Việt nêu đích danh chỗ sai để route trả 400 nguyên văn.
+ */
+export function validateRunStageSelection(
+  stageIds: readonly string[],
+  workflowStageIds: readonly string[],
+  state: ProjectPipelineState,
+  opts?: { workflowName?: string; mode?: PipelineRunMode },
+): { ok: true } | { ok: false; error: string } {
+  const known = new Set(workflowStageIds);
+  const unknown = stageIds.filter((id) => !known.has(id));
+  if (unknown.length > 0) {
+    const wf = opts?.workflowName ? ` "${opts.workflowName}"` : '';
+    return {
+      ok: false,
+      error: `Các bước sau không thuộc workflow${wf}: ${unknown.map((id) => `"${id}"`).join(', ')}.`,
+    };
+  }
+  const missing = missingDependencies(stageIds, state, opts?.mode ?? 'full');
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      error: missing
+        .map(
+          (m) =>
+            `Bước "${stageName(m.stage)}" cần ${m.missing
+              .map((dep) => `"${stageName(dep)}"`)
+              .join(', ')} chạy xong trước, nhưng bước đó không được chọn và cũng chưa chạy.`,
+        )
+        .join(' '),
+    };
+  }
+  return { ok: true };
 }
 
 // The set of stages to CLEAR + regenerate when `pipelineId` is re-run. Without
@@ -735,6 +943,7 @@ export function listPipelineStatus(
       ...(def.inputPlaceholder ? { inputPlaceholder: def.inputPlaceholder } : {}),
       ...(def.acceptsDesignSystem ? { acceptsDesignSystem: true } : {}),
       ...(def.acceptsPlatform ? { acceptsPlatform: true } : {}),
+      ...(def.acceptsUpload ? { acceptsUpload: true } : {}),
       ...(def.outputs && def.outputs.length ? { outputs: [...def.outputs] } : {}),
       ...(run?.lastRunId ? { lastRunId: run.lastRunId } : {}),
       ...(run?.lastConversationId ? { lastConversationId: run.lastConversationId } : {}),

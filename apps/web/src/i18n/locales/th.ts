@@ -223,6 +223,7 @@ export const th: Dict = {
   'settings.agentInstalledGroup': 'CLI ของคุณ ({count})',
   'settings.agentInstallGroup': 'พร้อมให้ติดตั้ง ({count})',
   'settings.agentAuthUnknown': 'ไม่ทราบสถานะการยืนยันตัวตน',
+  'settings.agentAuthOk': 'เข้าสู่ระบบแล้ว',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'เลือกผู้ให้บริการอย่างรวดเร็ว',
   'settings.customProvider': 'กำหนดผู้ให้บริการเอง',

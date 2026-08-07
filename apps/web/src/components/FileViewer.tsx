@@ -59,6 +59,10 @@ import { PipelineReactPreview } from './pipeline-preview/PipelineReactPreview';
 import { PipelineReactCanvas } from './pipeline-preview/PipelineReactCanvas';
 import { adaptScreenSpec } from './pipeline-preview/screen-adapter';
 import { SpecPreview, type SpecDoc } from './SpecPreview';
+import { DocRedlinePreview } from './DocRedlinePreview';
+import { ComponentAuditPreview, isComponentAuditFile } from './ComponentAuditPreview';
+import { FlowchartPreview, isFlowchartFile } from './FlowchartPreview';
+import { inlineMarkdownImages } from '../runtime/markdown-images';
 import { SpecFlowCanvas, isFlowDoc, type FlowDoc } from './SpecFlowCanvas';
 import { ReviewPreview, type ReviewReport } from './ReviewPreview';
 import { UxResearchPreview, isUxResearchReport, type UxResearchReport } from './UxResearchPreview';
@@ -838,6 +842,29 @@ export function FileViewer({
   if (isPipelineUiScreenFile(file)) {
     return <PipelineScreenViewer projectId={projectId} file={file} />;
   }
+  // docs-review's redline page (`docs-review/review/docs/**/*.md`, the
+  // dr-review stage's edited clone) — highlights every change inline and
+  // lists its `.changes.json` reasons alongside, instead of the plain
+  // markdown viewer that has no idea a changes sidecar exists. Checked BEFORE
+  // the generic .md branch below, which would otherwise claim it first.
+  if (file.kind === 'text' && /\/review\/docs\/.+\.md$/i.test(file.name)) {
+    return <DocRedlinePreview projectId={projectId} file={file} />;
+  }
+  // docs-review's per-page component audit (`docs-review/comp/*.components.json`,
+  // the dr-comp stage's screen-by-screen catalogue check) — renders the screens
+  // and their element verdicts as a readable table instead of raw JSON. Checked
+  // BEFORE the generic JSON/text branches below (isJsonFile → SpecFileViewer),
+  // which would otherwise claim it first and drop the reader into the source
+  // view.
+  //
+  // Gates on 'code' AS WELL AS 'text': the daemon's `kindFor` (projects.ts) puts
+  // every `.json` in the 'code' bucket, so a `file.kind === 'text'` guard alone
+  // would never fire and this branch would be dead code. Both are accepted
+  // rather than swapping to 'code' only, so a file served with a text kind
+  // (hand-uploaded, or a future classifier change) still finds its viewer.
+  if ((file.kind === 'text' || file.kind === 'code') && isComponentAuditFile(file)) {
+    return <ComponentAuditPreview projectId={projectId} file={file} />;
+  }
   // Manifest-declared markdown artifacts AND plain .md files (pipeline docs —
   // docs/confluence/*.md etc. carry no artifact manifest) both get the
   // rendered markdown preview instead of the raw-text viewer.
@@ -861,6 +888,13 @@ export function FileViewer({
       return <SketchViewer projectId={projectId} file={file} />;
     }
     return <ImageViewer projectId={projectId} file={file} />;
+  }
+  // Sơ đồ khối của bước dr-flow (`flows/<FLOW-ID>.flowchart.json`) — ký pháp
+  // chuẩn (oval / chữ nhật / hình thoi) kèm hộp chú thích. Phải đứng TRƯỚC
+  // nhánh JSON chung ngay dưới, nếu không SpecFileViewer nhận trước và file
+  // rơi về khung nhìn mã nguồn.
+  if (isFlowchartFile(file)) {
+    return <FlowchartPreview projectId={projectId} file={file} />;
   }
   // A Customer-Journey / UX-Spec JSON (customer-journey-spec / ux-spec skill
   // output) renders as a visual spec; any other JSON falls back to source.
@@ -7572,15 +7606,10 @@ function resolveRelativePath(baseDir: string, rel: string): string {
  *  the image never loads. Point each LOCAL image ref at the project raw-file
  *  URL (resolved relative to the .md's own folder). External (http/data) srcs
  *  and already-absolute `/api/...` srcs are left untouched. */
-function inlineMarkdownImages(text: string, projectId: string, fileName: string): string {
-  const baseDir = baseDirFor(fileName);
-  return text.replace(/(!\[[^\]]*\]\()([^)]+)(\))/g, (full, open: string, src: string, close: string) => {
-    const url = src.trim();
-    if (/^(https?:|data:|\/)/i.test(url)) return full;
-    const abs = resolveRelativePath(baseDir, url.replace(/^\.\//, ''));
-    return `${open}${projectRawUrl(projectId, abs)}${close}`;
-  });
-}
+// Thân hàm đã chuyển sang ../runtime/markdown-images để DocRedlinePreview dùng
+// chung mà không phải import ngược vào file này (FileViewer đã import nó để
+// route file redline — chiều ngược lại sẽ thành import vòng).
+export { inlineMarkdownImages };
 
 function toOwnerRelativePath(ownerFileName: string, targetPath: string): string {
   const normalize = (value: string) => decodeURIComponent(value).replace(/^\/+/, '');
@@ -8095,6 +8124,89 @@ function PipelineSingleScreenViewer({ projectId, file }: { projectId: string; fi
   );
 }
 
+// docs-review's per-page fan-out manifest (`docs-review/review/index.json`,
+// written by apps/daemon/src/docs-review.ts's mergeChangeReports). Distinct
+// from docs-mockup-review's OWN index (`kind: 'docs-mockup-review-index'`,
+// DocsReviewPreview.tsx) — different workflow, different shape (`pages[]`
+// carries a change count + status, not a mockup score/verdict). Rendered as a
+// compact table only: each page's own redline already has its entry point in
+// the file rail (DocRedlinePreview above), so nesting per-page detail here
+// (as DocsReviewIndexPreview does for the mockup-review index) would just
+// duplicate that with no extra info.
+interface DocsSpecReviewIndex {
+  kind?: string;
+  schema_version?: string;
+  summary?: { pages?: number; changed_pages?: number; changes?: number; blockers?: number; majors?: number; minors?: number };
+  pages?: Array<{
+    slug?: string;
+    page?: string;
+    doc_path?: string;
+    review_path?: string;
+    changes?: number;
+    status?: 'succeeded' | 'failed';
+  }>;
+}
+
+function isDocsSpecReviewIndex(v: unknown): v is DocsSpecReviewIndex {
+  if (!v || typeof v !== 'object') return false;
+  const r = v as Record<string, unknown>;
+  if (r.kind === 'docs-spec-review-index') return true;
+  // Fallback: a pages[] array whose items carry a `review_path` — mirrors
+  // isDocsMockupReviewIndex's own shape fallback for a report saved without
+  // the `kind` marker round-tripping cleanly.
+  return Array.isArray(r.pages) && r.pages.some((p) => p && typeof p === 'object' && 'review_path' in (p as object));
+}
+
+function DocsSpecReviewIndexPreview({ index }: { index: DocsSpecReviewIndex }) {
+  const pages = index.pages ?? [];
+  const s = index.summary;
+  return (
+    <div className="viewer-body" style={{ padding: 18, overflow: 'auto' }}>
+      {s ? (
+        <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-soft, #4b5563)' }}>
+          {s.pages ?? pages.length} trang · {s.changed_pages ?? 0} trang có chỗ sửa · {s.changes ?? 0} chỗ sửa ·{' '}
+          {s.blockers ?? 0} nghiêm trọng · {s.majors ?? 0} nặng · {s.minors ?? 0} nhẹ
+        </p>
+      ) : null}
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+        <thead>
+          <tr>
+            {['Trang', 'Trạng thái', 'Số chỗ sửa'].map((h) => (
+              <th
+                key={h}
+                style={{
+                  textAlign: 'left',
+                  padding: '6px 10px',
+                  borderBottom: '1px solid var(--border, #e1e5eb)',
+                  color: 'var(--text-muted, #6b7280)',
+                  fontWeight: 650,
+                }}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {pages.map((p, i) => (
+            <tr key={p.slug ?? p.doc_path ?? i}>
+              <td style={{ padding: '6px 10px', borderBottom: '1px solid var(--border, #e1e5eb)' }}>
+                {p.page ?? p.slug ?? '—'}
+              </td>
+              <td style={{ padding: '6px 10px', borderBottom: '1px solid var(--border, #e1e5eb)' }}>
+                {p.status === 'succeeded' ? 'Đã sửa' : p.status === 'failed' ? 'Chạy hỏng' : '—'}
+              </td>
+              <td style={{ padding: '6px 10px', borderBottom: '1px solid var(--border, #e1e5eb)' }}>
+                {p.changes ?? 0}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // Customer-Journey / UX-Spec JSON viewer. When the document carries non-empty
 // journeys / personas / screens it renders the visual SpecPreview (with a
 // Mermaid + raw-source toggle); any other JSON falls back to the plain
@@ -8249,6 +8361,19 @@ function SpecFileViewer({
     }
   }, [text]);
 
+  // docs-review's own index.json (`kind: 'docs-spec-review-index'`) — see
+  // isDocsSpecReviewIndex's docblock for why this is a separate shape from
+  // docsMockupIndex above, not a variant of it.
+  const docsSpecReviewIndex = useMemo<DocsSpecReviewIndex | null>(() => {
+    if (text == null) return null;
+    try {
+      const p = JSON.parse(text) as unknown;
+      return isDocsSpecReviewIndex(p) ? (p as DocsSpecReviewIndex) : null;
+    } catch {
+      return null;
+    }
+  }, [text]);
+
   // A heuristic-review report (ux-review stage) also carries a `screens` array,
   // but those screens hold findings/verdict — NOT ux-spec name/components. Detect
   // it (by path or shape) so it renders as a review, not a broken spec.
@@ -8324,9 +8449,17 @@ function SpecFileViewer({
   );
   const lineCount = displayText ? displayText.split('\n').length : 0;
 
-  // A plain (non-spec, non-review, non-research, non-mockup-review, non-map)
-  // JSON file behaves like the generic text viewer.
-  if (text !== null && !spec && !review && !uxResearch && !docsMockupReview && !systemMap) {
+  // A plain (non-spec, non-review, non-research, non-mockup-review, non-map,
+  // non-docs-spec-review-index) JSON file behaves like the generic text viewer.
+  if (
+    text !== null &&
+    !spec &&
+    !review &&
+    !uxResearch &&
+    !docsMockupReview &&
+    !systemMap &&
+    !docsSpecReviewIndex
+  ) {
     return <TextViewer projectId={projectId} file={file} />;
   }
 
@@ -8394,8 +8527,15 @@ function SpecFileViewer({
       </div>
       <div className="viewer-body">
         {text === null ||
-        (spec === null && review === null && uxResearch === null && docsMockupReview === null && systemMap === null) ? (
+        (spec === null &&
+          review === null &&
+          uxResearch === null &&
+          docsMockupReview === null &&
+          systemMap === null &&
+          docsSpecReviewIndex === null) ? (
           <div className="viewer-empty">{t('fileViewer.loading')}</div>
+        ) : docsSpecReviewIndex && mode === 'preview' ? (
+          <DocsSpecReviewIndexPreview index={docsSpecReviewIndex} />
         ) : systemMap && mode === 'preview' ? (
           <SystemMapPreview doc={systemMap} />
         ) : docsMockupIndex && mode === 'preview' ? (

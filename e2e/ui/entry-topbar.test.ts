@@ -105,19 +105,13 @@ test('home topbar shows the new entry chips and links', async ({ page }) => {
   const topbar = page.locator('.entry-main__topbar');
   await expect(topbar).toBeVisible();
 
-  const star = page.getByTestId('entry-star-badge');
-  await expect(star).toBeVisible();
-  await expect(star).toHaveAttribute('href', 'https://github.com/nexu-io/open-design');
-  await expect(star).toContainText('Star');
-  await expect(star).toContainText('51.6K');
-
-  const discord = page.getByTestId('entry-discord-badge');
-  await expect(discord).toBeVisible();
-  await expect(discord).toHaveAttribute('href', 'https://discord.gg/mHAjSMV6gz');
-  await expect(discord).toContainText('Join Discord');
+  // Fork nội bộ: chrome marketing của upstream (GitHub Star / Discord / Use
+  // everywhere) đã gỡ khỏi topbar — khẳng định chúng KHÔNG quay lại.
+  await expect(page.getByTestId('entry-star-badge')).toHaveCount(0);
+  await expect(page.getByTestId('entry-discord-badge')).toHaveCount(0);
+  await expect(page.getByTestId('entry-use-everywhere-button')).toHaveCount(0);
 
   await expect(page.getByTestId('inline-model-switcher-chip')).toBeVisible();
-  await expect(page.getByTestId('entry-use-everywhere-button')).toBeVisible();
   await expect(page.getByRole('button', { name: OPEN_SETTINGS_LABEL })).toBeVisible();
 });
 

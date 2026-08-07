@@ -16,6 +16,7 @@ import {
   looksLikeConfluenceRef,
   renderConfluenceIndex,
   resolveBasEndpoint,
+  searchConfluencePages,
 } from '../src/bas/bas-client.js';
 import { parseRunSource } from '../src/pipeline-routes.js';
 
@@ -312,6 +313,108 @@ test('listDescendantPages returns the whole sub-tree with folder path relative t
     { pageId: '301', title: '1. Thiết lập', treePath: ['I. Tài khoản'] },
     { pageId: '200', title: 'I. Tài khoản', treePath: [] },
   ]);
+});
+
+test('searchConfluencePages (direct PAT) maps each hit\'s ancestors (root→down, page excluded) and hasChildren (existence-only) so the App-root dropdown can distinguish + expand pages correctly', async () => {
+  globalThis.fetch = vi.fn(async (url: any) => {
+    const u = String(url);
+    assert.match(u, /\/rest\/api\/content\/search\?cql=/);
+    assert.match(u, /expand=space,ancestors,children\.page/);
+    return makeRes(
+      JSON.stringify({
+        results: [
+          {
+            id: '301',
+            title: 'Đăng nhập',
+            space: { key: 'XPOS' },
+            _links: { webui: '/spaces/XPOS/pages/301/Dang-nhap' },
+            ancestors: [
+              { id: '1', title: 'Space XPOS' },
+              { id: '100', title: 'Dự án XPOS' },
+            ],
+          },
+          {
+            // Same title, DIFFERENT dự án — ancestors is what tells them apart.
+            id: '777',
+            title: 'Đăng nhập',
+            space: { key: 'VNPAY' },
+            ancestors: [
+              { id: '2', title: 'Space VNPAY' },
+              { id: '200', title: 'Dự án VNPAY' },
+            ],
+          },
+          // No ancestors on this hit (top-level page, or field omitted) →
+          // the mapped hit must not carry an empty/garbage ancestors array.
+          { id: '888', title: 'Trang gốc' },
+          // Has children (non-empty children.page.results, no `size`) → true.
+          { id: '111', title: 'Thư mục cha', children: { page: { results: [{ id: '112' }] } } },
+          // Empty children.page.results → false.
+          { id: '222', title: 'Trang lá', children: { page: { results: [] } } },
+          // No children block at all → undefined (unknown, not "no children").
+          { id: '333', title: 'Không rõ' },
+        ],
+      }),
+    ) as any;
+  }) as any;
+
+  const hits = await searchConfluencePages(null, 'Đăng nhập', 25, { base: 'https://wiki.test', token: 'pat' });
+  assert.deepEqual(hits, [
+    {
+      id: '301',
+      title: 'Đăng nhập',
+      url: 'https://wiki.test/spaces/XPOS/pages/301/Dang-nhap',
+      space: 'XPOS',
+      ancestors: ['Space XPOS', 'Dự án XPOS'],
+    },
+    {
+      id: '777',
+      title: 'Đăng nhập',
+      space: 'VNPAY',
+      ancestors: ['Space VNPAY', 'Dự án VNPAY'],
+    },
+    { id: '888', title: 'Trang gốc' },
+    { id: '111', title: 'Thư mục cha', hasChildren: true },
+    { id: '222', title: 'Trang lá', hasChildren: false },
+    { id: '333', title: 'Không rõ' },
+  ]);
+  // Every existing field stayed intact for the no-ancestors hit — no stray
+  // `ancestors: []` key.
+  assert.equal('ancestors' in hits[2]!, false);
+  // The unknown-children hit must not carry a guessed `hasChildren` key.
+  assert.equal('hasChildren' in hits[5]!, false);
+});
+
+test('searchConfluencePages (direct PAT) prefers children.page.size over results.length when both are present', async () => {
+  globalThis.fetch = vi.fn(async () =>
+    makeRes(
+      JSON.stringify({
+        results: [
+          // size says 3 children even though this page's results array (the
+          // default-limited preview) happens to be empty.
+          { id: '444', title: 'Size wins (true)', children: { page: { size: 3, results: [] } } },
+          // size says 0 even though a stale/truncated results array is non-empty.
+          { id: '555', title: 'Size wins (false)', children: { page: { size: 0, results: [{ id: '556' }] } } },
+        ],
+      }),
+    ) as any,
+  ) as any;
+
+  const hits = await searchConfluencePages(null, 'x', 25, { base: 'https://wiki.test', token: 'pat' });
+  assert.deepEqual(hits, [
+    { id: '444', title: 'Size wins (true)', hasChildren: true },
+    { id: '555', title: 'Size wins (false)', hasChildren: false },
+  ]);
+});
+
+test('searchConfluencePages (BAS gateway fallback) leaves ancestors and hasChildren undefined — the tool has no equivalent field', async () => {
+  stubFetch((name) => {
+    assert.equal(name, 'confluence_search');
+    return makeRes(toolResult(2, [{ page_id: '301', title: 'Đăng nhập', space_key: 'XPOS' }]));
+  });
+  const hits = await searchConfluencePages(EP, 'Đăng nhập');
+  assert.deepEqual(hits, [{ id: '301', title: 'Đăng nhập', space: 'XPOS' }]);
+  assert.equal('ancestors' in hits[0]!, false);
+  assert.equal('hasChildren' in hits[0]!, false);
 });
 
 test('fetchConfluencePages nests sub-tree pages into folders and depth-corrects the image prefix', async () => {

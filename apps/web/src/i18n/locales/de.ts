@@ -225,6 +225,7 @@ export const de: Dict = {
   'settings.agentInstallGroup': 'Zur Installation verfügbar ({count})',
   'settings.agentAuthRequired': 'Authentifizierung erforderlich',
   'settings.agentAuthUnknown': 'Authentifizierungsstatus unbekannt',
+  'settings.agentAuthOk': 'Angemeldet',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'Anbieter schnell ausfüllen',
   'settings.customProvider': 'Benutzerdefinierter Anbieter',
