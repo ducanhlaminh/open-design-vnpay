@@ -1443,11 +1443,13 @@ export function PipelinesView() {
     ? railCfg.confluencePages.length === 1
       ? (railCfg.confluencePages[0]!.title ?? railCfg.confluencePages[0]!.url ?? railCfg.confluencePages[0]!.id ?? 'Confluence')
       : `${railCfg.confluencePages.length} trang Confluence`
-    : railCfg?.docsFromUpload
-      ? 'File tải lên'
-      : railCfg?.basDocumentTitle || railCfg?.basDocumentId
-        ? `BAS · ${railCfg.basDocumentTitle ?? railCfg.basDocumentId}`
-        : 'Chưa cấu hình';
+    : railCfg?.appFiles?.paths?.length
+      ? `Tài liệu App · ${railCfg.appFiles.paths.length} file`
+      : railCfg?.docsFromUpload
+        ? 'File tải lên'
+        : railCfg?.basDocumentTitle || railCfg?.basDocumentId
+          ? `BAS · ${railCfg.basDocumentTitle ?? railCfg.basDocumentId}`
+          : 'Chưa cấu hình';
   const railDsLabel =
     railCfg?.designSystemId === undefined
       ? 'Mặc định'
