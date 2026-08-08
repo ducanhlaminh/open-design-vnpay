@@ -12,7 +12,9 @@ import {
   isPoolClean,
   markBranchDistilled,
   pendingCount,
+  poolPrefixLen,
   readManifest,
+  rebalanceBranches,
   setBranchState,
   sha256,
   stageAppDocsPool,
@@ -86,6 +88,40 @@ describe('app-pool — deriveBranch (§2.1 "slug nhánh cấp-1")', () => {
 
   it('a standalone (folder-less) page becomes its own one-page branch, minus the .md extension', () => {
     expect(deriveBranch('standalone-page.md')).toBe('standalone-page');
+  });
+});
+
+describe('app-pool — poolPrefixLen + rebalanceBranches (path tuyệt đối, branch sau prefix)', () => {
+  const page = (path: string) => ({
+    pageId: path, path, title: path, branch: '', contentHash: 'h', fetchedAt: 1,
+    distill: { state: 'fetched' as const, distilledHash: null },
+  });
+
+  it('prefix = chuỗi folder chung của MỌI trang, không ăn vào tên file', () => {
+    expect(poolPrefixLen([page('Home/Docs/A/x.md'), page('Home/Docs/B/y.md')])).toBe(2);
+    // Một trang nằm NGAY tại mức prefix (file) → prefix dừng trước đó.
+    expect(poolPrefixLen([page('Home/Docs.md'), page('Home/Docs/B/y.md')])).toBe(1);
+    expect(poolPrefixLen([page('x.md')])).toBe(0);
+    expect(poolPrefixLen([])).toBe(0);
+  });
+
+  it('rebalanceBranches: branch = segment đầu SAU prefix; trang tại gốc thành branch riêng', () => {
+    const manifest = { version: 1 as const, pages: [
+      page('Home/Docs/Root.md'),
+      page('Home/Docs/Root/Sub/leaf.md'),
+      page('Home/Docs/Other/z.md'),
+    ] };
+    rebalanceBranches(manifest);
+    expect(manifest.pages.map((p) => p.branch)).toEqual(['Root', 'Root', 'Other']);
+  });
+
+  it('rebalanceBranches: import thêm trang ngoài gốc cũ → prefix co lại, branch tính lại nhất quán', () => {
+    const manifest = { version: 1 as const, pages: [page('Home/Docs/A/x.md'), page('Home/Docs/A/y.md')] };
+    rebalanceBranches(manifest);
+    expect(manifest.pages.map((p) => p.branch)).toEqual(['x', 'y']);
+    manifest.pages.push(page('Home/Wiki/B/z.md'));
+    rebalanceBranches(manifest);
+    expect(manifest.pages.map((p) => p.branch)).toEqual(['Docs', 'Docs', 'Wiki']);
   });
 });
 
@@ -346,7 +382,10 @@ describe('app-pool — importConfluenceIntoPool (stubbed fetch core)', () => {
     expect(result.imported).toBe(2);
     expect(result.updated).toBe(0);
     expect(result.pages.map((p) => p.path).sort()).toEqual(['branch-x/page-0.md', 'branch-x/page-1.md']);
-    expect(result.pages[0]!.branch).toBe('branch-x');
+    // Path tuyệt đối + branch-sau-prefix: 'branch-x' là folder chung của MỌI
+    // trang mà không trang nào nằm ngay mức đó → nó là prefix (giàn giáo),
+    // branch tính từ segment sau — mỗi page thành branch riêng.
+    expect(result.pages[0]!.branch).toBe('page-0');
     expect(result.pages.every((p) => p.distill.state === 'fetched')).toBe(true);
 
     const manifest = await readManifest(projectsDir, 'app-1');

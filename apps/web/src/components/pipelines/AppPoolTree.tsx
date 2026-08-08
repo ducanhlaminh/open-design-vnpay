@@ -180,7 +180,17 @@ export interface AppPoolTreeProps {
  *  ticked) reads as "off" for the click decision (tapping it fills the rest
  *  in, same as an indeterminate checkbox committing to "on" on click). */
 export function AppPoolTree({ pages, selection, renderLeafActions, query }: AppPoolTreeProps) {
-  const tree = useMemo(() => buildAppPoolTree(pages), [pages]);
+  // Path pool lưu TUYỆT ĐỐI theo chuỗi tổ tiên Confluence thật (bất biến theo
+  // batch import) — phần "giàn giáo wiki" chung (space home…) là chuỗi folder
+  // gốc đơn-con KHÔNG có trang bắt cặp: ẩn đi khi render, cây bắt đầu từ gốc
+  // chung có nội dung thật.
+  const tree = useMemo(() => {
+    let nodes = buildAppPoolTree(pages);
+    while (nodes.length === 1 && nodes[0]!.page === undefined && nodes[0]!.children.length > 0) {
+      nodes = nodes[0]!.children;
+    }
+    return nodes;
+  }, [pages]);
   const normalizedQuery = useMemo(() => normalizeForSearch(query ?? '').trim(), [query]);
   const visibleTree = useMemo(
     () => (normalizedQuery ? filterTree(tree, normalizedQuery) : tree),

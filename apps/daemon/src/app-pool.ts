@@ -143,6 +143,34 @@ export function sha256(content: string | Buffer): string {
  *  page with no subfolder (a lone top-level pick) becomes its own one-page
  *  branch — the filename minus nothing stripped, exactly the first (only)
  *  segment. */
+/** Số segment FOLDER đầu path mà MỌI trang trong pool cùng chia sẻ — phần
+ *  "giàn giáo wiki" (space home, thư mục gốc…) khi path lưu TUYỆT ĐỐI theo
+ *  chuỗi tổ tiên thật. Branch chưng cất tính từ SAU prefix này (không thì cả
+ *  pool dồn về một branch duy nhất); UI cũng ẩn nó khi render cây. Không bao
+ *  giờ ăn vào segment cuối (tên file) của bất kỳ trang nào. */
+export function poolPrefixLen(pages: Array<{ path: string }>): number {
+  if (pages.length === 0) return 0;
+  const segLists = pages.map((p) => p.path.replace(/\\/g, '/').split('/').filter(Boolean));
+  const max = Math.min(...segLists.map((s) => s.length - 1));
+  let len = 0;
+  for (let i = 0; i < max; i += 1) {
+    const seg = segLists[0]![i];
+    if (!segLists.every((s) => s[i] === seg)) break;
+    len = i + 1;
+  }
+  return len;
+}
+
+/** Gán lại `branch` cho MỌI trang từ prefix pool-wide hiện hành — gọi sau mỗi
+ *  lần merge import (prefix có thể đổi khi trang mới nằm ngoài gốc cũ). */
+export function rebalanceBranches(manifest: AppPoolManifest): void {
+  const prefixLen = poolPrefixLen(manifest.pages);
+  for (const page of manifest.pages) {
+    const segments = page.path.replace(/\\/g, '/').split('/').filter(Boolean);
+    page.branch = deriveBranch(segments.slice(prefixLen).join('/'));
+  }
+}
+
 export function deriveBranch(relPath: string): string {
   const norm = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
   const idx = norm.indexOf('/');
@@ -369,6 +397,9 @@ export async function importConfluenceIntoPool(opts: {
     }
   }
   const { manifest: next, imported, updated } = upsertPagesFromFetch(current, writable, now);
+  // Path giờ TUYỆT ĐỐI theo tổ tiên thật → branch phải tính SAU prefix chung
+  // của cả pool (không thì mọi trang chung một branch "giàn giáo wiki").
+  rebalanceBranches(next);
   await writeManifest(projectsDir, appId, next);
   await writeIndexMd(projectsDir, appId, next);
   return { imported, updated, pages: next.pages };

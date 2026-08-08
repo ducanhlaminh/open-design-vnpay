@@ -113,7 +113,7 @@ export function NewAppModal({
     // Từ đây App đã tồn tại — mọi lỗi tiếp theo là lỗi IMPORT, không phải lỗi
     // tạo App; nhưng vẫn phải RESOLVE trước khi lật màn (xem docblock ở đầu
     // file) để AppPoolSection's mount-time pool fetch thấy đúng dữ liệu.
-    let anyImported = false;
+    let importFailed = false;
     if (ticked.size > 0) {
       setPhase('importing');
       const refs = [...ticked];
@@ -121,29 +121,31 @@ export function NewAppModal({
       try {
         const result = await importConfluenceInBatches(newAppId, refs, (done, total) => setImportProgress({ done, total }));
         setImportResult(result);
-        anyImported = true;
       } catch (cause) {
+        importFailed = true;
         if (cause instanceof ConfluenceImportBatchError) {
           setImportError(
             `${cause.message} (đã nhập ${cause.succeededRefs.length}/${refs.length} trang trước khi lỗi — không rollback)`,
           );
-          if (cause.succeededRefs.length > 0) {
-            setImportResult(cause.partial);
-            anyImported = true;
-          }
+          if (cause.succeededRefs.length > 0) setImportResult(cause.partial);
         } else {
           setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
         }
       }
       setImportProgress(null);
     }
-    // KHÔNG tự chưng cất ở bước tạo App nữa: tạo App chỉ NẠP tài liệu vào
-    // pool. Chưng cất dời vào bước 1 của workflow ("Tài liệu (chưng cất &
-    // nạp)") — chạy lần đầu sẽ tự chưng cất; nút "Chưng cất tài liệu" trong
-    // AppPoolSection vẫn còn cho ai muốn chạy trước (pre-warm, tùy chọn).
+    // KHÔNG tự chưng cất ở bước tạo App nữa (việc của bước 1 workflow), và
+    // KHÔNG còn màn "App đã tạo" trung gian: thành công → đóng modal luôn,
+    // card App mới xuất hiện là xác nhận. Màn xác nhận CHỈ giữ cho ca import
+    // LỖI — đóng câm khi lỗi là nuốt mất thông tin người dùng cần thấy.
     setPhase(null);
-    setCreatedAppId(newAppId);
     setBusy(false);
+    if (importFailed) {
+      setCreatedAppId(newAppId);
+      return;
+    }
+    await onCreated(newAppId);
+    onClose();
   };
 
   const finish = async () => {
