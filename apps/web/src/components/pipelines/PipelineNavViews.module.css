@@ -1340,58 +1340,57 @@
 }
 
 /* ---- App detail tabs (PipelinesFeaturesView: Features / Tài liệu) -------- */
-/* Same treatment as PipelinesView's workflow picker (`.pl-workflow-tab` in
-   styles/home/pipelines.css: equal-width cards, accent border+tint when
-   active) — reused here as CSS-module classes instead of the legacy global
-   selectors, per this module's own convention (see file header docblock:
-   new component styles default to a Module, not styles/home/pipelines.css). */
+/* Classic underline tab bar — a compact horizontal row (content-sized
+   buttons, NOT equal-width cards) with a full-width hairline along the
+   bottom of the bar; the active tab reads via bold accent text plus its OWN
+   2-3px accent border-bottom sitting flush on that hairline. No card
+   background/border on either state — that reads as "2 info blocks", not a
+   tab switcher (previous attempt below, replaced per feedback).
+   Traced *.module.css and styles/*.css for an existing underline-tab
+   precedent first — none found (`.pl-workflow-tab`/`.viewer-tab`/
+   `.subtab-pill`/`.pl-fanout-tab` are all filled pill/card treatments, not
+   underline), so this is built fresh from the same neutral tokens
+   (--accent/--border/--text-muted) everything else here already uses. */
 .detailTabs {
   display: flex;
-  gap: 10px;
+  align-items: stretch;
+  gap: 22px;
+  border-bottom: 1px solid var(--border);
 }
 
 .detailTab {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  text-align: left;
-  padding: 10px 16px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--bg-panel);
-  box-shadow: var(--shadow-xs);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 1px 10px;
+  border: none;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
-  transition: border-color 0.18s var(--pnv-ease), background 0.18s var(--pnv-ease),
-    box-shadow 0.18s var(--pnv-ease), transform 0.18s var(--pnv-ease);
+  transition: color 0.18s var(--pnv-ease), border-color 0.18s var(--pnv-ease);
 }
 
 .detailTab:hover {
-  border-color: var(--border-strong);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-sm);
+  color: var(--text-strong);
 }
 
 .detailTabActive {
-  border-color: var(--accent);
-  background: var(--accent-tint);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  color: var(--accent-strong);
+  border-bottom-color: var(--accent);
 }
 
 .detailTabName {
   font-size: 14px;
-  font-weight: 650;
-  color: var(--text-strong);
+  font-weight: 550;
 }
 
 .detailTabActive .detailTabName {
-  color: var(--accent-strong);
+  font-weight: 650;
 }
 
 .detailTabMeta {
   font-size: 12px;
-  line-height: 1.4;
   color: var(--text-muted);
 }
 
@@ -1404,7 +1403,8 @@
     flex-direction: column;
   }
   .detailTabs {
-    flex-direction: column;
+    gap: 14px;
+    overflow-x: auto;
   }
   .toolbar {
     flex-direction: column;

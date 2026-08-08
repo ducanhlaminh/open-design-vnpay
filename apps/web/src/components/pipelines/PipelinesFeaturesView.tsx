@@ -238,7 +238,8 @@ export function PipelinesFeaturesView({
           >
             <span className={styles.detailTabName}>Features</span>
             <span className={styles.detailTabMeta}>
-              {counts.all} feature · {counts.done} xong
+              · {counts.all}
+              {counts.done > 0 ? ` (${counts.done} xong)` : ''}
             </span>
           </button>
           <button
@@ -250,9 +251,10 @@ export function PipelinesFeaturesView({
           >
             <span className={styles.detailTabName}>Tài liệu</span>
             <span className={styles.detailTabMeta}>
+              ·{' '}
               {poolSummary
-                ? `${poolSummary.pages} trang · ${poolSummary.clean ? 'pool sạch' : `${poolSummary.pending} pending`}`
-                : 'Docs đã import/chưng cất'}
+                ? `${poolSummary.pages} trang${poolSummary.clean ? ' (sạch)' : ` (${poolSummary.pending} pending)`}`
+                : '…'}
             </span>
           </button>
         </div>
