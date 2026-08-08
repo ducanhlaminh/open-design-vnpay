@@ -130,3 +130,8 @@
   color: var(--text-soft);
   font-size: 12.5px;
 }
+
+/* Preview 2 cột (AppPoolSection): tên trang bấm được + dòng đang preview. */
+.rowClickable { cursor: pointer; }
+.rowClickable:hover .rowTitle { color: var(--accent); }
+.rowActive { background: color-mix(in srgb, var(--accent) 9%, transparent); border-radius: 6px; }

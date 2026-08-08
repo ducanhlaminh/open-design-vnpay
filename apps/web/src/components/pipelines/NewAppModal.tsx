@@ -64,6 +64,7 @@ export function NewAppModal({
   const apps = useAppOptions();
   const [name, setName] = useState('');
   const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const [relatedTicked, setRelatedTicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<'creating' | 'importing' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -119,7 +120,7 @@ export function NewAppModal({
       const refs = [...ticked];
       setImportProgress({ done: 0, total: refs.length });
       try {
-        const result = await importConfluenceInBatches(newAppId, refs, (done, total) => setImportProgress({ done, total }));
+        const result = await importConfluenceInBatches(newAppId, refs, (done, total) => setImportProgress({ done, total }), [...relatedTicked]);
         setImportResult(result);
       } catch (cause) {
         importFailed = true;
@@ -231,7 +232,7 @@ export function NewAppModal({
         }
       >
         {(fieldProps) => (
-          <ConfluenceTreePicker {...fieldProps} ticked={ticked} onTickedChange={setTicked} disabled={busy} />
+          <ConfluenceTreePicker {...fieldProps} ticked={ticked} onTickedChange={setTicked} relatedTicked={relatedTicked} onRelatedTickedChange={setRelatedTicked} disabled={busy} />
         )}
       </FormField>
 

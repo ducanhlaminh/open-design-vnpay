@@ -77,8 +77,12 @@ export async function importConfluenceInBatches(
   appId: string,
   refs: string[],
   onProgress?: (done: number, total: number) => void,
+  /** Tập con của refs đến từ "Quét tài liệu liên quan" — daemon gắn cờ
+   *  related trên manifest để UI tách nhóm. */
+  relatedRefs?: string[],
 ): Promise<AppPoolImportResponse> {
   const total = refs.length;
+  const relatedSet = new Set(relatedRefs ?? []);
   let aggregate: AppPoolImportResponse = { imported: 0, updated: 0, pages: [] };
   const succeededRefs: string[] = [];
   onProgress?.(0, total);
@@ -88,7 +92,7 @@ export async function importConfluenceInBatches(
       const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/import-confluence`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ refs: chunk }),
+        body: JSON.stringify({ refs: chunk, relatedRefs: chunk.filter((r) => relatedSet.has(r)) }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || `Nhập tài liệu thất bại (${res.status}).`);
@@ -261,6 +265,11 @@ export interface ConfluenceTreePickerProps {
    *  across an App-creation submit (`NewAppModal`). */
   ticked: Set<string>;
   onTickedChange: (next: Set<string>) => void;
+  /** Controlled (optional): tập pageId đã tick TỪ danh sách "Tài liệu liên
+   *  quan" — subset của `ticked`. Caller giữ để gửi `relatedRefs` khi import
+   *  (daemon gắn cờ related, UI pool tách nhóm "Docs liên quan"). */
+  relatedTicked?: Set<string>;
+  onRelatedTickedChange?: (next: Set<string>) => void;
   disabled?: boolean;
   placeholder?: string;
   autoFocus?: boolean;
@@ -277,6 +286,8 @@ export interface ConfluenceTreePickerProps {
 export function ConfluenceTreePicker({
   ticked,
   onTickedChange,
+  relatedTicked,
+  onRelatedTickedChange,
   disabled,
   placeholder,
   autoFocus,
@@ -333,9 +344,16 @@ export function ConfluenceTreePicker({
   };
   const toggleRelated = (pageId: string) => {
     const next = new Set(ticked);
-    if (next.has(pageId)) next.delete(pageId);
-    else next.add(pageId);
+    const nextRelated = new Set(relatedTicked ?? []);
+    if (next.has(pageId)) {
+      next.delete(pageId);
+      nextRelated.delete(pageId);
+    } else {
+      next.add(pageId);
+      nextRelated.add(pageId);
+    }
     onTickedChange(next);
+    onRelatedTickedChange?.(nextRelated);
   };
 
   const updatePos = useCallback(() => {
@@ -679,6 +697,7 @@ export interface ConfluenceTreeImportProps {
  *  directly once the App exists). */
 export function ConfluenceTreeImport({ appId, onImported, onPartialImport, disabled }: ConfluenceTreeImportProps) {
   const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const [relatedTicked, setRelatedTicked] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -690,7 +709,7 @@ export function ConfluenceTreeImport({ appId, onImported, onPartialImport, disab
     const refs = [...ticked];
     setImportProgress({ done: 0, total: refs.length });
     try {
-      const result = await importConfluenceInBatches(appId, refs, (done, total) => setImportProgress({ done, total }));
+      const result = await importConfluenceInBatches(appId, refs, (done, total) => setImportProgress({ done, total }), [...relatedTicked]);
       onImported(result);
       setTicked(new Set());
     } catch (cause) {
@@ -719,7 +738,7 @@ export function ConfluenceTreeImport({ appId, onImported, onPartialImport, disab
 
   return (
     <div className={styles.wrap}>
-      <ConfluenceTreePicker ticked={ticked} onTickedChange={setTicked} disabled={disabled || importing} />
+      <ConfluenceTreePicker ticked={ticked} onTickedChange={setTicked} relatedTicked={relatedTicked} onRelatedTickedChange={setRelatedTicked} disabled={disabled || importing} />
       {ticked.size > 0 && !importing ? (
         <div className={styles.summaryRow}>
           <p className={styles.summaryText}>{ticked.size} trang đã tick</p>

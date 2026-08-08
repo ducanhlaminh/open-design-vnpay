@@ -47,10 +47,12 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
   const [error, setError] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [deleting, setDeleting] = useState<AppPoolPage | null>(null);
-  const [overviewOpen, setOverviewOpen] = useState(false);
-  const [overviewHtml, setOverviewHtml] = useState<string | null>(null);
-  const [overviewLoading, setOverviewLoading] = useState(false);
-  const [overviewError, setOverviewError] = useState<string | null>(null);
+  // Preview pane (cột phải của layout 2 cột): trang đang xem — click tên
+  // trang trong tree, hoặc nút "Xem tổng quan" (path đặc biệt _overview.md).
+  const [preview, setPreview] = useState<{ path: string; title: string } | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   const loadPool = useCallback(async (background = false) => {
     if (background) setRefreshing(true);
@@ -74,8 +76,9 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
 
   useEffect(() => {
     setPool(null);
-    setOverviewOpen(false);
-    setOverviewHtml(null);
+    setPreview(null);
+    setPreviewHtml(null);
+    setPreviewError(null);
     wasRunningRef.current = false;
     setDistillFailed(false);
     void loadPool();
@@ -130,20 +133,20 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
     await loadPool(true);
   };
 
-  const openOverview = () => {
-    setOverviewOpen((open) => !open);
-    if (overviewOpen || overviewHtml !== null) return;
-    setOverviewLoading(true);
-    setOverviewError(null);
+  const openPreviewPath = (path: string, title: string) => {
+    setPreview({ path, title });
+    setPreviewHtml(null);
+    setPreviewError(null);
+    setPreviewLoading(true);
     void (async () => {
       try {
-        const text = await fetchProjectFileText(appId, 'docs/_overview.md');
-        if (text === null) throw new Error('Không đọc được _overview.md.');
-        setOverviewHtml(renderMarkdownToSafeHtml(text));
+        const text = await fetchProjectFileText(appId, `docs/${path}`);
+        if (text === null) throw new Error(`Không đọc được ${path}.`);
+        setPreviewHtml(renderMarkdownToSafeHtml(text));
       } catch (cause) {
-        setOverviewError(cause instanceof Error ? cause.message : 'Không đọc được _overview.md.');
+        setPreviewError(cause instanceof Error ? cause.message : `Không đọc được ${path}.`);
       } finally {
-        setOverviewLoading(false);
+        setPreviewLoading(false);
       }
     })();
   };
@@ -174,9 +177,9 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
         </div>
         <div className={styles.headerActions}>
           {pool.overviewExists ? (
-            <button type="button" className={styles.secondaryButton} onClick={openOverview}>
+            <button type="button" className={styles.secondaryButton} onClick={() => openPreviewPath('_overview.md', 'Tổng quan tài liệu (_overview.md)')}>
               <Icon name="eye" size={13} />
-              {overviewOpen ? 'Ẩn tổng quan' : 'Xem tổng quan'}
+              Xem tổng quan
             </button>
           ) : null}
           {pool.pages.length > 0 && !hideDistill ? (
@@ -210,35 +213,66 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
       ) : null}
       {error ? <p className={styles.error}>{error}</p> : null}
 
-      {overviewOpen ? (
-        <div className={styles.overviewPanel}>
-          {overviewLoading ? (
-            <p className={styles.muted}>Đang tải _overview.md…</p>
-          ) : overviewError ? (
-            <p className={styles.error}>{overviewError}</p>
-          ) : overviewHtml ? (
-            // eslint-disable-next-line react/no-danger -- renderMarkdownToSafeHtml escapes raw HTML by contract.
-            <div className={`${styles.overviewBody} markdown-rendered`} dangerouslySetInnerHTML={{ __html: overviewHtml }} />
-          ) : null}
-        </div>
-      ) : null}
-
-      {pool.pages.length > 0 ? (
-        <AppPoolTree
-          pages={pool.pages}
-          renderLeafActions={(page) => (
-            <button
-              type="button"
-              className={styles.deleteButton}
-              onClick={() => setDeleting(page)}
-              aria-label={`Xóa trang ${page.title}`}
-              title="Xóa trang"
-            >
-              <Icon name="trash" size={13} />
-            </button>
-          )}
-        />
-      ) : null}
+      {pool.pages.length > 0 ? (() => {
+        // 2 cột: trái = tree tách "Docs chính" / "Docs liên quan" (cờ related
+        // gắn lúc import qua "Quét tài liệu liên quan"; pool cũ chưa có cờ →
+        // tất cả là docs chính), phải = preview nội dung trang đang chọn.
+        const mainPages = pool.pages.filter((page) => page.related !== true);
+        const relatedPages = pool.pages.filter((page) => page.related === true);
+        const leafActions = (page: AppPoolPage) => (
+          <button
+            type="button"
+            className={styles.deleteButton}
+            onClick={() => setDeleting(page)}
+            aria-label={`Xóa trang ${page.title}`}
+            title="Xóa trang"
+          >
+            <Icon name="trash" size={13} />
+          </button>
+        );
+        const openPage = (page: AppPoolPage) => openPreviewPath(page.path, page.title);
+        return (
+          <div className={styles.split}>
+            <div className={styles.treePane}>
+              <div className={styles.groupLabel}>Docs chính</div>
+              {mainPages.length > 0 ? (
+                <AppPoolTree pages={mainPages} renderLeafActions={leafActions} onOpenPage={openPage} activePath={preview?.path} />
+              ) : (
+                <p className={styles.muted}>Không có docs chính.</p>
+              )}
+              {relatedPages.length > 0 ? (
+                <>
+                  <div className={styles.groupLabel}>Docs liên quan</div>
+                  <AppPoolTree pages={relatedPages} renderLeafActions={leafActions} onOpenPage={openPage} activePath={preview?.path} />
+                </>
+              ) : null}
+            </div>
+            <div className={styles.previewPane}>
+              {preview ? (
+                <>
+                  <div className={styles.previewHead}>
+                    <div className={styles.previewTitleWrap}>
+                      <span className={styles.previewTitle}>{preview.title}</span>
+                      <span className={styles.previewPath}>{preview.path}</span>
+                    </div>
+                    <button type="button" className={styles.secondaryButton} onClick={() => setPreview(null)} aria-label="Đóng preview">
+                      <Icon name="close" size={13} />
+                    </button>
+                  </div>
+                  {previewLoading ? <p className={styles.muted}>Đang tải…</p> : null}
+                  {previewError ? <p className={styles.error}>{previewError}</p> : null}
+                  {previewHtml ? (
+                    // eslint-disable-next-line react/no-danger -- renderMarkdownToSafeHtml escapes raw HTML by contract.
+                    <div className={`${styles.previewBody} markdown-rendered`} dangerouslySetInnerHTML={{ __html: previewHtml }} />
+                  ) : null}
+                </>
+              ) : (
+                <p className={styles.previewHint}>Bấm vào tên một trang bên trái để xem nội dung — hoặc "Xem tổng quan" ở trên.</p>
+              )}
+            </div>
+          </div>
+        );
+      })() : null}
 
       {!hideImport ? (
         <div className={styles.importSection}>

@@ -99,6 +99,7 @@ function normalizeManifest(raw: unknown): AppPoolManifest {
       branch: String(p.branch ?? ''),
       contentHash: String(p.contentHash ?? ''),
       fetchedAt: typeof p.fetchedAt === 'number' ? p.fetchedAt : 0,
+      ...(p.related === true ? { related: true } : {}),
       distill: normalizeDistill(p.distill),
     }))
     .filter((p) => p.pageId && p.path);
@@ -280,7 +281,7 @@ export async function writeIndexMd(
  *  as updated). */
 export function upsertPagesFromFetch(
   manifest: AppPoolManifest,
-  fetched: Array<{ pageId: string; title: string; path: string; contentHash: string }>,
+  fetched: Array<{ pageId: string; title: string; path: string; contentHash: string; related?: boolean }>,
   now: number,
 ): { manifest: AppPoolManifest; imported: number; updated: number } {
   const byId = new Map(manifest.pages.map((p) => [p.pageId, p] as const));
@@ -298,22 +299,33 @@ export function upsertPagesFromFetch(
         branch,
         contentHash: f.contentHash,
         fetchedAt: now,
+        ...(f.related ? { related: true } : {}),
         distill: { state: 'fetched', distilledHash: null },
       });
       continue;
     }
     if (existing.contentHash === f.contentHash && existing.path === f.path) {
-      // Nothing changed — leave the entry (including its distill state) alone.
+      // Nội dung không đổi — chỉ đồng bộ cờ related (import lại một trang
+      // "liên quan" bằng tick trực tiếp thì nó thành docs chính, và ngược
+      // lại); KHÔNG đụng distill state, không tính là updated.
+      if (f.related === true && existing.related !== true) byId.set(f.pageId, { ...existing, related: true });
+      else if (f.related === false && existing.related === true) {
+        const { related: _related, ...rest } = existing;
+        byId.set(f.pageId, rest);
+      }
       continue;
     }
     updated += 1;
+    const nextRelated = f.related === undefined ? existing.related === true : f.related;
+    const { related: _dropRelated, ...restExisting } = existing;
     byId.set(f.pageId, {
-      ...existing,
+      ...restExisting,
       path: f.path,
       title: f.title,
       branch,
       contentHash: f.contentHash,
       fetchedAt: now,
+      ...(nextRelated ? { related: true } : {}),
       distill: { ...existing.distill, state: 'stale' },
     });
   }
@@ -330,6 +342,9 @@ export async function importConfluenceIntoPool(opts: {
   runtimeDataDir: string;
   appId: string;
   refs: string[];
+  /** Tập con của refs được chọn từ "Quét tài liệu liên quan" — gắn cờ
+   *  `related: true` trên manifest để UI tách nhóm "Docs liên quan". */
+  relatedRefs?: string[];
   followLinks?: boolean;
   includeDescendants?: boolean;
 }): Promise<{ imported: number; updated: number; pages: ManifestPage[] }> {
@@ -370,7 +385,12 @@ export async function importConfluenceIntoPool(opts: {
     ...(treePages.length ? { treePages } : {}),
   });
   const now = Date.now();
-  const writable: Array<{ pageId: string; title: string; path: string; contentHash: string }> = [];
+  // Cờ related theo pageId (refs của "Quét tài liệu liên quan" là page id/URL
+  // — resolve như refs thường). Trang KHÔNG nằm trong relatedRefs được đánh
+  // dấu tường minh false: tick trực tiếp một trang từng là "liên quan" sẽ
+  // nâng nó lên docs chính.
+  const relatedIds = new Set((opts.relatedRefs ?? []).map((r) => extractPageId(r)));
+  const writable: Array<{ pageId: string; title: string; path: string; contentHash: string; related?: boolean }> = [];
   for (const p of fetched) {
     // `p.relPath` is `docs/<branch>/.../<slug>.md` (flat layout) — strip the
     // leading `docs/` so the manifest `path` is relative to the App's docs/
@@ -384,6 +404,7 @@ export async function importConfluenceIntoPool(opts: {
       title: p.title,
       path: relInDocs,
       contentHash: sha256(p.content),
+      related: relatedIds.has(p.pageId),
     });
   }
   const current = await readManifest(projectsDir, appId);

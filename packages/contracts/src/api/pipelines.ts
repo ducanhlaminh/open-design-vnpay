@@ -653,6 +653,10 @@ export interface AppPoolPage {
   branch: string;
   contentHash: string;
   fetchedAt: number;
+  /** Trang vào pool qua "Quét tài liệu liên quan" (depth-1) chứ không phải
+   *  do user tick trực tiếp — UI tách nhóm "Docs liên quan" riêng. Vắng mặt
+   *  (pool cũ) = docs chính. */
+  related?: boolean;
   distill: { state: AppPoolDistillState; distilledHash: string | null };
 }
 

@@ -173,13 +173,18 @@ export interface AppPoolTreeProps {
   renderLeafActions?: (page: AppPoolPage) => ReactNode;
   /** Từ khóa lọc; rỗng/undefined thì hiển thị toàn bộ cây. */
   query?: string;
+  /** Bấm vào TÊN một trang → mở preview (AppPoolSection 2 cột). Vắng mặt thì
+   *  tên trang không bấm được như cũ. */
+  onOpenPage?: (page: AppPoolPage) => void;
+  /** Path trang đang preview — highlight dòng tương ứng. */
+  activePath?: string;
 }
 
 /** Cascade tick: ticking a folder ticks every leaf page under it (all
  *  levels); unticking mirrors it. Mixed state (some but not all leaves
  *  ticked) reads as "off" for the click decision (tapping it fills the rest
  *  in, same as an indeterminate checkbox committing to "on" on click). */
-export function AppPoolTree({ pages, selection, renderLeafActions, query }: AppPoolTreeProps) {
+export function AppPoolTree({ pages, selection, renderLeafActions, query, onOpenPage, activePath }: AppPoolTreeProps) {
   // Path pool lưu TUYỆT ĐỐI theo chuỗi tổ tiên Confluence thật (bất biến theo
   // batch import) — phần "giàn giáo wiki" chung (space home…) là chuỗi folder
   // gốc đơn-con KHÔNG có trang bắt cặp: ẩn đi khi render, cây bắt đầu từ gốc
@@ -251,7 +256,10 @@ export function AppPoolTree({ pages, selection, renderLeafActions, query }: AppP
     const displayName = node.page ? node.page.title : node.name;
     return (
       <div key={node.key}>
-        <div className={node.page ? styles.row : styles.folderRow} style={{ paddingLeft: indent }}>
+        <div
+          className={`${node.page ? styles.row : styles.folderRow}${node.page && activePath === node.page.path ? ' ' + styles.rowActive : ''}`}
+          style={{ paddingLeft: indent }}
+        >
           {hasChildren ? (
             <button
               type="button"
@@ -277,7 +285,11 @@ export function AppPoolTree({ pages, selection, renderLeafActions, query }: AppP
             </button>
           ) : null}
           {node.page ? (
-            <span className={styles.rowBody} title={node.page.path}>
+            <span
+              className={`${styles.rowBody}${onOpenPage ? ' ' + styles.rowClickable : ''}`}
+              title={node.page.path}
+              onClick={onOpenPage ? () => onOpenPage(node.page!) : undefined}
+            >
               <span className={styles.rowTitle}>{displayName}</span>
             </span>
           ) : (

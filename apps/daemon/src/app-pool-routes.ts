@@ -87,12 +87,16 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
     // default follow như cũ — khác mục đích.)
     const followLinks = req.body?.followLinks === true;
     const includeDescendants = req.body?.includeDescendants === true;
+    const relatedRefs = Array.isArray(req.body?.relatedRefs)
+      ? (req.body.relatedRefs as unknown[]).filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+      : [];
     try {
       const result = await importConfluenceIntoPool({
         projectsDir: paths.PROJECTS_DIR,
         runtimeDataDir: paths.RUNTIME_DATA_DIR,
         appId,
         refs,
+        relatedRefs,
         followLinks,
         includeDescendants,
       });
