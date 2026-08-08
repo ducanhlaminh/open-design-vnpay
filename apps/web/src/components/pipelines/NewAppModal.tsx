@@ -169,9 +169,12 @@ export function NewAppModal({
           {importResult
             ? ` Đã nhập ${importResult.imported} trang mới${importResult.updated > 0 ? `, cập nhật ${importResult.updated} trang` : ''}.`
             : null}
+          {' '}Tài liệu sẽ được chưng cất tự động ở bước 1 khi workflow chạy lần đầu.
         </FormText>
         {importError ? <FormError>{importError} — App vẫn đã tạo; nhập lại ở màn Sửa App.</FormError> : null}
-        <AppPoolSection appId={createdAppId} hideImport />
+        {/* Màn xác nhận NẠP: cây trang để soát lại đã import đúng chưa. Nút
+            chưng cất ẩn — việc đó bước 1 workflow tự làm khi chạy lần đầu. */}
+        <AppPoolSection appId={createdAppId} hideImport hideDistill />
       </PipelineFormModal>
     );
   }

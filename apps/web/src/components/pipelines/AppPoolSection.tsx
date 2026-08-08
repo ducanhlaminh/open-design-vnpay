@@ -24,9 +24,13 @@ interface AppPoolSectionProps {
    *  under the just-shown result; additional imports still belong in the
    *  Sửa App screen, which renders this section with the default (visible). */
   hideImport?: boolean;
+  /** Ẩn nút "Chưng cất tài liệu" (+ banner thử lại) — màn "App đã tạo" chỉ
+   *  xác nhận NẠP tài liệu; chưng cất thuộc bước 1 workflow. Màn Sửa App vẫn
+   *  hiện nút (đường pre-warm tùy chọn). */
+  hideDistill?: boolean;
 }
 
-export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
+export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectionProps) {
   const [pool, setPool] = useState<AppPoolResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -175,7 +179,7 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
               {overviewOpen ? 'Ẩn tổng quan' : 'Xem tổng quan'}
             </button>
           ) : null}
-          {pool.pages.length > 0 ? (
+          {pool.pages.length > 0 && !hideDistill ? (
             <button
               type="button"
               className={styles.primaryButton}
@@ -194,7 +198,7 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
           percent={percent}
         />
       ) : null}
-      {distillFailed ? (
+      {distillFailed && !hideDistill ? (
         <div className={styles.distillFailBanner}>
           <p className={styles.error}>
             Chưng cất chưa xong hết — còn {pool.distill.pending} trang. Bấm thử lại hoặc dùng nút "Chưng cất tài liệu" ở trên.
