@@ -172,7 +172,7 @@ export function NewAppModal({
           {importResult
             ? ` Đã nhập ${importResult.imported} trang mới${importResult.updated > 0 ? `, cập nhật ${importResult.updated} trang` : ''}.`
             : null}
-          {' '}Tài liệu sẽ được chưng cất tự động ở bước 1 khi workflow chạy lần đầu.
+          {' '}Chưng cất tài liệu ở màn App (nút Chưng cất tài liệu) trước khi chạy workflow — bước 1 chỉ nạp.
         </FormText>
         {importError ? <FormError>{importError} — App vẫn đã tạo; nhập lại ở màn Sửa App.</FormError> : null}
         {/* Màn xác nhận NẠP: cây trang để soát lại đã import đúng chưa. Nút

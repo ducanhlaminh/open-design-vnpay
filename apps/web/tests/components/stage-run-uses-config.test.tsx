@@ -37,6 +37,24 @@ describe('resolveStageRunConfig — chạy một bước bằng cấu hình pane
     expect(d.payload?.input).toBe('https://cf/x');
   });
 
+  it('pool App bẩn → chặn chạy và nêu số trang chưa chưng cất', () => {
+    const cfg: RunAllConfig = { appPool: { appId: 'app-1', paths: ['a.md'] } };
+    const d = resolveStageRunConfig(docsStage, cfg, { clean: false, pending: 3 });
+    expect(d).toEqual({
+      ok: false,
+      missing: 'Tài liệu App chưa chưng cất (còn 3 trang) — bấm "Chưng cất tài liệu" ở màn App/modal Nguồn tài liệu',
+    });
+  });
+
+  it('pool App sạch → giữ payload app-pool', () => {
+    const cfg: RunAllConfig = { appPool: { appId: 'app-1', paths: ['a.md'] } };
+    const d = resolveStageRunConfig(docsStage, cfg, { clean: true, pending: 0 });
+    expect(d).toEqual({
+      ok: true,
+      payload: { source: { kind: 'app-pool', appId: 'app-1', paths: ['a.md'] } },
+    });
+  });
+
   it('tài liệu tải tay (docsFromUpload) cũng đủ điều kiện chạy, không cần trang Confluence', () => {
     const d = resolveStageRunConfig(docsStage, { docsFromUpload: true });
     expect(d.ok).toBe(true);
