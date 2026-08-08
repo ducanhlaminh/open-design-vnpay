@@ -362,7 +362,8 @@ export async function importConfluenceIntoPool(opts: {
     }
   }
   const fetched: ConfluenceDocPage[] = await fetchConfluencePages({ creds, ep }, refs, {
-    followLinks: opts.followLinks !== false,
+    // Mặc định KHÔNG follow link (pool user-curated; xem app-pool-routes).
+    followLinks: opts.followLinks === true,
     attachmentsDir: path.join(docsDir, 'attachments'),
     runtimeDataDir,
     pathLayout: 'flat',

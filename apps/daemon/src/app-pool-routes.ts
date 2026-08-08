@@ -58,7 +58,13 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
       ? (req.body.refs as unknown[]).filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
       : [];
     if (refs.length === 0) return res.status(400).json({ error: 'refs (Confluence URLs/ids) is required' });
-    const followLinks = req.body?.followLinks !== false;
+    // Pool App là kho do USER tự chọn từng trang — mặc định KHÔNG kéo thêm
+    // trang được link (depth-1): trang link-followed thường nằm nhánh wiki
+    // khác (PRD, ID-Safe…), lôi vào vừa làm pool phình ngoài ý muốn vừa phá
+    // gốc chung của cây (path tuyệt đối theo tổ tiên). Muốn theo link thì
+    // client gửi followLinks:true tường minh. (Đường dr-docs legacy giữ
+    // default follow như cũ — khác mục đích.)
+    const followLinks = req.body?.followLinks === true;
     const includeDescendants = req.body?.includeDescendants === true;
     try {
       const result = await importConfluenceIntoPool({
