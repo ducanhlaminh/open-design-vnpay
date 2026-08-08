@@ -14,8 +14,15 @@
 // khi tạo xong): người dùng tick trang ngay lúc còn đang gõ tên App, rồi bấm
 // "Tạo" một lần — tick 0 trang vẫn tạo được bình thường (import bị bỏ qua).
 // App đã tồn tại trước khi gọi import-confluence, nên import lỗi KHÔNG coi là
-// tạo App thất bại: lỗi hiện ra ở màn kết quả, người dùng thử lại ngay trong
-// AppPoolSection (đã có sẵn "Nhập tài liệu từ Confluence" cho đúng việc đó).
+// tạo App thất bại: lỗi hiện ra ở màn kết quả, người dùng thử lại ở màn Sửa
+// App (AppPoolSection's "Nhập tài liệu từ Confluence" — CHỈ hiện ở đó, màn
+// kết quả bên dưới cố tình KHÔNG lặp lại affordance import thứ hai).
+//
+// `submit` chờ import-confluence RESOLVE (thành công hay lỗi) rồi mới lật
+// sang màn "App đã tạo" — AppPoolSection tự fetch pool ngay lúc mount, nên
+// mount nó SỚM hơn (trước khi import xong) là một race: pool fetch đầu tiên
+// trả về rỗng, "Đã nhập N trang" hiện ra nhưng card pool vẫn nói "Chưa có
+// tài liệu". Đợi import xong trước khi setCreatedAppId loại bỏ race đó.
 
 import { useState } from 'react';
 import type { AppPoolImportResponse } from '@open-design/contracts';
@@ -86,8 +93,8 @@ export function NewAppModal({
     }
 
     // Từ đây App đã tồn tại — mọi lỗi tiếp theo là lỗi IMPORT, không phải lỗi
-    // tạo App. Modal vẫn chuyển sang màn kết quả; lỗi (nếu có) hiện ở đó.
-    setCreatedAppId(newAppId);
+    // tạo App; nhưng vẫn phải RESOLVE trước khi lật màn (xem docblock ở đầu
+    // file) để AppPoolSection's mount-time pool fetch thấy đúng dữ liệu.
     if (ticked.size > 0) {
       try {
         const refs = [...ticked];
@@ -103,6 +110,7 @@ export function NewAppModal({
         setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
       }
     }
+    setCreatedAppId(newAppId);
     setBusy(false);
   };
 
@@ -130,8 +138,8 @@ export function NewAppModal({
             ? ` Đã nhập ${importResult.imported} trang mới${importResult.updated > 0 ? `, cập nhật ${importResult.updated} trang` : ''}.`
             : null}
         </FormText>
-        {importError ? <FormError>{importError} — App vẫn đã tạo; nhập lại bên dưới.</FormError> : null}
-        <AppPoolSection appId={createdAppId} />
+        {importError ? <FormError>{importError} — App vẫn đã tạo; nhập lại ở màn Sửa App.</FormError> : null}
+        <AppPoolSection appId={createdAppId} hideImport />
       </PipelineFormModal>
     );
   }

@@ -11,7 +11,7 @@
 .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .headerActions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .heading { margin: 0; color: var(--text-strong); font-size: 15px; font-weight: 650; }
-.muted, .path { margin: 4px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.45; }
+.muted { margin: 4px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.45; }
 .error { margin: 0; color: var(--red); font-size: 12px; line-height: 1.45; }
 .progress { margin: -4px 0 0; color: var(--accent); font-size: 12px; font-weight: 600; }
 
@@ -36,21 +36,6 @@
 .primaryButton:focus-visible, .secondaryButton:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .secondaryButton { align-self: flex-start; background: var(--bg-subtle); color: var(--text); border-color: var(--border-strong); }
 .count { min-width: 19px; padding: 2px 5px; border-radius: 999px; background: var(--bg-panel); color: var(--accent); text-align: center; font-size: 11px; }
-
-.tree { display: flex; flex-direction: column; gap: 14px; }
-.group { overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
-.groupTitle { margin: 0; padding: 9px 12px; background: var(--bg-subtle); color: var(--text); font-size: 12px; font-weight: 650; }
-.pages { display: flex; flex-direction: column; }
-.page { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; border-top: 1px solid var(--border-soft); }
-.pageCopy { min-width: 0; display: flex; flex-direction: column; }
-.pageTitle { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
-.path { overflow: hidden; margin-top: 3px; text-overflow: ellipsis; white-space: nowrap; }
-.pageActions { flex: none; display: flex; align-items: center; gap: 8px; }
-.badge { flex: none; padding: 4px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-.fetched { background: var(--bg-subtle); color: var(--text-soft); }
-.stale { background: var(--yellow-soft); color: var(--yellow); }
-.distilling { background: var(--accent-soft); color: var(--accent); }
-.distilled { background: var(--green-soft); color: var(--green); }
 
 .deleteButton {
   display: inline-flex;
@@ -95,6 +80,4 @@
   .header { flex-direction: column; }
   .headerActions { justify-content: flex-start; width: 100%; }
   .primaryButton { width: 100%; }
-  .page { align-items: flex-start; flex-direction: column; gap: 8px; }
-  .pageActions { align-self: flex-end; }
 }

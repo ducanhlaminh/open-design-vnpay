@@ -1,0 +1,125 @@
+/* Hierarchical folder/leaf tree for an App's Confluence pool — shared by
+   AppPoolSection (browse) and PipelineModals.tsx's "Tài liệu App" run-source
+   card (browse + tick). Visual language matches ConfluenceTreeImport.module.css
+   (chevron/checkbox/row shapes) so the whole App-pool import UX reads as one
+   family. */
+
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.folderRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.row:hover,
+.folderRow:hover {
+  background: var(--bg-subtle);
+}
+
+.chevron {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.chevron:hover {
+  color: var(--accent);
+}
+
+.chevronSpacer {
+  flex: none;
+  width: 16px;
+}
+
+.folderName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.checkbox {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1.5px solid var(--border-strong);
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+.checkboxOn {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.checkboxIndeterminate {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.checkbox:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rowBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.rowTitle {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  flex: none;
+  padding: 4px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.fetched { background: var(--bg-subtle); color: var(--text-soft); }
+.stale { background: var(--yellow-soft); color: var(--yellow); }
+.distilling { background: var(--accent-soft); color: var(--accent); }
+.distilled { background: var(--green-soft); color: var(--green); }

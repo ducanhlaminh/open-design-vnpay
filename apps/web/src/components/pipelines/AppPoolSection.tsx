@@ -1,21 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { AppPoolPage, AppPoolResponse } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
 import { renderMarkdownToSafeHtml } from '../../artifacts/markdown';
 import { fetchProjectFileText } from '../../providers/registry';
+import { AppPoolTree } from './AppPoolTree';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { ConfluenceTreeImport } from './ConfluenceTreeImport';
 import styles from './AppPoolSection.module.css';
-
-const STATE_LABELS: Record<AppPoolPage['distill']['state'], string> = {
-  fetched: 'Đã tải',
-  stale: 'Cần chưng cất lại',
-  distilling: 'Đang chưng cất',
-  distilled: 'Đã chưng cất',
-};
 
 function poolUrl(appId: string): string {
   return `/api/pipelines/apps/${encodeURIComponent(appId)}/pool`;
@@ -23,9 +17,15 @@ function poolUrl(appId: string): string {
 
 interface AppPoolSectionProps {
   appId: string;
+  /** Suppresses the "Nhập tài liệu từ Confluence" toggle + picker — the
+   *  NewAppModal post-create screen already has its OWN picker (the
+   *  pre-create form) and doesn't want a second import entry point right
+   *  under the just-shown result; additional imports still belong in the
+   *  Sửa App screen, which renders this section with the default (visible). */
+  hideImport?: boolean;
 }
 
-export function AppPoolSection({ appId }: AppPoolSectionProps) {
+export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
   const [pool, setPool] = useState<AppPoolResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -70,17 +70,6 @@ export function AppPoolSection({ appId }: AppPoolSectionProps) {
     const interval = window.setInterval(() => void loadPool(true), 3000);
     return () => window.clearInterval(interval);
   }, [distilling, loadPool]);
-
-  const groups = useMemo(() => {
-    const grouped = new Map<string, AppPoolPage[]>();
-    for (const page of pool?.pages ?? []) {
-      const branch = page.path.split('/')[0] || 'Tài liệu gốc';
-      const pages = grouped.get(branch) ?? [];
-      pages.push(page);
-      grouped.set(branch, pages);
-    }
-    return [...grouped.entries()];
-  }, [pool]);
 
   const startDistill = async () => {
     setError(null);
@@ -182,49 +171,39 @@ export function AppPoolSection({ appId }: AppPoolSectionProps) {
       ) : null}
 
       {pool.pages.length > 0 ? (
-        <div className={styles.tree}>
-          {groups.map(([branch, pages]) => (
-            <div className={styles.group} key={branch}>
-              <h3 className={styles.groupTitle}>{branch}</h3>
-              <div className={styles.pages}>
-                {pages.map((page) => (
-                  <div className={styles.page} key={page.pageId}>
-                    <div className={styles.pageCopy}><strong className={styles.pageTitle}>{page.title}</strong><span className={styles.path}>{page.path}</span></div>
-                    <div className={styles.pageActions}>
-                      <span className={`${styles.badge} ${styles[page.distill.state]}`}>{STATE_LABELS[page.distill.state]}</span>
-                      <button
-                        type="button"
-                        className={styles.deleteButton}
-                        onClick={() => setDeleting(page)}
-                        aria-label={`Xóa trang ${page.title}`}
-                        title="Xóa trang"
-                      >
-                        <Icon name="trash" size={13} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+        <AppPoolTree
+          pages={pool.pages}
+          renderLeafActions={(page) => (
+            <button
+              type="button"
+              className={styles.deleteButton}
+              onClick={() => setDeleting(page)}
+              aria-label={`Xóa trang ${page.title}`}
+              title="Xóa trang"
+            >
+              <Icon name="trash" size={13} />
+            </button>
+          )}
+        />
       ) : null}
 
-      <div className={styles.importSection}>
-        <button type="button" className={styles.linkButton} onClick={() => setImportOpen((open) => !open)}>
-          <Icon name="import" size={13} />
-          {importOpen ? 'Ẩn nhập tài liệu' : 'Nhập tài liệu từ Confluence'}
-        </button>
-        {importOpen ? (
-          <ConfluenceTreeImport
-            appId={appId}
-            onImported={() => {
-              setImportOpen(false);
-              void loadPool(true);
-            }}
-          />
-        ) : null}
-      </div>
+      {!hideImport ? (
+        <div className={styles.importSection}>
+          <button type="button" className={styles.linkButton} onClick={() => setImportOpen((open) => !open)}>
+            <Icon name="import" size={13} />
+            {importOpen ? 'Ẩn nhập tài liệu' : 'Nhập tài liệu từ Confluence'}
+          </button>
+          {importOpen ? (
+            <ConfluenceTreeImport
+              appId={appId}
+              onImported={() => {
+                setImportOpen(false);
+                void loadPool(true);
+              }}
+            />
+          ) : null}
+        </div>
+      ) : null}
 
       {deleting ? (
         <ConfirmDeleteModal

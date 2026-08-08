@@ -36,6 +36,7 @@ import { Icon, type IconName } from '../Icon';
 import { FileViewer } from '../FileViewer';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
+import { AppPoolTree } from './AppPoolTree';
 import { PlModal } from './PlModal';
 import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzone';
 import { ConfluenceTreeImport } from './ConfluenceTreeImport';
@@ -1610,23 +1611,6 @@ export function RunAllModal({
   }, [appPoolDistilling, refreshAppPool]);
 
   const appPoolAvailable = appId !== undefined && (appPoolPages?.length ?? 0) > 0;
-  const appPoolGroups = useMemo(() => {
-    const grouped = new Map<string, AppPoolPage[]>();
-    for (const page of appPoolPages ?? []) {
-      const branch = page.path.split('/')[0] || 'Tài liệu gốc';
-      const pages = grouped.get(branch) ?? [];
-      pages.push(page);
-      grouped.set(branch, pages);
-    }
-    return [...grouped.entries()];
-  }, [appPoolPages]);
-  const toggleAppPoolPath = (path: string) =>
-    setAppPoolPaths((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
   const startAppPoolDistill = async () => {
     if (!appId) return;
     setAppPoolError(null);
@@ -2049,33 +2033,10 @@ export function RunAllModal({
                 Còn {appPoolDistill.pending} trang chưa chưng cất — nút Chạy sẽ bị khoá cho tới khi xong.
               </p>
             ) : null}
-            <div className={poolStyles.tree}>
-              {appPoolGroups.map(([branch, pages]) => (
-                <div className={poolStyles.group} key={branch}>
-                  <h3 className={poolStyles.groupTitle}>{branch}</h3>
-                  <div className={poolStyles.pages}>
-                    {pages.map((page) => (
-                      <label className={poolStyles.page} key={page.pageId}>
-                        <input
-                          type="checkbox"
-                          className={styles.stageCheckbox}
-                          checked={appPoolPaths.has(page.path)}
-                          onChange={() => toggleAppPoolPath(page.path)}
-                          disabled={busy}
-                        />
-                        <div className={poolStyles.pageCopy}>
-                          <strong className={poolStyles.pageTitle}>{page.title}</strong>
-                          <span className={poolStyles.path}>{page.path}</span>
-                        </div>
-                        <span className={`${poolStyles.badge} ${poolStyles[page.distill.state]}`}>
-                          {page.distill.state === 'distilled' ? 'Đã chưng cất' : page.distill.state === 'distilling' ? 'Đang chưng cất' : page.distill.state === 'stale' ? 'Cần chưng cất lại' : 'Đã tải'}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <AppPoolTree
+              pages={appPoolPages ?? []}
+              selection={{ ticked: appPoolPaths, onToggle: setAppPoolPaths, disabled: busy }}
+            />
             <div className={poolStyles.importSection}>
               <button type="button" className={poolStyles.linkButton} onClick={() => setAppPoolImportOpen((open) => !open)}>
                 <Icon name="import" size={13} />
