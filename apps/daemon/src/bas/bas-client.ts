@@ -503,7 +503,18 @@ function deaccentVietnamese(s: string): string {
 }
 
 function slug(s: string): string {
-  return deaccentVietnamese(s).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'doc';
+  return (
+    deaccentVietnamese(s)
+      .replace(/[^A-Za-z0-9._-]+/g, '-')
+      // A literal '-' in the title is an ALLOWED char (kept as-is above) —
+      // adjacent to a replaced run (e.g. " - " → space→'-', '-' kept, space→'-')
+      // that produces runs of 2+ dashes ("---"). Collapse them: real titles
+      // like "2.2. URD - Danh mục vật tư hàng hoá" must not slug to
+      // "2.2.-URD---Danh-muc-...".
+      .replace(/-{2,}/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || 'doc'
+  );
 }
 
 // Source-order comparison for doc titles/segments. Confluence pages are
@@ -1320,14 +1331,26 @@ export async function fetchConfluencePages(
     }
   }
 
+  const flat = opts.pathLayout === 'flat';
+
   // Fold a MULTI-page selection into folders: when ≥2 seed pages were picked
   // (e.g. from the tree picker), nest each under the ancestor titles it does NOT
   // share with the others — so a checkbox pick of pages across a Confluence tree
   // lands folder-structured (docs/confluence/<module>/…/<page>.md) exactly like
   // the old sub-tree scan, driving the module grouping in the review UI. A
   // single seed (or a treePage that already carries its path) stays as-is.
+  //
+  // 'flat' layout (App pool) does NOT use this — collapsing the ancestor
+  // prefix EVERY seed shares is right for "N pages that together form one
+  // feature's doc bundle" (dr-docs), but wrong for a pool meant to MIRROR the
+  // real Confluence tree: it flattens direct children (their own remaining
+  // chain below the shared prefix is empty) while still nesting grandchildren
+  // under an ancestor title that itself has no fetched page/file to pair with
+  // — the exact "flat siblings + orphan raw-slug folder" bug this replaces.
+  // `dir` for flat is computed per-page below instead, straight from real
+  // Confluence ancestors, filtered to ones actually IN this fetch (see pass 2).
   const seedPages = seedIds.map((id) => fetched.get(id)).filter((p): p is RawPage => !!p && !p.treePath);
-  if (seedPages.length >= 2) {
+  if (!flat && seedPages.length >= 2) {
     const chains = seedPages.map((p) => (p.ancestors ?? []).map((a) => a.id));
     // Longest common leading ancestor prefix shared by EVERY seed.
     let commonLen = Math.min(...chains.map((c) => c.length));
@@ -1346,7 +1369,6 @@ export async function fetchConfluencePages(
   }
 
   // ── Pass 2: assign files, then convert with cross-page links rewritten ────
-  const flat = opts.pathLayout === 'flat';
   const attachmentsRoot = flat ? 'docs/attachments' : 'docs/confluence/attachments';
   const pages: ConfluenceDocPage[] = [];
   const takenPaths = new Set<string>();
@@ -1368,7 +1390,19 @@ export async function fetchConfluencePages(
     // distinctly from the main pages. Seeds + sub-tree pages stay under
     // docs/confluence/ (sub-tree nested by wiki hierarchy, seeds flat).
     const isContext = !!p.linked && !p.treePath;
-    const dir = (p.treePath ?? []).map(slug).filter(Boolean);
+    // flat: mirror the page's REAL Confluence ancestor chain — but only the
+    // ancestors that are THEMSELVES part of this fetch (so every folder
+    // segment pairs with an actual fetched page's own file — see below).
+    // Ancestors outside the fetched set are simply not folders here; the page
+    // nests as deep as the picked/fetched set reaches, "relative từ trang
+    // được pick" rather than the absolute wiki root. Non-flat keeps the
+    // existing treePath convention (sub-tree scan / fold-by-commonLen above).
+    const dir = flat
+      ? (p.ancestors ?? [])
+          .filter((a) => fetched.has(a.id))
+          .map((a) => slug(a.title))
+          .filter(Boolean)
+      : (p.treePath ?? []).map(slug).filter(Boolean);
     const folder = flat
       ? ['docs', ...dir].join('/')
       : ['docs', isContext ? 'context' : 'confluence', ...dir].join('/');

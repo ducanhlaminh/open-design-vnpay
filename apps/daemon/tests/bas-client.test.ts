@@ -487,6 +487,146 @@ test('fetchConfluencePages nests sub-tree pages into folders and depth-corrects 
   }
 });
 
+// Regression: App-pool import (apps/daemon/src/app-pool.ts) reported a broken
+// pool tree — direct children of a picked page landed FLAT (top-level)
+// instead of nested under it, and some folders showed a raw un-paired slug
+// with no title. Root cause: 'flat' layout was reusing the 'confluence'
+// layout's "fold ALL picked pages' shared ancestor PREFIX away" logic, which
+// is right for a single feature's doc bundle but wrong for a pool meant to
+// MIRROR the real tree. Fixed by computing `dir` from each page's OWN real
+// ancestors, filtered to ancestors that are THEMSELVES part of this fetch —
+// so a folder segment always pairs with the ancestor page's own file (same
+// `slug()` call on the same title), at whatever depth the picked set reaches.
+function directPageRes(page: {
+  title: string;
+  ancestors?: Array<{ id: string; title: string }>;
+}) {
+  return makeRes(
+    JSON.stringify({
+      title: page.title,
+      body: { view: { value: `<p>${page.title}</p>` } },
+      ancestors: page.ancestors ?? [],
+      _links: { base: 'https://wiki.test', webui: '/x' },
+    }),
+  );
+}
+
+test('fetchConfluencePages (flat pathLayout) mirrors the FULL real ancestor chain for a sub-tree scan — nested at every level, not flattened', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-flat-tree-'));
+  try {
+    const byId: Record<string, ReturnType<typeof directPageRes>> = {
+      '2': directPageRes({ title: 'Parent Doc' }),
+      '21': directPageRes({ title: 'Child A', ancestors: [{ id: '2', title: 'Parent Doc' }] }),
+      '211': directPageRes({
+        title: 'Grandchild B',
+        ancestors: [
+          { id: '2', title: 'Parent Doc' },
+          { id: '21', title: 'Child A' },
+        ],
+      }),
+    };
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const m = /\/rest\/api\/content\/(\d+)\?/.exec(String(url));
+      if (m && byId[m[1]!]) return byId[m[1]!] as any;
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as any;
+
+    const pages = await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['2'], {
+      attachmentsDir,
+      followLinks: false,
+      pathLayout: 'flat',
+      treePages: [
+        { pageId: '21', title: 'Child A', treePath: ['Parent Doc'] },
+        { pageId: '211', title: 'Grandchild B', treePath: ['Parent Doc', 'Child A'] },
+      ],
+    });
+
+    const parent = pages.find((p) => p.pageId === '2')!;
+    const child = pages.find((p) => p.pageId === '21')!;
+    const grandchild = pages.find((p) => p.pageId === '211')!;
+
+    // Every level nests under its OWN parent — not flattened to siblings.
+    assert.equal(parent.relPath, 'docs/Parent-Doc.md');
+    assert.equal(child.relPath, 'docs/Parent-Doc/Child-A.md');
+    assert.equal(grandchild.relPath, 'docs/Parent-Doc/Child-A/Grandchild-B.md');
+
+    // Slug pairing BY CONSTRUCTION: the folder segment a child nests under is
+    // the SAME string as that ancestor's own file basename (both `slug(title)`
+    // on the identical title) — no orphan raw-slug folder with no title.
+    assert.equal(parent.relPath.replace(/^docs\//, '').replace(/\.md$/, ''), 'Parent-Doc');
+    assert.ok(child.relPath.startsWith('docs/Parent-Doc/'));
+    assert.equal(child.relPath.replace(/^docs\/Parent-Doc\//, '').replace(/\.md$/, ''), 'Child-A');
+    assert.ok(grandchild.relPath.startsWith('docs/Parent-Doc/Child-A/'));
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages (flat pathLayout) with MANY individually-ticked seeds still mirrors real per-page ancestors — NOT the commonLen-fold "flatten siblings" behavior', async () => {
+  // Reproduces the actual App-pool import shape: every page (root AND every
+  // descendant) is ticked individually via the search picker, so ALL of them
+  // arrive as separate `refs` (seeds) — no treePages/includeDescendants.
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-flat-seeds-'));
+  try {
+    const byId: Record<string, ReturnType<typeof directPageRes>> = {
+      '2': directPageRes({ title: 'Parent Doc' }),
+      '21': directPageRes({ title: 'Child A', ancestors: [{ id: '2', title: 'Parent Doc' }] }),
+      '211': directPageRes({
+        title: 'Grandchild B',
+        ancestors: [
+          { id: '2', title: 'Parent Doc' },
+          { id: '21', title: 'Child A' },
+        ],
+      }),
+    };
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const m = /\/rest\/api\/content\/(\d+)\?/.exec(String(url));
+      if (m && byId[m[1]!]) return byId[m[1]!] as any;
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as any;
+
+    const pages = await fetchConfluencePages(
+      { creds: { base: 'https://wiki.test', token: 'pat' } },
+      ['2', '21', '211'], // all three ticked as PEER seeds — this is the ≥2-seed path
+      { attachmentsDir, followLinks: false, pathLayout: 'flat' },
+    );
+
+    const parent = pages.find((p) => p.pageId === '2')!;
+    const child = pages.find((p) => p.pageId === '21')!;
+    const grandchild = pages.find((p) => p.pageId === '211')!;
+
+    // With the OLD (non-flat) fold-by-commonLen behavior, "Child A" (a direct
+    // child of the shared root) would land FLAT at the same level as the
+    // root — this asserts it stays nested instead.
+    assert.equal(parent.relPath, 'docs/Parent-Doc.md');
+    assert.equal(child.relPath, 'docs/Parent-Doc/Child-A.md');
+    assert.equal(grandchild.relPath, 'docs/Parent-Doc/Child-A/Grandchild-B.md');
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages slug() collapses runs of dashes from " - " in a title (no "---" artifacts)', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-slug-dash-'));
+  try {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      if (/\/rest\/api\/content\/2\?/.test(String(url))) {
+        return directPageRes({ title: '2.2. URD - Danh muc vat tu hang hoa' }) as any;
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as any;
+    const pages = await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['2'], {
+      attachmentsDir,
+      followLinks: false,
+      pathLayout: 'flat',
+    });
+    assert.equal(pages[0]!.relPath, 'docs/2.2.-URD-Danh-muc-vat-tu-hang-hoa.md');
+    assert.doesNotMatch(pages[0]!.relPath, /--/);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
 test('renderConfluenceIndex lists sub-tree pages in their own group with folder-relative links', async () => {
   const md = renderConfluenceIndex([
     { pageId: '100', title: 'B1. PRD', url: 'u', relPath: 'docs/confluence/B1.-PRD.md', content: '', linked: false },
