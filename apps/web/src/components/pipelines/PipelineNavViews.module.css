@@ -1343,9 +1343,12 @@
 /* Classic underline tab bar — a compact horizontal row (content-sized
    buttons, NOT equal-width cards) with a full-width hairline along the
    bottom of the bar; the active tab reads via bold accent text plus its OWN
-   2-3px accent border-bottom sitting flush on that hairline. No card
-   background/border on either state — that reads as "2 info blocks", not a
-   tab switcher (previous attempt below, replaced per feedback).
+   thin 2px accent border-bottom, exactly as wide as its label+meta content
+   and sitting flush on that hairline (zero gap — see `.detailTab`'s
+   `margin-bottom` below). No card background/border, no border-radius, no
+   fixed width — anything that reads as a pill/progress-bar segment instead
+   of a text underline was a bug from an earlier pass (see git blame on this
+   block for the two prior fixes it took to get here).
    Traced *.module.css and styles/*.css for an existing underline-tab
    precedent first — none found (`.pl-workflow-tab`/`.viewer-tab`/
    `.subtab-pill`/`.pl-fanout-tab` are all filled pill/card treatments, not
@@ -1367,7 +1370,7 @@
    never the border. */
 .detailTabs {
   display: flex;
-  align-items: stretch;
+  align-items: flex-end;
   gap: 22px;
   padding: 14px 24px 0;
   border-bottom: 1px solid var(--border);
@@ -1385,13 +1388,28 @@
   border-top-right-radius: var(--radius-lg);
 }
 
+/* `.detailTab` is a plain `<button>`, and the GLOBAL `button` reset
+   (styles/primitives.css) sets `border-radius: var(--radius-sm)` on every
+   button — left alone, that rounds the border-bottom below into a pill with
+   rounded end-caps (exactly the "dày, bo tròn, trông như progress bar" bug
+   from feedback), so it's zeroed explicitly here. `margin-bottom: -1px`
+   (not `align-items: stretch` on the container, which depended on the
+   button's rendered height exactly matching its siblings') pulls the
+   button's OWN border-box down by the container's hairline width — its
+   border-bottom then draws exactly ON TOP of `.detailTabs`'s border-bottom
+   instead of stopping short of it, so there is zero gap between underline
+   and hairline regardless of any sub-pixel height mismatch. Width is
+   whatever the button's content (label + meta) plus its own 1px horizontal
+   padding measures — never stretched, never fixed. */
 .detailTab {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
+  margin-bottom: -1px;
   padding: 0 1px 10px;
   border: none;
-  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
