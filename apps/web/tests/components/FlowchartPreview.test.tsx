@@ -196,11 +196,12 @@ describe('FlowchartPreview', () => {
     await waitFor(() => expect(screen.getByText('Vào màn hình chính')).toBeTruthy());
     await act(async () => { fireEvent.click(screen.getByText('Vào màn hình chính')); });
 
-    // Dãy khối: đủ 4 bước của đường thành công, có nhãn loại bước.
-    await waitFor(() => expect(screen.getByText('Nhập tên đăng nhập + mật khẩu')).toBeTruthy());
-    expect(screen.getByText('Thông tin hợp lệ?')).toBeTruthy();
-    // Nhãn LOẠI bước ("Bắt đầu" của node start trùng chữ với nhãn node — dùng
-    // getAllByText để phép kiểm không phụ thuộc vào trùng lặp vô hại đó).
+    // Ngã rẽ + phần riêng của kịch bản hiện ngay; các bước ĐẦU dùng chung với
+    // mọi kịch bản khác nằm trong khối gộp, bung ra mới thấy.
+    await waitFor(() => expect(screen.getByText('Thông tin hợp lệ?')).toBeTruthy());
+    expect(screen.queryByText('Nhập tên đăng nhập + mật khẩu')).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Các bước chung/ })); });
+    expect(screen.getByText('Nhập tên đăng nhập + mật khẩu')).toBeTruthy();
     expect(screen.getAllByText('Bắt đầu').length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText('Rẽ nhánh').length).toBeGreaterThan(0);
     expect(screen.getByText(/Chọn:\s*Có/)).toBeTruthy();

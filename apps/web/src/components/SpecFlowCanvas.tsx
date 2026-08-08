@@ -36,7 +36,7 @@ import type { SpecDoc } from './SpecPreview';
 
 export interface FlowDocNode {
   id: string;
-  kind: 'decision' | 'end' | 'screen';
+  kind: 'decision' | 'end' | 'screen' | 'nav';
   label?: string;
   screen?: string;
 }
@@ -360,20 +360,27 @@ function EndFlowNode({ data }: NodeProps) {
   );
 }
 
-const NODE_TYPES = { screen: ScreenFlowNode, decision: DecisionFlowNode, end: EndFlowNode };
+function NavFlowNode({ data }: NodeProps) {
+  const d = data as FlowNodeData;
+  return <div style={{ width: END_W, minHeight: END_H, border: `1px solid ${T.border}`, borderRadius: 10, background: T.paper, display: 'grid', placeItems: 'center', padding: '10px 16px', fontSize: 12, fontWeight: 700, color: T.ink, textAlign: 'center' }}>
+    <Handle type="target" position={Position.Left} style={{ opacity: 0 }} /><Handle type="source" position={Position.Right} style={{ opacity: 0 }} />{d.title}
+  </div>;
+}
+
+const NODE_TYPES = { screen: ScreenFlowNode, decision: DecisionFlowNode, end: EndFlowNode, nav: NavFlowNode };
 
 /** Layered left→right layout: BFS depth from the entry (fallback: in-degree-0
  * nodes) picks the column; siblings stack vertically inside their column. */
 function layoutFlow(
   flow: FlowDoc,
   screenIds: Set<string>,
-): { kinds: Map<string, 'screen' | 'decision' | 'end'>; pos: Map<string, { x: number; y: number }> } {
+): { kinds: Map<string, 'screen' | 'decision' | 'end' | 'nav'>; pos: Map<string, { x: number; y: number }> } {
   const declared = new Map((flow.nodes ?? []).map((n) => [n.id, n]));
-  const kinds = new Map<string, 'screen' | 'decision' | 'end'>();
+  const kinds = new Map<string, 'screen' | 'decision' | 'end' | 'nav'>();
   const touch = (id: string) => {
     if (kinds.has(id)) return;
     const n = declared.get(id);
-    if (n && (n.kind === 'decision' || n.kind === 'end')) kinds.set(id, n.kind);
+    if (n && (n.kind === 'decision' || n.kind === 'end' || n.kind === 'nav')) kinds.set(id, n.kind);
     else if (n?.kind === 'screen') kinds.set(id, 'screen');
     else kinds.set(id, screenIds.has(id) ? 'screen' : 'end');
   };
@@ -406,10 +413,8 @@ function layoutFlow(
 
   const byCol = new Map<number, string[]>();
   for (const [id, d] of depth) byCol.set(d, [...(byCol.get(d) ?? []), id]);
-  const widthOf = (k: 'screen' | 'decision' | 'end') =>
-    k === 'screen' ? SCREEN_W : k === 'decision' ? DECISION_W : END_W;
-  const heightOf = (k: 'screen' | 'decision' | 'end') =>
-    k === 'screen' ? SCREEN_H : k === 'decision' ? DECISION_H : END_H;
+  const widthOf = (k: 'screen' | 'decision' | 'end' | 'nav') => k === 'screen' ? SCREEN_W : k === 'decision' ? DECISION_W : END_W;
+  const heightOf = (k: 'screen' | 'decision' | 'end' | 'nav') => k === 'screen' ? SCREEN_H : k === 'decision' ? DECISION_H : END_H;
 
   // Crossing reduction (barycenter): order each column by the average row of
   // its already-placed predecessors, so an edge mostly flows straight right

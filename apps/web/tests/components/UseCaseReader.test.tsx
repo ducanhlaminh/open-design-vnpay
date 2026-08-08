@@ -33,6 +33,10 @@ describe('UseCaseReader', () => {
     expect(screen.getAllByText('Thành công').length).toBeGreaterThan(0);
     expect(screen.getByText('Báo lỗi')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Báo lỗi/ }));
+    // Bước chung ở đầu nằm trong khối gộp — bung ra mới thấy (và mới gọi
+    // renderStepExtra cho node đó).
+    const shared = screen.queryByRole('button', { name: /Các bước chung/ });
+    if (shared) fireEvent.click(shared);
     expect(screen.getByText('Nhập thông tin')).toBeTruthy();
     expect(screen.getByText('thumbnail-action')).toBeTruthy();
     expect(extra).toHaveBeenCalled();

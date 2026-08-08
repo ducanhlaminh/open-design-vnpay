@@ -47,6 +47,14 @@ export interface FlowUseCaseResult {
   truncated: boolean;
 }
 
+export interface UseCaseSplit {
+  /** Các bước MỌI kịch bản đều đi qua ở đầu — đường vào tính năng. */
+  entryPath: UseCaseStep[];
+  /** Kịch bản đã CẮT BỎ phần entryPath khỏi `steps`. */
+  useCases: FlowUseCase[];
+  truncated: boolean;
+}
+
 /** Trần số kịch bản. Đo trên dữ liệu thật thì tối đa 11 nên trần này chỉ là
  *  lưới an toàn cho sơ đồ bệnh lý (rẽ nhánh lồng nhau nhiều tầng). */
 export const MAX_USE_CASES = 60;
@@ -165,6 +173,43 @@ export function deriveUseCases(doc: FlowchartDoc): FlowUseCaseResult {
   }
 
   return { useCases, truncated };
+}
+
+/** Tách tiền tố giống nhau khỏi các kịch bản để đường vào chỉ hiện một lần. */
+export function deriveUseCasesWithEntry(doc: FlowchartDoc): UseCaseSplit {
+  const result = deriveUseCases(doc);
+  if (result.useCases.length < 2) {
+    return { entryPath: [], useCases: result.useCases, truncated: result.truncated };
+  }
+
+  const first = result.useCases[0]!.steps;
+  const shortest = Math.min(...result.useCases.map((item) => item.steps.length));
+  let length = 0;
+  // So khớp CẢ câu trả lời, không chỉ node: điểm rẽ nhánh mà mọi kịch bản đều
+  // đi qua ("Có quyền Thêm KH?") vẫn là node CHUNG, nhưng mỗi kịch bản trả lời
+  // một kiểu — gộp nó vào "đường vào chung" thì khối chung sẽ hiện câu trả lời
+  // của kịch bản đầu tiên như thể đó là đáp án của tất cả. Tiền tố phải dừng
+  // ĐÚNG chỗ các đường đi tách nhau.
+  while (
+    length < shortest &&
+    result.useCases.every(
+      (item) =>
+        item.steps[length]?.node.id === first[length]?.node.id &&
+        item.steps[length]?.answer === first[length]?.answer,
+    )
+  ) {
+    length += 1;
+  }
+
+  if (length < 2 || length * 100 > shortest * 60) {
+    return { entryPath: [], useCases: result.useCases, truncated: result.truncated };
+  }
+
+  return {
+    entryPath: first.slice(0, length),
+    useCases: result.useCases.map((useCase) => ({ ...useCase, steps: useCase.steps.slice(length) })),
+    truncated: result.truncated,
+  };
 }
 
 /** Node của `flows/*.flow.json` (bước ux) — schema KHÁC `.flowchart.json`:

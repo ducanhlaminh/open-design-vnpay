@@ -11,6 +11,10 @@
 .scenarioMeta code { max-width: 42%; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; white-space: nowrap; font-family: var(--mono, ui-monospace, monospace); }
 .truncatedBanner { margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--amber, #b26200); border-radius: var(--radius-sm, 8px); background: var(--amber-bg, #fff3e0); color: var(--text, #1a1916); font-size: 12px; }
 .scenarioList { display: grid; gap: 10px; max-width: 850px; }
+.entrySummary { margin-bottom: 16px; border: 1px solid var(--border, #e1e5eb); border-radius: var(--radius-md, 10px); background: var(--bg-subtle, #f7f8fa); overflow: hidden; }
+.entrySummaryButton { display: flex; align-items: center; gap: 10px; width: 100%; padding: 13px 15px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.entrySummaryText { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted, #57544e); font-size: 12px; }
+.entryTrack { display: flex; width: max-content; max-width: 100%; overflow-x: auto; padding: 4px 15px 15px; }
 .scenarioCard { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; width: 100%; padding: 16px; border: 1px solid var(--border, #e1e5eb); border-radius: var(--radius-md, 10px); background: var(--bg-panel, #fff); color: inherit; text-align: left; cursor: pointer; transition: border-color 200ms cubic-bezier(.23,1,.32,1), transform 200ms cubic-bezier(.23,1,.32,1); }
 .scenarioCard:hover { border-color: var(--accent, #0066b3); transform: translateX(3px); }
 .outcomeBadge, .kindBadge { display: inline-flex; align-items: center; width: fit-content; border-radius: 999px; padding: 4px 8px; font-size: 11px; font-weight: 700; white-space: nowrap; }
@@ -29,6 +33,7 @@
 .stepTrack { display: flex; align-items: center; width: max-content; min-width: 100%; }
 .stepItem, .loopItem { display: flex; align-items: center; }
 .stepCard { display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box; min-width: 200px; width: 200px; min-height: 140px; padding: 14px; border: 1px solid var(--border-strong, #c9d0da); border-radius: var(--radius-sm, 8px); background: var(--bg-panel, #fff); }
+.entryCollapsed { display: inline-flex; align-items: center; gap: 8px; min-width: 200px; min-height: 140px; padding: 14px; border: 1px dashed var(--accent, #0066b3); border-radius: var(--radius-sm, 8px); background: var(--accent-tint, #e6f0f8); color: var(--accent, #0066b3); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
 .stepCardLast { border-color: var(--amber, #b26200); }
 .stepTop { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-muted, #57544e); font-size: 11px; font-weight: 700; }
 .kindBadge { padding: 3px 6px; background: var(--bg-subtle, #eef1f5); color: var(--text-muted, #57544e); }

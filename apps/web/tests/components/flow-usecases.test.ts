@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { MAX_USE_CASES, deriveUseCases, flowDocToChart } from '../../src/components/flow-usecases';
+import { MAX_USE_CASES, deriveUseCases, deriveUseCasesWithEntry, flowDocToChart } from '../../src/components/flow-usecases';
 import type { FlowchartDoc } from '../../src/components/FlowchartPreview';
 
 const DOC: FlowchartDoc = {
@@ -108,6 +108,69 @@ describe('deriveUseCases', () => {
   });
 });
 
+describe('deriveUseCasesWithEntry', () => {
+  const commonDoc: FlowchartDoc = {
+    id: 'entry',
+    nodes: [
+      { id: 'start', type: 'start', label: 'Trang chủ' },
+      { id: 'menu', type: 'action', label: 'Mở menu Danh mục' },
+      { id: 'staff', type: 'action', label: 'Nhân viên' },
+      { id: 'save', type: 'action', label: 'Lưu hồ sơ' },
+      { id: 'ok', type: 'end', label: 'Thành công' },
+      { id: 'no', type: 'action', label: 'Báo lỗi' },
+      { id: 'stop', type: 'end', label: 'Dừng' },
+    ],
+    edges: [
+      { from: 'start', to: 'menu' },
+      { from: 'menu', to: 'staff' },
+      { from: 'staff', to: 'save', label: 'Có' },
+      { from: 'save', to: 'ok' },
+      { from: 'staff', to: 'no', label: 'Không' },
+      { from: 'no', to: 'stop' },
+    ],
+  };
+
+  it('gộp các bước chung ở đầu, DỪNG trước ngã rẽ (ngã rẽ thuộc về từng kịch bản)', () => {
+    const result = deriveUseCasesWithEntry(commonDoc);
+    expect(result.entryPath.map((step) => step.node.id)).toEqual(['start', 'menu']);
+    // `staff` là điểm rẽ nhánh: node chung nhưng đáp án khác nhau nên nó phải
+    // ở lại đầu MỖI kịch bản, không được nằm trong đường vào chung.
+    expect(result.useCases.every((useCase) => useCase.steps[0]?.node.id === 'staff')).toBe(true);
+    // Không mất bước nào: entryPath + phần riêng = độ dài gốc của từng kịch bản.
+    const original = deriveUseCases(commonDoc).useCases;
+    result.useCases.forEach((useCase, i) => {
+      expect(result.entryPath.length + useCase.steps.length).toBe(original[i]!.steps.length);
+    });
+  });
+
+  it('does not extract an entry path for one scenario', () => {
+    const doc = { ...commonDoc, edges: commonDoc.edges.filter((edge) => edge.from !== 'staff' || edge.label !== 'Không') };
+    expect(deriveUseCasesWithEntry(doc).entryPath).toEqual([]);
+  });
+
+  it('does not extract a prefix that consumes more than sixty percent', () => {
+    const doc: FlowchartDoc = {
+      id: 'short',
+      nodes: [
+        { id: 's', type: 'start', label: 'Trang chủ' },
+        { id: 'a', type: 'action', label: 'Mở menu' },
+        { id: 'b', type: 'action', label: 'Chọn mục' },
+        { id: 'd', type: 'action', label: 'Mở màn tính năng' },
+        { id: 'c', type: 'decision', label: 'Tiếp tục?' },
+        { id: 'x', type: 'end', label: 'Xong' },
+        { id: 'y', type: 'end', label: 'Dừng' },
+      ],
+      // 4 bước chung / kịch bản dài 6 bước = 67% > trần 60% → không gộp, vì
+      // gộp gần hết nội dung thì thẻ kịch bản chẳng còn gì để đọc.
+      edges: [
+        { from: 's', to: 'a' }, { from: 'a', to: 'b' }, { from: 'b', to: 'd' }, { from: 'd', to: 'c' },
+        { from: 'c', to: 'x', label: 'Có' }, { from: 'c', to: 'y', label: 'Không' },
+      ],
+    };
+    expect(deriveUseCasesWithEntry(doc).entryPath).toEqual([]);
+  });
+});
+
 // `.flow.json` của bước ux — schema khác: MÀN HÌNH LÀ NGẦM ĐỊNH (đầu cạnh nào
 // trùng screens[].id thì đó là màn), chỉ decision/end mới khai tường minh.
 // Fixture rút từ file thật Tinh_nang_1/docs-to-ui/mobile/flows/.
@@ -153,5 +216,36 @@ describe('flowDocToChart + deriveUseCases trên .flow.json (bước ux)', () => 
     // "không có thẻ hợp lệ" từng bị gắn nhãn Thành công vì khớp chữ "hợp lệ".
     expect(err.outcome).toBe('blocked');
     expect(useCases.find((u) => u.title === 'Lưu thiết kế thành công')!.outcome).toBe('success');
+  });
+});
+
+describe('deriveUseCasesWithEntry — điểm rẽ nhánh KHÔNG được nằm trong đường vào chung', () => {
+  it('dừng tiền tố ngay trước ngã rẽ: node chung nhưng câu trả lời khác nhau', () => {
+    // Dạng thật hay gặp: Bắt đầu → thao tác trên màn danh sách → hỏi quyền,
+    // rồi mỗi kịch bản trả lời một kiểu. "Hỏi quyền" là node CHUNG nhưng đáp
+    // án khác nhau → gộp vào đường vào là nói dối.
+    const doc: FlowchartDoc = {
+      id: 'FLOW-them',
+      nodes: [
+        { id: 's', type: 'start', label: 'Bắt đầu' },
+        { id: 'a', type: 'action', label: 'Trên SCR-001, nhấn Thêm mới' },
+        { id: 'q', type: 'decision', label: 'Có quyền Thêm KH?' },
+        { id: 'ok', type: 'end', label: 'Thêm mới thành công' },
+        { id: 'no', type: 'end', label: 'Không có quyền' },
+      ],
+      edges: [
+        { from: 's', to: 'a' },
+        { from: 'a', to: 'q' },
+        { from: 'q', to: 'ok', label: 'Có' },
+        { from: 'q', to: 'no', label: 'Không' },
+      ],
+    };
+    const { entryPath, useCases } = deriveUseCasesWithEntry(doc);
+    expect(entryPath.map((s) => s.node.id)).toEqual(['s', 'a']);
+    // Ngã rẽ ở lại trong TỪNG kịch bản, kèm đúng đáp án của kịch bản đó.
+    for (const useCase of useCases) {
+      expect(useCase.steps[0]!.node.id).toBe('q');
+      expect(useCase.steps[0]!.answer).toBe(useCase.outcome === 'success' ? 'Có' : 'Không');
+    }
   });
 });
