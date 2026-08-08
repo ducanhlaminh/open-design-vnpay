@@ -361,14 +361,38 @@ function outcomeClass(outcome: UseCaseOutcome): string {
   return styles[`outcome${pascalCase(outcome)}` as keyof typeof styles] ?? '';
 }
 
-function ModeBar({ mode, onChange }: { mode: PreviewView['mode']; onChange: (mode: PreviewView['mode']) => void }) {
+function ModeBar({
+  mode,
+  onChange,
+  useCaseCount,
+  stepCount,
+}: {
+  mode: PreviewView['mode'];
+  onChange: (mode: PreviewView['mode']) => void;
+  useCaseCount: number;
+  stepCount: number;
+}) {
   return (
     <div className={styles.modeBar} role="tablist" aria-label="Chế độ xem sơ đồ">
-      <button type="button" role="tab" aria-selected={mode === 'list'} className={`${styles.modeButton} ${mode === 'list' ? styles.modeButtonActive : ''}`} onClick={() => onChange('list')}>
-        Kịch bản
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === 'list'}
+        className={`${styles.modeButton} ${mode === 'list' ? styles.modeButtonActive : ''}`}
+        onClick={() => onChange('list')}
+      >
+        <span className={styles.modeButtonName}>Kịch bản</span>
+        <span className={styles.modeButtonMeta}>· {useCaseCount}</span>
       </button>
-      <button type="button" role="tab" aria-selected={mode === 'graph'} className={`${styles.modeButton} ${mode === 'graph' ? styles.modeButtonActive : ''}`} onClick={() => onChange('graph')}>
-        Sơ đồ đầy đủ
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === 'graph'}
+        className={`${styles.modeButton} ${mode === 'graph' ? styles.modeButtonActive : ''}`}
+        onClick={() => onChange('graph')}
+      >
+        <span className={styles.modeButtonName}>Sơ đồ đầy đủ</span>
+        <span className={styles.modeButtonMeta}>· {stepCount} bước</span>
       </button>
     </div>
   );
@@ -492,7 +516,7 @@ export function FlowchartPreview({ projectId, file }: { projectId: string; file:
   return (
     <div className="viewer" style={{ height: '100%' }}>
       <div className={`viewer-body ${styles.viewerBody}`}>
-        <ModeBar mode={view.mode} onChange={(mode) => setView(mode === 'list' ? { mode: 'list' } : mode === 'graph' ? { mode: 'graph' } : view)} />
+        <ModeBar mode={view.mode} useCaseCount={useCases.length} stepCount={doc.nodes.length} onChange={(mode) => setView(mode === 'list' ? { mode: 'list' } : mode === 'graph' ? { mode: 'graph' } : view)} />
         {view.mode === 'list' ? <UseCaseList doc={doc} useCases={useCases} truncated={truncated} onSelect={(useCaseId) => setView({ mode: 'detail', useCaseId })} /> : null}
         {view.mode === 'detail' && selected ? <DetailView useCase={selected} index={orderedUseCases.indexOf(selected)} total={orderedUseCases.length} onBack={() => setView({ mode: 'list' })} onMove={(delta) => { const next = orderedUseCases[orderedUseCases.indexOf(selected) + delta]; if (next) setView({ mode: 'detail', useCaseId: next.id }); }} /> : null}
         {view.mode === 'graph' ? <><div className={styles.head}><h2 className={styles.title}>{doc.title ?? doc.id}</h2>{doc.source ? <span className={styles.source} title={doc.source}>Nguồn: <code>{doc.source}</code></span> : null}</div><FlowchartCanvas doc={doc} /></> : null}

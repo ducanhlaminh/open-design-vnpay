@@ -177,8 +177,8 @@ describe('FlowchartPreview', () => {
     FILES['review/flows/FLOW-login.flowchart.json'] = JSON.stringify(LOGIN);
     render(<FlowchartPreview projectId="p1" file={file('review/flows/FLOW-login.flowchart.json')} />);
 
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Kịch bản' })).toBeTruthy());
-    expect(screen.getByRole('tab', { name: 'Kịch bản' }).getAttribute('aria-selected')).toBe('true');
+    await waitFor(() => expect(screen.getByRole('tab', { name: /^Kịch bản/ })).toBeTruthy());
+    expect(screen.getByRole('tab', { name: /^Kịch bản/ }).getAttribute('aria-selected')).toBe('true');
     // Hai kịch bản: vào được màn chính (thành công) và báo lỗi (đường cụt).
     expect(screen.getByText('Vào màn hình chính')).toBeTruthy();
     expect(screen.getByText('Báo lỗi sai thông tin')).toBeTruthy();
@@ -216,8 +216,8 @@ describe('FlowchartPreview', () => {
       <FlowchartPreview projectId="p1" file={file('review/flows/FLOW-login.flowchart.json')} />,
     );
 
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Sơ đồ đầy đủ' })).toBeTruthy());
-    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: 'Sơ đồ đầy đủ' })); });
+    await waitFor(() => expect(screen.getByRole('tab', { name: /^Sơ đồ đầy đủ/ })).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /^Sơ đồ đầy đủ/ })); });
     await waitFor(() => expect(container.querySelector('.react-flow')).toBeTruthy());
   });
 
