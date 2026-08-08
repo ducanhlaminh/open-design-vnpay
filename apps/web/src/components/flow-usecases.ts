@@ -51,13 +51,16 @@ export interface FlowUseCaseResult {
  *  lưới an toàn cho sơ đồ bệnh lý (rẽ nhánh lồng nhau nhiều tầng). */
 export const MAX_USE_CASES = 60;
 
-const SUCCESS_RE = /thành\s*công|hoàn\s*t(ấ|â)t|success|đã\s*lưu|hợp\s*lệ/i;
+const SUCCESS_RE = /thành\s*công|hoàn\s*t(ấ|â)t|success|đã\s*lưu/i;
 const BLOCKED_RE =
-  /lỗi|thất\s*bại|không\s*có\s*quyền|từ\s*chối|hu(ỷ|ỷ|y)|hủy|dừng|không\s*hợp\s*lệ|denied|fail/i;
+  /lỗi|thất\s*bại|không\s*có\s*quyền|từ\s*chối|hu(ỷ|y)|hủy|dừng|không\s*hợp\s*lệ|denied|fail|(không|chưa)\s+\S+\s*(thành\s*công|hợp\s*lệ)/i;
 
+/** Xét "hỏng" TRƯỚC "thành công": nhãn thật hay là câu phủ định chứa nguyên từ
+ *  tích cực — "Báo lỗi: không có thẻ hợp lệ" từng bị gắn nhãn Thành công vì
+ *  khớp chữ "hợp lệ". Kết thúc mà nhắc tới lỗi/từ chối/hủy thì luôn là hỏng. */
 function outcomeOfEnd(label: string): UseCaseOutcome {
-  if (SUCCESS_RE.test(label)) return 'success';
   if (BLOCKED_RE.test(label)) return 'blocked';
+  if (SUCCESS_RE.test(label)) return 'success';
   return 'neutral';
 }
 
@@ -162,6 +165,52 @@ export function deriveUseCases(doc: FlowchartDoc): FlowUseCaseResult {
   }
 
   return { useCases, truncated };
+}
+
+/** Node của `flows/*.flow.json` (bước ux) — schema KHÁC `.flowchart.json`:
+ *  màn hình là NGẦM ĐỊNH (đầu cạnh nào trùng `screens[].id` thì đó là màn), chỉ
+ *  node quyết định/kết thúc mới khai tường minh. Khai lại tối thiểu ở đây để
+ *  module này không phải import ngược SpecFlowCanvas (vòng import). */
+export interface FlowLikeDoc {
+  id: string;
+  name?: string;
+  entry?: string;
+  nodes?: Array<{ id: string; kind?: string; label?: string; screen?: string }>;
+  edges?: Array<{ from?: string; to?: string; label?: string }>;
+}
+
+/** Đưa `.flow.json` (bước ux) về đúng hình dạng `.flowchart.json` để dùng CHUNG
+ *  bộ chẻ kịch bản. Màn hình ngầm định thành node `action` mang TÊN màn (tra
+ *  theo `screenTitles`, không có thì lấy chính id); `entry` thành `start` để
+ *  đường đi bắt đầu đúng chỗ. */
+export function flowDocToChart(
+  flow: FlowLikeDoc,
+  screenTitles: Record<string, string> = {},
+): FlowchartDoc {
+  const declared = new Map((flow.nodes ?? []).map((n) => [n.id, n]));
+  const edges = (flow.edges ?? [])
+    .filter((e): e is { from: string; to: string; label?: string } => Boolean(e.from && e.to))
+    .map((e) => ({ from: e.from, to: e.to, ...(e.label ? { label: e.label } : {}) }));
+
+  const ids = new Set<string>([...declared.keys(), ...edges.flatMap((e) => [e.from, e.to])]);
+  const entry = flow.entry && ids.has(flow.entry) ? flow.entry : undefined;
+
+  const nodes: FlowchartNode[] = [...ids].map((id) => {
+    const node = declared.get(id);
+    const kind = node?.kind;
+    const label = node?.label?.trim() || screenTitles[node?.screen ?? id] || screenTitles[id] || id;
+    if (id === entry) return { id, type: 'start', label };
+    if (kind === 'decision') return { id, type: 'decision', label };
+    if (kind === 'end') return { id, type: 'end', label };
+    return { id, type: 'action', label };
+  });
+
+  return {
+    id: flow.id,
+    ...(flow.name ? { title: flow.name } : {}),
+    nodes,
+    edges,
+  };
 }
 
 export const OUTCOME_LABELS: Record<UseCaseOutcome, string> = {

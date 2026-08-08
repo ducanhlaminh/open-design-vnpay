@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { MAX_USE_CASES, deriveUseCases } from '../../src/components/flow-usecases';
+import { MAX_USE_CASES, deriveUseCases, flowDocToChart } from '../../src/components/flow-usecases';
 import type { FlowchartDoc } from '../../src/components/FlowchartPreview';
 
 const DOC: FlowchartDoc = {
@@ -105,5 +105,53 @@ describe('deriveUseCases', () => {
     }
     const result = deriveUseCases({ id: 'big', nodes, edges });
     expect(result.useCases.length).toBeLessThanOrEqual(MAX_USE_CASES);
+  });
+});
+
+// `.flow.json` của bước ux — schema khác: MÀN HÌNH LÀ NGẦM ĐỊNH (đầu cạnh nào
+// trùng screens[].id thì đó là màn), chỉ decision/end mới khai tường minh.
+// Fixture rút từ file thật Tinh_nang_1/docs-to-ui/mobile/flows/.
+describe('flowDocToChart + deriveUseCases trên .flow.json (bước ux)', () => {
+  const FLOW = {
+    id: 'FLOW-CARD-DESIGN',
+    name: 'Chọn & lưu thiết kế thẻ',
+    entry: 'SCR-CARD-DETAIL',
+    nodes: [
+      { id: 'D-VALID', kind: 'decision', label: 'Có thẻ hợp lệ?' },
+      { id: 'E-ERR', kind: 'end', label: 'Báo lỗi: Quý khách không có thẻ hợp lệ' },
+      { id: 'E-OK', kind: 'end', label: 'Lưu thiết kế thành công' },
+    ],
+    edges: [
+      { from: 'SCR-CARD-DETAIL', to: 'D-VALID', label: 'Đổi thiết kế' },
+      { from: 'D-VALID', to: 'E-ERR', label: 'Không' },
+      { from: 'D-VALID', to: 'SCR-CARD-DESIGN', label: 'Có' },
+      { from: 'SCR-CARD-DESIGN', to: 'E-OK', label: 'Lưu' },
+    ],
+  };
+  const TITLES = { 'SCR-CARD-DETAIL': 'Chi tiết thẻ', 'SCR-CARD-DESIGN': 'Thiết kế thẻ' };
+
+  it('màn hình ngầm định thành bước mang TÊN màn, entry thành điểm bắt đầu', () => {
+    const chart = flowDocToChart(FLOW, TITLES);
+    expect(chart.title).toBe('Chọn & lưu thiết kế thẻ');
+    const byId = new Map(chart.nodes.map((n) => [n.id, n]));
+    expect(byId.get('SCR-CARD-DETAIL')).toEqual({ id: 'SCR-CARD-DETAIL', type: 'start', label: 'Chi tiết thẻ' });
+    expect(byId.get('SCR-CARD-DESIGN')).toEqual({ id: 'SCR-CARD-DESIGN', type: 'action', label: 'Thiết kế thẻ' });
+    expect(byId.get('D-VALID')?.type).toBe('decision');
+    expect(byId.get('E-OK')?.type).toBe('end');
+  });
+
+  it('không có bảng tên màn thì lấy chính id, không rơi mất node', () => {
+    const chart = flowDocToChart(FLOW);
+    expect(chart.nodes.find((n) => n.id === 'SCR-CARD-DESIGN')?.label).toBe('SCR-CARD-DESIGN');
+    expect(chart.nodes).toHaveLength(5);
+  });
+
+  it('chẻ ra 2 kịch bản; nhãn phủ định chứa từ tích cực vẫn tính là hỏng', () => {
+    const { useCases } = deriveUseCases(flowDocToChart(FLOW, TITLES));
+    expect(useCases).toHaveLength(2);
+    const err = useCases.find((u) => u.title.startsWith('Báo lỗi'))!;
+    // "không có thẻ hợp lệ" từng bị gắn nhãn Thành công vì khớp chữ "hợp lệ".
+    expect(err.outcome).toBe('blocked');
+    expect(useCases.find((u) => u.title === 'Lưu thiết kế thành công')!.outcome).toBe('success');
   });
 });
