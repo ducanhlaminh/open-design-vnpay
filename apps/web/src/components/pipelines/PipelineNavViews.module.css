@@ -1339,12 +1339,71 @@
   line-height: 1.45;
 }
 
+/* ---- App detail tabs (PipelinesFeaturesView: Features / Tài liệu) -------- */
+/* Same treatment as PipelinesView's workflow picker (`.pl-workflow-tab` in
+   styles/home/pipelines.css: equal-width cards, accent border+tint when
+   active) — reused here as CSS-module classes instead of the legacy global
+   selectors, per this module's own convention (see file header docblock:
+   new component styles default to a Module, not styles/home/pipelines.css). */
+.detailTabs {
+  display: flex;
+  gap: 10px;
+}
+
+.detailTab {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  transition: border-color 0.18s var(--pnv-ease), background 0.18s var(--pnv-ease),
+    box-shadow 0.18s var(--pnv-ease), transform 0.18s var(--pnv-ease);
+}
+
+.detailTab:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.detailTabActive {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.detailTabName {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
+.detailTabActive .detailTabName {
+  color: var(--accent-strong);
+}
+
+.detailTabMeta {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 /* ---- Responsive ------------------------------------------------------ */
 @media (max-width: 760px) {
   .page {
     padding: 28px 18px 72px;
   }
   .header {
+    flex-direction: column;
+  }
+  .detailTabs {
     flex-direction: column;
   }
   .toolbar {

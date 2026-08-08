@@ -3,16 +3,29 @@
 // this App's features only — the status counts on the toolbar chips are
 // derived from the same `PipelineProject[]` the cards on Screen 1 read, so
 // they never disagree with what Screen 1 showed for this App.
-
-import { useMemo, useState } from 'react';
-import type { PipelineProject, PipelineWorkflowSummary } from '@open-design/contracts';
+//
+// TABS (Features / Tài liệu): this screen IS the App-detail route
+// (`{kind:'pipelines-app', appId}` in PipelinesRoute.tsx) — the Docs tab
+// renders the App's FULL `AppPoolSection` (merged pool tree, distill
+// progress, import) instead of duplicating any of that here. Local `tab`
+// state only (no query param/route change): the router has no existing
+// `?tab=` convention to extend, and this state doesn't need to survive a
+// reload/deep-link any more than the row-expand state below does. The Docs
+// tab is meaningless for the "Chưa gán app" bucket (`app.unassigned` — it has
+// no real App entity, so no pool), so both the tab bar and the tab default
+// only apply once a real App is resolved.
+import { useEffect, useMemo, useState } from 'react';
+import type { AppPoolResponse, PipelineProject, PipelineWorkflowSummary } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
 import { navigate } from '../../router';
+import { AppPoolSection } from './AppPoolSection';
 import { RowActionsMenu } from './RowActionsMenu';
 import { featureStatus, isFeatureDone, isFeatureUntouched, runningWorkflows } from './usePipelineNav';
 import type { PipelineNav } from './usePipelineNav';
 import styles from './PipelineNavViews.module.css';
+
+type DetailTab = 'features' | 'docs';
 
 interface Props {
   nav: PipelineNav;
@@ -69,7 +82,36 @@ export function PipelinesFeaturesView({
       return next;
     });
 
+  const [tab, setTab] = useState<DetailTab>('features');
+  useEffect(() => setTab('features'), [appId]);
+
   const app = nav.appById(appId);
+  const hasDocsTab = Boolean(app && !app.unassigned);
+
+  // Lightweight — just enough for the tab's own "N trang · pool sạch/x
+  // pending" summary line. `AppPoolSection` (mounted only once the Docs tab
+  // is actually open) does its own full fetch + polling independently; this
+  // one is a small, separate GET so the summary can show up on the Features
+  // tab too without paying for the whole section's mount cost up front.
+  const [poolSummary, setPoolSummary] = useState<{ pages: number; clean: boolean; pending: number } | null>(null);
+  useEffect(() => {
+    setPoolSummary(null);
+    if (!hasDocsTab) return undefined;
+    let alive = true;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/pool`);
+        if (!res.ok) return;
+        const j = (await res.json()) as AppPoolResponse;
+        if (alive) setPoolSummary({ pages: j.pages.length, clean: j.distill.clean, pending: j.distill.pending });
+      } catch {
+        /* tóm tắt chỉ là gợi ý trên tab — im lặng bỏ qua, AppPoolSection tự báo lỗi khi mở tab */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [appId, hasDocsTab]);
 
   const counts = useMemo(() => {
     const features = app?.features ?? [];
@@ -175,7 +217,7 @@ export function PipelinesFeaturesView({
             {counts.all} feature · {counts.done} xong — chọn feature để chạy pipeline.
           </p>
         </div>
-        {onNewFeature && hasFeatures ? (
+        {onNewFeature && hasFeatures && tab === 'features' ? (
           <div className={styles.headerActions}>
             <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={onNewFeature}>
               <Icon name="plus" size={13} />
@@ -185,6 +227,40 @@ export function PipelinesFeaturesView({
         ) : null}
       </div>
 
+      {hasDocsTab ? (
+        <div className={styles.detailTabs} role="tablist" aria-label="Chi tiết App">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'features'}
+            className={`${styles.detailTab}${tab === 'features' ? ' ' + styles.detailTabActive : ''}`}
+            onClick={() => setTab('features')}
+          >
+            <span className={styles.detailTabName}>Features</span>
+            <span className={styles.detailTabMeta}>
+              {counts.all} feature · {counts.done} xong
+            </span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'docs'}
+            className={`${styles.detailTab}${tab === 'docs' ? ' ' + styles.detailTabActive : ''}`}
+            onClick={() => setTab('docs')}
+          >
+            <span className={styles.detailTabName}>Tài liệu</span>
+            <span className={styles.detailTabMeta}>
+              {poolSummary
+                ? `${poolSummary.pages} trang · ${poolSummary.clean ? 'pool sạch' : `${poolSummary.pending} pending`}`
+                : 'Docs đã import/chưng cất'}
+            </span>
+          </button>
+        </div>
+      ) : null}
+
+      {tab === 'docs' && hasDocsTab ? (
+        <AppPoolSection appId={appId} />
+      ) : (
       <section className={styles.panel}>
         {hasFeatures ? (
           <div className={styles.panelToolbar}>
@@ -441,6 +517,7 @@ export function PipelinesFeaturesView({
       )}
         </div>
       </section>
+      )}
     </div>
   );
 }
