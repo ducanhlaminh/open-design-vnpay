@@ -18,6 +18,7 @@ export type EntryView =
   | 'onboarding'
   | 'projects'
   | 'tasks'
+  | 'feedback'
   | 'pipelines'
   | 'plugins'
   | 'design-systems'
@@ -122,6 +123,15 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
           testId="entry-nav-pipelines"
         >
           <Icon name="pipeline" size={18} />
+        </NavButton>
+        <NavButton
+          active={view === 'feedback'}
+          ariaLabel={t('entry.navFeedback')}
+          tooltip={t('entry.navFeedback')}
+          onClick={() => onViewChange('feedback')}
+          testId="entry-nav-feedback"
+        >
+          <Icon name="comment" size={18} />
         </NavButton>
         <NavButton
           active={view === 'design-systems'}

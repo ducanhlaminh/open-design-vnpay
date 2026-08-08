@@ -15,6 +15,7 @@ export type EntryHomeView =
   | 'projects'
   | 'tasks'
   | 'pipelines'
+  | 'feedback'
   | 'plugins'
   | 'design-systems'
   | 'integrations';
@@ -103,6 +104,12 @@ export function parseRoute(pathname: string): Route {
   if (parts[0] === 'automations' || parts[0] === 'tasks') {
     return { kind: 'home', view: 'tasks' };
   }
+  // Trang tổng hợp phản hồi — NGANG CẤP với /pipelines (một mục nav riêng),
+  // không lồng trong dự án: người xem thống kê chọn dự án ngay trong trang
+  // (?project=<id>, component tự đọc/ghi query).
+  if (parts[0] === 'feedback') {
+    return { kind: 'home', view: 'feedback' };
+  }
   if (parts[0] === 'pipelines') {
     // /pipelines/:projectId/result/:pipelineId → full-page Quick result.
     // Kiểm TRƯỚC nhánh drill-down: link cũ trong thông báo phải mở được, kể cả
@@ -159,6 +166,7 @@ export function buildPath(route: Route): string {
     if (route.view === 'projects') return '/projects';
     if (route.view === 'tasks') return '/automations';
     if (route.view === 'pipelines') return '/pipelines';
+    if (route.view === 'feedback') return '/feedback';
     if (route.view === 'plugins') return '/plugins';
     if (route.view === 'design-systems') return '/design-systems';
     if (route.view === 'integrations') return '/integrations';
