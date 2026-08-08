@@ -1,15 +1,15 @@
 'use client';
 
-// Percent progress bar, extracted from AppPoolSection's distill-progress UI
+// Percent progress bar, extracted from AppPoolSection's progress UI
 // so the same visual (and now the same batched-import progress) shows up
 // wherever an App-pool operation reports real x/y progress: AppPoolSection
-// (distill), ConfluenceTreeImport (batched self-import), NewAppModal
+// ConfluenceTreeImport (batched self-import), NewAppModal
 // (creation-flow import phase).
 
 import styles from './ProgressBar.module.css';
 
 export interface ProgressBarProps {
-  /** Full status line, e.g. "Đang chưng cất tài liệu… 3/10 trang (30%)". */
+  /** Full status line, e.g. "Đang nhập tài liệu… 3/10 trang (30%)". */
   label: string;
   /** 0-100; values outside that range are clamped. */
   percent: number;

@@ -27,15 +27,14 @@
 // `phase` hiện trạng thái từng bước thay vì im lặng trong lúc `busy`: 'creating'
 // ('Đang tạo App…') → 'importing' (progress bar % thật — xem dưới — chỉ khi
 // có trang tick) → setCreatedAppId. Tạo App CHỈ NẠP tài liệu vào pool —
-// KHÔNG tự chưng cất: việc đó thuộc bước 1 của workflow ("Tài liệu (chưng
-// cất & nạp)"); nút thủ công trong AppPoolSection là đường pre-warm tùy chọn.
+// Tạo App chỉ nạp tài liệu vào pool; bước 1 của workflow sẽ copy các trang
+// được chọn vào workspace khi chạy.
 //
 // Import dùng `importConfluenceInBatches` (ConfluenceTreeImport.tsx) thay vì
 // một POST refs[N] duy nhất — daemon trả về MỘT response cho cả yêu cầu, nên
 // batch nhỏ dần tuần tự là cách duy nhất có %-thật thay vì "im lặng rồi xong".
 // Batch lỗi giữa chừng → KHÔNG rollback (phần trước đã ghi lên đĩa); vẫn
-// setImportResult với phần đã nhập, hiện lỗi kèm "đã nhập X/N", và VẪN kích
-// hoạt chưng cất cho phần đó nếu có ít nhất 1 trang lọt qua.
+// setImportResult với phần đã nhập và hiện lỗi kèm "đã nhập X/N".
 
 import { useState } from 'react';
 import type { AppPoolImportResponse } from '@open-design/contracts';
@@ -135,7 +134,6 @@ export function NewAppModal({
       }
       setImportProgress(null);
     }
-    // KHÔNG tự chưng cất ở bước tạo App nữa (việc của bước 1 workflow), và
     // KHÔNG còn màn "App đã tạo" trung gian: thành công → đóng modal luôn,
     // card App mới xuất hiện là xác nhận. Màn xác nhận CHỈ giữ cho ca import
     // LỖI — đóng câm khi lỗi là nuốt mất thông tin người dùng cần thấy.
@@ -172,12 +170,11 @@ export function NewAppModal({
           {importResult
             ? ` Đã nhập ${importResult.imported} trang mới${importResult.updated > 0 ? `, cập nhật ${importResult.updated} trang` : ''}.`
             : null}
-          {' '}Chưng cất tài liệu ở màn App (nút Chưng cất tài liệu) trước khi chạy workflow — bước 1 chỉ nạp.
+          {' '}Tài liệu đã nạp vào App — bước 1 của workflow sẽ copy trang được chọn vào workspace khi chạy.
         </FormText>
         {importError ? <FormError>{importError} — App vẫn đã tạo; nhập lại ở màn Sửa App.</FormError> : null}
-        {/* Màn xác nhận NẠP: cây trang để soát lại đã import đúng chưa. Nút
-            chưng cất ẩn — việc đó bước 1 workflow tự làm khi chạy lần đầu. */}
-        <AppPoolSection appId={createdAppId} hideImport hideDistill />
+        {/* Màn xác nhận NẠP: cây trang để soát lại đã import đúng chưa. */}
+        <AppPoolSection appId={createdAppId} hideImport />
       </PipelineFormModal>
     );
   }

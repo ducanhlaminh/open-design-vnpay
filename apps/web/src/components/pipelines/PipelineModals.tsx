@@ -44,7 +44,6 @@ import styles from './PipelineSourceModal.module.css';
 import sp from './StagePicker.module.css';
 import poolStyles from './AppPoolSection.module.css';
 import { PipelineFlowCanvas } from './PipelineFlowCanvas';
-import { DistillModal } from './DistillModal';
 
 /** What the run-source modal hands back: either a structured BAS/Confluence
  * source (pre-fetched by the daemon) or a legacy free-text input (JIRA/JQL). */
@@ -1317,10 +1316,7 @@ export interface RunAllPayload {
    *  stage from the chain — that stage's declared output is the very folder the
    *  files landed in, so running it would delete them and fetch nothing. */
   docsFromUpload?: boolean;
-  /** App Docs Pool nguồn (docs/app-docs-pool-spec.md §2.2) — trang CHÍNH đã
-   *  tick. Có mặt (paths ≥1) → daemon copy deterministic các trang này vào
-   *  `<wf>/docs/` SAU KHI qua GATE (mọi trang trong pool `distilled`); FE chỉ
-   *  cho gửi payload này khi `distill.clean === true` (xem `runAllWithSavedConfig`). */
+  /** App Docs Pool nguồn — trang CHÍNH đã tick; daemon copy các trang này vào `<wf>/docs/`. */
   appPool?: { appId: string; paths: string[] };
 }
 
@@ -1473,7 +1469,6 @@ export function RunAllModal({
   anySucceeded,
   focus,
   onClose,
-  onAppPoolDistillFinished,
   onSaveConfig,
   onUploadDocs,
 }: {
@@ -1535,8 +1530,6 @@ export function RunAllModal({
    *  mọi section. Footer giống nhau ở cả hai chế độ ("Hủy / Lưu"). */
   focus?: RunAllFocus;
   onClose: () => void;
-  /** Notify the parent gate after the nested distill flow completes. */
-  onAppPoolDistillFinished?: () => void;
   /** Bấm "Lưu": ghi cấu hình dự án (PUT /api/pipelines/projects/:id/run-config,
    *  owner là PipelinesView). Chế độ focus chỉ gửi field của section đang mở;
    *  chế độ đầy đủ gửi mọi section modal đang hiện. Reject → modal hiện lỗi,
@@ -1573,11 +1566,9 @@ export function RunAllModal({
   // thẻ "Tài liệu App" có hiện hay không (pool rỗng → không hiện thẻ, y hệt
   // App chưa từng import gì).
   const [appPoolPages, setAppPoolPages] = useState<AppPoolPage[] | null>(null);
-  const [appPoolDistill, setAppPoolDistill] = useState<AppPoolResponse['distill'] | null>(null);
   const [appPoolLoading, setAppPoolLoading] = useState(false);
   const [appPoolError, setAppPoolError] = useState<string | null>(null);
   const [appPoolImportOpen, setAppPoolImportOpen] = useState(false);
-  const [distillModalOpen, setDistillModalOpen] = useState(false);
   // Ô search lọc cây pool (thay cho picker tìm-Confluence cũ của workflow).
   const [appPoolQuery, setAppPoolQuery] = useState('');
   // Trang CHÍNH đã tick, keyed theo `path` (khớp `RunAllConfig.appPool.paths`).
@@ -1594,7 +1585,6 @@ export function RunAllModal({
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const j = (await res.json()) as AppPoolResponse;
         setAppPoolPages(j.pages);
-        setAppPoolDistill(j.distill);
         setAppPoolError(null);
       } catch (cause) {
         setAppPoolError(cause instanceof Error ? cause.message : 'Không tải được tài liệu App.');
@@ -1607,7 +1597,6 @@ export function RunAllModal({
 
   useEffect(() => {
     setAppPoolPages(null);
-    setAppPoolDistill(null);
     void refreshAppPool();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId]);
@@ -1955,7 +1944,7 @@ export function RunAllModal({
                     </span>
                   ) : null}
                 </span>
-                <span className={styles.cardDesc}>Tick trang từ pool của App. Bước 1 chỉ COPY trang đã tick + bản chưng cất vào workspace — không chạy agent.</span>
+                <span className={styles.cardDesc}>Tick trang từ pool tài liệu đã nhập khi tạo App. Bước 1 copy các trang này vào docs-feature/ — toàn bộ pool luôn sẵn ở docs-app/ để agent nắm toàn cảnh App.</span>
               </button>
             ) : null}
             {hasUpload ? (
@@ -2003,26 +1992,9 @@ export function RunAllModal({
             {appPoolError ? <p className={styles.empty}>{appPoolError}</p> : null}
             <div className={poolStyles.header}>
               <p className={styles.hint} style={{ margin: 0 }}>
-                {appPoolPaths.size > 0 ? `${appPoolPaths.size} trang đã tick` : 'Tick trang CHÍNH sẽ nạp vào workspace.'}
+                {appPoolPaths.size > 0 ? `${appPoolPaths.size} trang đã tick → nạp vào docs-feature/` : 'Tick trang CHÍNH sẽ nạp vào workspace.'}
               </p>
             </div>
-            <div className={poolStyles.importSection}>
-              <strong>Bản chưng cất (luôn nạp kèm)</strong>
-              <ul>
-                <li><code>_overview.md</code> — tổng quan toàn App</li>
-                {[...new Set((appPoolPages ?? []).filter((page) => appPoolPaths.has(page.path)).map((page) => page.branch).filter(Boolean))].map((branch) => (
-                  <li key={branch}><code>_branches/{branch}.md</code> — tóm tắt phân hệ có trang được tick</li>
-                ))}
-              </ul>
-            </div>
-            {appPoolDistill && !appPoolDistill.clean ? (
-              <p className="pl-modal-field__hint">
-                Còn {appPoolDistill.pending} trang chưa chưng cất — phải chưng cất xong mới chạy được bước 1.{' '}
-                <button type="button" className={poolStyles.linkButton} onClick={() => setDistillModalOpen(true)} disabled={busy}>
-                  Chưng cất tài liệu
-                </button>
-              </p>
-            ) : null}
             <input
               className="pl-proj-search"
               value={appPoolQuery}
@@ -2325,16 +2297,6 @@ export function RunAllModal({
         </div>
       ) : null}
     </PlModal>
-    {distillModalOpen && appId ? (
-      <DistillModal
-        appId={appId}
-        onClose={() => setDistillModalOpen(false)}
-        onFinished={() => {
-          void refreshAppPool(true);
-          onAppPoolDistillFinished?.();
-        }}
-      />
-    ) : null}
     </>
   );
 }

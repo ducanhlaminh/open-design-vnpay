@@ -1,4 +1,4 @@
-/* Percent progress bar — shared by AppPoolSection (distill progress),
+/* Percent progress bar — shared by AppPoolSection,
    ConfluenceTreeImport (batched self-import progress), and NewAppModal
    (creation-flow import phase, before AppPoolSection itself mounts).
    Ported verbatim from AppPoolSection.module.css's original `.progressWrap`/

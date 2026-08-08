@@ -13,7 +13,6 @@ const page = (pageId, path, title) => ({
   branch: path.split('/')[0] ?? '',
   contentHash: `${pageId}-hash`,
   fetchedAt: 1,
-  distill: { state: 'distilled', distilledHash: `${pageId}-hash` },
 });
 
 const pages = [

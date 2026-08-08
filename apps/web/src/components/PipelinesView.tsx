@@ -303,11 +303,6 @@ export type StageRunDecision =
 export function resolveStageRunConfig(
   p: Pick<PipelineView, 'inputPlaceholder' | 'acceptsDesignSystem' | 'acceptsPlatform'>,
   cfg: RunAllConfig | undefined,
-  // App Docs Pool GATE (docs/app-docs-pool-spec.md §2.2): trạng thái chưng cất
-  // sống trên máy chủ (GET pool), không phải trong `cfg`, nên caller tự fetch
-  // và truyền vào đây. Vắng mặt (chưa fetch xong / dự án không dùng pool) →
-  // không chặn; khi đã biết pool bẩn thì fail-fast trước khi gửi lượt chạy.
-  appPoolGate?: { clean: boolean; pending: number } | null,
 ): StageRunDecision {
   if (p.inputPlaceholder) {
     const uploading = cfg?.docsFromUpload === true;
@@ -316,12 +311,6 @@ export function resolveStageRunConfig(
     const pages = cfg?.confluencePages ?? [];
     if (!uploading && !usingAppPool && pages.length === 0) return { ok: false, missing: 'Nguồn tài liệu' };
     if (usingAppPool) {
-      if (appPoolGate && !appPoolGate.clean) {
-        return {
-          ok: false,
-          missing: `Tài liệu App chưa chưng cất (còn ${appPoolGate.pending} trang) — bấm "Chưng cất tài liệu" ở màn App/modal Nguồn tài liệu`,
-        };
-      }
       return {
         ok: true,
         payload: { source: { kind: 'app-pool', appId: cfg!.appPool!.appId, paths: appPoolPaths } },
@@ -466,39 +455,6 @@ export function PipelinesView() {
       cancelled = true;
     };
   }, [projectId]);
-  // App Docs Pool GATE (docs/app-docs-pool-spec.md §2.2): trạng thái chưng cất
-  // của App sở hữu dự án ĐANG chọn, CHỈ fetch khi cấu hình đã lưu thật sự dùng
-  // pool làm nguồn — dự án dùng Confluence/upload không cần request này. BE là
-  // chốt thật khi chạy; state này chỉ để FE disable nút Chạy TRƯỚC khi người
-  // dùng click ra một lỗi mà lẽ ra đã biết trước.
-  const [appPoolGate, setAppPoolGate] = useState<{ clean: boolean; pending: number } | null>(null);
-  const [appPoolGateRefreshKey, setAppPoolGateRefreshKey] = useState(0);
-  useEffect(() => {
-    const proj = projects.find((pr) => pr.id === projectId);
-    const cfg = proj?.savedRunAll ?? proj?.config;
-    const usingAppPool = cfg?.docsFromUpload !== true && (cfg?.appPool?.paths?.length ?? 0) > 0;
-    const appId = usingAppPool ? (cfg?.appPool?.appId ?? proj?.app?.id) : undefined;
-    if (!appId) {
-      setAppPoolGate(null);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/pool`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const j = (await res.json()) as { distill?: { clean?: boolean; pending?: number } };
-        if (!cancelled) {
-          setAppPoolGate({ clean: Boolean(j.distill?.clean), pending: Number(j.distill?.pending ?? 0) });
-        }
-      } catch {
-        if (!cancelled) setAppPoolGate(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, projects, runAllOpen, appPoolGateRefreshKey]);
   // Dưới 1100px rail không đủ chỗ đứng cạnh stepper — sập thành nút "Cấu hình"
   // mở cùng nội dung trong drawer (dùng lại PlModal, không phải editor mới).
   const [railNarrow, setRailNarrow] = useState(false);
@@ -1274,14 +1230,6 @@ export function PipelinesView() {
       pushToast({ message: 'Cấu hình nguồn tài liệu trước khi chạy' });
       return;
     }
-    if (usingAppPool && runsIngestStage && appPoolGate && !appPoolGate.clean) {
-      pushToast({
-        message: 'Tài liệu App chưa chưng cất — chưa thể chạy',
-        details: `Còn ${appPoolGate.pending} trang chưa chưng cất. Bấm "Chưng cất tài liệu" ở màn App/modal Nguồn tài liệu.`,
-        code: 'error',
-      });
-      return;
-    }
     setRunAllBusy(true);
     try {
       await startRunAll(buildRunAllPayloadFromConfig(cfg));
@@ -1394,7 +1342,7 @@ export function PipelinesView() {
    *  cái đó rồi bấm lại sẽ được nhắc cái kế tiếp. */
   const proceedRun = (p: PipelineView) => {
     const proj = projects.find((pr) => pr.id === projectId);
-    const decision = resolveStageRunConfig(p, proj?.savedRunAll ?? proj?.config, appPoolGate);
+    const decision = resolveStageRunConfig(p, proj?.savedRunAll ?? proj?.config);
     if (!decision.ok) {
       pushToast({
         message: `Bước “${p.name}” cần ${decision.missing}`,
@@ -1463,9 +1411,6 @@ export function PipelinesView() {
   // Pipeline Studio khi chưa từng chạy).
   const railProject = projects.find((pr) => pr.id === projectId);
   const railCfg: RunAllConfig | undefined = railProject?.savedRunAll ?? railProject?.config;
-  // Pool chưa sạch chặn nút Chạy; cấu hình vẫn có thể lưu trong RunAllModal.
-  const railUsingAppPool = railCfg?.docsFromUpload !== true && (railCfg?.appPool?.paths?.length ?? 0) > 0;
-  const railAppPoolWillDistill = railUsingAppPool && appPoolGate !== null && !appPoolGate.clean;
   const railSourceSummary = railCfg?.appPool?.paths?.length
     ? `Tài liệu App · ${railCfg.appPool.paths.length} trang`
     : railCfg?.confluencePages?.length
@@ -2475,11 +2420,7 @@ export function PipelinesView() {
               className="pl-btn pl-btn--run"
               onClick={() => void runAllWithSavedConfig()}
               disabled={!projectId || pipelines.length === 0 || runAllBusy}
-              title={
-                railAppPoolWillDistill
-                  ? `Tài liệu App chưa chưng cất (còn ${appPoolGate?.pending ?? 0} trang) — chưng cất trước rồi mới chạy được`
-                  : 'Chạy toàn bộ pipeline bằng cấu hình đang hiện ở rail bên cạnh — đổi cấu hình trước bằng nút Đổi nếu cần khác đi'
-              }
+              title="Chạy toàn bộ pipeline bằng cấu hình đang hiện ở rail bên cạnh — đổi cấu hình trước bằng nút Đổi nếu cần khác đi"
             >
               <Icon name={runAllBusy ? 'spinner' : 'play'} size={14} />
               <span>{runAllBusy ? 'Đang khởi động…' : 'Chạy pipeline'}</span>
@@ -2929,7 +2870,6 @@ export function PipelinesView() {
             anySucceeded={pipelines.some((p) => p.status === 'succeeded')}
             focus={runAllFocus}
             onClose={() => setRunAllOpen(false)}
-            onAppPoolDistillFinished={() => setAppPoolGateRefreshKey((key) => key + 1)}
             onSaveConfig={saveRunConfig}
             onUploadDocs={uploadRunAllDocs}
           />

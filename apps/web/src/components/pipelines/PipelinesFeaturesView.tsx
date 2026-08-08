@@ -6,8 +6,8 @@
 //
 // TABS (Features / Tài liệu): this screen IS the App-detail route
 // (`{kind:'pipelines-app', appId}` in PipelinesRoute.tsx) — the Docs tab
-// renders the App's FULL `AppPoolSection` (merged pool tree, distill
-// progress, import) instead of duplicating any of that here. Local `tab`
+// renders the App's FULL `AppPoolSection` (merged pool tree, import)
+// instead of duplicating any of that here. Local `tab`
 // state only (no query param/route change): the router has no existing
 // `?tab=` convention to extend, and this state doesn't need to survive a
 // reload/deep-link any more than the row-expand state below does. The Docs
@@ -20,13 +20,12 @@ import type { AppPoolResponse, PipelineProject, PipelineWorkflowSummary } from '
 import { Icon } from '../Icon';
 import { navigate } from '../../router';
 import { AppPoolSection } from './AppPoolSection';
-import { AppDistillSection } from './AppDistillSection';
 import { RowActionsMenu } from './RowActionsMenu';
 import { featureStatus, isFeatureDone, isFeatureUntouched, runningWorkflows } from './usePipelineNav';
 import type { PipelineNav } from './usePipelineNav';
 import styles from './PipelineNavViews.module.css';
 
-type DetailTab = 'features' | 'docs' | 'distill';
+type DetailTab = 'features' | 'docs';
 
 interface Props {
   nav: PipelineNav;
@@ -89,12 +88,11 @@ export function PipelinesFeaturesView({
   const app = nav.appById(appId);
   const hasDocsTab = Boolean(app && !app.unassigned);
 
-  // Lightweight — just enough for the tab's own "N trang · pool sạch/x
-  // pending" summary line. `AppPoolSection` (mounted only once the Docs tab
-  // is actually open) does its own full fetch + polling independently; this
-  // one is a small, separate GET so the summary can show up on the Features
-  // tab too without paying for the whole section's mount cost up front.
-  const [poolSummary, setPoolSummary] = useState<{ pages: number; clean: boolean; pending: number } | null>(null);
+  // Lightweight — just enough for the tab's own "N trang" summary line.
+  // `AppPoolSection` (mounted only once the Docs tab is actually open) does
+  // its own full fetch independently; this small GET lets the summary show
+  // up on the Features tab without mounting the whole section up front.
+  const [poolSummary, setPoolSummary] = useState<{ pages: number } | null>(null);
   useEffect(() => {
     setPoolSummary(null);
     if (!hasDocsTab) return undefined;
@@ -104,7 +102,7 @@ export function PipelinesFeaturesView({
         const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/pool`);
         if (!res.ok) return;
         const j = (await res.json()) as AppPoolResponse;
-        if (alive) setPoolSummary({ pages: j.pages.length, clean: j.distill.clean, pending: j.distill.pending });
+        if (alive) setPoolSummary({ pages: j.pages.length });
       } catch {
         /* tóm tắt chỉ là gợi ý trên tab — im lặng bỏ qua, AppPoolSection tự báo lỗi khi mở tab */
       }
@@ -252,24 +250,7 @@ export function PipelinesFeaturesView({
               onClick={() => setTab('docs')}
             >
               <span className={styles.detailTabName}>Tài liệu</span>
-              <span className={styles.detailTabMeta}>
-                ·{' '}
-                {poolSummary
-                  ? `${poolSummary.pages} trang${poolSummary.clean ? ' (sạch)' : ` (${poolSummary.pending} pending)`}`
-                  : '…'}
-              </span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'distill'}
-              className={`${styles.detailTab}${tab === 'distill' ? ' ' + styles.detailTabActive : ''}`}
-              onClick={() => setTab('distill')}
-            >
-              <span className={styles.detailTabName}>Tài liệu chưng cất</span>
-              <span className={styles.detailTabMeta}>
-                · {poolSummary ? (poolSummary.clean ? 'sạch' : `${poolSummary.pending} pending`) : '…'}
-              </span>
+              <span className={styles.detailTabMeta}>· {poolSummary ? `${poolSummary.pages} trang` : '…'}</span>
             </button>
           </div>
         ) : null}
@@ -283,10 +264,6 @@ export function PipelinesFeaturesView({
                 PipelineNavViews.module.css only; see report for the
                 follow-up note. */}
             <AppPoolSection appId={appId} />
-          </div>
-        ) : tab === 'distill' && hasDocsTab ? (
-          <div className={styles.panelBody}>
-            <AppDistillSection appId={appId} />
           </div>
         ) : (
           <>

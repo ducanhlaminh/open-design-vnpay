@@ -14,13 +14,6 @@ import type { AppPoolPage } from '@open-design/contracts';
 import { Icon } from '../Icon';
 import styles from './AppPoolTree.module.css';
 
-export const APP_POOL_STATE_LABELS: Record<AppPoolPage['distill']['state'], string> = {
-  fetched: 'Đã tải',
-  stale: 'Cần chưng cất lại',
-  distilling: 'Đang chưng cất',
-  distilled: 'Đã chưng cất',
-};
-
 interface TreeNode {
   /** Folder nodes: the accumulated `folder/sub-folder` path (stable across
    *  reloads, used as the expand/collapse key). Leaf/merged nodes:
@@ -34,7 +27,7 @@ interface TreeNode {
   children: TreeNode[];
   /** Present on a leaf (no children of its own) OR a MERGED node (see
    *  `mergeSiblingsAtLevel`: a page whose export paired it with a same-named
-   *  sibling folder, so this node is BOTH selectable/badged AND expandable).
+   *  sibling folder, so this node is BOTH selectable AND expandable).
    *  Absent on a plain (unmerged) folder. */
   page?: AppPoolPage;
 }
@@ -75,7 +68,7 @@ function buildAppPoolTree(pages: AppPoolPage[]): TreeNode[] {
 
 /** Within one level's children, merge each page-leaf's raw-name sibling
  *  folder into ONE node (expandable via the folder's former children, still
- *  selectable/badged via the page) — a Confluence export pairs page `x.md`
+ *  selectable via the page) — a Confluence export pairs page `x.md`
  *  with a same-level `x/` folder holding its own children/attachments, so
  *  without this the same page renders TWICE: once as the leaf, once as the
  *  folder that has nothing of its own. Matched by RAW segment name (`x`),
@@ -203,8 +196,7 @@ export function AppPoolTree({ pages, selection, renderLeafActions, query, onOpen
   );
   const isFiltering = normalizedQuery.length > 0;
   // Seeded ONCE (first non-empty tree) with every top-level folder key, per
-  // "mặc định cấp 1 mở, sâu hơn đóng" — a later pool refresh (distill
-  // polling, a fresh import) must not stomp on folders the user has since
+  // "mặc định cấp 1 mở, sâu hơn đóng" — a later pool refresh (a fresh import) must not stomp on folders the user has since
   // toggled, so this never re-seeds after that first pass.
   const [expanded, setExpanded] = useState<Set<string> | null>(null);
   useEffect(() => {
@@ -234,11 +226,11 @@ export function AppPoolTree({ pages, selection, renderLeafActions, query, onOpen
   };
 
   // Unified row: whether a chevron shows depends on `node.children.length`
-  // (NOT on `node.page`) and whether a badge/delete-button/checkbox-by-path
+  // (NOT on `node.page`) and whether a delete-button/checkbox-by-path
   // shows depends on `node.page` (NOT on children) — the two used to be
   // mutually exclusive (a node was either a childless page leaf or a
   // page-less folder), but a MERGED node (see `mergeSiblingsAtLevel`) is
-  // BOTH: expandable via the folder half it absorbed, selectable/badged via
+  // BOTH: expandable via the folder half it absorbed, selectable via
   // the page half. A plain leaf or plain folder still renders exactly as
   // before — this only ADDS the merged case, it doesn't change either of
   // the other two.
@@ -299,11 +291,6 @@ export function AppPoolTree({ pages, selection, renderLeafActions, query, onOpen
               <span className={styles.folderText}>{displayName}</span>
             </span>
           )}
-          {node.page ? (
-            <span className={`${styles.badge} ${styles[node.page.distill.state]}`}>
-              {APP_POOL_STATE_LABELS[node.page.distill.state]}
-            </span>
-          ) : null}
           {/* Deleting a merged node only removes ITS page — never its
               absorbed children, per spec ("không đụng con"). */}
           {node.page && renderLeafActions ? renderLeafActions(node.page) : null}

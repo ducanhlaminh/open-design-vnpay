@@ -9,7 +9,6 @@ import { fetchProjectFileText } from '../../providers/registry';
 import { AppPoolTree } from './AppPoolTree';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { ConfluenceTreeImport } from './ConfluenceTreeImport';
-import { DistillModal } from './DistillModal';
 import styles from './AppPoolSection.module.css';
 
 /** Trang pool mở đầu bằng frontmatter YAML (`--- title/page_id/url/source ---`)
@@ -35,17 +34,12 @@ interface AppPoolSectionProps {
    *  under the just-shown result; additional imports still belong in the
    *  Sửa App screen, which renders this section with the default (visible). */
   hideImport?: boolean;
-  /** Ẩn nút "Chưng cất tài liệu" (+ banner thử lại) — màn "App đã tạo" chỉ
-   *  xác nhận NẠP tài liệu; chưng cất thuộc bước 1 workflow. Màn Sửa App vẫn
-   *  hiện nút (đường pre-warm tùy chọn). */
-  hideDistill?: boolean;
 }
 
-export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectionProps) {
+export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
   const [pool, setPool] = useState<AppPoolResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [distillModalOpen, setDistillModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [deleting, setDeleting] = useState<AppPoolPage | null>(null);
@@ -120,8 +114,6 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
   if (error && !pool) return <section className={styles.section}><p className={styles.error}>{error}</p><button className={styles.secondaryButton} onClick={() => void loadPool()}>Thử lại</button></section>;
   if (!pool) return null;
 
-  const isRunning = pool.distill.running;
-  const ready = pool.pages.length > 0 && !isRunning && pool.distill.clean;
 
   return (
     <section className={styles.section} aria-label="Tài liệu App">
@@ -129,32 +121,9 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
         <div>
           <h2 className={styles.heading}>Tài liệu App</h2>
           <p className={styles.muted}>
-            {pool.pages.length === 0
-              ? 'Chưa có tài liệu trong pool.'
-              : ready
-                ? `Pool sẵn sàng (${pool.pages.length} trang đã chưng cất)`
-                : `${pool.pages.length} trang`}
+            {pool.pages.length === 0 ? 'Chưa có tài liệu trong pool.' : `${pool.pages.length} trang`}
             {refreshing ? ' · đang cập nhật…' : ''}
           </p>
-        </div>
-        <div className={styles.headerActions}>
-          {pool.overviewExists ? (
-            <button type="button" className={styles.secondaryButton} onClick={() => openPreviewPath('_overview.md', 'Tổng quan tài liệu (_overview.md)')}>
-              <Icon name="eye" size={13} />
-              Xem tổng quan
-            </button>
-          ) : null}
-          {pool.pages.length > 0 && !hideDistill ? (
-            <button
-              type="button"
-              className={styles.primaryButton}
-              onClick={() => setDistillModalOpen(true)}
-              disabled={isRunning || (pool.distill.pending === 0 && pool.overviewExists)}
-            >
-              Chưng cất tài liệu
-              {pool.distill.pending > 0 ? <span className={styles.count}>{pool.distill.pending}</span> : null}
-            </button>
-          ) : null}
         </div>
       </div>
       {error ? <p className={styles.error}>{error}</p> : null}
@@ -269,20 +238,10 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
       {deleting ? (
         <ConfirmDeleteModal
           title={`Xóa trang "${deleting.title}"?`}
-          body="Xóa khỏi pool tài liệu App trên máy này. Chưng cất trước đó (nếu có) có thể lệch cho tới lần chưng cất lại kế tiếp."
+          body="Xóa khỏi pool tài liệu App trên máy này."
           confirmLabel="Xóa trang"
           onClose={() => setDeleting(null)}
           onConfirm={() => deletePage(deleting)}
-        />
-      ) : null}
-      {distillModalOpen && !hideDistill ? (
-        <DistillModal
-          appId={appId}
-          onClose={() => {
-            setDistillModalOpen(false);
-            void loadPool(true);
-          }}
-          onFinished={() => void loadPool(true)}
         />
       ) : null}
     </section>

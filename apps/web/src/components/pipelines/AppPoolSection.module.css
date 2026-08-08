@@ -14,15 +14,6 @@
 .muted { margin: 4px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.45; }
 .error { margin: 0; color: var(--red); font-size: 12px; line-height: 1.45; }
 
-/* Bare distill-progress text — the percent BAR itself is `ProgressBar.tsx`
-   (shared with ConfluenceTreeImport/NewAppModal); `.progress` alone stays
-   here because PipelineModals.tsx's RunAllModal app-pool card still uses it
-   for its own plain "Tiến độ: x/y" line. */
-.progress { margin: -4px 0 0; color: var(--accent); font-size: 12px; font-weight: 600; }
-
-.distillFailBanner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--red); border-radius: var(--radius-sm); background: var(--red-bg); }
-.distillFailBanner .error { flex: 1; }
-
 .primaryButton, .secondaryButton {
   display: inline-flex;
   align-items: center;
