@@ -72,4 +72,13 @@ describe('feedback forms', () => {
     expect(JSON.parse(client.files[0].data.toString())).toMatchObject({ sections, questions: sectionQuestions });
     expect((await readFeedbackForms('p', { client: client as never })).forms).toHaveLength(2);
   });
+
+  it('saves workflowId for per-workflow forms and rejects blank workflowId', async () => {
+    const client = new FakeClient();
+    const draft = { title: 'PRD', workflowId: 'docs-to-prd', sections, questions: sectionQuestions };
+    const saved = await saveFeedbackForm('p', draft, { client: client as never });
+    expect(saved.workflowId).toBe('docs-to-prd');
+    expect(JSON.parse(client.files[0].data.toString())).toMatchObject({ workflowId: 'docs-to-prd' });
+    await expect(saveFeedbackForm('p', { ...draft, workflowId: '  ' }, { client: client as never })).rejects.toThrow('workflowId');
+  });
 });

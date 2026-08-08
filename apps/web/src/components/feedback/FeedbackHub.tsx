@@ -59,10 +59,15 @@ export function FeedbackHub({
   // một id ổn định để rơi chung một thư mục trên store.
   const draftIdRef = useRef<string>('');
 
-  const latestForm: FeedbackFormDef | null = useMemo(
-    () => (forms && forms.forms.length > 0 ? forms.forms[forms.forms.length - 1]! : null),
-    [forms],
-  );
+  // Form của workflow hiện tại: ƯU TIÊN version mới nhất có workflowId khớp;
+  // workflow chưa có form riêng rơi về version chung (không workflowId) mới
+  // nhất. Form của workflow KHÁC không bao giờ được chọn.
+  const latestForm: FeedbackFormDef | null = useMemo(() => {
+    const list = forms?.forms ?? [];
+    const specific = list.filter((f) => f.workflowId === workflowId);
+    const pool = specific.length ? specific : list.filter((f) => !f.workflowId);
+    return pool.length ? pool[pool.length - 1]! : null;
+  }, [forms, workflowId]);
 
   // Ngữ cảnh lúc điền: nuôi câu optionsSource 'workflow-steps' (nhãn bước =
   // option) và prefill 'completed-steps'. failed cũng tính là "đã dùng" —
@@ -252,10 +257,12 @@ export function FeedbackHub({
                   onSave={async (draft) => {
                     setBusy(true);
                     try {
+                      // Form lưu từ thẻ của một workflow là form RIÊNG của
+                      // workflow đó — workflowId gắn tự động.
                       const res = await fetch('/api/pipelines/feedback/forms', {
                         method: 'PUT',
                         headers: { 'content-type': 'application/json' },
-                        body: JSON.stringify({ projectId, ...draft }),
+                        body: JSON.stringify({ projectId, workflowId, ...draft }),
                       });
                       if (!res.ok) {
                         const j = (await res.json().catch(() => ({}))) as { error?: string };

@@ -888,7 +888,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   });
 
   app.put('/api/pipelines/feedback/forms', (req, res) => {
-    const body = req.body as Partial<{ projectId: string; title: string; sections: unknown; questions: unknown }>;
+    const body = req.body as Partial<{ projectId: string; title: string; workflowId: string; sections: unknown; questions: unknown }>;
     if (!body.projectId || typeof body.title !== 'string' || !Array.isArray(body.questions)) {
       return res.status(400).json({ error: 'projectId, title and questions are required' });
     }
@@ -900,6 +900,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           body.projectId!,
           {
             title: body.title!,
+            ...(typeof body.workflowId === 'string' && body.workflowId ? { workflowId: body.workflowId } : {}),
             ...(Array.isArray(body.sections) ? { sections: body.sections as never } : {}),
             questions: body.questions as never,
           },

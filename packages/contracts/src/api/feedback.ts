@@ -72,6 +72,10 @@ export interface FeedbackFormDef {
   /** 1-based, tăng dần, mỗi version một file bất biến trên store. */
   version: number;
   title: string;
+  /** Form dành RIÊNG một workflow (vd 'docs-review'): thẻ đánh giá của
+   * workflow đó dùng version-mới-nhất-có-workflowId-khớp; vắng = form chung,
+   * làm fallback cho workflow chưa có form riêng. */
+  workflowId?: string;
   /** Có mặt (≥1) → form render dạng wizard nhiều PHẦN; vắng → một trang cuộn. */
   sections?: FeedbackFormSection[];
   questions: FeedbackQuestion[];
