@@ -606,6 +606,51 @@ test('fetchConfluencePages (flat pathLayout) with MANY individually-ticked seeds
   }
 });
 
+test('fetchConfluencePages (flat pathLayout) giữ cấp của tổ tiên KHÔNG được fetch — tick lá mà không tick cha thì cha vẫn thành folder (cây soi gương Confluence gốc)', async () => {
+  // Bug thật từ App-pool import: user tick trang gốc + các trang lá, KHÔNG
+  // tick trang giữa ("2.2 …") → hành vi cũ lọc tổ tiên theo fetched-set làm
+  // các lá bị đôn lên thành sibling của trang gốc. Hành vi mới: chuỗi tổ
+  // tiên dùng nguyên văn (trừ prefix chung), tổ tiên chưa fetch = folder trơn.
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-flat-unfetched-anc-'));
+  try {
+    const byId: Record<string, ReturnType<typeof directPageRes>> = {
+      '2': directPageRes({ title: 'Parent Doc' }),
+      '221': directPageRes({
+        title: 'Leaf One',
+        ancestors: [
+          { id: '2', title: 'Parent Doc' },
+          { id: '22', title: 'Sub Section' }, // KHÔNG nằm trong refs
+        ],
+      }),
+      '222': directPageRes({
+        title: 'Leaf Two',
+        ancestors: [
+          { id: '2', title: 'Parent Doc' },
+          { id: '22', title: 'Sub Section' },
+        ],
+      }),
+    };
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const m = /\/rest\/api\/content\/(\d+)\?/.exec(String(url));
+      if (m && byId[m[1]!]) return byId[m[1]!] as any;
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as any;
+
+    const pages = await fetchConfluencePages(
+      { creds: { base: 'https://wiki.test', token: 'pat' } },
+      ['2', '221', '222'],
+      { attachmentsDir, followLinks: false, pathLayout: 'flat' },
+    );
+
+    assert.equal(pages.find((p) => p.pageId === '2')!.relPath, 'docs/Parent-Doc.md');
+    // Cấp "Sub Section" GIỮ NGUYÊN dù trang 22 không được fetch.
+    assert.equal(pages.find((p) => p.pageId === '221')!.relPath, 'docs/Parent-Doc/Sub-Section/Leaf-One.md');
+    assert.equal(pages.find((p) => p.pageId === '222')!.relPath, 'docs/Parent-Doc/Sub-Section/Leaf-Two.md');
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
 test('fetchConfluencePages slug() collapses runs of dashes from " - " in a title (no "---" artifacts)', async () => {
   const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-slug-dash-'));
   try {

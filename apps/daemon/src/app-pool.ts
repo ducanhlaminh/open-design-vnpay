@@ -358,6 +358,16 @@ export async function importConfluenceIntoPool(opts: {
     });
   }
   const current = await readManifest(projectsDir, appId);
+  // Trang cũ đổi chỗ (cấu trúc cây theo tổ tiên thật có thể khác lần import
+  // trước) → xóa file ở path CŨ, nếu không nó thành mồ côi trên đĩa và
+  // stageAppDocsPool (copy mọi *.md) sẽ nạp trùng một trang hai chỗ.
+  const oldPathById = new Map(current.pages.map((p) => [p.pageId, p.path] as const));
+  for (const w of writable) {
+    const oldPath = oldPathById.get(w.pageId);
+    if (oldPath && oldPath !== w.path) {
+      await fs.promises.rm(path.join(docsDir, oldPath), { force: true }).catch(() => null);
+    }
+  }
   const { manifest: next, imported, updated } = upsertPagesFromFetch(current, writable, now);
   await writeManifest(projectsDir, appId, next);
   await writeIndexMd(projectsDir, appId, next);

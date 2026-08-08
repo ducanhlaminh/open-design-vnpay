@@ -1383,6 +1383,27 @@ export async function fetchConfluencePages(
     if (bd) return bd;
     return naturalSegsCompare([...(a.treePath ?? []), a.title], [...(b.treePath ?? []), b.title]);
   });
+  // flat: chuỗi tổ tiên dùng NGUYÊN VĂN theo wiki, chỉ cắt phần prefix chung
+  // mà MỌI trang (không tính trang link-followed) cùng chia sẻ — để cây pool
+  // soi gương đúng Confluence gốc kể từ gốc chung của đợt pick, thay vì (a)
+  // tụt về tận root wiki, hoặc (b) như trước đây: lọc bỏ tổ tiên không nằm
+  // trong đợt fetch làm con cháu bị đôn lên thành sibling (tick lá mà không
+  // tick cha là mất cấp — cây sau import khác hẳn cây lúc search).
+  let flatCommonLen = 0;
+  if (flat) {
+    const prefixPool = [...fetched.values()].filter((p) => !(p.linked && !p.treePath));
+    if (prefixPool.length > 0) {
+      const chains = prefixPool.map((p) => (p.ancestors ?? []).map((a) => a.id));
+      flatCommonLen = Math.min(...chains.map((c) => c.length));
+      for (let i = 0; i < flatCommonLen; i += 1) {
+        const id = chains[0]![i];
+        if (!chains.every((c) => c[i] === id)) {
+          flatCommonLen = i;
+          break;
+        }
+      }
+    }
+  }
   for (const p of ordered) {
     // Link-followed pages are CONTEXT ONLY: they nest under docs/context/ (not
     // docs/confluence/) so downstream skills read them for domain understanding
@@ -1390,16 +1411,13 @@ export async function fetchConfluencePages(
     // distinctly from the main pages. Seeds + sub-tree pages stay under
     // docs/confluence/ (sub-tree nested by wiki hierarchy, seeds flat).
     const isContext = !!p.linked && !p.treePath;
-    // flat: mirror the page's REAL Confluence ancestor chain — but only the
-    // ancestors that are THEMSELVES part of this fetch (so every folder
-    // segment pairs with an actual fetched page's own file — see below).
-    // Ancestors outside the fetched set are simply not folders here; the page
-    // nests as deep as the picked/fetched set reaches, "relative từ trang
-    // được pick" rather than the absolute wiki root. Non-flat keeps the
-    // existing treePath convention (sub-tree scan / fold-by-commonLen above).
+    // flat: mirror the page's REAL Confluence ancestor chain below the shared
+    // prefix — tổ tiên CHƯA fetch vẫn thành folder (folder thường, không có
+    // file .md bắt cặp; AppPoolTree render dạng folder trơn). Non-flat keeps
+    // the existing treePath convention (sub-tree scan / fold-by-commonLen).
     const dir = flat
       ? (p.ancestors ?? [])
-          .filter((a) => fetched.has(a.id))
+          .slice(flatCommonLen)
           .map((a) => slug(a.title))
           .filter(Boolean)
       : (p.treePath ?? []).map(slug).filter(Boolean);
