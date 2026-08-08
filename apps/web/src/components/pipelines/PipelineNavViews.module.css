@@ -1392,13 +1392,7 @@
    (styles/primitives.css) sets `border-radius: var(--radius-sm)` on every
    button — left alone, that rounds the border-bottom below into a pill with
    rounded end-caps (exactly the "dày, bo tròn, trông như progress bar" bug
-   from feedback), so it's zeroed explicitly here. `margin-bottom: -1px`
-   (not `align-items: stretch` on the container, which depended on the
-   button's rendered height exactly matching its siblings') pulls the
-   button's OWN border-box down by the container's hairline width — its
-   border-bottom then draws exactly ON TOP of `.detailTabs`'s border-bottom
-   instead of stopping short of it, so there is zero gap between underline
-   and hairline regardless of any sub-pixel height mismatch.
+   from feedback), so it's zeroed explicitly here.
    `flex: none` (`.detailTabs` is `display:flex`) pins the button to its
    CONTENT width (label + meta, its natural max-content size) — without it a
    flex item's default `flex-shrink: 1` lets the browser shrink the button's
@@ -1407,17 +1401,31 @@
    text itself keeps overflowing past it (the "underline chỉ nằm dưới
    Features, meta thò ra ngoài" bug from feedback). `white-space: nowrap`
    is the same insurance against the label/meta ever line-wrapping instead
-   of just measuring wider. */
+   of just measuring wider.
+   NO border-bottom and NO negative margin on the base/inactive state: an
+   earlier pass gave every tab (inactive included) a transparent 2px
+   border-bottom plus `margin-bottom: -1px` to pre-align with the hairline,
+   but that pulls EVERY tab's border-box down over `.detailTabs`'s own
+   border-bottom — including inactive ones, whose (transparent) border
+   still physically occupies that row and breaks the hairline into dashes
+   under each tab (feedback: "hairline dưới tab inactive bị che/đứt"). The
+   correct split: inactive tabs reserve the SAME vertical space via
+   `padding-bottom` alone (12px = the old 10px content gap + the 2px an
+   active tab's border would occupy) and sit flush ABOVE the hairline with
+   nothing crossing it, so the hairline stays one unbroken line; only
+   `.detailTabActive` (below) adds back a real 2px accent border-bottom
+   (dropping its own padding-bottom by that same 2px, so total reserved
+   height matches — switching tabs never shifts anything vertically) and
+   ONLY THAT state gets `margin-bottom: -1px` to press its accent line down
+   onto the hairline. */
 .detailTab {
   display: inline-flex;
   flex: none;
   align-items: baseline;
   gap: 6px;
-  margin-bottom: -1px;
-  padding: 0 1px 10px;
+  padding: 0 1px 12px;
   border: none;
   border-radius: 0;
-  border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--text-muted);
   white-space: nowrap;
@@ -1429,22 +1437,14 @@
    which sets `background: var(--bg-subtle)` and `border-color:
    var(--border-strong)` — that selector's specificity (element + 2
    pseudo-classes) otherwise wins over a plain `.detailTab:hover`, which is
-   exactly what was painting the grey hover BOX and tinting the underline
-   grey on hover (feedback: "nền xám dạng hộp"). Matching its own
-   `:not(:disabled)` qualifier is the same technique this stylesheet already
-   uses for `.btn`/`.pagerBtn` above — no `!important` needed. Hover/focus
-   change TEXT COLOR only; background stays transparent in every state, and
-   the accent underline is re-asserted for the active+hover combo so
-   hovering the active tab doesn't lose it to the grey reset. */
+   exactly what was painting the grey hover BOX (feedback: "nền xám dạng
+   hộp"). Matching its own `:not(:disabled)` qualifier is the same technique
+   this stylesheet already uses for `.btn`/`.pagerBtn` above — no
+   `!important` needed. Hover/focus change TEXT COLOR only; background stays
+   transparent in every state. */
 .detailTab:hover:not(:disabled) {
   color: var(--text-strong);
   background: transparent;
-  border-bottom-color: transparent;
-}
-
-.detailTabActive:hover:not(:disabled) {
-  color: var(--accent-strong);
-  border-bottom-color: var(--accent);
 }
 
 /* `:focus-visible` already gets a thin outline (no background) for free
@@ -1455,7 +1455,24 @@
   background: transparent;
 }
 
+/* The only state that actually draws a border: 2px accent, `margin-bottom:
+   -1px` presses it down onto `.detailTabs`'s hairline (zero gap, matches
+   the active tab's width exactly since the border is on the button's own
+   border-box), and `padding-bottom` drops from 12px to 10px so this state's
+   total reserved height (10px padding + 2px border) equals the inactive
+   state's (12px padding, 0 border) — switching tabs cannot shift layout.
+   Re-declared under `:hover:not(:disabled)` too so hovering the ACTIVE tab
+   keeps its accent underline/color instead of losing them to the plain
+   `.detailTab:hover` rule above (equal specificity; source order decides,
+   and this block comes after). */
 .detailTabActive {
+  padding-bottom: 10px;
+  margin-bottom: -1px;
+  border-bottom: 2px solid var(--accent);
+  color: var(--accent-strong);
+}
+
+.detailTabActive:hover:not(:disabled) {
   color: var(--accent-strong);
   border-bottom-color: var(--accent);
 }
