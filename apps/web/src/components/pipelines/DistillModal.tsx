@@ -14,7 +14,7 @@ interface DistillModalProps {
 
 type BranchStatus = 'clean' | 'running' | 'waiting' | 'error';
 
-interface BranchSummary {
+export interface BranchSummary {
   name: string;
   pages: AppPoolPage[];
   status: BranchStatus;
@@ -31,7 +31,7 @@ function distillUrl(appId: string): string {
 /** Pool còn việc cho job distill: trang chưa chưng cất, HOẶC mọi nhánh sạch
  *  nhưng thiếu `_overview.md` (reduce từng fail) — daemon nhận POST ở cả hai
  *  ca (reduce-only run). */
-function needsDistill(pool: AppPoolResponse): boolean {
+export function needsDistill(pool: AppPoolResponse): boolean {
   return pool.distill.pending > 0 || (!pool.overviewExists && pool.pages.length > 0);
 }
 
@@ -39,7 +39,7 @@ function isPageClean(page: AppPoolPage): boolean {
   return page.distill.state === 'distilled' && page.distill.distilledHash === page.contentHash;
 }
 
-function branchSummaries(pages: AppPoolPage[]): BranchSummary[] {
+export function branchSummaries(pages: AppPoolPage[]): BranchSummary[] {
   const grouped = new Map<string, AppPoolPage[]>();
   for (const page of pages) {
     const branch = page.branch || 'Khác';

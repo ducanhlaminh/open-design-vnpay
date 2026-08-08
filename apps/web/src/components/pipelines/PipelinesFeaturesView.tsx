@@ -20,12 +20,13 @@ import type { AppPoolResponse, PipelineProject, PipelineWorkflowSummary } from '
 import { Icon } from '../Icon';
 import { navigate } from '../../router';
 import { AppPoolSection } from './AppPoolSection';
+import { AppDistillSection } from './AppDistillSection';
 import { RowActionsMenu } from './RowActionsMenu';
 import { featureStatus, isFeatureDone, isFeatureUntouched, runningWorkflows } from './usePipelineNav';
 import type { PipelineNav } from './usePipelineNav';
 import styles from './PipelineNavViews.module.css';
 
-type DetailTab = 'features' | 'docs';
+type DetailTab = 'features' | 'docs' | 'distill';
 
 interface Props {
   nav: PipelineNav;
@@ -258,6 +259,18 @@ export function PipelinesFeaturesView({
                   : '…'}
               </span>
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'distill'}
+              className={`${styles.detailTab}${tab === 'distill' ? ' ' + styles.detailTabActive : ''}`}
+              onClick={() => setTab('distill')}
+            >
+              <span className={styles.detailTabName}>Tài liệu chưng cất</span>
+              <span className={styles.detailTabMeta}>
+                · {poolSummary ? (poolSummary.clean ? 'sạch' : `${poolSummary.pending} pending`) : '…'}
+              </span>
+            </button>
           </div>
         ) : null}
 
@@ -270,6 +283,10 @@ export function PipelinesFeaturesView({
                 PipelineNavViews.module.css only; see report for the
                 follow-up note. */}
             <AppPoolSection appId={appId} />
+          </div>
+        ) : tab === 'distill' && hasDocsTab ? (
+          <div className={styles.panelBody}>
+            <AppDistillSection appId={appId} />
           </div>
         ) : (
           <>
