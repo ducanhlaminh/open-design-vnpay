@@ -123,3 +123,10 @@
 .stale { background: var(--yellow-soft); color: var(--yellow); }
 .distilling { background: var(--accent-soft); color: var(--accent); }
 .distilled { background: var(--green-soft); color: var(--green); }
+
+
+.emptyState {
+  padding: 10px 12px;
+  color: var(--text-soft);
+  font-size: 12.5px;
+}

@@ -137,6 +137,24 @@ function collectLeafPages(node: TreeNode): AppPoolPage[] {
   return [...own, ...node.children.flatMap(collectLeafPages)];
 }
 
+function normalizeForSearch(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+/** Keep matching pages, their ancestors, and full subtrees of matching folders. */
+function filterTree(nodes: TreeNode[], normalizedQuery: string): TreeNode[] {
+  return nodes.flatMap((node) => {
+    const folderMatches = normalizeForSearch(node.name).includes(normalizedQuery);
+    const pageMatches = node.page
+      ? normalizeForSearch(node.page.title).includes(normalizedQuery) ||
+        normalizeForSearch(node.page.path).includes(normalizedQuery)
+      : false;
+    if (folderMatches || pageMatches) return [node];
+    const children = filterTree(node.children, normalizedQuery);
+    return children.length > 0 ? [{ ...node, children }] : [];
+  });
+}
+
 export interface AppPoolTreeProps {
   pages: AppPoolPage[];
   /** Present → every row (leaf AND folder, cascading) gets a tick checkbox
@@ -153,14 +171,22 @@ export interface AppPoolTreeProps {
   };
   /** Per-leaf trailing action slot (AppPoolSection's delete button). */
   renderLeafActions?: (page: AppPoolPage) => ReactNode;
+  /** Từ khóa lọc; rỗng/undefined thì hiển thị toàn bộ cây. */
+  query?: string;
 }
 
 /** Cascade tick: ticking a folder ticks every leaf page under it (all
  *  levels); unticking mirrors it. Mixed state (some but not all leaves
  *  ticked) reads as "off" for the click decision (tapping it fills the rest
  *  in, same as an indeterminate checkbox committing to "on" on click). */
-export function AppPoolTree({ pages, selection, renderLeafActions }: AppPoolTreeProps) {
+export function AppPoolTree({ pages, selection, renderLeafActions, query }: AppPoolTreeProps) {
   const tree = useMemo(() => buildAppPoolTree(pages), [pages]);
+  const normalizedQuery = useMemo(() => normalizeForSearch(query ?? '').trim(), [query]);
+  const visibleTree = useMemo(
+    () => (normalizedQuery ? filterTree(tree, normalizedQuery) : tree),
+    [tree, normalizedQuery],
+  );
+  const isFiltering = normalizedQuery.length > 0;
   // Seeded ONCE (first non-empty tree) with every top-level folder key, per
   // "mặc định cấp 1 mở, sâu hơn đóng" — a later pool refresh (distill
   // polling, a fresh import) must not stomp on folders the user has since
@@ -204,7 +230,7 @@ export function AppPoolTree({ pages, selection, renderLeafActions }: AppPoolTree
   const renderNode = (node: TreeNode, depth: number): ReactNode => {
     const indent = 8 + depth * 16;
     const hasChildren = node.children.length > 0;
-    const open = isExpanded(node.key);
+    const open = isFiltering ? hasChildren : isExpanded(node.key);
     // `collectLeafPages` already returns "own page (if any) + every
     // descendant page" — so this ONE formula covers a plain leaf's own tick
     // state, a plain folder's cascade state, AND a merged node's "self +
@@ -263,5 +289,13 @@ export function AppPoolTree({ pages, selection, renderLeafActions }: AppPoolTree
     );
   };
 
-  return <div className={styles.tree}>{tree.map((n) => renderNode(n, 0))}</div>;
+  if (isFiltering && visibleTree.length === 0) {
+    return (
+      <div className={styles.tree}>
+        <div className={styles.emptyState}>Không có trang nào khớp &quot;{query}&quot;.</div>
+      </div>
+    );
+  }
+
+  return <div className={styles.tree}>{visibleTree.map((n) => renderNode(n, 0))}</div>;
 }

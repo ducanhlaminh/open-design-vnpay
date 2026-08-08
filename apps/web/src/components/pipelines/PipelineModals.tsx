@@ -1555,8 +1555,11 @@ export function RunAllModal({
   // trừ nhau — 'upload' khiến daemon BỎ HẲN bước ingest khỏi chuỗi
   // (docsFromUpload), vì chạy nó sẽ xóa đúng file vừa nạp; 'app-pool' copy
   // deterministic các trang đã tick (§2.4), không cần agent.
+  // Dự án GẮN App: nguồn tài liệu của workflow CHỈ còn là pool của App
+  // (nạp/import ở bước tạo App) — mode Confluence bị ẩn hẳn, khỏi fetch lại
+  // thứ App đã có. Dự án không gắn App giữ đường Confluence cũ.
   const [docsSource, setDocsSource] = useState<'confluence' | 'upload' | 'app-pool'>(
-    defaultDocsFromUpload ? 'upload' : defaultAppPool?.paths?.length ? 'app-pool' : 'confluence',
+    defaultDocsFromUpload ? 'upload' : appId !== undefined ? 'app-pool' : defaultAppPool?.paths?.length ? 'app-pool' : 'confluence',
   );
   const [pendingDocs, setPendingDocs] = useState<PendingFile[]>([]);
   const uploading = docsSource === 'upload' && hasUpload;
@@ -1571,6 +1574,8 @@ export function RunAllModal({
   const [appPoolError, setAppPoolError] = useState<string | null>(null);
   const [appPoolDistilling, setAppPoolDistilling] = useState(false);
   const [appPoolImportOpen, setAppPoolImportOpen] = useState(false);
+  // Ô search lọc cây pool (thay cho picker tìm-Confluence cũ của workflow).
+  const [appPoolQuery, setAppPoolQuery] = useState('');
   // Trang CHÍNH đã tick, keyed theo `path` (khớp `RunAllConfig.appPool.paths`).
   const [appPoolPaths, setAppPoolPaths] = useState<Set<string>>(
     new Set(appId && defaultAppPool?.appId === appId ? (defaultAppPool?.paths ?? []) : []),
@@ -1921,13 +1926,14 @@ export function RunAllModal({
       )}
       {shows('source') ? (
       <div className="pl-modal-field">
-        <span className="pl-modal-field__label">Nguồn tài liệu (bước Docs)</span>
+        <span className="pl-modal-field__label">Nguồn tài liệu (bước 1 — chưng cất &amp; nạp)</span>
         {/* Workflow có bước ingest nhận file tay (`acceptsUpload`, ví dụ Docs →
-            Review tài liệu) thì cho chọn nguồn ngay tại đây — trước đây chỉ nút
-            Run của riêng bước đó mới có, nên cấu hình chung khóa cứng Confluence.
-            Thẻ "Tài liệu App" chỉ hiện khi App của dự án có pool KHÔNG rỗng. */}
+            Review tài liệu) thì cho chọn nguồn ngay tại đây. Dự án GẮN App:
+            thẻ Confluence bị ẨN — tài liệu chỉ chọn từ pool App (mọi workflow
+            dùng chung modal này, chung một nguồn). */}
         {hasUpload || appPoolAvailable ? (
           <div className={styles.cards} role="radiogroup" aria-label="Nguồn tài liệu">
+            {appId === undefined ? (
             <button
               type="button"
               role="radio"
@@ -1947,6 +1953,7 @@ export function RunAllModal({
               </span>
               <span className={styles.cardDesc}>Daemon tự fetch các trang đã chọn về Markdown.</span>
             </button>
+            ) : null}
             {appPoolAvailable ? (
               <button
                 type="button"
@@ -2033,8 +2040,16 @@ export function RunAllModal({
                 Còn {appPoolDistill.pending} trang chưa chưng cất — không sao: bước 1 sẽ tự chưng cất trước khi nạp (chạy sẽ lâu hơn). Bấm "Chưng cất tài liệu" ở đây nếu muốn làm trước.
               </p>
             ) : null}
+            <input
+              className="pl-proj-search"
+              value={appPoolQuery}
+              onChange={(event) => setAppPoolQuery(event.target.value)}
+              placeholder="Tìm trang trong tài liệu App — tick nhiều trang cho workflow…"
+              disabled={busy}
+            />
             <AppPoolTree
               pages={appPoolPages ?? []}
+              query={appPoolQuery}
               selection={{ ticked: appPoolPaths, onToggle: setAppPoolPaths, disabled: busy }}
             />
             <div className={poolStyles.importSection}>
@@ -2069,6 +2084,16 @@ export function RunAllModal({
                 />
               ) : null}
             </div>
+          </>
+        ) : docsSource === 'app-pool' ? (
+          <>
+            {/* Dự án gắn App nhưng pool RỖNG: không rơi về picker Confluence —
+                tài liệu phải nạp ở màn App trước. */}
+            {appPoolError ? <p className={styles.empty}>{appPoolError}</p> : null}
+            <p className="pl-modal-field__hint">
+              App này chưa có tài liệu nào trong pool. Nạp tài liệu ở màn <b>App</b> (mục "Tài liệu
+              App" — Import từ Confluence) rồi quay lại đây tick trang cho workflow.
+            </p>
           </>
         ) : (
           <>
