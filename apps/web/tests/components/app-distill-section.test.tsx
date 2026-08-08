@@ -63,4 +63,52 @@ describe('AppDistillSection', () => {
     await waitFor(() => expect(fetchProjectFileText).toHaveBeenCalledWith('app-1', 'docs/_overview.md'));
     expect(await screen.findByText('Tổng quan')).toBeTruthy();
   });
+
+  it('renders the distilled tree with clean and pending branches', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      pages: [page('a', 'admin', 'distilled'), page('b', 'ops', 'fetched')],
+      distill: { clean: false, pending: 1, running: false },
+      overviewExists: true,
+    })));
+    render(<AppDistillSection appId="app-1" />);
+
+    expect(await screen.findByText('_overview.md')).toBeTruthy();
+    expect(screen.getByText('_branches/')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /_branches\/admin\.md/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /_branches\/ops\.md/ })).toHaveProperty('disabled', true);
+    expect(screen.getByText('chưa chưng cất')).toBeTruthy();
+  });
+
+  it('shows an empty preview and toggles the branches folder', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      pages: [page('a', 'admin', 'distilled')],
+      distill: { clean: true, pending: 0, running: false },
+      overviewExists: true,
+    })));
+    render(<AppDistillSection appId="app-1" />);
+
+    expect(await screen.findByText('Chọn một file bên trái để xem nội dung')).toBeTruthy();
+    const folder = screen.getByRole('button', { name: /^_branches\/1$/ });
+    fireEvent.click(folder);
+    expect(screen.queryByRole('button', { name: /_branches\/admin\.md/ })).toBeNull();
+    fireEvent.click(folder);
+    expect(screen.getByRole('button', { name: /_branches\/admin\.md/ })).toBeTruthy();
+  });
+
+  it('opens a branch preview and marks its row active', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      pages: [page('a', 'admin', 'distilled')],
+      distill: { clean: true, pending: 0, running: false },
+      overviewExists: true,
+    })));
+    vi.mocked(fetchProjectFileText).mockResolvedValue('# Admin');
+    render(<AppDistillSection appId="app-1" />);
+
+    const row = await screen.findByRole('button', { name: /_branches\/admin\.md/ });
+    fireEvent.click(row);
+    await waitFor(() => expect(fetchProjectFileText).toHaveBeenCalledWith('app-1', 'docs/_branches/admin.md'));
+    expect(await screen.findByText('Admin')).toBeTruthy();
+    expect(row.className).toContain('rowActive');
+    expect(screen.getAllByText('_branches/admin.md')).toHaveLength(2);
+  });
 });

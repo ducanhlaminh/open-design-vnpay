@@ -34,6 +34,7 @@ export function AppDistillSection({ appId }: { appId: string }): JSX.Element {
   const [hasRun, setHasRun] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [branchesOpen, setBranchesOpen] = useState(true);
   const previousPool = useRef<AppPoolResponse | null>(null);
   const logId = useRef(0);
 
@@ -89,6 +90,8 @@ export function AppDistillSection({ appId }: { appId: string }): JSX.Element {
     setError(null);
     setHasRun(false);
     setLogs([]);
+    setPreview(null);
+    setBranchesOpen(true);
     previousPool.current = null;
     void poll();
   }, [appId, poll]);
@@ -139,8 +142,7 @@ export function AppDistillSection({ appId }: { appId: string }): JSX.Element {
   if (!pool) return <section className={styles.section} />;
 
   const totalPercent = progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
-  const ready = !running && !needsDistill(pool);
-  const overviewButton = pool.overviewExists ? <button type="button" className={styles.fileButton} onClick={() => void openPreview('_overview.md', '_overview.md')}><Icon name="file" size={13} />_overview.md</button> : null;
+  const hasDistilledFiles = pool.overviewExists || branches.some((branch) => branch.status === 'clean');
 
   return (
     <section className={styles.section} aria-label="Tài liệu chưng cất">
@@ -168,10 +170,64 @@ export function AppDistillSection({ appId }: { appId: string }): JSX.Element {
 
       {logs.length > 0 ? <div className={styles.log} aria-label="Log tiến trình">{logs.map((entry) => <div key={entry.id}>{entry.text}</div>)}</div> : null}
 
-      {ready || pool.overviewExists ? (
-        <div className={styles.files}><h3>Bản chưng cất</h3>{overviewButton}{branches.filter((branch) => branch.status === 'clean').map((branch) => <button type="button" className={styles.fileButton} key={branch.name} onClick={() => void openPreview(`_branches/${branch.name}.md`, `_branches/${branch.name}.md`)}><Icon name="file" size={13} />_branches/{branch.name}.md</button>)}</div>
+      {hasDistilledFiles ? (
+        <div className={styles.distilledSection}>
+          <h3>Bản chưng cất</h3>
+          <div className={styles.split}>
+            <div className={styles.treePane} aria-label="Cây bản chưng cất">
+              {pool.overviewExists ? (
+                <button
+                  type="button"
+                  className={`${styles.treeRow} ${preview?.path === '_overview.md' ? styles.rowActive : ''}`}
+                  onClick={() => void openPreview('_overview.md', '_overview.md')}
+                >
+                  <Icon name="file" size={13} />
+                  <span className={styles.rowTitle}>_overview.md</span>
+                </button>
+              ) : null}
+              <button type="button" className={styles.folderRow} onClick={() => setBranchesOpen((open) => !open)} aria-expanded={branchesOpen}>
+                <Icon name={branchesOpen ? 'folder-filled' : 'folder'} size={13} />
+                <span className={styles.rowTitle}>_branches/</span>
+                <span className={styles.rowCount}>{branches.length}</span>
+              </button>
+              {branchesOpen ? branches.map((branch) => {
+                const path = `_branches/${branch.name}.md`;
+                const clean = branch.status === 'clean';
+                return (
+                  <button
+                    type="button"
+                    key={branch.name}
+                    className={`${styles.treeRow} ${styles.branchFileRow} ${preview?.path === path ? styles.rowActive : ''} ${!clean ? styles.rowDisabled : ''}`}
+                    disabled={!clean}
+                    onClick={() => void openPreview(path, path)}
+                  >
+                    <Icon name="file" size={13} />
+                    <span className={styles.rowTitle}>{path}</span>
+                    {!clean ? <span className={styles.rowBadge}>chưa chưng cất</span> : null}
+                  </button>
+                );
+              }) : null}
+            </div>
+            <div className={styles.previewPane}>
+              {preview ? (
+                <>
+                  <div className={styles.previewHead}>
+                    <span className={styles.previewTitle}><Icon name="file" size={13} />{preview.title}</span>
+                    <button type="button" className={styles.closeButton} onClick={() => setPreview(null)} aria-label="Đóng preview">×</button>
+                  </div>
+                  <div className={styles.previewScroll}>
+                    {preview.loading ? <p className={styles.muted}>Đang tải…</p> : null}
+                    {preview.error ? <p className={styles.error}>{preview.error}</p> : null}
+                    {preview.html ? <div className={`${styles.previewBody} markdown-rendered`} dangerouslySetInnerHTML={{ __html: preview.html }} /> : null}
+                  </div>
+                </>
+              ) : (
+                <div className={styles.previewEmpty}><Icon name="file" size={22} /><p>Chọn một file bên trái để xem nội dung</p></div>
+              )}
+            </div>
+          </div>
+        </div>
       ) : null}
-      {preview ? <div className={styles.preview}><div className={styles.previewHead}><strong>{preview.title}</strong><button type="button" className={styles.closeButton} onClick={() => setPreview(null)} aria-label="Đóng preview">×</button></div><div className={styles.previewScroll}>{preview.loading ? <p className={styles.muted}>Đang tải…</p> : null}{preview.error ? <p className={styles.error}>{preview.error}</p> : null}{preview.html ? <div className={`${styles.previewBody} markdown-rendered`} dangerouslySetInnerHTML={{ __html: preview.html }} /> : null}</div></div> : null}
     </section>
   );
 }
