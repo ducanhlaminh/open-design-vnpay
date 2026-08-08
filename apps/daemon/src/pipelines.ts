@@ -55,6 +55,11 @@ export interface PipelineDef {
    */
   acceptsDesignSystem?: boolean;
   /**
+   * When true, this stage takes review criteria from a design system. The
+   * daemon copies criteria files into the workflow before the review runs.
+   */
+  usesDesignSystemCriteria?: boolean;
+  /**
    * When true, this stage decides the target platform of the generated screens
    * — the UX Spec stage, whose per-screen `layout` field (`mobile` | `web`)
    * downstream UI-Spec terminals follow. The UI shows a Mobile/Website picker
@@ -301,7 +306,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // re-run of dr-review untouched). skillId MUST stay 'jira-ingest' for
   // dr-docs: runDocsDeterministic (server.ts) only takes the tool-only
   // Confluence path for that exact skillId.
-  { id: 'dr-docs',          name: 'Tài liệu (nạp)',                   skillId: 'jira-ingest',           dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL', acceptsUpload: true },
+  { id: 'dr-docs',          name: 'Tài liệu (nạp)',                   skillId: 'jira-ingest',           dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL', acceptsUpload: true, usesDesignSystemCriteria: true },
   // Bước GIỮA: đối chiếu component. Đọc `docs/` (bản GỐC, chưa review) và với
   // MỖI màn hình trong tài liệu, liệt kê phần tử nào dùng component nào rồi
   // đối chiếu với danh mục hợp lệ `criteria/components.md`, ghi ra

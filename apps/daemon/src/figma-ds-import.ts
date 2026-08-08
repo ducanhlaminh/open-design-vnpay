@@ -24,6 +24,7 @@ import { extractComponentsManifest } from '@open-design/contracts';
 import { LocalDesignSystemImportError } from './design-system-import.js';
 import { compileIR } from './vendor/fig-import/compile-core.js';
 import { mergeIRs } from './vendor/fig-import/merge-ir.js';
+import { writeDsRulesFile } from './ds-criteria.js';
 
 export type FigmaIRImportFile = {
   /** Original upload filename, used for ordering, merge warnings and ir/ persistence. */
@@ -60,6 +61,7 @@ export type FigmaIRImportResult = {
   dir: string;
   warnings: string[];
   summary: FigmaIRImportSummary;
+  criteria: { rules: boolean };
 };
 
 /** globals.css layout marker written by compile-core (tokens above, tk-* below). */
@@ -70,13 +72,18 @@ export async function importFigmaIRDesignSystem(
   userDesignSystemsRoot: string,
   options: FigmaIRImportOptions = {},
 ): Promise<FigmaIRImportResult> {
-  if (files.length === 0) {
+  const mdFiles = files.filter((file) => file.filename.toLowerCase().endsWith('.md'));
+  const irFiles = files.filter((file) => !file.filename.toLowerCase().endsWith('.md'));
+  if (mdFiles.length > 1) {
+    throw new LocalDesignSystemImportError('BAD_REQUEST', `chỉ nhận 1 file rules .md kèm theo (nhận được ${mdFiles.length})`);
+  }
+  if (irFiles.length === 0) {
     throw new LocalDesignSystemImportError('BAD_REQUEST', 'at least one .ir.json or plugin .zip file is required');
   }
 
   // Natural filename order (upstream merge-react convention: 01-, 02-, …) so
   // the merge order never depends on browser/OS file-picker ordering.
-  const ordered = [...files].sort((a, b) =>
+  const ordered = [...irFiles].sort((a, b) =>
     a.filename.localeCompare(b.filename, undefined, { numeric: true, sensitivity: 'base' }),
   );
 
@@ -159,8 +166,8 @@ export async function importFigmaIRDesignSystem(
     filename: String(entry?.filename ?? sourceTexts[index]?.filename ?? `IR #${index + 1}`),
     figmaFile: String(entry?.name ?? ''),
   }));
-
   const warnings = [...(merged.warnings ?? [])];
+
   // mergeIRs rebuilds meta from scratch, so per-export image notes only exist
   // on the source IRs. Surface them here or an oversized image silently comes
   // back as a lower-resolution render with no trace of why.
@@ -223,10 +230,13 @@ export async function importFigmaIRDesignSystem(
     'utf8',
   );
 
+  if (mdFiles[0]) warnings.push(...await writeDsRulesFile(outDir, Buffer.isBuffer(mdFiles[0].content) ? mdFiles[0].content.toString('utf8') : mdFiles[0].content));
+
   return {
     id,
     dir: outDir,
     warnings,
+    criteria: { rules: Boolean(mdFiles[0]) },
     summary: {
       componentSets: Number(summary.totalSets ?? 0),
       components: Number(summary.components ?? 0),

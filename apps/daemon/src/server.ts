@@ -516,6 +516,7 @@ import {
   stageAppDocsPool,
 } from './app-pool.js';
 import { registerAppPoolRoutes } from './app-pool-routes.js';
+import { commitGeneratedComponentsMd, dsCriteriaDir, readDsCriteriaState } from './ds-criteria.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv, sha256hex, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
@@ -1449,6 +1450,21 @@ const orbitService = new OrbitService(RUNTIME_DATA_DIR);
 const designSystemGenerationJobs = createDesignSystemGenerationJobStore({
   root: USER_DESIGN_SYSTEMS_DIR,
 });
+
+/** Thư mục trên đĩa của một design-system id, hoặc null nếu không có.
+ *
+ *  Id trong catalog mang tiền tố `user:` cho DS người dùng nạp lên; DS dựng sẵn
+ *  của repo không có tiền tố và nằm ở thư mục khác. Thử lần lượt cả hai gốc thay
+ *  vì bắt caller tự biết DS thuộc loại nào. */
+const dsDirForId = async (designSystemId: string): Promise<string | null> => {
+  const bareId = designSystemId.replace(/^user:/, '');
+  if (!bareId || bareId.includes('/') || bareId.includes('\\') || bareId.includes('..')) return null;
+  for (const root of [USER_DESIGN_SYSTEMS_DIR, DESIGN_SYSTEMS_DIR]) {
+    const dir = path.join(root, bareId);
+    if (await fs.promises.stat(dir).then((s) => s.isDirectory()).catch(() => false)) return dir;
+  }
+  return null;
+};
 let routineService = null;
 
 // In-memory OAuth state cache. Lives for the daemon process's lifetime.
@@ -6218,6 +6234,229 @@ export async function startServer({
         return res.status(404).json({ error: 'design system generation job not found' });
       }
       res.json({ job });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── Bộ tiêu chí review của Design System (`<ds>/criteria/`) ───────────────
+  //
+  // `components.md` = DANH MỤC component hợp lệ, sinh bằng AGENT đọc chính DS.
+  // `rules.md` = quy tắc UX, KHÔNG sinh — người dùng nạp kèm lúc import (một
+  // file .md thả chung với zip, xem figma-ds-import.ts). Quy tắc "form dài thì
+  // dùng Drawer" là quyết định sản phẩm, không nằm trong export Figma; bắt agent
+  // suy ra thì nó bịa, và `dr-review` sẽ lấy chính rule bịa đó làm căn cứ buộc
+  // tội tài liệu sai.
+  //
+  // Vì sao KHÔNG dùng `designSystemGenerationJobs` ở trên: store đó chạy step
+  // giả lập theo `delayMs` để dựng DRAFT, nó không spawn agent bao giờ. Việc ở
+  // đây là đọc `react/docs/catalog.md` (hàng nghìn dòng, hàng trăm component)
+  // rồi LỌC / GOM NHÓM / DIỄN GIẢI — phán đoán, không phải biến đổi cơ học.
+  //
+  // cwd của agent là chính thư mục DS, có được nhờ một project row ẩn mang
+  // `metadata.baseDir` — `startChatRun` đọc đúng field đó để chọn cwd. Một row
+  // dùng lại cho mọi lần sinh của cùng một DS.
+  type DsCriteriaJobStep = { id: string; title: string; status: 'pending' | 'running' | 'succeeded' | 'failed'; message?: string };
+  type DsCriteriaJob = {
+    id: string;
+    designSystemId: string;
+    status: 'queued' | 'running' | 'succeeded' | 'failed';
+    message: string;
+    steps: DsCriteriaJobStep[];
+    createdAt: string;
+    updatedAt: string;
+  };
+  const dsCriteriaJobs = new Map<string, DsCriteriaJob>();
+  /** designSystemId → id của job GẦN NHẤT. GET /criteria trả job này, nên UI
+   *  vẫn thấy được lý do thất bại sau khi tải lại trang. */
+  const dsCriteriaJobByDs = new Map<string, string>();
+
+  const startDsCriteriaJob = (designSystemId: string, dsDir: string): DsCriteriaJob => {
+    const now = () => new Date().toISOString();
+    const job: DsCriteriaJob = {
+      id: randomUUID(),
+      designSystemId,
+      status: 'queued',
+      message: 'Đã xếp hàng',
+      steps: [
+        { id: 'read-catalog', title: 'Đọc catalog của DS', status: 'pending' },
+        { id: 'generate', title: 'Agent sinh danh mục component', status: 'pending' },
+        { id: 'validate', title: 'Kiểm tra & ghi đè components.md', status: 'pending' },
+      ],
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    dsCriteriaJobs.set(job.id, job);
+    dsCriteriaJobByDs.set(designSystemId, job.id);
+    const step = (id: string) => job.steps.find((s) => s.id === id)!;
+    const touch = () => {
+      job.updatedAt = now();
+    };
+
+    void (async () => {
+      job.status = 'running';
+      touch();
+      try {
+        step('read-catalog').status = 'running';
+        touch();
+        const catalogRel = 'react/docs/catalog.md';
+        const catalogAbs = path.join(dsDir, catalogRel);
+        if (!(await fs.promises.stat(catalogAbs).then((s) => s.isFile()).catch(() => false))) {
+          throw new Error(
+            `DS này không có "${catalogRel}" — chỉ design system nạp từ Figma IR mới có catalog để sinh danh mục.`,
+          );
+        }
+        step('read-catalog').status = 'succeeded';
+        touch();
+
+        step('generate').status = 'running';
+        job.message = 'Agent đang đọc catalog…';
+        touch();
+
+        const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+        let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
+        if (!agentId) {
+          const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
+          agentId = agents.find((a) => a.available)?.id ?? null;
+        }
+        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) throw new Error('Chưa cấu hình agent nào khả dụng — chọn agent trong Cài đặt trước.');
+
+        // Project row ẩn trỏ vào thư mục DS. Dùng lại theo DS (không tạo mới mỗi
+        // lần sinh) để lịch sử hội thoại của một DS nằm chung một chỗ.
+        const projectId = `ds-criteria-${designSystemId.replace(/^user:/, '')}`;
+        const rowNow = Date.now();
+        if (!getProject(db, projectId)) {
+          insertProject(db, {
+            id: projectId,
+            name: `Bộ tiêu chí · ${designSystemId}`,
+            skillId: null,
+            designSystemId: null,
+            pendingPrompt: null,
+            metadata: { kind: 'ds-criteria', baseDir: dsDir, designSystemId },
+            createdAt: rowNow,
+            updatedAt: rowNow,
+          });
+        }
+        const conversationId = `ds-criteria-conv-${randomUUID()}`;
+        insertConversation(db, {
+          id: conversationId,
+          projectId,
+          title: `Sinh danh mục component · ${new Date(rowNow).toLocaleString('vi-VN')}`,
+          createdAt: rowNow,
+          updatedAt: rowNow,
+        });
+        const assistantMessageId = `ds-criteria-assistant-${randomUUID()}`;
+        const kickoff =
+          `Áp skill "ds-criteria-extract" cho design system "${designSystemId}". ` +
+          `cwd của bạn LÀ thư mục DS: đọc "${catalogRel}" (nguồn chính), "react/STYLE-GUIDE.md" và "DESIGN.md". ` +
+          `Ghi kết quả ra ĐÚNG MỘT file: "criteria/components.md.next". ` +
+          `TUYỆT ĐỐI KHÔNG ghi đè "criteria/components.md" — daemon validate file .next rồi mới rename; ghi thẳng vào file thật là bỏ qua bước kiểm và có thể phá danh mục đang dùng. ` +
+          `KHÔNG đụng "criteria/rules.md" (file của người dùng) và không sửa bất cứ thứ gì trong "react/" hay "ir/".`;
+        const run = design.runs.create({
+          projectId,
+          conversationId,
+          assistantMessageId,
+          clientRequestId: `ds-criteria-${randomUUID()}`,
+          agentId,
+        });
+        activeRuns.add(run);
+        upsertMessage(db, conversationId, { id: `ds-criteria-user-${run.id}`, role: 'user', content: kickoff });
+        upsertMessage(db, conversationId, {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: '',
+          agentId,
+          agentName: getAgentDef(agentId)?.name ?? agentId,
+          runId: run.id,
+          runStatus: 'queued',
+          startedAt: Date.now(),
+        });
+        const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+        design.runs.start(run, () =>
+          startChatRun(
+            {
+              agentId,
+              projectId,
+              conversationId,
+              assistantMessageId,
+              clientRequestId: run.clientRequestId,
+              skillId: 'ds-criteria-extract',
+              model: modelPrefs.model ?? null,
+              reasoning: modelPrefs.reasoning ?? null,
+              message: kickoff,
+              systemPrompt:
+                'Bạn đang chạy một job không có người ngồi cạnh. Không hỏi lại, không chờ input — chọn mặc định hợp lý và hoàn thành.',
+            },
+            run,
+          ),
+        );
+        const final = await design.runs.wait(run);
+        activeRuns.delete(run);
+        db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+        if (final.status !== 'succeeded') {
+          throw new Error(`Agent kết thúc với trạng thái "${final.status}".`);
+        }
+        step('generate').status = 'succeeded';
+        touch();
+
+        step('validate').status = 'running';
+        touch();
+        const committed = await commitGeneratedComponentsMd(dsDir);
+        if (!committed.ok) {
+          step('validate').status = 'failed';
+          step('validate').message = committed.errors.join('; ');
+          throw new Error(committed.errors.join('; '));
+        }
+        step('validate').status = 'succeeded';
+        job.status = 'succeeded';
+        job.message = `${committed.components} component`;
+        touch();
+      } catch (error) {
+        const detail = String((error as Error)?.message ?? error);
+        const active = job.steps.find((s) => s.status === 'running');
+        if (active) {
+          active.status = 'failed';
+          active.message = active.message ?? detail;
+        }
+        job.status = 'failed';
+        job.message = detail;
+        touch();
+        console.warn(`[ds-criteria] sinh danh mục cho "${designSystemId}" thất bại:`, detail);
+      }
+    })();
+
+    return job;
+  };
+
+  // Sinh (hoặc sinh lại) `criteria/components.md` của một DS.
+  app.post('/api/design-systems/:id/criteria/generate', async (req, res) => {
+    try {
+      const id = req.params.id;
+      const dsDir = await dsDirForId(id);
+      if (!dsDir) return res.status(404).json({ error: `design system not found: ${id}` });
+      const existingId = dsCriteriaJobByDs.get(id);
+      const existing = existingId ? dsCriteriaJobs.get(existingId) : undefined;
+      if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+        return res.status(202).json({ jobId: existing.id, job: existing });
+      }
+      const job = startDsCriteriaJob(id, dsDir);
+      res.status(202).json({ jobId: job.id, job });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Trạng thái bộ tiêu chí + job gần nhất. UI poll route này.
+  app.get('/api/design-systems/:id/criteria', async (req, res) => {
+    try {
+      const id = req.params.id;
+      const dsDir = await dsDirForId(id);
+      if (!dsDir) return res.status(404).json({ error: `design system not found: ${id}` });
+      const state = await readDsCriteriaState(dsDir);
+      const jobId = dsCriteriaJobByDs.get(id);
+      const job = jobId ? (dsCriteriaJobs.get(jobId) ?? null) : null;
+      res.json({ ...state, job });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -14029,6 +14268,8 @@ export async function startServer({
         const idxAbs = path.join(cwd, 'docs/confluence/_index.md');
         await fs.promises.mkdir(path.dirname(idxAbs), { recursive: true });
         await fs.promises.writeFile(idxAbs, renderConfluenceIndex(pages), 'utf8');
+        const criteriaDsId = criteriaDesignSystemForProject(projectId);
+        if (criteriaDsId) await copyDsCriteriaIntoWorkflow(criteriaDsId, cwd);
         console.log(
           `[pipelines] deterministic docs run for ${projectId}: fetched ${pages.length} Confluence page(s), no agent`,
         );
@@ -14051,6 +14292,69 @@ export async function startServer({
       }
     })();
     return { projectId, completion };
+  };
+
+  /** Chép bộ tiêu chí review của một Design System vào `<wf>/criteria/`.
+   *
+   *  DS ở đây KHÔNG sinh UI — nó chỉ là NGUỒN FILE (cờ `usesDesignSystemCriteria`
+   *  trong pipelines.ts, cố ý tách khỏi `acceptsDesignSystem`). Chép ở bước nạp
+   *  tài liệu vì đó là bước duy nhất chạy TRƯỚC cả `dr-comp` lẫn `dr-review` —
+   *  hai bên tiêu thụ `criteria/components.md` và `criteria/rules.md`.
+   *
+   *  Ghi đè có chủ ý: đã chọn DS thì DS là nguồn sự thật. Không chọn DS thì hàm
+   *  này không được gọi, nên file người dùng tự upload (⋯ → Tải file lên) sống
+   *  qua mọi lần chạy lại — `criteria/` không phải output của stage nào.
+   *
+   *  KHÔNG BAO GIỜ THROW. DS chưa có `components.md` là chuyện bình thường (job
+   *  sinh có thể đang chạy hoặc đã hỏng), và bước nạp tài liệu không có lý do gì
+   *  phải fail vì thiếu một input TUỲ CHỌN: skill của cả `dr-comp` lẫn
+   *  `dr-review` đều có nhánh "thiếu danh mục → mọi verdict là ok". */
+  const copyDsCriteriaIntoWorkflow = async (designSystemId: string, cwd: string): Promise<void> => {
+    try {
+      const dsDir = await dsDirForId(designSystemId);
+      const srcDir = dsDir ? dsCriteriaDir(dsDir) : null;
+      if (!srcDir || !(await fs.promises.stat(srcDir).then((s) => s.isDirectory()).catch(() => false))) {
+        console.warn(
+          `[dr-criteria] DS "${designSystemId}" chưa có thư mục criteria/ — bỏ qua, workflow chạy với bộ tiêu chí mặc định của skill`,
+        );
+        return;
+      }
+      const dstDir = path.join(cwd, 'criteria');
+      await fs.promises.mkdir(dstDir, { recursive: true });
+      const copied: string[] = [];
+      for (const name of ['components.md', 'rules.md']) {
+        const src = path.join(srcDir, name);
+        if (!(await fs.promises.stat(src).then((s) => s.isFile()).catch(() => false))) continue;
+        await fs.promises.copyFile(src, path.join(dstDir, name));
+        copied.push(name);
+      }
+      console.log(
+        copied.length > 0
+          ? `[dr-criteria] chép từ DS "${designSystemId}": ${copied.join(', ')} → criteria/`
+          : `[dr-criteria] DS "${designSystemId}" có criteria/ nhưng không có components.md/rules.md nào — không chép gì`,
+      );
+    } catch (error) {
+      console.warn('[dr-criteria] chép bộ tiêu chí từ DS thất bại (bỏ qua):', error);
+    }
+  };
+
+  /** DS được chọn làm nguồn bộ tiêu chí review cho feature này, đọc THẲNG từ
+   *  `metadata.runAllConfig` thay vì luồn qua `RunPipelineOptions`.
+   *
+   *  Vì sao đọc thẳng: `runAllConfig` là cấu hình đã LƯU của feature, nên một
+   *  lần chạy lại RIÊNG bước nạp tài liệu (không qua Run-all) vẫn thấy đúng lựa
+   *  chọn — luồn qua opts thì chỉ Run-all mới mang được id, còn nút chạy lẻ sẽ
+   *  âm thầm bỏ qua bộ tiêu chí. */
+  const criteriaDesignSystemForProject = (projectId: string): string | null => {
+    try {
+      const cfg = getProject(db, projectId)?.metadata?.runAllConfig as
+        | { criteriaDesignSystemId?: string | null }
+        | undefined;
+      const id = cfg?.criteriaDesignSystemId;
+      return typeof id === 'string' && id ? id : null;
+    } catch {
+      return null;
+    }
   };
 
   // ── App Docs Pool — deterministic copy (docs/app-docs-pool-spec.md §WP-4)
@@ -14124,6 +14428,8 @@ export async function startServer({
         await stageAppDocsPool(PROJECTS_DIR, appId, cwd).catch((error) => {
           console.warn('[app-pool] stage docs-app at step 1 failed (continuing):', error);
         });
+        const criteriaDsId = criteriaDesignSystemForProject(projectId);
+        if (criteriaDsId) await copyDsCriteriaIntoWorkflow(criteriaDsId, cwd);
 
         console.log(
           `[app-pool] docs ingest for ${projectId}: copied ${selected.length} page(s) into docs-feature/ from App "${appId}" pool, no fetch, no agent`,

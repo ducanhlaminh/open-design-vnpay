@@ -789,7 +789,12 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
             `imported design system was not found in catalog: ${result.dir}`,
           );
         }
-        res.status(201).json({ designSystem, warnings: result.warnings, summary: result.summary });
+        res.status(201).json({
+          designSystem,
+          warnings: result.warnings,
+          summary: result.summary,
+          criteria: { rules: result.criteria.rules, components: false },
+        });
       } catch (err: any) {
         if (err instanceof LocalDesignSystemImportError) {
           return sendApiError(res, err.code === 'BAD_REQUEST' ? 400 : 500, err.code, err.message);

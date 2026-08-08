@@ -618,6 +618,36 @@ export async function importGitHubDesignSystem(
   }
 }
 
+export async function getDesignSystemCriteria(id: string): Promise<
+  | {
+      hasComponents: boolean;
+      hasRules: boolean;
+      components: number;
+      rules: number;
+      meta: { generatedAt: string; components: number; rulesBytes: number | null } | null;
+      job: { id: string; status: 'queued' | 'running' | 'succeeded' | 'failed'; message?: string } | null;
+    }
+  | { error: string }
+> {
+  try {
+    const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/criteria`);
+    if (!resp.ok) return { error: `Criteria request failed (${resp.status}).` };
+    return (await resp.json()) as Exclude<Awaited<ReturnType<typeof getDesignSystemCriteria>>, { error: string }>;
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Criteria request failed.' };
+  }
+}
+
+export async function generateDesignSystemCriteria(id: string): Promise<{ jobId: string } | { error: string }> {
+  try {
+    const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/criteria/generate`, { method: 'POST' });
+    if (!resp.ok) return { error: `Criteria generation failed (${resp.status}).` };
+    return (await resp.json()) as { jobId: string };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Criteria generation failed.' };
+  }
+}
+
 export async function importFigmaDesignSystem(
   input: ImportFigmaDesignSystemFields & { files: File[] },
 ): Promise<ImportFigmaDesignSystemResponse | { error: SkillImportError }> {

@@ -178,6 +178,12 @@ export interface PipelineView {
    */
   acceptsDesignSystem?: boolean;
   /**
+   * When true, this stage takes review criteria from a design system.
+   * Unlike `acceptsDesignSystem` (which generates UI), the design system is
+   * only a file source: the daemon copies its criteria into the workflow.
+   */
+  usesDesignSystemCriteria?: boolean;
+  /**
    * When true, this stage decides the target platform of the generated screens
    * (the UX Spec stage: every screen's `layout` field). The UI shows a
    * Mobile/Website picker before running; the choice is sent as
@@ -348,6 +354,20 @@ export interface ConfluencePageRef {
 export interface RunAllConfig {
   confluencePages?: ConfluencePageRef[];
   designSystemId?: string | null;
+  /**
+   * DS làm NGUỒN BỘ TIÊU CHÍ review cho workflow `docs-review` — daemon chép
+   * `<ds>/criteria/components.md` (+ `rules.md` nếu có) vào `<workflow>/criteria/`
+   * khi bước `dr-docs` chạy.
+   *
+   * CỐ Ý TÁCH khỏi `designSystemId`: `runAllConfig` là MỘT object cho cả feature,
+   * dùng chung giữa `docs-to-ui` và `docs-review`. `designSystemId` là DS mà
+   * `ui-html`/`ui-react` dùng để SINH UI — ghép hai nghĩa vào một field thì chọn
+   * DS ở màn review sẽ âm thầm đổi DS sinh UI của workflow kia.
+   *
+   * 3 trạng thái giống `designSystemId`: id / `null` (không dùng) / vắng mặt (giữ
+   * giá trị đã lưu).
+   */
+  criteriaDesignSystemId?: string | null;
   basDocumentId?: string;
   basDocumentTitle?: string;
   displayName?: string;
@@ -507,6 +527,8 @@ export interface RunPipelineRequest {
    * Only stages whose `PipelineView.acceptsDesignSystem` is true consume it.
    */
   designSystemId?: string | null;
+  /** DS nguồn bộ tiêu chí review cho stage `dr-docs`; cùng 3 trạng thái với RunAllConfig. */
+  criteriaDesignSystemId?: string | null;
   /**
    * Target platform for stages whose `PipelineView.acceptsPlatform` is true
    * (the UX Spec stage). `web` makes the skill author every screen with

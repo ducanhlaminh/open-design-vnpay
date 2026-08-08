@@ -466,6 +466,8 @@ export interface ImportFigmaDesignSystemResponse {
   /** Merge/token-link warnings (duplicate tokens, unresolved bindings, …). */
   warnings: string[];
   summary: ImportFigmaDesignSystemSummary;
+  criteria?: { rules: boolean; components: boolean };
+  criteriaJobId?: string;
 }
 
 export interface HealthResponse {

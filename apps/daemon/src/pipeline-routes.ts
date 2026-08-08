@@ -118,6 +118,9 @@ function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean })
   const dsId = body.designSystemId;
   if (typeof dsId === 'string') out.designSystemId = dsId;
   else if (dsId === null) out.designSystemId = null;
+  const criteriaDsId = body.criteriaDesignSystemId;
+  if (typeof criteriaDsId === 'string') out.criteriaDesignSystemId = criteriaDsId;
+  else if (criteriaDsId === null) out.criteriaDesignSystemId = null;
   // appPool là field ba trạng thái GIỐNG designSystemId (object / null / vắng
   // mặt) — cố tình đọc trực tiếp `body.appPool` thay vì qua `has()`: dưới
   // run-all (`all=true`) muốn "vắng mặt" vẫn để `out.appPool` KHÔNG được set
