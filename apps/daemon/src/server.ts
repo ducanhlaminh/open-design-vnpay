@@ -512,14 +512,10 @@ import { appContextDirective, resolveAppId, stageAppContext } from './app-contex
 import {
   appDocsDir,
   appDocsPoolDirective,
-  branchFilePath,
-  overviewPath,
-  pageClean,
   readManifest,
   stageAppDocsPool,
 } from './app-pool.js';
 import { registerAppPoolRoutes } from './app-pool-routes.js';
-import { type DistillTask } from './app-distill.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv, sha256hex, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
@@ -14057,15 +14053,14 @@ export async function startServer({
     return { projectId, completion };
   };
 
-  // ── App Docs Pool — GATE + deterministic copy (docs/app-docs-pool-spec.md
-  // §WP-4) ────────────────────────────────────────────────────────────────
-  // jira-ingest with an `app-pool` source: no fetch, NO AGENT, no distill —
-  // bước 1 là "nạp" thuần. Chưng cất xảy ra Ở MỘT CHỖ DUY NHẤT: nút
-  // "Chưng cất tài liệu" (POST .../distill, modal ở màn App). Ở đây chỉ
-  // GATE trên đúng những trang được tick (§2.1: `distilled` + hash khớp)
-  // rồi copy trang tick + BẢN CHƯNG CẤT đi kèm (_overview.md + _branches
-  // của các phân hệ có trang tick + attachments/) vào `<wf>/docs/` — cùng
-  // status/history semantics với `runDocsDeterministic` ở trên.
+  // ── App Docs Pool — deterministic copy (docs/app-docs-pool-spec.md §WP-4)
+  // ────────────────────────────────────────────────────────────────────────
+  // jira-ingest with an `app-pool` source: no fetch, NO AGENT — bước 1 copy
+  // THẲNG trang gốc được tick (+ attachments/ dùng chung) từ pool của App
+  // vào `<wf>/docs/`. Tầng chưng cất đã gỡ hẳn (quyết định 2026-08-08:
+  // docs gốc là nguồn làm việc duy nhất; các stage sau đọc cả pool qua
+  // `.app-docs/` với `_index.md` sinh máy làm bản đồ) — cùng status/history
+  // semantics với `runDocsDeterministic` ở trên.
   const runDocsFromAppPool = (
     pipelineId: string,
     projectId: string,
@@ -14098,59 +14093,21 @@ export async function startServer({
           if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
         }
 
-        // GATE fail-fast trên ĐÚNG những trang được tick: pool bẩn không còn
-        // kích hoạt auto-distill nữa (bước 1 không bao giờ chạy agent) — lỗi
-        // trả về chỉ thẳng người dùng tới nút "Chưng cất tài liệu".
         const manifest = await readManifest(PROJECTS_DIR, appId);
         const selected = manifest.pages.filter((p) => paths.includes(p.path));
         if (selected.length === 0) {
           throw new Error('Không có trang nào được chọn từ pool tài liệu App — tick lại rồi chạy lại.');
         }
-        const dirty = selected.filter((p) => !pageClean(p));
-        if (dirty.length > 0) {
-          throw new Error(
-            `Tài liệu App chưa chưng cất xong (${dirty.length}/${selected.length} trang) — bấm "Chưng cất tài liệu" ở màn App rồi chạy lại. Bước 1 chỉ nạp, không chưng cất.`,
-          );
-        }
         const cwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
         const poolDocsDir = appDocsDir(PROJECTS_DIR, appId);
-        const wsDocsDir = path.join(cwd, 'docs');
-        // Đổi selection rồi chạy lại phải cho kết quả ĐÚNG selection mới:
-        // regen-clear ở trên chỉ khớp outputs khai báo (docs/jira|confluence|
-        // context), còn file pool-copy nằm docs/<branch>/… nên không bao giờ
-        // khớp — dọn tay mọi thứ trong docs/ trừ phần thuộc stage/nguồn khác.
-        const KEEP_DOCS_ENTRIES = new Set(['system-map.json', 'jira', 'confluence', 'context', 'source']);
-        for (const entry of await fs.promises.readdir(wsDocsDir).catch(() => [] as string[])) {
-          if (KEEP_DOCS_ENTRIES.has(entry)) continue;
-          await fs.promises.rm(path.join(wsDocsDir, entry), { recursive: true, force: true }).catch(() => null);
-        }
-        await fs.promises.mkdir(wsDocsDir, { recursive: true });
-        // Nạp = trang tick + BẢN CHƯNG CẤT đi kèm: _overview.md + tóm tắt của
-        // đúng những phân hệ có trang được tick — workspace nhận đúng cái
-        // modal Nguồn tài liệu hứa ở khối "Bản chưng cất (luôn nạp kèm)".
-        // Thiếu _overview.md (pool sạch nhưng reduce từng fail validation)
-        // không chặn nạp: trang gốc + tóm tắt nhánh vẫn đủ cho các bước sau.
-        const overviewOk = await fs.promises
-          .copyFile(overviewPath(PROJECTS_DIR, appId), path.join(wsDocsDir, '_overview.md'))
-          .then(() => true)
-          .catch(() => false);
-        if (!overviewOk) {
-          console.warn(`[app-pool] pool "${appId}" thiếu _overview.md — vẫn nạp trang gốc + tóm tắt nhánh.`);
-        }
-        const selectedBranches = [...new Set(selected.map((p) => p.branch).filter(Boolean))].sort();
-        let copiedBranches = 0;
-        if (selectedBranches.length > 0) {
-          await fs.promises.mkdir(path.join(wsDocsDir, '_branches'), { recursive: true });
-          for (const b of selectedBranches) {
-            const ok = await fs.promises
-              .copyFile(branchFilePath(PROJECTS_DIR, appId, b), path.join(wsDocsDir, '_branches', `${b}.md`))
-              .then(() => true)
-              .catch(() => false);
-            if (ok) copiedBranches += 1;
-          }
-        }
+        // `docs-feature/` thuộc TRỌN quyền bước 1 — xóa cả cây rồi copy lại
+        // đúng selection mới, không cần danh sách KEEP (system-map.json,
+        // docs/jira|confluence… là chuyện của layout cũ nằm ngoài thư mục này).
+        const featureDir = path.join(cwd, 'docs-feature');
+        await fs.promises.rm(featureDir, { recursive: true, force: true }).catch(() => null);
+        await fs.promises.mkdir(featureDir, { recursive: true });
         for (const p of selected) {
-          const dst = path.join(wsDocsDir, p.path);
+          const dst = path.join(featureDir, p.path);
           await fs.promises.mkdir(path.dirname(dst), { recursive: true });
           await fs.promises.copyFile(path.join(poolDocsDir, p.path), dst);
         }
@@ -14159,11 +14116,17 @@ export async function startServer({
         // copied pages' `![...](…/attachments/…)` references resolve,
         // regardless of which subset of pages was ticked.
         await fs.promises
-          .cp(path.join(poolDocsDir, 'attachments'), path.join(wsDocsDir, 'attachments'), { recursive: true })
+          .cp(path.join(poolDocsDir, 'attachments'), path.join(featureDir, 'attachments'), { recursive: true })
           .catch(() => null);
+        // Mặc định của MỌI workflow gắn App: cả pool nạp read-only vào
+        // `docs-app/` ngay từ bước 1 (các stage agent sau cũng tự re-stage
+        // trước mỗi lượt chạy) — agent nắm toàn cảnh App qua _index.md.
+        await stageAppDocsPool(PROJECTS_DIR, appId, cwd).catch((error) => {
+          console.warn('[app-pool] stage docs-app at step 1 failed (continuing):', error);
+        });
 
         console.log(
-          `[app-pool] docs ingest for ${projectId}: copied ${selected.length} page(s) + ${copiedBranches} branch summary(ies)${overviewOk ? ' + overview' : ''} from App "${appId}" pool, no fetch, no agent`,
+          `[app-pool] docs ingest for ${projectId}: copied ${selected.length} page(s) into docs-feature/ from App "${appId}" pool, no fetch, no agent`,
         );
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
         void commitHistory(pipelineCwd, {
@@ -14184,111 +14147,6 @@ export async function startServer({
     })();
     return { projectId, completion };
   };
-
-  // App Docs Pool — distill agent runner (§WP-2/§WP-4): executes ONE
-  // app-distill.ts DistillTask (a branch write, or the final reduce) as a
-  // single agent turn, cwd'd at the App's OWN docs pool
-  // (`<PROJECTS_DIR>/<appId>/docs/`) — NOT `.app-docs/` staging, which is
-  // only for FEATURE runs consuming an App's already-distilled pool
-  // read-only (see appDocsPoolDirective below). Wired into app-distill.ts's
-  // injectable `AppDistillDeps.runTask` — see that module's docblock for why
-  // the split exists (testability without spawning a real agent).
-  const ensureAppProjectRow = (appId: string) => {
-    if (getProject(db, appId)) return;
-    const now = Date.now();
-    insertProject(db, {
-      id: appId,
-      name: appId,
-      skillId: null,
-      designSystemId: null,
-      pendingPrompt: null,
-      // 'app-pool' (not 'pipeline'/'kg-pull') keeps this out of
-      // isKgsProject()/collectLocalApps' feature listing — this row exists
-      // ONLY so conversations (FK'd to projects) can be created here.
-      metadata: { kind: 'app-pool' },
-      createdAt: now,
-      updatedAt: now,
-    });
-  };
-
-  const runAppDistillTask = async (appId: string, task: DistillTask): Promise<'succeeded' | 'failed'> => {
-    // Kill-switch cho test/hermetic env: máy dev thường CÓ claude/codex thật
-    // trong PATH nên detectAgents sẽ tìm ra và spawn một run thật — test
-    // auto-distill (app-pool-gate.test.ts) cần đường fail tất định.
-    if (process.env.OD_APP_DISTILL_NO_AGENT === '1') {
-      console.warn('[app-distill] OD_APP_DISTILL_NO_AGENT=1 — task failed without agent');
-      return 'failed';
-    }
-    const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
-    let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
-    if (!agentId) {
-      const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
-      agentId = agents.find((a) => a.available)?.id ?? null;
-    }
-    if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
-    if (!agentId) {
-      console.warn('[app-distill] no available agent configured — task failed');
-      return 'failed';
-    }
-    ensureAppProjectRow(appId);
-    await ensureProject(PROJECTS_DIR, appId);
-    const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
-    const conversationId = `app-distill-conv-${randomUUID()}`;
-    const title = task.kind === 'branch' ? `Chưng cất — ${task.branch}` : 'Chưng cất — tổng hợp overview';
-    insertConversation(db, { id: conversationId, projectId: appId, title, createdAt: Date.now(), updatedAt: Date.now() });
-    const assistantMessageId = `app-distill-assistant-${randomUUID()}`;
-    // The skill's own protocol header defaults to `.app-docs/` (the FEATURE-run
-    // staging convention) unless the kickoff says otherwise — this IS the
-    // "otherwise": the distill run's cwd is the pool ITSELF, not a staged copy.
-    const cwdNote =
-      ' Thư mục làm việc hiện tại LÀ GỐC pool tài liệu App (không có `.app-docs/`) — `_index.md`, các trang nguồn, `_branches/` và `_overview.md` đều nằm trực tiếp ở đây theo path tương đối, đúng như trong manifest.';
-    const kickoff =
-      task.kind === 'branch'
-        ? `Chưng cất tài liệu App. MODE=branch. Branch cần chưng cất: "${task.branch}".${cwdNote} Đọc "_index.md" để lấy danh sách đầy đủ trang thuộc branch này, đọc TỪNG trang, rồi ghi "_branches/${task.branch}.md" đúng template của skill.`
-        : `Chưng cất tài liệu App. MODE=reduce.${cwdNote} Đọc "_index.md", "_overview.md" cũ (nếu có), và MỌI file "_branches/*.md", rồi ghi "_overview.md" đúng template của skill, đủ 100% trang từ "_index.md".`;
-    const run = design.runs.create({
-      projectId: appId,
-      conversationId,
-      assistantMessageId,
-      clientRequestId: `app-distill-${task.kind}-${task.branch ?? 'reduce'}-${randomUUID()}`,
-      agentId,
-    });
-    upsertMessage(db, conversationId, { id: `app-distill-user-${run.id}`, role: 'user', content: kickoff });
-    upsertMessage(db, conversationId, {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '',
-      agentId,
-      agentName: getAgentDef(agentId)?.name ?? agentId,
-      runId: run.id,
-      runStatus: 'queued',
-      startedAt: Date.now(),
-    });
-    design.runs.start(run, () =>
-      startChatRun(
-        {
-          agentId,
-          projectId: appId,
-          conversationId,
-          assistantMessageId,
-          clientRequestId: run.clientRequestId,
-          skillId: 'app-context-distill',
-          cwdSubdir: 'docs',
-          model: modelPrefs.model ?? null,
-          reasoning: modelPrefs.reasoning ?? null,
-          message: kickoff,
-        },
-        run,
-      ),
-    );
-    const final = await design.runs.wait(run);
-    db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
-    return final.status === 'succeeded' ? 'succeeded' : 'failed';
-  };
-
-  // runAppDistillTask chỉ còn MỘT đường vào: nút "Chưng cất tài liệu" (POST
-  // .../distill → ctx.distill ở registerAppPoolRoutes). Bước 1 workflow
-  // KHÔNG chưng cất nữa — runDocsFromAppPool gate fail-fast rồi copy thuần.
 
   // PRD Mockup Review runs PER PAGE in parallel: one agent run per doc page
   // (bounded pool), each writing review/<slug>/report.json, then the daemon
@@ -16821,18 +16679,16 @@ export async function startServer({
     const featureScope = featureAppName
       ? `feature "${projectId}" of app "${featureAppName}"`
       : `feature "${projectId}"`;
-    // App Docs Pool (docs/app-docs-pool-spec.md §2.4): every stage of a
-    // project whose App has a pool gets that pool's DISTILLED markdown
-    // staged read-only into `./.app-docs` + the pinned kickoff directive
-    // telling the agent to read `_overview.md` first. Same `def.id !== 'docs'`
-    // guard as `.app-context` above — the ingest stage produces `docs/`
-    // itself and never seeds an agent that could read the staged folder
-    // (a Confluence/app-pool source is fetched/copied deterministically; the
-    // JIRA-key fallback fetches its OWN source via the Atlassian MCP).
+    // App Docs Pool (docs/app-docs-pool-spec.md §2.4): MỌI stage (kể cả
+    // `docs` khi nó chạy bằng agent — nguồn Confluence trực tiếp/JIRA) của
+    // project gắn App được nạp CẢ pool trang gốc read-only vào `docs-app/`
+    // + directive ghim trong kickoff: đọc `_index.md` để nắm danh mục, làm
+    // việc chính trên `docs-feature/` (mặc định mọi workflow — quyết định
+    // 2026-08-08, thay cho tầng chưng cất `.app-docs` đã gỡ).
     // Best-effort: an App with no pool yet (or any staging error) keeps the
     // kickoff byte-identical to the legacy one (appDocsDirective stays '').
     let appDocsDirective = '';
-    if (def.id !== 'docs') {
+    {
       try {
         const poolAppId = typeof studioCfg?.appId === 'string' ? studioCfg.appId.trim() : '';
         if (poolAppId) {
@@ -16842,7 +16698,7 @@ export async function startServer({
           appDocsDirective = appDocsPoolDirective(staged);
         }
       } catch (error) {
-        console.warn('[app-pool] staging .app-docs failed (continuing without it):', error);
+        console.warn('[app-pool] staging docs-app failed (continuing without it):', error);
       }
     }
     // UI terminals (ui-html / ui-react / ui-react-ds) get the target-viewport
@@ -17849,13 +17705,10 @@ export async function startServer({
     paths: pathDeps,
   });
 
-  // App Docs Pool (docs/app-docs-pool-spec.md) — import/pool/distill routes.
-  // `distill.runTask` is the real fan-out step (runAppDistillTask above);
-  // app-distill.ts's `startDistill` owns the branch/reduce orchestration.
+  // App Docs Pool (docs/app-docs-pool-spec.md) — import/pool routes.
   registerAppPoolRoutes(app, {
     db,
     paths: pathDeps,
-    distill: { projectsDir: pathDeps.PROJECTS_DIR, runTask: runAppDistillTask },
   });
 
   // KG sync (pull-all/push-all) is registered here — after the pipeline file
