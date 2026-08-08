@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 // @ts-nocheck
 import { afterEach, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import type { FeedbackFormDef, FeedbackSubmission } from '@open-design/contracts';
 import { aggregateFeedback, FeedbackSummaryView } from '../../src/components/feedback/FeedbackSummaryView';
+import { filterFeedbackSubmissions } from '../../src/components/feedback/FeedbackSummaryRoute';
 
 afterEach(() => cleanup());
 
@@ -54,28 +55,25 @@ it('optionsSource đếm giá trị quan sát, không cần options gốc', () =
   expect(item.optionCounts).toEqual([{ option: 'Alpha', count: 2 }, { option: 'Beta', count: 1 }]);
 });
 
-const renderData = (submissions: FeedbackSubmission[] = [submission({ q: 'A' })]) => ({ storeReachable: false, forms: [form([{ id: 'q', label: 'Lựa chọn', type: 'radio', options: ['A', 'B'], allowOther: true }, { id: 's', label: 'Điểm', type: 'scale', scaleMax: 5 }])], submissions });
+const demoForms = [form([{ id: 'q', label: 'Lựa chọn', type: 'radio', options: ['A', 'B'], allowOther: true }, { id: 's', label: 'Điểm', type: 'scale', scaleMax: 5 }])];
 
-it('render option count, Khác + chữ tay, banner, gallery ảnh và stage-output', () => {
-  const data = renderData([{ ...submission({ q: '__other__', s: 4 }, { otherTexts: { q: 'Tự viết' }, attachments: [{ kind: 'image', path: 'a.png', name: 'anh.png' }, { kind: 'stage-output', path: 'a.md', name: 'bao-cao.md', stageId: 'review' }] }) }]);
-  render(<FeedbackSummaryView data={data} attachmentUrl={(path) => `/store/${path}`} />);
-  expect(screen.getByText('Chưa kết nối media store — dữ liệu có thể thiếu')).toBeTruthy();
+it('render option count, Khác + chữ tay, gallery ảnh và stage-output', () => {
+  const submissions = [{ ...submission({ q: '__other__', s: 4 }, { otherTexts: { q: 'Tự viết' }, attachments: [{ kind: 'image', path: 'a.png', name: 'anh.png' }, { kind: 'stage-output', path: 'a.md', name: 'bao-cao.md', stageId: 'review' }] }) }];
+  render(<FeedbackSummaryView forms={demoForms} submissions={submissions} attachmentUrl={(path) => `/store/${path}`} />);
   expect(screen.getAllByText('Khác').length).toBeGreaterThan(0); expect(screen.getByText('Tự viết')).toBeTruthy(); expect(screen.getByText('bao-cao.md')).toBeTruthy();
   expect(screen.getByRole('img', { name: 'anh.png' }).getAttribute('src')).toBe('/store/a.png');
   expect(screen.getByRole('link', { name: /bao-cao\.md/ }).getAttribute('href')).toBe('/store/a.md');
 });
 
-it('ẩn dev mặc định, tắt toggle thì hiện; workflow filter có mặt', () => {
-  const data = renderData([submission({ q: 'A' }, { channel: 'dev', user: 'dev' }), submission({ q: 'B' }, { workflowId: 'other', user: 'real' })]);
-  render(<FeedbackSummaryView data={data} attachmentUrl={(path) => path} />);
-  expect(screen.getByText((_content, element) => element?.textContent === '1 bài gửi')).toBeTruthy();
-  fireEvent.click(screen.getByRole('checkbox', { name: /Ẩn bản ghi dev/ }));
-  expect(screen.getByText((_content, element) => element?.textContent === '2 bài gửi')).toBeTruthy();
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'other' } });
-  expect(screen.getByText((_content, element) => element?.textContent === '1 bài gửi')).toBeTruthy();
+it('filterFeedbackSubmissions: ẩn dev mặc định, workflow lọc đúng', () => {
+  const rows = [submission({ q: 'A' }, { channel: 'dev', user: 'dev' }), submission({ q: 'B' }, { workflowId: 'other', user: 'real' })];
+  expect(filterFeedbackSubmissions(rows, { workflow: '', hideDev: true })).toHaveLength(1);
+  expect(filterFeedbackSubmissions(rows, { workflow: '', hideDev: false })).toHaveLength(2);
+  expect(filterFeedbackSubmissions(rows, { workflow: 'other', hideDev: false })).toHaveLength(1);
+  expect(filterFeedbackSubmissions(rows, { workflow: 'wf', hideDev: true })).toHaveLength(0);
 });
 
-it('empty state sau lọc', () => {
-  render(<FeedbackSummaryView data={renderData([submission({ q: 'A' }, { channel: 'dev' })])} attachmentUrl={(path) => path} />);
+it('empty state khi không có bài gửi', () => {
+  render(<FeedbackSummaryView forms={demoForms} submissions={[]} attachmentUrl={(path) => path} />);
   expect(screen.getByText(/Chưa có bài gửi phù hợp/)).toBeTruthy();
 });

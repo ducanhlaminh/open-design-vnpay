@@ -1,10 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import type {
   FeedbackAttachment,
   FeedbackFormDef,
   FeedbackQuestion,
   FeedbackSubmission,
-  FeedbackSummaryResponse,
 } from '@open-design/contracts';
 import styles from './FeedbackSummaryView.module.css';
 
@@ -103,8 +102,17 @@ export function aggregateFeedback(forms: FeedbackFormDef[], submissions: Feedbac
 }
 
 export interface FeedbackSummaryViewProps {
-  data: FeedbackSummaryResponse;
+  /** Forms + submissions ĐÃ qua bộ lọc của host (FeedbackHomeView giữ filter
+   * chung cho cả hai tab Tổng quan / Chi tiết). */
+  forms: FeedbackFormDef[];
+  submissions: FeedbackSubmission[];
   attachmentUrl: (path: string) => string;
+}
+
+/** Id anchor của một PHẦN trong tab Chi tiết — tab Tổng quan drill xuống bằng
+ * scrollIntoView theo id này. */
+export function sectionAnchorId(title: string): string {
+  return `fb-sec-${title.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 }
 
 function OptionBars({ item }: { item: QuestionAggregate }) {
@@ -127,22 +135,8 @@ function Attachments({ attachments, attachmentUrl }: { attachments: FeedbackAtta
   return <section className={styles.attachments}><h3 className={styles.sectionTitle}>Đính kèm</h3><div className={styles.gallery}>{attachments.map((attachment) => <a className={styles.attachment} href={attachmentUrl(attachment.path)} target="_blank" rel="noreferrer" key={attachment.path}><span className={styles.attachmentVisual}>{attachment.kind === 'image' ? <img className={styles.thumbnail} src={attachmentUrl(attachment.path)} alt={attachment.name} /> : '📄'}</span><span className={styles.attachmentName}>{attachment.name}</span>{attachment.stageId ? <span className={styles.stage}>{attachment.stageId}</span> : null}</a>)}</div></section>;
 }
 
-export function FeedbackSummaryView({ data, attachmentUrl }: FeedbackSummaryViewProps): JSX.Element {
-  const [workflow, setWorkflow] = useState('');
-  const [hideDev, setHideDev] = useState(true);
-  const workflows = useMemo(() => [...new Set(data.submissions.map((submission) => submission.workflowId))].sort(), [data.submissions]);
-  const visible = useMemo(() => data.submissions.filter((submission) => (!hideDev || submission.channel !== 'dev') && (!workflow || submission.workflowId === workflow)), [data.submissions, hideDev, workflow]);
-  const aggregates = useMemo(() => aggregateFeedback(data.forms, visible), [data.forms, visible]);
-  const users = new Set(visible.map((submission) => submission.user));
-  const latest = visible.length ? Math.max(...visible.map((submission) => submission.createdAt)) : 0;
-  const allAttachments = aggregates.map((aggregate) => ({ aggregate, attachments: visible.filter((submission) => submission.formVersion === aggregate.form.version).flatMap((submission) => submission.attachments ?? []) }));
-  return <main className={styles.page}>{!data.storeReachable ? <div className={styles.warning}>Chưa kết nối media store — dữ liệu có thể thiếu</div> : null}
-    {/* Thanh filter + stat gộp một panel card theo concept toolbar Pipelines:
-        nhãn uppercase nhỏ trên control, toggle dev là chip pill, số liệu dồn
-        phải. Title trang do FeedbackHomeView (hero) đảm nhiệm — không lặp. */}
-    <div className={styles.filters}>
-      <label className={styles.filter}><span className={styles.filterLabel}>Workflow</span><select className={styles.select} value={workflow} onChange={(event) => setWorkflow(event.target.value)}><option value="">Tất cả workflow</option>{workflows.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-      <label className={styles.toggle} data-on={hideDev ? 'yes' : 'no'} title="Mặc định bật — dữ liệu thử (dev) không làm bẩn số liệu thật"><input type="checkbox" checked={hideDev} onChange={(event) => setHideDev(event.target.checked)} /><span>Ẩn bản ghi dev</span></label>
-      <div className={styles.stats}><span className={styles.stat}><b>{visible.length}</b> bài gửi</span><span className={styles.stat}><b>{users.size}</b> người gửi</span><span className={styles.stat}><b>{latest ? new Date(latest).toLocaleString('vi-VN') : '—'}</b> gần nhất</span></div>
-    </div>{!visible.length ? <p className={styles.empty}>Chưa có bài gửi phù hợp. Hãy thử tắt bộ lọc.</p> : <div className={styles.versions}>{allAttachments.map(({ aggregate, attachments }) => <section className={styles.version} key={`${aggregate.form.version}-${aggregate.form.title}`}><h2 className={styles.versionTitle}>v{aggregate.form.version} · {aggregate.form.title} · {aggregate.submissionCount} bài gửi</h2>{aggregate.sections.map((section, index) => <section className={styles.section} key={`${section.title}-${index}`}>{section.title ? <h3 className={styles.sectionTitle}>{section.title}</h3> : null}{section.items.map((item) => <QuestionCard item={item} key={`${item.question.id}-${item.instanceLabel ?? ''}`} />)}</section>)}<Attachments attachments={attachments} attachmentUrl={attachmentUrl} /></section>)}</div>}</main>;
+export function FeedbackSummaryView({ forms, submissions, attachmentUrl }: FeedbackSummaryViewProps): JSX.Element {
+  const aggregates = useMemo(() => aggregateFeedback(forms, submissions), [forms, submissions]);
+  const allAttachments = aggregates.map((aggregate) => ({ aggregate, attachments: submissions.filter((submission) => submission.formVersion === aggregate.form.version).flatMap((submission) => submission.attachments ?? []) }));
+  return <main className={styles.page}>{!submissions.length ? <p className={styles.empty}>Chưa có bài gửi phù hợp. Hãy thử tắt bộ lọc.</p> : <div className={styles.versions}>{allAttachments.map(({ aggregate, attachments }) => <section className={styles.version} key={`${aggregate.form.version}-${aggregate.form.title}`}><h2 className={styles.versionTitle}>v{aggregate.form.version} · {aggregate.form.title} · {aggregate.submissionCount} bài gửi</h2>{aggregate.sections.map((section, index) => <section className={styles.section} id={section.title ? sectionAnchorId(section.title) : undefined} key={`${section.title}-${index}`}>{section.title ? <h3 className={styles.sectionTitle}>{section.title}</h3> : null}{section.items.map((item) => <QuestionCard item={item} key={`${item.question.id}-${item.instanceLabel ?? ''}`} />)}</section>)}<Attachments attachments={attachments} attachmentUrl={attachmentUrl} /></section>)}</div>}</main>;
 }

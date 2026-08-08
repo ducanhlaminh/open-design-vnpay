@@ -1,18 +1,22 @@
 // FeedbackHomeView — trang "Phản hồi" CẤP CAO NHẤT (`/feedback`), một mục nav
 // đứng ngang Pipelines chứ không lồng trong dự án nào.
 //
+// Hai TẦNG xem: tab "Tổng quan" (mặc định — dashboard trung bình của mọi
+// report: KPI, TB theo phần, TB theo bước, sẵn sàng dùng thật) và tab
+// "Chi tiết" (breakdown từng câu như trước). Bộ lọc (workflow + ẩn dev) là
+// MỘT state dùng chung — đổi filter thì cả chart lẫn chi tiết cùng đổi.
+// Click một thanh phần bên Tổng quan drill sang Chi tiết và cuộn tới đúng
+// phần đó (sectionAnchorId).
+//
 // Vì đứng ngoài dự án, trang tự có picker chọn dự án (GET
 // /api/pipelines/projects — cùng nguồn màn Pipelines dùng). Dự án đang chọn
 // đồng bộ vào `?project=<id>` bằng replaceState: URL dán được cho đồng nghiệp
-// ("xem thống kê dự án X ở đây") và F5 giữ nguyên chỗ — hai lý do khiến đây là
-// một TRANG chứ không phải modal. Router chỉ biết `/feedback`; query là việc
-// riêng của trang, không phình Route type vì một tham số lọc.
-//
-// Phần dựng thống kê là FeedbackSummaryView (controlled thuần props, đã test
-// riêng) — file này chỉ lo vỏ: chọn dự án, nạp dữ liệu, tải lại.
-import { useCallback, useEffect, useState } from 'react';
-import type { FeedbackSummaryResponse } from '@open-design/contracts';
-import { FeedbackSummaryView } from './FeedbackSummaryView';
+// và F5 giữ nguyên chỗ. Router chỉ biết `/feedback`; query là việc riêng của
+// trang.
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { FeedbackSubmission, FeedbackSummaryResponse } from '@open-design/contracts';
+import { FeedbackOverview } from './FeedbackOverview';
+import { FeedbackSummaryView, sectionAnchorId } from './FeedbackSummaryView';
 import styles from './FeedbackSummaryRoute.module.css';
 
 type LoadState =
@@ -30,14 +34,27 @@ function projectFromQuery(): string {
   return new URLSearchParams(window.location.search).get('project') ?? '';
 }
 
+/** Bộ lọc dùng chung cho cả hai tab — hàm thuần để test được độc lập. */
+export function filterFeedbackSubmissions(
+  submissions: FeedbackSubmission[],
+  opts: { workflow: string; hideDev: boolean },
+): FeedbackSubmission[] {
+  return submissions.filter(
+    (submission) =>
+      (!opts.hideDev || submission.channel !== 'dev') &&
+      (!opts.workflow || submission.workflowId === opts.workflow),
+  );
+}
+
 export function FeedbackHomeView() {
   const [projects, setProjects] = useState<ProjectRow[] | null>(null);
   const [projectId, setProjectId] = useState<string>(projectFromQuery);
   const [state, setState] = useState<LoadState>({ status: 'idle' });
+  const [tab, setTab] = useState<'overview' | 'detail'>('overview');
+  const [workflow, setWorkflow] = useState('');
+  const [hideDev, setHideDev] = useState(true);
 
-  // Danh sách dự án nạp một lần; chưa có ?project= thì mặc định dự án đầu —
-  // trang thống kê mở ra trống trơn bắt người dùng tự đoán bước tiếp là hỏng
-  // ấn tượng đầu tiên.
+  // Danh sách dự án nạp một lần; chưa có ?project= thì mặc định dự án đầu.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -72,8 +89,7 @@ export function FeedbackHomeView() {
     }
   }, []);
 
-  // Đổi dự án → nạp lại + ghi query. replaceState (không push): đổi picker
-  // qua lại không nên chất đầy lịch sử Back của trình duyệt.
+  // Đổi dự án → nạp lại + ghi query (replaceState — không chất đầy Back).
   useEffect(() => {
     if (!projectId) return;
     const url = new URL(window.location.href);
@@ -82,11 +98,29 @@ export function FeedbackHomeView() {
     void load(projectId);
   }, [projectId, load]);
 
+  const data = state.status === 'ok' ? state.data : null;
+  const workflows = useMemo(
+    () => [...new Set((data?.submissions ?? []).map((submission) => submission.workflowId))].sort(),
+    [data],
+  );
+  const visible = useMemo(
+    () => filterFeedbackSubmissions(data?.submissions ?? [], { workflow, hideDev }),
+    [data, workflow, hideDev],
+  );
+  const users = new Set(visible.map((submission) => submission.user));
+  const latest = visible.length ? Math.max(...visible.map((submission) => submission.createdAt)) : 0;
+
+  const attachmentUrl = (path: string) =>
+    `/api/pipelines/feedback/attachment?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path)}`;
+
+  const drill = (sectionTitle: string) => {
+    setTab('detail');
+    // Đợi tab Chi tiết mount xong rồi mới cuộn; jsdom không có scrollIntoView.
+    setTimeout(() => document.getElementById(sectionAnchorId(sectionTitle))?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }), 60);
+  };
+
   return (
     <div className={styles.page}>
-      {/* Hero theo đúng concept trang Pipelines: eyebrow pill + title lớn +
-          lede muted bên trái, cụm điều khiển bên phải. Header/stat trong
-          FeedbackSummaryView không lặp lại title nữa. */}
       <header className={styles.hero}>
         <div className={styles.copy}>
           <span className={styles.eyebrow}>Feedback</span>
@@ -116,18 +150,54 @@ export function FeedbackHomeView() {
           </button>
         </div>
       </header>
+
+      {data && !data.storeReachable ? (
+        <div className={styles.warning}>Chưa kết nối media store — dữ liệu có thể thiếu</div>
+      ) : null}
+
+      {/* Thanh điều khiển chung: tab segmented + filter + stat dồn phải. */}
+      <div className={styles.controls}>
+        <div className={styles.tabs} role="tablist" aria-label="Chế độ xem">
+          <button type="button" role="tab" aria-selected={tab === 'overview'} className={styles.tabButton} data-active={tab === 'overview' ? 'yes' : 'no'} onClick={() => setTab('overview')}>
+            Tổng quan
+          </button>
+          <button type="button" role="tab" aria-selected={tab === 'detail'} className={styles.tabButton} data-active={tab === 'detail' ? 'yes' : 'no'} onClick={() => setTab('detail')}>
+            Chi tiết
+          </button>
+        </div>
+        <label className={styles.filter}>
+          <span className={styles.filterLabel}>Workflow</span>
+          <select className={styles.select} value={workflow} onChange={(event) => setWorkflow(event.target.value)}>
+            <option value="">Tất cả workflow</option>
+            {workflows.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className={styles.toggle} data-on={hideDev ? 'yes' : 'no'} title="Mặc định bật — dữ liệu thử (dev) không làm bẩn số liệu thật">
+          <input type="checkbox" checked={hideDev} onChange={(event) => setHideDev(event.target.checked)} />
+          <span>Ẩn bản ghi dev</span>
+        </label>
+        <div className={styles.stats}>
+          <span className={styles.stat}><b>{visible.length}</b> bài gửi</span>
+          <span className={styles.stat}><b>{users.size}</b> người gửi</span>
+          <span className={styles.stat}><b>{latest ? new Date(latest).toLocaleString('vi-VN') : '—'}</b> gần nhất</span>
+        </div>
+      </div>
+
       {projects !== null && projects.length === 0 ? (
         <p className={styles.note}>Chưa có dự án pipeline nào — tạo hoặc pull một dự án trước.</p>
       ) : null}
       {state.status === 'loading' ? <p className={styles.note}>Đang tải…</p> : null}
       {state.status === 'error' ? <p className={styles.error}>Không tải được thống kê: {state.message}</p> : null}
-      {state.status === 'ok' ? (
-        <FeedbackSummaryView
-          data={state.data}
-          attachmentUrl={(path) =>
-            `/api/pipelines/feedback/attachment?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path)}`
-          }
-        />
+      {data ? (
+        tab === 'overview' ? (
+          <FeedbackOverview forms={data.forms} submissions={visible} onDrill={drill} />
+        ) : (
+          <FeedbackSummaryView forms={data.forms} submissions={visible} attachmentUrl={attachmentUrl} />
+        )
       ) : null}
     </div>
   );
