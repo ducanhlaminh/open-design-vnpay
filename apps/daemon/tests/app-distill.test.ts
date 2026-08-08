@@ -118,16 +118,41 @@ describe('app-distill — incremental branch selection', () => {
     await waitForIdle(appId);
   });
 
-  it('no branches need distilling → started:false, runTask never called', async () => {
+  it('no branches need distilling + _overview.md đã có → started:false, runTask never called', async () => {
     const manifest: AppPoolManifest = {
       version: 1,
       pages: [{ ...page('1', 'a'), distill: { state: 'distilled', distilledHash: sha256('v1') } }],
     };
     await writeManifest(projectsDir, appId, manifest);
+    await writeFile(overviewPath(projectsDir, appId), VALID_OVERVIEW(['a'], ['a/1.md']), 'utf8');
     const runTask = vi.fn(async () => 'succeeded' as const);
     const result = await startDistill(appId, { projectsDir, runTask });
     expect(result).toEqual({ started: false, branches: [] });
     expect(runTask).not.toHaveBeenCalled();
+  });
+
+  // Mô hình một-nút: reduce fail rồi thì pool sạch + pending=0 — nếu
+  // startDistill từ chối luôn thì không còn cửa nào tạo lại _overview.md.
+  it('mọi nhánh sạch nhưng THIẾU _overview.md → reduce-only run tạo lại overview', async () => {
+    const manifest: AppPoolManifest = {
+      version: 1,
+      pages: [{ ...page('1', 'a'), distill: { state: 'distilled', distilledHash: sha256('v1') } }],
+    };
+    await writeManifest(projectsDir, appId, manifest);
+    const runTask = vi.fn(async (_id: string, task: DistillTask) => {
+      expect(task).toEqual({ kind: 'reduce' });
+      await writeFile(overviewPath(projectsDir, appId), VALID_OVERVIEW(['a'], ['a/1.md']), 'utf8');
+      return 'succeeded' as const;
+    });
+    const result = await startDistill(appId, { projectsDir, runTask });
+    expect(result).toEqual({ started: true, branches: [] });
+    await waitForIdle(appId);
+    expect(runTask).toHaveBeenCalledTimes(1);
+    const progress = getDistillProgress(appId);
+    expect(progress?.error).toBeUndefined();
+    expect(progress?.done).toBe(1);
+    expect(progress?.total).toBe(1);
+    expect(await readFile(overviewPath(projectsDir, appId), 'utf8')).toContain('## Bản đồ trang');
   });
 
   it('a second start while one is running throws DistillConflictError (409 at the route)', async () => {

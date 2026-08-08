@@ -149,7 +149,7 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
               type="button"
               className={styles.primaryButton}
               onClick={() => setDistillModalOpen(true)}
-              disabled={isRunning || pool.distill.pending === 0}
+              disabled={isRunning || (pool.distill.pending === 0 && pool.overviewExists)}
             >
               Chưng cất tài liệu
               {pool.distill.pending > 0 ? <span className={styles.count}>{pool.distill.pending}</span> : null}

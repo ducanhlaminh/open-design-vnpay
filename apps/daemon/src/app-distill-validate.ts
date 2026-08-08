@@ -57,6 +57,17 @@ function isSeparatorRow(row: string[]): boolean {
   return row.length > 0 && row.every((cell) => /^:?-{3,}:?$/.test(cell));
 }
 
+/** Ô path/slug so sánh theo GIÁ TRỊ, không theo cách trình bày: agent hay bọc
+ *  path trong `backtick` (đúng thói quen citation của skill) hoặc viết `./`
+ *  đằng trước — e2e đầu tiên (App "Test chung cất") fail validation chỉ vì
+ *  backtick dù nội dung đúng 100%. Chỉ áp cho ô ĐƯỢC so sánh (Path/Slug/
+ *  Branch), không áp cho cells() chung — ô Keywords chứa nhiều span backtick
+ *  thì bóc kiểu này sẽ sai. */
+function stripCellDecoration(cell: string): string {
+  const unquoted = /^`([^`]*)`$/.exec(cell)?.[1] ?? cell;
+  return unquoted.replace(/^\.\//, '').trim();
+}
+
 function tablePaths(content: string): { paths: string[]; found: boolean } {
   const lines = content.split(/\r\n?|\n/);
   for (let index = 0; index < lines.length - 1; index += 1) {
@@ -75,7 +86,7 @@ function tablePaths(content: string): { paths: string[]; found: boolean } {
         if (paths.length > 0) break;
         continue;
       }
-      if (row[0]) paths.push(row[0]);
+      if (row[0]) paths.push(stripCellDecoration(row[0]));
     }
     return { paths, found: true };
   }
@@ -131,8 +142,8 @@ function phanHeSlugs(overviewContent: string): { slugs: Set<string>; found: bool
         if (slugs.size > 0) break;
         continue;
       }
-      if (slugIdx >= 0 && row[slugIdx]) slugs.add(row[slugIdx]!);
-      if (branchIdx >= 0 && row[branchIdx]) slugs.add(row[branchIdx]!);
+      if (slugIdx >= 0 && row[slugIdx]) slugs.add(stripCellDecoration(row[slugIdx]!));
+      if (branchIdx >= 0 && row[branchIdx]) slugs.add(stripCellDecoration(row[branchIdx]!));
     }
     return { slugs, found: true };
   }

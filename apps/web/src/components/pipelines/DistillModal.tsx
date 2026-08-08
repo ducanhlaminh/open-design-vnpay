@@ -28,6 +28,13 @@ function distillUrl(appId: string): string {
   return `/api/pipelines/apps/${encodeURIComponent(appId)}/distill`;
 }
 
+/** Pool còn việc cho job distill: trang chưa chưng cất, HOẶC mọi nhánh sạch
+ *  nhưng thiếu `_overview.md` (reduce từng fail) — daemon nhận POST ở cả hai
+ *  ca (reduce-only run). */
+function needsDistill(pool: AppPoolResponse): boolean {
+  return pool.distill.pending > 0 || (!pool.overviewExists && pool.pages.length > 0);
+}
+
 function isPageClean(page: AppPoolPage): boolean {
   return page.distill.state === 'distilled' && page.distill.distilledHash === page.contentHash;
 }
@@ -92,7 +99,7 @@ export function DistillModal({ appId, onClose, onFinished }: DistillModalProps) 
       setPool(nextPool);
       setLoadError(null);
       if (nextPool.distill.running) observedRunRef.current = true;
-      if (!nextPool.distill.running && nextPool.distill.pending > 0 && !observedRunRef.current) {
+      if (!nextPool.distill.running && needsDistill(nextPool) && !observedRunRef.current) {
         await startDistill();
       }
       return nextPool;
@@ -117,7 +124,7 @@ export function DistillModal({ appId, onClose, onFinished }: DistillModalProps) 
     // it decides whether this modal should auto-start a pending pool.
     void (async () => {
       const firstPool = await loadPool();
-      if (!cancelled && firstPool && (firstPool.distill.running || firstPool.distill.pending > 0)) {
+      if (!cancelled && firstPool && (firstPool.distill.running || needsDistill(firstPool))) {
         timer = window.setTimeout(poll, 1500);
       }
     })();
@@ -141,7 +148,7 @@ export function DistillModal({ appId, onClose, onFinished }: DistillModalProps) 
       : !running && !allBranchesClean
         ? 'Bỏ qua/Lỗi'
         : 'Chờ';
-  const canRetry = !running && (pool?.distill.pending ?? 0) > 0;
+  const canRetry = !running && pool !== null && needsDistill(pool);
 
   useEffect(() => {
     if (!pool || running || !allBranchesClean || !observedRunRef.current || finishedRef.current) return;
@@ -173,7 +180,7 @@ export function DistillModal({ appId, onClose, onFinished }: DistillModalProps) 
             {canRetry ? <button type="button" className={styles.secondaryButton} onClick={() => void startDistill()} disabled={starting}>Thử lại</button> : null}
           </div>
         ) : null}
-        {pool && pool.distill.pending === 0 && !running ? <p className={styles.ready}>Pool đã chưng cất đủ</p> : null}
+        {pool && !needsDistill(pool) && !running ? <p className={styles.ready}>Pool đã chưng cất đủ</p> : null}
 
         <div className={styles.list}>
           {branches.map((branch) => (
@@ -198,7 +205,7 @@ export function DistillModal({ appId, onClose, onFinished }: DistillModalProps) 
 
         <footer className={styles.footer}>
           <p className={styles.note}>Đóng cửa sổ không dừng tiến trình.</p>
-          {pool && !running && pool.distill.pending === 0 ? <button type="button" className={styles.secondaryButton} onClick={onClose}>Đóng</button> : null}
+          {pool && !running && !needsDistill(pool) ? <button type="button" className={styles.secondaryButton} onClick={onClose}>Đóng</button> : null}
         </footer>
       </section>
     </div>

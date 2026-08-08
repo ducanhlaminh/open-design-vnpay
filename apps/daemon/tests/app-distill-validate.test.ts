@@ -52,6 +52,23 @@ describe('app-distill-validate — validateOverview', () => {
     expect(result.errors).toEqual([]);
   });
 
+  // Bug e2e đầu tiên (App "Test chung cất"): agent bọc path trong `backtick`
+  // đúng thói quen citation → validator cũ báo unknown+missing dù nội dung
+  // đúng 100%. So sánh phải theo GIÁ TRỊ ô, không theo cách trình bày.
+  it('path bọc `backtick` (và ./ đằng trước) trong Bản đồ trang + Slug/Branch vẫn pass', () => {
+    const content =
+      OVERVIEW_HEADER.replace(
+        '| branch-a | Tài khoản | Quản lý tài khoản | branch-a |',
+        '| `branch-a` | Tài khoản | Quản lý tài khoản | `_branches/branch-a.md` |',
+      ) +
+      '\n| Path | Nội dung | Keywords |\n| --- | --- | --- |\n' +
+      '| `branch-a/page-one.md` | Nội dung 1 | `kw1`; `kw2` |\n' +
+      '| ./branch-a/page-two.md | Nội dung 2 | kw2 |\n';
+    const result = validateOverview(content, pages, ['branch-a']);
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
   it('fails when a heading is missing/out of order', () => {
     const badHeader = OVERVIEW_HEADER.replace('## Thuật ngữ', '## ThuatNgu');
     const content =
@@ -144,6 +161,21 @@ describe('app-distill-validate — validateBranch', () => {
     ]);
     const result = validateBranch(content, branchPages);
     expect(result.ok).toBe(true);
+  });
+
+  it('path bọc `backtick` trong Bảng trang con vẫn pass (bug App "Test chung cất")', () => {
+    const content = [
+      '# Branch A',
+      '',
+      '| Path | Chức năng | Keywords |',
+      '| --- | --- | --- |',
+      '| `branch-a/page-one.md` | Chức năng 1 | kw |',
+      '| `branch-a/page-two.md` | Chức năng 2 | kw |',
+      '',
+    ].join('\n');
+    const result = validateBranch(content, pages);
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
   });
 
   it('"thiếu trang" fails', () => {

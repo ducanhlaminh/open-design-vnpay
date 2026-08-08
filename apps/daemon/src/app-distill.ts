@@ -155,7 +155,16 @@ export async function startDistill(
   if (isDistillRunning(appId)) throw new DistillConflictError();
   const manifest = await readManifest(deps.projectsDir, appId);
   const branches = branchesNeedingDistill(manifest);
-  if (branches.length === 0) return { started: false, branches: [] };
+  // Mọi nhánh sạch nhưng THIẾU _overview.md (reduce từng fail/chết giữa
+  // chừng) vẫn phải chạy được: job reduce-only — không có cửa nào khác tạo
+  // lại overview trong mô hình một-nút.
+  if (branches.length === 0) {
+    const overviewExists = await fs.promises
+      .access(overviewPath(deps.projectsDir, appId))
+      .then(() => true)
+      .catch(() => false);
+    if (overviewExists || manifest.pages.length === 0) return { started: false, branches: [] };
+  }
   progressByApp.set(appId, { running: true, done: 0, total: branches.length + 1, branches });
   void runDistillJob(appId, branches, deps).catch((error) => {
     progressByApp.set(appId, {
