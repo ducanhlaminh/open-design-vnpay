@@ -9,6 +9,7 @@ import { fetchProjectFileText } from '../../providers/registry';
 import { AppPoolTree } from './AppPoolTree';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { ConfluenceTreeImport } from './ConfluenceTreeImport';
+import { ProgressBar } from './ProgressBar';
 import styles from './AppPoolSection.module.css';
 
 function poolUrl(appId: string): string {
@@ -188,14 +189,10 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
         </div>
       </div>
       {isRunning && progress ? (
-        <div className={styles.progressWrap}>
-          <p className={styles.progress}>
-            Đang chưng cất tài liệu… {progress.done}/{progress.total} trang ({percent}%)
-          </p>
-          <div className={styles.progressBar} role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
-            <div className={styles.progressBarFill} style={{ width: `${percent}%` }} />
-          </div>
-        </div>
+        <ProgressBar
+          label={`Đang chưng cất tài liệu… ${progress.done}/${progress.total} trang (${percent}%)`}
+          percent={percent}
+        />
       ) : null}
       {distillFailed ? (
         <div className={styles.distillFailBanner}>
@@ -252,6 +249,7 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
                 setImportOpen(false);
                 void loadPool(true);
               }}
+              onPartialImport={() => void loadPool(true)}
             />
           ) : null}
         </div>

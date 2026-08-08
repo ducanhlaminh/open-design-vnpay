@@ -25,13 +25,20 @@
 // tài liệu". Đợi import xong trước khi setCreatedAppId loại bỏ race đó.
 //
 // `phase` hiện trạng thái từng bước thay vì im lặng trong lúc `busy`: 'creating'
-// ('Đang tạo App…') → 'importing' ('Đang nhập tài liệu từ Confluence (N
-// trang)…', chỉ khi có trang tick). Import xong (thành công) → POST
-// /distill NGAY (best-effort, không chặn UI — daemon trả lời tức thì, job
-// chạy nền) rồi mới setCreatedAppId; AppPoolSection mount lên thấy
-// `distill.running: true` ngay từ lần fetch đầu, TỰ kích hoạt polling +
-// progress bar của chính nó (AppPoolSection.module.css's `.progressWrap`) —
-// không cần NewAppModal tự vẽ lại thanh tiến độ chưng cất.
+// ('Đang tạo App…') → 'importing' (progress bar % thật — xem dưới — chỉ khi
+// có trang tick). Import xong (thành công, kể cả một phần) → POST /distill
+// NGAY (best-effort, không chặn UI — daemon trả lời tức thì, job chạy nền)
+// rồi mới setCreatedAppId; AppPoolSection mount lên thấy `distill.running:
+// true` ngay từ lần fetch đầu, TỰ kích hoạt polling + progress bar của chính
+// nó (`ProgressBar.tsx`) — không cần NewAppModal tự vẽ lại thanh tiến độ
+// chưng cất.
+//
+// Import dùng `importConfluenceInBatches` (ConfluenceTreeImport.tsx) thay vì
+// một POST refs[N] duy nhất — daemon trả về MỘT response cho cả yêu cầu, nên
+// batch nhỏ dần tuần tự là cách duy nhất có %-thật thay vì "im lặng rồi xong".
+// Batch lỗi giữa chừng → KHÔNG rollback (phần trước đã ghi lên đĩa); vẫn
+// setImportResult với phần đã nhập, hiện lỗi kèm "đã nhập X/N", và VẪN kích
+// hoạt chưng cất cho phần đó nếu có ít nhất 1 trang lọt qua.
 
 import { useState } from 'react';
 import type { AppPoolImportResponse } from '@open-design/contracts';
@@ -46,7 +53,8 @@ import {
   TextInput,
 } from './PipelineFormModal';
 import { AppPoolSection } from './AppPoolSection';
-import { ConfluenceTreePicker } from './ConfluenceTreeImport';
+import { ConfluenceImportBatchError, ConfluenceTreePicker, importConfluenceInBatches } from './ConfluenceTreeImport';
+import { ProgressBar } from './ProgressBar';
 import { appLabelOf, toSlugId, useAppOptions } from './newProjectForm';
 
 export function NewAppModal({
@@ -69,6 +77,7 @@ export function NewAppModal({
   const [createdAppId, setCreatedAppId] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<AppPoolImportResponse | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
 
   const nameTrim = name.trim();
   // Trùng tên KHÔNG được im lặng tái dùng App cũ: người dùng đang bấm "App
@@ -107,29 +116,36 @@ export function NewAppModal({
     // Từ đây App đã tồn tại — mọi lỗi tiếp theo là lỗi IMPORT, không phải lỗi
     // tạo App; nhưng vẫn phải RESOLVE trước khi lật màn (xem docblock ở đầu
     // file) để AppPoolSection's mount-time pool fetch thấy đúng dữ liệu.
-    let imported = false;
+    let anyImported = false;
     if (ticked.size > 0) {
       setPhase('importing');
+      const refs = [...ticked];
+      setImportProgress({ done: 0, total: refs.length });
       try {
-        const refs = [...ticked];
-        const importRes = await fetch(`/api/pipelines/apps/${encodeURIComponent(newAppId)}/import-confluence`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ refs }),
-        });
-        const importJson = await importRes.json().catch(() => ({}));
-        if (!importRes.ok) throw new Error(importJson?.error || `Nhập tài liệu thất bại (${importRes.status}).`);
-        setImportResult(importJson as AppPoolImportResponse);
-        imported = true;
+        const result = await importConfluenceInBatches(newAppId, refs, (done, total) => setImportProgress({ done, total }));
+        setImportResult(result);
+        anyImported = true;
       } catch (cause) {
-        setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
+        if (cause instanceof ConfluenceImportBatchError) {
+          setImportError(
+            `${cause.message} (đã nhập ${cause.succeededRefs.length}/${refs.length} trang trước khi lỗi — không rollback)`,
+          );
+          if (cause.succeededRefs.length > 0) {
+            setImportResult(cause.partial);
+            anyImported = true;
+          }
+        } else {
+          setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
+        }
       }
+      setImportProgress(null);
     }
-    // Kích hoạt chưng cất NGAY khi import xong — daemon chỉ ĐĂNG KÝ job rồi
-    // trả lời tức thì (job chạy nền), nên await ở đây không chờ hết chưng
-    // cất, chỉ chờ job bắt đầu. AppPoolSection mount lên ngay sau đó sẽ thấy
-    // `distill.running: true` và tự vẽ tiếp phase "Đang chưng cất…".
-    if (imported) {
+    // Kích hoạt chưng cất NGAY khi có ít nhất một trang lọt qua (kể cả import
+    // lỗi giữa chừng) — daemon chỉ ĐĂNG KÝ job rồi trả lời tức thì (job chạy
+    // nền), nên await ở đây không chờ hết chưng cất, chỉ chờ job bắt đầu.
+    // AppPoolSection mount lên ngay sau đó sẽ thấy `distill.running: true` và
+    // tự vẽ tiếp phase "Đang chưng cất…".
+    if (anyImported) {
       try {
         await fetch(`/api/pipelines/apps/${encodeURIComponent(newAppId)}/distill`, { method: 'POST' });
       } catch {
@@ -225,10 +241,18 @@ export function NewAppModal({
         )}
       </FormField>
 
-      {phase ? (
-        <FormText>
-          {phase === 'creating' ? 'Đang tạo App…' : `Đang nhập tài liệu từ Confluence (${ticked.size} trang)…`}
-        </FormText>
+      {phase === 'creating' ? <FormText>Đang tạo App…</FormText> : null}
+      {phase === 'importing' ? (
+        importProgress ? (
+          <ProgressBar
+            label={`Đang nhập tài liệu… ${importProgress.done}/${importProgress.total} trang (${
+              importProgress.total > 0 ? Math.round((importProgress.done / importProgress.total) * 100) : 0
+            }%)`}
+            percent={importProgress.total > 0 ? (importProgress.done / importProgress.total) * 100 : 0}
+          />
+        ) : (
+          <FormText>{`Đang nhập tài liệu từ Confluence (${ticked.size} trang)…`}</FormText>
+        )
       ) : null}
       {error ? <FormError>{error}</FormError> : null}
     </PipelineFormModal>

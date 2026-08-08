@@ -2056,6 +2056,16 @@ export function RunAllModal({
                     });
                     void refreshAppPool(true);
                   }}
+                  onPartialImport={(result) => {
+                    // KHÔNG đóng panel — importError vẫn cần hiện ở đó. Vẫn
+                    // tick + refresh vì phần đã nhập đã nằm trong pool rồi.
+                    setAppPoolPaths((prev) => {
+                      const next = new Set(prev);
+                      for (const p of result.pages) next.add(p.path);
+                      return next;
+                    });
+                    void refreshAppPool(true);
+                  }}
                 />
               ) : null}
             </div>

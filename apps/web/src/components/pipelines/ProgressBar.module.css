@@ -1,0 +1,33 @@
+/* Percent progress bar — shared by AppPoolSection (distill progress),
+   ConfluenceTreeImport (batched self-import progress), and NewAppModal
+   (creation-flow import phase, before AppPoolSection itself mounts).
+   Ported verbatim from AppPoolSection.module.css's original `.progressWrap`/
+   `.progressBar`/`.progressBarFill` rules so every phase of the App-pool
+   import UX reads as the same visual language. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  margin: 0;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+}
+
+.fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.2s cubic-bezier(0.23, 1, 0.32, 1);
+}

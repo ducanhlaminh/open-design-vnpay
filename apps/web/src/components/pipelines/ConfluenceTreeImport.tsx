@@ -36,7 +36,82 @@ import { createPortal } from 'react-dom';
 import type { AppPoolImportResponse, ConfluencePageHit } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
+import { ProgressBar } from './ProgressBar';
 import styles from './ConfluenceTreeImport.module.css';
+
+// ── Batched import (real progress) ──────────────────────────────────────────
+// `POST .../import-confluence` is ONE request in, ONE response out for
+// however many refs are sent — a 64-page tick would be one opaque round trip
+// with no way to show real x/y progress. Chunking client-side into small
+// sequential batches turns "silent for N seconds" into an actual progress
+// bar, with no daemon change needed.
+export const CONFLUENCE_IMPORT_BATCH_SIZE = 8;
+
+/** Thrown when a batch POST fails mid-import. Earlier batches already landed
+ *  server-side (no rollback — `import-confluence` writes files + the
+ *  manifest per call), so this carries what succeeded so far rather than
+ *  just an error string. */
+export class ConfluenceImportBatchError extends Error {
+  constructor(
+    message: string,
+    /** Aggregate response as of the LAST successful batch — `.pages` is the
+     *  App's full current pool manifest (what `import-confluence` always
+     *  returns), so this already reflects every page that landed. */
+    public readonly partial: AppPoolImportResponse,
+    /** Ids from `refs` that belonged to an already-succeeded batch — lets a
+     *  caller un-tick just those and leave the rest ticked for a one-click
+     *  retry of exactly the part that didn't make it. */
+    public readonly succeededRefs: string[],
+  ) {
+    super(message);
+    this.name = 'ConfluenceImportBatchError';
+  }
+}
+
+/** Sequential batches of `CONFLUENCE_IMPORT_BATCH_SIZE` refs each — `onProgress`
+ *  fires after every batch lands with (refs attempted so far, refs total),
+ *  which is exactly the x/y a `ProgressBar` needs. Stops at the first
+ *  failing batch (throws `ConfluenceImportBatchError`); does not retry or
+ *  roll anything back. */
+export async function importConfluenceInBatches(
+  appId: string,
+  refs: string[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<AppPoolImportResponse> {
+  const total = refs.length;
+  let aggregate: AppPoolImportResponse = { imported: 0, updated: 0, pages: [] };
+  const succeededRefs: string[] = [];
+  onProgress?.(0, total);
+  for (let i = 0; i < refs.length; i += CONFLUENCE_IMPORT_BATCH_SIZE) {
+    const chunk = refs.slice(i, i + CONFLUENCE_IMPORT_BATCH_SIZE);
+    try {
+      const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/import-confluence`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ refs: chunk }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || `Nhập tài liệu thất bại (${res.status}).`);
+      const batch = j as AppPoolImportResponse;
+      aggregate = {
+        imported: aggregate.imported + batch.imported,
+        updated: aggregate.updated + batch.updated,
+        // Each response already carries the FULL current manifest — the
+        // latest batch's `.pages` supersedes every earlier one, not append.
+        pages: batch.pages,
+      };
+      succeededRefs.push(...chunk);
+      onProgress?.(succeededRefs.length, total);
+    } catch (cause) {
+      throw new ConfluenceImportBatchError(
+        cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.',
+        aggregate,
+        succeededRefs,
+      );
+    }
+  }
+  return aggregate;
+}
 
 /** Debounced Confluence title search — same endpoint/response shape every
  *  other Confluence picker in this app consumes
@@ -513,52 +588,80 @@ export function ConfluenceTreePicker({
 export interface ConfluenceTreeImportProps {
   appId: string;
   onImported: (result: AppPoolImportResponse) => void;
+  /** Fired INSTEAD of `onImported` when a batch fails mid-import — whatever
+   *  landed before the failing batch is already persisted server-side (no
+   *  rollback). Callers should still refresh their pool view from `.pages`,
+   *  but must NOT close the import panel here (unlike `onImported`'s usual
+   *  side effect) — `importError` below stays visible next to the picker so
+   *  the user sees what happened and can retry the leftover ticked refs. */
+  onPartialImport?: (result: AppPoolImportResponse) => void;
   disabled?: boolean;
 }
 
 /** `ConfluenceTreePicker` + its own ticked-set state + a "Nhập N trang"
- *  button that POSTs straight to `.../import-confluence` — the self-contained
- *  shape every EXISTING-App import surface wants (AppPoolSection,
- *  PipelineModals.tsx's app-pool card). `NewAppModal`'s pre-create screen
- *  uses the bare `ConfluenceTreePicker` instead, since it needs to hold the
- *  ticked ids across the App-creation POST before any import call can fire. */
-export function ConfluenceTreeImport({ appId, onImported, disabled }: ConfluenceTreeImportProps) {
+ *  button that imports in batches (see `importConfluenceInBatches` above,
+ *  for a real x/y progress bar) — the self-contained shape every EXISTING-App
+ *  import surface wants (AppPoolSection, PipelineModals.tsx's app-pool card).
+ *  `NewAppModal`'s pre-create screen uses the bare `ConfluenceTreePicker`
+ *  instead, since it needs to hold the ticked ids across the App-creation
+ *  POST before any import call can fire (it calls `importConfluenceInBatches`
+ *  directly once the App exists). */
+export function ConfluenceTreeImport({ appId, onImported, onPartialImport, disabled }: ConfluenceTreeImportProps) {
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
 
   const importTicked = async () => {
     if (importing || ticked.size === 0) return;
     setImporting(true);
     setImportError(null);
+    const refs = [...ticked];
+    setImportProgress({ done: 0, total: refs.length });
     try {
-      const refs = [...ticked];
-      const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/import-confluence`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ refs }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j?.error || `Nhập tài liệu thất bại (${res.status}).`);
-      onImported(j as AppPoolImportResponse);
+      const result = await importConfluenceInBatches(appId, refs, (done, total) => setImportProgress({ done, total }));
+      onImported(result);
       setTicked(new Set());
     } catch (cause) {
-      setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
+      if (cause instanceof ConfluenceImportBatchError) {
+        setImportError(
+          `${cause.message} (đã nhập ${cause.succeededRefs.length}/${refs.length} trang trước khi lỗi — không rollback, thử lại bên dưới để tiếp tục phần còn lại)`,
+        );
+        // Bỏ tick đúng những trang ĐÃ nhập; batch lỗi + phần chưa-tới-lượt vẫn
+        // tick sẵn, nên bấm "Nhập" lại là retry đúng phần thiếu.
+        if (cause.succeededRefs.length > 0) {
+          const succeeded = new Set(cause.succeededRefs);
+          setTicked((prev) => new Set([...prev].filter((id) => !succeeded.has(id))));
+          onPartialImport?.(cause.partial);
+        }
+      } else {
+        setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
+      }
     } finally {
       setImporting(false);
+      setImportProgress(null);
     }
   };
+
+  const percent =
+    importProgress && importProgress.total > 0 ? Math.round((importProgress.done / importProgress.total) * 100) : 0;
 
   return (
     <div className={styles.wrap}>
       <ConfluenceTreePicker ticked={ticked} onTickedChange={setTicked} disabled={disabled || importing} />
-      {ticked.size > 0 ? (
+      {ticked.size > 0 && !importing ? (
         <div className={styles.summaryRow}>
           <p className={styles.summaryText}>{ticked.size} trang đã tick</p>
           <button type="button" className={styles.primaryButton} onClick={() => void importTicked()} disabled={importing}>
-            {importing ? 'Đang nhập…' : `Nhập ${ticked.size} trang`}
+            Nhập {ticked.size} trang
           </button>
         </div>
+      ) : null}
+      {importing && importProgress ? (
+        <ProgressBar
+          label={`Đang nhập tài liệu… ${importProgress.done}/${importProgress.total} trang (${percent}%)`}
+          percent={percent}
+        />
       ) : null}
       {importError ? <p className={styles.error}>{importError}</p> : null}
     </div>
