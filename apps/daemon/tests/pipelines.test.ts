@@ -120,8 +120,6 @@ test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -
 test('dr-docs accepts a manual file upload (acceptsUpload), and the flag reaches clients through listPipelineStatus', () => {
   // dr-docs is the only stage that lets a user drop in a doc / criteria file
   // directly from the UI — everything else only ever gets input from a run.
-  // (App-level doc uploads — POST /api/pipelines/apps/:appId/upload-folder —
-  // are a separate, App-scoped corpus, not a per-stage acceptsUpload flag.)
   assert.equal(getPipelineDef('dr-docs')?.acceptsUpload, true);
   assert.equal(getPipelineDef('dr-comp')?.acceptsUpload, undefined);
   assert.equal(getPipelineDef('dr-review')?.acceptsUpload, undefined);

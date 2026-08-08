@@ -13,7 +13,6 @@
 import { useState } from 'react';
 
 import {
-  ConfluenceRootField,
   FormError,
   FormField,
   PipelineFormModal,
@@ -21,7 +20,6 @@ import {
   QuietButton,
   TextInput,
 } from './PipelineFormModal';
-import { AppDocsUploadSection } from './AppDocsUpload';
 import { appLabelOf, toSlugId, useAppOptions } from './newProjectForm';
 
 export function NewAppModal({
@@ -33,7 +31,6 @@ export function NewAppModal({
 }) {
   const apps = useAppOptions();
   const [name, setName] = useState('');
-  const [confluenceRoots, setConfluenceRoots] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,7 +52,6 @@ export function NewAppModal({
         body: JSON.stringify({
           appId,
           name: nameTrim,
-          ...(confluenceRoots.length ? { confluenceRoots } : {}),
         }),
       });
       const j = await res.json().catch(() => ({}));
@@ -110,23 +106,6 @@ export function NewAppModal({
           />
         )}
       </FormField>
-
-      <FormField
-        label="Confluence root"
-        hint="Tùy chọn, chọn được nhiều — gõ tên trang để tìm/duyệt cây rồi tick (hoặc dán link/page id thẳng). Đặt sẵn ở đây thì màn Run source của từng feature có thêm tab chọn trang từ các cây này thay vì dán link mỗi lần."
-      >
-        {(fieldProps) => (
-          <ConfluenceRootField
-            {...fieldProps}
-            placeholder="Gõ tên trang để tìm, hoặc dán link/page id…"
-            value={confluenceRoots}
-            onValueChange={setConfluenceRoots}
-            onEnter={() => void submit()}
-          />
-        )}
-      </FormField>
-
-      <AppDocsUploadSection appId={null} />
 
       {error ? <FormError>{error}</FormError> : null}
     </PipelineFormModal>

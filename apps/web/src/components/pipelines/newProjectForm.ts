@@ -13,21 +13,6 @@ export interface AppOption {
   id: string;
   name?: string;
   origin: 'local' | 'remote';
-  /** Confluence pageIds gốc của dự án (multi-root, docs/app-docs-tree-picker-
-   *  spec.md) — nguồn cho picker "Tài liệu App" ở màn Run source
-   *  (docs/prd-docs/dr-docs). Vắng/rỗng = App chưa khai báo gốc nào. */
-  confluenceRoots?: string[];
-  /** Legacy single-root field — server still returns it (= confluenceRoots[0])
-   *  for older clients. Use `appConfluenceRoots()` below, not this directly. */
-  confluenceRoot?: string | null;
-}
-
-/** The App's Confluence root pageIds, whichever shape the server sent —
- *  prefers the v2 array, falls back to the legacy single field so this
- *  degrades gracefully against an older/partially-migrated daemon build. */
-export function appConfluenceRoots(app: Pick<AppOption, 'confluenceRoots' | 'confluenceRoot'>): string[] {
-  if (app.confluenceRoots && app.confluenceRoots.length > 0) return app.confluenceRoots;
-  return app.confluenceRoot ? [app.confluenceRoot] : [];
 }
 
 // Cùng luật với Pipeline Studio (xem apps/daemon/src/pipeline-routes.ts): id

@@ -7,9 +7,9 @@
 // round-trip — the deterministic-vs-agent branching and the conversation
 // seeding live deep inside server.ts's runPipeline, not reachable through a
 // fake-express harness):
-//   1. FAIL-FAST: no explicit input/source, no saved runAllConfig.appFiles,
-//      and the stage's own docs/ isn't already populated → fail the stage
-//      immediately, no conversation created.
+//   1. FAIL-FAST: no explicit input/source, and the stage's own docs/ isn't
+//      already populated → fail the stage immediately, no conversation
+//      created.
 //   2. The 'failed' status now carries a short `error` string, round-tripped
 //      through GET /api/pipelines.
 //   3. HARD GATE (follow-up hardening — the incident continued after (1)
@@ -21,10 +21,10 @@
 //      stale web bundle's leftover value) fails immediately instead.
 //   4. SUCCESS shortcut (the OTHER half of the ghost-run this incident kept
 //      surfacing — "cần Atlassian MCP" on a project whose docs/ was already
-//      populated by hand): empty input/source/saved-appFiles but the
-//      stage's own docs/ ALREADY has files → mark the stage succeeded
-//      immediately (docsFromUpload semantics — see server.ts's runPipeline),
-//      no fetch, no agent, docs left untouched.
+//      populated by hand): empty input/source but the stage's own docs/
+//      ALREADY has files → mark the stage succeeded immediately
+//      (docsFromUpload semantics — see server.ts's runPipeline), no fetch,
+//      no agent, docs left untouched.
 
 import type http from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -78,7 +78,7 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     });
   }
 
-  it('fails fast (no input, no source, no saved appFiles, empty docs/) and does NOT create a conversation', async () => {
+  it('fails fast (no input, no source, empty docs/) and does NOT create a conversation', async () => {
     const projectId = uniqueId('failfast');
     await createProject(projectId);
 
@@ -98,7 +98,7 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     const view = await stageView(projectId, 'docs');
     expect(view.status).toBe('failed');
     expect(view.error).toBe(
-      'Chưa cấu hình Nguồn tài liệu — chọn trang Confluence hoặc Tài liệu App ở panel cấu hình rồi chạy lại.',
+      'Chưa cấu hình Nguồn tài liệu — chọn trang Confluence ở panel cấu hình rồi chạy lại.',
     );
   });
 
@@ -117,8 +117,7 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     await createProject(projectId);
 
     // Pre-populate <projectId>/docs-to-ui/docs/ directly (the single-file
-    // upload path UploadFilesModal uses for a manual "Tải file lên" — distinct
-    // from the App-level doc corpus routes).
+    // upload path UploadFilesModal uses for a manual "Tải file lên").
     const uploadRes = await fetch(`${baseUrl}/api/projects/${projectId}/files`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -196,7 +195,7 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     const view = await stageView(projectId, 'docs');
     expect(view.status).toBe('failed');
     expect(view.error).toBe(
-      'Input không nhận dạng được (không phải link/id Confluence, không phải JIRA key/JQL). Chọn nguồn ở panel Nguồn tài liệu (Tài liệu App hoặc Confluence) rồi chạy lại.',
+      'Input không nhận dạng được (không phải link/id Confluence, không phải JIRA key/JQL). Chọn nguồn ở panel Nguồn tài liệu (Confluence) rồi chạy lại.',
     );
   });
 

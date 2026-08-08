@@ -29,13 +29,6 @@ export interface NavApp {
   /** Feature đã chạy xong toàn bộ pipeline mặc định. */
   doneFeatures: number;
   runningFeatures: number;
-  /** Confluence pageIds gốc của App (multi-root, từ GET /api/pipelines/apps)
-   *  — EditAppModal dùng để prefill; picker "Tài liệu App" ở Run source đọc
-   *  root qua useAppOptions thay vì qua đây. */
-  confluenceRoots?: string[];
-  /** Legacy single-root field — server may still return it for older
-   *  clients; prefer `confluenceRoots` (use `appConfluenceRoots()`). */
-  confluenceRoot?: string | null;
 }
 
 export interface PipelineNav {
@@ -94,21 +87,14 @@ export function appIdOf(p: PipelineProject): string {
 
 export function groupByApp(
   projects: PipelineProject[],
-  knownApps: Array<{ id: string; name?: string; confluenceRoots?: string[]; confluenceRoot?: string | null }>,
+  knownApps: Array<{ id: string; name?: string }>,
 ): NavApp[] {
   const byId = new Map<string, NavApp>();
-  const ensure = (
-    id: string,
-    name?: string,
-    confluenceRoots?: string[],
-    confluenceRoot?: string | null,
-  ): NavApp => {
+  const ensure = (id: string, name?: string): NavApp => {
     const hit = byId.get(id);
     if (hit) {
       // Tên đến sau từ danh sách app (feature chỉ mang bản sao có thể cũ).
       if (name && hit.name === hit.id) hit.name = name;
-      if (confluenceRoots !== undefined) hit.confluenceRoots = confluenceRoots;
-      if (confluenceRoot !== undefined) hit.confluenceRoot = confluenceRoot;
       return hit;
     }
     const row: NavApp = {
@@ -118,15 +104,13 @@ export function groupByApp(
       features: [],
       doneFeatures: 0,
       runningFeatures: 0,
-      confluenceRoots,
-      confluenceRoot,
     };
     byId.set(id, row);
     return row;
   };
 
   // App rỗng vẫn phải hiện: vừa tạo xong mà không thấy nó ở đâu là bế tắc.
-  for (const a of knownApps) ensure(a.id, a.name, a.confluenceRoots, a.confluenceRoot);
+  for (const a of knownApps) ensure(a.id, a.name);
 
   for (const p of projects) {
     const row = ensure(appIdOf(p), p.app?.name);
@@ -147,9 +131,7 @@ export function groupByApp(
 
 export function usePipelineNav(): PipelineNav {
   const [projects, setProjects] = useState<PipelineProject[]>([]);
-  const [knownApps, setKnownApps] = useState<
-    Array<{ id: string; name?: string; confluenceRoots?: string[]; confluenceRoot?: string | null }>
-  >([]);
+  const [knownApps, setKnownApps] = useState<Array<{ id: string; name?: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);

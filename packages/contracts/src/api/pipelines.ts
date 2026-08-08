@@ -347,16 +347,6 @@ export interface ConfluencePageRef {
  *  system trong khi `savedRunAll` set đầy đủ mọi lựa chọn của modal Run-all. */
 export interface RunAllConfig {
   confluencePages?: ConfluencePageRef[];
-  /** A selection out of the project's App-level doc corpus (see
-   *  POST /api/pipelines/apps/:appId/upload-folder|upload-zip and the
-   *  `app-files` PipelineRunSource) — the "Nguồn tài liệu" rail's App-corpus
-   *  picker persists it here. When present and no explicit per-run
-   *  input/source overrides it, the docs-ingest stage runs deterministically
-   *  through this selection (same as an explicit `app-files` source) instead
-   *  of a Confluence fetch. Takes precedence over `confluencePages` (which
-   *  has no server-side fallback of its own — the FE always resolves it into
-   *  an explicit `input` before a run). */
-  appFiles?: { appId: string; paths: string[] };
   designSystemId?: string | null;
   basDocumentId?: string;
   basDocumentTitle?: string;
@@ -476,15 +466,6 @@ export interface CreatePipelineProjectResponse {
 export interface PipelineApp {
   id: string;
   name?: string;
-  /** An App's declared Confluence scope (docs-tree picker spec, multi-root
-   *  revision) — page ids, in the order the App configured them. Local
-   *  Apps only (remote/studio Apps have none yet); omitted when the App has
-   *  no root configured. */
-  confluenceRoots?: string[];
-  /** `confluenceRoots[0]`, kept for one release of back-compat with clients
-   *  still reading the pre-multi-root singular field. Omitted alongside
-   *  `confluenceRoots` when the App has no root configured. */
-  confluenceRoot?: string;
   origin: 'local' | 'remote';
 }
 
@@ -586,19 +567,6 @@ export type PipelineRunSource =
       documentId: string;
       /** Chosen feature ids within that document; empty/absent → whole document. */
       featureIds?: string[];
-    }
-  | {
-      /** The App's already-uploaded doc corpus (`<appId>/docs/`, see
-       *  POST /api/pipelines/apps/:appId/upload-folder|upload-zip) — the
-       *  run-config picker PICKS files out of it instead of re-fetching or
-       *  re-uploading per feature. Deterministic (no agent), like `confluence`:
-       *  each path is copied verbatim from the App's corpus into this run's
-       *  `docs/` — see runPipeline's jira-ingest branch. */
-      kind: 'app-files';
-      appId: string;
-      /** Paths relative to `<appId>/docs/` (as returned by
-       *  GET /api/pipelines/apps/:appId/docs-files). */
-      paths: string[];
     };
 
 // A KG document in BAS (from `kg_list_documents`) — the top level of the BAS
@@ -625,18 +593,6 @@ export interface ConfluencePageHit {
   title: string;
   url?: string;
   space?: string;
-  /** Ancestor page TITLES, top→down, excluding this page itself — lets a
-   *  search result with a title shared by pages in different dự án be told
-   *  apart (App-root combobox). Optional: the direct-PAT search path can
-   *  supply it (CQL `expand=ancestors`); the BAS-gateway fallback path
-   *  cannot, so it stays undefined there rather than guessing. */
-  ancestors?: string[];
-  /** Whether this page has at least one child page — lets the App-root search
-   *  dropdown only render an expand arrow on pages that actually have
-   *  children. `undefined` = unknown (the BAS-gateway fallback path has no
-   *  equivalent field, and the direct-PAT path leaves it undefined too when
-   *  Confluence's response omits the children block for a result). */
-  hasChildren?: boolean;
 }
 
 export interface ConfluencePagesResponse {

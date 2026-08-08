@@ -3635,24 +3635,6 @@ export async function startServer({
   }
 
   const app = express();
-  // App-level docs corpus upload (POST /api/pipelines/apps/:appId/upload-folder,
-  // pipeline-routes.ts) sends a JSON body whose files[].base64 payload can be
-  // large — a real Confluence "export to MD" folder (base64 inflates ~1.33×;
-  // observed an 88MB real-world export 413ing against the 4mb ceiling below).
-  // MUST be registered BEFORE the global json() limit: body-parser's `read()`
-  // bails out via `onFinished.isFinished(req)` once a PRIOR parser has already
-  // consumed the request stream, so the global parser below becomes a no-op
-  // for this path instead of re-checking (and rejecting against) its own
-  // smaller limit — Express runs middleware strictly in registration order,
-  // so a route-scoped `app.use(path, ...)` registered AFTER the global one
-  // would never even see the request. Scoped strictly to this one path
-  // (matches its own `:appId` param, still doesn't leak to any other route)
-  // so every other route keeps the tight 4mb ceiling. 120mb covers the
-  // route's own 80MB total-request cap with headroom for JSON envelope
-  // overhead. (The sibling upload-zip route is multipart, not JSON — multer's
-  // own `limits.fileSize` on that route's dedicated instance bounds it
-  // instead, no body-parser limit applies.)
-  app.use('/api/pipelines/apps/:appId/upload-folder', express.json({ limit: '120mb' }));
   app.use(express.json({ limit: '4mb' }));
 
   // Plan §3.K1 — bearer-token middleware.
@@ -14064,131 +14046,6 @@ export async function startServer({
     return { projectId, completion };
   };
 
-  // Reject absolute / '..' / backslash / empty-segment paths — same contract
-  // as pipeline-routes.ts's validateUploadRelPath (App-level doc uploads),
-  // duplicated here rather than cross-imported: that helper is a closure
-  // private to registerPipelineRoutes, and this file is the run engine, not
-  // a route module. Returns the normalized '/'-joined path, or null.
-  function safeAppDocsRelPath(raw) {
-    if (typeof raw !== 'string') return null;
-    const value = raw.trim();
-    if (!value || value.includes('\0') || value.includes('\\')) return null;
-    if (value.startsWith('/') || /^[A-Za-z]:/.test(value)) return null;
-    const parts = value.split('/');
-    if (parts.some((p) => p === '' || p === '.' || p === '..')) return null;
-    return parts.join('/');
-  }
-
-  // ── Deterministic App-files run (TOOL-ONLY — no agent, no LLM) ─────────────
-  // The `app-files` source: the run-config picker PICKS pages out of the
-  // App's already-uploaded doc corpus (`<appId>/docs/`, see
-  // POST /api/pipelines/apps/:appId/upload-folder|upload-zip) instead of
-  // re-fetching Confluence or re-uploading per feature. Mirrors
-  // runDocsDeterministic's shape exactly (status/history/re-run-clear/
-  // completion), swapping "fetch from Confluence" for "copy from the App's
-  // corpus" as the only different step.
-  const runAppFilesDeterministic = async (
-    pipelineId: string,
-    projectId: string,
-    wfDir: string | null,
-    source: { kind: 'app-files'; appId: string; paths: string[] },
-    resetScope?: 'stage' | 'downstream',
-  ) => {
-    const trimmedInput = source.paths.join('\n');
-    setProjectPipelineStatus(db, projectId, pipelineId, {
-      status: 'running',
-      lastInput: trimmedInput,
-      lastSource: source,
-    });
-    const regenIds = new Set(stageRegenSet(pipelineId, resetScope === 'downstream'));
-    const pipelineCwd = await ensureProject(PROJECTS_DIR, projectId).catch(() => null);
-    if (pipelineCwd) {
-      // Same fence + re-run clear as runDocsDeterministic: manual edits get
-      // their own history commit, then this stage's (and, on cascade,
-      // downstream) outputs are wiped so the copy regenerates a clean set.
-      await commitHistory(pipelineCwd, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
-      try {
-        const snap = await snapshotPipelineCwd(pipelineCwd);
-        for (const rel of snap.keys()) {
-          if (relClearedByRegen(rel, regenIds, wfDir)) {
-            await fs.promises.rm(path.join(pipelineCwd, rel), { force: true }).catch(() => null);
-          }
-        }
-      } catch (error) {
-        console.warn('[pipelines] re-run clear failed (continuing):', error);
-      }
-    }
-    for (const id of regenIds) {
-      if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
-    }
-    const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
-      try {
-        if (!pipelineCwd) throw new Error(`project dir for ${projectId} unavailable`);
-        const cwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
-        const appDocsDir = path.join(PROJECTS_DIR, source.appId, 'docs');
-        const destDocsDir = path.join(cwd, 'docs');
-        let copied = 0;
-        for (const rawPath of source.paths) {
-          const relPath = safeAppDocsRelPath(rawPath);
-          if (!relPath) {
-            console.warn(`[pipelines] app-files: rejecting unsafe path "${rawPath}" (skipping)`);
-            continue;
-          }
-          const srcAbs = path.join(appDocsDir, relPath);
-          const exists = await fs.promises.access(srcAbs).then(() => true, () => false);
-          if (!exists) {
-            console.warn(
-              `[pipelines] app-files: "${relPath}" not found under app "${source.appId}"'s docs corpus (skipping)`,
-            );
-            continue;
-          }
-          const destAbs = path.join(destDocsDir, relPath);
-          await fs.promises.mkdir(path.dirname(destAbs), { recursive: true });
-          await fs.promises.cp(srcAbs, destAbs, { recursive: true });
-          copied += 1;
-          // Attachments pairing (Confluence-export layout): a page
-          // `<dir>/<name>.md` pairs with a sibling `<dir>/<name>/attachments/`
-          // folder holding the images it references — copy that whole
-          // sub-tree too when it exists, alongside the page itself.
-          if (path.extname(relPath).toLowerCase() === '.md') {
-            const base = relPath.slice(0, -path.extname(relPath).length);
-            const attachRel = `${base}/attachments`;
-            const attachSrcAbs = path.join(appDocsDir, attachRel);
-            const hasAttachments = await fs.promises.access(attachSrcAbs).then(() => true, () => false);
-            if (hasAttachments) {
-              const attachDestAbs = path.join(destDocsDir, attachRel);
-              await fs.promises.mkdir(path.dirname(attachDestAbs), { recursive: true });
-              await fs.promises.cp(attachSrcAbs, attachDestAbs, { recursive: true });
-            }
-          }
-        }
-        if (copied === 0) {
-          throw new Error(`no valid file found under app "${source.appId}"'s docs corpus for the selected paths`);
-        }
-        console.log(
-          `[pipelines] app-files deterministic run for ${projectId}: copied ${copied} file(s) from app "${source.appId}", no agent`,
-        );
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
-        void commitHistory(pipelineCwd, {
-          kind: 'run',
-          pipelineId,
-          status: 'succeeded',
-          by: historyActor(),
-          ...(trimmedInput ? { input: trimmedInput } : {}),
-        }).catch(() => null);
-        return 'succeeded' as const;
-      } catch (error) {
-        setProjectPipelineStatus(db, projectId, pipelineId, {
-          status: 'failed',
-          error: String(error?.message ?? error),
-        });
-        console.warn('[pipelines] app-files deterministic run failed:', error);
-        return 'failed' as const;
-      }
-    })();
-    return { projectId, completion };
-  };
-
   // PRD Mockup Review runs PER PAGE in parallel: one agent run per doc page
   // (bounded pool), each writing review/<slug>/report.json, then the daemon
   // merges them into review/index.json + summary.md. All page runs share ONE
@@ -16293,9 +16150,9 @@ export async function startServer({
 
   // Whether a jira-ingest stage's own declared output (`<wfDir>/docs/`)
   // already has ANY content — the docsFromUpload case: the user manually
-  // uploaded via POST /api/pipelines/apps/:appId/upload-folder|upload-zip.
-  // Shallow (one readdir) is enough — any entry at all means something was
-  // uploaded, regardless of nesting.
+  // uploaded via POST /api/projects/:id/files (UploadFilesModal's existing
+  // mechanism). Shallow (one readdir) is enough — any entry at all means
+  // something was uploaded, regardless of nesting.
   const hasPopulatedDocsDir = async (projectId: string, wfDir: string | null): Promise<boolean> => {
     const dir = path.join(PROJECTS_DIR, projectId, wfDir ?? '', 'docs');
     try {
@@ -16321,31 +16178,6 @@ export async function startServer({
     if (!def) throw new Error(`Unknown pipeline ${pipelineId}`);
     const project = getProject(db, projectId);
     if (!project) throw new Error(`Project ${projectId} not found`);
-
-    // Saved run-config fallback for the docs-ingest stage ONLY, and ONLY when
-    // this run supplies NEITHER an explicit input NOR an explicit source — an
-    // explicit per-run value always wins, unchanged. `confluencePages` has NO
-    // equivalent fallback here by design: tracing apps/web's PipelinesView.tsx
-    // (buildRunAllPayloadFromConfig) shows the FE always resolves a saved
-    // `confluencePages` selection into an explicit `input` client-side before
-    // POSTing, so the daemon has never needed its own confluencePages
-    // fallback — `appFiles` is the FIRST server-side saved-config fallback,
-    // deliberately scoped to fire only when nothing else already would apply.
-    // Precedence falls out naturally: explicit input/source > saved appFiles >
-    // saved confluencePages (still FE-resolved into `input`, never auto-
-    // applied here — unchanged).
-    if (input === undefined && source === undefined && def.skillId === 'jira-ingest') {
-      const savedAppFiles = project.metadata?.runAllConfig?.appFiles;
-      if (
-        savedAppFiles &&
-        typeof savedAppFiles.appId === 'string' &&
-        savedAppFiles.appId &&
-        Array.isArray(savedAppFiles.paths) &&
-        savedAppFiles.paths.length > 0
-      ) {
-        source = { kind: 'app-files', appId: savedAppFiles.appId, paths: savedAppFiles.paths };
-      }
-    }
 
     // Multi-target single-stage run (routes/CLI name a target — or the project
     // has exactly one configured): scope it exactly like run-all would. Without
@@ -16398,13 +16230,8 @@ export async function startServer({
     // source, or a free-text input whose every line is a page URL/id, is
     // fetched by the daemon itself — no agent. Only JIRA key / JQL input
     // (needs the Atlassian MCP) still goes to the agent. (The BAS source is
-    // LOCKED for maintenance at the routes/CLI.) `app-files` source → also
-    // TOOL-ONLY, but COPIES from the App's already-uploaded doc corpus
-    // instead of fetching Confluence (runAppFilesDeterministic above).
+    // LOCKED for maintenance at the routes/CLI.)
     if (def.skillId === 'jira-ingest') {
-      if (source?.kind === 'app-files') {
-        return runAppFilesDeterministic(pipelineId, projectId, wfDir, source, resetScope);
-      }
       const inputRefs = (input ?? '')
         .split(/\r?\n/)
         .map((s) => s.trim())
@@ -16417,10 +16244,9 @@ export async function startServer({
             : null;
       if (refs) return runDocsDeterministic(pipelineId, projectId, wfDir, refs, input, source, resetScope, followLinks, includeDescendants);
 
-      // Reached only with NO Confluence ref, NO app-files selection (explicit
-      // OR the saved-runAllConfig fallback above), and free-text input (if
-      // any) that ISN'T JIRA-shaped either — i.e. nothing this daemon knows
-      // how to fetch. Evaluated HERE, before this function's own re-run-clear
+      // Reached only with NO Confluence ref, and free-text input (if any)
+      // that ISN'T JIRA-shaped either — i.e. nothing this daemon knows how
+      // to fetch. Evaluated HERE, before this function's own re-run-clear
       // block runs (that block sits further down, after readAppConfig/agent
       // detection — every branch below either `return`s out through a
       // sibling deterministic runner with its OWN internal clear, or through
@@ -16465,10 +16291,10 @@ export async function startServer({
         // instead, exactly like any other stage failure (run-all's runStage
         // sees this 'failed' completion and stops the chain the same way).
         const message =
-          'Chưa cấu hình Nguồn tài liệu — chọn trang Confluence hoặc Tài liệu App ở panel cấu hình rồi chạy lại.';
+          'Chưa cấu hình Nguồn tài liệu — chọn trang Confluence ở panel cấu hình rồi chạy lại.';
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
         console.warn(
-          `[pipelines] ${pipelineId} for ${projectId}: no input/source/appFiles and docs/ empty — failing fast (no agent seeded)`,
+          `[pipelines] ${pipelineId} for ${projectId}: no input/source and docs/ empty — failing fast (no agent seeded)`,
         );
         return { projectId, completion: Promise.resolve('failed' as const) };
       }
@@ -16486,7 +16312,7 @@ export async function startServer({
       // fallthrough was still open).
       if (inputRefs.length > 0 && source === undefined && !looksLikeJiraInput(input ?? '')) {
         const message =
-          'Input không nhận dạng được (không phải link/id Confluence, không phải JIRA key/JQL). Chọn nguồn ở panel Nguồn tài liệu (Tài liệu App hoặc Confluence) rồi chạy lại.';
+          'Input không nhận dạng được (không phải link/id Confluence, không phải JIRA key/JQL). Chọn nguồn ở panel Nguồn tài liệu (Confluence) rồi chạy lại.';
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
         console.warn(
           `[pipelines] ${pipelineId} for ${projectId}: input matches neither Confluence refs nor JIRA key/JQL — failing fast (no agent seeded): ${JSON.stringify(input)}`,
@@ -17747,7 +17573,6 @@ export async function startServer({
     db,
     pipelines: pipelineDeps,
     paths: pathDeps,
-    http: httpDeps,
   });
 
   // KG sync (pull-all/push-all) is registered here — after the pipeline file

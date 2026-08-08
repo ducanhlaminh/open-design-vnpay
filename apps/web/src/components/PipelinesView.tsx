@@ -55,8 +55,7 @@ import {
   type RunSourcePayload,
 } from './pipelines/PipelineModals';
 import { UploadFilesModal } from './pipelines/UploadFilesModal';
-import { appConfluenceRoots, useAppOptions } from './pipelines/newProjectForm';
-import { fetchDesignSystems } from '../providers/registry';
+import { fetchDesignSystems, writeProjectTextFileDetailed } from '../providers/registry';
 import { applyPendingStarts } from '../runtime/pipeline-pending-starts';
 import { PullConflictModal } from './pipelines/PullConflictModal';
 import { PlModal } from './pipelines/PlModal';
@@ -308,21 +307,6 @@ export function resolveStageRunConfig(
 ): StageRunDecision {
   if (p.inputPlaceholder) {
     const uploading = cfg?.docsFromUpload === true;
-    // App-corpus rail pick (RunAllModal's "Tài liệu App" card) — takes
-    // precedence over `confluencePages` per RunAllConfig.appFiles' own
-    // docblock ("confluencePages has no server-side fallback of its own —
-    // the FE always resolves it into an explicit input before a run", so a
-    // saved appFiles selection is checked FIRST, ahead of that fallback).
-    // Structured `source`, not `input`: the daemon copies these
-    // deterministically from the App's own corpus, same shape RunInputModal
-    // already sends for the same pick.
-    const appFiles = !uploading ? cfg?.appFiles : undefined;
-    if (appFiles && appFiles.paths.length > 0) {
-      return {
-        ok: true,
-        payload: { source: { kind: 'app-files', appId: appFiles.appId, paths: appFiles.paths } },
-      };
-    }
     const pages = cfg?.confluencePages ?? [];
     if (!uploading && pages.length === 0) return { ok: false, missing: 'Nguồn tài liệu' };
     const input = uploading
@@ -565,12 +549,6 @@ export function PipelinesView() {
     setConfigDrawerOpen(false);
   };
   const [runInputFor, setRunInputFor] = useState<PipelineView | null>(null);
-  // App list (id → confluenceRoot) — CHỈ để proceedRun quyết định có mở modal
-  // "Tài liệu App" hay không khi bước Docs chưa có nguồn cấu hình sẵn ở rail.
-  // Đã có nguồn (kể cả từ upload) thì đi thẳng runDirect như cũ; modal chỉ mở
-  // khi rail nói "thiếu Nguồn tài liệu" và App đứng sau feature có confluenceRoot
-  // (docs/app-docs-tree-picker-spec.md §3).
-  const apps = useAppOptions();
   const [designSystemFor, setDesignSystemFor] = useState<PipelineView | null>(null);
   const [platformFor, setPlatformFor] = useState<PipelineView | null>(null);
   // Separate from the run-flow modal state above on purpose — "Tải file lên"
@@ -1216,9 +1194,6 @@ export function PipelinesView() {
       ...(cfg?.followLinks === false ? { followLinks: false } : {}),
       ...(!uploading && cfg?.includeDescendants ? { includeDescendants: true } : {}),
       ...(uploading ? { docsFromUpload: true } : {}),
-      // Nguồn "Tài liệu App" đã lưu: PHẢI gửi kèm — run-all persist lại config
-      // từ body, thiếu field này là lần chạy sau xoá luôn nguồn đã cấu hình.
-      ...(cfg?.appFiles?.paths?.length ? { appFiles: cfg.appFiles } : {}),
     };
   };
 
@@ -1231,9 +1206,7 @@ export function PipelinesView() {
     const cfg = proj?.savedRunAll ?? proj?.config;
     // Cùng điều kiện modal vẫn validate: có nguồn tài liệu, HOẶC "chỉ chạy bước
     // còn thiếu" khi bước Docs đã xong từ trước (chạy lẻ) nên không cần nguồn.
-    const hasSource = Boolean(
-      cfg?.confluencePages?.length || cfg?.docsFromUpload || cfg?.appFiles?.paths?.length,
-    );
+    const hasSource = Boolean(cfg?.confluencePages?.length || cfg?.docsFromUpload);
     // …HOẶC lựa chọn bước đã lưu KHÔNG có bước nạp tài liệu nào. Nguồn tài liệu
     // là input của đúng bước ingest; một lựa chọn kiểu "chỉ chạy lại ux + ui"
     // không đọc tới nó, nên đòi cấu hình nguồn ở đây chỉ dựng lên một cánh cửa
@@ -1286,6 +1259,24 @@ export function PipelinesView() {
     // Chế độ chạy đổi thì stepper phải vẽ lại (bước nào bị bỏ qua đọc từ daemon).
     await load(projectId, { background: true });
     pushToast({ message: 'Đã lưu cấu hình' });
+  };
+
+  // Nhánh nguồn "Tải file lên" của modal cấu hình: ghi các file `.md` đã chọn
+  // vào docsDir của workflow đang mở (docsDirOf — không còn giả định
+  // `<workflowId>/docs/`, một số workflow ghi thẳng `docs/` ở gốc dự án) ngay
+  // khi bấm Lưu. Same route and reasoning as UploadFilesModal — the JSON
+  // write endpoint keeps a multi-segment name verbatim, while the multipart
+  // one strips every `/` and would flatten the file to the project root.
+  // Throws on the first failure so RunAllModal can surface it instead of
+  // saving a source that points at a half-written folder.
+  const uploadRunAllDocs = async (files: File[]) => {
+    if (!projectId || !workflowId) throw new Error('Chưa chọn dự án/workflow');
+    const dir = docsDirOf(workflows, workflowId);
+    for (const file of files) {
+      const content = await file.text();
+      const result = await writeProjectTextFileDetailed(projectId, `${dir}/${file.name}`, content);
+      if (!result.ok) throw new Error(`${file.name}: ${result.message}`);
+    }
   };
 
   const runDirect = async (
@@ -1349,20 +1340,6 @@ export function PipelinesView() {
     const proj = projects.find((pr) => pr.id === projectId);
     const decision = resolveStageRunConfig(p, proj?.savedRunAll ?? proj?.config);
     if (!decision.ok) {
-      // "Nguồn tài liệu" chưa cấu hình ở rail: bình thường báo toast trỏ về
-      // panel phải, NHƯNG khi App của feature này đã khai confluenceRoot
-      // (docs/app-docs-tree-picker-spec.md §3), mở thẳng RunInputModal thay vì
-      // toast — đó là nơi DUY NHẤT render tab "Tài liệu App" (picker theo cây
-      // Confluence của App), nên không mở modal thì tab không bao giờ tới
-      // được người dùng. Mọi `missing` khác (Design system, Sản phẩm cần
-      // build) giữ nguyên toast — hành vi không đổi.
-      const appId = proj?.app?.id;
-      const appHit = appId ? apps.find((a) => a.id === appId) : undefined;
-      const hasAppDocs = Boolean(appHit && appConfluenceRoots(appHit).length > 0);
-      if (decision.missing === 'Nguồn tài liệu' && hasAppDocs) {
-        setRunInputFor(p);
-        return;
-      }
       pushToast({
         message: `Bước “${p.name}” cần ${decision.missing}`,
         details: `Cấu hình ${decision.missing} ở panel bên phải rồi bấm Chạy lại.`,
@@ -1443,13 +1420,11 @@ export function PipelinesView() {
     ? railCfg.confluencePages.length === 1
       ? (railCfg.confluencePages[0]!.title ?? railCfg.confluencePages[0]!.url ?? railCfg.confluencePages[0]!.id ?? 'Confluence')
       : `${railCfg.confluencePages.length} trang Confluence`
-    : railCfg?.appFiles?.paths?.length
-      ? `Tài liệu App · ${railCfg.appFiles.paths.length} file`
-      : railCfg?.docsFromUpload
-        ? 'File tải lên'
-        : railCfg?.basDocumentTitle || railCfg?.basDocumentId
-          ? `BAS · ${railCfg.basDocumentTitle ?? railCfg.basDocumentId}`
-          : 'Chưa cấu hình';
+    : railCfg?.docsFromUpload
+      ? 'File tải lên'
+      : railCfg?.basDocumentTitle || railCfg?.basDocumentId
+        ? `BAS · ${railCfg.basDocumentTitle ?? railCfg.basDocumentId}`
+        : 'Chưa cấu hình';
   const railDsLabel =
     railCfg?.designSystemId === undefined
       ? 'Mặc định'
@@ -2863,9 +2838,7 @@ export function PipelinesView() {
         return (
           <RunAllModal
             workflowName={workflows.find((w) => w.id === workflowId)?.name ?? 'Docs → UI-Spec'}
-            appId={runAllProject?.app?.id}
             defaultConfluencePages={runAllDefaults?.confluencePages}
-            defaultAppFiles={runAllDefaults?.appFiles}
             defaultDesignSystemId={runAllDefaults?.designSystemId}
             defaultDesignSystemByTarget={runAllDefaults?.designSystemByTarget}
             defaultTerminal={runAllDefaults?.terminal}
@@ -2874,13 +2847,8 @@ export function PipelinesView() {
             defaultFollowLinks={runAllDefaults?.followLinks}
             // Mọi chế độ đều là SỬA cấu hình đã lưu, nên prefill đầy đủ — bỏ
             // trống sẽ âm thầm tắt lựa chọn cũ khi bấm Lưu.
-            // KHÔNG còn defaultDocsFromUpload: rail hết nhánh nguồn "Tải file
-            // lên" (upload giờ thuộc App — AppDocsUpload.tsx) nên không còn gì
-            // để mở sẵn theo cờ đó; một cấu hình `docsFromUpload: true` đã lưu
-            // TỪ TRƯỚC vẫn chạy được (resolveStageRunConfig/BE đọc thẳng từ
-            // savedRunAll/config, không qua modal này) cho tới khi người dùng
-            // Lưu một nguồn MỚI ở đây, việc đó tự ghi `docsFromUpload: false`.
             defaultIncludeDescendants={runAllDefaults?.includeDescendants}
+            defaultDocsFromUpload={runAllDefaults?.docsFromUpload}
             defaultSkipSucceeded={runAllDefaults?.skipSucceeded}
             defaultLean={runAllDefaults?.lean}
             // Bước của workflow đang mở + lựa chọn đã lưu — cùng dữ liệu dòng
@@ -2895,6 +2863,9 @@ export function PipelinesView() {
             hasPlatform={pipelines.some((p) => p.acceptsPlatform)}
             hasTerminal={pipelines.some((p) => p.id === 'ui-html' || p.id === 'ui-react')}
             hasDesignSystem={pipelines.some((p) => p.acceptsDesignSystem)}
+            // Ingest step nhận file tay (Docs → Review tài liệu) → modal mở thêm
+            // nhánh nguồn "Tải file .md lên" thay vì khóa cứng Confluence.
+            hasUpload={pipelines.some((p) => p.acceptsUpload)}
             // Lean chỉ là khái niệm của docs-to-ui — các workflow khác (Docs →
             // PRD Review) chạy đủ chuỗi, ẩn hẳn section "Chế độ chạy".
             supportsLean={workflowId === 'docs-to-ui'}
@@ -2902,6 +2873,7 @@ export function PipelinesView() {
             focus={runAllFocus}
             onClose={() => setRunAllOpen(false)}
             onSaveConfig={saveRunConfig}
+            onUploadDocs={uploadRunAllDocs}
           />
         );
       })() : null}
@@ -2912,7 +2884,6 @@ export function PipelinesView() {
         <RunInputModal
           pipelineName={runInputFor.name}
           placeholder={runInputFor.inputPlaceholder ?? ''}
-          appId={runInputProject?.app?.id}
           defaultConfluencePages={runInputProject?.config?.confluencePages}
           defaultBasDocumentId={runInputProject?.config?.basDocumentId}
           // Docs step of docs-to-ui: offer the UI-target picker so targets.json

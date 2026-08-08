@@ -8,7 +8,6 @@
 import { useState } from 'react';
 
 import {
-  ConfluenceRootField,
   FormError,
   FormField,
   PipelineFormModal,
@@ -16,32 +15,19 @@ import {
   QuietButton,
   TextInput,
 } from './PipelineFormModal';
-import { AppDocsUploadSection } from './AppDocsUpload';
-import { appConfluenceRoots, appLabelOf, useAppOptions } from './newProjectForm';
-
-/** Order-insensitive array equality — used to detect whether the roots
- *  picker actually changed anything (chip add/remove doesn't preserve
- *  order, so a plain index compare would false-positive on "changed"). */
-function sameRoots(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  const sa = [...a].sort();
-  const sb = [...b].sort();
-  return sa.every((v, i) => v === sb[i]);
-}
+import { appLabelOf, useAppOptions } from './newProjectForm';
 
 export function EditAppModal({
   app,
   onClose,
   onSaved,
 }: {
-  app: { id: string; name: string; confluenceRoots?: string[]; confluenceRoot?: string | null };
+  app: { id: string; name: string };
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
   const apps = useAppOptions();
   const [name, setName] = useState(app.name);
-  const initialRoots = appConfluenceRoots(app);
-  const [confluenceRoots, setConfluenceRoots] = useState<string[]>(initialRoots);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,9 +37,7 @@ export function EditAppModal({
   const duplicate = apps.some(
     (a) => a.id !== app.id && appLabelOf(a).trim().toLowerCase() === nameTrim.toLowerCase(),
   );
-  const confluenceRootsChanged = !sameRoots(confluenceRoots, initialRoots);
-  const canSubmit =
-    Boolean(nameTrim) && !duplicate && (nameTrim !== app.name || confluenceRootsChanged);
+  const canSubmit = Boolean(nameTrim) && !duplicate && nameTrim !== app.name;
 
   const submit = async () => {
     if (busy || !canSubmit) return;
@@ -65,9 +49,6 @@ export function EditAppModal({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           name: nameTrim,
-          // [] clears — always send when changed so emptying the chips can
-          // clear every root.
-          ...(confluenceRootsChanged ? { confluenceRoots } : {}),
         }),
       });
       const j = await res.json().catch(() => ({}));
@@ -118,23 +99,6 @@ export function EditAppModal({
           />
         )}
       </FormField>
-
-      <FormField
-        label="Confluence root"
-        hint="Tùy chọn, chọn được nhiều — gõ tên trang để tìm/duyệt cây rồi tick (hoặc dán link/page id thẳng). Bỏ hết chip để gỡ."
-      >
-        {(fieldProps) => (
-          <ConfluenceRootField
-            {...fieldProps}
-            placeholder="Gõ tên trang để tìm, hoặc dán link/page id…"
-            value={confluenceRoots}
-            onValueChange={setConfluenceRoots}
-            onEnter={() => void submit()}
-          />
-        )}
-      </FormField>
-
-      <AppDocsUploadSection appId={app.id} />
 
       {error ? <FormError>{error}</FormError> : null}
     </PipelineFormModal>

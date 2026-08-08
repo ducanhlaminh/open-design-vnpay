@@ -1,8 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import multer from 'multer';
-import JSZip from 'jszip';
 import type { Express, Response } from 'express';
 import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
 import { TARGETS_CONFIG_BASENAME, UI_TARGETS, buildTargetsConfig, isUiTarget } from '@open-design/contracts';
@@ -81,10 +79,7 @@ function parseDesignSystemByTarget(raw: unknown): Partial<Record<UiTarget, strin
 // to null for all three, so no `<target>/` nesting ever applies to the
 // ingest stage itself), going through the canonical helper keeps this
 // correct if that ever changes instead of silently drifting from the real
-// run path. Exposed on GET /api/workflows (docsDir) for the FE; NOT used by
-// the App-level doc uploads below — an App's doc corpus lives at
-// `<appId>/docs/`, independent of any workflow (see the docs-tree spec's
-// multi-root App-level design).
+// run path. Exposed on GET /api/workflows (docsDir) for the FE.
 function docsDirForWorkflow(workflow: { pipelineIds: readonly string[] }): string {
   const firstStageId = workflow.pipelineIds[0];
   const wfDir = firstStageId ? workflowDirForPipeline(firstStageId) : null;
@@ -99,13 +94,6 @@ function docsDirForWorkflow(workflow: { pipelineIds: readonly string[] }): strin
 //  - mặc định (run-config): merge từng section, nên CHỈ field có mặt trong body
 //    được ghi. `designSystemId: null` ghi đè thành null ("Không dùng"),
 //    `confluencePages: []` xóa hết trang; field không gửi giữ nguyên giá trị cũ.
-//
-// `appFiles` is the ONE field here that THROWS on a malformed shape (every
-// other field silently drops a bad entry) — it's picked from a real list
-// (GET /api/pipelines/apps/:appId/docs-files), so a malformed shape is a
-// genuine client bug worth a 400, not a silent no-op. Both call sites
-// (PUT .../run-config, POST /api/pipelines/run-all) must catch this and map
-// it to 400 — see each route.
 function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean }): Partial<RunAllConfig> {
   const all = opts?.withDefaults === true;
   const body = (input && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
@@ -124,41 +112,6 @@ function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean })
       }));
     // run-all không ghi danh sách rỗng (giữ shape cũ); patch thì rỗng = xóa hết.
     if (pages.length > 0 || !all) out.confluencePages = pages;
-  }
-  // App-corpus selection for the docs-ingest stage (docs-tree/App-corpus
-  // "Nguồn tài liệu" rail). Three states: absent (has()===false in patch
-  // mode, or key genuinely missing in withDefaults mode) → untouched/omitted;
-  // `null` → explicit clear (patch mode only — withDefaults never persists an
-  // empty selection, same convention as confluencePages above); an object →
-  // validated { appId: non-empty string, paths: non-empty string[] }.
-  if (has('appFiles')) {
-    const raw = body.appFiles;
-    if (raw === undefined) {
-      // withDefaults mode, key genuinely absent from the request → omit,
-      // mirroring confluencePages' "don't persist an empty selection".
-    } else if (raw === null) {
-      // Explicit key-present-but-undefined so `{ ...saved, ...patch }` at the
-      // call site overrides a previously-saved value (JSON.stringify then
-      // drops the key entirely) — `exactOptionalPropertyTypes` forbids this
-      // assignment through `out`'s own optional-field type, hence the local cast.
-      if (!all) (out as { appFiles?: { appId: string; paths: string[] } | undefined }).appFiles = undefined;
-    } else {
-      if (typeof raw !== 'object' || Array.isArray(raw)) {
-        throw new Error('appFiles must be an object { appId, paths } or null to clear');
-      }
-      const rec = raw as Record<string, unknown>;
-      const appId = typeof rec.appId === 'string' ? rec.appId.trim() : '';
-      const rawPaths = Array.isArray(rec.paths) ? rec.paths : null;
-      if (
-        !appId ||
-        !rawPaths ||
-        rawPaths.length === 0 ||
-        !rawPaths.every((p) => typeof p === 'string' && p.trim() !== '')
-      ) {
-        throw new Error('appFiles must be { appId: non-empty string, paths: non-empty string[] }');
-      }
-      out.appFiles = { appId, paths: rawPaths.map((p) => (p as string).trim()) };
-    }
   }
   // designSystemId là field ba trạng thái: id / null (không dùng) / vắng mặt.
   const dsId = body.designSystemId;
@@ -217,14 +170,6 @@ import { loadRemoteProjects } from './kg-sync/remote-registry.js';
 import { StagingBlockedError } from './kg-sync/push-dest.js';
 import { readAppConfig } from './app-config.js';
 import { publishPipelineEvaluation, readPipelineEvaluations } from './feedback.js';
-import {
-  extractPageId,
-  fetchConfluencePageDirect,
-  listDescendantPages,
-  resolveConfluenceCreds,
-} from './bas/bas-client.js';
-import type { ConfluenceCreds } from './bas/bas-client.js';
-import { writeProjectFile } from './projects.js';
 
 // A pipeline's "project" is a KGS app: either pulled from the central KGS
 // (`od kg pull`, metadata.source === 'kg-pull') OR created fresh for pipelines
@@ -305,16 +250,7 @@ export function parseRunSource(raw: unknown): PipelineRunSource | undefined {
       ...(featureIds.length ? { featureIds } : {}),
     };
   }
-  if (s.kind === 'app-files') {
-    const appId = typeof s.appId === 'string' ? s.appId.trim() : '';
-    if (!appId) throw new Error('source.appId is required for an app-files source');
-    const paths = Array.isArray(s.paths)
-      ? s.paths.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim())
-      : [];
-    if (paths.length === 0) throw new Error('source.paths (at least one) is required for an app-files source');
-    return { kind: 'app-files', appId, paths };
-  }
-  throw new Error('source.kind must be "confluence", "bas", or "app-files"');
+  throw new Error('source.kind must be "confluence" or "bas"');
 }
 
 // Nguồn BAS (KG document) của pipeline 1 đang KHÓA BẢO TRÌ (2026-07): card
@@ -330,9 +266,7 @@ const BAS_LOCKED_MSG =
 // runs are manual and one-shot. The route layer validates project + gating and
 // delegates the actual conversation-seeding run to `ctx.pipelines.runPipeline`,
 // a closure wired in server.ts that has access to design.runs + startChatRun.
-// 'http' added for sendMulterError — POST /api/pipelines/apps/:appId/upload-zip
-// reuses the SAME multer-error responder /api/plugins/upload-zip uses.
-export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines' | 'paths' | 'http'> {}
+export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines' | 'paths'> {}
 
 export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutesDeps) {
   const { db } = ctx;
@@ -471,7 +405,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // Các App CỤC BỘ thấy được: {appId, appName} denormalize trên feature +
   // row bảng pipeline_apps (App 0 feature). Dùng cho cả picker (GET) và check
   // trùng khi tạo (POST).
-  type AppEntry = { id: string; name?: string; confluenceRoots?: string[]; origin: 'local' | 'remote' };
+  type AppEntry = { id: string; name?: string; origin: 'local' | 'remote' };
   const collectLocalApps = (): Map<string, AppEntry> => {
     const byId = new Map<string, AppEntry>();
     const mergeName = (entry: AppEntry, name: string | undefined) => {
@@ -492,20 +426,15 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       }
     }
     // App 0 feature (POST /api/pipelines/apps): chưa có feature nào mirror
-    // {appId, appName} nên nguồn duy nhất là bảng pipeline_apps. confluenceRoots
-    // CŨNG chỉ sống ở đây (không denormalize trên feature — xem docs-tree spec).
+    // {appId, appName} nên nguồn duy nhất là bảng pipeline_apps.
     for (const a of listPipelineApps(db)) {
       const existing = byId.get(a.id);
       if (existing) {
         mergeName(existing, a.name && a.name !== a.id ? a.name : undefined);
-        if (!existing.confluenceRoots?.length && a.confluenceRoots?.length) {
-          existing.confluenceRoots = a.confluenceRoots;
-        }
       } else {
         byId.set(a.id, {
           id: a.id,
           ...(a.name && a.name !== a.id ? { name: a.name } : {}),
-          ...(a.confluenceRoots?.length ? { confluenceRoots: a.confluenceRoots } : {}),
           origin: 'local',
         });
       }
@@ -529,62 +458,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       }));
   };
 
-  // Optional `confluenceRoots`/`confluenceRoot` field (POST create / PATCH
-  // update, docs-tree spec — multi-root revision): an App's Confluence scope
-  // is now MULTIPLE roots.
-  //   - `confluenceRoots: string[]` (NEW, plural) — each entry normalized via
-  //     extractPageId (a URL that doesn't resolve throws → 400); `[]` clears.
-  //     Must be an array of non-empty strings, else 400.
-  //   - `confluenceRoot: string` (LEGACY, singular) — kept accepting so
-  //     existing callers don't break: normalizes to a 1-element array; ''
-  //     clears. A present-but-non-string value 400s rather than silently
-  //     falling through to the clear branch.
-  //   - Both present → `confluenceRoots` wins.
-  //   - Neither present → caller leaves the stored roots untouched.
-  const parseConfluenceRootsField = (
-    body: Record<string, unknown>,
-  ): { present: boolean; value: string[] } => {
-    if (Object.prototype.hasOwnProperty.call(body, 'confluenceRoots')) {
-      const raw = body.confluenceRoots;
-      if (!Array.isArray(raw)) {
-        throw new Error('confluenceRoots must be an array of Confluence URLs/page ids');
-      }
-      const seen = new Set<string>();
-      const value: string[] = [];
-      for (const entry of raw) {
-        if (typeof entry !== 'string') {
-          throw new Error('confluenceRoots entries must be strings (Confluence URL or page id)');
-        }
-        const trimmed = entry.trim();
-        if (!trimmed) {
-          throw new Error('confluenceRoots entries must not be empty');
-        }
-        const pageId = extractPageId(trimmed);
-        if (!seen.has(pageId)) {
-          seen.add(pageId);
-          value.push(pageId);
-        }
-      }
-      return { present: true, value };
-    }
-    if (Object.prototype.hasOwnProperty.call(body, 'confluenceRoot')) {
-      const raw = body.confluenceRoot;
-      if (typeof raw !== 'string') {
-        throw new Error('confluenceRoot must be a string (Confluence URL, page id, or "" to clear)');
-      }
-      const trimmed = raw.trim();
-      return { present: true, value: trimmed ? [extractPageId(trimmed)] : [] };
-    }
-    return { present: false, value: [] };
-  };
-
-  // POST /api/pipelines/apps { appId, name, confluenceRoots?, confluenceRoot? }
-  // — tạo App container 0 feature. Form "App mới" trên UI chỉ tạo App;
-  // feature thêm sau qua POST /api/pipelines/projects (khi đó {appId,
-  // appName} được mirror vào metadata.studioConfig của feature). App 0
-  // feature không có gì để chạy/push nên route này là LOCAL-ONLY: không chạm
-  // KGS/studio/media. `confluenceRoots` (docs-tree spec) là danh sách URL
-  // hoặc page id Confluence — chuẩn hóa từng phần tử về pageId.
+  // POST /api/pipelines/apps { appId, name } — tạo App container 0 feature.
+  // Form "App mới" trên UI chỉ tạo App; feature thêm sau qua POST
+  // /api/pipelines/projects (khi đó {appId, appName} được mirror vào
+  // metadata.studioConfig của feature). App 0 feature không có gì để
+  // chạy/push nên route này là LOCAL-ONLY: không chạm KGS/studio/media.
   app.post('/api/pipelines/apps', async (req, res) => {
     const appId = typeof req.body?.appId === 'string' ? req.body.appId.trim() : '';
     const name = typeof req.body?.name === 'string' && req.body.name.trim()
@@ -598,13 +476,6 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           'invalid app id (must start with a letter/digit, then A-Z a-z 0-9 . _ - , max 64 chars total — matches pipeline-studio\'s id rule). This is the KGS project_id.',
       });
     }
-    let confluenceRoots: string[] = [];
-    try {
-      const parsed = parseConfluenceRootsField((req.body ?? {}) as Record<string, unknown>);
-      if (parsed.present) confluenceRoots = parsed.value;
-    } catch (err: any) {
-      return res.status(400).json({ error: String(err?.message ?? err) });
-    }
     if (collectLocalApps().has(appId)) {
       return res.status(409).json({ error: `app "${appId}" already exists` });
     }
@@ -617,12 +488,8 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     } catch {
       /* stores unreachable → chỉ dựa vào check cục bộ ở trên */
     }
-    insertPipelineApp(db, { id: appId, name, createdAt: Date.now(), ...(confluenceRoots.length ? { confluenceRoots } : {}) });
-    res.status(201).json({
-      id: appId,
-      name,
-      ...(confluenceRoots.length ? { confluenceRoot: confluenceRoots[0], confluenceRoots } : {}),
-    });
+    insertPipelineApp(db, { id: appId, name, createdAt: Date.now() });
+    res.status(201).json({ id: appId, name });
   });
 
   // GET /api/pipelines/apps — App containers a user can pick as the parent of
@@ -658,17 +525,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     } catch {
       /* stores unreachable → local-only picker */
     }
-    // `confluenceRoot` (singular, first root) rides along `confluenceRoots`
-    // for one release of back-compat — a client reading the old field never
-    // sees an app with roots go silently blank.
     const apps = Array.from(byId.values())
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((e) => ({
         id: e.id,
         ...(e.name ? { name: e.name } : {}),
-        ...(e.confluenceRoots?.length
-          ? { confluenceRoot: e.confluenceRoots[0], confluenceRoots: e.confluenceRoots }
-          : {}),
         origin: e.origin,
       }));
     res.json({ apps });
@@ -716,15 +577,10 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
   };
 
-  // PATCH /api/pipelines/apps/:id { name, confluenceRoots?, confluenceRoot? }
-  // — đổi TÊN HIỂN THỊ của App (id giữ nguyên vì nó là project_id trên KGS)
-  // và, khi gửi kèm, confluenceRoots (docs-tree spec, multi-root revision —
-  // [] xóa hết, phần tử không hợp lệ → 400; `confluenceRoot` singular vẫn
-  // được chấp nhận cho back-compat, '' xóa, và thua `confluenceRoots` khi cả
-  // hai cùng có mặt). Ghi hai chỗ vì tên App sống ở hai nguồn: row
-  // pipeline_apps (UPSERT — App có feature chưa chắc có row) và appName
-  // denormalize trên từng feature (GET /api/pipelines/projects đọc ở đó);
-  // confluenceRoots chỉ sống ở pipeline_apps (không denormalize).
+  // PATCH /api/pipelines/apps/:id { name } — đổi TÊN HIỂN THỊ của App (id giữ
+  // nguyên vì nó là project_id trên KGS). Ghi hai chỗ vì tên App sống ở hai
+  // nguồn: row pipeline_apps (UPSERT — App có feature chưa chắc có row) và
+  // appName denormalize trên từng feature (GET /api/pipelines/projects đọc ở đó).
   app.patch('/api/pipelines/apps/:id', async (req, res) => {
     const appId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
@@ -734,18 +590,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     if (!collectLocalApps().has(appId) && !(await remoteAppIds())?.has(appId)) {
       return res.status(404).json({ error: `app "${appId}" not found` });
     }
-    let confluenceRootsPatch: { present: boolean; value: string[] };
-    try {
-      confluenceRootsPatch = parseConfluenceRootsField((req.body ?? {}) as Record<string, unknown>);
-    } catch (err: any) {
-      return res.status(400).json({ error: String(err?.message ?? err) });
-    }
-    upsertPipelineAppName(db, {
-      id: appId,
-      name,
-      createdAt: Date.now(),
-      ...(confluenceRootsPatch.present ? { confluenceRoots: confluenceRootsPatch.value } : {}),
-    });
+    upsertPipelineAppName(db, { id: appId, name, createdAt: Date.now() });
     for (const f of featuresOfApp(appId)) {
       updateProject(db, f.id, {
         metadata: {
@@ -754,16 +599,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         },
       });
     }
-    const finalConfluenceRoots = confluenceRootsPatch.present
-      ? confluenceRootsPatch.value
-      : (getPipelineApp(db, appId)?.confluenceRoots ?? []);
-    res.json({
-      id: appId,
-      name,
-      ...(finalConfluenceRoots.length
-        ? { confluenceRoot: finalConfluenceRoots[0], confluenceRoots: finalConfluenceRoots }
-        : {}),
-    });
+    res.json({ id: appId, name });
   });
 
   // DELETE /api/pipelines/apps/:id — xóa App CỤC BỘ. Feature KHÔNG bị xóa: chỉ
@@ -788,481 +624,6 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       updateProject(db, f.id, { metadata: detachApp(f) });
     }
     res.json({ ok: true, detached: features.length });
-  });
-
-  // ---- App docs-tree browse (docs-tree picker spec §2, multi-root revision) ─
-  // GET /api/pipelines/apps/:appId/docs-tree — the MERGED Confluence sub-tree
-  // under ALL of the App's declared `confluence_root`s, for the run-source
-  // modal's "Tài liệu App" tab. Ingest stages that record a page selection here.
-  const INGEST_STAGE_IDS = ['docs', 'prd-docs', 'dr-docs'] as const;
-  // listDescendantPages' own default is the same 500; named locally so the
-  // truncation check below reads as intent, not a magic re-derivation of the
-  // library's default.
-  const DOCS_TREE_HARD_CAP = 500;
-
-  // pageId -> which sibling features (same App) already ingested it, per
-  // ingest-stage `lastInput`/`lastSource`. In-memory over the projects list,
-  // best-effort: a ref that doesn't parse as a Confluence page id (a JIRA
-  // key/JQL run) is skipped rather than surfaced as an error — this is a
-  // hint, not a ledger (see spec's "Risks / edge cases").
-  const collectDocsTreeUsedBy = (
-    appId: string,
-  ): Map<string, Array<{ projectId: string; pipelineId: string }>> => {
-    const map = new Map<string, Array<{ projectId: string; pipelineId: string }>>();
-    const add = (pageId: string, projectId: string, pipelineId: string) => {
-      const arr = map.get(pageId) ?? [];
-      if (!arr.some((e) => e.projectId === projectId && e.pipelineId === pipelineId)) {
-        arr.push({ projectId, pipelineId });
-        map.set(pageId, arr);
-      }
-    };
-    for (const p of listProjects(db) as LocalFeature[]) {
-      if (!isKgsProject(p)) continue;
-      if (studioConfigOf(p).appId !== appId) continue;
-      const pipelines = (p.metadata?.pipelines ?? {}) as Record<
-        string,
-        { lastInput?: unknown; lastSource?: unknown }
-      >;
-      for (const stageId of INGEST_STAGE_IDS) {
-        const run = pipelines[stageId];
-        if (!run) continue;
-        const refs: string[] = [];
-        if (typeof run.lastInput === 'string') {
-          refs.push(...run.lastInput.split('\n').map((l) => l.trim()).filter(Boolean));
-        }
-        if (
-          run.lastSource &&
-          typeof run.lastSource === 'object' &&
-          (run.lastSource as Record<string, unknown>).kind === 'confluence' &&
-          typeof (run.lastSource as Record<string, unknown>).ref === 'string'
-        ) {
-          refs.push((run.lastSource as Record<string, unknown>).ref as string);
-        }
-        for (const ref of refs) {
-          try {
-            add(extractPageId(ref), p.id, stageId);
-          } catch {
-            /* not a Confluence ref (JIRA key/JQL) — best-effort, skip */
-          }
-        }
-      }
-    }
-    return map;
-  };
-
-  // Best-effort root page title: id fallback keeps the response usable when
-  // the PAT can't read the root page's metadata (permissions) even though
-  // listDescendantPages (CQL `ancestor=`) still succeeds.
-  const bestEffortPageTitle = async (creds: ConfluenceCreds, pageId: string): Promise<string> => {
-    try {
-      return (await fetchConfluencePageDirect(creds, pageId)).title || pageId;
-    } catch {
-      return pageId;
-    }
-  };
-
-  app.get('/api/pipelines/apps/:appId/docs-tree', async (req, res) => {
-    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
-    // Local `pipeline_apps` only — an App that only exists denormalized on
-    // features (no row yet) has never had a confluence_root configured.
-    const appRow = getPipelineApp(db, appId);
-    if (!appRow) {
-      return res.status(404).json({ error: `app "${appId}" not found` });
-    }
-    const roots = appRow.confluenceRoots ?? [];
-    if (roots.length === 0) {
-      return res.status(400).json({ error: `app "${appId}" has no confluence_root configured` });
-    }
-    const creds = await resolveConfluenceCreds(ctx.paths.RUNTIME_DATA_DIR);
-    if (!creds) {
-      return res.status(502).json({
-        error:
-          'Chưa có credential Confluence (CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN) — cần PAT để đọc cây trang.',
-      });
-    }
-    const usedByMap = collectDocsTreeUsedBy(appId);
-    type PageOut = {
-      pageId: string;
-      title: string;
-      treePath: string[];
-      rootPageId: string;
-      usedBy: Array<{ projectId: string; pipelineId: string }>;
-    };
-    // Merge every root's sub-tree into one page list. Insertion order = roots
-    // order; a page reachable from TWO overlapping roots keeps the FIRST
-    // root's entry (Map.set is a no-op on an existing key below).
-    const pagesById = new Map<string, PageOut>();
-    const rootsOut: Array<{ pageId: string; title: string }> = [];
-    let truncated = false;
-    for (const root of roots) {
-      const rootTitle = await bestEffortPageTitle(creds, root);
-      rootsOut.push({ pageId: root, title: rootTitle });
-      // The root page ITSELF is a legitimate, selectable ingest target (the
-      // old single-root shape excluded it) — treePath [] marks it as top-level.
-      if (!pagesById.has(root)) {
-        pagesById.set(root, {
-          pageId: root,
-          title: rootTitle,
-          treePath: [],
-          rootPageId: root,
-          usedBy: usedByMap.get(root) ?? [],
-        });
-      }
-      let fetched: Awaited<ReturnType<typeof listDescendantPages>>;
-      try {
-        // Ask for ONE more than the cap: listDescendantPages itself hard-stops
-        // at its `hardCap` arg (returns exactly that many when the tree is
-        // bigger OR exactly that size), so capping the request at
-        // DOCS_TREE_HARD_CAP can't tell "exactly 500 pages" apart from "more
-        // than 500, cut short". The +1 sentinel disambiguates; sliced back
-        // down to DOCS_TREE_HARD_CAP for the response either way.
-        fetched = await listDescendantPages(creds, root, DOCS_TREE_HARD_CAP + 1);
-      } catch (err: any) {
-        return res.status(502).json({ error: String(err?.message ?? err) });
-      }
-      const rootTruncated = fetched.length > DOCS_TREE_HARD_CAP;
-      if (rootTruncated) truncated = true;
-      const descendants = rootTruncated ? fetched.slice(0, DOCS_TREE_HARD_CAP) : fetched;
-      for (const p of descendants) {
-        if (pagesById.has(p.pageId)) continue; // dedupe overlap — keep first
-        pagesById.set(p.pageId, {
-          pageId: p.pageId,
-          title: p.title,
-          treePath: p.treePath,
-          rootPageId: root,
-          usedBy: usedByMap.get(p.pageId) ?? [],
-        });
-      }
-    }
-    res.json({
-      // Singular `root` kept for one release of back-compat with the
-      // single-root response shape — first root, same {pageId, title} shape.
-      root: rootsOut[0],
-      roots: rootsOut,
-      pages: Array.from(pagesById.values()),
-      truncated,
-    });
-  });
-
-  // ── App-level doc corpus upload (no-API Confluence "export to MD") ─────────
-  // The App (`pipeline_apps`) owns the docs corpus, not any one pipeline run:
-  // a feature's run-config later PICKS files out of what the App already
-  // loaded (see the `app-files` deterministic run source in server.ts's
-  // `runPipeline`) — uploading is a one-time App-level load, independent of
-  // any workflow. Two upload shapes land in the SAME place,
-  // `<PROJECTS_DIR>/<appId>/docs/`:
-  //   - POST .../upload-folder — JSON batch (files[].text|base64), for a
-  //     browser folder-picker that can't produce one multipart request
-  //     without re-flattening every path (see UploadFilesModal's header
-  //     comment on why multipart strips '/' out of names).
-  //   - POST .../upload-zip — one multipart zip (raw bytes, no base64
-  //     inflation) for a Confluence "export to MD" delivered as an archive.
-  // Both funnel through the SAME per-entry validate core (validateUploadPath)
-  // and the SAME write pass (writeValidatedUploadEntries) — reusing
-  // `writeProjectFile` (project.ts), the exact helper /api/projects/:id/files
-  // calls, so target-dir resolution and overwrite semantics stay identical to
-  // every other project-file write path in the daemon.
-  const UPLOAD_MAX_FILES = 300;
-  const UPLOAD_MAX_FILE_BYTES = 10 * 1024 * 1024;
-  const UPLOAD_MAX_REQUEST_BYTES = 80 * 1024 * 1024;
-  const UPLOAD_ZIP_MAX_BYTES = 200 * 1024 * 1024;
-  const UPLOAD_ZIP_MAX_EXTRACTED_BYTES = 300 * 1024 * 1024;
-  // NO extension allowlist: a real Confluence "export to MD" folder mixes
-  // genuine extensionless documents (Confluence attachment names sometimes
-  // carry none) with export-tool artifacts (.tmp/.html/.render/.tfss) the
-  // user still wants preserved verbatim — a real 590-file export lost 117
-  // files (57 of them extensionless, real documents) to a prior allowlist
-  // here. Path safety + size caps are the only gate; content type is not
-  // this route's concern.
-
-  // Path safety for one entry of a batch: absolute / '..' / backslash /
-  // empty-segment paths are REJECTED (skip that entry, never trust a client-
-  // supplied path enough to hand it to writeProjectFile's own sanitizer
-  // un-checked) — distinct from writeProjectFile's own `sanitizePath`, which
-  // silently NORMALIZES backslashes into separators; this route's contract
-  // is stricter: backslashes are a hard skip, not a normalize. Doubles as the
-  // zip-slip guard for upload-zip (a zip entry name is just another
-  // client-supplied path).
-  const validateUploadRelPath = (
-    raw: unknown,
-  ): { ok: true; relPath: string } | { ok: false; reason: string } => {
-    if (typeof raw !== 'string' || raw.trim() === '') return { ok: false, reason: 'empty path' };
-    if (raw.includes('\\')) return { ok: false, reason: 'backslashes are not allowed in path' };
-    if (raw.includes('\0')) return { ok: false, reason: 'invalid path' };
-    if (raw.startsWith('/') || /^[A-Za-z]:/.test(raw)) {
-      return { ok: false, reason: 'absolute paths are not allowed' };
-    }
-    const segments = raw.split('/');
-    if (segments.some((s) => s === '')) return { ok: false, reason: 'empty path segment' };
-    if (segments.some((s) => s === '..')) return { ok: false, reason: 'path traversal (..) is not allowed' };
-    return { ok: true, relPath: segments.join('/') };
-  };
-
-  // Shared per-entry CORE for both upload routes: path safety ONLY — no
-  // extension gate (see the note above). A problem here is a per-entry SKIP —
-  // one malformed path must never fail the rest of a real folder/zip export.
-  // (The per-file BYTE-SIZE cap is intentionally NOT folded in here — it 400s
-  // the WHOLE request in both callers, so each keeps that check inline where
-  // it can `return` immediately.)
-  const validateUploadPath = (
-    rawPath: unknown,
-  ): { ok: true; relPath: string } | { ok: false; path: string; reason: string } => {
-    const pathCheck = validateUploadRelPath(rawPath);
-    if (!pathCheck.ok) {
-      return { ok: false, path: typeof rawPath === 'string' ? rawPath : '(invalid)', reason: pathCheck.reason };
-    }
-    return { ok: true, relPath: pathCheck.relPath };
-  };
-
-  // Shared write pass for both upload routes: <PROJECTS_DIR>/<appId>/docs/<relPath>.
-  const writeValidatedUploadEntries = async (
-    appId: string,
-    toWrite: Array<{ relPath: string; buf: Buffer }>,
-  ): Promise<{ written: number; skipped: Array<{ path: string; reason: string }> }> => {
-    let written = 0;
-    const writeFailures: Array<{ path: string; reason: string }> = [];
-    for (const { relPath, buf } of toWrite) {
-      try {
-        await writeProjectFile(ctx.paths.PROJECTS_DIR, appId, `docs/${relPath}`, buf, {}, undefined);
-        written += 1;
-      } catch (err: any) {
-        writeFailures.push({ path: relPath, reason: String(err?.message ?? err) });
-      }
-    }
-    return { written, skipped: writeFailures };
-  };
-
-  // POST /api/pipelines/apps/:appId/upload-folder { files: [{path, text?, base64?}] }
-  app.post('/api/pipelines/apps/:appId/upload-folder', async (req, res) => {
-    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
-    if (!getPipelineApp(db, appId)) {
-      return res.status(404).json({ error: `app "${appId}" not found` });
-    }
-
-    const files = Array.isArray(req.body?.files) ? (req.body.files as unknown[]) : [];
-    if (files.length === 0) return res.status(400).json({ error: 'files are required' });
-    if (files.length > UPLOAD_MAX_FILES) {
-      return res.status(400).json({
-        error: `too many files in one request (max ${UPLOAD_MAX_FILES}) — chunk the upload`,
-      });
-    }
-
-    // Pass 1: validate path + content shape, decode to a Buffer, and enforce
-    // the per-file / total-request byte caps — ALL before a single byte hits
-    // disk, so a cap violation 400s the whole request with nothing partially
-    // written (the FE is expected to chunk under these caps; hitting one
-    // here is a client bug, not something to silently truncate).
-    const skipped: Array<{ path: string; reason: string }> = [];
-    const toWrite: Array<{ relPath: string; buf: Buffer }> = [];
-    let totalBytes = 0;
-    for (const raw of files) {
-      const entry = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-      const pe = validateUploadPath(entry.path);
-      if (!pe.ok) {
-        skipped.push({ path: pe.path, reason: pe.reason });
-        continue;
-      }
-      const hasText = typeof entry.text === 'string';
-      const hasBase64 = typeof entry.base64 === 'string';
-      if (hasText === hasBase64) {
-        // Both present or neither — same "not exactly one" rejection either way.
-        skipped.push({ path: pe.relPath, reason: 'exactly one of text or base64 is required' });
-        continue;
-      }
-      let buf: Buffer;
-      try {
-        buf = hasText ? Buffer.from(entry.text as string, 'utf8') : Buffer.from(entry.base64 as string, 'base64');
-      } catch {
-        skipped.push({ path: pe.relPath, reason: 'invalid base64 content' });
-        continue;
-      }
-      if (buf.length > UPLOAD_MAX_FILE_BYTES) {
-        return res.status(400).json({
-          error: `file too large (max ${UPLOAD_MAX_FILE_BYTES} bytes): ${pe.relPath}`,
-        });
-      }
-      totalBytes += buf.length;
-      if (totalBytes > UPLOAD_MAX_REQUEST_BYTES) {
-        return res.status(400).json({
-          error: `request exceeds ${UPLOAD_MAX_REQUEST_BYTES} bytes total — chunk the upload into smaller batches`,
-        });
-      }
-      toWrite.push({ relPath: pe.relPath, buf });
-    }
-
-    const result = await writeValidatedUploadEntries(appId, toWrite);
-    res.json({ written: result.written, skipped: [...skipped, ...result.skipped] });
-  });
-
-  // Multipart zip upload — raw bytes, NO base64 (avoids the ~1.33× inflation
-  // the JSON upload-folder path pays). Memory storage: the extraction below
-  // needs the whole buffer for JSZip anyway, and the 200MB cap keeps this
-  // bounded. Mirrors `pluginUpload` (server.ts's POST /api/plugins/upload-zip)
-  // in shape, sized for this route's own cap.
-  const pipelineZipUpload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: UPLOAD_ZIP_MAX_BYTES, files: 1 },
-  });
-
-  // POST /api/pipelines/apps/:appId/upload-zip — multipart, field "file".
-  app.post('/api/pipelines/apps/:appId/upload-zip', (req, res) => {
-    pipelineZipUpload.single('file')(req, res, async (err) => {
-      if (err) return ctx.http.sendMulterError(res, err);
-      const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
-      if (!getPipelineApp(db, appId)) {
-        return res.status(404).json({ error: `app "${appId}" not found` });
-      }
-      const file = (req as any).file as { buffer: Buffer } | undefined;
-      if (!file || !file.buffer) {
-        return res.status(400).json({ error: 'file is required' });
-      }
-
-      let zip: JSZip;
-      try {
-        zip = await JSZip.loadAsync(file.buffer);
-      } catch (err2: any) {
-        return res.status(400).json({ error: `not a valid zip file: ${String(err2?.message ?? err2)}` });
-      }
-      const entries = Object.values(zip.files);
-      if (entries.length === 0) {
-        return res.status(400).json({ error: 'zip contains no files' });
-      }
-
-      // Same validate-then-write two-pass shape as upload-folder: a per-file
-      // size violation or the total-extracted cap 400s the whole request
-      // before anything is written; a bad path is a per-entry skip.
-      const skipped: Array<{ path: string; reason: string }> = [];
-      const toWrite: Array<{ relPath: string; buf: Buffer }> = [];
-      let totalBytes = 0;
-      for (const entry of entries) {
-        if (entry.dir) continue;
-        // Zip-safety (reused from /api/plugins/upload-zip's extractPluginZipToFolder):
-        // a zip entry can encode a symlink via its unix permission bits in
-        // the external file attributes — reject it outright rather than
-        // trusting the path check alone, since a symlink can point outside
-        // the write target even when its OWN zip-entry name is safe.
-        const unixMode = typeof entry.unixPermissions === 'number' ? entry.unixPermissions : 0;
-        if ((unixMode & 0o170000) === 0o120000) {
-          skipped.push({ path: entry.name, reason: 'zip entry is a symbolic link' });
-          continue;
-        }
-        // Entry paths = paths inside the zip, top folder kept (no stripping).
-        const pe = validateUploadPath(entry.name);
-        if (!pe.ok) {
-          skipped.push({ path: pe.path, reason: pe.reason });
-          continue;
-        }
-        const buf = await entry.async('nodebuffer');
-        if (buf.length > UPLOAD_MAX_FILE_BYTES) {
-          return res.status(400).json({
-            error: `file too large (max ${UPLOAD_MAX_FILE_BYTES} bytes): ${pe.relPath}`,
-          });
-        }
-        totalBytes += buf.length;
-        if (totalBytes > UPLOAD_ZIP_MAX_EXTRACTED_BYTES) {
-          return res.status(400).json({
-            error: `extracted content exceeds ${UPLOAD_ZIP_MAX_EXTRACTED_BYTES} bytes total`,
-          });
-        }
-        toWrite.push({ relPath: pe.relPath, buf });
-      }
-
-      const result = await writeValidatedUploadEntries(appId, toWrite);
-      res.json({ written: result.written, skipped: [...skipped, ...result.skipped] });
-    });
-  });
-
-  // GET /api/pipelines/apps/:appId/docs-files — recursive listing of the
-  // App's uploaded doc corpus, for the run-config source picker (which PICKS
-  // files out of this list rather than re-uploading per feature).
-  const DOCS_FILE_TITLE_EXTENSIONS = new Set(['.md', '.markdown']);
-  // Only the HEAD of a doc file matters for a display title — a 2KB read
-  // comfortably covers any real front-matter/heading without paying for a
-  // full-file read across a few hundred markdown files per request.
-  const DOCS_FILE_TITLE_HEAD_BYTES = 2048;
-  // A line that's ENTIRELY one markdown image/link and nothing else — never a
-  // usable title (e.g. a lone `![Diagram](attachments/x.png)` as the first
-  // line of an export).
-  const IMAGE_OR_LINK_ONLY_LINE = /^!?\[[^\]]*\]\([^)]*\)$/;
-
-  // Confluence's "export to MD" slugifies filenames (diacritics dropped,
-  // spaces→hyphens — "1-tng-quan-h-thng..."), but the real title survives
-  // INSIDE the file as the first heading. Never renamed on disk: other
-  // exported .md files cross-reference these exact slug paths, and renaming
-  // would break every such link. This is purely a DISPLAY title layered onto
-  // the listing.
-  //   1. First ATX heading (`#`..`######`) anywhere in the head chunk, its
-  //      captured text with trailing `#`s/whitespace stripped.
-  //   2. Else the first non-empty line, IF it's short (<200 chars) and not an
-  //      image/link-only line — otherwise no title (undefined), not a worse
-  //      guess.
-  const extractMdTitle = async (fullPath: string): Promise<string | undefined> => {
-    let handle: fs.promises.FileHandle | null = null;
-    try {
-      handle = await fs.promises.open(fullPath, 'r');
-      const buf = Buffer.alloc(DOCS_FILE_TITLE_HEAD_BYTES);
-      const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
-      const lines = buf.toString('utf8', 0, bytesRead).split(/\r?\n/);
-      for (const raw of lines) {
-        const line = raw.trim();
-        const m = /^#{1,6}\s+(.+)$/.exec(line);
-        if (m) {
-          const title = m[1]!.replace(/\s*#+\s*$/, '').trim();
-          if (title) return title;
-        }
-      }
-      for (const raw of lines) {
-        const line = raw.trim();
-        if (!line) continue;
-        if (line.length >= 200) return undefined;
-        if (IMAGE_OR_LINK_ONLY_LINE.test(line)) return undefined;
-        return line;
-      }
-      return undefined;
-    } catch {
-      return undefined;
-    } finally {
-      await handle?.close().catch(() => {});
-    }
-  };
-
-  const walkDocsFiles = async (
-    dir: string,
-    relDir: string,
-    out: Array<{ path: string; size: number; title?: string }>,
-  ) => {
-    let entries: fs.Dirent[];
-    try {
-      entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    } catch (err: any) {
-      if (err?.code === 'ENOENT') return;
-      throw err;
-    }
-    for (const entry of entries) {
-      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walkDocsFiles(full, rel, out);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      const st = await fs.promises.stat(full);
-      const ext = path.extname(entry.name).toLowerCase();
-      const title = DOCS_FILE_TITLE_EXTENSIONS.has(ext) ? await extractMdTitle(full) : undefined;
-      out.push({ path: rel, size: st.size, ...(title ? { title } : {}) });
-    }
-  };
-
-  app.get('/api/pipelines/apps/:appId/docs-files', async (req, res) => {
-    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
-    if (!getPipelineApp(db, appId)) {
-      return res.status(404).json({ error: `app "${appId}" not found` });
-    }
-    const docsDir = path.join(ctx.paths.PROJECTS_DIR, appId, 'docs');
-    const files: Array<{ path: string; size: number; title?: string }> = [];
-    await walkDocsFiles(docsDir, '', files);
-    files.sort((a, b) => a.path.localeCompare(b.path));
-    res.json({ files });
   });
 
   // PATCH /api/pipelines/projects/:id { name?, appId?, appName? } — sửa một
@@ -1668,12 +1029,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
     const prev = project.metadata?.runAllConfig;
     const saved = (prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {}) as RunAllConfig;
-    let patch: Partial<RunAllConfig>;
-    try {
-      patch = runAllConfigFromBody(req.body);
-    } catch (err: any) {
-      return res.status(400).json({ error: String(err?.message ?? err) });
-    }
+    const patch = runAllConfigFromBody(req.body);
     const merged: RunAllConfig = { ...saved, ...patch };
     updateProject(db, projectId, {
       metadata: {
@@ -1815,24 +1171,6 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       // Only Pipeline-Studio's config seeds the FIRST run (no saved config yet);
       // every trigger after that overwrites this with the latest choices.
       const nextRunAllConfig = runAllConfigFromBody(req.body, { withDefaults: true });
-      // `appFiles` is NOT part of the Run-all modal's own state — it's set
-      // through a SEPARATE, independent surface (the "Nguồn tài liệu" rail's
-      // App-corpus picker, PUT .../run-config). Every OTHER field here is
-      // correctly a full replace (withDefaults mode — the modal always
-      // resends its complete current state, so "the latest choices" IS
-      // everything), but a run-all trigger whose caller doesn't know about
-      // `appFiles` (an older/stale client, a CLI invocation, run-all fired
-      // from a flow that only sets the fields IT owns) must not silently
-      // wipe a previously-saved selection — that is local run config, not
-      // Pipeline-Studio-owned state, and this exact wipe is what live users
-      // hit (a saved appFiles disappearing while terminal/stageIds survived
-      // a later run-all trigger). Preserve it unless THIS request explicitly
-      // sent `appFiles` (present, including `null` to clear — see
-      // runAllConfigFromBody's own three-state handling above).
-      if (!Object.prototype.hasOwnProperty.call((req.body ?? {}) as Record<string, unknown>, 'appFiles')) {
-        const savedAppFiles = (project.metadata?.runAllConfig as RunAllConfig | undefined)?.appFiles;
-        if (savedAppFiles) nextRunAllConfig.appFiles = savedAppFiles;
-      }
       updateProject(db, projectId, {
         metadata: {
           ...(project.metadata ?? {}),
@@ -1863,9 +1201,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         ? 409
         : /Unknown workflow/i.test(msg)
           ? 404
-          : /^appFiles/.test(msg) // runAllConfigFromBody's appFiles validation (see there)
-            ? 400
-            : 500;
+          : 500;
       res.status(status).json({ error: msg });
     }
   });

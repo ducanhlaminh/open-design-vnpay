@@ -24,12 +24,6 @@
 // stage would never see it. `.md` is text, so each file is read with
 // `File.text()` — no base64 round-trip, and this repo has no shared
 // File→base64 helper to reuse for it anyway.
-//
-// NOTE: a bulk folder/.zip upload path used to live here as a third target —
-// moved to AppDocsUpload.tsx (NewAppModal/EditAppModal's "Tài liệu dự án"
-// section) once it became clear the uploaded corpus belongs to the APP (so
-// every feature can pick from one shared pool), not to a single per-project
-// run. Do not re-add bulk upload here.
 import { useState } from 'react';
 import { Icon } from '../Icon';
 import { PlModal } from './PlModal';
