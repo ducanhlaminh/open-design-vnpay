@@ -29,6 +29,9 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { WireFrameView, DEVICES, type WireDoc } from './WireFrameView';
+import { UseCaseReader } from './UseCaseReader';
+import { flowDocToChart, deriveUseCases } from './flow-usecases';
+import readerStyles from './UseCaseReader.module.css';
 import type { SpecDoc } from './SpecPreview';
 
 export interface FlowDocNode {
@@ -479,7 +482,11 @@ export function SpecFlowCanvas({
     return derived ? [derived] : [];
   }, [flows, spec]);
   const [idx, setIdx] = useState(0);
+  const [mode, setMode] = useState<'scenarios' | 'graph'>('scenarios');
   const flow = effective[Math.min(idx, effective.length - 1)];
+  const screenTitles = useMemo(() => Object.fromEntries(screens.map((s) => [String(s.id), String(s.name ?? s.title ?? s.id)])), [screens]);
+  const chart = useMemo(() => (flow ? flowDocToChart(flow, screenTitles) : null), [flow, screenTitles]);
+  const useCaseCount = useMemo(() => (chart ? deriveUseCases(chart).useCases.length : 0), [chart]);
 
   const built = useMemo(() => {
     if (!flow) return { nodes: [] as Node[], edges: [] as Edge[] };
@@ -571,8 +578,32 @@ export function SpecFlowCanvas({
     );
   }
 
+  const renderStepExtra = (node: import('./FlowchartPreview').FlowchartNode) => {
+    if (node.type !== 'action' && node.type !== 'start') return null;
+    const wire = wireframes?.[node.id];
+    if (!wire) return null;
+    const platform = platforms?.[node.id] ?? 'mobile';
+    const natural = platform === 'web' ? DEVICES.desktop.w : DEVICES.mobile.w;
+    const scale = 174 / natural;
+    return (
+      <div style={{ height: 142, marginTop: 10, overflow: 'hidden', position: 'relative', borderRadius: 5, background: 'var(--bg-subtle, #f5f6f8)' }}>
+        <div style={{ width: natural, transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none' }}>
+          <WireFrameView doc={wire} platform={platform} />
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 480 }}>
+      <div className={readerStyles.modeBar} role="tablist" aria-label="Chế độ xem flow">
+        <button type="button" role="tab" aria-selected={mode === 'scenarios'} className={`${readerStyles.modeButton} ${mode === 'scenarios' ? readerStyles.modeButtonActive : ''}`} onClick={() => setMode('scenarios')}>
+          <span className={readerStyles.modeButtonName}>Kịch bản</span><span className={readerStyles.modeButtonMeta}>· {useCaseCount}</span>
+        </button>
+        <button type="button" role="tab" aria-selected={mode === 'graph'} className={`${readerStyles.modeButton} ${mode === 'graph' ? readerStyles.modeButtonActive : ''}`} onClick={() => setMode('graph')}>
+          <span className={readerStyles.modeButtonName}>Sơ đồ</span><span className={readerStyles.modeButtonMeta}>· {built.nodes.length}</span>
+        </button>
+      </div>
       {effective.length > 1 ? (
         <div style={{ display: 'flex', gap: 6, padding: '8px 12px', borderBottom: `1px solid ${T.border}`, flexWrap: 'wrap' }}>
           {effective.map((f, i) => (
@@ -596,6 +627,8 @@ export function SpecFlowCanvas({
           ))}
         </div>
       ) : null}
+      {mode === 'scenarios' && chart ? <UseCaseReader doc={chart} renderStepExtra={renderStepExtra} /> : null}
+      {mode === 'graph' ? <>
       {/* Without a key, the red dashed edges read as "something is broken"
           rather than "this is the branch that does not go well". */}
       {built.edges.some((e) => (e.data as { negative?: boolean } | undefined)?.negative) ? (
@@ -645,6 +678,7 @@ export function SpecFlowCanvas({
           </ReactFlow>
         </ReactFlowProvider>
       </div>
+      </> : null}
     </div>
   );
 }

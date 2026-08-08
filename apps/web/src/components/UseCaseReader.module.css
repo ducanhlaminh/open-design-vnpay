@@ -1,0 +1,89 @@
+/* Scenario reader: the listing stays a single calm column; only the detail
+   track is allowed to become wider than its viewport. */
+.scenarioView, .detailView {
+  min-height: 0;
+  overflow: auto;
+  padding: 22px 24px 28px;
+}
+.scenarioHead { margin-bottom: 18px; }
+.scenarioTitle, .detailTitle { margin: 0; color: var(--text, #1a1916); font-size: 20px; font-weight: 700; }
+.scenarioMeta { margin: 6px 0 0; color: var(--text-muted, #57544e); font-size: 12px; }
+.scenarioMeta code { max-width: 42%; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; white-space: nowrap; font-family: var(--mono, ui-monospace, monospace); }
+.truncatedBanner { margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--amber, #b26200); border-radius: var(--radius-sm, 8px); background: var(--amber-bg, #fff3e0); color: var(--text, #1a1916); font-size: 12px; }
+.scenarioList { display: grid; gap: 10px; max-width: 850px; }
+.scenarioCard { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; width: 100%; padding: 16px; border: 1px solid var(--border, #e1e5eb); border-radius: var(--radius-md, 10px); background: var(--bg-panel, #fff); color: inherit; text-align: left; cursor: pointer; transition: border-color 200ms cubic-bezier(.23,1,.32,1), transform 200ms cubic-bezier(.23,1,.32,1); }
+.scenarioCard:hover { border-color: var(--accent, #0066b3); transform: translateX(3px); }
+.outcomeBadge, .kindBadge { display: inline-flex; align-items: center; width: fit-content; border-radius: 999px; padding: 4px 8px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.outcomeSuccess { background: var(--green-bg, #e5f5eb); color: var(--green, #19713b); }
+.outcomeBlocked { background: var(--red-bg, #fbe9e7); color: var(--red, #9c2a25); }
+.outcomeLoop { background: var(--amber-bg, #fff3e0); color: var(--amber, #b26200); }
+.outcomeNeutral { background: var(--bg-subtle, #eef1f5); color: var(--text-muted, #57544e); }
+.scenarioCardBody { display: grid; gap: 5px; min-width: 0; }
+.scenarioCardTitle { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 14px; }
+.scenarioCardDescription { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; color: var(--text-muted, #57544e); font-size: 12px; line-height: 1.45; }
+.scenarioCardSteps { color: var(--text-muted, #57544e); font-size: 11px; white-space: nowrap; }
+.detailHead { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.backButton, .detailNav button { border: 1px solid var(--border, #e1e5eb); border-radius: var(--radius-sm, 8px); padding: 8px 11px; background: var(--bg-panel, #fff); color: var(--text, #1a1916); font: inherit; font-size: 12px; cursor: pointer; }
+.detailTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; }
+.stepScroller { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 4px 2px 14px; }
+.stepTrack { display: flex; align-items: center; width: max-content; min-width: 100%; }
+.stepItem, .loopItem { display: flex; align-items: center; }
+.stepCard { display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box; min-width: 200px; width: 200px; min-height: 140px; padding: 14px; border: 1px solid var(--border-strong, #c9d0da); border-radius: var(--radius-sm, 8px); background: var(--bg-panel, #fff); }
+.stepCardLast { border-color: var(--amber, #b26200); }
+.stepTop { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-muted, #57544e); font-size: 11px; font-weight: 700; }
+.kindBadge { padding: 3px 6px; background: var(--bg-subtle, #eef1f5); color: var(--text-muted, #57544e); }
+.kindAction { background: var(--accent-tint, #e6f0f8); color: var(--accent, #0066b3); }
+.kindDecision { background: var(--amber-bg, #fff3e0); color: var(--amber, #b26200); }
+.kindEnd { background: var(--green-bg, #e5f5eb); color: var(--green, #19713b); }
+.stepLabel { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 3; -webkit-box-orient: vertical; font-size: 14px; line-height: 1.35; }
+.answerChip { align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; border-radius: 5px; padding: 4px 7px; background: var(--accent-tint, #e6f0f8); color: var(--accent, #0066b3); font-size: 11px; white-space: nowrap; }
+.stepArrow { flex: 0 0 auto; padding: 0 12px; color: var(--text-muted, #57544e); font-size: 22px; }
+.loopCard { justify-content: center; border-color: var(--amber, #b26200); background: var(--amber-bg, #fff3e0); color: var(--amber, #b26200); }
+.detailDescription { max-width: 850px; margin: 12px 0 22px; color: var(--text-muted, #57544e); font-size: 13px; line-height: 1.5; }
+.detailNav { display: flex; justify-content: space-between; max-width: 850px; }
+.detailNav button:disabled { cursor: not-allowed; opacity: .45; }
+@media (max-width: 700px) {
+  .scenarioView, .detailView { padding: 18px 14px 24px; }
+  .scenarioCard { grid-template-columns: auto 1fr; }
+  .scenarioCardSteps { grid-column: 2; }
+  .detailHead { flex-wrap: wrap; }
+  .detailTitle { order: 3; flex-basis: 100%; }
+}
+
+/* Thanh chế độ Kịch bản/Sơ đồ — ĐẶT Ở ĐÂY để hai khung nhìn dùng chung (bản
+   sao thứ ba của công thức tab thì chắc chắn sẽ lệch). Cùng công thức với
+   PipelineNavViews `.detailTabs` của màn App: gạch chân accent 2px, không nền.
+   `border-radius: 0` chặn reset button toàn cục bo tròn gạch chân thành viên
+   thuốc; `flex: none` + `nowrap` chặn nút co hẹp hơn chữ làm gạch chân đứt
+   trước phần meta; padding 12px→10px khi active bù đúng 2px viền nên đổi tab
+   không xê dịch layout. */
+.modeBar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  gap: 22px;
+  padding: 14px 20px 0;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: transparent;
+}
+.modeButton {
+  display: inline-flex;
+  flex: none;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 1px 12px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted, #57544e);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.18s ease, border-color 0.18s ease;
+}
+.modeButton:hover:not(:disabled), .modeButton:focus-visible { color: var(--text-strong, #1a1916); background: transparent; }
+.modeButtonActive { padding-bottom: 10px; margin-bottom: -1px; border-bottom: 2px solid var(--accent, #0066b3); color: var(--accent-strong, #0066b3); }
+.modeButtonActive:hover:not(:disabled) { color: var(--accent-strong, #0066b3); border-bottom-color: var(--accent, #0066b3); }
+.modeButtonName { font-size: 14px; font-weight: 550; }
+.modeButtonActive .modeButtonName { font-weight: 650; }
+.modeButtonMeta { font-size: 12px; color: var(--text-muted, #57544e); }
