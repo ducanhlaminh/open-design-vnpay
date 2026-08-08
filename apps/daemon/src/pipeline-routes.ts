@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import express from 'express';
 import type { Express, Response } from 'express';
 import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
 import { TARGETS_CONFIG_BASENAME, UI_TARGETS, buildTargetsConfig, isUiTarget } from '@open-design/contracts';
@@ -117,6 +118,25 @@ function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean })
   const dsId = body.designSystemId;
   if (typeof dsId === 'string') out.designSystemId = dsId;
   else if (dsId === null) out.designSystemId = null;
+  // appPool là field ba trạng thái GIỐNG designSystemId (object / null / vắng
+  // mặt) — cố tình đọc trực tiếp `body.appPool` thay vì qua `has()`: dưới
+  // run-all (`all=true`) muốn "vắng mặt" vẫn để `out.appPool` KHÔNG được set
+  // (khác `confluencePages`/`terminal` vốn tự điền default khi `all`), để
+  // route gọi PRESERVE giá trị đã lưu thay vì ghi đè bằng default — bài học
+  // run-all full-replace (docs/app-docs-pool-spec.md §1, §2.2).
+  if (Object.prototype.hasOwnProperty.call(body, 'appPool')) {
+    const rawAppPool = body.appPool;
+    if (rawAppPool === null) {
+      out.appPool = null;
+    } else if (rawAppPool && typeof rawAppPool === 'object' && !Array.isArray(rawAppPool)) {
+      const obj = rawAppPool as Record<string, unknown>;
+      const poolAppId = typeof obj.appId === 'string' ? obj.appId.trim() : '';
+      const poolPaths = Array.isArray(obj.paths)
+        ? obj.paths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+        : [];
+      if (poolAppId) out.appPool = { appId: poolAppId, paths: poolPaths };
+    }
+  }
   if (has('terminal')) {
     const t = body.terminal;
     if (t === 'ui-html' || t === 'ui-react' || t === 'ui-react-ds' || t === 'both') out.terminal = t as WorkflowTerminal;
@@ -169,6 +189,10 @@ import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import { loadRemoteProjects } from './kg-sync/remote-registry.js';
 import { StagingBlockedError } from './kg-sync/push-dest.js';
 import { readAppConfig } from './app-config.js';
+import { readFeedbackForms, saveFeedbackForm } from './feedback-forms.js';
+import { readAllFeedbackSubmissions, submitFeedback, uploadFeedbackImage } from './feedback-submissions.js';
+import { getMachineUser } from './auth-routes.js';
+import { isPackagedRuntime } from './app-version.js';
 import { publishPipelineEvaluation, readPipelineEvaluations } from './feedback.js';
 
 // A pipeline's "project" is a KGS app: either pulled from the central KGS
@@ -250,7 +274,16 @@ export function parseRunSource(raw: unknown): PipelineRunSource | undefined {
       ...(featureIds.length ? { featureIds } : {}),
     };
   }
-  throw new Error('source.kind must be "confluence" or "bas"');
+  if (s.kind === 'app-pool') {
+    const appId = typeof s.appId === 'string' ? s.appId.trim() : '';
+    if (!appId) throw new Error('source.appId is required for an app-pool source');
+    const paths = Array.isArray(s.paths)
+      ? s.paths.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+      : [];
+    if (paths.length === 0) throw new Error('source.paths (App pool pages) is required for an app-pool source');
+    return { kind: 'app-pool', appId, paths };
+  }
+  throw new Error('source.kind must be "confluence", "bas" or "app-pool"');
 }
 
 // Nguồn BAS (KG document) của pipeline 1 đang KHÓA BẢO TRÌ (2026-07): card
@@ -825,6 +858,187 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
   });
 
+  // ── Form feedback cuối pipeline (builder + submit + thống kê) ─────────────
+  // Sáu route mỏng trên hai module thuần feedback-forms/feedback-submissions —
+  // logic (validate/version/cap/merge) sống bên đó và đã có unit test; route
+  // chỉ resolve danh tính + channel rồi chuyển tiếp.
+
+  /** user = email Google đã xác thực (getMachineUser) khi có; fallback
+   *  feedbackUsername/installationId — cùng thứ tự ưu tiên với attribution của
+   *  push (server.ts), để hai chỗ không kể hai câu chuyện về cùng một người. */
+  const resolveFeedbackIdentity = async () => {
+    const config = await readAppConfig(ctx.paths.RUNTIME_DATA_DIR);
+    const machine = getMachineUser();
+    return {
+      user: machine?.email || config.feedbackUsername?.trim() || config.installationId || 'unknown',
+      installationId: config.installationId || 'unknown-install',
+    };
+  };
+
+  app.get('/api/pipelines/feedback/forms', (req, res) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+    void (async () => {
+      try {
+        res.json(await readFeedbackForms(projectId));
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
+  app.put('/api/pipelines/feedback/forms', (req, res) => {
+    const body = req.body as Partial<{ projectId: string; title: string; sections: unknown; questions: unknown }>;
+    if (!body.projectId || typeof body.title !== 'string' || !Array.isArray(body.questions)) {
+      return res.status(400).json({ error: 'projectId, title and questions are required' });
+    }
+    if (!getProject(db, body.projectId)) return res.status(404).json({ error: 'project not found' });
+    void (async () => {
+      try {
+        const { user } = await resolveFeedbackIdentity();
+        const form = await saveFeedbackForm(
+          body.projectId!,
+          {
+            title: body.title!,
+            ...(Array.isArray(body.sections) ? { sections: body.sections as never } : {}),
+            questions: body.questions as never,
+          },
+          { user },
+        );
+        res.status(201).json({ form });
+      } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
+  // Ảnh gửi RAW (body = bytes, Content-Type = image/*) thay vì JSON base64:
+  // limit json toàn cục là 4mb, còn ảnh cap 5MB — base64 phồng ~33% nữa là
+  // chắc chắn vượt. Raw thì cap 6mb là đủ dư cho 5MB thật.
+  app.post(
+    '/api/pipelines/feedback/attachments',
+    express.raw({ type: 'image/*', limit: '6mb' }),
+    (req, res) => {
+      const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+      const draftId = typeof req.query.draftId === 'string' ? req.query.draftId : '';
+      const filename = typeof req.query.filename === 'string' ? req.query.filename : '';
+      if (!projectId || !draftId || !filename) {
+        return res.status(400).json({ error: 'projectId, draftId and filename are required' });
+      }
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'body phải là bytes ảnh (Content-Type: image/*)' });
+      }
+      void (async () => {
+        try {
+          const attachment = await uploadFeedbackImage({
+            projectId,
+            submissionDraftId: draftId,
+            filename,
+            contentType: req.headers['content-type'] ?? 'application/octet-stream',
+            data: req.body as Buffer,
+          });
+          res.status(201).json({ attachment });
+        } catch (error) {
+          res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+        }
+      })();
+    },
+  );
+
+  app.post('/api/pipelines/feedback/submissions', (req, res) => {
+    const body = req.body as Partial<{
+      projectId: string; workflowId: string; runId: string; formVersion: number;
+      answers: Record<string, unknown>; otherTexts: Record<string, string>;
+      images: unknown[]; stageFiles: unknown[];
+    }>;
+    if (!body.projectId || !body.workflowId || typeof body.formVersion !== 'number' || !body.answers) {
+      return res.status(400).json({ error: 'projectId, workflowId, formVersion and answers are required' });
+    }
+    if (!getProject(db, body.projectId)) return res.status(404).json({ error: 'project not found' });
+    void (async () => {
+      try {
+        const { forms } = await readFeedbackForms(body.projectId!);
+        const form = forms.find((f) => f.version === body.formVersion);
+        // Version không tồn tại = client cầm form đã bị vượt qua hoặc bịa —
+        // nhận bừa thì answers không đối chiếu được với câu hỏi nào.
+        if (!form) return res.status(400).json({ error: `Form version ${body.formVersion} không tồn tại` });
+        const { user, installationId } = await resolveFeedbackIdentity();
+        const projectRoot = path.resolve(ctx.paths.PROJECTS_DIR, body.projectId!);
+        const submission = await submitFeedback({
+          projectId: body.projectId!,
+          installationId,
+          user,
+          channel: isPackagedRuntime() ? 'packaged' : 'dev',
+          workflowId: body.workflowId!,
+          ...(body.runId ? { runId: body.runId } : {}),
+          form,
+          answers: body.answers as never,
+          ...(body.otherTexts ? { otherTexts: body.otherTexts } : {}),
+          ...(Array.isArray(body.images) ? { images: body.images as never } : {}),
+          ...(Array.isArray(body.stageFiles) ? { stageFiles: body.stageFiles as never } : {}),
+          // Snapshot đọc từ CWD của project, và CHẶN đường dẫn thoát ra ngoài
+          // (sourcePath là input người dùng — '../' trỏ được vào file bất kỳ
+          // trên máy nếu không kiểm).
+          readStageFile: async (sourcePath: string) => {
+            const abs = path.resolve(projectRoot, sourcePath);
+            if (abs !== projectRoot && !abs.startsWith(projectRoot + path.sep)) {
+              throw new Error(`Đường dẫn không hợp lệ: ${sourcePath}`);
+            }
+            return fs.promises.readFile(abs);
+          },
+        });
+        res.status(201).json({ submission });
+      } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
+  // Tải MỘT file đính kèm từ media store về trình duyệt — đính kèm KHÔNG nằm
+  // trong cwd local (projectRawUrl không với tới). Chặn path ngoài thư mục
+  // đính kèm: đây là proxy store, không phải cửa đọc file tùy ý.
+  app.get('/api/pipelines/feedback/attachment', (req, res) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    const filePath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!projectId || !filePath) return res.status(400).json({ error: 'projectId and path are required' });
+    if (!filePath.startsWith('feedback/attachments/') || filePath.includes('..')) {
+      return res.status(400).json({ error: 'path phải nằm dưới feedback/attachments/' });
+    }
+    void (async () => {
+      try {
+        const { MediaClient, mediaConfigFromEnv } = await import('./kg-sync/media-client.js');
+        const data = await new MediaClient(mediaConfigFromEnv()).downloadFile(projectId, filePath);
+        const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+        const mime = ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+          : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'application/octet-stream';
+        res.setHeader('content-type', mime);
+        res.send(data);
+      } catch (error) {
+        res.status(404).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
+  app.get('/api/pipelines/feedback/summary', (req, res) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+    void (async () => {
+      try {
+        const [formsRes, subsRes] = await Promise.all([
+          readFeedbackForms(projectId),
+          readAllFeedbackSubmissions(projectId),
+        ]);
+        res.json({
+          storeReachable: formsRes.storeReachable && subsRes.storeReachable,
+          forms: formsRes.forms,
+          submissions: subsRes.submissions,
+        });
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
   // POST /api/pipelines/pull-files { projectId } — regenerate the project's
   // pipeline files from the KGS file store into the local project cwd. This is
   // the "pull on another device to continue" step (cross-device handoff).
@@ -1171,11 +1385,26 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       // Only Pipeline-Studio's config seeds the FIRST run (no saved config yet);
       // every trigger after that overwrites this with the latest choices.
       const nextRunAllConfig = runAllConfigFromBody(req.body, { withDefaults: true });
+      // run-all GHI ĐÈ TOÀN BỘ `runAllConfig` (không merge như PUT run-config)
+      // — bài học lịch sử (commit cfef0fe): một field mới mà request không
+      // nhắc tới sẽ bị XÓA thay vì giữ nguyên. `appPool` là field như vậy
+      // (runAllConfigFromBody đọc thẳng `body.appPool`, không tự điền default
+      // dưới `withDefaults`) — PRESERVE nó từ config đã lưu khi request này
+      // không gửi key `appPool`.
+      const savedRunAllConfig =
+        project.metadata?.runAllConfig && typeof project.metadata.runAllConfig === 'object' && !Array.isArray(project.metadata.runAllConfig)
+          ? (project.metadata.runAllConfig as RunAllConfig)
+          : undefined;
       updateProject(db, projectId, {
         metadata: {
           ...(project.metadata ?? {}),
           // Cùng builder với `PUT .../run-config` để hai đường ghi không lệch shape.
-          runAllConfig: nextRunAllConfig,
+          runAllConfig: {
+            ...nextRunAllConfig,
+            ...(nextRunAllConfig.appPool === undefined && savedRunAllConfig?.appPool !== undefined
+              ? { appPool: savedRunAllConfig.appPool }
+              : {}),
+          },
         },
       });
       const result = await ctx.pipelines.runWorkflowAll(projectId, {

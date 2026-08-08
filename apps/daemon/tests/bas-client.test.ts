@@ -965,7 +965,7 @@ test('parseRunSource rejects a bas source with no documentId', () => {
 });
 
 test('parseRunSource rejects an unknown source kind', () => {
-  assert.throws(() => parseRunSource({ kind: 'sharepoint', ref: 'x' }), /must be "confluence" or "bas"/);
+  assert.throws(() => parseRunSource({ kind: 'sharepoint', ref: 'x' }), /must be "confluence", "bas" or "app-pool"/);
 });
 
 // --- Multi-page draw.io splitting (drawio-render.ts) ----------------------

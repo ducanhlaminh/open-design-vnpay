@@ -108,9 +108,62 @@ function validatePageTable(
   return errors;
 }
 
+// §2.3 validation rule (c): "mọi `_branches/` được `## Phân hệ` tham chiếu" —
+// every existing `_branches/<slug>.md` file's slug must show up in the
+// `## Phân hệ` table (its `Slug` or `Branch` column; the table is
+// `Slug|Phân hệ|Phạm vi|Branch`).
+function phanHeSlugs(overviewContent: string): { slugs: Set<string>; found: boolean } {
+  const sectionContent = section(overviewContent, 'Phân hệ');
+  const lines = sectionContent.split(/\r\n?|\n/);
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const header = cells(lines[index] ?? '');
+    const separator = cells(lines[index + 1] ?? '');
+    if (!header || !separator || !isSeparatorRow(separator)) continue;
+    const slugIdx = header.findIndex((h) => /^slug$/i.test(h));
+    const branchIdx = header.findIndex((h) => /^branch$/i.test(h));
+    if (slugIdx < 0 && branchIdx < 0) continue;
+    const slugs = new Set<string>();
+    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
+      const rowLine = lines[rowIndex] ?? '';
+      if (/^##\s+/.test(rowLine)) break;
+      const row = cells(rowLine);
+      if (!row) {
+        if (slugs.size > 0) break;
+        continue;
+      }
+      if (slugIdx >= 0 && row[slugIdx]) slugs.add(row[slugIdx]!);
+      if (branchIdx >= 0 && row[branchIdx]) slugs.add(row[branchIdx]!);
+    }
+    return { slugs, found: true };
+  }
+  return { slugs: new Set(), found: false };
+}
+
+export function validateBranchReferences(
+  overviewContent: string,
+  branchSlugs: readonly string[],
+): ValidationResult {
+  const errors: string[] = [];
+  const { slugs, found } = phanHeSlugs(overviewContent);
+  if (!found) {
+    if (branchSlugs.length > 0) errors.push('Phân hệ table is missing or has no Slug/Branch header.');
+    return result(errors);
+  }
+  for (const branch of branchSlugs) {
+    if (!slugs.has(branch)) {
+      errors.push(`Overview "Phân hệ" table does not reference _branches/${branch}.md.`);
+    }
+  }
+  return result(errors);
+}
+
 export function validateOverview(
   overviewContent: string,
   manifestPages: readonly DistillPage[],
+  /** Existing `_branches/<slug>.md` slugs — checked against rule (c). Omit
+   *  (or pass []) to skip that check, e.g. when validating before any branch
+   *  file exists. */
+  branchSlugs: readonly string[] = [],
 ): ValidationResult {
   const errors: string[] = [];
   const actualHeadings = headings(overviewContent);
@@ -126,6 +179,7 @@ export function validateOverview(
 
   const map = section(overviewContent, 'Bản đồ trang');
   errors.push(...validatePageTable(map, manifestPages, 'Overview'));
+  errors.push(...validateBranchReferences(overviewContent, branchSlugs).errors);
   return result(errors);
 }
 

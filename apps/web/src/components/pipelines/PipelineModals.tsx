@@ -8,8 +8,10 @@
 // - PipelineResultModal:     preview a finished pipeline's output files inline
 //                            (file rail + embedded FileViewer), no workspace nav.
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  AppPoolPage,
+  AppPoolResponse,
   BasDocument,
   BasDocumentsResponse,
   BasFeature,
@@ -36,8 +38,10 @@ import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { PlModal } from './PlModal';
 import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzone';
+import { ConfluenceTitleSearchImport } from './AppPoolSection';
 import styles from './PipelineSourceModal.module.css';
 import sp from './StagePicker.module.css';
+import poolStyles from './AppPoolSection.module.css';
 import { PipelineFlowCanvas } from './PipelineFlowCanvas';
 
 /** What the run-source modal hands back: either a structured BAS/Confluence
@@ -1311,6 +1315,11 @@ export interface RunAllPayload {
    *  stage from the chain — that stage's declared output is the very folder the
    *  files landed in, so running it would delete them and fetch nothing. */
   docsFromUpload?: boolean;
+  /** App Docs Pool nguồn (docs/app-docs-pool-spec.md §2.2) — trang CHÍNH đã
+   *  tick. Có mặt (paths ≥1) → daemon copy deterministic các trang này vào
+   *  `<wf>/docs/` SAU KHI qua GATE (mọi trang trong pool `distilled`); FE chỉ
+   *  cho gửi payload này khi `distill.clean === true` (xem `runAllWithSavedConfig`). */
+  appPool?: { appId: string; paths: string[] };
 }
 
 /** Section duy nhất mà modal hiển thị khi mở từ nút "Đổi" của một dòng trên rail
@@ -1448,6 +1457,7 @@ export function RunAllModal({
   defaultFollowLinks,
   defaultIncludeDescendants,
   defaultDocsFromUpload,
+  defaultAppPool,
   defaultSkipSucceeded,
   defaultLean,
   stages = [],
@@ -1456,6 +1466,7 @@ export function RunAllModal({
   hasTerminal = true,
   hasDesignSystem = true,
   hasUpload = false,
+  appId,
   supportsLean = true,
   anySucceeded,
   focus,
@@ -1483,6 +1494,9 @@ export function RunAllModal({
   /** Cũng chỉ dành cho chế độ focus: mở sẵn đúng nhánh nguồn đang lưu, để dòng
    *  rail "File tải lên" không mở ra một modal trông như đang dùng Confluence. */
   defaultDocsFromUpload?: boolean;
+  /** App Docs Pool đã lưu (docs/app-docs-pool-spec.md §2.2) — trang CHÍNH đã
+   *  tick từ pool của App. Chỉ có nghĩa khi `appId` khớp App của dự án. */
+  defaultAppPool?: { appId: string; paths: string[] } | null;
   defaultSkipSucceeded?: boolean;
   defaultLean?: boolean;
   /** Mọi bước của workflow đang mở, ĐÚNG thứ tự stepper — nguồn của section
@@ -1503,6 +1517,10 @@ export function RunAllModal({
    *  không — có thì modal mở thêm nhánh nguồn "Tải file .md lên" bên cạnh
    *  Confluence, đúng như nút Run của riêng bước đó. */
   hasUpload?: boolean;
+  /** App sở hữu dự án đang mở (`PipelineProject.app.id`) — khi có VÀ pool của
+   *  App đó không rỗng, modal thêm thẻ nguồn "Tài liệu App" (docs/app-docs-pool-spec.md
+   *  §WP-6). Vắng mặt (dự án chưa gán App) → không có thẻ này, hành vi y hệt cũ. */
+  appId?: string;
   /** Lean là khái niệm CHỈ của docs-to-ui (bỏ hành trình/research/rà soát để
    *  tới UI nhanh hơn). docs-to-prd không có bước nào bỏ được — hành trình +
    *  research chính là bằng chứng của bài review — nên workflow đó ẩn hẳn
@@ -1531,15 +1549,99 @@ export function RunAllModal({
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
   const [followLinks, setFollowLinks] = useState(defaultFollowLinks ?? true);
   const [includeDescendants, setIncludeDescendants] = useState(defaultIncludeDescendants ?? false);
-  // Nguồn tài liệu cho bước ingest: fetch từ Confluence, hoặc tự tải file
-  // `.md` lên. Hai nhánh loại trừ nhau — 'upload' còn khiến daemon BỎ HẲN
-  // bước ingest khỏi chuỗi (docsFromUpload), vì chạy nó sẽ xóa đúng file vừa
-  // nạp.
-  const [docsSource, setDocsSource] = useState<'confluence' | 'upload'>(
-    defaultDocsFromUpload ? 'upload' : 'confluence',
+  // Nguồn tài liệu cho bước ingest: fetch từ Confluence, tự tải file `.md`
+  // lên, hoặc tick trang có sẵn trong pool tài liệu của App. Ba nhánh loại
+  // trừ nhau — 'upload' khiến daemon BỎ HẲN bước ingest khỏi chuỗi
+  // (docsFromUpload), vì chạy nó sẽ xóa đúng file vừa nạp; 'app-pool' copy
+  // deterministic các trang đã tick (§2.4), không cần agent.
+  const [docsSource, setDocsSource] = useState<'confluence' | 'upload' | 'app-pool'>(
+    defaultDocsFromUpload ? 'upload' : defaultAppPool?.paths?.length ? 'app-pool' : 'confluence',
   );
   const [pendingDocs, setPendingDocs] = useState<PendingFile[]>([]);
   const uploading = docsSource === 'upload' && hasUpload;
+
+  // ── App Docs Pool (§WP-6) ─────────────────────────────────────────────────
+  // Pool của App sở hữu dự án — fetch một lần khi có appId, đủ để quyết định
+  // thẻ "Tài liệu App" có hiện hay không (pool rỗng → không hiện thẻ, y hệt
+  // App chưa từng import gì).
+  const [appPoolPages, setAppPoolPages] = useState<AppPoolPage[] | null>(null);
+  const [appPoolDistill, setAppPoolDistill] = useState<AppPoolResponse['distill'] | null>(null);
+  const [appPoolLoading, setAppPoolLoading] = useState(false);
+  const [appPoolError, setAppPoolError] = useState<string | null>(null);
+  const [appPoolDistilling, setAppPoolDistilling] = useState(false);
+  const [appPoolImportOpen, setAppPoolImportOpen] = useState(false);
+  // Trang CHÍNH đã tick, keyed theo `path` (khớp `RunAllConfig.appPool.paths`).
+  const [appPoolPaths, setAppPoolPaths] = useState<Set<string>>(
+    new Set(appId && defaultAppPool?.appId === appId ? (defaultAppPool?.paths ?? []) : []),
+  );
+
+  const refreshAppPool = useCallback(
+    async (background = false) => {
+      if (!appId) return;
+      if (!background) setAppPoolLoading(true);
+      try {
+        const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/pool`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const j = (await res.json()) as AppPoolResponse;
+        setAppPoolPages(j.pages);
+        setAppPoolDistill(j.distill);
+        setAppPoolDistilling(j.distill.running);
+        setAppPoolError(null);
+      } catch (cause) {
+        setAppPoolError(cause instanceof Error ? cause.message : 'Không tải được tài liệu App.');
+      } finally {
+        if (!background) setAppPoolLoading(false);
+      }
+    },
+    [appId],
+  );
+
+  useEffect(() => {
+    setAppPoolPages(null);
+    setAppPoolDistill(null);
+    void refreshAppPool();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appId]);
+
+  useEffect(() => {
+    if (!appPoolDistilling) return undefined;
+    const interval = window.setInterval(() => void refreshAppPool(true), 3000);
+    return () => window.clearInterval(interval);
+  }, [appPoolDistilling, refreshAppPool]);
+
+  const appPoolAvailable = appId !== undefined && (appPoolPages?.length ?? 0) > 0;
+  const appPoolGroups = useMemo(() => {
+    const grouped = new Map<string, AppPoolPage[]>();
+    for (const page of appPoolPages ?? []) {
+      const branch = page.path.split('/')[0] || 'Tài liệu gốc';
+      const pages = grouped.get(branch) ?? [];
+      pages.push(page);
+      grouped.set(branch, pages);
+    }
+    return [...grouped.entries()];
+  }, [appPoolPages]);
+  const toggleAppPoolPath = (path: string) =>
+    setAppPoolPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  const startAppPoolDistill = async () => {
+    if (!appId) return;
+    setAppPoolError(null);
+    try {
+      const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/distill`, { method: 'POST' });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      setAppPoolDistilling(true);
+      await refreshAppPool(true);
+    } catch (cause) {
+      setAppPoolError(cause instanceof Error ? cause.message : 'Không chưng cất được tài liệu App.');
+    }
+  };
   const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(defaultTerminal ?? 'ui-html');
   // Legacy single-platform (docs-to-prd has no UI stage / non-target callers).
   // docs-to-ui uses the `targets` multi-select below; platform is derived from
@@ -1608,8 +1710,13 @@ export function RunAllModal({
     };
   }, []);
 
-  // Nguồn: nhánh upload cần ≥1 file, nhánh Confluence cần ≥1 trang.
-  const hasSource = uploading ? pendingDocs.length > 0 : confPages.length > 0;
+  // Nguồn: nhánh upload cần ≥1 file, nhánh App-pool cần ≥1 trang đã tick,
+  // nhánh Confluence cần ≥1 trang.
+  const hasSource = uploading
+    ? pendingDocs.length > 0
+    : docsSource === 'app-pool'
+      ? appPoolPaths.size > 0
+      : confPages.length > 0;
   // Nhánh upload ĐANG là nguồn đã lưu: file cũ vẫn nằm trong `docs/` nên không
   // bắt tải lại — Lưu khi đó chỉ xác nhận lại lựa chọn nguồn.
   const sourceOk = hasSource || (uploading && defaultDocsFromUpload === true);
@@ -1639,12 +1746,25 @@ export function RunAllModal({
   const configPatchFor = (section: RunAllFocus): Partial<RunAllConfig> => {
     switch (section) {
       case 'source':
-        if (uploading) return { docsFromUpload: true, confluencePages: [] };
+        // Ba nhánh loại trừ nhau — mỗi lần Lưu section này PHẢI resend cả ba
+        // field (`confluencePages` / `docsFromUpload` / `appPool`), kể cả để
+        // XÓA hai nhánh không chọn: field vắng mặt trong patch được daemon
+        // PRESERVE giá trị cũ (bài học appFiles, xem spec §2.2), nên chỉ gửi
+        // đúng field của nhánh đang chọn sẽ để sót giá trị cũ của nhánh khác.
+        if (uploading) return { docsFromUpload: true, confluencePages: [], appPool: null };
+        if (docsSource === 'app-pool' && appId) {
+          return {
+            docsFromUpload: false,
+            confluencePages: [],
+            appPool: { appId, paths: [...appPoolPaths] },
+          };
+        }
         return {
           confluencePages: confPages,
           followLinks,
           includeDescendants,
           docsFromUpload: false,
+          appPool: null,
         };
       case 'designSystem':
         return {
@@ -1792,9 +1912,11 @@ export function RunAllModal({
                     ? 'Tick ít nhất một bước sẽ chạy'
                   : uploading
                     ? 'Chọn ít nhất một file .md'
-                    : focus
-                      ? 'Chọn ít nhất một trang Confluence'
-                      : 'Chọn ít nhất một trang Confluence (hoặc tick "chỉ chạy bước còn thiếu" khi Docs đã xong)'
+                    : docsSource === 'app-pool'
+                      ? 'Tick ít nhất một trang trong Tài liệu App'
+                      : focus
+                        ? 'Chọn ít nhất một trang Confluence'
+                        : 'Chọn ít nhất một trang Confluence (hoặc tick "chỉ chạy bước còn thiếu" khi Docs đã xong)'
             }
           >
             <Icon name={busy ? 'spinner' : 'check'} size={14} />
@@ -1818,8 +1940,9 @@ export function RunAllModal({
         <span className="pl-modal-field__label">Nguồn tài liệu (bước Docs)</span>
         {/* Workflow có bước ingest nhận file tay (`acceptsUpload`, ví dụ Docs →
             Review tài liệu) thì cho chọn nguồn ngay tại đây — trước đây chỉ nút
-            Run của riêng bước đó mới có, nên cấu hình chung khóa cứng Confluence. */}
-        {hasUpload ? (
+            Run của riêng bước đó mới có, nên cấu hình chung khóa cứng Confluence.
+            Thẻ "Tài liệu App" chỉ hiện khi App của dự án có pool KHÔNG rỗng. */}
+        {hasUpload || appPoolAvailable ? (
           <div className={styles.cards} role="radiogroup" aria-label="Nguồn tài liệu">
             <button
               type="button"
@@ -1840,25 +1963,48 @@ export function RunAllModal({
               </span>
               <span className={styles.cardDesc}>Daemon tự fetch các trang đã chọn về Markdown.</span>
             </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={docsSource === 'upload'}
-              className={`${styles.card}${docsSource === 'upload' ? ' ' + styles.cardSelected : ''}`}
-              onClick={() => setDocsSource('upload')}
-              disabled={busy}
-            >
-              <span className={styles.cardTop}>
-                <Icon name="upload" size={16} />
-                Tải file .md lên
-                {docsSource === 'upload' ? (
-                  <span className={styles.cardCheck} aria-hidden="true">
-                    <Icon name="check" size={14} />
-                  </span>
-                ) : null}
-              </span>
-              <span className={styles.cardDesc}>Có sẵn tài liệu — bỏ luôn bước fetch, chạy thẳng từ bước sau.</span>
-            </button>
+            {appPoolAvailable ? (
+              <button
+                type="button"
+                role="radio"
+                aria-checked={docsSource === 'app-pool'}
+                className={`${styles.card}${docsSource === 'app-pool' ? ' ' + styles.cardSelected : ''}`}
+                onClick={() => setDocsSource('app-pool')}
+                disabled={busy}
+              >
+                <span className={styles.cardTop}>
+                  <Icon name="blocks" size={16} />
+                  Tài liệu App
+                  {docsSource === 'app-pool' ? (
+                    <span className={styles.cardCheck} aria-hidden="true">
+                      <Icon name="check" size={14} />
+                    </span>
+                  ) : null}
+                </span>
+                <span className={styles.cardDesc}>Tick trang từ pool đã import + chưng cất sẵn cho App này.</span>
+              </button>
+            ) : null}
+            {hasUpload ? (
+              <button
+                type="button"
+                role="radio"
+                aria-checked={docsSource === 'upload'}
+                className={`${styles.card}${docsSource === 'upload' ? ' ' + styles.cardSelected : ''}`}
+                onClick={() => setDocsSource('upload')}
+                disabled={busy}
+              >
+                <span className={styles.cardTop}>
+                  <Icon name="upload" size={16} />
+                  Tải file .md lên
+                  {docsSource === 'upload' ? (
+                    <span className={styles.cardCheck} aria-hidden="true">
+                      <Icon name="check" size={14} />
+                    </span>
+                  ) : null}
+                </span>
+                <span className={styles.cardDesc}>Có sẵn tài liệu — bỏ luôn bước fetch, chạy thẳng từ bước sau.</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
         {uploading ? (
@@ -1877,6 +2023,81 @@ export function RunAllModal({
               → Markdown" bị <strong>bỏ khỏi chuỗi</strong> khi chạy — thư mục đó chính là output của
               bước ấy, chạy nó sẽ xóa sạch file bạn vừa nạp.
             </span>
+          </>
+        ) : docsSource === 'app-pool' && appPoolAvailable ? (
+          <>
+            {appPoolError ? <p className={styles.empty}>{appPoolError}</p> : null}
+            <div className={poolStyles.header}>
+              <p className={styles.hint} style={{ margin: 0 }}>
+                {appPoolPaths.size > 0 ? `${appPoolPaths.size} trang đã tick` : 'Tick trang CHÍNH sẽ ingest vào docs/.'}
+              </p>
+              <button
+                type="button"
+                className={poolStyles.primaryButton}
+                onClick={() => void startAppPoolDistill()}
+                disabled={busy || appPoolLoading || appPoolDistilling || (appPoolDistill?.pending ?? 0) === 0}
+              >
+                Chưng cất tài liệu
+                {appPoolDistill?.pending ? <span className={poolStyles.count}>{appPoolDistill.pending}</span> : null}
+              </button>
+            </div>
+            {appPoolDistilling && appPoolDistill?.progress ? (
+              <p className={poolStyles.progress}>Tiến độ: {appPoolDistill.progress.done}/{appPoolDistill.progress.total}</p>
+            ) : null}
+            {appPoolDistill && !appPoolDistill.clean ? (
+              <p className="pl-modal-field__hint">
+                Còn {appPoolDistill.pending} trang chưa chưng cất — nút Chạy sẽ bị khoá cho tới khi xong.
+              </p>
+            ) : null}
+            <div className={poolStyles.tree}>
+              {appPoolGroups.map(([branch, pages]) => (
+                <div className={poolStyles.group} key={branch}>
+                  <h3 className={poolStyles.groupTitle}>{branch}</h3>
+                  <div className={poolStyles.pages}>
+                    {pages.map((page) => (
+                      <label className={poolStyles.page} key={page.pageId}>
+                        <input
+                          type="checkbox"
+                          className={styles.stageCheckbox}
+                          checked={appPoolPaths.has(page.path)}
+                          onChange={() => toggleAppPoolPath(page.path)}
+                          disabled={busy}
+                        />
+                        <div className={poolStyles.pageCopy}>
+                          <strong className={poolStyles.pageTitle}>{page.title}</strong>
+                          <span className={poolStyles.path}>{page.path}</span>
+                        </div>
+                        <span className={`${poolStyles.badge} ${poolStyles[page.distill.state]}`}>
+                          {page.distill.state === 'distilled' ? 'Đã chưng cất' : page.distill.state === 'distilling' ? 'Đang chưng cất' : page.distill.state === 'stale' ? 'Cần chưng cất lại' : 'Đã tải'}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className={poolStyles.importSection}>
+              <button type="button" className={poolStyles.linkButton} onClick={() => setAppPoolImportOpen((open) => !open)}>
+                <Icon name="import" size={13} />
+                {appPoolImportOpen ? 'Ẩn nhập tài liệu' : 'Import thêm từ Confluence'}
+              </button>
+              {appPoolImportOpen && appId ? (
+                <ConfluenceTitleSearchImport
+                  appId={appId}
+                  onImported={(result) => {
+                    setAppPoolImportOpen(false);
+                    // Tick sẵn đúng các trang vừa nhập/cập nhật — người dùng
+                    // không phải tìm lại chúng trong cây vừa mới dài thêm ra.
+                    setAppPoolPaths((prev) => {
+                      const next = new Set(prev);
+                      for (const p of result.pages) next.add(p.path);
+                      return next;
+                    });
+                    void refreshAppPool(true);
+                  }}
+                />
+              ) : null}
+            </div>
           </>
         ) : (
           <>

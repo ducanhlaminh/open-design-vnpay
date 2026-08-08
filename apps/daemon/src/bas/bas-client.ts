@@ -1179,6 +1179,20 @@ export async function fetchConfluencePages(
     /** Enables headless rendering of multi-page draw.io diagrams (needs a
      *  writable runtime dir for the chromium runner). */
     runtimeDataDir?: string;
+    /**
+     * Folder-root convention for the returned `relPath`/attachments layout.
+     * `'confluence'` (default) is the original dr-docs shape:
+     * `docs/confluence/**` for seeds/sub-tree pages, `docs/context/**` for
+     * link-followed pages, images under `docs/confluence/attachments`.
+     * `'flat'` drops the `confluence`/`context` split — every page lands at
+     * `docs/<ancestor-dir>/<slug>.md` (or `docs/<slug>.md` when it has no
+     * shared ancestor), images under `docs/attachments`. Used by the App
+     * pool importer, whose manifest `path` is relative to `docs/` with the
+     * ancestor folder AS the branch (§app-docs-pool-spec.md §2.1) — a
+     * `confluence`/`context` prefix would make every page's branch the same
+     * constant instead of its subsystem.
+     */
+    pathLayout?: 'confluence' | 'flat';
   } = {},
 ): Promise<ConfluenceDocPage[]> {
   if (!src.creds && !src.ep) throw new Error('no Confluence credential (PAT) and no BAS gateway configured');
@@ -1306,6 +1320,8 @@ export async function fetchConfluencePages(
   }
 
   // ── Pass 2: assign files, then convert with cross-page links rewritten ────
+  const flat = opts.pathLayout === 'flat';
+  const attachmentsRoot = flat ? 'docs/attachments' : 'docs/confluence/attachments';
   const pages: ConfluenceDocPage[] = [];
   const takenPaths = new Set<string>();
   const relByPageId = new Map<string, string>();
@@ -1327,7 +1343,9 @@ export async function fetchConfluencePages(
     // docs/confluence/ (sub-tree nested by wiki hierarchy, seeds flat).
     const isContext = !!p.linked && !p.treePath;
     const dir = (p.treePath ?? []).map(slug).filter(Boolean);
-    const folder = ['docs', isContext ? 'context' : 'confluence', ...dir].join('/');
+    const folder = flat
+      ? ['docs', ...dir].join('/')
+      : ['docs', isContext ? 'context' : 'confluence', ...dir].join('/');
     let relPath = `${folder}/${slug(p.title)}.md`;
     if (takenPaths.has(relPath)) relPath = `${folder}/${slug(p.title)}-${p.pageId}.md`;
     takenPaths.add(relPath);
@@ -1352,7 +1370,7 @@ export async function fetchConfluencePages(
     // relative path keeps context pages' images resolving (../confluence/…).
     const attachmentsPrefix = path.posix.relative(
       path.posix.dirname(relPath),
-      'docs/confluence/attachments',
+      attachmentsRoot,
     );
     let body: string;
     if (p.html !== undefined) {
@@ -1488,6 +1506,12 @@ export async function fetchSourceFiles(ep: BasEndpoint, source: PipelineRunSourc
   }
 
   // BAS: KG document → selected feature(s), else the whole document subgraph.
+  // (The App-pool source is pre-fetched by app-pool.ts's own deterministic
+  // path and never reaches this BAS-gateway fetcher — narrow it out here so
+  // the union below is exhaustive.)
+  if (source.kind !== 'bas') {
+    throw new Error(`fetchSourceFiles does not handle source.kind "${(source as { kind: string }).kind}"`);
+  }
   const files: SourceFile[] = [];
   const featIds = source.featureIds ?? [];
   if (featIds.length > 0) {

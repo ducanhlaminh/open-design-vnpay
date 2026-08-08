@@ -15,6 +15,7 @@ import {
   QuietButton,
   TextInput,
 } from './PipelineFormModal';
+import { AppPoolSection } from './AppPoolSection';
 import { appLabelOf, useAppOptions } from './newProjectForm';
 
 export function EditAppModal({
@@ -101,6 +102,8 @@ export function EditAppModal({
       </FormField>
 
       {error ? <FormError>{error}</FormError> : null}
+
+      <AppPoolSection appId={app.id} />
     </PipelineFormModal>
   );
 }

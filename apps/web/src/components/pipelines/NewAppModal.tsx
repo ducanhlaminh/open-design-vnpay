@@ -15,11 +15,13 @@ import { useState } from 'react';
 import {
   FormError,
   FormField,
+  FormText,
   PipelineFormModal,
   PrimaryButton,
   QuietButton,
   TextInput,
 } from './PipelineFormModal';
+import { AppPoolSection } from './AppPoolSection';
 import { appLabelOf, toSlugId, useAppOptions } from './newProjectForm';
 
 export function NewAppModal({
@@ -33,6 +35,11 @@ export function NewAppModal({
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // App vừa tạo xong: giữ modal MỞ thêm một bước để nhập tài liệu Confluence
+  // ngay lúc còn nhớ tên trang — đóng modal luôn thì người dùng phải tự mở lại
+  // App vừa tạo (kebab → Sửa) mới thấy được phần Import. `onCreated` (điều
+  // hướng sang màn Features) chỉ gọi khi bấm "Xong" ở bước này.
+  const [createdAppId, setCreatedAppId] = useState<string | null>(null);
 
   const nameTrim = name.trim();
   // Trùng tên KHÔNG được im lặng tái dùng App cũ: người dùng đang bấm "App
@@ -58,13 +65,40 @@ export function NewAppModal({
       // 409 = mã đã có. KHÔNG tự thêm hậu tố: khác Feature, App là thứ người
       // dùng sẽ gọi tên hằng ngày, "retail-3f2a" đằng sau lưng họ là sai.
       if (!res.ok) throw new Error(j?.error || `tạo App thất bại: ${res.status}`);
-      await onCreated(j?.id ?? appId);
-      onClose();
+      setBusy(false);
+      setCreatedAppId(j?.id ?? appId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
     }
   };
+
+  const finish = async () => {
+    if (!createdAppId) return;
+    await onCreated(createdAppId);
+    onClose();
+  };
+
+  if (createdAppId) {
+    return (
+      <PipelineFormModal
+        title="Nhập tài liệu cho App"
+        icon="blocks"
+        onClose={() => void finish()}
+        footer={
+          <PrimaryButton icon="check" onClick={() => void finish()}>
+            Xong
+          </PrimaryButton>
+        }
+      >
+        <FormText>
+          App “{nameTrim}” đã tạo. Nhập tài liệu Confluence vào pool ngay bây giờ, hoặc bấm Xong và
+          làm sau ở màn Sửa App.
+        </FormText>
+        <AppPoolSection appId={createdAppId} />
+      </PipelineFormModal>
+    );
+  }
 
   return (
     <PipelineFormModal

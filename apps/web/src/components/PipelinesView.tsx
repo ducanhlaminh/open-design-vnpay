@@ -59,7 +59,7 @@ import { fetchDesignSystems, writeProjectTextFileDetailed } from '../providers/r
 import { applyPendingStarts } from '../runtime/pipeline-pending-starts';
 import { PullConflictModal } from './pipelines/PullConflictModal';
 import { PlModal } from './pipelines/PlModal';
-import { PipelineEvaluationStep } from './pipelines/PipelineEvaluationStep';
+import { FeedbackHub } from './feedback/FeedbackHub';
 import navStyles from './pipelines/PipelineNavViews.module.css';
 import { pullApply, pullPlan } from '../providers/pullConflict';
 import { useT } from '../i18n';
@@ -304,11 +304,28 @@ export type StageRunDecision =
 export function resolveStageRunConfig(
   p: Pick<PipelineView, 'inputPlaceholder' | 'acceptsDesignSystem' | 'acceptsPlatform'>,
   cfg: RunAllConfig | undefined,
+  // App Docs Pool GATE (docs/app-docs-pool-spec.md §2.2): trạng thái chưng cất
+  // sống trên máy chủ (GET pool), không phải trong `cfg`, nên caller tự fetch
+  // và truyền vào đây. Vắng mặt (chưa fetch xong / dự án không dùng pool) →
+  // không chặn, để BE là chốt thật như spec ghi rõ (FE chỉ disable khi ĐÃ BIẾT
+  // là chưa sạch, không suy đoán khi chưa có dữ liệu).
+  appPoolGate?: { clean: boolean; pending: number } | null,
 ): StageRunDecision {
   if (p.inputPlaceholder) {
     const uploading = cfg?.docsFromUpload === true;
+    const appPoolPaths = !uploading ? (cfg?.appPool?.paths ?? []) : [];
+    const usingAppPool = !uploading && appPoolPaths.length > 0;
     const pages = cfg?.confluencePages ?? [];
-    if (!uploading && pages.length === 0) return { ok: false, missing: 'Nguồn tài liệu' };
+    if (!uploading && !usingAppPool && pages.length === 0) return { ok: false, missing: 'Nguồn tài liệu' };
+    if (usingAppPool) {
+      if (appPoolGate && !appPoolGate.clean) {
+        return { ok: false, missing: `Chưng cất tài liệu (còn ${appPoolGate.pending} trang chưa xong)` };
+      }
+      return {
+        ok: true,
+        payload: { source: { kind: 'app-pool', appId: cfg!.appPool!.appId, paths: appPoolPaths } },
+      };
+    }
     const input = uploading
       ? ''
       : pages
@@ -374,7 +391,6 @@ export function PipelinesView() {
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [ratedRunIds, setRatedRunIds] = useState<Set<string>>(new Set());
 
   const [syncBusy, setSyncBusy] = useState<null | 'pull' | 'push'>(null);
   // Project history (version hóa output), scoped per PIPELINE CARD: the card's
@@ -448,6 +464,38 @@ export function PipelinesView() {
       cancelled = true;
     };
   }, [projectId]);
+  // App Docs Pool GATE (docs/app-docs-pool-spec.md §2.2): trạng thái chưng cất
+  // của App sở hữu dự án ĐANG chọn, CHỈ fetch khi cấu hình đã lưu thật sự dùng
+  // pool làm nguồn — dự án dùng Confluence/upload không cần request này. BE là
+  // chốt thật khi chạy; state này chỉ để FE disable nút Chạy TRƯỚC khi người
+  // dùng click ra một lỗi mà lẽ ra đã biết trước.
+  const [appPoolGate, setAppPoolGate] = useState<{ clean: boolean; pending: number } | null>(null);
+  useEffect(() => {
+    const proj = projects.find((pr) => pr.id === projectId);
+    const cfg = proj?.savedRunAll ?? proj?.config;
+    const usingAppPool = cfg?.docsFromUpload !== true && (cfg?.appPool?.paths?.length ?? 0) > 0;
+    const appId = usingAppPool ? (cfg?.appPool?.appId ?? proj?.app?.id) : undefined;
+    if (!appId) {
+      setAppPoolGate(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/pool`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const j = (await res.json()) as { distill?: { clean?: boolean; pending?: number } };
+        if (!cancelled) {
+          setAppPoolGate({ clean: Boolean(j.distill?.clean), pending: Number(j.distill?.pending ?? 0) });
+        }
+      } catch {
+        if (!cancelled) setAppPoolGate(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, projects]);
   // Dưới 1100px rail không đủ chỗ đứng cạnh stepper — sập thành nút "Cấu hình"
   // mở cùng nội dung trong drawer (dùng lại PlModal, không phải editor mới).
   const [railNarrow, setRailNarrow] = useState(false);
@@ -1123,6 +1171,7 @@ export function PipelinesView() {
         ...(workflowId ? { workflowId } : {}),
         ...(payload.input ? { input: payload.input } : {}),
         ...(payload.confluencePages?.length ? { confluencePages: payload.confluencePages } : {}),
+        ...(payload.appPool?.paths?.length ? { appPool: payload.appPool } : {}),
         terminal: payload.terminal,
         platform: payload.platform,
         ...(payload.targets?.length ? { targets: payload.targets } : {}),
@@ -1169,17 +1218,20 @@ export function PipelinesView() {
     const hasPlatformStage = pipelines.some((p) => p.acceptsPlatform);
     const targets = hasPlatformStage ? (cfg?.targets?.length ? cfg.targets : (['mobile'] as UiTarget[])) : undefined;
     const uploading = cfg?.docsFromUpload === true;
+    const usingAppPool = !uploading && (cfg?.appPool?.paths?.length ?? 0) > 0;
     const knownStageIds = new Set(pipelines.map((p) => p.id));
     const stageIdsForRun = (cfg?.stageIds ?? []).filter((id) => knownStageIds.has(id));
-    const input = uploading
-      ? ''
-      : (cfg?.confluencePages ?? [])
-          .map((p) => p.url ?? p.id)
-          .filter((x): x is string => Boolean(x))
-          .join('\n');
+    const input =
+      uploading || usingAppPool
+        ? ''
+        : (cfg?.confluencePages ?? [])
+            .map((p) => p.url ?? p.id)
+            .filter((x): x is string => Boolean(x))
+            .join('\n');
     return {
       ...(input ? { input } : {}),
-      ...(!uploading && cfg?.confluencePages?.length ? { confluencePages: cfg.confluencePages } : {}),
+      ...(!uploading && !usingAppPool && cfg?.confluencePages?.length ? { confluencePages: cfg.confluencePages } : {}),
+      ...(usingAppPool ? { appPool: cfg!.appPool! } : {}),
       terminal: cfg?.terminal ?? 'ui-html',
       platform: targets?.[0] ? UI_TARGETS[targets[0]].platform : (cfg?.platform ?? 'mobile'),
       ...(targets ? { targets } : {}),
@@ -1192,7 +1244,7 @@ export function PipelinesView() {
       ...(stageIdsForRun.length ? { stageIds: stageIdsForRun } : {}),
       ...(cfg?.lean ? { lean: true } : {}),
       ...(cfg?.followLinks === false ? { followLinks: false } : {}),
-      ...(!uploading && cfg?.includeDescendants ? { includeDescendants: true } : {}),
+      ...(!uploading && !usingAppPool && cfg?.includeDescendants ? { includeDescendants: true } : {}),
       ...(uploading ? { docsFromUpload: true } : {}),
     };
   };
@@ -1206,7 +1258,8 @@ export function PipelinesView() {
     const cfg = proj?.savedRunAll ?? proj?.config;
     // Cùng điều kiện modal vẫn validate: có nguồn tài liệu, HOẶC "chỉ chạy bước
     // còn thiếu" khi bước Docs đã xong từ trước (chạy lẻ) nên không cần nguồn.
-    const hasSource = Boolean(cfg?.confluencePages?.length || cfg?.docsFromUpload);
+    const usingAppPool = cfg?.docsFromUpload !== true && (cfg?.appPool?.paths?.length ?? 0) > 0;
+    const hasSource = Boolean(cfg?.confluencePages?.length || cfg?.docsFromUpload || usingAppPool);
     // …HOẶC lựa chọn bước đã lưu KHÔNG có bước nạp tài liệu nào. Nguồn tài liệu
     // là input của đúng bước ingest; một lựa chọn kiểu "chỉ chạy lại ux + ui"
     // không đọc tới nó, nên đòi cấu hình nguồn ở đây chỉ dựng lên một cánh cửa
@@ -1224,6 +1277,17 @@ export function PipelinesView() {
     if (!canRun) {
       openRunAll();
       pushToast({ message: 'Cấu hình nguồn tài liệu trước khi chạy' });
+      return;
+    }
+    // GATE (docs/app-docs-pool-spec.md §2.2): nguồn App-pool chỉ chạy khi
+    // 100% trang pool đã chưng cất — BE là chốt thật, đây chỉ chặn sớm để
+    // không tạo một run-all sẽ fail ngay ở bước đầu.
+    if (usingAppPool && runsIngestStage && appPoolGate && !appPoolGate.clean) {
+      pushToast({
+        message: 'Chưng cất tài liệu trước khi chạy',
+        details: `Còn ${appPoolGate.pending} trang chưa chưng cất — mở "Nguồn tài liệu" để bấm Chưng cất tài liệu.`,
+        code: 'error',
+      });
       return;
     }
     setRunAllBusy(true);
@@ -1338,7 +1402,7 @@ export function PipelinesView() {
    *  cái đó rồi bấm lại sẽ được nhắc cái kế tiếp. */
   const proceedRun = (p: PipelineView) => {
     const proj = projects.find((pr) => pr.id === projectId);
-    const decision = resolveStageRunConfig(p, proj?.savedRunAll ?? proj?.config);
+    const decision = resolveStageRunConfig(p, proj?.savedRunAll ?? proj?.config, appPoolGate);
     if (!decision.ok) {
       pushToast({
         message: `Bước “${p.name}” cần ${decision.missing}`,
@@ -1401,30 +1465,27 @@ export function PipelinesView() {
         (p) => p.status === 'succeeded' || p.status === 'running' || p.status === 'queued',
       ),
   );
-  const feedbackPipeline = pipelines
-    .filter((pipeline) => pipeline.status === 'succeeded' || pipeline.status === 'failed')
-    .sort((left, right) => (left.updatedAt ?? 0) - (right.updatedAt ?? 0))
-    .at(-1);
-  const feedbackRunId = feedbackPipeline
-    ? feedbackPipeline.lastRunId
-      ?? `legacy:${projectId}:${workflowId}:${feedbackPipeline.id}:${feedbackPipeline.updatedAt ?? 'existing'}`
-    : null;
-
   // ── Rail cấu hình (Task 2) ────────────────────────────────────────────────
   // Cấu hình đã lưu của dự án đang chọn — CÙNG nguồn RunAllModal đọc để điền
   // sẵn (savedRunAll của lần chạy full workflow gần nhất, hoặc config từ
   // Pipeline Studio khi chưa từng chạy).
   const railProject = projects.find((pr) => pr.id === projectId);
   const railCfg: RunAllConfig | undefined = railProject?.savedRunAll ?? railProject?.config;
-  const railSourceSummary = railCfg?.confluencePages?.length
-    ? railCfg.confluencePages.length === 1
-      ? (railCfg.confluencePages[0]!.title ?? railCfg.confluencePages[0]!.url ?? railCfg.confluencePages[0]!.id ?? 'Confluence')
-      : `${railCfg.confluencePages.length} trang Confluence`
-    : railCfg?.docsFromUpload
-      ? 'File tải lên'
-      : railCfg?.basDocumentTitle || railCfg?.basDocumentId
-        ? `BAS · ${railCfg.basDocumentTitle ?? railCfg.basDocumentId}`
-        : 'Chưa cấu hình';
+  // GATE UX (docs/app-docs-pool-spec.md §2.2): nguồn App-pool nhưng pool chưa
+  // sạch → "Chạy pipeline" khoá tại đây thay vì bấm xong mới biết fail.
+  const railUsingAppPool = railCfg?.docsFromUpload !== true && (railCfg?.appPool?.paths?.length ?? 0) > 0;
+  const railAppPoolBlocking = railUsingAppPool && appPoolGate !== null && !appPoolGate.clean;
+  const railSourceSummary = railCfg?.appPool?.paths?.length
+    ? `Tài liệu App · ${railCfg.appPool.paths.length} trang`
+    : railCfg?.confluencePages?.length
+      ? railCfg.confluencePages.length === 1
+        ? (railCfg.confluencePages[0]!.title ?? railCfg.confluencePages[0]!.url ?? railCfg.confluencePages[0]!.id ?? 'Confluence')
+        : `${railCfg.confluencePages.length} trang Confluence`
+      : railCfg?.docsFromUpload
+        ? 'File tải lên'
+        : railCfg?.basDocumentTitle || railCfg?.basDocumentId
+          ? `BAS · ${railCfg.basDocumentTitle ?? railCfg.basDocumentId}`
+          : 'Chưa cấu hình';
   const railDsLabel =
     railCfg?.designSystemId === undefined
       ? 'Mặc định'
@@ -2387,17 +2448,14 @@ export function PipelinesView() {
               </li>
             );
           })}
-          {feedbackPipeline && feedbackRunId ? (
-            <PipelineEvaluationStep
-              key={workflowId}
-              projectId={projectId}
-              workflowId={workflowId}
-              pipeline={feedbackPipeline}
-              pipelines={pipelines}
-              runId={feedbackRunId}
-              submitted={ratedRunIds.has(feedbackRunId)}
-              onSubmitted={() => setRatedRunIds((current) => new Set(current).add(feedbackRunId))}
-            />
+          {/* Thẻ "Đánh giá chất lượng pipeline" — bước cuối workflow, hệ
+              feedback MỚI (form builder + đính kèm + thống kê /feedback) mặc vỏ
+              thẻ evaluation cũ. Thẻ PipelineEvaluationStep cũ đã gỡ khỏi
+              stepper (endpoint cũ /api/pipelines/feedback giữ nguyên cho dữ
+              liệu lịch sử). Nằm TRONG <ol> — con trực tiếp của .pl-run-layout
+              sẽ chiếm một ô lưới và phá cột. */}
+          {projectId ? (
+            <FeedbackHub projectId={projectId} workflowId={workflowId} pipelines={pipelines} />
           ) : null}
         </ol>
         {!railNarrow ? (
@@ -2425,8 +2483,12 @@ export function PipelinesView() {
               type="button"
               className="pl-btn pl-btn--run"
               onClick={() => void runAllWithSavedConfig()}
-              disabled={!projectId || pipelines.length === 0 || runAllBusy}
-              title="Chạy toàn bộ pipeline bằng cấu hình đang hiện ở rail bên cạnh — đổi cấu hình trước bằng nút Đổi nếu cần khác đi"
+              disabled={!projectId || pipelines.length === 0 || runAllBusy || railAppPoolBlocking}
+              title={
+                railAppPoolBlocking
+                  ? `Chưng cất tài liệu trước khi chạy — còn ${appPoolGate?.pending ?? 0} trang chưa xong`
+                  : 'Chạy toàn bộ pipeline bằng cấu hình đang hiện ở rail bên cạnh — đổi cấu hình trước bằng nút Đổi nếu cần khác đi'
+              }
             >
               <Icon name={runAllBusy ? 'spinner' : 'play'} size={14} />
               <span>{runAllBusy ? 'Đang khởi động…' : 'Chạy pipeline'}</span>
@@ -2849,6 +2911,7 @@ export function PipelinesView() {
             // trống sẽ âm thầm tắt lựa chọn cũ khi bấm Lưu.
             defaultIncludeDescendants={runAllDefaults?.includeDescendants}
             defaultDocsFromUpload={runAllDefaults?.docsFromUpload}
+            defaultAppPool={runAllDefaults?.appPool}
             defaultSkipSucceeded={runAllDefaults?.skipSucceeded}
             defaultLean={runAllDefaults?.lean}
             // Bước của workflow đang mở + lựa chọn đã lưu — cùng dữ liệu dòng
@@ -2866,6 +2929,9 @@ export function PipelinesView() {
             // Ingest step nhận file tay (Docs → Review tài liệu) → modal mở thêm
             // nhánh nguồn "Tải file .md lên" thay vì khóa cứng Confluence.
             hasUpload={pipelines.some((p) => p.acceptsUpload)}
+            // App sở hữu dự án — modal tự fetch pool của App này và chỉ hiện
+            // thẻ "Tài liệu App" khi pool không rỗng (docs/app-docs-pool-spec.md §WP-6).
+            appId={runAllProject?.app?.id}
             // Lean chỉ là khái niệm của docs-to-ui — các workflow khác (Docs →
             // PRD Review) chạy đủ chuỗi, ẩn hẳn section "Chế độ chạy".
             supportsLean={workflowId === 'docs-to-ui'}

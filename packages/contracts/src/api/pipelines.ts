@@ -390,6 +390,18 @@ export interface RunAllConfig {
    * hình đã lưu và mọi lệnh CLI hiện có vẫn chạy y như trước.
    */
   stageIds?: string[];
+  /**
+   * App Docs Pool (docs/app-docs-pool-spec.md §2.2): trang CHÍNH đã tick từ
+   * pool tài liệu của App sở hữu dự án này — nguồn thay thế cho
+   * `confluencePages` khi dự án dùng pool thay vì picker Confluence lẻ. Run-all
+   * PUT PRESERVE field này khi body không nhắc tới key (giống `appFiles` cũ);
+   * `null` (3-state, cùng ngữ nghĩa `designSystemId`) XÓA field đã lưu — mỗi
+   * lần Lưu nguồn tài liệu phải resend cả ba nhánh loại trừ nhau
+   * (`confluencePages` / `docsFromUpload` / `appPool`).
+   * GATE: run chỉ thật sự fetch khi mọi trang trong pool của App đã
+   * `distilled` (BE kiểm ở `POST run-all`/`run-config`, FE chỉ disable nút).
+   */
+  appPool?: { appId: string; paths: string[] } | null;
 }
 
 /** Tiến độ của MỘT workflow trên một feature (`PipelineProject.workflows`).
@@ -567,6 +579,15 @@ export type PipelineRunSource =
       documentId: string;
       /** Chosen feature ids within that document; empty/absent → whole document. */
       featureIds?: string[];
+    }
+  | {
+      /** App Docs Pool (docs/app-docs-pool-spec.md §2.2): copy the ticked MAIN
+       *  pages (deterministic, incl. images/attachments) into `<wf>/docs/`,
+       *  same status semantics as the plain Confluence path — gated on every
+       *  pool page being `distilled` (parsed at `parseRunSource`). */
+      kind: 'app-pool';
+      appId: string;
+      paths: string[];
     };
 
 // A KG document in BAS (from `kg_list_documents`) — the top level of the BAS
@@ -597,6 +618,50 @@ export interface ConfluencePageHit {
 
 export interface ConfluencePagesResponse {
   pages: ConfluencePageHit[];
+}
+
+// ── App Docs Pool (docs/app-docs-pool-spec.md §2) ────────────────────────────
+// One Confluence fetch per App (not per feature run): pages land in
+// `<appId>/docs/` + a manifest, then get "chưng cất" (map-reduce distill) into
+// `_overview.md` + `_branches/*.md` before any pipeline run may consume them
+// (GATE — see `RunAllConfig.appPool` / `PipelineRunSource` 'app-pool').
+
+/** Manifest page state machine (spec §2.1): `stale` = re-fetch changed the
+ *  page's content after it was already distilled. Gate passes only when every
+ *  page is `distilled` AND `distilledHash === contentHash`. */
+export type AppPoolDistillState = 'fetched' | 'stale' | 'distilling' | 'distilled';
+
+/** One page in an App's pool (`<appId>/docs/_manifest.json` entry). */
+export interface AppPoolPage {
+  pageId: string;
+  /** Relative path under `<appId>/docs/`. */
+  path: string;
+  title: string;
+  /** Slug of the top-level branch (phân hệ) this page belongs to. */
+  branch: string;
+  contentHash: string;
+  fetchedAt: number;
+  distill: { state: AppPoolDistillState; distilledHash: string | null };
+}
+
+/** `GET /api/pipelines/apps/:appId/pool`. */
+export interface AppPoolResponse {
+  pages: AppPoolPage[];
+  distill: {
+    /** True ⇔ every page is `distilled` with a matching hash — the GATE. */
+    clean: boolean;
+    pending: number;
+    running: boolean;
+    progress?: { done: number; total: number };
+  };
+  overviewExists: boolean;
+}
+
+/** `POST /api/pipelines/apps/:appId/import-confluence` response. */
+export interface AppPoolImportResponse {
+  imported: number;
+  updated: number;
+  pages: AppPoolPage[];
 }
 
 // A feature within a KG document (from kg_get_document_subgraph's FEATURE nodes).
@@ -676,6 +741,11 @@ export interface RunWorkflowRequest {
    * into `savedRunAll` so a later Run-all modal open can restore the picker
    * with titles instead of just bare URLs. */
   confluencePages?: ConfluencePageRef[];
+  /** App Docs Pool nguồn (docs/app-docs-pool-spec.md §2.2) — trang CHÍNH đã
+   *  tick từ pool của App. Có mặt → daemon GATE (mọi trang pool `distilled`)
+   *  rồi copy deterministic vào `<wf>/docs/`, cùng semantics `confluencePages`
+   *  nhưng đọc từ pool thay vì fetch trực tiếp. `null` xóa lựa chọn đã lưu. */
+  appPool?: { appId: string; paths: string[] } | null;
   /** Design system for the UI terminal(s) — same semantics as RunPipelineRequest. */
   designSystemId?: string | null;
   /** Target platform for the UX stage — same semantics as RunPipelineRequest.

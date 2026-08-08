@@ -1,0 +1,450 @@
+// App Docs Pool — one deterministic Confluence fetch per App, stored under
+// `<PROJECTS_DIR>/<appId>/docs/`, distilled by an agent (app-distill.ts) into
+// `_overview.md` + `_branches/<slug>.md`, and gated before a feature run can
+// consume it. Contracts are pinned in docs/app-docs-pool-spec.md §2 — this
+// module owns §2.1 (manifest) + the mechanical `_index.md` generator (§2.3)
+// + the deterministic Confluence import (§2.2's import-confluence, reusing
+// the dr-docs fetch core in bas/bas-client.ts — see importConfluenceIntoPool).
+//
+// Storage layout (all under `<PROJECTS_DIR>/<appId>/docs/`):
+//   _manifest.json   — §2.1, the single source of truth for pool state.
+//   _index.md        — mechanical (0 LLM), regenerated on every pool change.
+//   _overview.md     — agent-authored (app-distill.ts MODE=reduce).
+//   _branches/<slug>.md — agent-authored, one per branch (MODE=branch).
+//   <branch>/<slug>.md (+ attachments/) — the actual fetched pages; `path` in
+//     the manifest is relative to this `docs/` root, e.g.
+//     "2-urd-cho-website-k-ton/i-urd-ti-khon.md".
+//
+// An App has no `projects` DB row of its own in the pre-existing pipeline
+// model (see pipeline-routes.ts's collectLocalApps comment) — the pool lives
+// purely on disk, keyed by appId exactly like a project cwd (`ensureProject`
+// works unmodified because appId and projectId share the same id-safety
+// rules). Distill's agent runs (app-distill.ts) DO need a `projects` row for
+// the conversations FK; that row is created lazily there, not here.
+
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+
+import type { AppPoolDistillState, AppPoolPage } from '@open-design/contracts';
+
+import {
+  extractPageId,
+  fetchConfluencePages,
+  listDescendantPages,
+  resolveBasEndpoint,
+  resolveConfluenceCreds,
+  type ConfluenceDocPage,
+} from './bas/bas-client.js';
+
+// The manifest page/state shapes are the pinned §2.1 contract, shared with
+// the web client via `packages/contracts` (`AppPoolPage`/`AppPoolDistillState`
+// back `GET .../pool`'s response) — re-exported under the daemon-local names
+// this module (and app-distill.ts) already used, so nothing downstream needs
+// renaming.
+export type DistillState = AppPoolDistillState;
+export type ManifestPageDistill = AppPoolPage['distill'];
+export type ManifestPage = AppPoolPage;
+
+export interface AppPoolManifest {
+  version: 1;
+  pages: ManifestPage[];
+}
+
+const EMPTY_MANIFEST: AppPoolManifest = { version: 1, pages: [] };
+
+export function appDocsDir(projectsDir: string, appId: string): string {
+  return path.join(projectsDir, appId, 'docs');
+}
+
+export function manifestPath(projectsDir: string, appId: string): string {
+  return path.join(appDocsDir(projectsDir, appId), '_manifest.json');
+}
+
+export function indexPath(projectsDir: string, appId: string): string {
+  return path.join(appDocsDir(projectsDir, appId), '_index.md');
+}
+
+export function overviewPath(projectsDir: string, appId: string): string {
+  return path.join(appDocsDir(projectsDir, appId), '_overview.md');
+}
+
+export function branchesDir(projectsDir: string, appId: string): string {
+  return path.join(appDocsDir(projectsDir, appId), '_branches');
+}
+
+export function branchFilePath(projectsDir: string, appId: string, branch: string): string {
+  return path.join(branchesDir(projectsDir, appId), `${branch}.md`);
+}
+
+function normalizeDistill(raw: unknown): ManifestPageDistill {
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const state: DistillState =
+    obj.state === 'distilling' || obj.state === 'distilled' || obj.state === 'stale'
+      ? obj.state
+      : 'fetched';
+  const distilledHash = typeof obj.distilledHash === 'string' ? obj.distilledHash : null;
+  return { state, distilledHash };
+}
+
+function normalizeManifest(raw: unknown): AppPoolManifest {
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const rawPages = Array.isArray(obj.pages) ? obj.pages : [];
+  const pages: ManifestPage[] = rawPages
+    .filter((p): p is Record<string, unknown> => !!p && typeof p === 'object')
+    .map((p) => ({
+      pageId: String(p.pageId ?? ''),
+      path: String(p.path ?? ''),
+      title: String(p.title ?? ''),
+      branch: String(p.branch ?? ''),
+      contentHash: String(p.contentHash ?? ''),
+      fetchedAt: typeof p.fetchedAt === 'number' ? p.fetchedAt : 0,
+      distill: normalizeDistill(p.distill),
+    }))
+    .filter((p) => p.pageId && p.path);
+  return { version: 1, pages };
+}
+
+/** Read the manifest; a missing file is a fresh, empty pool (not an error) —
+ *  mirrors every other daemon store that treats "no file yet" as day zero. */
+export async function readManifest(projectsDir: string, appId: string): Promise<AppPoolManifest> {
+  try {
+    const raw = await fs.promises.readFile(manifestPath(projectsDir, appId), 'utf8');
+    return normalizeManifest(JSON.parse(raw));
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { ...EMPTY_MANIFEST, pages: [] };
+    throw err;
+  }
+}
+
+/** Atomic write: tmp file + rename, so a crash mid-write never leaves a
+ *  truncated/corrupt manifest for the next reader (same pattern as every
+ *  other daemon on-disk store). */
+export async function writeManifest(
+  projectsDir: string,
+  appId: string,
+  manifest: AppPoolManifest,
+): Promise<void> {
+  const target = manifestPath(projectsDir, appId);
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  const tmp = path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  await fs.promises.writeFile(tmp, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  await fs.promises.rename(tmp, target);
+}
+
+export function sha256(content: string | Buffer): string {
+  return `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`;
+}
+
+/** Branch = the first path segment (§2.1: "slug nhánh cấp-1 (phân hệ)"). A
+ *  page with no subfolder (a lone top-level pick) becomes its own one-page
+ *  branch — the filename minus nothing stripped, exactly the first (only)
+ *  segment. */
+export function deriveBranch(relPath: string): string {
+  const norm = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const idx = norm.indexOf('/');
+  if (idx !== -1) return norm.slice(0, idx);
+  // Folder-less page (no shared ancestor folding applied) — its branch is a
+  // clean slug of its own filename (strip `.md`), not the literal filename
+  // with extension, so `_branches/<branch>.md` never doubles up.
+  return norm.replace(/\.md$/i, '') || norm;
+}
+
+function pageClean(p: ManifestPage): boolean {
+  return p.distill.state === 'distilled' && p.distill.distilledHash === p.contentHash;
+}
+
+/** §2.1: "Gate pass ⇔ mọi page state==='distilled' && distilledHash===contentHash". */
+export function isPoolClean(manifest: AppPoolManifest): boolean {
+  return manifest.pages.every(pageClean);
+}
+
+export function pendingCount(manifest: AppPoolManifest): number {
+  return manifest.pages.filter((p) => !pageClean(p)).length;
+}
+
+export function listBranches(manifest: AppPoolManifest): string[] {
+  return [...new Set(manifest.pages.map((p) => p.branch))].sort((a, b) => a.localeCompare(b));
+}
+
+export function pagesForBranch(manifest: AppPoolManifest, branch: string): ManifestPage[] {
+  return manifest.pages.filter((p) => p.branch === branch);
+}
+
+/** Branches with ≥1 page not yet clean — what an incremental distill run
+ *  needs to (re)process (WP-2's "chỉ nhánh có trang ≠distilled"). */
+export function branchesNeedingDistill(manifest: AppPoolManifest): string[] {
+  const set = new Set(manifest.pages.filter((p) => !pageClean(p)).map((p) => p.branch));
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+/** Flip every page of `branch` to `state` (distilling/fetched/stale). Used by
+ *  the distill runner to mark in-flight branches, and to revert on failure. */
+export function setBranchState(
+  manifest: AppPoolManifest,
+  branch: string,
+  state: DistillState,
+): AppPoolManifest {
+  return {
+    ...manifest,
+    pages: manifest.pages.map((p) =>
+      p.branch === branch ? { ...p, distill: { ...p.distill, state } } : p,
+    ),
+  };
+}
+
+/** Mark every page of `branch` distilled — `distilledHash` becomes the
+ *  page's OWN current `contentHash` (the gate compares the two per page). */
+export function markBranchDistilled(manifest: AppPoolManifest, branch: string): AppPoolManifest {
+  return {
+    ...manifest,
+    pages: manifest.pages.map((p) =>
+      p.branch === branch
+        ? { ...p, distill: { state: 'distilled', distilledHash: p.contentHash } }
+        : p,
+    ),
+  };
+}
+
+/** §2.3: "_index.md CƠ HỌC (0 LLM): cây trang + title(heading) + path" —
+ *  grouped by branch so it doubles as a map of "which pages make up which
+ *  phân hệ" for a human skimming it. */
+export function generateIndexMd(manifest: AppPoolManifest): string {
+  const byBranch = new Map<string, ManifestPage[]>();
+  for (const p of manifest.pages) {
+    const list = byBranch.get(p.branch) ?? [];
+    list.push(p);
+    byBranch.set(p.branch, list);
+  }
+  const branches = [...byBranch.keys()].sort((a, b) => a.localeCompare(b));
+  const lines: string[] = [
+    '# Bản đồ tài liệu (sinh cơ học — không do agent viết)',
+    '',
+    `${manifest.pages.length} trang, ${branches.length} nhánh.`,
+    '',
+  ];
+  for (const branch of branches) {
+    lines.push(`## ${branch}`, '');
+    const pages = [...byBranch.get(branch)!].sort((a, b) => a.path.localeCompare(b.path));
+    for (const p of pages) lines.push(`- [${p.title}](${p.path}) — \`${p.path}\``);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+export async function writeIndexMd(
+  projectsDir: string,
+  appId: string,
+  manifest: AppPoolManifest,
+): Promise<void> {
+  const target = indexPath(projectsDir, appId);
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  await fs.promises.writeFile(target, generateIndexMd(manifest), 'utf8');
+}
+
+/** Merge freshly-fetched pages into the manifest (§2.2 import-confluence):
+ *  a brand-new pageId → `fetched`; an existing pageId whose content changed
+ *  → `stale` (needs re-distilling), distill state otherwise untouched;
+ *  unchanged content → the existing entry is left exactly as-is (not counted
+ *  as updated). */
+export function upsertPagesFromFetch(
+  manifest: AppPoolManifest,
+  fetched: Array<{ pageId: string; title: string; path: string; contentHash: string }>,
+  now: number,
+): { manifest: AppPoolManifest; imported: number; updated: number } {
+  const byId = new Map(manifest.pages.map((p) => [p.pageId, p] as const));
+  let imported = 0;
+  let updated = 0;
+  for (const f of fetched) {
+    const existing = byId.get(f.pageId);
+    const branch = deriveBranch(f.path);
+    if (!existing) {
+      imported += 1;
+      byId.set(f.pageId, {
+        pageId: f.pageId,
+        path: f.path,
+        title: f.title,
+        branch,
+        contentHash: f.contentHash,
+        fetchedAt: now,
+        distill: { state: 'fetched', distilledHash: null },
+      });
+      continue;
+    }
+    if (existing.contentHash === f.contentHash && existing.path === f.path) {
+      // Nothing changed — leave the entry (including its distill state) alone.
+      continue;
+    }
+    updated += 1;
+    byId.set(f.pageId, {
+      ...existing,
+      path: f.path,
+      title: f.title,
+      branch,
+      contentHash: f.contentHash,
+      fetchedAt: now,
+      distill: { ...existing.distill, state: 'stale' },
+    });
+  }
+  return { manifest: { version: 1, pages: [...byId.values()] }, imported, updated };
+}
+
+/** §2.2 import-confluence: fetch (dr-docs deterministic core, reused via
+ *  `fetchConfluencePages({ pathLayout: 'flat' })` — NOT duplicated), write
+ *  the pages under `<appId>/docs/`, update + persist the manifest, and
+ *  regenerate `_index.md`. Throws when neither Confluence credential is
+ *  configured (route maps that to 502), or when the fetch itself fails. */
+export async function importConfluenceIntoPool(opts: {
+  projectsDir: string;
+  runtimeDataDir: string;
+  appId: string;
+  refs: string[];
+  followLinks?: boolean;
+  includeDescendants?: boolean;
+}): Promise<{ imported: number; updated: number; pages: ManifestPage[] }> {
+  const { projectsDir, runtimeDataDir, appId, refs } = opts;
+  const [creds, ep] = await Promise.all([
+    resolveConfluenceCreds(runtimeDataDir).catch(() => null),
+    resolveBasEndpoint(runtimeDataDir).catch(() => null),
+  ]);
+  if (!creds && !ep) {
+    throw new Error(
+      'Chưa có credential Confluence: thêm CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN (Settings → MCP) hoặc cấu hình BAS gateway.',
+    );
+  }
+  const docsDir = appDocsDir(projectsDir, appId);
+  const treePages: import('./bas/bas-client.js').DescendantPage[] = [];
+  if (opts.includeDescendants && creds) {
+    const seen = new Set<string>();
+    for (const ref of refs) {
+      const seedId = extractPageId(ref);
+      try {
+        const desc = await listDescendantPages(creds, seedId);
+        for (const d of desc) {
+          if (seen.has(d.pageId)) continue;
+          seen.add(d.pageId);
+          treePages.push(d);
+        }
+      } catch (err) {
+        console.warn(`[app-pool] sub-tree scan for seed ${seedId} failed (continuing):`, err);
+      }
+    }
+  }
+  const fetched: ConfluenceDocPage[] = await fetchConfluencePages({ creds, ep }, refs, {
+    followLinks: opts.followLinks !== false,
+    attachmentsDir: path.join(docsDir, 'attachments'),
+    runtimeDataDir,
+    pathLayout: 'flat',
+    ...(treePages.length ? { treePages } : {}),
+  });
+  const now = Date.now();
+  const writable: Array<{ pageId: string; title: string; path: string; contentHash: string }> = [];
+  for (const p of fetched) {
+    // `p.relPath` is `docs/<branch>/.../<slug>.md` (flat layout) — strip the
+    // leading `docs/` so the manifest `path` is relative to the App's docs/
+    // root, matching §2.1's example.
+    const relInDocs = path.posix.relative('docs', p.relPath);
+    const abs = path.join(docsDir, relInDocs);
+    await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+    await fs.promises.writeFile(abs, p.content, 'utf8');
+    writable.push({
+      pageId: p.pageId,
+      title: p.title,
+      path: relInDocs,
+      contentHash: sha256(p.content),
+    });
+  }
+  const current = await readManifest(projectsDir, appId);
+  const { manifest: next, imported, updated } = upsertPagesFromFetch(current, writable, now);
+  await writeManifest(projectsDir, appId, next);
+  await writeIndexMd(projectsDir, appId, next);
+  return { imported, updated, pages: next.pages };
+}
+
+/** Dot-folder a pool's DISTILLED files + every page's markdown stage into
+ *  inside a run cwd (§2.4). Mirrors `stageAppContext`'s shape (app-context.ts):
+ *  a dot-folder so snapshot/push/re-run-clear never see it, wiped and
+ *  rewritten on every stage run so it always reflects the CURRENT pool.
+ *  Only `.md` files are staged (images/attachments and `_manifest.json` are
+ *  deliberately excluded — §2.4: "toàn bộ `*.md` pool (KHÔNG ảnh)"). Returns
+ *  the staged relative paths (empty when the app has no pool yet — a no-op,
+ *  matching app-context.ts's unlinked-feature behavior) and whether
+ *  `_overview.md` is among them. */
+export const STAGED_APP_DOCS = '.app-docs';
+
+export async function stageAppDocsPool(
+  projectsDir: string,
+  appId: string,
+  runCwd: string,
+): Promise<{ staged: string[]; overviewExists: boolean }> {
+  const docsDir = appDocsDir(projectsDir, appId);
+  const files: string[] = [];
+  await collectMarkdown(docsDir, '', files);
+  if (files.length === 0) return { staged: [], overviewExists: false };
+  const staged = path.join(runCwd, STAGED_APP_DOCS);
+  await fs.promises.rm(staged, { recursive: true, force: true });
+  for (const rel of files) {
+    const src = path.join(docsDir, rel);
+    const dst = path.join(staged, rel);
+    await fs.promises.mkdir(path.dirname(dst), { recursive: true });
+    await fs.promises.copyFile(src, dst);
+  }
+  return { staged: files, overviewExists: files.includes('_overview.md') };
+}
+
+async function collectMarkdown(dir: string, relDir: string, out: string[]): Promise<void> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return;
+    throw err;
+  }
+  for (const entry of entries) {
+    const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      await collectMarkdown(path.join(dir, entry.name), rel, out);
+      continue;
+    }
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) out.push(rel);
+  }
+}
+
+/** The kickoff directive appended when a feature's App has a staged pool
+ *  (§2.4 — text pinned by the spec). Pure (no I/O); '' when nothing was
+ *  staged keeps the kickoff byte-identical to the legacy one. */
+export function appDocsPoolDirective(stagedFiles: string[]): string {
+  if (stagedFiles.length === 0) return '';
+  return (
+    ' Tài liệu App: đọc `.app-docs/_overview.md` TRƯỚC KHI làm việc. Cần sâu phân hệ →' +
+    ' `.app-docs/_branches/<slug>.md`; cần chi tiết → mở trang theo «Bản đồ trang». Phạm vi xử lý' +
+    ' CHÍNH của bạn chỉ là `docs/` — KHÔNG audit/fan-out các file trong `.app-docs/`.'
+  );
+}
+
+/** §2.2 DELETE pool/pages: remove manifest entries + their files, regenerate
+ *  `_index.md`. Best-effort on the file removal (a page whose file is
+ *  already gone still drops from the manifest). */
+export async function deletePoolPages(
+  projectsDir: string,
+  appId: string,
+  pageIds: string[],
+): Promise<AppPoolManifest> {
+  const manifest = await readManifest(projectsDir, appId);
+  const toDelete = new Set(pageIds);
+  const docsDir = appDocsDir(projectsDir, appId);
+  for (const p of manifest.pages) {
+    if (!toDelete.has(p.pageId)) continue;
+    await fs.promises.rm(path.join(docsDir, p.path), { force: true }).catch(() => null);
+  }
+  const next: AppPoolManifest = {
+    version: 1,
+    pages: manifest.pages.filter((p) => !toDelete.has(p.pageId)),
+  };
+  await writeManifest(projectsDir, appId, next);
+  await writeIndexMd(projectsDir, appId, next);
+  return next;
+}
