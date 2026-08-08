@@ -290,11 +290,13 @@ export function AppPoolTree({ pages, selection, renderLeafActions, query, onOpen
               title={node.page.path}
               onClick={onOpenPage ? () => onOpenPage(node.page!) : undefined}
             >
+              <Icon name="file" size={13} />
               <span className={styles.rowTitle}>{displayName}</span>
             </span>
           ) : (
             <span className={styles.folderName} onClick={() => toggleExpanded(node.key)}>
-              {displayName}
+              <Icon name={open ? 'folder' : 'folder-filled'} size={13} />
+              <span className={styles.folderText}>{displayName}</span>
             </span>
           )}
           {node.page ? (

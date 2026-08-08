@@ -57,14 +57,23 @@
 }
 
 .folderName {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.folderText {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 12.5px;
-  font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
 }
 
 .checkbox {
@@ -98,8 +107,12 @@
 }
 
 .rowBody {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   flex: 1;
   min-width: 0;
+  color: var(--text-soft);
 }
 
 .rowTitle {
@@ -131,7 +144,24 @@
   font-size: 12.5px;
 }
 
-/* Preview 2 cột (AppPoolSection): tên trang bấm được + dòng đang preview. */
+/* ── Preview 2 cột (AppPoolSection) ───────────────────────────────────────
+   Tên trang bấm được; dòng đang xem giữ nền accent + thanh chỉ thị bên trái
+   để mắt bám được vị trí trong cây dài. */
 .rowClickable { cursor: pointer; }
 .rowClickable:hover .rowTitle { color: var(--accent); }
-.rowActive { background: color-mix(in srgb, var(--accent) 9%, transparent); border-radius: 6px; }
+.rowActive {
+  position: relative;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.rowActive::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+}
+.rowActive .rowTitle { color: var(--accent-strong, var(--accent)); font-weight: 640; }
+.rowActive .rowBody { color: var(--accent); }

@@ -12,6 +12,17 @@ import { ConfluenceTreeImport } from './ConfluenceTreeImport';
 import { ProgressBar } from './ProgressBar';
 import styles from './AppPoolSection.module.css';
 
+/** Trang pool mở đầu bằng frontmatter YAML (`--- title/page_id/url/source ---`)
+ *  do bộ fetch ghi vào. Renderer markdown không hiểu khối đó nên nó đổ ra
+ *  thành một đoạn văn thô ngay đầu preview — bóc ra, chỉ giữ `url` để dựng
+ *  link "Mở trên Confluence" ở đầu pane. */
+function splitFrontmatter(text: string): { body: string; url: string | null } {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
+  if (!match) return { body: text, url: null };
+  const url = /^url:\s*(\S+)\s*$/m.exec(match[1] ?? '')?.[1] ?? null;
+  return { body: text.slice(match[0].length), url };
+}
+
 function poolUrl(appId: string): string {
   return `/api/pipelines/apps/${encodeURIComponent(appId)}/pool`;
 }
@@ -51,6 +62,7 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
   // trang trong tree, hoặc nút "Xem tổng quan" (path đặc biệt _overview.md).
   const [preview, setPreview] = useState<{ path: string; title: string } | null>(null);
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
@@ -137,12 +149,15 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
     setPreview({ path, title });
     setPreviewHtml(null);
     setPreviewError(null);
+    setPreviewUrl(null);
     setPreviewLoading(true);
     void (async () => {
       try {
         const text = await fetchProjectFileText(appId, `docs/${path}`);
         if (text === null) throw new Error(`Không đọc được ${path}.`);
-        setPreviewHtml(renderMarkdownToSafeHtml(text));
+        const { body, url } = splitFrontmatter(text);
+        setPreviewUrl(url);
+        setPreviewHtml(renderMarkdownToSafeHtml(body));
       } catch (cause) {
         setPreviewError(cause instanceof Error ? cause.message : `Không đọc được ${path}.`);
       } finally {
@@ -234,15 +249,23 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
         return (
           <div className={styles.split}>
             <div className={styles.treePane}>
-              <div className={styles.groupLabel}>Docs chính</div>
+              <div className={styles.groupHead}>
+                <Icon name="folder-filled" size={13} />
+                <span className={styles.groupTitle}>Docs chính</span>
+                <span className={styles.groupCount}>{mainPages.length}</span>
+              </div>
               {mainPages.length > 0 ? (
                 <AppPoolTree pages={mainPages} renderLeafActions={leafActions} onOpenPage={openPage} activePath={preview?.path} />
               ) : (
-                <p className={styles.muted}>Không có docs chính.</p>
+                <p className={styles.groupEmpty}>Chưa có docs chính.</p>
               )}
               {relatedPages.length > 0 ? (
                 <>
-                  <div className={styles.groupLabel}>Docs liên quan</div>
+                  <div className={`${styles.groupHead} ${styles.groupHeadRelated}`}>
+                    <Icon name="link" size={13} />
+                    <span className={styles.groupTitle}>Docs liên quan</span>
+                    <span className={styles.groupCount}>{relatedPages.length}</span>
+                  </div>
                   <AppPoolTree pages={relatedPages} renderLeafActions={leafActions} onOpenPage={openPage} activePath={preview?.path} />
                 </>
               ) : null}
@@ -253,21 +276,40 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
                   <div className={styles.previewHead}>
                     <div className={styles.previewTitleWrap}>
                       <span className={styles.previewTitle}>{preview.title}</span>
-                      <span className={styles.previewPath}>{preview.path}</span>
+                      <span className={styles.previewPath} title={preview.path}>{preview.path}</span>
                     </div>
-                    <button type="button" className={styles.secondaryButton} onClick={() => setPreview(null)} aria-label="Đóng preview">
-                      <Icon name="close" size={13} />
-                    </button>
+                    <div className={styles.previewActions}>
+                      {previewUrl ? (
+                        <a
+                          className={styles.previewLink}
+                          href={previewUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Mở trang gốc trên Confluence"
+                        >
+                          <Icon name="external-link" size={13} />
+                          Confluence
+                        </a>
+                      ) : null}
+                      <button type="button" className={styles.previewClose} onClick={() => setPreview(null)} aria-label="Đóng preview">
+                        <Icon name="close" size={14} />
+                      </button>
+                    </div>
                   </div>
-                  {previewLoading ? <p className={styles.muted}>Đang tải…</p> : null}
-                  {previewError ? <p className={styles.error}>{previewError}</p> : null}
-                  {previewHtml ? (
-                    // eslint-disable-next-line react/no-danger -- renderMarkdownToSafeHtml escapes raw HTML by contract.
-                    <div className={`${styles.previewBody} markdown-rendered`} dangerouslySetInnerHTML={{ __html: previewHtml }} />
-                  ) : null}
+                  <div className={styles.previewScroll}>
+                    {previewLoading ? <p className={styles.muted}>Đang tải…</p> : null}
+                    {previewError ? <p className={styles.error}>{previewError}</p> : null}
+                    {previewHtml ? (
+                      // eslint-disable-next-line react/no-danger -- renderMarkdownToSafeHtml escapes raw HTML by contract.
+                      <div className={`${styles.previewBody} markdown-rendered`} dangerouslySetInnerHTML={{ __html: previewHtml }} />
+                    ) : null}
+                  </div>
                 </>
               ) : (
-                <p className={styles.previewHint}>Bấm vào tên một trang bên trái để xem nội dung — hoặc "Xem tổng quan" ở trên.</p>
+                <div className={styles.previewEmpty}>
+                  <Icon name="file" size={22} />
+                  <p className={styles.previewHint}>Bấm tên một trang bên trái để đọc nội dung tại chỗ.</p>
+                </div>
               )}
             </div>
           </div>
