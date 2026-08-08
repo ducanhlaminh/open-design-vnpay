@@ -5,7 +5,7 @@
 // ra từ điểm quyết định có hiện nhãn không, và file hỏng có báo lỗi gọn thay vì
 // làm sập khung nhìn không.
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import {
   FlowchartCanvas,
@@ -169,6 +169,68 @@ describe('FlowchartPreview', () => {
 
     await waitFor(() => expect(screen.getByText('Đăng nhập')).toBeTruthy());
     expect(screen.getByText('review/docs/dang-nhap.md')).toBeTruthy();
+  });
+
+  // Khung nhìn KỊCH BẢN (lý do tồn tại: sơ đồ thật 23 node/7 rẽ nhánh vẽ
+  // nguyên khối thì không đọc nổi — xem flow-usecases.ts).
+  it('mặc định mở chế độ Kịch bản: mỗi đường đi là một thẻ, tên lấy từ điểm kết thúc', async () => {
+    FILES['review/flows/FLOW-login.flowchart.json'] = JSON.stringify(LOGIN);
+    render(<FlowchartPreview projectId="p1" file={file('review/flows/FLOW-login.flowchart.json')} />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Kịch bản' })).toBeTruthy());
+    expect(screen.getByRole('tab', { name: 'Kịch bản' }).getAttribute('aria-selected')).toBe('true');
+    // Hai kịch bản: vào được màn chính (thành công) và báo lỗi (đường cụt).
+    expect(screen.getByText('Vào màn hình chính')).toBeTruthy();
+    expect(screen.getByText('Báo lỗi sai thông tin')).toBeTruthy();
+    // Mô tả = ngã rẽ đã chọn, thứ phân biệt hai kịch bản.
+    expect(screen.getByText(/Thông tin hợp lệ\? → Có/)).toBeTruthy();
+    expect(screen.getByText(/Thông tin hợp lệ\? → Không/)).toBeTruthy();
+    // Chưa vào chi tiết thì chưa vẽ sơ đồ (React Flow chỉ dựng ở chế độ Sơ đồ).
+    expect(document.querySelector('.react-flow')).toBeNull();
+  });
+
+  it('bấm một thẻ → chi tiết hiện dãy khối, khối rẽ nhánh mang chip "Chọn: …"; ← quay lại danh sách', async () => {
+    FILES['review/flows/FLOW-login.flowchart.json'] = JSON.stringify(LOGIN);
+    render(<FlowchartPreview projectId="p1" file={file('review/flows/FLOW-login.flowchart.json')} />);
+
+    await waitFor(() => expect(screen.getByText('Vào màn hình chính')).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByText('Vào màn hình chính')); });
+
+    // Dãy khối: đủ 4 bước của đường thành công, có nhãn loại bước.
+    await waitFor(() => expect(screen.getByText('Nhập tên đăng nhập + mật khẩu')).toBeTruthy());
+    expect(screen.getByText('Thông tin hợp lệ?')).toBeTruthy();
+    // Nhãn LOẠI bước ("Bắt đầu" của node start trùng chữ với nhãn node — dùng
+    // getAllByText để phép kiểm không phụ thuộc vào trùng lặp vô hại đó).
+    expect(screen.getAllByText('Bắt đầu').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('Rẽ nhánh').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Chọn:\s*Có/)).toBeTruthy();
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /← Kịch bản/ })); });
+    await waitFor(() => expect(screen.getByText('Báo lỗi sai thông tin')).toBeTruthy());
+    expect(screen.queryByText(/Chọn:\s*Có/)).toBeNull();
+  });
+
+  it('chuyển sang "Sơ đồ đầy đủ" thì React Flow mới dựng — bản vẽ cũ không mất', async () => {
+    FILES['review/flows/FLOW-login.flowchart.json'] = JSON.stringify(LOGIN);
+    const { container } = render(
+      <FlowchartPreview projectId="p1" file={file('review/flows/FLOW-login.flowchart.json')} />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Sơ đồ đầy đủ' })).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: 'Sơ đồ đầy đủ' })); });
+    await waitFor(() => expect(container.querySelector('.react-flow')).toBeTruthy());
+  });
+
+  it('kịch bản quay vòng hiện khối "Quay lại bước #K" thay vì đi vòng vô tận', async () => {
+    // Thêm cạnh báo-lỗi → quay về bước nhập: đúng ca "quá lượt nhập" ngoài đời.
+    const looping = { ...LOGIN, edges: [...LOGIN.edges, { from: 'n4', to: 'n2' }] };
+    FILES['review/flows/FLOW-loop.flowchart.json'] = JSON.stringify(looping);
+    render(<FlowchartPreview projectId="p1" file={file('review/flows/FLOW-loop.flowchart.json')} />);
+
+    await waitFor(() => expect(screen.getByText('Báo lỗi sai thông tin')).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByText('Báo lỗi sai thông tin')); });
+
+    await waitFor(() => expect(screen.getByText(/Quay lại bước #2/)).toBeTruthy());
   });
 
   it('file hỏng → báo lỗi gọn, không sập khung nhìn', async () => {
