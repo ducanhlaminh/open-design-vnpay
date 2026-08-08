@@ -214,6 +214,37 @@ describe('app-pool routes', () => {
     expect(res.body.pages).toEqual([]);
   });
 
+  it('linked-pages 400s with missing/invalid refs and returns discovered pages', async () => {
+    const missing = await call('POST /api/pipelines/confluence/linked-pages', { body: {} });
+    expect(missing.status).toBe(400);
+    const invalid = await call('POST /api/pipelines/confluence/linked-pages', { body: { refs: [''] } });
+    expect(invalid.status).toBe(400);
+
+    const previousUrl = process.env.CONFLUENCE_URL;
+    const previousToken = process.env.CONFLUENCE_PERSONAL_TOKEN;
+    process.env.CONFLUENCE_URL = 'https://wiki.test';
+    process.env.CONFLUENCE_PERSONAL_TOKEN = 'pat';
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const id = /\/content\/(\d+)\?/.exec(String(url))?.[1];
+      const page = id === '1'
+        ? { title: 'Seed', body: { view: { value: '<a href=\"/pages/2/Linked\">Linked</a>' } }, ancestors: [] }
+        : { title: 'Linked', body: { view: { value: '<p>Linked</p>' } }, ancestors: [{ id: 'root', title: 'Root' }] };
+      return { ok: true, status: 200, text: async () => JSON.stringify(page) };
+    }) as any;
+    try {
+      const result = await call('POST /api/pipelines/confluence/linked-pages', { body: { refs: ['1'] } });
+      expect(result.status).toBe(200);
+      expect(result.body.pages).toEqual([{ pageId: '2', title: 'Linked', ancestors: ['Root'], linkedFrom: 'Seed' }]);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousUrl === undefined) delete process.env.CONFLUENCE_URL;
+      else process.env.CONFLUENCE_URL = previousUrl;
+      if (previousToken === undefined) delete process.env.CONFLUENCE_PERSONAL_TOKEN;
+      else process.env.CONFLUENCE_PERSONAL_TOKEN = previousToken;
+    }
+  });
+
   it('import-confluence 400s with no refs, and surfaces the missing-credential error as 502', async () => {
     insertPipelineApp(db, { id: 'XPOS', name: 'X POS', createdAt: Date.now() });
     const noRefs = await call('POST /api/pipelines/apps/:appId/import-confluence', {

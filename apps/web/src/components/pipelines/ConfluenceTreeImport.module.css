@@ -221,3 +221,28 @@
   font-size: 12px;
   line-height: 1.45;
 }
+
+/* ── Tài liệu liên quan (quét link depth-1, user tự tick) ─────────────────── */
+.relatedWrap { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.relatedScan {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.relatedScan:hover { border-color: var(--accent); color: var(--accent); }
+.relatedScan:disabled { opacity: 0.5; cursor: not-allowed; }
+.relatedList {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border-soft, var(--border));
+  border-radius: 8px;
+  padding: 4px;
+}

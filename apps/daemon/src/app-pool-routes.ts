@@ -18,6 +18,7 @@ import {
   type ManifestPage,
 } from './app-pool.js';
 import { DistillConflictError, getDistillProgress, startDistill, type AppDistillDeps } from './app-distill.js';
+import { discoverLinkedConfluencePages, resolveConfluenceCreds } from './bas/bas-client.js';
 
 export interface RegisterAppPoolRoutesDeps {
   db: any;
@@ -47,6 +48,26 @@ function appExistsLocally(db: any, appId: string): boolean {
 
 export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDeps) {
   const { db, paths } = ctx;
+
+  // POST /api/pipelines/confluence/linked-pages — discover depth-1 linked pages.
+  app.post('/api/pipelines/confluence/linked-pages', async (req, res) => {
+    const refs = req.body?.refs;
+    if (!Array.isArray(refs) || refs.length === 0 || !refs.every((ref: unknown) => typeof ref === 'string' && ref.trim())) {
+      return res.status(400).json({ error: 'refs (Confluence URLs/ids) is required' });
+    }
+    try {
+      const creds = await resolveConfluenceCreds(paths.RUNTIME_DATA_DIR);
+      if (!creds) {
+        throw new Error(
+          'Chưa có credential Confluence: thêm CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN (Settings → MCP) hoặc cấu hình BAS gateway.',
+        );
+      }
+      const pages = await discoverLinkedConfluencePages(creds, refs as string[]);
+      res.json({ pages });
+    } catch (err: any) {
+      res.status(502).json({ error: String(err?.message ?? err) });
+    }
+  });
 
   // POST /api/pipelines/apps/:appId/import-confluence — §2.2.
   app.post('/api/pipelines/apps/:appId/import-confluence', async (req, res) => {

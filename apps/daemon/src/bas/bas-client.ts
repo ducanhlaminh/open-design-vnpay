@@ -1122,6 +1122,15 @@ export { htmlToMarkdown };
 // Shared direct-PAT REST call for one page's metadata/body — used by the
 // fetchConfluencePages pipeline below (seed fetch, link-follow, tree scan)
 // without duplicating the request shape three times.
+export interface LinkedPageCandidate {
+  pageId: string;
+  title: string;
+  /** Chuỗi TITLE tổ tiên thật (root → cha gần nhất) — FE hiện làm breadcrumb. */
+  ancestors: string[];
+  /** Title trang seed đầu tiên nhắc tới nó. */
+  linkedFrom: string;
+}
+
 async function fetchConfluencePageDirect(
   creds: ConfluenceCreds,
   pageId: string,
@@ -1168,6 +1177,53 @@ export function extractLinkedPageIds(html: string, base: string): string[] {
     if (idMatch) ids.add(idMatch[1]!);
   }
   return [...ids];
+}
+
+/** Khám phá các trang được link trực tiếp từ các seed, không ghi xuống đĩa. */
+export async function discoverLinkedConfluencePages(
+  creds: { base: string; token: string },
+  refs: string[],
+  opts: { cap?: number } = {},
+): Promise<LinkedPageCandidate[]> {
+  if (!creds.base.trim() || !creds.token.trim()) {
+    throw new Error('Thiếu credential Confluence PAT');
+  }
+  const cap = Math.max(0, opts.cap ?? FOLLOW_MAX_TOTAL);
+  const seedIds = new Set(refs.map(extractPageId));
+  const seeds: Array<{ title: string; html: string }> = [];
+  for (const ref of refs) {
+    const pageId = extractPageId(ref);
+    try {
+      const page = await fetchConfluencePageDirect(creds, pageId);
+      seeds.push(page);
+    } catch (err) {
+      console.warn(`[bas] seed Confluence page ${pageId} skipped:`, err);
+    }
+  }
+
+  const candidates = new Map<string, string>();
+  for (const seed of seeds) {
+    for (const pageId of extractLinkedPageIds(seed.html, creds.base)) {
+      if (seedIds.has(pageId) || candidates.has(pageId)) continue;
+      candidates.set(pageId, seed.title);
+    }
+  }
+
+  const pages: LinkedPageCandidate[] = [];
+  for (const [pageId, linkedFrom] of [...candidates].slice(0, cap)) {
+    try {
+      const page = await fetchConfluencePageDirect(creds, pageId);
+      pages.push({
+        pageId,
+        title: page.title,
+        ancestors: page.ancestors.map((a) => a.title),
+        linkedFrom,
+      });
+    } catch (err) {
+      console.warn(`[bas] linked Confluence page ${pageId} skipped:`, err);
+    }
+  }
+  return pages;
 }
 
 /** What the deterministic docs fetch authenticates with — direct PAT is

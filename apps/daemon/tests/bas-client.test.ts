@@ -10,6 +10,7 @@ import {
   basListFeatures,
   extractPageId,
   fetchConfluencePages,
+  discoverLinkedConfluencePages,
   fetchSourceFiles,
   listDescendantPages,
   naturalSegsCompare,
@@ -510,6 +511,49 @@ function directPageRes(page: {
     }),
   );
 }
+
+function directLinkedPageRes(page: {
+  title: string;
+  html?: string;
+  ancestors?: Array<{ id: string; title: string }>;
+}, status = 200) {
+  return makeRes(
+    JSON.stringify({
+      title: page.title,
+      body: { view: { value: page.html ?? `<p>${page.title}</p>` } },
+      ancestors: page.ancestors ?? [],
+      _links: { base: 'https://wiki.test', webui: '/x' },
+    }),
+    { status },
+  );
+}
+
+test('discoverLinkedConfluencePages discovers unique depth-1 links with seed provenance and ancestors', async () => {
+  const pages: Record<string, ReturnType<typeof directLinkedPageRes>> = {
+    '1': directLinkedPageRes({ title: 'Seed A', html: '<a href="/pages/3/X">X</a><a href="/pages/2/B">B</a><a href="/pages/1/A">A</a>' }),
+    '2': directLinkedPageRes({ title: 'Seed B', html: '<a href="/pages/3/X">X</a>' }),
+    '3': directLinkedPageRes({ title: 'X', ancestors: [{ id: '0', title: 'Root' }, { id: '9', title: 'Parent' }] }),
+  };
+  globalThis.fetch = vi.fn(async (url: any) => pages[/\/content\/(\d+)\?/.exec(String(url))?.[1] ?? ''] as any);
+  const result = await discoverLinkedConfluencePages({ base: 'https://wiki.test', token: 'pat' }, ['1', '2']);
+  assert.deepEqual(result, [{ pageId: '3', title: 'X', ancestors: ['Root', 'Parent'], linkedFrom: 'Seed A' }]);
+  assert.equal((globalThis.fetch as any).mock.calls.length, 3);
+});
+
+test('discoverLinkedConfluencePages applies cap and skips failed candidates', async () => {
+  const pages: Record<string, ReturnType<typeof directLinkedPageRes>> = {
+    '1': directLinkedPageRes({ title: 'Seed', html: '<a href="/pages/2/A">A</a><a href="/pages/3/B">B</a>' }),
+    '2': directLinkedPageRes({ title: 'A' }),
+    '3': directLinkedPageRes({ title: 'B' }, 404),
+  };
+  globalThis.fetch = vi.fn(async (url: any) => pages[/\/content\/(\d+)\?/.exec(String(url))?.[1] ?? ''] as any);
+  const capped = await discoverLinkedConfluencePages({ base: 'https://wiki.test', token: 'pat' }, ['1'], { cap: 1 });
+  assert.deepEqual(capped.map((p) => p.pageId), ['2']);
+
+  pages['2'] = directLinkedPageRes({ title: 'A' }, 404);
+  const afterError = await discoverLinkedConfluencePages({ base: 'https://wiki.test', token: 'pat' }, ['1']);
+  assert.deepEqual(afterError, []);
+});
 
 test('fetchConfluencePages (flat pathLayout) mirrors the FULL real ancestor chain for a sub-tree scan — nested at every level, not flattened', async () => {
   const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-flat-tree-'));

@@ -304,6 +304,40 @@ export function ConfluenceTreePicker({
   const { hits, loading, error } = useConfluenceTitleSearch(query);
   const showFloating = open && trimmed.length >= 2;
 
+  // ── Tài liệu liên quan (depth-1, opt-in) ─────────────────────────────────
+  // Import pool KHÔNG tự follow link nữa (kéo nhầm trang nhánh wiki khác);
+  // thay bằng nút quét chủ động: daemon trả các trang được LINK từ những
+  // trang đã tick, user tick chọn từng trang — tick = thêm thẳng pageId vào
+  // `ticked`, mọi luồng import phía sau (batch, tạo App, Sửa App) ăn nguyên.
+  type RelatedPage = { pageId: string; title: string; ancestors: string[]; linkedFrom: string };
+  const [related, setRelated] = useState<RelatedPage[] | null>(null);
+  const [relatedLoading, setRelatedLoading] = useState(false);
+  const [relatedError, setRelatedError] = useState<string | null>(null);
+  const scanRelated = async () => {
+    setRelatedLoading(true);
+    setRelatedError(null);
+    try {
+      const res = await fetch('/api/pipelines/confluence/linked-pages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ refs: [...ticked] }),
+      });
+      const j = (await res.json().catch(() => ({}))) as { pages?: RelatedPage[]; error?: string };
+      if (!res.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
+      setRelated(j.pages ?? []);
+    } catch (cause) {
+      setRelatedError(cause instanceof Error ? cause.message : 'Không quét được tài liệu liên quan.');
+    } finally {
+      setRelatedLoading(false);
+    }
+  };
+  const toggleRelated = (pageId: string) => {
+    const next = new Set(ticked);
+    if (next.has(pageId)) next.delete(pageId);
+    else next.add(pageId);
+    onTickedChange(next);
+  };
+
   const updatePos = useCallback(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -560,6 +594,43 @@ export function ConfluenceTreePicker({
           }}
         />
       </label>
+      <div className={styles.relatedWrap}>
+        <button
+          type="button"
+          className={styles.relatedScan}
+          disabled={disabled || relatedLoading || ticked.size === 0}
+          title={ticked.size === 0 ? 'Tick ít nhất một trang trước rồi quét' : 'Tìm các trang được link từ những trang đã tick (depth-1)'}
+          onClick={() => void scanRelated()}
+        >
+          <Icon name={relatedLoading ? 'spinner' : 'link'} size={13} />
+          {relatedLoading ? 'Đang quét tài liệu liên quan…' : 'Quét tài liệu liên quan'}
+        </button>
+        {relatedError ? <p className={styles.msg}>{relatedError}</p> : null}
+        {related && related.length === 0 ? (
+          <p className={styles.msg}>Không tìm thấy tài liệu liên quan từ các trang đã tick.</p>
+        ) : null}
+        {related && related.length > 0 ? (
+          <div className={styles.relatedList}>
+            {related.map((r) => {
+              const on = ticked.has(r.pageId);
+              return (
+                <div key={r.pageId} className={styles.hitRow} onClick={() => !disabled && toggleRelated(r.pageId)}>
+                  <span className={styles.chevronSpacer} aria-hidden="true" />
+                  <span className={`${styles.checkbox}${on ? ' ' + styles.checkboxOn : ''}`}>
+                    {on ? <Icon name="check" size={11} /> : null}
+                  </span>
+                  <span className={styles.optionBody}>
+                    <span className={styles.optionTitle}>{r.title}</span>
+                    <span className={styles.optionMeta}>
+                      {r.ancestors.length ? `${r.ancestors.join(' / ')} · ` : ''}nhắc tới trong “{r.linkedFrom}”
+                    </span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
       {showFloating && pos
         ? createPortal(
             <div
