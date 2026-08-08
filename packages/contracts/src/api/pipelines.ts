@@ -614,6 +614,18 @@ export interface ConfluencePageHit {
   title: string;
   url?: string;
   space?: string;
+  /** Ancestor page TITLES, top→down, excluding this page itself — lets a
+   *  search result with a title shared by pages in different dự án be told
+   *  apart (App-root combobox). Optional: the direct-PAT search path can
+   *  supply it (CQL `expand=ancestors`); the BAS-gateway fallback path
+   *  cannot, so it stays undefined there rather than guessing. */
+  ancestors?: string[];
+  /** Whether this page has at least one child page — lets the App-root search
+   *  dropdown only render an expand arrow on pages that actually have
+   *  children. `undefined` = unknown (the BAS-gateway fallback path has no
+   *  equivalent field, and the direct-PAT path leaves it undefined too when
+   *  Confluence's response omits the children block for a result). */
+  hasChildren?: boolean;
 }
 
 export interface ConfluencePagesResponse {

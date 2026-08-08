@@ -38,7 +38,7 @@ import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { PlModal } from './PlModal';
 import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzone';
-import { ConfluenceTitleSearchImport } from './AppPoolSection';
+import { ConfluenceTreeImport } from './ConfluenceTreeImport';
 import styles from './PipelineSourceModal.module.css';
 import sp from './StagePicker.module.css';
 import poolStyles from './AppPoolSection.module.css';
@@ -2082,7 +2082,7 @@ export function RunAllModal({
                 {appPoolImportOpen ? 'Ẩn nhập tài liệu' : 'Import thêm từ Confluence'}
               </button>
               {appPoolImportOpen && appId ? (
-                <ConfluenceTitleSearchImport
+                <ConfluenceTreeImport
                   appId={appId}
                   onImported={(result) => {
                     setAppPoolImportOpen(false);

@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AppPoolImportResponse, AppPoolPage, AppPoolResponse, ConfluencePageHit } from '@open-design/contracts';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { AppPoolPage, AppPoolResponse } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
 import { renderMarkdownToSafeHtml } from '../../artifacts/markdown';
 import { fetchProjectFileText } from '../../providers/registry';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
+import { ConfluenceTreeImport } from './ConfluenceTreeImport';
 import styles from './AppPoolSection.module.css';
 
 const STATE_LABELS: Record<AppPoolPage['distill']['state'], string> = {
@@ -18,131 +19,6 @@ const STATE_LABELS: Record<AppPoolPage['distill']['state'], string> = {
 
 function poolUrl(appId: string): string {
   return `/api/pipelines/apps/${encodeURIComponent(appId)}/pool`;
-}
-
-/** Picker tìm-theo-tên + tick nhiều DÙNG CHUNG cho pool App: search
- *  `GET /api/pipelines/confluence/pages?q=` (debounce ≥2 ký tự, cùng endpoint
- *  picker Confluence khác trong app đã dùng), tick nhiều trang rồi bấm "Nhập"
- *  gọi thẳng `POST .../import-confluence` — component TỰ gọi import (không chỉ
- *  trả `refs` ra ngoài) vì cả AppPoolSection (WP-5) lẫn thẻ "Tài liệu App" của
- *  RunAllModal (WP-6) đều cần đúng một hành vi: nhập xong thì có ngay
- *  ManifestPage mới để tick vào run-config. */
-export function ConfluenceTitleSearchImport({
-  appId,
-  onImported,
-  disabled,
-}: {
-  appId: string;
-  onImported: (result: AppPoolImportResponse) => void;
-  disabled?: boolean;
-}) {
-  const [query, setQuery] = useState('');
-  const [hits, setHits] = useState<ConfluencePageHit[] | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [ticked, setTicked] = useState<Set<string>>(new Set());
-  const [importing, setImporting] = useState(false);
-  const [importError, setImportError] = useState<string | null>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => {
-    clearTimeout(debounceRef.current);
-    if (query.trim().length < 2) {
-      setHits(null);
-      return undefined;
-    }
-    debounceRef.current = setTimeout(() => {
-      setSearching(true);
-      setSearchError(null);
-      void (async () => {
-        try {
-          const res = await fetch(`/api/pipelines/confluence/pages?q=${encodeURIComponent(query.trim())}`);
-          const j = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(j?.error || `HTTP ${res.status}`);
-          setHits((j as { pages?: ConfluencePageHit[] }).pages ?? []);
-        } catch (cause) {
-          setSearchError(cause instanceof Error ? cause.message : 'Tìm trang thất bại.');
-          setHits([]);
-        } finally {
-          setSearching(false);
-        }
-      })();
-    }, 350);
-    return () => clearTimeout(debounceRef.current);
-  }, [query]);
-
-  const toggle = (id: string) =>
-    setTicked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
-  const importTicked = async () => {
-    if (importing || ticked.size === 0) return;
-    setImporting(true);
-    setImportError(null);
-    try {
-      const refs = [...ticked];
-      const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/import-confluence`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ refs }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j?.error || `Nhập tài liệu thất bại (${res.status}).`);
-      onImported(j as AppPoolImportResponse);
-      setTicked(new Set());
-      setQuery('');
-      setHits(null);
-    } catch (cause) {
-      setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
-    } finally {
-      setImporting(false);
-    }
-  };
-
-  return (
-    <div className={styles.importPanel}>
-      <label className={styles.searchField}>
-        <Icon name="search" size={14} />
-        <input
-          type="text"
-          className={styles.searchInput}
-          placeholder="Tìm trang Confluence theo tên…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          disabled={disabled || importing}
-        />
-      </label>
-      {searching ? (
-        <p className={styles.muted}>Đang tìm…</p>
-      ) : searchError ? (
-        <p className={styles.error}>{searchError}</p>
-      ) : hits !== null ? (
-        hits.length === 0 ? (
-          <p className={styles.muted}>Không trang nào khớp “{query}”.</p>
-        ) : (
-          <div className={styles.hitList}>
-            {hits.map((h) => (
-              <label key={h.id} className={styles.hitRow}>
-                <input type="checkbox" checked={ticked.has(h.id)} onChange={() => toggle(h.id)} disabled={importing} />
-                <span className={styles.hitTitle}>{h.title}</span>
-                {h.space ? <span className={styles.hitSpace}>{h.space}</span> : null}
-              </label>
-            ))}
-          </div>
-        )
-      ) : null}
-      {ticked.size > 0 ? (
-        <button type="button" className={styles.primaryButton} onClick={() => void importTicked()} disabled={importing}>
-          {importing ? 'Đang nhập…' : `Nhập ${ticked.size} trang`}
-        </button>
-      ) : null}
-      {importError ? <p className={styles.error}>{importError}</p> : null}
-    </div>
-  );
 }
 
 interface AppPoolSectionProps {
@@ -340,7 +216,7 @@ export function AppPoolSection({ appId }: AppPoolSectionProps) {
           {importOpen ? 'Ẩn nhập tài liệu' : 'Nhập tài liệu từ Confluence'}
         </button>
         {importOpen ? (
-          <ConfluenceTitleSearchImport
+          <ConfluenceTreeImport
             appId={appId}
             onImported={() => {
               setImportOpen(false);

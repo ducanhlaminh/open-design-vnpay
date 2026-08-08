@@ -1,0 +1,223 @@
+/* Confluence eager parent/child tree picker — ConfluenceTreeImport.tsx.
+   Styling ported from the pre-revert PipelineFormModal.module.css
+   `.combo*` rules (git show cfef0fe^:…PipelineFormModal.module.css), kept
+   self-contained here since this component is used outside
+   PipelineFormModal's own dialogs too (AppPoolSection, PipelineModals). */
+
+.wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.searchField {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-soft);
+}
+
+.searchInput {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+}
+
+.searchInput:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.searchInput:disabled {
+  opacity: 0.55;
+}
+
+/* Rendered through a portal into document.body (position: fixed, top/left/
+   width/maxHeight set inline in JS via getBoundingClientRect + flip-above
+   math) so it escapes any modal's `overflow-y: auto` body and stacking
+   context. z-index matches `.od-select-menu` / the pre-revert
+   `.comboDropdown` precedent — this repo's established value for "portal
+   dropdown above any modal". */
+.dropdown {
+  position: fixed;
+  z-index: 9000;
+  overflow-y: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-app);
+  background-image: linear-gradient(var(--bg-panel), var(--bg-panel));
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+}
+
+/* Top-level search-hit row: chevron (expand/fetch sub-tree) + checkbox (tick
+   this page + its whole subtree) + title/meta. */
+.hitRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.hitRow:hover {
+  background: var(--bg-subtle);
+}
+
+/* Nested descendant row (inside an expanded hit's sub-tree) — same
+   chevron+checkbox shape, single-line title, indented per depth (inline
+   `paddingLeft`). */
+.nodeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.nodeRow:hover {
+  background: var(--bg-subtle);
+}
+
+.chevron {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.chevron:hover {
+  color: var(--accent);
+}
+
+.chevronSpacer {
+  flex: none;
+  width: 16px;
+}
+
+.checkbox {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  border-radius: 4px;
+  border: 1.5px solid var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.checkboxOn {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.optionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.optionTitle {
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.optionMeta {
+  font-size: 11px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg {
+  margin: 0;
+  padding: 7px 9px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.summaryRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.summaryText {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.primaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--bg-panel);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.16s cubic-bezier(0.23, 1, 0.32, 1), transform 0.12s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.primaryButton:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.primaryButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.primaryButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.error {
+  margin: 0;
+  color: var(--red);
+  font-size: 12px;
+  line-height: 1.45;
+}
