@@ -17,9 +17,36 @@
 .required { color: var(--red); }
 .input, .textarea, .otherInput { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-app); color: var(--text-strong); font: inherit; }
 .textarea { min-height: 110px; resize: vertical; }
-.options, .scale, .attachments, .stageGroup { display: flex; flex-direction: column; gap: 9px; }
-.checkOption { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
-.checkOption input { accent-color: var(--accent); }
+.scale, .attachments, .stageGroup { display: flex; flex-direction: column; gap: 9px; }
+/* Lưới pill 2 cột như modal đánh giá cũ. Mọi thuộc tính hướng/căn đặt TƯỜNG
+   MINH (direction/text-align/justify) — modal nằm trong cây pipelines có
+   global css cho label/fieldset từng kéo chữ văng sang phải. */
+.options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.checkOption {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: left;
+  direction: ltr;
+  cursor: pointer;
+}
+.checkOption input { flex: 0 0 auto; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.checkOption span { flex: 1 1 auto; min-width: 0; text-align: left; overflow-wrap: anywhere; }
+.checkOption[data-selected='yes'] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+/* Danh sách file đính kèm: pill full-width một cột đọc dễ hơn. */
+.stageGroup .checkOption { border: 0; padding: 4px 0; background: transparent; }
 .scale { flex-direction: row; flex-wrap: wrap; align-items: center; }
 .scaleButton { min-width: 35px; height: 35px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text); cursor: pointer; }
 .scaleButton[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-soft); color: var(--text-strong); }
@@ -38,7 +65,7 @@
 .button:disabled { opacity: .5; cursor: not-allowed; }
 .primary { border-color: var(--accent); background: var(--accent); color: var(--text-on-accent, white); }
 .success { padding: 32px; color: var(--text-strong); text-align: center; }
-@media (max-width: 680px) { .wizard { display: flex; } .sidebar { min-height: auto; } }
+@media (max-width: 680px) { .wizard { display: flex; } .sidebar { min-height: auto; } .options { grid-template-columns: 1fr; } }
 
 .instance { display: flex; flex-direction: column; gap: 12px; }
 .instanceTitle { margin: 0; color: var(--text-strong); font-size: 14px; }
