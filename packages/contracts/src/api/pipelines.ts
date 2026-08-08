@@ -398,8 +398,8 @@ export interface RunAllConfig {
    * `null` (3-state, cùng ngữ nghĩa `designSystemId`) XÓA field đã lưu — mỗi
    * lần Lưu nguồn tài liệu phải resend cả ba nhánh loại trừ nhau
    * (`confluencePages` / `docsFromUpload` / `appPool`).
-   * GATE: run chỉ thật sự fetch khi mọi trang trong pool của App đã
-   * `distilled` (BE kiểm ở `POST run-all`/`run-config`, FE chỉ disable nút).
+   * Run copies selected pages from the App pool into the feature's `docs-feature/`
+   * root; the full pool is available read-only under `docs-app/`.
    */
   appPool?: { appId: string; paths: string[] } | null;
 }
@@ -584,7 +584,7 @@ export type PipelineRunSource =
       /** App Docs Pool (docs/app-docs-pool-spec.md §2.2): copy the ticked MAIN
        *  pages (deterministic, incl. images/attachments) into `<wf>/docs/`,
        *  same status semantics as the plain Confluence path — gated on every
-       *  pool page being `distilled` (parsed at `parseRunSource`). */
+       *  pool page being present (parsed at `parseRunSource`). */
       kind: 'app-pool';
       appId: string;
       paths: string[];
@@ -633,15 +633,7 @@ export interface ConfluencePagesResponse {
 }
 
 // ── App Docs Pool (docs/app-docs-pool-spec.md §2) ────────────────────────────
-// One Confluence fetch per App (not per feature run): pages land in
-// `<appId>/docs/` + a manifest, then get "chưng cất" (map-reduce distill) into
-// `_overview.md` + `_branches/*.md` before any pipeline run may consume them
-// (GATE — see `RunAllConfig.appPool` / `PipelineRunSource` 'app-pool').
-
-/** Manifest page state machine (spec §2.1): `stale` = re-fetch changed the
- *  page's content after it was already distilled. Gate passes only when every
- *  page is `distilled` AND `distilledHash === contentHash`. */
-export type AppPoolDistillState = 'fetched' | 'stale' | 'distilling' | 'distilled';
+// One Confluence fetch per App: pages land in `<appId>/docs/` + a manifest.
 
 /** One page in an App's pool (`<appId>/docs/_manifest.json` entry). */
 export interface AppPoolPage {
@@ -654,23 +646,13 @@ export interface AppPoolPage {
   contentHash: string;
   fetchedAt: number;
   /** Trang vào pool qua "Quét tài liệu liên quan" (depth-1) chứ không phải
-   *  do user tick trực tiếp — UI tách nhóm "Docs liên quan" riêng. Vắng mặt
-   *  (pool cũ) = docs chính. */
+   *  do user tick trực tiếp — UI tách nhóm "Docs liên quan" riêng. */
   related?: boolean;
-  distill: { state: AppPoolDistillState; distilledHash: string | null };
 }
 
 /** `GET /api/pipelines/apps/:appId/pool`. */
 export interface AppPoolResponse {
   pages: AppPoolPage[];
-  distill: {
-    /** True ⇔ every page is `distilled` with a matching hash — the GATE. */
-    clean: boolean;
-    pending: number;
-    running: boolean;
-    progress?: { done: number; total: number; error?: string };
-  };
-  overviewExists: boolean;
 }
 
 /** `POST /api/pipelines/apps/:appId/import-confluence` response. */

@@ -44,6 +44,17 @@ test('listMockupPages returns only pages with an attachments image, nested, with
   assert.equal(pages[0]!.mdPath, 'docs/confluence/i-tai-khoan/1-thiet-lap.md');
 });
 
+test('listMockupPages prefers docs-feature', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'od-prd-feature-'));
+  await mkdir(join(cwd, 'docs-feature'), { recursive: true });
+  await writeFile(join(cwd, 'docs-feature', 'screen.md'), '![screen](attachments/a.png)');
+  await mkdir(join(cwd, 'docs', 'confluence'), { recursive: true });
+  await writeFile(join(cwd, 'docs', 'confluence', 'legacy.md'), '![legacy](attachments/b.png)');
+  const pages = await listMockupPages(cwd);
+  assert.equal(pages[0]?.mdPath, 'docs-feature/screen.md');
+  await rm(cwd, { recursive: true, force: true });
+});
+
 test('scorePageReport recomputes counts/score/verdict from images (skill arithmetic)', () => {
   const r = scorePageReport({
     images: [

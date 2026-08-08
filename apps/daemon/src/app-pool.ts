@@ -1,16 +1,10 @@
 // App Docs Pool — one deterministic Confluence fetch per App, stored under
-// `<PROJECTS_DIR>/<appId>/docs/`, distilled by an agent (app-distill.ts) into
-// `_overview.md` + `_branches/<slug>.md`, and gated before a feature run can
-// consume it. Contracts are pinned in docs/app-docs-pool-spec.md §2 — this
-// module owns §2.1 (manifest) + the mechanical `_index.md` generator (§2.3)
-// + the deterministic Confluence import (§2.2's import-confluence, reusing
-// the dr-docs fetch core in bas/bas-client.ts — see importConfluenceIntoPool).
+// `<PROJECTS_DIR>/<appId>/docs/`. The pool contains fetched source pages and
+// a mechanical `_index.md`; legacy derived artifacts are never staged.
 //
 // Storage layout (all under `<PROJECTS_DIR>/<appId>/docs/`):
 //   _manifest.json   — §2.1, the single source of truth for pool state.
 //   _index.md        — mechanical (0 LLM), regenerated on every pool change.
-//   _overview.md     — agent-authored (app-distill.ts MODE=reduce).
-//   _branches/<slug>.md — agent-authored, one per branch (MODE=branch).
 //   <branch>/<slug>.md (+ attachments/) — the actual fetched pages; `path` in
 //     the manifest is relative to this `docs/` root, e.g.
 //     "2-urd-cho-website-k-ton/i-urd-ti-khon.md".
@@ -19,14 +13,12 @@
 // model (see pipeline-routes.ts's collectLocalApps comment) — the pool lives
 // purely on disk, keyed by appId exactly like a project cwd (`ensureProject`
 // works unmodified because appId and projectId share the same id-safety
-// rules). Distill's agent runs (app-distill.ts) DO need a `projects` row for
-// the conversations FK; that row is created lazily there, not here.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { AppPoolDistillState, AppPoolPage } from '@open-design/contracts';
+import type { AppPoolPage } from '@open-design/contracts';
 
 import {
   extractPageId,
@@ -37,13 +29,6 @@ import {
   type ConfluenceDocPage,
 } from './bas/bas-client.js';
 
-// The manifest page/state shapes are the pinned §2.1 contract, shared with
-// the web client via `packages/contracts` (`AppPoolPage`/`AppPoolDistillState`
-// back `GET .../pool`'s response) — re-exported under the daemon-local names
-// this module (and app-distill.ts) already used, so nothing downstream needs
-// renaming.
-export type DistillState = AppPoolDistillState;
-export type ManifestPageDistill = AppPoolPage['distill'];
 export type ManifestPage = AppPoolPage;
 
 export interface AppPoolManifest {
@@ -65,28 +50,6 @@ export function indexPath(projectsDir: string, appId: string): string {
   return path.join(appDocsDir(projectsDir, appId), '_index.md');
 }
 
-export function overviewPath(projectsDir: string, appId: string): string {
-  return path.join(appDocsDir(projectsDir, appId), '_overview.md');
-}
-
-export function branchesDir(projectsDir: string, appId: string): string {
-  return path.join(appDocsDir(projectsDir, appId), '_branches');
-}
-
-export function branchFilePath(projectsDir: string, appId: string, branch: string): string {
-  return path.join(branchesDir(projectsDir, appId), `${branch}.md`);
-}
-
-function normalizeDistill(raw: unknown): ManifestPageDistill {
-  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-  const state: DistillState =
-    obj.state === 'distilling' || obj.state === 'distilled' || obj.state === 'stale'
-      ? obj.state
-      : 'fetched';
-  const distilledHash = typeof obj.distilledHash === 'string' ? obj.distilledHash : null;
-  return { state, distilledHash };
-}
-
 function normalizeManifest(raw: unknown): AppPoolManifest {
   const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   const rawPages = Array.isArray(obj.pages) ? obj.pages : [];
@@ -100,7 +63,6 @@ function normalizeManifest(raw: unknown): AppPoolManifest {
       contentHash: String(p.contentHash ?? ''),
       fetchedAt: typeof p.fetchedAt === 'number' ? p.fetchedAt : 0,
       ...(p.related === true ? { related: true } : {}),
-      distill: normalizeDistill(p.distill),
     }))
     .filter((p) => p.pageId && p.path);
   return { version: 1, pages };
@@ -182,62 +144,6 @@ export function deriveBranch(relPath: string): string {
   return norm.replace(/\.md$/i, '') || norm;
 }
 
-export function pageClean(p: ManifestPage): boolean {
-  return p.distill.state === 'distilled' && p.distill.distilledHash === p.contentHash;
-}
-
-/** §2.1: "Gate pass ⇔ mọi page state==='distilled' && distilledHash===contentHash". */
-export function isPoolClean(manifest: AppPoolManifest): boolean {
-  return manifest.pages.every(pageClean);
-}
-
-export function pendingCount(manifest: AppPoolManifest): number {
-  return manifest.pages.filter((p) => !pageClean(p)).length;
-}
-
-export function listBranches(manifest: AppPoolManifest): string[] {
-  return [...new Set(manifest.pages.map((p) => p.branch))].sort((a, b) => a.localeCompare(b));
-}
-
-export function pagesForBranch(manifest: AppPoolManifest, branch: string): ManifestPage[] {
-  return manifest.pages.filter((p) => p.branch === branch);
-}
-
-/** Branches with ≥1 page not yet clean — what an incremental distill run
- *  needs to (re)process (WP-2's "chỉ nhánh có trang ≠distilled"). */
-export function branchesNeedingDistill(manifest: AppPoolManifest): string[] {
-  const set = new Set(manifest.pages.filter((p) => !pageClean(p)).map((p) => p.branch));
-  return [...set].sort((a, b) => a.localeCompare(b));
-}
-
-/** Flip every page of `branch` to `state` (distilling/fetched/stale). Used by
- *  the distill runner to mark in-flight branches, and to revert on failure. */
-export function setBranchState(
-  manifest: AppPoolManifest,
-  branch: string,
-  state: DistillState,
-): AppPoolManifest {
-  return {
-    ...manifest,
-    pages: manifest.pages.map((p) =>
-      p.branch === branch ? { ...p, distill: { ...p.distill, state } } : p,
-    ),
-  };
-}
-
-/** Mark every page of `branch` distilled — `distilledHash` becomes the
- *  page's OWN current `contentHash` (the gate compares the two per page). */
-export function markBranchDistilled(manifest: AppPoolManifest, branch: string): AppPoolManifest {
-  return {
-    ...manifest,
-    pages: manifest.pages.map((p) =>
-      p.branch === branch
-        ? { ...p, distill: { state: 'distilled', distilledHash: p.contentHash } }
-        : p,
-    ),
-  };
-}
-
 /** §2.3: "_index.md CƠ HỌC (0 LLM): cây trang + title(heading) + path" —
  *  grouped by branch so it doubles as a map of "which pages make up which
  *  phân hệ" for a human skimming it. */
@@ -275,9 +181,7 @@ export async function writeIndexMd(
 }
 
 /** Merge freshly-fetched pages into the manifest (§2.2 import-confluence):
- *  a brand-new pageId → `fetched`; an existing pageId whose content changed
- *  → `stale` (needs re-distilling), distill state otherwise untouched;
- *  unchanged content → the existing entry is left exactly as-is (not counted
+ *  a brand-new pageId is added; unchanged content is left exactly as-is (not counted
  *  as updated). */
 export function upsertPagesFromFetch(
   manifest: AppPoolManifest,
@@ -300,14 +204,13 @@ export function upsertPagesFromFetch(
         contentHash: f.contentHash,
         fetchedAt: now,
         ...(f.related ? { related: true } : {}),
-        distill: { state: 'fetched', distilledHash: null },
       });
       continue;
     }
     if (existing.contentHash === f.contentHash && existing.path === f.path) {
       // Nội dung không đổi — chỉ đồng bộ cờ related (import lại một trang
       // "liên quan" bằng tick trực tiếp thì nó thành docs chính, và ngược
-      // lại); KHÔNG đụng distill state, không tính là updated.
+      // lại); không tính là updated.
       if (f.related === true && existing.related !== true) byId.set(f.pageId, { ...existing, related: true });
       else if (f.related === false && existing.related === true) {
         const { related: _related, ...rest } = existing;
@@ -326,7 +229,6 @@ export function upsertPagesFromFetch(
       contentHash: f.contentHash,
       fetchedAt: now,
       ...(nextRelated ? { related: true } : {}),
-      distill: { ...existing.distill, state: 'stale' },
     });
   }
   return { manifest: { version: 1, pages: [...byId.values()] }, imported, updated };
@@ -427,7 +329,7 @@ export async function importConfluenceIntoPool(opts: {
   return { imported, updated, pages: next.pages };
 }
 
-/** Dot-folder a pool's DISTILLED files + every page's markdown stage into
+/** Dot-folder a pool's pool Markdown files + every page's markdown stage into
  *  inside a run cwd (§2.4). Mirrors `stageAppContext`'s shape (app-context.ts):
  *  a dot-folder so snapshot/push/re-run-clear never see it, wiped and
  *  rewritten on every stage run so it always reflects the CURRENT pool.
@@ -435,8 +337,8 @@ export async function importConfluenceIntoPool(opts: {
  *  deliberately excluded — §2.4: "toàn bộ `*.md` pool (KHÔNG ảnh)"). Returns
  *  the staged relative paths (empty when the app has no pool yet — a no-op,
  *  matching app-context.ts's unlinked-feature behavior) and whether
- *  `_overview.md` is among them. */
-export const STAGED_APP_DOCS = '.app-docs';
+ *  legacy overview is excluded. */
+export const STAGED_APP_DOCS = 'docs-app';
 
 export async function stageAppDocsPool(
   projectsDir: string,
@@ -455,7 +357,7 @@ export async function stageAppDocsPool(
     await fs.promises.mkdir(path.dirname(dst), { recursive: true });
     await fs.promises.copyFile(src, dst);
   }
-  return { staged: files, overviewExists: files.includes('_overview.md') };
+  return { staged: files, overviewExists: false };
 }
 
 async function collectMarkdown(dir: string, relDir: string, out: string[]): Promise<void> {
@@ -469,10 +371,11 @@ async function collectMarkdown(dir: string, relDir: string, out: string[]): Prom
   for (const entry of entries) {
     const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
+      if (entry.name === '_branches') continue;
       await collectMarkdown(path.join(dir, entry.name), rel, out);
       continue;
     }
-    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) out.push(rel);
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md') && entry.name !== '_overview.md') out.push(rel);
   }
 }
 
@@ -481,11 +384,7 @@ async function collectMarkdown(dir: string, relDir: string, out: string[]): Prom
  *  staged keeps the kickoff byte-identical to the legacy one. */
 export function appDocsPoolDirective(stagedFiles: string[]): string {
   if (stagedFiles.length === 0) return '';
-  return (
-    ' Tài liệu App: đọc `.app-docs/_overview.md` TRƯỚC KHI làm việc. Cần sâu phân hệ →' +
-    ' `.app-docs/_branches/<slug>.md`; cần chi tiết → mở trang theo «Bản đồ trang». Phạm vi xử lý' +
-    ' CHÍNH của bạn chỉ là `docs/` — KHÔNG audit/fan-out các file trong `.app-docs/`.'
-  );
+  return ' Tài liệu App: trang cho feature này ở `docs-feature/` (nguồn sự thật). TOÀN BỘ pool App nạp read-only ở `docs-app/` — đọc `docs-app/_index.md` để nắm danh mục, chỉ mở trang khi cần đối chiếu ngoài phạm vi feature; KHÔNG audit/fan-out/deliverable từ `docs-app/`.';
 }
 
 /** §2.2 DELETE pool/pages: remove manifest entries + their files, regenerate

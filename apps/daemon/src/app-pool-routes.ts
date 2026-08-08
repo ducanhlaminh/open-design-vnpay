@@ -1,9 +1,6 @@
 // App Docs Pool — HTTP routes (docs/app-docs-pool-spec.md §2.2 / §WP-1).
 // One deterministic Confluence import per App + a gate-readable pool view +
-// page deletion + the distill trigger (actual distill logic in
-// app-distill.ts; this file only wires the HTTP surface to it).
-
-import fs from 'node:fs';
+// page deletion.
 
 import type { Express } from 'express';
 
@@ -11,13 +8,9 @@ import { listPipelineApps, listProjects } from './db.js';
 import {
   deletePoolPages,
   importConfluenceIntoPool,
-  isPoolClean,
-  overviewPath,
-  pendingCount,
   readManifest,
   type ManifestPage,
 } from './app-pool.js';
-import { DistillConflictError, getDistillProgress, startDistill, type AppDistillDeps } from './app-distill.js';
 import { discoverLinkedConfluencePages, resolveConfluenceCreds } from './bas/bas-client.js';
 
 export interface RegisterAppPoolRoutesDeps {
@@ -26,9 +19,6 @@ export interface RegisterAppPoolRoutesDeps {
     PROJECTS_DIR: string;
     RUNTIME_DATA_DIR: string;
   };
-  /** Wired in server.ts to the real fan-out agent runner (see app-distill.ts's
-   *  docblock); the route layer only starts/reads progress. */
-  distill: AppDistillDeps;
 }
 
 /** An App is "known" locally when it either has its own `pipeline_apps` row
@@ -114,30 +104,8 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
     }
     try {
       const manifest = await readManifest(paths.PROJECTS_DIR, appId);
-      const progress = getDistillProgress(appId);
-      const overviewExists = await fs.promises
-        .access(overviewPath(paths.PROJECTS_DIR, appId))
-        .then(() => true)
-        .catch(() => false);
       const pages: ManifestPage[] = manifest.pages;
-      res.json({
-        pages,
-        distill: {
-          clean: isPoolClean(manifest),
-          pending: pendingCount(manifest),
-          running: progress?.running === true,
-          ...(progress
-            ? {
-                progress: {
-                  done: progress.done,
-                  total: progress.total,
-                  ...(progress.error ? { error: progress.error } : {}),
-                },
-              }
-            : {}),
-        },
-        overviewExists,
-      });
+      res.json({ pages });
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
     }
@@ -161,20 +129,4 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
     }
   });
 
-  // POST /api/pipelines/apps/:appId/distill — §2.2.
-  app.post('/api/pipelines/apps/:appId/distill', async (req, res) => {
-    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
-    if (!appId || !appExistsLocally(db, appId)) {
-      return res.status(404).json({ error: `app "${appId}" not found` });
-    }
-    try {
-      const result = await startDistill(appId, ctx.distill);
-      res.json(result);
-    } catch (err: any) {
-      if (err instanceof DistillConflictError) {
-        return res.status(409).json({ error: err.message });
-      }
-      res.status(500).json({ error: String(err?.message ?? err) });
-    }
-  });
 }

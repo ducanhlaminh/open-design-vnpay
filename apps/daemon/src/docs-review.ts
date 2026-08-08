@@ -49,7 +49,8 @@ function titleFromFrontmatter(md: string, fallback: string): string {
  *  Unlike listMockupPages, EVERY page counts — not just pages carrying a
  *  mockup image, because this stage reviews text/flow/gap issues too. */
 export async function listDocPages(cwd: string): Promise<DocPage[]> {
-  const root = path.join(cwd, 'docs');
+  const featureRoot = path.join(cwd, 'docs-feature');
+  const root = (await hasMarkdown(featureRoot)) ? featureRoot : path.join(cwd, 'docs');
   const out: DocPage[] = [];
   const walk = async (dir: string): Promise<void> => {
     let entries: import('node:fs').Dirent[];
@@ -79,6 +80,17 @@ export async function listDocPages(cwd: string): Promise<DocPage[]> {
   // Deterministic order (path) so re-runs and the index are stable.
   out.sort((a, b) => a.mdPath.localeCompare(b.mdPath));
   return out;
+}
+
+async function hasMarkdown(root: string): Promise<boolean> {
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [] as import('node:fs').Dirent[]);
+  for (const entry of entries) {
+    if (entry.name === 'attachments') continue;
+    const abs = path.join(root, entry.name);
+    if (entry.isDirectory() && await hasMarkdown(abs)) return true;
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md') && entry.name.toLowerCase() !== '_index.md') return true;
+  }
+  return false;
 }
 
 // NO rewriteImagePaths here — this stage clones the ENTIRE docs/ tree
@@ -112,8 +124,9 @@ export async function listDocPages(cwd: string): Promise<DocPage[]> {
  *  image files. */
 export async function cloneDocsForReview(cwd: string): Promise<string[]> {
   const pages = await listDocPages(cwd);
-  const src = path.join(cwd, 'docs');
-  const dest = path.join(cwd, 'review', 'docs');
+  const rootName = pages[0]?.mdPath.startsWith('docs-feature/') ? 'docs-feature' : 'docs';
+  const src = path.join(cwd, rootName);
+  const dest = path.join(cwd, 'review', rootName);
   await fs.rm(dest, { recursive: true, force: true });
   try {
     await fs.cp(src, dest, { recursive: true, force: true });

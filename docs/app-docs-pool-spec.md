@@ -14,7 +14,7 @@ BẤT BIẾN, không WP nào được sửa shape mà không cập nhật spec.
   `distilled` + hash khớp. FE disable nút Chạy; BE là chốt thật (failed +
   error đếm trang).
 - **Run**: bước ingest copy deterministic trang CHÍNH (đã tick) →
-  `<wf>/docs/`; TOÀN BỘ pool (md-only) stage vào `.app-docs/` (dot-folder,
+  `<wf>/docs/`; TOÀN BỘ pool (md-only) stage vào `docs-app/` (dot-folder,
   khuôn `stageAppContext` — vô hình với snapshot/push/re-run-clear) + kickoff
   bắt agent đọc `_overview.md` trước, drill-down theo bản đồ, phạm vi chính
   = `docs/`.
@@ -77,12 +77,12 @@ BẤT BIẾN, không WP nào được sửa shape mà không cập nhật spec.
   tham chiếu. Fail → distill run đánh dấu failed, KHÔNG set distilled.
 
 ### 2.4 Staging vào run + kickoff
-- `.app-docs/` trong run cwd: `_overview.md`, `_branches/**`, `_index.md`,
+- `docs-app/` trong run cwd: `_overview.md`, `_branches/**`, `_index.md`,
   toàn bộ `*.md` pool (KHÔNG ảnh — ảnh chỉ theo trang chính vào `docs/`).
-- Kickoff thêm đúng đoạn: «Tài liệu App: đọc `.app-docs/_overview.md` TRƯỚC
-  KHI làm việc. Cần sâu phân hệ → `.app-docs/_branches/<slug>.md`; cần chi
+- Kickoff thêm đúng đoạn: «Tài liệu App: đọc `docs-app/_overview.md` TRƯỚC
+  KHI làm việc. Cần sâu phân hệ → `docs-app/_branches/<slug>.md`; cần chi
   tiết → mở trang theo «Bản đồ trang». Phạm vi xử lý CHÍNH của bạn chỉ là
-  `docs/` — KHÔNG audit/fan-out các file trong `.app-docs/`.»
+  `docs/` — KHÔNG audit/fan-out các file trong `docs-app/`.»
 
 ## 3. Work Packages (chạy song song trừ khi ghi depends)
 
@@ -121,7 +121,7 @@ jira-ingest: source/saved appPool → GATE check (§2.1) — fail: status failed
 + error «N trang chưa chưng cất (…) — bấm Chưng cất tài liệu rồi chạy lại»;
 pass: copy deterministic trang chính (+ảnh/attachments cùng thư mục trang)
 → `<wf>/docs/` + status như runDocsDeterministic cũ. MỌI stage của project
-có App gắn pool: stage `.app-docs/` (§2.4, khuôn stageAppContext) + kickoff
+có App gắn pool: stage `docs-app/` (§2.4, khuôn stageAppContext) + kickoff
 directive. Contracts: PipelineRunSource + RunAllConfig.appPool. Tests: gate
 pass/fail, copy, preserve, staging, kickoff chứa directive.
 

@@ -1307,3 +1307,16 @@ test('removePageOutputs dọn luôn file lát cắt .s<NN>.slice.md', async () =
     await assert.rejects(() => stat(join(dir, name)), `${name} phải bị xoá`);
   }
 });
+
+test('listDocPages and cloneDocsForReview prefer docs-feature and preserve its root', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'od-docs-feature-'));
+  await mkdir(join(cwd, 'docs-feature'), { recursive: true });
+  await writeFile(join(cwd, 'docs-feature', 'feature.md'), '# Feature');
+  await mkdir(join(cwd, 'docs'), { recursive: true });
+  await writeFile(join(cwd, 'docs', 'legacy.md'), '# Legacy');
+  const pages = await listDocPages(cwd);
+  assert.deepEqual(pages.map((p) => p.mdPath), ['docs-feature/feature.md']);
+  assert.deepEqual(await cloneDocsForReview(cwd), ['review/docs-feature/feature.md']);
+  assert.equal(await readFile(join(cwd, 'review/docs-feature/feature.md'), 'utf8'), '# Feature');
+  await rm(cwd, { recursive: true, force: true });
+});

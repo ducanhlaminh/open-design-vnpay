@@ -9,13 +9,9 @@ import {
   deletePoolPages,
   deriveBranch,
   generateIndexMd,
-  isPoolClean,
-  markBranchDistilled,
-  pendingCount,
   poolPrefixLen,
   readManifest,
   rebalanceBranches,
-  setBranchState,
   sha256,
   stageAppDocsPool,
   upsertPagesFromFetch,
@@ -42,7 +38,6 @@ function page(overrides: Partial<AppPoolManifest['pages'][number]> = {}): AppPoo
     branch: 'branch-a',
     contentHash: sha256('v1'),
     fetchedAt: 1000,
-    distill: { state: 'fetched', distilledHash: null },
     ...overrides,
   };
 }
@@ -94,7 +89,6 @@ describe('app-pool — deriveBranch (§2.1 "slug nhánh cấp-1")', () => {
 describe('app-pool — poolPrefixLen + rebalanceBranches (path tuyệt đối, branch sau prefix)', () => {
   const page = (path: string) => ({
     pageId: path, path, title: path, branch: '', contentHash: 'h', fetchedAt: 1,
-    distill: { state: 'fetched' as const, distilledHash: null },
   });
 
   it('prefix = chuỗi folder chung của MỌI trang, không ăn vào tên file', () => {
@@ -125,33 +119,6 @@ describe('app-pool — poolPrefixLen + rebalanceBranches (path tuyệt đối, b
   });
 });
 
-describe('app-pool — gate (isPoolClean/pendingCount)', () => {
-  it('is clean only when every page is distilled with a matching hash', () => {
-    const clean: AppPoolManifest = {
-      version: 1,
-      pages: [page({ distill: { state: 'distilled', distilledHash: sha256('v1') } })],
-    };
-    expect(isPoolClean(clean)).toBe(true);
-    expect(pendingCount(clean)).toBe(0);
-  });
-
-  it('a stale page (hash changed since last distill) fails the gate', () => {
-    const manifest: AppPoolManifest = {
-      version: 1,
-      pages: [
-        page({ contentHash: sha256('v2'), distill: { state: 'stale', distilledHash: sha256('v1') } }),
-        page({ pageId: '2', distill: { state: 'distilled', distilledHash: sha256('v1') } }),
-      ],
-    };
-    expect(isPoolClean(manifest)).toBe(false);
-    expect(pendingCount(manifest)).toBe(1);
-  });
-
-  it('an empty pool is vacuously clean', () => {
-    expect(isPoolClean({ version: 1, pages: [] })).toBe(true);
-  });
-});
-
 describe('app-pool — upsertPagesFromFetch (§2.2 import-confluence)', () => {
   it('a brand-new pageId is imported as "fetched"', () => {
     const { manifest, imported, updated } = upsertPagesFromFetch(
@@ -162,69 +129,9 @@ describe('app-pool — upsertPagesFromFetch (§2.2 import-confluence)', () => {
     expect(imported).toBe(1);
     expect(updated).toBe(0);
     expect(manifest.pages).toHaveLength(1);
-    expect(manifest.pages[0]!.distill).toEqual({ state: 'fetched', distilledHash: null });
     expect(manifest.pages[0]!.branch).toBe('a');
   });
 
-  it('re-fetching an EXISTING page whose content changed flips it to "stale"', () => {
-    const before: AppPoolManifest = {
-      version: 1,
-      pages: [page({ distill: { state: 'distilled', distilledHash: sha256('v1') } })],
-    };
-    const { manifest, imported, updated } = upsertPagesFromFetch(
-      before,
-      [{ pageId: '1', title: 'Page One', path: 'branch-a/page-one.md', contentHash: sha256('v2') }],
-      2000,
-    );
-    expect(imported).toBe(0);
-    expect(updated).toBe(1);
-    expect(manifest.pages[0]!.distill.state).toBe('stale');
-    expect(manifest.pages[0]!.contentHash).toBe(sha256('v2'));
-  });
-
-  it('re-fetching with IDENTICAL content is a no-op (distill state untouched)', () => {
-    const before: AppPoolManifest = {
-      version: 1,
-      pages: [page({ distill: { state: 'distilled', distilledHash: sha256('v1') } })],
-    };
-    const { manifest, imported, updated } = upsertPagesFromFetch(
-      before,
-      [{ pageId: '1', title: 'Page One', path: 'branch-a/page-one.md', contentHash: sha256('v1') }],
-      2000,
-    );
-    expect(imported).toBe(0);
-    expect(updated).toBe(0);
-    expect(manifest.pages[0]!.distill).toEqual({ state: 'distilled', distilledHash: sha256('v1') });
-  });
-});
-
-describe('app-pool — branch state helpers', () => {
-  it('setBranchState flips every page of that branch, leaving others untouched', () => {
-    const manifest: AppPoolManifest = {
-      version: 1,
-      pages: [page({ pageId: '1', branch: 'a' }), page({ pageId: '2', branch: 'b' })],
-    };
-    const next = setBranchState(manifest, 'a', 'distilling');
-    expect(next.pages.find((p) => p.pageId === '1')!.distill.state).toBe('distilling');
-    expect(next.pages.find((p) => p.pageId === '2')!.distill.state).toBe('fetched');
-  });
-
-  it('markBranchDistilled sets distilledHash to each page\'s OWN current contentHash', () => {
-    const manifest: AppPoolManifest = {
-      version: 1,
-      pages: [
-        page({ pageId: '1', branch: 'a', contentHash: sha256('page-1') }),
-        page({ pageId: '2', branch: 'a', contentHash: sha256('page-2') }),
-      ],
-    };
-    const next = markBranchDistilled(manifest, 'a');
-    expect(next.pages[0]!.distill).toEqual({ state: 'distilled', distilledHash: sha256('page-1') });
-    expect(next.pages[1]!.distill).toEqual({ state: 'distilled', distilledHash: sha256('page-2') });
-    expect(isPoolClean(next)).toBe(true);
-  });
-});
-
-describe('app-pool — _index.md generator (§2.3, mechanical / 0 LLM)', () => {
   it('groups pages by branch and lists title + path', () => {
     const manifest: AppPoolManifest = {
       version: 1,
@@ -295,7 +202,7 @@ describe('app-pool — stageAppDocsPool + appDocsPoolDirective (§2.4)', () => {
     }
   });
 
-  it('stages every *.md under docs/ into ./.app-docs, excluding images and _manifest.json', async () => {
+  it('stages every *.md under docs/ into ./docs-app, excluding images and _manifest.json', async () => {
     const appId = 'app-1';
     const docsDir = appDocsDir(projectsDir, appId);
     const fsp = await import('node:fs/promises');
@@ -310,44 +217,22 @@ describe('app-pool — stageAppDocsPool + appDocsPoolDirective (§2.4)', () => {
     const runCwd = await mkdtemp(path.join(tmpdir(), 'od-app-pool-run-'));
     try {
       const { staged, overviewExists } = await stageAppDocsPool(projectsDir, appId, runCwd);
-      expect(overviewExists).toBe(true);
-      expect(new Set(staged)).toEqual(new Set(['_overview.md', '_index.md', '_branches/a.md']));
-      const stagedOverview = await readFile(path.join(runCwd, '.app-docs/_overview.md'), 'utf8');
-      expect(stagedOverview).toBe('# Overview');
-      // Images/manifest never cross into the staged dot-folder.
-      await expect(fsp.access(path.join(runCwd, '.app-docs/attachments/logo.png'))).rejects.toThrow();
-      await expect(fsp.access(path.join(runCwd, '.app-docs/_manifest.json'))).rejects.toThrow();
+      expect(overviewExists).toBe(false);
+      expect(new Set(staged)).toEqual(new Set(['_index.md']));
+            // Images/manifest never cross into the staged dot-folder.
+      await expect(fsp.access(path.join(runCwd, 'docs-app/attachments/logo.png'))).rejects.toThrow();
+      await expect(fsp.access(path.join(runCwd, 'docs-app/_manifest.json'))).rejects.toThrow();
 
       const directive = appDocsPoolDirective(staged);
-      expect(directive).toContain('.app-docs/_overview.md');
-      expect(directive).toContain('.app-docs/_branches/<slug>.md');
+      expect(directive).toContain('docs-app/_index.md');
+      expect(directive).toContain('docs-feature/');
       expect(directive).toMatch(/KHÔNG audit\/fan-out/);
     } finally {
       await rm(runCwd, { recursive: true, force: true });
     }
   });
 
-  it('wipes and re-stages on every call (always reflects the CURRENT pool)', async () => {
-    const appId = 'app-1';
-    const docsDir = appDocsDir(projectsDir, appId);
-    const fsp = await import('node:fs/promises');
-    await fsp.mkdir(docsDir, { recursive: true });
-    await fsp.writeFile(path.join(docsDir, '_overview.md'), 'v1');
-    const runCwd = await mkdtemp(path.join(tmpdir(), 'od-app-pool-run-'));
-    try {
-      await stageAppDocsPool(projectsDir, appId, runCwd);
-      await fsp.writeFile(path.join(docsDir, 'stale.md'), 'stale');
-      await fsp.writeFile(path.join(docsDir, '_overview.md'), 'v2');
-      await fsp.rm(path.join(docsDir, 'stale.md'));
-      const { staged } = await stageAppDocsPool(projectsDir, appId, runCwd);
-      const content = await readFile(path.join(runCwd, '.app-docs/_overview.md'), 'utf8');
-      expect(content).toBe('v2');
-      expect(staged).toEqual(['_overview.md']);
-    } finally {
-      await rm(runCwd, { recursive: true, force: true });
-    }
-  });
-});
+
 
 // ── import-confluence with a stubbed fetch ─────────────────────────────────
 vi.mock('../src/bas/bas-client.js', async (importOriginal) => {
@@ -386,7 +271,7 @@ describe('app-pool — importConfluenceIntoPool (stubbed fetch core)', () => {
     // trang mà không trang nào nằm ngay mức đó → nó là prefix (giàn giáo),
     // branch tính từ segment sau — mỗi page thành branch riêng.
     expect(result.pages[0]!.branch).toBe('page-0');
-    expect(result.pages.every((p) => p.distill.state === 'fetched')).toBe(true);
+    expect(result.pages.every((p) => !('distill' in p))).toBe(true);
 
     const manifest = await readManifest(projectsDir, 'app-1');
     expect(manifest.pages).toHaveLength(2);
@@ -397,4 +282,6 @@ describe('app-pool — importConfluenceIntoPool (stubbed fetch core)', () => {
     const index = await readFile(path.join(appDocsDir(projectsDir, 'app-1'), '_index.md'), 'utf8');
     expect(index).toContain('branch-x/page-0.md');
   });
+});
+
 });

@@ -34,7 +34,7 @@ export interface MockupPage {
  *  bare name) still slugifies sensibly. */
 export function pageSlug(mdRelPath: string): string {
   const norm = mdRelPath.replace(/\\/g, '/').replace(/^\.\//, '');
-  const noPrefix = norm.replace(/^docs\/confluence\//, '');
+  const noPrefix = norm.replace(/^docs-feature\//, '').replace(/^docs\/confluence\//, '');
   return noPrefix.replace(/\.md$/i, '').replace(/\//g, '__');
 }
 
@@ -55,7 +55,8 @@ function titleFromFrontmatter(md: string, fallback: string): string {
  *  the _index.md companion and anything under attachments/) that embeds ≥1
  *  mockup image. */
 export async function listMockupPages(cwd: string): Promise<MockupPage[]> {
-  const root = path.join(cwd, 'docs', 'confluence');
+  const featureRoot = path.join(cwd, 'docs-feature');
+  const root = (await hasMarkdown(featureRoot)) ? featureRoot : path.join(cwd, 'docs', 'confluence');
   const out: MockupPage[] = [];
   const walk = async (dir: string): Promise<void> => {
     let entries: import('node:fs').Dirent[];
@@ -88,6 +89,17 @@ export async function listMockupPages(cwd: string): Promise<MockupPage[]> {
   // Deterministic order (path) so re-runs and the index are stable.
   out.sort((a, b) => a.mdPath.localeCompare(b.mdPath));
   return out;
+}
+
+async function hasMarkdown(root: string): Promise<boolean> {
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [] as import('node:fs').Dirent[]);
+  for (const entry of entries) {
+    if (entry.name === 'attachments') continue;
+    const abs = path.join(root, entry.name);
+    if (entry.isDirectory() && await hasMarkdown(abs)) return true;
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md') && entry.name.toLowerCase() !== '_index.md') return true;
+  }
+  return false;
 }
 
 const asVerdict = (v: unknown): Verdict => (v === 'fail' || v === 'warn' ? v : 'pass');

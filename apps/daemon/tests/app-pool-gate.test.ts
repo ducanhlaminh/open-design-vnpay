@@ -86,7 +86,6 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
           branch: 'branch-a',
           contentHash: p1.contentHash,
           fetchedAt: Date.now(),
-          distill: { state: 'fetched', distilledHash: null },
         },
       ],
     };
@@ -112,14 +111,12 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
     await mkdir(path.join(appDocsDir(projectsDir, appId), 'attachments'), { recursive: true });
     await writeFile(path.join(appDocsDir(projectsDir, appId), 'attachments', 'logo.png'), 'fake-bytes');
 
-    const done = (p: { contentHash: string }) =>
-      ({ state: 'distilled', distilledHash: p.contentHash }) as const;
     const manifest: AppPoolManifest = {
       version: 1,
       pages: [
-        { pageId: '1', path: p1.path, title: 'Page One', branch: 'branch-a', contentHash: p1.contentHash, fetchedAt: Date.now(), distill: done(p1) },
-        { pageId: '2', path: p2.path, title: 'Page Two', branch: 'branch-a', contentHash: p2.contentHash, fetchedAt: Date.now(), distill: done(p2) },
-        { pageId: '3', path: p3.path, title: 'Page Three', branch: 'branch-b', contentHash: p3.contentHash, fetchedAt: Date.now(), distill: done(p3) },
+        { pageId: '1', path: p1.path, title: 'Page One', branch: 'branch-a', contentHash: p1.contentHash, fetchedAt: Date.now() },
+        { pageId: '2', path: p2.path, title: 'Page Two', branch: 'branch-a', contentHash: p2.contentHash, fetchedAt: Date.now() },
+        { pageId: '3', path: p3.path, title: 'Page Three', branch: 'branch-b', contentHash: p3.contentHash, fetchedAt: Date.now() },
       ],
     };
     await writeManifest(projectsDir, appId, manifest);
