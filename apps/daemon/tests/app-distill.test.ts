@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DistillConflictError,
+  ensureDistilled,
   getDistillProgress,
   startDistill,
   type AppDistillDeps,
@@ -260,5 +261,84 @@ describe('app-distill — state machine (validate → distilled / revert on fail
     await waitForIdle(appId);
     expect(reduceCalled).not.toHaveBeenCalled();
     expect(getDistillProgress(appId)?.error).toBeTruthy();
+  });
+});
+
+
+describe('app-distill — ensureDistilled', () => {
+  it('returns immediately for a clean pool without running a task', async () => {
+    const manifest: AppPoolManifest = {
+      version: 1,
+      pages: [{ ...page('1', 'a'), distill: { state: 'distilled', distilledHash: sha256('v1') } }],
+    };
+    await writeManifest(projectsDir, appId, manifest);
+    const runTask = vi.fn(async () => 'succeeded' as const);
+
+    await expect(ensureDistilled(appId, { projectsDir, runTask }, undefined, { pollMs: 5 })).resolves.toEqual({ ok: true });
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
+  it('starts and waits for a distill job, forwarding progress', async () => {
+    const manifest: AppPoolManifest = { version: 1, pages: [page('1', 'a'), page('2', 'a')] };
+    await writeManifest(projectsDir, appId, manifest);
+    const runTask: AppDistillDeps['runTask'] = async (_id, task) => {
+      if (task.kind === 'branch') {
+        await mkdir(path.dirname(branchFilePath(projectsDir, appId, task.branch!)), { recursive: true });
+        await writeFile(branchFilePath(projectsDir, appId, task.branch!), VALID_BRANCH_DOC('a', ['a/1.md', 'a/2.md']));
+      } else {
+        await writeFile(overviewPath(projectsDir, appId), VALID_OVERVIEW(['a'], ['a/1.md', 'a/2.md']));
+      }
+      return 'succeeded';
+    };
+    const progress: number[] = [];
+
+    await expect(
+      ensureDistilled(appId, { projectsDir, runTask }, (p) => progress.push(p.done), { pollMs: 5 }),
+    ).resolves.toEqual({ ok: true });
+    expect(progress.length).toBeGreaterThanOrEqual(1);
+    expect(progress.at(-1)).toBeGreaterThan(progress[0]!);
+  });
+
+  it('waits for an already-running job instead of throwing a conflict', async () => {
+    const manifest: AppPoolManifest = { version: 1, pages: [page('1', 'a')] };
+    await writeManifest(projectsDir, appId, manifest);
+    let resolveTask: (value: 'succeeded' | 'failed') => void = () => {};
+    const gate = new Promise<'succeeded' | 'failed'>((resolve) => { resolveTask = resolve; });
+    const runTask: AppDistillDeps['runTask'] = async (_id, task) => {
+      if (task.kind === 'branch') {
+        await gate;
+        await mkdir(path.dirname(branchFilePath(projectsDir, appId, 'a')), { recursive: true });
+        await writeFile(branchFilePath(projectsDir, appId, 'a'), VALID_BRANCH_DOC('a', ['a/1.md']));
+      } else {
+        await writeFile(overviewPath(projectsDir, appId), VALID_OVERVIEW(['a'], ['a/1.md']));
+      }
+      return 'succeeded';
+    };
+    await startDistill(appId, { projectsDir, runTask });
+    const result = ensureDistilled(appId, { projectsDir, runTask }, undefined, { pollMs: 5 });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    resolveTask('succeeded');
+
+    await expect(result).resolves.toEqual({ ok: true });
+  });
+
+  it('returns the distill error and preserves the branch state on failure', async () => {
+    const manifest: AppPoolManifest = { version: 1, pages: [page('1', 'a')] };
+    await writeManifest(projectsDir, appId, manifest);
+    const runTask: AppDistillDeps['runTask'] = async () => 'failed';
+
+    const result = await ensureDistilled(appId, { projectsDir, runTask }, undefined, { pollMs: 5 });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/thất bại/i);
+    expect((await readManifest(projectsDir, appId)).pages[0]!.distill.state).toBe('fetched');
+  });
+
+  it('times out while a distill task remains pending', async () => {
+    const manifest: AppPoolManifest = { version: 1, pages: [page('1', 'a')] };
+    await writeManifest(projectsDir, appId, manifest);
+    const runTask: AppDistillDeps['runTask'] = async () => new Promise<'succeeded' | 'failed'>(() => {});
+
+    const result = await ensureDistilled(appId, { projectsDir, runTask }, undefined, { pollMs: 5, timeoutMs: 30 });
+    expect(result).toEqual({ ok: false, error: 'Chưng cất quá 60 phút — kiểm tra agent rồi thử lại.' });
   });
 });

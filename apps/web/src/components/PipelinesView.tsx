@@ -317,9 +317,8 @@ export function resolveStageRunConfig(
     const pages = cfg?.confluencePages ?? [];
     if (!uploading && !usingAppPool && pages.length === 0) return { ok: false, missing: 'Nguồn tài liệu' };
     if (usingAppPool) {
-      if (appPoolGate && !appPoolGate.clean) {
-        return { ok: false, missing: `Chưng cất tài liệu (còn ${appPoolGate.pending} trang chưa xong)` };
-      }
+      // Pool chưa chưng cất không còn chặn: bước 1 tự chưng cất trước khi
+      // nạp (BE ensureDistilled) — payload cứ gửi, tiến độ hiện trên bước.
       return {
         ok: true,
         payload: { source: { kind: 'app-pool', appId: cfg!.appPool!.appId, paths: appPoolPaths } },
@@ -1271,16 +1270,14 @@ export function PipelinesView() {
       pushToast({ message: 'Cấu hình nguồn tài liệu trước khi chạy' });
       return;
     }
-    // GATE (docs/app-docs-pool-spec.md §2.2): nguồn App-pool chỉ chạy khi
-    // 100% trang pool đã chưng cất — BE là chốt thật, đây chỉ chặn sớm để
-    // không tạo một run-all sẽ fail ngay ở bước đầu.
+    // Pool chưa chưng cất KHÔNG chặn nữa: bước 1 của workflow giờ tự chưng
+    // cất rồi mới nạp workspace (server.ts runDocsFromAppPool →
+    // ensureDistilled) — chỉ báo trước cho người dùng biết bước 1 sẽ lâu.
     if (usingAppPool && runsIngestStage && appPoolGate && !appPoolGate.clean) {
       pushToast({
-        message: 'Chưng cất tài liệu trước khi chạy',
-        details: `Còn ${appPoolGate.pending} trang chưa chưng cất — mở "Nguồn tài liệu" để bấm Chưng cất tài liệu.`,
-        code: 'error',
+        message: 'Bước 1 sẽ chưng cất tài liệu App trước khi nạp',
+        details: `Còn ${appPoolGate.pending} trang chưa chưng cất — theo dõi tiến độ ngay trên bước "Tài liệu (chưng cất & nạp)".`,
       });
-      return;
     }
     setRunAllBusy(true);
     try {
@@ -1463,10 +1460,11 @@ export function PipelinesView() {
   // Pipeline Studio khi chưa từng chạy).
   const railProject = projects.find((pr) => pr.id === projectId);
   const railCfg: RunAllConfig | undefined = railProject?.savedRunAll ?? railProject?.config;
-  // GATE UX (docs/app-docs-pool-spec.md §2.2): nguồn App-pool nhưng pool chưa
-  // sạch → "Chạy pipeline" khoá tại đây thay vì bấm xong mới biết fail.
+  // Pool chưa sạch không khoá nút Chạy nữa (bước 1 tự chưng cất) — chỉ dùng
+  // để đổi title nút thành lời nhắc "bước 1 sẽ lâu hơn".
   const railUsingAppPool = railCfg?.docsFromUpload !== true && (railCfg?.appPool?.paths?.length ?? 0) > 0;
-  const railAppPoolBlocking = railUsingAppPool && appPoolGate !== null && !appPoolGate.clean;
+  const railAppPoolBlocking = false as boolean;
+  const railAppPoolWillDistill = railUsingAppPool && appPoolGate !== null && !appPoolGate.clean;
   const railSourceSummary = railCfg?.appPool?.paths?.length
     ? `Tài liệu App · ${railCfg.appPool.paths.length} trang`
     : railCfg?.confluencePages?.length
@@ -2477,8 +2475,8 @@ export function PipelinesView() {
               onClick={() => void runAllWithSavedConfig()}
               disabled={!projectId || pipelines.length === 0 || runAllBusy || railAppPoolBlocking}
               title={
-                railAppPoolBlocking
-                  ? `Chưng cất tài liệu trước khi chạy — còn ${appPoolGate?.pending ?? 0} trang chưa xong`
+                railAppPoolWillDistill
+                  ? `Bước 1 sẽ chưng cất tài liệu App trước khi nạp (còn ${appPoolGate?.pending ?? 0} trang) — sẽ lâu hơn bình thường`
                   : 'Chạy toàn bộ pipeline bằng cấu hình đang hiện ở rail bên cạnh — đổi cấu hình trước bằng nút Đổi nếu cần khác đi'
               }
             >

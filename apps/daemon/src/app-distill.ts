@@ -26,6 +26,7 @@ import {
   markBranchDistilled,
   overviewPath,
   pagesForBranch,
+  pendingCount,
   readManifest,
   setBranchState,
   writeIndexMd,
@@ -85,6 +86,65 @@ class DistillConflictError extends Error {
  *  them (+ a final reduce once every branch is clean), in the background.
  *  Returns immediately with the branches selected; throws DistillConflictError
  *  (routes map to 409) if a distill is already running for this app. */
+export interface EnsureDistilledResult {
+  ok: boolean;
+  error?: string;
+}
+
+export interface EnsureDistilledOptions {
+  pollMs?: number;
+  timeoutMs?: number;
+}
+
+/** Ensure the app pool is clean, waiting for an in-flight job when needed. */
+export async function ensureDistilled(
+  appId: string,
+  deps: AppDistillDeps,
+  onProgress?: (p: DistillProgress) => void,
+  opts: EnsureDistilledOptions = {},
+): Promise<EnsureDistilledResult> {
+  const pollMs = opts.pollMs ?? 500;
+  const timeoutMs = opts.timeoutMs ?? 3_600_000;
+  let manifest = await readManifest(deps.projectsDir, appId);
+  if (isPoolClean(manifest)) return { ok: true };
+
+  if (!isDistillRunning(appId)) {
+    try {
+      await startDistill(appId, deps);
+    } catch (error) {
+      if (!(error instanceof DistillConflictError)) throw error;
+    }
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  let previous: DistillProgress | undefined;
+  while (isDistillRunning(appId)) {
+    const progress = getDistillProgress(appId);
+    if (progress && (!previous || progress.done !== previous.done || progress.total !== previous.total || progress.error !== previous.error || progress.branches.join('\0') !== previous.branches.join('\0'))) {
+      onProgress?.(progress);
+      previous = progress;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      return { ok: false, error: 'Chưng cất quá 60 phút — kiểm tra agent rồi thử lại.' };
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
+  }
+
+  const progress = getDistillProgress(appId);
+  if (progress && (!previous || progress.done !== previous.done || progress.total !== previous.total || progress.error !== previous.error || progress.branches.join('\0') !== previous.branches.join('\0'))) {
+    onProgress?.(progress);
+  }
+  manifest = await readManifest(deps.projectsDir, appId);
+  if (isPoolClean(manifest)) return { ok: true };
+  return {
+    ok: false,
+    error:
+      progress?.error ??
+      `Chưng cất chưa hoàn tất — còn ${pendingCount(manifest)} trang chưa chưng cất.`,
+  };
+}
+
 export async function startDistill(
   appId: string,
   deps: AppDistillDeps,

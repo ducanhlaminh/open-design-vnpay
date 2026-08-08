@@ -2030,7 +2030,7 @@ export function RunAllModal({
             ) : null}
             {appPoolDistill && !appPoolDistill.clean ? (
               <p className="pl-modal-field__hint">
-                Còn {appPoolDistill.pending} trang chưa chưng cất — nút Chạy sẽ bị khoá cho tới khi xong.
+                Còn {appPoolDistill.pending} trang chưa chưng cất — không sao: bước 1 sẽ tự chưng cất trước khi nạp (chạy sẽ lâu hơn). Bấm "Chưng cất tài liệu" ở đây nếu muốn làm trước.
               </p>
             ) : null}
             <AppPoolTree

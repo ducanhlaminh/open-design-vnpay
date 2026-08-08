@@ -20,6 +20,9 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
   let baseUrl: string;
 
   beforeAll(async () => {
+    // Auto-distill (bước 1) không được spawn agent THẬT trong test — máy dev
+    // có claude/codex trong PATH nên detectAgents sẽ tìm ra chúng.
+    process.env.OD_APP_DISTILL_NO_AGENT = '1';
     const started = (await startServer({ port: 0, returnServer: true })) as {
       url: string;
       server: http.Server;
@@ -65,7 +68,11 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
     return { path: relPath, contentHash: sha256(content) };
   }
 
-  it('GATE FAIL: any pending (non-distilled) page in the pool fails the run — status failed, no copy', async () => {
+  // Ngữ nghĩa MỚI (bước 1 = chưng cất & nạp): pool pending không fail ngay
+  // nữa — bước 1 TỰ chưng cất (ensureDistilled) rồi mới copy. Môi trường test
+  // không có agent nào nên lượt chưng cất thất bại → stage failed với thông
+  // điệp "Chưng cất tài liệu App thất bại", và vẫn không copy gì.
+  it('AUTO-DISTILL: pending page → bước 1 tự chưng cất; không có agent → failed với lỗi chưng cất, no copy', async () => {
     const projectId = uniqueId('gatefail');
     const appId = uniqueId('app');
     await createProject(projectId);
@@ -92,8 +99,7 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
 
     const view = await pollUntilTerminal(projectId, 'docs');
     expect(view.status).toBe('failed');
-    expect(view.error).toMatch(/1 trang chưa chưng cất/);
-    expect(view.error).toMatch(/Chưng cất tài liệu/);
+    expect(view.error).toMatch(/Chưng cất tài liệu App thất bại/);
 
     // No copy happened.
     await expect(

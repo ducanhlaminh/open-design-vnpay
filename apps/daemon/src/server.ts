@@ -513,12 +513,11 @@ import {
   appDocsDir,
   appDocsPoolDirective,
   isPoolClean,
-  pendingCount,
   readManifest,
   stageAppDocsPool,
 } from './app-pool.js';
 import { registerAppPoolRoutes } from './app-pool-routes.js';
-import type { DistillTask } from './app-distill.js';
+import { ensureDistilled, type DistillTask } from './app-distill.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv, sha256hex, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
@@ -14096,13 +14095,33 @@ export async function startServer({
           if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
         }
 
-        const manifest = await readManifest(PROJECTS_DIR, appId);
-        if (!isPoolClean(manifest)) {
-          const pending = pendingCount(manifest);
-          throw new Error(
-            `${pending} trang chưa chưng cất (App "${appId}") — bấm "Chưng cất tài liệu" rồi chạy lại.`,
-          );
+        // Bước 1 = "chưng cất rồi mới nạp workspace": pool chưa chưng cất
+        // KHÔNG còn là lỗi — bước này tự chạy distill (hoặc CHỜ job một
+        // feature khác cùng App đã khởi động) rồi mới copy. Tiến độ đẩy vào
+        // lastInput để stepper không phải nhìn spinner câm suốt map-reduce.
+        {
+          const manifest0 = await readManifest(PROJECTS_DIR, appId);
+          if (!isPoolClean(manifest0)) {
+            setProjectPipelineStatus(db, projectId, pipelineId, {
+              status: 'running',
+              lastInput: 'Chưng cất tài liệu App (chuẩn bị)…',
+            });
+            const distilled = await ensureDistilled(appId, appDistillDeps, (p) => {
+              setProjectPipelineStatus(db, projectId, pipelineId, {
+                lastInput: `Chưng cất tài liệu App: ${p.done}/${p.total} phần…`,
+              });
+            });
+            if (!distilled.ok) {
+              throw new Error(
+                `Chưng cất tài liệu App thất bại: ${distilled.error ?? 'không rõ nguyên nhân'} — thử chạy lại, hoặc bấm "Chưng cất tài liệu" ở màn App.`,
+              );
+            }
+            setProjectPipelineStatus(db, projectId, pipelineId, {
+              lastInput: 'Chưng cất xong — đang nạp tài liệu vào workspace…',
+            });
+          }
         }
+        const manifest = await readManifest(PROJECTS_DIR, appId);
         const selected = manifest.pages.filter((p) => paths.includes(p.path));
         if (selected.length === 0) {
           throw new Error('Không có trang nào được chọn từ pool tài liệu App — tick lại rồi chạy lại.');
@@ -14172,6 +14191,13 @@ export async function startServer({
   };
 
   const runAppDistillTask = async (appId: string, task: DistillTask): Promise<'succeeded' | 'failed'> => {
+    // Kill-switch cho test/hermetic env: máy dev thường CÓ claude/codex thật
+    // trong PATH nên detectAgents sẽ tìm ra và spawn một run thật — test
+    // auto-distill (app-pool-gate.test.ts) cần đường fail tất định.
+    if (process.env.OD_APP_DISTILL_NO_AGENT === '1') {
+      console.warn('[app-distill] OD_APP_DISTILL_NO_AGENT=1 — task failed without agent');
+      return 'failed';
+    }
     const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
     let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
     if (!agentId) {
@@ -14238,6 +14264,11 @@ export async function startServer({
     db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
     return final.status === 'succeeded' ? 'succeeded' : 'failed';
   };
+
+  // Deps chưng cất dùng chung: bước 1 workflow (runDocsFromAppPool →
+  // ensureDistilled) và nút "Chưng cất tài liệu" ở màn App (ctx.distill)
+  // cùng một runTask — một job chạy là cả hai phía thấy chung tiến độ.
+  const appDistillDeps = { projectsDir: PROJECTS_DIR, runTask: runAppDistillTask };
 
   // PRD Mockup Review runs PER PAGE in parallel: one agent run per doc page
   // (bounded pool), each writing review/<slug>/report.json, then the daemon

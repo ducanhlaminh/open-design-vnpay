@@ -139,7 +139,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // stage-scoped pull, so leaving it out hid them from the rail AND kept them
   // off the media store, which left a second machine's ux run with none of the
   // domain background it is told to read.
-  { id: 'docs',             name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
+  { id: 'docs',             name: 'Tài liệu (chưng cất & nạp)',    skillId: 'jira-ingest',           dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
   // Customer Journey built straight from the ingested docs MD (no feature-analysis
   // upstream). Each STAGE carries `sources[]` — the key text excerpts from the
   // source MD — which the SpecPreview surfaces under each stage card.
@@ -274,7 +274,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // field here in sync with the `docs`/`cj`/`ux-research` defs above by hand;
   // there is no shared base def to factor out because `PipelineDef.dependsOn`
   // and `outputs` must each point at THIS workflow's own sibling ids.
-  { id: 'prd-docs',         name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
+  { id: 'prd-docs',         name: 'Tài liệu (chưng cất & nạp)',    skillId: 'jira-ingest',           dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
   // NO skippedInLeanRun anywhere in docs-to-prd: lean is a docs-to-ui-only
   // concept. The journey + research here are the review's evidence base — a
   // mockup review without them is not a cheaper review, it is a different and
@@ -301,7 +301,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // re-run of dr-review untouched). skillId MUST stay 'jira-ingest' for
   // dr-docs: runDocsDeterministic (server.ts) only takes the tool-only
   // Confluence path for that exact skillId.
-  { id: 'dr-docs',          name: 'Tài liệu → Markdown',       skillId: 'jira-ingest',           dependsOn: [],                   outputs: ['docs/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL', acceptsUpload: true },
+  { id: 'dr-docs',          name: 'Tài liệu (chưng cất & nạp)',       skillId: 'jira-ingest',           dependsOn: [],                   outputs: ['docs/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL', acceptsUpload: true },
   // Bước GIỮA: đối chiếu component. Đọc `docs/` (bản GỐC, chưa review) và với
   // MỖI màn hình trong tài liệu, liệt kê phần tử nào dùng component nào rồi
   // đối chiếu với danh mục hợp lệ `criteria/components.md`, ghi ra
