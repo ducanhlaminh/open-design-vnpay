@@ -50,6 +50,11 @@ ingest, with NO feature-analysis upstream and NO `./features/` folder — do not
 look for one.
 **Docs layouts.** App-linked projects (app-pool source) work from `./docs-feature/` — the Confluence pages selected for THIS feature, with original Markdown, a tree mirroring Confluence, and images in `./docs-feature/attachments/`. This is the source of truth. `./docs-app/` contains the App's full read-only document pool: read `./docs-app/_index.md` first, then individual pages only for cross-feature context; never audit, fan out over, or produce deliverables from it. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`. Treat every `.md` under the active working folder except `_index.md` and `attachments/` as a source page.
 
+Customer journeys thường XUYÊN feature. Được phép và khuyến khích đọc
+`./docs-app/_index.md` để biết các bước trước/sau nằm ngoài tài liệu feature
+(ví dụ đăng nhập, chọn tài khoản) và ghi chúng thành stage của journey, nhưng
+chỉ khi có căn cứ; **CẤM BỊA** và phải trích dẫn path thật trong `sources[]`.
+
 1. **Docs MD (primary):** read every Markdown file under `./docs/` (e.g.
    `./docs/confluence/**/*.md`, `./docs/jira/**/*.md`). These product docs ARE
    your source of truth — derive the actors, the to-be journeys, and each stage

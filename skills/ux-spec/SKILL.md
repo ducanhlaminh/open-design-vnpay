@@ -52,7 +52,7 @@ it and shows it on `/ux-spec`, scoped to the project.
 The docs→UI workflow is `docs → cj → ux`: there is NO feature-analysis step and
 NO `./features/` folder — do not look for one. Your inputs are:
 
-**Docs layouts.** App-linked projects use `./docs-feature/` as the primary source; read `./docs-app/_index.md` first only for cross-feature context, and never build screens from `./docs-app/`. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
+**Docs layouts.** App-linked projects use `./docs-feature/` as the primary source; read `./docs-app/_index.md` first only for cross-feature context, and never build screens from `./docs-app/`. When authoring flow navigation, also read `./docs-app/_index.md` and relevant pages in `./docs-app/` to establish the documented entry path; this is an exception because navigation is part of the flow deliverable. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
 
 **Docs (primary input):** the ingested Markdown under `./docs/` (e.g.
 `./docs/confluence/**/*.md`, `./docs/jira/**/*.md`, or `./docs-feature/**/*.md`). Read these to understand the
@@ -289,6 +289,18 @@ screens serve), write `./flows/<FLOW-ID>.flow.json`.
   ]
 }
 ```
+
+`entry` VẪN là màn đầu tiên của feature (đây là chỗ wireframe bắt đầu). Trước
+`entry`, flow PHẢI có các node điều hướng khai tường minh trong `nodes[]` với
+`"kind": "nav"` và `label` là tên màn/bước điều hướng thật, ví dụ
+`{"id":"NAV-HOME","kind":"nav","label":"Trang chủ"}`, nối bằng edges tới
+`entry`. Node `nav` không phải màn của feature nên không có wireframe — đó là
+bình thường. Chỉ thêm nav khi có căn cứ trong câu mô tả cách vào của tài liệu
+feature hoặc trong `docs-app/_index.md` và các trang liên quan của `docs-app/`;
+không suy đoán tên menu, không tự chế bước như "Đăng nhập". Không có căn cứ thì
+bỏ hẳn phần nav và flow bắt đầu ở `entry` như cũ.
+
+`kind` hợp lệ giờ là `decision | end | nav` (màn vẫn ngầm định).
 
 Rules:
 - **Every screen referenced must exist in the spec** (`screens[].id`) — the

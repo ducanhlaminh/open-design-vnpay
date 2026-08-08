@@ -81,6 +81,8 @@ downstream stages still get criteria to follow.
   under `./customer-journey/`. Its STAGES are your unit of analysis: each
   stage's goal, pain points, and emotion tell you which UX topics matter.
 
+Được phép đọc `./docs-app/_index.md` để hiểu bối cảnh toàn App khi rút tiêu chí; không tạo deliverable từ `./docs-app/`.
+
 From these, write down (for yourself): the **domain** (banking, e-commerce,
 healthcare, …), the **target users**, and the **3–7 key flows** (onboarding,
 form-heavy tasks, search/browse, payment, notifications, …).

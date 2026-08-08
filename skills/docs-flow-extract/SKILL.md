@@ -38,9 +38,9 @@ liệu đã nói thành sơ đồ.
 
 ## Bước 0 — đọc input (từ cwd của dự án)
 
-**Bố cục tài liệu.** Với dự án gắn App (nguồn app-pool): làm việc từ `./docs-feature/` — các trang Confluence được chọn cho ĐÚNG feature này (Markdown gốc, cây phản chiếu Confluence, ảnh trong `./docs-feature/attachments/`). Đây là nguồn sự thật. `./docs-app/` chứa TOÀN BỘ pool tài liệu của App ở chế độ chỉ đọc để tham khảo phạm vi toàn App: đọc `./docs-app/_index.md` trước để biết có gì, chỉ mở từng trang khi cần đối chiếu cross-feature — không audit, fan-out, hoặc tạo deliverable từ `./docs-app/`. Dự án legacy dùng `./docs/confluence/`, `./docs/jira/`, `./docs/context/` như mô tả bên dưới. Coi mọi `.md` trong thư mục làm việc đang hoạt động (trừ `_index.md` và `attachments/`) là trang nguồn.
+**Bố cục tài liệu.** Với dự án gắn App (nguồn app-pool): làm việc từ `./docs-feature/` — các trang Confluence được chọn cho ĐÚNG feature này (Markdown gốc, cây phản chiếu Confluence, ảnh trong `./docs-feature/attachments/`). Đây là nguồn sự thật. `./docs-app/` chứa TOÀN BỘ pool tài liệu của App ở chế độ chỉ đọc để tham khảo phạm vi toàn App: đọc `./docs-app/_index.md` trước để biết có gì, chỉ mở từng trang khi cần đối chiếu cross-feature — không audit, fan-out, hoặc tạo deliverable từ `./docs-app/`. **Ngoại lệ:** để xác định đường vào feature, được phép đọc `./docs-app/_index.md` và các trang liên quan trong `./docs-app/`, vì đường vào là một phần của deliverable. Dự án legacy dùng `./docs/confluence/`, `./docs/jira/`, `./docs/context/` như mô tả bên dưới. Coi mọi `.md` trong thư mục làm việc đang hoạt động (trừ `_index.md` và `attachments/`) là trang nguồn.
 
-- **Nguồn:** `./docs/**/*.md` hoặc `./docs-feature/**/*.md` — tài liệu `dr-docs` đã nạp. Chỉ đọc `./docs-app/**/*.md` khi cần tham khảo cross-feature; không audit hoặc tạo deliverable từ đó. Không có file `.md`
+- **Nguồn:** `./docs/**/*.md` hoặc `./docs-feature/**/*.md` — tài liệu `dr-docs` đã nạp. Ngoại lệ cho việc xác định đường vào: đọc `./docs-app/_index.md` và các trang liên quan trong `./docs-app/`; đường vào là một phần của deliverable. Không audit hoặc tạo deliverable khác từ `./docs-app/`. Không có file `.md`
   nào thì không có gì để làm — dừng lại và nói rõ, đừng bịa sơ đồ.
 - **CHỈ ĐỌC.** Stage này không sửa bất cứ file nào dưới `docs/`; nó chỉ GHI
   vào `flows/`.
@@ -75,7 +75,7 @@ Ghi ĐÚNG một file cho mỗi luồng, theo schema dưới đây. **Schema là
   "title": "Đăng nhập",
   "source": "docs/2.1.1-urd-quan-ly-nhan-vien.md",
   "nodes": [
-    { "id": "n1", "type": "start",    "label": "Bắt đầu" },
+    { "id": "n1", "type": "start",    "label": "Trang chủ <tên app>" },
     { "id": "n2", "type": "action",   "label": "Nhập tên đăng nhập + mật khẩu" },
     { "id": "n3", "type": "decision", "label": "Thông tin hợp lệ?" },
     { "id": "n4", "type": "action",   "label": "Hiện thông báo lỗi" },
@@ -101,6 +101,16 @@ Ghi ĐÚNG một file cho mỗi luồng, theo schema dưới đây. **Schema là
 - `edges[]`: `from`/`to` phải là `id` có thật trong `nodes[]`; `label` tuỳ chọn
   (bắt buộc với edge ra khỏi `decision`).
 
+## Đường vào (bắt buộc)
+
+- Node `start` là MÀN GỐC người dùng đang đứng trước khi bắt đầu nghiệp vụ (trang chủ / màn chính của app), KHÔNG phải chữ "Bắt đầu".
+- Ngay sau `start` là các node `action` mô tả TỪNG bước điều hướng tới màn của tính năng — ví dụ `"Mở menu Danh mục"` → `"Chọn Nhân viên"` → `"Màn danh sách Nhân viên"`. Mỗi bước một node, đúng thứ tự bấm.
+- **Nguồn để biết đường vào, theo thứ tự ưu tiên:**
+  1. Câu mô tả cách vào nằm trong chính tài liệu feature (`docs-feature/**`) — ví dụ "Chọn menu Danh mục → Nhân viên".
+  2. `docs-app/_index.md` — cây tài liệu toàn App; các cấp thư mục thường PHẢN CHIẾU cấu trúc menu (ví dụ `II. URD Danh mục / 2.1 Danh mục đối tượng / 2.1.3 Quản lý khách hàng` ⇒ Danh mục → Đối tượng → Khách hàng). Mở trang trong `docs-app/` để xác nhận tên menu đúng như tài liệu viết.
+- **CẤM BỊA:** chỉ ghi bước điều hướng có căn cứ trong tài liệu. Không suy đoán tên menu, không tự chế "Đăng nhập" nếu tài liệu không nói. Không tìm được căn cứ → giữ đúng một node `start` nhãn `"Bắt đầu"` như cũ VÀ ghi lý do vào `note` của mục tương ứng trong `flows/index.json` (ví dụ `"Chưa xác định được đường vào từ tài liệu"`).
+- Đường vào là phần CHUNG của mọi kịch bản trong flow đó — viết một lần ở đầu, không lặp lại giữa flow.
+
 ## LUẬT FLOWCHART CHUẨN (bắt buộc)
 
 Sơ đồ này dùng đúng ký pháp flowchart kinh điển — viewer vẽ theo hình dạng
@@ -119,7 +129,7 @@ Các luật phải giữ đúng:
 
 1. **`type` CHỈ được là `start` | `end` | `action` | `decision`.** Không có
    loại nào khác.
-2. **Đúng MỘT node `start`** mỗi flow, và **≥1 node `end`**.
+2. **Đúng MỘT node `start`** mỗi flow, và **≥1 node `end`**. `start` là màn gốc app, không phải nhãn chung chung.
 3. **Mọi node đều nằm trên đường đi từ `start`** — không có node mồ côi, không
    có nhánh treo lơ lửng không ai trỏ tới.
 4. **Node `decision` có label là CÂU HỎI** (kết thúc bằng dấu `?`), có **≥2
