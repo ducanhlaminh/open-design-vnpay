@@ -16399,7 +16399,7 @@ export async function startServer({
         // instead, exactly like any other stage failure (run-all's runStage
         // sees this 'failed' completion and stops the chain the same way).
         const message =
-          'Chưa cấu hình Nguồn tài liệu — chọn trang Confluence ở panel cấu hình rồi chạy lại.';
+          'Chưa cấu hình Nguồn tài liệu — tick trang trong tài liệu App (hoặc chọn trang Confluence) ở panel cấu hình rồi chạy lại.';
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
         console.warn(
           `[pipelines] ${pipelineId} for ${projectId}: no input/source and docs/ empty — failing fast (no agent seeded)`,

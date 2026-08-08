@@ -98,7 +98,7 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     const view = await stageView(projectId, 'docs');
     expect(view.status).toBe('failed');
     expect(view.error).toBe(
-      'Chưa cấu hình Nguồn tài liệu — chọn trang Confluence ở panel cấu hình rồi chạy lại.',
+      'Chưa cấu hình Nguồn tài liệu — tick trang trong tài liệu App (hoặc chọn trang Confluence) ở panel cấu hình rồi chạy lại.',
     );
   });
 

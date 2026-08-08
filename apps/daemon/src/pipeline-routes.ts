@@ -1408,11 +1408,25 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           },
         },
       });
+      // `appPool` là một NGUỒN, không chỉ là cấu hình để nhớ: run-all gửi nó ở
+      // key riêng (`body.appPool`) chứ không bọc trong `source`, nên nếu không
+      // dịch ở đây thì bước ingest nhận `source: undefined` → fail-fast "Chưa
+      // cấu hình Nguồn tài liệu" DÙ người dùng đã tick trang (đường single-stage
+      // Run không dính vì FE tự dựng `source` cho nó). Ưu tiên `source` tường
+      // minh nếu request có; sau đó tới appPool của request; cuối cùng là
+      // appPool đã lưu (nút "Chạy pipeline" đọc cấu hình đã lưu là đường chạy
+      // chính, có khi request không lặp lại key này).
+      const effectiveAppPool = nextRunAllConfig.appPool ?? savedRunAllConfig?.appPool ?? null;
+      const runSource: PipelineRunSource | undefined =
+        source ??
+        (effectiveAppPool?.appId && effectiveAppPool.paths?.length
+          ? { kind: 'app-pool', appId: effectiveAppPool.appId, paths: [...effectiveAppPool.paths] }
+          : undefined);
       const result = await ctx.pipelines.runWorkflowAll(projectId, {
         ...(workflowId !== undefined ? { workflowId } : {}),
         ...(rawTerminal !== undefined ? { terminal: rawTerminal as WorkflowTerminal } : {}),
         ...(input !== undefined ? { input } : {}),
-        ...(source !== undefined ? { source } : {}),
+        ...(runSource !== undefined ? { source: runSource } : {}),
         ...(designSystemId !== undefined ? { designSystemId } : {}),
         ...(rawPlatform !== undefined ? { platform: rawPlatform as TargetPlatform } : {}),
         ...(targets.length ? { targets } : {}),

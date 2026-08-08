@@ -168,6 +168,48 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
     }
   }
 
+  // Live bug (App "test-doc-app" → feature quan-ly-khach-hang): run-all gửi
+  // nguồn App ở key RIÊNG `appPool`, không bọc trong `source`, mà route run-all
+  // chỉ đọc `body.source` → bước ingest nhận source rỗng và fail-fast "Chưa cấu
+  // hình Nguồn tài liệu" DÙ người dùng đã tick trang. Nút Run một-bước không
+  // dính (FE tự dựng `source`), nên lỗ này sống sót tới lúc chạy full workflow.
+  it('RUN-ALL: appPool ĐÃ LƯU (body không nhắc) vẫn thành source app-pool — không fail-fast "Chưa cấu hình Nguồn tài liệu"', async () => {
+    const projectId = uniqueId('runallpool');
+    const appId = uniqueId('app');
+    await createProject(projectId);
+
+    const p1 = await writePoolPage(appId, 'branch-a/page-one.md', '# Page One');
+    const manifest: AppPoolManifest = {
+      version: 1,
+      pages: [
+        { pageId: '1', path: p1.path, title: 'Page One', branch: 'branch-a', contentHash: p1.contentHash, fetchedAt: Date.now() },
+      ],
+    };
+    await writeManifest(projectsDir, appId, manifest);
+    await writeIndexMd(projectsDir, appId, manifest);
+
+    await fetch(`${baseUrl}/api/pipelines/projects/${projectId}/run-config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appPool: { appId, paths: [p1.path] } }),
+    });
+
+    // Body KHÔNG nhắc appPool/source — đúng như nút "Chạy pipeline" gửi khi
+    // cấu hình đã lưu từ trước; chỉ chạy bước ingest cho gọn.
+    const runAllRes = await fetch(`${baseUrl}/api/pipelines/run-all`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId, workflowId: 'docs-to-ui', terminal: 'ui-html', stageIds: ['docs'] }),
+    });
+    expect(runAllRes.status).toBe(202);
+
+    const view = await pollUntilTerminal(projectId, 'docs');
+    expect(view.status).toBe('succeeded');
+    expect(
+      await readFile(path.join(projectsDir, projectId, 'docs-to-ui', 'docs-feature', p1.path), 'utf8'),
+    ).toBe('# Page One');
+  });
+
   // ── run-all PRESERVE (docs/app-docs-pool-spec.md §1/§2.2 — the appFiles
   // history lesson) ──────────────────────────────────────────────────────
   it('PUT run-config sets appPool; a later POST run-all that omits it PRESERVES it (not full-replace-wiped)', async () => {
