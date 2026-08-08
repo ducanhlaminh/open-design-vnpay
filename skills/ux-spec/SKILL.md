@@ -302,6 +302,15 @@ bỏ hẳn phần nav và flow bắt đầu ở `entry` như cũ.
 
 `kind` hợp lệ giờ là `decision | end | nav` (màn vẫn ngầm định).
 
+**Nhãn không được để mã màn trần.** Người xem sơ đồ không mở tài liệu bên cạnh,
+mà mã màn (`SCR-001`, `MH1`…) còn đánh lại từ đầu trong từng tài liệu URD nên
+đứng một mình là vô nghĩa. Trong `label` của node `nav`/`decision`/`end` và
+trong nhãn cạnh, luôn gọi TÊN màn như tài liệu đặt, mã chỉ đi kèm trong ngoặc:
+`"Trên màn Danh sách Khách hàng (SCR-001), nhấn Thêm mới"` — không viết
+`"Trên SCR-001, nhấn Thêm mới"`. (`screens[].id` vẫn là mã như bình thường:
+khung nhìn tự tra `screens[].name` để hiện tên, nên `name` phải là tên thật của
+màn, không phải chép lại mã.)
+
 Rules:
 - **Every screen referenced must exist in the spec** (`screens[].id`) — the
   flowchart joins wireframes by id, a dangling id renders as a hole.

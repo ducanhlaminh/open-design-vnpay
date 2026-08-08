@@ -101,6 +101,27 @@ Ghi ĐÚNG một file cho mỗi luồng, theo schema dưới đây. **Schema là
 - `edges[]`: `from`/`to` phải là `id` có thật trong `nodes[]`; `label` tuỳ chọn
   (bắt buộc với edge ra khỏi `decision`).
 
+### Nhãn phải GỌI TÊN màn, không được để mã trần
+
+Người đọc sơ đồ không có tài liệu mở bên cạnh. `"Trên SCR-001, nhấn Thêm mới"`
+là nhãn hỏng: không ai biết SCR-001 là màn gì. Mã màn (`SCR-001`, `MH1`, `S01`…)
+còn được đánh **lại từ đầu trong TỪNG tài liệu URD**, nên đứng một mình nó vừa
+khó hiểu vừa nhập nhằng giữa các tài liệu.
+
+- **Bắt buộc:** mọi nhắc tới màn hình trong `label` phải dùng TÊN màn như tài
+  liệu đặt. Mã chỉ được đi KÈM trong ngoặc, không bao giờ đứng một mình:
+  - ✅ `"Trên màn Danh sách Khách hàng (SCR-001), nhấn Thêm mới"`
+  - ✅ `"Màn Danh sách Khách hàng"`
+  - ❌ `"Trên SCR-001, nhấn Thêm mới"` · ❌ `"Về SCR-001"` · ❌ `"MH3"`
+- **Lấy tên ở đâu:** chính tài liệu nguồn luôn định nghĩa mã ngay chỗ mô tả màn
+  — heading kiểu `### Màn hình 1: SCR-001 — Danh sách Nhóm Hàng hóa dịch vụ`,
+  hoặc bảng "Danh sách màn hình". Lập bảng tra mã → tên TRƯỚC khi viết nhãn, rồi
+  thay mọi mã trong nhãn bằng tên.
+- Tài liệu thật sự không đặt tên cho một mã nào đó → viết mã kèm mô tả ngắn tự
+  suy từ ngữ cảnh câu văn (`"Màn danh sách (SCR-004)"`), tuyệt đối không bịa một
+  cái tên nghe hợp lý mà tài liệu không nói.
+- Luật này áp cho MỌI `label`: node `action`, `decision`, `end`, và cả nhãn cạnh.
+
 ## Đường vào (bắt buộc)
 
 - Node `start` là MÀN GỐC người dùng đang đứng trước khi bắt đầu nghiệp vụ (trang chủ / màn chính của app), KHÔNG phải chữ "Bắt đầu".
