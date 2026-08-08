@@ -227,6 +227,18 @@ describe('app-pool — stageAppDocsPool + appDocsPoolDirective (§2.4)', () => {
       expect(directive).toContain('docs-app/_index.md');
       expect(directive).toContain('docs-feature/');
       expect(directive).toMatch(/KHÔNG audit\/fan-out/);
+
+      // Bước sinh flow/spec màn hình phải BIẾT đường vào cấp app (Trang chủ →
+      // menu → màn feature) — thông tin chỉ có trong pool App, nên với các
+      // bước này docs-app là INPUT của deliverable chứ không phải tham khảo.
+      for (const stage of ['ux', 'dr-flow', 'cj', 'prd-cj']) {
+        const navDirective = appDocsPoolDirective(staged, stage);
+        expect(navDirective).toMatch(/ĐƯỜNG VÀO/);
+        expect(navDirective).toMatch(/KHÔNG bịa tên menu/);
+        expect(navDirective).not.toMatch(/KHÔNG audit\/fan-out/);
+      }
+      // Bước khác giữ nguyên luật cũ: docs-app chỉ để tham khảo.
+      expect(appDocsPoolDirective(staged, 'ui-html')).toMatch(/KHÔNG audit\/fan-out/);
     } finally {
       await rm(runCwd, { recursive: true, force: true });
     }

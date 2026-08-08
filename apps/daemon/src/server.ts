@@ -16695,7 +16695,7 @@ export async function startServer({
           const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
           const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
           const { staged } = await stageAppDocsPool(PROJECTS_DIR, poolAppId, runCwd);
-          appDocsDirective = appDocsPoolDirective(staged);
+          appDocsDirective = appDocsPoolDirective(staged, def.id);
         }
       } catch (error) {
         console.warn('[app-pool] staging docs-app failed (continuing without it):', error);

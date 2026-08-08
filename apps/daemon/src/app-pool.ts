@@ -379,12 +379,25 @@ async function collectMarkdown(dir: string, relDir: string, out: string[]): Prom
   }
 }
 
+/** Bước cần ĐƯỜNG VÀO app-level: flow/spec màn hình phải nói được người dùng
+ *  đi từ đâu tới tính năng này (Trang chủ → menu nào → màn nào), mà thông tin
+ *  đó chỉ có trong pool App chứ không có trong tài liệu riêng của feature.
+ *  Với các bước này `docs-app/` là INPUT của deliverable, không phải tài liệu
+ *  tham khảo — nên chỉ dẫn phải nói ngược lại câu "không deliverable từ
+ *  docs-app" áp cho các bước còn lại. */
+const APP_NAV_STAGES = new Set(['ux', 'dr-flow', 'cj', 'prd-cj']);
+
 /** The kickoff directive appended when a feature's App has a staged pool
  *  (§2.4 — text pinned by the spec). Pure (no I/O); '' when nothing was
  *  staged keeps the kickoff byte-identical to the legacy one. */
-export function appDocsPoolDirective(stagedFiles: string[]): string {
+export function appDocsPoolDirective(stagedFiles: string[], stageId?: string): string {
   if (stagedFiles.length === 0) return '';
-  return ' Tài liệu App: trang cho feature này ở `docs-feature/` (nguồn sự thật). TOÀN BỘ pool App nạp read-only ở `docs-app/` — đọc `docs-app/_index.md` để nắm danh mục, chỉ mở trang khi cần đối chiếu ngoài phạm vi feature; KHÔNG audit/fan-out/deliverable từ `docs-app/`.';
+  const base =
+    ' Tài liệu App: trang cho feature này ở `docs-feature/` (nguồn sự thật). TOÀN BỘ pool App nạp read-only ở `docs-app/` — đọc `docs-app/_index.md` để nắm danh mục';
+  if (stageId && APP_NAV_STAGES.has(stageId)) {
+    return `${base}. Bước này PHẢI xác định ĐƯỜNG VÀO tính năng ở cấp app: người dùng đứng ở màn gốc nào, đi qua menu/bước nào để tới màn của feature. Căn cứ theo thứ tự: câu mô tả cách vào trong \`docs-feature/\`, rồi cây thư mục trong \`docs-app/_index.md\` (thường phản chiếu cấu trúc menu) — mở trang trong \`docs-app/\` để lấy đúng tên menu như tài liệu viết. KHÔNG bịa tên menu: không có căn cứ thì bỏ phần đường vào và ghi rõ là chưa xác định được.`;
+  }
+  return `${base}, chỉ mở trang khi cần đối chiếu ngoài phạm vi feature; KHÔNG audit/fan-out/deliverable từ \`docs-app/\`.`;
 }
 
 /** §2.2 DELETE pool/pages: remove manifest entries + their files, regenerate
