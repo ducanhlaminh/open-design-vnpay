@@ -19,7 +19,6 @@ const PENDING_START_GRACE_MS = 60_000;
 import type {
   DesignSystemSummary,
   PipelineProject,
-  PipelinePulseFeedbackListResponse,
   PipelineProjectsResponse,
   PipelineRunMode,
   PipelineView,
@@ -696,10 +695,7 @@ export function PipelinesView() {
       setError(null);
     }
     try {
-      const [res, feedbackRes] = await Promise.all([
-        fetch(`/api/pipelines?projectId=${encodeURIComponent(pid)}&workflowId=${encodeURIComponent(workflowId)}`),
-        fetch(`/api/pipelines/feedback?projectId=${encodeURIComponent(pid)}`),
-      ]);
+      const res = await fetch(`/api/pipelines?projectId=${encodeURIComponent(pid)}&workflowId=${encodeURIComponent(workflowId)}`);
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `load failed: ${res.status}`);
@@ -712,10 +708,6 @@ export function PipelinesView() {
       setStatusByTarget(data.statusByTarget ?? {});
       // Giữ lựa chọn còn hợp lệ; dự án đổi cấu hình → về target đầu tiên.
       setActiveTarget((cur) => (cur && nextTargets.includes(cur) ? cur : nextTargets[0] ?? null));
-      if (feedbackRes.ok) {
-        const feedbackData = (await feedbackRes.json()) as PipelinePulseFeedbackListResponse;
-        setRatedRunIds(new Set(feedbackData.feedback.map((item) => item.runId)));
-      }
       if (background) setError(null);
     } catch (err) {
       // A transient poll hiccup must not wipe the stepper mid-run — keep the
