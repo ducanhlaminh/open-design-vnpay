@@ -512,12 +512,14 @@ import { appContextDirective, resolveAppId, stageAppContext } from './app-contex
 import {
   appDocsDir,
   appDocsPoolDirective,
-  isPoolClean,
+  branchFilePath,
+  overviewPath,
+  pageClean,
   readManifest,
   stageAppDocsPool,
 } from './app-pool.js';
 import { registerAppPoolRoutes } from './app-pool-routes.js';
-import { ensureDistilled, type DistillTask } from './app-distill.js';
+import { type DistillTask } from './app-distill.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv, sha256hex, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
@@ -14057,12 +14059,13 @@ export async function startServer({
 
   // ── App Docs Pool — GATE + deterministic copy (docs/app-docs-pool-spec.md
   // §WP-4) ────────────────────────────────────────────────────────────────
-  // jira-ingest with an `app-pool` source: no fetch, no agent — the App's
-  // pool was already fetched (POST .../import-confluence) and distilled
-  // separately. This just enforces the GATE (§2.1: every pool page
-  // `distilled` with a matching hash) and, once it passes, copies the
-  // TICKED main pages (+ the pool's shared `attachments/`) into `<wf>/docs/`
-  // — same status/history semantics as `runDocsDeterministic` above.
+  // jira-ingest with an `app-pool` source: no fetch, NO AGENT, no distill —
+  // bước 1 là "nạp" thuần. Chưng cất xảy ra Ở MỘT CHỖ DUY NHẤT: nút
+  // "Chưng cất tài liệu" (POST .../distill, modal ở màn App). Ở đây chỉ
+  // GATE trên đúng những trang được tick (§2.1: `distilled` + hash khớp)
+  // rồi copy trang tick + BẢN CHƯNG CẤT đi kèm (_overview.md + _branches
+  // của các phân hệ có trang tick + attachments/) vào `<wf>/docs/` — cùng
+  // status/history semantics với `runDocsDeterministic` ở trên.
   const runDocsFromAppPool = (
     pipelineId: string,
     projectId: string,
@@ -14095,41 +14098,59 @@ export async function startServer({
           if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
         }
 
-        // Bước 1 = "chưng cất rồi mới nạp workspace": pool chưa chưng cất
-        // KHÔNG còn là lỗi — bước này tự chạy distill (hoặc CHỜ job một
-        // feature khác cùng App đã khởi động) rồi mới copy. Tiến độ đẩy vào
-        // lastInput để stepper không phải nhìn spinner câm suốt map-reduce.
-        {
-          const manifest0 = await readManifest(PROJECTS_DIR, appId);
-          if (!isPoolClean(manifest0)) {
-            setProjectPipelineStatus(db, projectId, pipelineId, {
-              status: 'running',
-              lastInput: 'Chưng cất tài liệu App (chuẩn bị)…',
-            });
-            const distilled = await ensureDistilled(appId, appDistillDeps, (p) => {
-              setProjectPipelineStatus(db, projectId, pipelineId, {
-                lastInput: `Chưng cất tài liệu App: ${p.done}/${p.total} phần…`,
-              });
-            });
-            if (!distilled.ok) {
-              throw new Error(
-                `Chưng cất tài liệu App thất bại: ${distilled.error ?? 'không rõ nguyên nhân'} — thử chạy lại, hoặc bấm "Chưng cất tài liệu" ở màn App.`,
-              );
-            }
-            setProjectPipelineStatus(db, projectId, pipelineId, {
-              lastInput: 'Chưng cất xong — đang nạp tài liệu vào workspace…',
-            });
-          }
-        }
+        // GATE fail-fast trên ĐÚNG những trang được tick: pool bẩn không còn
+        // kích hoạt auto-distill nữa (bước 1 không bao giờ chạy agent) — lỗi
+        // trả về chỉ thẳng người dùng tới nút "Chưng cất tài liệu".
         const manifest = await readManifest(PROJECTS_DIR, appId);
         const selected = manifest.pages.filter((p) => paths.includes(p.path));
         if (selected.length === 0) {
           throw new Error('Không có trang nào được chọn từ pool tài liệu App — tick lại rồi chạy lại.');
         }
+        const dirty = selected.filter((p) => !pageClean(p));
+        if (dirty.length > 0) {
+          throw new Error(
+            `Tài liệu App chưa chưng cất xong (${dirty.length}/${selected.length} trang) — bấm "Chưng cất tài liệu" ở màn App rồi chạy lại. Bước 1 chỉ nạp, không chưng cất.`,
+          );
+        }
         const cwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
         const poolDocsDir = appDocsDir(PROJECTS_DIR, appId);
+        const wsDocsDir = path.join(cwd, 'docs');
+        // Đổi selection rồi chạy lại phải cho kết quả ĐÚNG selection mới:
+        // regen-clear ở trên chỉ khớp outputs khai báo (docs/jira|confluence|
+        // context), còn file pool-copy nằm docs/<branch>/… nên không bao giờ
+        // khớp — dọn tay mọi thứ trong docs/ trừ phần thuộc stage/nguồn khác.
+        const KEEP_DOCS_ENTRIES = new Set(['system-map.json', 'jira', 'confluence', 'context', 'source']);
+        for (const entry of await fs.promises.readdir(wsDocsDir).catch(() => [] as string[])) {
+          if (KEEP_DOCS_ENTRIES.has(entry)) continue;
+          await fs.promises.rm(path.join(wsDocsDir, entry), { recursive: true, force: true }).catch(() => null);
+        }
+        await fs.promises.mkdir(wsDocsDir, { recursive: true });
+        // Nạp = trang tick + BẢN CHƯNG CẤT đi kèm: _overview.md + tóm tắt của
+        // đúng những phân hệ có trang được tick — workspace nhận đúng cái
+        // modal Nguồn tài liệu hứa ở khối "Bản chưng cất (luôn nạp kèm)".
+        // Thiếu _overview.md (pool sạch nhưng reduce từng fail validation)
+        // không chặn nạp: trang gốc + tóm tắt nhánh vẫn đủ cho các bước sau.
+        const overviewOk = await fs.promises
+          .copyFile(overviewPath(PROJECTS_DIR, appId), path.join(wsDocsDir, '_overview.md'))
+          .then(() => true)
+          .catch(() => false);
+        if (!overviewOk) {
+          console.warn(`[app-pool] pool "${appId}" thiếu _overview.md — vẫn nạp trang gốc + tóm tắt nhánh.`);
+        }
+        const selectedBranches = [...new Set(selected.map((p) => p.branch).filter(Boolean))].sort();
+        let copiedBranches = 0;
+        if (selectedBranches.length > 0) {
+          await fs.promises.mkdir(path.join(wsDocsDir, '_branches'), { recursive: true });
+          for (const b of selectedBranches) {
+            const ok = await fs.promises
+              .copyFile(branchFilePath(PROJECTS_DIR, appId, b), path.join(wsDocsDir, '_branches', `${b}.md`))
+              .then(() => true)
+              .catch(() => false);
+            if (ok) copiedBranches += 1;
+          }
+        }
         for (const p of selected) {
-          const dst = path.join(cwd, 'docs', p.path);
+          const dst = path.join(wsDocsDir, p.path);
           await fs.promises.mkdir(path.dirname(dst), { recursive: true });
           await fs.promises.copyFile(path.join(poolDocsDir, p.path), dst);
         }
@@ -14138,11 +14159,11 @@ export async function startServer({
         // copied pages' `![...](…/attachments/…)` references resolve,
         // regardless of which subset of pages was ticked.
         await fs.promises
-          .cp(path.join(poolDocsDir, 'attachments'), path.join(cwd, 'docs', 'attachments'), { recursive: true })
+          .cp(path.join(poolDocsDir, 'attachments'), path.join(wsDocsDir, 'attachments'), { recursive: true })
           .catch(() => null);
 
         console.log(
-          `[app-pool] docs ingest for ${projectId}: copied ${selected.length} page(s) from App "${appId}" pool, no fetch, no agent`,
+          `[app-pool] docs ingest for ${projectId}: copied ${selected.length} page(s) + ${copiedBranches} branch summary(ies)${overviewOk ? ' + overview' : ''} from App "${appId}" pool, no fetch, no agent`,
         );
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
         void commitHistory(pipelineCwd, {
@@ -14265,10 +14286,9 @@ export async function startServer({
     return final.status === 'succeeded' ? 'succeeded' : 'failed';
   };
 
-  // Deps chưng cất dùng chung: bước 1 workflow (runDocsFromAppPool →
-  // ensureDistilled) và nút "Chưng cất tài liệu" ở màn App (ctx.distill)
-  // cùng một runTask — một job chạy là cả hai phía thấy chung tiến độ.
-  const appDistillDeps = { projectsDir: PROJECTS_DIR, runTask: runAppDistillTask };
+  // runAppDistillTask chỉ còn MỘT đường vào: nút "Chưng cất tài liệu" (POST
+  // .../distill → ctx.distill ở registerAppPoolRoutes). Bước 1 workflow
+  // KHÔNG chưng cất nữa — runDocsFromAppPool gate fail-fast rồi copy thuần.
 
   // PRD Mockup Review runs PER PAGE in parallel: one agent run per doc page
   // (bounded pool), each writing review/<slug>/report.json, then the daemon

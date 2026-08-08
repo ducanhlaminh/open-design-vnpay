@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { AppPoolPage, AppPoolResponse } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
@@ -9,7 +9,7 @@ import { fetchProjectFileText } from '../../providers/registry';
 import { AppPoolTree } from './AppPoolTree';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { ConfluenceTreeImport } from './ConfluenceTreeImport';
-import { ProgressBar } from './ProgressBar';
+import { DistillModal } from './DistillModal';
 import styles from './AppPoolSection.module.css';
 
 /** Trang pool mở đầu bằng frontmatter YAML (`--- title/page_id/url/source ---`)
@@ -45,16 +45,7 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
   const [pool, setPool] = useState<AppPoolResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [distilling, setDistilling] = useState(false);
-  // `startDistill` returns as soon as the daemon REGISTERS the job (before it
-  // finishes) — `running` only observed via polling. `runDistillJob` reverts
-  // a failed branch's pages rather than leaving them `distilling`, so a
-  // running→not-running transition that still leaves pages pending is the
-  // client-visible signature of a failed run (the daemon doesn't forward the
-  // job's own error message on this endpoint). `wasRunningRef` gates this so
-  // a brand-new, never-distilled pool isn't mistaken for a failed one.
-  const wasRunningRef = useRef(false);
-  const [distillFailed, setDistillFailed] = useState(false);
+  const [distillModalOpen, setDistillModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [deleting, setDeleting] = useState<AppPoolPage | null>(null);
@@ -75,7 +66,6 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
       const nextPool = (await response.json()) as AppPoolResponse;
       setPool(nextPool);
       setError(null);
-      setDistilling(nextPool.distill.running);
     } catch (cause) {
       if (!background || pool === null) {
         setError(cause instanceof Error ? cause.message : 'Không thể tải tài liệu App.');
@@ -91,48 +81,8 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
     setPreview(null);
     setPreviewHtml(null);
     setPreviewError(null);
-    wasRunningRef.current = false;
-    setDistillFailed(false);
     void loadPool();
   }, [appId, loadPool]);
-
-  useEffect(() => {
-    if (!distilling) return undefined;
-    const interval = window.setInterval(() => void loadPool(true), 3000);
-    return () => window.clearInterval(interval);
-  }, [distilling, loadPool]);
-
-  // See `wasRunningRef`'s docblock — this is the running→not-running-but-
-  // still-pending transition that reads as "the distill job failed".
-  useEffect(() => {
-    if (!pool) return;
-    const runningNow = pool.distill.running;
-    if (runningNow) {
-      wasRunningRef.current = true;
-      setDistillFailed(false);
-    } else if (wasRunningRef.current) {
-      wasRunningRef.current = false;
-      if (!pool.distill.clean && pool.distill.pending > 0) setDistillFailed(true);
-    }
-  }, [pool]);
-
-  const startDistill = async () => {
-    setError(null);
-    setDistillFailed(false);
-    try {
-      const response = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/distill`, {
-        method: 'POST',
-      });
-      if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error || `Không thể chưng cất tài liệu (${response.status}).`);
-      }
-      setDistilling(true);
-      await loadPool(true);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Không thể chưng cất tài liệu.');
-    }
-  };
 
   const deletePage = async (page: AppPoolPage) => {
     const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/pool/pages`, {
@@ -170,10 +120,7 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
   if (error && !pool) return <section className={styles.section}><p className={styles.error}>{error}</p><button className={styles.secondaryButton} onClick={() => void loadPool()}>Thử lại</button></section>;
   if (!pool) return null;
 
-  const progress = pool.distill.progress;
-  const isRunning = distilling || pool.distill.running;
-  const percent =
-    progress && progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : 0;
+  const isRunning = pool.distill.running;
   const ready = pool.pages.length > 0 && !isRunning && pool.distill.clean;
 
   return (
@@ -201,7 +148,7 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
             <button
               type="button"
               className={styles.primaryButton}
-              onClick={() => void startDistill()}
+              onClick={() => setDistillModalOpen(true)}
               disabled={isRunning || pool.distill.pending === 0}
             >
               Chưng cất tài liệu
@@ -210,22 +157,6 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
           ) : null}
         </div>
       </div>
-      {isRunning && progress ? (
-        <ProgressBar
-          label={`Đang chưng cất tài liệu… ${progress.done}/${progress.total} trang (${percent}%)`}
-          percent={percent}
-        />
-      ) : null}
-      {distillFailed && !hideDistill ? (
-        <div className={styles.distillFailBanner}>
-          <p className={styles.error}>
-            Chưng cất chưa xong hết — còn {pool.distill.pending} trang. Bấm thử lại hoặc dùng nút "Chưng cất tài liệu" ở trên.
-          </p>
-          <button type="button" className={styles.secondaryButton} onClick={() => void startDistill()}>
-            Thử lại
-          </button>
-        </div>
-      ) : null}
       {error ? <p className={styles.error}>{error}</p> : null}
 
       {pool.pages.length > 0 ? (() => {
@@ -342,6 +273,16 @@ export function AppPoolSection({ appId, hideImport, hideDistill }: AppPoolSectio
           confirmLabel="Xóa trang"
           onClose={() => setDeleting(null)}
           onConfirm={() => deletePage(deleting)}
+        />
+      ) : null}
+      {distillModalOpen && !hideDistill ? (
+        <DistillModal
+          appId={appId}
+          onClose={() => {
+            setDistillModalOpen(false);
+            void loadPool(true);
+          }}
+          onFinished={() => void loadPool(true)}
         />
       ) : null}
     </section>

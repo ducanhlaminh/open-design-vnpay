@@ -52,7 +52,9 @@ Two things carry the "one system" meaning, and both are required:
 
 ### 0. Read the inputs
 
-- **Docs (source of truth):** every Markdown file under `./docs/confluence/`,
+**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+
+- **Docs (source of truth):** in the distilled layout, every source page under `./docs/<branch>/**/*.md` is authoritative; `./docs/_overview.md` and `./docs/_branches/` are navigation maps, not system-map document entries. In the legacy layout, every Markdown file under `./docs/confluence/`,
   `./docs/jira/`. Read `./docs/context/` for background only — a context page
   never becomes a document entry in the map.
 - **Flow diagrams (best evidence for the seams):** the ingest saved each draw.io

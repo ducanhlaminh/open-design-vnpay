@@ -40,12 +40,12 @@ system; leaving it out is what turns a map into a list of silos.
 ```
 
 ## Document
-One entry per file under `docs/confluence/` and `docs/jira/`. Context pages
+In the distilled layout, source-page entries are `docs/<branch>/**/*.md`; `docs/_overview.md` and `docs/_branches/` are navigation maps, not entries. In the legacy layout, one entry per file under `docs/confluence/` and `docs/jira/`. Context pages
 (`docs/context/`) are background and never appear here.
 
 ```jsonc
 {
-  "file": "docs/confluence/2.-Dang-nhap.md",  // on-disk path, verbatim
+  "file": "docs/<branch>/…/<page>.md",           // or legacy docs/confluence/...; on-disk path, verbatim
   "apps": ["web-user"],                        // MAY list several — a doc describing an
                                                // end-to-end flow belongs to each app it
                                                // covers. `[]` = could not place it.
@@ -66,7 +66,7 @@ run builds one app, and these are the only places it can see the others.
   "trigger": "…",        // the action or event that causes the hand-off
   "data":    "…",        // what travels across
   "back":    "…",        // optional: how the result returns to `from`
-  "sources": ["docs/confluence/2.-Dang-nhap.md"]  // where this is documented
+  "sources": ["docs/<branch>/…/<page>.md"]          // example distilled-layout path
 }
 ```
 

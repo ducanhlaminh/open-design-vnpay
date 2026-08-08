@@ -96,7 +96,10 @@ export interface EnsureDistilledOptions {
   timeoutMs?: number;
 }
 
-/** Ensure the app pool is clean, waiting for an in-flight job when needed. */
+/**
+ * Ensure the app pool is clean, waiting for an in-flight job when needed.
+ * @deprecated Bước 1 không auto-distill nữa (spec DST-A); chỉ còn test dùng. Xóa ở lượt dọn sau.
+ */
 export async function ensureDistilled(
   appId: string,
   deps: AppDistillDeps,
@@ -171,56 +174,95 @@ async function runDistillJob(appId: string, branches: string[], deps: AppDistill
   let manifest = await readManifest(deps.projectsDir, appId);
   let firstError: string | undefined;
 
-  for (const branch of branches) {
-    const pages = pagesForBranch(manifest, branch);
-    // Snapshot each page's PRE-attempt state so a failure can revert exactly
-    // ("giữ nguyên" — §WP-2), instead of collapsing every failure to one
-    // fixed fallback state.
-    const priorStates = new Map(pages.map((p) => [p.pageId, p.distill.state] as const));
-
-    manifest = setBranchState(manifest, branch, 'distilling');
-    await writeManifest(deps.projectsDir, appId, manifest);
-
-    const revert = async (message: string) => {
-      manifest = {
-        ...manifest,
-        pages: manifest.pages.map((p) =>
-          p.branch === branch
-            ? { ...p, distill: { ...p.distill, state: priorStates.get(p.pageId) ?? ('fetched' as DistillState) } }
-            : p,
-        ),
-      };
+  // All manifest reads and writes go through this chain. Agent tasks may run
+  // concurrently, but their state transitions must never race on disk.
+  let chain = Promise.resolve();
+  const mutate = (fn: (m: AppPoolManifest) => AppPoolManifest): Promise<void> => {
+    chain = chain.then(async () => {
+      manifest = fn(manifest);
       await writeManifest(deps.projectsDir, appId, manifest);
-      firstError = firstError ?? message;
-    };
+    });
+    return chain;
+  };
 
-    let agentStatus: 'succeeded' | 'failed';
-    try {
-      agentStatus = await deps.runTask(appId, { kind: 'branch', branch });
-    } catch (error) {
-      agentStatus = 'failed';
-      console.warn(`[app-distill] branch "${branch}" agent run threw:`, error);
-    }
-    if (agentStatus !== 'succeeded') {
-      await revert(`Nhánh "${branch}": lượt chạy agent thất bại.`);
-    } else {
-      const content = await fs.promises
-        .readFile(branchFilePath(deps.projectsDir, appId, branch), 'utf8')
-        .catch(() => null);
-      if (content === null) {
-        await revert(`Nhánh "${branch}": không tìm thấy file _branches/${branch}.md sau khi chạy.`);
+  let nextBranch = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const branch = branches[nextBranch++];
+      if (branch === undefined) return;
+
+      // Capture the pre-attempt state in the same serialized operation as the
+      // distilling transition, so a concurrent worker cannot overwrite it.
+      let pages: ReturnType<typeof pagesForBranch> = [];
+      let priorStates = new Map<string, DistillState>();
+      await mutate((m) => {
+        pages = pagesForBranch(m, branch);
+        priorStates = new Map(pages.map((p) => [p.pageId, p.distill.state] as const));
+        return setBranchState(m, branch, 'distilling');
+      });
+
+      let agentStatus: 'succeeded' | 'failed';
+      try {
+        agentStatus = await deps.runTask(appId, { kind: 'branch', branch });
+      } catch (error) {
+        agentStatus = 'failed';
+        console.warn(`[app-distill] branch "${branch}" agent run threw:`, error);
+      }
+
+      if (agentStatus !== 'succeeded') {
+        await mutate((m) => {
+          firstError = firstError ?? `Nhánh "${branch}": lượt chạy agent thất bại.`;
+          return {
+            ...m,
+            pages: m.pages.map((p) =>
+              p.branch === branch
+                ? { ...p, distill: { ...p.distill, state: priorStates.get(p.pageId) ?? ('fetched' as DistillState) } }
+                : p,
+            ),
+          };
+        });
       } else {
-        const check = validateBranch(content, pages);
-        if (!check.ok) {
-          await revert(`Nhánh "${branch}": ${check.errors.join(' ')}`);
+        const content = await fs.promises
+          .readFile(branchFilePath(deps.projectsDir, appId, branch), 'utf8')
+          .catch(() => null);
+        if (content === null) {
+          await mutate((m) => {
+            firstError = firstError ?? `Nhánh "${branch}": không tìm thấy file _branches/${branch}.md sau khi chạy.`;
+            return {
+              ...m,
+              pages: m.pages.map((p) =>
+                p.branch === branch
+                  ? { ...p, distill: { ...p.distill, state: priorStates.get(p.pageId) ?? ('fetched' as DistillState) } }
+                  : p,
+              ),
+            };
+          });
         } else {
-          manifest = markBranchDistilled(manifest, branch);
-          await writeManifest(deps.projectsDir, appId, manifest);
+          const check = validateBranch(content, pages);
+          if (!check.ok) {
+            await mutate((m) => {
+              firstError = firstError ?? `Nhánh "${branch}": ${check.errors.join(' ')}`;
+              return {
+                ...m,
+                pages: m.pages.map((p) =>
+                  p.branch === branch
+                    ? { ...p, distill: { ...p.distill, state: priorStates.get(p.pageId) ?? ('fetched' as DistillState) } }
+                    : p,
+                ),
+              };
+            });
+          } else {
+            await mutate((m) => markBranchDistilled(m, branch));
+          }
         }
       }
+      progressByApp.set(appId, { ...progress(), done: progress().done + 1 });
     }
-    progressByApp.set(appId, { ...progress(), done: progress().done + 1 });
-  }
+  };
+
+  const limit = Math.max(1, Number(process.env.OD_APP_DISTILL_CONCURRENCY ?? '4') || 4);
+  await Promise.all(Array.from({ length: Math.min(limit, branches.length) }, () => worker()));
+  await chain;
 
   await writeIndexMd(deps.projectsDir, appId, manifest);
 

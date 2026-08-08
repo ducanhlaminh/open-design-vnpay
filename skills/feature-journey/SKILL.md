@@ -35,7 +35,9 @@ exactly, but sequence them through the two phases here.
 ## Run in two ordered phases (do NOT interleave)
 
 ### Phase 1 — Feature Analysis → `./features/`
-Follow the **feature-analysis** workflow exactly: read `./docs/jira/*.md` (+
+**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+
+Follow the **feature-analysis** workflow exactly: in the distilled layout read `./docs/_overview.md` first, then the selected source pages under `./docs/<branch>/**/*.md`; otherwise read `./docs/jira/*.md` (+
 `./docs/confluence/`) produced by *Docs → Markdown*, distil into one file per
 feature under `./features/<Feature Name>.md` plus `./features/_index.json`. If
 `./docs/jira/` is missing or empty, STOP and tell the user to run **Docs →

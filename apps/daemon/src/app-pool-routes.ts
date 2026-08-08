@@ -126,7 +126,15 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
           clean: isPoolClean(manifest),
           pending: pendingCount(manifest),
           running: progress?.running === true,
-          ...(progress ? { progress: { done: progress.done, total: progress.total } } : {}),
+          ...(progress
+            ? {
+                progress: {
+                  done: progress.done,
+                  total: progress.total,
+                  ...(progress.error ? { error: progress.error } : {}),
+                },
+              }
+            : {}),
         },
         overviewExists,
       });

@@ -668,7 +668,7 @@ export interface AppPoolResponse {
     clean: boolean;
     pending: number;
     running: boolean;
-    progress?: { done: number; total: number };
+    progress?: { done: number; total: number; error?: string };
   };
   overviewExists: boolean;
 }

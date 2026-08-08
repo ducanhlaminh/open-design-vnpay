@@ -48,6 +48,8 @@ Customer Journey preview (`/customer-journey`) renders it, and the downstream
 The docs→UI workflow is `docs → cj → ux`: this pipeline runs straight after docs
 ingest, with NO feature-analysis upstream and NO `./features/` folder — do not
 look for one.
+**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+
 1. **Docs MD (primary):** read every Markdown file under `./docs/` (e.g.
    `./docs/confluence/**/*.md`, `./docs/jira/**/*.md`). These product docs ARE
    your source of truth — derive the actors, the to-be journeys, and each stage
@@ -135,7 +137,7 @@ Author a journey file following `references/schema.md`. Key rules:
   `user_actions`, `system_responses`, `touchpoints`, `pain_points` — this drives
   the emotion curve + pain markers on the customer-journey view.
 - **Each stage MUST carry `sources[]`** — the key source-text excerpts that
-  justify it: `{ "file": "docs/confluence/<slug>.md", "heading": "<section>",
+  justify it: `{ "file": "docs/<branch>/…/<page>.md" (the exact on-disk path in the distilled layout), "heading": "<section>",
   "quote": "<short verbatim snippet from that MD>" }`. Keep quotes short (1–3
   sentences), copied VERBATIM (do not paraphrase). **`file` MUST be the exact
   SLUGIFIED path of the file you actually read on disk** (kebab-cased, deaccented

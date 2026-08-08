@@ -20,8 +20,9 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
   let baseUrl: string;
 
   beforeAll(async () => {
-    // Auto-distill (bước 1) không được spawn agent THẬT trong test — máy dev
-    // có claude/codex trong PATH nên detectAgents sẽ tìm ra chúng.
+    // Bước 1 không còn auto-distill (gate fail-fast), nhưng vẫn chốt cửa:
+    // nếu regression nào đó gọi lại agent thật (máy dev có claude/codex trong
+    // PATH) thì kill-switch này làm nó fail deterministic thay vì treo test.
     process.env.OD_APP_DISTILL_NO_AGENT = '1';
     const started = (await startServer({ port: 0, returnServer: true })) as {
       url: string;
@@ -68,11 +69,10 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
     return { path: relPath, contentHash: sha256(content) };
   }
 
-  // Ngữ nghĩa MỚI (bước 1 = chưng cất & nạp): pool pending không fail ngay
-  // nữa — bước 1 TỰ chưng cất (ensureDistilled) rồi mới copy. Môi trường test
-  // không có agent nào nên lượt chưng cất thất bại → stage failed với thông
-  // điệp "Chưng cất tài liệu App thất bại", và vẫn không copy gì.
-  it('AUTO-DISTILL: pending page → bước 1 tự chưng cất; không có agent → failed với lỗi chưng cất, no copy', async () => {
+  // Ngữ nghĩa MỚI (bước 1 = NẠP thuần): pool bẩn KHÔNG kích hoạt auto-distill
+  // nữa — bước 1 không bao giờ chạy agent. Trang được tick mà chưa chưng cất
+  // → fail NGAY với chỉ dẫn bấm nút "Chưng cất tài liệu", và không copy gì.
+  it('GATE FAIL-FAST: trang tick chưa chưng cất → failed ngay (không agent, không copy), lỗi chỉ tới nút Chưng cất', async () => {
     const projectId = uniqueId('gatefail');
     const appId = uniqueId('app');
     await createProject(projectId);
@@ -99,7 +99,8 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
 
     const view = await pollUntilTerminal(projectId, 'docs');
     expect(view.status).toBe('failed');
-    expect(view.error).toMatch(/Chưng cất tài liệu App thất bại/);
+    expect(view.error).toMatch(/chưa chưng cất xong/);
+    expect(view.error).toMatch(/Chưng cất tài liệu/);
 
     // No copy happened.
     await expect(
@@ -107,40 +108,40 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
     ).rejects.toThrow();
   });
 
-  it('GATE PASS: every page distilled with a matching hash → copies ticked pages + shared attachments into <wf>/docs/', async () => {
+  it('GATE PASS: copy trang tick + _overview.md + _branches của ĐÚNG phân hệ tick; dọn pool-copy cũ, giữ system-map.json', async () => {
     const projectId = uniqueId('gatepass');
     const appId = uniqueId('app');
     await createProject(projectId);
 
     const p1 = await writePoolPage(appId, 'branch-a/page-one.md', '# Page One');
     const p2 = await writePoolPage(appId, 'branch-a/page-two.md', '# Page Two — not ticked');
+    const p3 = await writePoolPage(appId, 'branch-b/page-three.md', '# Page Three — nhánh không tick');
     await mkdir(path.join(appDocsDir(projectsDir, appId), 'attachments'), { recursive: true });
     await writeFile(path.join(appDocsDir(projectsDir, appId), 'attachments', 'logo.png'), 'fake-bytes');
+    // Bản chưng cất trên pool: overview + tóm tắt từng nhánh.
+    await writeFile(path.join(appDocsDir(projectsDir, appId), '_overview.md'), '# Overview');
+    await mkdir(path.join(appDocsDir(projectsDir, appId), '_branches'), { recursive: true });
+    await writeFile(path.join(appDocsDir(projectsDir, appId), '_branches', 'branch-a.md'), '# Branch A');
+    await writeFile(path.join(appDocsDir(projectsDir, appId), '_branches', 'branch-b.md'), '# Branch B');
 
+    const distilled = (p: { contentHash: string }) =>
+      ({ state: 'distilled', distilledHash: p.contentHash }) as const;
     const manifest: AppPoolManifest = {
       version: 1,
       pages: [
-        {
-          pageId: '1',
-          path: p1.path,
-          title: 'Page One',
-          branch: 'branch-a',
-          contentHash: p1.contentHash,
-          fetchedAt: Date.now(),
-          distill: { state: 'distilled', distilledHash: p1.contentHash },
-        },
-        {
-          pageId: '2',
-          path: p2.path,
-          title: 'Page Two',
-          branch: 'branch-a',
-          contentHash: p2.contentHash,
-          fetchedAt: Date.now(),
-          distill: { state: 'distilled', distilledHash: p2.contentHash },
-        },
+        { pageId: '1', path: p1.path, title: 'Page One', branch: 'branch-a', contentHash: p1.contentHash, fetchedAt: Date.now(), distill: distilled(p1) },
+        { pageId: '2', path: p2.path, title: 'Page Two', branch: 'branch-a', contentHash: p2.contentHash, fetchedAt: Date.now(), distill: distilled(p2) },
+        { pageId: '3', path: p3.path, title: 'Page Three', branch: 'branch-b', contentHash: p3.contentHash, fetchedAt: Date.now(), distill: distilled(p3) },
       ],
     };
     await writeManifest(projectsDir, appId, manifest);
+
+    // Workspace đã có rác từ lượt chạy trước với selection khác + output của
+    // stage docs-map: rác phải bị dọn, system-map.json phải sống sót.
+    const wsDocs = path.join(projectsDir, projectId, 'docs-to-ui', 'docs');
+    await mkdir(path.join(wsDocs, 'old-branch'), { recursive: true });
+    await writeFile(path.join(wsDocs, 'old-branch', 'stale.md'), '# lượt trước');
+    await writeFile(path.join(wsDocs, 'system-map.json'), '{"apps":[]}');
 
     // Only page-one is ticked as a "trang CHÍNH" — page-two stays pool-only.
     const res = await runDocsWithAppPool(projectId, appId, [p1.path]);
@@ -149,17 +150,19 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
     const view = await pollUntilTerminal(projectId, 'docs');
     expect(view.status).toBe('succeeded');
 
-    const copied = await readFile(path.join(projectsDir, projectId, 'docs-to-ui', 'docs', p1.path), 'utf8');
+    const copied = await readFile(path.join(wsDocs, p1.path), 'utf8');
     expect(copied).toBe('# Page One');
     // Untocked page is NOT copied into the feature's docs/.
-    await expect(
-      readFile(path.join(projectsDir, projectId, 'docs-to-ui', 'docs', p2.path), 'utf8'),
-    ).rejects.toThrow();
+    await expect(readFile(path.join(wsDocs, p2.path), 'utf8')).rejects.toThrow();
+    // Bản chưng cất đi kèm: overview + đúng nhánh có trang tick, KHÔNG kèm nhánh khác.
+    expect(await readFile(path.join(wsDocs, '_overview.md'), 'utf8')).toBe('# Overview');
+    expect(await readFile(path.join(wsDocs, '_branches', 'branch-a.md'), 'utf8')).toBe('# Branch A');
+    await expect(readFile(path.join(wsDocs, '_branches', 'branch-b.md'), 'utf8')).rejects.toThrow();
+    // Pool-copy cũ bị dọn; output stage khác (docs-map) giữ nguyên.
+    await expect(readFile(path.join(wsDocs, 'old-branch', 'stale.md'), 'utf8')).rejects.toThrow();
+    expect(await readFile(path.join(wsDocs, 'system-map.json'), 'utf8')).toBe('{"apps":[]}');
     // Shared attachments folder travels along regardless of which pages were ticked.
-    const logo = await readFile(
-      path.join(projectsDir, projectId, 'docs-to-ui', 'docs', 'attachments', 'logo.png'),
-      'utf8',
-    );
+    const logo = await readFile(path.join(wsDocs, 'attachments', 'logo.png'), 'utf8');
     expect(logo).toBe('fake-bytes');
   });
 

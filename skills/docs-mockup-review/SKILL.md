@@ -49,7 +49,9 @@ that what they drew is itself usable.
 
 ### 0. Read the inputs (from the project cwd)
 
-- **Docs (primary):** `./docs/confluence/**/*.md`. Each page mixes prose with
+**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+
+- **Docs (primary):** in the distilled layout, review source pages under `./docs/<branch>/**/*.md`; a page with images uses `![](attachments/…)`. In the legacy layout, use `./docs/confluence/**/*.md`. Each page mixes prose with
   inline `![alt](attachments/<file>)` Markdown image refs — the mockup for the
   feature described in the paragraph(s) immediately around it. A page may have
   zero, one, or several mockups (one per sub-flow/state it documents).
@@ -68,7 +70,7 @@ that what they drew is itself usable.
   pages. Read them for domain understanding, but NEVER review or fabricate
   mockups from them — only `./docs/confluence/` pages are reviewed.
 
-If `./docs/confluence/` has no page with at least one embedded image, stop and
+If neither layout has a page with at least one embedded image — scan distilled source pages under `./docs/<branch>/…` and legacy pages under `./docs/confluence/` — stop and
 report that there is nothing to review — do not fabricate images or findings.
 
 ### 1. Pair each mockup with the feature text that owns it
@@ -156,7 +158,7 @@ Write exactly one file:
 
 **`./review/<page-slug>/report.json`** — the per-image schema below, scoped to
 THIS page's mockups only. `<page-slug>` is the folder the kickoff already gave
-you (the page's `.md` path under `docs/confluence/` with slashes → `__` and the
+you (the page's `.md` path under `docs/<branch>/…/` (or legacy `docs/confluence/`) with slashes → `__` and the
 `.md` dropped, e.g. `docs/confluence/i-tai-khoan/1-thiet-lap.md` →
 `i-tai-khoan__1-thiet-lap`). Use it verbatim. Shape:
 

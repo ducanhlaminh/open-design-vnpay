@@ -182,7 +182,7 @@ export function deriveBranch(relPath: string): string {
   return norm.replace(/\.md$/i, '') || norm;
 }
 
-function pageClean(p: ManifestPage): boolean {
+export function pageClean(p: ManifestPage): boolean {
   return p.distill.state === 'distilled' && p.distill.distilledHash === p.contentHash;
 }
 

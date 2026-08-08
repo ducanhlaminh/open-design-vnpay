@@ -150,6 +150,89 @@ describe('app-distill — incremental branch selection', () => {
 });
 
 describe('app-distill — state machine (validate → distilled / revert on failure)', () => {
+  it('fans branch tasks out without exceeding the configured concurrency', async () => {
+    const branches = ['a', 'b', 'c', 'd', 'e', 'f'];
+    await writeManifest(projectsDir, appId, {
+      version: 1,
+      pages: branches.map((branch) => page(`${branch}-1`, branch)),
+    });
+    const gates = new Map<string, Promise<'succeeded'>>();
+    const releases = new Map<string, () => void>();
+    let active = 0;
+    let maximum = 0;
+    const runTask: AppDistillDeps['runTask'] = async (_id, task) => {
+      if (task.kind === 'reduce') return 'succeeded';
+      active += 1;
+      maximum = Math.max(maximum, active);
+      const gate = new Promise<'succeeded'>((resolve) => releases.set(task.branch!, resolve));
+      gates.set(task.branch!, gate);
+      await gate;
+      active -= 1;
+      await mkdir(path.dirname(branchFilePath(projectsDir, appId, task.branch!)), { recursive: true });
+      await writeFile(branchFilePath(projectsDir, appId, task.branch!), VALID_BRANCH_DOC(task.branch!, [`${task.branch!}/${task.branch!}-1.md`]));
+      return 'succeeded';
+    };
+
+    const previous = process.env.OD_APP_DISTILL_CONCURRENCY;
+    process.env.OD_APP_DISTILL_CONCURRENCY = '2';
+    try {
+      await startDistill(appId, { projectsDir, runTask });
+      let released = 0;
+      while (released < branches.length) {
+        while (released < gates.size) releases.get(branches[released++])!('succeeded');
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      await waitForIdle(appId);
+    } finally {
+      if (previous === undefined) delete process.env.OD_APP_DISTILL_CONCURRENCY;
+      else process.env.OD_APP_DISTILL_CONCURRENCY = previous;
+    }
+    expect(maximum).toBe(2);
+    expect([...gates.keys()].sort()).toEqual(branches);
+  });
+
+  it('serializes manifest mutations and reduces only after all branches settle', async () => {
+    const branches = ['a', 'b', 'c'];
+    await writeManifest(projectsDir, appId, {
+      version: 1,
+      pages: branches.map((branch) => page(`${branch}-1`, branch)),
+    });
+    const releases = new Map<string, () => void>();
+    const settled: string[] = [];
+    let reduceSawAll = false;
+    const runTask: AppDistillDeps['runTask'] = async (_id, task) => {
+      if (task.kind === 'reduce') {
+        reduceSawAll = settled.length === 3;
+        await writeFile(overviewPath(projectsDir, appId), VALID_OVERVIEW(branches, branches.map((b) => `${b}/${b}-1.md`)));
+        return 'succeeded';
+      }
+      await mkdir(path.dirname(branchFilePath(projectsDir, appId, task.branch!)), { recursive: true });
+      await writeFile(branchFilePath(projectsDir, appId, task.branch!), VALID_BRANCH_DOC(task.branch!, [`${task.branch!}/${task.branch!}-1.md`]));
+      await new Promise<void>((resolve) => releases.set(task.branch!, resolve));
+      settled.push(task.branch!);
+      return 'succeeded';
+    };
+
+    const previous = process.env.OD_APP_DISTILL_CONCURRENCY;
+    process.env.OD_APP_DISTILL_CONCURRENCY = '3';
+    try {
+      await startDistill(appId, { projectsDir, runTask });
+      while (releases.size < 3) await new Promise((resolve) => setTimeout(resolve, 1));
+      releases.get('b')!();
+      releases.get('a')!();
+      releases.get('c')!();
+      await waitForIdle(appId);
+    } finally {
+      if (previous === undefined) delete process.env.OD_APP_DISTILL_CONCURRENCY;
+      else process.env.OD_APP_DISTILL_CONCURRENCY = previous;
+    }
+
+    const after = await readManifest(projectsDir, appId);
+    expect(after.pages.every((p) => p.distill.state === 'distilled' && p.distill.distilledHash === p.contentHash)).toBe(true);
+    expect(await readFile(path.join(appDocsDir(projectsDir, appId), '_index.md'), 'utf8')).toContain('# Bản đồ tài liệu');
+    expect(reduceSawAll).toBe(true);
+  });
+
   it('a branch whose agent run succeeds AND validates flips every page to distilled', async () => {
     const manifest: AppPoolManifest = { version: 1, pages: [page('1', 'a'), page('2', 'a')] };
     await writeManifest(projectsDir, appId, manifest);

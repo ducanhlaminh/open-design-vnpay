@@ -52,6 +52,8 @@ it and shows it on `/ux-spec`, scoped to the project.
 The docs→UI workflow is `docs → cj → ux`: there is NO feature-analysis step and
 NO `./features/` folder — do not look for one. Your inputs are:
 
+**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+
 **Docs (primary input):** the ingested Markdown under `./docs/` (e.g.
 `./docs/confluence/**/*.md`, `./docs/jira/**/*.md`). Read these to understand the
 domain and derive the screens — each doc section that needs a UI becomes a

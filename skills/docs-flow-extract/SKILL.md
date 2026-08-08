@@ -38,6 +38,8 @@ liệu đã nói thành sơ đồ.
 
 ## Bước 0 — đọc input (từ cwd của dự án)
 
+**Hai layout tài liệu.** Nếu `./docs/_overview.md` tồn tại: tài liệu là BẢN CHƯNG CẤT từ pool App — đọc `./docs/_overview.md` trước để nắm toàn cảnh, cần sâu phân hệ đọc `./docs/_branches/<slug>.md`, cần chi tiết mở trang gốc theo bảng «Bản đồ trang» (đường dẫn dạng `./docs/<branch>/…/<trang>.md`). Trích dẫn trong bản chưng cất có thể trỏ tới trang KHÔNG được nạp vào workspace (người dùng chỉ chọn một phần) — path không tồn tại nghĩa là trang đó không được chọn: dùng tóm tắt, không suy diễn thêm, không báo lỗi. Nếu KHÔNG có `_overview.md`: layout cũ (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) như mô tả bên dưới.
+
 - **Nguồn:** `./docs/**/*.md` — tài liệu `dr-docs` đã nạp. Không có file `.md`
   nào thì không có gì để làm — dừng lại và nói rõ, đừng bịa sơ đồ.
 - **CHỈ ĐỌC.** Stage này không sửa bất cứ file nào dưới `docs/`; nó chỉ GHI
