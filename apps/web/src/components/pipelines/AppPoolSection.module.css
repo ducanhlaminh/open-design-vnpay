@@ -13,7 +13,28 @@
 .heading { margin: 0; color: var(--text-strong); font-size: 15px; font-weight: 650; }
 .muted { margin: 4px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.45; }
 .error { margin: 0; color: var(--red); font-size: 12px; line-height: 1.45; }
-.progress { margin: -4px 0 0; color: var(--accent); font-size: 12px; font-weight: 600; }
+
+/* Distill progress — percent bar + "x/y trang (z%)" text, shared by the
+   manual "Chưng cất tài liệu" trigger here AND NewAppModal's post-create
+   screen (it just mounts this section, which auto-detects `distill.running`
+   from its own pool fetch and picks the SAME polling/progress up). */
+.progressWrap { display: flex; flex-direction: column; gap: 6px; margin: -4px 0 0; }
+.progress { margin: 0; color: var(--accent); font-size: 12px; font-weight: 600; }
+.progressBar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+}
+.progressBarFill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.2s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.distillFailBanner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--red); border-radius: var(--radius-sm); background: var(--red-bg); }
+.distillFailBanner .error { flex: 1; }
 
 .primaryButton, .secondaryButton {
   display: inline-flex;

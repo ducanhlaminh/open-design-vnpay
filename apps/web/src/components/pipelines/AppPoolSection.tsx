@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppPoolPage, AppPoolResponse } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
@@ -30,6 +30,15 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [distilling, setDistilling] = useState(false);
+  // `startDistill` returns as soon as the daemon REGISTERS the job (before it
+  // finishes) — `running` only observed via polling. `runDistillJob` reverts
+  // a failed branch's pages rather than leaving them `distilling`, so a
+  // running→not-running transition that still leaves pages pending is the
+  // client-visible signature of a failed run (the daemon doesn't forward the
+  // job's own error message on this endpoint). `wasRunningRef` gates this so
+  // a brand-new, never-distilled pool isn't mistaken for a failed one.
+  const wasRunningRef = useRef(false);
+  const [distillFailed, setDistillFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [deleting, setDeleting] = useState<AppPoolPage | null>(null);
@@ -62,6 +71,8 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
     setPool(null);
     setOverviewOpen(false);
     setOverviewHtml(null);
+    wasRunningRef.current = false;
+    setDistillFailed(false);
     void loadPool();
   }, [appId, loadPool]);
 
@@ -71,8 +82,23 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
     return () => window.clearInterval(interval);
   }, [distilling, loadPool]);
 
+  // See `wasRunningRef`'s docblock — this is the running→not-running-but-
+  // still-pending transition that reads as "the distill job failed".
+  useEffect(() => {
+    if (!pool) return;
+    const runningNow = pool.distill.running;
+    if (runningNow) {
+      wasRunningRef.current = true;
+      setDistillFailed(false);
+    } else if (wasRunningRef.current) {
+      wasRunningRef.current = false;
+      if (!pool.distill.clean && pool.distill.pending > 0) setDistillFailed(true);
+    }
+  }, [pool]);
+
   const startDistill = async () => {
     setError(null);
+    setDistillFailed(false);
     try {
       const response = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/distill`, {
         method: 'POST',
@@ -123,6 +149,9 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
 
   const progress = pool.distill.progress;
   const isRunning = distilling || pool.distill.running;
+  const percent =
+    progress && progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : 0;
+  const ready = pool.pages.length > 0 && !isRunning && pool.distill.clean;
 
   return (
     <section className={styles.section} aria-label="Tài liệu App">
@@ -130,7 +159,11 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
         <div>
           <h2 className={styles.heading}>Tài liệu App</h2>
           <p className={styles.muted}>
-            {pool.pages.length > 0 ? `${pool.pages.length} trang` : 'Chưa có tài liệu trong pool.'}
+            {pool.pages.length === 0
+              ? 'Chưa có tài liệu trong pool.'
+              : ready
+                ? `Pool sẵn sàng (${pool.pages.length} trang đã chưng cất)`
+                : `${pool.pages.length} trang`}
             {refreshing ? ' · đang cập nhật…' : ''}
           </p>
         </div>
@@ -154,7 +187,26 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
           ) : null}
         </div>
       </div>
-      {isRunning && progress ? <p className={styles.progress}>Tiến độ: {progress.done}/{progress.total}</p> : null}
+      {isRunning && progress ? (
+        <div className={styles.progressWrap}>
+          <p className={styles.progress}>
+            Đang chưng cất tài liệu… {progress.done}/{progress.total} trang ({percent}%)
+          </p>
+          <div className={styles.progressBar} role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
+            <div className={styles.progressBarFill} style={{ width: `${percent}%` }} />
+          </div>
+        </div>
+      ) : null}
+      {distillFailed ? (
+        <div className={styles.distillFailBanner}>
+          <p className={styles.error}>
+            Chưng cất chưa xong hết — còn {pool.distill.pending} trang. Bấm thử lại hoặc dùng nút "Chưng cất tài liệu" ở trên.
+          </p>
+          <button type="button" className={styles.secondaryButton} onClick={() => void startDistill()}>
+            Thử lại
+          </button>
+        </div>
+      ) : null}
       {error ? <p className={styles.error}>{error}</p> : null}
 
       {overviewOpen ? (

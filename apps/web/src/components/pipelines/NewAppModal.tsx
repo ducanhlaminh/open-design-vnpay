@@ -23,6 +23,15 @@
 // mount nó SỚM hơn (trước khi import xong) là một race: pool fetch đầu tiên
 // trả về rỗng, "Đã nhập N trang" hiện ra nhưng card pool vẫn nói "Chưa có
 // tài liệu". Đợi import xong trước khi setCreatedAppId loại bỏ race đó.
+//
+// `phase` hiện trạng thái từng bước thay vì im lặng trong lúc `busy`: 'creating'
+// ('Đang tạo App…') → 'importing' ('Đang nhập tài liệu từ Confluence (N
+// trang)…', chỉ khi có trang tick). Import xong (thành công) → POST
+// /distill NGAY (best-effort, không chặn UI — daemon trả lời tức thì, job
+// chạy nền) rồi mới setCreatedAppId; AppPoolSection mount lên thấy
+// `distill.running: true` ngay từ lần fetch đầu, TỰ kích hoạt polling +
+// progress bar của chính nó (AppPoolSection.module.css's `.progressWrap`) —
+// không cần NewAppModal tự vẽ lại thanh tiến độ chưng cất.
 
 import { useState } from 'react';
 import type { AppPoolImportResponse } from '@open-design/contracts';
@@ -51,6 +60,7 @@ export function NewAppModal({
   const [name, setName] = useState('');
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<'creating' | 'importing' | null>(null);
   const [error, setError] = useState<string | null>(null);
   // App vừa tạo xong: giữ modal MỞ thêm một bước để hiện kết quả nhập tài
   // liệu (nếu có) + pool đầy đủ — đóng modal luôn thì người dùng phải tự mở
@@ -69,6 +79,7 @@ export function NewAppModal({
   const submit = async () => {
     if (busy || !canSubmit) return;
     setBusy(true);
+    setPhase('creating');
     setError(null);
     const appId = toSlugId(nameTrim);
     let newAppId: string;
@@ -88,6 +99,7 @@ export function NewAppModal({
       newAppId = j?.id ?? appId;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setPhase(null);
       setBusy(false);
       return;
     }
@@ -95,7 +107,9 @@ export function NewAppModal({
     // Từ đây App đã tồn tại — mọi lỗi tiếp theo là lỗi IMPORT, không phải lỗi
     // tạo App; nhưng vẫn phải RESOLVE trước khi lật màn (xem docblock ở đầu
     // file) để AppPoolSection's mount-time pool fetch thấy đúng dữ liệu.
+    let imported = false;
     if (ticked.size > 0) {
+      setPhase('importing');
       try {
         const refs = [...ticked];
         const importRes = await fetch(`/api/pipelines/apps/${encodeURIComponent(newAppId)}/import-confluence`, {
@@ -106,10 +120,23 @@ export function NewAppModal({
         const importJson = await importRes.json().catch(() => ({}));
         if (!importRes.ok) throw new Error(importJson?.error || `Nhập tài liệu thất bại (${importRes.status}).`);
         setImportResult(importJson as AppPoolImportResponse);
+        imported = true;
       } catch (cause) {
         setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
       }
     }
+    // Kích hoạt chưng cất NGAY khi import xong — daemon chỉ ĐĂNG KÝ job rồi
+    // trả lời tức thì (job chạy nền), nên await ở đây không chờ hết chưng
+    // cất, chỉ chờ job bắt đầu. AppPoolSection mount lên ngay sau đó sẽ thấy
+    // `distill.running: true` và tự vẽ tiếp phase "Đang chưng cất…".
+    if (imported) {
+      try {
+        await fetch(`/api/pipelines/apps/${encodeURIComponent(newAppId)}/distill`, { method: 'POST' });
+      } catch {
+        /* best-effort — nút "Chưng cất tài liệu" thủ công trong AppPoolSection là fallback */
+      }
+    }
+    setPhase(null);
     setCreatedAppId(newAppId);
     setBusy(false);
   };
@@ -156,7 +183,7 @@ export function NewAppModal({
             Hủy
           </QuietButton>
           <PrimaryButton icon="check" busy={busy} onClick={() => void submit()} disabled={busy || !canSubmit}>
-            {busy ? 'Đang tạo…' : 'Tạo'}
+            {phase === 'importing' ? 'Đang nhập tài liệu…' : busy ? 'Đang tạo…' : 'Tạo'}
           </PrimaryButton>
         </>
       }
@@ -198,6 +225,11 @@ export function NewAppModal({
         )}
       </FormField>
 
+      {phase ? (
+        <FormText>
+          {phase === 'creating' ? 'Đang tạo App…' : `Đang nhập tài liệu từ Confluence (${ticked.size} trang)…`}
+        </FormText>
+      ) : null}
       {error ? <FormError>{error}</FormError> : null}
     </PipelineFormModal>
   );
