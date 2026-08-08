@@ -1,40 +1,92 @@
-/* Vỏ trang /feedback — toolbar chọn dự án + vùng thống kê. */
+/* Vỏ trang /feedback — mirror concept .pipelines-page (container rộng, hero
+   eyebrow + title lớn + lede, cụm điều khiển bên phải). */
 .page {
-  max-width: 1080px;
+  width: 100%;
+  max-width: var(--pl-page-width-full, 1240px);
   margin: 0 auto;
-  padding: 24px 28px 64px;
+  padding: 40px 32px 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.copy {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 640px;
+  min-width: 0;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--accent-tint, color-mix(in srgb, var(--accent) 10%, transparent));
+  color: var(--accent-strong, var(--accent));
+  border: 1px solid var(--accent-soft, color-mix(in srgb, var(--accent) 25%, transparent));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.heading {
+  margin: 0;
+  font-size: 34px;
+  line-height: 1.1;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+}
+
+.lede {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
 }
 
 .toolbar {
   display: flex;
-  align-items: center;
-  gap: 14px;
+  align-items: flex-end;
+  gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 20px;
-}
-
-.heading {
-  margin: 0 auto 0 0;
-  font-size: 20px;
-  color: var(--text, #1a1a1a);
 }
 
 .picker {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
-  color: var(--text-muted, #6b7280);
+  flex-direction: column;
+  gap: 5px;
+}
+.pickerLabel {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-soft);
 }
 .picker select {
   min-width: 220px;
-  padding: 7px 10px;
-  border: 1px solid var(--border, #e1e5eb);
-  border-radius: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
   background: var(--bg-panel, #fff);
-  color: var(--text, #1a1a1a);
+  color: var(--text-strong);
   font: inherit;
+  font-size: 13px;
 }
 
-.note { color: var(--text-muted, #6b7280); font-size: 13px; }
-.error { color: #dc2626; font-size: 13px; }
+.note { color: var(--text-muted); font-size: 13px; }
+.error { color: var(--red, #dc2626); font-size: 13px; }

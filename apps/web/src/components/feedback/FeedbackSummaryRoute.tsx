@@ -84,27 +84,38 @@ export function FeedbackHomeView() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.toolbar}>
-        <h1 className={styles.heading}>Tổng hợp phản hồi</h1>
-        <label className={styles.picker}>
-          Dự án
-          <select value={projectId} onChange={(ev) => setProjectId(ev.target.value)}>
-            {(projects ?? []).map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="button"
-          className="pl-btn"
-          onClick={() => void load(projectId)}
-          disabled={state.status === 'loading' || !projectId}
-        >
-          Tải lại
-        </button>
-      </div>
+      {/* Hero theo đúng concept trang Pipelines: eyebrow pill + title lớn +
+          lede muted bên trái, cụm điều khiển bên phải. Header/stat trong
+          FeedbackSummaryView không lặp lại title nữa. */}
+      <header className={styles.hero}>
+        <div className={styles.copy}>
+          <span className={styles.eyebrow}>Feedback</span>
+          <h1 className={styles.heading}>Tổng hợp phản hồi</h1>
+          <p className={styles.lede}>
+            Kết quả đánh giá chất lượng pipeline từ mọi người dùng — nhóm theo version form, kèm ảnh và output từng bước.
+          </p>
+        </div>
+        <div className={styles.toolbar}>
+          <label className={styles.picker}>
+            <span className={styles.pickerLabel}>Dự án</span>
+            <select value={projectId} onChange={(ev) => setProjectId(ev.target.value)}>
+              {(projects ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="pl-btn"
+            onClick={() => void load(projectId)}
+            disabled={state.status === 'loading' || !projectId}
+          >
+            Tải lại
+          </button>
+        </div>
+      </header>
       {projects !== null && projects.length === 0 ? (
         <p className={styles.note}>Chưa có dự án pipeline nào — tạo hoặc pull một dự án trước.</p>
       ) : null}
