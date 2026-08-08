@@ -1350,12 +1350,39 @@
    precedent first — none found (`.pl-workflow-tab`/`.viewer-tab`/
    `.subtab-pill`/`.pl-fanout-tab` are all filled pill/card treatments, not
    underline), so this is built fresh from the same neutral tokens
-   (--accent/--border/--text-muted) everything else here already uses. */
+   (--accent/--border/--text-muted) everything else here already uses.
+
+   Lives INSIDE `.panel` now (its first child, per feedback: a tab bar
+   floating above the card reads as detached from what it controls) — same
+   24px side padding as `.panelToolbar`/`.panelBody` so its buttons line up
+   with the card's other rows, `padding-top` for breathing room above the
+   row, and ZERO padding-bottom: the hairline must sit flush under the tab
+   buttons, and each `.detailTab` already carries its own 10px bottom
+   padding before its underline border — adding more here would open a gap
+   between the button text and the hairline instead of touching it. The
+   hairline itself spans edge-to-edge automatically: `.panel` has NO padding
+   of its own (each section owns its own, same pattern as `.panelToolbar`),
+   so this element's border-box — and therefore its border-bottom — is
+   already the card's full width; the side padding only insets the BUTTONS,
+   never the border. */
 .detailTabs {
   display: flex;
   align-items: stretch;
   gap: 22px;
+  padding: 14px 24px 0;
   border-bottom: 1px solid var(--border);
+}
+
+/* First element of the card → round its top corners in step with `.panel`'s
+   own `--radius-lg`, same trick `.panelToolbar:first-child` already uses
+   below (this rule wins that spot instead whenever a Docs tab exists — see
+   PipelinesFeaturesView.tsx, `.panelToolbar` is only ever the panel's first
+   child when there's no tab bar to begin with). Harmless even though this
+   bar has no fill of its own to visually clip — cheap insurance if it ever
+   gains one. */
+.detailTabs:first-child {
+  border-top-left-radius: var(--radius-lg);
+  border-top-right-radius: var(--radius-lg);
 }
 
 .detailTab {

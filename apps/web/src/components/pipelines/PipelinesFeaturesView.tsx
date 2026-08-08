@@ -227,47 +227,58 @@ export function PipelinesFeaturesView({
         ) : null}
       </div>
 
-      {hasDocsTab ? (
-        <div className={styles.detailTabs} role="tablist" aria-label="Chi tiết App">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'features'}
-            className={`${styles.detailTab}${tab === 'features' ? ' ' + styles.detailTabActive : ''}`}
-            onClick={() => setTab('features')}
-          >
-            <span className={styles.detailTabName}>Features</span>
-            <span className={styles.detailTabMeta}>
-              · {counts.all}
-              {counts.done > 0 ? ` (${counts.done} xong)` : ''}
-            </span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'docs'}
-            className={`${styles.detailTab}${tab === 'docs' ? ' ' + styles.detailTabActive : ''}`}
-            onClick={() => setTab('docs')}
-          >
-            <span className={styles.detailTabName}>Tài liệu</span>
-            <span className={styles.detailTabMeta}>
-              ·{' '}
-              {poolSummary
-                ? `${poolSummary.pages} trang${poolSummary.clean ? ' (sạch)' : ` (${poolSummary.pending} pending)`}`
-                : '…'}
-            </span>
-          </button>
-        </div>
-      ) : null}
-
-      {tab === 'docs' && hasDocsTab ? (
-        <AppPoolSection appId={appId} />
-      ) : (
       <section className={styles.panel}>
+        {hasDocsTab ? (
+          <div className={styles.detailTabs} role="tablist" aria-label="Chi tiết App">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'features'}
+              className={`${styles.detailTab}${tab === 'features' ? ' ' + styles.detailTabActive : ''}`}
+              onClick={() => setTab('features')}
+            >
+              <span className={styles.detailTabName}>Features</span>
+              <span className={styles.detailTabMeta}>
+                · {counts.all}
+                {counts.done > 0 ? ` (${counts.done} xong)` : ''}
+              </span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'docs'}
+              className={`${styles.detailTab}${tab === 'docs' ? ' ' + styles.detailTabActive : ''}`}
+              onClick={() => setTab('docs')}
+            >
+              <span className={styles.detailTabName}>Tài liệu</span>
+              <span className={styles.detailTabMeta}>
+                ·{' '}
+                {poolSummary
+                  ? `${poolSummary.pages} trang${poolSummary.clean ? ' (sạch)' : ` (${poolSummary.pending} pending)`}`
+                  : '…'}
+              </span>
+            </button>
+          </div>
+        ) : null}
+
+        {tab === 'docs' && hasDocsTab ? (
+          <div className={styles.panelBody}>
+            {/* AppPoolSection is a self-contained card elsewhere (Sửa App,
+                màn "App đã tạo") — nested here it keeps its own border/shadow
+                (card-in-card) rather than a prop-driven "bare" mode, since
+                this round's scope is PipelinesFeaturesView.tsx +
+                PipelineNavViews.module.css only; see report for the
+                follow-up note. */}
+            <AppPoolSection appId={appId} />
+          </div>
+        ) : (
+          <>
         {hasFeatures ? (
           <div className={styles.panelToolbar}>
             <div className={styles.listHead}>
-              <h2 className={styles.listHeadTitle}>Danh sách feature</h2>
+              {/* "Danh sách feature" title dropped — the "Features" tab
+                  right above already names this section; keeping both read
+                  as a duplicate heading. */}
               <span className={styles.listHeadHint}>
                 Mỗi dòng là một feature — bấm để xổ trạng thái từng workflow bên trong.
               </span>
@@ -518,8 +529,9 @@ export function PipelinesFeaturesView({
         </div>
       )}
         </div>
+          </>
+        )}
       </section>
-      )}
     </div>
   );
 }
