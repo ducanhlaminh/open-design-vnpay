@@ -6933,7 +6933,7 @@ Common options:
 }
 
 function printPipelineHelp() {
-  console.log(`Usage: od pipeline <new|apps|projects|list|run|run-all|feedback|target-ds|upload|pull|build|demo|figma-capture|figma-audit|history|restore> [options]
+  console.log(`Usage: od pipeline <new|apps|projects|list|run|run-all|feedback|feedback-forms|feedback-summary|target-ds|upload|pull|build|demo|figma-capture|figma-audit|history|restore> [options]
 
 Dự án tạo cục bộ ngay tại đây (kind: pipeline) HOẶC pull về từ Pipeline Studio
 (\`od kg pull-all\`) — cả hai chạy pipeline giống nhau tại đây; Push mới chọn
@@ -7006,6 +7006,10 @@ Commands:
                        The current state is committed first, so restore is always undoable.
   feedback <stage>     Submit run pulse feedback: --run <id> --rating <ready|minor_edits|major_edits|unusable>
                        [--issue <comma-separated codes>] [--comment <text>].
+  feedback-forms       List feedback form versions on the project media store.
+                       --project <projectId> [--json]
+  feedback-summary     Dump all feedback submissions (merged across installs).
+                       --project <projectId> [--json]
 
 Options:
   --project <id>       KGS project id (required for list/run/pull). This is a KGS app
@@ -7164,6 +7168,41 @@ async function runPipeline(args) {
     }
     console.log('# id\tname');
     for (const p of list) console.log([p.id, p.name].join('\t'));
+    return;
+  }
+
+  // Hai lệnh đọc của hệ feedback form (builder + thống kê) — mirror GET
+  // /api/pipelines/feedback/forms|summary để giữ khép kín UI/CLI dual-track.
+  if (sub === 'feedback-forms' || sub === 'feedback-summary') {
+    const projectId = flags.project ?? positional[0];
+    if (!projectId) {
+      console.error(`Usage: od pipeline ${sub} --project <projectId> [--json]`);
+      process.exit(2);
+    }
+    const path = sub === 'feedback-forms' ? 'forms' : 'summary';
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/feedback/${path}?projectId=${encodeURIComponent(projectId)}`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`storeReachable: ${data.storeReachable}`);
+    if (sub === 'feedback-forms') {
+      for (const form of data.forms ?? []) {
+        const shape = form.sections?.length ? `${form.sections.length} phần / ${form.questions.length} câu` : `${form.questions.length} câu`;
+        console.log(`v${form.version}\t${form.title}\t${shape}${form.createdBy ? `\t${form.createdBy}` : ''}`);
+      }
+      return;
+    }
+    const submissions = data.submissions ?? [];
+    console.log(`${submissions.length} submission(s)`);
+    for (const s of submissions) {
+      console.log([new Date(s.createdAt).toISOString(), `v${s.formVersion}`, s.channel, s.user, s.workflowId, `${Object.keys(s.answers ?? {}).length} câu trả lời`, `${(s.attachments ?? []).length} đính kèm`].join('\t'));
+    }
     return;
   }
 

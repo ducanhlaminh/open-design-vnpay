@@ -414,6 +414,7 @@ export const zhCN: Dict = {
   'entry.navProjects': '项目',
   'entry.navTasks': '自动化',
   'entry.navPipelines': '流水线',
+  'entry.navFeedback': '反馈',
   'entry.navPlugins': '插件',
   'entry.navDesignSystems': '设计体系',
   'entry.navIntegrations': '集成',

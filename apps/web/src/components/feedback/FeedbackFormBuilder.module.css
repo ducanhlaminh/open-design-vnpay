@@ -1,0 +1,23 @@
+.root { display: flex; flex-direction: column; gap: 18px; padding: 20px; color: var(--text); background: var(--bg); }
+.titleField, .field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; }
+.titleInput, .input { width: 100%; min-height: 36px; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); color: var(--text); font: inherit; }
+.titleInput { font-size: 18px; font-weight: 650; }
+.titleInput:focus, .input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sections, .questions { display: flex; flex-direction: column; gap: 14px; }
+.section, .question { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel); }
+.sectionHead, .questionHead, .footer, .inline, .optionRow { display: flex; align-items: center; gap: 10px; }
+.sectionHead, .questionHead, .footer { justify-content: space-between; }
+.questionHead strong, .subLabel { color: var(--text); font-size: 13px; }
+.actions { display: flex; gap: 5px; }
+.iconButton, .removeButton, .secondaryButton, .primaryButton { min-height: 32px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); color: var(--text); cursor: pointer; font: inherit; font-size: 12px; }
+.primaryButton { border-color: var(--accent); background: var(--accent); color: var(--bg); font-weight: 650; }
+.iconButton:disabled, .removeButton:disabled, .primaryButton:disabled { opacity: .5; cursor: not-allowed; }
+.iconButton:hover:not(:disabled), .removeButton:hover:not(:disabled), .secondaryButton:hover { border-color: var(--accent); }
+.check { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; }
+.check input { accent-color: var(--accent); }
+.options { display: flex; flex-direction: column; gap: 8px; }
+.optionRow .input { flex: 1; }
+.inline { align-items: flex-end; flex-wrap: wrap; }
+.errors { display: flex; flex-direction: column; gap: 5px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; }
+.note { color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+@media (max-width: 640px) { .footer { align-items: stretch; flex-direction: column; } }

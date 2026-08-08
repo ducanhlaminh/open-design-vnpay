@@ -1,0 +1,40 @@
+/* Vỏ trang /feedback — toolbar chọn dự án + vùng thống kê. */
+.page {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 28px 64px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.heading {
+  margin: 0 auto 0 0;
+  font-size: 20px;
+  color: var(--text, #1a1a1a);
+}
+
+.picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-muted, #6b7280);
+}
+.picker select {
+  min-width: 220px;
+  padding: 7px 10px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 8px;
+  background: var(--bg-panel, #fff);
+  color: var(--text, #1a1a1a);
+  font: inherit;
+}
+
+.note { color: var(--text-muted, #6b7280); font-size: 13px; }
+.error { color: #dc2626; font-size: 13px; }
