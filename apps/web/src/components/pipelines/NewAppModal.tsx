@@ -26,12 +26,9 @@
 //
 // `phase` hiện trạng thái từng bước thay vì im lặng trong lúc `busy`: 'creating'
 // ('Đang tạo App…') → 'importing' (progress bar % thật — xem dưới — chỉ khi
-// có trang tick). Import xong (thành công, kể cả một phần) → POST /distill
-// NGAY (best-effort, không chặn UI — daemon trả lời tức thì, job chạy nền)
-// rồi mới setCreatedAppId; AppPoolSection mount lên thấy `distill.running:
-// true` ngay từ lần fetch đầu, TỰ kích hoạt polling + progress bar của chính
-// nó (`ProgressBar.tsx`) — không cần NewAppModal tự vẽ lại thanh tiến độ
-// chưng cất.
+// có trang tick) → setCreatedAppId. Tạo App CHỈ NẠP tài liệu vào pool —
+// KHÔNG tự chưng cất: việc đó thuộc bước 1 của workflow ("Tài liệu (chưng
+// cất & nạp)"); nút thủ công trong AppPoolSection là đường pre-warm tùy chọn.
 //
 // Import dùng `importConfluenceInBatches` (ConfluenceTreeImport.tsx) thay vì
 // một POST refs[N] duy nhất — daemon trả về MỘT response cho cả yêu cầu, nên
@@ -140,18 +137,10 @@ export function NewAppModal({
       }
       setImportProgress(null);
     }
-    // Kích hoạt chưng cất NGAY khi có ít nhất một trang lọt qua (kể cả import
-    // lỗi giữa chừng) — daemon chỉ ĐĂNG KÝ job rồi trả lời tức thì (job chạy
-    // nền), nên await ở đây không chờ hết chưng cất, chỉ chờ job bắt đầu.
-    // AppPoolSection mount lên ngay sau đó sẽ thấy `distill.running: true` và
-    // tự vẽ tiếp phase "Đang chưng cất…".
-    if (anyImported) {
-      try {
-        await fetch(`/api/pipelines/apps/${encodeURIComponent(newAppId)}/distill`, { method: 'POST' });
-      } catch {
-        /* best-effort — nút "Chưng cất tài liệu" thủ công trong AppPoolSection là fallback */
-      }
-    }
+    // KHÔNG tự chưng cất ở bước tạo App nữa: tạo App chỉ NẠP tài liệu vào
+    // pool. Chưng cất dời vào bước 1 của workflow ("Tài liệu (chưng cất &
+    // nạp)") — chạy lần đầu sẽ tự chưng cất; nút "Chưng cất tài liệu" trong
+    // AppPoolSection vẫn còn cho ai muốn chạy trước (pre-warm, tùy chọn).
     setPhase(null);
     setCreatedAppId(newAppId);
     setBusy(false);
