@@ -29,9 +29,9 @@ Second stage of the **docs → UI** pipeline. You turn the raw Jira Markdown fro
 P1 into a clean, deduplicated **Feature list** that downstream design stages can
 build on without re-reading Jira.
 
-**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+**Docs layouts.** App-linked projects use `./docs-feature/` as the selected feature source; read `./docs-app/_index.md` first and individual `./docs-app/` pages only for cross-feature reference. Never build features from `./docs-app/`. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
 
-- **Input (only):** in the distilled layout, read the App snapshot and source pages under `./docs/<branch>/**/*.md`; in the legacy layout read `./docs/jira/*.md` + `./docs/jira/_index.md` written by the
+- **Input (only):** for an App-linked project, read `./docs-feature/**/*.md`; use `./docs-app/` only as read-only cross-feature context. In the legacy layout read `./docs/jira/*.md` + `./docs/jira/_index.md` written by the
   `jira-ingest` pipeline (P1). If that folder is missing/empty, stop and tell the
   user to run **Docs → Markdown (JIRA)** first.
 - **Output:** one file per feature `./features/<Feature Name>.md` (frontmatter =

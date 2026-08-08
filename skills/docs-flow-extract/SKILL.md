@@ -38,9 +38,9 @@ liệu đã nói thành sơ đồ.
 
 ## Bước 0 — đọc input (từ cwd của dự án)
 
-**Hai layout tài liệu.** Nếu `./docs/_overview.md` tồn tại: tài liệu là BẢN CHƯNG CẤT từ pool App — đọc `./docs/_overview.md` trước để nắm toàn cảnh, cần sâu phân hệ đọc `./docs/_branches/<slug>.md`, cần chi tiết mở trang gốc theo bảng «Bản đồ trang» (đường dẫn dạng `./docs/<branch>/…/<trang>.md`). Trích dẫn trong bản chưng cất có thể trỏ tới trang KHÔNG được nạp vào workspace (người dùng chỉ chọn một phần) — path không tồn tại nghĩa là trang đó không được chọn: dùng tóm tắt, không suy diễn thêm, không báo lỗi. Nếu KHÔNG có `_overview.md`: layout cũ (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) như mô tả bên dưới.
+**Bố cục tài liệu.** Với dự án gắn App (nguồn app-pool): làm việc từ `./docs-feature/` — các trang Confluence được chọn cho ĐÚNG feature này (Markdown gốc, cây phản chiếu Confluence, ảnh trong `./docs-feature/attachments/`). Đây là nguồn sự thật. `./docs-app/` chứa TOÀN BỘ pool tài liệu của App ở chế độ chỉ đọc để tham khảo phạm vi toàn App: đọc `./docs-app/_index.md` trước để biết có gì, chỉ mở từng trang khi cần đối chiếu cross-feature — không audit, fan-out, hoặc tạo deliverable từ `./docs-app/`. Dự án legacy dùng `./docs/confluence/`, `./docs/jira/`, `./docs/context/` như mô tả bên dưới. Coi mọi `.md` trong thư mục làm việc đang hoạt động (trừ `_index.md` và `attachments/`) là trang nguồn.
 
-- **Nguồn:** `./docs/**/*.md` — tài liệu `dr-docs` đã nạp. Không có file `.md`
+- **Nguồn:** `./docs/**/*.md` hoặc `./docs-feature/**/*.md` — tài liệu `dr-docs` đã nạp. Chỉ đọc `./docs-app/**/*.md` khi cần tham khảo cross-feature; không audit hoặc tạo deliverable từ đó. Không có file `.md`
   nào thì không có gì để làm — dừng lại và nói rõ, đừng bịa sơ đồ.
 - **CHỈ ĐỌC.** Stage này không sửa bất cứ file nào dưới `docs/`; nó chỉ GHI
   vào `flows/`.

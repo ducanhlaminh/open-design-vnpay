@@ -74,9 +74,9 @@ downstream stages still get criteria to follow.
 
 ### 1. Read the inputs (from the project cwd)
 
-**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+**Docs layouts.** App-linked projects work from `./docs-feature/` as the primary source; `./docs-app/` is read-only cross-feature context after reading `./docs-app/_index.md`, and never a deliverable source. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
 
-- **Docs (primary):** `./docs/**/*.md` — the domain, the features, constraints.
+- **Docs (primary):** `./docs/**/*.md` or `./docs-feature/**/*.md` — the domain, the features, constraints. `./docs-app/` is reference-only.
 - **Customer Journey (primary):** `./*-customer-journey.json` / `./*-cj.json` or
   under `./customer-journey/`. Its STAGES are your unit of analysis: each
   stage's goal, pain points, and emotion tell you which UX topics matter.

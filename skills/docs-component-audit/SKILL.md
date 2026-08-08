@@ -60,9 +60,9 @@ Bạn đọc, và bạn ghi ra đúng một file JSON.
 
 ## Bước 0 — đọc input (từ cwd của dự án)
 
-**Hai layout tài liệu.** Nếu `./docs/_overview.md` tồn tại: tài liệu là BẢN CHƯNG CẤT từ pool App — đọc `./docs/_overview.md` trước để nắm toàn cảnh, cần sâu phân hệ đọc `./docs/_branches/<slug>.md`, cần chi tiết mở trang gốc theo bảng «Bản đồ trang» (đường dẫn dạng `./docs/<branch>/…/<trang>.md`). Trích dẫn trong bản chưng cất có thể trỏ tới trang KHÔNG được nạp vào workspace (người dùng chỉ chọn một phần) — path không tồn tại nghĩa là trang đó không được chọn: dùng tóm tắt, không suy diễn thêm, không báo lỗi. Nếu KHÔNG có `_overview.md`: layout cũ (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) như mô tả bên dưới.
+**Bố cục tài liệu.** Dự án gắn App dùng `./docs-feature/` làm nguồn trang đã chọn; `./docs-app/` chỉ đọc để tham khảo sau khi đọc `./docs-app/_index.md`, không audit hoặc tạo deliverable từ đó. Dự án legacy dùng `./docs/confluence/`, `./docs/jira/`, `./docs/context/`.
 
-- **Tài liệu (CHỈ ĐỌC):** `docs/<page>.md` — kickoff nêu đúng đường dẫn (ở layout chưng cất có thể là `docs/<branch>/…`). Đây là
+- **Tài liệu (CHỈ ĐỌC):** `docs/<page>.md` — kickoff nêu đúng đường dẫn (có thể là `docs-feature/<branch>/…`). Đây là
   nguồn sự thật của cả workflow. **Tuyệt đối không sửa nó**, kể cả một dấu
   cách: bước này không có bản clone nào để sửa an toàn, và `dr-review` phía sau
   dùng chính file này làm bản gốc để đối chiếu `before` của mọi thay đổi — sửa

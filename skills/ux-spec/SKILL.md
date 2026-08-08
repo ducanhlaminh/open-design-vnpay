@@ -52,10 +52,10 @@ it and shows it on `/ux-spec`, scoped to the project.
 The docs→UI workflow is `docs → cj → ux`: there is NO feature-analysis step and
 NO `./features/` folder — do not look for one. Your inputs are:
 
-**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+**Docs layouts.** App-linked projects use `./docs-feature/` as the primary source; read `./docs-app/_index.md` first only for cross-feature context, and never build screens from `./docs-app/`. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
 
 **Docs (primary input):** the ingested Markdown under `./docs/` (e.g.
-`./docs/confluence/**/*.md`, `./docs/jira/**/*.md`). Read these to understand the
+`./docs/confluence/**/*.md`, `./docs/jira/**/*.md`, or `./docs-feature/**/*.md`). Read these to understand the
 domain and derive the screens — each doc section that needs a UI becomes a
 screen. Only when no docs are present at all, take the screens from the user's
 request.

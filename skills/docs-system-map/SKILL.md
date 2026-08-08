@@ -52,14 +52,14 @@ Two things carry the "one system" meaning, and both are required:
 
 ### 0. Read the inputs
 
-**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+**Docs layouts.** App-linked projects (app-pool source): work from `./docs-feature/` — the Confluence pages selected for THIS feature (original markdown, tree mirrors Confluence, images in `./docs-feature/attachments/`). This is your source of truth. `./docs-app/` holds the App's FULL document pool read-only for whole-App context: read `./docs-app/_index.md` first to know what exists, open individual pages only when you need cross-feature reference — never audit, fan out over, or produce deliverables from `./docs-app/`. Legacy projects instead use `./docs/confluence/`, `./docs/jira/`, `./docs/context/` as described below. Treat every `.md` under the active working folder (excluding `_index.md` and `attachments/`) as a source page.
 
-- **Docs (source of truth):** in the distilled layout, every source page under `./docs/<branch>/**/*.md` is authoritative; `./docs/_overview.md` and `./docs/_branches/` are navigation maps, not system-map document entries. In the legacy layout, every Markdown file under `./docs/confluence/`,
+- **Docs (source of truth):** every Markdown file under `./docs/confluence/`, `./docs/jira/`, or `./docs-feature/` is authoritative. In the legacy layout, every Markdown file under `./docs/confluence/`,
   `./docs/jira/`. Read `./docs/context/` for background only — a context page
   never becomes a document entry in the map.
 - **Flow diagrams (best evidence for the seams):** the ingest saved each draw.io
   diagram's SOURCE next to its page —
-  `./docs/confluence/attachments/<pageId>-<name>.drawio`. A sequence diagram's
+  `./docs/confluence/attachments/<pageId>-<name>.drawio` or `./docs-feature/attachments/<pageId>-<name>.drawio`. A sequence diagram's
   LIFELINES are the apps, and every arrow crossing between two lifelines is a
   hand-off. Read them before inferring anything from prose:
   ```bash

@@ -73,9 +73,9 @@ score is computed with its arithmetic. Do NOT invent heuristics or severities.
   under `./customer-journey/`. Use STAGE goals, pain points, and emotion to know
   what each screen is *supposed* to achieve — a screen that doesn't serve its
   stage's goal is itself a finding (N.8 / D6).
-**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+**Docs layouts.** App-linked projects use `./docs-feature/` as the primary context; read `./docs-app/_index.md` first and individual `./docs-app/` pages only for cross-feature reference. Never produce findings or deliverables from `./docs-app/`. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
 
-- **Docs (context):** `./docs/**/*.md` — the domain. Use them to tell a real
+- **Docs (context):** `./docs/**/*.md` or `./docs-feature/**/*.md` — the domain. Use them to tell a real
   domain constraint (which must be honored → D5/D6) from a missing affordance.
 - **Rule flowcharts (primary, when present):** `./flows/<FLOW-ID>.flow.json`
   (decision/end nodes + labeled edges between screen ids), authored by the same

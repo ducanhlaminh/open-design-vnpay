@@ -57,13 +57,13 @@ sau khi tất cả chạy xong.
 
 ## Bước 0 — đọc input (từ cwd của dự án)
 
-**Hai layout tài liệu.** Nếu `./docs/_overview.md` tồn tại: tài liệu là BẢN CHƯNG CẤT từ pool App — đọc `./docs/_overview.md` trước để nắm toàn cảnh, cần sâu phân hệ đọc `./docs/_branches/<slug>.md`, cần chi tiết mở trang gốc theo bảng «Bản đồ trang» (đường dẫn dạng `./docs/<branch>/…/<trang>.md`). Trích dẫn trong bản chưng cất có thể trỏ tới trang KHÔNG được nạp vào workspace (người dùng chỉ chọn một phần) — path không tồn tại nghĩa là trang đó không được chọn: dùng tóm tắt, không suy diễn thêm, không báo lỗi. Nếu KHÔNG có `_overview.md`: layout cũ (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) như mô tả bên dưới.
+**Bố cục tài liệu.** Bản gốc theo path kickoff (`docs/…` hoặc `docs-feature/…`) là nguồn sự thật và chỉ đọc. `./docs-app/` không thuộc phạm vi review; chỉ có thể tham khảo sau khi đọc `./docs-app/_index.md`. Dự án legacy dùng `./docs/confluence/`, `./docs/jira/`, `./docs/context/`.
 
-**Lưu ý:** Trong layout chưng cất, bỏ qua `docs/_overview.md` và `docs/_branches/` khi liệt kê các trang cần review; chúng chỉ là bản đồ.
+**Lưu ý:** `docs-app/` không thuộc phạm vi review; chỉ review các trang được kickoff nêu.
 
-**Hai layout tài liệu.** Nếu `./docs/_overview.md` tồn tại: tài liệu là BẢN CHƯNG CẤT từ pool App — đọc `./docs/_overview.md` trước để nắm toàn cảnh, cần sâu phân hệ đọc `./docs/_branches/<slug>.md`, cần chi tiết mở trang gốc theo bảng «Bản đồ trang» (đường dẫn dạng `./docs/<branch>/…/<trang>.md`). Trích dẫn trong bản chưng cất có thể trỏ tới trang KHÔNG được nạp vào workspace (người dùng chỉ chọn một phần) — path không tồn tại nghĩa là trang đó không được chọn: dùng tóm tắt, không suy diễn thêm, không báo lỗi. Nếu KHÔNG có `_overview.md`: layout cũ (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) như mô tả bên dưới.
+**Bố cục tài liệu:** review bản gốc theo path kickoff (`docs/…` hoặc `docs-feature/…`) ở chế độ chỉ đọc; `docs-app/` không thuộc phạm vi review.
 
-- **Bản gốc (CHỈ ĐỌC):** `docs/<page>.md` — kickoff nêu đúng đường dẫn (ở layout chưng cất có thể là `docs/<branch>/…`). Đây là
+- **Bản gốc (CHỈ ĐỌC):** `docs/<page>.md` — kickoff nêu đúng đường dẫn (có thể là `docs-feature/<branch>/…`). Đây là
   nguồn sự thật, không được sửa.
 - **Lát cắt của bạn (nơi DUY NHẤT được sửa):** `review/docs/<page>.s<NN>.slice.md`
   — daemon đã tách sẵn, chứa ĐÚNG nội dung section bạn phụ trách. Ref ảnh tương

@@ -53,7 +53,7 @@ renders it. It is NOT pushed to KGS and carries no `project_id`.
     { "to": "STG-HOME",     "condition": "Đúng 1 DN" }
   ],
   "sources": [                        // key source-text excerpts (from docs MD)
-  // In the distilled layout, `file` may be `docs/<branch>/…/<page>.md`; copy the exact on-disk path.
+  // In an App-linked project, `file` may be `docs-feature/<branch>/…/<page>.md`; copy the exact on-disk path.
     {
       "file":    "docs/<branch>/…/<page>.md",           // exact on-disk path; legacy may use docs/confluence/...
       "heading": "Onboarding",                         // optional section heading

@@ -49,9 +49,9 @@ that what they drew is itself usable.
 
 ### 0. Read the inputs (from the project cwd)
 
-**Two documentation layouts.** If `./docs/_overview.md` exists: the documentation is a distilled snapshot from the App pool — read `./docs/_overview.md` first for the full picture, read `./docs/_branches/<slug>.md` for subsystem depth, and open original pages for detail using the "Page map" (paths like `./docs/<branch>/…/<page>.md`). Citations in the distilled snapshot may point to pages NOT loaded into the workspace (the user selected only part of the pool) — a missing path means that page was not selected: use the summary, do not infer further, and do not report an error. If `_overview.md` is absent: use the legacy layout (`./docs/confluence/`, `./docs/jira/`, `./docs/context/`) described below.
+**Docs layouts.** App-linked projects use `./docs-feature/` as the primary source; read `./docs-app/_index.md` first only for cross-feature context, and never review or produce deliverables from `./docs-app/`. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
 
-- **Docs (primary):** in the distilled layout, review source pages under `./docs/<branch>/**/*.md`; a page with images uses `![](attachments/…)`. In the legacy layout, use `./docs/confluence/**/*.md`. Each page mixes prose with
+- **Docs (primary):** review source pages under `./docs-feature/**/*.md` or legacy `./docs/confluence/**/*.md`. A page with images uses `![](attachments/…)`. Each page mixes prose with
   inline `![alt](attachments/<file>)` Markdown image refs — the mockup for the
   feature described in the paragraph(s) immediately around it. A page may have
   zero, one, or several mockups (one per sub-flow/state it documents).
@@ -70,7 +70,7 @@ that what they drew is itself usable.
   pages. Read them for domain understanding, but NEVER review or fabricate
   mockups from them — only `./docs/confluence/` pages are reviewed.
 
-If neither layout has a page with at least one embedded image — scan distilled source pages under `./docs/<branch>/…` and legacy pages under `./docs/confluence/` — stop and
+If neither layout has a page with at least one embedded image — scan source pages under `./docs-feature/` and legacy pages under `./docs/confluence/` — stop and
 report that there is nothing to review — do not fabricate images or findings.
 
 ### 1. Pair each mockup with the feature text that owns it
