@@ -17,6 +17,7 @@ import {
   listProjects,
   updateProject,
   upsertPipelineAppName,
+  setPipelineAppDesignSystem,
 } from './db.js';
 import {
   DEFAULT_WORKFLOW_ID,
@@ -118,9 +119,6 @@ function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean })
   const dsId = body.designSystemId;
   if (typeof dsId === 'string') out.designSystemId = dsId;
   else if (dsId === null) out.designSystemId = null;
-  const criteriaDsId = body.criteriaDesignSystemId;
-  if (typeof criteriaDsId === 'string') out.criteriaDesignSystemId = criteriaDsId;
-  else if (criteriaDsId === null) out.criteriaDesignSystemId = null;
   // appPool là field ba trạng thái GIỐNG designSystemId (object / null / vắng
   // mặt) — cố tình đọc trực tiếp `body.appPool` thay vì qua `has()`: dưới
   // run-all (`all=true`) muốn "vắng mặt" vẫn để `out.appPool` KHÔNG được set
@@ -441,7 +439,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // Các App CỤC BỘ thấy được: {appId, appName} denormalize trên feature +
   // row bảng pipeline_apps (App 0 feature). Dùng cho cả picker (GET) và check
   // trùng khi tạo (POST).
-  type AppEntry = { id: string; name?: string; origin: 'local' | 'remote' };
+  type AppEntry = { id: string; name?: string; designSystemId: string | null; origin: 'local' | 'remote' };
   const collectLocalApps = (): Map<string, AppEntry> => {
     const byId = new Map<string, AppEntry>();
     const mergeName = (entry: AppEntry, name: string | undefined) => {
@@ -458,7 +456,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       if (existing) {
         mergeName(existing, appName);
       } else {
-        byId.set(appId, { id: appId, ...(appName ? { name: appName } : {}), origin: 'local' });
+        byId.set(appId, { id: appId, ...(appName ? { name: appName } : {}), designSystemId: null, origin: 'local' });
       }
     }
     // App 0 feature (POST /api/pipelines/apps): chưa có feature nào mirror
@@ -467,10 +465,12 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       const existing = byId.get(a.id);
       if (existing) {
         mergeName(existing, a.name && a.name !== a.id ? a.name : undefined);
+        existing.designSystemId = a.designSystemId;
       } else {
         byId.set(a.id, {
           id: a.id,
           ...(a.name && a.name !== a.id ? { name: a.name } : {}),
+          designSystemId: a.designSystemId,
           origin: 'local',
         });
       }
@@ -504,6 +504,8 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     const name = typeof req.body?.name === 'string' && req.body.name.trim()
       ? req.body.name.trim()
       : appId;
+    const designSystemId = typeof req.body?.designSystemId === 'string' && req.body.designSystemId.trim()
+      ? req.body.designSystemId.trim() : req.body?.designSystemId === null ? null : null;
     // Cùng regex với POST /api/pipelines/projects: id App cũng là project_id
     // trên KGS, id studio không duyệt thì chặn ngay tại đây.
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(appId)) {
@@ -524,8 +526,8 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     } catch {
       /* stores unreachable → chỉ dựa vào check cục bộ ở trên */
     }
-    insertPipelineApp(db, { id: appId, name, createdAt: Date.now() });
-    res.status(201).json({ id: appId, name });
+    insertPipelineApp(db, { id: appId, name, designSystemId, createdAt: Date.now() });
+    res.status(201).json({ id: appId, name, designSystemId });
   });
 
   // GET /api/pipelines/apps — App containers a user can pick as the parent of
@@ -555,7 +557,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         if (existing) {
           if (!existing.name && r.name) existing.name = r.name;
         } else {
-          byId.set(r.id, { id: r.id, ...(r.name ? { name: r.name } : {}), origin: 'remote' });
+          byId.set(r.id, { id: r.id, ...(r.name ? { name: r.name } : {}), designSystemId: null, origin: 'remote' });
         }
       }
     } catch {
@@ -566,6 +568,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       .map((e) => ({
         id: e.id,
         ...(e.name ? { name: e.name } : {}),
+        designSystemId: e.designSystemId,
         origin: e.origin,
       }));
     res.json({ apps });
@@ -619,23 +622,36 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // appName denormalize trên từng feature (GET /api/pipelines/projects đọc ở đó).
   app.patch('/api/pipelines/apps/:id', async (req, res) => {
     const appId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    const hasName = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'name');
+    const hasDesignSystemId = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'designSystemId');
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-    if (!name) return res.status(400).json({ error: 'name is required' });
+    const designSystemId = req.body?.designSystemId === null
+      ? null
+      : typeof req.body?.designSystemId === 'string' ? req.body.designSystemId.trim() : '';
+    if ((!hasName || !name) && (!hasDesignSystemId || (!designSystemId && designSystemId !== null))) {
+      return res.status(400).json({ error: 'name or designSystemId is required' });
+    }
     // Rename được cả App remote: row local chỉ là cái tên phủ lên (picker cho
     // tên local thắng), không đổi gì trên studio.
     if (!collectLocalApps().has(appId) && !(await remoteAppIds())?.has(appId)) {
       return res.status(404).json({ error: `app "${appId}" not found` });
     }
-    upsertPipelineAppName(db, { id: appId, name, createdAt: Date.now() });
-    for (const f of featuresOfApp(appId)) {
-      updateProject(db, f.id, {
-        metadata: {
-          ...(f.metadata ?? {}),
-          studioConfig: { ...studioConfigOf(f), appId, appName: name },
-        },
-      });
+    if (hasName && name) {
+      upsertPipelineAppName(db, { id: appId, name, createdAt: Date.now() });
+      for (const f of featuresOfApp(appId)) {
+        updateProject(db, f.id, {
+          metadata: {
+            ...(f.metadata ?? {}),
+            studioConfig: { ...studioConfigOf(f), appId, appName: name },
+          },
+        });
+      }
     }
-    res.json({ id: appId, name });
+    if (hasDesignSystemId) {
+      setPipelineAppDesignSystem(db, { id: appId, ...(hasName && name ? { name } : {}), designSystemId, createdAt: Date.now() });
+    }
+    const updated = getPipelineApp(db, appId);
+    res.json({ id: appId, name: updated?.name ?? name, designSystemId: updated?.designSystemId ?? null });
   });
 
   // DELETE /api/pipelines/apps/:id — xóa App CỤC BỘ. Feature KHÔNG bị xóa: chỉ

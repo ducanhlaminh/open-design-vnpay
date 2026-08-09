@@ -23,6 +23,8 @@ import { UNASSIGNED_APP } from '../../router';
 export interface NavApp {
   id: string;
   name: string;
+  /** Design System gắn ở cấp App. */
+  designSystemId?: string | null;
   /** Rổ "Chưa gán app" — hiển thị khác, không có trang cấu hình app. */
   unassigned: boolean;
   features: PipelineProject[];
@@ -87,19 +89,21 @@ export function appIdOf(p: PipelineProject): string {
 
 export function groupByApp(
   projects: PipelineProject[],
-  knownApps: Array<{ id: string; name?: string }>,
+  knownApps: Array<{ id: string; name?: string; designSystemId?: string | null }>,
 ): NavApp[] {
   const byId = new Map<string, NavApp>();
-  const ensure = (id: string, name?: string): NavApp => {
+  const ensure = (id: string, name?: string, designSystemId?: string | null): NavApp => {
     const hit = byId.get(id);
     if (hit) {
       // Tên đến sau từ danh sách app (feature chỉ mang bản sao có thể cũ).
       if (name && hit.name === hit.id) hit.name = name;
+      if (designSystemId !== undefined) hit.designSystemId = designSystemId;
       return hit;
     }
     const row: NavApp = {
       id,
       name: name || id,
+      designSystemId,
       unassigned: id === UNASSIGNED_APP,
       features: [],
       doneFeatures: 0,
@@ -110,7 +114,7 @@ export function groupByApp(
   };
 
   // App rỗng vẫn phải hiện: vừa tạo xong mà không thấy nó ở đâu là bế tắc.
-  for (const a of knownApps) ensure(a.id, a.name);
+  for (const a of knownApps) ensure(a.id, a.name, a.designSystemId);
 
   for (const p of projects) {
     const row = ensure(appIdOf(p), p.app?.name);
@@ -131,7 +135,7 @@ export function groupByApp(
 
 export function usePipelineNav(): PipelineNav {
   const [projects, setProjects] = useState<PipelineProject[]>([]);
-  const [knownApps, setKnownApps] = useState<Array<{ id: string; name?: string }>>([]);
+  const [knownApps, setKnownApps] = useState<Array<{ id: string; name?: string; designSystemId?: string | null }>>([]);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);

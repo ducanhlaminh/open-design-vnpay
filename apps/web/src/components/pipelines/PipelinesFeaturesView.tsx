@@ -15,17 +15,19 @@
 // no real App entity, so no pool), so both the tab bar and the tab default
 // only apply once a real App is resolved.
 import { useEffect, useMemo, useState } from 'react';
-import type { AppPoolResponse, PipelineProject, PipelineWorkflowSummary } from '@open-design/contracts';
+import type { AppPoolResponse, DesignSystemSummary, PipelineProject, PipelineWorkflowSummary } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
 import { navigate } from '../../router';
 import { AppPoolSection } from './AppPoolSection';
+import { AppDesignSystemPanel } from './AppDesignSystemPanel';
+import { fetchDesignSystems } from '../../providers/registry';
 import { RowActionsMenu } from './RowActionsMenu';
 import { featureStatus, isFeatureDone, isFeatureUntouched, runningWorkflows } from './usePipelineNav';
 import type { PipelineNav } from './usePipelineNav';
 import styles from './PipelineNavViews.module.css';
 
-type DetailTab = 'features' | 'docs';
+type DetailTab = 'features' | 'docs' | 'ds';
 
 interface Props {
   nav: PipelineNav;
@@ -87,6 +89,15 @@ export function PipelinesFeaturesView({
 
   const app = nav.appById(appId);
   const hasDocsTab = Boolean(app && !app.unassigned);
+  const [designSystems, setDesignSystems] = useState<DesignSystemSummary[]>([]);
+  useEffect(() => {
+    if (!hasDocsTab) return undefined;
+    let alive = true;
+    void fetchDesignSystems().then((items) => { if (alive) setDesignSystems(items); });
+    return () => { alive = false; };
+  }, [hasDocsTab]);
+  const designSystemTitle = app?.designSystemId ? designSystems.find((item) => item.id === app.designSystemId)?.title : undefined;
+  const designSystemMeta = designSystemTitle ? `· ${designSystemTitle}` : '· chưa chọn';
 
   // Lightweight — just enough for the tab's own "N trang" summary line.
   // `AppPoolSection` (mounted only once the Docs tab is actually open) does
@@ -252,10 +263,22 @@ export function PipelinesFeaturesView({
               <span className={styles.detailTabName}>Tài liệu</span>
               <span className={styles.detailTabMeta}>· {poolSummary ? `${poolSummary.pages} trang` : '…'}</span>
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'ds'}
+              className={`${styles.detailTab}${tab === 'ds' ? ' ' + styles.detailTabActive : ''}`}
+              onClick={() => setTab('ds')}
+            >
+              <span className={styles.detailTabName}>DS</span>
+              <span className={styles.detailTabMeta} title={designSystemTitle}>{designSystemMeta}</span>
+            </button>
           </div>
         ) : null}
 
-        {tab === 'docs' && hasDocsTab ? (
+        {tab === 'ds' && hasDocsTab ? (
+          <div className={styles.panelBody}><AppDesignSystemPanel appId={appId} designSystemId={app?.designSystemId} /></div>
+        ) : tab === 'docs' && hasDocsTab ? (
           <div className={styles.panelBody}>
             {/* AppPoolSection is a self-contained card elsewhere (Sửa App,
                 màn "App đã tạo") — nested here it keeps its own border/shadow

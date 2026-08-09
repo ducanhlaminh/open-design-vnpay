@@ -365,6 +365,7 @@ import {
   getDeployment,
   getDeploymentById,
   getProject,
+  getPipelineApp,
   getTemplate,
   insertConversation,
   insertProject,
@@ -14338,20 +14339,17 @@ export async function startServer({
     }
   };
 
-  /** DS được chọn làm nguồn bộ tiêu chí review cho feature này, đọc THẲNG từ
-   *  `metadata.runAllConfig` thay vì luồn qua `RunPipelineOptions`.
-   *
-   *  Vì sao đọc thẳng: `runAllConfig` là cấu hình đã LƯU của feature, nên một
-   *  lần chạy lại RIÊNG bước nạp tài liệu (không qua Run-all) vẫn thấy đúng lựa
-   *  chọn — luồn qua opts thì chỉ Run-all mới mang được id, còn nút chạy lẻ sẽ
-   *  âm thầm bỏ qua bộ tiêu chí. */
+  /** DS làm nguồn bộ tiêu chí review cho feature này — thuộc tính của APP sở hữu
+   * nó, không phải của feature. */
   const criteriaDesignSystemForProject = (projectId: string): string | null => {
     try {
-      const cfg = getProject(db, projectId)?.metadata?.runAllConfig as
-        | { criteriaDesignSystemId?: string | null }
-        | undefined;
-      const id = cfg?.criteriaDesignSystemId;
-      return typeof id === 'string' && id ? id : null;
+      const appId = getProject(db, projectId)?.metadata?.studioConfig;
+      const id = appId && typeof appId === 'object' && !Array.isArray(appId)
+        ? (appId as Record<string, unknown>).appId
+        : null;
+      if (typeof id !== 'string' || !id) return null;
+      const designSystemId = getPipelineApp(db, id)?.designSystemId;
+      return typeof designSystemId === 'string' && designSystemId ? designSystemId : null;
     } catch {
       return null;
     }

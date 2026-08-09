@@ -2834,7 +2834,6 @@ export function PipelinesView() {
             workflowName={workflows.find((w) => w.id === workflowId)?.name ?? 'Docs → UI-Spec'}
             defaultConfluencePages={runAllDefaults?.confluencePages}
             defaultDesignSystemId={runAllDefaults?.designSystemId}
-            defaultCriteriaDesignSystemId={runAllDefaults?.criteriaDesignSystemId}
             defaultDesignSystemByTarget={runAllDefaults?.designSystemByTarget}
             defaultTerminal={runAllDefaults?.terminal}
             defaultPlatform={runAllDefaults?.platform}
@@ -2858,8 +2857,7 @@ export function PipelinesView() {
             // ngoài patch khi Lưu (modal không ghi đè field nó không hiện).
             hasPlatform={pipelines.some((p) => p.acceptsPlatform)}
             hasTerminal={pipelines.some((p) => p.id === 'ui-html' || p.id === 'ui-react')}
-            hasDesignSystem={pipelines.some((p) => p.acceptsDesignSystem || p.usesDesignSystemCriteria)}
-            designSystemPurpose={pipelines.some((p) => p.acceptsDesignSystem) ? 'ui' : 'criteria'}
+            hasDesignSystem={pipelines.some((p) => p.acceptsDesignSystem)}
             // Ingest step nhận file tay (Docs → Review tài liệu) → modal mở thêm
             // nhánh nguồn "Tải file .md lên" thay vì khóa cứng Confluence.
             hasUpload={pipelines.some((p) => p.acceptsUpload)}

@@ -5,7 +5,8 @@
 // Cấu hình workflow không thuộc form này (nó ở RunAllModal / RunInputModal /
 // registry), giống hai form khai sinh cạnh đây.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { DesignSystemSummary } from '@open-design/contracts';
 
 import {
   FormError,
@@ -17,20 +18,32 @@ import {
 } from './PipelineFormModal';
 import { AppPoolSection } from './AppPoolSection';
 import { appLabelOf, useAppOptions } from './newProjectForm';
+import { fetchDesignSystems } from '../../providers/registry';
+import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 
 export function EditAppModal({
   app,
   onClose,
   onSaved,
 }: {
-  app: { id: string; name: string };
+  app: { id: string; name: string; designSystemId?: string | null };
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
   const apps = useAppOptions();
   const [name, setName] = useState(app.name);
+  const [systems, setSystems] = useState<DesignSystemSummary[] | null>(null);
+  const [designSystemId, setDesignSystemId] = useState<string | null>(app.designSystemId ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchDesignSystems().then((all) => {
+      if (!cancelled) setSystems(all);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const nameTrim = name.trim();
   // Trùng tên một App KHÁC là bẫy: hai thẻ cùng nhãn trên lưới Apps thì người
@@ -38,7 +51,9 @@ export function EditAppModal({
   const duplicate = apps.some(
     (a) => a.id !== app.id && appLabelOf(a).trim().toLowerCase() === nameTrim.toLowerCase(),
   );
-  const canSubmit = Boolean(nameTrim) && !duplicate && nameTrim !== app.name;
+  const nameChanged = nameTrim !== app.name;
+  const designSystemChanged = designSystemId !== (app.designSystemId ?? null);
+  const canSubmit = Boolean(nameTrim) && !duplicate && (nameChanged || designSystemChanged);
 
   const submit = async () => {
     if (busy || !canSubmit) return;
@@ -49,11 +64,12 @@ export function EditAppModal({
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          name: nameTrim,
+          ...(nameChanged ? { name: nameTrim } : {}),
+          ...(designSystemChanged ? { designSystemId } : {}),
         }),
       });
       const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j?.error || `đổi tên App thất bại: ${res.status}`);
+      if (!res.ok) throw new Error(j?.error || `cập nhật App thất bại: ${res.status}`);
       await onSaved();
       onClose();
     } catch (err) {
@@ -98,6 +114,23 @@ export function EditAppModal({
               if (e.key === 'Enter') void submit();
             }}
           />
+        )}
+      </FormField>
+
+      <FormField
+        label="Design System (Figma)"
+        hint="Nguồn bộ tiêu chí review cho mọi feature của App; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/."
+      >
+        {(fieldProps) => (
+          <div {...fieldProps}>
+            <ProjectDesignSystemPicker
+              designSystems={(systems ?? []).filter((s) => s.status !== 'draft')}
+              selectedId={designSystemId}
+              loading={systems === null}
+              onChange={setDesignSystemId}
+              popoverZIndex={1100}
+            />
+          </div>
         )}
       </FormField>
 

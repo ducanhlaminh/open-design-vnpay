@@ -1,0 +1,17 @@
+.section { display: flex; flex-direction: column; gap: 18px; }
+.header { display: flex; justify-content: space-between; gap: 16px; }
+.heading, .subheading { margin: 0; color: var(--text-strong); }
+.heading { font-size: 18px; }
+.subheading { font-size: 14px; }
+.muted, .meta { margin: 5px 0 0; color: var(--text-muted); font-size: 12px; }
+.empty { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.55; }
+.empty p { margin: 0 0 6px; }
+.modeBar { display: flex; flex: 0 0 auto; align-items: flex-end; gap: 22px; padding: 0 0 0; border-bottom: 1px solid var(--border); }
+.modeButton { display: inline-flex; flex: none; padding: 0 1px 12px; border: 0; border-radius: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; }
+.modeButton:hover:not(:disabled) { background: transparent; color: var(--text-strong); }
+.modeButtonActive { padding-bottom: 10px; margin-bottom: -1px; border-bottom: 2px solid var(--accent); color: var(--accent-strong); font-weight: 650; }
+.modeButtonActive:hover:not(:disabled) { background: transparent; color: var(--accent-strong); border-bottom-color: var(--accent); }
+.frameWrap, .criteriaWrap { min-height: 420px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated); overflow: hidden; }
+.frame { display: block; width: 100%; height: 620px; border: 0; background: var(--bg-panel); }
+.criteriaWrap { padding: 18px; overflow: auto; }
+.criteriaHead { margin-bottom: 14px; }

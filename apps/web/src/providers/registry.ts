@@ -383,6 +383,21 @@ export async function fetchDesignSystemFiles(
   }
 }
 
+export async function fetchDesignSystemCriteriaFile(
+  id: string,
+): Promise<DesignSystemFileDetail | { error: string }> {
+  try {
+    const resp = await fetch(
+      `/api/design-systems/${encodeURIComponent(id)}/file?path=${encodeURIComponent('criteria/components.md')}`,
+    );
+    if (!resp.ok) return { error: resp.status === 404 ? 'not-found' : `HTTP ${resp.status}` };
+    const json = (await resp.json()) as { file?: DesignSystemFileDetail };
+    return json.file ?? { error: 'not-found' };
+  } catch {
+    return { error: 'network' };
+  }
+}
+
 export async function fetchDesignSystemFile(
   id: string,
   filePath: string,

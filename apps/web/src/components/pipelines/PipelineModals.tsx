@@ -1448,7 +1448,6 @@ export function RunAllModal({
   workflowName,
   defaultConfluencePages,
   defaultDesignSystemId,
-  defaultCriteriaDesignSystemId,
   defaultDesignSystemByTarget,
   defaultTerminal,
   defaultPlatform,
@@ -1464,7 +1463,6 @@ export function RunAllModal({
   hasPlatform = true,
   hasTerminal = true,
   hasDesignSystem = true,
-  designSystemPurpose = 'ui',
   hasUpload = false,
   appId,
   supportsLean = true,
@@ -1481,7 +1479,6 @@ export function RunAllModal({
    *  modal chỉ biết "đây là giá trị khởi tạo". */
   defaultConfluencePages?: ConfluencePageRefLike[];
   defaultDesignSystemId?: string | null;
-  defaultCriteriaDesignSystemId?: string | null;
   /** DS RIÊNG từng target, prefilled từ lần chạy trước (multi-target). */
   defaultDesignSystemByTarget?: Partial<Record<UiTarget, string>>;
   defaultTerminal?: WorkflowTerminalChoice;
@@ -1514,7 +1511,6 @@ export function RunAllModal({
   hasPlatform?: boolean;
   hasTerminal?: boolean;
   hasDesignSystem?: boolean;
-  designSystemPurpose?: 'ui' | 'criteria';
   /** Bước ingest của workflow có affordance "Tải file lên" (`acceptsUpload`)
    *  không — có thì modal mở thêm nhánh nguồn "Tải file .md lên" bên cạnh
    *  Confluence, đúng như nút Run của riêng bước đó. */
@@ -1618,7 +1614,7 @@ export function RunAllModal({
     setTargets((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
   const [systems, setSystems] = useState<DesignSystemSummary[] | null>(null);
   const [designSystemId, setDesignSystemId] = useState<string | null>(
-    (designSystemPurpose === 'criteria' ? defaultCriteriaDesignSystemId : defaultDesignSystemId) ?? null,
+    defaultDesignSystemId === undefined ? null : defaultDesignSystemId,
   );
   // DS RIÊNG từng target (≥2 target): mobile và web đến từ lib Figma khác
   // nhau nên một id chung không phục vụ được multi-target build.
@@ -1732,8 +1728,8 @@ export function RunAllModal({
         };
       case 'designSystem':
         return {
-          ...(designSystemPurpose === 'criteria' ? { criteriaDesignSystemId: designSystemId } : { designSystemId }),
-          ...(designSystemPurpose === 'ui' && hasPlatform && targets.length >= 2
+          designSystemId,
+          ...(hasPlatform && targets.length >= 2
             ? { designSystemByTarget: dsByTargetForSelected() }
             : {}),
         };
@@ -1851,7 +1847,7 @@ export function RunAllModal({
   return (
     <>
       <PlModal
-      title={focus ? (focus === 'designSystem' && designSystemPurpose === 'criteria' ? 'Bộ tiêu chí review' : RUN_ALL_FOCUS_TITLES[focus]) : `Cấu hình pipeline · ${workflowName}`}
+      title={focus ? RUN_ALL_FOCUS_TITLES[focus] : `Cấu hình pipeline · ${workflowName}`}
       icon="sliders"
       size="md"
       busy={busy}
@@ -2215,13 +2211,13 @@ export function RunAllModal({
         </div>
       </div>
       ) : null}
-      {designSystemPurpose === 'ui' && hasDesignSystem && shows('designSystem') && hasPlatform && targets.length >= 2 ? (
+      {hasDesignSystem && shows('designSystem') && hasPlatform && targets.length >= 2 ? (
         // ≥2 target: DS RIÊNG từng target — mobile và web đến từ lib Figma
         // khác nhau. Ghi vào targets.json để re-run stage lẻ resolve đúng DS.
         <div className="pl-modal-field pl-modal-field--ds">
           <span className="pl-modal-field__label">
             {terminal === 'ui-react-ds'
-              ? 'Design system TỪNG TARGET (bắt buộc — bộ React từ Figma)'
+            ? 'Design system TỪNG TARGET (bắt buộc — bộ React từ Figma)'
               : 'Design system TỪNG TARGET (tùy chọn)'}
           </span>
           {targets.map((t) => (
@@ -2259,18 +2255,13 @@ export function RunAllModal({
       ) : hasDesignSystem && shows('designSystem') ? (
       <div className="pl-modal-field pl-modal-field--ds">
         <span className="pl-modal-field__label">
-          {designSystemPurpose === 'criteria'
-            ? 'Design system (tùy chọn — nguồn bộ tiêu chí review)'
-            : terminal === 'ui-react-ds'
-              ? 'Design system (bắt buộc — bộ React từ Figma)'
+          {terminal === 'ui-react-ds'
+            ? 'Design system (bắt buộc — bộ React từ Figma)'
               : 'Design system (tùy chọn)'}
         </span>
-        {designSystemPurpose === 'criteria' ? (
-          <span className="pl-modal-field__hint">Chọn DS thì bước “Tài liệu (nạp)” sẽ chép components.md + rules.md của DS đó vào criteria/ của workflow, ghi đè file đang có.</span>
-        ) : null}
         <ProjectDesignSystemPicker
           designSystems={(systems ?? []).filter((s) =>
-            designSystemPurpose === 'criteria' ? s.status !== 'draft' : terminal === 'ui-react-ds' ? s.hasReactBundle : s.status !== 'draft',
+            terminal === 'ui-react-ds' ? s.hasReactBundle : s.status !== 'draft',
           )}
           selectedId={designSystemId}
           loading={systems === null}

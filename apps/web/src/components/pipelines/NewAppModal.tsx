@@ -36,7 +36,7 @@
 // Batch lỗi giữa chừng → KHÔNG rollback (phần trước đã ghi lên đĩa); vẫn
 // setImportResult với phần đã nhập và hiện lỗi kèm "đã nhập X/N".
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { AppPoolImportResponse } from '@open-design/contracts';
 
 import {
@@ -52,6 +52,8 @@ import { AppPoolSection } from './AppPoolSection';
 import { ConfluenceImportBatchError, ConfluenceTreePicker, importConfluenceInBatches } from './ConfluenceTreeImport';
 import { ProgressBar } from './ProgressBar';
 import { appLabelOf, toSlugId, useAppOptions } from './newProjectForm';
+import { fetchDesignSystems } from '../../providers/registry';
+import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 
 export function NewAppModal({
   onClose,
@@ -62,6 +64,8 @@ export function NewAppModal({
 }) {
   const apps = useAppOptions();
   const [name, setName] = useState('');
+  const [systems, setSystems] = useState<Awaited<ReturnType<typeof fetchDesignSystems>> | null>(null);
+  const [designSystemId, setDesignSystemId] = useState<string | null>(null);
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [relatedTicked, setRelatedTicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -75,6 +79,10 @@ export function NewAppModal({
   const [importResult, setImportResult] = useState<AppPoolImportResponse | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
+
+  useEffect(() => {
+    void fetchDesignSystems().then(setSystems);
+  }, []);
 
   const nameTrim = name.trim();
   // Trùng tên KHÔNG được im lặng tái dùng App cũ: người dùng đang bấm "App
@@ -96,6 +104,7 @@ export function NewAppModal({
         body: JSON.stringify({
           appId,
           name: nameTrim,
+          ...(designSystemId ? { designSystemId } : {}),
         }),
       });
       const j = await res.json().catch(() => ({}));
@@ -217,6 +226,23 @@ export function NewAppModal({
               if (e.key === 'Enter') void submit();
             }}
           />
+        )}
+      </FormField>
+
+      <FormField
+        label="Design System (Figma)"
+        hint="Tuỳ chọn. DS này là nguồn bộ tiêu chí review cho mọi feature của App; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/."
+      >
+        {(fieldProps) => (
+          <div {...fieldProps}>
+            <ProjectDesignSystemPicker
+              designSystems={(systems ?? []).filter((s) => s.status !== 'draft')}
+              selectedId={designSystemId}
+              loading={systems === null}
+              onChange={setDesignSystemId}
+              popoverZIndex={1100}
+            />
+          </div>
         )}
       </FormField>
 

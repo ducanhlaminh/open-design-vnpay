@@ -256,6 +256,10 @@ function migrate(db: SqliteDb): void {
   if (!cols.some((c: DbRow) => c.name === 'custom_instructions')) {
     db.exec(`ALTER TABLE projects ADD COLUMN custom_instructions TEXT`);
   }
+  const pipelineAppCols = db.prepare(`PRAGMA table_info(pipeline_apps)`).all() as DbRow[];
+  if (!pipelineAppCols.some((c: DbRow) => c.name === 'design_system_id')) {
+    db.exec(`ALTER TABLE pipeline_apps ADD COLUMN design_system_id TEXT`);
+  }
   const messageCols = db.prepare(`PRAGMA table_info(messages)`).all() as DbRow[];
   if (!messageCols.some((c: DbRow) => c.name === 'agent_id')) {
     db.exec(`ALTER TABLE messages ADD COLUMN agent_id TEXT`);
@@ -762,21 +766,21 @@ function normalizeProjectRunStatus(status: unknown) {
 
 export function listPipelineApps(db: SqliteDb) {
   return (db
-    .prepare(`SELECT id, name, created_at AS createdAt FROM pipeline_apps ORDER BY created_at ASC`)
+    .prepare(`SELECT id, name, design_system_id AS designSystemId, created_at AS createdAt FROM pipeline_apps ORDER BY created_at ASC`)
     .all() as DbRow[])
-    .map((r: DbRow) => ({ id: r.id as string, name: r.name as string, createdAt: Number(r.createdAt) }));
+    .map((r: DbRow) => ({ id: r.id as string, name: r.name as string, designSystemId: (r.designSystemId as string | null) ?? null, createdAt: Number(r.createdAt) }));
 }
 
 export function getPipelineApp(db: SqliteDb, id: string) {
   const r = db
-    .prepare(`SELECT id, name, created_at AS createdAt FROM pipeline_apps WHERE id = ?`)
+    .prepare(`SELECT id, name, design_system_id AS designSystemId, created_at AS createdAt FROM pipeline_apps WHERE id = ?`)
     .get(id) as DbRow | undefined;
-  return r ? { id: r.id as string, name: r.name as string, createdAt: Number(r.createdAt) } : null;
+  return r ? { id: r.id as string, name: r.name as string, designSystemId: (r.designSystemId as string | null) ?? null, createdAt: Number(r.createdAt) } : null;
 }
 
-export function insertPipelineApp(db: SqliteDb, a: { id: string; name: string; createdAt: number }) {
-  db.prepare(`INSERT INTO pipeline_apps (id, name, created_at) VALUES (?, ?, ?)`)
-    .run(a.id, a.name, a.createdAt);
+export function insertPipelineApp(db: SqliteDb, a: { id: string; name: string; designSystemId?: string | null; createdAt: number }) {
+  db.prepare(`INSERT INTO pipeline_apps (id, name, design_system_id, created_at) VALUES (?, ?, ?, ?)`)
+    .run(a.id, a.name, a.designSystemId ?? null, a.createdAt);
   return getPipelineApp(db, a.id);
 }
 
@@ -792,6 +796,19 @@ export function upsertPipelineAppName(
        ON CONFLICT(id) DO UPDATE SET name = excluded.name`,
   ).run(a.id, a.name, a.createdAt);
   return getPipelineApp(db, a.id);
+}
+
+/** Đặt (hoặc gỡ, khi `designSystemId` là null) DS của một App.
+ * UPSERT vì App có feature chưa chắc đã có row `pipeline_apps`.
+ */
+export function setPipelineAppDesignSystem(
+  db: SqliteDb,
+  args: { id: string; name?: string; designSystemId: string | null; createdAt: number },
+): void {
+  db.prepare(
+    `INSERT INTO pipeline_apps (id, name, design_system_id, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET design_system_id = excluded.design_system_id`,
+  ).run(args.id, args.name ?? args.id, args.designSystemId, args.createdAt);
 }
 
 export function deletePipelineApp(db: SqliteDb, id: string) {
