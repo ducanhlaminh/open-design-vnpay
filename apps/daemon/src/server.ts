@@ -6361,7 +6361,10 @@ export async function startServer({
           clientRequestId: `ds-criteria-${randomUUID()}`,
           agentId,
         });
-        activeRuns.add(run);
+        // KHÔNG đăng ký vào `activeRuns`: cái Set đó là sổ hủy CỦA MỘT LƯỢT
+        // CHẠY PIPELINE (khai bên trong runner, xem `registerPipelineCanceler`)
+        // — nó không tồn tại ở phạm vi này. Job sinh danh mục cũng không có nút
+        // Hủy nào để phục vụ.
         upsertMessage(db, conversationId, { id: `ds-criteria-user-${run.id}`, role: 'user', content: kickoff });
         upsertMessage(db, conversationId, {
           id: assistantMessageId,
@@ -6393,7 +6396,6 @@ export async function startServer({
           ),
         );
         const final = await design.runs.wait(run);
-        activeRuns.delete(run);
         db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
         if (final.status !== 'succeeded') {
           throw new Error(`Agent kết thúc với trạng thái "${final.status}".`);
