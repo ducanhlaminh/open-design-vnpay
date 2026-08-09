@@ -7,6 +7,8 @@ import {
   disconnectConnector,
   ensureDesignSystemWorkspace,
   fetchDesignSystemGenerationJob,
+  generateDesignSystemCriteria,
+  getDesignSystemCriteria,
   fetchDesignSystem,
   fetchConnectorStatuses,
   fetchProjectFileText,
@@ -155,14 +157,14 @@ interface DetailProps {
   config: AppConfig;
   agents: AgentInfo[];
   onBack: () => void;
-  onOpenProject?: (projectId: string) => void;
+  onOpenProject?: (projectId: string, conversationId?: string | null) => void;
   onSetDefault: (id: string) => void;
   onSystemsRefresh?: () => Promise<void> | void;
   onProjectsRefresh?: () => Promise<void> | void;
 }
 
 type SetupStep = 'setup' | 'confirm';
-type ReviewTab = 'system' | 'files';
+type ReviewTab = 'system' | 'files' | 'criteria';
 
 interface ResolvedDesignSystemWorkspaceProject {
   projectId: string;
@@ -1805,13 +1807,27 @@ export function DesignSystemDetailView({
             >
               Design Files
             </button>
+            {system.hasReactBundle ? (
+              <button
+                type="button"
+                className={tab === 'criteria' ? 'active' : ''}
+                onClick={() => setTab('criteria')}
+              >
+                Danh mục review
+              </button>
+            ) : null}
           </div>
           <button type="button" className="ghost">
             Share
           </button>
         </header>
 
-        {tab === 'system' ? (
+        {tab === 'criteria' ? (
+          <DesignSystemCriteriaPanel
+            systemId={system.id}
+            onOpenProject={onOpenProject}
+          />
+        ) : tab === 'system' ? (
           <div className="ds-review-column">
             <h1>Review draft design system</h1>
             <div className="ds-review-rule" aria-hidden />
@@ -2461,6 +2477,91 @@ function SourceContextCard({ provenance }: { provenance?: DesignSystemProvenance
           <small>{row.value}</small>
         </div>
       ))}
+    </div>
+  );
+}
+
+export type CriteriaPanelResult = Exclude<Awaited<ReturnType<typeof getDesignSystemCriteria>>, { error: string }>;
+type CriteriaJob = NonNullable<CriteriaPanelResult['job']>;
+
+function formatCriteriaDuration(createdAt: string, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - Date.parse(createdAt)) / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+export function DesignSystemCriteriaPanel({
+  systemId,
+  onOpenProject,
+}: {
+  systemId: string;
+  onOpenProject?: (projectId: string, conversationId?: string | null) => void;
+}) {
+  const [criteria, setCriteria] = useState<CriteriaPanelResult | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const job = criteria?.job ?? null;
+  const active = job?.status === 'queued' || job?.status === 'running';
+  const existing = (criteria?.components ?? 0) > 0;
+
+  const refresh = useCallback(async () => {
+    const next = await getDesignSystemCriteria(systemId);
+    if (!('error' in next)) setCriteria(next);
+  }, [systemId]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // Depend on the returned job object, not a derived boolean. Each response
+  // must be able to schedule the next poll while status stays unchanged.
+  useEffect(() => {
+    if (!job || !active) return undefined;
+    const timer = window.setTimeout(() => { void refresh(); }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [job, active, refresh]);
+
+  useEffect(() => {
+    if (!job || !active) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [job, active]);
+
+  async function start() {
+    if (starting || active) return;
+    setStarting(true);
+    const result = await generateDesignSystemCriteria(systemId);
+    if (!('error' in result)) await refresh();
+    setStarting(false);
+  }
+
+  return (
+    <div className="ds-review-column" aria-label="Danh mục review">
+      <h1>Danh mục review</h1>
+      <div className="ds-review-rule" aria-hidden />
+      <section className="ds-generation-review-card">
+        <strong>{existing ? `${criteria?.components ?? 0} component · cập nhật ${new Date(criteria?.meta?.generatedAt ?? '').toLocaleString('vi-VN')}` : 'Chưa sinh danh mục component.'}</strong>
+        {criteria?.hasRules ? <p>Đã có bộ quy tắc review (rules.md).</p> : null}
+        <p>Danh mục này hỗ trợ bước “Màn hình → Component” trong workflow Docs → Review tài liệu đối chiếu; agent đọc catalog của chính design system, mất khoảng 6–7 phút.</p>
+        {existing ? <p>Cảnh báo: chạy lại sẽ ghi đè components.md.</p> : null}
+        <div className="row">
+          <button type="button" className="primary" disabled={active || starting} onClick={() => void start()}>
+            {active ? 'Đang chạy…' : existing ? 'Sinh lại' : 'Sinh danh mục'}
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            disabled={!job?.projectId || !job.conversationId}
+            onClick={() => { if (job?.projectId && job.conversationId) onOpenProject?.(job.projectId, job.conversationId); }}
+          >
+            Mở hội thoại
+          </button>
+          {active && job ? <span>Đã chạy {formatCriteriaDuration(job.createdAt, now)}</span> : null}
+        </div>
+        <div className="ds-generation-review-steps">
+          {(['read-catalog', 'generate', 'validate'] as const).map((id) => {
+            const step = job?.steps.find((item) => item.id === id);
+            return <span key={id} className={`is-${step?.status ?? 'pending'}`}>{step?.title ?? id}{step?.message ? `: ${step.message}` : ''}</span>;
+          })}
+        </div>
+      </section>
     </div>
   );
 }

@@ -13,7 +13,6 @@ import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
 import { FigmaDesignSystemDetailModal } from './FigmaDesignSystemDetailModal';
 import { Icon } from './Icon';
 import { orderDesignSystemGroups } from './design-system-group-order';
-import { DsCriteriaJobModal } from './DsCriteriaJobModal';
 
 // Sibling Settings section that hosts the design-systems registry.
 // Lifted out of the previous LibrarySection so each surface (functional
@@ -39,7 +38,6 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [previewSystem, setPreviewSystem] = useState<DesignSystemSummary | null>(null);
-  const [criteriaSystem, setCriteriaSystem] = useState<DesignSystemSummary | null>(null);
   const [renameTarget, setRenameTarget] = useState<{ id: string; original: string } | null>(null);
   const [renameInput, setRenameInput] = useState('');
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -495,7 +493,7 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
               </details>
             ) : null}
             {importCriteria?.rules ? <p className="library-install-status">Đã nạp bộ quy tắc review (rules.md).</p> : null}
-            {importedDesignSystem && !importCriteria?.components ? <p className="library-install-status">Danh mục component chưa sinh, bấm Sinh danh mục trên thẻ DS để chạy.</p> : null}
+            {importedDesignSystem && !importCriteria?.components ? <p className="library-install-status">Danh mục component chưa sinh, mở trang design system để chạy.</p> : null}
             {importMessage ? (
               <p className="library-install-status">
                 <span>{t('settings.designSystemsImportedStatus', { title: importMessage })}</span>
@@ -617,19 +615,6 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                         </div>
                         <div className="library-ds-summary">{ds.summary}</div>
                       </div>
-                      {ds.hasReactBundle ? (
-                        <button
-                          type="button"
-                          className="library-ds-criteria-btn"
-                          title="Sinh danh mục component để review tài liệu (chạy agent, ~6 phút)"
-                          aria-label={`Sinh danh mục review ${ds.title}`}
-                          onClick={(e) => { e.stopPropagation(); setCriteriaSystem(ds); }}
-                          onKeyDown={(e) => e.stopPropagation()}
-                        >
-                          <Icon name="blocks" size={13} />
-                          Danh mục review
-                        </button>
-                      ) : null}
                       <div className="library-ds-toggle-cell">
                         <label
                           className="toggle-switch toggle-switch-sm"
@@ -712,13 +697,6 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
             </div>
           </form>
         </div>
-      ) : null}
-      {criteriaSystem ? (
-        <DsCriteriaJobModal
-          system={criteriaSystem}
-          onClose={() => setCriteriaSystem(null)}
-          onDone={() => { void fetchDesignSystems().then(setDesignSystems); }}
-        />
       ) : null}
     </section>
   );

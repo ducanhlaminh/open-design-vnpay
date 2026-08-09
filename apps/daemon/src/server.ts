@@ -6271,8 +6271,12 @@ export async function startServer({
      *  KHÔNG tự tích luỹ log: stream đã có sẵn và một bản sao trong RAM chỉ tổ
      *  phình theo mỗi lần sinh mà không ai đọc lại. */
     runId?: string;
-    /** Hội thoại chứa transcript của run — để UI mở lại xem sau khi job xong. */
+    /** Hội thoại chứa transcript của run, và project ẩn sở hữu nó. Đủ để UI mở
+     *  thẳng màn chat (`navigate({kind:'project', projectId, conversationId})`)
+     *  — người dùng xem agent chạy tới đâu bằng chính giao diện chat quen thuộc,
+     *  không cần một khung log riêng dựng lại từ đầu. */
     conversationId?: string;
+    projectId?: string;
     /** Log đã kết thúc: vài dòng tóm tắt daemon tự ghi, luôn có kể cả khi run
      *  đã bị thu hồi nên `/events` không còn phát gì. */
     notes: string[];
@@ -6380,6 +6384,7 @@ export async function startServer({
         });
         job.runId = run.id;
         job.conversationId = conversationId;
+        job.projectId = projectId;
         note(`Agent "${agentId}" khởi động (run ${run.id.slice(0, 8)})`);
         // KHÔNG đăng ký vào `activeRuns`: cái Set đó là sổ hủy CỦA MỘT LƯỢT
         // CHẠY PIPELINE (khai bên trong runner, xem `registerPipelineCanceler`)

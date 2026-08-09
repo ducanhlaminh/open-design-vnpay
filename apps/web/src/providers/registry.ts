@@ -649,6 +649,7 @@ export async function getDesignSystemCriteria(id: string): Promise<
         updatedAt: string;
         runId?: string;
         conversationId?: string;
+        projectId?: string;
         notes: string[];
       } | null;
     }
@@ -671,38 +672,6 @@ export async function generateDesignSystemCriteria(id: string): Promise<{ jobId:
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Criteria generation failed.' };
   }
-}
-
-/** Read stdout SSE chunks. Network errors stop logging; daemon job continues. */
-export function streamRunLog(runId: string, onChunk: (text: string) => void): () => void {
-  const controller = new AbortController();
-  void (async () => {
-    try {
-      const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}/events`, { signal: controller.signal });
-      if (!resp.ok || !resp.body) return;
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (!controller.signal.aborted) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let end;
-        while ((end = buffer.indexOf('\n\n')) !== -1) {
-          const frame = buffer.slice(0, end);
-          buffer = buffer.slice(end + 2);
-          const event = frame.match(/^event: ([^\n]+)$/m)?.[1];
-          const data = frame.match(/^data: (.+)$/m)?.[1];
-          if (event !== 'stdout' || !data) continue;
-          try {
-            const payload = JSON.parse(data) as { chunk?: unknown };
-            if (typeof payload.chunk === 'string') onChunk(payload.chunk);
-          } catch { /* malformed event: ignore */ }
-        }
-      }
-    } catch { /* logging is best effort */ }
-  })();
-  return () => controller.abort();
 }
 
 export async function importFigmaDesignSystem(
