@@ -6266,6 +6266,16 @@ export async function startServer({
     steps: DsCriteriaJobStep[];
     createdAt: string;
     updatedAt: string;
+    /** Run của agent, có mặt từ lúc bước `generate` khởi động. UI mở
+     *  `GET /api/runs/<runId>/events` để xem log agent chạy trực tiếp — job này
+     *  KHÔNG tự tích luỹ log: stream đã có sẵn và một bản sao trong RAM chỉ tổ
+     *  phình theo mỗi lần sinh mà không ai đọc lại. */
+    runId?: string;
+    /** Hội thoại chứa transcript của run — để UI mở lại xem sau khi job xong. */
+    conversationId?: string;
+    /** Log đã kết thúc: vài dòng tóm tắt daemon tự ghi, luôn có kể cả khi run
+     *  đã bị thu hồi nên `/events` không còn phát gì. */
+    notes: string[];
   };
   const dsCriteriaJobs = new Map<string, DsCriteriaJob>();
   /** designSystemId → id của job GẦN NHẤT. GET /criteria trả job này, nên UI
@@ -6286,12 +6296,17 @@ export async function startServer({
       ],
       createdAt: now(),
       updatedAt: now(),
+      notes: [],
     };
     dsCriteriaJobs.set(job.id, job);
     dsCriteriaJobByDs.set(designSystemId, job.id);
     const step = (id: string) => job.steps.find((s) => s.id === id)!;
     const touch = () => {
       job.updatedAt = now();
+    };
+    const note = (line: string) => {
+      job.notes.push(`${new Date().toISOString().slice(11, 19)} ${line}`);
+      touch();
     };
 
     void (async () => {
@@ -6307,7 +6322,9 @@ export async function startServer({
             `DS này không có "${catalogRel}" — chỉ design system nạp từ Figma IR mới có catalog để sinh danh mục.`,
           );
         }
+        const catalogBytes = (await fs.promises.stat(catalogAbs)).size;
         step('read-catalog').status = 'succeeded';
+        note(`Catalog: ${catalogRel} (${Math.round(catalogBytes / 1024)} KB)`);
         touch();
 
         step('generate').status = 'running';
@@ -6361,6 +6378,9 @@ export async function startServer({
           clientRequestId: `ds-criteria-${randomUUID()}`,
           agentId,
         });
+        job.runId = run.id;
+        job.conversationId = conversationId;
+        note(`Agent "${agentId}" khởi động (run ${run.id.slice(0, 8)})`);
         // KHÔNG đăng ký vào `activeRuns`: cái Set đó là sổ hủy CỦA MỘT LƯỢT
         // CHẠY PIPELINE (khai bên trong runner, xem `registerPipelineCanceler`)
         // — nó không tồn tại ở phạm vi này. Job sinh danh mục cũng không có nút
@@ -6401,6 +6421,7 @@ export async function startServer({
           throw new Error(`Agent kết thúc với trạng thái "${final.status}".`);
         }
         step('generate').status = 'succeeded';
+        note('Agent xong, đang kiểm tra kết quả');
         touch();
 
         step('validate').status = 'running';
@@ -6414,9 +6435,11 @@ export async function startServer({
         step('validate').status = 'succeeded';
         job.status = 'succeeded';
         job.message = `${committed.components} component`;
+        note(`Ghi criteria/components.md — ${committed.components} component`);
         touch();
       } catch (error) {
         const detail = String((error as Error)?.message ?? error);
+        note(`LỖI: ${detail}`);
         const active = job.steps.find((s) => s.status === 'running');
         if (active) {
           active.status = 'failed';

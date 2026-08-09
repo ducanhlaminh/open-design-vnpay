@@ -5,8 +5,6 @@ import type { AppConfig, DesignSystemSummary } from '../types';
 import {
   fetchDesignSystems,
   importFigmaDesignSystem,
-  getDesignSystemCriteria,
-  generateDesignSystemCriteria,
   importGitHubDesignSystem,
   importLocalDesignSystem,
   updateDesignSystemDraft,
@@ -15,6 +13,7 @@ import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
 import { FigmaDesignSystemDetailModal } from './FigmaDesignSystemDetailModal';
 import { Icon } from './Icon';
 import { orderDesignSystemGroups } from './design-system-group-order';
+import { DsCriteriaJobModal } from './DsCriteriaJobModal';
 
 // Sibling Settings section that hosts the design-systems registry.
 // Lifted out of the previous LibrarySection so each surface (functional
@@ -40,6 +39,7 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [previewSystem, setPreviewSystem] = useState<DesignSystemSummary | null>(null);
+  const [criteriaSystem, setCriteriaSystem] = useState<DesignSystemSummary | null>(null);
   const [renameTarget, setRenameTarget] = useState<{ id: string; original: string } | null>(null);
   const [renameInput, setRenameInput] = useState('');
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -58,8 +58,6 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
   // so selection order here does not matter.
   const [importIrFiles, setImportIrFiles] = useState<File[]>([]);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
-  const [criteriaJobId, setCriteriaJobId] = useState<string | null>(null);
-  const [criteriaStatus, setCriteriaStatus] = useState<Awaited<ReturnType<typeof getDesignSystemCriteria>> | null>(null);
   const [importCriteria, setImportCriteria] = useState<{ rules: boolean; components: boolean } | null>(null);
   const [packageImportMode, setPackageImportMode] = useState<'normalized' | 'hybrid' | 'verbatim'>('hybrid');
   const [craftApplies, setCraftApplies] = useState<string[]>([]);
@@ -75,23 +73,6 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
     fetchDesignSystems().then(setDesignSystems);
   }, []);
 
-  useEffect(() => {
-    if (!criteriaJobId || !importedDesignSystem || (criteriaStatus && !('error' in criteriaStatus) && (!criteriaStatus.job || criteriaStatus.job.status === 'succeeded' || criteriaStatus.job.status === 'failed'))) return;
-    let cancelled = false;
-    const poll = async () => {
-      const next = await getDesignSystemCriteria(importedDesignSystem.id);
-      if (cancelled) return;
-      setCriteriaStatus(next);
-      if (!('error' in next) && next.job && (next.job.status === 'queued' || next.job.status === 'running')) {
-        window.setTimeout(poll, 2000);
-      }
-    };
-    const timer = window.setTimeout(poll, 2000);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [criteriaJobId, criteriaStatus, importedDesignSystem]);
 
   const disabledDS = useMemo(
     () => new Set(cfg.disabledDesignSystems ?? []),
@@ -233,8 +214,6 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
     setImportMessage(null);
     setImportedDesignSystem(null);
     setImportWarnings([]);
-    setCriteriaJobId(null);
-    setCriteriaStatus(null);
     setImportCriteria(null);
   }
 
@@ -278,23 +257,11 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
     setImportIrFiles([]);
     setImportWarnings(importWarningsNext);
     setImportedDesignSystem(importedSystem);
-    setCriteriaStatus(null);
     const criteria = 'criteria' in result && result.criteria && typeof result.criteria === 'object'
       ? result.criteria as { rules: boolean; components: boolean }
       : null;
-    const jobId = 'criteriaJobId' in result && typeof result.criteriaJobId === 'string' ? result.criteriaJobId : null;
     setImportCriteria(criteria);
     setImportMessage(importedSystem.title);
-    if (jobId) {
-      setCriteriaJobId(jobId);
-      return;
-    }
-    // Import route chỉ ghi `criteria/rules.md` (deterministic, đồng bộ); việc
-    // sinh `components.md` là một AGENT chạy vài phút nên nó là job riêng —
-    // kick từ đây để người dùng không phải bấm thêm nút sau khi nạp DS.
-    setCriteriaJobId(null);
-    const started = await generateDesignSystemCriteria(importedSystem.id);
-    if (!('error' in started)) setCriteriaJobId(started.jobId);
   }
 
   function viewImportedDesignSystem() {
@@ -527,21 +494,8 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                 </ul>
               </details>
             ) : null}
-            {importedDesignSystem && criteriaStatus && !('error' in criteriaStatus) && criteriaStatus.job?.status === 'succeeded' ? (
-              <p className="library-install-status">Danh mục component: {criteriaStatus.components} component.</p>
-            ) : null}
-            {importedDesignSystem && criteriaStatus && !('error' in criteriaStatus) && criteriaStatus.job?.status === 'failed' ? (
-              <p className="library-install-error">
-                Sinh danh mục thất bại: {criteriaStatus.job.message ?? 'Không rõ lỗi.'}{' '}
-                <button type="button" className="library-install-status-link" onClick={async () => {
-                  const next = await generateDesignSystemCriteria(importedDesignSystem.id);
-                  if ('error' in next) setImportError(next.error);
-                  else { setImportError(null); setCriteriaJobId(next.jobId); setCriteriaStatus(null); }
-                }}>Sinh lại</button>
-              </p>
-            ) : null}
             {importCriteria?.rules ? <p className="library-install-status">Đã nạp bộ quy tắc review (rules.md).</p> : null}
-            {criteriaJobId && (!criteriaStatus || 'error' in criteriaStatus || criteriaStatus.job?.status === 'queued' || criteriaStatus.job?.status === 'running') ? <p className="library-install-status">Đang sinh danh mục component…</p> : null}
+            {importedDesignSystem && !importCriteria?.components ? <p className="library-install-status">Danh mục component chưa sinh, bấm Sinh danh mục trên thẻ DS để chạy.</p> : null}
             {importMessage ? (
               <p className="library-install-status">
                 <span>{t('settings.designSystemsImportedStatus', { title: importMessage })}</span>
@@ -663,6 +617,17 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                         </div>
                         <div className="library-ds-summary">{ds.summary}</div>
                       </div>
+                      {ds.hasReactBundle ? (
+                        <button
+                          type="button"
+                          className="library-ds-edit"
+                          aria-label={`Sinh danh mục review ${ds.title}`}
+                          onClick={(e) => { e.stopPropagation(); setCriteriaSystem(ds); }}
+                          onKeyDown={(e) => e.stopPropagation()}
+                        >
+                          Sinh danh mục
+                        </button>
+                      ) : null}
                       <div className="library-ds-toggle-cell">
                         <label
                           className="toggle-switch toggle-switch-sm"
@@ -745,6 +710,13 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
             </div>
           </form>
         </div>
+      ) : null}
+      {criteriaSystem ? (
+        <DsCriteriaJobModal
+          system={criteriaSystem}
+          onClose={() => setCriteriaSystem(null)}
+          onDone={() => { void fetchDesignSystems().then(setDesignSystems); }}
+        />
       ) : null}
     </section>
   );
