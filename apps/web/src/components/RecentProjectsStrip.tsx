@@ -45,6 +45,9 @@ export function RecentProjectsStrip({
   const t = useT();
   const recent = useMemo(
     () => [...projects]
+      // Keep infrastructure criteria projects available to project routes and
+      // WorkspaceTabsBar; hide them only from this user-facing Recent rail.
+      .filter((project) => String(project.metadata?.kind) !== 'ds-criteria')
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, limit),
     [projects, limit],

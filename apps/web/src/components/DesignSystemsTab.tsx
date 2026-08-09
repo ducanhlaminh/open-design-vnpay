@@ -35,6 +35,7 @@ interface Props {
   onPreviewFullscreen?: (id: string) => void;
   onCreate?: () => void;
   onOpenSystem?: (id: string) => void;
+  onOpenCriteria?: (id: string) => void;
   onSystemsRefresh?: () => Promise<void> | void;
   templates?: ProjectTemplate[];
 }
@@ -112,6 +113,7 @@ export function DesignSystemsTab({
   onPreviewFullscreen,
   onCreate,
   onOpenSystem,
+  onOpenCriteria,
   onSystemsRefresh,
   templates = [],
 }: Props) {
@@ -667,6 +669,16 @@ export function DesignSystemsTab({
                         disabled={busy}
                       >
                         Edit
+                      </button>
+                    ) : null}
+                    {system.hasReactBundle && onOpenCriteria ? (
+                      <button
+                        type="button"
+                        className="ghost compact"
+                        onClick={() => onOpenCriteria(system.id)}
+                        disabled={busy}
+                      >
+                        Danh mục review
                       </button>
                     ) : null}
                     {!selected && canUseInProjects ? (

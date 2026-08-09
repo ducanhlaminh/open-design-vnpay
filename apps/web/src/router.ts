@@ -23,7 +23,7 @@ export type EntryHomeView =
 export type Route =
   | { kind: 'home'; view: EntryHomeView }
   | { kind: 'design-system-create' }
-  | { kind: 'design-system-detail'; designSystemId: string }
+  | { kind: 'design-system-detail'; designSystemId: string; section?: 'criteria' }
   | {
       kind: 'project';
       projectId: string;
@@ -97,7 +97,11 @@ export function parseRoute(pathname: string): Route {
       return { kind: 'design-system-create' };
     }
     if (parts[1]) {
-      return { kind: 'design-system-detail', designSystemId: decodeURIComponent(parts[1]) };
+      return {
+        kind: 'design-system-detail',
+        designSystemId: decodeURIComponent(parts[1]),
+        ...(parts[2] === 'criteria' ? { section: 'criteria' as const } : {}),
+      };
     }
     return { kind: 'home', view: 'design-systems' };
   }
@@ -191,7 +195,7 @@ export function buildPath(route: Route): string {
   if (route.kind === 'marketplace-detail') return `/marketplace/${encodeURIComponent(route.pluginId)}`;
   if (route.kind === 'design-system-create') return '/design-systems/create';
   if (route.kind === 'design-system-detail') {
-    return `/design-systems/${encodeURIComponent(route.designSystemId)}`;
+    return `/design-systems/${encodeURIComponent(route.designSystemId)}${route.section === 'criteria' ? '/criteria' : ''}`;
   }
   const id = encodeURIComponent(route.projectId);
   const file = route.fileName

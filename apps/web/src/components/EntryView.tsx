@@ -127,6 +127,7 @@ interface Props {
     },
   ) => ReactNode;
   onOpenDesignSystem?: (id: string) => void;
+  onOpenDesignSystemCriteria?: (id: string) => void;
   onDesignSystemsRefresh?: () => Promise<void> | void;
   onPersistComposioKey: (composio: AppConfig['composio']) => Promise<void> | void;
   onOpenSettings: (section?: 'execution' | 'media' | 'composio' | 'orbit' | 'integrations' | 'mcpClient' | 'language' | 'appearance' | 'notifications' | 'pet' | 'library' | 'about' | 'memory' | 'designSystems') => void;
@@ -286,6 +287,7 @@ export function EntryView({
   onCreateDesignSystem,
   renderDesignSystemCreation,
   onOpenDesignSystem,
+  onOpenDesignSystemCriteria,
   onDesignSystemsRefresh,
   onPersistComposioKey,
   onOpenSettings,
@@ -382,6 +384,7 @@ export function EntryView({
       onCreateDesignSystem={onCreateDesignSystem}
       renderDesignSystemCreation={renderDesignSystemCreation}
       onOpenDesignSystem={onOpenDesignSystem}
+      onOpenDesignSystemCriteria={onOpenDesignSystemCriteria}
       onDesignSystemsRefresh={onDesignSystemsRefresh}
       onPersistComposioKey={onPersistComposioKey}
       onOpenSettings={onOpenSettings}

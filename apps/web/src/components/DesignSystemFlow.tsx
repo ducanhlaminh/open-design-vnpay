@@ -161,6 +161,8 @@ interface DetailProps {
   onSetDefault: (id: string) => void;
   onSystemsRefresh?: () => Promise<void> | void;
   onProjectsRefresh?: () => Promise<void> | void;
+  onOpenCriteria?: (id: string) => void;
+  section?: 'criteria';
 }
 
 type SetupStep = 'setup' | 'confirm';
@@ -891,11 +893,16 @@ export function DesignSystemDetailView({
   onSetDefault,
   onSystemsRefresh,
   onProjectsRefresh,
+  onOpenCriteria,
+  section,
 }: DetailProps) {
   const { locale } = useI18n();
   const [system, setSystem] = useState<DesignSystemDetail | null>(null);
   const [body, setBody] = useState('');
-  const [tab, setTab] = useState<ReviewTab>('system');
+  const [tab, setTab] = useState<ReviewTab>(section === 'criteria' ? 'criteria' : 'system');
+  useEffect(() => {
+    setTab(section === 'criteria' ? 'criteria' : 'system');
+  }, [section]);
   const [openSection, setOpenSection] = useState(0);
   const [saving, setSaving] = useState(false);
   const [statusLine, setStatusLine] = useState<string | null>(null);
@@ -958,7 +965,12 @@ export function DesignSystemDetailView({
   }, [id]);
 
   useEffect(() => {
-    if (!system) return undefined;
+    /**
+     * The criteria route is a stable review page. It must not resolve and
+     * auto-open the workspace, because that navigation unmounts this view
+     * immediately after the criteria tab renders.
+     */
+    if (section === 'criteria' || !system) return undefined;
     const currentSystem = system;
     let cancelled = false;
     async function syncWorkspaceProject() {
@@ -1811,7 +1823,7 @@ export function DesignSystemDetailView({
               <button
                 type="button"
                 className={tab === 'criteria' ? 'active' : ''}
-                onClick={() => setTab('criteria')}
+                onClick={() => (onOpenCriteria ? onOpenCriteria(system.id) : setTab('criteria'))}
               >
                 Danh mục review
               </button>

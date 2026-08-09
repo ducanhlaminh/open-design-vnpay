@@ -271,6 +271,7 @@ interface Props {
     },
   ) => ReactNode;
   onOpenDesignSystem?: (id: string) => void;
+  onOpenDesignSystemCriteria?: (id: string) => void;
   onDesignSystemsRefresh?: () => Promise<void> | void;
   onPersistComposioKey: (composio: AppConfig['composio']) => Promise<void> | void;
   onOpenSettings: (
@@ -366,6 +367,7 @@ export function EntryShell({
   onCreateDesignSystem,
   renderDesignSystemCreation,
   onOpenDesignSystem,
+  onOpenDesignSystemCriteria,
   onDesignSystemsRefresh,
   onPersistComposioKey,
   onOpenSettings,
@@ -704,6 +706,7 @@ export function EntryShell({
                     onSelect={onChangeDefaultDesignSystem}
                     onCreate={onCreateDesignSystem}
                     onOpenSystem={onOpenDesignSystem}
+                    onOpenCriteria={onOpenDesignSystemCriteria}
                     onSystemsRefresh={onDesignSystemsRefresh}
                     onPreview={(id) => {
                       setPreviewFullscreen(false);

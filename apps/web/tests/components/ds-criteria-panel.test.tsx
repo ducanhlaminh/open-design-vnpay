@@ -3,12 +3,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { DesignSystemCriteriaPanel } from '../../src/components/DesignSystemFlow';
-import { generateDesignSystemCriteria, getDesignSystemCriteria } from '../../src/providers/registry';
+import { DesignSystemCriteriaPanel, DesignSystemDetailView } from '../../src/components/DesignSystemFlow';
+import type { AppConfig, DesignSystemDetail } from '../../src/types';
+import { ensureDesignSystemWorkspace, fetchDesignSystem, fetchDesignSystemRevisions, generateDesignSystemCriteria, getDesignSystemCriteria } from '../../src/providers/registry';
 
 vi.mock('../../src/providers/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/registry')>('../../src/providers/registry');
-  return { ...actual, generateDesignSystemCriteria: vi.fn(), getDesignSystemCriteria: vi.fn() };
+  return { ...actual, generateDesignSystemCriteria: vi.fn(), getDesignSystemCriteria: vi.fn(), fetchDesignSystem: vi.fn(), fetchDesignSystemRevisions: vi.fn(), ensureDesignSystemWorkspace: vi.fn() };
 });
 
 type Criteria = Awaited<ReturnType<typeof getDesignSystemCriteria>>;
@@ -28,6 +29,17 @@ const result = (status: 'queued' | 'running' | 'succeeded' | 'failed', extra: Re
 const empty = (): Criteria => ({ hasComponents: false, hasRules: false, components: 0, rules: 0, meta: null, job: null });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
+
+const detail: DesignSystemDetail = {
+  id: 'user:lib-x', title: 'Library', category: 'Custom', summary: 'Library', swatches: [],
+  surface: 'web', body: '# Library', status: 'draft', source: 'user', isEditable: true,
+  projectId: 'ds-lib-x', hasReactBundle: true,
+};
+const config: AppConfig = {
+  mode: 'daemon', apiKey: '', baseUrl: '', model: '', agentId: 'agent-1', agentModels: {},
+  skillId: null, designSystemId: null,
+};
+
 
 describe('DesignSystemCriteriaPanel', () => {
   it('loads without generating, starts once, then opens the exact conversation', async () => {
@@ -56,6 +68,28 @@ describe('DesignSystemCriteriaPanel', () => {
     await screen.findByRole('button', { name: 'Mở hội thoại' });
     expect((screen.getByRole('button', { name: 'Mở hội thoại' }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole('button', { name: 'Sinh danh mục' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+
+  it('opens criteria immediately without auto-opening the workspace', async () => {
+    vi.mocked(fetchDesignSystem).mockResolvedValue(detail);
+    vi.mocked(fetchDesignSystemRevisions).mockResolvedValue([]);
+    vi.mocked(getDesignSystemCriteria).mockResolvedValue(empty());
+    const open = vi.fn();
+    render(<DesignSystemDetailView id={detail.id} section="criteria" selectedId={null} config={config} agents={[]} onBack={vi.fn()} onSetDefault={vi.fn()} onOpenProject={open} />);
+    expect((await screen.findByRole('button', { name: 'Danh mục review' })).className).toContain('active');
+    await act(async () => { await Promise.resolve(); });
+    expect(open).not.toHaveBeenCalled();
+    expect(ensureDesignSystemWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('keeps auto-opening the workspace on the default route', async () => {
+    vi.mocked(fetchDesignSystem).mockResolvedValue(detail);
+    vi.mocked(fetchDesignSystemRevisions).mockResolvedValue([]);
+    vi.mocked(ensureDesignSystemWorkspace).mockResolvedValue({ project: { id: detail.projectId! }, files: [] } as never);
+    const open = vi.fn();
+    render(<DesignSystemDetailView id={detail.id} selectedId={null} config={config} agents={[]} onBack={vi.fn()} onSetDefault={vi.fn()} onOpenProject={open} />);
+    await waitFor(() => expect(open).toHaveBeenCalledWith(detail.projectId));
   });
 
   it('stops polling after success', async () => {

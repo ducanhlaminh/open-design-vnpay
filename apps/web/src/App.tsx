@@ -1391,6 +1391,7 @@ export function App() {
     appMain = (
       <DesignSystemDetailView
         id={route.designSystemId}
+        section={route.section}
         selectedId={config.designSystemId}
         config={config}
         agents={agents}
@@ -1400,6 +1401,7 @@ export function App() {
         onSetDefault={handleChangeDefaultDesignSystem}
         onSystemsRefresh={refreshDesignSystems}
         onProjectsRefresh={refreshProjects}
+        onOpenCriteria={(id) => navigate({ kind: 'design-system-detail', designSystemId: id, section: 'criteria' })}
       />
     );
   } else if (activeProject) {
@@ -1507,6 +1509,7 @@ export function App() {
           />
         )}
         onOpenDesignSystem={(id: string) => navigate({ kind: 'design-system-detail', designSystemId: id })}
+        onOpenDesignSystemCriteria={(id: string) => navigate({ kind: 'design-system-detail', designSystemId: id, section: 'criteria' })}
         onDesignSystemsRefresh={refreshDesignSystems}
         onPersistComposioKey={handleConfigPersistComposioKey}
         onOpenSettings={openSettings}
