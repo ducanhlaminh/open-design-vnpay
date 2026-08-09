@@ -1060,6 +1060,38 @@
   overflow: hidden;
 }
 
+/* Nút "Sinh danh mục" trên thẻ design system.
+ *
+ *  KHÔNG dùng lại `.library-ds-edit`: class đó là nút ICON 22×22 với
+ *  `opacity: 0`, chỉ hiện khi rê chuột vào thẻ — nhét nhãn chữ vào đó thì chữ
+ *  bị bóp trong ô 22px và người dùng không bao giờ tìm ra nút. Đây là hành động
+ *  chính của thẻ với DS Figma nên nó phải nhìn thấy được ngay. */
+.library-ds-criteria-btn {
+  flex: none;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-muted);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 120ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.library-ds-criteria-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong, var(--border));
+}
+
 .library-ds-toggle-cell {
   display: flex;
   align-items: flex-start;

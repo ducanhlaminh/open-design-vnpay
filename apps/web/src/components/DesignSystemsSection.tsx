@@ -620,12 +620,14 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                       {ds.hasReactBundle ? (
                         <button
                           type="button"
-                          className="library-ds-edit"
+                          className="library-ds-criteria-btn"
+                          title="Sinh danh mục component để review tài liệu (chạy agent, ~6 phút)"
                           aria-label={`Sinh danh mục review ${ds.title}`}
                           onClick={(e) => { e.stopPropagation(); setCriteriaSystem(ds); }}
                           onKeyDown={(e) => e.stopPropagation()}
                         >
-                          Sinh danh mục
+                          <Icon name="blocks" size={13} />
+                          Danh mục review
                         </button>
                       ) : null}
                       <div className="library-ds-toggle-cell">
