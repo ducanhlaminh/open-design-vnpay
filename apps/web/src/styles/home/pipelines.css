@@ -1211,6 +1211,20 @@
   color: var(--text-soft);
 }
 
+/* GỢI Ý thứ tự thường dùng — KHÁC .pl-step__lock: bước này đã mở khóa (active,
+   Chạy bấm được), phụ thuộc tĩnh chỉ còn là thông tin. Cố tình dùng cùng tông
+   nhẹ với .pl-step__lock/.pl-step__stale (không phải màu lỗi/cảnh báo) vì đây
+   không phải một lý do chặn gì cả. */
+.pl-step__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+
 .pl-step__actions {
   flex: none;
   display: flex;

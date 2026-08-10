@@ -167,6 +167,7 @@ export function NewAppModal({
       <PipelineFormModal
         title="App đã tạo"
         icon="blocks"
+        wide
         onClose={() => void finish()}
         footer={
           <PrimaryButton icon="check" onClick={() => void finish()}>
@@ -193,6 +194,7 @@ export function NewAppModal({
       title="App mới"
       icon="blocks"
       busy={busy}
+      wide
       onClose={onClose}
       footer={
         <>
@@ -248,9 +250,11 @@ export function NewAppModal({
 
       <FormField
         label="Tài liệu Confluence (tùy chọn)"
+        // Số trang đã tick là chip trong đầu panel picker, nên hint ở đây chỉ
+        // còn nói điều panel không nói được: chuyện gì xảy ra khi bấm Tạo.
         hint={
           ticked.size > 0
-            ? `${ticked.size} trang đã tick — nhập ngay khi bấm Tạo.`
+            ? 'Các trang này được nhập vào pool tài liệu của App ngay khi bấm Tạo.'
             : 'Tìm và tick trang muốn nhập ngay khi tạo App, hoặc bỏ qua và nhập sau ở màn Sửa App.'
         }
       >

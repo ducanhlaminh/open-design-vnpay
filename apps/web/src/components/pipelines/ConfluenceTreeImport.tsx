@@ -5,15 +5,26 @@
 // was reverted in cfef0fe ("bỏ toàn bộ hướng 'Tài liệu App'"). That revert
 // only reverted the App-docs-tree DIRECTION (a persistent "Confluence root"
 // field on the App form); the tree-browsing MACHINERY itself — eager subtree
-// fetch, auto-expand, hasChildren-aware chevrons, ancestor breadcrumbs, a
-// portal dropdown that escapes modal clipping — is still the right shape for
-// "search a Confluence page, then tick it or any of its descendants".
+// fetch, hasChildren-aware chevrons, ancestor breadcrumbs — is still the right
+// shape for "search a Confluence page, then tick it or any of its descendants".
+//
+// Cây con nạp sớm nhưng MẶC ĐỊNH ĐÓNG (bản trước mở sẵn mọi tầng). Một truy
+// vấn thường trả về chục trang cha, mở hết thành vài trăm hàng và chính trang
+// người dùng đang tìm bị đẩy khỏi màn hình. Nạp sớm vẫn giữ nguyên vì nó trả
+// lời được câu "trang này có con thật không" — thứ quyết định hàng đó có mũi
+// tên hay không — và làm cú bấm mở ra không phải chờ mạng.
 //
 // Recovered from `git show cfef0fe^:apps/web/src/components/pipelines/PipelineFormModal.tsx`:
 //   useConfluenceTitleSearch, confluenceHitMeta, ConfluenceDescNode,
-//   buildConfluenceDescTree, collectExpandableIds, collectDescendantIds,
-//   buildConfluenceNodeIndex, and the portal-dropdown positioning/outside-click
-//   wiring from ConfluenceRootField.
+//   buildConfluenceDescTree, collectDescendantIds, buildConfluenceNodeIndex.
+//
+// KHÔNG còn portal dropdown. Kết quả tìm đổ thẳng vào vùng danh sách của panel
+// (cùng chỗ với danh sách trang đã tick, chuyển chế độ theo ô tìm có chữ hay
+// không). Dropdown cũ phải render qua portal vào document.body kèm toán
+// flip-above chỉ để thoát `overflow-y: auto` của modal — và đổi lại nó che mất
+// chính cái panel đang chọn, không cuộn cùng modal, đè lên footer trên màn hẹp,
+// và kéo theo cả một bộ outside-click + listener resize/scroll. Đổ inline bỏ
+// hết chỗ đó, không mất tính năng nào.
 //
 // NOT recovered (deliberately dropped, out of this task's scope):
 //   - the "paste a link/bare id as a root" affordance (`looksLikeConfluenceRef`
@@ -31,8 +42,7 @@
 //     field being `undefined` degrades exactly as it did before (see
 //     `confluenceHitMeta`/`hitShowsChevron` below).
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AppPoolImportResponse, ConfluencePageHit } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
@@ -224,15 +234,6 @@ function buildConfluenceDescTree(
   return root;
 }
 
-/** Every node id in a subtree that HAS children (the node itself, if it's
- *  not a leaf, plus every non-leaf descendant) — auto-expand target: a
- *  freshly loaded subtree opens fully by default (every level), so this
- *  seeds `expandedNode` with every id a chevron could collapse. */
-function collectExpandableIds(node: ConfluenceDescNode): string[] {
-  if (node.children.length === 0) return [];
-  return [node.id, ...node.children.flatMap(collectExpandableIds)];
-}
-
 /** Every descendant id under a node, NOT including the node itself — what a
  *  cascade-tick on this node must also add/remove from the ticked set. */
 function collectDescendantIds(node: ConfluenceDescNode): string[] {
@@ -295,15 +296,6 @@ export function ConfluenceTreePicker({
   'aria-describedby': describedBy,
 }: ConfluenceTreePickerProps) {
   const [query, setQuery] = useState('');
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  // Options render through a portal — needs its own ref for the outside-click
-  // check, since it's no longer a DOM descendant of wrapRef.
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  // Portal position, recomputed while open. Same flip-above math as
-  // CustomSelect.tsx's `updatePosition` (this repo's existing portal-dropdown
-  // precedent) — reused rather than reinvented.
-  const [pos, setPos] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
   // Expand/collapse state shared by top-level hits AND any nested descendant
   // node (keyed by pageId) — expanding a hit for the FIRST time also
   // triggers its one-shot sub-tree fetch (see descByHit below); expanding a
@@ -313,7 +305,13 @@ export function ConfluenceTreePicker({
 
   const trimmed = query.trim();
   const { hits, loading, error } = useConfluenceTitleSearch(query);
-  const showFloating = open && trimmed.length >= 2;
+  // Kết quả tìm hiện NGAY TRONG vùng danh sách của panel, không phải một
+  // dropdown nổi. Dropdown cũ phải render qua portal vào document.body kèm
+  // toán flip-above để thoát `overflow-y: auto` của modal — và đổi lại, nó che
+  // mất chính cái panel đang chọn, không cuộn cùng modal, và trên màn hẹp thì
+  // đè lên cả footer. Cùng một khung nhìn cho "đang tìm" và "đã tick" bỏ hết
+  // các vấn đề đó, không cần một mét vuông định vị nào.
+  const searching = trimmed.length >= 2;
 
   // ── Tài liệu liên quan (depth-1, opt-in) ─────────────────────────────────
   // Import pool KHÔNG tự follow link nữa (kéo nhầm trang nhánh wiki khác);
@@ -356,47 +354,6 @@ export function ConfluenceTreePicker({
     onRelatedTickedChange?.(nextRelated);
   };
 
-  const updatePos = useCallback(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const gap = 4;
-    const viewportPad = 12;
-    const below = window.innerHeight - rect.bottom - viewportPad;
-    const above = rect.top - viewportPad;
-    const maxHeight = Math.max(160, Math.min(260, Math.max(below, above) - gap));
-    const openAbove = below < 200 && above > below;
-    setPos({
-      top: openAbove ? Math.max(viewportPad, rect.top - maxHeight - gap) : rect.bottom + gap,
-      left: rect.left,
-      width: rect.width,
-      maxHeight,
-    });
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!showFloating) return undefined;
-    updatePos();
-    window.addEventListener('resize', updatePos);
-    window.addEventListener('scroll', updatePos, true);
-    return () => {
-      window.removeEventListener('resize', updatePos);
-      window.removeEventListener('scroll', updatePos, true);
-    };
-  }, [showFloating, updatePos]);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const onDocDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (wrapRef.current?.contains(t)) return;
-      if (dropdownRef.current?.contains(t)) return;
-      setOpen(false);
-    };
-    document.addEventListener('mousedown', onDocDown);
-    return () => document.removeEventListener('mousedown', onDocDown);
-  }, [open]);
-
   // Fetch dedupe is tracked in a REF (not derived from `descByHit` state) so
   // dispatching fetches doesn't need `descByHit` as an effect dependency —
   // persists across searches: a page seen again under a different query is
@@ -406,22 +363,17 @@ export function ConfluenceTreePicker({
     if (dispatchedFetch.current.has(hit.id)) return;
     dispatchedFetch.current.add(hit.id);
     setDescByHit((m) => ({ ...m, [hit.id]: 'loading' }));
-    // Eager-load auto-expands from the moment the fetch is dispatched (the
-    // loading row IS the "lightweight per-hit loading" indicator) — no
-    // waiting for a chevron click.
-    setExpandedNode((s) => new Set(s).add(hit.id));
+    // Cây con vẫn được nạp SỚM (để chevron biết trang có con thật hay không, và
+    // để mở ra là có ngay), nhưng KHÔNG tự mở nữa: một truy vấn như "Kế toán"
+    // trả về chục kết quả, mở hết mọi tầng biến danh sách thành vài trăm hàng
+    // và trang cha — thứ người dùng đang tìm — trôi mất khỏi màn hình.
     void (async () => {
       try {
         const res = await fetch(`/api/pipelines/confluence/descendants?ref=${encodeURIComponent(hit.id)}`);
         const j = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(j?.error || `HTTP ${res.status}`);
         const flat = (j.pages ?? []) as Array<{ pageId: string; title: string; treePath: string[] }>;
-        const tree = buildConfluenceDescTree(hit.id, hit.title, flat);
-        setDescByHit((m) => ({ ...m, [hit.id]: tree }));
-        // "All levels open by default": expand every internal node the fetch
-        // just revealed, not only the hit's own top level.
-        const ids = collectExpandableIds(tree);
-        if (ids.length) setExpandedNode((s) => new Set([...s, ...ids]));
+        setDescByHit((m) => ({ ...m, [hit.id]: buildConfluenceDescTree(hit.id, hit.title, flat) }));
       } catch {
         setDescByHit((m) => ({ ...m, [hit.id]: 'error' }));
       }
@@ -449,6 +401,27 @@ export function ConfluenceTreePicker({
   };
 
   const nodeIndex = useMemo(() => buildConfluenceNodeIndex(descByHit), [descByHit]);
+
+  // Tên trang của mọi id ĐÃ THẤY trong phiên này, tích luỹ dần. Phải là cache
+  // chứ không phải tra thẳng `hits`: `hits` chỉ chứa kết quả của truy vấn HIỆN
+  // TẠI, nên một trang tick dưới từ khoá trước sẽ mất tên (rơi về id thô) ngay
+  // khi người dùng gõ từ khoá mới — đúng lúc danh sách "đã tick" cần nó nhất.
+  const [titleCache, setTitleCache] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setTitleCache((prev) => {
+      const next = { ...prev };
+      let grew = false;
+      const put = (id: string, title: string) => {
+        if (next[id] === title) return;
+        next[id] = title;
+        grew = true;
+      };
+      for (const h of hits ?? []) put(h.id, h.title);
+      for (const [id, node] of nodeIndex) put(id, node.title);
+      for (const r of related ?? []) put(r.pageId, r.title);
+      return grew ? next : prev;
+    });
+  }, [hits, nodeIndex, related]);
 
   // Cascade tick: checking a node checks its whole loaded subtree too;
   // unchecking mirrors it. If the subtree isn't fetched yet, only the node's
@@ -494,28 +467,20 @@ export function ConfluenceTreePicker({
     return (
       <div key={node.id}>
         <div
-          className={styles.nodeRow}
+          className={`${styles.nodeRow}${on ? ' ' + styles.rowOn : ''}${hasKids ? '' : ' ' + styles.rowLeaf}`}
           style={{ paddingLeft: 8 + depth * 16 }}
-          onClick={() => toggleNode(node.id)}
+          onClick={hasKids ? () => toggleExpandedNode(node.id) : undefined}
         >
-          {hasKids ? (
-            <button
-              type="button"
-              className={styles.chevron}
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleExpandedNode(node.id);
-              }}
-            >
-              <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
-            </button>
-          ) : (
-            <span className={styles.chevronSpacer} aria-hidden="true" />
-          )}
-          <span className={`${styles.checkbox}${on ? ' ' + styles.checkboxOn : ''}`}>
-            {on ? <Icon name="check" size={11} /> : null}
-          </span>
+          {renderTickBox(node.id, node.title, () => toggleNode(node.id))}
           <span className={styles.optionTitle}>{node.title}</span>
+          {/* Mũi tên ở BÊN PHẢI: cột trái thuộc về ô tick — thứ người dùng bấm
+              liên tục — nên nó phải thẳng hàng ở mọi độ sâu, không bị đẩy tới
+              lui tuỳ trang đó có con hay không. */}
+          {hasKids ? (
+            <span className={styles.chevron} aria-hidden="true">
+              <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
+            </span>
+          ) : null}
         </div>
         {isExpanded ? node.children.map((c) => renderDescNode(c, depth + 1)) : null}
       </div>
@@ -542,41 +507,40 @@ export function ConfluenceTreePicker({
     const showChevron = hitShowsChevron(h);
     return (
       <div key={h.id}>
-        <div className={styles.hitRow} title={meta.fullPath ?? undefined} onClick={() => toggleNode(h.id)}>
-          {showChevron ? (
-            <button
-              type="button"
-              className={styles.chevron}
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleExpandedNode(h.id);
-              }}
-            >
-              <Icon name={desc === 'loading' ? 'spinner' : isExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
-            </button>
-          ) : (
-            <span className={styles.chevronSpacer} aria-hidden="true" />
-          )}
-          <span className={`${styles.checkbox}${on ? ' ' + styles.checkboxOn : ''}`}>
-            {on ? <Icon name="check" size={11} /> : null}
-          </span>
+        {/* Bấm HÀNG = mở/đóng cây con; tick chỉ đổi khi bấm đúng ô tick. Hai
+            hành động này khác hẳn nhau về hậu quả — mở cây con là xem, tick là
+            quyết định trang nào được nhập — nên gộp cả hai vào một vùng bấm
+            khiến người duyệt cây tick nhầm liên tục. Hàng không có con thì
+            không có gì để mở, nên nó KHÔNG bấm được (xem `.rowLeaf`): giả vờ
+            bấm được rồi không phản ứng gì còn khó hiểu hơn. */}
+        <div
+          className={`${styles.hitRow}${on ? ' ' + styles.rowOn : ''}${showChevron ? '' : ' ' + styles.rowLeaf}`}
+          title={meta.fullPath ?? undefined}
+          onClick={showChevron ? () => toggleExpandedNode(h.id) : undefined}
+        >
+          {renderTickBox(h.id, h.title, () => toggleNode(h.id))}
           <span className={styles.optionBody}>
             <span className={styles.optionTitle}>{h.title}</span>
             <span className={styles.optionMeta}>{meta.text}</span>
           </span>
+          {showChevron ? (
+            <span className={styles.chevron} aria-hidden="true">
+              <Icon name={desc === 'loading' ? 'spinner' : isExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
+            </span>
+          ) : null}
         </div>
         {isExpanded && desc === 'loading' ? (
-          <p className={styles.msg} style={{ paddingLeft: 30 }}>
+          <p className={styles.msg} style={{ paddingLeft: 35 }}>
             Đang tải…
           </p>
         ) : null}
         {isExpanded && desc === 'error' ? (
-          <p className={styles.msg} style={{ paddingLeft: 30 }}>
+          <p className={styles.msg} style={{ paddingLeft: 35 }}>
             Không tải được trang con.
           </p>
         ) : null}
         {isExpanded && desc && desc !== 'loading' && desc !== 'error' && desc.children.length === 0 ? (
-          <p className={styles.msg} style={{ paddingLeft: 30 }}>
+          <p className={styles.msg} style={{ paddingLeft: 35 }}>
             Không có trang con.
           </p>
         ) : null}
@@ -585,58 +549,167 @@ export function ConfluenceTreePicker({
     );
   };
 
+  /**
+   * Trạng thái ô tick của một trang, xét CẢ cây con của nó.
+   *
+   * Ba giá trị chứ không phải hai, vì cây này cho tick lẻ từng trang con: tick
+   * trang cha kéo cả cây con theo, nhưng bỏ tick một trang con KHÔNG bỏ tick
+   * trang cha. Không có trạng thái giữa thì trang cha đó hiện dấu tick đầy đủ
+   * trong khi cây con của nó đã thủng lỗ chỗ — người dùng đóng cây lại là mất
+   * hẳn dấu vết, và tin rằng cả nhánh sẽ được nhập.
+   *
+   * Trang chưa nạp cây con (hoặc là lá) chỉ có hai trạng thái như thường.
+   */
+  const tickStateOf = (pageId: string): 'on' | 'partial' | 'off' => {
+    const self = ticked.has(pageId);
+    const node = nodeIndex.get(pageId);
+    const kids = node ? collectDescendantIds(node) : [];
+    if (kids.length === 0) return self ? 'on' : 'off';
+    if (self && kids.every((k) => ticked.has(k))) return 'on';
+    if (self || kids.some((k) => ticked.has(k))) return 'partial';
+    return 'off';
+  };
+
+  /** Ô tick dùng chung cho hàng kết quả và hàng cây con — điều khiển RIÊNG,
+   *  không ăn theo cú bấm mở/đóng của cả hàng. */
+  const renderTickBox = (pageId: string, title: string, onToggle: () => void) => {
+    const state = tickStateOf(pageId);
+    return (
+      <button
+        type="button"
+        className={`${styles.checkbox} ${styles.checkboxBtn}${
+          state === 'on' ? ' ' + styles.checkboxOn : state === 'partial' ? ' ' + styles.checkboxPartial : ''
+        }`}
+        aria-checked={state === 'on' ? 'true' : state === 'partial' ? 'mixed' : 'false'}
+        role="checkbox"
+        aria-label={`${state === 'off' ? 'Tick' : 'Bỏ tick'} ${title}`}
+        disabled={disabled}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle();
+        }}
+      >
+        {state === 'on' ? <Icon name="check" size={11} /> : null}
+        {state === 'partial' ? <Icon name="minus" size={11} /> : null}
+      </button>
+    );
+  };
+
+  // Bỏ tick từ danh sách "đã tick": trang đến từ nhánh "liên quan" phải đi qua
+  // `toggleRelated` để `relatedTicked` (cờ gửi lên daemon) không bị bỏ lại.
+  const untick = (id: string) => {
+    if (relatedTicked?.has(id)) toggleRelated(id);
+    else toggleNode(id);
+  };
+
+  // Một PANEL ba tầng, cùng ngôn ngữ với picker "Nguồn tài liệu": thanh công
+  // cụ (tìm + đếm) → vùng danh sách nổi lên → chân panel. Điểm quan trọng nhất
+  // không phải cái khung, mà là VÙNG GIỮA: trước đây tick xong thì dropdown
+  // đóng lại và trên màn không còn dấu vết gì ngoài một dòng chữ đếm — người
+  // dùng không soát lại được mình đã tick những trang nào, cũng không bỏ tick
+  // được trang nào mà không phải đi tìm lại nó trong kết quả tìm kiếm.
   return (
-    <div className={styles.wrap} ref={wrapRef}>
-      <label className={styles.searchField}>
-        <Icon name="search" size={14} />
-        <input
-          id={id}
-          aria-describedby={describedBy}
-          type="text"
-          role="combobox"
-          aria-expanded={showFloating}
-          aria-autocomplete="list"
-          autoComplete="off"
-          className={styles.searchInput}
-          placeholder={placeholder ?? 'Tìm trang Confluence theo tên…'}
-          autoFocus={autoFocus}
-          disabled={disabled}
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setOpen(false);
-          }}
-        />
-      </label>
-      <div className={styles.relatedWrap}>
-        <button
-          type="button"
-          className={styles.relatedScan}
-          disabled={disabled || relatedLoading || ticked.size === 0}
-          title={ticked.size === 0 ? 'Tick ít nhất một trang trước rồi quét' : 'Tìm các trang được link từ những trang đã tick (depth-1)'}
-          onClick={() => void scanRelated()}
-        >
-          <Icon name={relatedLoading ? 'spinner' : 'link'} size={13} />
-          {relatedLoading ? 'Đang quét tài liệu liên quan…' : 'Quét tài liệu liên quan'}
-        </button>
-        {relatedError ? <p className={styles.msg}>{relatedError}</p> : null}
-        {related && related.length === 0 ? (
-          <p className={styles.msg}>Không tìm thấy tài liệu liên quan từ các trang đã tick.</p>
+    <div className={styles.picker}>
+      <div className={styles.pickerHead}>
+        <label className={styles.searchField}>
+          <Icon name="search" size={14} />
+          <input
+            id={id}
+            aria-describedby={describedBy}
+            type="text"
+            role="combobox"
+            aria-expanded={searching}
+            aria-autocomplete="list"
+            aria-controls={`${id ?? 'confluence-picker'}-results`}
+            autoComplete="off"
+            className={styles.searchInput}
+            placeholder={placeholder ?? 'Tìm trang Confluence theo tên…'}
+            autoFocus={autoFocus}
+            disabled={disabled}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Escape XOÁ ô tìm (thay vì đóng dropdown như trước) — đó là
+              // hành động "quay lại danh sách đã tick" duy nhất còn ý nghĩa.
+              if (e.key === 'Escape' && query) {
+                e.stopPropagation();
+                setQuery('');
+              }
+            }}
+          />
+        </label>
+        {searching ? (
+          <button
+            type="button"
+            className={styles.searchClear}
+            onClick={() => setQuery('')}
+            disabled={disabled}
+          >
+            Xong
+          </button>
         ) : null}
-        {related && related.length > 0 ? (
-          <div className={styles.relatedList}>
+        <span className={`${styles.pickerCount}${ticked.size > 0 ? ' ' + styles.pickerCountOn : ''}`}>
+          {ticked.size > 0 ? `${ticked.size} trang đã tick` : 'Chưa tick trang nào'}
+        </span>
+      </div>
+
+      {/* MỘT vùng, hai chế độ: đang gõ → kết quả tìm; ô tìm trống → các trang
+          đã tick (+ tài liệu liên quan nếu đã quét). Chip đếm ở đầu panel luôn
+          hiện tổng, nên chuyển chế độ không bao giờ làm mất dấu con số. */}
+      <div className={styles.pickerBody} id={`${id ?? 'confluence-picker'}-results`} role="listbox">
+        {searching ? (
+          loading ? (
+            <p className={styles.msg}>Đang tìm…</p>
+          ) : error ? (
+            <p className={styles.msg}>{error}</p>
+          ) : hits && hits.length > 0 ? (
+            hits.map((h) => renderHitRow(h))
+          ) : hits ? (
+            <p className={styles.pickerEmpty}>Không có trang nào khớp “{trimmed}”.</p>
+          ) : null
+        ) : null}
+        {!searching && ticked.size === 0 && !related?.length ? (
+          <p className={styles.pickerEmpty}>
+            Gõ tên trang vào ô trên để tìm. Tick một trang cha sẽ tick cả cây con của nó.
+          </p>
+        ) : null}
+        {!searching && ticked.size > 0 ? (
+          <>
+            <p className={styles.groupHead}>Trang đã tick</p>
+            {[...ticked].map((id) => (
+              <div key={id} className={styles.pickedRow}>
+                <span className={`${styles.checkbox} ${styles.checkboxOn}`}>
+                  <Icon name="check" size={11} />
+                </span>
+                <span className={styles.pickedTitle} title={titleCache[id] ?? id}>
+                  {titleCache[id] ?? id}
+                </span>
+                {relatedTicked?.has(id) ? <span className={styles.pickedTag}>liên quan</span> : null}
+                <button
+                  type="button"
+                  className={styles.pickedRemove}
+                  disabled={disabled}
+                  aria-label={`Bỏ tick ${titleCache[id] ?? id}`}
+                  onClick={() => untick(id)}
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+            ))}
+          </>
+        ) : null}
+        {!searching && related && related.length > 0 ? (
+          <>
+            <p className={`${styles.groupHead} ${styles.groupHeadRelated}`}>
+              Tài liệu liên quan · {related.length}
+            </p>
             {related.map((r) => {
               const on = ticked.has(r.pageId);
               return (
-                <div key={r.pageId} className={styles.hitRow} onClick={() => !disabled && toggleRelated(r.pageId)}>
-                  <span className={styles.chevronSpacer} aria-hidden="true" />
-                  <span className={`${styles.checkbox}${on ? ' ' + styles.checkboxOn : ''}`}>
-                    {on ? <Icon name="check" size={11} /> : null}
-                  </span>
+                // Trang liên quan không có cây con để mở, nên ô tick là điều
+                // khiển DUY NHẤT — cùng luật với hàng lá của kết quả tìm.
+                <div key={r.pageId} className={`${styles.hitRow} ${styles.rowLeaf}${on ? ' ' + styles.rowOn : ''}`}>
+                  {renderTickBox(r.pageId, r.title, () => toggleRelated(r.pageId))}
                   <span className={styles.optionBody}>
                     <span className={styles.optionTitle}>{r.title}</span>
                     <span className={styles.optionMeta}>
@@ -646,30 +719,29 @@ export function ConfluenceTreePicker({
                 </div>
               );
             })}
-          </div>
+          </>
         ) : null}
       </div>
-      {showFloating && pos
-        ? createPortal(
-            <div
-              ref={dropdownRef}
-              className={styles.dropdown}
-              role="listbox"
-              style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}
-            >
-              {loading ? (
-                <p className={styles.msg}>Đang tìm…</p>
-              ) : error ? (
-                <p className={styles.msg}>{error}</p>
-              ) : hits && hits.length > 0 ? (
-                hits.map((h) => renderHitRow(h))
-              ) : hits ? (
-                <p className={styles.msg}>Không có trang nào khớp “{trimmed}”.</p>
-              ) : null}
-            </div>,
-            document.body,
-          )
-        : null}
+
+      <div className={styles.pickerFoot}>
+        <span className={styles.pickerFootMsg}>
+          {relatedError
+            ? relatedError
+            : related && related.length === 0
+              ? 'Không tìm thấy tài liệu liên quan từ các trang đã tick.'
+              : 'Quét để tìm trang được link từ những trang đã tick.'}
+        </span>
+        <button
+          type="button"
+          className={styles.relatedScan}
+          disabled={disabled || relatedLoading || ticked.size === 0}
+          title={ticked.size === 0 ? 'Tick ít nhất một trang trước rồi quét' : 'Tìm các trang được link từ những trang đã tick (depth-1)'}
+          onClick={() => void scanRelated()}
+        >
+          <Icon name={relatedLoading ? 'spinner' : 'link'} size={13} />
+          {relatedLoading ? 'Đang quét…' : 'Quét tài liệu liên quan'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -739,9 +811,10 @@ export function ConfluenceTreeImport({ appId, onImported, onPartialImport, disab
   return (
     <div className={styles.wrap}>
       <ConfluenceTreePicker ticked={ticked} onTickedChange={setTicked} relatedTicked={relatedTicked} onRelatedTickedChange={setRelatedTicked} disabled={disabled || importing} />
+      {/* Số trang đã tick giờ là chip trong đầu panel picker — hàng này chỉ còn
+          hành động, không lặp lại con số ngay bên dưới chỗ vừa nói nó. */}
       {ticked.size > 0 && !importing ? (
         <div className={styles.summaryRow}>
-          <p className={styles.summaryText}>{ticked.size} trang đã tick</p>
           <button type="button" className={styles.primaryButton} onClick={() => void importTicked()} disabled={importing}>
             Nhập {ticked.size} trang
           </button>

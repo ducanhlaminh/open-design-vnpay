@@ -4,7 +4,8 @@
 // issue, recommendation). Read-only, styled with open-design theme tokens.
 // Mirrors pipeline-studio's ReviewPanel content.
 import { useMemo, useState } from 'react';
-import { WireFrameView, DEVICES, WEB_DEVICES, type WireDoc, type DeviceKey } from './WireFrameView';
+
+import { WireBlocks } from './WireBlocks';
 
 type Verdict = 'pass' | 'warn' | 'fail';
 type Severity = 'blocker' | 'major' | 'minor';
@@ -71,8 +72,8 @@ function ScreenCard({
   severities,
 }: {
   s: ReviewScreen;
-  wire?: WireDoc | null;
-  base?: WireDoc | null;
+  wire?: string | null;
+  base?: string | null;
   platform?: string;
   /** Clean/minor-only screens start collapsed so the eye lands on real problems. */
   defaultOpen: boolean;
@@ -132,7 +133,7 @@ function ScreenCard({
           <div style={{ minWidth: 0 }}>
             <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: T.faint }}>Wireframe</div>
             {wire ? (
-              <WireFrameView doc={wire} platform={platform} base={base ?? undefined} />
+              <WireBlocks html={wire} platform={platform} />
             ) : (
               <p style={{ margin: 0, borderRadius: 9, border: `1px dashed ${T.border}`, padding: '18px 14px', textAlign: 'center', fontSize: 13, color: T.faint }}>
                 Màn này chưa có wireframe.
@@ -210,7 +211,7 @@ export function ReviewPreview({
 }: {
   report: ReviewReport;
   /** Wireframe per screen id — the exact layout the review judged. */
-  wireframes?: Record<string, WireDoc> | null;
+  wireframes?: Record<string, string> | null;
   /** Per-screen platform (web|mobile) for the responsive layout. */
   platforms?: Record<string, string> | null;
 }) {
@@ -276,7 +277,7 @@ export function ReviewPreview({
 
       {screens.map((s, i) => {
         const wire = s.screen ? wireframes?.[s.screen] ?? null : null;
-        const base = wire?.overlayOf ? wireframes?.[wire.overlayOf] ?? null : null;
+        const base = null;
         // Open by default only when the screen has a blocker or major — clean and
         // minor-only screens stay collapsed so the reader lands on real problems.
         const defaultOpen = (s.findings ?? []).some(

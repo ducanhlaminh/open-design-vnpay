@@ -24,8 +24,10 @@ import {
   WORKFLOWS,
   computeActive,
   deriveStateFromLocalFiles,
+  docsReadyFromFiles,
   getPipelineDef,
   getWorkflow,
+  ingestDefOfWorkflow,
   isStageSkipped,
   listPipelineStatus,
   mergePipelineState,
@@ -226,6 +228,29 @@ function runModeFor(
   return resolveRunMode(typeof saved === 'boolean' ? saved : undefined, state, pipelineIds);
 }
 
+// The stages the project's SAVED `runAllConfig.stageIds` explicitly picked for
+// its last run-all (same source `POST /api/pipelines/run-all` reads to gate
+// the run itself — see `validateRunStageSelection`'s `opts.explicitSelection`
+// call sites below). `runAllConfig` is stored at PROJECT scope, so it can
+// carry a stageIds list ticked on a DIFFERENT workflow tab; filter to `wf`'s
+// own ids before handing it to `listPipelineStatus`/`computeActive`. A filter
+// result that comes back EMPTY is treated as "no explicit selection" (falls
+// back to mode-derived gating) — an empty selection must never be read as
+// "run nothing", the same rule `selectRunStages` documents for its own
+// `stageIds` branch.
+function explicitStageSelectionFor(
+  project: { metadata?: Record<string, unknown> } | null | undefined,
+  wf: { pipelineIds: readonly string[] },
+): string[] | undefined {
+  const raw = project?.metadata?.runAllConfig;
+  const stageIds =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as RunAllConfig).stageIds : undefined;
+  if (!Array.isArray(stageIds) || stageIds.length === 0) return undefined;
+  const known = new Set(wf.pipelineIds);
+  const filtered = stageIds.filter((id) => known.has(id));
+  return filtered.length > 0 ? filtered : undefined;
+}
+
 // Tiến độ của MỘT workflow trên state đã nạp: đếm đúng các stage mà MODE của
 // project này thật sự chạy (một chuỗi lean xong là 5/5, không phải 5/8 — một
 // project "xong" không được đọc thành dở dang vì các stage nó cố tình bỏ).
@@ -308,7 +333,23 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // Cross-device pipeline state = this device's local run metadata (transient
   // running/failed) merged with the media-service file store (durable "done"
   // signal any device sees after a pull). Media unreachable → fall back to local.
-  const loadMergedState = async (projectId: string): Promise<ProjectPipelineState> => {
+  //
+  // Returns TWO separate facts — never conflate them again (that conflation
+  // was a real bug: see git history around this function for the incident
+  // where it made an in-progress ingest run's rail entry read "succeeded"):
+  //  - `state`: this device's REAL merged run state, untouched. `status` for
+  //    every pipeline (including a workflow's ingest stage) reflects actual
+  //    run history — running/failed/idle/succeeded — exactly as recorded.
+  //  - `docsReady`: whether a workflow's ingest-stage OUTPUT FILES exist on
+  //    disk right now, keyed by that ingest stage's `PipelineDef.id`. This is
+  //    the docs-only gate's condition (see pipelines.ts's `computeActive`) —
+  //    "has a document arrived" — which is a DIFFERENT question from "did the
+  //    ingest stage's last run succeed". Callers pass this into
+  //    `computeActive` / `missingDependencies` / `validateRunStageSelection`
+  //    (their own `docsReady` param) instead of writing it into `state`.
+  const loadMergedState = async (
+    projectId: string,
+  ): Promise<{ state: ProjectPipelineState; docsReady: Record<string, boolean> }> => {
     const local = getProjectPipelineState(db, projectId) as ProjectPipelineState;
     // "Done" is derived from THIS DEVICE'S LOCAL state only: a stage is done when
     // its output files exist in the local cwd (or local run metadata says so).
@@ -319,7 +360,17 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     // reflect immediately (no stale store copy keeping a reset stage "done").
     const localPaths = await ctx.pipelines.localOutputs(projectId).catch(() => [] as string[]);
     const fileState: ProjectPipelineState = deriveStateFromLocalFiles(localPaths);
-    return mergePipelineState(local, fileState);
+    const merged = mergePipelineState(local, fileState);
+    // Docs-ready fact, per workflow's ingest stage — reuses the SAME
+    // `localPaths` list already loaded above (never re-scan the project
+    // directory a second time). Deliberately NOT written into `merged`.
+    const docsReady: Record<string, boolean> = {};
+    for (const wf of WORKFLOWS) {
+      const ingest = ingestDefOfWorkflow(wf);
+      if (!ingest) continue;
+      docsReady[ingest.id] = docsReadyFromFiles(localPaths, workflowDirForPipeline(ingest.id));
+    }
+    return { state: merged, docsReady };
   };
 
   // GET /api/pipelines/projects — the KGS apps available for pipelines (projects
@@ -335,7 +386,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     // KGS errors).
     const projects = await Promise.all(
       kgsProjects.map(async (p: { id: string; name: string; metadata?: Record<string, unknown> }) => {
-        const state = await loadMergedState(p.id);
+        const { state } = await loadMergedState(p.id);
         const { done, total, running } = countWorkflowProgress(p, state, wf.pipelineIds);
         // Trạng thái của TỪNG workflow, đếm trên CÙNG state vừa nạp (không nạp
         // lại lần nào): badge một-workflow ở trên không nói được workflow nào
@@ -731,8 +782,9 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     if (!project) return res.status(404).json({ error: 'project not found' });
     const wf = getWorkflow(typeof req.query.workflowId === 'string' ? req.query.workflowId : '')
       ?? getWorkflow(DEFAULT_WORKFLOW_ID)!;
-    const state = await loadMergedState(projectId);
+    const { state, docsReady } = await loadMergedState(projectId);
     const runMode = runModeFor(project, state, wf.pipelineIds);
+    const explicitSelection = explicitStageSelectionFor(project, wf);
     // Multi-target: configured targets + a FILE-derived per-target status
     // (which stages have outputs under <wf>/<target>/) — the DB run state is
     // stage-global, so this is what tells "mobile done, web-user not yet".
@@ -756,7 +808,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     res.json({
       projectId,
       workflowId: wf.id,
-      pipelines: listPipelineStatus(state, wf.pipelineIds, runMode),
+      pipelines: listPipelineStatus(state, wf.pipelineIds, runMode, explicitSelection, docsReady),
       runMode,
       ...(targets.length > 0 ? { targets } : {}),
       ...(statusByTarget ? { statusByTarget } : {}),
@@ -1372,8 +1424,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       // and non-string ids drop silently (same tolerance as `targets`).
       const designSystemByTarget = parseDesignSystemByTarget(req.body?.designSystemByTarget);
       // Bước người dùng tick tay. Dùng CHUNG parser với cấu hình đã lưu để hai
-      // đường (chạy ngay / lưu rồi chạy sau) không bao giờ hiểu khác nhau.
-      const stageIds = runAllConfigFromBody(req.body).stageIds;
+      // đường (chạy ngay / lưu rồi chạy sau) không bao giờ hiểu khác nhau. Giữ
+      // lại object đã parse (không gọi lại runAllConfigFromBody lần hai) — mode
+      // gate bên dưới đọc `.lean` từ CHÍNH object này.
+      const bodyRunConfig = runAllConfigFromBody(req.body);
+      const stageIds = bodyRunConfig.stageIds;
       if (stageIds && stageIds.length > 0) {
         // CHẶN NGAY một lựa chọn thiếu phụ thuộc, thay vì để nó chạy rồi hỏng:
         // run-all gọi thẳng runPipeline và KHÔNG hỏi gating (xem runWorkflowAll
@@ -1385,16 +1440,34 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         // Workflow lạ: để runWorkflowAll ném "Unknown workflow" → 404 như cũ.
         if (wf) {
           // Cùng nguồn "đã xong" mà mọi route khác dùng (local run metadata +
-          // output trên đĩa), và cùng MODE mà `POST /api/pipelines/:id/run`
-          // gate theo: trên một project từng chạy lean, phụ thuộc mà chế độ đó
-          // không bao giờ chạy phải thu về bước gần nhất nó có chạy, nếu không
-          // các terminal UI sẽ bị khoá vĩnh viễn (xem effectiveDependsOn).
-          // Đọc TRƯỚC khi ghi runAllConfig bên dưới — ghi trước thì mode của
-          // lần chạy này sẽ tự trả lời chính nó.
-          const state = await loadMergedState(projectId);
+          // output trên đĩa — xem `loadMergedState`). Đọc TRƯỚC khi ghi
+          // runAllConfig bên dưới — ghi trước thì mode của lần chạy này sẽ tự
+          // trả lời chính nó.
+          const { state, docsReady } = await loadMergedState(projectId);
+          // Mode CỦA LẦN CHẠY NÀY ưu tiên `lean` mà CHÍNH request này gửi lên
+          // (đây là request đang bật/tắt luồng tiết kiệm, không phải một lần đọc
+          // lại trạng thái cũ) — vắng mặt (request không nói gì về `lean`, ví
+          // dụ đường "Chạy pipeline" đọc lại cấu hình đã lưu) mới rơi về
+          // `runModeFor` (đọc runAllConfig đã lưu, có fallback `resolveRunMode`
+          // suy từ run state cho project cũ chưa từng lưu `lean`). Vẫn tính +
+          // truyền `mode`/`explicitSelection` xuống dưới cho ĐÚNG chữ ký hiện
+          // có của `validateRunStageSelection` — nhưng từ lô docs-only-gate
+          // (2026-08), cả hai không còn ảnh hưởng kết quả gate: bước ingest
+          // (`docs`) là phụ thuộc DUY NHẤT còn lại (xem pipelines.ts's
+          // `computeActive`/`missingDependencies`). `docsReady` là sự thật
+          // RIÊNG "tài liệu đã có trên đĩa" (xem `loadMergedState`) — truyền
+          // thẳng xuống thay vì đọc lại qua `state[ingestId].status`.
+          const mode: PipelineRunMode =
+            typeof bodyRunConfig.lean === 'boolean'
+              ? bodyRunConfig.lean
+                ? 'lean'
+                : 'full'
+              : runModeFor(project, state, wf.pipelineIds);
           const check = validateRunStageSelection(stageIds, wf.pipelineIds, state, {
             workflowName: wf.name,
-            mode: runModeFor(project, state, wf.pipelineIds),
+            mode,
+            explicitSelection: true,
+            docsReady,
           });
           if (!check.ok) return res.status(400).json({ error: check.error });
         }
@@ -1485,12 +1558,19 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           error: 'project is not a KGS app; pull it first with `od kg pull <project-id>`',
         });
       }
-      const state = await loadMergedState(projectId);
-      // Gate against the stages this project's mode actually runs: on a LEAN
-      // project the UI terminals must stay runnable even though the heuristic
-      // review they statically depend on was never part of the chain.
+      const { state, docsReady } = await loadMergedState(projectId);
+      // Docs-only gate (2026-08, pipelines.ts's `computeActive`): a card is
+      // active the instant this workflow's ingest stage has a document —
+      // `docsReady` (from `loadMergedState`) carries that fact SEPARATELY
+      // from `state`'s real run status. `runMode`/`explicitSelection` are
+      // still computed and passed through only to match `computeActive`'s
+      // existing signature (and to keep `GET /api/pipelines` and this 409
+      // check reading the exact same inputs); neither affects the result
+      // anymore.
       const wf = workflowForPipeline(def.id);
-      if (!computeActive(state, def, runModeFor(project, state, wf?.pipelineIds ?? []))) {
+      const runMode = runModeFor(project, state, wf?.pipelineIds ?? []);
+      const explicitSelection = wf ? explicitStageSelectionFor(project, wf) : undefined;
+      if (!computeActive(state, def, runMode, explicitSelection, docsReady)) {
         return res.status(409).json({
           error: `pipeline "${def.id}" is not active yet; finish its prerequisites first`,
         });

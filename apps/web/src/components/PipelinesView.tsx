@@ -46,8 +46,10 @@ import {
   PushAllModal,
   PipelineResultView,
   PipelineStatusModal,
+  RunAllClearConfirmModal,
   RunAllModal,
   RunInputModal,
+  UI_TERMINAL_STAGE_IDS,
   type RunAllFocus,
   type RunAllPayload,
   type RunStageOption,
@@ -350,6 +352,138 @@ export function resolveStageRunConfig(
   return { ok: true };
 }
 
+/** Which stage ids a run-all `payload` will actually execute right now —
+ *  the same "what does this payload run" question `stagesLosingOutputForRunAll`
+ *  below answers as its first step, factored out so `staleInputsForRunAll`
+ *  (further below) can ask it too without re-deriving the two daemon
+ *  decisions it mirrors. */
+function willRunStageIdsForRunAll(
+  pipelines: Pick<PipelineView, 'id' | 'status' | 'skipped'>[],
+  payload: Pick<RunAllPayload, 'stageIds' | 'terminal' | 'skipSucceeded'>,
+): string[] {
+  const manualIds = (payload.stageIds ?? []).filter((id) => pipelines.some((p) => p.id === id));
+  if (manualIds.length > 0) return manualIds;
+  const wanted = new Set(payload.terminal === 'both' ? ['ui-html', 'ui-react'] : [payload.terminal]);
+  return pipelines
+    .filter((p) => p.skipped !== true)
+    .filter((p) => !UI_TERMINAL_STAGE_IDS.has(p.id) || wanted.has(p.id))
+    .filter((p) => !payload.skipSucceeded || p.status !== 'succeeded')
+    .map((p) => p.id);
+}
+
+/** Human NAMES of every stage that will lose its existing result if `payload`
+ *  runs right now — the run-all pre-flight confirm dialog's only question.
+ *  Tách thành hàm THUẦN (cùng lý do `resolveStageRunConfig` ở trên): mount cả
+ *  `PipelinesView` chỉ để test một biểu thức là đo nhầm sang mọi thứ khác.
+ *
+ *  Mirrors two daemon decisions closely enough to answer "what will this
+ *  clear?" without a round-trip — the daemon (`runWorkflowAll` +
+ *  `resetScopeForRunAllStage`, `apps/daemon/src/server.ts`) remains the
+ *  actual source of truth for what gets deleted:
+ *
+ *   1. Which stages this run actually executes: `payload.stageIds` verbatim
+ *      when the user hand-ticked a set (mirrors `manualStages`), else every
+ *      non-`skipped` (lean-dropped) stage, narrowed to the chosen UI
+ *      terminal(s), minus anything `skipSucceeded` would drop.
+ *   2. A fresh FULL automatic run (no hand-tick, not `skipSucceeded`) resets
+ *      its first stage with `'downstream'`, which cascades through the WHOLE
+ *      dependency graph — including a stage this pass itself won't re-run
+ *      (e.g. an unchosen terminal) — so those succeeded stages are added too.
+ *
+ *  A stage only "loses" something it actually HAS: the intersection with
+ *  `status === 'succeeded'` is what makes an empty result here mean "run
+ *  straight through, nothing to warn about" (see `must_not`: never ask when
+ *  there is nothing to lose). */
+export function stagesLosingOutputForRunAll(
+  pipelines: Pick<PipelineView, 'id' | 'name' | 'status' | 'dependsOn' | 'skipped'>[],
+  payload: Pick<RunAllPayload, 'stageIds' | 'terminal' | 'skipSucceeded'>,
+): string[] {
+  const manualIds = (payload.stageIds ?? []).filter((id) => pipelines.some((p) => p.id === id));
+  const manual = manualIds.length > 0;
+  const willRunIds = willRunStageIdsForRunAll(pipelines, payload);
+  const byId = new Map(pipelines.map((p) => [p.id, p]));
+  const lost = new Set<string>();
+  for (const id of willRunIds) {
+    if (byId.get(id)?.status === 'succeeded') lost.add(id);
+  }
+  if (!manual && !payload.skipSucceeded && willRunIds[0]) {
+    const downstream = new Set<string>([willRunIds[0]]);
+    for (;;) {
+      let grew = false;
+      for (const p of pipelines) {
+        if (downstream.has(p.id)) continue;
+        if (p.dependsOn.some((d) => downstream.has(d))) {
+          downstream.add(p.id);
+          grew = true;
+        }
+      }
+      if (!grew) break;
+    }
+    for (const id of downstream) {
+      if (id !== willRunIds[0] && byId.get(id)?.status === 'succeeded') lost.add(id);
+    }
+  }
+  return pipelines.filter((p) => lost.has(p.id)).map((p) => p.name);
+}
+
+/** Every about-to-run stage `S` whose primary input still traces back — via
+ *  `dependsOn` — to an ancestor this run-all will NOT refresh: an ancestor the
+ *  project's run mode dropped (`skipped: true`) that already `succeeded`
+ *  sometime before. The rail already marks that ancestor "· ngoài chế độ";
+ *  this is what lets the run-all confirm say so too, BEFORE `S` quietly reads
+ *  a result that may no longer match what was just re-ingested upstream (the
+ *  spec's worked case: `docs` just reloaded, `cj` is skipped-and-35m-stale,
+ *  `ux` is about to build its spec on that stale journey).
+ *
+ *  Walks `dependsOn` upward from each `S` in `stageIdsToRun`, depth-first,
+ *  with a per-`S` `seen` set against cycles:
+ *   - an ancestor `A` that is ALSO in `stageIdsToRun` stops that branch — it
+ *     will be re-run by this same pass, so nothing past it can be stale
+ *     through this path;
+ *   - the first `A` outside the run with `status === 'succeeded'` AND
+ *     `skipped === true` IS the stale source: record `{ stage: S, source: A,
+ *     updatedAt: A.updatedAt }` and stop climbing that branch — a further
+ *     ancestor would only be noise once the nearest stale input is found;
+ *   - any other `A` (not yet run, or ran without being `skipped`) is not
+ *     itself a source of staleness, so the walk continues past it to ITS
+ *     ancestors.
+ *
+ *  Pure and warning-only — this only FINDS stale input chains, it never
+ *  decides whether that should block anything (see the spec's `must_not`).
+ *  Deduped by `(stage, source)`; result content does not depend on the order
+ *  of `stageIdsToRun`. */
+export function staleInputsForRunAll(
+  pipelines: Pick<PipelineView, 'id' | 'dependsOn' | 'status' | 'skipped' | 'updatedAt'>[],
+  stageIdsToRun: string[],
+): Array<{ stage: string; source: string; updatedAt: number }> {
+  const byId = new Map(pipelines.map((p) => [p.id, p]));
+  const willRun = new Set(stageIdsToRun);
+  const out: Array<{ stage: string; source: string; updatedAt: number }> = [];
+  const seenPairs = new Set<string>();
+  const addIfNew = (stage: string, source: string, updatedAt: number) => {
+    const key = `${stage}::${source}`;
+    if (seenPairs.has(key)) return;
+    seenPairs.add(key);
+    out.push({ stage, source, updatedAt });
+  };
+  for (const stageId of stageIdsToRun) {
+    const seen = new Set<string>([stageId]);
+    const walk = (ancestorId: string) => {
+      if (seen.has(ancestorId)) return;
+      seen.add(ancestorId);
+      if (willRun.has(ancestorId)) return; // will be refreshed this run
+      const ancestor = byId.get(ancestorId);
+      if (ancestor?.status === 'succeeded' && ancestor.skipped === true) {
+        addIfNew(stageId, ancestorId, ancestor.updatedAt ?? 0);
+        return; // nearest stale source on this branch — climbing further is noise
+      }
+      for (const next of ancestor?.dependsOn ?? []) walk(next);
+    };
+    for (const dep of byId.get(stageId)?.dependsOn ?? []) walk(dep);
+  }
+  return out;
+}
+
 export function PipelinesView() {
   const t = useT();
   const [runAllOpen, setRunAllOpen] = useState(false);
@@ -467,6 +601,16 @@ export function PipelinesView() {
   }, []);
   const [configDrawerOpen, setConfigDrawerOpen] = useState(false);
   const [runAllBusy, setRunAllBusy] = useState(false);
+  // "Chạy pipeline" đang chờ xác nhận vì lần chạy này sẽ xoá kết quả có sẵn
+  // của (những) bước trong `stageNames`, HOẶC (những) bước sắp chạy sẽ đọc
+  // đầu vào từ một bước cũ ngoài lượt (`staleInputs`) — payload đã dựng sẵn,
+  // chỉ chờ người dùng bấm nút xác nhận ở RunAllClearConfirmModal. `null` =
+  // không có gì đang chờ (đường chạy thẳng, không hỏi, vẫn là mặc định).
+  const [runAllClearConfirmFor, setRunAllClearConfirmFor] = useState<{
+    payload: RunAllPayload;
+    stageNames: string[];
+    staleInputs: Array<{ stageName: string; sourceName: string; updatedAt: number }>;
+  } | null>(null);
 
   // Đổi project → đóng panel lịch sử của card cũ; dữ liệu cũ không còn đúng.
   useEffect(() => {
@@ -1230,9 +1374,35 @@ export function PipelinesView() {
       pushToast({ message: 'Cấu hình nguồn tài liệu trước khi chạy' });
       return;
     }
+    const payload = buildRunAllPayloadFromConfig(cfg);
+    // Lần chạy này sẽ xoá kết quả có sẵn của bước nào (mất kết quả), VÀ/HOẶC
+    // sẽ có bước sắp chạy đọc đầu vào từ một bước cũ ngoài lượt (đầu vào cũ —
+    // xem `staleInputsForRunAll`). Cả hai rỗng → chạy thẳng (không hỏi gì khi
+    // không có gì để cảnh báo — must_not). Có ít nhất một loại → hỏi trước,
+    // nêu đích danh, rồi mới POST run-all.
+    const stageNames = stagesLosingOutputForRunAll(pipelines, payload);
+    const byId = new Map(pipelines.map((p) => [p.id, p]));
+    const staleInputs = staleInputsForRunAll(pipelines, willRunStageIdsForRunAll(pipelines, payload)).map(
+      (row) => ({
+        stageName: byId.get(row.stage)?.name ?? row.stage,
+        sourceName: byId.get(row.source)?.name ?? row.source,
+        updatedAt: row.updatedAt,
+      }),
+    );
+    if (stageNames.length > 0 || staleInputs.length > 0) {
+      setRunAllClearConfirmFor({ payload, stageNames, staleInputs });
+      return;
+    }
+    await runAllNow(payload);
+  };
+
+  // Phần CHẠY thật của "Chạy pipeline" — tách khỏi runAllWithSavedConfig ở
+  // trên để cả đường chạy thẳng (không có gì để mất) lẫn đường xác nhận qua
+  // RunAllClearConfirmModal cùng gọi đúng một chỗ.
+  const runAllNow = async (payload: RunAllPayload) => {
     setRunAllBusy(true);
     try {
-      await startRunAll(buildRunAllPayloadFromConfig(cfg));
+      await startRunAll(payload);
     } catch (err) {
       pushToast({
         message: 'Không khởi động được full workflow',
@@ -1382,29 +1552,67 @@ export function PipelinesView() {
   // is server-derived data, and a daemon reporting mode-adjusted lists once
   // fused cj/ux-research/ux into a phantom three-badge "UI-Spec" card. Ids
   // cannot drift per mode, so this grouping is stable no matter what the
-  // daemon reports.
-  const UI_TERMINAL_IDS = new Set(['ui-html', 'ui-react', 'ui-react-ds']);
+  // daemon reports. Same list the run-config modal groups its final step by
+  // (`UI_TERMINAL_STAGE_IDS`) — one declaration, so the stepper and the modal
+  // can never disagree about which stages are alternatives.
   const stepEntries: PipelineView[][] = [];
   for (const p of pipelines) {
     const last = stepEntries[stepEntries.length - 1];
-    const sibling = !!last && UI_TERMINAL_IDS.has(p.id) && UI_TERMINAL_IDS.has(last[0]!.id);
+    const sibling =
+      !!last && UI_TERMINAL_STAGE_IDS.has(p.id) && UI_TERMINAL_STAGE_IDS.has(last[0]!.id);
     if (sibling) last!.push(p);
     else stepEntries.push([p]);
   }
   // A step is done when any of its options succeeded (either UI-Spec output
   // completes the step).
   const doneCount = stepEntries.filter((opts) => opts.some((p) => p.status === 'succeeded')).length;
-  // Bước ĐANG CHỜ NGƯỜI DÙNG: bước đầu tiên đã mở khoá mà chưa xong và chưa
-  // chạy. Cả stepper hiện là 7 thẻ trông giống hệt nhau, mỗi thẻ tới 5 nút cùng
-  // kiểu — không có gì nói "bấm cái này trước". -1 = không còn gì để làm (xong
-  // hết, hoặc mọi bước còn lại đều bị khoá bởi bước trước).
-  const nextStepIdx = stepEntries.findIndex(
-    (opts) =>
-      opts.some((p) => p.active) &&
-      !opts.some(
-        (p) => p.status === 'succeeded' || p.status === 'running' || p.status === 'queued',
-      ),
-  );
+  // Bước ĐANG CHỜ NGƯỜI DÙNG: bước đầu tiên THEO THỨ TỰ WORKFLOW mà chưa xong,
+  // chưa chạy, và không bị chế độ hiện tại bỏ qua (`skipped`). KHÔNG còn tính
+  // theo `active` — cổng phụ thuộc theo bước đã bỏ (spec
+  // g2-ui-suggestion-not-gate), nên `active` giờ chỉ còn nghĩa "chưa có tài
+  // liệu"; "bước tiếp theo" vẫn phải đúng ngay cả khi mọi thẻ đều mở khoá.
+  // -1 = không còn gì để làm (xong hết, hoặc mọi bước còn lại đều bị bỏ qua).
+  const nextStepIdx = stepEntries.findIndex((opts) => {
+    const done = opts.some(
+      (p) => p.status === 'succeeded' || p.status === 'running' || p.status === 'queued',
+    );
+    if (done) return false;
+    return !opts.every((p) => p.skipped === true);
+  });
+  // Bước 1 (tài liệu nạp) — điều kiện DUY NHẤT còn lại sau khi cổng phụ thuộc
+  // theo bước bị bỏ. Nhận diện bằng `dependsOn` rỗng, không phải vị trí trong
+  // mảng: cả ba workflow (docs-to-ui/docs-to-prd/docs-review) đặt nó ở đầu,
+  // nhưng không có gì bắt buộc thứ tự đó ngoài quy ước của daemon registry.
+  const ingestStage = pipelines.find((p) => p.dependsOn.length === 0);
+  /**
+   * Chú thích dưới một thẻ bước, GỢI Ý không phải MỆNH LỆNH.
+   *
+   * `!active` giờ chỉ còn một nghĩa (sau lô daemon bỏ cổng phụ thuộc theo
+   * bước): "chưa có tài liệu" — nên lý do khoá luôn trỏ về BƯỚC 1, không phải
+   * `effectiveDependsOn`/`dependsOn` (một bước trung gian như "Bản đồ hệ
+   * thống"), vì bước trung gian không còn là điều kiện thật. Khi `active`
+   * (đã có tài liệu, nút Chạy hiện/bấm được), phụ thuộc tĩnh CHƯA `succeeded`
+   * chỉ còn là một gợi ý thứ tự thường dùng — không chặn gì cả.
+   */
+  const dependencyNote = (
+    active: boolean,
+    anyDone: boolean,
+    deps: string[],
+  ): { kind: 'lock' | 'stale' | 'hint'; text: string } | null => {
+    if (!active) {
+      if (!ingestStage) return null;
+      return anyDone
+        ? { kind: 'stale', text: t('pipelines.rail.staleNeedsDocs', { stage: ingestStage.name }) }
+        : { kind: 'lock', text: t('pipelines.rail.needsDocs', { stage: ingestStage.name }) };
+    }
+    const unmet = deps.filter((id) => {
+      const dep = pipelines.find((x) => x.id === id);
+      return dep !== undefined && dep.status !== 'succeeded';
+    });
+    if (unmet.length === 0) return null;
+    const names = unmet.map((id) => pipelines.find((x) => x.id === id)?.name ?? id).join(', ');
+    return { kind: 'hint', text: t('pipelines.rail.usuallyAfter', { stages: names }) };
+  };
   // ── Rail cấu hình (Task 2) ────────────────────────────────────────────────
   // Cấu hình đã lưu của dự án đang chọn — CÙNG nguồn RunAllModal đọc để điền
   // sẵn (savedRunAll của lần chạy full workflow gần nhất, hoặc config từ
@@ -1482,14 +1690,6 @@ export function PipelinesView() {
   // này không có lựa chọn đó". Cùng nguồn cờ với RunAllModal bên dưới.
   const railHasDesignSystem = pipelines.some((p) => p.acceptsDesignSystem);
   const railHasTargets = pipelines.some((p) => p.acceptsPlatform);
-  // Cùng điều kiện với prop hasTerminal của RunAllModal bên dưới.
-  const railHasTerminal = pipelines.some((p) => p.id === 'ui-html' || p.id === 'ui-react');
-  const railTerminalLabel = {
-    'ui-html': 'HTML prototype',
-    'ui-react': 'React app',
-    'ui-react-ds': 'React DS',
-    both: 'HTML + React',
-  }[railCfg?.terminal ?? 'ui-html'];
 
   // Nội dung dùng chung cho cả hai chỗ hiển thị (aside cạnh stepper ở màn
   // rộng, PlModal-drawer ở màn hẹp) — một nguồn duy nhất, không có editor mới:
@@ -1521,18 +1721,12 @@ export function PipelinesView() {
           </button>
         </div>
       ) : null}
-      {railHasTerminal ? (
-        <div className="pl-rail-row">
-          <span className="pl-rail-row__label">Kết quả UI-Spec</span>
-          <span className="pl-rail-row__value">{railTerminalLabel}</span>
-          <button type="button" className="pl-rail-row__change" onClick={() => openRunAll('terminal')}>
-            Đổi
-          </button>
-        </div>
-      ) : null}
       {/* KHÔNG gate theo railSupportsLean như dòng "Chế độ chạy" cũ: chọn bước
           là khái niệm chung của mọi workflow, còn "Tiết kiệm" mới là thứ chỉ
-          docs-to-ui có (giờ là một preset bên trong section này). */}
+          docs-to-ui có (giờ là một preset bên trong section này).
+          Dòng "Kết quả UI-Spec" cũ cũng đã gộp vào đây: đầu ra UI-Spec là BƯỚC
+          CUỐI của chuỗi, nên nó thuộc về danh sách bước — để riêng một dòng là
+          hỏi cùng một câu ở hai chỗ, và hai chỗ đó ghi vào hai field khác nhau. */}
       <div className="pl-rail-row">
         <span className="pl-rail-row__label">Các bước sẽ chạy</span>
         <span className="pl-rail-row__value" title={railStagesTitle}>
@@ -2039,22 +2233,33 @@ export function PipelinesView() {
                         Bước cuối — sinh UI-Spec từ UX Spec. Bấm Run để chọn định dạng: HTML
                         prototype hoặc React app (chạy một hoặc cả hai).
                       </p>
-                      {/* Một card không được vừa tick xanh vừa báo "khóa". Đã có
-                          option chạy xong nghĩa là bước này ĐÃ mở khóa; nếu giờ
-                          gate không còn thỏa thì đó là bước trên vừa bị reset —
-                          nói đúng chuyện đó thay vì gọi là khóa. Gate lấy theo
-                          effectiveDependsOn để không bao giờ nêu tên một bước
-                          mà chế độ hiện tại bỏ qua. */}
-                      {!active && (opts[0]!.effectiveDependsOn ?? opts[0]!.dependsOn).length > 0 ? (
-                        <p className={anyDone ? 'pl-step__stale' : 'pl-step__lock'}>
-                          <Icon name={anyDone ? 'info' : 'eye-off'} size={12} />
-                          {anyDone ? 'Bản hiện tại dựng từ kết quả cũ — chạy lại ' : 'Cần xong '}
-                          {(opts[0]!.effectiveDependsOn ?? opts[0]!.dependsOn)
-                            .map((dep) => pipelines.find((x) => x.id === dep)?.name ?? dep)
-                            .join(', ')}
-                          {anyDone ? ' để đồng bộ lại' : ' trước'}
-                        </p>
-                      ) : null}
+                      {/* Cổng phụ thuộc theo bước đã bỏ — `!active` giờ chỉ còn
+                          nghĩa "chưa có tài liệu" (dependencyNote trỏ về bước 1,
+                          không phải một bước trung gian). `active` mà phụ thuộc
+                          tĩnh chưa `succeeded` chỉ còn là GỢI Ý thứ tự thường
+                          dùng, không chặn nút Chạy bên dưới. */}
+                      {(() => {
+                        const note = dependencyNote(
+                          active,
+                          anyDone,
+                          opts[0]!.effectiveDependsOn ?? opts[0]!.dependsOn,
+                        );
+                        if (!note) return null;
+                        return (
+                          <p
+                            className={
+                              note.kind === 'stale'
+                                ? 'pl-step__stale'
+                                : note.kind === 'lock'
+                                  ? 'pl-step__lock'
+                                  : 'pl-step__hint'
+                            }
+                          >
+                            <Icon name={note.kind === 'lock' ? 'eye-off' : 'info'} size={12} />
+                            {note.text}
+                          </p>
+                        );
+                      })()}
                     </div>
 
                     <div className="pl-step__actions">
@@ -2089,9 +2294,10 @@ export function PipelinesView() {
 
             // Task 1: MỘT nút chính (theo trạng thái) + MỘT nút ⋯ gom phần còn
             // lại, thay cho 5 nút phẳng cùng kiểu (Quick result/Open chat/Run
-            // again/Lịch sử + toggle (i)) trước đây. Bước bị khóa (!p.active)
-            // không render nút nào — dòng "Cần xong … trước" đã đủ nói lý do,
-            // nút xám trước đây là điểm bấm chết.
+            // again/Lịch sử + toggle (i)) trước đây. Bước bị khóa (!p.active,
+            // giờ chỉ còn nghĩa "chưa có tài liệu") không render nút nào —
+            // dòng chú thích (dependencyNote) đã đủ nói lý do, nút xám trước
+            // đây là điểm bấm chết.
             const historyItem: OverflowMenuItem = {
               key: 'history',
               label: 'Lịch sử',
@@ -2356,23 +2562,35 @@ export function PipelinesView() {
                         Bỏ qua ở chế độ Tiết kiệm — không chặn bước nào; chạy bổ sung nếu cần bàn
                         giao.
                       </p>
-                    ) : !p.active && (p.effectiveDependsOn ?? p.dependsOn).length > 0 ? (
-                      <p className="pl-step__lock">
-                        <Icon name="eye-off" size={12} />
-                        Cần xong{' '}
-                        {(p.effectiveDependsOn ?? p.dependsOn)
-                          .map((dep) => pipelines.find((x) => x.id === dep)?.name ?? dep)
-                          .join(', ')}{' '}
-                        trước
-                      </p>
-                    ) : null}
+                    ) : (() => {
+                      const note = dependencyNote(
+                        p.active,
+                        p.status === 'succeeded',
+                        p.effectiveDependsOn ?? p.dependsOn,
+                      );
+                      if (!note) return null;
+                      return (
+                        <p
+                          className={
+                            note.kind === 'stale'
+                              ? 'pl-step__stale'
+                              : note.kind === 'lock'
+                                ? 'pl-step__lock'
+                                : 'pl-step__hint'
+                          }
+                        >
+                          <Icon name={note.kind === 'lock' ? 'eye-off' : 'info'} size={12} />
+                          {note.text}
+                        </p>
+                      );
+                    })()}
 
                   </div>
 
                   <div className="pl-step__actions">
-                    {/* Bước khóa (!p.active) không render gì ở đây — dòng "Cần
-                        xong … trước" bên trên đã đủ; nút xám trước đây là điểm
-                        bấm chết. */}
+                    {/* Bước khóa (!p.active — giờ chỉ còn nghĩa "chưa có tài
+                        liệu") không render gì ở đây — chú thích bên trên đã
+                        đủ; nút xám trước đây là điểm bấm chết. */}
                     {p.active ? (
                       <>
                         {primaryNode}
@@ -2579,7 +2797,7 @@ export function PipelinesView() {
             // "any multi-entry group" — this modal is specifically the
             // HTML-vs-React picker.
             const options = stepEntries.find(
-              (e) => e.length > 1 && e.every((o) => UI_TERMINAL_IDS.has(o.id)),
+              (e) => e.length > 1 && e.every((o) => UI_TERMINAL_STAGE_IDS.has(o.id)),
             );
             if (!options) return null;
             return (
@@ -2875,6 +3093,18 @@ export function PipelinesView() {
           />
         );
       })() : null}
+      {runAllClearConfirmFor ? (
+        <RunAllClearConfirmModal
+          stageNames={runAllClearConfirmFor.stageNames}
+          staleInputs={runAllClearConfirmFor.staleInputs}
+          onClose={() => setRunAllClearConfirmFor(null)}
+          onConfirm={async () => {
+            const { payload } = runAllClearConfirmFor;
+            setRunAllClearConfirmFor(null);
+            await runAllNow(payload);
+          }}
+        />
+      ) : null}
       {runInputFor ? (() => {
         const runInputProject = projects.find((pr) => pr.id === projectId);
         const runInputDefaults = runInputProject?.savedRunAll ?? runInputProject?.config;

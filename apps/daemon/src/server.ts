@@ -437,7 +437,7 @@ import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { registerPipelineRoutes } from './pipeline-routes.js';
-import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isExportArtifact, isHistoryArtifact, isSyncExcluded, isTargetScopedWfDir, mergePipelineState, pickRunTarget, relClearedByRegen, selectRunStages, stageForOutput, stagesForOutput, stageRegenSet, upstreamStages, workflowDirForPipeline } from './pipelines.js';
+import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isExportArtifact, isHistoryArtifact, isSyncExcluded, isTargetScopedWfDir, mergePipelineState, pickRunTarget, relClearedByRegen, relClearedByRunAllLaunch, selectRunStages, stageForOutput, stagesForOutput, stageRegenSet, upstreamStages, wfDirForStage, workflowDirForPipeline } from './pipelines.js';
 import { generateProjectExports } from './pipeline-exports.js';
 import {
   historyKeepCount,
@@ -465,7 +465,6 @@ import {
 import { buildReactDemo } from './react-demo.js';
 import { iconNameMapFromIrDir, rewriteIconMarkersInDir, runFigmaCapture } from './figma-capture.js';
 import { runFigmaAudit } from './figma-audit.js';
-import { checkWireframes, wireframeCheckMessage } from './wireframe-check.js';
 import { listMockupPages, mergePageReports } from './prd-review-fanout.js';
 import {
   listDocPages,
@@ -517,7 +516,7 @@ import {
   stageAppDocsPool,
 } from './app-pool.js';
 import { registerAppPoolRoutes } from './app-pool-routes.js';
-import { commitGeneratedComponentsMd, dsCriteriaDir, readDsCriteriaState } from './ds-criteria.js';
+import { commitGeneratedComponentsMd, commitGeneratedRulesMd, copyDsCriteriaIntoWorkflow, readDsCriteriaState } from './ds-criteria.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv, sha256hex, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
@@ -3626,6 +3625,68 @@ function resolveAcpStageTimeoutMs(): number | undefined {
   return Math.min(MAX_CHAT_RUN_INACTIVITY_TIMEOUT_MS, Math.max(0, Math.floor(raw)));
 }
 
+/**
+ * The kickoff directive appended for a stage that consumes a Design System's
+ * review criteria (`usesDesignSystemCriteria` in pipelines.ts, today only
+ * `ux`). Pure (no I/O) so it is unit-testable, same shape as
+ * `appContextDirective` (app-context.ts): the caller checks which of the two
+ * staged files actually exist on disk (a DS can have `rules.md` without
+ * `components.md` yet, or vice versa) and passes that in — this function
+ * never guesses from whether a DS was found. Returns '' when neither file is
+ * present, keeping the kickoff byte-identical for a project with no linked
+ * DS or a DS that hasn't generated criteria yet.
+ */
+export function dsCriteriaDirective(input: { hasRules: boolean; hasComponents: boolean }): string {
+  const { hasRules, hasComponents } = input;
+  if (!hasRules && !hasComponents) return '';
+  const parts: string[] = [];
+  if (hasRules) {
+    parts.push(
+      '"./criteria/rules.md" (the design system\'s UX rules — you MUST follow them when authoring screens and wireframes)',
+    );
+  }
+  if (hasComponents) {
+    parts.push(
+      '"./criteria/components.md" (the design system\'s VALID component catalog — spec only components that appear in it)',
+    );
+  }
+  return ` This app has a Design System with review criteria staged in the run cwd — read ${parts.join(' and ')}. `;
+}
+
+/**
+ * Which re-run clear scope `runWorkflowAll`'s `runStage` should pass to
+ * `runPipeline` for ONE stage of a full-workflow run. Pure so the 3-branch
+ * decision is unit-testable without spinning up the daemon (see
+ * `tests/run-all-reset-scope.test.ts`). Two outcomes, never `undefined`:
+ *
+ *   - `'downstream'`: only the very FIRST stage of an AUTOMATIC (not
+ *     hand-ticked) run that isn't skipping already-succeeded stages — a
+ *     fresh full run resets the whole project up front, catching stale
+ *     output of stages that won't even re-run this pass.
+ *   - `'stage'`: every other stage that is actually about to run — including
+ *     the first stage of a hand-ticked run, and every stage after the first
+ *     in an automatic run. A stage that runs without clearing its OWN prior
+ *     output leaves last run's files sitting in its `outputs`, and anything
+ *     downstream reads them as if THIS run had produced them — e.g. a
+ *     fan-out stage that merges per-module output
+ *     (`ux/<module>/ux-spec.json`) silently folds in a module the current
+ *     pass no longer emits, because the old module's folder was never
+ *     wiped.
+ *
+ * This function only ever answers for a stage `runStage` is about to
+ * actually run — a stage dropped from `stages` entirely (skipped) never
+ * reaches it.
+ */
+export function resetScopeForRunAllStage(params: {
+  manualStages: boolean;
+  isFirstStage: boolean;
+  skipSucceeded: boolean;
+}): 'stage' | 'downstream' {
+  const { manualStages, isFirstStage, skipSucceeded } = params;
+  if (!manualStages && isFirstStage && !skipSucceeded) return 'downstream';
+  return 'stage';
+}
+
 export async function startServer({
   port = 7456,
   host = process.env.OD_BIND_HOST || '127.0.0.1',
@@ -6253,6 +6314,7 @@ export async function startServer({
   // giả lập theo `delayMs` để dựng DRAFT, nó không spawn agent bao giờ. Việc ở
   // đây là đọc `react/docs/catalog.md` (hàng nghìn dòng, hàng trăm component)
   // rồi LỌC / GOM NHÓM / DIỄN GIẢI — phán đoán, không phải biến đổi cơ học.
+  // Luồng sinh rules là opt-in, chỉ chạy khi người dùng chủ động bấm.
   //
   // cwd của agent là chính thư mục DS, có được nhờ một project row ẩn mang
   // `metadata.baseDir` — `startChatRun` đọc đúng field đó để chọn cwd. Một row
@@ -6491,6 +6553,94 @@ export async function startServer({
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
+  });
+
+
+  const dsRulesJobs = new Map<string, DsCriteriaJob>();
+  const dsRulesJobByDs = new Map<string, string>();
+  const startDsRulesJob = (designSystemId: string, dsDir: string): DsCriteriaJob => {
+    const now = () => new Date().toISOString();
+    const job: DsCriteriaJob = {
+      id: randomUUID(), designSystemId, status: 'queued', message: 'Đã xếp hàng',
+      steps: [
+        { id: 'read-showcase', title: 'Đọc showcase của DS', status: 'pending' },
+        { id: 'generate', title: 'Agent sinh quy tắc', status: 'pending' },
+        { id: 'validate', title: 'Kiểm tra & ghi đè rules.md', status: 'pending' },
+      ], createdAt: now(), updatedAt: now(), notes: [],
+    };
+    dsRulesJobs.set(job.id, job); dsRulesJobByDs.set(designSystemId, job.id);
+    const step = (id: string) => job.steps.find((item) => item.id === id)!;
+    const touch = () => { job.updatedAt = now(); };
+    const note = (line: string) => { job.notes.push(`${new Date().toISOString().slice(11, 19)} ${line}`); touch(); };
+    void (async () => {
+      job.status = 'running'; touch();
+      try {
+        step('read-showcase').status = 'running'; touch();
+        const showcase = path.join(dsDir, 'react/showcase/index.html');
+        const previewDir = path.join(dsDir, 'preview');
+        const hasShowcase = await fs.promises.stat(showcase).then((item) => item.isFile()).catch(() => false);
+        const previews = await fs.promises.readdir(previewDir).catch(() => []);
+        const hasPreview = previews.some((name) => name.endsWith('.html'));
+        if (!hasShowcase && !hasPreview) throw new Error('DS này chưa có showcase/preview để rút quy tắc');
+        step('read-showcase').status = 'succeeded'; note(`Nguồn showcase: ${hasShowcase ? 'react/showcase/index.html' : 'preview/*.html'}`);
+
+        step('generate').status = 'running'; job.message = 'Agent đang đọc showcase…'; touch();
+        const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+        let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
+        if (!agentId) {
+          const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
+          agentId = agents.find((a) => a.available)?.id ?? null;
+        }
+        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) throw new Error('Chưa cấu hình agent nào khả dụng — chọn agent trong Cài đặt trước.');
+        const projectId = `ds-rules-${designSystemId.replace(/^user:/, '')}`;
+        const rowNow = Date.now();
+        if (!getProject(db, projectId)) insertProject(db, { id: projectId, name: `Quy tắc review · ${designSystemId}`, skillId: null, designSystemId: null, pendingPrompt: null, metadata: { kind: 'ds-rules', baseDir: dsDir, designSystemId }, createdAt: rowNow, updatedAt: rowNow });
+        const conversationId = `ds-rules-conv-${randomUUID()}`;
+        insertConversation(db, { id: conversationId, projectId, title: `Sinh quy tắc · ${new Date(rowNow).toLocaleString('vi-VN')}`, createdAt: rowNow, updatedAt: rowNow });
+        const assistantMessageId = `ds-rules-assistant-${randomUUID()}`;
+        const kickoff = `Áp skill "ds-rules-extract" cho design system "${designSystemId}". cwd của bạn LÀ thư mục DS. Đọc "react/showcase/index.html" nếu có, "preview/*.html", "react/STYLE-GUIDE.md", "react/docs/catalog.md", "DESIGN.md". KHÔNG đọc "react/showcase/showcase-data.js". Ghi đúng một file "criteria/rules.md.next", không ghi đè "criteria/rules.md", không tạo "_meta.json" hay file khác, không đụng "react/" hay "ir/".`;
+        const run = design.runs.create({ projectId, conversationId, assistantMessageId, clientRequestId: `ds-rules-${randomUUID()}`, agentId });
+        job.runId = run.id; job.conversationId = conversationId; job.projectId = projectId; note(`Agent "${agentId}" khởi động (run ${run.id.slice(0, 8)})`);
+        upsertMessage(db, conversationId, { id: `ds-rules-user-${run.id}`, role: 'user', content: kickoff });
+        upsertMessage(db, conversationId, { id: assistantMessageId, role: 'assistant', content: '', agentId, agentName: getAgentDef(agentId)?.name ?? agentId, runId: run.id, runStatus: 'queued', startedAt: Date.now() });
+        const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+        design.runs.start(run, () => startChatRun({ agentId, projectId, conversationId, assistantMessageId, clientRequestId: run.clientRequestId, skillId: 'ds-rules-extract', model: modelPrefs.model ?? null, reasoning: modelPrefs.reasoning ?? null, message: kickoff, systemPrompt: 'Bạn đang chạy một job không có người ngồi cạnh. Không hỏi lại, không chờ input — chọn mặc định hợp lý và hoàn thành.' }, run));
+        const final = await design.runs.wait(run);
+        db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+        if (final.status !== 'succeeded') throw new Error(`Agent kết thúc với trạng thái "${final.status}".`);
+        step('generate').status = 'succeeded'; note('Agent xong, đang kiểm tra kết quả');
+        step('validate').status = 'running'; touch();
+        const committed = await commitGeneratedRulesMd(dsDir);
+        if (!committed.ok) { step('validate').status = 'failed'; step('validate').message = committed.errors.join('; '); throw new Error(committed.errors.join('; ')); }
+        step('validate').status = 'succeeded'; job.status = 'succeeded'; job.message = `${committed.rules} quy tắc`; note(`Ghi criteria/rules.md — ${committed.rules} quy tắc`); touch();
+      } catch (error) {
+        const detail = String((error as Error)?.message ?? error); note(`LỖI: ${detail}`);
+        const active = job.steps.find((item) => item.status === 'running'); if (active) { active.status = 'failed'; active.message = active.message ?? detail; }
+        job.status = 'failed'; job.message = detail; touch(); console.warn(`[ds-rules] sinh quy tắc cho "${designSystemId}" thất bại:`, detail);
+      }
+    })();
+    return job;
+  };
+
+  app.post('/api/design-systems/:id/rules/generate', async (req, res) => {
+    try {
+      const id = req.params.id; const dsDir = await dsDirForId(id);
+      if (!dsDir) return res.status(404).json({ error: `design system not found: ${id}` });
+      const existingId = dsRulesJobByDs.get(id); const existing = existingId ? dsRulesJobs.get(existingId) : undefined;
+      if (existing && (existing.status === 'queued' || existing.status === 'running')) return res.status(202).json({ jobId: existing.id, job: existing });
+      const job = startDsRulesJob(id, dsDir); res.status(202).json({ jobId: job.id, job });
+    } catch (err) { res.status(500).json({ error: String(err) }); }
+  });
+
+  app.get('/api/design-systems/:id/rules', async (req, res) => {
+    try {
+      const id = req.params.id; const dsDir = await dsDirForId(id);
+      if (!dsDir) return res.status(404).json({ error: `design system not found: ${id}` });
+      const state = await readDsCriteriaState(dsDir); const jobId = dsRulesJobByDs.get(id);
+      const job = jobId ? (dsRulesJobs.get(jobId) ?? null) : null;
+      res.json({ hasRules: state.hasRules, rules: state.rules, job });
+    } catch (err) { res.status(500).json({ error: String(err) }); }
   });
 
   app.post('/api/design-systems/:id/revision-jobs', async (req, res) => {
@@ -8379,30 +8529,21 @@ export async function startServer({
   });
 
   // Persist a component assignment made in the wireframe preview: overwrite
-  // ONE wireframes/<id>.wire.json with the edited tree. Deliberately narrow —
-  // this is NOT a general raw-file writer; the path shape is pinned so the
-  // browser can only touch wireframe files inside the project sandbox.
+  // ONE self-contained wireframes/<id>.html file.
   app.put('/api/projects/:id/wireframe', async (req, res) => {
     try {
       const projectId = req.params.id;
       const project = getProject(db, projectId);
       if (!project) return res.status(404).json({ error: 'project not found' });
       const rel = typeof req.body?.path === 'string' ? req.body.path : '';
-      if (!/^(?:[A-Za-z0-9._-]+\/)*wireframes\/[A-Za-z0-9._-]+\.wire\.json$/.test(rel) || rel.includes('..')) {
-        return res.status(400).json({ error: 'path must be <…>/wireframes/<id>.wire.json' });
+      if (!/^(?:[A-Za-z0-9._-]+\/)*wireframes\/[A-Za-z0-9._-]+\.html$/.test(rel) || rel.includes('..')) {
+        return res.status(400).json({ error: 'path must be <…>/wireframes/<id>.html' });
       }
-      const tree = req.body?.tree;
-      if (!tree || typeof tree !== 'object') {
-        return res.status(400).json({ error: 'tree (the wireframe JSON) is required' });
+      const html = req.body?.html;
+      if (typeof html !== 'string') {
+        return res.status(400).json({ error: 'html (the wireframe document) is required' });
       }
-      await writeProjectFile(
-        PROJECTS_DIR,
-        projectId,
-        rel,
-        Buffer.from(`${JSON.stringify(tree, null, 2)}\n`, 'utf8'),
-        {},
-        project.metadata,
-      );
+      await writeProjectFile(PROJECTS_DIR, projectId, rel, Buffer.from(html, 'utf8'), {}, project.metadata);
       res.json({ ok: true, path: rel });
     } catch (err) {
       res.status(500).json({ error: String((err as Error)?.message ?? err) });
@@ -14300,7 +14441,7 @@ export async function startServer({
         await fs.promises.mkdir(path.dirname(idxAbs), { recursive: true });
         await fs.promises.writeFile(idxAbs, renderConfluenceIndex(pages), 'utf8');
         const criteriaDsId = criteriaDesignSystemForProject(projectId);
-        if (criteriaDsId) await copyDsCriteriaIntoWorkflow(criteriaDsId, cwd);
+        if (criteriaDsId) await copyDsCriteriaIntoWorkflow(criteriaDsId, cwd, dsDirForId);
         console.log(
           `[pipelines] deterministic docs run for ${projectId}: fetched ${pages.length} Confluence page(s), no agent`,
         );
@@ -14325,49 +14466,9 @@ export async function startServer({
     return { projectId, completion };
   };
 
-  /** Chép bộ tiêu chí review của một Design System vào `<wf>/criteria/`.
-   *
-   *  DS ở đây KHÔNG sinh UI — nó chỉ là NGUỒN FILE (cờ `usesDesignSystemCriteria`
-   *  trong pipelines.ts, cố ý tách khỏi `acceptsDesignSystem`). Chép ở bước nạp
-   *  tài liệu vì đó là bước duy nhất chạy TRƯỚC cả `dr-comp` lẫn `dr-review` —
-   *  hai bên tiêu thụ `criteria/components.md` và `criteria/rules.md`.
-   *
-   *  Ghi đè có chủ ý: đã chọn DS thì DS là nguồn sự thật. Không chọn DS thì hàm
-   *  này không được gọi, nên file người dùng tự upload (⋯ → Tải file lên) sống
-   *  qua mọi lần chạy lại — `criteria/` không phải output của stage nào.
-   *
-   *  KHÔNG BAO GIỜ THROW. DS chưa có `components.md` là chuyện bình thường (job
-   *  sinh có thể đang chạy hoặc đã hỏng), và bước nạp tài liệu không có lý do gì
-   *  phải fail vì thiếu một input TUỲ CHỌN: skill của cả `dr-comp` lẫn
-   *  `dr-review` đều có nhánh "thiếu danh mục → mọi verdict là ok". */
-  const copyDsCriteriaIntoWorkflow = async (designSystemId: string, cwd: string): Promise<void> => {
-    try {
-      const dsDir = await dsDirForId(designSystemId);
-      const srcDir = dsDir ? dsCriteriaDir(dsDir) : null;
-      if (!srcDir || !(await fs.promises.stat(srcDir).then((s) => s.isDirectory()).catch(() => false))) {
-        console.warn(
-          `[dr-criteria] DS "${designSystemId}" chưa có thư mục criteria/ — bỏ qua, workflow chạy với bộ tiêu chí mặc định của skill`,
-        );
-        return;
-      }
-      const dstDir = path.join(cwd, 'criteria');
-      await fs.promises.mkdir(dstDir, { recursive: true });
-      const copied: string[] = [];
-      for (const name of ['components.md', 'rules.md']) {
-        const src = path.join(srcDir, name);
-        if (!(await fs.promises.stat(src).then((s) => s.isFile()).catch(() => false))) continue;
-        await fs.promises.copyFile(src, path.join(dstDir, name));
-        copied.push(name);
-      }
-      console.log(
-        copied.length > 0
-          ? `[dr-criteria] chép từ DS "${designSystemId}": ${copied.join(', ')} → criteria/`
-          : `[dr-criteria] DS "${designSystemId}" có criteria/ nhưng không có components.md/rules.md nào — không chép gì`,
-      );
-    } catch (error) {
-      console.warn('[dr-criteria] chép bộ tiêu chí từ DS thất bại (bỏ qua):', error);
-    }
-  };
+  // copyDsCriteriaIntoWorkflow sống ở ds-criteria.ts (cùng nhà với
+  // dsCriteriaDir/readDsCriteriaState/writeDsRulesFile/commitGeneratedComponentsMd)
+  // — import ở đầu file. server.ts chỉ còn truyền `dsDirForId` làm resolver.
 
   /** DS làm nguồn bộ tiêu chí review cho feature này — thuộc tính của APP sở hữu
    * nó, không phải của feature. */
@@ -14457,7 +14558,7 @@ export async function startServer({
           console.warn('[app-pool] stage docs-app at step 1 failed (continuing):', error);
         });
         const criteriaDsId = criteriaDesignSystemForProject(projectId);
-        if (criteriaDsId) await copyDsCriteriaIntoWorkflow(criteriaDsId, cwd);
+        if (criteriaDsId) await copyDsCriteriaIntoWorkflow(criteriaDsId, cwd, dsDirForId);
 
         console.log(
           `[app-pool] docs ingest for ${projectId}: copied ${selected.length} page(s) into docs-feature/ from App "${appId}" pool, no fetch, no agent`,
@@ -16032,6 +16133,28 @@ export async function startServer({
           }
         }
 
+        // Design System review criteria (ux-spec fan-out only): the fan-out's
+        // cwd IS the run cwd every section run shares (unlike the single-target
+        // docs copy below, staging happens once here, not per section). Same
+        // best-effort contract as the single-agent path in runPipeline — no
+        // linked App / DS / criteria yet all keep this ''.
+        let dsCriteriaKickoffDirective = '';
+        if (kind === 'ux-spec' && def.usesDesignSystemCriteria) {
+          try {
+            const criteriaDsId = criteriaDesignSystemForProject(projectId);
+            if (criteriaDsId) {
+              await copyDsCriteriaIntoWorkflow(criteriaDsId, cwd, dsDirForId);
+              const [hasRules, hasComponents] = await Promise.all([
+                fs.promises.stat(path.join(cwd, 'criteria', 'rules.md')).then((s) => s.isFile()).catch(() => false),
+                fs.promises.stat(path.join(cwd, 'criteria', 'components.md')).then((s) => s.isFile()).catch(() => false),
+              ]);
+              dsCriteriaKickoffDirective = dsCriteriaDirective({ hasRules, hasComponents });
+            }
+          } catch (error) {
+            console.warn('[ds-criteria] staging into fan-out cwd failed (continuing without it):', error);
+          }
+        }
+
         // Pre-create one conversation per module (all "queued"), plus a trailing
         // "Hợp nhất" (reconcile) task, so the Status modal shows X/N done + each
         // module's live state.
@@ -16077,9 +16200,9 @@ export async function startServer({
                   ` This is a FILE-ONLY stage: do not push anything.`
                 : `Run the ux-spec skill for ONE MODULE of feature "${projectId}". ` +
                   `Author UX Spec screens ONLY for this module — its pages: ${pagesList} (module: ${sec.title}), guided by the module's customer journey + UX research in the cwd. ` +
-                  `EVERY screen id MUST start with "${sec.key}__" so ids (and the wireframes/<id>.wire.json files they name) never collide with other modules. ` +
-                  `Write the module's screens to "${outRel(sec.key)}" AND each screen's "wireframes/<screen-id>.wire.json" + each flow's "flows/<flow-id>.flow.json" into the SHARED wireframes/ and flows/ dirs. ` +
-                  `Do NOT write the root -ux-spec.json and do NOT author other modules' screens — the daemon merges every module's screens.${platformDirective}` +
+                  `EVERY screen id MUST start with "${sec.key}__" so ids (and the wireframes/<id>.html files they name) never collide with other modules. ` +
+                  `Write the module's screens to "${outRel(sec.key)}" AND each screen's "wireframes/<screen-id>.html" + each flow's "flows/<flow-id>.flow.json" into the SHARED wireframes/ and flows/ dirs. ` +
+                  `Do NOT write the root -ux-spec.json and do NOT author other modules' screens — the daemon merges every module's screens.${platformDirective}${dsCriteriaKickoffDirective}` +
                   ` This is a FILE-ONLY stage: do not push anything.`;
           const run = design.runs.create({
             projectId,
@@ -16200,7 +16323,7 @@ export async function startServer({
                   `Keep EVERY journey and its module tag — do not drop or rewrite journey content, only dedup personas and fix ids. Overwrite the SAME file. Do not push anything.`
                 : kind === 'ux-research'
                   ? `Reconcile the merged UX research file "${canonicalRel}" in the cwd. It was assembled by concatenating per-module slices, so it may have DUPLICATE CRITERIA that state the same requirement under different wording. Merge each duplicate set into ONE criterion (keep the strongest wording, union the sources' used_for), keep criteria ids sequential (UXR-01, UXR-02, …), and recompute the summary counts (criteria/must/should/nice). Keep every distinct criterion — only dedup true duplicates. Overwrite the SAME file. Do not push anything.`
-                  : `Reconcile the merged UX Spec file "${canonicalRel}" in the cwd (screens from per-module slices; ids are module-prefixed so they don't collide). Seams to heal: (1) DUPLICATE PERSONAS — merge same-role personas into one. (2) DANGLING NAV — every component's \`navigates_to\` must point at a screen id that EXISTS in \`screens\`; fix or drop targets that don't resolve (a CTA that crosses modules should point at the real target screen's id). (3) DUPLICATE SCREENS — if two modules authored the same screen, keep one. Do NOT rename screen ids (their wireframes/<id>.wire.json files depend on them) and do NOT drop distinct screens. Overwrite the SAME file. Do not push anything.`;
+                  : `Reconcile the merged UX Spec file "${canonicalRel}" in the cwd (screens from per-module slices; ids are module-prefixed so they don't collide). Seams to heal: (1) DUPLICATE PERSONAS — merge same-role personas into one. (2) DANGLING NAV — every component's \`navigates_to\` must point at a screen id that EXISTS in \`screens\`; fix or drop targets that don't resolve (a CTA that crosses modules should point at the real target screen's id). (3) DUPLICATE SCREENS — if two modules authored the same screen, keep one. Do NOT rename screen ids (their wireframes/<id>.html files depend on them) and do NOT drop distinct screens. Overwrite the SAME file. Do not push anything.`;
             const rc = design.runs.create({
               projectId,
               conversationId,
@@ -16353,7 +16476,7 @@ export async function startServer({
           const kickoff =
             kind === 'ux-review'
               ? `Run the heuristic-eval review for ONE screen of feature "${projectId}". ` +
-                `Review ONLY the screen id "${s.id}" (${s.name}) — its wireframe "wireframes/${s.id}.wire.json" and its spec in the UX Spec, against the usability heuristics + UX Research criteria in the cwd. ` +
+                `Review ONLY the screen id "${s.id}" (${s.name}) — its wireframe "wireframes/${s.id}.html" and its spec in the UX Spec, against the usability heuristics + UX Research criteria in the cwd. ` +
                 `Write your result to "heuristic-review/${s.slug}/report.json" (the per-screen report schema, screens[] holding just this one screen, screen id VERBATIM). ` +
                 `Do NOT review any other screen, and do NOT write heuristic-review/report.json or summary.md — the pipeline merges those. FILE-ONLY: no push.`
               : `Run the html-interactive-prototype render for ONE screen of feature "${projectId}". ` +
@@ -16599,6 +16722,49 @@ export async function startServer({
     }
   };
 
+  // CHẨN ĐOÁN stage kết thúc KHÔNG 'succeeded': best-effort, chỉ đọc đĩa — một
+  // lỗi ở đây không được phép làm sai lệch kết quả của chính lượt chạy đang
+  // được chẩn đoán (mọi lỗi nội bộ tự nuốt, không throw). Với mỗi output
+  // pattern khai báo ở PipelineDef.outputs (xem outputMatches trong
+  // pipelines.ts để biết cú pháp pattern), báo output đó có mặt trong cwd của
+  // lượt chạy hay không, để log tự trả lời "stage có sinh ra file mong đợi
+  // không" thay vì phải đoán.
+  const describeStageOutputs = async (
+    cwd: string | null,
+    wfDir: string | null,
+    outputs: readonly string[] | undefined,
+  ): Promise<string> => {
+    if (!cwd) return '(cwd unavailable)';
+    const specs = outputs ?? [];
+    if (specs.length === 0) return '(none declared)';
+    const runCwd = wfDir ? path.join(cwd, wfDir) : cwd;
+    const parts: string[] = [];
+    for (const spec of specs) {
+      try {
+        if (spec.startsWith('*') || spec.startsWith('-')) {
+          // Suffix pattern — shallow scan of the run cwd is enough for a
+          // diagnostic (not a gate, so no recursive walk).
+          const suffix = spec.startsWith('*') ? spec.slice(1) : spec;
+          const entries = await fs.promises.readdir(runCwd).catch(() => [] as string[]);
+          parts.push(`${spec}=${entries.some((e) => e.endsWith(suffix)) ? 'found' : 'missing'}`);
+          continue;
+        }
+        const isDir = spec.endsWith('/');
+        const abs = path.join(runCwd, isDir ? spec.slice(0, -1) : spec);
+        if (isDir) {
+          const entries = await fs.promises.readdir(abs).catch(() => null);
+          parts.push(`${spec}=${entries && entries.length > 0 ? 'exists' : 'missing'}`);
+        } else {
+          const stat = await fs.promises.stat(abs).catch(() => null);
+          parts.push(`${spec}=${stat?.isFile() ? 'exists' : 'missing'}`);
+        }
+      } catch (error) {
+        parts.push(`${spec}=(check failed: ${String((error as Error)?.message ?? error)})`);
+      }
+    }
+    return parts.join(', ');
+  };
+
   const runPipeline = async (
     projectId: string,
     pipelineId: string,
@@ -16638,9 +16804,11 @@ export async function startServer({
     // <projectDir>/<workflowId>/ so the two workflows never share a cwd (no
     // cross-reads, no clobbering, no status bleed). null → run at the cwd root.
     // A multi-target build appends the target subfolder (<workflowId>/<target>/)
-    // so each target's stages get their own output subtree.
-    const baseWfDir = workflowDirForPipeline(pipelineId);
-    const wfDir = targetDir ? `${baseWfDir ?? ''}${baseWfDir ? '/' : ''}${targetDir}` : baseWfDir;
+    // so each target's stages get their own output subtree. wfDirForStage is
+    // the single place this is computed — run-all's clear-on-launch scope
+    // (runWorkflowAll) resolves the SAME pairs through it so the two can never
+    // drift on what "this stage's directory" means.
+    const { baseWfDir, wfDir } = wfDirForStage(pipelineId, targetDir);
 
     // Docs step run with UI targets picked (docs-to-ui): record targets.json
     // next to the shared docs so the post-docs stages know which products to
@@ -16846,7 +17014,7 @@ export async function startServer({
       reactDsDirective =
         ` The selected design system's react bundle IS STAGED at "./react-ds/src/ds/" (components/ui + components/icons + lib/runtime + styles/globals.css + docs/catalog.md — ${reactInfo.components} components, ${reactInfo.icons} icons) and its icon SVGs at "./react-ds/public/assets/". Compose screens from it per the active skill; never edit or regenerate anything under src/ds/ or public/.`;
       // Human-locked components (the ux-spec preview's "Gán component" UI
-      // writes them into the wireframes' `comp` prop): surface the list in the
+      // writes them into the wireframes' `data-comp` attribute): surface the list in the
       // kickoff so the agent treats them as a CONTRACT up front instead of
       // discovering them file by file — the verify gate hard-fails on any
       // locked component that isn't used.
@@ -16856,14 +17024,14 @@ export async function startServer({
         const wireDir = path.join(runCwd, 'wireframes');
         const locked = new Set<string>();
         for (const entry of await fs.promises.readdir(wireDir).catch(() => [] as string[])) {
-          if (!entry.endsWith('.wire.json')) continue;
+          if (!entry.endsWith('.html')) continue;
           const raw = await fs.promises.readFile(path.join(wireDir, entry), 'utf8').catch(() => null);
           if (!raw) continue;
-          for (const m of raw.matchAll(/"comp"\s*:\s*"([^"]+)"/g)) locked.add(m[1]!);
+          for (const m of raw.matchAll(/\bdata-comp\s*=\s*[\"']([^\"']+)[\"']/gi)) locked.add(m[1]!);
         }
         if (locked.size > 0) {
           const listed = [...locked].slice(0, 24).join(', ');
-          reactDsDirective += ` ${locked.size} component(s) are HUMAN-LOCKED in ../wireframes/*.wire.json via the \`comp\` prop (${listed}${locked.size > 24 ? ', …' : ''}) — every locked wireframe node MUST be built with exactly that ds component (the verify gate fails otherwise); read each wire file to see which node locks which component.`;
+          reactDsDirective += ` ${locked.size} component(s) are HUMAN-LOCKED in ../wireframes/*.html via the \`data-comp\` attribute (${listed}${locked.size > 24 ? ', …' : ''}) — every locked wireframe node MUST be built with exactly that ds component (the verify gate fails otherwise); read each wire file to see which node locks which component.`;
         }
       } catch {
         /* best-effort — no wireframes yet is fine */
@@ -17035,10 +17203,38 @@ export async function startServer({
         console.warn('[app-pool] staging docs-app failed (continuing without it):', error);
       }
     }
+    // Design System review criteria (stages with usesDesignSystemCriteria,
+    // today only `ux`): the DS attached to this feature's APP (not a
+    // per-run picker — see criteriaDesignSystemForProject) is the source of
+    // the same `criteria/rules.md` + `criteria/components.md` docs-review
+    // already reads at its own docs step. Staged into the RUN cwd (not the
+    // workflow root) because a multi-target run executes this stage inside
+    // <workflow>/<target>/ and the sandbox bind-mounts only that directory —
+    // a workflow-root copy would be invisible to the agent. Best-effort: no
+    // linked App, no DS, or a DS with no criteria/ yet all keep the kickoff
+    // byte-identical (dsCriteriaKickoffDirective stays '').
+    let dsCriteriaKickoffDirective = '';
+    if (def.usesDesignSystemCriteria) {
+      try {
+        const criteriaDsId = criteriaDesignSystemForProject(projectId);
+        if (criteriaDsId) {
+          const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+          const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+          await copyDsCriteriaIntoWorkflow(criteriaDsId, runCwd, dsDirForId);
+          const [hasRules, hasComponents] = await Promise.all([
+            fs.promises.stat(path.join(runCwd, 'criteria', 'rules.md')).then((s) => s.isFile()).catch(() => false),
+            fs.promises.stat(path.join(runCwd, 'criteria', 'components.md')).then((s) => s.isFile()).catch(() => false),
+          ]);
+          dsCriteriaKickoffDirective = dsCriteriaDirective({ hasRules, hasComponents });
+        }
+      } catch (error) {
+        console.warn('[ds-criteria] staging into run cwd failed (continuing without it):', error);
+      }
+    }
     // UI terminals (ui-html / ui-react / ui-react-ds) get the target-viewport
     // directive on multi-target runs (responsive website vs fixed-viewport app).
     const uiDirective = def.id.startsWith('ui-') ? await uiTargetDirective(wfDir) : '';
-    const kickoff = `Run the "${def.name}" pipeline for ${featureScope}. ${skillDirective}${sourceDirective}${platformDirective}${audienceDirective}${uiDirective}${rerunDirective}${kbDirective}${appCtxDirective}${appDocsDirective}${reactDsDirective}${graphDirective}`;
+    const kickoff = `Run the "${def.name}" pipeline for ${featureScope}. ${skillDirective}${sourceDirective}${platformDirective}${audienceDirective}${uiDirective}${rerunDirective}${kbDirective}${appCtxDirective}${appDocsDirective}${dsCriteriaKickoffDirective}${reactDsDirective}${graphDirective}`;
 
     // BAS document pre-fetch (BE owns the BAS KG HTTP) — done BEFORE any
     // conversation/run state is created so a fetch failure aborts cleanly with no
@@ -17194,42 +17390,52 @@ export async function startServer({
           : finalStatus.status === 'canceled'
             ? 'idle'
             : 'failed';
-        // Wireframe gate (ux only): the skill asks the agent to validate its
-        // wireframes; this is what makes sure it happened. Errors mean unknown
-        // component slugs / mistyped props, which render as `?slug` badges and
-        // give ui-react a broken layout contract — so the stage does NOT go
-        // green on them. Never throws; a missing validator just skips.
-        let wireframeGate: 'ok' | 'errors' = 'ok';
-        let wireframeErrorCount = 0;
-        if (next === 'succeeded' && pipelineId === 'ux' && pipelineCwd) {
-          const check = await checkWireframes(pipelineCwd, SKILLS_DIR).catch(() => null);
-          if (check && (check.errors > 0 || check.warnings > 0)) {
-            if (check.errors > 0) {
-              wireframeGate = 'errors';
-              wireframeErrorCount = check.errors;
-            }
-            upsertMessage(db, conversationId, {
-              id: randomUUID(),
-              role: 'assistant',
-              content: wireframeCheckMessage(check),
-              runStatus: check.errors > 0 ? 'failed' : 'succeeded',
-              createdAt: Date.now(),
-            });
+        // CHẨN ĐOÁN "stage chết trong run-all nhưng chạy lẻ thành công, không
+        // có bảng `runs` để khám nghiệm lượt đã hỏng" (xem incident docs-map):
+        // đây là chỗ DUY NHẤT vừa biết trạng thái cuối vừa còn cầm `run` object
+        // — chạy cho CẢ run-all lẫn kích hoạt lẻ vì cả hai đi qua đúng một
+        // `runPipeline`. Chỉ log khi KHÔNG 'succeeded'; đường thành công không
+        // được thêm log. Toàn bộ khối tự nuốt lỗi — chẩn đoán không được phép
+        // làm sai lệch (hay làm hỏng) kết quả thật của lượt chạy.
+        try {
+          const finalClassification = next;
+          if (finalClassification !== 'succeeded') {
+            const assistantRow = db
+              .prepare(`SELECT content FROM messages WHERE id = ?`)
+              .get(assistantMessageId) as { content?: string } | undefined;
+            const assistantContentLength =
+              typeof assistantRow?.content === 'string' ? assistantRow.content.length : 0;
+            const why =
+              finalStatus.status === 'canceled'
+                  ? `agent run status was 'canceled' — mapped to 'idle'`
+                  : `agent run status was '${finalStatus.status}' — mapped to 'failed'`;
+            const outputsSummary = await describeStageOutputs(pipelineCwd, wfDir, def.outputs).catch(
+              (error) => `(check failed: ${String(error?.message ?? error)})`,
+            );
+            console.warn(
+              [
+                `[pipelines] STAGE NOT SUCCEEDED — project=${projectId} stage=${pipelineId} workflow=${workflowDirForPipeline(pipelineId) ?? '(none)'} run=${run.id}`,
+                `  final=${finalClassification} — ${why}`,
+                `  agent run: exitCode=${finalStatus.exitCode ?? '(null)'} signal=${finalStatus.signal ?? '(null)'} errorCode=${finalStatus.errorCode ?? '(null)'} error=${finalStatus.error ?? '(none)'}`,
+                `  assistant message ${assistantMessageId}: content length=${assistantContentLength}${assistantContentLength === 0 ? ' (EMPTY)' : ''}`,
+                `  expected outputs: ${outputsSummary}`,
+              ].join('\n'),
+            );
           }
+        } catch (diagError) {
+          console.warn('[pipelines] stage-end diagnostic logging failed (continuing):', diagError);
         }
         // Upload to KGS is now MANUAL (the "Upload to KGS" button /
         // POST /api/pipelines/upload). The run only produces files locally and
         // updates the gate; the user uploads when ready.
         setProjectPipelineStatus(db, projectId, pipelineId, {
-          status: wireframeGate === 'errors' ? 'failed' : next,
+          status: next,
           // Agent-run failure: prefer the run's OWN error (design.runs' error
           // text — see extractErrorDetails in runs.ts, e.g. an agent CLI
           // crash or an MCP/tool failure), then the wireframe-gate-specific
           // reason, then the generic fallback — never leave a failed status
           // with nothing for "Xem lỗi" to show.
-          ...(wireframeGate === 'errors'
-            ? { error: `Wireframe có ${wireframeErrorCount} lỗi (component/props không hợp lệ) — xem hội thoại của bước để biết chi tiết.` }
-            : next === 'failed'
+          ...(next === 'failed'
               ? { error: finalStatus.error || 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' }
               : {}),
         });
@@ -17247,7 +17453,7 @@ export async function startServer({
         }
         // A failed wireframe gate also stops the run-all chain — ux-review and
         // the UI terminals would otherwise build on a broken layout contract.
-        return wireframeGate === 'errors' ? 'failed' : next;
+        return next;
       } catch (error) {
         setProjectPipelineStatus(db, projectId, pipelineId, {
           status: 'failed',
@@ -17386,6 +17592,122 @@ export async function startServer({
     };
     const docsStageIds = stages.filter(isShared);
     const postStageIds = stages.filter((id) => !isShared(id));
+
+    // CLEAR-ON-LAUNCH: the bug this closes — runWorkflowAll used to reset
+    // NOTHING at launch, only call runStage(id) in sequence, so a stage still
+    // waiting its turn kept showing the PREVIOUS run's "Xong · Nm ago" with its
+    // stale files sitting on disk (worse: a chain that broke mid-way left that
+    // lie up forever). User-decided fix: wipe it the instant Run is pressed.
+    // Awaited HERE (not inside the fire-and-forget chain below) so by the time
+    // this function returns to its HTTP caller, the clear + `queued` flip has
+    // already happened — no race between the response and the UI's first poll.
+    //
+    // SCOPE = ĐÚNG tập (stage × target) THIS launch will run, no more: reuse
+    // `relClearedByRunAllLaunch` per (stage, wfDir) pair, mirroring the exact
+    // two branches `runStage` uses below (docs stages: no target; post-docs
+    // stages: once per chosen target, or once un-scoped for a single build) —
+    // wfDir itself comes from `wfDirForStage`, the SAME function `runPipeline`
+    // resolves its own `wfDir` through, so this can never compute a different
+    // directory than the run that follows it. `baseWfDir` is the explicit
+    // workflow fence (relClearedByRunAllLaunch) that keeps this confined to
+    // `wf.id`'s own subtree — a parallel workflow tree in the same project
+    // (`docs-review/`, …) is never touched.
+    //
+    // Failure here must never fail run-all — log and continue, like every
+    // other clear step in this file.
+    try {
+      const clearProjectRoot = await ensureProject(PROJECTS_DIR, projectId);
+      const baseWfDir = workflowDirForPipeline(stages[0]!);
+      const clearPairs: Array<{ stageId: string; wfDir: string | null }> = docsStageIds.map((id) => ({
+        stageId: id,
+        wfDir: wfDirForStage(id, undefined).wfDir,
+      }));
+      if (targets.length > 0) {
+        const { UI_TARGETS: clearUiTargets } = await import('@open-design/contracts');
+        for (const t of targets) {
+          const dir = clearUiTargets[t].dir;
+          for (const id of postStageIds) {
+            clearPairs.push({ stageId: id, wfDir: wfDirForStage(id, dir).wfDir });
+          }
+        }
+      } else {
+        for (const id of postStageIds) {
+          clearPairs.push({ stageId: id, wfDir: wfDirForStage(id, undefined).wfDir });
+        }
+      }
+      if (clearPairs.length > 0) {
+        // Đường lùi trước khi phá hàng loạt — runPipeline vẫn tự chụp ảnh riêng
+        // cho lần dọn LẺ của chính nó bên dưới; đây là một ảnh chụp RIÊNG cho
+        // lần dọn HÀNG LOẠT này, trước khi bất cứ file nào bị xoá.
+        await commitHistory(clearProjectRoot, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
+        const clearSnap = await snapshotPipelineCwd(clearProjectRoot);
+        const allClearStageIds = new Set(clearPairs.map((p) => p.stageId));
+        const clearedStageIds = new Set<string>();
+        let clearedFileCount = 0;
+        // CHẨN ĐOÁN "chỉ 1/6 bước khớp file" (bug chưa có bằng chứng chắc
+        // chắn về nguyên nhân — xem spec-g3-queued-and-diagnostics.yaml): mỗi
+        // cặp (stageId, wfDir) tự báo số file nó khớp, để LẦN CHẠY SAU đọc
+        // log là thấy ngay bước nào khớp 0 file và đang dùng wfDir gì, thay vì
+        // phải dựng lại vòng lặp này bằng tay để đoán.
+        const pairMatchKey = (p: { stageId: string; wfDir: string | null }) => `${p.stageId}::${p.wfDir ?? '(none)'}`;
+        const pairMatchCounts = new Map<string, number>(clearPairs.map((p) => [pairMatchKey(p), 0]));
+        console.log(
+          `[pipelines] run-all clear-on-launch scan for ${projectId}/${wf.id}: snapshot=${clearSnap.size} file, baseWfDir=${baseWfDir ?? '(none)'}`,
+        );
+        for (const rel of clearSnap.keys()) {
+          // Check EVERY pair (no early break): a rel could in principle match
+          // more than one in-scope stage, and every match must land in
+          // `clearedStageIds` — breaking after the first would delete the file
+          // (correct) but silently skip marking a second owning stage `queued`
+          // (stale "Xong" left standing for it).
+          let matchedAny = false;
+          for (const pair of clearPairs) {
+            const { stageId, wfDir: pairWfDir } = pair;
+            if (relClearedByRunAllLaunch(rel, new Set([stageId]), pairWfDir, baseWfDir)) {
+              clearedStageIds.add(stageId);
+              const key = pairMatchKey(pair);
+              pairMatchCounts.set(key, (pairMatchCounts.get(key) ?? 0) + 1);
+              matchedAny = true;
+            }
+          }
+          if (matchedAny) {
+            await fs.promises.rm(path.join(clearProjectRoot, rel), { force: true }).catch(() => null);
+            clearedFileCount += 1;
+          }
+        }
+        for (const pair of clearPairs) {
+          console.log(
+            `[pipelines] run-all clear-on-launch pair for ${projectId}/${wf.id}: stage=${pair.stageId} wfDir=${pair.wfDir ?? '(none)'} khớp ${pairMatchCounts.get(pairMatchKey(pair)) ?? 0} file`,
+          );
+        }
+        // QUEUED cho MỌI bước sắp chạy có mặt trong `clearPairs` — không chỉ
+        // những bước THẬT SỰ có file bị xoá (`clearedStageIds`, dùng lại bên
+        // dưới CHỈ để log). Bước nào sắp chạy thì trạng thái đúng của nó LÀ
+        // "chờ chạy", bất kể trên đĩa có sẵn file để xoá hay không: một bước
+        // `succeeded` từ lượt trước (như `ux` trong bug report) mà 0 file
+        // khớp thì VẪN sắp bị chạy lại — giữ badge xanh "Xong" ở đó là nói dối
+        // sản phẩm.
+        //
+        // NGOẠI LỆ: một bước đang THẬT SỰ `running` không bị đè thành
+        // `queued`. `workflowRunsInFlight` chỉ khoá lại CHÍNH workflow này
+        // (projectId::wf.id) — không khoá từng stage riêng lẻ — nên về lý
+        // thuyết một stage vẫn có thể đang chạy do một lần kích hoạt lẻ khác
+        // (không qua run-all) đúng lúc run-all này khởi động. Stage đó không
+        // "chờ chạy", nó ĐANG chạy; đè `queued` lên sẽ nói dối theo hướng
+        // ngược lại.
+        const currentState = getProjectPipelineState(db, projectId);
+        for (const id of allClearStageIds) {
+          if (currentState[id]?.status === 'running') continue;
+          setProjectPipelineStatus(db, projectId, id, { status: 'queued' });
+        }
+        console.log(
+          `[pipelines] run-all clear-on-launch for ${projectId}/${wf.id}: xoá ${clearedFileCount} file thuộc ${clearedStageIds.size}/${allClearStageIds.size} bước sắp chạy`,
+        );
+      }
+    } catch (error) {
+      console.warn('[pipelines] run-all clear-on-launch failed (continuing):', error);
+    }
+
     workflowRunsInFlight.add(runLockKey);
     void (async () => {
       // One stage of the chain. `targetDir` scopes it into a target subfolder;
@@ -17411,9 +17733,16 @@ export async function startServer({
           // KHÔNG reset downstream khi người dùng tự chọn bước: họ đang chạy
           // một TẬP bước cụ thể, còn 'downstream' xoá luôn kết quả của mọi bước
           // phía sau — tức phá đúng những thứ họ không đụng tới và cũng không
-          // có bước nào trong lần chạy này dựng lại.
-          resetScope:
-            !manualStages && id === stages[0] && !opts.skipSucceeded ? 'downstream' : undefined,
+          // có bước nào trong lần chạy này dựng lại. Nhưng MỌI bước thực sự
+          // chạy vẫn phải dọn output của CHÍNH NÓ trước — bỏ trống ở đây từng
+          // là bug: bước chạy lại giữ nguyên file của lần trước trong
+          // `outputs` của nó, và các bước sau đọc chúng như thể lần này vừa
+          // sinh ra (xem `resetScopeForRunAllStage`).
+          resetScope: resetScopeForRunAllStage({
+            manualStages: !!manualStages,
+            isFirstStage: id === stages[0],
+            skipSucceeded: !!opts.skipSucceeded,
+          }),
           followLinks: def.inputPlaceholder ? opts.followLinks : undefined,
           includeDescendants: def.inputPlaceholder ? opts.includeDescendants : undefined,
           targetDir,

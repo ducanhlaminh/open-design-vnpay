@@ -40,6 +40,11 @@ export interface PipelineFormModalProps {
   busy?: boolean;
   onClose: () => void;
   footer?: ReactNode;
+  /** Dialog rộng hơn (620px) cho form có PICKER — panel tìm-kiếm + danh sách
+   *  trang không đủ chỗ trong 460px mặc định: ô tìm bị bóp còn một nửa và tên
+   *  trang nào cũng cụt thành "…". Hộp thoại chỉ hỏi một câu (xác nhận xóa,
+   *  đổi tên) giữ nguyên bề rộng cũ — rộng ra chỉ làm câu hỏi khó đọc hơn. */
+  wide?: boolean;
   children: ReactNode;
 }
 
@@ -52,6 +57,7 @@ export function PipelineFormModal({
   busy = false,
   onClose,
   footer,
+  wide = false,
   children,
 }: PipelineFormModalProps) {
   const titleId = useId();
@@ -113,7 +119,14 @@ export function PipelineFormModal({
         if (e.target === e.currentTarget && !busy) onClose();
       }}
     >
-      <div ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+      <div
+        ref={dialogRef}
+        className={wide ? `${styles.dialog} ${styles.dialogWide}` : styles.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
         <header className={styles.head}>
           <span id={titleId} className={styles.title}>
             {icon ? <Icon name={icon} size={16} /> : null}

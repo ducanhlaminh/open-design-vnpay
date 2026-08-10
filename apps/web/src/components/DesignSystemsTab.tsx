@@ -701,7 +701,21 @@ export function DesignSystemsTab({
                       <span>{status === 'published' ? 'Published' : 'Draft'}</span>
                       <i aria-hidden />
                     </button>
-                    {onOpenSystem ? (
+                    {/* DS Figma (có react bundle): nút này mở PREVIEW toàn màn
+                        hình 3 tab Showcase / Thành phần / Nguyên tắc. Với DS
+                        thường thì giữ hành vi cũ là mở màn chi tiết — nút
+                        "Edit" ngay bên trái đã lo đường vào màn Edit rồi. */}
+                    {system.hasReactBundle && onPreviewFullscreen ? (
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label={`Preview ${system.title}`}
+                        title="Preview toàn màn hình (Showcase / Thành phần / Nguyên tắc)"
+                        onClick={() => onPreviewFullscreen(system.id)}
+                      >
+                        <Icon name="external-link" />
+                      </button>
+                    ) : onOpenSystem ? (
                       <button
                         type="button"
                         className="icon-btn"

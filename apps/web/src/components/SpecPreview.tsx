@@ -31,8 +31,10 @@ import {
 } from 'lucide-react';
 import { fetchProjectFileText, fetchProjectFiles } from '../providers/registry';
 import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
-import { WireFrameView, wiretextEditUrl, DEVICES, WEB_DEVICES, type WireDoc, type DeviceKey } from './WireFrameView';
-import { WireCompAssign } from './WireCompAssign';
+import { WireBlocks } from './WireBlocks';
+import type { DeviceKey } from './WireBlocks';
+const WEB_DEVICES = ['desktop', 'tablet', 'mobile'] as const;
+const DEVICE_WIDTHS = { desktop: 1280, tablet: 834, mobile: 390 } as const;
 
 interface SpecComponent {
   id?: string;
@@ -1350,16 +1352,16 @@ function UxSpecView({
   screens,
   personas,
   wireframes,
+  wireframesLegacy,
   projectId,
-  wireframeDir,
 }: {
   screens: SpecScreen[];
   personas: SpecPersona[];
-  /** Wireframe bố cục tự do per screen id (wireframes/<id>.wire.json). */
-  wireframes?: Record<string, WireDoc> | null;
+  /** Wireframe bố cục tự do per screen id (wireframes/<id>.html). */
+  wireframes?: Record<string, string> | null;
+  /** Ids màn còn file .wire.json (định dạng cũ) — hiện thông báo thay vì màn trống. */
+  wireframesLegacy?: string[];
   projectId?: string;
-  /** Project-relative dir of the wire files — enables the component-assignment panel. */
-  wireframeDir?: string | null;
 }) {
   const [actor, setActor] = useState<string>('all');
   const actors = useMemo(() => {
@@ -1422,77 +1424,64 @@ function UxSpecView({
 
         <div style={{ ...S.sectionTitle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span>Wireframe — {comps.length} thành phần</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {screen.layout === 'web' ? (
-              <div
-                role="tablist"
-                style={{ display: 'inline-flex', gap: 2, padding: 2, borderRadius: 8, background: T.subtle, border: `1px solid ${T.border}` }}
-              >
-                {WEB_DEVICES.map((d) => {
-                  const active = device === d;
-                  return (
-                    <button
-                      key={d}
-                      type="button"
-                      role="tab"
-                      aria-selected={active}
-                      onClick={() => setDevice(d)}
-                      title={`${DEVICES[d].label} · ${DEVICES[d].w}px`}
-                      style={{
-                        border: 0,
-                        cursor: 'pointer',
-                        borderRadius: 6,
-                        padding: '3px 10px',
-                        fontSize: 11,
-                        fontWeight: active ? 700 : 500,
-                        background: active ? T.panel : 'transparent',
-                        color: active ? T.accent : T.textMuted,
-                        boxShadow: active ? '0 1px 2px rgba(0,0,0,0.06)' : undefined,
-                      }}
-                    >
-                      {DEVICES[d].label}
-                      <span style={{ marginLeft: 5, fontSize: 10, opacity: 0.7 }}>{DEVICES[d].w}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-            {wireframes?.[screen.id] ? (
-              <a
-                href={wiretextEditUrl(wireframes[screen.id]!)}
-                target="_blank"
-                rel="noreferrer"
-                title="Mở wireframe này trong editor wiretext.app để chỉnh tay (data nằm trong URL, không upload)"
-                style={{ fontSize: 10.5, fontWeight: 500, color: T.textMuted, border: `1px solid ${T.border}`, borderRadius: 6, padding: '2px 8px', textDecoration: 'none' }}
-              >
-                Mở trong wiretext ↗
-              </a>
-            ) : null}
-          </div>
+          {wireframes?.[screen.id] && screen.layout === 'web' ? (
+            <div
+              role="tablist"
+              style={{ display: 'inline-flex', gap: 2, padding: 2, borderRadius: 8, background: T.subtle, border: `1px solid ${T.border}` }}
+            >
+              {WEB_DEVICES.map((d) => {
+                const active = device === d;
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setDevice(d)}
+                    title={`${d} · ${DEVICE_WIDTHS[d]}px`}
+                    style={{
+                      border: 0,
+                      cursor: 'pointer',
+                      borderRadius: 6,
+                      padding: '3px 10px',
+                      fontSize: 11,
+                      fontWeight: active ? 700 : 500,
+                      background: active ? T.panel : 'transparent',
+                      color: active ? T.accent : T.textMuted,
+                      boxShadow: active ? '0 1px 2px rgba(0,0,0,0.06)' : undefined,
+                    }}
+                  >
+                    {d}
+                    <span style={{ marginLeft: 5, fontSize: 10, opacity: 0.7 }}>{DEVICE_WIDTHS[d]}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
         {wireframes?.[screen.id] ? (
-          <>
-            <WireFrameView
-              doc={wireframes[screen.id]!}
-              platform={screen.layout}
-              device={device}
-              base={wireframes[screen.id]!.overlayOf ? wireframes[wireframes[screen.id]!.overlayOf!] ?? undefined : undefined}
-            />
-            {projectId && wireframeDir ? (
-              <WireCompAssign
-                projectId={projectId}
-                wirePath={`${wireframeDir}${screen.id}.wire.json`}
-                doc={wireframes[screen.id]!}
-              />
-            ) : null}
-          </>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'center',
+              padding: 20,
+              border: `1px solid ${T.border}`,
+              borderRadius: T.radius,
+              background: T.subtle,
+              overflowX: 'auto',
+            }}
+          >
+            <WireBlocks html={wireframes[screen.id]!} platform={screen.layout} device={device} />
+          </div>
+        ) : wireframesLegacy?.includes(screen.id) ? (
+          <p style={{ border: `1px dashed ${T.border}`, borderRadius: 9, background: T.subtle, padding: '20px 14px', textAlign: 'center', fontSize: 12, color: T.textMuted, margin: 0 }}>
+            Wireframe định dạng cũ (.wire.json) — chạy lại stage UX Spec để sinh lại.
+          </p>
         ) : (
           <p style={{ border: `1px dashed ${T.border}`, borderRadius: 9, background: T.subtle, padding: '20px 14px', textAlign: 'center', fontSize: 12, color: T.textMuted, margin: 0 }}>
-            Màn này chưa có wireframe — chạy lại bước <strong>UX Spec</strong> để agent soạn bố cục
-            (<code>wireframes/{screen.id}.wire.json</code>).
+            Màn này chưa có wireframe — chạy lại bước <strong>UX Spec</strong> để agent soạn bố cục (<code>wireframes/{screen.id}.html</code>).
           </p>
         )}
-
         {/* Components table — text-mockup chi tiết */}
         <div style={S.sectionTitle}>Components ({comps.length})</div>
         <div style={{ border: `1px solid ${T.border}`, borderRadius: T.radius, overflow: 'hidden' }}>
@@ -1752,18 +1741,17 @@ export function specToMermaid(doc: SpecDoc): string {
 export function SpecPreview({
   doc,
   wireframes,
+  wireframesLegacy,
   projectId,
-  wireframeDir,
 }: {
   doc: SpecDoc;
-  /** Wireframe bố cục tự do per screen id (wireframes/<id>.wire.json, cạnh file spec). */
-  wireframes?: Record<string, WireDoc> | null;
+  /** Wireframe bố cục tự do per screen id (wireframes/<id>.html, cạnh file spec). */
+  wireframes?: Record<string, string> | null;
+  /** Ids màn còn file .wire.json (định dạng cũ) — hiện thông báo thay vì màn trống. */
+  wireframesLegacy?: string[];
   /** Project the spec belongs to — enables clicking a source quote to open the
    *  underlying doc, scroll to the passage, and highlight it. Omit to disable. */
   projectId?: string;
-  /** Project-relative dir the wire files live in (`<wf>/<target>/wireframes/`)
-   *  — enables the per-screen "Gán component" panel (WireCompAssign). */
-  wireframeDir?: string | null;
 }) {
   const screens = Array.isArray(doc.screens) ? doc.screens : [];
   const journeys = Array.isArray(doc.journeys) ? doc.journeys : [];
@@ -1789,8 +1777,8 @@ export function SpecPreview({
         screens={screens}
         personas={personas}
         wireframes={wireframes}
+        wireframesLegacy={wireframesLegacy}
         projectId={projectId}
-        wireframeDir={wireframeDir}
       />
     ) : (
       <CustomerJourneyView journeys={journeys} personas={personas} projectId={projectId} />

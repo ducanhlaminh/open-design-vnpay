@@ -53,17 +53,20 @@ test('dr-flow: skill docs-flow-extract, phụ thuộc dr-docs, output flows/ ở
   assert.deepEqual([...upstreamStages('dr-flow')].sort(), ['dr-docs']);
 });
 
-test('gating: dr-flow mở ngay khi dr-docs succeeded; dr-review là bước CHỐT cuối cần cả dr-flow', () => {
+test('gating: dr-flow mở ngay khi dr-docs succeeded; dr-review (docs-only gate) cũng mở ngay khi dr-docs succeeded — không còn phải đợi dr-comp/dr-flow', () => {
   assert.equal(computeActive({}, def('dr-flow')), false);
   assert.equal(computeActive({ 'dr-docs': { status: 'succeeded' } }, def('dr-flow')), true);
-  // Review đứng cuối: thiếu dr-flow thì chưa mở.
+  // dependsOn của registry KHÔNG đổi — dr-review vẫn CHỐT ở cuối cấu trúc
+  // (dr-docs, dr-comp, dr-flow); dòng này tả registry, không phải cổng active.
   assert.deepEqual(def('dr-review').dependsOn, ['dr-docs', 'dr-comp', 'dr-flow']);
+  // 2026-08 docs-only gate: dr-review chỉ còn chờ bước ingest của workflow này
+  // (dr-docs) — dr-comp/dr-flow có chạy hay chưa không còn gate gì cả.
   assert.equal(
     computeActive(
       { 'dr-docs': { status: 'succeeded' }, 'dr-comp': { status: 'succeeded' } },
       def('dr-review'),
     ),
-    false,
+    true,
   );
   assert.equal(
     computeActive(
@@ -75,6 +78,15 @@ test('gating: dr-flow mở ngay khi dr-docs succeeded; dr-review là bước CH�
       def('dr-review'),
     ),
     true,
+  );
+  // Chưa có dr-docs (bước ingest) → vẫn khoá, dù dr-comp/dr-flow (giả định)
+  // đã xong — docs-only gate chỉ đọc trạng thái của ingest, không đọc gì khác.
+  assert.equal(
+    computeActive(
+      { 'dr-comp': { status: 'succeeded' }, 'dr-flow': { status: 'succeeded' } },
+      def('dr-review'),
+    ),
+    false,
   );
 });
 

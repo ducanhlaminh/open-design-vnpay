@@ -2515,4 +2515,28 @@ export interface Dict {
   'diagnostics.exporting': string;
   'diagnostics.exportSuccess': string;
   'diagnostics.exportFailed': string;
+
+  // Pipelines — run-all pre-flight "this will clear old results" confirm
+  'pipelines.runAllClear.title': string;
+  'pipelines.runAllClear.body': string;
+  'pipelines.runAllClear.historyNote': string;
+  'pipelines.runAllClear.confirm': string;
+  // Pipelines — run-all pre-flight "stale input" section (same dialog, no
+  // output loss involved — see PipelineModals.tsx RunAllClearConfirmModal)
+  'pipelines.runAllClear.staleOnlyTitle': string;
+  'pipelines.runAllClear.confirmContinue': string;
+  'pipelines.runAllClear.staleSectionTitle': string;
+  'pipelines.runAllClear.staleLine': string;
+  'pipelines.runAllClear.staleNote': string;
+
+  // Pipelines — dependency gate is now a SUGGESTION, not a lock (spec
+  // g2-ui-suggestion-not-gate). Every stage is runnable once step 1 (docs
+  // ingest) has run; these strings replace the old "must finish X first"
+  // blocking copy with informational notes that never disable Save/Run.
+  'pipelines.runAllPicker.ingestRequired': string;
+  'pipelines.runAllPicker.softNote': string;
+  'pipelines.runAllPicker.hint': string;
+  'pipelines.rail.usuallyAfter': string;
+  'pipelines.rail.needsDocs': string;
+  'pipelines.rail.staleNeedsDocs': string;
 }

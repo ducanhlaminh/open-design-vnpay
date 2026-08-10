@@ -9,7 +9,7 @@ export interface SandboxStatusResponse {
   enabled: boolean;
   /** Agent runtime ids gated into the sandbox (default ['claude']). */
   runtimes: string[];
-  /** Skill ids gated into the sandbox (default ['ui-react']). */
+  /** Skill ids gated into the sandbox (default ['*'] — every run). */
   skills: string[];
   timeoutMinutes: number;
   /** Docker engine reachable. */

@@ -65,6 +65,43 @@ export interface ResolvedSandboxConfig {
 const DEFAULT_SANDBOX_SKILLS = ['*'];
 
 /**
+ * Skill gates that USED to be the default. Earlier builds shipped a narrower
+ * default (first `['ui-react']`, then the five docs→output pipeline steps) and
+ * older daemons persisted the resolved default straight into app-config.json,
+ * so a config carrying exactly one of these lists means "nobody ever chose
+ * this" — it is a leftover from before the gate became `'*'`.
+ *
+ * Left alone, such a leftover silently downgrades the WHOLE app to host mode:
+ * `/api/agents` and `/api/usage/claude` both key off `skills.includes('*')`, so
+ * the picker starts probing host binaries (every host CLI shows up instead of
+ * just "Claude · Docker") and the quota meter reports the host account instead
+ * of the od-claude-auth volume — while only the listed skills actually run in
+ * Docker. Treating these values as unset restores the current default. A gate
+ * that is genuinely narrow (any other list) is still honored; use
+ * OD_SANDBOX_SKILLS to pin one of these values on purpose.
+ */
+const LEGACY_DEFAULT_SKILL_GATES: readonly (readonly string[])[] = [
+  ['ui-react'],
+  [
+    'jira-ingest',
+    'customer-journey-spec',
+    'ux-spec',
+    'ui-react',
+    'html-interactive-prototype',
+  ],
+];
+
+/** Warn once per process — resolveSandboxConfig runs on nearly every request. */
+let warnedLegacySkillGate = false;
+
+function isLegacyDefaultSkillGate(skills: readonly string[]): boolean {
+  return LEGACY_DEFAULT_SKILL_GATES.some(
+    (legacy) =>
+      legacy.length === skills.length && legacy.every((id) => skills.includes(id)),
+  );
+}
+
+/**
  * Prefs → effective config. `OD_SANDBOX=1|0` overrides the persisted
  * `enabled` flag for quick dev toggling without editing app-config.json.
  * A `'*'` entry in `runtimes`/`skills` matches everything.
@@ -90,14 +127,25 @@ export function resolveSandboxConfig(
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  const persistedSkills = prefs?.skills?.length ? prefs.skills : null;
+  const staleSkills = persistedSkills !== null && isLegacyDefaultSkillGate(persistedSkills);
+  if (staleSkills && persistedSkills && !warnedLegacySkillGate) {
+    warnedLegacySkillGate = true;
+    console.warn(
+      `[sandbox] ignoring legacy skill gate [${persistedSkills.join(', ')}] from app-config.json — ` +
+        'it is an old default and would move CLI detection + the Claude quota meter back to the host. ' +
+        `Using [${DEFAULT_SANDBOX_SKILLS.join(', ')}]; set OD_SANDBOX_SKILLS to pin a narrow gate.`,
+    );
+  }
   return {
     enabled,
     runtimes: prefs?.runtimes?.length ? prefs.runtimes : ['claude'],
-    skills: prefs?.skills?.length
-      ? prefs.skills
-      : envSkills.length
-        ? envSkills
-        : [...DEFAULT_SANDBOX_SKILLS],
+    skills:
+      persistedSkills && !staleSkills
+        ? persistedSkills
+        : envSkills.length
+          ? envSkills
+          : [...DEFAULT_SANDBOX_SKILLS],
     timeoutMinutes: prefs?.timeoutMinutes ?? 30,
     cpus: prefs?.cpus ?? 2,
     memoryGb: prefs?.memoryGb ?? 4,

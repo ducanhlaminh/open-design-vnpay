@@ -36,6 +36,24 @@ describe('resolveSandboxConfig', () => {
     expect(resolved.skills).toContain('ui-html');
     expect(resolved.cpus).toBe(1);
   });
+
+  it('drops a persisted skill gate that is only an OLD default', () => {
+    // Configs written before the gate became '*' still carry the then-current
+    // default. Honoring it would flip /api/agents + the quota meter back to the
+    // host without anyone asking, so those exact lists resolve to the default.
+    for (const legacy of [
+      ['ui-react'],
+      ['jira-ingest', 'customer-journey-spec', 'ux-spec', 'ui-react', 'html-interactive-prototype'],
+    ]) {
+      expect(resolveSandboxConfig({ enabled: true, skills: legacy }, {}).skills).toEqual(['*']);
+    }
+    // OD_SANDBOX_SKILLS is the way to pin one of those gates on purpose.
+    expect(
+      resolveSandboxConfig({ enabled: true, skills: ['ui-react'] }, { OD_SANDBOX_SKILLS: 'ui-react' }).skills,
+    ).toEqual(['ui-react']);
+    // Any other narrow list is a real choice and survives untouched.
+    expect(resolveSandboxConfig({ enabled: true, skills: ['ui-html'] }, {}).skills).toEqual(['ui-html']);
+  });
 });
 
 describe('shouldSandboxRun', () => {
@@ -56,8 +74,9 @@ describe('shouldSandboxRun', () => {
     expect(shouldSandboxRun({ agentId: 'codex', skillIds: ['ui-react'], cfg })).toBe(false);
     expect(shouldSandboxRun({ agentId: null, skillIds: ['ui-react'], cfg })).toBe(false);
     // User-persisted narrow list restores skill-scoped sandboxing: chat and
-    // unlisted skills go back to host spawn.
-    const narrowed = resolveSandboxConfig({ enabled: true, skills: ['ui-react'] }, {});
+    // unlisted skills go back to host spawn. (`['ui-react']` alone is an OLD
+    // default, so it resolves back to '*' — use a list nobody ever shipped.)
+    const narrowed = resolveSandboxConfig({ enabled: true, skills: ['ui-react', 'ui-html'] }, {});
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['ui-react'], cfg: narrowed })).toBe(true);
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['summary-feedback'], cfg: narrowed })).toBe(false);
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: [], cfg: narrowed })).toBe(false);

@@ -674,6 +674,45 @@ export async function generateDesignSystemCriteria(id: string): Promise<{ jobId:
   }
 }
 
+
+export async function getDesignSystemRules(id: string): Promise<
+  | {
+      hasRules: boolean;
+      rules: number;
+      job: {
+        id: string;
+        status: 'queued' | 'running' | 'succeeded' | 'failed';
+        message?: string;
+        steps: Array<{ id: string; title: string; status: 'pending' | 'running' | 'succeeded' | 'failed'; message?: string }>;
+        createdAt: string;
+        updatedAt: string;
+        runId?: string;
+        conversationId?: string;
+        projectId?: string;
+        notes: string[];
+      } | null;
+    }
+  | { error: string }
+> {
+  try {
+    const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/rules`);
+    if (!resp.ok) return { error: `Rules request failed (${resp.status}).` };
+    return (await resp.json()) as Exclude<Awaited<ReturnType<typeof getDesignSystemRules>>, { error: string }>;
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Rules request failed.' };
+  }
+}
+
+export async function generateDesignSystemRules(id: string): Promise<{ jobId: string } | { error: string }> {
+  try {
+    const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/rules/generate`, { method: 'POST' });
+    if (!resp.ok) return { error: `Rules generation failed (${resp.status}).` };
+    return (await resp.json()) as { jobId: string };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Rules generation failed.' };
+  }
+}
+
 export async function importFigmaDesignSystem(
   input: ImportFigmaDesignSystemFields & { files: File[] },
 ): Promise<ImportFigmaDesignSystemResponse | { error: SkillImportError }> {

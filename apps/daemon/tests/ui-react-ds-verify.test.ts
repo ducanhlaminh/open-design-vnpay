@@ -260,13 +260,12 @@ describe('ui-react-ds verify gate', () => {
 
   it('enforces human-locked wireframe comps: unused or invalid locks fail, used locks pass', async () => {
     // Wireframes live BESIDE react-ds/ in the target tree — build that shape
-    // for real: <tmp>/wireframes/*.wire.json + <tmp>/react-ds/ as the verify
+    // for real: <tmp>/wireframes/*.html + <tmp>/react-ds/ as the verify
     // target (the plain fixture() would resolve `..` outside the tmp dir).
     const wire = (comp: string) =>
-      JSON.stringify({
-        dslVersion: 2,
-        layout: { dir: 'stack', children: [{ c: 'shadcn:Button', props: { label: 'Lưu', comp } }] },
-      });
+      `<!doctype html><html><body data-screen="SCR-X" data-layout="mobile">
+        <section data-comp="${comp}">Dialog</section>
+      </body></html>`;
     const lockedFixture = async (comp: string) => {
       const parent = await mkdtemp(path.join(tmpdir(), 'uireact-ds-locked-'));
       const reactDs = path.join(parent, 'react-ds');
@@ -285,7 +284,7 @@ describe('ui-react-ds verify gate', () => {
         await writeFile(dest, content, 'utf8');
       }
       await mkdir(path.join(parent, 'wireframes'), { recursive: true });
-      await writeFile(path.join(parent, 'wireframes', 'home.wire.json'), wire(comp), 'utf8');
+      await writeFile(path.join(parent, 'wireframes', 'home.html'), wire(comp), 'utf8');
       return { parent, reactDs };
     };
 

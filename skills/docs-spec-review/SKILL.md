@@ -116,6 +116,10 @@ Mỗi tiêu chí ở đây có một **định danh riêng** (cột `rule_id`) �
 Bảy định danh trên là TẬP ĐÓNG — daemon đối chiếu và một `default#…` bịa ra
 làm hỏng cả trang, y như một anchor bịa trong `criteria/`.
 
+## Bộ quy tắc Design System
+
+Khi daemon đã stage `criteria/rules.md`, đọc file này trước khi review và dùng anchor thật (`criteria/rules.md#R-...`) cho finding/pass liên quan. File này có thể do người dùng nạp tay HOẶC do daemon tự sinh từ showcase + token của DS, nên ngoài quyết định UX nó còn có thể phủ màu, typography, spacing, elevation/radius, component-usage — trích đúng anchor CÓ THẬT trong file, đừng giả định một tập anchor cố định. Nếu có `criteria/components.md`, dùng nó làm danh mục component hợp lệ đóng; không suy đoán từ trí nhớ. Thiếu một hoặc cả hai file là hợp lệ.
+
 ## Bước 0.5 — mở ảnh mockup KHI CẦN (flow / gap / edge-case)
 
 Mỗi `![alt](attachments/…)` nằm trong phạm vi section của bạn là một **file

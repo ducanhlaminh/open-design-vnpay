@@ -1,7 +1,7 @@
 // SpecFlowCanvas — the UX Spec "user flow" view: wireframes + RULE FLOWCHART.
 // Renders the ux stage's `flows/<FLOW-ID>.flow.json` (decision/end nodes +
 // labeled edges between screen ids) as a React Flow chart whose screen nodes
-// are the screens' own wireframe thumbnails (WireFrameView, scaled down) —
+// are the screens' own wireframe thumbnails (WireBlocks, scaled down) —
 // replacing the retired Mermaid view. Screens are implicit nodes: any edge
 // endpoint matching a spec screen id renders as that screen; `nodes[]` in the
 // flow file lists only decisions/ends. With no flow files (older ux runs) one
@@ -28,7 +28,8 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { WireFrameView, DEVICES, type WireDoc } from './WireFrameView';
+const DEVICE_WIDTHS = { desktop: 1280, mobile: 390 } as const;
+import { WireBlocks } from './WireBlocks';
 import { UseCaseReader } from './UseCaseReader';
 import { flowDocToChart, deriveUseCases } from './flow-usecases';
 import readerStyles from './UseCaseReader.module.css';
@@ -235,14 +236,14 @@ const EDGE_TYPES = { labeled: LabeledEdge };
 
 type FlowNodeData = {
   title: string;
-  wire?: WireDoc | null;
+  wire?: string | null;
   platform?: string;
 };
 
 function ScreenFlowNode({ data }: NodeProps) {
   const d = data as FlowNodeData;
   const isWeb = d.platform === 'web';
-  const natural = isWeb ? DEVICES.desktop.w : DEVICES.mobile.w;
+  const natural = isWeb ? DEVICE_WIDTHS.desktop : DEVICE_WIDTHS.mobile;
   const scale = (SCREEN_W - 18) / natural;
   const wrap: CSSProperties = {
     width: SCREEN_W,
@@ -274,7 +275,7 @@ function ScreenFlowNode({ data }: NodeProps) {
               inset: 0,
             }}
           >
-            <WireFrameView doc={d.wire} platform={d.platform} />
+            <WireBlocks html={d.wire} platform={d.platform} />
           </div>
         ) : (
           <div style={{ display: 'grid', placeItems: 'center', height: '100%', fontSize: 11, color: T.muted, padding: 10, textAlign: 'center' }}>
@@ -460,7 +461,7 @@ export function SpecFlowCanvas({
 }: {
   flows: FlowDoc[];
   spec: SpecDoc;
-  wireframes: Record<string, WireDoc> | null;
+  wireframes: Record<string, string> | null;
   platforms: Record<string, string> | null;
 }) {
   // MUST be memoized: `?? []` mints a new array on every render when the spec
@@ -588,12 +589,12 @@ export function SpecFlowCanvas({
     const wire = wireframes?.[node.id];
     if (!wire) return null;
     const platform = platforms?.[node.id] ?? 'mobile';
-    const natural = platform === 'web' ? DEVICES.desktop.w : DEVICES.mobile.w;
+    const natural = platform === 'web' ? DEVICE_WIDTHS.desktop : DEVICE_WIDTHS.mobile;
     const scale = 174 / natural;
     return (
       <div style={{ height: 142, marginTop: 10, overflow: 'hidden', position: 'relative', borderRadius: 5, background: 'var(--bg-subtle, #f5f6f8)' }}>
         <div style={{ width: natural, transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none' }}>
-          <WireFrameView doc={wire} platform={platform} />
+          <WireBlocks html={wire} platform={platform} />
         </div>
       </div>
     );

@@ -441,37 +441,23 @@ for (const file of appFiles) {
 }
 
 // --- (g) human-locked wireframe components ----------------------------------
-// A wireframe node's `comp` prop is a component assignment the REVIEWER locked
-// in the ux-spec preview — the build MUST use exactly that component. Collect
-// every locked comp from ../wireframes/*.wire.json (sibling of react-ds/ in
-// the same target tree) and fail when one is invalid or never used.
+// A wireframe's data-comp attribute is a component assignment the reviewer
+// locked in the ux-spec preview. Collect assignments from sibling HTML files.
 function collectLockedComps(wireDir) {
-  const locked = new Map(); // comp -> [wire files]
+  const locked = new Map();
   if (!existsSync(wireDir)) return locked;
-  const walkComp = (node, add) => {
-    if (!node || typeof node !== "object") return;
-    if (Array.isArray(node)) {
-      for (const item of node) walkComp(item, add);
-      return;
-    }
-    if (typeof node.comp === "string" && node.comp.trim()) add(node.comp.trim());
-    if (node.props && typeof node.props === "object" && typeof node.props.comp === "string" && node.props.comp.trim()) {
-      add(node.props.comp.trim());
-    }
-    for (const value of Object.values(node)) {
-      if (value && typeof value === "object") walkComp(value, add);
-    }
-  };
   for (const entry of readdirSync(wireDir)) {
-    if (!entry.endsWith(".wire.json")) continue;
+    if (!entry.endsWith(".html")) continue;
     try {
-      const tree = JSON.parse(readFileSync(path.join(wireDir, entry), "utf8"));
-      walkComp(tree, (comp) => {
+      const raw = readFileSync(path.join(wireDir, entry), "utf8");
+      for (const match of raw.matchAll(/\bdata-comp\s*=\s*["']([^"']+)["']/gi)) {
+        const comp = match[1].trim();
+        if (!comp) continue;
         if (!locked.has(comp)) locked.set(comp, []);
-        if (!locked.get(comp).includes(entry)) locked.get(comp).push(entry);
-      });
+        locked.get(comp).push(entry);
+      }
     } catch {
-      /* invalid wire file is the ux stage's problem, not this gate's */
+      /* invalid HTML is the ux stage's problem, not this gate's */
     }
   }
   return locked;

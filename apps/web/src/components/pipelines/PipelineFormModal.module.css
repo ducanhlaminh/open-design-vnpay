@@ -39,6 +39,12 @@
   animation: pfmPopIn 0.2s var(--pfm-ease);
 }
 
+/* Form có picker (App mới / Sửa App). 460px là bề rộng của một hộp thoại HỎI
+   MỘT CÂU; một panel tìm-kiếm kèm danh sách trang cần chỗ hơn thế. */
+.dialogWide {
+  max-width: 620px;
+}
+
 .dialog:focus-visible {
   outline: none;
 }

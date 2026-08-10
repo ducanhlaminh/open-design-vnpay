@@ -47,7 +47,7 @@ describe('DesignSystemCriteriaPanel', () => {
     vi.mocked(generateDesignSystemCriteria).mockResolvedValue({ jobId: 'job-1' });
     const open = vi.fn();
     render(<DesignSystemCriteriaPanel systemId="ds-1" onOpenProject={open} />);
-    await screen.findByText('Chưa sinh danh mục component.');
+    await screen.findByText('Chưa sinh danh mục component');
     expect(generateDesignSystemCriteria).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Sinh danh mục' }));
@@ -83,13 +83,29 @@ describe('DesignSystemCriteriaPanel', () => {
     expect(ensureDesignSystemWorkspace).not.toHaveBeenCalled();
   });
 
-  it('keeps auto-opening the workspace on the default route', async () => {
+  it('keeps auto-opening the workspace on the default route for a plain design system', async () => {
+    const plain: DesignSystemDetail = { ...detail, hasReactBundle: false };
+    vi.mocked(fetchDesignSystem).mockResolvedValue(plain);
+    vi.mocked(fetchDesignSystemRevisions).mockResolvedValue([]);
+    vi.mocked(ensureDesignSystemWorkspace).mockResolvedValue({ project: { id: plain.projectId! }, files: [] } as never);
+    const open = vi.fn();
+    render(<DesignSystemDetailView id={plain.id} selectedId={null} config={config} agents={[]} onBack={vi.fn()} onSetDefault={vi.fn()} onOpenProject={open} />);
+    await waitFor(() => expect(open).toHaveBeenCalledWith(plain.projectId));
+  });
+
+  // DS Figma đi ngược lại: màn này CHÍNH LÀ preview (Showcase / Thành phần /
+  // Nguyên tắc), nên nhảy sang /projects/:id sẽ unmount đúng thứ vừa mở.
+  it('stays on the preview for a react-bundle design system instead of routing to the project', async () => {
     vi.mocked(fetchDesignSystem).mockResolvedValue(detail);
     vi.mocked(fetchDesignSystemRevisions).mockResolvedValue([]);
     vi.mocked(ensureDesignSystemWorkspace).mockResolvedValue({ project: { id: detail.projectId! }, files: [] } as never);
     const open = vi.fn();
     render(<DesignSystemDetailView id={detail.id} selectedId={null} config={config} agents={[]} onBack={vi.fn()} onSetDefault={vi.fn()} onOpenProject={open} />);
-    await waitFor(() => expect(open).toHaveBeenCalledWith(detail.projectId));
+    // Workspace vẫn phải resolve (chat bên trái cần project đó), chỉ là không điều hướng.
+    await waitFor(() => expect(ensureDesignSystemWorkspace).toHaveBeenCalled());
+    await act(async () => { await Promise.resolve(); });
+    expect(open).not.toHaveBeenCalled();
+    expect(await screen.findByRole('tab', { name: 'Nguyên tắc' })).toBeTruthy();
   });
 
   it('stops polling after success', async () => {

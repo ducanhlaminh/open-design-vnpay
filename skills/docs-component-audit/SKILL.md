@@ -58,6 +58,10 @@ lượt chạy của riêng nó, và hai lượt cùng ghi một file là mất 
 Bạn **không review câu chữ, không sửa tài liệu, không thiết kế màn hình mới**.
 Bạn đọc, và bạn ghi ra đúng một file JSON.
 
+## Bộ quy tắc Design System
+
+Nếu có `criteria/rules.md`, đọc trước khi map component và ghi nhận rule anchor liên quan. File này có thể do người dùng nạp tay HOẶC do daemon tự sinh từ showcase + token của DS, nên ngoài quyết định overlay/feedback/table/badge/action nó còn có thể phủ màu, typography, spacing, elevation/radius (anchor kiểu `R-COLOR-*`, `R-TYPE-*`, `R-SPACING-*`). Trích đúng anchor CÓ THẬT trong file, đừng giả định một tập anchor cố định. `criteria/components.md` là danh mục component hợp lệ đóng; không suy đoán component từ trí nhớ. Thiếu file là hợp lệ.
+
 ## Bước 0 — đọc input (từ cwd của dự án)
 
 **Bố cục tài liệu.** Dự án gắn App dùng `./docs-feature/` làm nguồn trang đã chọn; `./docs-app/` chỉ đọc để tham khảo sau khi đọc `./docs-app/_index.md`, không audit hoặc tạo deliverable từ đó. Dự án legacy dùng `./docs/confluence/`, `./docs/jira/`, `./docs/context/`.

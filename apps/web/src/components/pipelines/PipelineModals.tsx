@@ -34,6 +34,8 @@ import type { TrackingProjectKind } from '@open-design/contracts/analytics';
 
 import { Icon, type IconName } from '../Icon';
 import { FileViewer } from '../FileViewer';
+import { useT } from '../../i18n';
+import { relativeTimeLong } from '../../utils/chatTime';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { AppPoolTree } from './AppPoolTree';
@@ -42,8 +44,6 @@ import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzo
 import { ConfluenceTreeImport } from './ConfluenceTreeImport';
 import styles from './PipelineSourceModal.module.css';
 import sp from './StagePicker.module.css';
-import poolStyles from './AppPoolSection.module.css';
-import { PipelineFlowCanvas } from './PipelineFlowCanvas';
 
 /** What the run-source modal hands back: either a structured BAS/Confluence
  * source (pre-fetched by the daemon) or a legacy free-text input (JIRA/JQL). */
@@ -1323,7 +1323,7 @@ export interface RunAllPayload {
 /** Section duy nhất mà modal hiển thị khi mở từ nút "Đổi" của một dòng trên rail
  *  cấu hình — cùng modal, nhưng chỉ đúng phần người dùng bấm vào. Không truyền =
  *  modal đầy đủ (mọi section). Cả hai chế độ footer đều là "Hủy / Lưu". */
-export type RunAllFocus = 'source' | 'designSystem' | 'targets' | 'stages' | 'mode' | 'terminal';
+export type RunAllFocus = 'source' | 'designSystem' | 'targets' | 'stages' | 'mode';
 
 const RUN_ALL_FOCUS_TITLES: Record<RunAllFocus, string> = {
   source: 'Nguồn tài liệu',
@@ -1331,7 +1331,33 @@ const RUN_ALL_FOCUS_TITLES: Record<RunAllFocus, string> = {
   targets: 'Sản phẩm cần build',
   stages: 'Các bước sẽ chạy',
   mode: 'Chế độ chạy',
-  terminal: 'Kết quả UI-Spec',
+};
+
+/**
+ * Ba đầu ra UI-Spec của `docs-to-ui` — BA LỰA CHỌN THAY THẾ NHAU, không phải ba
+ * bước nối tiếp: cả ba cùng `dependsOn: ['ux-review']` nên ở cùng một tầng của
+ * đồ thị, và một lần chạy chỉ nên ra một loại prototype.
+ *
+ * Vì sao là một danh sách KHAI BÁO chứ không suy ra từ đồ thị: "cùng tầng" KHÔNG
+ * đồng nghĩa với "chọn một". Workflow `docs-review` có `dr-comp` và `dr-flow`
+ * cũng cùng phụ thuộc `dr-docs`, cũng cùng tầng — nhưng CẢ HAI đều phải chạy vì
+ * `dr-review` đọc output của cả hai. Suy ra từ hình dạng đồ thị sẽ biến workflow
+ * đó thành một lựa-chọn-một sai hoàn toàn.
+ */
+export const UI_TERMINAL_STAGE_IDS: ReadonlySet<string> = new Set([
+  'ui-html',
+  'ui-react',
+  'ui-react-ds',
+]);
+
+/** Nhãn + mô tả của từng đầu ra UI-Spec, dùng cho nhóm radio ở bước cuối. */
+const UI_TERMINAL_LABELS: Record<string, { label: string; desc: string }> = {
+  'ui-html': { label: 'HTML prototype', desc: 'Prototype HTML tương tác, mỗi màn một file.' },
+  'ui-react': { label: 'React app', desc: 'App Vite + React 19 thật (cần Docker).' },
+  'ui-react-ds': {
+    label: 'React DS',
+    desc: 'App React ghép từ bộ design system đã import (cần DS Figma).',
+  },
 };
 
 /** Một bước của workflow như section "Các bước sẽ chạy" cần biết — tập con của
@@ -1375,66 +1401,67 @@ export function initialStageSelection(
 }
 
 /**
- * Tick MỘT bước ⇒ kéo theo mọi phụ thuộc CHƯA `succeeded` của nó, đệ quy.
+ * Tick MỘT bước ⇒ CHỈ thêm đúng bước đó vào lựa chọn.
  *
- * Bất biến phải giữ: mỗi bước được tick đều có đủ input tại thời điểm nó chạy.
- * Daemon KHÔNG hỏi gating khi chạy run-all (nó gọi thẳng runPipeline theo thứ
- * tự), nên một lựa chọn thiếu phụ thuộc vẫn chạy thật — với thư mục input rỗng
- * — và trả về kết quả rác trông y như thành công. Phụ thuộc đã `succeeded` thì
- * output có sẵn trên đĩa, không cần chạy lại, nên không bị tự tick (người dùng
- * vẫn tick tay được để regenerate).
+ * Cổng phụ thuộc theo bước đã bỏ — điều kiện duy nhất còn lại là bước 1 (tài
+ * liệu nạp), gate ở ngoài picker này. Trước đây hàm này kéo theo mọi phụ
+ * thuộc CHƯA `succeeded`, đệ quy; giờ người dùng có toàn quyền tick một bước
+ * dù phụ thuộc của nó chưa tick/chưa xong — bước đó sẽ chạy với dữ liệu hiện
+ * có trên đĩa, không còn bị chặn ở đây. `missingRunDeps` bên dưới tính đúng
+ * phần "sẽ chạy thiếu gì" đó để hiện chú thích mềm trong danh sách, không
+ * phải để ép tick lại. Tên hàm giữ nguyên (còn nhiều call-site trong file
+ * này); tham số `stages` giữ để chữ ký không đổi qua các lần gọi hiện có.
  */
 export function selectStageWithDeps(
   stageId: string,
   stages: readonly RunStageOption[],
   selected: ReadonlySet<string>,
 ): Set<string> {
-  const byId = new Map(stages.map((s) => [s.id, s]));
+  void stages;
   const next = new Set(selected);
-  const add = (id: string): void => {
-    const stage = byId.get(id);
-    if (!stage || next.has(id)) return;
-    next.add(id);
-    for (const dep of stage.dependsOn) {
-      const depStage = byId.get(dep);
-      if (!depStage || depStage.status === 'succeeded') continue;
-      add(dep);
-    }
-  };
-  add(stageId);
+  next.add(stageId);
   return next;
 }
 
 /**
- * Bỏ tick MỘT bước ⇒ bỏ theo mọi bước đang tick mà vì thế mất input, đệ quy —
- * mặt đối xứng của `selectStageWithDeps`, giữ đúng một bất biến. Một bước phụ
- * thuộc vào bước vừa bỏ nhưng bước đó đã `succeeded` thì KHÔNG bị bỏ: output
- * của nó vẫn nằm trên đĩa, việc bỏ chỉ có nghĩa "không chạy lại".
+ * Bỏ tick MỘT bước ⇒ CHỈ bỏ đúng bước đó khỏi lựa chọn.
+ *
+ * Mặt đối xứng của `selectStageWithDeps` ở trên: trước đây bỏ tick một bước
+ * kéo theo mọi bước đang tick "vì thế mất input", đệ quy; giờ không còn cascade
+ * nào cả — bỏ tick một bước không đổi trạng thái tick của bước nào khác, kể cả
+ * bước phụ thuộc nó. `missingRunDeps` nói rõ hệ quả (bước nào sẽ chạy thiếu
+ * input) thay vì âm thầm bỏ hộ người dùng.
  */
 export function deselectStageWithDependents(
   stageId: string,
   stages: readonly RunStageOption[],
   selected: ReadonlySet<string>,
 ): Set<string> {
-  const byId = new Map(stages.map((s) => [s.id, s]));
+  void stages;
   const next = new Set(selected);
   next.delete(stageId);
-  for (;;) {
-    let shrank = false;
-    for (const stage of stages) {
-      if (!next.has(stage.id)) continue;
-      const starved = stage.dependsOn.some((dep) => {
-        const depStage = byId.get(dep);
-        return !!depStage && depStage.status !== 'succeeded' && !next.has(dep);
-      });
-      if (starved) {
-        next.delete(stage.id);
-        shrank = true;
-      }
-    }
-    if (!shrank) break;
-  }
   return next;
+}
+
+/**
+ * Phụ thuộc TĨNH của `stage` mà hiện KHÔNG nằm trong `selected` và cũng CHƯA
+ * `succeeded` trên đĩa — tức nếu `stage` chạy ngay bây giờ, nó sẽ chạy với dữ
+ * liệu hiện có thay vì input mới từ những phụ thuộc này. Nguồn cho chú thích
+ * MỀM trong danh sách bước (không phải lỗi): cổng phụ thuộc theo bước đã bỏ,
+ * người dùng có toàn quyền chọn vậy — họ chỉ cần được nói cho biết.
+ */
+export function missingRunDeps(
+  stage: RunStageOption,
+  stages: readonly RunStageOption[],
+  selected: ReadonlySet<string>,
+): RunStageOption[] {
+  const byId = new Map(stages.map((s) => [s.id, s]));
+  const out: RunStageOption[] = [];
+  for (const depId of stage.dependsOn) {
+    const dep = byId.get(depId);
+    if (dep && dep.status !== 'succeeded' && !selected.has(dep.id)) out.push(dep);
+  }
+  return out;
 }
 
 const STAGE_BADGES: Record<string, string> = {
@@ -1541,6 +1568,7 @@ export function RunAllModal({
    *  có khi `hasUpload`. Reject → modal hiện lỗi, không lưu. */
   onUploadDocs?: (files: File[]) => Promise<void>;
 }) {
+  const t = useT();
   // Same shared Confluence picker as the per-stage Docs modal (search by name
   // + paste links, multi-select); prefill from the studio project config. The
   // run input is one page URL/id per line, built from the picked pages.
@@ -1602,7 +1630,6 @@ export function RunAllModal({
   }, [appId]);
 
   const appPoolAvailable = appId !== undefined && (appPoolPages?.length ?? 0) > 0;
-  const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(defaultTerminal ?? 'ui-html');
   // Legacy single-platform (docs-to-prd has no UI stage / non-target callers).
   // docs-to-ui uses the `targets` multi-select below; platform is derived from
   // the first target in submit when targets are set.
@@ -1647,6 +1674,62 @@ export function RunAllModal({
   // Thứ tự workflow, không phải thứ tự tick — dòng tóm tắt phải đọc đúng thứ tự
   // daemon sẽ chạy.
   const selectedStages = stages.filter((s) => stageIds.has(s.id));
+  // Bước 1 (tài liệu nạp) — điều kiện DUY NHẤT còn lại sau khi cổng phụ thuộc
+  // theo bước bị bỏ. Nhận diện bằng `dependsOn` rỗng (đúng cho cả ba workflow:
+  // docs / prd-docs / dr-docs), không phải theo vị trí trong mảng, để không lệ
+  // thuộc thứ tự caller truyền `stages` vào.
+  const ingestStage = stages.find((s) => s.dependsOn.length === 0);
+  const ingestPending = ingestStage !== undefined && ingestStage.status !== 'succeeded';
+
+  // ── Bước cuối: BA đầu ra UI-Spec gộp thành MỘT bước, chọn một ─────────────
+  // `forkStages` rỗng hoặc chỉ có một phần tử (docs-to-prd, docs-review) → không
+  // có gì để chọn, mọi bước render thành hàng đánh số bình thường.
+  const forkStages = hasTerminal ? stages.filter((s) => UI_TERMINAL_STAGE_IDS.has(s.id)) : [];
+  const hasFork = forkStages.length >= 2;
+  const stepStages = hasFork ? stages.filter((s) => !UI_TERMINAL_STAGE_IDS.has(s.id)) : stages;
+  // Đầu ra đang chọn. Nguồn ưu tiên là `stageIds` (bước ĐANG tick), vì đó mới là
+  // thứ quyết định lần chạy tới; `defaultTerminal` chỉ đỡ khi chưa tick nhánh
+  // nào. `both` là giá trị cấu hình CŨ (html + react cùng lượt) — bề mặt mới chỉ
+  // cho chọn một, nên nó rơi về nhánh đầu tiên thay vì để radio trống.
+  const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(() => {
+    const initial = initialStageSelection(stages, defaultStageIds);
+    const ticked = stages.find((s) => UI_TERMINAL_STAGE_IDS.has(s.id) && initial.has(s.id));
+    if (ticked) return ticked.id as WorkflowTerminalChoice;
+    if (defaultTerminal && defaultTerminal !== 'both') return defaultTerminal;
+    return 'ui-html';
+  });
+  // Bước cuối có đang chạy không = có nhánh nào được tick không.
+  const forkEnabled = forkStages.some((s) => stageIds.has(s.id));
+  /** Bỏ tick MỌI nhánh đầu ra — qua `deselectStageWithDependents` chứ không xoá
+   *  thẳng khỏi Set, để bất biến "bước được tick luôn đủ input" do một hàm duy
+   *  nhất giữ (hôm nay nhánh cuối chưa có bước nào phụ thuộc nó, ngày mai có). */
+  const clearFork = (from: ReadonlySet<string>): Set<string> => {
+    let out = new Set(from);
+    for (const s of forkStages) {
+      if (out.has(s.id)) out = deselectStageWithDependents(s.id, stages, out);
+    }
+    return out;
+  };
+  /** Chọn một đầu ra ⇒ BẬT luôn bước cuối và bỏ nhánh đang chọn trước đó. Bấm
+   *  vào "React app" nghĩa là muốn React, không phải "ghi nhớ để lát nữa tick". */
+  const pickTerminal = (id: string) => {
+    setTerminal(id as WorkflowTerminalChoice);
+    setStageIds((prev) => selectStageWithDeps(id, stages, clearFork(prev)));
+  };
+  const toggleForkStep = () =>
+    setStageIds((prev) => (forkEnabled ? clearFork(prev) : selectStageWithDeps(terminal, stages, prev)));
+  /** Preset (Tất cả / Chỉ bước chưa xong / Tiết kiệm) thao tác trên CẢ danh sách
+   *  nên tự nhiên tick cả ba nhánh đầu ra — thu về đúng một nhánh, ưu tiên nhánh
+   *  đang chọn, để bề mặt không bao giờ mâu thuẫn với luật "chọn 1 trong 3". */
+  const applyPreset = (next: Set<string>) => {
+    const picked = forkStages.filter((s) => next.has(s.id));
+    if (picked.length > 1) {
+      const keep = picked.find((s) => s.id === terminal) ?? picked[0]!;
+      for (const s of picked) if (s.id !== keep.id) next.delete(s.id);
+      if (keep.id !== terminal) setTerminal(keep.id as WorkflowTerminalChoice);
+    }
+    setStageIds(next);
+  };
   // Workflow không hỗ trợ lean thì bỏ qua cả default đã lưu (cờ đó là của lần
   // chạy docs-to-ui trên cùng project, không phải của workflow này).
   const [lean, setLean] = useState(supportsLean ? (defaultLean ?? false) : false);
@@ -1736,11 +1819,15 @@ export function RunAllModal({
       case 'targets':
         return { targets };
       case 'stages':
-        return { stageIds: selectedStages.map((s) => s.id) };
+        // `terminal` đi CÙNG `stageIds` vì bước cuối giờ là một phần của section
+        // này. Hai field không thừa nhau: `stageIds` chi phối lần chạy tick tay,
+        // còn `terminal` là thứ DUY NHẤT chỉ định đầu ra cho đường chạy tự động
+        // (`selectRunStages` bỏ qua `terminal` khi `stageIds` không rỗng, và bỏ
+        // qua `stageIds` khi nó rỗng) — ghi lệch nhau thì hai đường chạy cùng
+        // một cấu hình sẽ ra hai kết quả khác nhau.
+        return { stageIds: selectedStages.map((s) => s.id), ...(hasTerminal ? { terminal } : {}) };
       case 'mode':
         return { lean };
-      case 'terminal':
-        return { terminal };
     }
   };
 
@@ -1777,8 +1864,7 @@ export function RunAllModal({
     // rỗng cũng không render được stepper), nhưng section này đọc dữ liệu từ
     // caller nên vẫn phải có nhánh cho "caller chưa truyền gì".
     (focus === 'stages' && stages.length === 0) ||
-    (focus === 'mode' && !supportsLean) ||
-    (focus === 'terminal' && !hasTerminal);
+    (focus === 'mode' && !supportsLean);
 
   const save = async () => {
     if (busy || !canSave || focusUnavailable) return;
@@ -1800,28 +1886,7 @@ export function RunAllModal({
     }
   };
 
-  const terminalCard = (value: WorkflowTerminalChoice, label: string, desc: string) => (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={terminal === value}
-      className={`${styles.card}${terminal === value ? ' ' + styles.cardSelected : ''}`}
-      onClick={() => setTerminal(value)}
-    >
-      <span className={styles.cardTop}>
-        <Icon name={value === 'ui-react' ? 'blocks' : value === 'ui-react-ds' ? 'palette' : value === 'both' ? 'sparkles' : 'file-code'} size={16} />
-        {label}
-        {terminal === value ? (
-          <span className={styles.cardCheck} aria-hidden="true">
-            <Icon name="check" size={14} />
-          </span>
-        ) : null}
-      </span>
-      <span className={styles.cardDesc}>{desc}</span>
-    </button>
-  );
-
-  // Same card shape as the terminal picker so the two choices read as one set.
+  // Card shape shared with the target picker so the choices read as one set.
   const modeCard = (value: boolean, label: string, desc: string, icon: IconName) => (
     <button
       type="button"
@@ -1990,29 +2055,61 @@ export function RunAllModal({
         ) : docsSource === 'app-pool' && appPoolAvailable ? (
           <>
             {appPoolError ? <p className={styles.empty}>{appPoolError}</p> : null}
-            <div className={poolStyles.header}>
-              <p className={styles.hint} style={{ margin: 0 }}>
-                {appPoolPaths.size > 0 ? `${appPoolPaths.size} trang đã tick → nạp vào docs-feature/` : 'Tick trang CHÍNH sẽ nạp vào workspace.'}
-              </p>
+            {/* Một PANEL có tầng: thanh công cụ (tìm + đếm) → vùng cây nổi lên
+                trên nền lõm → chân panel. Trước đây ô tìm và cây đổ thẳng ra
+                nền modal nên cả khối đọc như một danh sách phẳng không đầu
+                không cuối, không biết cây bắt đầu và kết thúc ở đâu. */}
+            <div className={styles.poolPicker}>
+              <div className={styles.poolHead}>
+                <span className={styles.poolSearch}>
+                  <Icon name="search" size={14} />
+                  {/* KHÔNG dùng `.pl-proj-search` toàn cục ở đây: class đó là
+                      `flex: 0 1 260px`, dựng cho thanh công cụ NẰM NGANG. Trong
+                      `.pl-modal-field` (flex column) thì 260px rơi vào chiều
+                      CAO, và `border-radius: 999px` biến ô tìm thành một hình
+                      bầu dục cao nửa modal. */}
+                  <input
+                    type="search"
+                    className={styles.poolSearchInput}
+                    value={appPoolQuery}
+                    onChange={(event) => setAppPoolQuery(event.target.value)}
+                    placeholder="Tìm trang trong tài liệu App…"
+                    aria-label="Tìm trang trong tài liệu App"
+                    disabled={busy}
+                  />
+                </span>
+                <span
+                  className={`${styles.poolCount}${appPoolPaths.size > 0 ? ' ' + styles.poolCountOn : ''}`}
+                >
+                  {appPoolPaths.size > 0 ? `${appPoolPaths.size} trang đã tick` : 'Chưa tick trang nào'}
+                </span>
+              </div>
+              <div className={styles.poolTree}>
+                <AppPoolTree
+                  pages={appPoolPages ?? []}
+                  query={appPoolQuery}
+                  selection={{ ticked: appPoolPaths, onToggle: setAppPoolPaths, disabled: busy }}
+                />
+              </div>
+              <div className={styles.poolFoot}>
+                <span className={styles.poolFootHint}>
+                  Trang đã tick nạp vào <code>docs-feature/</code>
+                </span>
+                <button
+                  type="button"
+                  className={styles.poolImportBtn}
+                  onClick={() => setAppPoolImportOpen((open) => !open)}
+                >
+                  <Icon name="import" size={13} />
+                  {appPoolImportOpen ? 'Ẩn nhập tài liệu' : 'Import thêm từ Confluence'}
+                </button>
+              </div>
             </div>
-            <input
-              className="pl-proj-search"
-              value={appPoolQuery}
-              onChange={(event) => setAppPoolQuery(event.target.value)}
-              placeholder="Tìm trang trong tài liệu App — tick nhiều trang cho workflow…"
-              disabled={busy}
-            />
-            <AppPoolTree
-              pages={appPoolPages ?? []}
-              query={appPoolQuery}
-              selection={{ ticked: appPoolPaths, onToggle: setAppPoolPaths, disabled: busy }}
-            />
-            <div className={poolStyles.importSection}>
-              <button type="button" className={poolStyles.linkButton} onClick={() => setAppPoolImportOpen((open) => !open)}>
-                <Icon name="import" size={13} />
-                {appPoolImportOpen ? 'Ẩn nhập tài liệu' : 'Import thêm từ Confluence'}
-              </button>
-              {appPoolImportOpen && appId ? (
+            {/* Panel nhập thêm chỉ dựng khi MỞ. Trước đây nó là một khối có
+                `border-top` luôn render, nên lúc đóng vẫn để lại một vạch kẻ
+                lửng lơ dưới cây — thứ trông y như lỗi layout. */}
+            {appPoolImportOpen && appId ? (
+              <div className={styles.poolImportPanel}>
                 <ConfluenceTreeImport
                   appId={appId}
                   onImported={(result) => {
@@ -2037,8 +2134,8 @@ export function RunAllModal({
                     void refreshAppPool(true);
                   }}
                 />
-              ) : null}
-            </div>
+              </div>
+            ) : null}
           </>
         ) : docsSource === 'app-pool' ? (
           <>
@@ -2083,11 +2180,21 @@ export function RunAllModal({
       {stages.length > 0 && shows('stages') ? (
       <div className="pl-modal-field">
         <span className="pl-modal-field__label">Các bước sẽ chạy</span>
+        {ingestPending && ingestStage ? (
+          // Điều kiện duy nhất còn lại (bước 1) phải nêu rõ TRƯỚC khi người
+          // dùng tick linh tinh các bước sau rồi bị API từ chối — mọi bước
+          // khác giờ tick/bỏ tick tự do, nhưng không bước nào chạy ra dữ liệu
+          // thật nếu bước 1 chưa xong.
+          <span className={styles.stageIngestNote}>
+            <Icon name="info" size={12} />
+            {t('pipelines.runAllPicker.ingestRequired', { stage: ingestStage.name })}
+          </span>
+        ) : null}
         <div className={styles.stagePresets}>
           <button
             type="button"
             className="pl-btn pl-btn--xs"
-            onClick={() => setStageIds(new Set(stages.map((s) => s.id)))}
+            onClick={() => applyPreset(new Set(stages.map((s) => s.id)))}
             disabled={busy}
           >
             Tất cả
@@ -2096,7 +2203,7 @@ export function RunAllModal({
             type="button"
             className="pl-btn pl-btn--xs"
             onClick={() =>
-              setStageIds(new Set(stages.filter((s) => s.status !== 'succeeded').map((s) => s.id)))
+              applyPreset(new Set(stages.filter((s) => s.status !== 'succeeded').map((s) => s.id)))
             }
             disabled={busy}
           >
@@ -2110,7 +2217,7 @@ export function RunAllModal({
               type="button"
               className="pl-btn pl-btn--xs"
               onClick={() =>
-                setStageIds(new Set(stages.filter((s) => !isLeanSkippableStage(s)).map((s) => s.id)))
+                applyPreset(new Set(stages.filter((s) => !isLeanSkippableStage(s)).map((s) => s.id)))
               }
               disabled={busy}
               title="Bỏ các bước phân tích (hành trình, research, rà soát) — đúng chuỗi của chế độ Tiết kiệm cũ"
@@ -2127,24 +2234,23 @@ export function RunAllModal({
             Bỏ chọn hết
           </button>
         </div>
-        {/* Sơ đồ node: cùng một `stageIds` với danh sách ngay dưới, không phải
-            hai nguồn sự thật. Sơ đồ nói được thứ danh sách dọc không nói nổi —
-            ba đầu ra UI-Spec là BA NHÁNH SONG SONG, và bước nào chờ bước nào.
-            Không truyền `onRunStage`: trong modal cấu hình, chạy lẻ một bước
-            không có nghĩa. */}
-        <div className={styles.stageGraph}>
-          <PipelineFlowCanvas
-            pipelines={stages}
-            selectedIds={stageIds}
-            onToggle={(id) => toggleStage(id)}
-          />
-        </div>
-        <ul className={styles.stageList}>
-          {stages.map((stage) => {
+        {/* Danh sách ĐÁNH SỐ theo đúng thứ tự daemon chạy. Ba đầu ra UI-Spec
+            không phải bước 7-8-9 nối tiếp mà là ba lựa chọn thay thế nhau, nên
+            chúng gộp vào MỘT hàng cuối có nhóm radio — thứ mà danh sách phẳng
+            (và cả sơ đồ node trước đây) đều không nói được. */}
+        <ol className={styles.stageList}>
+          {stepStages.map((stage, i) => {
             const badge = STAGE_BADGES[stage.status] ?? 'Chưa chạy';
+            // Chú thích MỀM — không phải lỗi, không chặn Lưu: bước này đang
+            // tick nhưng có phụ thuộc chưa tick và chưa `succeeded`, nên nó sẽ
+            // chạy với dữ liệu hiện có thay vì input mới từ phụ thuộc đó.
+            const missing = stageIds.has(stage.id) ? missingRunDeps(stage, stages, stageIds) : [];
             return (
-              <li key={stage.id}>
+              <li key={stage.id} className={styles.stageItem}>
                 <label className={styles.stageRow}>
+                  <span className={styles.stageNum} aria-hidden="true">
+                    {i + 1}
+                  </span>
                   <input
                     type="checkbox"
                     className={styles.stageCheckbox}
@@ -2153,6 +2259,14 @@ export function RunAllModal({
                     disabled={busy}
                   />
                   <span className={styles.stageName}>{stage.name}</span>
+                  {isLeanSkippableStage(stage) ? (
+                    <span
+                      className={styles.stageOptional}
+                      title="Chế độ Tiết kiệm bỏ bước này — không bước nào chờ nó"
+                    >
+                      tuỳ chọn
+                    </span>
+                  ) : null}
                   <span
                     className={`${styles.stageBadge} ${
                       stage.status === 'succeeded'
@@ -2165,10 +2279,84 @@ export function RunAllModal({
                     {badge}
                   </span>
                 </label>
+                {missing.length > 0 ? (
+                  <p className={styles.stageSoftNote}>
+                    {t('pipelines.runAllPicker.softNote', {
+                      stages: missing.map((m) => m.name).join(', '),
+                    })}
+                  </p>
+                ) : null}
               </li>
             );
           })}
-        </ul>
+          {hasFork ? (() => {
+            // Chú thích mềm áp cho ĐẦU RA đang chọn (terminal) — ba nhánh đều
+            // dùng chung `ux-review` nên chỉ cần tính trên nhánh hiện bật.
+            const chosen = forkEnabled ? forkStages.find((s) => s.id === terminal) : undefined;
+            const forkMissing = chosen ? missingRunDeps(chosen, stages, stageIds) : [];
+            return (
+            <li className={`${styles.stageItem} ${styles.stageItemFork}`}>
+              <label className={styles.stageRow}>
+                <span className={styles.stageNum} aria-hidden="true">
+                  {stepStages.length + 1}
+                </span>
+                <input
+                  type="checkbox"
+                  className={styles.stageCheckbox}
+                  checked={forkEnabled}
+                  onChange={toggleForkStep}
+                  disabled={busy}
+                />
+                <span className={styles.stageName}>Kết quả UI-Spec</span>
+                <span className={styles.stageOptional}>chọn 1 trong {forkStages.length}</span>
+              </label>
+              <div
+                className={`${styles.forkOptions}${forkEnabled ? '' : ' ' + styles.forkOptionsOff}`}
+                role="radiogroup"
+                aria-label="Kết quả UI-Spec"
+              >
+                {forkStages.map((s) => {
+                  const meta = UI_TERMINAL_LABELS[s.id];
+                  const on = forkEnabled && terminal === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={on}
+                      className={`${styles.forkOption}${on ? ' ' + styles.forkOptionOn : ''}`}
+                      onClick={() => pickTerminal(s.id)}
+                      disabled={busy}
+                    >
+                      <span className={styles.forkDot} aria-hidden="true" />
+                      <span className={styles.forkLabel}>{meta?.label ?? s.name}</span>
+                      <span className={styles.forkDesc}>{meta?.desc ?? ''}</span>
+                      <span
+                        className={`${styles.stageBadge} ${
+                          s.status === 'succeeded'
+                            ? styles.stageBadgeDone
+                            : s.status === 'failed'
+                              ? styles.stageBadgeFailed
+                              : styles.stageBadgeIdle
+                        }`}
+                      >
+                        {STAGE_BADGES[s.status] ?? 'Chưa chạy'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {forkMissing.length > 0 ? (
+                <p className={styles.stageSoftNote}>
+                  {t('pipelines.runAllPicker.softNote', {
+                    stages: forkMissing.map((m) => m.name).join(', '),
+                  })}
+                </p>
+              ) : null}
+            </li>
+            );
+          })() : null}
+        </ol>
         <span className="pl-modal-field__hint">
           {selectedStages.length > 0 ? (
             <>
@@ -2179,10 +2367,7 @@ export function RunAllModal({
             'Chưa tick bước nào — chọn ít nhất một bước thì mới lưu được.'
           )}
         </span>
-        <span className="pl-modal-field__hint">
-          Tick một bước thì các bước nó cần (chưa xong) được tick theo — daemon chạy thẳng chuỗi
-          đã chọn, không chờ điều kiện, nên một bước thiếu input sẽ chạy ra kết quả rỗng.
-        </span>
+        <span className="pl-modal-field__hint">{t('pipelines.runAllPicker.hint')}</span>
       </div>
       ) : null}
       {supportsLean && shows('mode') ? (
@@ -2198,17 +2383,6 @@ export function RunAllModal({
             research hay bước rà soát. Hợp để xem nhanh, chưa hợp để bàn giao.
           </span>
         ) : null}
-      </div>
-      ) : null}
-      {hasTerminal && shows('terminal') ? (
-      <div className="pl-modal-field">
-        <span className="pl-modal-field__label">Kết quả UI-Spec (bước cuối)</span>
-        <div className={styles.cards} role="radiogroup" aria-label="UI-Spec terminal">
-          {terminalCard('ui-html', 'HTML prototype', 'Prototype HTML tương tác, mỗi màn một file.')}
-          {terminalCard('ui-react', 'React app', 'App Vite + React 19 thật (cần Docker).')}
-          {terminalCard('ui-react-ds', 'React DS', 'App React ghép từ bộ design system đã import (cần DS Figma).')}
-          {terminalCard('both', 'Cả hai', 'HTML trước, React sau.')}
-        </div>
       </div>
       ) : null}
       {hasDesignSystem && shows('designSystem') && hasPlatform && targets.length >= 2 ? (
@@ -2413,6 +2587,99 @@ export function RerunScopeModal({
         <div className="pl-modal-error" role="alert">
           <Icon name="info" size={14} />
           <span>{error}</span>
+        </div>
+      ) : null}
+    </PlModal>
+  );
+}
+
+/**
+ * Pre-flight confirm for "Chạy pipeline" (run-all), covering TWO independent
+ * questions `PipelinesView` asks before every run-all POST — either one alone
+ * is enough to open this dialog (an EMPTY answer to both runs straight
+ * through, no dialog: nothing to say, so nothing to ask — see the spec's
+ * `must_not`):
+ *
+ *  - `stageNames` (`stagesLosingOutputForRunAll`): the about-to-run set
+ *    currently has a result for at least one stage that this run will erase.
+ *  - `staleInputs` (`staleInputsForRunAll`): a stage about to run will read
+ *    its primary input from an ancestor that is NOT part of this run and
+ *    already succeeded a while ago — the rail's "· ngoài chế độ" case. This
+ *    never loses anything (that ancestor's result is untouched), so it must
+ *    still surface even when `stageNames` is empty (first-ever `ux` run, but
+ *    `cj` is stale — nothing to clear, everything to say).
+ *
+ * Each becomes its own section, hidden entirely when empty, so the dialog
+ * only ever shows what actually applies. Named-action confirm button (never
+ * a bare "OK"); wording states facts, not scares — the daemon commits the
+ * current output to project history BEFORE clearing it (`commitHistory`,
+ * ahead of the re-run clear in `runPipeline`), so a clear is always
+ * restorable, and a stale input is simply "still exactly what it was", not
+ * "wrong". */
+export function RunAllClearConfirmModal({
+  stageNames,
+  staleInputs = [],
+  onClose,
+  onConfirm,
+}: {
+  /** Display NAMES (not raw ids) of every stage about to lose its current
+   *  result. */
+  stageNames: string[];
+  /** Every about-to-run stage whose primary input still comes from an older,
+   *  out-of-run ancestor — resolved to display names by the caller (mirrors
+   *  `stageNames` above), `updatedAt` is that ancestor's own last-run time.
+   *  Absent/empty when no about-to-run stage's input chain is stale. */
+  staleInputs?: Array<{ stageName: string; sourceName: string; updatedAt: number }>;
+  onClose: () => void;
+  onConfirm: () => void | Promise<void>;
+}) {
+  const t = useT();
+  const willLoseOutput = stageNames.length > 0;
+  const hasStaleInputs = staleInputs.length > 0;
+  return (
+    <PlModal
+      title={willLoseOutput ? t('pipelines.runAllClear.title') : t('pipelines.runAllClear.staleOnlyTitle')}
+      icon="refresh"
+      onClose={onClose}
+      footer={
+        <>
+          {/* Cancel is the DEFAULT — autofocused, so an accidental Enter
+           *  never fires the (possibly destructive) confirm action. */}
+          <button type="button" className="pl-btn" onClick={onClose} autoFocus>
+            {t('common.cancel')}
+          </button>
+          <button
+            type="button"
+            className={willLoseOutput ? 'pl-btn pl-btn--danger' : 'pl-btn pl-btn--primary'}
+            onClick={() => void onConfirm()}
+          >
+            <Icon name="refresh" size={14} />
+            <span>{t(willLoseOutput ? 'pipelines.runAllClear.confirm' : 'pipelines.runAllClear.confirmContinue')}</span>
+          </button>
+        </>
+      }
+    >
+      {willLoseOutput ? (
+        <div className={styles.clearConfirmSection}>
+          <span className={styles.hint}>
+            {t('pipelines.runAllClear.body', { stages: stageNames.join(', ') })}
+          </span>
+          <span className={styles.hint}>{t('pipelines.runAllClear.historyNote')}</span>
+        </div>
+      ) : null}
+      {hasStaleInputs ? (
+        <div className={styles.clearConfirmSection}>
+          <span className={styles.sectionLabel}>{t('pipelines.runAllClear.staleSectionTitle')}</span>
+          {staleInputs.map((row, i) => (
+            <span key={`${row.stageName}-${row.sourceName}-${i}`} className={styles.hint}>
+              {t('pipelines.runAllClear.staleLine', {
+                stage: row.stageName,
+                source: row.sourceName,
+                time: relativeTimeLong(row.updatedAt, t),
+              })}
+            </span>
+          ))}
+          <span className={styles.hint}>{t('pipelines.runAllClear.staleNote')}</span>
         </div>
       ) : null}
     </PlModal>

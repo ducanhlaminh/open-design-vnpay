@@ -3,8 +3,8 @@ import { useT } from '../i18n';
 import { fetchDesignSystemReactInfo } from '../providers/registry';
 import type { DesignSystemReactInfo, DesignSystemSummary } from '../types';
 import { DesignSpecView } from './DesignSpecView';
+import { FigmaDsPreviewTabs } from './FigmaDsPreviewTabs';
 import { PreviewModal } from './PreviewModal';
-import { WireframeMapView } from './WireframeMapView';
 
 interface Props {
   system: DesignSystemSummary;
@@ -45,34 +45,26 @@ export function FigmaDesignSystemDetailModal({ system, onClose, initialFullscree
           ? t('ds.reactStats', { components: info.components, icons: info.icons })
           : system.summary || system.category
       }
+      // MỘT view duy nhất: PreviewModal chỉ vẽ dải tab của nó khi có >1 view,
+      // nên tab bar 3 phần (Showcase / Thành phần / Nguyên tắc) + nút Tải lại
+      // của FigmaDsPreviewTabs là dải tab DUY NHẤT người dùng thấy — và giống
+      // hệt dải tab ở khung preview màn Edit, vì dùng chung component.
       views={[
         {
-          id: 'showcase',
+          id: 'preview',
           label: t('ds.showcase'),
-          // URL-load instead of srcDoc: the compiled showcase lazy-fetches
-          // its icon SVGs from the react-assets route, and only a
-          // same-origin iframe lets those requests carry the app's auth.
-          custom: (
-            <iframe
-              className="figma-ds-showcase-frame"
-              title={`${system.title} showcase`}
-              src={`/api/design-systems/${encodeURIComponent(system.id)}/showcase`}
-            />
-          ),
-        },
-        {
-          id: 'wireframe-map',
-          label: t('ds.wireframeMap'),
-          custom: <WireframeMapView systemId={system.id} />,
+          custom: <FigmaDsPreviewTabs systemId={system.id} />,
         },
       ]}
-      initialViewId="showcase"
+      initialViewId="preview"
       initialFullscreen={initialFullscreen}
       exportTitleFor={(viewId) => `${system.title} — ${viewId}`}
       onClose={onClose}
       sidebar={{
         label: t('ds.reactDetailToggle'),
-        defaultOpen: true,
+        // Đóng sẵn: 3 tab cần trọn bề ngang. STYLE-GUIDE + catalog vẫn cách
+        // một cú bấm.
+        defaultOpen: false,
         contentKey: system.id,
         content: (
           <DesignSpecView

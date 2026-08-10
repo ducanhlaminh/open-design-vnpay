@@ -75,7 +75,6 @@ import {
   type DocsMockupReviewReport,
   type DocsMockupReviewIndex,
 } from './DocsReviewPreview';
-import type { WireDoc } from './WireFrameView';
 import {
   exportAsHtml,
   exportAsImage,
@@ -8225,18 +8224,18 @@ function SpecFileViewer({
   const [reloadKey, setReloadKey] = useState(0);
   const [copied, setCopied] = useState(false);
   const [mode, setMode] = useState<SpecViewMode>('preview');
-  // Wireframe bố cục tự do cạnh file spec (`<dir>/wireframes/<SCREEN-ID>.wire.json`,
+  // Wireframe bố cục tự do cạnh file spec (`<dir>/wireframes/<SCREEN-ID>.html`,
   // bước ux emit) — key theo screen id để SpecPreview render tab Wireframe.
-  const [wireframes, setWireframes] = useState<Record<string, WireDoc> | null>(null);
-  // Project-relative dir of the wire files — the SpecPreview "Gán component"
-  // panel saves edited trees back to `${wireframeDir}<id>.wire.json`.
-  const [wireframeDir, setWireframeDir] = useState<string | null>(null);
+  const [wireframes, setWireframes] = useState<Record<string, string> | null>(null);
   // Rule flowcharts cạnh file spec (`<dir>/flows/<FLOW-ID>.flow.json`, bước ux
   // emit) — tab Flow render wireframe + flowchart (thay Mermaid đã gỡ).
   const [flows, setFlows] = useState<FlowDoc[] | null>(null);
   // Per-screen platform (web|mobile) from the workflow's ux-spec — drives the
   // review preview's responsive layout (web = stacked, mobile = side-by-side).
   const [platforms, setPlatforms] = useState<Record<string, string> | null>(null);
+  // Ids của màn còn file .wire.json (định dạng cũ) — dùng để hiện thông báo
+  // thay vì màn trống khi dự án chưa chạy lại stage ux.
+  const [wireframesLegacy, setWireframesLegacy] = useState<string[]>([]);
 
   useEffect(() => {
     setText(null);
@@ -8262,7 +8261,6 @@ function SpecFileViewer({
       // trailing `heuristic-review/` so the review preview finds them too.
       dir = dir.replace(/heuristic-review\/$/i, '');
       const prefix = `${dir}wireframes/`;
-      if (!cancelled) setWireframeDir(prefix);
       const flowPrefix = `${dir}flows/`;
       try {
         const files = await fetchProjectFiles(projectId);
@@ -8305,23 +8303,24 @@ function SpecFileViewer({
         }
         const wireNames = files
           .map((f) => f.name)
+          .filter((n) => n.startsWith(prefix) && /\.html$/i.test(n));
+        // Detect legacy .wire.json ids (dự án cũ chưa chạy lại stage ux)
+        const legacyNames = files
+          .map((f) => f.name)
           .filter((n) => n.startsWith(prefix) && /\.wire\.json$/i.test(n));
+        if (legacyNames.length && !cancelled) {
+          setWireframesLegacy(
+            legacyNames.map((n) => n.slice(prefix.length).replace(/\.wire\.json$/i, '')),
+          );
+        }
         if (!wireNames.length || cancelled) return;
-        const map: Record<string, WireDoc> = {};
+        const map: Record<string, string> = {};
         await Promise.all(
           wireNames.map(async (n) => {
             const raw = await fetchProjectFileText(projectId, n).catch(() => null);
             if (!raw) return;
-            try {
-              const parsed = JSON.parse(raw) as WireDoc;
-              // Accept either shape: a layout tree (preferred) or legacy objects[].
-              if (parsed.layout || Array.isArray(parsed.objects)) {
-                const stem = n.slice(prefix.length).replace(/\.wire\.json$/i, '');
-                map[stem] = parsed;
-              }
-            } catch {
-              /* wire.json hỏng → màn đó hiện placeholder */
-            }
+            const stem = n.slice(prefix.length).replace(/\.html$/i, '');
+            map[stem] = raw;
           }),
         );
         if (!cancelled && Object.keys(map).length) setWireframes(map);
@@ -8552,7 +8551,7 @@ function SpecFileViewer({
         ) : uxResearch && mode === 'preview' ? (
           <UxResearchPreview report={uxResearch} />
         ) : spec && mode === 'preview' ? (
-          <SpecPreview doc={spec} wireframes={wireframes} projectId={projectId} wireframeDir={wireframeDir} />
+          <SpecPreview doc={spec} wireframes={wireframes} wireframesLegacy={wireframesLegacy} projectId={projectId} />
         ) : spec && mode === 'flow' ? (
           <SpecFlowCanvas flows={flows ?? []} spec={spec} wireframes={wireframes} platforms={platforms} />
         ) : displayText !== null && lineCount > 0 ? (
