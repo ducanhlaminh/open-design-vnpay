@@ -9,9 +9,10 @@
 //   - `shouldSandboxRun` — the gate (runtime + skill allowlists from prefs).
 //   - `wrapInvocationInSandbox` — pure host→docker invocation rewrite. The
 //     container sees exactly one RW project dir at /work/app (a CHILD of
-//     /work so the toolkit at /work/node_modules keeps resolving), the shared
-//     auth volume at /home/node/.claude, and a whitelist of env vars — the
-//     host process env is never forwarded wholesale.
+//     /work so the toolkit at /work/node_modules keeps resolving), the
+//     runtime-specific auth volume (/home/node/.claude or /home/node/.codex),
+//     and a whitelist of env vars — the host process env is never forwarded
+//     wholesale.
 //   - probe/kill/sweep helpers for preflight, cancel, and orphan cleanup.
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -33,13 +34,152 @@ import {
 const execFileAsync = promisify(execFile);
 
 export const SANDBOX_IMAGE_NAME = 'od-agent-sandbox';
-export const SANDBOX_AUTH_VOLUME = 'od-claude-auth';
 export const SANDBOX_CONTAINER_PREFIX = 'od-sbx-';
 export const SANDBOX_LABEL_KEY = 'od.sandbox';
 export const CONTAINER_PROJECT_DIR = '/work/app';
-const CONTAINER_AUTH_DIR = '/home/node/.claude';
 const CONTAINER_VITE_CACHE_DIR = '/work/.vite-cache';
 const DOCKER_TIMEOUT_MS = 10_000;
+
+export type SandboxRuntimeId = 'claude' | 'codex';
+export type SandboxAuthState = 'logged-in' | 'missing' | 'unknown';
+
+interface SandboxRuntimeSpec {
+  authVolume: string;
+  authDir: string;
+  authFile: string;
+  loginCommand: readonly string[];
+  versionBin: string;
+  forcedEnv: Readonly<Record<string, string>>;
+  forwardedEnvKeys: readonly string[];
+}
+
+const SANDBOX_RUNTIME_SPECS = {
+  claude: {
+    authVolume: 'od-claude-auth',
+    authDir: '/home/node/.claude',
+    authFile: '.credentials.json',
+    loginCommand: ['claude', '/login'] as const,
+    versionBin: 'claude',
+    forcedEnv: {
+      CLAUDE_CONFIG_DIR: '/home/node/.claude',
+    },
+    forwardedEnvKeys: ['OD_TOOL_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY'] as const,
+  },
+  codex: {
+    authVolume: 'od-codex-auth',
+    authDir: '/home/node/.codex',
+    authFile: 'auth.json',
+    loginCommand: ['codex', 'login', '--device-auth'] as const,
+    versionBin: 'codex',
+    forcedEnv: {
+      CODEX_HOME: '/home/node/.codex',
+    },
+    forwardedEnvKeys: ['OD_TOOL_TOKEN', 'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'CODEX_API_KEY'] as const,
+  },
+} as const satisfies Record<SandboxRuntimeId, SandboxRuntimeSpec>;
+
+export const SANDBOX_CLAUDE_AUTH_VOLUME = SANDBOX_RUNTIME_SPECS.claude.authVolume;
+export const SANDBOX_CODEX_AUTH_VOLUME = SANDBOX_RUNTIME_SPECS.codex.authVolume;
+export const SANDBOX_AUTH_VOLUME = SANDBOX_CLAUDE_AUTH_VOLUME;
+export const CONTAINER_CLAUDE_AUTH_DIR = SANDBOX_RUNTIME_SPECS.claude.authDir;
+export const CONTAINER_CODEX_AUTH_DIR = SANDBOX_RUNTIME_SPECS.codex.authDir;
+const CONTAINER_AUTH_DIR = CONTAINER_CLAUDE_AUTH_DIR;
+
+function sandboxRuntimeSpec(runtimeId: SandboxRuntimeId): SandboxRuntimeSpec {
+  return SANDBOX_RUNTIME_SPECS[runtimeId];
+}
+
+export function sandboxAuthVolume(runtimeId: SandboxRuntimeId): string {
+  return sandboxRuntimeSpec(runtimeId).authVolume;
+}
+
+export function sandboxAuthDir(runtimeId: SandboxRuntimeId): string {
+  return sandboxRuntimeSpec(runtimeId).authDir;
+}
+
+export function sandboxAuthFile(runtimeId: SandboxRuntimeId): string {
+  return sandboxRuntimeSpec(runtimeId).authFile;
+}
+
+export function sandboxRuntimeLoginCommand(runtimeId: SandboxRuntimeId, image: string): string {
+  const spec = sandboxRuntimeSpec(runtimeId);
+  const forcedEnv = Object.entries(spec.forcedEnv)
+    .map(([key, value]) => `-e ${key}=${value}`)
+    .join(' ');
+  return `docker run -it --rm -v ${spec.authVolume}:${spec.authDir} ${forcedEnv} ${image} ${spec.loginCommand.join(' ')}`;
+}
+
+export function sandboxRuntimeVersionBin(runtimeId: SandboxRuntimeId): string {
+  return sandboxRuntimeSpec(runtimeId).versionBin;
+}
+
+export function sandboxRuntimeForwardedEnvKeys(runtimeId: SandboxRuntimeId): readonly string[] {
+  return sandboxRuntimeSpec(runtimeId).forwardedEnvKeys;
+}
+
+export function sandboxRuntimeForcedEnv(runtimeId: SandboxRuntimeId): Readonly<Record<string, string>> {
+  return sandboxRuntimeSpec(runtimeId).forcedEnv;
+}
+
+export function sandboxCodexProfileName(runId: string): string {
+  return `od-${sanitizeToken(runId)}-mcp`;
+}
+
+export function sandboxCodexProfilePath(profileName: string): string {
+  const safeName = sanitizeToken(profileName);
+  if (!safeName) {
+    throw new Error('Invalid Codex profile name.');
+  }
+  return path.posix.join(CONTAINER_CODEX_AUTH_DIR, `${safeName}.config.toml`);
+}
+
+export function buildSandboxCodexProfileMaterializationScript(
+  profileName: string,
+  encodedToml: string,
+): string {
+  const safeName = sanitizeToken(profileName);
+  if (!safeName) {
+    throw new Error('Invalid Codex profile name.');
+  }
+  const finalPath = sandboxCodexProfilePath(safeName);
+  const lockDir = path.posix.join(CONTAINER_CODEX_AUTH_DIR, `.${safeName}.lock`);
+  return [
+    'set -eu',
+    `cd ${JSON.stringify(CONTAINER_CODEX_AUTH_DIR)}`,
+    `final=${JSON.stringify(finalPath)}`,
+    `lockdir=${JSON.stringify(lockDir)}`,
+    'tmp="$(mktemp ./.codex-profile.XXXXXX)"',
+    'cleanup() { rm -f "$tmp"; rmdir "$lockdir" 2>/dev/null || true; }',
+    'trap cleanup EXIT INT TERM',
+    'while ! mkdir "$lockdir" 2>/dev/null; do sleep 0.2; done',
+    `echo '${encodedToml}' | base64 -d > "$tmp"`,
+    'mv -f "$tmp" "$final"',
+    'rmdir "$lockdir"',
+  ].join('\n');
+}
+
+export async function materializeSandboxCodexProfile(
+  image: string,
+  profileName: string,
+  toml: string,
+): Promise<void> {
+  const encodedToml = Buffer.from(toml, 'utf8').toString('base64');
+  const script = buildSandboxCodexProfileMaterializationScript(profileName, encodedToml);
+  await docker(
+    [
+      'run',
+      '--rm',
+      '-v',
+      `${SANDBOX_CODEX_AUTH_VOLUME}:${CONTAINER_CODEX_AUTH_DIR}`,
+      '--entrypoint',
+      'sh',
+      image,
+      '-c',
+      script,
+    ],
+    30_000,
+  );
+}
 
 export interface ResolvedSandboxConfig {
   enabled: boolean;
@@ -210,14 +350,6 @@ export function rewriteUrlForContainer(url: string): string {
 // Env vars forwarded from the computed host agent env into the container.
 // Whitelist-only: everything else (HOME, PATH, shell secrets, host paths)
 // stays on the host. OD_DAEMON_URL / OD_PROJECT_DIR are rewritten, not copied.
-const FORWARD_ENV_KEYS = [
-  'OD_TOOL_TOKEN',
-  // Claude runtime knobs the user may have configured via agentCliEnv; the
-  // upstream spawn env already decided whether these should be present.
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_API_KEY',
-] as const;
-
 export interface SandboxWrapInput {
   /** Binary name INSIDE the image (e.g. `claude`), not the host launch path. */
   agentBin: string;
@@ -231,6 +363,7 @@ export interface SandboxWrapInput {
   daemonUrl: string;
   image: string;
   cfg: ResolvedSandboxConfig;
+  runtimeId?: SandboxRuntimeId;
 }
 
 export function wrapInvocationInSandbox(input: SandboxWrapInput): {
@@ -238,7 +371,19 @@ export function wrapInvocationInSandbox(input: SandboxWrapInput): {
   args: string[];
   containerName: string;
 } {
-  const { agentBin, args, env, cwd, runId, projectId, daemonUrl, image, cfg } = input;
+  const {
+    agentBin,
+    args,
+    env,
+    cwd,
+    runId,
+    projectId,
+    daemonUrl,
+    image,
+    cfg,
+    runtimeId = 'claude',
+  } = input;
+  const spec = sandboxRuntimeSpec(runtimeId);
   const containerName = sandboxContainerName(runId);
   const dockerArgs: string[] = [
     'run',
@@ -250,7 +395,7 @@ export function wrapInvocationInSandbox(input: SandboxWrapInput): {
     '--label', `${SANDBOX_LABEL_KEY}=1`,
     '--label', `od.run.id=${sanitizeToken(runId)}`,
     '-v', `${cwd}:${CONTAINER_PROJECT_DIR}`,
-    '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}`,
+    '-v', `${spec.authVolume}:${spec.authDir}`,
     '--tmpfs', '/tmp',
     '--pids-limit', '1024',
     '--cpus', String(cfg.cpus),
@@ -271,7 +416,10 @@ export function wrapInvocationInSandbox(input: SandboxWrapInput): {
       '-v', `uireact-cache-${sanitizeToken(projectId)}:${CONTAINER_VITE_CACHE_DIR}`,
     );
   }
-  for (const key of FORWARD_ENV_KEYS) {
+  for (const [key, value] of Object.entries(spec.forcedEnv)) {
+    dockerArgs.push('-e', `${key}=${value}`);
+  }
+  for (const key of sandboxRuntimeForwardedEnvKeys(runtimeId)) {
     const value = env[key];
     if (typeof value === 'string' && value) dockerArgs.push('-e', `${key}=${value}`);
   }
@@ -314,25 +462,23 @@ export async function dockerVolumePresent(volume: string): Promise<boolean> {
 }
 
 /**
- * Whether the shared auth volume holds Claude CLI credentials. Runs a
- * short-lived container to look inside the volume, so callers should treat
- * this as a slow probe (status command), not a per-spawn check.
+ * Read a runtime's credential file from its sandbox auth volume. This is a
+ * slow probe by design: it shells into the short-lived sandbox image rather
+ * than trying to inspect the host's Docker volume API surface.
  */
-/**
- * Read the Claude CLI credentials JSON from the shared auth volume (where
- * `od sandbox login` stored them). Used by the usage meter when the sandbox
- * owns Claude runs — the OAuth token lives in the container volume, not on the
- * host keychain/file. Returns the raw file content, or null if unreadable.
- */
-export async function readSandboxClaudeCredentials(image: string): Promise<string | null> {
+export async function readSandboxRuntimeCredentials(
+  image: string,
+  runtimeId: SandboxRuntimeId,
+): Promise<string | null> {
+  const spec = sandboxRuntimeSpec(runtimeId);
   try {
     return await docker(
       [
         'run', '--rm',
-        '-v', `${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR}:ro`,
+        '-v', `${spec.authVolume}:${spec.authDir}:ro`,
         '--entrypoint', 'cat',
         image,
-        `${CONTAINER_AUTH_DIR}/.credentials.json`,
+        `${spec.authDir}/${spec.authFile}`,
       ],
       30_000,
     );
@@ -358,8 +504,55 @@ export function credentialsCarryToken(raw: string | null): boolean {
   }
 }
 
+export function sandboxRuntimeAuthStateFromRaw(
+  runtimeId: SandboxRuntimeId,
+  raw: string | null,
+): SandboxAuthState {
+  if (!raw) return 'missing';
+  try {
+    if (runtimeId === 'claude') {
+      return credentialsCarryToken(raw) ? 'logged-in' : 'missing';
+    }
+    const parsed = JSON.parse(raw) as {
+      tokens?: { access_token?: unknown };
+      OPENAI_API_KEY?: unknown;
+    };
+    const oauthToken =
+      typeof parsed.tokens?.access_token === 'string' && parsed.tokens.access_token.length > 0
+        ? parsed.tokens.access_token
+        : typeof parsed.OPENAI_API_KEY === 'string' && parsed.OPENAI_API_KEY.length > 0
+          ? parsed.OPENAI_API_KEY
+          : '';
+    return oauthToken ? 'logged-in' : 'missing';
+  } catch {
+    return 'unknown';
+  }
+}
+
+export async function probeSandboxRuntimeAuthState(
+  image: string,
+  runtimeId: SandboxRuntimeId,
+): Promise<SandboxAuthState> {
+  const raw = await readSandboxRuntimeCredentials(image, runtimeId);
+  return sandboxRuntimeAuthStateFromRaw(runtimeId, raw);
+}
+
+/** Backwards-compatible Claude probe used by the existing routes. */
+export async function readSandboxClaudeCredentials(image: string): Promise<string | null> {
+  return readSandboxRuntimeCredentials(image, 'claude');
+}
+
+/** Backwards-compatible Claude auth check used by the existing routes. */
 export async function sandboxAuthLoggedIn(image: string): Promise<boolean> {
-  return credentialsCarryToken(await readSandboxClaudeCredentials(image));
+  return (await probeSandboxRuntimeAuthState(image, 'claude')) === 'logged-in';
+}
+
+export async function readSandboxCodexCredentials(image: string): Promise<string | null> {
+  return readSandboxRuntimeCredentials(image, 'codex');
+}
+
+export async function sandboxCodexAuthLoggedIn(image: string): Promise<boolean> {
+  return (await probeSandboxRuntimeAuthState(image, 'codex')) === 'logged-in';
 }
 
 /**
@@ -684,7 +877,15 @@ export async function switchSandboxAccount(image: string, label: string): Promis
  *  writing credentials into the shared volume). Shared by the CLI and the
  *  "add account" terminal launcher. */
 export function sandboxLoginCommand(image: string): string {
-  return `docker run -it --rm -v ${SANDBOX_AUTH_VOLUME}:${CONTAINER_AUTH_DIR} ${image} claude /login`;
+  return sandboxRuntimeLoginCommand('claude', image);
+}
+
+/** Runtime-specific interactive login command, used by the terminal launcher. */
+export function sandboxRuntimeInteractiveLoginCommand(
+  runtimeId: SandboxRuntimeId,
+  image: string,
+): string {
+  return sandboxRuntimeLoginCommand(runtimeId, image);
 }
 
 // The login TUI runs INSIDE the container, so its own "open browser" step
@@ -960,6 +1161,169 @@ export function submitEmbeddedLoginCode(code: string): SandboxEmbeddedLoginStatu
   return getEmbeddedLoginStatus();
 }
 
+// ── Embedded (no-terminal) Codex device-auth login ─────────────────────────
+// Separate from the Claude flow so both runtime identities can be logged in
+// and probed independently. Codex stores its file-backed auth in
+// `od-codex-auth` at `/home/node/.codex`, and the device-auth command is
+// `codex login --device-auth`.
+
+let codexDeviceLogin: EmbeddedLoginSession | null = null;
+
+function teardownCodexDeviceLogin(session: EmbeddedLoginSession): void {
+  if (session.settleTimer) clearTimeout(session.settleTimer);
+  if (session.verifyTimer) clearInterval(session.verifyTimer);
+  clearTimeout(session.deadline);
+  try {
+    session.child.kill('SIGKILL');
+  } catch {
+    /* already gone */
+  }
+  void docker(['rm', '-f', session.containerName], 10_000).catch(() => {});
+}
+
+async function sweepCodexDeviceLoginContainers(): Promise<void> {
+  try {
+    const out = await docker(['ps', '-a', '--filter', 'name=od.sandbox.codex.login.', '--format', '{{.Names}}']);
+    for (const name of out.split('\n').filter(Boolean)) {
+      await docker(['rm', '-f', name], 10_000).catch(() => {});
+    }
+  } catch {
+    /* docker down — nothing to sweep */
+  }
+}
+
+export function getCodexDeviceAuthLoginStatus(): SandboxEmbeddedLoginStatus {
+  if (!codexDeviceLogin) return { phase: 'idle', url: null, error: null };
+  const { phase, url, error } = codexDeviceLogin;
+  return { phase, url, error };
+}
+
+export function cancelCodexDeviceAuthLogin(): SandboxEmbeddedLoginStatus {
+  if (codexDeviceLogin) {
+    teardownCodexDeviceLogin(codexDeviceLogin);
+    codexDeviceLogin = null;
+  }
+  return getCodexDeviceAuthLoginStatus();
+}
+
+export function startCodexDeviceAuthLogin(image: string): SandboxEmbeddedLoginStatus {
+  cancelCodexDeviceAuthLogin();
+  void sweepCodexDeviceLoginContainers();
+  const containerName = `od.sandbox.codex.login.${Date.now()}`;
+  const spec = sandboxRuntimeSpec('codex');
+  const child = spawn(
+    'docker',
+    [
+      'run',
+      '-i',
+      '--rm',
+      '--name',
+      containerName,
+      '-v',
+      `${spec.authVolume}:${spec.authDir}`,
+      '-e',
+      `CODEX_HOME=${spec.authDir}`,
+      '--entrypoint',
+      'sh',
+      image,
+      '-c',
+      `script -qec ${JSON.stringify(spec.loginCommand.join(' '))} /dev/null`,
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  const session: EmbeddedLoginSession = {
+    phase: 'starting',
+    url: null,
+    error: null,
+    image,
+    containerName,
+    child,
+    buf: '',
+    promptsSent: 0,
+    settleTimer: null,
+    verifyTimer: null,
+    deadline: setTimeout(() => {
+      if (codexDeviceLogin === session && session.phase !== 'done') {
+        session.phase = 'error';
+        session.error = 'Quá thời gian đăng nhập Codex (10 phút) — thử lại.';
+        teardownCodexDeviceLogin(session);
+      }
+    }, EMBEDDED_LOGIN_TIMEOUT_MS),
+  };
+  session.deadline.unref();
+  codexDeviceLogin = session;
+
+  const scheduleNudge = () => {
+    if (session.settleTimer) clearTimeout(session.settleTimer);
+    session.settleTimer = setTimeout(() => {
+      if (codexDeviceLogin !== session || session.phase !== 'starting') return;
+      if (session.promptsSent >= EMBEDDED_LOGIN_MAX_PROMPTS) {
+        session.phase = 'error';
+        session.error = 'Không đi hết được các bước của trình đăng nhập Codex — dùng cách mở Terminal.';
+        teardownCodexDeviceLogin(session);
+        return;
+      }
+      session.promptsSent += 1;
+      session.child.stdin?.write('\r');
+      scheduleNudge();
+    }, 1500);
+    session.settleTimer.unref();
+  };
+
+  const finishIfLoggedIn = () => {
+    void probeSandboxRuntimeAuthState(session.image, 'codex').then((state) => {
+      if (codexDeviceLogin !== session || session.phase === 'done' || session.phase === 'error') return;
+      if (state === 'logged-in') {
+        session.phase = 'done';
+        teardownCodexDeviceLogin(session);
+      }
+    });
+  };
+
+  const onData = (chunk: Buffer) => {
+    if (codexDeviceLogin !== session) return;
+    session.buf = (session.buf + chunk.toString()).slice(-EMBEDDED_LOGIN_BUF_MAX);
+    if (session.phase !== 'starting') {
+      finishIfLoggedIn();
+      return;
+    }
+    const url = extractOauthUrl(stripAnsi(session.buf));
+    if (url) {
+      if (session.settleTimer) clearTimeout(session.settleTimer);
+      session.phase = 'awaiting-code';
+      session.url = url;
+      openHostBrowser(url);
+      finishIfLoggedIn();
+      return;
+    }
+    scheduleNudge();
+  };
+  child.stdout?.on('data', onData);
+  child.stderr?.on('data', onData);
+  child.on('error', (err) => {
+    if (codexDeviceLogin !== session) return;
+    session.phase = 'error';
+    session.error = `Không chạy được docker: ${err.message}`;
+    teardownCodexDeviceLogin(session);
+  });
+  child.on('close', () => {
+    if (codexDeviceLogin !== session) return;
+    if (session.phase === 'done' || session.phase === 'error') return;
+    void probeSandboxRuntimeAuthState(session.image, 'codex').then((state) => {
+      if (codexDeviceLogin !== session) return;
+      if (state === 'logged-in') {
+        session.phase = 'done';
+      } else {
+        session.phase = 'error';
+        session.error = 'Phiên đăng nhập Codex kết thúc trước khi hoàn tất — thử lại.';
+      }
+      teardownCodexDeviceLogin(session);
+    });
+  });
+  scheduleNudge();
+  return getCodexDeviceAuthLoginStatus();
+}
+
 /**
  * Best-effort: open a HOST terminal window running the interactive Claude login
  * (a full-screen TUI that can't be embedded in the web UI). Returns whether a
@@ -968,7 +1332,19 @@ export function submitEmbeddedLoginCode(code: string): SandboxEmbeddedLoginStatu
  * OAuth URL in the host browser (see watchLoginLogForOauthUrl).
  */
 export function openSandboxLoginTerminal(image: string): { launched: boolean; command: string; message?: string } {
-  const command = sandboxLoginCommand(image);
+  return openSandboxRuntimeLoginTerminal('claude', image);
+}
+
+/**
+ * Best-effort: open a HOST terminal window running a runtime-specific login
+ * command. Returns whether a window was opened; the caller shows the raw
+ * command as a copy-paste fallback.
+ */
+export function openSandboxRuntimeLoginTerminal(
+  runtimeId: SandboxRuntimeId,
+  image: string,
+): { launched: boolean; command: string; message?: string } {
+  const command = sandboxRuntimeLoginCommand(runtimeId, image);
   try {
     if (process.platform === 'darwin') {
       const id = Date.now();
@@ -982,7 +1358,7 @@ export function openSandboxLoginTerminal(image: string): { launched: boolean; co
       const cmdPath = path.join(tmpdir(), `od-sandbox-login-${id}.command`);
       writeFileSync(
         cmdPath,
-        `#!/bin/zsh\nclear\necho "Đăng nhập Claude — làm theo hướng dẫn bên dưới; trình duyệt sẽ tự mở."\n${wrapped}\n`,
+        `#!/bin/zsh\nclear\necho "Đăng nhập ${runtimeId === 'codex' ? 'Codex' : 'Claude'} — làm theo hướng dẫn bên dưới; trình duyệt sẽ tự mở."\n${wrapped}\n`,
         { mode: 0o755 },
       );
       spawn('open', [cmdPath], { detached: true, stdio: 'ignore' }).unref();
@@ -991,25 +1367,55 @@ export function openSandboxLoginTerminal(image: string): { launched: boolean; co
         launched: true,
         command,
         message:
-          'Đã mở Terminal — trình duyệt sẽ tự bật trang đăng nhập sau vài giây; xác nhận ở đó rồi dán mã vào Terminal, xong quay lại Lưu.',
+          runtimeId === 'codex'
+            ? 'Đã mở Terminal — trình duyệt sẽ tự bật trang đăng nhập sau vài giây; xác nhận ở đó rồi quay lại Lưu.'
+            : 'Đã mở Terminal — trình duyệt sẽ tự bật trang đăng nhập sau vài giây; xác nhận ở đó rồi dán mã vào Terminal, xong quay lại Lưu.',
       };
     }
     if (process.platform === 'win32') {
       spawn('cmd', ['/c', 'start', 'cmd', '/k', command], { detached: true, stdio: 'ignore' }).unref();
-      return { launched: true, command, message: 'Đã mở cửa sổ lệnh — hoàn tất đăng nhập rồi quay lại Lưu.' };
+      return {
+        launched: true,
+        command,
+        message:
+          runtimeId === 'codex'
+            ? 'Đã mở cửa sổ lệnh — hoàn tất đăng nhập rồi quay lại Lưu.'
+            : 'Đã mở cửa sổ lệnh — hoàn tất đăng nhập rồi quay lại Lưu.',
+      };
     }
     // Linux: try the common terminal emulators, first hit wins.
     for (const term of ['x-terminal-emulator', 'gnome-terminal', 'konsole', 'xterm']) {
       try {
         spawn(term, ['-e', 'sh', '-c', `${command}; exec sh`], { detached: true, stdio: 'ignore' }).unref();
-        return { launched: true, command, message: 'Đã mở terminal — hoàn tất đăng nhập rồi quay lại Lưu.' };
+        return {
+          launched: true,
+          command,
+          message:
+            runtimeId === 'codex'
+              ? 'Đã mở terminal — hoàn tất đăng nhập rồi quay lại Lưu.'
+              : 'Đã mở terminal — hoàn tất đăng nhập rồi quay lại Lưu.',
+        };
       } catch {
         /* try the next emulator */
       }
     }
-    return { launched: false, command, message: 'Không mở được terminal — chạy lệnh này thủ công rồi quay lại Lưu.' };
+    return {
+      launched: false,
+      command,
+      message:
+        runtimeId === 'codex'
+          ? 'Không mở được terminal — chạy lệnh này thủ công rồi quay lại Lưu.'
+          : 'Không mở được terminal — chạy lệnh này thủ công rồi quay lại Lưu.',
+    };
   } catch {
-    return { launched: false, command, message: 'Không mở được terminal — chạy lệnh này thủ công rồi quay lại Lưu.' };
+    return {
+      launched: false,
+      command,
+      message:
+        runtimeId === 'codex'
+          ? 'Không mở được terminal — chạy lệnh này thủ công rồi quay lại Lưu.'
+          : 'Không mở được terminal — chạy lệnh này thủ công rồi quay lại Lưu.',
+    };
   }
 }
 
@@ -1063,7 +1469,7 @@ export interface SandboxRuntimeStatus {
  */
 export async function sandboxRuntimeStatus(
   image: string,
-  agentBin = 'claude',
+  runtimeId: SandboxRuntimeId = 'claude',
 ): Promise<SandboxRuntimeStatus> {
   if (!(await dockerAvailable())) {
     return { dockerRunning: false, imagePresent: false, authLoggedIn: false, version: null };
@@ -1072,12 +1478,17 @@ export async function sandboxRuntimeStatus(
     return { dockerRunning: true, imagePresent: false, authLoggedIn: false, version: null };
   }
   const [authLoggedIn, version] = await Promise.all([
-    sandboxAuthLoggedIn(image),
-    docker(['run', '--rm', image, agentBin, '--version'], 30_000)
+    probeSandboxRuntimeAuthState(image, runtimeId),
+    docker(['run', '--rm', image, sandboxRuntimeVersionBin(runtimeId), '--version'], 30_000)
       .then((out) => out.split('\n')[0] ?? null)
       .catch(() => null),
   ]);
-  return { dockerRunning: true, imagePresent: true, authLoggedIn, version };
+  return {
+    dockerRunning: true,
+    imagePresent: true,
+    authLoggedIn: authLoggedIn === 'logged-in',
+    version,
+  };
 }
 
 export async function killSandboxContainer(containerName: string): Promise<boolean> {
@@ -1127,7 +1538,10 @@ export interface SandboxPreflightResult {
  * back to host spawn would drop the security boundary without anyone
  * noticing.
  */
-export async function sandboxPreflight(image: string): Promise<SandboxPreflightResult> {
+export async function sandboxPreflight(
+  image: string,
+  runtimeId: SandboxRuntimeId = 'claude',
+): Promise<SandboxPreflightResult> {
   if (!(await dockerAvailable())) {
     return {
       ok: false,
@@ -1140,10 +1554,14 @@ export async function sandboxPreflight(image: string): Promise<SandboxPreflightR
       reason: `Sandbox image ${image} is missing. Build it with: od sandbox build`,
     };
   }
-  if (!(await dockerVolumePresent(SANDBOX_AUTH_VOLUME))) {
+  const authVolume = sandboxAuthVolume(runtimeId);
+  if (!(await dockerVolumePresent(authVolume))) {
     return {
       ok: false,
-      reason: `Sandbox auth volume ${SANDBOX_AUTH_VOLUME} is missing. Log in once with: od sandbox login`,
+      reason:
+        runtimeId === 'codex'
+          ? `Sandbox auth volume ${authVolume} is missing. Log in once with: codex login --device-auth`
+          : `Sandbox auth volume ${authVolume} is missing. Log in once with: od sandbox login`,
     };
   }
   return { ok: true };
@@ -1242,6 +1660,7 @@ export async function ensureSandboxImage(
       const platform = nativeDockerPlatform();
       const toolkit = readFileSync(path.join(builderDir, 'base', 'toolkit.version'), 'utf8').trim();
       const claude = readFileSync(path.join(builderDir, 'sandbox', 'claude.version'), 'utf8').trim();
+      const codex = readFileSync(path.join(builderDir, 'sandbox', 'codex.version'), 'utf8').trim();
       const baseImage = `uireact-base:${toolkit}`;
 
       // Pull-first: grab the published images off the public registry. The
@@ -1281,6 +1700,7 @@ export async function ensureSandboxImage(
           '--platform', platform,
           '--build-arg', `TOOLKIT_VERSION=${toolkit}`,
           '--build-arg', `CLAUDE_CODE_VERSION=${claude}`,
+          '--build-arg', `CODEX_VERSION=${codex}`,
           '-t', image,
           '-t', `${SANDBOX_IMAGE_NAME}:latest`,
           '-f', path.join(builderDir, 'sandbox', 'Dockerfile'),

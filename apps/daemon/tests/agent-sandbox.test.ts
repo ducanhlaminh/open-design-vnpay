@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildSandboxCodexProfileMaterializationScript,
+  sandboxAuthDir,
+  sandboxAuthFile,
+  sandboxAuthVolume,
+  sandboxCodexProfileName,
   resolveSandboxConfig,
   rewriteUrlForContainer,
   sandboxContainerName,
+  sandboxRuntimeAuthStateFromRaw,
+  sandboxRuntimeForwardedEnvKeys,
+  sandboxRuntimeLoginCommand,
+  sandboxRuntimeVersionBin,
   shouldSandboxRun,
   wrapInvocationInSandbox,
 } from '../src/agent-sandbox.js';
@@ -191,5 +200,86 @@ describe('wrapInvocationInSandbox', () => {
     });
     expect(args.join(' ')).not.toContain('uireact-cache');
     expect(args.join(' ')).not.toContain('OD_PROJECT_ID');
+  });
+
+  it('wraps Codex runs against the Codex auth volume and forwards only OpenAI/Codex env', () => {
+    const { args } = wrapInvocationInSandbox({
+      agentBin: 'codex',
+      args: ['login', '--device-auth'],
+      env: {
+        OPENAI_API_KEY: 'sk-openai',
+        OPENAI_BASE_URL: 'https://api.example',
+        CODEX_API_KEY: 'sk-codex',
+        ANTHROPIC_API_KEY: 'should-not-forward',
+      },
+      cwd: '/data/projects/p1/docs-to-react',
+      runId: 'run-codex',
+      projectId: 'p1',
+      daemonUrl: 'http://127.0.0.1:7456',
+      image: 'od-agent-sandbox:0.1.0',
+      cfg,
+      runtimeId: 'codex',
+    });
+    const mounts = args.flatMap((a, i) => (a === '-v' ? [args[i + 1]] : []));
+    const envs = args.flatMap((a, i) => (a === '-e' ? [args[i + 1]] : []));
+    expect(mounts).toContain('od-codex-auth:/home/node/.codex');
+    expect(envs).toContain('CODEX_HOME=/home/node/.codex');
+    expect(envs).toContain('OPENAI_API_KEY=sk-openai');
+    expect(envs).toContain('OPENAI_BASE_URL=https://api.example');
+    expect(envs).toContain('CODEX_API_KEY=sk-codex');
+    expect(envs.join(' ')).not.toContain('ANTHROPIC_API_KEY');
+  });
+});
+
+describe('Codex sandbox helpers', () => {
+  it('keeps Codex auth storage, login command, env whitelist, and version probing separate from Claude', () => {
+    expect(sandboxAuthVolume('claude')).toBe('od-claude-auth');
+    expect(sandboxAuthVolume('codex')).toBe('od-codex-auth');
+    expect(sandboxAuthDir('claude')).toBe('/home/node/.claude');
+    expect(sandboxAuthDir('codex')).toBe('/home/node/.codex');
+    expect(sandboxAuthFile('claude')).toBe('.credentials.json');
+    expect(sandboxAuthFile('codex')).toBe('auth.json');
+    expect(sandboxRuntimeVersionBin('claude')).toBe('claude');
+    expect(sandboxRuntimeVersionBin('codex')).toBe('codex');
+    expect(sandboxRuntimeForwardedEnvKeys('codex')).toEqual(
+      expect.arrayContaining(['OD_TOOL_TOKEN', 'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'CODEX_API_KEY']),
+    );
+    const command = sandboxRuntimeLoginCommand('codex', 'od-agent-sandbox:0.1.0');
+    expect(command).toContain('docker run -it --rm');
+    expect(command).toContain('-v od-codex-auth:/home/node/.codex');
+    expect(command).toContain('-e CODEX_HOME=/home/node/.codex');
+    expect(command).toContain('codex login --device-auth');
+  });
+
+  it('derives Codex profile names and materialization scripts without touching user config', () => {
+    expect(sandboxCodexProfileName('run/../evil x')).toBe('od-run-..-evil-x-mcp');
+    const script = buildSandboxCodexProfileMaterializationScript(
+      'od-run-42-mcp',
+      Buffer.from('mcpServers = {}', 'utf8').toString('base64'),
+    );
+    expect(script).toContain('cd "/home/node/.codex"');
+    expect(script).toContain('od-run-42-mcp.config.toml');
+    expect(script).toContain('mkdir "$lockdir"');
+    expect(script).toContain('mv -f "$tmp" "$final"');
+    expect(script).toContain('base64 -d');
+    expect(script).not.toContain('/home/node/.codex/config.toml');
+  });
+
+  it('parses runtime auth files into logged-in, missing, and unknown states', () => {
+    expect(
+      sandboxRuntimeAuthStateFromRaw(
+        'claude',
+        JSON.stringify({ claudeAiOauth: { accessToken: 'claude-token' } }),
+      ),
+    ).toBe('logged-in');
+    expect(
+      sandboxRuntimeAuthStateFromRaw(
+        'codex',
+        JSON.stringify({ tokens: { access_token: 'codex-token' } }),
+      ),
+    ).toBe('logged-in');
+    expect(sandboxRuntimeAuthStateFromRaw('codex', JSON.stringify({}))).toBe('missing');
+    expect(sandboxRuntimeAuthStateFromRaw('codex', 'not json')).toBe('unknown');
+    expect(sandboxRuntimeAuthStateFromRaw('claude', null)).toBe('missing');
   });
 });

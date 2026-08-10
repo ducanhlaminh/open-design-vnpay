@@ -7,6 +7,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 version="$(tr -d '[:space:]' < "$here/sandbox.version")"
 claude_version="$(tr -d '[:space:]' < "$here/claude.version")"
+codex_version="$(tr -d '[:space:]' < "$here/codex.version")"
 toolkit_version="$(tr -d '[:space:]' < "$here/../base/toolkit.version")"
 image="od-agent-sandbox:$version"
 
@@ -75,11 +76,12 @@ case "$(uname -m)" in
 esac
 platform="${OD_DOCKER_PLATFORM:-$native}"
 
-echo "[sandbox] building $image ($platform, base uireact-base:$toolkit_version, claude $claude_version)…"
+echo "[sandbox] building $image ($platform, base uireact-base:$toolkit_version, claude $claude_version, codex $codex_version)…"
 docker build \
   --platform "$platform" \
   --build-arg TOOLKIT_VERSION="$toolkit_version" \
   --build-arg CLAUDE_CODE_VERSION="$claude_version" \
+  --build-arg CODEX_VERSION="$codex_version" \
   -t "$image" \
   -t "od-agent-sandbox:latest" \
   -f "$here/Dockerfile" \
