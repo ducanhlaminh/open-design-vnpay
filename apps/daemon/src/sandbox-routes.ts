@@ -1,12 +1,24 @@
-// Agent-in-sandbox status surface. One read-only endpoint: the web Settings
-// card and `od sandbox status` both consume it. Enable/disable persists
-// through the existing `PUT /api/app-config` (`sandbox` section) — no
-// dedicated mutation endpoint here. Build/login are terminal-interactive
-// docker operations and live in the CLI (`od sandbox build|login`), which
-// resolves the scripts through `builderDir` from this response.
+// Agent-in-sandbox status surface. The web Settings card and `od sandbox
+// status` both consume it. Enable/disable persists through the existing
+// `PUT /api/app-config` (`sandbox` section) — no dedicated mutation endpoint
+// here. Build/login are terminal-interactive docker operations and live in the
+// CLI (`od sandbox build|login`), which resolves the scripts through
+// `builderDir` from this response.
+//
+// This module also owns the Codex device-login session state machine. The
+// device flow is specific to the Docker sandbox so it lives next to the other
+// sandbox auth routes, while the fallback resolver is exported for server.ts to
+// keep agent selection in one place.
 import path from 'node:path';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { Express, Response } from 'express';
 import type {
+  SandboxCodexDeviceLoginStatus,
+  SandboxRuntimeAuthStatus,
+  SandboxRuntimeId,
+  SandboxRuntimeLoginMethod,
+  SandboxRuntimeStatus,
   SandboxStatusResponse,
   SandboxAccountsResponse,
   SandboxAccountsCheckResponse,
@@ -39,6 +51,325 @@ import {
   SANDBOX_IMAGE_NAME,
 } from './agent-sandbox.js';
 
+const execFileAsync = promisify(execFile);
+const SANDBOX_CODEX_AUTH_VOLUME = 'od-codex-auth';
+const SANDBOX_CODEX_HOME = '/home/node/.codex';
+const SANDBOX_RUNTIME_IDS: readonly SandboxRuntimeId[] = ['claude', 'codex'];
+const SANDBOX_RUNTIME_LOGIN_METHODS: Record<SandboxRuntimeId, SandboxRuntimeLoginMethod> = {
+  claude: 'interactive',
+  codex: 'device',
+};
+
+export function sandboxRuntimeIsGated(
+  cfg: { enabled: boolean; runtimes: string[]; skills: string[] },
+  runtimeId: SandboxRuntimeId,
+): boolean {
+  return (
+    cfg.enabled &&
+    cfg.skills.includes('*') &&
+    (cfg.runtimes.includes('*') || cfg.runtimes.includes(runtimeId))
+  );
+}
+
+export function resolveSandboxFallbackRuntimeId(
+  cfg: { enabled: boolean; runtimes: string[]; skills: string[] },
+): SandboxRuntimeId | null {
+  if (sandboxRuntimeIsGated(cfg, 'claude')) return 'claude';
+  if (sandboxRuntimeIsGated(cfg, 'codex')) return 'codex';
+  return null;
+}
+
+async function dockerText(args: string[], timeoutMs = 10_000): Promise<string> {
+  const { stdout } = await execFileAsync('docker', args, { timeout: timeoutMs });
+  return stdout.trim();
+}
+
+async function dockerPresent(args: string[], timeoutMs = 10_000): Promise<boolean> {
+  try {
+    await dockerText(args, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function probeRuntimeVersion(image: string, runtimeId: SandboxRuntimeId): Promise<string | null> {
+  try {
+    return (await dockerText(['run', '--rm', image, runtimeId, '--version'], 30_000)).split('\n')[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function runtimeAuthVolume(runtimeId: SandboxRuntimeId): string {
+  return runtimeId === 'claude' ? SANDBOX_AUTH_VOLUME : SANDBOX_CODEX_AUTH_VOLUME;
+}
+
+function runtimeLoginMethod(runtimeId: SandboxRuntimeId): SandboxRuntimeLoginMethod {
+  return SANDBOX_RUNTIME_LOGIN_METHODS[runtimeId];
+}
+
+function authStatusFromText(text: string, runtimeId: SandboxRuntimeId): SandboxRuntimeAuthStatus {
+  const normalized = text.toLowerCase();
+  if (runtimeId === 'claude') {
+    if (normalized.includes('logged in') || normalized.includes('authenticated')) return 'logged-in';
+    if (normalized.includes('not logged in') || normalized.includes('sign in') || normalized.includes('login')) {
+      return 'missing';
+    }
+    return 'unknown';
+  }
+  if (normalized.includes('logged in') || normalized.includes('authenticated')) return 'logged-in';
+  if (normalized.includes('not logged in') || normalized.includes('sign in') || normalized.includes('login')) {
+    return 'missing';
+  }
+  return 'unknown';
+}
+
+async function probeRuntimeAuthStatus(image: string, runtimeId: SandboxRuntimeId): Promise<SandboxRuntimeAuthStatus> {
+  if (runtimeId === 'claude') {
+    return (await sandboxAuthLoggedIn(image)) ? 'logged-in' : 'missing';
+  }
+  try {
+    const text = await dockerText(
+      ['run', '--rm', '-v', `${SANDBOX_CODEX_AUTH_VOLUME}:${SANDBOX_CODEX_HOME}`, image, 'codex', 'login', 'status'],
+      30_000,
+    );
+    return authStatusFromText(text, runtimeId);
+  } catch (err) {
+    const stdout = typeof err === 'object' && err && 'stdout' in err ? String((err as { stdout?: unknown }).stdout ?? '') : '';
+    const stderr = typeof err === 'object' && err && 'stderr' in err ? String((err as { stderr?: unknown }).stderr ?? '') : '';
+    return authStatusFromText(`${stdout}\n${stderr}`, runtimeId);
+  }
+}
+
+export async function buildSandboxRuntimeStatuses(
+  image: string,
+  probeAuth: boolean,
+  dockerOk: boolean,
+): Promise<SandboxRuntimeStatus[]> {
+  const imageAvailable = dockerOk && (await dockerPresent(['image', 'inspect', '--format', '{{.Id}}', image]));
+  return Promise.all(
+    SANDBOX_RUNTIME_IDS.map(async (runtimeId) => {
+      const authVolume = runtimeAuthVolume(runtimeId);
+      const authVolumeAvailable = dockerOk && (await dockerPresent(['volume', 'inspect', '--format', '{{.Name}}', authVolume]));
+      const authStatus =
+        !dockerOk || !imageAvailable
+          ? 'unknown'
+          : !authVolumeAvailable
+            ? 'missing'
+          : probeAuth
+            ? await probeRuntimeAuthStatus(image, runtimeId)
+            : 'unknown';
+      return {
+        id: runtimeId,
+        version: imageAvailable ? await probeRuntimeVersion(image, runtimeId) : null,
+        imageAvailable,
+        authVolume,
+        authVolumeAvailable,
+        authStatus,
+        loginMethod: runtimeLoginMethod(runtimeId),
+      };
+    }),
+  );
+}
+
+type CodexDeviceLoginSession = {
+  phase: SandboxCodexDeviceLoginStatus['phase'];
+  verificationUrl: string | null;
+  userCode: string | null;
+  error: string | null;
+  image: string;
+  child: ChildProcess;
+  output: string;
+  verifyTimer: NodeJS.Timeout | null;
+  deadline: NodeJS.Timeout;
+};
+
+let codexDeviceLogin: CodexDeviceLoginSession | null = null;
+
+function codexDeviceLoginStatus(): SandboxCodexDeviceLoginStatus {
+  if (!codexDeviceLogin) return { phase: 'done', verificationUrl: null, userCode: null, error: null };
+  const { phase, verificationUrl, userCode, error } = codexDeviceLogin;
+  return { phase, verificationUrl, userCode, error };
+}
+
+function clearCodexDeviceLogin(): void {
+  if (codexDeviceLogin) {
+    if (codexDeviceLogin.verifyTimer) clearInterval(codexDeviceLogin.verifyTimer);
+    clearTimeout(codexDeviceLogin.deadline);
+    try {
+      codexDeviceLogin.child.kill('SIGKILL');
+    } catch {
+      /* already stopped */
+    }
+    codexDeviceLogin = null;
+  }
+}
+
+function cancelCodexDeviceLogin(): SandboxCodexDeviceLoginStatus {
+  if (codexDeviceLogin) {
+    if (codexDeviceLogin.verifyTimer) clearInterval(codexDeviceLogin.verifyTimer);
+    clearTimeout(codexDeviceLogin.deadline);
+    try {
+      codexDeviceLogin.child.kill('SIGKILL');
+    } catch {
+      /* already stopped */
+    }
+    codexDeviceLogin.phase = 'error';
+    codexDeviceLogin.error = 'Đăng nhập Codex đã bị hủy.';
+  }
+  return codexDeviceLoginStatus();
+}
+
+function parseCodexDeviceLoginOutput(output: string): { verificationUrl: string | null; userCode: string | null } {
+  const compact = output.replace(/\r/g, '\n');
+  const urlMatch = compact.match(/https:\/\/[^\s]+\/codex\/device[^\s]*/i) ?? compact.match(/https:\/\/[^\s]+/i);
+  const codeMatch =
+    compact.match(/\b[A-Z0-9]{4}(?:-[A-Z0-9]{4})+\b/i) ??
+    compact.match(/\b[A-Z0-9]{8,12}\b/i);
+  return {
+    verificationUrl: urlMatch ? urlMatch[0] : null,
+    userCode: codeMatch ? codeMatch[0] : null,
+  };
+}
+
+function startCodexDeviceLogin(image: string): SandboxCodexDeviceLoginStatus {
+  clearCodexDeviceLogin();
+  const child = spawn(
+    'docker',
+    [
+      'run',
+      '-i',
+      '--rm',
+      '-v',
+      `${SANDBOX_CODEX_AUTH_VOLUME}:${SANDBOX_CODEX_HOME}`,
+      image,
+      'codex',
+      'login',
+      '--device-auth',
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  const session: CodexDeviceLoginSession = {
+    phase: 'starting',
+    verificationUrl: null,
+    userCode: null,
+    error: null,
+    image,
+    child,
+    output: '',
+    verifyTimer: null,
+    deadline: setTimeout(() => {
+      if (codexDeviceLogin !== session) return;
+      session.phase = 'error';
+      session.error = 'Đăng nhập Codex hết thời gian chờ — thử lại.';
+      if (session.verifyTimer) clearInterval(session.verifyTimer);
+      clearTimeout(session.deadline);
+      try {
+        session.child.kill('SIGKILL');
+      } catch {
+        /* already stopped */
+      }
+    }, 10 * 60_000),
+  };
+  session.deadline.unref();
+  const onData = (chunk: Buffer) => {
+    if (codexDeviceLogin !== session) return;
+    session.output = `${session.output}${chunk.toString('utf8')}`.slice(-16_384);
+    if (session.phase === 'starting' || session.phase === 'awaiting-user') {
+      const parsed = parseCodexDeviceLoginOutput(session.output);
+      if (parsed.verificationUrl) session.verificationUrl = parsed.verificationUrl;
+      if (parsed.userCode) session.userCode = parsed.userCode;
+      if (session.verificationUrl && session.userCode) {
+        session.phase = 'awaiting-user';
+      }
+    }
+  };
+  child.stdout?.on('data', onData);
+  child.stderr?.on('data', onData);
+  child.on('error', (err) => {
+    if (codexDeviceLogin !== session) return;
+    session.phase = 'error';
+    session.error = `Không chạy được docker: ${err.message}`;
+    if (session.verifyTimer) clearInterval(session.verifyTimer);
+    clearTimeout(session.deadline);
+  });
+  child.on('close', () => {
+    if (codexDeviceLogin !== session) return;
+    session.phase = 'verifying';
+    session.verifyTimer = setInterval(() => {
+      if (codexDeviceLogin !== session) return;
+      void probeRuntimeAuthStatus(image, 'codex').then((status) => {
+        if (codexDeviceLogin !== session) return;
+        if (status === 'logged-in') {
+          session.phase = 'done';
+          if (session.verifyTimer) clearInterval(session.verifyTimer);
+          clearTimeout(session.deadline);
+          return;
+        }
+        if (status === 'missing') {
+          session.phase = 'error';
+          session.error = 'Codex chưa xác thực xong — thử lại.';
+          if (session.verifyTimer) clearInterval(session.verifyTimer);
+          clearTimeout(session.deadline);
+        }
+      });
+    }, 2000);
+    session.verifyTimer.unref();
+  });
+  codexDeviceLogin = session;
+  return codexDeviceLoginStatus();
+}
+
+async function resolveSandboxStatusBody(
+  req: { query: Record<string, unknown> },
+  ctx: RegisterSandboxRoutesDeps,
+): Promise<SandboxStatusResponse> {
+  const { RUNTIME_DATA_DIR, SKILLS_DIR } = ctx.paths;
+  const builderDir = path.join(SKILLS_DIR, 'ui-react', 'builder');
+  const prefs = await readAppConfig(RUNTIME_DATA_DIR).catch(
+    (): AppConfigPrefs => ({}),
+  );
+  const cfg = resolveSandboxConfig(prefs.sandbox, process.env);
+
+  let image = `${SANDBOX_IMAGE_NAME}:unknown`;
+  let claudeVersion: string | null = null;
+  try {
+    image = sandboxImageTag(builderDir);
+    const { readFileSync } = await import('node:fs');
+    claudeVersion = readFileSync(
+      path.join(builderDir, 'sandbox', 'claude.version'),
+      'utf8',
+    ).trim();
+  } catch {
+    // Builder pins unreadable (skill missing/moved) — report unknown.
+  }
+
+  const dockerOk = await dockerAvailable();
+  const imageOk = dockerOk && (await dockerImagePresent(image));
+  const authVolumeOk = dockerOk && (await dockerVolumePresent(SANDBOX_AUTH_VOLUME));
+  const probeAuth = req.query.probeAuth === '1';
+  const authLoggedIn = probeAuth && imageOk && authVolumeOk ? await sandboxAuthLoggedIn(image) : null;
+  const runtimeStatuses = await buildSandboxRuntimeStatuses(image, probeAuth, dockerOk);
+  const activeContainers = dockerOk ? await listSandboxContainers() : [];
+
+  return {
+    enabled: cfg.enabled,
+    runtimes: cfg.runtimes,
+    skills: cfg.skills,
+    timeoutMinutes: cfg.timeoutMinutes,
+    dockerOk,
+    image,
+    imageOk,
+    claudeVersion,
+    authVolumeOk,
+    authLoggedIn,
+    runtimeStatuses,
+    activeContainers,
+    builderDir,
+  };
+}
+
 export interface RegisterSandboxRoutesDeps extends RouteDeps<'http' | 'paths'> {}
 
 export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDeps) {
@@ -48,49 +379,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
 
   app.get('/api/sandbox/status', async (req, res) => {
     try {
-      const prefs = await readAppConfig(RUNTIME_DATA_DIR).catch(
-        (): AppConfigPrefs => ({}),
-      );
-      const cfg = resolveSandboxConfig(prefs.sandbox, process.env);
-
-      let image = `${SANDBOX_IMAGE_NAME}:unknown`;
-      let claudeVersion: string | null = null;
-      try {
-        image = sandboxImageTag(builderDir);
-        const { readFileSync } = await import('node:fs');
-        claudeVersion = readFileSync(
-          path.join(builderDir, 'sandbox', 'claude.version'),
-          'utf8',
-        ).trim();
-      } catch {
-        // Builder pins unreadable (skill missing/moved) — report unknown.
-      }
-
-      const dockerOk = await dockerAvailable();
-      const imageOk = dockerOk && (await dockerImagePresent(image));
-      const authVolumeOk = dockerOk && (await dockerVolumePresent(SANDBOX_AUTH_VOLUME));
-      // Deep probe only when requested (`?probeAuth=1`): it starts a
-      // short-lived container, too slow for a settings-panel poll.
-      const probeAuth = req.query.probeAuth === '1';
-      const authLoggedIn =
-        probeAuth && imageOk && authVolumeOk ? await sandboxAuthLoggedIn(image) : null;
-      const activeContainers = dockerOk ? await listSandboxContainers() : [];
-
-      const body: SandboxStatusResponse = {
-        enabled: cfg.enabled,
-        runtimes: cfg.runtimes,
-        skills: cfg.skills,
-        timeoutMinutes: cfg.timeoutMinutes,
-        dockerOk,
-        image,
-        imageOk,
-        claudeVersion,
-        authVolumeOk,
-        authLoggedIn,
-        activeContainers,
-        builderDir,
-      };
-      res.json(body);
+      res.json(await resolveSandboxStatusBody(req, ctx));
     } catch (err) {
       return sendApiError(res, 500, 'INTERNAL_ERROR', `sandbox status failed: ${(err as Error).message}`);
     }
@@ -353,5 +642,55 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
 
   app.delete('/api/sandbox/embedded-login', (_req, res) => {
     res.json(cancelEmbeddedLogin());
+  });
+
+  const codexContext = async (): Promise<{ supported: boolean; image: string | null; ready: boolean }> => {
+    const prefs = await readAppConfig(RUNTIME_DATA_DIR).catch((): AppConfigPrefs => ({}));
+    const cfg = resolveSandboxConfig(prefs.sandbox, process.env);
+    const supported = sandboxRuntimeIsGated(cfg, 'codex');
+    let image: string | null = null;
+    try {
+      image = sandboxImageTag(builderDir);
+    } catch {
+      image = null;
+    }
+    const ready = supported && !!image && (await dockerAvailable()) && !!image && (await dockerImagePresent(image));
+    return { supported, image, ready };
+  };
+
+  app.get('/api/sandbox/codex-login', (_req, res) => {
+    res.json(codexDeviceLoginStatus());
+  });
+
+  app.post('/api/sandbox/codex-login', async (_req, res) => {
+    const { supported, image, ready } = await codexContext();
+    if (!supported) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi sandbox sở hữu Codex (Docker-only).');
+    }
+    if (!ready || !image) {
+      return sendApiError(res, 503, 'SANDBOX_UNAVAILABLE', 'Docker/sandbox image chưa sẵn sàng.');
+    }
+    res.json(startCodexDeviceLogin(image));
+  });
+
+  app.delete('/api/sandbox/codex-login', (_req, res) => {
+    res.json(cancelCodexDeviceLogin());
+  });
+
+  app.post('/api/sandbox/codex-logout', async (_req, res) => {
+    const { supported, image, ready } = await codexContext();
+    if (!supported) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi sandbox sở hữu Codex (Docker-only).');
+    }
+    if (!ready || !image) {
+      return sendApiError(res, 503, 'SANDBOX_UNAVAILABLE', 'Docker/sandbox image chưa sẵn sàng.');
+    }
+    cancelCodexDeviceLogin();
+    try {
+      await dockerText(['volume', 'rm', SANDBOX_CODEX_AUTH_VOLUME], 30_000);
+    } catch {
+      // Missing volume is fine; logout is best-effort.
+    }
+    res.json({ ok: true });
   });
 }

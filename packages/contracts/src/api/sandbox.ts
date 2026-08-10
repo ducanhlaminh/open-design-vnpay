@@ -4,6 +4,29 @@
 // Enable/disable persists through the existing app-config surface
 // (`PUT /api/app-config` with a `sandbox` section), not a dedicated endpoint.
 
+export type SandboxRuntimeId = 'claude' | 'codex';
+
+export type SandboxRuntimeAuthStatus = 'logged-in' | 'missing' | 'unknown';
+
+export type SandboxRuntimeLoginMethod = 'interactive' | 'device' | 'unknown';
+
+export interface SandboxRuntimeStatus {
+  /** Stable runtime id. */
+  id: SandboxRuntimeId;
+  /** CLI version reported from inside the sandbox image, when probeable. */
+  version: string | null;
+  /** The sandbox image exists locally. */
+  imageAvailable: boolean;
+  /** Runtime-specific auth volume name (e.g. `od-claude-auth`). */
+  authVolume: string;
+  /** Auth volume exists locally. */
+  authVolumeAvailable: boolean;
+  /** Whether the auth surface is logged in, missing, or not yet probed. */
+  authStatus: SandboxRuntimeAuthStatus;
+  /** How this runtime authenticates inside the sandbox. */
+  loginMethod: SandboxRuntimeLoginMethod;
+}
+
 export interface SandboxStatusResponse {
   /** Effective enabled flag (prefs + OD_SANDBOX env override). */
   enabled: boolean;
@@ -27,6 +50,8 @@ export interface SandboxStatusResponse {
    * container, so only when docker + image are available; null = not probed.
    */
   authLoggedIn: boolean | null;
+  /** Per-runtime availability/auth status used by the CLI and agent fallback. */
+  runtimeStatuses: SandboxRuntimeStatus[];
   /** Names of live od.sandbox containers (active sandboxed runs). */
   activeContainers: string[];
   /**
@@ -152,6 +177,23 @@ export interface SandboxEmbeddedLoginStatus {
   /** OAuth URL once extracted (also auto-opened in the host browser). */
   url: string | null;
   /** Human error (also set alongside awaiting-code on a rejected code retry). */
+  error: string | null;
+}
+
+export type SandboxCodexDeviceLoginPhase =
+  | 'starting'
+  | 'awaiting-user'
+  | 'verifying'
+  | 'done'
+  | 'error';
+
+export interface SandboxCodexDeviceLoginStatus {
+  phase: SandboxCodexDeviceLoginPhase;
+  /** Device authorization URL shown to the user. */
+  verificationUrl: string | null;
+  /** User code shown alongside the authorization URL. */
+  userCode: string | null;
+  /** Human error when the flow fails or is cancelled. */
   error: string | null;
 }
 

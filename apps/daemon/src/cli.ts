@@ -39,7 +39,7 @@ const argv = process.argv.slice(2);
 // initialization") and crash every `od media …` invocation.
 // `od sandbox …` flag sets — hoisted here for the same TDZ reason as the
 // media flags above (SUBCOMMAND_MAP dispatch runs during module evaluation).
-const SANDBOX_STRING_FLAGS = new Set(['daemon-url']);
+const SANDBOX_STRING_FLAGS = new Set(['daemon-url', 'runtime']);
 const SANDBOX_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'probe-auth', 'force', 'all', 'yes']);
 
 const MEDIA_GENERATE_STRING_FLAGS = new Set([
@@ -5853,9 +5853,9 @@ async function runStatus(args) {
 // docs/agent-in-sandbox-spec-plan.md in the parent repo and
 // apps/daemon/src/agent-sandbox.ts). `status` / `enable` / `disable` go
 // through the daemon HTTP API (same data the Settings card reads);
-// `build` / `login` / `logout` / `ps` / `kill` are machine-local docker
-// operations (login needs a TTY, build streams docker output), so they run
-// docker directly — the daemon only supplies builderDir/image via status.
+// `build` / `ps` / `kill` stay local docker operations. `login` / `logout`
+// now route through the daemon for Codex device auth so the CLI can poll the
+// shared login state, while Claude still uses the direct TTY flow.
 // ---------------------------------------------------------------------------
 
 const SANDBOX_USAGE = `Usage:
@@ -5864,9 +5864,11 @@ const SANDBOX_USAGE = `Usage:
                                               container to verify credentials.
   od sandbox enable | disable                 Toggle sandbox.enabled in app config.
   od sandbox build [--force]                  Build the od-agent-sandbox image.
-  od sandbox login                            Claude CLI OAuth login into the shared
-                                              auth volume (interactive, needs a TTY).
-  od sandbox logout --yes                     Delete the auth volume (credentials!).
+  od sandbox login [--runtime claude|codex]    Login to the selected sandbox runtime.
+                                              claude opens the TTY flow; codex starts
+                                              device auth and polls to completion.
+  od sandbox logout --yes [--runtime claude|codex]
+                                              Delete the selected runtime auth volume.
   od sandbox account list [--json]            List saved Claude accounts (* = active).
   od sandbox account save <label>             Save the CURRENT login as <label>.
   od sandbox account switch <label>           Make <label> the active Claude login.
@@ -5952,6 +5954,12 @@ async function runSandbox(args) {
   const nodePath = await import('node:path');
   const runDocker = (dockerArgs, opts = {}) =>
     spawnSync('docker', dockerArgs, { stdio: 'inherit', ...opts });
+  const runtime = typeof flags.runtime === 'string' && flags.runtime.trim() ? flags.runtime.trim() : 'claude';
+  const validRuntime = runtime === 'claude' || runtime === 'codex';
+  if (!validRuntime) {
+    console.error(`usage: od sandbox ${sub} --runtime claude|codex`);
+    process.exit(2);
+  }
 
   if (sub === 'status') {
     const status = await sandboxFetchStatus(flags, flags['probe-auth'] === true);
@@ -5967,6 +5975,11 @@ async function runSandbox(args) {
     if (status.claudeVersion) console.log(`  claude cli:  ${status.claudeVersion} (pinned in image)`);
     console.log(`  auth volume: ${yn(status.authVolumeOk)}${status.authVolumeOk === false ? ' (run: od sandbox login)' : ''}`);
     console.log(`  logged in:   ${yn(status.authLoggedIn)}`);
+    for (const runtimeStatus of status.runtimeStatuses ?? []) {
+      console.log(
+        `  ${runtimeStatus.id}:      version=${runtimeStatus.version ?? '-'} image=${yn(runtimeStatus.imageAvailable)} auth-volume=${runtimeStatus.authVolume}(${yn(runtimeStatus.authVolumeAvailable)}) auth=${runtimeStatus.authStatus} login=${runtimeStatus.loginMethod}`,
+      );
+    }
     console.log(`  active runs: ${status.activeContainers.length ? status.activeContainers.join(', ') : 'none'}`);
     if (!status.enabled) console.log('\nEnable with: od sandbox enable');
     return;
@@ -6012,23 +6025,76 @@ async function runSandbox(args) {
       console.error(`image ${status.image} missing — run: od sandbox build`);
       process.exit(1);
     }
-    console.log('Opening Claude CLI login inside the sandbox (credentials persist in the od-claude-auth volume)…');
-    const result = runDocker([
-      'run', '-it', '--rm',
-      '-v', 'od-claude-auth:/home/node/.claude',
-      status.image,
-      'claude', '/login',
-    ]);
-    process.exit(result.status ?? 1);
+    if (runtime === 'claude') {
+      console.log('Opening Claude CLI login inside the sandbox (credentials persist in the od-claude-auth volume)…');
+      const result = runDocker([
+        'run', '-it', '--rm',
+        '-v', 'od-claude-auth:/home/node/.claude',
+        status.image,
+        'claude', '/login',
+      ]);
+      process.exit(result.status ?? 1);
+    }
+    const base = await cliDaemonBaseUrl(flags);
+    try {
+      const startResp = await fetch(`${base}/api/sandbox/codex-login`, { method: 'POST' });
+      if (!startResp.ok) await structuredHttpFailure(startResp);
+      let loginStatus = await startResp.json();
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const printCodexLoginStatus = (state) => {
+        if (flags.json) return;
+        console.log(`Codex device login: ${state.phase}`);
+        if (state.verificationUrl) console.log(`  verification: ${state.verificationUrl}`);
+        if (state.userCode) console.log(`  code:         ${state.userCode}`);
+        if (state.error) console.log(`  error:        ${state.error}`);
+      };
+      printCodexLoginStatus(loginStatus);
+      while (loginStatus.phase === 'starting' || loginStatus.phase === 'awaiting-user' || loginStatus.phase === 'verifying') {
+        await sleep(2000);
+        const pollResp = await fetch(`${base}/api/sandbox/codex-login`);
+        if (!pollResp.ok) await structuredHttpFailure(pollResp);
+        loginStatus = await pollResp.json();
+        printCodexLoginStatus(loginStatus);
+      }
+      if (flags.json) {
+        process.stdout.write(JSON.stringify(loginStatus, null, 2) + '\n');
+        return;
+      }
+      if (loginStatus.phase === 'done') {
+        console.log('Codex device login complete.');
+        return;
+      }
+      console.error(loginStatus.error ?? 'Codex device login failed.');
+      process.exit(1);
+    } catch (err) {
+      console.error(`cannot reach daemon at ${base}: ${err?.message ?? err}`);
+      process.exit(1);
+    }
   }
 
   if (sub === 'logout') {
     if (!flags.yes) {
-      console.error('This deletes the od-claude-auth volume (your sandbox Claude credentials). Re-run with --yes to confirm.');
+      console.error('This deletes the selected sandbox auth volume. Re-run with --yes to confirm.');
       process.exit(2);
     }
-    const result = runDocker(['volume', 'rm', 'od-claude-auth']);
-    process.exit(result.status ?? 1);
+    if (runtime === 'claude') {
+      const result = runDocker(['volume', 'rm', 'od-claude-auth']);
+      process.exit(result.status ?? 1);
+    }
+    const base = await cliDaemonBaseUrl(flags);
+    try {
+      const resp = await fetch(`${base}/api/sandbox/codex-logout`, { method: 'POST' });
+      if (!resp.ok) await structuredHttpFailure(resp);
+      if (flags.json) {
+        process.stdout.write(JSON.stringify(await resp.json(), null, 2) + '\n');
+        return;
+      }
+      console.log('Codex auth volume deleted.');
+      return;
+    } catch (err) {
+      console.error(`cannot reach daemon at ${base}: ${err?.message ?? err}`);
+      process.exit(1);
+    }
   }
 
   if (sub === 'ps') {

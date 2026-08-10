@@ -303,20 +303,25 @@ import {
 import { agentCliEnvForAgent, readAppConfig, readPluginEnvKnobs, writeAppConfig } from './app-config.js';
 import {
   CONTAINER_PROJECT_DIR,
+  SANDBOX_AUTH_VOLUME,
   dockerAvailable,
   dockerImagePresent,
+  dockerVolumePresent,
   ensureSandboxImage,
   readSandboxClaudeCredentials,
   resolveSandboxConfig,
   sandboxImageTag,
   sandboxPreflight,
-  sandboxRuntimeStatus,
   shouldSandboxRun,
   sweepOrphanSandboxContainers,
   killSandboxContainer,
   wrapInvocationInSandbox,
-  type SandboxRuntimeStatus,
 } from './agent-sandbox.js';
+import {
+  buildSandboxRuntimeStatuses,
+  resolveSandboxFallbackRuntimeId,
+  sandboxRuntimeIsGated,
+} from './sandbox-routes.js';
 import { planWriteIsolation, wrapInvocationInWriteIsolation, writeIsolationMode } from './write-isolation.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
@@ -6076,34 +6081,57 @@ export async function startServer({
     res.json({ ok: true });
   });
 
-  // Whether the sandbox provides the `claude` runtime for EVERY run (enabled
-  // + skills '*' + runtime gate) AND is usable right now (docker + image +
-  // auth volume). Auto-pick fallbacks use this so a machine with NO host
-  // claude install still routes Orbit / routine / pipeline runs into the
-  // container instead of failing "no available agent".
-  const sandboxProvidesClaude = async (): Promise<boolean> => {
+  const sandboxRuntimeImage = () => {
     try {
-      const config = await readAppConfig(RUNTIME_DATA_DIR);
-      const cfg = resolveSandboxConfig(config.sandbox, process.env);
-      if (!cfg.enabled || !cfg.skills.includes('*')) return false;
-      if (!cfg.runtimes.includes('*') && !cfg.runtimes.includes('claude')) return false;
-      const image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
-      return (await sandboxPreflight(image)).ok;
+      return sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
     } catch {
-      return false;
+      return 'od-agent-sandbox:unknown';
     }
   };
 
-  // Sandbox-side availability, cached: the version probe starts a short-lived
-  // container, too slow to run on every /api/agents poll.
-  let sandboxStatusCache: { image: string; at: number; status: SandboxRuntimeStatus } | null = null;
-  const cachedSandboxStatus = async (image: string): Promise<SandboxRuntimeStatus> => {
-    if (sandboxStatusCache && sandboxStatusCache.image === image && Date.now() - sandboxStatusCache.at < 60_000) {
-      return sandboxStatusCache.status;
+  const sandboxRuntimeAuthVolume = (runtimeId: 'claude' | 'codex') =>
+    runtimeId === 'claude' ? SANDBOX_AUTH_VOLUME : 'od-codex-auth';
+
+  // Runtime-aware sandbox fallback. The resolver is config-only; this helper
+  // adds the Docker/image/auth-volume readiness check so a missing volume does
+  // not get picked as a usable runtime.
+  const sandboxFallbackRuntimeId = async (): Promise<'claude' | 'codex' | null> => {
+    try {
+      const config = await readAppConfig(RUNTIME_DATA_DIR);
+      const cfg = resolveSandboxConfig(config.sandbox, process.env);
+      if (!resolveSandboxFallbackRuntimeId(cfg)) return null;
+      const image = sandboxRuntimeImage();
+      if (!(await dockerAvailable())) return null;
+      if (!(await dockerImagePresent(image))) return null;
+      if (sandboxRuntimeIsGated(cfg, 'claude') && (await dockerVolumePresent(sandboxRuntimeAuthVolume('claude')))) {
+        return 'claude';
+      }
+      if (sandboxRuntimeIsGated(cfg, 'codex') && (await dockerVolumePresent(sandboxRuntimeAuthVolume('codex')))) {
+        return 'codex';
+      }
+      return null;
+    } catch {
+      return null;
     }
-    const status = await sandboxRuntimeStatus(image);
-    sandboxStatusCache = { image, at: Date.now(), status };
-    return status;
+  };
+
+  // Sandbox-side availability, cached: the version probe starts short-lived
+  // containers, too slow to run on every /api/agents poll.
+  let sandboxStatusCache: { image: string; at: number; statuses: Awaited<ReturnType<typeof buildSandboxRuntimeStatuses>> } | null = null;
+  const cachedSandboxRuntimeStatuses = async (image: string, probeAuth: boolean) => {
+    if (
+      sandboxStatusCache &&
+      sandboxStatusCache.image === image &&
+      sandboxStatusCache.at + 60_000 > Date.now() &&
+      sandboxStatusCache.statuses.length > 0 &&
+      sandboxStatusCache.statuses[0]?.loginMethod &&
+      (sandboxStatusCache as { probeAuth?: boolean }).probeAuth === probeAuth
+    ) {
+      return sandboxStatusCache.statuses;
+    }
+    const statuses = await buildSandboxRuntimeStatuses(image, probeAuth, await dockerAvailable());
+    sandboxStatusCache = { image, at: Date.now(), statuses, probeAuth } as typeof sandboxStatusCache & { probeAuth: boolean };
+    return statuses;
   };
 
   app.get('/api/agents', async (_req, res) => {
@@ -6121,32 +6149,43 @@ export async function startServer({
         dockerOnly ? ['*'] : sandboxSkipProbe(config),
       );
       if (dockerOnly) {
-        let image: string | null = null;
-        try {
-          image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
-        } catch {
-          image = null; // unreadable version pin
-        }
-        if (image) {
-          const status = await cachedSandboxStatus(image);
-          const ok = status.dockerRunning && status.imagePresent && status.authLoggedIn;
-          for (const agent of list) {
-            if (!sandboxCfg.runtimes.includes('*') && !sandboxCfg.runtimes.includes(agent.id)) continue;
-            agent.sandbox = { owns: true, ...status };
-            agent.available = ok;
-            if (status.version) agent.version = status.version;
-            agent.authStatus = status.authLoggedIn ? 'ok' : 'missing';
-            if (!ok) {
-              agent.authMessage = !status.dockerRunning
-                ? 'Docker chưa chạy — bật Docker/OrbStack rồi thử lại.'
-                : !status.imagePresent
-                  ? `Thiếu image sandbox ${image} — build bằng: od sandbox build`
+        const image = sandboxRuntimeImage();
+        const runtimeStatuses = await cachedSandboxRuntimeStatuses(image, true);
+        const statusById = new Map(runtimeStatuses.map((status) => [status.id, status]));
+        for (const agent of list) {
+          if (!sandboxCfg.runtimes.includes('*') && !sandboxCfg.runtimes.includes(agent.id)) continue;
+          const status = statusById.get(agent.id as 'claude' | 'codex');
+          if (!status) continue;
+          const ok = status.imageAvailable && status.authVolumeAvailable && status.authStatus === 'logged-in';
+          agent.sandbox = {
+            owns: true,
+            dockerRunning: status.imageAvailable,
+            imagePresent: status.imageAvailable,
+            authLoggedIn: status.authStatus === 'logged-in',
+            version: status.version,
+          };
+          agent.available = ok;
+          if (status.version) agent.version = status.version;
+          agent.authStatus =
+            status.authStatus === 'logged-in'
+              ? 'ok'
+              : status.authStatus === 'missing'
+                ? 'missing'
+                : 'unknown';
+          if (!ok) {
+            const runtimeLabel = agent.id === 'codex' ? 'Codex' : 'Claude';
+            agent.authMessage = !status.imageAvailable
+              ? `Thiếu image sandbox ${image} — build bằng: od sandbox build`
+              : !status.authVolumeAvailable
+                ? `Sandbox chưa có volume auth cho ${runtimeLabel} — chạy: od sandbox ${agent.id === 'codex' ? 'login --runtime codex' : 'login'}`
+                : runtimeLabel === 'Codex'
+                  ? 'Sandbox chưa đăng nhập Codex — chạy: od sandbox login --runtime codex'
                   : 'Sandbox chưa đăng nhập Claude — chạy: od sandbox login';
-            }
           }
         }
         // Hide host CLIs entirely: only the sandbox-owned runtime(s) remain in a
-        // Docker-only install, so the picker/rescan shows just "Claude · Docker".
+        // Docker-only install, so the picker/rescan shows just the active sandbox
+        // runtime(s).
         const owned = (id: string) => sandboxCfg.runtimes.includes('*') || sandboxCfg.runtimes.includes(id);
         res.json({ agents: list.filter((a) => owned(a.id)) });
         return;
@@ -6403,7 +6442,10 @@ export async function startServer({
           const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
           agentId = agents.find((a) => a.available)?.id ?? null;
         }
-        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) {
+          const sandboxAgentId = await sandboxFallbackRuntimeId();
+          if (sandboxAgentId) agentId = sandboxAgentId;
+        }
         if (!agentId) throw new Error('Chưa cấu hình agent nào khả dụng — chọn agent trong Cài đặt trước.');
 
         // Project row ẩn trỏ vào thư mục DS. Dùng lại theo DS (không tạo mới mỗi
@@ -6591,7 +6633,10 @@ export async function startServer({
           const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
           agentId = agents.find((a) => a.available)?.id ?? null;
         }
-        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) {
+          const sandboxAgentId = await sandboxFallbackRuntimeId();
+          if (sandboxAgentId) agentId = sandboxAgentId;
+        }
         if (!agentId) throw new Error('Chưa cấu hình agent nào khả dụng — chọn agent trong Cài đặt trước.');
         const projectId = `ds-rules-${designSystemId.replace(/^user:/, '')}`;
         const rowNow = Date.now();
@@ -12954,7 +12999,10 @@ export async function startServer({
     }
     // Host detection found nothing, but the sandbox may still provide claude
     // (volume-only machines have no host install at all).
-    if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+    if (!agentId) {
+      const sandboxAgentId = await sandboxFallbackRuntimeId();
+      if (sandboxAgentId) agentId = sandboxAgentId;
+    }
     if (!agentId) throw new Error('No available agent is configured for Orbit. Choose an agent in Settings first.');
 
     const now = Date.now();
@@ -13670,7 +13718,10 @@ export async function startServer({
       agentId = agents.find((agent) => agent.available)?.id ?? null;
     }
     // Volume-only machines: no host install, but the sandbox provides claude.
-    if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+    if (!agentId) {
+      const sandboxAgentId = await sandboxFallbackRuntimeId();
+      if (sandboxAgentId) agentId = sandboxAgentId;
+    }
     if (!agentId) {
       throw new Error('No available agent is configured. Choose an agent in Settings first.');
     }
@@ -14637,7 +14688,10 @@ export async function startServer({
           const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
           agentId = agents.find((a) => a.available)?.id ?? null;
         }
-        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) {
+          const sandboxAgentId = await sandboxFallbackRuntimeId();
+          if (sandboxAgentId) agentId = sandboxAgentId;
+        }
         if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
 
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
@@ -14947,7 +15001,10 @@ export async function startServer({
           const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
           agentId = agents.find((a) => a.available)?.id ?? null;
         }
-        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) {
+          const sandboxAgentId = await sandboxFallbackRuntimeId();
+          if (sandboxAgentId) agentId = sandboxAgentId;
+        }
         if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
 
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
@@ -15503,7 +15560,10 @@ export async function startServer({
           const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
           agentId = agents.find((a) => a.available)?.id ?? null;
         }
-        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) {
+          const sandboxAgentId = await sandboxFallbackRuntimeId();
+          if (sandboxAgentId) agentId = sandboxAgentId;
+        }
         if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
 
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
@@ -16087,7 +16147,10 @@ export async function startServer({
           const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
           agentId = agents.find((a) => a.available)?.id ?? null;
         }
-        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) {
+          const sandboxAgentId = await sandboxFallbackRuntimeId();
+          if (sandboxAgentId) agentId = sandboxAgentId;
+        }
         if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
 
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
@@ -16427,7 +16490,10 @@ export async function startServer({
           const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
           agentId = agents.find((a) => a.available)?.id ?? null;
         }
-        if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+        if (!agentId) {
+          const sandboxAgentId = await sandboxFallbackRuntimeId();
+          if (sandboxAgentId) agentId = sandboxAgentId;
+        }
         if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
 
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
@@ -17046,7 +17112,10 @@ export async function startServer({
       agentId = agents.find((agent) => agent.available)?.id ?? null;
     }
     // Volume-only machines: no host install, but the sandbox provides claude.
-    if (!agentId && (await sandboxProvidesClaude())) agentId = 'claude';
+    if (!agentId) {
+      const sandboxAgentId = await sandboxFallbackRuntimeId();
+      if (sandboxAgentId) agentId = sandboxAgentId;
+    }
     if (!agentId) throw new Error('No available agent is configured. Choose an agent in Settings first.');
 
     const now = Date.now();
