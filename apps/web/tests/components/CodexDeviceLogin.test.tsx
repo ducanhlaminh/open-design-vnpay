@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CodexDeviceLogin } from '../../src/components/CodexDeviceLogin';
@@ -58,27 +58,26 @@ describe('CodexDeviceLogin', () => {
 
     render(<CodexDeviceLogin onComplete={onComplete} onAuthChanged={onAuthChanged} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start login' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Starting device-code login…')).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Start login' }));
     });
+    expect(screen.getByText('Starting device-code login…')).toBeTruthy();
 
-    await vi.advanceTimersByTimeAsync(2000);
-    await waitFor(() => {
-      expect(screen.getByText('Waiting for you to approve the login…')).toBeTruthy();
-      expect(screen.getByText('ABCD-1234')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
     });
+    expect(screen.getByText('Waiting for you to approve the login…')).toBeTruthy();
+    expect(screen.getByText('ABCD-1234')).toBeTruthy();
 
-    await vi.advanceTimersByTimeAsync(2000);
-    await waitFor(() => {
-      expect(screen.getByText('Verifying the code…')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
     });
+    expect(screen.getByText('Verifying the code…')).toBeTruthy();
 
-    await vi.advanceTimersByTimeAsync(2000);
-    await waitFor(() => {
-      expect(screen.getByText('Signed in.')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
     });
+    expect(screen.getByText('Signed in.')).toBeTruthy();
 
     expect(onComplete).toHaveBeenCalledTimes(1);
     expect(onAuthChanged).toHaveBeenCalled();
@@ -111,24 +110,21 @@ describe('CodexDeviceLogin', () => {
 
     render(<CodexDeviceLogin />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start login' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Device code expired')).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'Retry test' })).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Start login' }));
     });
+    expect(screen.getByText('Device code expired')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Retry test' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Retry test' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Starting device-code login…')).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry test' }));
     });
+    expect(screen.getByText('Starting device-code login…')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Start login' })).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     });
+    expect(screen.getByRole('button', { name: 'Start login' })).toBeTruthy();
   });
 });

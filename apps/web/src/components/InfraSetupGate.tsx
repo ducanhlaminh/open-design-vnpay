@@ -10,6 +10,7 @@
 // controls for later. Vietnamese-only copy on purpose — this fork's UI is
 // Vietnamese and we avoid new i18n keys here (see ClaudeAccountSwitcher).
 import { useCallback, useEffect, useState } from 'react';
+import { useT } from '../i18n';
 import type {
   SandboxAccountsResponse,
   SandboxBuildResponse,
@@ -50,6 +51,7 @@ interface Props {
 }
 
 export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Element | null {
+  const t = useT();
   const [dismissed, setDismissed] = useState(readDismissed);
   const [status, setStatus] = useState<SandboxUiStatusResponse | null>(null);
   const [accounts, setAccounts] = useState<SandboxAccountsResponse | null>(null);
@@ -67,7 +69,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
 
   const refreshStatus = useCallback(async () => {
     try {
-      const r = await fetch('/api/sandbox/status');
+      const r = await fetch('/api/sandbox/status?probeAuth=1');
       if (r.ok) setStatus((await r.json()) as SandboxUiStatusResponse);
     } catch {
       // Daemon unreachable — keep the last snapshot.

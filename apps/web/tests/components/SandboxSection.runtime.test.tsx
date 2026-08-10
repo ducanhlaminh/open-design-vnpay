@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/components/ClaudeAccountSwitcher', () => ({
@@ -29,7 +29,7 @@ describe('SandboxSection runtime split', () => {
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url.endsWith('/sandbox/status')) {
+      if (url.includes('/sandbox/status')) {
         return jsonResponse({
           enabled: true,
           dockerOk: true,
@@ -49,8 +49,8 @@ describe('SandboxSection runtime split', () => {
               imageAvailable: true,
               authVolume: '/volumes/claude',
               authVolumeAvailable: true,
-              authStatus: 'ready',
-              loginMethod: 'account-switcher',
+              authStatus: 'logged-in',
+              loginMethod: 'interactive',
             },
             {
               id: 'codex',
@@ -59,7 +59,7 @@ describe('SandboxSection runtime split', () => {
               authVolume: '/volumes/codex',
               authVolumeAvailable: false,
               authStatus: 'missing',
-              loginMethod: 'device-code',
+              loginMethod: 'device',
             },
           ],
         });
@@ -87,6 +87,11 @@ describe('SandboxSection runtime split', () => {
 
     const claudeCard = screen.getByTestId('sandbox-runtime-claude');
     const codexCard = screen.getByTestId('sandbox-runtime-codex');
+    expect((claudeCard as HTMLDetailsElement).open).toBe(false);
+    expect((codexCard as HTMLDetailsElement).open).toBe(false);
+    fireEvent.click(within(claudeCard).getByText('Claude runtime').closest('summary')!);
+    expect((claudeCard as HTMLDetailsElement).open).toBe(true);
+    expect((codexCard as HTMLDetailsElement).open).toBe(false);
 
     expect(within(claudeCard).getByText('Claude runtime')).toBeTruthy();
     expect(within(claudeCard).getByText('Ready')).toBeTruthy();

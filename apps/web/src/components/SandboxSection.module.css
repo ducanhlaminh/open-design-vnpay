@@ -114,33 +114,85 @@
 
 .runtimeGrid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 12px;
   margin-top: 10px;
 }
 
 .runtimeCard {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px;
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
-  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  overflow: clip;
 }
 
-.runtimeCardHead {
+.runtimeToggle {
+  list-style: none;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
 }
 
-.runtimeCardHead h4 {
+.runtimeToggle::-webkit-details-marker {
+  display: none;
+}
+
+.runtimeToggle::before {
+  content: '';
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.runtimeCard[open] > .runtimeToggle::before {
+  transform: rotate(90deg);
+}
+
+.runtimeToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.runtimeToggleCopy {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.runtimeToggleCopy h4 {
   margin: 0;
   font-size: 14px;
   font-weight: 650;
   color: var(--text-strong);
+}
+
+.runtimeToggleCopy span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtimeExpanded {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+  gap: 14px;
+  padding: 14px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-subtle);
 }
 
 .runtimeBody {
@@ -155,20 +207,6 @@
   border: 1px solid var(--border-soft);
   border-radius: 10px;
   background: var(--bg-panel);
-}
-
-.runtimeSummaryHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.runtimeSummaryHead strong {
-  font-size: 12.5px;
-  font-weight: 650;
-  color: var(--text-strong);
 }
 
 .runtimeReady {
@@ -208,4 +246,21 @@
 .runtimeSpecs li code {
   justify-self: end;
   font-size: 11.5px;
+}
+
+@media (max-width: 900px) {
+  .runtimeExpanded {
+    grid-template-columns: 1fr;
+  }
+
+  .runtimeSummary {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .runtimeToggleCopy span {
+    display: none;
+  }
 }

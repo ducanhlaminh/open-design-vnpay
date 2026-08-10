@@ -10,7 +10,6 @@ import { ClaudeAccountSwitcher } from './ClaudeAccountSwitcher';
 import { CodexDeviceLogin } from './CodexDeviceLogin';
 import {
   isSandboxRuntimeReady,
-  sandboxRuntimeDisplayName,
   type SandboxRuntimeStatus,
   type SandboxStatusResponse,
 } from './sandbox-runtime';
@@ -24,7 +23,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
   const refresh = useCallback(async () => {
     if (!daemonLive) return;
     try {
-      const resp = await fetch('/api/sandbox/status');
+      const resp = await fetch('/api/sandbox/status?probeAuth=1');
       if (resp.ok) setStatus((await resp.json()) as SandboxStatusResponse);
     } catch {
       // Daemon unreachable — keep whatever we last showed.
@@ -92,7 +91,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
   const codexRuntime = runtimeById.get('codex');
   const hasRuntimeStatuses = runtimeStatuses.length > 0;
 
-  const renderRuntimeRow = (runtime: SandboxRuntimeStatus | undefined, label: string) => {
+  const renderRuntimeRow = (runtime: SandboxRuntimeStatus | undefined) => {
     if (!runtime) {
       return (
         <span className={styles.missing}>
@@ -101,15 +100,8 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
       );
     }
 
-    const ready = isSandboxRuntimeReady(runtime);
     return (
         <div className={styles.runtimeSummary}>
-          <div className={styles.runtimeSummaryHead}>
-            <strong>{label}</strong>
-            <span className={ready ? styles.runtimeReady : styles.runtimeMissing}>
-              {ready ? t('settings.sandboxRuntimeReady') : t('settings.sandboxRuntimeNotReady')}
-            </span>
-          </div>
           <ul className={styles.runtimeSpecs}>
             <li>
             <span>Version</span>
@@ -157,34 +149,48 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
         <small className="hint">{t('settings.sandboxDaemonOffline')}</small>
       ) : hasRuntimeStatuses ? (
         <div className={styles.runtimeGrid}>
-          <article className={styles.runtimeCard} data-testid="sandbox-runtime-claude">
-            <div className={styles.runtimeCardHead}>
-              <div>
+          <details className={styles.runtimeCard} data-testid="sandbox-runtime-claude">
+            <summary className={styles.runtimeToggle}>
+              <span className={styles.runtimeToggleCopy}>
                 <h4>{t('settings.sandboxClaudeTitle')}</h4>
-                <p className="hint">{t('settings.sandboxClaudeHint')}</p>
+                <span>{t('settings.sandboxClaudeHint')}</span>
+              </span>
+              <span className={isSandboxRuntimeReady(claudeRuntime) ? styles.runtimeReady : styles.runtimeMissing}>
+                {isSandboxRuntimeReady(claudeRuntime)
+                  ? t('settings.sandboxRuntimeReady')
+                  : t('settings.sandboxRuntimeNotReady')}
+              </span>
+            </summary>
+            <div className={styles.runtimeExpanded}>
+              {renderRuntimeRow(claudeRuntime)}
+              <div className={styles.runtimeBody}>
+                <ClaudeAccountSwitcher daemonLive={daemonLive} />
               </div>
-              {renderRuntimeRow(claudeRuntime, sandboxRuntimeDisplayName('claude'))}
             </div>
-            <div className={styles.runtimeBody}>
-              <ClaudeAccountSwitcher daemonLive={daemonLive} />
-            </div>
-          </article>
-          <article className={styles.runtimeCard} data-testid="sandbox-runtime-codex">
-            <div className={styles.runtimeCardHead}>
-              <div>
+          </details>
+          <details className={styles.runtimeCard} data-testid="sandbox-runtime-codex">
+            <summary className={styles.runtimeToggle}>
+              <span className={styles.runtimeToggleCopy}>
                 <h4>{t('settings.sandboxCodexTitle')}</h4>
-                <p className="hint">{t('settings.sandboxCodexHint')}</p>
+                <span>{t('settings.sandboxCodexHint')}</span>
+              </span>
+              <span className={isSandboxRuntimeReady(codexRuntime) ? styles.runtimeReady : styles.runtimeMissing}>
+                {isSandboxRuntimeReady(codexRuntime)
+                  ? t('settings.sandboxRuntimeReady')
+                  : t('settings.sandboxRuntimeNotReady')}
+              </span>
+            </summary>
+            <div className={styles.runtimeExpanded}>
+              {renderRuntimeRow(codexRuntime)}
+              <div className={styles.runtimeBody}>
+                <CodexDeviceLogin
+                  disabled={codexRuntime ? !codexRuntime.imageAvailable : false}
+                  onAuthChanged={() => void refresh()}
+                  onComplete={() => void refresh()}
+                />
               </div>
-              {renderRuntimeRow(codexRuntime, sandboxRuntimeDisplayName('codex'))}
             </div>
-            <div className={styles.runtimeBody}>
-              <CodexDeviceLogin
-                disabled={codexRuntime ? !codexRuntime.imageAvailable : false}
-                onAuthChanged={() => void refresh()}
-                onComplete={() => void refresh()}
-              />
-            </div>
-          </article>
+          </details>
         </div>
       ) : (
         <>

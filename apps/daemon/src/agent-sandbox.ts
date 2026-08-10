@@ -69,7 +69,7 @@ const SANDBOX_RUNTIME_SPECS = {
     authVolume: 'od-codex-auth',
     authDir: '/home/node/.codex',
     authFile: 'auth.json',
-    loginCommand: ['codex', 'login', '--device-auth'] as const,
+    loginCommand: ['codex', 'login', '--device-auth', '-c', 'cli_auth_credentials_store="file"'] as const,
     versionBin: 'codex',
     forcedEnv: {
       CODEX_HOME: '/home/node/.codex',
@@ -181,6 +181,18 @@ export async function materializeSandboxCodexProfile(
   );
 }
 
+export async function removeSandboxCodexProfile(image: string, profileName: string): Promise<void> {
+  const profilePath = sandboxCodexProfilePath(profileName);
+  await docker(
+    [
+      'run', '--rm',
+      '-v', `${SANDBOX_CODEX_AUTH_VOLUME}:${CONTAINER_CODEX_AUTH_DIR}`,
+      '--entrypoint', 'rm', image, '-f', profilePath,
+    ],
+    30_000,
+  );
+}
+
 export interface ResolvedSandboxConfig {
   enabled: boolean;
   runtimes: string[];
@@ -279,7 +291,14 @@ export function resolveSandboxConfig(
   }
   return {
     enabled,
-    runtimes: prefs?.runtimes?.length ? prefs.runtimes : ['claude'],
+    // `['claude']` was the old persisted default before Codex shipped. Treat
+    // that exact value as legacy so existing installs gain the new runtime;
+    // explicit narrow runtime selection can still use the environment/config
+    // after migration support is removed in a later release.
+    runtimes:
+      prefs?.runtimes?.length && !(prefs.runtimes.length === 1 && prefs.runtimes[0] === 'claude')
+        ? prefs.runtimes
+        : ['claude', 'codex'],
     skills:
       persistedSkills && !staleSkills
         ? persistedSkills
@@ -423,7 +442,45 @@ export function wrapInvocationInSandbox(input: SandboxWrapInput): {
     const value = env[key];
     if (typeof value === 'string' && value) dockerArgs.push('-e', `${key}=${value}`);
   }
-  dockerArgs.push(image, agentBin, ...args);
+  const containerArgs = [...args];
+  if (runtimeId === 'codex') {
+    // buildArgs runs on the host before the Docker decision, so Codex's `-C`
+    // and `--add-dir` values contain host paths. Rewrite them to the mounted
+    // Linux paths; passing `/Users/...` or `C:\\...` into the container makes
+    // Codex exit immediately with `No such file or directory (os error 2)`.
+    let externalDirIndex = 0;
+    for (let index = 0; index < containerArgs.length - 1; index += 1) {
+      const flag = containerArgs[index];
+      if (flag === '-C' || flag === '--cd') {
+        containerArgs[index + 1] = CONTAINER_PROJECT_DIR;
+        index += 1;
+        continue;
+      }
+      if (flag !== '--add-dir') continue;
+      const hostDir = containerArgs[index + 1];
+      if (!hostDir) continue;
+      const relative = path.relative(cwd, hostDir);
+      if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+        containerArgs[index + 1] = relative
+          ? path.posix.join(CONTAINER_PROJECT_DIR, ...relative.split(path.sep))
+          : CONTAINER_PROJECT_DIR;
+      } else {
+        const containerDir = `/work/extra-${externalDirIndex}`;
+        externalDirIndex += 1;
+        dockerArgs.push('-v', `${hostDir}:${containerDir}`);
+        containerArgs[index + 1] = containerDir;
+      }
+      index += 1;
+    }
+    const sandboxFlag = containerArgs.indexOf('--sandbox');
+    if (sandboxFlag >= 0 && containerArgs[sandboxFlag + 1] === 'danger-full-access') {
+      containerArgs[sandboxFlag + 1] = 'workspace-write';
+    }
+    if (!containerArgs.includes('sandbox_workspace_write.network_access=true')) {
+      containerArgs.push('-c', 'sandbox_workspace_write.network_access=true');
+    }
+  }
+  dockerArgs.push(image, agentBin, ...containerArgs);
   return { command: 'docker', args: dockerArgs, containerName };
 }
 

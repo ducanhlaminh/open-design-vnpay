@@ -134,10 +134,6 @@ export function CodexDeviceLogin({ disabled = false, onComplete, onAuthChanged }
     }
   }, [call, disabled]);
 
-  const retry = useCallback(async () => {
-    await start();
-  }, [start]);
-
   const cancel = useCallback(async () => {
     setBusy(true);
     try {
@@ -229,9 +225,6 @@ export function CodexDeviceLogin({ disabled = false, onComplete, onAuthChanged }
           {session.phase === 'done' ? (
             <p className={styles.success}>Signed in.</p>
           ) : null}
-          {session.phase === 'error' && session.error ? (
-            <p className={styles.error}>{session.error}</p>
-          ) : null}
         </div>
       ) : null}
 
@@ -247,11 +240,6 @@ export function CodexDeviceLogin({ disabled = false, onComplete, onAuthChanged }
         {session.phase === 'done' ? (
           <button type="button" className={styles.ghostBtn} onClick={() => void disconnect()} disabled={authBusy}>
             {t('settings.sandboxCodexLoginDisconnect')}
-          </button>
-        ) : null}
-        {session.phase === 'error' ? (
-          <button type="button" className={styles.ghostBtn} onClick={() => void retry()} disabled={busy || disabled}>
-            {t('settings.testRetry')}
           </button>
         ) : null}
       </div>

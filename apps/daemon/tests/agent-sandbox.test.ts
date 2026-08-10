@@ -19,12 +19,12 @@ import {
 const cfg = resolveSandboxConfig({ enabled: true }, {});
 
 describe('resolveSandboxConfig', () => {
-  it('defaults to ENABLED, claude runtime, and EVERY run in scope (skills *)', () => {
+  it('defaults to ENABLED, Claude and Codex runtimes, and EVERY run in scope (skills *)', () => {
     // This fork runs Claude through the Docker sandbox by default (no UI toggle);
     // only an explicit prefs.enabled=false or OD_SANDBOX=0 opts out.
     const resolved = resolveSandboxConfig(undefined, {});
     expect(resolved.enabled).toBe(true);
-    expect(resolved.runtimes).toEqual(['claude']);
+    expect(resolved.runtimes).toEqual(['claude', 'codex']);
     // The sandbox owns ALL runs of gated runtimes by default — pipeline
     // steps AND general chat / Orbit / routine turns.
     expect(resolved.skills).toEqual(['*']);
@@ -77,10 +77,10 @@ describe('shouldSandboxRun', () => {
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['summary-feedback'], cfg })).toBe(true);
   });
 
-  it('rejects disabled config, other runtimes, null agent — and honors a NARROWED skill list', () => {
+  it('rejects disabled config and null agent — and honors a NARROWED skill list', () => {
     const disabled = resolveSandboxConfig({ enabled: false }, {});
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['ui-react'], cfg: disabled })).toBe(false);
-    expect(shouldSandboxRun({ agentId: 'codex', skillIds: ['ui-react'], cfg })).toBe(false);
+    expect(shouldSandboxRun({ agentId: 'codex', skillIds: ['ui-react'], cfg })).toBe(true);
     expect(shouldSandboxRun({ agentId: null, skillIds: ['ui-react'], cfg })).toBe(false);
     // User-persisted narrow list restores skill-scoped sandboxing: chat and
     // unlisted skills go back to host spawn. (`['ui-react']` alone is an OLD
@@ -94,10 +94,10 @@ describe('shouldSandboxRun', () => {
   it('supports wildcard matching in runtimes and skills', () => {
     const wild = resolveSandboxConfig({ enabled: true, runtimes: ['*'], skills: ['*'] }, {});
     expect(shouldSandboxRun({ agentId: 'codex', skillIds: ['anything-at-all'], cfg: wild })).toBe(true);
-    // Wildcard skills alone still respects the runtime gate.
+    // Wildcard skills use the default Claude + Codex runtime gate.
     const wildSkills = resolveSandboxConfig({ enabled: true, skills: ['*'] }, {});
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['summary-feedback'], cfg: wildSkills })).toBe(true);
-    expect(shouldSandboxRun({ agentId: 'codex', skillIds: ['summary-feedback'], cfg: wildSkills })).toBe(false);
+    expect(shouldSandboxRun({ agentId: 'codex', skillIds: ['summary-feedback'], cfg: wildSkills })).toBe(true);
     // Wildcard never bypasses the enabled flag or a null agent.
     const wildDisabled = resolveSandboxConfig({ enabled: false, runtimes: ['*'], skills: ['*'] }, {});
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['x'], cfg: wildDisabled })).toBe(false);
@@ -228,6 +228,36 @@ describe('wrapInvocationInSandbox', () => {
     expect(envs).toContain('OPENAI_BASE_URL=https://api.example');
     expect(envs).toContain('CODEX_API_KEY=sk-codex');
     expect(envs.join(' ')).not.toContain('ANTHROPIC_API_KEY');
+  });
+
+  it('normalizes a Windows-host Codex policy for the Linux container', () => {
+    const wrapped = wrapInvocationInSandbox({
+      agentBin: 'codex',
+      args: [
+        'exec', '--json',
+        '-C', '/data/project',
+        '--add-dir', '/data/project/docs',
+        '--add-dir', '/shared/design-system',
+        '--sandbox', 'danger-full-access',
+      ],
+      env: {},
+      cwd: '/data/project',
+      runId: 'run-windows-policy',
+      projectId: null,
+      daemonUrl: 'http://127.0.0.1:7456',
+      image: 'od-agent-sandbox:0.1.0',
+      cfg,
+      runtimeId: 'codex',
+    });
+    expect(wrapped.args).toContain('workspace-write');
+    expect(wrapped.args).not.toContain('danger-full-access');
+    expect(wrapped.args).toContain('sandbox_workspace_write.network_access=true');
+    expect(wrapped.args[wrapped.args.indexOf('-C') + 1]).toBe('/work/app');
+    const addDirs = wrapped.args.flatMap((arg, index) =>
+      arg === '--add-dir' ? [wrapped.args[index + 1]] : [],
+    );
+    expect(addDirs).toEqual(['/work/app/docs', '/work/extra-0']);
+    expect(wrapped.args).toContain('/shared/design-system:/work/extra-0');
   });
 });
 

@@ -315,6 +315,10 @@ import {
   shouldSandboxRun,
   sweepOrphanSandboxContainers,
   killSandboxContainer,
+  materializeSandboxCodexProfile,
+  removeSandboxCodexProfile,
+  sandboxAuthVolume,
+  sandboxCodexProfileName,
   wrapInvocationInSandbox,
 } from './agent-sandbox.js';
 import {
@@ -6089,9 +6093,6 @@ export async function startServer({
     }
   };
 
-  const sandboxRuntimeAuthVolume = (runtimeId: 'claude' | 'codex') =>
-    runtimeId === 'claude' ? SANDBOX_AUTH_VOLUME : 'od-codex-auth';
-
   // Runtime-aware sandbox fallback. The resolver is config-only; this helper
   // adds the Docker/image/auth-volume readiness check so a missing volume does
   // not get picked as a usable runtime.
@@ -6103,10 +6104,10 @@ export async function startServer({
       const image = sandboxRuntimeImage();
       if (!(await dockerAvailable())) return null;
       if (!(await dockerImagePresent(image))) return null;
-      if (sandboxRuntimeIsGated(cfg, 'claude') && (await dockerVolumePresent(sandboxRuntimeAuthVolume('claude')))) {
+      if (sandboxRuntimeIsGated(cfg, 'claude') && (await dockerVolumePresent(sandboxAuthVolume('claude')))) {
         return 'claude';
       }
-      if (sandboxRuntimeIsGated(cfg, 'codex') && (await dockerVolumePresent(sandboxRuntimeAuthVolume('codex')))) {
+      if (sandboxRuntimeIsGated(cfg, 'codex') && (await dockerVolumePresent(sandboxAuthVolume('codex')))) {
         return 'codex';
       }
       return null;
@@ -6156,7 +6157,10 @@ export async function startServer({
           if (!sandboxCfg.runtimes.includes('*') && !sandboxCfg.runtimes.includes(agent.id)) continue;
           const status = statusById.get(agent.id as 'claude' | 'codex');
           if (!status) continue;
-          const ok = status.imageAvailable && status.authVolumeAvailable && status.authStatus === 'logged-in';
+          // `available` means the CLI runtime can be launched. Authentication
+          // is reported separately so Settings can still list Codex and let
+          // the user complete device login instead of hiding it beforehand.
+          const ok = status.imageAvailable;
           agent.sandbox = {
             owns: true,
             dockerRunning: status.imageAvailable,
@@ -11740,6 +11744,7 @@ export async function startServer({
     // doesn't try to load an empty (or absent) layer.
     const CODEX_PROFILE_NAME = 'od-injected';
     let codexProfileName: string | undefined;
+    let sandboxCodexProfile: { name: string; toml: string } | null = null;
     if (def.externalMcpInjection === 'codex-profile-v2') {
       const codexHome =
         process.env.CODEX_HOME && process.env.CODEX_HOME.trim()
@@ -11751,15 +11756,21 @@ export async function startServer({
       );
       const toml = buildCodexMcpToml(enabledExternalMcp);
       if (toml) {
-        try {
-          await fs.promises.mkdir(codexHome, { recursive: true });
-          await fs.promises.writeFile(profilePath, toml, 'utf8');
-          codexProfileName = CODEX_PROFILE_NAME;
-        } catch (err) {
-          console.warn(
-            '[mcp-config] failed to write Codex profile-v2:',
-            err && err.message ? err.message : err,
-          );
+        if (willSandbox && agentId === 'codex') {
+          const name = sandboxCodexProfileName(runId);
+          sandboxCodexProfile = { name, toml };
+          codexProfileName = name;
+        } else {
+          try {
+            await fs.promises.mkdir(codexHome, { recursive: true });
+            await fs.promises.writeFile(profilePath, toml, 'utf8');
+            codexProfileName = CODEX_PROFILE_NAME;
+          } catch (err) {
+            console.warn(
+              '[mcp-config] failed to write Codex profile-v2:',
+              err && err.message ? err.message : err,
+            );
+          }
         }
       } else {
         try {
@@ -12067,8 +12078,15 @@ export async function startServer({
         if (!built.ok) failure = built.reason ?? 'sandbox image auto-build failed';
       }
       if (image && !failure) {
-        const preflight = await sandboxPreflight(image);
+        const preflight = await sandboxPreflight(image, agentId === 'codex' ? 'codex' : 'claude');
         if (!preflight.ok) failure = preflight.reason ?? 'sandbox preflight failed';
+        if (!failure && sandboxCodexProfile) {
+          try {
+            await materializeSandboxCodexProfile(image, sandboxCodexProfile.name, sandboxCodexProfile.toml);
+          } catch (err) {
+            failure = `Không thể đưa MCP profile vào Codex sandbox: ${(err as Error).message}`;
+          }
+        }
       }
       if (failure) {
         revokeToolToken('child_exit');
@@ -12244,6 +12262,7 @@ export async function startServer({
           daemonUrl,
           image: sandboxPlan.image,
           cfg: sandboxPlan.cfg,
+          runtimeId: agentId === 'codex' ? 'codex' : 'claude',
         });
         run.sandboxContainerName = wrapped.containerName;
         invocation = createCommandInvocation({
@@ -12276,6 +12295,11 @@ export async function startServer({
       // the final status, so the profile is cleaned up exactly once here
       // instead of threading it through every design.runs.finish call site.
       child.once('close', () => cleanupWriteIsolationProfile());
+      if (sandboxPlan && sandboxCodexProfile) {
+        child.once('close', () => {
+          void removeSandboxCodexProfile(sandboxPlan.image, sandboxCodexProfile!.name).catch(() => {});
+        });
+      }
       if (sandboxPlan && run.sandboxContainerName) {
         // Hard wall-clock cap for a sandboxed run: a hung container would
         // otherwise sit on its CPU/RAM reservation forever (run state is

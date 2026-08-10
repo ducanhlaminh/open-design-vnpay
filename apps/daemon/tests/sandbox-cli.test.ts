@@ -118,8 +118,9 @@ describe('sandbox CLI', () => {
         state.loginStarts += 1;
         res.end(JSON.stringify({
           phase: 'starting',
-          verificationUrl: 'https://auth.openai.com/codex/device',
-          userCode: 'ABCD-1234',
+          url: 'https://auth.openai.com/codex/device',
+          code: 'ABCD-1234',
+          expiresAt: null,
           error: null,
         }));
         return;
@@ -130,14 +131,16 @@ describe('sandbox CLI', () => {
           state.polls < 2
             ? {
                 phase: 'awaiting-user',
-                verificationUrl: 'https://auth.openai.com/codex/device',
-                userCode: 'ABCD-1234',
+                url: 'https://auth.openai.com/codex/device',
+                code: 'ABCD-1234',
+                expiresAt: null,
                 error: null,
               }
             : {
                 phase: 'done',
-                verificationUrl: 'https://auth.openai.com/codex/device',
-                userCode: 'ABCD-1234',
+                url: 'https://auth.openai.com/codex/device',
+                code: 'ABCD-1234',
+                expiresAt: null,
                 error: null,
               },
         ));

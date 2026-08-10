@@ -11,6 +11,7 @@ await build({
     "./src/api/finalize.ts",
     "./src/api/handoff.ts",
     "./src/api/providerModels.ts",
+    "./src/api/sandbox.ts",
     "./src/api/research.ts",
     "./src/analytics/index.ts",
   ],

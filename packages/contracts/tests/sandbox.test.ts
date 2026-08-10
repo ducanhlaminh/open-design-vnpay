@@ -24,8 +24,9 @@ describe('sandbox contracts', () => {
     };
     const loginStatus: SandboxCodexDeviceLoginStatus = {
       phase: 'awaiting-user',
-      verificationUrl: 'https://auth.openai.com/codex/device',
-      userCode: 'ABCD-1234',
+      url: 'https://auth.openai.com/codex/device',
+      code: 'ABCD-1234',
+      expiresAt: null,
       error: null,
     };
     const response: SandboxStatusResponse = {

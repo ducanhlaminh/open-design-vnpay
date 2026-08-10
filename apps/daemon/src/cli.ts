@@ -6044,8 +6044,8 @@ async function runSandbox(args) {
       const printCodexLoginStatus = (state) => {
         if (flags.json) return;
         console.log(`Codex device login: ${state.phase}`);
-        if (state.verificationUrl) console.log(`  verification: ${state.verificationUrl}`);
-        if (state.userCode) console.log(`  code:         ${state.userCode}`);
+        if (state.url) console.log(`  verification: ${state.url}`);
+        if (state.code) console.log(`  code:         ${state.code}`);
         if (state.error) console.log(`  error:        ${state.error}`);
       };
       printCodexLoginStatus(loginStatus);

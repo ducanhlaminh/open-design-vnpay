@@ -44,7 +44,7 @@ describe('InfraSetupGate runtime selection', () => {
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url.endsWith('/sandbox/status')) {
+      if (url.includes('/sandbox/status')) {
         return jsonResponse({
           enabled: true,
           dockerOk: true,
@@ -114,6 +114,6 @@ describe('InfraSetupGate runtime selection', () => {
 
     expect(screen.getByTestId('codex-login')).toBeTruthy();
     expect(screen.queryByTestId('claude-login')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Bắt đầu sử dụng' })).toBeDisabled();
+    expect((screen.getByRole('button', { name: 'Bắt đầu sử dụng' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

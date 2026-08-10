@@ -181,6 +181,7 @@ export interface SandboxEmbeddedLoginStatus {
 }
 
 export type SandboxCodexDeviceLoginPhase =
+  | 'idle'
   | 'starting'
   | 'awaiting-user'
   | 'verifying'
@@ -190,9 +191,11 @@ export type SandboxCodexDeviceLoginPhase =
 export interface SandboxCodexDeviceLoginStatus {
   phase: SandboxCodexDeviceLoginPhase;
   /** Device authorization URL shown to the user. */
-  verificationUrl: string | null;
+  url: string | null;
   /** User code shown alongside the authorization URL. */
-  userCode: string | null;
+  code: string | null;
+  /** ISO timestamp when the current flow expires. */
+  expiresAt: string | null;
   /** Human error when the flow fails or is cancelled. */
   error: string | null;
 }
