@@ -1566,6 +1566,14 @@ export const th: Dict = {
   'settings.sandboxMissing': 'ขาดหาย',
   'settings.sandboxRunCmd': 'รัน: {cmd}',
   'settings.sandboxDaemonOffline': 'เดมอนออฟไลน์ — ไม่สามารถดูสถานะแซนด์บ็อกซ์ได้',
+  'settings.sandboxClaudeTitle': 'Claude runtime',
+  'settings.sandboxClaudeHint': 'Claude keeps the existing account switcher and usage controls.',
+  'settings.sandboxCodexTitle': 'Codex runtime',
+  'settings.sandboxCodexHint': 'Codex uses browser-based device code login and never displays tokens.',
+  'settings.sandboxRuntimeReady': 'Ready',
+  'settings.sandboxRuntimeNotReady': 'Not ready',
+  'settings.sandboxCodexLoginStart': 'Start login',
+  'settings.sandboxCodexLoginDisconnect': 'Disconnect',
 
   // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
   'pipelines.runAllClear.title': 'Old results will be cleared',

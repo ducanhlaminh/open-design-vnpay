@@ -1,12 +1,19 @@
 // Agent-in-sandbox settings card (Settings → Execution, daemon mode).
-// Read-side of `GET /api/sandbox/status`; the enable toggle persists through
-// the shared `PUT /api/app-config` `sandbox` section (same route the `od
-// sandbox enable|disable` CLI uses). Build/login are terminal-interactive
-// docker operations, so the card only surfaces the commands to run.
-import { useCallback, useEffect, useState } from 'react';
-import type { SandboxStatusResponse, SandboxBuildResponse } from '@open-design/contracts';
+// The web UI reads the daemon sandbox snapshot and renders the Claude and
+// Codex runtimes independently. The daemon contract is mid-migration in the
+// other worktree, so this file keeps a local shadow of the new shape and falls
+// back to the legacy summary view when the runtime list is still absent.
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { SandboxBuildResponse } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { ClaudeAccountSwitcher } from './ClaudeAccountSwitcher';
+import { CodexDeviceLogin } from './CodexDeviceLogin';
+import {
+  isSandboxRuntimeReady,
+  sandboxRuntimeDisplayName,
+  type SandboxRuntimeStatus,
+  type SandboxStatusResponse,
+} from './sandbox-runtime';
 import styles from './SandboxSection.module.css';
 
 export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
@@ -76,6 +83,68 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
       </span>
     );
 
+  const runtimeStatuses = status?.runtimeStatuses ?? [];
+  const runtimeById = useMemo(
+    () => new Map(runtimeStatuses.map((runtime) => [runtime.id, runtime] as const)),
+    [runtimeStatuses],
+  );
+  const claudeRuntime = runtimeById.get('claude');
+  const codexRuntime = runtimeById.get('codex');
+  const hasRuntimeStatuses = runtimeStatuses.length > 0;
+
+  const renderRuntimeRow = (runtime: SandboxRuntimeStatus | undefined, label: string) => {
+    if (!runtime) {
+      return (
+        <span className={styles.missing}>
+          {t('settings.sandboxMissing')}
+        </span>
+      );
+    }
+
+    const ready = isSandboxRuntimeReady(runtime);
+    return (
+        <div className={styles.runtimeSummary}>
+          <div className={styles.runtimeSummaryHead}>
+            <strong>{label}</strong>
+            <span className={ready ? styles.runtimeReady : styles.runtimeMissing}>
+              {ready ? t('settings.sandboxRuntimeReady') : t('settings.sandboxRuntimeNotReady')}
+            </span>
+          </div>
+          <ul className={styles.runtimeSpecs}>
+            <li>
+            <span>Version</span>
+            <code>{runtime.version ?? '—'}</code>
+          </li>
+          <li>
+            <span>Image</span>
+            {runtime.imageAvailable ? (
+              <span className={styles.ok}>{t('settings.sandboxOk')}</span>
+            ) : (
+              <span className={styles.missing}>{t('settings.sandboxMissing')}</span>
+            )}
+          </li>
+          <li>
+            <span>Auth volume</span>
+            <code>{runtime.authVolume ?? '—'}</code>
+            {runtime.authVolumeAvailable ? (
+              <span className={styles.ok}>{t('settings.sandboxOk')}</span>
+            ) : (
+              <span className={styles.missing}>{t('settings.sandboxMissing')}</span>
+            )}
+          </li>
+          <li>
+            <span>Auth status</span>
+            <code>{runtime.authStatus ?? '—'}</code>
+          </li>
+          <li>
+            <span>Login method</span>
+            <code>{runtime.loginMethod ?? '—'}</code>
+          </li>
+        </ul>
+      </div>
+    );
+  };
+
   return (
     <section className="settings-section" data-testid="settings-sandbox">
       <div className="section-head">
@@ -86,6 +155,37 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
       </div>
       {!daemonLive || !status ? (
         <small className="hint">{t('settings.sandboxDaemonOffline')}</small>
+      ) : hasRuntimeStatuses ? (
+        <div className={styles.runtimeGrid}>
+          <article className={styles.runtimeCard} data-testid="sandbox-runtime-claude">
+            <div className={styles.runtimeCardHead}>
+              <div>
+                <h4>{t('settings.sandboxClaudeTitle')}</h4>
+                <p className="hint">{t('settings.sandboxClaudeHint')}</p>
+              </div>
+              {renderRuntimeRow(claudeRuntime, sandboxRuntimeDisplayName('claude'))}
+            </div>
+            <div className={styles.runtimeBody}>
+              <ClaudeAccountSwitcher daemonLive={daemonLive} />
+            </div>
+          </article>
+          <article className={styles.runtimeCard} data-testid="sandbox-runtime-codex">
+            <div className={styles.runtimeCardHead}>
+              <div>
+                <h4>{t('settings.sandboxCodexTitle')}</h4>
+                <p className="hint">{t('settings.sandboxCodexHint')}</p>
+              </div>
+              {renderRuntimeRow(codexRuntime, sandboxRuntimeDisplayName('codex'))}
+            </div>
+            <div className={styles.runtimeBody}>
+              <CodexDeviceLogin
+                disabled={codexRuntime ? !codexRuntime.imageAvailable : false}
+                onAuthChanged={() => void refresh()}
+                onComplete={() => void refresh()}
+              />
+            </div>
+          </article>
+        </div>
       ) : (
         <>
           <p className="hint" style={{ margin: '0 0 4px' }}>

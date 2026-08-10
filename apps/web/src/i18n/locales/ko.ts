@@ -1783,6 +1783,14 @@ export const ko: Dict = {
   'settings.sandboxMissing': '없음',
   'settings.sandboxRunCmd': '실행: {cmd}',
   'settings.sandboxDaemonOffline': '데몬 오프라인 — 샌드박스 상태를 확인할 수 없습니다.',
+  'settings.sandboxClaudeTitle': 'Claude runtime',
+  'settings.sandboxClaudeHint': 'Claude keeps the existing account switcher and usage controls.',
+  'settings.sandboxCodexTitle': 'Codex runtime',
+  'settings.sandboxCodexHint': 'Codex uses browser-based device code login and never displays tokens.',
+  'settings.sandboxRuntimeReady': 'Ready',
+  'settings.sandboxRuntimeNotReady': 'Not ready',
+  'settings.sandboxCodexLoginStart': 'Start login',
+  'settings.sandboxCodexLoginDisconnect': 'Disconnect',
 
   // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
   'pipelines.runAllClear.title': 'Old results will be cleared',

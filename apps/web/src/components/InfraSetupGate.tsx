@@ -13,9 +13,15 @@ import { useCallback, useEffect, useState } from 'react';
 import type {
   SandboxAccountsResponse,
   SandboxBuildResponse,
-  SandboxStatusResponse,
 } from '@open-design/contracts';
 import { EmbeddedClaudeLogin } from './EmbeddedClaudeLogin';
+import { CodexDeviceLogin } from './CodexDeviceLogin';
+import {
+  getStoredSandboxRuntime,
+  isSandboxRuntimeReady,
+  sandboxRuntimeDisplayName,
+  type SandboxStatusResponse as SandboxUiStatusResponse,
+} from './sandbox-runtime';
 import styles from './InfraSetupGate.module.css';
 
 const DISMISS_KEY = 'od-infra-setup-done';
@@ -45,19 +51,24 @@ interface Props {
 
 export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Element | null {
   const [dismissed, setDismissed] = useState(readDismissed);
-  const [status, setStatus] = useState<SandboxStatusResponse | null>(null);
+  const [status, setStatus] = useState<SandboxUiStatusResponse | null>(null);
   const [accounts, setAccounts] = useState<SandboxAccountsResponse | null>(null);
   const [build, setBuild] = useState<SandboxBuildResponse | null>(null);
+  const [selectedRuntime] = useState(() => getStoredSandboxRuntime());
   // True once the FIRST full evaluation decided the gate must show. Before
   // that we render nothing, so fully-provisioned machines never see a flash.
   const [evaluated, setEvaluated] = useState(false);
 
   const active = daemonLive && !dismissed;
+  const runtimeStatuses = status?.runtimeStatuses ?? [];
+  const runtimeById = new Map(runtimeStatuses.map((runtime) => [runtime.id, runtime] as const));
+  const selectedRuntimeStatus = runtimeById.get(selectedRuntime);
+  const usingRuntimeStatuses = runtimeStatuses.length > 0;
 
   const refreshStatus = useCallback(async () => {
     try {
       const r = await fetch('/api/sandbox/status');
-      if (r.ok) setStatus((await r.json()) as SandboxStatusResponse);
+      if (r.ok) setStatus((await r.json()) as SandboxUiStatusResponse);
     } catch {
       // Daemon unreachable — keep the last snapshot.
     }
@@ -87,9 +98,9 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   }, []);
 
   useEffect(() => {
-    if (!active || !ready) return;
+    if (!active || usingRuntimeStatuses || !ready) return;
     void refreshAccounts();
-  }, [active, ready, status?.authVolumeOk, refreshAccounts]);
+  }, [active, ready, usingRuntimeStatuses, status?.authVolumeOk, refreshAccounts]);
 
   // ── Build progress: resume a possibly-running build on mount, poll while
   // running, refresh the status list when it lands (same flow as Settings).
@@ -142,7 +153,10 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   // Auth step is N/A when the sandbox doesn't own Claude (host CLI handles
   // login there); until /accounts answers, assume it applies.
   const authNA = accounts != null && !accounts.supported;
-  const allOk = Boolean(status?.dockerOk && status?.imageOk && (authNA || loggedIn));
+  const legacyAllOk = Boolean(status?.dockerOk && status?.imageOk && (authNA || loggedIn));
+  const selectedRuntimeReady = usingRuntimeStatuses
+    ? isSandboxRuntimeReady(selectedRuntimeStatus)
+    : legacyAllOk;
 
   // ── First-evaluation gate: decide once whether to show at all. A machine
   // that's already fully set up (or has the sandbox disabled) self-dismisses
@@ -159,6 +173,14 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
       dismiss();
       return;
     }
+    if (usingRuntimeStatuses) {
+      if (!selectedRuntimeStatus || !selectedRuntimeReady) {
+        setEvaluated(true);
+        return;
+      }
+      dismiss();
+      return;
+    }
     if (!status.dockerOk || !status.imageOk) {
       setEvaluated(true);
       return;
@@ -170,13 +192,133 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
       return;
     }
     setEvaluated(true);
-  }, [active, evaluated, status, accounts, dismiss]);
+  }, [active, evaluated, status, accounts, dismiss, usingRuntimeStatuses, selectedRuntimeStatus, selectedRuntimeReady]);
 
   if (!active || !evaluated || !status) return null;
+  const allOk = selectedRuntimeReady;
 
   // One installer only (Docker Desktop, the cross-platform choice) so a
   // no-code user never has to pick; Windows additionally gets the WSL2 note.
   const isWindows = /Windows/i.test(navigator.userAgent);
+  if (usingRuntimeStatuses) {
+    const runtimeLabel = sandboxRuntimeDisplayName(selectedRuntime);
+
+    return (
+      <div
+        className={styles.overlay}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="infra-setup-gate-title"
+        data-testid="infra-setup-gate"
+      >
+        <div className={styles.card}>
+          <span className={styles.kicker}>VNPAY Design Platform</span>
+          <h2 id="infra-setup-gate-title" className={styles.title}>
+            Thiết lập môi trường lần đầu
+          </h2>
+          <p className={styles.desc}>
+            Máy này còn thiếu vài thứ để chạy agent thiết kế. Làm theo runtime đang được chọn
+            trong cấu hình hiện tại; các runtime khác không chặn bước bắt đầu.
+          </p>
+          <ol className={styles.steps}>
+            <li className={`${styles.step}${selectedRuntimeReady ? ' ' + styles.stepOk : ''}`}>
+              <span className={styles.stepBadge} aria-hidden="true">
+                {selectedRuntimeReady ? '✓' : '1'}
+              </span>
+              <div className={styles.stepBody}>
+                <div className={styles.stepTitle}>
+                  {runtimeLabel}
+                  {selectedRuntimeReady ? <span className={styles.stepDone}>xong</span> : null}
+                </div>
+                <div className={styles.runtimePanel}>
+                  <ul className={styles.runtimeSpecs}>
+                    <li>
+                      <span>Version</span>
+                      <code>{selectedRuntimeStatus?.version ?? '—'}</code>
+                    </li>
+                    <li>
+                      <span>Image</span>
+                      {selectedRuntimeStatus?.imageAvailable ? (
+                        <span className={styles.runtimeOk}>{t('settings.sandboxOk')}</span>
+                      ) : (
+                        <span className={styles.runtimeMissing}>{t('settings.sandboxMissing')}</span>
+                      )}
+                    </li>
+                    <li>
+                      <span>Auth volume</span>
+                      <code>{selectedRuntimeStatus?.authVolume ?? '—'}</code>
+                      {selectedRuntimeStatus?.authVolumeAvailable ? (
+                        <span className={styles.runtimeOk}>{t('settings.sandboxOk')}</span>
+                      ) : (
+                        <span className={styles.runtimeMissing}>{t('settings.sandboxMissing')}</span>
+                      )}
+                    </li>
+                    <li>
+                      <span>Auth status</span>
+                      <code>{selectedRuntimeStatus?.authStatus ?? '—'}</code>
+                    </li>
+                    <li>
+                      <span>Login method</span>
+                      <code>{selectedRuntimeStatus?.loginMethod ?? '—'}</code>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </li>
+            <li className={`${styles.step}${selectedRuntimeReady ? ' ' + styles.stepOk : ''}`}>
+              <span className={styles.stepBadge} aria-hidden="true">
+                {selectedRuntimeReady ? '✓' : '2'}
+              </span>
+              <div className={styles.stepBody}>
+                <div className={styles.stepTitle}>
+                  {selectedRuntime === 'codex'
+                    ? t('settings.sandboxCodexTitle')
+                    : t('settings.sandboxClaudeTitle')}
+                  {selectedRuntimeReady ? <span className={styles.stepDone}>xong</span> : null}
+                </div>
+                {selectedRuntime === 'codex' ? (
+                  <CodexDeviceLogin
+                    disabled={selectedRuntimeStatus ? !selectedRuntimeStatus.imageAvailable : false}
+                    onAuthChanged={() => void refreshStatus()}
+                    onComplete={() => void refreshStatus()}
+                  />
+                ) : (
+                  <EmbeddedClaudeLogin
+                    onSuccess={() => {
+                      void refreshStatus();
+                    }}
+                  />
+                )}
+              </div>
+            </li>
+          </ol>
+          <div className={styles.footer}>
+            <div className={styles.footerLeft}>
+              <button
+                type="button"
+                className={styles.linkBtn}
+                disabled={rechecking}
+                onClick={() => void recheck()}
+              >
+                {rechecking ? 'Đang kiểm tra…' : 'Kiểm tra lại'}
+              </button>
+              <button type="button" className={styles.skipBtn} onClick={dismiss}>
+                Để sau (mở lại trong Cài đặt)
+              </button>
+            </div>
+            <button
+              type="button"
+              className={styles.doneBtn}
+              disabled={!allOk}
+              onClick={dismiss}
+            >
+              Bắt đầu sử dụng
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const steps: Array<{
     key: string;

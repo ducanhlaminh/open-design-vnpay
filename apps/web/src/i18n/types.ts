@@ -672,6 +672,14 @@ export interface Dict {
   'settings.sandboxMissing': string;
   'settings.sandboxRunCmd': string;
   'settings.sandboxDaemonOffline': string;
+  'settings.sandboxClaudeTitle': string;
+  'settings.sandboxClaudeHint': string;
+  'settings.sandboxCodexTitle': string;
+  'settings.sandboxCodexHint': string;
+  'settings.sandboxRuntimeReady': string;
+  'settings.sandboxRuntimeNotReady': string;
+  'settings.sandboxCodexLoginStart': string;
+  'settings.sandboxCodexLoginDisconnect': string;
 
   // Notifications (settings + system notifications)
   'settings.notifications': string;

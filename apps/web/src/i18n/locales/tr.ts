@@ -1720,6 +1720,14 @@ export const tr: Dict = {
   'settings.sandboxMissing': 'eksik',
   'settings.sandboxRunCmd': 'çalıştır: {cmd}',
   'settings.sandboxDaemonOffline': 'Daemon çevrimdışı — sandbox durumu alınamıyor.',
+  'settings.sandboxClaudeTitle': 'Claude runtime',
+  'settings.sandboxClaudeHint': 'Claude keeps the existing account switcher and usage controls.',
+  'settings.sandboxCodexTitle': 'Codex runtime',
+  'settings.sandboxCodexHint': 'Codex uses browser-based device code login and never displays tokens.',
+  'settings.sandboxRuntimeReady': 'Ready',
+  'settings.sandboxRuntimeNotReady': 'Not ready',
+  'settings.sandboxCodexLoginStart': 'Start login',
+  'settings.sandboxCodexLoginDisconnect': 'Disconnect',
 
   // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
   'pipelines.runAllClear.title': 'Old results will be cleared',
