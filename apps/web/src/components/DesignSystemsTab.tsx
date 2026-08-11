@@ -143,6 +143,10 @@ export function DesignSystemsTab({
   const [userFilter, setUserFilter] = useState<UserListFilter>('all');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionMenuId, setActionMenuId] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<DesignSystemSummary | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   // Import trực tiếp từ zip của plugin Fig Pipeline ngay trên trang này —
   // chọn file là import luôn (không form phụ); xong thì refresh danh sách.
   // Lọc theo product family: app mobile (fixed viewport) vs website
@@ -299,6 +303,45 @@ export function DesignSystemsTab({
 
   async function refreshSystems() {
     await onSystemsRefresh?.();
+  }
+
+  function openRename(system: DesignSystemSummary) {
+    setActionMenuId(null);
+    setRenameTarget(system);
+    setRenameValue(system.title);
+    setRenameError(null);
+  }
+
+  function closeRename() {
+    if (renameSaving) return;
+    setRenameTarget(null);
+    setRenameValue('');
+    setRenameError(null);
+  }
+
+  async function saveRename() {
+    if (!renameTarget || renameSaving) return;
+    const title = renameValue.trim();
+    if (!title || title === renameTarget.title) {
+      closeRename();
+      return;
+    }
+    setRenameSaving(true);
+    setRenameError(null);
+    try {
+      const updated = await updateDesignSystemDraft(renameTarget.id, { title });
+      if (!updated) {
+        setRenameError('Không thể đổi tên bộ Design System. Vui lòng thử lại.');
+        return;
+      }
+      await refreshSystems();
+      setRenameTarget(null);
+      setRenameValue('');
+    } catch {
+      setRenameError('Không thể đổi tên bộ Design System. Vui lòng thử lại.');
+    } finally {
+      setRenameSaving(false);
+    }
   }
 
   async function togglePublished(system: DesignSystemSummary) {
@@ -630,6 +673,7 @@ export function DesignSystemsTab({
                   <button
                     type="button"
                     className="ds-user-row__open"
+                    aria-label={`Mở ${system.title}`}
                     onClick={() => onOpenSystem?.(system.id)}
                   >
                     <span className="ds-user-row__title">
@@ -669,6 +713,7 @@ export function DesignSystemsTab({
                         <div className="ds-user-row__menu" role="menu" aria-label={`Thao tác với ${system.title}`}>
                           {system.hasReactBundle && onOpenCriteria ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpenCriteria(system.id); }}>Danh mục review</button> : null}
                           {!selected && canUseInProjects ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); handleMakeDefaultClick(system); }}>Đặt làm mặc định</button> : null}
+                          <button type="button" role="menuitem" onClick={() => openRename(system)}>Đổi tên</button>
                           <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); void togglePublished(system); }}>
                             {status === 'published' ? 'Chuyển về bản nháp' : 'Xuất bản'}
                           </button>
@@ -683,6 +728,42 @@ export function DesignSystemsTab({
           </div>
         )}
         </section>
+      ) : null}
+
+      {renameTarget ? (
+        <div className="modal-backdrop" onClick={closeRename}>
+          <form
+            className="modal modal-rename"
+            aria-label="Đổi tên bộ Design System"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveRename();
+            }}
+          >
+            <h2>Đổi tên bộ Design System</h2>
+            <p>Tên mới chỉ thay đổi cách hiển thị. Phiên bản Figma và các dự án đang dùng bộ này không bị ảnh hưởng.</p>
+            <input
+              autoFocus
+              type="text"
+              aria-label="Tên bộ Design System"
+              value={renameValue}
+              disabled={renameSaving}
+              onChange={(event) => setRenameValue(event.target.value)}
+            />
+            {renameError ? <p className="library-install-error" role="alert">{renameError}</p> : null}
+            <div className="row">
+              <button type="button" onClick={closeRename} disabled={renameSaving}>Hủy</button>
+              <button
+                type="submit"
+                className="primary"
+                disabled={renameSaving || !renameValue.trim() || renameValue.trim() === renameTarget.title}
+              >
+                {renameSaving ? 'Đang lưu…' : 'Lưu tên mới'}
+              </button>
+            </div>
+          </form>
+        </div>
       ) : null}
 
       {primaryCollection === 'design-system' && designSystemCollection === 'official' ? (

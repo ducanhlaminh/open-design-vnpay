@@ -124,7 +124,7 @@ describe('pipeline app/feature edit routes', () => {
 
     const res = await patchApp('XPOS', { name: 'X POS mới' });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'XPOS', name: 'X POS mới' });
+    expect(res.body).toEqual({ id: 'XPOS', name: 'X POS mới', designSystemId: null });
 
     expect(listPipelineApps(db)).toEqual([
       expect.objectContaining({ id: 'XPOS', name: 'X POS mới' }),
@@ -150,14 +150,14 @@ describe('pipeline app/feature edit routes', () => {
     expect((await postApp({ appId: 'XPOS', name: 'X POS' })).status).toBe(201);
     const empty = await patchApp('XPOS', { name: '   ' });
     expect(empty.status).toBe(400);
-    expect(empty.body.error).toMatch(/name is required/);
+    expect(empty.body.error).toMatch(/name or designSystemId is required/);
 
     const missing = await patchApp('NOPE', { name: 'Nope' });
     expect(missing.status).toBe(404);
     expect(missing.body.error).toMatch(/not found/);
   });
 
-  it('deletes a local app and detaches its features instead of deleting them', async () => {
+  it('deletes a local app and all of its features from this device', async () => {
     expect((await postApp({ appId: 'XPOS', name: 'X POS' })).status).toBe(201);
     insertFeature('xpos-checkout', 'XPOS', 'X POS');
     insertFeature('xpos-refund', 'XPOS', 'X POS');
@@ -165,33 +165,32 @@ describe('pipeline app/feature edit routes', () => {
 
     const res = await deleteApp('XPOS');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true, detached: 2 });
+    expect(res.body).toEqual({ ok: true, deletedFeatures: 2, localOnly: true });
 
     expect(listPipelineApps(db)).toEqual([]);
-    // Feature còn nguyên, chỉ mất App cha → "Chưa gán app".
-    expect(getProject(db, 'xpos-checkout')).not.toBeNull();
-    expect(getProject(db, 'xpos-refund')).not.toBeNull();
-    expect(studioConfigOf('xpos-checkout')).toEqual({});
+    expect(getProject(db, 'xpos-checkout')).toBeNull();
+    expect(getProject(db, 'xpos-refund')).toBeNull();
     expect(studioConfigOf('other-feature')).toEqual({ appId: 'VNPAY', appName: 'VNPAY App' });
 
     const listed = await listProjectsRoute();
     const byId = new Map(listed.body.projects.map((p: any) => [p.id, p]));
-    expect(byId.get('xpos-checkout')).not.toHaveProperty('app');
-    expect(byId.get('xpos-refund')).not.toHaveProperty('app');
+    expect(byId.has('xpos-checkout')).toBe(false);
+    expect(byId.has('xpos-refund')).toBe(false);
     expect((byId.get('other-feature') as any).app).toEqual({ id: 'VNPAY', name: 'VNPAY App' });
   });
 
-  it('409s deleting an app that exists on the central registry', async () => {
-    remoteImpl = async () => [
+  it('deletes a pulled app locally without consulting the central registry', async () => {
+    const remote = vi.fn(async () => [
       { projectId: 'REMOTEAPP', name: 'Remote App', inKgs: true, inMedia: true, files: 0, isApp: true },
-    ];
+    ]);
+    remoteImpl = remote;
     insertFeature('remote-feature', 'REMOTEAPP', 'Remote App');
 
     const res = await deleteApp('REMOTEAPP');
-    expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/Pipeline Studio/);
-    // Không detach gì cả.
-    expect(studioConfigOf('remote-feature')).toEqual({ appId: 'REMOTEAPP', appName: 'Remote App' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, deletedFeatures: 1, localOnly: true });
+    expect(getProject(db, 'remote-feature')).toBeNull();
+    expect(remote).not.toHaveBeenCalled();
   });
 
   it('404s deleting an app no local source knows', async () => {

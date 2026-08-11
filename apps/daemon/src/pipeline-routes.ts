@@ -7,6 +7,7 @@ import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, Pipeline
 import { TARGETS_CONFIG_BASENAME, UI_TARGETS, buildTargetsConfig, isUiTarget } from '@open-design/contracts';
 
 import {
+  deleteProject as dbDeleteProject,
   deletePipelineApp,
   getPipelineApp,
   getProject,
@@ -19,6 +20,7 @@ import {
   upsertPipelineAppName,
   setPipelineAppDesignSystem,
 } from './db.js';
+import { isSafeId, removeProjectDir } from './projects.js';
 import {
   DEFAULT_WORKFLOW_ID,
   WORKFLOWS,
@@ -37,7 +39,7 @@ import {
   workflowForPipeline,
 } from './pipelines.js';
 import type { RouteDeps } from './server-context.js';
-import { createAppContextVersion, featureContextBindingFromMetadata, parseAppContextManifest, readCurrentAppContextManifest } from './app-context-version.js';
+import { createAppContextVersion, featureContextBindingFromMetadata, readCurrentAppContextManifest } from './app-context-version.js';
 
 // `{ target: dsId }` request field → validated map. Unknown targets and
 // non-string/empty ids drop silently (same tolerance as the `targets` list);
@@ -635,17 +637,13 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     res.status(201).json({ id: appId, name, designSystemId });
   });
 
-  // GET /api/pipelines/apps — App containers a user can pick as the parent of
-  // a NEW feature (Phase B local creation picker). Union of:
-  //   - local: distinct {appId, appName} pairs denormalized onto existing
-  //     local pipeline projects' metadata.studioConfig, PLUS `pipeline_apps`
-  //     rows (Apps created locally that have no feature yet).
-  //   - remote: {isApp: true} rows from the KGS/media registry, so the picker
-  //     can also parent a new feature under an App that already exists on
-  //     Pipeline Studio (that is case 1 — the feature gets created there on
-  //     approval, the App is reused as-is). Best-effort: the remote stores
-  //     being unreachable degrades the picker to local-only rather than 500ing
-  //     a user out of creating anything.
+  // GET /api/pipelines/apps — App containers that really exist on THIS device:
+  // distinct {appId, appName} pairs denormalized onto local Features, plus
+  // `pipeline_apps` rows (including pulled Apps with zero Features).
+  //
+  // Remote-only Apps belong exclusively to GET /api/kg/remote-projects, which
+  // backs the Pull modal. Keeping the sources separate is what lets a user
+  // remove a pulled App locally without it immediately reappearing here.
   //
   // An App with features deliberately does NOT get a local `projects` row of
   // its own: it has no cwd, no stages, nothing to run, and isKgsProject() would
@@ -654,50 +652,19 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // `pipeline_apps` row exists solely so a 0-feature App survives.
   app.get('/api/pipelines/apps', async (_req, res) => {
     const byId = collectLocalApps();
-    // Remote Apps come second so a local name (typed by this user) wins over
-    // the store's, but an App that only exists remotely still shows up.
-    try {
-      for (const r of await loadRemoteApps()) {
-        const existing = byId.get(r.id);
-        if (existing) {
-          if (!existing.name && r.name) existing.name = r.name;
-        } else {
-          byId.set(r.id, { id: r.id, ...(r.name ? { name: r.name } : {}), designSystemId: null, origin: 'remote' });
-        }
-      }
-    } catch {
-      /* stores unreachable → local-only picker */
-    }
-    const media = new MediaClient(mediaConfigFromEnv());
     const apps = await Promise.all(Array.from(byId.values())
       .sort((a, b) => a.id.localeCompare(b.id))
       .map(async (e) => {
         const localCurrent = await readCurrentAppContextManifest(ctx.paths.PROJECTS_DIR, e.id);
-        let current = localCurrent;
-        if (!current && e.origin === 'remote') {
-          try {
-            const pointer = JSON.parse((await media.downloadFile(e.id, 'context/current.json')).toString('utf8')) as Record<string, unknown>;
-            const version = typeof pointer.contextVersion === 'string' && /^v[1-9]\d*$/.test(pointer.contextVersion)
-              ? pointer.contextVersion
-              : null;
-            if (version) {
-              current = parseAppContextManifest(JSON.parse(
-                (await media.downloadFile(e.id, `context/versions/${version}/manifest.json`)).toString('utf8'),
-              ));
-            }
-          } catch {
-            // Legacy remote App: no version metadata.
-          }
-        }
         return {
           id: e.id,
           ...(e.name ? { name: e.name } : {}),
           designSystemId: e.designSystemId,
           origin: e.origin,
-          ...(current || localCurrent ? { context: {
-              current,
-              latestVersion: current?.contextVersion ?? null,
-              latestDigest: current?.contentDigest ?? null,
+          ...(localCurrent ? { context: {
+              current: localCurrent,
+              latestVersion: localCurrent.contextVersion,
+              latestDigest: localCurrent.contentDigest,
               localCurrentDigest: localCurrent?.contentDigest ?? null,
             } } : {}),
         };
@@ -786,28 +753,39 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     res.json({ id: appId, name: updated?.name ?? name, designSystemId: updated?.designSystemId ?? null });
   });
 
-  // DELETE /api/pipelines/apps/:id — xóa App CỤC BỘ. Feature KHÔNG bị xóa: chỉ
-  // gỡ {appId, appName} nên nó về nhóm "Chưa gán app" (xóa dự án là việc của
-  // DELETE /api/projects/:id). App có trên studio thì máy này không có quyền
-  // xóa — 409 để user xử lý trên studio.
+  // DELETE /api/pipelines/apps/:id — remove the complete local App tree. This
+  // route never reads or mutates KGS/media/Studio: the shared copy remains
+  // available in the Pull modal and can be materialized again later.
   app.delete('/api/pipelines/apps/:id', async (req, res) => {
     const appId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
-    const remote = await remoteAppIds();
-    if (remote?.has(appId)) {
-      return res.status(409).json({
-        error:
-          `App "${appId}" tồn tại trên Pipeline Studio — xóa trên studio; máy này chỉ xóa được App local.`,
-      });
-    }
+    if (!isSafeId(appId)) return res.status(400).json({ error: 'invalid app id' });
     if (!collectLocalApps().has(appId)) {
       return res.status(404).json({ error: `app "${appId}" not found` });
     }
-    deletePipelineApp(db, appId);
     const features = featuresOfApp(appId);
-    for (const f of features) {
-      updateProject(db, f.id, { metadata: detachApp(f) });
-    }
-    res.json({ ok: true, detached: features.length });
+    // DB deletion cascades run/conversation/KG state through the existing
+    // foreign keys. Capture the Feature list first because the App relation is
+    // denormalized in each Feature's metadata.
+    db.transaction(() => {
+      for (const f of features) dbDeleteProject(db, f.id);
+      // A legacy pull may have materialized the App workspace itself as a
+      // project row. It is a local mirror too, not a remote delete request.
+      const appProject = getProject(db, appId);
+      if (appProject && isKgsProject(appProject)) dbDeleteProject(db, appId);
+      deletePipelineApp(db, appId);
+    })();
+
+    // removeProjectDir validates every id before resolving it below
+    // PROJECTS_DIR. `force: true` inside that primitive keeps retries safe.
+    await Promise.all(
+      [...new Set([...features.map((feature) => feature.id), appId])]
+        // An unsafe legacy id could have a DB mirror, but projectDir never
+        // allowed it to own a directory. Delete its row without resolving an
+        // untrusted path.
+        .filter(isSafeId)
+        .map((id) => removeProjectDir(ctx.paths.PROJECTS_DIR, id)),
+    );
+    res.json({ ok: true, deletedFeatures: features.length, localOnly: true });
   });
 
   // PATCH /api/pipelines/projects/:id { name?, appId?, appName? } — sửa một

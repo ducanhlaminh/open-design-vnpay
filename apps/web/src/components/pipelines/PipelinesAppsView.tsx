@@ -367,7 +367,7 @@ export function PipelinesAppsView({
                           ? [
                               {
                                 key: 'delete',
-                                label: 'Xóa',
+                                label: 'Xóa khỏi máy',
                                 icon: 'trash' as const,
                                 danger: true,
                                 onSelect: () => onDeleteApp(app),

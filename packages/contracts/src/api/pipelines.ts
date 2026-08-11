@@ -1,3 +1,4 @@
+import type { OkResponse } from '../common.js';
 import type { AppContextManifest, FeatureContextBinding } from './app-context-version.js';
 
 // Pipelines: a per-project, dependency-gated chain of skill-driven agent runs
@@ -481,10 +482,10 @@ export interface CreatePipelineProjectResponse {
   name: string;
 }
 
-// One App container offered as the parent of a new feature (`GET
-// /api/pipelines/apps`). `local` Apps only exist denormalized on local
-// features' `PipelineProject.app`; `remote` Apps come from the central
-// KGS/media registry's `{isApp: true}` rows.
+// One App container that exists on this device (`GET /api/pipelines/apps`).
+// Remote-only Apps are deliberately listed through the remote registry API
+// used by the Pull flow; mixing them into this response makes a locally
+// deleted App immediately reappear.
 export interface PipelineApp {
   id: string;
   name?: string;
@@ -521,6 +522,12 @@ export interface PipelineApp {
 
 export interface PipelineAppsResponse {
   apps: PipelineApp[];
+}
+
+/** Result of removing an App and all of its Features from this device only. */
+export interface DeletePipelineAppResponse extends OkResponse {
+  deletedFeatures: number;
+  localOnly: true;
 }
 
 export interface RunPipelineRequest {

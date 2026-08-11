@@ -89,6 +89,13 @@ export function appIdOf(p: PipelineProject): string {
   return p.app?.id?.trim() || UNASSIGNED_APP;
 }
 
+/** Danh sách điều hướng chỉ phản ánh những Dự án đã có trên máy. Dự án chỉ
+ * tồn tại trong kho chung thuộc modal "Lấy dự án về máy", không được trộn vào
+ * màn local — nếu không một Dự án vừa xóa sẽ xuất hiện trở lại sau reload. */
+export function localPipelineApps(apps: PipelineApp[]): PipelineApp[] {
+  return apps.filter((app) => app.origin !== 'remote');
+}
+
 export function groupByApp(
   projects: PipelineProject[],
   knownApps: Array<{ id: string; name?: string; designSystemId?: string | null; context?: AppContextSyncInfo | null }>,
@@ -159,7 +166,7 @@ export function usePipelineNav(): PipelineNav {
       if (appsRes?.ok) {
         const appsJson = await appsRes.json().catch(() => ({}));
         const apps = Array.isArray(appsJson?.apps) ? appsJson.apps as PipelineApp[] : [];
-        setKnownApps(apps.map((app) => ({
+        setKnownApps(localPipelineApps(apps).map((app) => ({
           id: app.id,
           name: app.name,
           designSystemId: app.designSystemId,

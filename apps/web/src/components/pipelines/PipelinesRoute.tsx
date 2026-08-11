@@ -32,12 +32,17 @@ import type { NavApp } from './usePipelineNav';
 
 // Một App/Feature bị xóa thì màn đang xem nó không còn nghĩa gì — lùi lên một
 // cấp thay vì để người dùng ngồi nhìn "Không tìm thấy app này".
-async function deleteApp(appId: string): Promise<void> {
+export async function deleteAppFromMachine(appId: string): Promise<void> {
   const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}`, { method: 'DELETE' });
   const j = await res.json().catch(() => ({}));
-  // 409 = App thuộc Pipeline Studio (remote). Message của server nói rõ lý do
-  // hơn bất cứ câu nào ta tự viết ở đây, nên hiện nguyên văn.
-  if (!res.ok) throw new Error(j?.error || `xóa App thất bại: ${res.status}`);
+  if (!res.ok) throw new Error(j?.error || `Không thể xóa dự án khỏi máy: HTTP ${res.status}`);
+}
+
+export function appDeleteMessage(featureCount: number): string {
+  const localScope = featureCount > 0
+    ? `${featureCount} tính năng và toàn bộ dữ liệu của dự án trên máy này sẽ bị xóa. `
+    : 'Dự án này không có tính năng trên máy. ';
+  return `${localScope}Bản đã chia sẻ trong kho chung không bị ảnh hưởng. Bạn có thể lấy lại dự án sau.`;
 }
 
 // Feature dùng route xóa project CÓ SẴN — thư mục làm việc và trạng thái chạy
@@ -156,7 +161,7 @@ export function PipelinesRoute() {
   >(null);
   // Sửa/xóa dùng một state riêng, và mang theo cả OBJECT chứ không chỉ id:
   // hộp thoại cần tên hiện tại để prefill, còn hộp thoại xóa App cần số
-  // feature để nói đúng "X feature sẽ chuyển về…". Sau khi xóa, object trong
+  // feature để nói đúng "X tính năng sẽ bị xóa khỏi máy". Sau khi xóa, object trong
   // nav đã biến mất nên không tra lại được nữa.
   const [acting, setActing] = useState<
     | { kind: 'edit-app'; app: NavApp }
@@ -205,21 +210,18 @@ export function PipelinesRoute() {
       <EditFeatureModal feature={acting.feature} onClose={closeActing} onSaved={() => nav.reload()} />
     ) : acting.kind === 'delete-app' ? (
       <ConfirmDeleteModal
-        title={`Xóa dự án "${acting.app.name}"?`}
-        body={
-          (acting.app.features.length > 0
-            ? `${acting.app.features.length} tính năng sẽ chuyển về "Chưa thuộc dự án". `
-            : '') + 'Không xóa gì trên Pipeline Studio.'
-        }
-        confirmLabel="Xóa dự án"
+        title={`Xóa dự án "${acting.app.name}" khỏi máy?`}
+        body={appDeleteMessage(acting.app.features.length)}
+        confirmLabel="Xóa khỏi máy"
         onClose={closeActing}
         onConfirm={async () => {
-          await deleteApp(acting.app.id);
+          const deletedAppName = acting.app.name;
+          await deleteAppFromMachine(acting.app.id);
           await nav.reload();
-          // Đang đứng trong màn Features của chính App vừa xóa → về màn Apps.
-          if (route.kind === 'pipelines-app' && route.appId === acting.app.id) {
-            navigate({ kind: 'home', view: 'pipelines' });
-          }
+          setSyncToast({
+            message: `Đã xóa dự án "${deletedAppName}" khỏi máy. Bản trong kho chung vẫn được giữ.`,
+          });
+          navigate({ kind: 'home', view: 'pipelines' });
         }}
       />
     ) : (

@@ -410,6 +410,8 @@ import {
   updateConversation,
   updatePreviewCommentStatus,
   updateProject,
+  upsertPipelineAppName,
+  setPipelineAppDesignSystem,
   setProjectPipelineStatus,
   getProjectPipelineState,
   updateRoutine,
@@ -18338,15 +18340,37 @@ export async function startServer({
     // để picker nhóm feature theo app mà không phải gọi store mỗi lần list.
     const appId = typeof cfg.appId === 'string' ? cfg.appId.trim() : '';
     let appName = '';
+    let appDesignSystemId: string | null | undefined;
     if (appId) {
-      const appBuf = await media.downloadFile(appId, 'project.json').catch(() => null);
+      // Open Design publishes App metadata as app.json; project.json is the
+      // legacy/Pipeline Studio shape. Accept both so every successful Feature
+      // Pull materializes its parent App locally instead of depending on a
+      // remote/local union in GET /api/pipelines/apps.
+      const appBuf = await media.downloadFile(appId, 'app.json').catch(
+        () => media.downloadFile(appId, 'project.json').catch(() => null),
+      );
       if (appBuf) {
         try {
-          const appCfg = JSON.parse(appBuf.toString('utf8')) as { name?: unknown };
+          const appCfg = JSON.parse(appBuf.toString('utf8')) as { name?: unknown; designSystemId?: unknown };
           if (typeof appCfg.name === 'string') appName = appCfg.name.trim();
+          if (typeof appCfg.designSystemId === 'string' && appCfg.designSystemId.trim()) {
+            appDesignSystemId = appCfg.designSystemId.trim();
+          } else if (appCfg.designSystemId === null) {
+            appDesignSystemId = null;
+          }
         } catch {
           /* app config unreadable — keep id-only */
         }
+      }
+      const materializedName = appName || appId;
+      upsertPipelineAppName(db, { id: appId, name: materializedName, createdAt: Date.now() });
+      if (appDesignSystemId !== undefined) {
+        setPipelineAppDesignSystem(db, {
+          id: appId,
+          name: materializedName,
+          designSystemId: appDesignSystemId,
+          createdAt: Date.now(),
+        });
       }
     }
     const studioConfig = {
