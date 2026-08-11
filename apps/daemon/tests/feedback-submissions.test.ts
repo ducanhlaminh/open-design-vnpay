@@ -45,7 +45,7 @@ describe('feedback submissions', () => {
     await submitFeedback(input, { client: client as never });
     const file = client.files.find((f) => f.path === 'feedback/submissions/installa.json');
     expect(JSON.parse(file!.data.toString())).toHaveLength(2);
-    const attachment = first.attachments![0];
+    const attachment = first.attachments![0]!;
     expect(attachment).toMatchObject({ kind: 'stage-output', stageId: 'st', sourcePath: 'src.md' });
     expect(client.files.some((f) => f.path === attachment.path)).toBe(true);
   });

@@ -94,7 +94,7 @@ export interface FeedbackFillContext {
 }
 
 /** radio → string · checkbox → string[] · text → string · scale → number. */
-export type FeedbackAnswerValue = string | string[] | number;
+export type FeedbackAnswerValue = string | readonly string[] | number;
 
 /** Một file đầu ra của stage được chọn đính kèm LÚC ĐIỀN FORM. Daemon snapshot
  *  nội dung file này lên store lúc submit (không tham chiếu file sống — re-run

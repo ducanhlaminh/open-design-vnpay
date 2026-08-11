@@ -57,7 +57,7 @@ describe('feedback forms', () => {
   });
 
   it.each([
-    [q({ type: 'text', scaleMin: 2 }), 'scaleMin'],
+    [q({ type: 'text', scaleMin: 2 } as never), 'scaleMin'],
     [q({ type: 'text', scaleMin: 1 }), 'scaleMin'],
     [q({ type: 'radio', multiline: true }), 'multiline'],
     [q({ type: 'checkbox', prefill: 'project-id', options: ['a', 'b'] }), 'project-id'],
@@ -69,7 +69,7 @@ describe('feedback forms', () => {
     const draft = { title: 'Wizard', sections, questions: sectionQuestions };
     const saved = await saveFeedbackForm('p', draft, { client: client as never });
     expect(saved.sections).toEqual(sections);
-    expect(JSON.parse(client.files[0].data.toString())).toMatchObject({ sections, questions: sectionQuestions });
+    expect(JSON.parse(client.files[0]!.data.toString())).toMatchObject({ sections, questions: sectionQuestions });
     expect((await readFeedbackForms('p', { client: client as never })).forms).toHaveLength(2);
   });
 
@@ -78,7 +78,7 @@ describe('feedback forms', () => {
     const draft = { title: 'PRD', workflowId: 'docs-to-prd', sections, questions: sectionQuestions };
     const saved = await saveFeedbackForm('p', draft, { client: client as never });
     expect(saved.workflowId).toBe('docs-to-prd');
-    expect(JSON.parse(client.files[0].data.toString())).toMatchObject({ workflowId: 'docs-to-prd' });
+    expect(JSON.parse(client.files[0]!.data.toString())).toMatchObject({ workflowId: 'docs-to-prd' });
     await expect(saveFeedbackForm('p', { ...draft, workflowId: '  ' }, { client: client as never })).rejects.toThrow('workflowId');
   });
 });
