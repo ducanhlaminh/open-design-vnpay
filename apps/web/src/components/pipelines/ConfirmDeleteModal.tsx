@@ -4,8 +4,9 @@
 // nhất ở đây — cả App lẫn Feature đều không chạm tới dữ liệu trên Pipeline
 // Studio, và người dùng phải đọc được điều đó TRƯỚC khi bấm.
 //
-// Lỗi từ server (vd 409 khi App thuộc Pipeline Studio) hiện nguyên văn ngay
-// trong hộp thoại và KHÔNG đóng nó, để người dùng còn đọc được lý do.
+// Lỗi từ server hiện nguyên văn ngay trong hộp thoại và KHÔNG đóng nó, để
+// người dùng còn đọc được lý do và thử lại. Bản remote không thuộc phạm vi của
+// thao tác này; caller phải mô tả rõ đây là xóa dữ liệu trên máy.
 
 import { useState } from 'react';
 

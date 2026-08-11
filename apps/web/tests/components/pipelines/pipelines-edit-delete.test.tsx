@@ -18,7 +18,8 @@ import { PipelinesFeaturesView } from '../../../src/components/pipelines/Pipelin
 import { EditFeatureModal } from '../../../src/components/pipelines/EditFeatureModal';
 import { EditAppModal } from '../../../src/components/pipelines/EditAppModal';
 import { ConfirmDeleteModal } from '../../../src/components/pipelines/ConfirmDeleteModal';
-import { groupByApp } from '../../../src/components/pipelines/usePipelineNav';
+import { appDeleteMessage, deleteAppFromMachine } from '../../../src/components/pipelines/PipelinesRoute';
+import { groupByApp, localPipelineApps } from '../../../src/components/pipelines/usePipelineNav';
 
 function feature(o: Partial<PipelineProject> & { id: string; name: string }): PipelineProject {
   return { done: 0, total: 3, running: 0, ...o };
@@ -80,7 +81,7 @@ describe('kebab trên card App', () => {
     expect(onEditApp.mock.calls[0]?.[0].id).toBe('retail');
 
     fireEvent.click(screen.getByLabelText('Thao tác với Retail'));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Xóa' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Xóa khỏi máy' }));
     expect(onDeleteApp).toHaveBeenCalledOnce();
   });
 
@@ -137,7 +138,7 @@ describe('EditFeatureModal', () => {
     const onSaved = vi.fn();
     render(<EditFeatureModal feature={f} onClose={() => {}} onSaved={onSaved} />);
 
-    const appInput = screen.getByLabelText('Thuộc App (tuỳ chọn)') as HTMLInputElement;
+    const appInput = screen.getByLabelText('Thuộc dự án (tuỳ chọn)') as HTMLInputElement;
     expect(appInput.value).toBe('Retail');
     fireEvent.change(appInput, { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: 'Lưu' }));
@@ -158,7 +159,7 @@ describe('EditFeatureModal', () => {
     vi.stubGlobal('fetch', fetchMock);
     const onSaved = vi.fn();
     render(<EditFeatureModal feature={f} onClose={() => {}} onSaved={onSaved} />);
-    fireEvent.change(screen.getByLabelText('Tên Feature'), { target: { value: 'Thanh toán QR' } });
+    fireEvent.change(screen.getByLabelText('Tên tính năng'), { target: { value: 'Thanh toán QR' } });
     fireEvent.click(screen.getByRole('button', { name: 'Lưu' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     const patch = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/projects/'));
@@ -175,32 +176,33 @@ describe('EditAppModal', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail' }} onClose={() => {}} onSaved={() => {}} />);
-    fireEvent.change(screen.getByLabelText('Tên App'), { target: { value: 'Retail VN' } });
+    fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail VN' } });
     fireEvent.click(screen.getByRole('button', { name: 'Lưu' }));
     await waitFor(() => expect(screen.queryByText('tên đã dùng')).not.toBeNull());
-    const patch = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/apps/'));
+    const patch = fetchMock.mock.calls.find((c) => c[1]?.method === 'PATCH');
     expect(patch?.[1]?.method).toBe('PATCH');
     expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ name: 'Retail VN' });
   });
 });
 
 describe('ConfirmDeleteModal', () => {
-  it('giữ hộp thoại mở và hiện nguyên văn lỗi 409', async () => {
+  it('giữ hộp thoại mở và hiện nguyên văn lỗi server', async () => {
     const onClose = vi.fn();
     render(
       <ConfirmDeleteModal
-        title='Xóa App "Retail"?'
-        body="2 feature sẽ chuyển về &quot;Chưa gán app&quot;. Không xóa gì trên Pipeline Studio."
-        confirmLabel="Xóa App"
+        title='Xóa dự án "Retail" khỏi máy?'
+        body={appDeleteMessage(2)}
+        confirmLabel="Xóa khỏi máy"
         onClose={onClose}
         onConfirm={async () => {
-          throw new Error('App thuộc Pipeline Studio, không xóa được ở đây');
+          throw new Error('Không thể xóa dữ liệu trên máy');
         }}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Xóa App' }));
+    expect(screen.queryByText('2 tính năng và toàn bộ dữ liệu của dự án trên máy này sẽ bị xóa. Bản đã chia sẻ trong kho chung không bị ảnh hưởng. Bạn có thể lấy lại dự án sau.')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Xóa khỏi máy' }));
     await waitFor(() =>
-      expect(screen.queryByText('App thuộc Pipeline Studio, không xóa được ở đây')).not.toBeNull(),
+      expect(screen.queryByText('Không thể xóa dữ liệu trên máy')).not.toBeNull(),
     );
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -218,5 +220,24 @@ describe('ConfirmDeleteModal', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Xóa Feature' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+});
+
+describe('xóa dự án local', () => {
+  it('gọi đúng DELETE API và không gọi endpoint xóa trên kho chung', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await deleteAppFromMachine('retail/vn');
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith('/api/pipelines/apps/retail%2Fvn', { method: 'DELETE' });
+  });
+
+  it('ẩn Dự án chỉ có trên kho chung khỏi danh sách local', () => {
+    expect(localPipelineApps([
+      { id: 'local-app', name: 'Trên máy', origin: 'local' },
+      { id: 'remote-app', name: 'Kho chung', origin: 'remote' },
+    ])).toEqual([{ id: 'local-app', name: 'Trên máy', origin: 'local' }]);
   });
 });

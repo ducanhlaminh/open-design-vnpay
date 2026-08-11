@@ -107,13 +107,13 @@ describe('pipeline apps routes', () => {
     });
   }
 
-  it('creates a 0-feature app and lists it in the union', async () => {
+  it('creates a 0-feature app and lists it locally', async () => {
     const created = await postApp({ appId: 'XPOS', name: 'X POS' });
     expect(created.status).toBe(201);
-    expect(created.body).toEqual({ id: 'XPOS', name: 'X POS' });
+    expect(created.body).toEqual({ id: 'XPOS', name: 'X POS', designSystemId: null });
 
     const listed = await listApps();
-    expect(listed.body).toEqual({ apps: [{ id: 'XPOS', name: 'X POS', origin: 'local' }] });
+    expect(listed.body).toEqual({ apps: [{ id: 'XPOS', name: 'X POS', designSystemId: null, origin: 'local' }] });
   });
 
   it('rejects an id pipeline-studio would never accept', async () => {
@@ -141,7 +141,7 @@ describe('pipeline apps routes', () => {
     expect((await postApp({ appId: 'REMOTEAPP', name: 'Remote App' })).status).toBe(409);
   });
 
-  it('unions the 0-feature app with feature-denormalized and remote apps, local name winning', async () => {
+  it('lists only Apps that exist locally and leaves remote discovery to the Pull API', async () => {
     expect((await postApp({ appId: 'XPOS', name: 'X POS' })).status).toBe(201);
     insertFeature('VNPAY-checkout', 'VNPAY', 'VNPAY App');
     remoteImpl = async () => [
@@ -153,9 +153,8 @@ describe('pipeline apps routes', () => {
 
     expect((await listApps()).body).toEqual({
       apps: [
-        { id: 'ONLYREMOTE', name: 'Only Remote', origin: 'remote' },
-        { id: 'VNPAY', name: 'VNPAY App', origin: 'local' },
-        { id: 'XPOS', name: 'X POS', origin: 'local' },
+        { id: 'VNPAY', name: 'VNPAY App', designSystemId: null, origin: 'local' },
+        { id: 'XPOS', name: 'X POS', designSystemId: null, origin: 'local' },
       ],
     });
   });
