@@ -15,6 +15,7 @@ import type {
   SandboxAccountsResponse,
   SandboxBuildResponse,
   DockerSetupResponse,
+  WindowsFirmwareStatusResponse,
 } from '@open-design/contracts';
 import { EmbeddedClaudeLogin } from './EmbeddedClaudeLogin';
 import { CodexDeviceLogin } from './CodexDeviceLogin';
@@ -58,6 +59,10 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   const [accounts, setAccounts] = useState<SandboxAccountsResponse | null>(null);
   const [build, setBuild] = useState<SandboxBuildResponse | null>(null);
   const [dockerSetup, setDockerSetup] = useState<DockerSetupResponse | null>(null);
+  const [windowsSetup, setWindowsSetup] = useState<WindowsFirmwareStatusResponse | null>(null);
+  const [windowsSetupError, setWindowsSetupError] = useState<string | null>(null);
+  const [guidanceSaved, setGuidanceSaved] = useState(false);
+  const [restartingFirmware, setRestartingFirmware] = useState(false);
   const autoBuildStarted = useRef(false);
   const [selectedRuntime] = useState(() => getStoredSandboxRuntime());
   // True once the FIRST full evaluation decided the gate must show. Before
@@ -69,6 +74,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   const runtimeById = new Map(runtimeStatuses.map((runtime) => [runtime.id, runtime] as const));
   const selectedRuntimeStatus = runtimeById.get(selectedRuntime);
   const usingRuntimeStatuses = runtimeStatuses.length > 0;
+  const isWindows = /Windows/i.test(navigator.userAgent);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -87,6 +93,47 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
     const id = window.setInterval(() => void refreshStatus(), 4000);
     return () => window.clearInterval(id);
   }, [active, refreshStatus]);
+
+  useEffect(() => {
+    if (!active || !isWindows || status?.dockerOk !== false) return;
+    let cancelled = false;
+    void fetch('/api/sandbox/windows/firmware')
+      .then(async (r) => {
+        if (!r.ok) throw new Error('Không thể kiểm tra cấu hình virtualization của Windows.');
+        return r.json() as Promise<WindowsFirmwareStatusResponse>;
+      })
+      .then((result) => {
+        if (!cancelled) {
+          setWindowsSetup(result);
+          setWindowsSetupError(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setWindowsSetupError(error instanceof Error ? error.message : 'Không thể kiểm tra cấu hình Windows.');
+      });
+    return () => { cancelled = true; };
+  }, [active, isWindows, status?.dockerOk]);
+
+  const restartToFirmware = useCallback(async () => {
+    if (!guidanceSaved) return;
+    setRestartingFirmware(true);
+    setWindowsSetupError(null);
+    try {
+      const r = await fetch('/api/sandbox/windows/firmware/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      });
+      if (!r.ok) {
+        const body = await r.json().catch(() => null) as { error?: string | { message?: string } } | null;
+        const message = typeof body?.error === 'string' ? body.error : body?.error?.message;
+        throw new Error(message ?? 'Không thể khởi động vào BIOS/UEFI.');
+      }
+    } catch (error) {
+      setWindowsSetupError(error instanceof Error ? error.message : 'Không thể khởi động vào BIOS/UEFI.');
+      setRestartingFirmware(false);
+    }
+  }, [guidanceSaved]);
 
   // ── Login-state fetch. Each call spins a short-lived container, so it runs
   // only when it can answer (docker + image up) and only polls while a login
@@ -238,7 +285,67 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
 
   // One installer only (Docker Desktop, the cross-platform choice) so a
   // no-code user never has to pick; Windows additionally gets the WSL2 note.
-  const isWindows = /Windows/i.test(navigator.userAgent);
+  const virtualizationOff = Boolean(
+    isWindows && windowsSetup?.supportedPlatform && windowsSetup.detection?.virtualizationEnabled === false,
+  );
+  const windowsDetection = windowsSetup?.detection;
+  const windowsGuidance = windowsSetup?.guidance;
+  const virtualizationGuide = virtualizationOff && windowsSetup && windowsDetection && windowsGuidance ? (
+    <div className={styles.firmwareGuide} data-testid="windows-virtualization-guide">
+      <div className={styles.firmwareHeading}>Bật virtualization trong BIOS/UEFI</div>
+      <p className={styles.stepHint}>
+        Thiết bị: <strong>{windowsDetection.manufacturer} {windowsDetection.model}</strong>
+      </p>
+      {windowsDetection.virtualizationSupported === false ? (
+        <p className={styles.stepErr}>CPU này không báo hỗ trợ hardware virtualization. Hãy liên hệ bộ phận IT.</p>
+      ) : (
+        <>
+          <p className={styles.firmwareNotice}>
+            Hãy chụp hoặc lưu hướng dẫn này trước khi tiếp tục vì bạn sẽ không xem được app khi đang ở BIOS.
+          </p>
+          <ol className={styles.firmwareSteps}>
+            <li>Mở BIOS/UEFI của máy.</li>
+            {windowsGuidance.menuPaths.map((path) => <li key={path}>Mở <code>{path}</code>.</li>)}
+            <li>Bật <code>{windowsGuidance.settingNames.join(' hoặc ')}</code>, sau đó lưu và thoát.</li>
+          </ol>
+          {windowsGuidance.menuPaths.length ? (
+            <p className={styles.stepHint}>Đường dẫn thường gặp: <code>{windowsGuidance.menuPaths.join(' / ')}</code></p>
+          ) : null}
+          {windowsGuidance.settingNames.length ? (
+            <p className={styles.stepHint}>Tên cài đặt: <code>{windowsGuidance.settingNames.join(', ')}</code></p>
+          ) : null}
+          {windowsGuidance.notes.map((note) => <p className={styles.stepHint} key={note}>{note}</p>)}
+          {windowsGuidance.supportUrl ? (
+            <a className={styles.supportLink} href={windowsGuidance.supportUrl} target="_blank" rel="noreferrer">
+              Xem hướng dẫn chính thức của {windowsGuidance.displayName}
+            </a>
+          ) : null}
+          <label className={styles.confirmRow}>
+            <input type="checkbox" checked={guidanceSaved} onChange={(event) => setGuidanceSaved(event.target.checked)} />
+            Tôi đã chụp hoặc lưu hướng dẫn ở trên
+          </label>
+          {windowsSetup.canRestartToFirmware ? (
+            <button
+              type="button"
+              className={styles.primaryBtn}
+              disabled={!guidanceSaved || restartingFirmware}
+              onClick={() => void restartToFirmware()}
+            >
+              {restartingFirmware ? 'Đang khởi động lại…' : 'Khởi động vào BIOS/UEFI'}
+            </button>
+          ) : (
+            <p className={styles.firmwareFallback}>
+              Khởi động lại máy và nhấn liên tục <strong>{windowsGuidance.biosKeys.join(' hoặc ') || 'phím BIOS của hãng'}</strong> khi logo {windowsGuidance.displayName} xuất hiện.
+            </p>
+          )}
+          {windowsSetup.pending ? (
+            <p className={styles.stepHint}>Thiết lập đang chờ. Sau khi bật virtualization và quay lại Windows, app sẽ tự kiểm tra để tiếp tục.</p>
+          ) : null}
+        </>
+      )}
+      {windowsSetupError ? <p className={styles.stepErr}>{windowsSetupError}</p> : null}
+    </div>
+  ) : windowsSetupError ? <p className={styles.stepErr}>{windowsSetupError}</p> : null;
   if (usingRuntimeStatuses) {
     const runtimeLabel = sandboxRuntimeDisplayName(selectedRuntime);
 
@@ -269,19 +376,24 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
                 </div>
                 {!status.dockerOk ? (
                   <>
-                    <p className={styles.stepHint}>
-                      App sẽ tự cài và mở Docker Desktop. Hệ điều hành có thể yêu cầu bạn xác nhận quyền quản trị.
-                    </p>
-                    <div className={styles.actionRow}>
-                      <button
-                        type="button"
-                        className={styles.primaryBtn}
-                        disabled={dockerSetup?.running}
-                        onClick={() => void startDockerSetup()}
-                      >
-                        {dockerSetup?.running ? 'Đang cài đặt…' : 'Cài Docker tự động'}
-                      </button>
-                    </div>
+                    {virtualizationGuide}
+                    {!virtualizationOff ? (
+                      <>
+                        <p className={styles.stepHint}>
+                          App sẽ tự cài và mở Docker Desktop. Hệ điều hành có thể yêu cầu bạn xác nhận quyền quản trị.
+                        </p>
+                        <div className={styles.actionRow}>
+                          <button
+                            type="button"
+                            className={styles.primaryBtn}
+                            disabled={dockerSetup?.running}
+                            onClick={() => void startDockerSetup()}
+                          >
+                            {dockerSetup?.running ? 'Đang cài đặt…' : 'Cài Docker tự động'}
+                          </button>
+                        </div>
+                      </>
+                    ) : null}
                     {dockerSetup?.log.length ? (
                       <code className={styles.buildLog}>{dockerSetup.log[dockerSetup.log.length - 1]}</code>
                     ) : null}
@@ -420,7 +532,8 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
       blocked: false,
       body: status.dockerOk ? null : (
         <>
-          <p className={styles.stepHint}>
+          {virtualizationGuide}
+          {!virtualizationOff ? <><p className={styles.stepHint}>
             {isWindows
               ? 'Cần Docker để chạy agent thiết kế trong môi trường cách ly. Cài Docker Desktop (trình cài sẽ tự bật WSL2 — đồng ý khi được hỏi và khởi động lại máy nếu nó yêu cầu), mở app lên rồi chờ vài giây — trạng thái sẽ tự cập nhật.'
               : 'Cần Docker để chạy agent thiết kế trong môi trường cách ly. Cài Docker Desktop, mở app lên rồi chờ vài giây — trạng thái sẽ tự cập nhật.'}
@@ -435,6 +548,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
               {dockerSetup?.running ? 'Đang cài đặt…' : 'Cài Docker tự động'}
             </button>
           </div>
+          </> : null}
           {dockerSetup?.log.length ? (
             <code className={styles.buildLog}>{dockerSetup.log[dockerSetup.log.length - 1]}</code>
           ) : null}

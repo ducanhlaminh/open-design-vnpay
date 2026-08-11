@@ -239,3 +239,48 @@ export interface DockerSetupResponse {
   /** Tail of installer/startup output for diagnostics. */
   log: string[];
 }
+
+export type WindowsFirmwareVendor =
+  | 'dell' | 'hp' | 'lenovo-think' | 'lenovo-consumer'
+  | 'acer' | 'asus' | 'msi' | 'gigabyte' | 'microsoft' | 'generic';
+
+export interface WindowsFirmwareGuidance {
+  vendor: WindowsFirmwareVendor;
+  displayName: string;
+  biosKeys: string[];
+  menuPaths: string[];
+  settingNames: string[];
+  notes: string[];
+  supportUrl?: string;
+}
+
+export interface WindowsFirmwareDetection {
+  manufacturer: string;
+  model: string;
+  cpuManufacturer: string;
+  virtualizationEnabled: boolean | null;
+  virtualizationSupported: boolean | null;
+  firmwareType: 'uefi' | 'bios' | 'unknown';
+}
+
+export interface WindowsFirmwarePendingState {
+  phase: 'awaiting-bios-virtualization';
+  manufacturer: string;
+  model: string;
+  requestedAt: string;
+}
+
+export interface WindowsFirmwareStatusResponse {
+  supportedPlatform: boolean;
+  detection: WindowsFirmwareDetection | null;
+  guidance: WindowsFirmwareGuidance | null;
+  pending: WindowsFirmwarePendingState | null;
+  canRestartToFirmware: boolean;
+}
+
+export interface WindowsFirmwareRestartResponse {
+  ok: true;
+  restartScheduled: true;
+  delaySeconds: number;
+  pending: WindowsFirmwarePendingState;
+}
