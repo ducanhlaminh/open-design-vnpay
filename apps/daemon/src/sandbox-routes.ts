@@ -58,6 +58,7 @@ import {
   SANDBOX_IMAGE_NAME,
 } from './agent-sandbox.js';
 import { getDockerSetupStatus, startDockerSetup } from './docker-setup.js';
+import { getWindowsFirmwareStatus, restartWindowsToFirmware } from './windows-system-setup.js';
 
 const execFileAsync = promisify(execFile);
 const SANDBOX_RUNTIME_IDS: readonly SandboxRuntimeId[] = ['claude', 'codex'];
@@ -407,6 +408,34 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
 
   app.post('/api/sandbox/docker/setup', (_req, res) => {
     res.status(202).json(startDockerSetup() satisfies DockerSetupResponse);
+  });
+
+  app.get('/api/sandbox/windows/firmware', async (_req, res) => {
+    try {
+      res.json(await getWindowsFirmwareStatus(RUNTIME_DATA_DIR));
+    } catch (err) {
+      sendApiError(res, 500, 'INTERNAL_ERROR', `Windows firmware detection failed: ${(err as Error).message}`);
+    }
+  });
+
+  app.post('/api/sandbox/windows/firmware/restart', async (req, res) => {
+    if (req.body?.confirmed !== true) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'Cần xác nhận rõ ràng trước khi khởi động lại máy.');
+    }
+    if (process.platform !== 'win32') {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'Tính năng này chỉ hỗ trợ Windows.');
+    }
+    try {
+      const status = await getWindowsFirmwareStatus(RUNTIME_DATA_DIR);
+      if (!status.detection) return sendApiError(res, 500, 'INTERNAL_ERROR', 'Không đọc được thông tin firmware.');
+      const pending = await restartWindowsToFirmware(RUNTIME_DATA_DIR, status.detection);
+      res.status(202).json({ ok: true, restartScheduled: true, delaySeconds: 5, pending });
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message === 'UEFI_REQUIRED') return sendApiError(res, 409, 'BAD_REQUEST', 'Máy không hỗ trợ khởi động thẳng vào UEFI; hãy dùng phím BIOS trong hướng dẫn.');
+      if (message === 'VIRTUALIZATION_ALREADY_ENABLED') return sendApiError(res, 409, 'BAD_REQUEST', 'Virtualization đã được bật.');
+      return sendApiError(res, 500, 'INTERNAL_ERROR', `Không thể lên lịch khởi động vào UEFI: ${message}`);
+    }
   });
 
   // ── Claude account switching (Docker-only) ────────────────────────────────

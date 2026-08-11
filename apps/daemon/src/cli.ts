@@ -5995,6 +5995,9 @@ const SANDBOX_USAGE = `Usage:
                                               container to verify credentials.
   od sandbox setup [--json]                  Install/start Docker Desktop and wait
                                               until the engine is ready.
+  od sandbox firmware status [--json]        Detect Windows virtualization and show
+                                              model-specific BIOS/UEFI guidance.
+  od sandbox firmware restart --yes          Save resume state and restart into UEFI.
   od sandbox enable | disable                 Toggle sandbox.enabled in app config.
   od sandbox build [--force]                  Build the od-agent-sandbox image.
   od sandbox login [--runtime claude|codex]    Login to the selected sandbox runtime.
@@ -6138,6 +6141,53 @@ async function runSandbox(args) {
     else console.log(setup.dockerOk ? 'Docker is ready.' : `Docker setup failed: ${setup.error ?? 'unknown error'}`);
     if (!setup.dockerOk) process.exit(1);
     return;
+  }
+
+  if (sub === 'firmware') {
+    const action = args[1] ?? 'status';
+    const base = await cliDaemonBaseUrl(flags);
+    if (action === 'status') {
+      const resp = await fetch(`${base}/api/sandbox/windows/firmware`);
+      if (!resp.ok) await structuredHttpFailure(resp);
+      const firmware = await resp.json();
+      if (flags.json) {
+        process.stdout.write(JSON.stringify(firmware, null, 2) + '\n');
+        return;
+      }
+      if (!firmware.supportedPlatform) {
+        console.log('Windows firmware setup is only available on Windows.');
+        return;
+      }
+      const detection = firmware.detection;
+      const guidance = firmware.guidance;
+      console.log(`machine:        ${detection?.manufacturer ?? '-'} ${detection?.model ?? ''}`.trimEnd());
+      console.log(`firmware:       ${detection?.firmwareType ?? 'unknown'}`);
+      console.log(`virtualization: ${detection?.virtualizationEnabled === true ? 'enabled' : detection?.virtualizationEnabled === false ? 'DISABLED' : 'unknown'}`);
+      if (guidance && detection?.virtualizationEnabled === false) {
+        console.log(`BIOS keys:      ${guidance.biosKeys.join(' / ')}`);
+        console.log(`menu paths:     ${guidance.menuPaths.join(' | ')}`);
+        console.log(`settings:       ${guidance.settingNames.join(' / ')}`);
+      }
+      return;
+    }
+    if (action === 'restart') {
+      if (flags.yes !== true) {
+        console.error('Restarting into firmware requires explicit confirmation: od sandbox firmware restart --yes');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/sandbox/windows/firmware/restart`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      });
+      if (!resp.ok) await structuredHttpFailure(resp);
+      const result = await resp.json();
+      if (flags.json) process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      else console.log('Windows will restart into BIOS/UEFI in 5 seconds.');
+      return;
+    }
+    console.error('usage: od sandbox firmware status [--json] | restart --yes');
+    process.exit(2);
   }
 
   if (sub === 'enable' || sub === 'disable') {
