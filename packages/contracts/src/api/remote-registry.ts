@@ -1,3 +1,5 @@
+import type { AppContextManifest, FeatureContextBinding } from './app-context-version.js';
+
 // Remote registry DTOs — list + delete projects that live on the remote stores.
 //
 // "Remote" is two independent kewords: the KGS graph (DP_UI_WORKSPACE + nodes)
@@ -29,6 +31,25 @@ export interface RemoteProject {
   appId?: string | null;
 }
 
+/** Product-facing project summary returned by `/api/kg/remote-projects`. */
+export interface RemoteProjectSummary extends RemoteProject {
+  displayName: string;
+  appName?: string | null;
+  ownerName?: string | null;
+  lastPublishedAt?: string | null;
+  version?: string | null;
+  availableOutputs: string[];
+  alreadyOnThisDevice: boolean;
+  accessRole: 'owner' | 'editor' | 'viewer' | 'admin';
+  /** Present for App rows published with App Context schema v1. */
+  appContext?: {
+    current: AppContextManifest;
+    localCurrentDigest?: `sha256:${string}` | null;
+  };
+  /** Published immutable context selected by a Feature. */
+  appContextBinding?: FeatureContextBinding;
+}
+
 /** What a remote delete removes. Phase 1 implements `files` only. */
 export type RemoteDeleteScope = 'files' | 'graph' | 'all';
 
@@ -43,7 +64,7 @@ export interface RemoteDeleteResult {
 
 export interface RemoteProjectsResponse {
   ok: boolean;
-  data: RemoteProject[];
+  data: RemoteProjectSummary[];
 }
 
 export interface RemoteDeleteResponse {

@@ -24,6 +24,12 @@ const project: Project = {
   createdAt: 1,
   updatedAt: 2,
   status: { value: 'not_started' },
+  // Sau khi màn Workspaces chia 3 nhóm, project chat thường (kind:'other')
+  // không hiện ở nhóm nào — fixture phải là project pipeline thì các flow
+  // select/bulk-delete mới còn đường bấm tới. `kind:'pipeline'` là giá trị
+  // daemon ghi thật nhưng nằm ngoài union ProjectKind của contracts, nên cần
+  // cast — cùng cách isPipelineProject đọc nó qua Record<string, unknown>.
+  metadata: { kind: 'pipeline' } as unknown as Project['metadata'],
 };
 
 describe('DesignsTab select mode', () => {
@@ -223,6 +229,7 @@ describe('DesignsTab select mode', () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole('button', { name: /DS Figma/ }));
     expect(screen.getByText('Design System')).toBeTruthy();
   });
 

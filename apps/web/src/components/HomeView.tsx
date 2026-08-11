@@ -35,6 +35,7 @@ import {
   resolvePluginQueryFallback,
 } from '../state/projects';
 import { fetchMcpServers } from '../state/mcp';
+import { Icon } from './Icon';
 import { useI18n } from '../i18n';
 import {
   localizeSkillName,
@@ -73,6 +74,7 @@ import type { PluginLoopSubmit } from './PluginLoopHome';
 import type { FacetSelection } from './plugins-home/facets';
 import type { PluginUseAction } from './plugins-home/useActions';
 import { RecentProjectsStrip } from './RecentProjectsStrip';
+import { navigate, UNASSIGNED_APP } from '../router';
 
 interface ActivePlugin {
   record: InstalledPluginRecord;
@@ -216,6 +218,20 @@ export function HomeView({
     homePageViewFiredRef.current = true;
     trackPageView(analytics.track, { page_name: 'home' });
   }, [analytics.track]);
+  const [overviewItems, setOverviewItems] = useState<OverviewItem[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/overview/summary')
+      .then((response) => (response.ok ? response.json() as Promise<{ items?: OverviewItem[] }> : null))
+      .then((summary) => {
+        if (!cancelled) setOverviewItems(summary?.items ?? []);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
   const [pluginsLoading, setPluginsLoading] = useState(true);
   const [pendingApplyId, setPendingApplyId] = useState<string | null>(null);
@@ -1332,6 +1348,8 @@ export function HomeView({
         error={error}
       />
 
+      <OverviewShortcutCards items={overviewItems} designSystems={designSystems} />
+
       <RecentProjectsStrip
         projects={projects}
         designSystems={designSystems}
@@ -1458,6 +1476,163 @@ export function HomeView({
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+interface OverviewWorkflow {
+  id: string;
+  name: string;
+  done: number;
+  total: number;
+  running: boolean;
+}
+
+interface OverviewItem {
+  appId: string;
+  appName: string;
+  featureId: string;
+  name: string;
+  projectId: string;
+  localFiles: boolean;
+  workflows: OverviewWorkflow[];
+}
+
+function OverviewShortcutCards({
+  items,
+  designSystems,
+}: {
+  items: OverviewItem[];
+  designSystems: DesignSystemSummary[];
+}) {
+  // appId rỗng = feature chưa gắn App (bucket UNASSIGNED_APP bên Pipelines).
+  // Không render nó thành một card App không tên — feature của nó vẫn hiện ở
+  // cột Feature và điều hướng qua bucket __unassigned.
+  const apps = Array.from(
+    new Map(
+      items.filter((item) => item.appId.trim() !== '').map((item) => [item.appId, item.appName]),
+    ).entries(),
+  );
+  const features = items;
+  const figmaSystems = designSystems.filter((system) => system.hasReactBundle);
+  if (apps.length === 0 && features.length === 0 && figmaSystems.length === 0) return null;
+
+  return <OverviewShortcutTabs apps={apps} features={features} figmaSystems={figmaSystems} />;
+}
+
+// Tabs + Content: một dải tab (App | Feature | DS Figma) và một khung nội dung
+// hiện card của tab đang chọn — thay cho 3 cột đứng cạnh nhau.
+function OverviewShortcutTabs({
+  apps,
+  features,
+  figmaSystems,
+}: {
+  apps: Array<[string, string]>;
+  features: OverviewItem[];
+  figmaSystems: DesignSystemSummary[];
+}) {
+  // Tên tab không viết tắt; thuật ngữ chuyên ngành (App, Feature, Design
+  // System) giữ nguyên tiếng Anh như mọi chỗ khác trong sản phẩm.
+  const tabs = [
+    { id: 'app' as const, label: 'App', count: apps.length },
+    { id: 'feature' as const, label: 'Feature', count: features.length },
+    { id: 'ds-figma' as const, label: 'Design System Figma', count: figmaSystems.length },
+  ].filter((tab) => tab.count > 0);
+  const [tabId, setTabId] = useState(tabs[0]?.id ?? 'app');
+  const active = tabs.some((tab) => tab.id === tabId) ? tabId : tabs[0]?.id;
+
+  return (
+    <div className="home-shortcuts" data-testid="home-overview-shortcuts">
+      <div className="home-shortcuts__tabs" role="tablist" aria-label="Phím tắt workspace">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={active === tab.id}
+            className={`home-shortcuts__tab${active === tab.id ? ' is-active' : ''}`}
+            onClick={() => setTabId(tab.id)}
+          >
+            {tab.label}
+            <span className="home-shortcuts__count">{tab.count}</span>
+          </button>
+        ))}
+      </div>
+      <div className="home-shortcuts__panel">
+        {active === 'app'
+          ? apps.map(([id, name]) => (
+              <button
+                key={id}
+                type="button"
+                className="home-shortcuts__card"
+                onClick={() => navigate({ kind: 'pipelines-app', appId: id })}
+              >
+                <span className="home-shortcuts__icon" aria-hidden>
+                  <Icon name="folder" size={15} />
+                </span>
+                <span className="home-shortcuts__body">
+                  <strong>{name}</strong>
+                  <span className="home-shortcuts__meta">
+                    {features.filter((item) => item.appId === id).length} feature
+                  </span>
+                </span>
+                <Icon name="chevron-right" size={13} className="home-shortcuts__chevron" />
+              </button>
+            ))
+          : null}
+        {active === 'feature'
+          ? features.map((item) => {
+              const done = item.workflows.reduce((sum, workflow) => sum + workflow.done, 0);
+              const total = item.workflows.reduce((sum, workflow) => sum + workflow.total, 0);
+              const appId = item.appId.trim() || UNASSIGNED_APP;
+              const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+              return (
+                <button
+                  key={`${appId}:${item.featureId}`}
+                  type="button"
+                  className="home-shortcuts__card"
+                  onClick={() => navigate({ kind: 'pipelines-feature', appId, featureId: item.featureId })}
+                >
+                  <span className="home-shortcuts__icon" aria-hidden>
+                    <Icon name="pipeline" size={15} />
+                  </span>
+                  <span className="home-shortcuts__body">
+                    <strong>{item.name}</strong>
+                    <span className="home-shortcuts__meta">
+                      {item.appName.trim() ? (
+                        <span className="home-shortcuts__app-badge">{item.appName}</span>
+                      ) : null}
+                      <span className="home-shortcuts__progress" role="presentation">
+                        <i style={{ width: `${pct}%` }} />
+                      </span>
+                      <span className="home-shortcuts__ratio">{done}/{total}</span>
+                    </span>
+                  </span>
+                  <Icon name="chevron-right" size={13} className="home-shortcuts__chevron" />
+                </button>
+              );
+            })
+          : null}
+        {active === 'ds-figma'
+          ? figmaSystems.map((system) => (
+              <button
+                key={system.id}
+                type="button"
+                className="home-shortcuts__card"
+                onClick={() => navigate({ kind: 'design-system-detail', designSystemId: system.id })}
+              >
+                <span className="home-shortcuts__icon is-ds" aria-hidden>
+                  <Icon name="blocks" size={15} />
+                </span>
+                <span className="home-shortcuts__body">
+                  <strong>{system.title}</strong>
+                  <span className="home-shortcuts__meta">Design system · Figma</span>
+                </span>
+                <Icon name="chevron-right" size={13} className="home-shortcuts__chevron" />
+              </button>
+            ))
+          : null}
+      </div>
     </div>
   );
 }

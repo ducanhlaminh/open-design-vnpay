@@ -41,7 +41,9 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     "out/types/**/*.ts",
-    "out/dev/types/**/*.ts"
+    "out/dev/types/**/*.ts",
+    "../../.tmp/tools-dev/default/web/next/types/**/*.ts",
+    "../../.tmp/tools-dev/default/web/next/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",

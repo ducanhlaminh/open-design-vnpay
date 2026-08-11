@@ -35,6 +35,7 @@ import { DECK_FRAMEWORK_DIRECTIVE } from './deck-framework.js';
 import { MEDIA_GENERATION_CONTRACT } from './media-contract.js';
 import { IMAGE_MODELS } from '../media-models.js';
 import { renderPanelPrompt } from './panel.js';
+import { renderHouseStylePrompt } from '@open-design/contracts';
 import { defaultCritiqueConfig, type CritiqueConfig } from '@open-design/contracts/critique';
 
 const ELEVENLABS_VOICE_PROMPT_OPTION_LIMIT = 100;
@@ -444,6 +445,11 @@ export function composeSystemPrompt({
     parts.push(localePrompt);
     parts.push('\n\n---\n\n');
   }
+
+  // Language + answer shape sit above the charter so they outrank the
+  // softer tone wording further down. Mirrored in the contracts composer.
+  parts.push(renderHouseStylePrompt(locale));
+  parts.push('\n\n---\n\n');
 
   parts.push(
     DISCOVERY_AND_PHILOSOPHY,

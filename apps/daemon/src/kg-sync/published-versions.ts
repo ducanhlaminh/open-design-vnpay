@@ -16,6 +16,7 @@
 // them and stage derivation ignores them (see pipelines.ts guards).
 
 import type { LocalSyncFile, MediaClient } from './media-client.js';
+import { STAGING_REQUEST_PATH } from './staging.js';
 
 export const VERSIONS_PREFIX = '_v/';
 export const CHANGELOG_PATH = 'changelog.json';
@@ -36,9 +37,17 @@ export interface ChangelogEntry {
 }
 
 /** True for store paths that are store METADATA rather than outputs:
- *  version snapshots + changelog, and the studio-written project config. */
+ *  version snapshots + changelog, the studio-written project config, and the
+ *  staging approval ticket (kg-sync/staging.ts). Mirrors pipelines.ts
+ *  isHistoryArtifact — the two must stay in step or a metadata file starts
+ *  lighting stages / landing in the cwd. */
 export function isHistoryPath(rel: string): boolean {
-  return rel === CHANGELOG_PATH || rel === 'project.json' || rel.startsWith(VERSIONS_PREFIX);
+  return (
+    rel === CHANGELOG_PATH ||
+    rel === 'project.json' ||
+    rel === STAGING_REQUEST_PATH ||
+    rel.startsWith(VERSIONS_PREFIX)
+  );
 }
 
 export function historyKeepCount(env: NodeJS.ProcessEnv = process.env): number {

@@ -1,29 +1,209 @@
-import type { Express, Response } from 'express';
-import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, ProjectPipelineState, RunAllConfig, TargetPlatform, WorkflowTerminal } from '@open-design/contracts';
+import fs from 'node:fs';
+import path from 'node:path';
 
-import { getProject, getProjectPipelineState, insertProject, listProjects, updateProject } from './db.js';
+import express from 'express';
+import type { Express, Response } from 'express';
+import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
+import { TARGETS_CONFIG_BASENAME, UI_TARGETS, buildTargetsConfig, isUiTarget } from '@open-design/contracts';
+
+import {
+  deletePipelineApp,
+  getPipelineApp,
+  getProject,
+  getProjectPipelineState,
+  insertPipelineApp,
+  insertProject,
+  listPipelineApps,
+  listProjects,
+  updateProject,
+  upsertPipelineAppName,
+  setPipelineAppDesignSystem,
+} from './db.js';
 import {
   DEFAULT_WORKFLOW_ID,
   WORKFLOWS,
   computeActive,
   deriveStateFromLocalFiles,
+  docsReadyFromFiles,
   getPipelineDef,
   getWorkflow,
+  ingestDefOfWorkflow,
   isStageSkipped,
   listPipelineStatus,
   mergePipelineState,
   resolveRunMode,
+  validateRunStageSelection,
+  workflowDirForPipeline,
   workflowForPipeline,
 } from './pipelines.js';
 import type { RouteDeps } from './server-context.js';
+import { createAppContextVersion, featureContextBindingFromMetadata, parseAppContextManifest, readCurrentAppContextManifest } from './app-context-version.js';
+
+// `{ target: dsId }` request field → validated map. Unknown targets and
+// non-string/empty ids drop silently (same tolerance as the `targets` list);
+// undefined when nothing valid remains.
+// The project's configured UI targets + per-target DS map ([] single-build) —
+// read from `<project>/<workflow>/targets.json` (v1 files simply lack the map).
+async function readProjectTargets(
+  projectsDir: string,
+  projectId: string,
+  workflowId: string,
+): Promise<{ targets: UiTarget[]; designSystemByTarget?: Partial<Record<UiTarget, string>> }> {
+  try {
+    const raw = await fs.promises.readFile(
+      path.join(projectsDir, projectId, workflowId, TARGETS_CONFIG_BASENAME),
+      'utf8',
+    );
+    const cfg = JSON.parse(raw);
+    const targets: UiTarget[] = Array.isArray(cfg?.targets) ? cfg.targets.filter(isUiTarget) : [];
+    const designSystemByTarget = parseDesignSystemByTarget(cfg?.designSystemByTarget);
+    return { targets, ...(designSystemByTarget ? { designSystemByTarget } : {}) };
+  } catch {
+    return { targets: [] };
+  }
+}
+
+function parseDesignSystemByTarget(raw: unknown): Partial<Record<UiTarget, string>> | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const out: Partial<Record<UiTarget, string>> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (isUiTarget(key) && typeof value === 'string' && value) out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// A workflow's docs-ingest cwd prefix, relative to the project root — the
+// SAME cwd a real run of that workflow's ingest stage (`docs`/`prd-docs`/
+// `dr-docs`) resolves via `workflowDirForPipeline` (server.ts's `runPipeline`
+// computes its `wfDir` the identical way). NEVER hand-roll this as the
+// literal `${workflowId}` string — `workflowDirForPipeline` returns null for
+// a pipeline outside any workflow (cwd root), and while every REAL workflow
+// today happens to resolve to its own id (verified: `docs`, `prd-docs`,
+// `dr-docs` each belong to exactly one workflow, and none of them are
+// target-scoped — `def.inputPlaceholder` short-circuits `resolveRunTargetDir`
+// to null for all three, so no `<target>/` nesting ever applies to the
+// ingest stage itself), going through the canonical helper keeps this
+// correct if that ever changes instead of silently drifting from the real
+// run path. Exposed on GET /api/workflows (docsDir) for the FE.
+function docsDirForWorkflow(workflow: { pipelineIds: readonly string[] }): string {
+  const firstStageId = workflow.pipelineIds[0];
+  const wfDir = firstStageId ? workflowDirForPipeline(firstStageId) : null;
+  return wfDir ? `${wfDir}/docs` : 'docs';
+}
+
+// Body của `POST /api/pipelines/run-all` và `PUT .../run-config` → các field
+// của `metadata.runAllConfig`. MỘT nơi duy nhất quyết định shape đã lưu để hai
+// đường ghi không lệch nhau:
+//  - `withDefaults` (run-all): ghi CẢ BỘ lựa chọn của lần chạy, field thiếu lấy
+//    default — đúng shape route này vẫn ghi từ trước.
+//  - mặc định (run-config): merge từng section, nên CHỈ field có mặt trong body
+//    được ghi. `designSystemId: null` ghi đè thành null ("Không dùng"),
+//    `confluencePages: []` xóa hết trang; field không gửi giữ nguyên giá trị cũ.
+function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean }): Partial<RunAllConfig> {
+  const all = opts?.withDefaults === true;
+  const body = (input && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
+  const has = (key: string) => all || Object.prototype.hasOwnProperty.call(body, key);
+  const out: Partial<RunAllConfig> = {};
+  if (has('confluencePages')) {
+    const pages = (Array.isArray(body.confluencePages) ? body.confluencePages : ([] as unknown[]))
+      .filter(
+        (p: unknown): p is { id?: string; title?: string; url?: string } =>
+          !!p && typeof p === 'object' && (typeof (p as any).id === 'string' || typeof (p as any).url === 'string'),
+      )
+      .map((p: { id?: string; title?: string; url?: string }) => ({
+        ...(typeof p.id === 'string' && p.id ? { id: p.id } : {}),
+        ...(typeof p.title === 'string' && p.title ? { title: p.title } : {}),
+        ...(typeof p.url === 'string' && p.url ? { url: p.url } : {}),
+      }));
+    // run-all không ghi danh sách rỗng (giữ shape cũ); patch thì rỗng = xóa hết.
+    if (pages.length > 0 || !all) out.confluencePages = pages;
+  }
+  // designSystemId là field ba trạng thái: id / null (không dùng) / vắng mặt.
+  const dsId = body.designSystemId;
+  if (typeof dsId === 'string') out.designSystemId = dsId;
+  else if (dsId === null) out.designSystemId = null;
+  // appPool là field ba trạng thái GIỐNG designSystemId (object / null / vắng
+  // mặt) — cố tình đọc trực tiếp `body.appPool` thay vì qua `has()`: dưới
+  // run-all (`all=true`) muốn "vắng mặt" vẫn để `out.appPool` KHÔNG được set
+  // (khác `confluencePages`/`terminal` vốn tự điền default khi `all`), để
+  // route gọi PRESERVE giá trị đã lưu thay vì ghi đè bằng default — bài học
+  // run-all full-replace (docs/app-docs-pool-spec.md §1, §2.2).
+  if (Object.prototype.hasOwnProperty.call(body, 'appPool')) {
+    const rawAppPool = body.appPool;
+    if (rawAppPool === null) {
+      out.appPool = null;
+    } else if (rawAppPool && typeof rawAppPool === 'object' && !Array.isArray(rawAppPool)) {
+      const obj = rawAppPool as Record<string, unknown>;
+      const poolAppId = typeof obj.appId === 'string' ? obj.appId.trim() : '';
+      const poolPaths = Array.isArray(obj.paths)
+        ? obj.paths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+        : [];
+      if (poolAppId) out.appPool = { appId: poolAppId, paths: poolPaths };
+    }
+  }
+  if (has('terminal')) {
+    const t = body.terminal;
+    if (t === 'ui-html' || t === 'ui-react' || t === 'ui-react-ds' || t === 'both') out.terminal = t as WorkflowTerminal;
+    else if (all) out.terminal = 'ui-html';
+  }
+  if (has('platform')) {
+    const pf = body.platform;
+    if (pf === 'mobile' || pf === 'web') out.platform = pf as TargetPlatform;
+    else if (all) out.platform = 'mobile';
+  }
+  if (has('targets')) {
+    const targets = Array.isArray(body.targets) ? (body.targets as unknown[]).filter(isUiTarget) : [];
+    if (targets.length > 0 || !all) out.targets = targets;
+  }
+  if (has('designSystemByTarget')) {
+    const map = parseDesignSystemByTarget(body.designSystemByTarget);
+    if (map) out.designSystemByTarget = map;
+    else if (!all) out.designSystemByTarget = {};
+  }
+  if (has('followLinks')) out.followLinks = body.followLinks !== false;
+  if (has('includeDescendants')) out.includeDescendants = body.includeDescendants === true;
+  if (has('docsFromUpload')) {
+    // run-all chỉ ghi khi true (shape cũ); patch ghi cả false để đổi nguồn từ
+    // nhánh upload về Confluence xóa được cờ.
+    const fromUpload = body.docsFromUpload === true;
+    if (fromUpload || !all) out.docsFromUpload = fromUpload;
+  }
+  if (has('skipSucceeded')) out.skipSucceeded = body.skipSucceeded === true;
+  if (has('lean')) out.lean = body.lean === true;
+  if (has('stageIds')) {
+    // Bước người dùng tick tay. Chỉ nhận chuỗi không rỗng, khử trùng lặp, GIỮ
+    // NGUYÊN thứ tự gửi lên — server sắp lại theo thứ tự workflow lúc chạy
+    // (selectRunStages), nên thứ tự ở đây chỉ là dữ liệu người dùng đã chọn.
+    const ids = [
+      ...new Set(
+        (Array.isArray(body.stageIds) ? (body.stageIds as unknown[]) : []).filter(
+          (id): id is string => typeof id === 'string' && id.trim().length > 0,
+        ),
+      ),
+    ];
+    // run-all không ghi danh sách rỗng (giữ shape cũ: vắng mặt = hành vi cũ);
+    // patch thì rỗng = bỏ chọn tay, quay về `lean` + `skipSucceeded`.
+    if (ids.length > 0 || !all) out.stageIds = ids;
+  }
+  return out;
+}
+
+import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
+import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
+import { loadRemoteProjects } from './kg-sync/remote-registry.js';
+import { StagingBlockedError } from './kg-sync/push-dest.js';
 import { readAppConfig } from './app-config.js';
+import { readFeedbackForms, saveFeedbackForm } from './feedback-forms.js';
+import { readAllFeedbackSubmissions, submitFeedback, uploadFeedbackImage } from './feedback-submissions.js';
+import { getMachineUser } from './auth-routes.js';
+import { isPackagedRuntime } from './app-version.js';
 import { publishPipelineEvaluation, readPipelineEvaluations } from './feedback.js';
 
 // A pipeline's "project" is a KGS app: either pulled from the central KGS
 // (`od kg pull`, metadata.source === 'kg-pull') OR created fresh for pipelines
 // (metadata.kind === 'pipeline'). Either way its id IS the KGS project_id.
 // Ephemeral chat/orbit/routine workspaces are NOT eligible.
-function isKgsProject(project: { metadata?: unknown } | null | undefined): boolean {
+export function isKgsProject(project: { metadata?: unknown } | null | undefined): boolean {
   const metadata = project?.metadata;
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
   const m = metadata as Record<string, unknown>;
@@ -47,6 +227,76 @@ function runModeFor(
   const saved =
     raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as RunAllConfig).lean : undefined;
   return resolveRunMode(typeof saved === 'boolean' ? saved : undefined, state, pipelineIds);
+}
+
+// The stages the project's SAVED `runAllConfig.stageIds` explicitly picked for
+// its last run-all (same source `POST /api/pipelines/run-all` reads to gate
+// the run itself — see `validateRunStageSelection`'s `opts.explicitSelection`
+// call sites below). `runAllConfig` is stored at PROJECT scope, so it can
+// carry a stageIds list ticked on a DIFFERENT workflow tab; filter to `wf`'s
+// own ids before handing it to `listPipelineStatus`/`computeActive`. A filter
+// result that comes back EMPTY is treated as "no explicit selection" (falls
+// back to mode-derived gating) — an empty selection must never be read as
+// "run nothing", the same rule `selectRunStages` documents for its own
+// `stageIds` branch.
+function explicitStageSelectionFor(
+  project: { metadata?: Record<string, unknown> } | null | undefined,
+  wf: { pipelineIds: readonly string[] },
+): string[] | undefined {
+  const raw = project?.metadata?.runAllConfig;
+  const stageIds =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as RunAllConfig).stageIds : undefined;
+  if (!Array.isArray(stageIds) || stageIds.length === 0) return undefined;
+  const known = new Set(wf.pipelineIds);
+  const filtered = stageIds.filter((id) => known.has(id));
+  return filtered.length > 0 ? filtered : undefined;
+}
+
+// Tiến độ của MỘT workflow trên state đã nạp: đếm đúng các stage mà MODE của
+// project này thật sự chạy (một chuỗi lean xong là 5/5, không phải 5/8 — một
+// project "xong" không được đọc thành dở dang vì các stage nó cố tình bỏ).
+// Tách ra khỏi route vì giờ có hai người gọi: badge tổng (theo workflow của
+// query) và mảng `workflows` (mọi workflow trong registry).
+export function countWorkflowProgress(
+  project: { metadata?: Record<string, unknown> } | null | undefined,
+  state: ProjectPipelineState,
+  pipelineIds: readonly string[],
+): { done: number; total: number; running: number } {
+  const mode = runModeFor(project, state, pipelineIds);
+  const countedIds = pipelineIds.filter((id) => {
+    const def = getPipelineDef(id);
+    return !def || !isStageSkipped(def, mode);
+  });
+  return {
+    total: countedIds.length,
+    done: countedIds.reduce((n, id) => (state[id]?.status === 'succeeded' ? n + 1 : n), 0),
+    running: countedIds.reduce(
+      (n, id) => (state[id]?.status === 'running' || state[id]?.status === 'queued' ? n + 1 : n),
+      0,
+    ),
+  };
+}
+
+// Bước đang chạy của workflow: bước ĐẦU TIÊN (theo thứ tự pipelineIds) có
+// status running/queued. Trả tên hiển thị từ registry + updatedAt của lần đổi
+// trạng thái (mốc để FE tính "đã chạy N phút"). Tách riêng khỏi
+// countWorkflowProgress để không đổi chữ ký hàm đó (overview-routes.ts import).
+export function runningStageOf(
+  state: ProjectPipelineState,
+  pipelineIds: readonly string[],
+): { id: string; name: string; startedAt?: number } | undefined {
+  for (const id of pipelineIds) {
+    const st = state[id];
+    if (st?.status === 'running' || st?.status === 'queued') {
+      const def = getPipelineDef(id);
+      return {
+        id,
+        name: def?.name ?? id,
+        ...(typeof st.updatedAt === 'number' ? { startedAt: st.updatedAt } : {}),
+      };
+    }
+  }
+  return undefined;
 }
 
 // Validate the optional structured run source from the request body. Returns
@@ -73,7 +323,16 @@ export function parseRunSource(raw: unknown): PipelineRunSource | undefined {
       ...(featureIds.length ? { featureIds } : {}),
     };
   }
-  throw new Error('source.kind must be "confluence" or "bas"');
+  if (s.kind === 'app-pool') {
+    const appId = typeof s.appId === 'string' ? s.appId.trim() : '';
+    if (!appId) throw new Error('source.appId is required for an app-pool source');
+    const paths = Array.isArray(s.paths)
+      ? s.paths.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+      : [];
+    if (paths.length === 0) throw new Error('source.paths (App pool pages) is required for an app-pool source');
+    return { kind: 'app-pool', appId, paths };
+  }
+  throw new Error('source.kind must be "confluence", "bas" or "app-pool"');
 }
 
 // Nguồn BAS (KG document) của pipeline 1 đang KHÓA BẢO TRÌ (2026-07): card
@@ -94,10 +353,48 @@ export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines'
 export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutesDeps) {
   const { db } = ctx;
 
+  const snapshotKnownApp = async (appId: string) => {
+    const localApp = getPipelineApp(db, appId);
+    if (!localApp) return null;
+    let dsDir: string | null = null;
+    if (localApp.designSystemId) {
+      const bare = localApp.designSystemId.replace(/^user:/, '');
+      if (bare && !bare.includes('/') && !bare.includes('\\') && !bare.includes('..')) {
+        for (const root of [ctx.paths.USER_DESIGN_SYSTEMS_DIR, ctx.paths.DESIGN_SYSTEMS_DIR].filter((value): value is string => typeof value === 'string' && !!value)) {
+          const candidate = path.join(root, bare);
+          if (await fs.promises.stat(candidate).then((s) => s.isDirectory(), () => false)) { dsDir = candidate; break; }
+        }
+      }
+    }
+    return createAppContextVersion({
+      projectsDir: ctx.paths.PROJECTS_DIR,
+      appId,
+      appName: localApp.name,
+      designSystemId: localApp.designSystemId,
+      designSystemDir: dsDir,
+    });
+  };
+
   // Cross-device pipeline state = this device's local run metadata (transient
   // running/failed) merged with the media-service file store (durable "done"
   // signal any device sees after a pull). Media unreachable → fall back to local.
-  const loadMergedState = async (projectId: string): Promise<ProjectPipelineState> => {
+  //
+  // Returns TWO separate facts — never conflate them again (that conflation
+  // was a real bug: see git history around this function for the incident
+  // where it made an in-progress ingest run's rail entry read "succeeded"):
+  //  - `state`: this device's REAL merged run state, untouched. `status` for
+  //    every pipeline (including a workflow's ingest stage) reflects actual
+  //    run history — running/failed/idle/succeeded — exactly as recorded.
+  //  - `docsReady`: whether a workflow's ingest-stage OUTPUT FILES exist on
+  //    disk right now, keyed by that ingest stage's `PipelineDef.id`. This is
+  //    the docs-only gate's condition (see pipelines.ts's `computeActive`) —
+  //    "has a document arrived" — which is a DIFFERENT question from "did the
+  //    ingest stage's last run succeed". Callers pass this into
+  //    `computeActive` / `missingDependencies` / `validateRunStageSelection`
+  //    (their own `docsReady` param) instead of writing it into `state`.
+  const loadMergedState = async (
+    projectId: string,
+  ): Promise<{ state: ProjectPipelineState; docsReady: Record<string, boolean> }> => {
     const local = getProjectPipelineState(db, projectId) as ProjectPipelineState;
     // "Done" is derived from THIS DEVICE'S LOCAL state only: a stage is done when
     // its output files exist in the local cwd (or local run metadata says so).
@@ -108,7 +405,17 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     // reflect immediately (no stale store copy keeping a reset stage "done").
     const localPaths = await ctx.pipelines.localOutputs(projectId).catch(() => [] as string[]);
     const fileState: ProjectPipelineState = deriveStateFromLocalFiles(localPaths);
-    return mergePipelineState(local, fileState);
+    const merged = mergePipelineState(local, fileState);
+    // Docs-ready fact, per workflow's ingest stage — reuses the SAME
+    // `localPaths` list already loaded above (never re-scan the project
+    // directory a second time). Deliberately NOT written into `merged`.
+    const docsReady: Record<string, boolean> = {};
+    for (const wf of WORKFLOWS) {
+      const ingest = ingestDefOfWorkflow(wf);
+      if (!ingest) continue;
+      docsReady[ingest.id] = docsReadyFromFiles(localPaths, workflowDirForPipeline(ingest.id));
+    }
+    return { state: merged, docsReady };
   };
 
   // GET /api/pipelines/projects — the KGS apps available for pipelines (projects
@@ -124,24 +431,18 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     // KGS errors).
     const projects = await Promise.all(
       kgsProjects.map(async (p: { id: string; name: string; metadata?: Record<string, unknown> }) => {
-        const state = await loadMergedState(p.id);
-        // Progress counts the stages THIS PROJECT'S MODE runs: a finished lean
-        // chain is 5/5, not 5/8 — a "done" project must not read as unfinished
-        // because of stages it deliberately skips.
-        const mode = runModeFor(p, state, wf.pipelineIds);
-        const countedIds = wf.pipelineIds.filter((id) => {
-          const def = getPipelineDef(id);
-          return !def || !isStageSkipped(def, mode);
-        });
-        const total = countedIds.length;
-        const done = countedIds.reduce(
-          (n, id) => (state[id]?.status === 'succeeded' ? n + 1 : n),
-          0,
-        );
-        const running = countedIds.reduce(
-          (n, id) => (state[id]?.status === 'running' || state[id]?.status === 'queued' ? n + 1 : n),
-          0,
-        );
+        const { state } = await loadMergedState(p.id);
+        const { done, total, running } = countWorkflowProgress(p, state, wf.pipelineIds);
+        const runningStage = runningStageOf(state, wf.pipelineIds);
+        // Trạng thái của TỪNG workflow, đếm trên CÙNG state vừa nạp (không nạp
+        // lại lần nào): badge một-workflow ở trên không nói được workflow nào
+        // đang chạy, nên một feature đang chạy workflow khác vẫn báo "Chưa
+        // chạy". Row feature xổ ra đọc mảng này.
+        const workflows = WORKFLOWS.map((w) => ({
+          id: w.id,
+          name: w.name,
+          ...countWorkflowProgress(p, state, w.pipelineIds),
+        }));
         // Studio config (mirrored into metadata on pull): Run prefills the
         // Confluence link + design system from it (per-run override allowed).
         const sc = p.metadata?.studioConfig;
@@ -164,9 +465,14 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           done,
           total,
           running,
+          ...(runningStage ? { runningStage } : {}),
+          workflows,
           ...(config ? { config } : {}),
           ...(savedRunAll ? { savedRunAll } : {}),
           ...(appId ? { app: { id: appId, ...(appName ? { name: appName } : {}) } } : {}),
+          ...(featureContextBindingFromMetadata(p.metadata)
+            ? { appContextBinding: featureContextBindingFromMetadata(p.metadata)! }
+            : {}),
         };
       }),
     );
@@ -174,18 +480,378 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   });
 
   // GET /api/workflows — the named docs→output flows the picker offers.
+  // `docsDir` (additive; not yet in packages/contracts' `Workflow` type — this
+  // route intentionally widens past it) is the workflow's docs-ingest cwd
+  // prefix — see `docsDirForWorkflow` — so the FE's single-file upload path
+  // (UploadFilesModal's `${workflowId}/docs/` name-building) can target the
+  // REAL on-disk folder for every workflow, not just docs-review.
   app.get('/api/workflows', (_req, res) => {
-    res.json({ workflows: WORKFLOWS, defaultWorkflowId: DEFAULT_WORKFLOW_ID });
+    const workflows = WORKFLOWS.map((w) => ({ ...w, docsDir: docsDirForWorkflow(w) }));
+    res.json({ workflows, defaultWorkflowId: DEFAULT_WORKFLOW_ID });
   });
 
-  // POST /api/pipelines/projects đã GỠ (2026-07): dự án khai sinh ở Pipeline
-  // Studio (identity + media project.json + workspace KGS); open-design chỉ
-  // pull về (`od kg pull-all` tạo project row với source kg-pull). Trả 410 để
-  // client cũ nhận thông báo rõ thay vì 404 mù.
-  app.post('/api/pipelines/projects', (_req, res) => {
-    res.status(410).json({
-      error: 'tạo dự án đã chuyển sang Pipeline Studio — tạo ở đó rồi dùng `od kg pull-all` để kéo về',
+  // POST /api/pipelines/projects { projectId, name, appId?, appName? } —
+  // Phase B: mở lại tạo dự án CỤC BỘ (trước đây route này trả 410 và bắt
+  // buộc khai sinh ở Pipeline Studio). Giờ user dựng cấu trúc
+  // Project(App)/feature ngay trong open-design; project được đánh dấu
+  // metadata.kind='pipeline' như trước. Trên Push, đích được chọn sau (ghi
+  // đè project đã tồn tại trên studio, hoặc đi qua thư mục staging/approval —
+  // xem apps/daemon/src/kg-sync/push-dest.ts) — route này KHÔNG chạm tới
+  // studio/KGS, chỉ tạo project row cục bộ.
+  app.post('/api/pipelines/projects', (req, res) => {
+    const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId.trim() : '';
+    const name = typeof req.body?.name === 'string' && req.body.name.trim()
+      ? req.body.name.trim()
+      : projectId;
+    // Regex của pipeline-studio (khác regex cũ, rộng hơn, của route này
+    // trước khi bị gỡ): một id dài quá 63 ký tự hoặc mở đầu bằng ký tự không
+    // phải chữ/số sẽ KHÔNG BAO GIỜ được studio duyệt — chấp nhận nó ở đây chỉ
+    // trì hoãn một lỗi chắc chắn xảy ra, tới tận lúc Push mới lộ ra.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(projectId)) {
+      return res.status(400).json({
+        error:
+          'invalid project id (must start with a letter/digit, then A-Z a-z 0-9 . _ - , max 64 chars total — matches pipeline-studio\'s id rule). This is the KGS project_id.',
+      });
+    }
+    if (getProject(db, projectId)) {
+      return res.status(409).json({ error: `project "${projectId}" already exists` });
+    }
+    // App cha (optional): khi có, mirror denormalized vào metadata.studioConfig
+    // — GET /api/pipelines/projects (trên) đọc thẳng appId/appName từ đây để
+    // nhóm feature theo app, nên không cần thêm gì ở đó cho project mới này.
+    const appId = typeof req.body?.appId === 'string' ? req.body.appId.trim() : '';
+    const appName = typeof req.body?.appName === 'string' ? req.body.appName.trim() : '';
+    const now = Date.now();
+    insertProject(db, {
+      id: projectId,
+      name,
+      skillId: null,
+      designSystemId: null,
+      pendingPrompt: null,
+      metadata: appId
+        ? { kind: 'pipeline', studioConfig: { appId, ...(appName ? { appName } : {}) } }
+        : { kind: 'pipeline' },
+      createdAt: now,
+      updatedAt: now,
     });
+    res.status(201).json({ id: projectId, name });
+  });
+
+  // Các App CỤC BỘ thấy được: {appId, appName} denormalize trên feature +
+  // row bảng pipeline_apps (App 0 feature). Dùng cho cả picker (GET) và check
+  // trùng khi tạo (POST).
+  type AppEntry = { id: string; name?: string; designSystemId: string | null; origin: 'local' | 'remote' };
+  const collectLocalApps = (): Map<string, AppEntry> => {
+    const byId = new Map<string, AppEntry>();
+    const mergeName = (entry: AppEntry, name: string | undefined) => {
+      if (!entry.name && name) entry.name = name;
+    };
+    for (const p of listProjects(db).filter((p: { metadata?: unknown }) => isKgsProject(p))) {
+      const sc = (p as { metadata?: Record<string, unknown> }).metadata?.studioConfig;
+      const scRec =
+        sc && typeof sc === 'object' && !Array.isArray(sc) ? (sc as Record<string, unknown>) : undefined;
+      const appId = typeof scRec?.appId === 'string' ? scRec.appId.trim() : '';
+      if (!appId) continue;
+      const appName = typeof scRec?.appName === 'string' && scRec.appName.trim() ? scRec.appName.trim() : undefined;
+      const existing = byId.get(appId);
+      if (existing) {
+        mergeName(existing, appName);
+      } else {
+        byId.set(appId, { id: appId, ...(appName ? { name: appName } : {}), designSystemId: null, origin: 'local' });
+      }
+    }
+    // App 0 feature (POST /api/pipelines/apps): chưa có feature nào mirror
+    // {appId, appName} nên nguồn duy nhất là bảng pipeline_apps.
+    for (const a of listPipelineApps(db)) {
+      const existing = byId.get(a.id);
+      if (existing) {
+        mergeName(existing, a.name && a.name !== a.id ? a.name : undefined);
+        existing.designSystemId = a.designSystemId;
+      } else {
+        byId.set(a.id, {
+          id: a.id,
+          ...(a.name && a.name !== a.id ? { name: a.name } : {}),
+          designSystemId: a.designSystemId,
+          origin: 'local',
+        });
+      }
+    }
+    return byId;
+  };
+
+  // Các App có trên registry trung tâm (KGS/media). Ném lỗi khi store không
+  // với tới được — nơi gọi tự quyết định degrade (picker: local-only; tạo mới:
+  // bỏ qua check trùng remote).
+  const loadRemoteApps = async (): Promise<Array<{ id: string; name?: string }>> => {
+    const remote = await loadRemoteProjects(
+      new KgsClient(kgsConfigFromEnv()),
+      new MediaClient(mediaConfigFromEnv()),
+    );
+    return remote
+      .filter((r) => r.isApp)
+      .map((r) => ({
+        id: r.projectId,
+        ...(r.name && r.name !== r.projectId ? { name: r.name } : {}),
+      }));
+  };
+
+  // POST /api/pipelines/apps { appId, name } — tạo App container 0 feature.
+  // Form "App mới" trên UI chỉ tạo App; feature thêm sau qua POST
+  // /api/pipelines/projects (khi đó {appId, appName} được mirror vào
+  // metadata.studioConfig của feature). App 0 feature không có gì để
+  // chạy/push nên route này là LOCAL-ONLY: không chạm KGS/studio/media.
+  app.post('/api/pipelines/apps', async (req, res) => {
+    const appId = typeof req.body?.appId === 'string' ? req.body.appId.trim() : '';
+    const name = typeof req.body?.name === 'string' && req.body.name.trim()
+      ? req.body.name.trim()
+      : appId;
+    const designSystemId = typeof req.body?.designSystemId === 'string' && req.body.designSystemId.trim()
+      ? req.body.designSystemId.trim() : req.body?.designSystemId === null ? null : null;
+    // Cùng regex với POST /api/pipelines/projects: id App cũng là project_id
+    // trên KGS, id studio không duyệt thì chặn ngay tại đây.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(appId)) {
+      return res.status(400).json({
+        error:
+          'invalid app id (must start with a letter/digit, then A-Z a-z 0-9 . _ - , max 64 chars total — matches pipeline-studio\'s id rule). This is the KGS project_id.',
+      });
+    }
+    if (collectLocalApps().has(appId)) {
+      return res.status(409).json({ error: `app "${appId}" already exists` });
+    }
+    // Trùng với App đã có trên studio cũng là trùng (picker đã offer nó,
+    // origin 'remote'). Best-effort: store chết thì cứ cho tạo cục bộ.
+    try {
+      if ((await loadRemoteApps()).some((r) => r.id === appId)) {
+        return res.status(409).json({ error: `app "${appId}" already exists` });
+      }
+    } catch {
+      /* stores unreachable → chỉ dựa vào check cục bộ ở trên */
+    }
+    insertPipelineApp(db, { id: appId, name, designSystemId, createdAt: Date.now() });
+    // A truly empty App has no Context bytes yet. Its first pool/context edit,
+    // DS assignment, run, or Push creates v1; assigning a DS at creation is
+    // already meaningful context and snapshots immediately.
+    if (designSystemId) await snapshotKnownApp(appId);
+    res.status(201).json({ id: appId, name, designSystemId });
+  });
+
+  // GET /api/pipelines/apps — App containers a user can pick as the parent of
+  // a NEW feature (Phase B local creation picker). Union of:
+  //   - local: distinct {appId, appName} pairs denormalized onto existing
+  //     local pipeline projects' metadata.studioConfig, PLUS `pipeline_apps`
+  //     rows (Apps created locally that have no feature yet).
+  //   - remote: {isApp: true} rows from the KGS/media registry, so the picker
+  //     can also parent a new feature under an App that already exists on
+  //     Pipeline Studio (that is case 1 — the feature gets created there on
+  //     approval, the App is reused as-is). Best-effort: the remote stores
+  //     being unreachable degrades the picker to local-only rather than 500ing
+  //     a user out of creating anything.
+  //
+  // An App with features deliberately does NOT get a local `projects` row of
+  // its own: it has no cwd, no stages, nothing to run, and isKgsProject() would
+  // then try to push it like a real feature. It only ever exists as this
+  // denormalized {appId, appName} mirrored onto each of its features; the
+  // `pipeline_apps` row exists solely so a 0-feature App survives.
+  app.get('/api/pipelines/apps', async (_req, res) => {
+    const byId = collectLocalApps();
+    // Remote Apps come second so a local name (typed by this user) wins over
+    // the store's, but an App that only exists remotely still shows up.
+    try {
+      for (const r of await loadRemoteApps()) {
+        const existing = byId.get(r.id);
+        if (existing) {
+          if (!existing.name && r.name) existing.name = r.name;
+        } else {
+          byId.set(r.id, { id: r.id, ...(r.name ? { name: r.name } : {}), designSystemId: null, origin: 'remote' });
+        }
+      }
+    } catch {
+      /* stores unreachable → local-only picker */
+    }
+    const media = new MediaClient(mediaConfigFromEnv());
+    const apps = await Promise.all(Array.from(byId.values())
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map(async (e) => {
+        const localCurrent = await readCurrentAppContextManifest(ctx.paths.PROJECTS_DIR, e.id);
+        let current = localCurrent;
+        if (!current && e.origin === 'remote') {
+          try {
+            const pointer = JSON.parse((await media.downloadFile(e.id, 'context/current.json')).toString('utf8')) as Record<string, unknown>;
+            const version = typeof pointer.contextVersion === 'string' && /^v[1-9]\d*$/.test(pointer.contextVersion)
+              ? pointer.contextVersion
+              : null;
+            if (version) {
+              current = parseAppContextManifest(JSON.parse(
+                (await media.downloadFile(e.id, `context/versions/${version}/manifest.json`)).toString('utf8'),
+              ));
+            }
+          } catch {
+            // Legacy remote App: no version metadata.
+          }
+        }
+        return {
+          id: e.id,
+          ...(e.name ? { name: e.name } : {}),
+          designSystemId: e.designSystemId,
+          origin: e.origin,
+          ...(current || localCurrent ? { context: {
+              current,
+              latestVersion: current?.contextVersion ?? null,
+              latestDigest: current?.contentDigest ?? null,
+              localCurrentDigest: localCurrent?.contentDigest ?? null,
+            } } : {}),
+        };
+      }));
+    res.json({ apps });
+  });
+
+  // ---- Sửa/xóa App và feature (Phase 2) — tất cả LOCAL-ONLY: không chạm
+  // KGS/studio/media, chỉ ghi row cục bộ + metadata denormalize.
+
+  // {appId, appName} denormalize trên một feature; bản copy để sửa tự do.
+  const studioConfigOf = (
+    project: { metadata?: Record<string, unknown> } | null | undefined,
+  ): Record<string, unknown> => {
+    const sc = project?.metadata?.studioConfig;
+    return sc && typeof sc === 'object' && !Array.isArray(sc)
+      ? { ...(sc as Record<string, unknown>) }
+      : {};
+  };
+
+  // Các feature CỤC BỘ đang thuộc app này (nguồn duy nhất: studioConfig.appId).
+  type LocalFeature = { id: string; name: string; metadata?: Record<string, unknown> };
+  const featuresOfApp = (appId: string): LocalFeature[] =>
+    (listProjects(db) as LocalFeature[])
+      .filter((p) => isKgsProject(p))
+      .filter((p) => studioConfigOf(p).appId === appId);
+
+  // metadata của feature sau khi gỡ App cha. studioConfig rỗng thì bỏ hẳn key
+  // để GET /api/pipelines/projects không trả về `config: {}`.
+  const detachApp = (feature: LocalFeature): Record<string, unknown> => {
+    const metadata = { ...(feature.metadata ?? {}) };
+    const sc = studioConfigOf(feature);
+    delete sc.appId;
+    delete sc.appName;
+    if (Object.keys(sc).length > 0) metadata.studioConfig = sc;
+    else delete metadata.studioConfig;
+    return metadata;
+  };
+
+  // Id các App trên registry trung tâm; null khi store không với tới được —
+  // caller phân biệt "chắc chắn không remote" với "không biết".
+  const remoteAppIds = async (): Promise<Set<string> | null> => {
+    try {
+      return new Set((await loadRemoteApps()).map((r) => r.id));
+    } catch {
+      return null;
+    }
+  };
+
+  // PATCH /api/pipelines/apps/:id { name } — đổi TÊN HIỂN THỊ của App (id giữ
+  // nguyên vì nó là project_id trên KGS). Ghi hai chỗ vì tên App sống ở hai
+  // nguồn: row pipeline_apps (UPSERT — App có feature chưa chắc có row) và
+  // appName denormalize trên từng feature (GET /api/pipelines/projects đọc ở đó).
+  app.patch('/api/pipelines/apps/:id', async (req, res) => {
+    const appId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    const hasName = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'name');
+    const hasDesignSystemId = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'designSystemId');
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const designSystemId = req.body?.designSystemId === null
+      ? null
+      : typeof req.body?.designSystemId === 'string' ? req.body.designSystemId.trim() : '';
+    if ((!hasName || !name) && (!hasDesignSystemId || (!designSystemId && designSystemId !== null))) {
+      return res.status(400).json({ error: 'name or designSystemId is required' });
+    }
+    // Rename được cả App remote: row local chỉ là cái tên phủ lên (picker cho
+    // tên local thắng), không đổi gì trên studio.
+    if (!collectLocalApps().has(appId) && !(await remoteAppIds())?.has(appId)) {
+      return res.status(404).json({ error: `app "${appId}" not found` });
+    }
+    if (hasName && name) {
+      upsertPipelineAppName(db, { id: appId, name, createdAt: Date.now() });
+      for (const f of featuresOfApp(appId)) {
+        updateProject(db, f.id, {
+          metadata: {
+            ...(f.metadata ?? {}),
+            studioConfig: { ...studioConfigOf(f), appId, appName: name },
+          },
+        });
+      }
+    }
+    if (hasDesignSystemId) {
+      setPipelineAppDesignSystem(db, { id: appId, ...(hasName && name ? { name } : {}), designSystemId, createdAt: Date.now() });
+    }
+    const updated = getPipelineApp(db, appId);
+    await snapshotKnownApp(appId);
+    res.json({ id: appId, name: updated?.name ?? name, designSystemId: updated?.designSystemId ?? null });
+  });
+
+  // DELETE /api/pipelines/apps/:id — xóa App CỤC BỘ. Feature KHÔNG bị xóa: chỉ
+  // gỡ {appId, appName} nên nó về nhóm "Chưa gán app" (xóa dự án là việc của
+  // DELETE /api/projects/:id). App có trên studio thì máy này không có quyền
+  // xóa — 409 để user xử lý trên studio.
+  app.delete('/api/pipelines/apps/:id', async (req, res) => {
+    const appId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    const remote = await remoteAppIds();
+    if (remote?.has(appId)) {
+      return res.status(409).json({
+        error:
+          `App "${appId}" tồn tại trên Pipeline Studio — xóa trên studio; máy này chỉ xóa được App local.`,
+      });
+    }
+    if (!collectLocalApps().has(appId)) {
+      return res.status(404).json({ error: `app "${appId}" not found` });
+    }
+    deletePipelineApp(db, appId);
+    const features = featuresOfApp(appId);
+    for (const f of features) {
+      updateProject(db, f.id, { metadata: detachApp(f) });
+    }
+    res.json({ ok: true, detached: features.length });
+  });
+
+  // PATCH /api/pipelines/projects/:id { name?, appId?, appName? } — sửa một
+  // feature: đổi tên hiển thị và/hoặc chuyển sang App khác (`appId: null` = gỡ
+  // về "Chưa gán app"). Id/thư mục cwd giữ nguyên — nó là project_id trên KGS.
+  app.patch('/api/pipelines/projects/:id', (req, res) => {
+    const projectId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    const project = getProject(db, projectId) as LocalFeature | null;
+    if (!project || !isKgsProject(project)) {
+      return res.status(404).json({ error: 'project not found' });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const hasName = Object.prototype.hasOwnProperty.call(body, 'name');
+    const hasAppId = Object.prototype.hasOwnProperty.call(body, 'appId');
+    if (!hasName && !hasAppId) {
+      return res.status(400).json({ error: 'name or appId is required' });
+    }
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (hasName && !name) return res.status(400).json({ error: 'name must not be empty' });
+    const patch: Record<string, unknown> = {};
+    if (hasName) patch.name = name;
+    if (hasAppId) {
+      const appId = typeof body.appId === 'string' ? body.appId.trim() : '';
+      if (!appId) {
+        patch.metadata = detachApp(project);
+      } else {
+        // appName do client gửi (đang hiện trên picker); thiếu thì lấy tên đang
+        // biết của App để card không tụt về hiển thị id trần.
+        const known = collectLocalApps().get(appId)?.name;
+        const appName = typeof body.appName === 'string' && body.appName.trim()
+          ? body.appName.trim()
+          : known;
+        patch.metadata = {
+          ...(project.metadata ?? {}),
+          studioConfig: {
+            ...studioConfigOf(project),
+            appId,
+            ...(appName ? { appName } : {}),
+          },
+        };
+      }
+    }
+    const updated = updateProject(db, projectId, patch);
+    res.json({ id: projectId, name: updated?.name ?? project.name });
   });
 
   // GET /api/pipelines?projectId=... — the docs→UI pipeline list for a project,
@@ -197,14 +863,88 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     if (!project) return res.status(404).json({ error: 'project not found' });
     const wf = getWorkflow(typeof req.query.workflowId === 'string' ? req.query.workflowId : '')
       ?? getWorkflow(DEFAULT_WORKFLOW_ID)!;
-    const state = await loadMergedState(projectId);
+    const { state, docsReady } = await loadMergedState(projectId);
     const runMode = runModeFor(project, state, wf.pipelineIds);
+    const explicitSelection = explicitStageSelectionFor(project, wf);
+    // Multi-target: configured targets + a FILE-derived per-target status
+    // (which stages have outputs under <wf>/<target>/) — the DB run state is
+    // stage-global, so this is what tells "mobile done, web-user not yet".
+    const { targets, designSystemByTarget } = await readProjectTargets(
+      ctx.paths.PROJECTS_DIR,
+      projectId,
+      wf.id,
+    );
+    let statusByTarget: Partial<Record<UiTarget, Record<string, PipelineStatus>>> | undefined;
+    if (targets.length > 0) {
+      const localPaths = await ctx.pipelines.localOutputs(projectId).catch(() => [] as string[]);
+      statusByTarget = {};
+      for (const t of targets) {
+        const prefix = `${wf.id}/${UI_TARGETS[t].dir}/`;
+        const derived = deriveStateFromLocalFiles(localPaths.filter((p) => p.startsWith(prefix)));
+        statusByTarget[t] = Object.fromEntries(
+          Object.entries(derived).map(([id, v]) => [id, v.status]),
+        ) as Record<string, PipelineStatus>;
+      }
+    }
     res.json({
       projectId,
       workflowId: wf.id,
-      pipelines: listPipelineStatus(state, wf.pipelineIds, runMode),
+      pipelines: listPipelineStatus(state, wf.pipelineIds, runMode, explicitSelection, docsReady),
       runMode,
+      ...(targets.length > 0 ? { targets } : {}),
+      ...(statusByTarget ? { statusByTarget } : {}),
+      ...(designSystemByTarget ? { designSystemByTarget } : {}),
     });
+  });
+
+  // Gán/đổi design system cho MỘT target sau khi docs đã chạy — run-all là nơi
+  // duy nhất ghi designSystemByTarget lúc đầu, nên thiếu route này thì panel
+  // "Gán component" của preview ux-spec (và mọi re-run stage lẻ) không có cách
+  // nào cấu hình DS cho target nữa.
+  app.put('/api/pipelines/target-design-system', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const project = getProject(db, projectId);
+      if (!project) return res.status(404).json({ error: 'project not found' });
+      const target = req.body?.target;
+      if (!isUiTarget(target)) return res.status(400).json({ error: 'invalid target' });
+      const designSystemId =
+        typeof req.body?.designSystemId === 'string' && req.body.designSystemId
+          ? (req.body.designSystemId as string)
+          : null; // null = gỡ gán
+      const wf =
+        getWorkflow(typeof req.body?.workflowId === 'string' ? req.body.workflowId : '')
+        ?? getWorkflow(DEFAULT_WORKFLOW_ID)!;
+      const cfgPath = path.join(ctx.paths.PROJECTS_DIR, projectId, wf.id, TARGETS_CONFIG_BASENAME);
+      let cfg: Record<string, unknown>;
+      try {
+        cfg = JSON.parse(await fs.promises.readFile(cfgPath, 'utf8')) as Record<string, unknown>;
+      } catch {
+        return res.status(400).json({
+          error: 'dự án chưa chia target (không có targets.json) — chạy bước Docs với lựa chọn target trước',
+        });
+      }
+      const targets: UiTarget[] = Array.isArray(cfg.targets)
+        ? (cfg.targets as unknown[]).filter(isUiTarget)
+        : [];
+      if (!targets.includes(target)) {
+        return res.status(400).json({ error: `target "${target}" không nằm trong targets.json (${targets.join(', ')})` });
+      }
+      const map = (cfg.designSystemByTarget && typeof cfg.designSystemByTarget === 'object'
+        ? { ...(cfg.designSystemByTarget as Record<string, string>) }
+        : {}) as Record<string, string>;
+      if (designSystemId) map[target] = designSystemId;
+      else delete map[target];
+      cfg.designSystemByTarget = map;
+      if (Object.keys(map).length === 0) delete cfg.designSystemByTarget;
+      // File cũ version 1 vẫn hợp lệ; có map thì nâng lên 2 cho tự mô tả.
+      if (cfg.designSystemByTarget && cfg.version === 1) cfg.version = 2;
+      await fs.promises.writeFile(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
+      res.json({ ok: true, target, designSystemId, designSystemByTarget: cfg.designSystemByTarget ?? {} });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
   });
 
   app.get('/api/pipelines/feedback', (req, res) => {
@@ -270,6 +1010,208 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
   });
 
+  // ── Form feedback cuối pipeline (builder + submit + thống kê) ─────────────
+  // Sáu route mỏng trên hai module thuần feedback-forms/feedback-submissions —
+  // logic (validate/version/cap/merge) sống bên đó và đã có unit test; route
+  // chỉ resolve danh tính + channel rồi chuyển tiếp.
+
+  /** user = email Google đã xác thực (getMachineUser) khi có; fallback
+   *  feedbackUsername/installationId — cùng thứ tự ưu tiên với attribution của
+   *  push (server.ts), để hai chỗ không kể hai câu chuyện về cùng một người. */
+  const resolveFeedbackIdentity = async () => {
+    const config = await readAppConfig(ctx.paths.RUNTIME_DATA_DIR);
+    const machine = getMachineUser();
+    return {
+      user: machine?.email || config.feedbackUsername?.trim() || config.installationId || 'unknown',
+      installationId: config.installationId || 'unknown-install',
+    };
+  };
+
+  app.post('/api/projects/:id/docs-review/confirm', async (req, res) => {
+    const projectId = req.params.id;
+    if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+    const confirmationId = typeof req.body?.confirmationId === 'string' ? req.body.confirmationId : undefined;
+    const sourceRunId = typeof req.body?.sourceRunId === 'string' ? req.body.sourceRunId : undefined;
+    try {
+      // Go through the deterministic `dr-confirm` runner rather than calling
+      // the uploader directly: this is what makes the UI/CLI confirmation
+      // visible as the final pipeline stage and records its normal history.
+      const started = await ctx.pipelines.runPipeline(projectId, 'dr-confirm', {
+        ...(confirmationId ? { docsReviewConfirmationId: confirmationId } : {}),
+        ...(sourceRunId ? { docsReviewSourceRunId: sourceRunId } : {}),
+      });
+      if (!started.docsReviewConfirmation) throw new Error('docs-review confirmation runner is unavailable');
+      res.status(201).json(await started.docsReviewConfirmation);
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get('/api/pipelines/feedback/forms', (req, res) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+    void (async () => {
+      try {
+        res.json(await readFeedbackForms(projectId));
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
+  app.put('/api/pipelines/feedback/forms', (req, res) => {
+    const body = req.body as Partial<{ projectId: string; title: string; workflowId: string; sections: unknown; questions: unknown }>;
+    if (!body.projectId || typeof body.title !== 'string' || !Array.isArray(body.questions)) {
+      return res.status(400).json({ error: 'projectId, title and questions are required' });
+    }
+    if (!getProject(db, body.projectId)) return res.status(404).json({ error: 'project not found' });
+    void (async () => {
+      try {
+        const { user } = await resolveFeedbackIdentity();
+        const form = await saveFeedbackForm(
+          body.projectId!,
+          {
+            title: body.title!,
+            ...(typeof body.workflowId === 'string' && body.workflowId ? { workflowId: body.workflowId } : {}),
+            ...(Array.isArray(body.sections) ? { sections: body.sections as never } : {}),
+            questions: body.questions as never,
+          },
+          { user },
+        );
+        res.status(201).json({ form });
+      } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
+  // Ảnh gửi RAW (body = bytes, Content-Type = image/*) thay vì JSON base64:
+  // limit json toàn cục là 4mb, còn ảnh cap 5MB — base64 phồng ~33% nữa là
+  // chắc chắn vượt. Raw thì cap 6mb là đủ dư cho 5MB thật.
+  app.post(
+    '/api/pipelines/feedback/attachments',
+    express.raw({ type: 'image/*', limit: '6mb' }),
+    (req, res) => {
+      const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+      const draftId = typeof req.query.draftId === 'string' ? req.query.draftId : '';
+      const filename = typeof req.query.filename === 'string' ? req.query.filename : '';
+      if (!projectId || !draftId || !filename) {
+        return res.status(400).json({ error: 'projectId, draftId and filename are required' });
+      }
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'body phải là bytes ảnh (Content-Type: image/*)' });
+      }
+      void (async () => {
+        try {
+          const attachment = await uploadFeedbackImage({
+            projectId,
+            submissionDraftId: draftId,
+            filename,
+            contentType: req.headers['content-type'] ?? 'application/octet-stream',
+            data: req.body as Buffer,
+          });
+          res.status(201).json({ attachment });
+        } catch (error) {
+          res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+        }
+      })();
+    },
+  );
+
+  app.post('/api/pipelines/feedback/submissions', (req, res) => {
+    const body = req.body as Partial<{
+      projectId: string; workflowId: string; runId: string; formVersion: number;
+      answers: Record<string, unknown>; otherTexts: Record<string, string>;
+      images: unknown[]; stageFiles: unknown[];
+    }>;
+    if (!body.projectId || !body.workflowId || typeof body.formVersion !== 'number' || !body.answers) {
+      return res.status(400).json({ error: 'projectId, workflowId, formVersion and answers are required' });
+    }
+    if (!getProject(db, body.projectId)) return res.status(404).json({ error: 'project not found' });
+    void (async () => {
+      try {
+        const { forms } = await readFeedbackForms(body.projectId!);
+        const form = forms.find((f) => f.version === body.formVersion);
+        // Version không tồn tại = client cầm form đã bị vượt qua hoặc bịa —
+        // nhận bừa thì answers không đối chiếu được với câu hỏi nào.
+        if (!form) return res.status(400).json({ error: `Form version ${body.formVersion} không tồn tại` });
+        const { user, installationId } = await resolveFeedbackIdentity();
+        const projectRoot = path.resolve(ctx.paths.PROJECTS_DIR, body.projectId!);
+        const submission = await submitFeedback({
+          projectId: body.projectId!,
+          installationId,
+          user,
+          channel: isPackagedRuntime() ? 'packaged' : 'dev',
+          workflowId: body.workflowId!,
+          ...(body.runId ? { runId: body.runId } : {}),
+          form,
+          answers: body.answers as never,
+          ...(body.otherTexts ? { otherTexts: body.otherTexts } : {}),
+          ...(Array.isArray(body.images) ? { images: body.images as never } : {}),
+          ...(Array.isArray(body.stageFiles) ? { stageFiles: body.stageFiles as never } : {}),
+          // Snapshot đọc từ CWD của project, và CHẶN đường dẫn thoát ra ngoài
+          // (sourcePath là input người dùng — '../' trỏ được vào file bất kỳ
+          // trên máy nếu không kiểm).
+          readStageFile: async (sourcePath: string) => {
+            const abs = path.resolve(projectRoot, sourcePath);
+            if (abs !== projectRoot && !abs.startsWith(projectRoot + path.sep)) {
+              throw new Error(`Đường dẫn không hợp lệ: ${sourcePath}`);
+            }
+            return fs.promises.readFile(abs);
+          },
+        });
+        res.status(201).json({ submission });
+      } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
+  // Tải MỘT file đính kèm từ media store về trình duyệt — đính kèm KHÔNG nằm
+  // trong cwd local (projectRawUrl không với tới). Chặn path ngoài thư mục
+  // đính kèm: đây là proxy store, không phải cửa đọc file tùy ý.
+  app.get('/api/pipelines/feedback/attachment', (req, res) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    const filePath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!projectId || !filePath) return res.status(400).json({ error: 'projectId and path are required' });
+    if (!filePath.startsWith('feedback/attachments/') || filePath.includes('..')) {
+      return res.status(400).json({ error: 'path phải nằm dưới feedback/attachments/' });
+    }
+    void (async () => {
+      try {
+        const { MediaClient, mediaConfigFromEnv } = await import('./kg-sync/media-client.js');
+        const data = await new MediaClient(mediaConfigFromEnv()).downloadFile(projectId, filePath);
+        const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+        const mime = ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+          : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'application/octet-stream';
+        res.setHeader('content-type', mime);
+        res.send(data);
+      } catch (error) {
+        res.status(404).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
+  app.get('/api/pipelines/feedback/summary', (req, res) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+    void (async () => {
+      try {
+        const [formsRes, subsRes] = await Promise.all([
+          readFeedbackForms(projectId),
+          readAllFeedbackSubmissions(projectId),
+        ]);
+        res.json({
+          storeReachable: formsRes.storeReachable && subsRes.storeReachable,
+          forms: formsRes.forms,
+          submissions: subsRes.submissions,
+        });
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+  });
+
   // POST /api/pipelines/pull-files { projectId } — regenerate the project's
   // pipeline files from the KGS file store into the local project cwd. This is
   // the "pull on another device to continue" step (cross-device handoff).
@@ -304,6 +1246,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       const result = await ctx.pipelines.uploadFiles(projectId);
       res.json({ ok: true, ...result });
     } catch (err: any) {
+      // "Chưa đăng nhập" là điều kiện người dùng sửa được trong 10 giây, không
+      // phải lỗi máy chủ — 400 kèm code để UI nói đúng việc phải làm.
+      if (err instanceof StagingBlockedError) {
+        return res.status(400).json({ error: err.message, code: err.code });
+      }
       res.status(500).json({ error: String(err?.message ?? err) });
     }
   });
@@ -360,7 +1307,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       if (!projectId) return res.status(400).json({ error: 'projectId is required' });
       const project = getProject(db, projectId);
       if (!project) return res.status(404).json({ error: 'project not found' });
-      const result = await ctx.pipelines.buildReact(projectId);
+      const buildTarget = req.body?.target;
+      if (buildTarget !== undefined && !isUiTarget(buildTarget)) {
+        return res.status(400).json({ error: 'invalid target' });
+      }
+      const result = await ctx.pipelines.buildReact(projectId, buildTarget);
       res.json({ ok: true, ...result });
     } catch (err: any) {
       // Build failures carry the tsc/vite tail — surface it so the UI/CLI can
@@ -400,11 +1351,99 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     try {
       const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
       if (!projectId) return res.status(400).json({ error: 'projectId is required' });
-      const result = await ctx.pipelines.buildReactDemo(projectId);
+      const demoTarget = req.body?.target;
+      if (demoTarget !== undefined && !isUiTarget(demoTarget)) {
+        return res.status(400).json({ error: 'invalid target' });
+      }
+      const result = await ctx.pipelines.buildReactDemo(projectId, demoTarget);
       res.json({ ok: true, ...result });
     } catch (err: any) {
       res.status(422).json({ error: String(err?.message ?? err) });
     }
+  });
+
+  // POST /api/pipelines/figma-capture { projectId } — capture the BUILT
+  // UI-Spec (React DS) app into Figma screen JSON (figma-h2d IR with component
+  // instance markers) under react-ds/figma-screens/. The output feeds the
+  // design-v3 Fig Pipeline plugin's "Screen JSON → Figma" tab, which rebuilds
+  // the screens with REAL component instances. 422 with the runner tail on
+  // failure (missing dist, playwright env, dead click selector).
+  // POST /api/pipelines/figma-audit { projectId, target? } — Lớp 1 audit
+  // "Preview ↔ Figma": soi tĩnh các file capture đối chiếu bộ DS, báo trước
+  // unmatched icon / variant fallback / layer tràn khung TRƯỚC khi dán vào
+  // Figma. Ghi figma-screens/audit.json.
+  app.post('/api/pipelines/figma-audit', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const auditTarget = req.body?.target;
+      if (auditTarget !== undefined && !isUiTarget(auditTarget)) {
+        return res.status(400).json({ error: 'invalid target' });
+      }
+      const result = await ctx.pipelines.figmaAudit(projectId, auditTarget);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(422).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/pipelines/figma-capture', async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+      if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+      const captureTarget = req.body?.target;
+      if (captureTarget !== undefined && !isUiTarget(captureTarget)) {
+        return res.status(400).json({ error: 'invalid target' });
+      }
+      const result = await ctx.pipelines.figmaCapture(projectId, captureTarget);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(422).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // PUT /api/pipelines/projects/:id/run-config — LƯU cấu hình chạy mà KHÔNG
+  // chạy gì cả. Rail cấu hình trên màn Chạy có nút "Đổi" từng dòng, mở modal chỉ
+  // chứa section đó; bấm Lưu đi vào đây. Body là một RunAllConfig PARTIAL (chỉ
+  // các field của section vừa sửa) và được merge shallow vào
+  // `metadata.runAllConfig` — trước route này, đổi một lựa chọn phải chạy lại cả
+  // workflow (`POST /api/pipelines/run-all`) mới lưu được.
+  app.put('/api/pipelines/projects/:id/run-config', (req, res) => {
+    const projectId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    const project = getProject(db, projectId);
+    if (!project || !isKgsProject(project)) {
+      return res.status(404).json({ error: 'project not found' });
+    }
+    const prev = project.metadata?.runAllConfig;
+    const saved = (prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {}) as RunAllConfig;
+    const patch = runAllConfigFromBody(req.body);
+    const merged: RunAllConfig = { ...saved, ...patch };
+    updateProject(db, projectId, {
+      metadata: {
+        ...(project.metadata ?? {}),
+        runAllConfig: merged,
+      },
+    });
+    // Đổi "Sản phẩm cần build" phải ăn NGAY cả với chạy-lẻ-từng-bước: các stage
+    // chạy lẻ đọc target từ `<workflow>/targets.json` — file này trước đây chỉ
+    // được ghi lúc run-all khởi động, nên lưu target mới xong mà chạy lẻ vẫn
+    // build target CŨ (đã chọn web vẫn ra mobile). targets là khái niệm riêng
+    // của docs-to-ui (workflow duy nhất có stage acceptsPlatform) nên ghi thẳng
+    // vào thư mục đó; best-effort — dự án chưa có thư mục thì tạo.
+    if (patch.targets !== undefined || patch.designSystemByTarget !== undefined) {
+      const targets = (merged.targets ?? []).filter(isUiTarget);
+      if (targets.length > 0) {
+        try {
+          const wfDir = path.join(ctx.paths.PROJECTS_DIR, projectId, 'docs-to-ui');
+          fs.mkdirSync(wfDir, { recursive: true });
+          const cfg = buildTargetsConfig(targets, merged.designSystemByTarget);
+          fs.writeFileSync(path.join(wfDir, TARGETS_CONFIG_BASENAME), `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
+        } catch (error) {
+          console.warn('[pipelines] run-config: writing targets.json failed:', error);
+        }
+      }
+    }
+    res.json({ ok: true });
   });
 
   // POST /api/pipelines/run-all — run the WHOLE workflow sequentially with no
@@ -430,9 +1469,10 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         rawTerminal !== undefined &&
         rawTerminal !== 'ui-html' &&
         rawTerminal !== 'ui-react' &&
+        rawTerminal !== 'ui-react-ds' &&
         rawTerminal !== 'both'
       ) {
-        return res.status(400).json({ error: "terminal must be 'ui-html', 'ui-react' or 'both'" });
+        return res.status(400).json({ error: "terminal must be 'ui-html', 'ui-react', 'ui-react-ds' or 'both'" });
       }
       const input = typeof req.body?.input === 'string' ? req.body.input : undefined;
       let source: PipelineRunSource | undefined;
@@ -470,6 +1510,10 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       const lean = req.body?.lean === true;
       const followLinks = req.body?.followLinks !== false;
       const includeDescendants = req.body?.includeDescendants === true;
+      // Docs came from the modal's own upload, not from a fetch: the ingest
+      // stage is dropped from the chain (its output IS the folder they landed
+      // in, so re-running it would delete them).
+      const docsFromUpload = req.body?.docsFromUpload === true;
       // UI targets (docs-to-ui): a subset of the fixed enum; invalid entries drop.
       const targets: import('@open-design/contracts').UiTarget[] = Array.isArray(req.body?.targets)
         ? (req.body.targets as unknown[]).filter(
@@ -477,39 +1521,115 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
               t === 'mobile' || t === 'web-user' || t === 'web-backoffice',
           )
         : [];
+      // Per-target design systems: `{ target: dsId }` entries; unknown targets
+      // and non-string ids drop silently (same tolerance as `targets`).
+      const designSystemByTarget = parseDesignSystemByTarget(req.body?.designSystemByTarget);
+      // Bước người dùng tick tay. Dùng CHUNG parser với cấu hình đã lưu để hai
+      // đường (chạy ngay / lưu rồi chạy sau) không bao giờ hiểu khác nhau. Giữ
+      // lại object đã parse (không gọi lại runAllConfigFromBody lần hai) — mode
+      // gate bên dưới đọc `.lean` từ CHÍNH object này.
+      const bodyRunConfig = runAllConfigFromBody(req.body);
+      const stageIds = bodyRunConfig.stageIds;
+      if (stageIds && stageIds.length > 0) {
+        // CHẶN NGAY một lựa chọn thiếu phụ thuộc, thay vì để nó chạy rồi hỏng:
+        // run-all gọi thẳng runPipeline và KHÔNG hỏi gating (xem runWorkflowAll
+        // trong server.ts), nên một bước thiếu input sẽ không bị chặn ở đâu cả —
+        // nó chạy thật, đọc thư mục input rỗng, và cho ra một kết quả trông như
+        // thành công. Hỏng ồn ào ngay từ đầu rẻ hơn nhiều so với một bản spec
+        // rác mà người dùng chỉ phát hiện ở bước cuối.
+        const wf = getWorkflow(workflowId ?? DEFAULT_WORKFLOW_ID);
+        // Workflow lạ: để runWorkflowAll ném "Unknown workflow" → 404 như cũ.
+        if (wf) {
+          // Cùng nguồn "đã xong" mà mọi route khác dùng (local run metadata +
+          // output trên đĩa — xem `loadMergedState`). Đọc TRƯỚC khi ghi
+          // runAllConfig bên dưới — ghi trước thì mode của lần chạy này sẽ tự
+          // trả lời chính nó.
+          const { state, docsReady } = await loadMergedState(projectId);
+          // Mode CỦA LẦN CHẠY NÀY ưu tiên `lean` mà CHÍNH request này gửi lên
+          // (đây là request đang bật/tắt luồng tiết kiệm, không phải một lần đọc
+          // lại trạng thái cũ) — vắng mặt (request không nói gì về `lean`, ví
+          // dụ đường "Chạy pipeline" đọc lại cấu hình đã lưu) mới rơi về
+          // `runModeFor` (đọc runAllConfig đã lưu, có fallback `resolveRunMode`
+          // suy từ run state cho project cũ chưa từng lưu `lean`). Vẫn tính +
+          // truyền `mode`/`explicitSelection` xuống dưới cho ĐÚNG chữ ký hiện
+          // có của `validateRunStageSelection` — nhưng từ lô docs-only-gate
+          // (2026-08), cả hai không còn ảnh hưởng kết quả gate: bước ingest
+          // (`docs`) là phụ thuộc DUY NHẤT còn lại (xem pipelines.ts's
+          // `computeActive`/`missingDependencies`). `docsReady` là sự thật
+          // RIÊNG "tài liệu đã có trên đĩa" (xem `loadMergedState`) — truyền
+          // thẳng xuống thay vì đọc lại qua `state[ingestId].status`.
+          const mode: PipelineRunMode =
+            typeof bodyRunConfig.lean === 'boolean'
+              ? bodyRunConfig.lean
+                ? 'lean'
+                : 'full'
+              : runModeFor(project, state, wf.pipelineIds);
+          const check = validateRunStageSelection(stageIds, wf.pipelineIds, state, {
+            workflowName: wf.name,
+            mode,
+            explicitSelection: true,
+            docsReady,
+          });
+          if (!check.ok) return res.status(400).json({ error: check.error });
+        }
+      }
       // Remember this device's last-used run-all choices (per project) so a
       // later open of the Run-all modal — e.g. after canceling a stage mid-chain
       // — prefills from here instead of forcing the user to re-enter everything.
       // Only Pipeline-Studio's config seeds the FIRST run (no saved config yet);
       // every trigger after that overwrites this with the latest choices.
+      const nextRunAllConfig = runAllConfigFromBody(req.body, { withDefaults: true });
+      // run-all GHI ĐÈ TOÀN BỘ `runAllConfig` (không merge như PUT run-config)
+      // — bài học lịch sử (commit cfef0fe): một field mới mà request không
+      // nhắc tới sẽ bị XÓA thay vì giữ nguyên. `appPool` là field như vậy
+      // (runAllConfigFromBody đọc thẳng `body.appPool`, không tự điền default
+      // dưới `withDefaults`) — PRESERVE nó từ config đã lưu khi request này
+      // không gửi key `appPool`.
+      const savedRunAllConfig =
+        project.metadata?.runAllConfig && typeof project.metadata.runAllConfig === 'object' && !Array.isArray(project.metadata.runAllConfig)
+          ? (project.metadata.runAllConfig as RunAllConfig)
+          : undefined;
       updateProject(db, projectId, {
         metadata: {
           ...(project.metadata ?? {}),
+          // Cùng builder với `PUT .../run-config` để hai đường ghi không lệch shape.
           runAllConfig: {
-            ...(confluencePages.length ? { confluencePages } : {}),
-            ...(designSystemId !== undefined ? { designSystemId } : {}),
-            terminal: (rawTerminal as WorkflowTerminal | undefined) ?? 'ui-html',
-            platform: (rawPlatform as TargetPlatform | undefined) ?? 'mobile',
-            ...(targets.length ? { targets } : {}),
-            followLinks,
-            includeDescendants,
-            skipSucceeded,
-            lean,
+            ...nextRunAllConfig,
+            ...(nextRunAllConfig.appPool === undefined && savedRunAllConfig?.appPool !== undefined
+              ? { appPool: savedRunAllConfig.appPool }
+              : {}),
           },
         },
       });
+      // `appPool` là một NGUỒN, không chỉ là cấu hình để nhớ: run-all gửi nó ở
+      // key riêng (`body.appPool`) chứ không bọc trong `source`, nên nếu không
+      // dịch ở đây thì bước ingest nhận `source: undefined` → fail-fast "Chưa
+      // cấu hình Nguồn tài liệu" DÙ người dùng đã tick trang (đường single-stage
+      // Run không dính vì FE tự dựng `source` cho nó). Ưu tiên `source` tường
+      // minh nếu request có; sau đó tới appPool của request; cuối cùng là
+      // appPool đã lưu (nút "Chạy pipeline" đọc cấu hình đã lưu là đường chạy
+      // chính, có khi request không lặp lại key này).
+      const effectiveAppPool = nextRunAllConfig.appPool ?? savedRunAllConfig?.appPool ?? null;
+      const runSource: PipelineRunSource | undefined =
+        source ??
+        (effectiveAppPool?.appId && effectiveAppPool.paths?.length
+          ? { kind: 'app-pool', appId: effectiveAppPool.appId, paths: [...effectiveAppPool.paths] }
+          : undefined);
       const result = await ctx.pipelines.runWorkflowAll(projectId, {
         ...(workflowId !== undefined ? { workflowId } : {}),
         ...(rawTerminal !== undefined ? { terminal: rawTerminal as WorkflowTerminal } : {}),
         ...(input !== undefined ? { input } : {}),
-        ...(source !== undefined ? { source } : {}),
+        ...(runSource !== undefined ? { source: runSource } : {}),
         ...(designSystemId !== undefined ? { designSystemId } : {}),
         ...(rawPlatform !== undefined ? { platform: rawPlatform as TargetPlatform } : {}),
         ...(targets.length ? { targets } : {}),
+        ...(designSystemByTarget ? { designSystemByTarget } : {}),
         skipSucceeded,
         lean,
+        ...(stageIds && stageIds.length > 0 ? { stageIds } : {}),
         ...(followLinks ? {} : { followLinks: false }),
         ...(includeDescendants ? { includeDescendants: true } : {}),
+        ...(docsFromUpload ? { docsFromUpload: true } : {}),
       });
       res.status(202).json(result);
     } catch (err: any) {
@@ -539,12 +1659,19 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           error: 'project is not a KGS app; pull it first with `od kg pull <project-id>`',
         });
       }
-      const state = await loadMergedState(projectId);
-      // Gate against the stages this project's mode actually runs: on a LEAN
-      // project the UI terminals must stay runnable even though the heuristic
-      // review they statically depend on was never part of the chain.
+      const { state, docsReady } = await loadMergedState(projectId);
+      // Docs-only gate (2026-08, pipelines.ts's `computeActive`): a card is
+      // active the instant this workflow's ingest stage has a document —
+      // `docsReady` (from `loadMergedState`) carries that fact SEPARATELY
+      // from `state`'s real run status. `runMode`/`explicitSelection` are
+      // still computed and passed through only to match `computeActive`'s
+      // existing signature (and to keep `GET /api/pipelines` and this 409
+      // check reading the exact same inputs); neither affects the result
+      // anymore.
       const wf = workflowForPipeline(def.id);
-      if (!computeActive(state, def, runModeFor(project, state, wf?.pipelineIds ?? []))) {
+      const runMode = runModeFor(project, state, wf?.pipelineIds ?? []);
+      const explicitSelection = wf ? explicitStageSelectionFor(project, wf) : undefined;
+      if (!computeActive(state, def, runMode, explicitSelection, docsReady)) {
         return res.status(409).json({
           error: `pipeline "${def.id}" is not active yet; finish its prerequisites first`,
         });
@@ -575,6 +1702,16 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         return res.status(400).json({ error: "platform must be 'mobile' or 'web'" });
       }
       const platform = rawPlatform as TargetPlatform | undefined;
+      // Multi-target single-stage run: WHICH configured target this run builds.
+      // The daemon resolves the target subfolder + platform/audience from
+      // targets.json (see RunPipelineRequest.target).
+      const rawTarget = req.body?.target;
+      if (rawTarget !== undefined && !isUiTarget(rawTarget)) {
+        return res
+          .status(400)
+          .json({ error: "target must be 'mobile', 'web-user' or 'web-backoffice'" });
+      }
+      const target = rawTarget as UiTarget | undefined;
       // RE-RUN clear scope (UI re-run dialog / CLI --reset-downstream). Only
       // 'stage' | 'downstream' pass; absent → 'stage' (clear this stage only).
       const rawScope = req.body?.resetScope;
@@ -594,7 +1731,18 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
             (t: unknown) => t === 'mobile' || t === 'web-user' || t === 'web-backoffice',
           ) as import('@open-design/contracts').UiTarget[])
         : undefined;
-      const { completion: _completion, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, input, source, designSystemId, platform, resetScope, followLinks, includeDescendants, undefined, targets);
+      const { completion: _completion, docsReviewConfirmation: _docsReviewConfirmation, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, {
+        input,
+        source,
+        designSystemId,
+        platform,
+        resetScope,
+        followLinks,
+        includeDescendants,
+        target,
+        targets,
+        designSystemByTarget: parseDesignSystemByTarget(req.body?.designSystemByTarget),
+      });
       res.status(202).json(start);
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });

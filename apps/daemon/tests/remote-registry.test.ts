@@ -101,6 +101,24 @@ describe('loadRemoteProjects', () => {
     });
   });
 
+  it('hides `pending--…` folders — an approval request is not a pullable project', async () => {
+    // Studio hides them for free (it enumerates KGS workspaces and a staged
+    // push writes none); Open Design enumerates EVERY media folder, so without
+    // this filter every machine in the app would see other people's unapproved
+    // work as a project it could pull.
+    const kgs: WorkspaceSource = { queryEntities: async () => [] };
+    const media: FolderSource = {
+      listFolders: async () => [
+        { id: 'f1', name: 'checkout' },
+        { id: 'f2', name: 'pending--checkout--a1b2c3' },
+        { id: 'f3', name: 'pending--decisions' },
+      ],
+      listAllFiles: async () => [1],
+    };
+    const rows = await loadRemoteProjects(kgs, media);
+    expect(rows.map((r) => r.projectId)).toEqual(['checkout']);
+  });
+
   it('still lists media when KGS is down (best-effort per source)', async () => {
     const kgs: WorkspaceSource = {
       queryEntities: async () => {

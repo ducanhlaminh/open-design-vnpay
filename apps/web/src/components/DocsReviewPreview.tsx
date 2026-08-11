@@ -1633,7 +1633,7 @@ export function DocsReviewIndexPreview({
         <div style={{ fontSize: 13, lineHeight: 1.6 }}>
           Không tìm thấy mockup nào trong <code>docs/confluence/</code>. Một trang chỉ được chấm khi file{' '}
           <code>.md</code> của nó có tham chiếu ảnh <code>![](attachments/…)</code>. Kiểm tra bước{' '}
-          <b>Docs → Markdown</b> đã chạy chưa, và trang nguồn có ảnh mockup nhúng thật không — rồi chạy lại bước này.
+          <b>Tài liệu (nạp)</b> đã chạy chưa, và trang nguồn có ảnh mockup nhúng thật không — rồi chạy lại bước này.
         </div>
       </div>
     );

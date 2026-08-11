@@ -10,7 +10,7 @@
 //   3. which document taught the agent what — with how sure it was.
 // So: a hand-off graph on top, the hand-off details under it, then the document
 // classification grouped by app. Read-only, open-design theme tokens.
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   Background,
   BaseEdge,
@@ -18,6 +18,7 @@ import {
   EdgeLabelRenderer,
   Handle,
   MarkerType,
+  Panel,
   Position,
   ReactFlow,
   ReactFlowProvider,
@@ -28,6 +29,7 @@ import {
   type EdgeProps,
   type Node,
   type NodeProps,
+  type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
@@ -92,6 +94,10 @@ const T = {
   faint: 'var(--text-faint, #9ca3af)',
   border: 'var(--border, #e1e5eb)',
   paper: 'var(--bg-panel, #fff)',
+  /* --bg-panel is TRANSLUCENT (glassmorphism) — canvas surfaces must be
+     OPAQUE or the page text bleeds through nodes/labels/the fullscreen
+     overlay and nothing is readable. */
+  paperSolid: 'var(--bg, #faf9f7)',
   subtle: 'var(--bg-subtle, #f5f6f8)',
   accent: 'var(--accent, #0066b3)',
   red: 'var(--red, #dc2626)',
@@ -99,10 +105,10 @@ const T = {
   green: 'var(--green, #16a34a)',
 };
 
-const APP_W = 224;
-const APP_H = 132;
-const COL_W = APP_W + 190;
-const ROW_GAP = 44;
+const APP_W = 248;
+const APP_H = 150;
+const COL_W = APP_W + 240;
+const ROW_GAP = 84;
 
 const AUDIENCE_LABEL: Record<string, string> = {
   user: 'Người dùng',
@@ -150,10 +156,12 @@ function Chip({
 type AppNodeData = {
   app: SystemMapApp;
   docCount: number;
+  /** Quick-hide from the node itself (the panel chip un-hides). */
+  onHide?: (id: string) => void;
 };
 
 function AppNode({ data }: NodeProps) {
-  const { app, docCount } = data as AppNodeData;
+  const { app, docCount, onHide } = data as AppNodeData;
   const external = app.external === true;
   const wrap: CSSProperties = {
     width: APP_W,
@@ -162,7 +170,7 @@ function AppNode({ data }: NodeProps) {
     // External apps are part of the system but not of the build — dashed and
     // desaturated so "what we own" is readable without reading a legend.
     border: `1.5px ${external ? 'dashed' : 'solid'} ${external ? T.border : T.accent}`,
-    background: external ? T.subtle : T.paper,
+    background: external ? T.subtle : T.paperSolid,
     boxShadow: external ? 'none' : '0 1px 3px rgba(0,0,0,.07)',
     padding: '10px 12px',
     display: 'flex',
@@ -172,13 +180,24 @@ function AppNode({ data }: NodeProps) {
   };
   return (
     <div style={wrap}>
-      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
-      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+      {/* Hidden handles on BOTH sides, in TWO LANES per side — edges attach to
+          whichever side FACES the other node (handlesFor), and the forward
+          edge rides the upper lane (38%) while the return edge rides the lower
+          lane (62%): two parallel lines instead of one line drawn over the
+          other. */}
+      <Handle id="tgt-left-out" type="target" position={Position.Left} style={{ top: '38%', opacity: 0 }} />
+      <Handle id="tgt-left-back" type="target" position={Position.Left} style={{ top: '62%', opacity: 0 }} />
+      <Handle id="tgt-right-out" type="target" position={Position.Right} style={{ top: '38%', opacity: 0 }} />
+      <Handle id="tgt-right-back" type="target" position={Position.Right} style={{ top: '62%', opacity: 0 }} />
+      <Handle id="src-left-out" type="source" position={Position.Left} style={{ top: '38%', opacity: 0 }} />
+      <Handle id="src-left-back" type="source" position={Position.Left} style={{ top: '62%', opacity: 0 }} />
+      <Handle id="src-right-out" type="source" position={Position.Right} style={{ top: '38%', opacity: 0 }} />
+      <Handle id="src-right-back" type="source" position={Position.Right} style={{ top: '62%', opacity: 0 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
         <strong
           style={{
-            fontSize: 13,
-            color: external ? T.soft : T.ink,
+            fontSize: 14.5,
+            color: T.ink,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
@@ -187,18 +206,45 @@ function AppNode({ data }: NodeProps) {
         >
           {app.name ?? app.id}
         </strong>
-        {external ? (
-          <Chip text="ngoài phạm vi" dashed title="Hệ thống phụ thuộc app này nhưng dự án không build nó" />
-        ) : app.audience ? (
-          <Chip text={AUDIENCE_LABEL[app.audience] ?? app.audience} color={T.accent} />
-        ) : null}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flex: 'none' }}>
+          {external ? (
+            <Chip text="ngoài phạm vi" dashed title="Hệ thống phụ thuộc app này nhưng dự án không build nó" />
+          ) : app.audience ? (
+            <Chip text={AUDIENCE_LABEL[app.audience] ?? app.audience} color={T.accent} />
+          ) : null}
+          {onHide && app.id ? (
+            <button
+              type="button"
+              className="nodrag nopan"
+              onClick={() => onHide(String(app.id))}
+              title="Ẩn app này (và mọi đường nối vào nó) — bật lại ở panel góc trái"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 22,
+                height: 22,
+                padding: 0,
+                border: `1px solid ${T.border}`,
+                borderRadius: 6,
+                background: 'transparent',
+                color: T.soft,
+                cursor: 'pointer',
+                fontSize: 12,
+                lineHeight: 1,
+              }}
+            >
+              👁
+            </button>
+          ) : null}
+        </span>
       </div>
-      <code style={{ fontSize: 10.5, color: T.faint }}>{app.id}</code>
+      <code style={{ fontSize: 12, color: T.soft }}>{app.id}</code>
       <span
         style={{
-          fontSize: 11.5,
-          color: T.muted,
-          lineHeight: 1.4,
+          fontSize: 13,
+          color: T.ink,
+          lineHeight: 1.45,
           display: '-webkit-box',
           WebkitLineClamp: 3,
           WebkitBoxOrient: 'vertical',
@@ -208,7 +254,7 @@ function AppNode({ data }: NodeProps) {
       >
         {app.responsibility || '(chưa ghi trách nhiệm)'}
       </span>
-      <span style={{ marginTop: 'auto', fontSize: 11, color: docCount ? T.soft : T.faint }}>
+      <span style={{ marginTop: 'auto', fontSize: 12.5, color: T.soft }}>
         {docCount ? `${docCount} tài liệu` : 'chưa có tài liệu nào gán vào'}
       </span>
     </div>
@@ -216,6 +262,9 @@ function AppNode({ data }: NodeProps) {
 }
 
 const NODE_TYPES = { app: AppNode };
+
+/** One hand-off inside a merged edge — the tooltip lists the full exchange. */
+type HandoffEdgeDetail = { trigger?: string; data?: string; back?: string };
 
 function HandoffEdge({
   id,
@@ -229,6 +278,9 @@ function HandoffEdge({
   markerEnd,
   data,
 }: EdgeProps) {
+  const d = data as
+    | { label?: string; extra?: number; details?: HandoffEdgeDetail[]; shift?: number; back?: boolean }
+    | undefined;
   const [path, labelX, labelY] = getSmoothStepPath({
     sourceX,
     sourceY,
@@ -237,37 +289,118 @@ function HandoffEdge({
     sourcePosition,
     targetPosition,
     borderRadius: 10,
+    // Per-lane turn distance: on long L-shaped routes the VERTICAL run sits at
+    // `node edge + offset` — with one shared offset the out and back lanes
+    // collapse onto the same x there. The return lane turns 26px further out,
+    // so the two verticals stay parallel just like the horizontals.
+    offset: d?.back ? 46 : 20,
   });
-  const d = data as { label?: string; shift?: number; back?: boolean } | undefined;
+  // Hover mở tooltip THẬT (title native không bao giờ hiện được khi label
+  // pointer-events: none) và highlight đúng đường của label — mắt nối được
+  // chip ↔ line giữa nhiều mũi tên.
+  const [hover, setHover] = useState(false);
+  const details = d?.details ?? [];
   return (
     <>
-      <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd as string | undefined} />
+      <BaseEdge
+        id={id}
+        path={path}
+        style={{
+          ...style,
+          ...(hover ? { stroke: T.accent, strokeWidth: 2.4, strokeDasharray: d?.back ? '6 4' : undefined } : {}),
+        }}
+        markerEnd={markerEnd as string | undefined}
+      />
       {d?.label ? (
         <EdgeLabelRenderer>
           <div
-            title={d.label}
+            className="nodrag nopan"
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY + (d.shift ?? 0)}px)`,
-              maxWidth: 165,
-              padding: '2px 8px',
-              borderRadius: 7,
-              border: `1px ${d.back ? 'dashed' : 'solid'} ${T.border}`,
-              background: T.paper,
-              boxShadow: '0 1px 2px rgba(0,0,0,.06)',
-              fontSize: 10.5,
-              fontWeight: 600,
-              color: d.back ? T.muted : T.ink,
-              lineHeight: 1.3,
-              textAlign: 'center',
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-              pointerEvents: 'none',
+              zIndex: hover ? 20 : 1,
+              pointerEvents: 'all',
+              cursor: 'default',
             }}
           >
-            {d.label}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                maxWidth: 280,
+                padding: '4px 10px',
+                borderRadius: 8,
+                border: `1.5px ${d.back ? 'dashed' : 'solid'} ${hover ? T.accent : T.soft}`,
+                background: T.paperSolid,
+                boxShadow: '0 1px 3px rgba(0,0,0,.1)',
+                fontSize: 13,
+                fontWeight: 600,
+                color: T.ink,
+                lineHeight: 1.35,
+              }}
+            >
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {d.label}
+              </span>
+              {d.extra ? (
+                <span
+                  style={{
+                    flex: 'none',
+                    padding: '0 7px',
+                    borderRadius: 999,
+                    background: `color-mix(in srgb, ${T.accent} 16%, transparent)`,
+                    color: T.accent,
+                    fontSize: 12,
+                    fontWeight: 700,
+                  }}
+                >
+                  +{d.extra}
+                </span>
+              ) : null}
+            </div>
+            {/* Tooltip: TOÀN BỘ trao đổi của cặp app này, không cắt chữ. */}
+            {hover && details.length > 0 ? (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 6px)',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  width: 380,
+                  maxWidth: '80vw',
+                  padding: '12px 14px',
+                  borderRadius: 10,
+                  border: `1px solid ${T.soft}`,
+                  background: T.paperSolid,
+                  boxShadow: '0 12px 32px rgba(0,0,0,.16)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                  pointerEvents: 'none',
+                  textAlign: 'left',
+                }}
+              >
+                {details.map((item, i) => (
+                  <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: T.ink, lineHeight: 1.45 }}>
+                      {details.length > 1 ? `${i + 1}. ` : ''}
+                      {item.trigger ?? '—'}
+                    </span>
+                    {item.data ? (
+                      <span style={{ fontSize: 12.5, color: T.ink, lineHeight: 1.45 }}>{item.data}</span>
+                    ) : null}
+                    {item.back ? (
+                      <span style={{ fontSize: 12.5, color: T.soft, fontStyle: 'italic', lineHeight: 1.45 }}>
+                        ↩ {item.back}
+                      </span>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         </EdgeLabelRenderer>
       ) : null}
@@ -352,6 +485,9 @@ function SystemMapCanvas({
   handoffs: SystemMapHandoff[];
   docCounts: Map<string, number>;
 }) {
+  // Ẩn/hiện app: node ẩn kéo theo MỌI edge chạm nó (đỡ rối khi soi một
+  // nhánh); bật lại bằng chip trong panel góc trái.
+  const [hiddenApps, setHiddenApps] = useState<Set<string>>(new Set());
   const built = useMemo(() => {
     const pos = layoutApps(apps, handoffs);
     const known = new Set(apps.map((a) => String(a.id ?? '')));
@@ -362,55 +498,84 @@ function SystemMapCanvas({
         type: 'app',
         position: pos.get(String(a.id)) ?? { x: 0, y: 0 },
         draggable: true,
-        data: { app: a, docCount: docCounts.get(String(a.id)) ?? 0 } satisfies AppNodeData,
+        data: {
+          app: a,
+          docCount: docCounts.get(String(a.id)) ?? 0,
+          onHide: (id: string) => setHiddenApps((cur) => new Set(cur).add(id)),
+        } satisfies AppNodeData,
       }));
 
-    // One edge per hand-off, plus a dashed return edge when `back` is filled —
-    // the way home is a different fact from the way out and hiding it inside a
-    // tooltip is how a two-way integration reads as one-way.
+    // MERGE per (from, to): several hand-offs between the same pair used to be
+    // several near-identical smoothstep paths with label chips staggered by a
+    // GLOBAL per-column slot — chips detached from their own line and still
+    // piling up. One forward edge per pair now carries them all (first trigger
+    // + a "+N" badge; the full numbered exchange lives in the hover tooltip),
+    // plus ONE dashed return edge when any of them answers back — the way home
+    // is a different fact from the way out.
     const drawn = handoffs.filter(
       (h) => h.from && h.to && known.has(String(h.from)) && known.has(String(h.to)),
     );
-    const slots = new Map<number, number>();
-    const gutterOf = (id: string) => Math.round((pos.get(id)?.x ?? 0) / COL_W);
+    const pairs = new Map<string, SystemMapHandoff[]>();
+    const pairOrder: string[] = [];
+    for (const h of drawn) {
+      const key = `${String(h.from)}\u0000${String(h.to)}`;
+      if (!pairs.has(key)) {
+        pairs.set(key, []);
+        pairOrder.push(key);
+      }
+      pairs.get(key)!.push(h);
+    }
+    // Attach each edge to the sides of the two cards that FACE each other —
+    // a fixed right→left convention sent every right-to-left hand-off (and
+    // every return edge) on a lap around the whole map, crossing other cards.
+    const handlesFor = (sourceId: string, targetId: string, lane: 'out' | 'back') => {
+      const sx = pos.get(sourceId)?.x ?? 0;
+      const tx = pos.get(targetId)?.x ?? 0;
+      return sx <= tx
+        ? { sourceHandle: `src-right-${lane}`, targetHandle: `tgt-left-${lane}` }
+        : { sourceHandle: `src-left-${lane}`, targetHandle: `tgt-right-${lane}` };
+    };
     const edges: Edge[] = [];
-    for (const [i, h] of drawn.entries()) {
-      const from = String(h.from);
-      const gutter = gutterOf(from);
-      const slot = slots.get(gutter) ?? 0;
-      slots.set(gutter, slot + 1);
+    for (const [i, key] of pairOrder.entries()) {
+      const group = pairs.get(key)!;
+      const [from, to] = key.split('\u0000') as [string, string];
+      const details = group.map((h) => ({
+        ...(h.trigger ? { trigger: h.trigger } : {}),
+        ...(h.data ? { data: h.data } : {}),
+        ...(h.back ? { back: h.back } : {}),
+      }));
+      const firstLabel = group.find((h) => h.trigger)?.trigger ?? `${group.length} bàn giao`;
       edges.push({
         id: `h${i}`,
         source: from,
-        target: String(h.to),
+        target: to,
         type: 'handoff',
-        data: { label: h.trigger, slot, gutter },
+        ...handlesFor(from, to, 'out'),
+        // Forward chip sits just ABOVE its own midpoint, return chip just
+        // BELOW — always visually attached to their line.
+        data: { label: firstLabel, extra: group.length - 1, details, shift: -16 },
         style: { stroke: T.ink, strokeWidth: 1.6 },
         markerEnd: { type: MarkerType.ArrowClosed, color: T.ink },
       });
-      if (h.back) {
+      const backs = group.filter((h) => h.back);
+      if (backs.length > 0) {
         edges.push({
           id: `h${i}-back`,
-          source: String(h.to),
+          source: to,
           target: from,
           type: 'handoff',
-          data: { label: h.back, slot: slot + 1, gutter, back: true },
-          style: { stroke: T.muted, strokeWidth: 1.3, strokeDasharray: '6 4' },
-          markerEnd: { type: MarkerType.ArrowClosed, color: T.muted },
+          ...handlesFor(to, from, 'back'),
+          data: {
+            label: backs[0]!.back,
+            extra: backs.length - 1,
+            details,
+            shift: 16,
+            back: true,
+          },
+          style: { stroke: T.soft, strokeWidth: 1.5, strokeDasharray: '6 4' },
+          markerEnd: { type: MarkerType.ArrowClosed, color: T.soft },
         });
       }
-    }
-    // Stagger label chips sharing a gutter so they never stack on one midpoint.
-    const LABEL_SLOT = 38;
-    const totals = new Map<number, number>();
-    for (const e of edges) {
-      const g = (e.data as { gutter: number }).gutter;
-      totals.set(g, Math.max(totals.get(g) ?? 0, ((e.data as { slot: number }).slot ?? 0) + 1));
-    }
-    for (const e of edges) {
-      const d = e.data as { slot: number; gutter: number; shift?: number };
-      const total = totals.get(d.gutter) ?? 1;
-      d.shift = total > 1 ? (d.slot - (total - 1) / 2) * LABEL_SLOT : 0;
     }
     return { nodes, edges };
   }, [apps, handoffs, docCounts]);
@@ -418,18 +583,65 @@ function SystemMapCanvas({
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   useEffect(() => {
-    setNodes(built.nodes);
-    setEdges(built.edges);
-  }, [built, setNodes, setEdges]);
+    setNodes(built.nodes.map((n) => ({ ...n, hidden: hiddenApps.has(n.id) })));
+    setEdges(
+      built.edges.map((e) => ({
+        ...e,
+        hidden: hiddenApps.has(e.source) || hiddenApps.has(e.target),
+      })),
+    );
+  }, [built, hiddenApps, setNodes, setEdges]);
+
+  // Fullscreen: phóng canvas ra overlay toàn màn hình (Esc / nút để thoát).
+  // Sau khi đổi kích thước phải fitView lại — React Flow không tự re-fit.
+  const [fullscreen, setFullscreen] = useState(false);
+  const flowRef = useRef<ReactFlowInstance | null>(null);
+  useEffect(() => {
+    if (!fullscreen) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFullscreen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    // Trang phía sau không được cuộn khi overlay đang mở.
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [fullscreen]);
+  useEffect(() => {
+    const id = window.setTimeout(
+      () => flowRef.current?.fitView({ padding: 0.16, maxZoom: 1 }),
+      60,
+    );
+    return () => window.clearTimeout(id);
+  }, [fullscreen]);
 
   return (
-    <div style={{ height: 460, border: `1px solid ${T.border}`, borderRadius: 12, overflow: 'hidden', background: T.paper }}>
+    <div
+      style={
+        fullscreen
+          ? {
+              position: 'fixed',
+              inset: 0,
+              zIndex: 1300,
+              background: T.paperSolid,
+              display: 'flex',
+              flexDirection: 'column',
+            }
+          : { height: 520, border: `1px solid ${T.border}`, borderRadius: 12, overflow: 'hidden', background: T.paperSolid }
+      }
+    >
       <ReactFlowProvider>
         <ReactFlow
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
+          onInit={(instance) => {
+            flowRef.current = instance;
+          }}
           nodeTypes={NODE_TYPES}
           edgeTypes={EDGE_TYPES}
           fitView
@@ -442,12 +654,102 @@ function SystemMapCanvas({
           panOnDrag
           // The canvas is embedded in a SCROLLING report — grabbing the wheel
           // here would trap the page scroll. Zoom lives on the Controls.
-          zoomOnScroll={false}
+          // Fullscreen has no page behind it, so the wheel is safe to take.
+          zoomOnScroll={fullscreen}
           panOnScroll={false}
-          preventScrolling={false}
+          preventScrolling={fullscreen}
         >
           <Background gap={22} size={1.4} />
           <Controls showInteractive={false} />
+          {hiddenApps.size > 0 ? (
+            <Panel position="top-left">
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  flexWrap: 'wrap',
+                  maxWidth: 460,
+                  padding: '6px 8px',
+                  borderRadius: 8,
+                  border: `1px solid ${T.border}`,
+                  background: T.paperSolid,
+                  boxShadow: '0 1px 3px rgba(0,0,0,.1)',
+                }}
+              >
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: T.soft }}>Đang ẩn:</span>
+                {[...hiddenApps].map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() =>
+                      setHiddenApps((cur) => {
+                        const next = new Set(cur);
+                        next.delete(id);
+                        return next;
+                      })
+                    }
+                    title="Hiện lại app này"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      padding: '2px 8px',
+                      borderRadius: 999,
+                      border: `1px dashed ${T.soft}`,
+                      background: 'transparent',
+                      color: T.ink,
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {apps.find((a) => String(a.id) === id)?.name ?? id}
+                    <span aria-hidden="true">✕</span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setHiddenApps(new Set())}
+                  style={{
+                    padding: '2px 8px',
+                    borderRadius: 999,
+                    border: 0,
+                    background: 'transparent',
+                    color: T.accent,
+                    fontSize: 11.5,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Hiện tất cả
+                </button>
+              </div>
+            </Panel>
+          ) : null}
+          <Panel position="top-right">
+            <button
+              type="button"
+              onClick={() => setFullscreen((v) => !v)}
+              title={fullscreen ? 'Thoát toàn màn hình (Esc)' : 'Xem toàn màn hình'}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '6px 12px',
+                borderRadius: 8,
+                border: `1px solid ${T.soft}`,
+                background: T.paperSolid,
+                color: T.ink,
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: 'pointer',
+                boxShadow: '0 1px 3px rgba(0,0,0,.12)',
+              }}
+            >
+              {fullscreen ? '✕ Thoát (Esc)' : '⛶ Toàn màn hình'}
+            </button>
+          </Panel>
         </ReactFlow>
       </ReactFlowProvider>
     </div>
@@ -459,6 +761,107 @@ function SystemMapCanvas({
 function baseName(path: string): string {
   const i = path.lastIndexOf('/');
   return i >= 0 ? path.slice(i + 1) : path;
+}
+
+// Sequence/swimlane của các bàn giao: lifeline dọc cho từng app tham gia,
+// mỗi handoff một mũi tên NGANG theo đúng thứ tự khai trong system-map.json
+// (mũi tên liền = trigger + data; mũi tên đứt quay về = `back`). SVG thuần —
+// bố cục cột đều nhau nên không cần thư viện đồ thị.
+function HandoffSequence({ apps, handoffs }: { apps: SystemMapApp[]; handoffs: SystemMapHandoff[] }) {
+  // Lanes: chỉ app THAM GIA bàn giao, app trong dự án trước, external sau.
+  const laneIds = useMemo(() => {
+    const involved = new Set<string>();
+    for (const h of handoffs) {
+      if (h.from) involved.add(String(h.from));
+      if (h.to) involved.add(String(h.to));
+    }
+    const ordered = apps.map((a) => String(a.id)).filter((id) => involved.has(id));
+    const known = new Set(ordered);
+    for (const id of involved) if (!known.has(id)) ordered.push(id);
+    return ordered.sort((a, b) => {
+      const ea = apps.find((x) => String(x.id) === a)?.external ? 1 : 0;
+      const eb = apps.find((x) => String(x.id) === b)?.external ? 1 : 0;
+      return ea - eb;
+    });
+  }, [apps, handoffs]);
+  const nameOf = (id: string) => apps.find((a) => String(a.id) === id)?.name ?? id;
+  if (laneIds.length < 2) return null;
+
+  const LANE_W = Math.max(210, Math.min(320, 960 / laneIds.length));
+  const HEAD_H = 52;
+  const ROW_H = 78;
+  const BACK_H = 42;
+  const laneX = (id: string) => laneIds.indexOf(id) * LANE_W + LANE_W / 2;
+  // y tăng dần theo thứ tự handoff; handoff có `back` chiếm thêm một hàng phụ.
+  const rows: Array<{ h: SystemMapHandoff; y: number; backY: number | null }> = [];
+  let y = HEAD_H + 28;
+  for (const h of handoffs) {
+    if (!h.from || !h.to) continue;
+    const backY = h.back ? y + BACK_H : null;
+    rows.push({ h, y, backY });
+    y += ROW_H + (h.back ? BACK_H : 0);
+  }
+  const totalH = y + 16;
+  const totalW = laneIds.length * LANE_W;
+  const trim = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+  return (
+    <div style={{ border: `1px solid ${T.border}`, borderRadius: 12, background: T.paperSolid, overflowX: 'auto' }}>
+      <svg width={totalW} height={totalH} style={{ display: 'block', margin: '0 auto', maxWidth: '100%' }} role="img" aria-label="Trình tự bàn giao giữa các app">
+        <defs>
+          <marker id="seq-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill={T.ink} />
+          </marker>
+          <marker id="seq-arrow-back" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill={T.soft} />
+          </marker>
+        </defs>
+        {laneIds.map((id) => {
+          const x = laneX(id);
+          const external = apps.find((a) => String(a.id) === id)?.external === true;
+          return (
+            <g key={id}>
+              <rect x={x - LANE_W / 2 + 10} y={8} width={LANE_W - 20} height={HEAD_H - 14} rx={8} fill={T.subtle} stroke={T.soft} strokeDasharray={external ? '4 3' : undefined} />
+              <text x={x} y={8 + (HEAD_H - 14) / 2 + 5} textAnchor="middle" fontSize={14} fontWeight={700} fill={T.ink}>
+                {trim(nameOf(id), Math.floor(LANE_W / 8))}
+              </text>
+              <line x1={x} y1={HEAD_H} x2={x} y2={totalH - 8} stroke={T.soft} strokeDasharray="3 4" opacity={0.5} />
+            </g>
+          );
+        })}
+        {rows.map(({ h, y: rowY, backY }, i) => {
+          const x1 = laneX(String(h.from));
+          const x2 = laneX(String(h.to));
+          const mid = (x1 + x2) / 2;
+          return (
+            <g key={i}>
+              <line x1={x1} y1={rowY} x2={x2} y2={rowY} stroke={T.ink} strokeWidth={1.8} markerEnd="url(#seq-arrow)" />
+              {h.trigger ? (
+                <text x={mid} y={rowY - 22} textAnchor="middle" fontSize={13.5} fontWeight={700} fill={T.ink}>
+                  {trim(`${i + 1}. ${h.trigger}`, Math.floor(Math.abs(x2 - x1) / 7) + 24)}
+                </text>
+              ) : null}
+              {h.data ? (
+                <text x={mid} y={rowY - 6} textAnchor="middle" fontSize={12.5} fill={T.ink}>
+                  {trim(h.data, Math.floor(Math.abs(x2 - x1) / 6.5) + 20)}
+                </text>
+              ) : null}
+              {backY !== null ? (
+                <g>
+                  <line x1={x2} y1={backY} x2={x1} y2={backY} stroke={T.soft} strokeWidth={1.5} strokeDasharray="5 4" markerEnd="url(#seq-arrow-back)" />
+                  {h.back ? (
+                    <text x={mid} y={backY - 6} textAnchor="middle" fontSize={12.5} fill={T.soft} fontStyle="italic">
+                      {trim(h.back, Math.floor(Math.abs(x2 - x1) / 6.5) + 20)}
+                    </text>
+                  ) : null}
+                </g>
+              ) : null}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
 }
 
 export function SystemMapPreview({ doc }: { doc: SystemMapDoc }) {
@@ -555,6 +958,19 @@ export function SystemMapPreview({ doc }: { doc: SystemMapDoc }) {
             </span>
             <span>Kéo để di chuyển · zoom bằng nút góc dưới</span>
           </div>
+        </section>
+      ) : null}
+
+      {/* Trình tự phối hợp (swimlane/sequence): mỗi app một lifeline, các bàn
+          giao vẽ THEO THỨ TỰ khai trong system-map — đây là cái nhìn "use case
+          chạy xuyên app" (mobile gửi → BO duyệt → mobile nhận) mà sơ đồ graph
+          phía trên không thể hiện được thứ tự. */}
+      {handoffs.length >= 1 && apps.filter((a) => !a.external).length >= 2 ? (
+        <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <h3 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: T.muted, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+            Trình tự phối hợp giữa các app
+          </h3>
+          <HandoffSequence apps={apps} handoffs={handoffs} />
         </section>
       ) : null}
 

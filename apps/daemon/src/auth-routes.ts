@@ -23,18 +23,42 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import type { AuthSyncIssue, AuthSyncState } from '@open-design/contracts';
 
 const SESSION_COOKIE = 'od_session';
 const STATE_COOKIE = 'od_oauth_state';
 const SESSION_TTL_S = 7 * 24 * 60 * 60; // 7 days — local tool, low-risk scope
 
 export interface AuthSessionUser {
-  /** preview-identity user id when the upsert succeeded, else `google:<sub>`. */
+  /** Google subject for new sessions. Legacy cookies may contain an identity
+   * UUID or `google:<subject>` here and are reconciled defensively. */
   sub: string;
+  googleSubject?: string;
+  /** Canonical preview-identity UUID. The only id allowed at identity APIs. */
+  identityUserId?: string;
+  syncIssue?: AuthSyncIssue;
   email: string;
   name: string;
   picture?: string;
   provider: 'google';
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isIdentityUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
+export function identityUserIdOf(user: AuthSessionUser | null): string | null {
+  if (!user) return null;
+  if (isIdentityUuid(user.identityUserId)) return user.identityUserId;
+  // Backward compatibility for cookies issued before identityUserId existed.
+  return isIdentityUuid(user.sub) ? user.sub : null;
+}
+
+function googleSubjectOf(user: AuthSessionUser): string {
+  if (typeof user.googleSubject === 'string' && user.googleSubject) return user.googleSubject;
+  return user.sub.startsWith('google:') ? user.sub.slice('google:'.length) : (isIdentityUuid(user.sub) ? '' : user.sub);
 }
 
 export interface AuthConfig {
@@ -54,6 +78,9 @@ export interface AuthConfig {
   callbackOrigin: string;
   /** preview-identity base URL — optional, upsert is best-effort. */
   identityUrl: string;
+  /** Bearer credential for the identity service principal that may exchange
+   * verified OAuth identities. It must carry `user:manage:global`. */
+  identityServiceToken: string;
   /** Master switch for the allowlists below (OD_AUTH_DOMAIN_LOCK=1|true).
    *  OFF (dev default) → any verified Google account may sign in, lists are
    *  ignored. ON → only allowedEmails/allowedDomains pass; with both lists
@@ -78,6 +105,7 @@ export function authConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AuthCon
     appUrl: (env.OD_APP_URL ?? `http://localhost:${env.OD_WEB_PORT || '52564'}`).replace(/\/+$/, ''),
     callbackOrigin: (env.OD_AUTH_CALLBACK_URL ?? 'http://localhost:52564').replace(/\/+$/, ''),
     identityUrl: (env.IDENTITY_URL ?? '').replace(/\/+$/, ''),
+    identityServiceToken: env.IDENTITY_SERVICE_TOKEN ?? '',
     domainLock: env.OD_AUTH_DOMAIN_LOCK === '1' || env.OD_AUTH_DOMAIN_LOCK === 'true',
     allowedEmails: list(env.OD_AUTH_ALLOWED_EMAILS),
     allowedDomains: list(env.OD_AUTH_ALLOWED_DOMAINS),
@@ -179,6 +207,7 @@ export function authUserOf(req: Request): AuthSessionUser | null {
 const MACHINE_USER_FILE = 'auth-user.json';
 let machineUserDir: string | null = null;
 let machineUserCache: { at: number; user: AuthSessionUser | null } | null = null;
+let activeAuthConfig: AuthConfig | null = null;
 
 function rememberMachineUser(user: AuthSessionUser): void {
   machineUserCache = { at: Date.now(), user };
@@ -188,7 +217,17 @@ function rememberMachineUser(user: AuthSessionUser): void {
     writeFileSync(
       join(machineUserDir, MACHINE_USER_FILE),
       JSON.stringify(
-        { sub: user.sub, email: user.email, name: user.name, at: new Date().toISOString() },
+        {
+          sub: user.sub,
+          googleSubject: googleSubjectOf(user),
+          identityUserId: identityUserIdOf(user),
+          syncIssue: user.syncIssue ?? null,
+          email: user.email,
+          name: user.name,
+          ...(user.picture ? { picture: user.picture } : {}),
+          provider: 'google',
+          at: new Date().toISOString(),
+        },
         null,
         2,
       ),
@@ -206,7 +245,16 @@ export function getMachineUser(): AuthSessionUser | null {
     try {
       const raw = JSON.parse(readFileSync(join(machineUserDir, MACHINE_USER_FILE), 'utf8'));
       if (typeof raw?.sub === 'string' && raw.sub && typeof raw?.email === 'string') {
-        user = { sub: raw.sub, email: raw.email, name: raw.name ?? raw.email, provider: 'google' };
+        user = {
+          sub: raw.sub,
+          ...(typeof raw.googleSubject === 'string' ? { googleSubject: raw.googleSubject } : {}),
+          ...(isIdentityUuid(raw.identityUserId) ? { identityUserId: raw.identityUserId } : {}),
+          ...(typeof raw.syncIssue === 'string' ? { syncIssue: raw.syncIssue as AuthSyncIssue } : {}),
+          email: raw.email,
+          name: raw.name ?? raw.email,
+          ...(typeof raw.picture === 'string' ? { picture: raw.picture } : {}),
+          provider: 'google',
+        };
       }
     } catch {
       /* absent/corrupt → no machine user */
@@ -298,15 +346,24 @@ function handoffResultPage(ok: boolean, detail: string): string {
 
 /* ── preview-identity best-effort upsert (same account as pipeline-studio) ── */
 
-async function upsertIdentityUser(cfg: AuthConfig, email: string, name: string): Promise<string | null> {
-  if (!cfg.identityUrl) return null;
+type IdentityResolution =
+  | { ok: true; id: string }
+  | { ok: false; issue: AuthSyncIssue };
+
+async function upsertIdentityUser(
+  cfg: AuthConfig,
+  input: { externalId: string; email: string; name: string; picture?: string },
+): Promise<IdentityResolution> {
+  if (!cfg.identityUrl) return { ok: false, issue: 'identity_not_configured' };
+  if (!cfg.identityServiceToken) return { ok: false, issue: 'identity_not_configured' };
   const idFetch = async (path: string, init: RequestInit = {}) => {
     const res = await fetch(`${cfg.identityUrl}${path}`, {
       ...init,
+      signal: init.signal ?? AbortSignal.timeout(5_000),
       headers: { 'content-type': 'application/json', 'x-user-id': 'open-design', ...(init.headers ?? {}) },
     });
     const text = await res.text();
-    return { ok: res.ok, json: text ? (JSON.parse(text) as unknown) : null };
+    return { ok: res.ok, status: res.status, json: text ? (JSON.parse(text) as unknown) : null };
   };
   const usersOf = (body: unknown): Array<{ id?: string; email?: string }> => {
     if (!body || typeof body !== 'object') return [];
@@ -317,20 +374,98 @@ async function upsertIdentityUser(cfg: AuthConfig, email: string, name: string):
     return [];
   };
   try {
-    const found = await idFetch(`/api/v1/admin/users?search=${encodeURIComponent(email)}&limit=10`);
+    // Preferred atomic exchange. It is idempotent on email and returns the
+    // canonical UUID even when another first-party app created the user.
+    const resolved = await idFetch('/api/v1/auth/external/resolve', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.identityServiceToken}` },
+      body: JSON.stringify({
+        provider: 'google',
+        externalId: input.externalId || input.email,
+        email: input.email,
+        name: input.name,
+        ...(input.picture ? { avatarUrl: input.picture } : {}),
+      }),
+    });
+    const resolvedBody = resolved.json as { user?: { id?: string } } | null;
+    if (resolved.ok && isIdentityUuid(resolvedBody?.user?.id)) {
+      return { ok: true, id: resolvedBody!.user!.id! };
+    }
+    // A deployed identity service is temporarily unavailable. Do not turn a
+    // recoverable outage into "unresolved" merely because the legacy
+    // fallback endpoints cannot answer either.
+    if (resolved.status >= 500) return { ok: false, issue: 'identity_unavailable' };
+
+    // Tolerate an older identity deployment during rolling upgrades.
+    const found = await idFetch(`/api/v1/admin/users?search=${encodeURIComponent(input.email)}&limit=10`);
+    if (found.status >= 500) return { ok: false, issue: 'identity_unavailable' };
     const match = usersOf(found.json).find(
-      (u) => typeof u.email === 'string' && u.email.toLowerCase() === email.toLowerCase(),
+      (u) => typeof u.email === 'string' && u.email.toLowerCase() === input.email.toLowerCase(),
     );
-    if (match?.id) return match.id;
+    if (isIdentityUuid(match?.id)) return { ok: true, id: match.id };
     const created = await idFetch('/api/v1/admin/users', {
       method: 'POST',
-      body: JSON.stringify({ email, name, password: randomBytes(24).toString('base64url') }),
+      body: JSON.stringify({
+        email: input.email,
+        name: input.name,
+        password: randomBytes(24).toString('base64url'),
+      }),
     });
+    if (created.status >= 500) return { ok: false, issue: 'identity_unavailable' };
     const u = created.json as { user?: { id?: string }; id?: string } | null;
-    return u?.user?.id ?? u?.id ?? null;
+    const id = u?.user?.id ?? u?.id;
+    return isIdentityUuid(id)
+      ? { ok: true, id }
+      : { ok: false, issue: 'identity_user_unresolved' };
   } catch {
-    return null; // identity down → session still works with google:<sub>
+    return { ok: false, issue: 'identity_unavailable' };
   }
+}
+
+async function reconcileIdentityUser(cfg: AuthConfig, user: AuthSessionUser): Promise<AuthSessionUser> {
+  const existing = identityUserIdOf(user);
+  if (existing) {
+    const { syncIssue: _syncIssue, ...rest } = user;
+    return { ...rest, identityUserId: existing };
+  }
+  const resolved = await upsertIdentityUser(cfg, {
+    externalId: googleSubjectOf(user),
+    email: user.email,
+    name: user.name,
+    ...(user.picture ? { picture: user.picture } : {}),
+  });
+  if (!resolved.ok) {
+    const { identityUserId: _identityUserId, ...rest } = user;
+    return { ...rest, syncIssue: resolved.issue };
+  }
+  const { syncIssue: _syncIssue, ...rest } = user;
+  return { ...rest, identityUserId: resolved.id };
+}
+
+export function authSyncStateOf(user: AuthSessionUser | null): AuthSyncState {
+  const identityUserId = identityUserIdOf(user);
+  return identityUserId
+    ? { syncReady: true, identityUserId, syncIssue: null }
+    : {
+        syncReady: false,
+        identityUserId: null,
+        syncIssue: user?.syncIssue ?? (activeAuthConfig?.identityUrl ? 'identity_user_unresolved' : 'identity_not_configured'),
+      };
+}
+
+/** Reconciles a degraded Google login before a sync operation. */
+export async function getMachineIdentityUser(): Promise<AuthSessionUser | null> {
+  const user = getMachineUser();
+  if (!user) return null;
+  // A previously reconciled UUID remains a valid sync identity while the
+  // identity service is temporarily unreachable or a daemon restart has not
+  // loaded IDENTITY_URL yet.  Never manufacture a provider subject here.
+  if (identityUserIdOf(user)) return user;
+  if (!activeAuthConfig?.identityUrl) return null;
+  if (user.syncIssue && machineUserCache && Date.now() - machineUserCache.at < 10_000) return null;
+  const next = await reconcileIdentityUser(activeAuthConfig, user);
+  rememberMachineUser(next);
+  return identityUserIdOf(next) ? next : null;
 }
 
 /* ── registration ── */
@@ -341,6 +476,7 @@ export function registerAuthRoutes(
   opts: { stateDir?: string } = {},
 ): void {
   const enabled = isAuthEnabled(cfg);
+  activeAuthConfig = cfg;
   if (opts.stateDir) {
     machineUserDir = opts.stateDir;
     machineUserCache = null; // re-read from the new location
@@ -462,9 +598,16 @@ export function registerAuthRoutes(
       if (!emailAllowed(cfg, info.email)) return fail(`Tài khoản ${info.email} không được phép truy cập`);
 
       const name = info.name || info.email.split('@')[0]!;
-      const identityId = await upsertIdentityUser(cfg, info.email, name);
+      const identity = await upsertIdentityUser(cfg, {
+        externalId: info.sub ?? info.email,
+        email: info.email,
+        name,
+        ...(info.picture ? { picture: info.picture } : {}),
+      });
       const session: AuthSessionUser = {
-        sub: identityId ?? `google:${info.sub}`,
+        sub: info.sub ?? info.email,
+        googleSubject: info.sub ?? '',
+        ...(identity.ok ? { identityUserId: identity.id } : { syncIssue: identity.issue }),
         email: info.email,
         name,
         ...(info.picture ? { picture: info.picture } : {}),
@@ -591,12 +734,29 @@ export function registerAuthRoutes(
   }
 
   app.get('/api/auth/me', async (req, res) => {
-    const user = verifySession(cfg.sessionSecret, readCookie(req, SESSION_COOKIE));
-    if (!user) {
+    const sessionUser = verifySession(cfg.sessionSecret, readCookie(req, SESSION_COOKIE));
+    if (!sessionUser) {
       res.status(401).json({ error: { code: 'UNAUTHENTICATED', message: 'chưa đăng nhập' } });
       return;
     }
-    res.json({ user: { ...user, roles: await rolesOf(user.sub) } });
+    const user = await reconcileIdentityUser(cfg, sessionUser);
+    const identityUserId = identityUserIdOf(user);
+    if (identityUserId !== identityUserIdOf(sessionUser) || user.syncIssue !== sessionUser.syncIssue) {
+      const refreshed = signSession(cfg.sessionSecret, user);
+      setCookie(res, cfg.appUrl, SESSION_COOKIE, refreshed, SESSION_TTL_S);
+      rememberMachineUser(user);
+    }
+    res.json({
+      user: {
+        googleSubject: googleSubjectOf(user),
+        email: user.email,
+        name: user.name,
+        ...(user.picture ? { picture: user.picture } : {}),
+        provider: user.provider,
+        roles: identityUserId ? await rolesOf(identityUserId) : [],
+      },
+      ...authSyncStateOf(user),
+    });
   });
 
   app.post('/api/auth/logout', (_req, res) => {

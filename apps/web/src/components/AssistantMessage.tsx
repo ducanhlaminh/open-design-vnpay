@@ -314,6 +314,10 @@ interface Props {
   // `skills_applied` event ids. Threaded down from ChatPane so the
   // chips can show real names instead of bare ids.
   skillsCatalog?: SkillSummary[];
+  // Reader-facing view: keep the prose, the questions and the produced
+  // files; drop everything that is the agent narrating its own plumbing.
+  // See `state/chatDisplayMode.ts`.
+  simpleMode?: boolean;
 }
 
 /**
@@ -345,6 +349,7 @@ export function AssistantMessage({
   suppressDirectionForms = false,
   hasDesignSystemContext = false,
   skillsCatalog,
+  simpleMode = false,
 }: Props) {
   const t = useT();
   const events = message.events ?? [];
@@ -366,6 +371,14 @@ export function AssistantMessage({
   const blocks = stripTodoToolGroups(
     suppressAskUserQuestionFallbackText(buildBlocks(events)),
   );
+  // Simple mode renders a subset, but `blocks` stays whole below: the
+  // produced-files inference reads the very tool calls it hides.
+  const visibleBlocks = simpleMode ? blocks.filter(isReaderFacingBlock) : blocks;
+  // Those hidden tool cards were also the "still working" signal, so the
+  // turn needs a plain-language pill standing in for them while it streams.
+  const hidesToolActivity =
+    simpleMode &&
+    blocks.some((b) => b.kind === "tool-group" && !isReaderFacingBlock(b));
   const fileOps = useMemo(() => deriveFileOps(events), [events]);
   const produced = message.producedFiles ?? [];
   const displayedProduced = useMemo(
@@ -513,7 +526,7 @@ export function AssistantMessage({
     <div className="msg assistant">
       <div className="role">
         <span>{roleLabel}</span>
-        {isSandboxed && (
+        {isSandboxed && !simpleMode && (
           <span
             className="sandboxed-badge"
             title={t("assistant.sandboxedTitle")}
@@ -524,20 +537,20 @@ export function AssistantMessage({
         <MessageTimestamp message={message} t={t} />
       </div>
       <div className="assistant-flow">
-        {skillsApplied && (
+        {skillsApplied && !simpleMode && (
           <SkillsAppliedCard
             skillId={skillsApplied.skillId}
             skillIds={skillsApplied.skillIds}
             catalog={skillsCatalog}
           />
         )}
-        {blocks.length === 0 && streaming ? (
+        {visibleBlocks.length === 0 && streaming ? (
           <WaitingPill
             startedAt={message.startedAt}
             latestStatus={latestStatusLabel(events)}
           />
         ) : null}
-        {fileOps.length > 0 ? (
+        {fileOps.length > 0 && !simpleMode ? (
           <FileOpsSummary
             entries={fileOps}
             streaming={streaming}
@@ -545,7 +558,7 @@ export function AssistantMessage({
             onRequestOpenFile={onRequestOpenFile}
           />
         ) : null}
-        {blocks.map((b, i) => {
+        {visibleBlocks.map((b, i) => {
           if (b.kind === "text")
             return (
               <ProseBlock
@@ -556,6 +569,7 @@ export function AssistantMessage({
                 nextUserContent={nextUserContent}
                 locallySubmitted={locallySubmitted}
                 suppressDirectionForms={suppressDirectionForms}
+                hideSystemReminders={simpleMode}
                 onSubmitForm={(formId, text) => {
                   setLocallySubmitted((prev) => {
                     const next = new Set(prev);
@@ -606,6 +620,12 @@ export function AssistantMessage({
             return <StatusPill key={i} label={b.label} detail={b.detail} />;
           return null;
         })}
+        {streaming && hidesToolActivity && visibleBlocks.length > 0 ? (
+          <WaitingPill
+            startedAt={message.startedAt}
+            latestStatus={latestStatusLabel(events)}
+          />
+        ) : null}
         {!streaming && displayedProduced.length > 0 && projectId ? (
           <ProducedFiles
             files={displayedProduced}
@@ -674,6 +694,7 @@ export function AssistantMessage({
                   hasUnfinishedTodos: unfinishedTodos.length > 0,
                   hasEmptyResponse,
                   forceVisible: true,
+                  hideStats: simpleMode,
                 }}
               />
             ) : (
@@ -684,6 +705,7 @@ export function AssistantMessage({
                 usage={usage}
                 hasUnfinishedTodos={unfinishedTodos.length > 0}
                 hasEmptyResponse={hasEmptyResponse}
+                hideStats={simpleMode}
               />
             )}
           </div>
@@ -801,6 +823,9 @@ interface AssistantFooterProps {
   hasEmptyResponse: boolean;
   feedbackControls?: ReactNode;
   forceVisible?: boolean;
+  // Simple mode keeps the human-readable state label ("Working" / "Done")
+  // but drops elapsed time, output tokens and cost.
+  hideStats?: boolean;
 }
 
 function AssistantFooter({
@@ -812,6 +837,7 @@ function AssistantFooter({
   hasEmptyResponse,
   feedbackControls,
   forceVisible = false,
+  hideStats = false,
 }: AssistantFooterProps) {
   const t = useT();
   const elapsed = useLiveElapsed(streaming, startedAt, endedAt, usage?.durationMs);
@@ -839,15 +865,17 @@ function AssistantFooter({
           ? t("assistant.unfinishedLabel")
           : t("assistant.doneLabel")}
       </span>
-      <span className="assistant-stats">
-        {elapsed}
-        {usage?.outputTokens != null
-          ? ` · ${t("assistant.outTokens", { n: usage.outputTokens })}`
-          : ""}
-        {typeof usage?.costUsd === "number"
-          ? ` · $${usage.costUsd.toFixed(4)}`
-          : ""}
-      </span>
+      {hideStats ? null : (
+        <span className="assistant-stats">
+          {elapsed}
+          {usage?.outputTokens != null
+            ? ` · ${t("assistant.outTokens", { n: usage.outputTokens })}`
+            : ""}
+          {typeof usage?.costUsd === "number"
+            ? ` · $${usage.costUsd.toFixed(4)}`
+            : ""}
+        </span>
+      )}
       {feedbackControls}
     </div>
   );
@@ -1654,6 +1682,7 @@ function ProseBlock({
   nextUserContent,
   locallySubmitted,
   suppressDirectionForms,
+  hideSystemReminders = false,
   onSubmitForm,
   onRequestOpenFile,
 }: {
@@ -1663,6 +1692,9 @@ function ProseBlock({
   nextUserContent?: string;
   locallySubmitted: Set<string>;
   suppressDirectionForms: boolean;
+  // `<system-reminder>` blocks the model echoed back are plumbing leaking
+  // into the transcript; simple mode drops them entirely.
+  hideSystemReminders?: boolean;
   onSubmitForm: (formId: string, text: string) => void;
   onRequestOpenFile?: (name: string) => void;
 }) {
@@ -1701,11 +1733,13 @@ function ProseBlock({
       }
       if (seg.text.trim().length === 0) return [];
       const sub = splitSystemReminders(seg.text);
-      return sub.map((s, j) => ({
-        key: `t-${idx}-${j}`,
-        kind: s.kind,
-        text: s.text,
-      }));
+      return sub
+        .filter((s) => !(hideSystemReminders && s.kind === "reminder"))
+        .map((s, j) => ({
+          key: `t-${idx}-${j}`,
+          kind: s.kind,
+          text: s.text,
+        }));
     }
   );
   if (renderable.length === 0) return null;
@@ -2134,15 +2168,33 @@ function stripTodoToolGroups(blocks: Block[]): Block[] {
 // assistant message. Claude tends to also write the same questions as
 // markdown text alongside the tool call. The card already shows the
 // content; the prose is hedge that duplicates and confuses the user.
+function isAskUserQuestionToolName(name: string): boolean {
+  return name === "AskUserQuestion" || name === "ask_user_question";
+}
+
+/**
+ * Blocks a non-technical reader is actually here for: the agent's prose,
+ * the questions it needs answered, and the plugins it offers to install.
+ * Everything else in the flow — reasoning, status pills, file reads, edits,
+ * shell output — is the agent narrating its own plumbing, which simple mode
+ * drops. A tool-group survives only when it carries an interactive card the
+ * user must act on, otherwise the run would silently stall waiting for an
+ * answer nobody can see.
+ */
+function isReaderFacingBlock(block: Block): boolean {
+  if (block.kind === "text" || block.kind === "plugin-candidate") return true;
+  if (block.kind === "tool-group")
+    return block.items.some((it) => isAskUserQuestionToolName(it.use.name));
+  return false;
+}
+
 function suppressAskUserQuestionFallbackText(blocks: Block[]): Block[] {
   let seenAskUserQuestion = false;
   const filtered: Block[] = [];
   for (const block of blocks) {
     if (block.kind === "tool-group") {
-      const hasAuq = block.items.some(
-        (it) =>
-          it.use.name === "AskUserQuestion" ||
-          it.use.name === "ask_user_question",
+      const hasAuq = block.items.some((it) =>
+        isAskUserQuestionToolName(it.use.name),
       );
       if (hasAuq) seenAskUserQuestion = true;
       filtered.push(block);

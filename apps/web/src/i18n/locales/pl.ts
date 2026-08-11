@@ -225,6 +225,7 @@ export const pl: Dict = {
   'settings.agentInstallGroup': 'Dostępne do instalacji ({count})',
   'settings.agentAuthRequired': 'Wymagane uwierzytelnienie',
   'settings.agentAuthUnknown': 'Stan uwierzytelnienia nieznany',
+  'settings.agentAuthOk': 'Zalogowano',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'Szybkie wypełnienie dostawcy',
   'settings.customProvider': 'Niestandardowy dostawca',
@@ -354,6 +355,7 @@ export const pl: Dict = {
   'entry.useEverywhereAria': 'Otwórz przewodnik „Używaj wszędzie” (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': 'Nowy projekt',
   'entry.navHome': 'Strona główna',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'Projekty',
   'entry.navDesignSystems': 'Systemy projektowe',
   'entry.helpAria': 'Pomoc',
@@ -696,9 +698,13 @@ export const pl: Dict = {
   'ds.categoryAll': 'Wszystkie',
   'ds.categoryUncategorized': 'Niekategoryzowane',
   'ds.showcase': 'Galeria',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Tokeny',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'Ładowanie DESIGN.md…',
+  'ds.reactStats': '{components} komponentów · {icons} ikon',
+  'ds.reactDetailToggle': 'Biblioteka komponentów',
+  'ds.reactDetailLoading': 'Ładowanie biblioteki komponentów…',
 
   'avatar.title': 'Konto i ustawienia',
   'avatar.localCli': 'Lokalne CLI',
@@ -775,6 +781,9 @@ export const pl: Dict = {
   'chat.inspect.commentHint': 'Click an element in the canvas to add a comment.',
   'chat.conversationsTitle': 'Rozmowy',
   'chat.conversationsAria': 'Historia rozmów',
+  'chat.displayModeAria': 'Pokaż lub ukryj szczegóły techniczne',
+  'chat.displayModeSimpleTitle': 'Widok uproszczony — kroki techniczne są ukryte. Kliknij, aby je pokazać.',
+  'chat.displayModeFullTitle': 'Widok szczegółowy — kroki techniczne są widoczne. Kliknij, aby uprościć.',
   'chat.newConversation': 'Nowa rozmowa',
   'chat.newConversationsTitle': 'Nowa rozmowa',
   'chat.conversationsHeading': 'Rozmowy',
@@ -1442,6 +1451,11 @@ export const pl: Dict = {
   'settings.designSystemsSource': 'Źródło',
   'settings.designSystemsSourceLocal': 'Lokalnie',
   'settings.designSystemsSourceGithub': 'GitHub',
+  'settings.designSystemsSourceFigma': 'Figma IR',
+  'settings.designSystemsFigmaFiles': 'Pliki Figma IR',
+  'settings.designSystemsFigmaFilesHelp': 'Wybierz eksporty .ir.json i/lub pakiet .zip wtyczki Fig Pipeline. Kolejność scalania wynika z nazw plików — prefiks 01-, 02-, …, plik foundation (tokeny) jako pierwszy.',
+  'settings.designSystemsImportFigma': 'Importuj Figma IR',
+  'settings.designSystemsImportWarnings': 'Ostrzeżenia importu: {count}',
   'settings.designSystemsStructure': 'Struktura',
   'settings.designSystemsModeHybrid': 'Hybrydowa',
   'settings.designSystemsModeNormalized': 'Znormalizowana',
@@ -1720,4 +1734,37 @@ export const pl: Dict = {
   'settings.sandboxMissing': 'brak',
   'settings.sandboxRunCmd': 'uruchom: {cmd}',
   'settings.sandboxDaemonOffline': 'Daemon offline — status sandboksa niedostępny.',
+  'settings.sandboxClaudeTitle': 'Claude runtime',
+  'settings.sandboxClaudeHint': 'Claude keeps the existing account switcher and usage controls.',
+  'settings.sandboxCodexTitle': 'Codex runtime',
+  'settings.sandboxCodexHint': 'Codex uses browser-based device code login and never displays tokens.',
+  'settings.sandboxRuntimeReady': 'Ready',
+  'settings.sandboxRuntimeNotReady': 'Not ready',
+  'settings.sandboxCodexLoginStart': 'Start login',
+  'settings.sandboxCodexLoginDisconnect': 'Disconnect',
+
+  // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
+  'pipelines.runAllClear.title': 'Old results will be cleared',
+  'pipelines.runAllClear.body': 'Running now will delete the existing results of: {stages}.',
+  'pipelines.runAllClear.historyNote':
+    'The current results are saved to project history first, so you can restore them afterward.',
+  'pipelines.runAllClear.confirm': 'Run and clear old results',
+  'pipelines.runAllClear.staleOnlyTitle': 'Some inputs are from outside this run',
+  'pipelines.runAllClear.confirmContinue': 'Run',
+  'pipelines.runAllClear.staleSectionTitle': 'Using input from outside this run',
+  'pipelines.runAllClear.staleLine': "{stage} will use {source}'s result from {time}.",
+  'pipelines.runAllClear.staleNote':
+    'Each source stage above is outside this run, so its result stays exactly as it is — the stage that depends on it will use that same version.',
+
+  // Pipelines — dependency gate is now a SUGGESTION, not a lock (spec
+  // g2-ui-suggestion-not-gate). Every stage is runnable once step 1 (docs
+  // ingest) has run; these strings replace the old "must finish X first"
+  // blocking copy with informational notes that never disable Save/Run.
+  'pipelines.runAllPicker.ingestRequired': '{stage} (step 1) must finish first — the steps below need ingested documents to run.',
+  'pipelines.runAllPicker.softNote': "Will run with current data; {stages} won't run this time.",
+  'pipelines.runAllPicker.hint':
+    "Tick exactly the steps you want to run — ticking one won't drag in others. A step whose dependency isn't ticked and hasn't finished yet runs with whatever data already exists (see the note under it).",
+  'pipelines.rail.usuallyAfter': 'Usually runs after {stages}',
+  'pipelines.rail.needsDocs': 'Needs {stage} first — no documents ingested yet',
+  'pipelines.rail.staleNeedsDocs': 'This result is from old data — rerun {stage} to sync',
 };

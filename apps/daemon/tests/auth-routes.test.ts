@@ -8,11 +8,14 @@ import type { Server } from 'node:http';
 
 import {
   authConfigFromEnv,
+  authSyncStateOf,
   claimLoginRequest,
   createLoginRequest,
   emailAllowed,
   fulfillLoginRequest,
   getMachineUser,
+  identityUserIdOf,
+  isIdentityUuid,
   isAuthEnabled,
   isBrowserRequest,
   registerAuthRoutes,
@@ -37,6 +40,7 @@ const cfg = (over: Partial<AuthConfig> = {}): AuthConfig => ({
   // Port 0 → the fixed-callback listener binds an ephemeral port in tests.
   callbackOrigin: 'http://127.0.0.1:0',
   identityUrl: '',
+  identityServiceToken: 'identity-service-test-token',
   domainLock: false,
   allowedEmails: [],
   allowedDomains: [],
@@ -63,6 +67,22 @@ describe('session token', () => {
   it('rejects expired sessions', () => {
     const token = signSession('s3cret', USER, Date.now() - 8 * 24 * 60 * 60 * 1000);
     expect(verifySession('s3cret', token)).toBeNull();
+  });
+});
+
+describe('identity sync state', () => {
+  const uuid = '65edc73c-56a4-4c48-8651-d7cb07a5e10d';
+
+  it('only accepts canonical UUIDs for downstream identity calls', () => {
+    expect(isIdentityUuid(uuid)).toBe(true);
+    expect(isIdentityUuid('google:123')).toBe(false);
+    expect(identityUserIdOf({ ...USER, sub: 'google:123' })).toBeNull();
+    expect(identityUserIdOf({ ...USER, identityUserId: uuid })).toBe(uuid);
+    expect(authSyncStateOf({ ...USER, identityUserId: uuid })).toEqual({
+      syncReady: true,
+      identityUserId: uuid,
+      syncIssue: null,
+    });
   });
 });
 
@@ -240,8 +260,102 @@ describe('gate middleware (integration)', () => {
         headers: { cookie: `od_session=${encodeURIComponent(token)}` },
       });
       expect(me.status).toBe(200);
-      expect(await me.json()).toMatchObject({ user: { email: 'dev@vnpay.vn' } });
+      expect(await me.json()).toMatchObject({
+        user: { email: 'dev@vnpay.vn', googleSubject: 'usr_1' },
+        syncReady: false,
+        identityUserId: null,
+        syncIssue: 'identity_not_configured',
+      });
     });
+  });
+
+  it('/me reconciles a degraded Google session to an identity UUID by email', async () => {
+    const identityUuid = '65edc73c-56a4-4c48-8651-d7cb07a5e10d';
+    const identity = express();
+    identity.use(express.json());
+    identity.post('/api/v1/auth/external/resolve', (req, res) => {
+      expect(req.headers['x-user-id']).toBe('open-design');
+      expect(req.headers.authorization).toBe('Bearer identity-service-test-token');
+      expect(req.body).toMatchObject({ provider: 'google', externalId: 'google-sub', email: USER.email });
+      res.json({ user: { id: identityUuid, email: USER.email, name: USER.name } });
+    });
+    identity.get('/api/v1/admin/users/:id/roles', (_req, res) => res.json({ roles: [] }));
+    const identityServer: Server = await new Promise((resolve) => {
+      const s = identity.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    try {
+      const identityPort = (identityServer.address() as AddressInfo).port;
+      await withApp(cfg({ identityUrl: `http://127.0.0.1:${identityPort}` }), async (base) => {
+        const degraded: AuthSessionUser = { ...USER, sub: 'google-sub', googleSubject: 'google-sub' };
+        const token = signSession('s3cret', degraded);
+        const me = await fetch(`${base}/api/auth/me`, {
+          headers: { cookie: `od_session=${encodeURIComponent(token)}` },
+        });
+        expect(me.status).toBe(200);
+        expect(await me.json()).toEqual({
+          user: {
+            googleSubject: 'google-sub',
+            email: USER.email,
+            name: USER.name,
+            provider: 'google',
+            roles: [],
+          },
+          syncReady: true,
+          identityUserId: identityUuid,
+          syncIssue: null,
+        });
+        expect(me.headers.get('set-cookie')).toContain('od_session=');
+      });
+    } finally {
+      await new Promise((resolve) => identityServer.close(resolve));
+    }
+  });
+
+  it('keeps a Google session local-only while identity is down, then reconciles it when identity recovers', async () => {
+    const identityUuid = '65edc73c-56a4-4c48-8651-d7cb07a5e10d';
+    let available = false;
+    const identity = express();
+    identity.use(express.json());
+    identity.post('/api/v1/auth/external/resolve', (_req, res) => {
+      if (!available) return res.status(503).json({ error: 'temporarily unavailable' });
+      res.json({ user: { id: identityUuid } });
+    });
+    // Older deployment fallback endpoints also stay unavailable during the
+    // outage; once recovery begins the atomic exchange succeeds first.
+    identity.get('/api/v1/admin/users', (_req, res) => res.status(503).json({}));
+    identity.post('/api/v1/admin/users', (_req, res) => res.status(503).json({}));
+    identity.get('/api/v1/admin/users/:id/roles', (_req, res) => res.json({ roles: [] }));
+    const identityServer: Server = await new Promise((resolve) => {
+      const s = identity.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    try {
+      const identityPort = (identityServer.address() as AddressInfo).port;
+      await withApp(cfg({ identityUrl: `http://127.0.0.1:${identityPort}` }), async (base) => {
+        const token = signSession('s3cret', { ...USER, sub: 'google-sub', googleSubject: 'google-sub' });
+        const first = await fetch(`${base}/api/auth/me`, {
+          headers: { cookie: `od_session=${encodeURIComponent(token)}` },
+        });
+        expect(first.status).toBe(200);
+        expect(await first.json()).toMatchObject({
+          syncReady: false,
+          identityUserId: null,
+          syncIssue: 'identity_unavailable',
+        });
+
+        available = true;
+        const second = await fetch(`${base}/api/auth/me`, {
+          headers: { cookie: `od_session=${encodeURIComponent(token)}` },
+        });
+        expect(second.status).toBe(200);
+        expect(await second.json()).toMatchObject({
+          syncReady: true,
+          identityUserId: identityUuid,
+          syncIssue: null,
+        });
+      });
+    } finally {
+      await new Promise((resolve) => identityServer.close(resolve));
+    }
   });
 
   it('iframe-safe read-only GETs stay open: sandboxed previews never send cookies (issue: 401 on dist/screen assets)', async () => {

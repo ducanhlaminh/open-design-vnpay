@@ -13,8 +13,10 @@ export type EntryHomeView =
   | 'home'
   | 'onboarding'
   | 'projects'
+  | 'workspaces'
   | 'tasks'
   | 'pipelines'
+  | 'feedback'
   | 'plugins'
   | 'design-systems'
   | 'integrations';
@@ -22,7 +24,12 @@ export type EntryHomeView =
 export type Route =
   | { kind: 'home'; view: EntryHomeView }
   | { kind: 'design-system-create' }
-  | { kind: 'design-system-detail'; designSystemId: string }
+  | { kind: 'design-system-detail'; designSystemId: string; section?: 'criteria' | 'figma-update' }
+  | {
+      kind: 'design-system-criteria-workspace';
+      designSystemId: string;
+      criteriaKind: 'components' | 'rules';
+    }
   | {
       kind: 'project';
       projectId: string;
@@ -41,7 +48,20 @@ export type Route =
   // Full-page "Quick result" for a pipeline stage. Replaces the old xl modal
   // so a finished stage's output preview gets the whole viewport. Rendered by
   // PipelinesView (which owns the loaded pipeline list) under the pipelines shell.
-  | { kind: 'pipeline-result'; projectId: string; pipelineId: string };
+  | { kind: 'pipeline-result'; projectId: string; pipelineId: string }
+  // Pipelines drill-down: App → Feature → Pipeline → Chạy. Mỗi cấp một màn,
+  // một việc. Cấp đang xem sống trong URL (không phải useState) nên F5 không
+  // mất chỗ và link dán được cho đồng nghiệp.
+  //
+  // Segment literal `app/` tách hẳn nhánh này khỏi route Quick result cũ
+  // (`/pipelines/:projectId/result/:pipelineId`) — thông báo và link cũ vẫn
+  // phải mở được, nên nhánh đó được kiểm TRƯỚC trong parseRoute.
+  | { kind: 'pipelines-app'; appId: string }
+  | { kind: 'pipelines-feature'; appId: string; featureId: string }
+  | { kind: 'pipelines-run'; appId: string; featureId: string; pipelineId: string };
+
+/** Rổ chứa feature chưa gắn app nào (mirror pipeline-studio's bucket id). */
+export const UNASSIGNED_APP = '__unassigned';
 
 export function parseRoute(pathname: string): Route {
   const parts = pathname.replace(/\/+$/, '').split('/').filter(Boolean);
@@ -49,10 +69,10 @@ export function parseRoute(pathname: string): Route {
   if (parts[0] === 'onboarding') {
     return { kind: 'home', view: 'onboarding' };
   }
-  if (parts[0] === 'projects') {
+  if (parts[0] === 'workspaces' || parts[0] === 'projects') {
     if (parts[1]) {
       const projectId = decodeURIComponent(parts[1]);
-      // /projects/:id/conversations/:cid[/files/...]
+      // /workspaces/:id/conversations/:cid[/files/...]
       if (parts[2] === 'conversations' && parts[3]) {
         const conversationId = decodeURIComponent(parts[3]);
         if (parts[4] === 'files' && parts[5]) {
@@ -65,7 +85,7 @@ export function parseRoute(pathname: string): Route {
         }
         return { kind: 'project', projectId, conversationId, fileName: null };
       }
-      // /projects/:id/files/...
+      // /workspaces/:id/files/...
       if (parts[2] === 'files' && parts[3]) {
         return {
           kind: 'project',
@@ -76,28 +96,69 @@ export function parseRoute(pathname: string): Route {
       }
       return { kind: 'project', projectId, conversationId: null, fileName: null };
     }
-    return { kind: 'home', view: 'projects' };
+    return { kind: 'home', view: 'workspaces' };
   }
   if (parts[0] === 'design-systems') {
     if (parts[1] === 'create') {
       return { kind: 'design-system-create' };
     }
     if (parts[1]) {
-      return { kind: 'design-system-detail', designSystemId: decodeURIComponent(parts[1]) };
+      if (
+        parts[2] === 'criteria'
+        && (parts[3] === 'components' || parts[3] === 'rules')
+        && parts[4] === 'workspace'
+      ) {
+        return {
+          kind: 'design-system-criteria-workspace',
+          designSystemId: decodeURIComponent(parts[1]),
+          criteriaKind: parts[3],
+        };
+      }
+      return {
+        kind: 'design-system-detail',
+        designSystemId: decodeURIComponent(parts[1]),
+        ...(parts[2] === 'criteria' ? { section: 'criteria' as const } : {}),
+        ...(parts[2] === 'figma-update' ? { section: 'figma-update' as const } : {}),
+      };
     }
     return { kind: 'home', view: 'design-systems' };
   }
   if (parts[0] === 'automations' || parts[0] === 'tasks') {
     return { kind: 'home', view: 'tasks' };
   }
+  // Trang tổng hợp phản hồi — NGANG CẤP với /pipelines (một mục nav riêng),
+  // không lồng trong dự án: người xem thống kê chọn dự án ngay trong trang
+  // (?project=<id>, component tự đọc/ghi query).
+  if (parts[0] === 'feedback') {
+    return { kind: 'home', view: 'feedback' };
+  }
   if (parts[0] === 'pipelines') {
     // /pipelines/:projectId/result/:pipelineId → full-page Quick result.
+    // Kiểm TRƯỚC nhánh drill-down: link cũ trong thông báo phải mở được, kể cả
+    // khi một dự án tình cờ tên là "app".
     if (parts[1] && parts[2] === 'result' && parts[3]) {
       return {
         kind: 'pipeline-result',
         projectId: decodeURIComponent(parts[1]),
         pipelineId: decodeURIComponent(parts[3]),
       };
+    }
+    // /pipelines/app/:appId[/:featureId[/:pipelineId]] → drill-down.
+    if (parts[1] === 'app' && parts[2]) {
+      const appId = decodeURIComponent(parts[2]);
+      if (parts[3]) {
+        const featureId = decodeURIComponent(parts[3]);
+        if (parts[4]) {
+          return {
+            kind: 'pipelines-run',
+            appId,
+            featureId,
+            pipelineId: decodeURIComponent(parts[4]),
+          };
+        }
+        return { kind: 'pipelines-feature', appId, featureId };
+      }
+      return { kind: 'pipelines-app', appId };
     }
     return { kind: 'home', view: 'pipelines' };
   }
@@ -124,9 +185,11 @@ export function parseRoute(pathname: string): Route {
 export function buildPath(route: Route): string {
   if (route.kind === 'home') {
     if (route.view === 'onboarding') return '/onboarding';
-    if (route.view === 'projects') return '/projects';
+    if (route.view === 'projects') return '/workspaces';
+    if (route.view === 'workspaces') return '/workspaces';
     if (route.view === 'tasks') return '/automations';
     if (route.view === 'pipelines') return '/pipelines';
+    if (route.view === 'feedback') return '/feedback';
     if (route.view === 'plugins') return '/plugins';
     if (route.view === 'design-systems') return '/design-systems';
     if (route.view === 'integrations') return '/integrations';
@@ -135,11 +198,29 @@ export function buildPath(route: Route): string {
   if (route.kind === 'pipeline-result') {
     return `/pipelines/${encodeURIComponent(route.projectId)}/result/${encodeURIComponent(route.pipelineId)}`;
   }
+  if (route.kind === 'pipelines-app') {
+    return `/pipelines/app/${encodeURIComponent(route.appId)}`;
+  }
+  if (route.kind === 'pipelines-feature') {
+    return `/pipelines/app/${encodeURIComponent(route.appId)}/${encodeURIComponent(route.featureId)}`;
+  }
+  if (route.kind === 'pipelines-run') {
+    return (
+      `/pipelines/app/${encodeURIComponent(route.appId)}` +
+      `/${encodeURIComponent(route.featureId)}/${encodeURIComponent(route.pipelineId)}`
+    );
+  }
   if (route.kind === 'marketplace') return '/marketplace';
   if (route.kind === 'marketplace-detail') return `/marketplace/${encodeURIComponent(route.pluginId)}`;
   if (route.kind === 'design-system-create') return '/design-systems/create';
+  if (route.kind === 'design-system-criteria-workspace') {
+    return (
+      `/design-systems/${encodeURIComponent(route.designSystemId)}`
+      + `/criteria/${route.criteriaKind}/workspace`
+    );
+  }
   if (route.kind === 'design-system-detail') {
-    return `/design-systems/${encodeURIComponent(route.designSystemId)}`;
+    return `/design-systems/${encodeURIComponent(route.designSystemId)}${route.section === 'criteria' ? '/criteria' : route.section === 'figma-update' ? '/figma-update' : ''}`;
   }
   const id = encodeURIComponent(route.projectId);
   const file = route.fileName
@@ -148,10 +229,10 @@ export function buildPath(route: Route): string {
   if (route.conversationId) {
     const cid = encodeURIComponent(route.conversationId);
     return file
-      ? `/projects/${id}/conversations/${cid}/files/${file}`
-      : `/projects/${id}/conversations/${cid}`;
+      ? `/workspaces/${id}/conversations/${cid}/files/${file}`
+      : `/workspaces/${id}/conversations/${cid}`;
   }
-  return file ? `/projects/${id}/files/${file}` : `/projects/${id}`;
+  return file ? `/workspaces/${id}/files/${file}` : `/workspaces/${id}`;
 }
 
 // Centralized navigation. Components call this instead of mutating

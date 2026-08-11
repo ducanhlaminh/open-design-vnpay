@@ -1,8 +1,12 @@
 // Pipeline registry — the static docs→UI DAG. Each pipeline is a fixed skill
 // whose SKILL.md body becomes the run's system prompt (via composeSystemPrompt's
 // "## Active skill" block). There is no scheduler/executor: pipelines are run
-// manually (button / `od pipeline run`) and gated by dependency — a pipeline is
-// "active" only once every pipeline it dependsOn has succeeded. Mutable run
+// manually (button / `od pipeline run`). `dependsOn` still drives run ORDER
+// (run-all sequencing) and CASCADE clearing (`stageRegenSet`), but it no
+// longer GATES a stage's `active` flag — 2026-08 product decision (docs-only
+// gate, see `computeActive`): the only prerequisite left is "does this
+// workflow's ingest stage have a document yet", read straight off the
+// project's files, not off a chain of per-stage run statuses. Mutable run
 // state per project lives in projects.metadata_json (see db.ts helpers); this
 // module is pure registry + derivation.
 
@@ -55,6 +59,11 @@ export interface PipelineDef {
    */
   acceptsDesignSystem?: boolean;
   /**
+   * When true, this stage takes review criteria from a design system. The
+   * daemon copies criteria files into the workflow before the review runs.
+   */
+  usesDesignSystemCriteria?: boolean;
+  /**
    * When true, this stage decides the target platform of the generated screens
    * — the UX Spec stage, whose per-screen `layout` field (`mobile` | `web`)
    * downstream UI-Spec terminals follow. The UI shows a Mobile/Website picker
@@ -62,6 +71,16 @@ export interface PipelineDef {
    * daemon folds it into the kickoff. No choice → the skill defaults to mobile.
    */
   acceptsPlatform?: boolean;
+  /**
+   * When true, this stage accepts a MANUAL file upload from the UI (a
+   * secondary "Tải file lên" button, separate from Run) instead of only ever
+   * receiving input from an agent run. The daemon does not gate anything on
+   * this flag itself — it is purely a client-side affordance flag; the actual
+   * write goes through the normal `POST /api/projects/:id/files` route. Today
+   * only `dr-docs` sets it: a user drops in a `.md` doc directly, or a
+   * `criteria/` file the dr-review stage should judge against.
+   */
+  acceptsUpload?: boolean;
   /**
    * When true, this stage's outputs stay LOCAL — they are never pushed to the
    * media file store nor graph-converted on upload, so they do NOT round-trip to
@@ -129,7 +148,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // stage-scoped pull, so leaving it out hid them from the rail AND kept them
   // off the media store, which left a second machine's ux run with none of the
   // domain background it is told to read.
-  { id: 'docs',             name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
+  { id: 'docs',             name: 'Tài liệu (nạp)',                skillId: 'jira-ingest',           dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
   // Customer Journey built straight from the ingested docs MD (no feature-analysis
   // upstream). Each STAGE carries `sources[]` — the key text excerpts from the
   // source MD — which the SpecPreview surfaces under each stage card.
@@ -170,7 +189,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // File-only deliverables, synced like other outputs.
   // Depends on ux-research (not cj directly): the spec must be authored against
   // the researched criteria.
-  { id: 'ux',               name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['ux-research'], outputs: ['-ux-spec.json', 'ux/', 'wireframes/', 'flows/'], acceptsPlatform: true },
+  { id: 'ux',               name: 'UX Spec',                   skillId: 'ux-spec',               dependsOn: ['ux-research'], outputs: ['-ux-spec.json', 'ux/', 'wireframes/', 'flows/'], acceptsPlatform: true, usesDesignSystemCriteria: true },
   // ── GATE 1: UX Heuristic Review (Nielsen + Norman, judged on the wireframe) ─
   // Shift-left quality gate BETWEEN the UX Spec and the UI-Spec terminals: a
   // separate run (not the ux-spec generator grading its own work) reads the
@@ -180,7 +199,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // built — one gate protects both html + react. FILE-ONLY (convertToGraph
   // unset): the report is a local deliverable synced to the media store, never
   // projected into KGS. WCAG pixel gates are judged later, post-render.
-  { id: 'ux-review',        name: 'UX Heuristic Review',       skillId: 'heuristic-eval',        dependsOn: ['ux'], outputs: ['heuristic-review/'], skippedInLeanRun: true },
+  { id: 'ux-review',        name: 'UX Heuristic Review',       skillId: 'heuristic-eval',        dependsOn: ['ux'], outputs: ['heuristic-review/'], skippedInLeanRun: true, usesDesignSystemCriteria: true },
   // ── Terminal option A: UI-Spec (HTML prototype) ────────────────────────────
   // ui-html also activates `frontend-design` (UI/UX craft) so the agent designs
   // boldly + well, not just structurally. The prototype skill additionally opts
@@ -195,7 +214,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // deterministic and the two terminals are OPTIONAL — a shared post-terminal
   // stage couldn't gate "either one". The report lives inside prototype/ so it
   // syncs + attributes to this stage with no extra output pattern.
-  { id: 'ui-html',          name: 'UI-Spec (HTML)',            skillId: 'html-interactive-prototype', extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill', 'wcag-lint'], dependsOn: ['ux-review'], outputs: ['prototype/'], acceptsDesignSystem: true },
+  { id: 'ui-html',          name: 'UI-Spec (HTML)',            skillId: 'html-interactive-prototype', extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill', 'wcag-lint'], dependsOn: ['ux-review'], outputs: ['prototype/'], acceptsDesignSystem: true, usesDesignSystemCriteria: true },
 
   // ── Terminal option B: UI-Spec (React app) ─────────────────────────────────
   // The `ui-react` skill emits a REAL, buildable Vite + React 19 + Tailwind v4
@@ -218,7 +237,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // GATE 2 (post-render WCAG) also rides along here as `wcag-lint`: after the
   // Vite build, the agent lints ./react/dist and writes ./react/a11y-report.json
   // (react/a11y-report.json is not in syncExclude, so it round-trips).
-  { id: 'ui-react',         name: 'UI-Spec (React)',           skillId: 'ui-react',              extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill', 'wcag-lint'], dependsOn: ['ux-review'], outputs: ['react/'], acceptsDesignSystem: true,
+  { id: 'ui-react',         name: 'UI-Spec (React)',           skillId: 'ui-react',              extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill', 'wcag-lint'], dependsOn: ['ux-review'], outputs: ['react/'], acceptsDesignSystem: true, usesDesignSystemCriteria: true,
     syncExclude: [
       'react/screens/',
       'react/package.json',
@@ -228,6 +247,29 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
       'react/index.html',
       'react/src/components/ui/',
       'react/src/lib/',
+      '*.artifact.json',
+    ] },
+
+  // ── Terminal option C: UI-Spec (React DS) ──────────────────────────────────
+  // Like ui-react, but the component vocabulary IS the imported design system:
+  // before the run the daemon stages the selected system's compiled react
+  // bundle (a Figma IR import — components/ui + lib/runtime + tk-* token
+  // classes) into <workflow>/react-ds/src/ds/ (Phase C of the design-system
+  // import spec), and the skill composes screens exclusively from it — no
+  // Tailwind, no shadcn. Requires a design system that ships a react bundle
+  // (hasReactBundle); the daemon refuses the run otherwise. The staged src/ds/
+  // and public/ (icon SVGs) are excluded from sync — they are re-staged from
+  // the design system on every run, and the assets tree is far too heavy for
+  // the media store.
+  { id: 'ui-react-ds',      name: 'UI-Spec (React DS)',        skillId: 'ui-react-ds',           extraSkillIds: ['frontend-design', 'web-design-guidelines', 'taste-skill', 'wcag-lint'], dependsOn: ['ux-review'], outputs: ['react-ds/'], acceptsDesignSystem: true, usesDesignSystemCriteria: true,
+    syncExclude: [
+      'react-ds/screens/',
+      'react-ds/package.json',
+      'react-ds/vite.config.ts',
+      'react-ds/tsconfig.json',
+      'react-ds/index.html',
+      'react-ds/src/ds/',
+      'react-ds/public/',
       '*.artifact.json',
     ] },
 
@@ -241,21 +283,59 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // field here in sync with the `docs`/`cj`/`ux-research` defs above by hand;
   // there is no shared base def to factor out because `PipelineDef.dependsOn`
   // and `outputs` must each point at THIS workflow's own sibling ids.
-  { id: 'prd-docs',         name: 'Docs → Markdown (JIRA)',    skillId: 'jira-ingest',           dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
+  { id: 'prd-docs',         name: 'Tài liệu (nạp)',                skillId: 'jira-ingest',           dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
   // NO skippedInLeanRun anywhere in docs-to-prd: lean is a docs-to-ui-only
-  // concept. The journey + research here are the review's evidence base — a
-  // mockup review without them is not a cheaper review, it is a different and
-  // weaker product. The Run-all lean toggle is therefore inert for this
+  // concept. The journey + research here are the requirements review's evidence
+  // base. The Run-all lean toggle is therefore inert for this
   // workflow (and the UI hides it).
   { id: 'prd-cj',           name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['prd-docs'],    outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
   { id: 'prd-ux-research',  name: 'UX Research',               skillId: 'ux-research',           dependsOn: ['prd-cj'],      outputs: ['ux-research/'] },
-  // PRD Mockup Review: reviews the MOCKUP IMAGES embedded in the source
-  // Confluence docs (not a generated wireframe like ux-review) against the
-  // surrounding text + customer journey + UX research criteria: does each
-  // mockup actually deliver the feature its own doc text describes. FILE-ONLY,
-  // one report keyed by image (not by screen — there is no UX Spec here, this
-  // workflow never reaches `ux`/`ux-review`).
-  { id: 'prd-review',       name: 'PRD Mockup Review',         skillId: 'docs-mockup-review',    dependsOn: ['prd-ux-research'], outputs: ['review/'] },
+  // PRD Requirements Review: assesses the written URD/PRD against its Customer
+  // Journey + UX research criteria. Embedded mockups are illustrative only:
+  // they must never become visual direction, a wireframe source, or a basis for
+  // adding/removing a textual requirement. The current report remains keyed by
+  // attachment for preview compatibility, but its conclusions are text-first.
+  { id: 'prd-review',       name: 'PRD Requirements Review',  skillId: 'docs-mockup-review',    dependsOn: ['prd-ux-research'], outputs: ['review/'], usesDesignSystemCriteria: true },
+
+  // ── `docs-review` workflow — fully INDEPENDENT of docs-to-ui AND docs-to-prd ─
+  // Three stages: ingest (same jira-ingest skill, its own dr-docs id/folder —
+  // the independence rule above applies here too, so a docs-to-ui or
+  // docs-to-prd ingest never counts as "already done" for this workflow), then
+  // a review stage that clones every ingested page into `review/docs/` and edits
+  // the CLONE against an optional `criteria/` folder the user drops in via
+  // `od files upload --as docs-review/criteria/<name>.md` (criteria/ is not a
+  // stage output of anything — see stagesForOutput — so it survives every
+  // re-run of dr-review untouched). skillId MUST stay 'jira-ingest' for
+  // dr-docs: runDocsDeterministic (server.ts) only takes the tool-only
+  // Confluence path for that exact skillId.
+  { id: 'dr-docs',          name: 'Tài liệu (nạp)',                   skillId: 'jira-ingest',           dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL', acceptsUpload: true },
+  // Bước GIỮA: đối chiếu component. Đọc `docs/` (bản GỐC, chưa review) và với
+  // MỖI màn hình trong tài liệu, liệt kê phần tử nào dùng component nào rồi
+  // đối chiếu với danh mục hợp lệ `criteria/components.md`, ghi ra
+  // `comp/<page-slug>.components.json`.
+  //
+  // Vì sao tách thành một bước riêng thay vì để dr-review tự làm: component
+  // được map một lần từ khai báo chữ trong URD/PRD tới danh mục hợp lệ. Ảnh
+  // mockup chỉ là minh hoạ, không được dùng để suy component/variant/layout;
+  // nhờ vậy các section không thể tạo kết luận mâu thuẫn từ cùng một ảnh.
+  //
+  // `comp/` nằm ở GỐC workflow-dir, KHÔNG lồng trong `review/` — cùng lý do đã
+  // ghi cho `flows/` bên dưới: lồng vào đó thì mỗi lần re-run dr-review sẽ xoá
+  // sạch kết quả, và stagesForOutput sẽ chấm hai stage cho cùng một file.
+  { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-component-audit',  dependsOn: ['dr-docs'],          outputs: ['comp/'], usesDesignSystemCriteria: true },
+  // Rút SƠ ĐỒ LUỒNG MÀN HÌNH từ tài liệu GỐC (`docs/`): mỗi luồng nghiệp vụ
+  // thành một `flows/<FLOW-ID>.flowchart.json` (node start/end/action/decision
+  // + edge có nhãn) để viewer vẽ lại. Chạy TRƯỚC dr-review — review là bước
+  // chốt cuối của workflow, soát cả tài liệu lẫn sơ đồ đã rút.
+  // `flows/` nằm ở GỐC workflow-dir, KHÔNG lồng trong `review/`: `review/` là
+  // output của dr-review, nên lồng vào đó thì (a) mỗi lần re-run dr-review sẽ
+  // xoá sạch sơ đồ vừa dựng và (b) stagesForOutput chấm CẢ HAI stage cho cùng
+  // một file, làm dr-review hiện xanh chỉ vì dr-flow đã chạy. Trùng tên với
+  // `flows/` của stage `ux` bên docs-to-ui là vô hại: attribution có namespace
+  // theo workflow nên `docs-review/flows/…` chỉ khớp stage của workflow này.
+  { id: 'dr-flow',          name: 'Sơ đồ luồng màn hình',      skillId: 'docs-flow-extract',     dependsOn: ['dr-docs'],          outputs: ['flows/'] },
+  { id: 'dr-review',        name: 'Review tài liệu',           skillId: 'docs-spec-review',      dependsOn: ['dr-docs', 'dr-comp', 'dr-flow'], outputs: ['review/'], usesDesignSystemCriteria: true },
+  { id: 'dr-confirm',       name: 'Xác nhận hoàn tất',         skillId: 'docs-review-confirm',   dependsOn: ['dr-review'], outputs: ['confirmation/'] },
 ];
 
 // Named docs→output flows. Each is an ordered subset of PIPELINE_DEFS. The
@@ -271,22 +351,43 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
 // output reused across workflows, that is a DIFFERENT, deliberate case (like
 // the retired `docs-html`/`docs-react` folder merge) — this repo has decided
 // against it here on purpose, keep it that way.
-export const WORKFLOWS: readonly Workflow[] = [
+// Static workflow definitions WITHOUT `stages` — `WORKFLOWS` below derives it
+// from each entry's own `pipelineIds` so the two lists can never drift apart
+// (no hand-duplicated id array to keep in sync).
+const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
   {
     id: 'docs-to-ui',
     name: 'Docs → UI-Spec',
     description:
       'Product docs → UX Research (evidence-based criteria) → UX Spec → a heuristic review gate → UI-Spec: an interactive HTML prototype or a real Vite + React 19 app — pick either (or both) at the final stage.',
-    pipelineIds: ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react'],
+    pipelineIds: ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react', 'ui-react-ds'],
   },
   {
     id: 'docs-to-prd',
-    name: 'Docs → PRD Review',
+    name: 'Docs → PRD Requirements Review',
     description:
-      'Product docs (Confluence, with embedded mockup images) → Customer Journey → UX Research → a review of every mockup against the feature text next to it — editable in the preview, exportable with all its images. Independent of Docs → UI-Spec: its own docs/journey/research run.',
+      'Product docs → Customer Journey → UX Research → text-first PRD requirements coverage review. Any embedded mockup is illustrative only; requirements, UX research, and the Design System drive downstream design rather than copied screens. Independent of Docs → UI-Spec: its own docs/journey/research run.',
     pipelineIds: ['prd-docs', 'prd-cj', 'prd-ux-research', 'prd-review'],
   },
+  {
+    id: 'docs-review',
+    name: 'Docs → Review tài liệu',
+    description:
+      'Độc lập hoàn toàn với Docs → UI-Spec và Docs → PRD Requirements Review: nạp tài liệu (Confluence hoặc file .md) riêng cho workflow này, đối chiếu component được khai báo trong chữ với danh mục hợp lệ, review theo bộ tiêu chí của bạn (đặt trong criteria/, tuỳ chọn — thiếu thì dùng bộ mặc định của skill) và trả về bản sao đã sửa kèm chú giải từng chỗ sửa, rồi rút sơ đồ luồng màn hình của từng nghiệp vụ từ bản đã review. Ảnh mockup nhúng chỉ để minh hoạ, không phải hướng thiết kế.',
+    pipelineIds: ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review', 'dr-confirm'],
+  },
 ];
+
+// Workflow.stages — the per-stage display-name carrier — is derived HERE from
+// each workflow's OWN pipelineIds, resolving each id's human name against
+// PIPELINE_DEFS (the single source of truth for a stage's name; never a
+// second hand-mirrored list). An id missing from PIPELINE_DEFS falls back to
+// itself so a registry typo surfaces as a raw id in the UI rather than a
+// crash.
+export const WORKFLOWS: readonly Workflow[] = WORKFLOW_DEFS.map((w) => ({
+  ...w,
+  stages: w.pipelineIds.map((id) => ({ id, name: PIPELINE_DEFS.find((d) => d.id === id)?.name ?? id })),
+}));
 
 // Folder heads of the RETIRED twin workflows (merged into docs-to-ui 2026-07).
 // Old projects' outputs keep these prefixes on disk and on the media store;
@@ -362,13 +463,19 @@ function splitWorkflowPath(rel: string): [Workflow | undefined, string] {
 }
 
 // STORE METADATA (not pipeline outputs): published version snapshots + their
-// changelog index, and `project.json` — the project config Pipeline Studio
-// writes at create/config time (dự án khai sinh ở studio: link Confluence +
-// design system). None of these may light a stage, sync, or pull as an
-// output. Mirrors kg-sync/published-versions.ts isHistoryPath (kept local
-// here so the pure registry stays dependency-free).
+// changelog index, `project.json` — the project config Pipeline Studio writes
+// at create/config time (dự án khai sinh ở studio: link Confluence + design
+// system) — and `request.json`, the approval ticket a staged push leaves in
+// its `pending--…` folder (kg-sync/staging.ts). None of these may light a
+// stage, sync, or pull as an output. Mirrors kg-sync/published-versions.ts
+// isHistoryPath (kept local here so the pure registry stays dependency-free).
 export function isHistoryArtifact(rel: string): boolean {
-  return rel === 'changelog.json' || rel === 'project.json' || rel.startsWith('_v/');
+  return (
+    rel === 'changelog.json' ||
+    rel === 'project.json' ||
+    rel === 'request.json' ||
+    rel.startsWith('_v/')
+  );
 }
 
 // DOWNLOAD-READY MD EXPORTS (`exports/…`): regenerated from the local outputs
@@ -412,6 +519,152 @@ export function stageForOutput(rel: string): PipelineDef | undefined {
 }
 
 /**
+ * Whether at least one file in `relPaths` is a declared output of a doc-
+ * INGEST stage — a `PipelineDef` with `inputPlaceholder` set (the existing
+ * marker for "this is the stage that loads documents", see `PipelineDef`).
+ * This is the single predicate the 2026-08 docs-only gate reads (see
+ * `computeActive`): a workflow's other stages no longer wait on any
+ * intermediate stage's run status, only on "has a document arrived".
+ *
+ * Reuses `stagesForOutput`'s own workflow-scoped path matching instead of
+ * re-deriving an outputs allowlist a second time, so each workflow's ingest
+ * outputs (`docs`'s `docs/jira/`, `docs/confluence/`, …; `dr-docs`'s `docs/`;
+ * `prd-docs`'s own copies) are read LIVE off `PIPELINE_DEFS` — never
+ * hardcoded here, so the check never drifts when the registry changes.
+ *
+ * `wfDir`, when given, additionally confines the check to files under
+ * `<wfDir>/`. This matters for `stagesForOutput`'s legacy fallback: an
+ * UNPREFIXED path (one under no known workflow folder) matches across every
+ * workflow's stages, which would otherwise let a `docs-review/…` file "prove"
+ * `docs-to-ui` is ready. Callers that already know which workflow they are
+ * gating (every real caller does — see `pipeline-routes.ts`'s
+ * `loadMergedState`) must pass that workflow's own directory here.
+ */
+export function docsReadyFromFiles(relPaths: Iterable<string>, wfDir: string | null): boolean {
+  for (const rel of relPaths) {
+    if (wfDir && !rel.startsWith(`${wfDir}/`)) continue;
+    if (stagesForOutput(rel).some((d) => d.inputPlaceholder !== undefined)) return true;
+  }
+  return false;
+}
+
+/**
+ * Which configured target a SINGLE-stage run builds (multi-target projects,
+ * contract: RunPipelineRequest.target). Pure decision half of the daemon's
+ * resolveRunTargetDir — kept here so the rules are unit-testable:
+ *   no targets configured + no request  → null (single build, legacy);
+ *   no targets configured + a request   → error (not a multi-target project);
+ *   one target configured + no request  → that target (auto);
+ *   several configured + no request     → error (caller must pick);
+ *   requested not in the configured set → error.
+ */
+export function pickRunTarget<T extends string>(configured: readonly T[], requested: T | undefined): T | null {
+  if (configured.length === 0) {
+    if (requested) {
+      throw new Error(
+        `target "${requested}" chỉ dùng được trên dự án multi-target — dự án này chưa có targets.json (chạy bước docs với lựa chọn target trước).`,
+      );
+    }
+    return null;
+  }
+  const target = requested ?? (configured.length === 1 ? configured[0]! : null);
+  if (!target) {
+    throw new Error(
+      `Dự án này build ${configured.length} target (${configured.join(', ')}) — chỉ định target cho lần chạy stage này (CLI: --target <id>).`,
+    );
+  }
+  if (!configured.includes(target)) {
+    throw new Error(`target "${target}" không nằm trong targets.json (${configured.join(', ')}).`);
+  }
+  return target;
+}
+
+/** Whether a run cwd (`wfDir`, project-relative) is scoped to one multi-target
+ *  subfolder (`<workflow>/<target>`), as opposed to the shared workflow root. */
+export function isTargetScopedWfDir(wfDir: string | null | undefined): boolean {
+  if (!wfDir) return false;
+  const segments = wfDir.split('/');
+  return segments.length >= 2 && UI_TARGET_DIRS.has(segments[1]!);
+}
+
+/**
+ * The RE-RUN clear predicate every runner shares: should `rel` (project-cwd-
+ * relative) be deleted before re-running the stages in `regenIds`?
+ *
+ * Ownership is path-derived (stagesForOutput) so the clear matches the
+ * workflow-namespaced tree exactly and never touches upstream inputs. TARGET
+ * FENCE: stagesForOutput deliberately STRIPS the multi-target segment for
+ * attribution (`<wf>/mobile/ux/…` and `<wf>/web-user/ux/…` both attribute to
+ * `ux`), so a target-scoped run (wfDir = `<workflow>/<target>`) must
+ * additionally confine deletions to its own subtree — without the fence,
+ * re-running a stage for ONE target would wipe the same stage's outputs of
+ * EVERY other target.
+ */
+export function relClearedByRegen(
+  rel: string,
+  regenIds: ReadonlySet<string>,
+  wfDir: string | null | undefined,
+): boolean {
+  if (isHistoryArtifact(rel)) return false;
+  if (isTargetScopedWfDir(wfDir) && !rel.startsWith(`${wfDir}/`)) return false;
+  return stagesForOutput(rel).some((d) => regenIds.has(d.id));
+}
+
+/**
+ * The cwd subdirectory a stage's run + outputs live under, given the optional
+ * multi-target subfolder segment (contract: RunPipelineRequest.targetDir):
+ * `<workflow>` for a shared/single-build run, `<workflow>/<targetDir>` for a
+ * per-target one. SINGLE SOURCE OF TRUTH for this nesting rule — `runPipeline`
+ * (one stage) and `runWorkflowAll`'s clear-on-launch scope (server.ts) both
+ * resolve `wfDir` THROUGH this instead of re-deriving it from
+ * `workflowDirForPipeline` + `targetDir` a second time, so "this stage's
+ * directory" can never drift between the two call sites.
+ */
+export function wfDirForStage(
+  pipelineId: string,
+  targetDir: string | null | undefined,
+): { baseWfDir: string | null; wfDir: string | null } {
+  const baseWfDir = workflowDirForPipeline(pipelineId);
+  const wfDir = targetDir ? `${baseWfDir ?? ''}${baseWfDir ? '/' : ''}${targetDir}` : baseWfDir;
+  return { baseWfDir, wfDir };
+}
+
+/**
+ * The RUN-ALL LAUNCH clear predicate: should `rel` be deleted the instant a
+ * full-workflow run starts, before its first stage runs (server.ts
+ * `runWorkflowAll`)? Built on TOP of `relClearedByRegen` — same history-
+ * artifact skip and same per-target fence, unchanged — plus ONE more,
+ * EXPLICIT fence: when `baseWfDir` is given, `rel` must sit under
+ * `${baseWfDir}/`.
+ *
+ * Why this extra fence can't be inferred from `relClearedByRegen` alone:
+ * `stagesForOutput` (pipelines.ts) attributes a workflow-namespaced path
+ * (`<workflowId>/...`) to ONLY that workflow's stages, but a path that is
+ * NOT namespaced under any known workflow folder falls through to its legacy
+ * branch and matches across EVERY `PIPELINE_DEFS` entry regardless of
+ * workflow (kept for pre-namespacing projects — see `stagesForOutput`'s own
+ * comment). `relClearedByRegen` alone has no way to tell "legitimately
+ * unprefixed" apart from "prefixed under a DIFFERENT workflow's folder"; a
+ * project with several parallel workflow trees (`docs-to-ui/`,
+ * `docs-review/`, …) needs that distinction, because a run-all launch of one
+ * workflow must never delete another workflow's tree. `baseWfDir` makes the
+ * boundary explicit instead of leaning on how rarely the legacy branch is hit.
+ *
+ * `baseWfDir` null/empty (no workflow namespace at all — legacy project)
+ * keeps `relClearedByRegen`'s own behavior unchanged.
+ */
+export function relClearedByRunAllLaunch(
+  rel: string,
+  regenIds: ReadonlySet<string>,
+  wfDir: string | null | undefined,
+  baseWfDir: string | null | undefined,
+): boolean {
+  if (!relClearedByRegen(rel, regenIds, wfDir)) return false;
+  if (!baseWfDir) return true;
+  return rel.startsWith(`${baseWfDir}/`);
+}
+
+/**
  * Whether a project-cwd-relative path is barred from media-store sync by its
  * stage's `syncExclude` patterns (both directions: push skip/prune AND pull
  * ignore). Workflow-namespaced paths are matched against the workflow-relative
@@ -440,13 +693,21 @@ export function isStageSkipped(def: PipelineDef, mode: PipelineRunMode): boolean
 }
 
 /**
- * The dependencies that actually gate `def` under `mode`. A lean run NEVER runs
- * the `skippedInLeanRun` stages, so gating on them would lock everything below
- * forever — the lean chain reaches a UI, then the stepper claims the UI step is
- * waiting on a review that by definition will never happen. Each skipped
- * dependency is therefore replaced by ITS OWN dependencies, transitively, so
- * the gate lands on the nearest ancestor this mode does run. `full` returns the
- * static list unchanged.
+ * The dependencies `mode` would have gated `def` on, back when a stage's
+ * `active` flag was computed from its `dependsOn` chain. Since the 2026-08
+ * docs-only gate (see `computeActive`), NOTHING reads this for gating anymore
+ * — its only remaining call-site is `listPipelineStatus`, which still surfaces
+ * it as an INFORMATIONAL `effectiveDependsOn` field on `PipelineView` (a lean
+ * run's stepper UI uses it to explain what a skipped stage's neighbors used to
+ * wait on). Kept for that display purpose and because it is still a genuinely
+ * useful "what would `lean` collapse this chain to" computation; do not wire
+ * it back into gating without re-reading the docs-only-gate decision this
+ * module's header comment records.
+ *
+ * A lean run NEVER runs the `skippedInLeanRun` stages, so a naive walk of
+ * `def.dependsOn` would name one of them; each skipped dependency is replaced
+ * by ITS OWN dependencies, transitively, so the result never names a stage
+ * that mode will never run. `full` returns the static list unchanged.
  */
 export function effectiveDependsOn(def: PipelineDef, mode: PipelineRunMode = 'full'): string[] {
   if (mode === 'full') return [...def.dependsOn];
@@ -467,14 +728,248 @@ export function effectiveDependsOn(def: PipelineDef, mode: PipelineRunMode = 'fu
   return gates;
 }
 
-// A pipeline is runnable only when every dependency THIS MODE RUNS has
-// succeeded (see effectiveDependsOn).
+/**
+ * The doc-ingest stage of `workflow` — the def with `inputPlaceholder` set
+ * (see `PipelineDef`; today `docs` for `docs-to-ui`, `prd-docs` for
+ * `docs-to-prd`, `dr-docs` for `docs-review`). Every OTHER stage in the
+ * workflow reads ITS readiness off this one stage (see `computeActive`), so
+ * this lookup — never a hardcoded id table — is what lets a new workflow's
+ * own ingest stage participate without a second place to update. Undefined
+ * only for a malformed workflow that declares no ingest stage at all.
+ */
+export function ingestDefOfWorkflow(workflow: Pick<Workflow, 'pipelineIds'>): PipelineDef | undefined {
+  for (const id of workflow.pipelineIds) {
+    const d = getPipelineDef(id);
+    if (d?.inputPlaceholder !== undefined) return d;
+  }
+  return undefined;
+}
+
+/**
+ * Whether `def` can be run right now.
+ *
+ * 2026-08 product decision — THE DOCS-ONLY GATE (see this file's header
+ * comment): the by-step `dependsOn` chain used to gate `active` (walk every
+ * ancestor, require each `succeeded`) is GONE. The only prerequisite left is
+ * "has this workflow's ingest stage produced a document" — a status-chain
+ * gate blocked a user for hours on a case the chain could never see: files
+ * present with no matching run record (pasted in by hand, pulled from the
+ * media store onto a fresh device, or a local run record lost while its
+ * output survived on disk). `def.inputPlaceholder` itself (the ingest stage)
+ * is ALWAYS active — it is the bootstrap step, nothing gates it. Every other
+ * stage in the same workflow is active the instant `ingestDefOfWorkflow`'s
+ * status reads `succeeded` in `state` — OR `docsReady` says its files are on
+ * disk (see below).
+ *
+ * `state` is trusted as given: this pure function has no file-system access,
+ * so it is the CALLER's job to keep `state` true to this device's actual run
+ * history — see `pipeline-routes.ts`'s `loadMergedState`, the one place that
+ * builds `state` for every route calling this function.
+ *
+ * `docsReady` (optional, keyed by ingest `PipelineDef.id`) carries the OTHER
+ * fact this gate needs: "has this workflow's ingest stage produced a
+ * document on disk", straight from `docsReadyFromFiles` — see
+ * `pipeline-routes.ts`'s `loadMergedState`. This is deliberately NOT folded
+ * into `state[ingestId].status`: that field is also the ingest stage's
+ * user-visible run status (rail / stepper), and a running or failed ingest
+ * run must keep showing as running/failed there even while its OLD output
+ * files (from an earlier run) already satisfy this gate for downstream
+ * stages. Absent/false at a key → falls back to `state`-only, i.e. the
+ * pre-`docsReady` behavior.
+ *
+ * `mode` and `explicitSelection` stay in the signature ONLY so every existing
+ * call-site (`listPipelineStatus`, both `pipeline-routes.ts` gate checks,
+ * every test importing this) keeps compiling unchanged — NEITHER parameter
+ * affects the result anymore. This is not an oversight: the mode-derived /
+ * explicit-selection-derived dependency chains they used to select between
+ * (`effectiveDependsOn` / the now-deleted `explicitSelectionDependsOn`)
+ * governed a by-step gate this function no longer computes at all.
+ */
 export function computeActive(
   state: ProjectPipelineState,
   def: PipelineDef,
   mode: PipelineRunMode = 'full',
+  explicitSelection?: readonly string[],
+  docsReady?: Readonly<Record<string, boolean>>,
 ): boolean {
-  return effectiveDependsOn(def, mode).every((dep) => statusOf(state, dep) === 'succeeded');
+  if (def.inputPlaceholder !== undefined) return true;
+  const wf = workflowForPipeline(def.id);
+  const ingest = wf && ingestDefOfWorkflow(wf);
+  if (!ingest) return false;
+  if (docsReady?.[ingest.id]) return true;
+  return statusOf(state, ingest.id) === 'succeeded';
+}
+
+/**
+ * Lựa chọn phạm vi chạy của MỘT lần run-all: từ danh sách bước ứng viên của
+ * workflow (đã bỏ các terminal UI không chọn) ra danh sách bước sẽ chạy thật.
+ *
+ * Hai NHÁNH loại trừ nhau, và đó là toàn bộ ý nghĩa của hàm này:
+ *  - `stageIds` có mặt và không rỗng → người dùng đã tick tay từng bước, nên
+ *    chạy ĐÚNG các bước đó. `lean` và `skipSucceeded` bị bỏ qua: cả hai là cách
+ *    SUY RA phạm vi, còn đây là phạm vi được nêu thẳng — suy tiếp trên một lựa
+ *    chọn đã tường minh chỉ có thể làm nó khác đi ngoài ý muốn (tick lại một
+ *    bước đã `succeeded` nghĩa là muốn CHẠY LẠI nó, không phải muốn bỏ qua nó).
+ *  - vắng mặt → hành vi cũ y nguyên: `lean` bỏ các bước `skippedInLeanRun`,
+ *    rồi `skipSucceeded` bỏ các bước đã xong.
+ *
+ * `docsFromUpload` áp cho CẢ HAI nhánh (kể cả khi người dùng tự tick đúng bước
+ * ingest): output khai báo của bước ingest CHÍNH LÀ `<workflow>/docs/`, nên
+ * chạy lại nó sẽ xoá sạch tài liệu người dùng vừa tải lên rồi fetch về rỗng.
+ *
+ * Thứ tự trả về LUÔN là thứ tự của workflow (`all`), không phải thứ tự người
+ * dùng gửi — chuỗi run-all chạy tuần tự nên một thứ tự khác sẽ cho bước sau
+ * chạy trước input của nó.
+ */
+export function selectRunStages(
+  all: readonly string[],
+  opts: {
+    /** Bước người dùng tick tay (thứ tự gửi lên không quan trọng). */
+    stageIds?: readonly string[];
+    lean?: boolean;
+    skipSucceeded?: boolean;
+    docsFromUpload?: boolean;
+    /** State đã merge — chỉ dùng cho `skipSucceeded`. */
+    state?: ProjectPipelineState;
+  },
+): string[] {
+  let stages = [...all];
+  if (opts.stageIds && opts.stageIds.length > 0) {
+    const picked = new Set(opts.stageIds);
+    stages = stages.filter((id) => picked.has(id));
+  } else {
+    if (opts.lean) stages = stages.filter((id) => !getPipelineDef(id)?.skippedInLeanRun);
+    if (opts.skipSucceeded) {
+      const state = opts.state ?? {};
+      stages = stages.filter((id) => state[id]?.status !== 'succeeded');
+    }
+  }
+  if (opts.docsFromUpload) stages = stages.filter((id) => !getPipelineDef(id)?.acceptsUpload);
+  return stages;
+}
+
+/** Một bước được chọn mà thiếu phụ thuộc: `stage` thiếu các bước trong `missing`. */
+export interface MissingStageDependency {
+  stage: string;
+  missing: string[];
+}
+
+/**
+ * Các bước được chọn mà TÀI LIỆU của workflow đó CHƯA sẵn sàng. Rỗng = lựa
+ * chọn hợp lệ.
+ *
+ * Vì sao luật này phải tồn tại: run-all gọi thẳng `runPipeline`, KHÔNG hỏi
+ * gating (xem `runWorkflowAll` trong server.ts), nên một bước thiếu tài liệu
+ * sẽ không bị chặn — nó chạy thật, đọc thư mục input rỗng, và cho ra một kết
+ * quả trông như thành công. Chặn ngay lúc nhận yêu cầu rẻ hơn nhiều so với
+ * một bản spec rác mà người dùng chỉ phát hiện ở bước cuối.
+ *
+ * 2026-08 product decision — THE DOCS-ONLY GATE (xem `computeActive`): "thiếu
+ * phụ thuộc" không còn nghĩa là "một bước TRUNG GIAN trong `dependsOn` chưa
+ * `succeeded`". Với mỗi id được chọn (trừ chính bước ingest — nó không bao
+ * giờ thiếu gì): nếu bước INGEST của workflow đó (`ingestDefOfWorkflow`)
+ * KHÔNG nằm trong `selected`, VÀ chưa `succeeded` trong `state`, VÀ
+ * `opts.docsReady` không xác nhận tài liệu đã có trên đĩa cho bước ingest đó,
+ * `id` thiếu ĐÚNG MỘT phụ thuộc — bước ingest, không phải bước liền trước nó
+ * trong `dependsOn`.
+ *
+ * `opts.docsReady` (keyed theo ingest `PipelineDef.id`) là sự thật RIÊNG "tài
+ * liệu có trên đĩa" — xem `docsReadyFromFiles`, nạp trong `pipeline-routes.ts`'s
+ * `loadMergedState`. Nó KHÔNG được gộp vào `state[ingestId].status`: field đó
+ * còn là trạng thái chạy hiển thị trên rail của chính bước ingest, nên một lượt
+ * chạy ingest đang `running`/`failed` phải vẫn hiện đúng như vậy dù file cũ
+ * (từ một lượt chạy trước) đã đủ để mở cổng cho các bước sau. Hàm THUẦN này chỉ
+ * đọc `state`/`opts.docsReady` đã cho, giữ chúng đúng với đĩa là việc của caller.
+ *
+ * `mode` và `opts.explicitSelection` giữ trong chữ ký để
+ * `validateRunStageSelection` và mọi test/caller hiện có không phải đổi cách
+ * gọi, nhưng không còn ảnh hưởng kết quả — cùng lý do đã ghi ở `computeActive`.
+ */
+export function missingDependencies(
+  selected: readonly string[],
+  state: ProjectPipelineState,
+  mode: PipelineRunMode = 'full',
+  opts?: { explicitSelection?: boolean; docsReady?: Readonly<Record<string, boolean>> },
+): MissingStageDependency[] {
+  const picked = new Set(selected);
+  const out: MissingStageDependency[] = [];
+  for (const id of selected) {
+    const def = getPipelineDef(id);
+    if (!def) continue; // id lạ là việc của validateRunStageSelection
+    if (def.inputPlaceholder !== undefined) continue; // bước ingest không bao giờ thiếu gì.
+    const wf = workflowForPipeline(id);
+    const ingest = wf && ingestDefOfWorkflow(wf);
+    if (!ingest) continue; // ngoài mọi workflow — không có gì để gate ở đây.
+    const ready = opts?.docsReady?.[ingest.id] === true || statusOf(state, ingest.id) === 'succeeded';
+    if (!picked.has(ingest.id) && !ready) {
+      out.push({ stage: id, missing: [ingest.id] });
+    }
+  }
+  return out;
+}
+
+/** Tên hiển thị của một bước (id trần khi id không có trong registry). */
+function stageName(id: string): string {
+  return getPipelineDef(id)?.name ?? id;
+}
+
+/**
+ * Kiểm tra trọn vẹn một lựa chọn bước thủ công trước khi chạy: id phải thuộc
+ * workflow đang chạy, và (2026-08 docs-only gate, xem `computeActive`) bước
+ * ingest của workflow đó phải được chọn cùng hoặc tài liệu đã sẵn sàng — xem
+ * `missingDependencies`. Trả về câu tiếng Việt nêu đích danh chỗ sai để route
+ * trả 400 nguyên văn; lỗi luôn trỏ về bước INGEST (vd. "Tài liệu (nạp)"),
+ * không bao giờ về một bước trung gian — KHÔNG còn câu "cần bước X chạy xong
+ * trước" cho bước trung gian.
+ *
+ * `opts.mode`/`opts.explicitSelection` giữ trong chữ ký để call-site không
+ * phải đổi, nhưng không còn ảnh hưởng kết quả — cùng lý do đã ghi ở
+ * `computeActive`/`missingDependencies`.
+ *
+ * `opts.docsReady` (tuỳ chọn, keyed theo ingest `PipelineDef.id`) chuyển
+ * thẳng xuống `missingDependencies` — xem hàm đó về vì sao đây là một sự thật
+ * RIÊNG với `state[ingestId].status`, không phải thay thế cho nó.
+ */
+export function validateRunStageSelection(
+  stageIds: readonly string[],
+  workflowStageIds: readonly string[],
+  state: ProjectPipelineState,
+  opts?: {
+    workflowName?: string;
+    mode?: PipelineRunMode;
+    explicitSelection?: boolean;
+    docsReady?: Readonly<Record<string, boolean>>;
+  },
+): { ok: true } | { ok: false; error: string } {
+  const known = new Set(workflowStageIds);
+  const unknown = stageIds.filter((id) => !known.has(id));
+  if (unknown.length > 0) {
+    const wf = opts?.workflowName ? ` "${opts.workflowName}"` : '';
+    return {
+      ok: false,
+      error: `Các bước sau không thuộc workflow${wf}: ${unknown.map((id) => `"${id}"`).join(', ')}.`,
+    };
+  }
+  const missing = missingDependencies(stageIds, state, opts?.mode ?? 'full', {
+    ...(opts?.explicitSelection ? { explicitSelection: true } : {}),
+    ...(opts?.docsReady ? { docsReady: opts.docsReady } : {}),
+  });
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      // `m.missing` luôn là bước INGEST của workflow (xem `missingDependencies`
+      // 2026-08 docs-only gate) — không bao giờ là một bước trung gian.
+      error: missing
+        .map(
+          (m) =>
+            `Bước "${stageName(m.stage)}" cần tài liệu — chạy bước ${m.missing
+              .map((dep) => `"${stageName(dep)}"`)
+              .join(', ')} trước.`,
+        )
+        .join(' '),
+    };
+  }
+  return { ok: true };
 }
 
 // The set of stages to CLEAR + regenerate when `pipelineId` is re-run. Without
@@ -626,14 +1121,37 @@ export function resolveRunMode(
 // clients use its identity as structure (the stepper fuses consecutive
 // pipelines sharing one list into a single option-group step), so rewriting it
 // per mode fused unrelated stages into phantom "UI-Spec" groups.
+//
+// `explicitSelection`, when given and NON-EMPTY, is the project's saved
+// `runAllConfig.stageIds` (already filtered to THIS workflow by the caller —
+// see `pipeline-routes.ts`'s `GET /api/pipelines`). Historically it overrode
+// `mode` for the `active` field too (via `computeActive`); since the 2026-08
+// docs-only gate `computeActive` no longer reads `mode`/`explicitSelection`
+// AT ALL (see its docblock) — `active` is now purely "this workflow's ingest
+// stage has a document". `explicitSelection` still does ONE thing here:
+//  - `skipped: true` for every stage NOT in the selection (mode-derived
+//    `isStageSkipped` is bypassed entirely — the selection is a stronger,
+//    more specific signal than "does this mode ever run it").
+// Absent/empty → `skipped` falls back to the mode-derived `isStageSkipped`.
+//
+// `docsReady` (optional, keyed by ingest `PipelineDef.id`) is forwarded
+// verbatim to `computeActive` for the `active` field — see that function's
+// docblock for why it stays a fact SEPARATE from `state`. `status` below
+// keeps reading `state[def.id].status` directly and is NEVER influenced by
+// `docsReady`, so an ingest stage's own rail entry always reflects its real
+// running/failed/succeeded/idle run history.
 export function listPipelineStatus(
   state: ProjectPipelineState,
   pipelineIds?: readonly string[],
   mode: PipelineRunMode = 'full',
+  explicitSelection?: readonly string[],
+  docsReady?: Readonly<Record<string, boolean>>,
 ): PipelineView[] {
   const defs = pipelineIds
     ? pipelineIds.map((id) => PIPELINE_DEFS.find((p) => p.id === id)).filter((d): d is PipelineDef => !!d)
     : PIPELINE_DEFS;
+  const picked =
+    explicitSelection && explicitSelection.length > 0 ? new Set(explicitSelection) : undefined;
   return defs.map((def) => {
     const run = state[def.id];
     const effective = effectiveDependsOn(def, mode);
@@ -645,11 +1163,12 @@ export function listPipelineStatus(
       dependsOn: [...def.dependsOn],
       ...(gateDiffers ? { effectiveDependsOn: effective } : {}),
       status: run?.status ?? 'idle',
-      active: computeActive(state, def, mode),
-      ...(isStageSkipped(def, mode) ? { skipped: true as const } : {}),
+      active: computeActive(state, def, mode, explicitSelection, docsReady),
+      ...((picked ? !picked.has(def.id) : isStageSkipped(def, mode)) ? { skipped: true as const } : {}),
       ...(def.inputPlaceholder ? { inputPlaceholder: def.inputPlaceholder } : {}),
       ...(def.acceptsDesignSystem ? { acceptsDesignSystem: true } : {}),
       ...(def.acceptsPlatform ? { acceptsPlatform: true } : {}),
+      ...(def.acceptsUpload ? { acceptsUpload: true } : {}),
       ...(def.outputs && def.outputs.length ? { outputs: [...def.outputs] } : {}),
       ...(run?.lastRunId ? { lastRunId: run.lastRunId } : {}),
       ...(run?.lastConversationId ? { lastConversationId: run.lastConversationId } : {}),
@@ -664,6 +1183,10 @@ export function listPipelineStatus(
       ...(run?.lastInput ? { lastInput: run.lastInput } : {}),
       ...(run?.lastSource ? { lastSource: run.lastSource } : {}),
       ...(run?.lastPlatform ? { lastPlatform: run.lastPlatform } : {}),
+      // Only meaningful alongside a 'failed' status — setProjectPipelineStatus
+      // (db.ts) clears it on any other status transition, so a stale error
+      // from an earlier failed run never survives onto a later succeeded run.
+      ...(run?.status === 'failed' && run.error ? { error: run.error } : {}),
     };
   });
 }

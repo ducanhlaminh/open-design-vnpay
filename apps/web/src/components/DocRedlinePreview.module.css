@@ -1,0 +1,1147 @@
+/*
+ * DocRedlinePreview — MỘT cột tài liệu (bản ĐÃ SỬA, có bôi highlight) cạnh một
+ * rail cố định bên PHẢI liệt kê mọi chỗ sửa. Cột bản gốc đã bỏ: bề ngang trả về
+ * cho tài liệu thật sự được đọc, còn "đã đổi từ gì" nằm trong thẻ lý do
+ * ("chữ cũ → chữ mới"). Panel đáy trượt lên cũng đã bỏ — rail hiện sẵn lý do
+ * của MỌI chỗ sửa nên panel chỉ là nơi thứ hai hiển thị cùng thông tin.
+ *
+ * Rail nằm bên phải nên `grid-template-columns` là `minmax(0, 1fr) <rail>` —
+ * đảo lại so với `.ds-workspace` (styles/design-system-flow.css) vốn đặt rail
+ * bên trái.
+ *
+ * The doc column reuses the shared global `.markdown-rendered` typography
+ * (styles/viewer/code.css) — same treatment as MarkdownViewer — so only the
+ * layout + highlight + rail styling below is this component's own.
+ */
+
+.viewerBody {
+  padding: 0;
+}
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Dải trạng thái phía trên: tổng số chỗ sửa + số vùng bôi. Danh sách chỗ sửa
+   (kể cả những chỗ không neo được) nằm trong rail bên phải, nên dải này không
+   còn nút nào. */
+.strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #f5f6f8);
+  color: var(--text-soft, #4b5563);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Chú giải hai màu bôi trong dải trạng thái — không có nó thì cam/tím chỉ là
+   màu, người xem không biết "đã sửa" khác "cần bàn" chỗ nào. Đẩy sang phải
+   bằng margin-left: auto vì .strip là flex hàng ngang với span đếm số bên
+   trái. Swatch dùng đúng màu/viền của .hl và .hlNote để không lệch với vùng
+   bôi thật trong tài liệu. */
+/* Bốn màu dùng chung cho ô màu của bộ lọc (xem .chipSwatch). Tên còn giữ tiền
+   tố `legend` vì chúng vẫn LÀ chú thích màu — chỉ khác là giờ bấm được. */
+.legendSwatchChange {
+  background: rgba(245, 158, 11, 0.38);
+  outline: 1px solid rgba(245, 158, 11, 0.85);
+}
+.legendSwatchAdd {
+  background: rgba(34, 197, 94, 0.28);
+  outline: 1px solid rgba(34, 197, 94, 0.85);
+}
+.legendSwatchDel {
+  background: rgba(239, 68, 68, 0.18);
+  outline: 1px solid rgba(239, 68, 68, 0.7);
+}
+.legendSwatchNote {
+  background: rgba(139, 92, 246, 0.3);
+  outline: 1px dashed rgba(139, 92, 246, 0.85);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.docCol {
+  min-width: 0;
+  height: 100%;
+  overflow: auto;
+  padding: 20px 24px;
+}
+/* Vùng bôi được cuộn tới không được nằm sát mép trên — `.strip` phía trên sẽ
+   che mất mép của nó (cùng lý do như scrollMarginTop trong DsShowcasePreview). */
+.docCol mark {
+  scroll-margin-top: 16px;
+}
+
+/* Rail chỗ sửa bên phải: tự cuộn riêng, không đẩy tài liệu. */
+.rail {
+  min-width: 0;
+  height: 100%;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-left: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-panel, #fff);
+}
+
+/* Mục trong rail. Mục neo được là <button> thật, nên phải trung hoà style mặc
+   định của button (nền/viền/canh chữ) để nó trông như một thẻ. */
+.item {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.item:focus-visible {
+  outline: 2px solid var(--accent, #0066b3);
+  outline-offset: 2px;
+}
+.itemActive {
+  box-shadow: 0 0 0 2px var(--accent, #0066b3);
+}
+/* Mục không neo được: không bấm được, nên bỏ con trỏ tay và làm nhạt đi một
+   chút — nhưng vẫn hiện đầy đủ nhóm/mức độ/lý do như mọi mục khác. */
+.itemDead {
+  cursor: default;
+}
+.itemDeadNote {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 5px 2px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--amber, #b45309);
+}
+
+/* The highlight itself — a scoped module class, passed into highlightMatch()
+   so it survives even though CSS Modules hash class names at build time. */
+/* KHÔNG dùng --amber-bg ở đây. Nó là nền THẺ: #fff3e0 (kem rất nhạt) ở theme
+   sáng và #2a1a04 (nâu rất tối) ở theme tối — bôi lên chữ thì gần như vô hình
+   ở CẢ HAI theme. Và vì biến đó có tồn tại trong tokens.css, giá trị dự phòng
+   viết kèm (#fde68a) không bao giờ được dùng tới.
+   Trộn thẳng --amber (màu nhấn, đậm ở cả hai theme) vào nền, cộng gạch chân
+   đậm để vùng bôi vẫn đọc ra khi tương phản nền thấp. */
+.hl {
+  /* Màu tuyệt đối, KHÔNG dùng biến theme và KHÔNG dùng color-mix.
+     Lý do: --amber-bg là nền THẺ (kem rất nhạt ở sáng, nâu rất tối ở tối) nên
+     bôi lên chữ là vô hình; còn color-mix bị Chromium cũ bỏ qua nguyên dòng
+     khai báo, làm nền biến mất hoàn toàn. rgba amber ở dưới đọc được trên cả
+     nền sáng lẫn nền tối và chạy ở mọi phiên bản. */
+  background: rgba(245, 158, 11, 0.38);
+  outline: 1px solid rgba(245, 158, 11, 0.85);
+  border-radius: 3px;
+  padding: 1px 2px;
+  cursor: pointer;
+  color: inherit;
+}
+/* Ba màu cho ba phép sửa. Một màu vàng cho tất cả (bản trước) nói rằng "chỗ
+   này có đụng vào", nhưng người review cần biết ĐỤNG KIỂU GÌ: thêm một câu mới
+   và viết lại một câu sai là hai việc phải đọc bằng hai kiểu chú ý khác nhau.
+   Xanh = thêm, vàng = sửa, đỏ = xoá — cùng quy ước với mọi công cụ diff, nên
+   không phải học.
+   Màu tuyệt đối, KHÔNG dùng biến theme và KHÔNG dùng color-mix — cùng lý do đã
+   ghi ở .hl phía trên. */
+.hlAdd {
+  background: rgba(34, 197, 94, 0.28);
+  outline: 1px solid rgba(34, 197, 94, 0.85);
+  border-radius: 3px;
+  padding: 1px 2px;
+  cursor: pointer;
+  color: inherit;
+}
+/* Chỗ xoá là chữ CHÈN THÊM vào tài liệu (nó không còn trong bản đã sửa), nên
+   nền nhạt hơn hai loại trên: nó không được tranh chữ với bản đã sửa mà người
+   dùng đang đọc. Gạch ngang là thứ nói "đoạn này đã bị bỏ", nền chỉ để khoanh
+   vùng. */
+.hlDel {
+  background: rgba(239, 68, 68, 0.18);
+  outline: 1px solid rgba(239, 68, 68, 0.7);
+  border-radius: 3px;
+  padding: 1px 2px;
+  cursor: pointer;
+  color: var(--text-muted, #6b7280);
+}
+.hlDel del {
+  text-decoration: line-through;
+}
+
+.hlFlash {
+  animation: hlFlash 1.6s ease-out;
+}
+@keyframes hlFlash {
+  0%,
+  15% {
+    background: var(--accent, #0066b3);
+    color: #fff;
+  }
+  /* Kết thúc phải trùng nền của .hl, nếu không vùng bôi sẽ nhảy màu khi hết
+     animation. Giữ nguyên màu tuyệt đối như .hl, cùng lý do. */
+  100% {
+    background: rgba(245, 158, 11, 0.38);
+    color: inherit;
+  }
+}
+/* Change đang được chọn (click vùng bôi, hoặc click mục trong rail).
+   `!important` là BẮT BUỘC ở đây, không phải thói quen xấu: nền vàng của vùng
+   bôi được đặt trong thuộc tính style ngay trên thẻ <mark> (HL_INLINE_STYLE
+   trong DocRedlinePreview.tsx) để không phụ thuộc CSS Module có tới nơi hay
+   không. Style nội tuyến thắng mọi selector, nên nếu không có !important thì
+   `background`/`outline` dưới đây thua và mark đang chọn vẫn vàng y hệt mark
+   không chọn — chỉ còn chữ trắng trên nền vàng nhạt, gần như không đọc được.
+   .hlFlash không cần: khai báo trong @keyframes vốn đã thắng style nội tuyến. */
+.hlActive {
+  background: var(--accent, #0066b3) !important;
+  outline-color: var(--accent, #0066b3) !important;
+  color: #fff;
+  box-shadow: 0 0 0 2px var(--accent, #0066b3);
+}
+
+.empty {
+  margin: 14px;
+  font-size: 12.5px;
+  color: var(--text-muted, #6b7280);
+}
+
+.card {
+  border: 1px solid var(--border, #e1e5eb);
+  border-left-width: 3px;
+  border-radius: 9px;
+  padding: 10px 12px;
+  background: var(--bg-subtle, #f5f6f8);
+}
+.sevBlocker {
+  border-left-color: var(--red, #dc2626);
+}
+.sevMajor {
+  border-left-color: var(--amber, #b45309);
+}
+.sevMinor {
+  border-left-color: var(--border, #e1e5eb);
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cardKind {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-soft, #4b5563);
+}
+.sevBadge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  background: var(--bg-panel, #fff);
+  color: var(--text-muted, #6b7280);
+  border: 1px solid var(--border, #e1e5eb);
+}
+
+/* Chip hiện NHÃN dễ hiểu ("Thiếu trường hợp biên"), không còn hiện mã rule —
+   nên chữ ở đây là chữ thường chứ không phải mono. Mã kỹ thuật chuyển vào
+   popover (xem .rulePopCode) và vẫn giữ mono ở đó, vì trong popover nó đúng là
+   một mã để chép/trace chứ không phải chữ để đọc. */
+.ruleId {
+  display: inline-block;
+  max-width: 100%;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 999px;
+  background: var(--bg-panel, #fff);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--text-soft, #4b5563);
+}
+
+.reason {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text, #1a1a1a);
+  white-space: pre-wrap;
+}
+
+.diff {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.diffBefore {
+  color: var(--text-muted, #6b7280);
+  text-decoration: line-through;
+}
+.diffAfter {
+  color: var(--text, #1a1a1a);
+  font-weight: 600;
+}
+
+/* ── Diff mức từ trong thẻ lý do ───────────────────────────────────────────
+   Một đoạn LIỀN thay cho hai khối `before → quote`: với một câu 30 từ đổi hai
+   từ, hai khối buộc người đọc tự so từng từ. Ở đây phần không đổi là chữ
+   thường, chỉ chữ bị bỏ và chữ mới được tô — mắt nhảy thẳng tới chỗ khác nhau.
+   Màu lấy đúng họ màu của vùng bôi trong tài liệu (đỏ = bỏ, xanh = thêm) để
+   thẻ và tài liệu nói cùng một thứ tiếng, nhưng nhạt hơn vì ở đây là chữ nhỏ
+   trên nền thẻ, không phải vùng bôi giữa tài liệu. */
+.diffInline {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text, #1a1a1a);
+}
+.runSame {
+  color: var(--text-soft, #4b5563);
+}
+.runDel {
+  background: rgba(239, 68, 68, 0.16);
+  border-radius: 3px;
+  padding: 0 2px;
+  color: var(--text-muted, #6b7280);
+  text-decoration: line-through;
+}
+.runAdd {
+  background: rgba(34, 197, 94, 0.22);
+  border-radius: 3px;
+  padding: 0 2px;
+  color: var(--text, #1a1a1a);
+  font-weight: 600;
+}
+
+/* Khối một-phía: chỗ THÊM (chỉ có chữ mới) và chỗ XOÁ (chỉ có chữ cũ). Không
+   có gì để diff nên không dùng .diffInline; nền cùng họ màu với run tương ứng
+   để ba loại thẻ đọc ra ngay từ màu. */
+.blockAdd {
+  background: rgba(34, 197, 94, 0.14);
+  border-radius: 6px;
+  padding: 3px 6px;
+  color: var(--text, #1a1a1a);
+  font-weight: 600;
+}
+.blockDel {
+  background: rgba(239, 68, 68, 0.12);
+  border-radius: 6px;
+  padding: 3px 6px;
+  color: var(--text-muted, #6b7280);
+  text-decoration: line-through;
+}
+/* Nhãn "Đã thêm", cùng khuôn .badgeDeleted nhưng họ màu xanh. */
+.badgeAdded {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 650;
+  background: rgba(34, 197, 94, 0.16);
+  color: #15803d;
+}
+
+.badgeDeleted {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 650;
+  background: color-mix(in srgb, var(--red, #dc2626) 12%, transparent);
+  color: var(--red, #dc2626);
+}
+
+/* ── Nhận xét (không sửa trực tiếp) ────────────────────────────────────────
+   Note là phát hiện KHÔNG sửa được bằng cách sửa chữ (sai R-OVERLAY, component
+   ngoài danh mục, thiếu cả một màn, sơ đồ rỗng). Nó phải TRÔNG KHÁC một chỗ
+   sửa, nếu không người đọc tưởng nó cũng đã được sửa rồi: vùng bôi tím + viền
+   nét đứt ("cần bàn"), đối lập với vàng nét liền ("đã sửa"). */
+.railHeading {
+  margin: 10px 2px 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border, #e1e5eb);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+  color: var(--text-soft, #4b5563);
+}
+
+/* Màu tuyệt đối, KHÔNG dùng biến theme và KHÔNG dùng color-mix — cùng lý do đã
+   ghi ở .hl phía trên (biến nền thẻ bôi lên chữ là vô hình; color-mix bị
+   Chromium cũ bỏ qua nguyên dòng khai báo). */
+.hlNote {
+  background: rgba(139, 92, 246, 0.3);
+  outline: 1px dashed rgba(139, 92, 246, 0.85);
+  border-radius: 3px;
+  padding: 1px 2px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.noteCard {
+  border-style: dashed;
+  border-left-style: solid;
+}
+
+.suggestion {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-soft, #4b5563);
+  white-space: pre-wrap;
+}
+.suggestionLabel {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  background: var(--bg-panel, #fff);
+  border: 1px solid var(--border, #e1e5eb);
+  color: var(--text-muted, #6b7280);
+}
+
+/* ── Tham chiếu: chip rule bấm được + nút nhảy tới đoạn được viện dẫn ────────
+   Vùng viện dẫn trong tài liệu (.hlRef) CỐ Ý không có nền, khác cả ba loại vùng
+   bôi kia: nó không phải chỗ tài liệu bị đụng vào, chỉ là bằng chứng cho một
+   chỗ sửa ở nơi khác. Cho nó nền thì người đọc đếm nhầm số chỗ đã sửa. */
+.hlRef {
+  border-bottom: 1px dotted rgba(59, 130, 246, 0.85);
+  cursor: pointer;
+}
+
+.ruleWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Kế thừa .ruleId (đã có viền/nền/cỡ chữ) và chỉ thêm phần "bấm được". */
+.ruleIdBtn {
+  cursor: pointer;
+  text-align: left;
+}
+
+.ruleIdBtn:hover {
+  border-color: var(--accent, #0066b3);
+}
+
+/* Dấu "?" cạnh badge — điểm bấm duy nhất mở giải thích rule. Hình tròn nhỏ để
+   đọc ngay ra "chỗ này có trợ giúp", không lẫn với chính badge. */
+.ruleHelpBtn {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border-strong, #c9c4ba);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted, #6d675e);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ruleHelpBtn:hover,
+.ruleHelpBtn[aria-expanded='true'] {
+  border-color: var(--accent, #0066b3);
+  color: var(--accent, #0066b3);
+  background: var(--accent-tint, rgba(0, 102, 179, 0.08));
+}
+
+/* Popover phải nổi TRÊN các thẻ bên dưới trong rail, nên cần z-index; rail có
+   cuộn riêng nên `position: absolute` neo theo .ruleWrap là đủ, không cần
+   portal. */
+.rulePop {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  /* Rail rộng 360px; trừ padding rail và padding thẻ còn khoảng 310px, nên
+     popover rộng hơn thế sẽ bị chính rail (có cuộn riêng) cắt mất mép phải.
+     `min-width: 100%` để nó không bao giờ hẹp hơn chính cái chip. */
+  width: 300px;
+  min-width: 100%;
+  max-width: min(340px, calc(100vw - 32px));
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: var(--radius, 12px);
+  /* `--bg` (nền ĐẶC) chứ không phải `--bg-panel`, cùng lý do như .modal bên
+     dưới: token panel là kính mờ nên chữ của thẻ phía sau xuyên qua và đè lên
+     đoạn giải thích. Đây là chỗ để ĐỌC, không phải chỗ để trang trí. */
+  background: var(--bg);
+  box-shadow: var(--shadow-md, 0 6px 18px rgba(0, 0, 0, 0.12));
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text, #1a1a1a);
+  white-space: normal;
+  cursor: auto;
+}
+
+/* Đầu popover: nhãn dễ hiểu ở trên, mã kỹ thuật ở dưới. Hai dòng chứ không
+   phải một hàng ngang — mã rule của dự án (`criteria/rules.md#R-OVERLAY`) dài
+   hơn cả nhãn, đặt cạnh nhau thì nó tranh mất chỗ của thứ cần đọc trước. */
+.rulePopHead {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft, #edf0f4);
+}
+
+.rulePopLabel {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--text-strong, #1a1a1a);
+}
+
+/* Mã đầy đủ: mờ và nhỏ vì nó chỉ dùng khi cần lần ngược về file criteria,
+   nhưng vẫn chọn/chép được nên để `user-select` mặc định. */
+.rulePopCode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text-faint, #8a857b);
+  word-break: break-all;
+}
+
+.rulePopBody {
+  color: var(--text, #1a1a1a);
+}
+
+.refRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin: 6px 0 0;
+}
+
+.refLabel {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #6b7280);
+}
+
+.refBtn {
+  padding: 1px 6px;
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.08);
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--text, #1a1a1a);
+  cursor: pointer;
+  text-align: left;
+}
+
+.refBtn:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.18);
+}
+
+/* Ref không neo được vẫn HIỆN (mờ đi), không ẩn: ẩn đi làm người đọc tưởng lý
+   do này không viện dẫn gì cả. */
+.refBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Cửa sổ xem đoạn được tham chiếu ─────────────────────────────────────────
+   Modal chứ không cuộn cột chính: đoạn được viện dẫn thường nằm rất xa chỗ
+   đang đọc, nên nhảy tại chỗ đồng nghĩa vứt mất vị trí người đọc đang đứng.
+   Đóng lại là về đúng chỗ cũ, không cần tự tìm đường quay lại. */
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(880px, 100%);
+  height: min(80vh, 100%);
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 12px;
+  /* `--bg` (nền ĐẶC) chứ không phải `--bg-panel`: token panel là kính mờ
+     (rgba(255,255,255,.74)) nên chữ tài liệu phía sau xuyên qua và gần như
+     không đọc nổi. Cửa sổ này tồn tại để ĐỌC một đoạn văn bản dày, nên nó là
+     chỗ duy nhất trong màn hình cần bỏ hiệu ứng kính. */
+  background: var(--bg);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+
+.modalHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+}
+
+.modalTitleWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.modalTitle {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text, #1a1a1a);
+}
+
+/* Nguyên văn đoạn được dẫn, để người đọc biết mình đang được chỉ tới cái gì
+   trước cả khi mắt tìm thấy vùng bôi trong trang. */
+.modalQuote {
+  font-size: 11.5px;
+  color: var(--text-muted, #6b7280);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modalClose {
+  flex: none;
+  padding: 4px 12px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg-panel, #fff);
+  font-size: 11.5px;
+  color: var(--text, #1a1a1a);
+  cursor: pointer;
+}
+
+.modalClose:hover {
+  border-color: var(--accent, #0066b3);
+}
+
+.modalBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+
+/* Vùng bôi khi TẮT tô màu — mark vẫn tồn tại (còn bấm được, thẻ bên phải còn
+   neo được), chỉ gỡ phần sơn. Xem HL_OFF_INLINE_STYLE. */
+.hlOff {
+  background: none;
+  outline: none;
+  cursor: pointer;
+}
+
+.hlDelOff {
+  background: none;
+  outline: none;
+  cursor: pointer;
+  opacity: 0.65;
+}
+
+
+.modalActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ── Bộ lọc màu (kiêm chú thích màu) ─────────────────────────────────────────
+   Mỗi chip là một ô chọn thật; ô màu bên trong chính là chú thích. Trạng thái
+   TẮT phải đọc được ngay từ xa mà không cần nhìn kỹ ô tick, nên chip tắt vừa
+   nhạt đi vừa rỗng ruột ô màu. */
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 999px;
+  background: var(--bg-panel, #fff);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text, #1a1a1a);
+  cursor: pointer;
+  user-select: none;
+  /* Ease-out chuẩn của repo (xem AGENTS.md “UI animation philosophy”). */
+  transition:
+    opacity 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.chip:hover {
+  border-color: color-mix(in srgb, var(--accent, #0066b3) 55%, var(--border, #e1e5eb));
+}
+
+/* Ô tick gốc ẩn khỏi mắt nhưng CÒN trong cây a11y: bàn phím tab tới được, trình
+   đọc màn hình vẫn thấy "checkbox, checked". `display:none` sẽ cắt mất cả hai. */
+.chipInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.chipInput:focus-visible + .chipSwatch {
+  box-shadow: 0 0 0 2px var(--accent, #0066b3);
+}
+
+.chipSwatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  flex: none;
+  transition: background-color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* Dấu tick nằm trong chính ô màu — xem chú thích ở JSX. Kích thước nhỏ và màu
+   chữ thường để nó đọc như một ô tick chứ không tranh chỗ với màu nền. */
+.chipCheck {
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--text, #1a1a1a);
+}
+
+.filtersHint {
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+  white-space: nowrap;
+}
+
+.chipCount {
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  color: var(--text-muted, #6b7280);
+}
+
+.chipOff {
+  opacity: 0.55;
+  background: none;
+}
+
+/* Ô màu rỗng ruột khi tắt — giữ nguyên viền màu để vẫn biết chip này nói về
+   màu nào. `!important` vì màu nền đến từ các lớp .legendSwatch* dùng chung. */
+.chipOff .chipSwatch {
+  background: transparent !important;
+}
+
+/* Tắt = ô vuông RỖNG (không tick). Đó là nửa còn lại của hình ảnh checkbox:
+   có tick/không tick là thứ người dùng đọc trước cả màu sắc. */
+.chipOff .chipCheck {
+  visibility: hidden;
+}
+
+.chipOff .chipCount {
+  opacity: 0.8;
+}
+
+.actions { display: flex; gap: 6px; margin-top: 9px; align-items: center; }
+.actions button, .printButton { border: 1px solid var(--border, #e1e5eb); border-radius: 6px; background: var(--bg-panel, #fff); color: var(--text, #1a1a1a); padding: 3px 8px; font-size: 11px; cursor: pointer; }
+.actions button:disabled { opacity: .5; cursor: not-allowed; }
+.editBox textarea { width: 100%; min-height: 72px; margin-top: 8px; padding: 6px; border: 1px solid var(--border, #e1e5eb); border-radius: 6px; font: inherit; font-size: 12px; resize: vertical; }
+.error { margin: 6px 0 0; color: var(--red, #dc2626); font-size: 11px; }
+.dismissed { opacity: .58; }
+.badgeEdited { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10.5px; font-weight: 650; background: rgba(37, 99, 235, .12); color: #1d4ed8; }
+
+.originAgent,
+.originUser {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.originAgent {
+  color: var(--accent, #0066b3);
+  background: color-mix(in srgb, var(--accent, #0066b3) 10%, transparent);
+}
+
+.originUser {
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.1);
+}
+
+.userToolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-panel, #fff);
+}
+
+.userToolbarHint {
+  margin-right: 2px;
+  color: var(--text-muted, #6b7280);
+  font-size: 11px;
+}
+
+.userToolbar button,
+.annotationComposer button {
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg-panel, #fff);
+  color: var(--text, #1a1a1a);
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.userToolbar button:hover,
+.annotationComposer button:hover {
+  border-color: var(--accent, #0066b3);
+}
+
+.userToolbar button:active,
+.annotationComposer button:active,
+.confirmButton:active {
+  transform: translateY(1px);
+}
+
+.toolbarError {
+  color: var(--red, #dc2626);
+  font-size: 11px;
+}
+
+.annotationComposer {
+  flex: 0 0 auto;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: color-mix(in srgb, var(--accent, #0066b3) 5%, var(--bg-panel, #fff));
+}
+
+.annotationComposerHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.selectedQuote {
+  margin: 0 0 8px;
+  color: var(--text-muted, #6b7280);
+  font-size: 11px;
+}
+
+.annotationComposer textarea,
+.annotationComposer input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text, #1a1a1a);
+  font: inherit;
+  font-size: 12px;
+}
+
+.annotationComposer textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.annotationComposer textarea:focus,
+.annotationComposer input:focus {
+  border-color: var(--accent, #0066b3);
+  outline: 2px solid color-mix(in srgb, var(--accent, #0066b3) 18%, transparent);
+  outline-offset: 1px;
+}
+
+.confirmPanel {
+  margin-top: auto;
+  padding: 14px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 10px;
+  background: var(--bg-subtle, #f5f6f8);
+}
+
+.confirmHeading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.confirmHeading h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-strong, #1a1a1a);
+}
+
+.confirmHeading p,
+.confirmDetail,
+.confirmHint {
+  margin: 3px 0 0;
+  color: var(--text-muted, #6b7280);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.metricRows {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.metricRows > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  padding: 8px;
+  border: 1px solid var(--border-soft, #edf0f4);
+  border-radius: 8px;
+  background: var(--bg-panel, #fff);
+}
+
+.metricRows span {
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.metricRows strong {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.metricRows small {
+  grid-column: 1 / -1;
+  color: var(--text-muted, #6b7280);
+  font-size: 9.5px;
+}
+
+.receipt,
+.staleReceipt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 9px;
+  padding: 8px;
+  border-radius: 8px;
+  font-size: 10.5px;
+}
+
+.receipt {
+  color: #166534;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.staleReceipt {
+  color: var(--amber, #b45309);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.receipt code,
+.staleReceipt code {
+  overflow-wrap: anywhere;
+  font-size: 9.5px;
+}
+
+.confirmedBadge {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 6px;
+  color: #166534;
+  background: rgba(34, 197, 94, 0.12);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.confirmError {
+  margin: 8px 0 0;
+  color: var(--red, #dc2626);
+  font-size: 10.5px;
+}
+
+.confirmButton {
+  width: 100%;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--accent, #0066b3);
+  border-radius: 7px;
+  background: var(--accent, #0066b3);
+  color: #fff;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.confirmButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 760px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .docCol {
+    min-height: 50vh;
+  }
+
+  .rail {
+    height: auto;
+    max-height: 52vh;
+    border-top: 1px solid var(--border, #e1e5eb);
+    border-left: 0;
+  }
+
+  .metricRows {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Đánh số map lỗi ↔ vùng bôi ─────────────────────────────────────────────
+   Cùng một số hiện ở BA nơi: badge đầu thẻ lý do, con số nhỏ dính vào vùng bôi
+   trong tài liệu (mark[data-od-idx] — component dán attr, CSS vẽ), và cột STT
+   của phụ lục in. Nhận xét mang tiền tố N để không lẫn với chỗ sửa. */
+.cardIdx {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--text-strong, #1a1a1a);
+  color: var(--bg-panel, #fff);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.docCol mark[data-od-idx]::after,
+.modalBody mark[data-od-idx]::after,
+.printSheet mark[data-od-idx]::after {
+  content: attr(data-od-idx);
+  display: inline-block;
+  margin-left: 3px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.82);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.6;
+  vertical-align: super;
+  font-variant-numeric: tabular-nums;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+/* ── Bản in (nút "Xuất PDF") ─────────────────────────────────────────────────
+   Sheet là PORTAL con trực tiếp của <body> (xem DocRedlinePreview.tsx): in tại
+   chỗ trong cây app là bị các container cao-cố-định + overflow hidden (khung
+   Quick result, panel, entry-main…) cắt còn một trang khung rỗng. Trên màn
+   hình sheet luôn ẩn; khi in — và CHỈ khi cờ body[data-od-print='redline'] do
+   nút Xuất PDF bật — mọi thứ khác trong body bị ẩn, còn lại đúng tấm sheet. */
+.printSheet {
+  display: none;
+}
+
+@media print {
+  :global(body[data-od-print='redline']) > :global(*:not([data-od-print-sheet])) {
+    display: none !important;
+  }
+  :global(body[data-od-print='redline']) .printSheet {
+    display: block;
+    background: #fff;
+    color: #111;
+    font-size: 12px;
+  }
+  /* Vùng bôi trong bản in giữ nguyên màu (mark mang style nội tuyến sẵn). */
+  .printSheet :global(mark) {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .printCover { padding: 12mm 12mm 8mm; border-bottom: 1px solid #999; break-after: page; }
+  .printCover h1 { margin: 0 0 8mm; font-size: 20px; }
+  .printCover p { margin: 2mm 0; }
+  .printSheet :global(article) { padding: 0 12mm; }
+  .printAppendix { padding: 12mm; break-before: page; }
+  .printAppendix h2 { margin-top: 0; }
+  .printAppendix table { width: 100%; border-collapse: collapse; font-size: 10px; }
+  .printAppendix th, .printAppendix td { border: 1px solid #999; padding: 4px; text-align: left; vertical-align: top; }
+  .printAppendix th { background: #eee; }
+  .printDismissed { opacity: 0.6; }
+}

@@ -1,11 +1,10 @@
-// PRD Mockup Review — per-page PARALLEL fan-out helpers.
+// PRD Requirements Review — per-page PARALLEL fan-out helpers.
 //
-// The prd-review stage reviews every mockup embedded in the ingested Confluence
-// docs. With a whole sub-tree of dozens of pages, one agent reviewing hundreds
-// of images is slow and context-bound, so the daemon fans out: one agent run
-// PER PAGE (bounded concurrency), each writing its own review/<slug>/report.json,
-// then the daemon deterministically merges those into review/index.json +
-// review/summary.md (no LLM needed for the aggregation).
+// The prd-review stage reviews written requirements on every ingested URD/PRD
+// page. Embedded mockups are illustrative only, so page eligibility must never
+// depend on an attachment. The daemon fans out one bounded-concurrency agent run
+// PER PAGE, then deterministically merges review/<slug>/report.json files into
+// review/index.json + review/summary.md (no LLM needed for aggregation).
 //
 // This module holds the PURE, unit-testable pieces: which pages have mockups,
 // the stable page slug, and the merge. The run-lifecycle orchestration lives in
@@ -16,16 +15,16 @@ import path from 'node:path';
 
 export type Verdict = 'pass' | 'warn' | 'fail';
 
-/** A doc page that carries at least one mockup image → one fan-out unit. */
-export interface MockupPage {
+/** A requirements-bearing doc page → one fan-out unit. */
+export interface RequirementPage {
   /** Page md path relative to the run cwd, e.g. docs/confluence/i-tai-khoan/1.md */
   mdPath: string;
   /** Stable slug: docs/confluence/ prefix stripped, '/'→'__', '.md' dropped. */
   slug: string;
   /** Page title (from the md frontmatter `title:`), fallback to the file stem. */
   page: string;
-  /** How many embedded mockup image refs the page has (for logging/summary). */
-  mockupCount: number;
+  /** Embedded illustration count, retained only for report/preview compatibility. */
+  illustrationCount: number;
 }
 
 /** Stable per-page slug — MUST match the skill's convention so re-runs and
@@ -34,13 +33,12 @@ export interface MockupPage {
  *  bare name) still slugifies sensibly. */
 export function pageSlug(mdRelPath: string): string {
   const norm = mdRelPath.replace(/\\/g, '/').replace(/^\.\//, '');
-  const noPrefix = norm.replace(/^docs\/confluence\//, '');
+  const noPrefix = norm.replace(/^docs-feature\//, '').replace(/^docs\/confluence\//, '');
   return noPrefix.replace(/\.md$/i, '').replace(/\//g, '__');
 }
 
-/** A markdown image ref whose target sits under an `attachments/` folder — the
- *  shape localizeConfluenceImages emits for every downloaded mockup. */
-const MOCKUP_REF_RE = /!\[[^\]]*\]\([^)]*attachments\/[^)]+\)/g;
+/** Local illustration refs, counted only as compatibility metadata. */
+const ILLUSTRATION_REF_RE = /!\[[^\]]*\]\([^)]*attachments\/[^)]+\)/g;
 
 function titleFromFrontmatter(md: string, fallback: string): string {
   const m = /^---\n([\s\S]*?)\n---/.exec(md);
@@ -51,12 +49,13 @@ function titleFromFrontmatter(md: string, fallback: string): string {
   return fallback;
 }
 
-/** Recursively list every markdown page under `docs/confluence/` (excluding
- *  the _index.md companion and anything under attachments/) that embeds ≥1
- *  mockup image. */
-export async function listMockupPages(cwd: string): Promise<MockupPage[]> {
-  const root = path.join(cwd, 'docs', 'confluence');
-  const out: MockupPage[] = [];
+/** Recursively list every requirements page under the active docs tree. The
+ *  `_index.md` companion and files under `attachments/` are not source pages;
+ *  every other Markdown page is eligible whether or not it embeds an image. */
+export async function listRequirementPages(cwd: string): Promise<RequirementPage[]> {
+  const featureRoot = path.join(cwd, 'docs-feature');
+  const root = (await hasMarkdown(featureRoot)) ? featureRoot : path.join(cwd, 'docs', 'confluence');
+  const out: RequirementPage[] = [];
   const walk = async (dir: string): Promise<void> => {
     let entries: import('node:fs').Dirent[];
     try {
@@ -73,14 +72,13 @@ export async function listMockupPages(cwd: string): Promise<MockupPage[]> {
       }
       if (!e.name.toLowerCase().endsWith('.md') || e.name.toLowerCase() === '_index.md') continue;
       const md = await fs.readFile(abs, 'utf8').catch(() => '');
-      const mockupCount = (md.match(MOCKUP_REF_RE) ?? []).length;
-      if (mockupCount === 0) continue;
+      const illustrationCount = (md.match(ILLUSTRATION_REF_RE) ?? []).length;
       const mdPath = path.relative(cwd, abs).replace(/\\/g, '/');
       out.push({
         mdPath,
         slug: pageSlug(mdPath),
         page: titleFromFrontmatter(md, path.basename(e.name, path.extname(e.name))),
-        mockupCount,
+        illustrationCount,
       });
     }
   };
@@ -88,6 +86,17 @@ export async function listMockupPages(cwd: string): Promise<MockupPage[]> {
   // Deterministic order (path) so re-runs and the index are stable.
   out.sort((a, b) => a.mdPath.localeCompare(b.mdPath));
   return out;
+}
+
+async function hasMarkdown(root: string): Promise<boolean> {
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [] as import('node:fs').Dirent[]);
+  for (const entry of entries) {
+    if (entry.name === 'attachments') continue;
+    const abs = path.join(root, entry.name);
+    if (entry.isDirectory() && await hasMarkdown(abs)) return true;
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md') && entry.name.toLowerCase() !== '_index.md') return true;
+  }
+  return false;
 }
 
 const asVerdict = (v: unknown): Verdict => (v === 'fail' || v === 'warn' ? v : 'pass');
@@ -105,8 +114,8 @@ export function scorePageReport(report: unknown): {
   score: number;
   verdict: Verdict;
 } {
-  // Score SCREEN mockups only — 'diagram' images (draw.io / flowcharts) are flow
-  // reference context, never graded, so they don't enter the count or the mean.
+  // Entries remain attachment-keyed for schema compatibility. 'diagram' entries
+  // are process context only, never graded, so they don't enter the count/mean.
   const all = Array.isArray((report as any)?.images) ? (report as any).images : [];
   const images = all.filter((im: any) => im?.kind !== 'diagram');
   let blockers = 0;
@@ -179,9 +188,9 @@ export function mergePageReports(
     pages: merged,
   };
   const vLabel = (v: Verdict) => (v === 'fail' ? 'Chưa đạt' : v === 'warn' ? 'Cảnh báo' : 'Đạt');
-  let summaryMd = `# PRD Mockup Review — ${vLabel(verdict)} (${score}/100)\n\n`;
-  summaryMd += `${merged.length} trang · ${images} mockup · ${blockers} nghiêm trọng · ${majors} nặng · ${minors} nhẹ\n\n`;
-  summaryMd += `| Trang | Mockup | Điểm | Kết luận | NT | Nặng |\n| --- | --- | --- | --- | --- | --- |\n`;
+  let summaryMd = `# PRD Requirements Review — ${vLabel(verdict)} (${score}/100)\n\n`;
+  summaryMd += `${merged.length} trang · ${images} mục review · ${blockers} nghiêm trọng · ${majors} nặng · ${minors} nhẹ\n\n`;
+  summaryMd += `| Trang | Mục review | Điểm | Kết luận | NT | Nặng |\n| --- | --- | --- | --- | --- | --- |\n`;
   for (const p of merged) {
     summaryMd += `| ${p.page} | ${p.images} | ${p.score} | ${vLabel(p.verdict)} | ${p.blockers} | ${p.majors} |\n`;
   }

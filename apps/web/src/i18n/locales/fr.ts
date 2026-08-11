@@ -225,6 +225,7 @@ export const fr: Dict = {
   'settings.agentInstallGroup': 'Disponibles à installer ({count})',
   'settings.agentAuthRequired': 'Authentification requise',
   'settings.agentAuthUnknown': 'Statut d’authentification inconnu',
+  'settings.agentAuthOk': 'Connecté',
   'settings.apiSection': 'API Anthropic',
   'settings.quickFillProvider': 'Remplissage rapide du fournisseur',
   'settings.customProvider': 'Fournisseur personnalisé',
@@ -354,6 +355,7 @@ export const fr: Dict = {
   'entry.useEverywhereAria': 'Ouvrir le guide « Utiliser partout » (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': 'Nouveau projet',
   'entry.navHome': 'Accueil',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'Projets',
   'entry.navDesignSystems': 'Systèmes de design',
   'designSystemPicker.select': 'Choisir un design system',
@@ -712,9 +714,13 @@ export const fr: Dict = {
   'ds.categoryAll': 'Tout',
   'ds.categoryUncategorized': 'Non catégorisé',
   'ds.showcase': 'Vitrine',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Jetons',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'Chargement du DESIGN.md…',
+  'ds.reactStats': '{components} composants · {icons} icônes',
+  'ds.reactDetailToggle': 'Bibliothèque de composants',
+  'ds.reactDetailLoading': 'Chargement de la bibliothèque de composants…',
 
   'avatar.title': 'Compte et paramètres',
   'avatar.localCli': 'CLI local',
@@ -791,6 +797,9 @@ export const fr: Dict = {
   'chat.inspect.commentHint': 'Click an element in the canvas to add a comment.',
   'chat.conversationsTitle': 'Conversations',
   'chat.conversationsAria': 'Historique des conversations',
+  'chat.displayModeAria': 'Afficher ou masquer les détails techniques',
+  'chat.displayModeSimpleTitle': 'Vue simplifiée — les étapes techniques sont masquées. Cliquez pour les afficher.',
+  'chat.displayModeFullTitle': 'Vue détaillée — les étapes techniques sont affichées. Cliquez pour simplifier.',
   'chat.newConversation': 'Nouvelle conversation',
   'chat.newConversationsTitle': 'Nouvelle conversation',
   'chat.conversationsHeading': 'Conversations',
@@ -1458,6 +1467,11 @@ export const fr: Dict = {
   'settings.designSystemsSource': 'Source',
   'settings.designSystemsSourceLocal': 'Local',
   'settings.designSystemsSourceGithub': 'GitHub',
+  'settings.designSystemsSourceFigma': 'Figma IR',
+  'settings.designSystemsFigmaFiles': 'Fichiers Figma IR',
+  'settings.designSystemsFigmaFilesHelp': 'Sélectionnez des exports .ir.json et/ou le bundle .zip du plugin Fig Pipeline. L’ordre de fusion suit l’ordre des noms de fichiers — préfixe 01-, 02-, …, le fichier foundation (tokens) en premier.',
+  'settings.designSystemsImportFigma': 'Importer Figma IR',
+  'settings.designSystemsImportWarnings': '{count} avertissements d’import',
   'settings.designSystemsStructure': 'Structure',
   'settings.designSystemsModeHybrid': 'Hybride',
   'settings.designSystemsModeNormalized': 'Normalisé',
@@ -1946,4 +1960,37 @@ export const fr: Dict = {
   'settings.sandboxMissing': 'manquant',
   'settings.sandboxRunCmd': 'exécuter : {cmd}',
   'settings.sandboxDaemonOffline': 'Daemon hors ligne — statut sandbox indisponible.',
+  'settings.sandboxClaudeTitle': 'Claude runtime',
+  'settings.sandboxClaudeHint': 'Claude keeps the existing account switcher and usage controls.',
+  'settings.sandboxCodexTitle': 'Codex runtime',
+  'settings.sandboxCodexHint': 'Codex uses browser-based device code login and never displays tokens.',
+  'settings.sandboxRuntimeReady': 'Ready',
+  'settings.sandboxRuntimeNotReady': 'Not ready',
+  'settings.sandboxCodexLoginStart': 'Start login',
+  'settings.sandboxCodexLoginDisconnect': 'Disconnect',
+
+  // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
+  'pipelines.runAllClear.title': 'Old results will be cleared',
+  'pipelines.runAllClear.body': 'Running now will delete the existing results of: {stages}.',
+  'pipelines.runAllClear.historyNote':
+    'The current results are saved to project history first, so you can restore them afterward.',
+  'pipelines.runAllClear.confirm': 'Run and clear old results',
+  'pipelines.runAllClear.staleOnlyTitle': 'Some inputs are from outside this run',
+  'pipelines.runAllClear.confirmContinue': 'Run',
+  'pipelines.runAllClear.staleSectionTitle': 'Using input from outside this run',
+  'pipelines.runAllClear.staleLine': "{stage} will use {source}'s result from {time}.",
+  'pipelines.runAllClear.staleNote':
+    'Each source stage above is outside this run, so its result stays exactly as it is — the stage that depends on it will use that same version.',
+
+  // Pipelines — dependency gate is now a SUGGESTION, not a lock (spec
+  // g2-ui-suggestion-not-gate). Every stage is runnable once step 1 (docs
+  // ingest) has run; these strings replace the old "must finish X first"
+  // blocking copy with informational notes that never disable Save/Run.
+  'pipelines.runAllPicker.ingestRequired': '{stage} (step 1) must finish first — the steps below need ingested documents to run.',
+  'pipelines.runAllPicker.softNote': "Will run with current data; {stages} won't run this time.",
+  'pipelines.runAllPicker.hint':
+    "Tick exactly the steps you want to run — ticking one won't drag in others. A step whose dependency isn't ticked and hasn't finished yet runs with whatever data already exists (see the note under it).",
+  'pipelines.rail.usuallyAfter': 'Usually runs after {stages}',
+  'pipelines.rail.needsDocs': 'Needs {stage} first — no documents ingested yet',
+  'pipelines.rail.staleNeedsDocs': 'This result is from old data — rerun {stage} to sync',
 };

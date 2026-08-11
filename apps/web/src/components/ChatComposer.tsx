@@ -98,6 +98,10 @@ interface Props {
   sendDisabled?: boolean;
   initialDraft?: string;
   draftStorageKey?: string;
+  /** Đè placeholder mặc định ("Describe what you want to generate…") — các
+   *  surface không phải sinh-nội-dung (vd workspace tổng chỉ-đọc) cần lời
+   *  mời đúng việc của chúng. */
+  placeholder?: string;
   // Lazy ensure — the composer calls this before its first upload, so the
   // project folder exists on disk before files land in it. Returns the
   // project id when ready.
@@ -197,6 +201,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       sendDisabled = false,
       initialDraft,
       draftStorageKey,
+      placeholder,
       onEnsureProject,
       commentAttachments = [],
       onRemoveCommentAttachment,
@@ -1420,7 +1425,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 // element + subtree entirely.
                 className="ph-no-capture"
                 value={draft}
-                placeholder={t('chat.composerPlaceholder')}
+                placeholder={placeholder ?? t('chat.composerPlaceholder')}
                 spellCheck={false}
                 onChange={handleChange}
                 onPaste={handlePaste}

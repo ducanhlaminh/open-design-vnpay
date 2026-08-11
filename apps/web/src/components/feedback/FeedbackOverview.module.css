@@ -1,0 +1,33 @@
+.page { display: grid; gap: 16px; color: var(--text); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
+.kpi, .panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); box-shadow: var(--shadow-xs); }
+.kpi { display: flex; flex-direction: column; gap: 7px; padding: 16px; }
+.kpiLabel, .metricLabel { color: var(--text-soft); font-size: 10.5px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; }
+.kpiValue { color: var(--text-strong); font-size: 27px; line-height: 1; font-variant-numeric: tabular-nums; }
+.badgePositive { color: var(--accent-strong, var(--accent)); }
+.badgeNegative { color: #dc2626; }
+.badgeNeutral { color: var(--text-strong); }
+.panel { padding: 18px; }
+.panelTitle { margin: 0 0 16px; color: var(--text-strong); font-size: 15px; font-weight: 680; }
+.bars, .steps { display: grid; gap: 10px; }
+.barRow { display: grid; grid-template-columns: minmax(110px, 1fr) 2.5fr 34px; align-items: center; gap: 10px; width: 100%; padding: 8px 6px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.barRow:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.barLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sample { display: block; margin-top: 2px; color: var(--text-soft); font-size: 10px; }
+.barTrack, .metricTrack, .productionTrack { display: block; overflow: hidden; border-radius: 99px; background: var(--bg-subtle); }
+.barTrack { height: 8px; }
+.barFill, .metricFill, .productionFill { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.barValue { color: var(--text-strong); font-variant-numeric: tabular-nums; text-align: right; }
+.step { display: grid; grid-template-columns: minmax(110px, 1fr) 2fr 2fr; align-items: center; gap: 12px; }
+.stepTitle { overflow: hidden; color: var(--text-strong); text-overflow: ellipsis; white-space: nowrap; }
+.metric { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; min-width: 0; }
+.metricTrack { height: 6px; }
+.metricFill.secondary, .productionFill:nth-child(2n) { background: color-mix(in srgb, var(--accent) 55%, var(--text-soft)); }
+.metricValue { color: var(--text-strong); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.productionTrack { display: flex; height: 18px; }
+.productionFill { min-width: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; color: var(--text-muted); font-size: 12px; }
+.legendItem { display: inline-flex; align-items: center; gap: 5px; }
+.legendDot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.empty { padding: 48px 24px; border: 1px dashed var(--border-strong); border-radius: var(--radius); background: color-mix(in srgb, var(--bg-panel) 55%, transparent); color: var(--text-muted); text-align: center; }
+@media (max-width: 700px) { .step { grid-template-columns: 1fr; gap: 7px; } .metric { grid-template-columns: 100px 1fr auto; } }

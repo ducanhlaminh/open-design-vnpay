@@ -1,12 +1,18 @@
 // Agent-in-sandbox settings card (Settings → Execution, daemon mode).
-// Read-side of `GET /api/sandbox/status`; the enable toggle persists through
-// the shared `PUT /api/app-config` `sandbox` section (same route the `od
-// sandbox enable|disable` CLI uses). Build/login are terminal-interactive
-// docker operations, so the card only surfaces the commands to run.
-import { useCallback, useEffect, useState } from 'react';
-import type { SandboxStatusResponse, SandboxBuildResponse } from '@open-design/contracts';
+// The web UI reads the daemon sandbox snapshot and renders the Claude and
+// Codex runtimes independently. The daemon contract is mid-migration in the
+// other worktree, so this file keeps a local shadow of the new shape and falls
+// back to the legacy summary view when the runtime list is still absent.
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { SandboxBuildResponse } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { ClaudeAccountSwitcher } from './ClaudeAccountSwitcher';
+import { CodexDeviceLogin } from './CodexDeviceLogin';
+import {
+  isSandboxRuntimeReady,
+  type SandboxRuntimeStatus,
+  type SandboxStatusResponse,
+} from './sandbox-runtime';
 import styles from './SandboxSection.module.css';
 
 export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
@@ -17,7 +23,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
   const refresh = useCallback(async () => {
     if (!daemonLive) return;
     try {
-      const resp = await fetch('/api/sandbox/status');
+      const resp = await fetch('/api/sandbox/status?probeAuth=1');
       if (resp.ok) setStatus((await resp.json()) as SandboxStatusResponse);
     } catch {
       // Daemon unreachable — keep whatever we last showed.
@@ -76,6 +82,61 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
       </span>
     );
 
+  const runtimeStatuses = status?.runtimeStatuses ?? [];
+  const runtimeById = useMemo(
+    () => new Map(runtimeStatuses.map((runtime) => [runtime.id, runtime] as const)),
+    [runtimeStatuses],
+  );
+  const claudeRuntime = runtimeById.get('claude');
+  const codexRuntime = runtimeById.get('codex');
+  const hasRuntimeStatuses = runtimeStatuses.length > 0;
+
+  const renderRuntimeRow = (runtime: SandboxRuntimeStatus | undefined) => {
+    if (!runtime) {
+      return (
+        <span className={styles.missing}>
+          {t('settings.sandboxMissing')}
+        </span>
+      );
+    }
+
+    return (
+        <div className={styles.runtimeSummary}>
+          <ul className={styles.runtimeSpecs}>
+            <li>
+            <span>Version</span>
+            <code>{runtime.version ?? '—'}</code>
+          </li>
+          <li>
+            <span>Image</span>
+            {runtime.imageAvailable ? (
+              <span className={styles.ok}>{t('settings.sandboxOk')}</span>
+            ) : (
+              <span className={styles.missing}>{t('settings.sandboxMissing')}</span>
+            )}
+          </li>
+          <li>
+            <span>Auth volume</span>
+            <code>{runtime.authVolume ?? '—'}</code>
+            {runtime.authVolumeAvailable ? (
+              <span className={styles.ok}>{t('settings.sandboxOk')}</span>
+            ) : (
+              <span className={styles.missing}>{t('settings.sandboxMissing')}</span>
+            )}
+          </li>
+          <li>
+            <span>Auth status</span>
+            <code>{runtime.authStatus ?? '—'}</code>
+          </li>
+          <li>
+            <span>Login method</span>
+            <code>{runtime.loginMethod ?? '—'}</code>
+          </li>
+        </ul>
+      </div>
+    );
+  };
+
   return (
     <section className="settings-section" data-testid="settings-sandbox">
       <div className="section-head">
@@ -86,6 +147,51 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
       </div>
       {!daemonLive || !status ? (
         <small className="hint">{t('settings.sandboxDaemonOffline')}</small>
+      ) : hasRuntimeStatuses ? (
+        <div className={styles.runtimeGrid}>
+          <details className={styles.runtimeCard} data-testid="sandbox-runtime-claude">
+            <summary className={styles.runtimeToggle}>
+              <span className={styles.runtimeToggleCopy}>
+                <h4>{t('settings.sandboxClaudeTitle')}</h4>
+                <span>{t('settings.sandboxClaudeHint')}</span>
+              </span>
+              <span className={isSandboxRuntimeReady(claudeRuntime) ? styles.runtimeReady : styles.runtimeMissing}>
+                {isSandboxRuntimeReady(claudeRuntime)
+                  ? t('settings.sandboxRuntimeReady')
+                  : t('settings.sandboxRuntimeNotReady')}
+              </span>
+            </summary>
+            <div className={styles.runtimeExpanded}>
+              {renderRuntimeRow(claudeRuntime)}
+              <div className={styles.runtimeBody}>
+                <ClaudeAccountSwitcher daemonLive={daemonLive} />
+              </div>
+            </div>
+          </details>
+          <details className={styles.runtimeCard} data-testid="sandbox-runtime-codex">
+            <summary className={styles.runtimeToggle}>
+              <span className={styles.runtimeToggleCopy}>
+                <h4>{t('settings.sandboxCodexTitle')}</h4>
+                <span>{t('settings.sandboxCodexHint')}</span>
+              </span>
+              <span className={isSandboxRuntimeReady(codexRuntime) ? styles.runtimeReady : styles.runtimeMissing}>
+                {isSandboxRuntimeReady(codexRuntime)
+                  ? t('settings.sandboxRuntimeReady')
+                  : t('settings.sandboxRuntimeNotReady')}
+              </span>
+            </summary>
+            <div className={styles.runtimeExpanded}>
+              {renderRuntimeRow(codexRuntime)}
+              <div className={styles.runtimeBody}>
+                <CodexDeviceLogin
+                  disabled={codexRuntime ? !codexRuntime.imageAvailable : false}
+                  onAuthChanged={() => void refresh()}
+                  onComplete={() => void refresh()}
+                />
+              </div>
+            </div>
+          </details>
+        </div>
       ) : (
         <>
           <p className="hint" style={{ margin: '0 0 4px' }}>

@@ -94,6 +94,12 @@
   justify-content: center;
 }
 .chat-header-actions .icon-only:hover { background: var(--bg-subtle); color: var(--text); }
+/* Simplified view is the default, so the toggle only picks up the accent
+   once the user has opted into the developer-facing full transcript. */
+.chat-header-actions .chat-display-mode-toggle:not(.is-simple) {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
 
 .chat-log {
   flex: 1;

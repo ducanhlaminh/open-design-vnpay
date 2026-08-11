@@ -8,6 +8,8 @@
 
 import type { RemoteProject } from '@open-design/contracts';
 
+import { isPending } from './staging.js';
+
 // ── workspace → projectId ────────────────────────────────────────────────────
 // Derive a pull-able project id from a DP_UI_WORKSPACE entity: prefer the
 // explicit projectId property, else the conventional `ws-project-<ID>` entity id.
@@ -95,7 +97,12 @@ export async function loadRemoteProjects(kgs: WorkspaceSource, media: FolderSour
     kgsRows.push({ projectId, name });
   }
 
-  const folders = await media.listFolders().catch(() => []);
+  // `pending--…` folders are approval requests, not projects. Studio hides them
+  // for free (it enumerates KGS workspaces, and a staged push writes no
+  // workspace node) but Open Design lists EVERY media folder — without this
+  // filter a request awaiting approval would show up as a pullable project on
+  // every machine in the app.
+  const folders = (await media.listFolders().catch(() => [])).filter((f) => !isPending(f.name));
   const mediaRows: MediaRow[] = await Promise.all(
     folders.map(async (f) => ({
       projectId: f.name,

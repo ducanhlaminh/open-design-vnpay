@@ -949,6 +949,11 @@
   line-height: 1.35;
 }
 .agent-card-meta .muted { color: var(--text-soft); font-style: italic; }
+/* Login state of a detected CLI: green = signed in, red = needs `/login`.
+   Unknown keeps the neutral --text-muted so an unverifiable probe never
+   reads as a hard failure. */
+.agent-card-meta .agent-card-auth-ok { color: var(--green); }
+.agent-card-meta .agent-card-auth-missing { color: var(--red); font-weight: 500; }
 .agent-model-row-head {
   font-size: 12px;
   color: var(--text);

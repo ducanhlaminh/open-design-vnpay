@@ -1,0 +1,384 @@
+/*
+ * ComponentAuditPreview — bảng đối chiếu component theo màn hình cho
+ * `docs-review/comp/*.components.json`.
+ *
+ * Ngôn ngữ thị giác của thanh tóm tắt + bộ lọc chip là bản sao có chủ ý của
+ * DocRedlinePreview.module.css (`.strip`, `.filters`, `.chip`, `.chipSwatch`,
+ * `.chipCheck`): hai màn cùng thuộc bước review docs, một hàng chip trông khác
+ * đi ở màn thứ hai chỉ bắt người dùng học lại cùng một thứ. Chép chứ không
+ * import chung vì CSS Module không có cơ chế kế thừa lớp giữa hai file mà
+ * không kéo theo cả bố cục hai cột của màn kia.
+ *
+ * Mọi màu lấy từ token trong styles/tokens.css nên sáng/tối tự đúng — không
+ * hard-code màu ngoài giá trị dự phòng của var(), giữ đúng thói quen
+ * `var(--x, #hex)` của các khung nhìn xung quanh. Riêng năm màu verdict dùng
+ * rgba() thẳng, cùng lý do (và cùng bảng màu) như các `.legendSwatch*` bên
+ * redline: chúng phải giống nhau ở CẢ HAI theme nên không thể là token nền.
+ */
+
+.viewerBody {
+  padding: 0;
+}
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.message {
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-muted, #57544e);
+}
+.error {
+  color: var(--red, #9c2a25);
+}
+
+/* ── Thanh tóm tắt trên cùng ─────────────────────────────────────────────── */
+.strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #f5f6f8);
+  color: var(--text-soft, #4b5563);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tally {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dòng tên trang + đường dẫn tài liệu gốc: người đọc thường mở file này từ cây
+   thư mục `comp/`, tên file đã bị slug hoá nên tự nó không nói được đây là
+   trang nào. */
+.pageLine {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  color: var(--text-muted, #6b7280);
+  font-size: 12px;
+}
+.pageName {
+  color: var(--text, #1a1a1a);
+  font-weight: 600;
+}
+.docPath {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--text-muted, #6b7280);
+}
+
+/* ── Bộ lọc verdict (kiêm chú thích màu) ─────────────────────────────────────
+   Mỗi chip là một ô chọn thật; ô màu bên trong chính là chú thích. Trạng thái
+   TẮT phải đọc được từ xa nên chip tắt vừa nhạt đi vừa rỗng ruột ô màu. */
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.filtersHint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted, #6b7280);
+  white-space: nowrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 999px;
+  background: var(--bg-panel, #fff);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text, #1a1a1a);
+  cursor: pointer;
+  user-select: none;
+  /* Ease-out chuẩn của repo (xem AGENTS.md “UI animation philosophy”). */
+  transition:
+    opacity 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.chip:hover {
+  border-color: color-mix(in srgb, var(--accent, #0066b3) 55%, var(--border, #e1e5eb));
+}
+
+/* Ô tick gốc ẩn khỏi mắt nhưng CÒN trong cây a11y: bàn phím tab tới được, trình
+   đọc màn hình vẫn thấy "checkbox, checked". `display:none` cắt mất cả hai. */
+.chipInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.chipInput:focus-visible + .chipSwatch {
+  box-shadow: 0 0 0 2px var(--accent, #0066b3);
+}
+
+.chipSwatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  flex: none;
+  transition: background-color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* Dấu tick nằm trong chính ô màu: một ô vuông có tick là hình ảnh ai cũng đọc
+   ra ngay là checkbox, mà không phải thêm một hộp vuông thứ hai bên cạnh. */
+.chipCheck {
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--text, #1a1a1a);
+}
+
+.chipCount {
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  color: var(--text-muted, #6b7280);
+}
+
+.chipOff {
+  opacity: 0.55;
+  background: none;
+}
+
+/* Ô màu rỗng ruột khi tắt — giữ nguyên viền màu để vẫn biết chip nói về màu
+   nào. `!important` vì nền đến từ các lớp .swatch* dùng chung. */
+.chipOff .chipSwatch {
+  background: transparent !important;
+}
+
+/* Tắt = ô vuông RỖNG (không tick). Đó là nửa còn lại của hình ảnh checkbox. */
+.chipOff .chipCheck {
+  visibility: hidden;
+}
+
+.chipOff .chipCount {
+  opacity: 0.8;
+}
+
+/* Năm màu verdict: đạt xanh lá, ngoài danh mục đỏ, sai biến thể vàng, chưa rõ
+   tím, nội bộ xám. Giữ đúng họ màu đang dùng ở redline (xanh = ổn/thêm,
+   đỏ = hỏng/xoá, vàng = phải nhìn lại, tím = cần bàn) để người đọc không phải
+   đổi bảng nghĩa giữa hai màn của cùng một bước. */
+.swatchOk {
+  background: rgba(34, 197, 94, 0.28);
+  outline: 1px solid rgba(34, 197, 94, 0.85);
+}
+.swatchNotInCatalog {
+  background: rgba(239, 68, 68, 0.24);
+  outline: 1px solid rgba(239, 68, 68, 0.8);
+}
+.swatchVariantMismatch {
+  background: rgba(245, 158, 11, 0.38);
+  outline: 1px solid rgba(245, 158, 11, 0.85);
+}
+.swatchAmbiguous {
+  background: rgba(139, 92, 246, 0.3);
+  outline: 1px solid rgba(139, 92, 246, 0.85);
+}
+.swatchInternal {
+  background: rgba(107, 114, 128, 0.24);
+  outline: 1px solid rgba(107, 114, 128, 0.7);
+}
+
+/* ── Thân: một khối cho mỗi màn hình ─────────────────────────────────────── */
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.empty {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted, #6b7280);
+}
+
+.screen {
+  /* .body là flex-column CUỘN: để flex-shrink mặc định thì khi tổng nội dung
+     cao hơn khung, mọi card bị bóp lùn xuống và `overflow: hidden` cắt cụt
+     bảng bên trong (mỗi card chỉ còn lòi 1-2 hàng). Card phải giữ nguyên chiều
+     cao nội dung — cuộn là việc của .body. */
+  flex: none;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 10px;
+  background: var(--bg-panel, #fff);
+  overflow: hidden;
+}
+
+.screenHead {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #f5f6f8);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #1a1a1a);
+}
+.screenId {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--accent, #0066b3);
+}
+.screenSep {
+  color: var(--text-faint, #8a857b);
+}
+.screenName {
+  min-width: 0;
+}
+.screenCount {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted, #6b7280);
+}
+
+/* ── Bảng phần tử ────────────────────────────────────────────────────────── */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  color: var(--text, #1a1a1a);
+}
+.table th {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+  color: var(--text-muted, #6b7280);
+  white-space: nowrap;
+}
+.table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-soft, #edf0f4);
+  vertical-align: top;
+}
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cellLabel {
+  font-weight: 550;
+  word-break: break-word;
+}
+.cellDocType {
+  color: var(--text-soft, #4b5563);
+  word-break: break-word;
+}
+.cellComponent {
+  color: var(--text, #1a1a1a);
+  word-break: break-word;
+}
+.cellVerdict {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.ruleId {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #faf9f7);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--text-muted, #6b7280);
+  /* Mã anchor dài (criteria/components.md#…) không có chỗ ngắt tự nhiên —
+     phải cho bẻ chuỗi, không thì nó banh ngang cả bảng. */
+  word-break: break-all;
+}
+
+.verdict {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e1e5eb);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.verdictOk {
+  border-color: var(--green-border, #c6ead2);
+  background: var(--green-bg, #e8f7ee);
+  color: var(--green, #1f7a3a);
+}
+.verdictNotInCatalog {
+  border-color: var(--red-border, #f5c6c2);
+  background: var(--red-bg, #fdecea);
+  color: var(--red, #9c2a25);
+}
+.verdictVariantMismatch {
+  border-color: color-mix(in srgb, var(--amber, #b26200) 35%, transparent);
+  background: var(--amber-bg, #fff3e0);
+  color: var(--amber, #b26200);
+}
+.verdictAmbiguous {
+  border-color: var(--purple-border, #e4d4f1);
+  background: var(--purple-bg, #f3ecf9);
+  color: var(--purple, #6c3aa6);
+}
+.verdictInternal {
+  border-color: var(--border, #e1e5eb);
+  background: var(--bg-subtle, #eef1f5);
+  color: var(--text-muted, #57544e);
+}
+
+/* Dòng note: thụt vào bằng đúng cột đầu tiên và bỏ viền trên, để nó đọc như
+   phần đuôi của dòng ngay trên chứ không phải một phần tử thứ hai. */
+.noteRow td {
+  border-bottom: 1px solid var(--border-soft, #edf0f4);
+}
+.noteCell {
+  padding: 0 12px 8px 26px;
+}
+.note {
+  display: block;
+  border-left: 2px solid var(--border-strong, #c9d0da);
+  padding-left: 8px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-muted, #6b7280);
+}

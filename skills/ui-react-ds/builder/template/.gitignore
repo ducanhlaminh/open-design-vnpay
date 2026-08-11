@@ -1,0 +1,7 @@
+# Keep the project CWD light and deterministic. node_modules never lands here
+# (it's the shared image toolkit); .vite-cache lives in a Docker volume.
+node_modules/
+dist/
+.vite-cache/
+/screens/
+*.local

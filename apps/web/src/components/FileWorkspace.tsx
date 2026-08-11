@@ -51,6 +51,7 @@ import { LiveArtifactBadges } from './LiveArtifactBadges';
 import { MissingBrandFontsBanner } from './MissingBrandFontsBanner';
 import { PasteTextDialog } from './PasteTextDialog';
 import { QuickSwitcher } from './QuickSwitcher';
+import { WorkspacePreviewMenu } from './WorkspacePreviewMenu';
 import { SketchEditor } from './SketchEditor';
 import {
   buildSketchDocument,
@@ -66,6 +67,13 @@ interface Props {
   liveArtifacts: LiveArtifactSummary[];
   filesRefreshKey?: number;
   onRefreshFiles: () => Promise<void> | void;
+  // Open a pipeline-step preview from the toolbar Preview dropdown. Defaults to
+  // the internal openFile(); the parent only overrides it when it needs to do
+  // something extra around the tab open.
+  onOpenPreviewFile?: (name: string) => void;
+  // Reload the active preview. The parent must ALSO bump filesRefreshKey —
+  // refetching the file list alone does not cache-bust the preview iframe.
+  onReloadPreview?: () => Promise<void> | void;
   isDeck: boolean;
   onExportAsPptx?: ((fileName: string) => void) | undefined;
   streaming?: boolean;
@@ -197,6 +205,8 @@ export function FileWorkspace({
   liveArtifacts,
   filesRefreshKey = 0,
   onRefreshFiles,
+  onOpenPreviewFile,
+  onReloadPreview,
   isDeck,
   onExportAsPptx,
   streaming,
@@ -251,6 +261,8 @@ export function FileWorkspace({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [sketches, setSketches] = useState<Record<string, SketchState>>({});
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
+  // Busy flag for the toolbar's Reload preview button.
+  const [previewReloading, setPreviewReloading] = useState(false);
   const [draggedTabName, setDraggedTabName] = useState<string | null>(null);
   const [dragOverTab, setDragOverTab] = useState<{
     name: string;
@@ -931,6 +943,28 @@ export function FileWorkspace({
               />
             );
           })}
+        </div>
+        {/* Sibling of ws-tabs-bar, not a child: inside the scrollable strip it
+            would scroll away with the tabs and would also sit inside
+            role="tablist" while being neither a tab nor tab-like. */}
+        <div className="ws-tabs-actions">
+          <WorkspacePreviewMenu
+            files={visibleFiles}
+            activeTab={activeTab}
+            onOpenFile={(name) => (onOpenPreviewFile ?? openFile)(name)}
+            reloading={previewReloading}
+            onReloadPreview={() => {
+              if (!onReloadPreview || previewReloading) return;
+              setPreviewReloading(true);
+              void (async () => {
+                try {
+                  await onReloadPreview();
+                } finally {
+                  setPreviewReloading(false);
+                }
+              })();
+            }}
+          />
         </div>
       </div>
       <div className="ws-body">

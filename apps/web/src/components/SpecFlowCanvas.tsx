@@ -1,7 +1,7 @@
 // SpecFlowCanvas — the UX Spec "user flow" view: wireframes + RULE FLOWCHART.
 // Renders the ux stage's `flows/<FLOW-ID>.flow.json` (decision/end nodes +
 // labeled edges between screen ids) as a React Flow chart whose screen nodes
-// are the screens' own wireframe thumbnails (WireFrameView, scaled down) —
+// are the screens' own wireframe thumbnails (WireBlocks, scaled down) —
 // replacing the retired Mermaid view. Screens are implicit nodes: any edge
 // endpoint matching a spec screen id renders as that screen; `nodes[]` in the
 // flow file lists only decisions/ends. With no flow files (older ux runs) one
@@ -28,12 +28,16 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { WireFrameView, DEVICES, type WireDoc } from './WireFrameView';
+const DEVICE_WIDTHS = { desktop: 1280, mobile: 390 } as const;
+import { WireBlocks } from './WireBlocks';
+import { UseCaseReader } from './UseCaseReader';
+import { flowDocToChart, deriveUseCases } from './flow-usecases';
+import readerStyles from './UseCaseReader.module.css';
 import type { SpecDoc } from './SpecPreview';
 
 export interface FlowDocNode {
   id: string;
-  kind: 'decision' | 'end' | 'screen';
+  kind: 'decision' | 'end' | 'screen' | 'nav';
   label?: string;
   screen?: string;
 }
@@ -232,14 +236,14 @@ const EDGE_TYPES = { labeled: LabeledEdge };
 
 type FlowNodeData = {
   title: string;
-  wire?: WireDoc | null;
+  wire?: string | null;
   platform?: string;
 };
 
 function ScreenFlowNode({ data }: NodeProps) {
   const d = data as FlowNodeData;
   const isWeb = d.platform === 'web';
-  const natural = isWeb ? DEVICES.desktop.w : DEVICES.mobile.w;
+  const natural = isWeb ? DEVICE_WIDTHS.desktop : DEVICE_WIDTHS.mobile;
   const scale = (SCREEN_W - 18) / natural;
   const wrap: CSSProperties = {
     width: SCREEN_W,
@@ -271,7 +275,7 @@ function ScreenFlowNode({ data }: NodeProps) {
               inset: 0,
             }}
           >
-            <WireFrameView doc={d.wire} platform={d.platform} />
+            <WireBlocks html={d.wire} platform={d.platform} />
           </div>
         ) : (
           <div style={{ display: 'grid', placeItems: 'center', height: '100%', fontSize: 11, color: T.muted, padding: 10, textAlign: 'center' }}>
@@ -357,20 +361,27 @@ function EndFlowNode({ data }: NodeProps) {
   );
 }
 
-const NODE_TYPES = { screen: ScreenFlowNode, decision: DecisionFlowNode, end: EndFlowNode };
+function NavFlowNode({ data }: NodeProps) {
+  const d = data as FlowNodeData;
+  return <div style={{ width: END_W, minHeight: END_H, border: `1px solid ${T.border}`, borderRadius: 10, background: T.paper, display: 'grid', placeItems: 'center', padding: '10px 16px', fontSize: 12, fontWeight: 700, color: T.ink, textAlign: 'center' }}>
+    <Handle type="target" position={Position.Left} style={{ opacity: 0 }} /><Handle type="source" position={Position.Right} style={{ opacity: 0 }} />{d.title}
+  </div>;
+}
+
+const NODE_TYPES = { screen: ScreenFlowNode, decision: DecisionFlowNode, end: EndFlowNode, nav: NavFlowNode };
 
 /** Layered left→right layout: BFS depth from the entry (fallback: in-degree-0
  * nodes) picks the column; siblings stack vertically inside their column. */
 function layoutFlow(
   flow: FlowDoc,
   screenIds: Set<string>,
-): { kinds: Map<string, 'screen' | 'decision' | 'end'>; pos: Map<string, { x: number; y: number }> } {
+): { kinds: Map<string, 'screen' | 'decision' | 'end' | 'nav'>; pos: Map<string, { x: number; y: number }> } {
   const declared = new Map((flow.nodes ?? []).map((n) => [n.id, n]));
-  const kinds = new Map<string, 'screen' | 'decision' | 'end'>();
+  const kinds = new Map<string, 'screen' | 'decision' | 'end' | 'nav'>();
   const touch = (id: string) => {
     if (kinds.has(id)) return;
     const n = declared.get(id);
-    if (n && (n.kind === 'decision' || n.kind === 'end')) kinds.set(id, n.kind);
+    if (n && (n.kind === 'decision' || n.kind === 'end' || n.kind === 'nav')) kinds.set(id, n.kind);
     else if (n?.kind === 'screen') kinds.set(id, 'screen');
     else kinds.set(id, screenIds.has(id) ? 'screen' : 'end');
   };
@@ -403,10 +414,8 @@ function layoutFlow(
 
   const byCol = new Map<number, string[]>();
   for (const [id, d] of depth) byCol.set(d, [...(byCol.get(d) ?? []), id]);
-  const widthOf = (k: 'screen' | 'decision' | 'end') =>
-    k === 'screen' ? SCREEN_W : k === 'decision' ? DECISION_W : END_W;
-  const heightOf = (k: 'screen' | 'decision' | 'end') =>
-    k === 'screen' ? SCREEN_H : k === 'decision' ? DECISION_H : END_H;
+  const widthOf = (k: 'screen' | 'decision' | 'end' | 'nav') => k === 'screen' ? SCREEN_W : k === 'decision' ? DECISION_W : END_W;
+  const heightOf = (k: 'screen' | 'decision' | 'end' | 'nav') => k === 'screen' ? SCREEN_H : k === 'decision' ? DECISION_H : END_H;
 
   // Crossing reduction (barycenter): order each column by the average row of
   // its already-placed predecessors, so an edge mostly flows straight right
@@ -452,7 +461,7 @@ export function SpecFlowCanvas({
 }: {
   flows: FlowDoc[];
   spec: SpecDoc;
-  wireframes: Record<string, WireDoc> | null;
+  wireframes: Record<string, string> | null;
   platforms: Record<string, string> | null;
 }) {
   // MUST be memoized: `?? []` mints a new array on every render when the spec
@@ -479,7 +488,11 @@ export function SpecFlowCanvas({
     return derived ? [derived] : [];
   }, [flows, spec]);
   const [idx, setIdx] = useState(0);
+  const [mode, setMode] = useState<'scenarios' | 'graph'>('scenarios');
   const flow = effective[Math.min(idx, effective.length - 1)];
+  const screenTitles = useMemo(() => Object.fromEntries(screens.map((s) => [String(s.id), String(s.name ?? s.title ?? s.id)])), [screens]);
+  const chart = useMemo(() => (flow ? flowDocToChart(flow, screenTitles) : null), [flow, screenTitles]);
+  const useCaseCount = useMemo(() => (chart ? deriveUseCases(chart).useCases.length : 0), [chart]);
 
   const built = useMemo(() => {
     if (!flow) return { nodes: [] as Node[], edges: [] as Edge[] };
@@ -571,8 +584,32 @@ export function SpecFlowCanvas({
     );
   }
 
+  const renderStepExtra = (node: import('./FlowchartPreview').FlowchartNode) => {
+    if (node.type !== 'action' && node.type !== 'start') return null;
+    const wire = wireframes?.[node.id];
+    if (!wire) return null;
+    const platform = platforms?.[node.id] ?? 'mobile';
+    const natural = platform === 'web' ? DEVICE_WIDTHS.desktop : DEVICE_WIDTHS.mobile;
+    const scale = 174 / natural;
+    return (
+      <div style={{ height: 142, marginTop: 10, overflow: 'hidden', position: 'relative', borderRadius: 5, background: 'var(--bg-subtle, #f5f6f8)' }}>
+        <div style={{ width: natural, transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none' }}>
+          <WireBlocks html={wire} platform={platform} />
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 480 }}>
+      <div className={readerStyles.modeBar} role="tablist" aria-label="Chế độ xem flow">
+        <button type="button" role="tab" aria-selected={mode === 'scenarios'} className={`${readerStyles.modeButton} ${mode === 'scenarios' ? readerStyles.modeButtonActive : ''}`} onClick={() => setMode('scenarios')}>
+          <span className={readerStyles.modeButtonName}>Kịch bản</span><span className={readerStyles.modeButtonMeta}>· {useCaseCount}</span>
+        </button>
+        <button type="button" role="tab" aria-selected={mode === 'graph'} className={`${readerStyles.modeButton} ${mode === 'graph' ? readerStyles.modeButtonActive : ''}`} onClick={() => setMode('graph')}>
+          <span className={readerStyles.modeButtonName}>Sơ đồ</span><span className={readerStyles.modeButtonMeta}>· {built.nodes.length}</span>
+        </button>
+      </div>
       {effective.length > 1 ? (
         <div style={{ display: 'flex', gap: 6, padding: '8px 12px', borderBottom: `1px solid ${T.border}`, flexWrap: 'wrap' }}>
           {effective.map((f, i) => (
@@ -596,6 +633,8 @@ export function SpecFlowCanvas({
           ))}
         </div>
       ) : null}
+      {mode === 'scenarios' && chart ? <UseCaseReader doc={chart} renderStepExtra={renderStepExtra} /> : null}
+      {mode === 'graph' ? <>
       {/* Without a key, the red dashed edges read as "something is broken"
           rather than "this is the branch that does not go well". */}
       {built.edges.some((e) => (e.data as { negative?: boolean } | undefined)?.negative) ? (
@@ -645,6 +684,7 @@ export function SpecFlowCanvas({
           </ReactFlow>
         </ReactFlowProvider>
       </div>
+      </> : null}
     </div>
   );
 }

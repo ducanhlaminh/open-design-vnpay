@@ -645,7 +645,8 @@
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
-  padding: 12px 16px 0;
+  /* Cân trên dưới — pb 0 làm dãy chip dính sát mép dưới của thanh sticky. */
+  padding: 12px 16px;
   background: var(--bg);
   isolation: isolate;
 }
@@ -915,6 +916,25 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: left;
+}
+/* Installed CLI that still needs `/login`: picking it would fail the run
+   with an opaque agent error, so mark the chip rather than stay silent. */
+.inline-switcher__agent.is-signed-out {
+  border-color: var(--red-border);
+}
+.inline-switcher__agent-warn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--red-bg);
+  color: var(--red);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 /* Provider chips (BYOK mode) */

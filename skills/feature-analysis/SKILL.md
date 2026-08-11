@@ -29,7 +29,9 @@ Second stage of the **docs → UI** pipeline. You turn the raw Jira Markdown fro
 P1 into a clean, deduplicated **Feature list** that downstream design stages can
 build on without re-reading Jira.
 
-- **Input (only):** `./docs/jira/*.md` + `./docs/jira/_index.md` written by the
+**Docs layouts.** App-linked projects use `./docs-feature/` as the selected feature source; read `./docs-app/_index.md` first and individual `./docs-app/` pages only for cross-feature reference. Never build features from `./docs-app/`. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
+
+- **Input (only):** for an App-linked project, read `./docs-feature/**/*.md`; use `./docs-app/` only as read-only cross-feature context. In the legacy layout read `./docs/jira/*.md` + `./docs/jira/_index.md` written by the
   `jira-ingest` pipeline (P1). If that folder is missing/empty, stop and tell the
   user to run **Docs → Markdown (JIRA)** first.
 - **Output:** one file per feature `./features/<Feature Name>.md` (frontmatter =

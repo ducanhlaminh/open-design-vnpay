@@ -18,10 +18,12 @@ import {
 import {
   deleteDesignSystemDraft,
   fetchDesignSystemShowcase,
+  importFigmaDesignSystem,
   updateDesignSystemDraft,
 } from '../providers/registry';
 import { buildSrcdoc } from '../runtime/srcdoc';
 import { Icon } from './Icon';
+import { DesignSystemSyncActions } from './DesignSystemSync';
 import type { DesignSystemSummary, ProjectTemplate, Surface } from '../types';
 
 interface Props {
@@ -29,8 +31,12 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onPreview: (id: string) => void;
+  // Open a react-bundle system's detail modal already expanded to the
+  // viewport (card corner "Fullscreen" action; react-bundle cards only).
+  onPreviewFullscreen?: (id: string) => void;
   onCreate?: () => void;
   onOpenSystem?: (id: string) => void;
+  onOpenCriteria?: (id: string) => void;
   onSystemsRefresh?: () => Promise<void> | void;
   templates?: ProjectTemplate[];
 }
@@ -105,8 +111,10 @@ export function DesignSystemsTab({
   selectedId,
   onSelect,
   onPreview,
+  onPreviewFullscreen,
   onCreate,
   onOpenSystem,
+  onOpenCriteria,
   onSystemsRefresh,
   templates = [],
 }: Props) {
@@ -134,6 +142,41 @@ export function DesignSystemsTab({
   const [filter, setFilter] = useState('');
   const [userFilter, setUserFilter] = useState<UserListFilter>('all');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionMenuId, setActionMenuId] = useState<string | null>(null);
+  // Import trực tiếp từ zip của plugin Fig Pipeline ngay trên trang này —
+  // chọn file là import luôn (không form phụ); xong thì refresh danh sách.
+  // Lọc theo product family: app mobile (fixed viewport) vs website
+  // (responsive) — mỗi target dùng lib riêng nên danh sách cần chia được.
+  const [platformFilter, setPlatformFilter] = useState<'all' | 'mobile' | 'web'>('all');
+  const [platformBusyId, setPlatformBusyId] = useState<string | null>(null);
+  const setSystemPlatform = async (system: DesignSystemSummary, next: 'mobile' | 'web') => {
+    if (platformBusyId) return;
+    setPlatformBusyId(system.id);
+    // Bấm lại thẻ đang bật = gỡ thẻ (null).
+    await updateDesignSystemDraft(system.id, {
+      platform: system.platform === next ? null : next,
+    });
+    await onSystemsRefresh?.();
+    setPlatformBusyId(null);
+  };
+  const figmaFileRef = useRef<HTMLInputElement | null>(null);
+  const [figmaImporting, setFigmaImporting] = useState(false);
+  const [figmaImportError, setFigmaImportError] = useState<string | null>(null);
+  const [figmaImportWarnings, setFigmaImportWarnings] = useState<string[]>([]);
+  const handleFigmaImportFiles = async (files: File[]) => {
+    if (files.length === 0 || figmaImporting) return;
+    setFigmaImporting(true);
+    setFigmaImportError(null);
+    setFigmaImportWarnings([]);
+    const result = await importFigmaDesignSystem({ files, craftApplies: [] });
+    if ('error' in result) {
+      setFigmaImportError(result.error.message ?? 'Import failed.');
+    } else {
+      setFigmaImportWarnings(result.warnings ?? []);
+      await onSystemsRefresh?.();
+    }
+    setFigmaImporting(false);
+  };
   const [primaryCollection, setPrimaryCollection] = useState<PrimaryCollection>('design-system');
   const [designSystemCollection, setDesignSystemCollection] = useState<DesignSystemCollection>('mine');
   const [templateCollection, setTemplateCollection] = useState<TemplateCollection>('mine');
@@ -157,10 +200,16 @@ export function DesignSystemsTab({
   );
 
   const userSystems = useMemo(() => {
-    const editable = systems.filter(isUserSystem);
+    let editable = systems.filter(isUserSystem);
+    // Tab Mobile/Web: lọc theo thẻ platform của DS (multi-target dùng lib
+    // riêng cho app và web). DS chưa gắn thẻ chỉ hiện ở "All" — gắn thẻ một
+    // chạm bằng nút M/W trên từng dòng.
+    if (platformFilter !== 'all') {
+      editable = editable.filter((system) => system.platform === platformFilter);
+    }
     if (userFilter === 'all') return editable;
     return editable.filter((system) => (system.status ?? 'draft') === userFilter);
-  }, [systems, userFilter]);
+  }, [systems, userFilter, platformFilter]);
 
   // Total systems per surface, ignoring every active filter. Drives the
   // "this surface is now empty" fallback below — that guard must react to
@@ -464,6 +513,35 @@ export function DesignSystemsTab({
             <span className="ds-manager-eyebrow">Design Systems</span>
             <h2>Your systems</h2>
           </div>
+          <div className="ds-tag-tabs" role="tablist" aria-label="Platform filter">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={platformFilter === 'all'}
+              className={platformFilter === 'all' ? 'active' : ''}
+              onClick={() => setPlatformFilter('all')}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={platformFilter === 'mobile'}
+              className={platformFilter === 'mobile' ? 'active' : ''}
+              onClick={() => setPlatformFilter('mobile')}
+            >
+              Mobile
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={platformFilter === 'web'}
+              className={platformFilter === 'web' ? 'active' : ''}
+              onClick={() => setPlatformFilter('web')}
+            >
+              Web
+            </button>
+          </div>
           <select
             aria-label="Filter design systems"
             value={userFilter}
@@ -475,6 +553,11 @@ export function DesignSystemsTab({
           </select>
         </div>
 
+        <DesignSystemSyncActions
+          systems={systems}
+          onSystemsRefresh={onSystemsRefresh}
+        />
+
         {onCreate ? (
           <button type="button" className="ds-create-row" onClick={onCreate}>
             <span>
@@ -483,6 +566,52 @@ export function DesignSystemsTab({
             </span>
             <span className="ds-create-row__action">Create</span>
           </button>
+        ) : null}
+
+        {/* Đường tắt tạo DS từ Figma: chọn (các) zip plugin Fig Pipeline là
+            import ngay — foundation trước, UI lib sau (đặt tên 01-/02- để cố
+            định thứ tự merge). Bộ React + token compile ngay khi upload. */}
+        <input
+          ref={figmaFileRef}
+          type="file"
+          accept=".zip,.json,application/zip,application/json"
+          multiple
+          hidden
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? []);
+            event.target.value = '';
+            void handleFigmaImportFiles(files);
+          }}
+        />
+        <button
+          type="button"
+          className="ds-create-row"
+          onClick={() => figmaFileRef.current?.click()}
+          disabled={figmaImporting}
+        >
+          <span>
+            <strong>{figmaImporting ? 'Importing from Figma…' : 'Import from Figma (.zip)'}</strong>
+            <small>
+              Pick the zip(s) exported by the Fig Pipeline plugin — foundation first, UI lib second
+              (name them 01-/02-). Compiles the React bundle + tokens on upload.
+            </small>
+          </span>
+          <span className="ds-create-row__action">{figmaImporting ? '…' : 'Import'}</span>
+        </button>
+        {figmaImportError ? (
+          <div className="ds-user-empty" role="alert">
+            {figmaImportError}
+          </div>
+        ) : null}
+        {figmaImportWarnings.length > 0 ? (
+          <details className="ds-user-empty">
+            <summary>{figmaImportWarnings.length} cảnh báo khi import</summary>
+            <ul>
+              {figmaImportWarnings.slice(0, 20).map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          </details>
         ) : null}
 
         {userSystems.length === 0 ? (
@@ -506,61 +635,47 @@ export function DesignSystemsTab({
                     <span className="ds-user-row__title">
                       <span>{system.title}</span>
                       {selected ? <span className="ds-card-badge">Default</span> : null}
+                      {system.platform ? (
+                        <span className="ds-card-badge">
+                          {system.platform === 'mobile' ? 'Mobile' : 'Web'}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="ds-user-row__meta">
                       You · updated {formatShortDate(system.updatedAt)}
+                      {system.platform ? ` · ${system.platform === 'mobile' ? 'Mobile' : 'Web'}` : ''}
                     </span>
                   </button>
                   <div className="ds-user-row__actions">
-                    {onOpenSystem ? (
-                      <button
-                        type="button"
-                        className="ghost compact"
-                        onClick={() => onOpenSystem(system.id)}
-                        disabled={busy}
-                      >
-                        Edit
-                      </button>
-                    ) : null}
-                    {!selected && canUseInProjects ? (
-                      <button
-                        type="button"
-                        className="ghost compact"
-                        onClick={() => handleMakeDefaultClick(system)}
-                        disabled={busy}
-                      >
-                        Make default
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className={`ds-status-toggle ${status === 'published' ? 'is-on' : ''}`}
-                      aria-pressed={status === 'published'}
-                      onClick={() => void togglePublished(system)}
-                      disabled={busy}
-                    >
-                      <span>{status === 'published' ? 'Published' : 'Draft'}</span>
-                      <i aria-hidden />
-                    </button>
-                    {onOpenSystem ? (
+                    <span className={`ds-user-row__status ${status === 'published' ? 'is-published' : ''}`}>
+                      {status === 'published' ? 'Đã xuất bản' : 'Bản nháp'}
+                    </span>
+                    <div className="ds-type-switch" role="group" aria-label="Loại Design System">
+                      <button type="button" aria-pressed={system.platform === 'mobile'} onClick={() => void setSystemPlatform(system, 'mobile')}>Mobile</button>
+                      <button type="button" aria-pressed={system.platform === 'web'} onClick={() => void setSystemPlatform(system, 'web')}>Web</button>
+                    </div>
+                    <div className="ds-user-row__menu-wrap">
                       <button
                         type="button"
                         className="icon-btn"
-                        aria-label={`Open ${system.title}`}
-                        onClick={() => onOpenSystem(system.id)}
+                        aria-label={`Thao tác với ${system.title}`}
+                        aria-expanded={actionMenuId === system.id}
+                        onClick={() => setActionMenuId((current) => current === system.id ? null : system.id)}
+                        disabled={busy}
                       >
-                        <Icon name="external-link" />
+                        <Icon name="more-horizontal" />
                       </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="icon-btn danger"
-                      aria-label={`Delete ${system.title}`}
-                      onClick={() => void deleteSystem(system)}
-                      disabled={busy}
-                    >
-                      <Icon name="close" />
-                    </button>
+                      {actionMenuId === system.id ? (
+                        <div className="ds-user-row__menu" role="menu" aria-label={`Thao tác với ${system.title}`}>
+                          {system.hasReactBundle && onOpenCriteria ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpenCriteria(system.id); }}>Danh mục review</button> : null}
+                          {!selected && canUseInProjects ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); handleMakeDefaultClick(system); }}>Đặt làm mặc định</button> : null}
+                          <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); void togglePublished(system); }}>
+                            {status === 'published' ? 'Chuyển về bản nháp' : 'Xuất bản'}
+                          </button>
+                          <button type="button" role="menuitem" className="danger" onClick={() => { setActionMenuId(null); void deleteSystem(system); }}>Xóa bộ Design System</button>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               );
@@ -681,6 +796,20 @@ export function DesignSystemsTab({
                   });
                   onPreview(s.id);
                 }}
+                onPreviewFullscreen={
+                  s.hasReactBundle && onPreviewFullscreen
+                    ? () => {
+                        trackDesignSystemsTemplateCardClick(analytics.track, {
+                          page_name: 'design_systems',
+                          area: 'templates_card',
+                          element: 'templates_card',
+                          templates_id: s.id,
+                          templates_type: s.source ?? 'library',
+                        });
+                        onPreviewFullscreen(s.id);
+                      }
+                    : undefined
+                }
               />
             ))}
           </div>
@@ -765,6 +894,7 @@ interface CardProps {
   onIntersect: () => void;
   onSelect: () => void;
   onPreview: () => void;
+  onPreviewFullscreen?: () => void;
 }
 
 function DesignSystemCard({
@@ -774,6 +904,7 @@ function DesignSystemCard({
   onIntersect,
   onSelect,
   onPreview,
+  onPreviewFullscreen,
 }: CardProps) {
   const { locale, t } = useI18n();
   const ref = useRef<HTMLDivElement | null>(null);
@@ -870,6 +1001,20 @@ function DesignSystemCard({
         <span className="ds-card-thumb-overlay" aria-hidden>
           {t('ds.preview')}
         </span>
+        {onPreviewFullscreen ? (
+          <button
+            type="button"
+            className="ds-card-thumb-fullscreen"
+            aria-label={t('common.fullscreen')}
+            title={t('common.fullscreen')}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPreviewFullscreen();
+            }}
+          >
+            <Icon name="maximize" />
+          </button>
+        ) : null}
       </div>
       <div className="ds-card-meta" data-testid={`design-system-select-${system.id}`}>
         <div className="ds-card-title-row">

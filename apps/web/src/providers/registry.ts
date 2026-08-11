@@ -6,6 +6,8 @@ import type {
   ConnectorDetailResponse,
   ConnectorListResponse,
   ConnectorStatusResponse,
+  ImportFigmaDesignSystemFields,
+  ImportFigmaDesignSystemResponse,
   ImportGitHubDesignSystemRequest,
   ImportGitHubDesignSystemResponse,
   OpenDesignGithubLatestReleaseResponse,
@@ -41,6 +43,7 @@ import type {
   DesignSystemRevision,
   DesignSystemRevisionJobRequest,
   DesignSystemRevisionStatus,
+  DesignSystemReactInfo,
   DesignSystemSummary,
   LiveArtifact,
   LiveArtifactRefreshLogEntry,
@@ -380,6 +383,21 @@ export async function fetchDesignSystemFiles(
   }
 }
 
+export async function fetchDesignSystemCriteriaFile(
+  id: string,
+): Promise<DesignSystemFileDetail | { error: string }> {
+  try {
+    const resp = await fetch(
+      `/api/design-systems/${encodeURIComponent(id)}/file?path=${encodeURIComponent('criteria/components.md')}`,
+    );
+    if (!resp.ok) return { error: resp.status === 404 ? 'not-found' : `HTTP ${resp.status}` };
+    const json = (await resp.json()) as { file?: DesignSystemFileDetail };
+    return json.file ?? { error: 'not-found' };
+  } catch {
+    return { error: 'network' };
+  }
+}
+
 export async function fetchDesignSystemFile(
   id: string,
   filePath: string,
@@ -426,6 +444,8 @@ export interface DesignSystemDraftInput {
   body?: string;
   sourceNotes?: string;
   provenance?: DesignSystemProvenance;
+  /** Product-family tag (Mobile/Web filter + per-target pickers). `null` clears. */
+  platform?: 'mobile' | 'web' | null;
 }
 
 export async function createDesignSystemDraft(
@@ -604,6 +624,111 @@ export async function importGitHubDesignSystem(
     });
     if (!resp.ok) return { error: await readImportError(resp) };
     return (await resp.json()) as ImportGitHubDesignSystemResponse;
+  } catch (err) {
+    return {
+      error: {
+        message: err instanceof Error ? err.message : 'Import request failed.',
+      },
+    };
+  }
+}
+
+export async function getDesignSystemCriteria(id: string): Promise<
+  | {
+      hasComponents: boolean;
+      hasRules: boolean;
+      components: number;
+      rules: number;
+      meta: { generatedAt: string; components: number; rulesBytes: number | null } | null;
+      job: {
+        id: string;
+        status: 'queued' | 'running' | 'succeeded' | 'failed';
+        message?: string;
+        steps: Array<{ id: string; title: string; status: 'pending' | 'running' | 'succeeded' | 'failed'; message?: string }>;
+        createdAt: string;
+        updatedAt: string;
+        runId?: string;
+        conversationId?: string;
+        projectId?: string;
+        notes: string[];
+      } | null;
+    }
+  | { error: string }
+> {
+  try {
+    const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/criteria`);
+    if (!resp.ok) return { error: `Criteria request failed (${resp.status}).` };
+    return (await resp.json()) as Exclude<Awaited<ReturnType<typeof getDesignSystemCriteria>>, { error: string }>;
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Criteria request failed.' };
+  }
+}
+
+export async function generateDesignSystemCriteria(id: string): Promise<{ jobId: string } | { error: string }> {
+  try {
+    const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/criteria/generate`, { method: 'POST' });
+    if (!resp.ok) return { error: `Criteria generation failed (${resp.status}).` };
+    return (await resp.json()) as { jobId: string };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Criteria generation failed.' };
+  }
+}
+
+
+export async function getDesignSystemRules(id: string): Promise<
+  | {
+      hasRules: boolean;
+      rules: number;
+      job: {
+        id: string;
+        status: 'queued' | 'running' | 'succeeded' | 'failed';
+        message?: string;
+        steps: Array<{ id: string; title: string; status: 'pending' | 'running' | 'succeeded' | 'failed'; message?: string }>;
+        createdAt: string;
+        updatedAt: string;
+        runId?: string;
+        conversationId?: string;
+        projectId?: string;
+        notes: string[];
+      } | null;
+    }
+  | { error: string }
+> {
+  try {
+    const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/rules`);
+    if (!resp.ok) return { error: `Rules request failed (${resp.status}).` };
+    return (await resp.json()) as Exclude<Awaited<ReturnType<typeof getDesignSystemRules>>, { error: string }>;
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Rules request failed.' };
+  }
+}
+
+export async function generateDesignSystemRules(id: string): Promise<{ jobId: string } | { error: string }> {
+  try {
+    const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/rules/generate`, { method: 'POST' });
+    if (!resp.ok) return { error: `Rules generation failed (${resp.status}).` };
+    return (await resp.json()) as { jobId: string };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Rules generation failed.' };
+  }
+}
+
+export async function importFigmaDesignSystem(
+  input: ImportFigmaDesignSystemFields & { files: File[] },
+): Promise<ImportFigmaDesignSystemResponse | { error: SkillImportError }> {
+  try {
+    // Multipart, not JSON: file order is merge order (foundation/token file
+    // first) — see ImportFigmaDesignSystemFields in contracts.
+    const form = new FormData();
+    for (const file of input.files) form.append('files', file, file.name);
+    if (input.name) form.append('name', input.name);
+    for (const slug of input.craftApplies ?? []) form.append('craftApplies', slug);
+    const resp = await fetch('/api/design-systems/import/figma', {
+      method: 'POST',
+      body: form,
+    });
+    if (!resp.ok) return { error: await readImportError(resp) };
+    return (await resp.json()) as ImportFigmaDesignSystemResponse;
   } catch (err) {
     return {
       error: {
@@ -1859,6 +1984,18 @@ export async function fetchDesignSystemShowcase(id: string): Promise<string | nu
     const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/showcase`);
     if (!resp.ok) return null;
     return await resp.text();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchDesignSystemReactInfo(
+  id: string,
+): Promise<DesignSystemReactInfo | null> {
+  try {
+    const resp = await fetch(`/api/design-systems/${encodeURIComponent(id)}/react-info`);
+    if (!resp.ok) return null;
+    return (await resp.json()) as DesignSystemReactInfo;
   } catch {
     return null;
   }

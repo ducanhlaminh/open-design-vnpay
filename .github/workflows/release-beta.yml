@@ -34,6 +34,10 @@ concurrency:
 
 env:
   OPEN_DESIGN_TELEMETRY_RELAY_URL: ${{ vars.OPEN_DESIGN_TELEMETRY_RELAY_URL }}
+  # Default Confluence credential for the packaged app. tools-pack embeds it
+  # only in official installers; the daemon seeds it on a fresh install and
+  # preserves any later user change in Settings → MCP.
+  OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
   # PostHog product-analytics ingest. Both vars must be defined as
   # repository/organization secrets/vars for official builds to ship with
   # analytics enabled. PR builds and forks run without these — the daemon's

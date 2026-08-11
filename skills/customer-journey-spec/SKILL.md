@@ -48,6 +48,13 @@ Customer Journey preview (`/customer-journey`) renders it, and the downstream
 The docs→UI workflow is `docs → cj → ux`: this pipeline runs straight after docs
 ingest, with NO feature-analysis upstream and NO `./features/` folder — do not
 look for one.
+**Docs layouts.** App-linked projects (app-pool source) work from `./docs-feature/` — the Confluence pages selected for THIS feature, with original Markdown, a tree mirroring Confluence, and images in `./docs-feature/attachments/`. This is the source of truth. `./docs-app/` contains the App's full read-only document pool: read `./docs-app/_index.md` first, then individual pages only for cross-feature context; never audit, fan out over, or produce deliverables from it. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`. Treat every `.md` under the active working folder except `_index.md` and `attachments/` as a source page.
+
+Customer journeys thường XUYÊN feature. Được phép và khuyến khích đọc
+`./docs-app/_index.md` để biết các bước trước/sau nằm ngoài tài liệu feature
+(ví dụ đăng nhập, chọn tài khoản) và ghi chúng thành stage của journey, nhưng
+chỉ khi có căn cứ; **CẤM BỊA** và phải trích dẫn path thật trong `sources[]`.
+
 1. **Docs MD (primary):** read every Markdown file under `./docs/` (e.g.
    `./docs/confluence/**/*.md`, `./docs/jira/**/*.md`). These product docs ARE
    your source of truth — derive the actors, the to-be journeys, and each stage
@@ -59,6 +66,14 @@ look for one.
 pages fetched ONLY as background. Read them to understand the domain / business
 rules, but do NOT derive any actor, journey, or stage from them. Build the
 journeys strictly from `./docs/confluence/` and `./docs/jira/`.
+
+**URD/PRD illustrations are not flow authority.** Ignore embedded UI mockups,
+screenshots, and other screen images when deriving actors, steps, states, or
+component behavior. They are explanatory illustrations, not a specification to
+reconstruct. The written requirements are authoritative. The only image-adjacent
+exception is a source `.drawio` file explicitly marked as a flow diagram: read
+its labels and arrows for documented branch/order only, never its geometry or
+styling as design direction.
 
 3. **Flow diagrams (AUTHORITATIVE for the order of steps):** the ingest saves
    every draw.io diagram embedded in the docs as its SOURCE file next to the
@@ -135,7 +150,7 @@ Author a journey file following `references/schema.md`. Key rules:
   `user_actions`, `system_responses`, `touchpoints`, `pain_points` — this drives
   the emotion curve + pain markers on the customer-journey view.
 - **Each stage MUST carry `sources[]`** — the key source-text excerpts that
-  justify it: `{ "file": "docs/confluence/<slug>.md", "heading": "<section>",
+  justify it: `{ "file": "docs-feature/<branch>/…/<page>.md" (the exact on-disk path; legacy may use `docs/confluence/…`), "heading": "<section>",
   "quote": "<short verbatim snippet from that MD>" }`. Keep quotes short (1–3
   sentences), copied VERBATIM (do not paraphrase). **`file` MUST be the exact
   SLUGIFIED path of the file you actually read on disk** (kebab-cased, deaccented

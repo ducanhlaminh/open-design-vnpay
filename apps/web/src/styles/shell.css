@@ -252,61 +252,60 @@
   -webkit-app-region: no-drag;
 }
 
-/* --- Claude account usage meter (5h / 7d quota %) --- */
-.claude-usage-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-panel, transparent);
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-  -webkit-app-region: no-drag;
-}
-.claude-usage-chip:hover,
-.claude-usage-chip.is-active {
-  color: var(--text);
-  background: var(--bg-subtle);
-  border-color: color-mix(in srgb, var(--accent, #0066b3) 45%, var(--border));
-}
-.claude-usage-chip svg { color: var(--accent, #0066b3); flex: 0 0 auto; }
-.claude-usage-chip--warn svg { color: #d97706; }
-.claude-usage-chip--crit svg { color: var(--red, #dc2626); }
-.claude-usage-chip__nums { display: inline-flex; align-items: center; gap: 3px; font-weight: 650; }
-.claude-usage-chip__sep { color: var(--text-muted); font-weight: 400; }
-.claude-usage-chip__v--ok { color: var(--text); }
-.claude-usage-chip__v--warn { color: #d97706; }
-.claude-usage-chip__v--crit { color: var(--red, #dc2626); }
-.claude-usage-chip__v--na { color: var(--text-muted); }
-
-.claude-usage-popover {
-  position: fixed;
-  width: 260px;
-  padding: 13px;
+/* --- Claude account usage (5h / 7d quota %) — a section inside the Local CLI
+       dropdown. It used to be a standalone header chip + floating popover;
+       those are gone, so there is no fixed positioning or z-index here. --- */
+.claude-usage-section {
   display: flex;
   flex-direction: column;
-  gap: 13px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--bg-panel, #fff);
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
-  z-index: 200;
+  gap: 10px;
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft, var(--border));
 }
-.claude-usage-popover__head {
+.claude-usage-section__head {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 650;
   color: var(--text);
 }
-.claude-usage-popover__head svg { color: var(--accent, #0066b3); }
+.claude-usage-section__head svg { color: var(--accent, #0066b3); flex: 0 0 auto; }
+.claude-usage-section__note {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+.claude-usage-section__retry {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.claude-usage-section__retry:hover {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+}
+.claude-usage-section__foot {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.claude-usage-section__foot code {
+  font-size: 10.5px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+}
 .claude-usage-plan {
   margin-left: auto;
   padding: 1px 7px;
@@ -318,18 +317,6 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.claude-usage-popover__foot {
-  font-size: 11px;
-  color: var(--text-muted);
-  line-height: 1.4;
-}
-.claude-usage-popover__foot code {
-  font-size: 10.5px;
-  padding: 0 3px;
-  border-radius: 4px;
-  background: var(--bg-subtle);
-}
-
 .claude-usage-win { display: flex; flex-direction: column; gap: 5px; }
 .claude-usage-win__top {
   display: flex;

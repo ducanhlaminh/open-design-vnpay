@@ -209,10 +209,16 @@ export const HomeHero = forwardRef<HTMLTextAreaElement, Props>(function HomeHero
   const inputElementRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const shortcutsMenuRef = useRef<HTMLDivElement>(null);
-  const canSubmit = (prompt.trim().length > 0 || stagedFiles.length > 0) && !submitDisabled;
+  // Enter/Send mở workspace tổng với PROMPT — đính kèm không có vai trò trong
+  // phiên hỏi-đáp chỉ-đọc, nên chỉ-có-file không đủ điều kiện gửi (trước đây
+  // nút sáng nhưng submit bị EntryShell nuốt vì prompt rỗng).
+  const canSubmit = prompt.trim().length > 0 && !submitDisabled;
+  // Enter/Send giờ mở workspace tổng (chat chỉ-đọc hỏi tiến độ App/Feature)
+  // thay vì tạo project — placeholder phải nói đúng việc đó. Hard-code tiếng
+  // Việt theo convention của app (như các nút Chạy/Dừng).
   const placeholder = activePluginTitle || activeSkillTitle
     ? t('homeHero.placeholderActive')
-    : t('homeHero.placeholder');
+    : 'Hỏi tiến độ App / Feature… (Enter để mở workspace tổng)';
   const mention = getContextMention(prompt);
   const mentionActive = Boolean(mention);
   const mentionQuery = mention?.query ?? '';
@@ -1115,31 +1121,10 @@ export const HomeHero = forwardRef<HTMLTextAreaElement, Props>(function HomeHero
         </div>
       </div>
 
-      {activeCreateChip ? null : (
-        <RailGroup
-          group="create"
-          activeChipId={activeChipId}
-          pendingChipId={pendingChipId}
-          pendingPluginId={pendingPluginId}
-          pluginsLoading={pluginsLoading}
-          onPickChip={onPickChip}
-          variant="tabs"
-        >
-          <ShortcutsMenu
-            activeChipId={activeChipId}
-            pendingChipId={pendingChipId}
-            pendingPluginId={pendingPluginId}
-            pluginsLoading={pluginsLoading}
-            open={shortcutsOpen}
-            refNode={shortcutsMenuRef}
-            onOpenChange={setShortcutsOpen}
-            onPickChip={(chip) => {
-              setShortcutsOpen(false);
-              onPickChip(chip);
-            }}
-          />
-        </RailGroup>
-      )}
+      {/* Dải chip kịch bản tạo-project (Prototype / Slide deck / Image / …)
+          đã gỡ: Enter/Send giờ mở workspace tổng chứ không tạo project nữa,
+          bấm chip rồi Enter sẽ hứa một đằng làm một nẻo. Đường tạo project
+          còn nguyên qua nút "+" ở sidebar. */}
 
       {activeExamplePlugins.length > 0 && activeChipId ? (
         <PluginPromptPresets

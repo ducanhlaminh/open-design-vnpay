@@ -1,22 +1,23 @@
 # od-agent-sandbox — the agent-in-sandbox runtime for the docs-to-react
 # workflow (see docs/agent-in-sandbox-spec-plan.md in the parent repo).
 #
-# Layers the Claude Code CLI on top of uireact-base so the agent AND the
-# React build toolchain live in one container: the daemon spawns
-# `docker run -i … claude -p …` instead of a host `claude` process, and the
-# ui-react skill's build.sh runs `tsc && vite build` directly in-container
-# (UIREACT_IN_SANDBOX=1) — no docker-in-docker.
+# Layers the Claude Code CLI and Codex CLI on top of uireact-base so the
+# agent AND the React build toolchain live in one container: the daemon
+# spawns `docker run -i … claude -p …` or `docker run -i … codex …` instead
+# of host processes, and the ui-react skill's build.sh runs `tsc && vite build`
+# directly in-container (UIREACT_IN_SANDBOX=1) — no docker-in-docker.
 #
 # Layout contract (inherited from uireact-base): the shared toolkit lives at
 # /work/node_modules; the project dir is bind-mounted at /work/app (a CHILD
 # dir) so Node/Vite/tsc resolve deps by walking up. NEVER mount the project
 # at /work — that would shadow the toolkit.
 #
-# Auth contract: a shared named volume (default `od-claude-auth`) is mounted
-# at /home/node/.claude and CLAUDE_CONFIG_DIR points there, so OAuth
-# credentials + CLI config persist across throwaway containers. Login once:
-#   docker run -it --rm -v od-claude-auth:/home/node/.claude \
-#     od-agent-sandbox:<ver> claude /login
+# Auth contract: runtime-specific shared named volumes persist OAuth/device
+# credentials across throwaway containers:
+#   - Claude: `od-claude-auth` at /home/node/.claude
+#   - Codex: `od-codex-auth` at /home/node/.codex
+# Login once with the matching CLI command and the volume keeps the file-
+# backed credentials/config. The container never mutates the host's home dir.
 ARG TOOLKIT_VERSION
 # BASE_IMAGE defaults to the locally-built base; push-ghcr.sh overrides it to
 # the registry ref so buildx can resolve a multi-arch base during cross-builds.
@@ -40,11 +41,17 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 # to latest (a silent CLI bump mid-week would change agent behavior).
 ARG CLAUDE_CODE_VERSION
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+ARG CODEX_VERSION
+RUN npm install -g "@openai/codex@${CODEX_VERSION}"
 
 # All Claude CLI state (credentials, config, onboarding) lives in the mounted
-# auth volume — including what would otherwise land at ~/.claude.json.
+# auth volume — including what would otherwise land at ~/.claude.json. Codex
+# is file-backed too, via CODEX_HOME=/home/node/.codex and the od-codex-auth
+# volume.
 ENV CLAUDE_CONFIG_DIR=/home/node/.claude
+ENV CODEX_HOME=/home/node/.codex
 RUN mkdir -p /home/node/.claude && chown -R node:node /home/node
+RUN mkdir -p /home/node/.codex && chown -R node:node /home/node
 
 LABEL org.opencontainers.image.title="od-agent-sandbox" \
       org.opencontainers.image.description="Claude Code agent + VNPAY React toolkit sandbox for docs-to-react"

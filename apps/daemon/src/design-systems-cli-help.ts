@@ -5,7 +5,8 @@
 export const DESIGN_SYSTEMS_USAGE = `Usage:
   od design-systems list                       List design systems.
   od design-systems show <id>                  Print one entry.
-  od design-systems rename <id> --title <new>  Rename an editable design system.`;
+  od design-systems rename <id> --title <new>  Rename an editable design system.
+  od design-systems import-figma <ir.json|zip...>  Import Fig Pipeline exports (01- prefix = merge order) as a React design system.`;
 
 // `help`, `--help`, and `-h` all route to the usage text above. Without the
 // flag forms, `od design-systems --help` falls through to the generic library

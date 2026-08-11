@@ -12,8 +12,26 @@
   --pl-ease: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
+/* CỘT NỘI DUNG CHÍNH — một con số duy nhất cho cả bốn màn của Pipelines.
+   PipelineNavViews.module.css (màn Apps / Features / chọn Pipeline) đọc đúng
+   biến này, nên không màn nào có thể trôi width mà không ai thấy.
+
+   `--pl-page-width-full` = 100%: mọi route lấp đầy đúng bằng chiều ngang cột
+   nội dung của shell (`.entry-main__inner`), không còn giới hạn theo px riêng
+   của Pipelines nữa — nên bốn màn Apps/Features/Picker/Chạy luôn cùng khổ.
+   `.page`/`.pipelines-page` khoá cả `min-width` lẫn `max-width` vào biến này
+   để không mục nào co hẹp hơn/rộng hơn mục khác. Ở màn Chạy, `--pl-rail-width`
+   + `--pl-rail-gap` vẫn dùng để trừ ra bề ngang cột bước trong `.pl-run-layout`. */
+:root {
+  --pl-rail-width: 280px;
+  --pl-rail-gap: 24px;
+  --pl-page-width-full: 100%;
+}
+
 .pipelines-page {
-  max-width: 980px;
+  width: 100%;
+  max-width: var(--pl-page-width-full);
+  min-width: min(var(--pl-page-width-full), 100%);
   margin: 0 auto;
   padding: 40px 32px 96px;
   display: flex;
@@ -153,9 +171,29 @@
   color: var(--text-soft);
 }
 
+/* Breadcrumb màn Chạy: dùng chung navStyles.breadcrumb* từ
+   PipelineNavViews.module.css (xem PipelinesView.tsx) — không còn CSS riêng
+   ở đây, để "Apps ›" trông giống hệt các màn Apps/Features/Picker trước đó. */
+
 /* ---- Workflow tabs --------------------------------------- */
 /* One row, equal-width cards — content-sized widths made the second card
-   wrap under the first on narrower panes. */
+   wrap under the first on narrower panes.
+   Mô tả tách khỏi thẻ tab và chỉ render cho tab đang chọn (xem
+   .pl-workflow-picker__desc): ba đoạn mô tả cạnh nhau ăn gần hết màn hình đầu,
+   đẩy stepper — nội dung thật — xuống dưới fold. */
+.pl-workflow-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pl-workflow-picker__desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
 .pl-workflow-tabs {
   display: flex;
   gap: 10px;
@@ -358,8 +396,8 @@
    (same bleed class as the simulator stepper dots). */
 
 .pl-pullall__hint {
-  margin: 0 0 10px;
-  font-size: 12.5px;
+  margin: 0 0 8px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -373,32 +411,99 @@
   padding: 22px 0;
 }
 
+.pl-pullall__picker {
+  overflow: hidden;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 16px;
+  background: var(--bg-subtle, var(--bg-inset, #f4f5f7));
+}
+
+.pl-pullall__picker-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.pl-pullall__searchbox {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  width: auto;
+  margin: 0;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, #b8c1d0);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text-soft);
+  transition: border-color 0.18s var(--pl-ease), box-shadow 0.18s var(--pl-ease);
+}
+
+.pl-pullall__searchbox:focus-within {
+  border-color: var(--selected);
+  box-shadow: 0 0 0 3px var(--selected-soft);
+  color: var(--selected);
+}
+
 .pl-pullall__search {
   width: 100%;
   box-sizing: border-box;
-  margin: 0 0 10px;
-  padding: 7px 12px;
+  min-width: 0;
+  padding: 9px 0;
   font-size: 13px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-panel);
+  border: 0;
+  outline: 0;
+  background: transparent;
   color: var(--text-strong);
-  transition: border-color 0.18s var(--pl-ease), box-shadow 0.18s var(--pl-ease);
 }
 
 .pl-pullall__search:focus {
   outline: none;
-  border-color: var(--selected);
-  box-shadow: 0 0 0 3px var(--selected-soft);
 }
 
 .pl-pullall__search::placeholder {
   color: var(--text-soft);
 }
 
+.pl-pullall__search-done {
+  flex: none;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 9px;
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: border-color 0.16s var(--pl-ease), color 0.16s var(--pl-ease);
+}
+
+.pl-pullall__search-done:hover {
+  border-color: var(--selected);
+  color: var(--selected);
+}
+
+.pl-pullall__picker-count {
+  flex: none;
+  padding: 6px 11px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--text-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .pl-pullall__list {
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  margin: 0 12px 12px;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 56%, transparent);
+  border-radius: 10px;
   overflow: hidden;
   background: var(--bg-panel);
 }
@@ -409,20 +514,20 @@
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 14px;
-  background: var(--bg-inset, rgba(0, 0, 0, 0.03));
-  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  padding: 5px 6px 7px;
+  background: transparent;
+  border-bottom: 0;
   cursor: pointer;
   user-select: none;
 }
 
 .pl-pullall__headlabel {
   flex: 1 1 auto;
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
   color: var(--text-soft);
 }
 
@@ -441,36 +546,134 @@
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 330px;
+  max-height: 320px;
   overflow-y: auto;
 }
 
+.pl-pullall__list > .pl-pullall__items {
+  border: 0;
+  border-radius: 7px;
+}
+
 .pl-pullall__items > li + li {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
 }
 
 .pl-pullall__row {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 10px 14px;
+  gap: 10px;
+  padding: 8px 12px;
   cursor: pointer;
   transition: background 0.14s var(--pl-ease);
 }
 
-/* An App groups features but has no KGS workspace of its own (see
-   apps/daemon/src/app-context.ts) — its row is a label, not a pull target. */
 .pl-pullall__group {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 7px 12px;
   background: var(--bg-inset, rgba(0, 0, 0, 0.03));
   font-size: 11.5px;
   font-weight: 700;
   color: var(--text-soft);
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.pl-pullall__group--selectable {
+  min-height: 42px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-strong);
+  background: transparent;
+}
+
+.pl-pullall__group-name {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.pl-pullall__tree-toggle {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.pl-pullall__group--selectable .pl-pullall__tree-toggle {
+  margin-left: auto;
+}
+
+.pl-pullall__tree-toggle:hover {
+  background: var(--bg-panel);
+  color: var(--text-strong);
+}
+
+.pl-pullall__tree-toggle:focus-visible {
+  outline: 2px solid var(--selected);
+  outline-offset: 2px;
+}
+
+.pl-pullall__context-badge-toggle {
+  border: 0;
+  cursor: pointer;
+  transition: background 160ms var(--pl-ease), color 160ms var(--pl-ease);
+}
+
+.pl-pullall__context-badge-toggle:hover {
+  background: var(--selected-soft);
+  color: var(--selected);
+}
+
+.pl-pullall__context-badge-toggle:focus-visible {
+  outline: 2px solid var(--selected);
+  outline-offset: 3px;
+  border-radius: 5px;
+}
+
+.pl-pullall__context-popover {
+  position: relative;
+  flex: none;
+}
+
+.pl-pullall__context-tooltip {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  gap: 3px;
+  width: min(280px, 70vw);
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--text-strong) 12%, transparent);
+  color: var(--text-soft);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.pl-pullall__context-tooltip strong {
+  color: var(--text-strong);
+  font-size: 12px;
+}
+
+.pl-pullall__group-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
 }
 
 .pl-pullall__group .pl-pullall__id {
@@ -483,14 +686,81 @@
   padding-left: 34px;
 }
 
+.pl-pullall__app-node + .pl-pullall__app-node {
+  margin-top: 0;
+}
+
+/* App header above a clean Feature branch. Context details live in the
+   hover popover on the version badge, never as another tree node. */
+.pl-pullall__app-node > .pl-pullall__group--selectable {
+  flex-wrap: wrap;
+  min-height: 42px;
+  padding: 7px 12px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+  border-radius: 0;
+}
+
+.pl-pullall__app-node:has(> .pl-pullall__group input:checked) > .pl-pullall__group--selectable {
+  background: color-mix(in srgb, var(--selected-soft) 6%, transparent);
+  border-color: color-mix(in srgb, var(--border) 64%, transparent);
+}
+
+.pl-pullall__row--feature {
+  background: transparent;
+  min-height: 44px;
+  padding: 8px 12px;
+}
+
+.pl-pullall__branch .pl-pullall__row:has(input:checked) {
+  background: color-mix(in srgb, var(--selected-soft) 8%, transparent);
+  box-shadow: none;
+}
+
+.pl-pullall__branch .pl-pullall__row:has(input:checked) .pl-pullall__name {
+  color: var(--text-strong);
+}
+
+.pl-pullall__branch {
+  max-height: none;
+  overflow: visible;
+  padding: 0 0 0 28px;
+}
+
+.pl-pullall__branch > li {
+  position: static;
+}
+
+.pl-pullall__branch > li + li {
+  border-top: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+}
+
+.pl-pullall__row--context,
+.pl-pullall__row--feature {
+  padding-left: 14px;
+}
+
+/* The tree should read as a product hierarchy, not a technical file browser. */
+.pl-pullall__row--context {
+  background: color-mix(in srgb, var(--bg-inset, #f4f5f7) 72%, transparent);
+}
+
+.pl-pullall__row--context .pl-pullall__id,
+.pl-pullall__row--feature .pl-pullall__id {
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .pl-pullall__row:hover {
-  background: color-mix(in srgb, var(--selected-soft) 45%, transparent);
+  background: color-mix(in srgb, var(--bg-inset, #f4f5f7) 78%, var(--selected-soft));
 }
 
 /* Checked rows read as chosen at a glance: soft tint + accent inset bar. */
 .pl-pullall__row:has(input:checked) {
-  background: var(--selected-soft);
-  box-shadow: inset 3px 0 0 var(--selected);
+  background: color-mix(in srgb, var(--selected-soft) 22%, var(--bg-panel));
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--selected) 72%, transparent);
 }
 
 .pl-pullall__row:has(input:checked) .pl-pullall__name {
@@ -501,18 +771,26 @@
   flex: none;
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  background: var(--bg-inset, rgba(0, 0, 0, 0.04));
-  border: 1px solid var(--border);
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: transparent;
+  border: 0;
+  color: var(--text-soft);
+}
+
+.pl-pullall__branch .pl-pullall__avatar {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text-soft);
 }
 
 .pl-pullall__row:has(input:checked) .pl-pullall__avatar {
   color: var(--selected);
-  border-color: color-mix(in srgb, var(--selected) 35%, var(--border));
-  background: color-mix(in srgb, var(--selected-soft) 70%, var(--bg-panel));
+  background: transparent;
 }
 
 .pl-pullall__text {
@@ -524,7 +802,7 @@
 }
 
 .pl-pullall__name {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-strong);
   white-space: nowrap;
@@ -533,9 +811,9 @@
 }
 
 .pl-pullall__id {
+  font-family: inherit;
   font-size: 11.5px;
   color: var(--text-soft);
-  font-family: var(--font-mono, ui-monospace, monospace);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -566,6 +844,153 @@
   text-transform: uppercase;
 }
 
+.pl-pullall__version {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-inset, rgba(0, 0, 0, 0.04));
+  color: var(--text-soft);
+  font-size: 10.5px;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pl-pullall__version--new {
+  background: color-mix(in srgb, var(--selected-soft) 76%, var(--bg-panel));
+  color: var(--selected);
+}
+
+.pl-pullall__version--stale {
+  background: color-mix(in srgb, #b7791f 12%, var(--bg-panel));
+  color: color-mix(in srgb, #9a6700 86%, var(--text-strong));
+}
+
+.pl-pullall__upgrade {
+  flex: none;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--selected) 32%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--selected-soft) 58%, var(--bg-panel));
+  color: var(--selected);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 680;
+  cursor: pointer;
+  transition: background 160ms var(--pl-ease), transform 160ms var(--pl-ease);
+}
+
+.pl-pullall__upgrade:hover:not(:disabled) {
+  background: var(--selected-soft);
+}
+
+.pl-pullall__upgrade:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.pl-pullall__upgrade:focus-visible {
+  outline: 2px solid var(--selected);
+  outline-offset: 2px;
+}
+
+.pl-pullall__upgrade:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.pl-pullall__change-preview {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 14px 8px 50px;
+  padding: 8px 10px;
+  border-left: 2px solid color-mix(in srgb, var(--selected) 72%, var(--border));
+  background: color-mix(in srgb, var(--selected-soft) 22%, var(--bg-panel));
+  color: var(--text-soft);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.pl-pullall__change-preview > div {
+  min-width: 0;
+}
+
+.pl-pullall__change-preview ul {
+  display: grid;
+  gap: 2px;
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pl-pullall__change-details {
+  margin-top: 4px;
+}
+
+.pl-pullall__change-details summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--selected);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.pl-pullall__change-details summary:hover {
+  text-decoration: underline;
+}
+
+.pl-pullall__change-preview li {
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
+
+.pl-pullall__change-preview strong {
+  flex: 0 0 30px;
+  color: var(--text-strong);
+  font-size: 10.5px;
+}
+
+.pl-pullall__change-preview code {
+  overflow: hidden;
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pl-pullall__conflict {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 16px;
+  margin: 0 14px 10px 50px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #b7791f 30%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, #b7791f 7%, var(--bg-panel));
+  color: var(--text-strong);
+  font-size: 11.5px;
+}
+
+.pl-pullall__conflict legend {
+  width: 100%;
+  padding: 0;
+  font-weight: 680;
+}
+
+.pl-pullall__conflict label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.pl-pullall__conflict p {
+  flex-basis: 100%;
+  margin: 1px 0 0;
+  color: var(--text-soft);
+}
+
 .pl-pullall__footcount {
   flex: 1 1 auto;
   font-size: 12.5px;
@@ -576,7 +1001,9 @@
 /* Hardened against the app's global input styles (full-width padded pills) —
    these must stay real 15px checkboxes. */
 .pl-pullall__head input[type='checkbox'],
-.pl-pullall__row input[type='checkbox'] {
+.pl-pullall__row input[type='checkbox'],
+.pl-pullall__group input[type='checkbox'],
+.pl-pullall__conflict input[type='radio'] {
   appearance: auto;
   -webkit-appearance: checkbox;
   flex: 0 0 auto;
@@ -1101,6 +1528,28 @@
   box-shadow: var(--shadow-sm);
 }
 
+/* BƯỚC TIẾP THEO — bước đầu tiên đã mở khoá mà chưa chạy.
+   Không có nó, stepper là 7 thẻ giống hệt nhau, mỗi thẻ tới 5 nút cùng kiểu:
+   người mới không có cách nào biết bấm cái nào trước. Đây là điểm neo thị giác
+   DUY NHẤT trên stepper — cố tình không thêm nhấn mạnh nào khác, thêm nữa là
+   mất tác dụng. */
+.pl-step[data-next='yes'] .pl-step__card {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-sm);
+}
+
+.pl-step__next {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
 .pl-step__icon {
   flex: none;
   display: grid;
@@ -1149,6 +1598,20 @@
   font-size: 12px;
   font-weight: 500;
   color: var(--text-soft);
+}
+
+/* GỢI Ý thứ tự thường dùng — KHÁC .pl-step__lock: bước này đã mở khóa (active,
+   Chạy bấm được), phụ thuộc tĩnh chỉ còn là thông tin. Cố tình dùng cùng tông
+   nhẹ với .pl-step__lock/.pl-step__stale (không phải màu lỗi/cảnh báo) vì đây
+   không phải một lý do chặn gì cả. */
+.pl-step__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-faint);
 }
 
 .pl-step__actions {
@@ -2156,4 +2619,289 @@
   margin: 2px 0 0;
   font-size: 11px;
   color: var(--text-muted, #6b7280);
+}
+
+/* ── Multi-target switcher + per-stage target dots ─────────────────────────
+   Chip row picks the ACTIVE target (stage runs / Build / Demo / Capture all
+   scope to it); the dots on a stage card show which targets already have that
+   stage's outputs on disk. */
+.pl-target-switch {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pl-target-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 200ms cubic-bezier(0.23, 1, 0.32, 1), color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.pl-target-chip:hover {
+  color: var(--foreground);
+}
+.pl-target-chip--on {
+  background: var(--accent);
+  color: var(--accent-foreground, #fff);
+}
+.pl-target-chip__count {
+  font-size: 11px;
+  opacity: 0.75;
+}
+.pl-target-dots {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 2px;
+}
+.pl-target-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+}
+.pl-target-dot--done {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+/* Run-all modal: one DS picker row per selected target (multi-target). */
+.pl-modal-field__dsrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.pl-modal-field__dsrow-label {
+  flex: 0 0 150px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.pl-modal-field__dsrow > :last-child {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Overflow menu (⋯) — dùng chung cho hàng bước (Task 1) + toolbar đầu
+   trang (Task 3). Icon-only trigger + <ul role="menu"> định vị tuyệt đối
+   ngay dưới nút, tự viết (không thêm dependency). ────────────────────────── */
+.pl-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Bước đang mở menu phải NỔI TRÊN các bước đứng sau nó: .pl-step là positioned
+   sibling nên bước sau paint sau — popover z-index cao đến đâu cũng bị thẻ kế
+   tiếp đè nếu không nâng CẢ bước chứa nó lên một tầng. */
+.pl-step:has(.pl-menu__trigger[aria-expanded='true']) {
+  z-index: 45;
+}
+
+.pl-btn--icon {
+  width: 34px;
+  padding: 0;
+  justify-content: center;
+}
+
+.pl-menu__trigger[aria-expanded='true'] {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+}
+
+.pl-menu__list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  margin: 0;
+  padding: 6px;
+  min-width: 192px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-lg);
+  animation: pl-pop-in 0.14s var(--pl-ease);
+}
+
+.pl-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 3px);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 540;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s var(--pl-ease), color 0.14s var(--pl-ease);
+}
+
+.pl-menu__item > svg {
+  flex: none;
+  color: var(--text-soft);
+}
+
+.pl-menu__item:hover:not(:disabled),
+.pl-menu__item:focus-visible {
+  background: var(--bg-subtle);
+  outline: none;
+}
+
+.pl-menu__item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Task 5: đỏ = hành động này PHÁ dữ liệu đã có (ví dụ "Chạy lại" khi có bước
+   sau phụ thuộc) — không dùng cho hành động chỉ đọc như "Xem lỗi". */
+.pl-menu__item--danger {
+  color: var(--red);
+}
+
+.pl-menu__item--danger > svg {
+  color: var(--red);
+}
+
+.pl-menu__item--danger:hover:not(:disabled),
+.pl-menu__item--danger:focus-visible {
+  background: var(--red-bg);
+}
+
+/* ── Rail cấu hình (Task 2) — thay modal Run-all 9 câu hỏi khỏi đường mặc
+   định: hiện SẴN giá trị đang dùng cạnh stepper, "Đổi" mới mở lại modal.
+   Dưới 1100px sập thành nút "Cấu hình" mở cùng nội dung trong drawer. ────── */
+.pl-run-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--pl-rail-width);
+  align-items: start;
+  gap: var(--pl-rail-gap);
+}
+
+.pl-config-rail {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
+}
+
+.pl-config-rail--drawer {
+  position: static;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.pl-rail-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 2px 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.pl-rail-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.pl-rail-row__label {
+  grid-column: 1 / -1;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.pl-rail-row__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--text-strong);
+}
+
+.pl-rail-row__change {
+  flex: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--selected);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.pl-rail-row__change:hover {
+  color: var(--accent-strong);
+}
+
+.pl-rail-row--sync .pl-rail-row__value {
+  white-space: normal;
+}
+
+.pl-rail-row__sync-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.pl-rail-row__sync-actions .pl-btn {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.pl-config-trigger {
+  align-self: flex-start;
+}
+
+@media (max-width: 1100px) {
+  .pl-run-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* `hidden` bị display của chính phần tử ghi đè — stepper vẫn hiện chồng lên
+   canvas nếu chỉ dựa vào thuộc tính. */
+.pipelines-flow[hidden] {
+  display: none;
 }

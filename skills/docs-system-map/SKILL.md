@@ -52,12 +52,18 @@ Two things carry the "one system" meaning, and both are required:
 
 ### 0. Read the inputs
 
-- **Docs (source of truth):** every Markdown file under `./docs/confluence/`,
+**Docs layouts.** App-linked projects (app-pool source): work from `./docs-feature/` — the Confluence pages selected for THIS feature (original markdown, tree mirrors Confluence, images in `./docs-feature/attachments/`). This is your source of truth. `./docs-app/` holds the App's FULL document pool read-only for whole-App context: read `./docs-app/_index.md` first to know what exists, open individual pages only when you need cross-feature reference — never audit, fan out over, or produce deliverables from `./docs-app/`. Legacy projects instead use `./docs/confluence/`, `./docs/jira/`, `./docs/context/` as described below. Treat every `.md` under the active working folder (excluding `_index.md` and `attachments/`) as a source page.
+
+- **Docs (source of truth):** every Markdown file under `./docs/confluence/`, `./docs/jira/`, or `./docs-feature/` is authoritative. In the legacy layout, every Markdown file under `./docs/confluence/`,
   `./docs/jira/`. Read `./docs/context/` for background only — a context page
   never becomes a document entry in the map.
+- **Illustration policy:** embedded UI mockups/screenshots are not evidence for
+  application ownership, handoffs, screens, or visual direction. Classify from
+  written requirements and explicitly marked source flow diagrams only; images
+  remain downloaded solely as document attachments.
 - **Flow diagrams (best evidence for the seams):** the ingest saved each draw.io
   diagram's SOURCE next to its page —
-  `./docs/confluence/attachments/<pageId>-<name>.drawio`. A sequence diagram's
+  `./docs/confluence/attachments/<pageId>-<name>.drawio` or `./docs-feature/attachments/<pageId>-<name>.drawio`. A sequence diagram's
   LIFELINES are the apps, and every arrow crossing between two lifelines is a
   hand-off. Read them before inferring anything from prose:
   ```bash
@@ -116,6 +122,11 @@ Full field reference: `references/schema.md`. Shape:
   explaining what is unclear — never omit it, or nobody will notice it was
   skipped.
 - **Do not invent apps.** Only what the docs and diagrams actually name.
+- **`handoffs` array order IS the business sequence.** The viewer draws a
+  sequence/swimlane diagram straight from the array (arrow per entry, top to
+  bottom), so list the hand-offs in the order the use case actually flows
+  (e.g. mobile gửi yêu cầu → backoffice duyệt → mobile nhận kết quả), not in
+  discovery order.
 - Diagrams outrank prose for the ORDER and the SEAMS; prose outranks diagrams
   for rules and detail. When they disagree, say so in the `why`.
 

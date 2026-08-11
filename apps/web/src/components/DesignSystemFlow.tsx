@@ -7,6 +7,10 @@ import {
   disconnectConnector,
   ensureDesignSystemWorkspace,
   fetchDesignSystemGenerationJob,
+  generateDesignSystemCriteria,
+  generateDesignSystemRules,
+  getDesignSystemCriteria,
+  getDesignSystemRules,
   fetchDesignSystem,
   fetchConnectorStatuses,
   fetchProjectFileText,
@@ -62,6 +66,16 @@ import type {
 } from '../types';
 import { decideAutoOpenAfterWrite } from './auto-open-file';
 import { ChatPane } from './ChatPane';
+import { FigmaDsPreviewTabs } from './FigmaDsPreviewTabs';
+import type { FigmaDsPreviewViewState } from './FigmaDsPreviewTabs';
+import { DesignSystemReviewCatalogModal } from './DesignSystemReviewCatalogModal';
+import {
+  CriteriaStaleBadge,
+  DesignSystemCriteriaUpdateReview,
+  DesignSystemFigmaUpdateWorkspace,
+  useDesignSystemFigmaUpdateState,
+} from './DesignSystemFigmaUpdate';
+import { DesignSystemShareButton } from './DesignSystemSync';
 import { FileWorkspace } from './FileWorkspace';
 import { Icon, type IconName } from './Icon';
 import { Spinner } from './Loading';
@@ -155,14 +169,18 @@ interface DetailProps {
   config: AppConfig;
   agents: AgentInfo[];
   onBack: () => void;
-  onOpenProject?: (projectId: string) => void;
+  onOpenProject?: (projectId: string, conversationId?: string | null) => void;
   onSetDefault: (id: string) => void;
   onSystemsRefresh?: () => Promise<void> | void;
   onProjectsRefresh?: () => Promise<void> | void;
+  onOpenCriteria?: (id: string) => void;
+  onOpenFigmaUpdate?: (id: string) => void;
+  onGenerateCriteria?: (id: string, kind: 'components' | 'rules') => void | Promise<void>;
+  section?: 'criteria' | 'figma-update';
 }
 
 type SetupStep = 'setup' | 'confirm';
-type ReviewTab = 'system' | 'files';
+type ReviewTab = 'system' | 'files' | 'criteria';
 
 interface ResolvedDesignSystemWorkspaceProject {
   projectId: string;
@@ -889,11 +907,35 @@ export function DesignSystemDetailView({
   onSetDefault,
   onSystemsRefresh,
   onProjectsRefresh,
+  onOpenCriteria,
+  onOpenFigmaUpdate,
+  onGenerateCriteria,
+  section,
 }: DetailProps) {
   const { locale } = useI18n();
   const [system, setSystem] = useState<DesignSystemDetail | null>(null);
   const [body, setBody] = useState('');
-  const [tab, setTab] = useState<ReviewTab>('system');
+  const [tab, setTab] = useState<ReviewTab>(section === 'criteria' ? 'criteria' : 'system');
+  const [criteriaViewState, setCriteriaViewState] = useState<FigmaDsPreviewViewState>(() =>
+    readCriteriaReviewViewState(id),
+  );
+  useEffect(() => {
+    setTab(section === 'criteria' ? 'criteria' : 'system');
+  }, [section]);
+  useEffect(() => {
+    setCriteriaViewState(readCriteriaReviewViewState(id));
+  }, [id]);
+  const handleCriteriaViewStateChange = useCallback((state: FigmaDsPreviewViewState) => {
+    setCriteriaViewState((current) => {
+      if (
+        current.tab === state.tab
+        && current.documentView.components === state.documentView.components
+        && current.documentView.rules === state.documentView.rules
+      ) return current;
+      return state;
+    });
+    writeCriteriaReviewViewState(id, state);
+  }, [id]);
   const [openSection, setOpenSection] = useState(0);
   const [saving, setSaving] = useState(false);
   const [statusLine, setStatusLine] = useState<string | null>(null);
@@ -956,7 +998,12 @@ export function DesignSystemDetailView({
   }, [id]);
 
   useEffect(() => {
-    if (!system) return undefined;
+    /**
+     * The criteria route is a stable review page. It must not resolve and
+     * auto-open the workspace, because that navigation unmounts this view
+     * immediately after the criteria tab renders.
+     */
+    if (section === 'criteria' || !system) return undefined;
     const currentSystem = system;
     let cancelled = false;
     async function syncWorkspaceProject() {
@@ -970,7 +1017,13 @@ export function DesignSystemDetailView({
       const projectId = resolved.projectId;
       setWorkspaceProjectId(projectId);
       setWorkspaceProjectFiles(resolved.files);
-      if (onOpenProject && openedProjectRef.current !== projectId) {
+      // DS Figma ở LẠI màn này: khung phải là preview 3 tab (Showcase / Thành
+      // phần / Nguyên tắc) và khung trái đã là ChatPane của đúng project
+      // workspace đó — nhảy sang route /projects/:id sẽ unmount cả hai và ném
+      // người dùng vào trình duyệt file, đúng thứ màn preview này thay thế.
+      // DS thường vẫn giữ hành vi cũ.
+      const staysOnPreview = currentSystem.hasReactBundle === true;
+      if (onOpenProject && !staysOnPreview && openedProjectRef.current !== projectId) {
         openedProjectRef.current = projectId;
         await onProjectsRefresh?.();
         if (!cancelled) onOpenProject(projectId);
@@ -1751,6 +1804,34 @@ export function DesignSystemDetailView({
     );
   }
 
+  if (section === 'criteria') {
+    return (
+      <div className="ds-setup-shell" aria-label="Danh mục review Design System">
+        <DesignSystemReviewCatalogModal
+          open
+          systemId={system.id}
+          title={system.title}
+          initialTab={criteriaViewState.tab}
+          initialDocumentView={criteriaViewState.documentView}
+          onGenerate={(kind) => onGenerateCriteria?.(system.id, kind)}
+          onUpdateFigma={() => onOpenFigmaUpdate?.(system.id)}
+          onViewStateChange={handleCriteriaViewStateChange}
+          onClose={onBack}
+        />
+      </div>
+    );
+  }
+
+  // DS nạp từ Figma (có react bundle): khung bên phải của màn Edit KHÔNG còn
+  // là trình xem DESIGN.md nữa mà là preview 3 tab dùng chung với modal
+  // (Showcase / Thành phần / Nguyên tắc) + nút Tải lại — agent sửa file qua
+  // chat bên trái thì bấm Tải lại là thấy nội dung mới.
+  //
+  // Route `?section=criteria` vẫn phải giữ nguyên bộ tab cũ: đó là trang
+  // "Danh mục review" (nơi bấm Sinh danh mục / Sinh quy tắc), đi vào từ nút
+  // riêng trên hàng DS.
+  const figmaPreview = system.hasReactBundle === true;
+
   return (
     <div className="ds-workspace">
       <aside className="ds-project-chat">
@@ -1790,28 +1871,50 @@ export function DesignSystemDetailView({
             <Icon name="arrow-left" />
             Back
           </button>
-          <div className="segmented">
-            <button
-              type="button"
-              className={tab === 'system' ? 'active' : ''}
-              onClick={() => setTab('system')}
-            >
-              Design System
-            </button>
-            <button
-              type="button"
-              className={tab === 'files' ? 'active' : ''}
-              onClick={() => setTab('files')}
-            >
-              Design Files
-            </button>
-          </div>
-          <button type="button" className="ghost">
-            Share
-          </button>
+          {/* Với DS Figma, dải tab DUY NHẤT là của FigmaDsPreviewTabs ở dưới
+              (Showcase / Thành phần / Nguyên tắc) — không xếp chồng hai dải
+              tab lên nhau. Header còn Back + Share, `space-between` của
+              .ds-review-tabs tự đẩy về hai mép. */}
+          {figmaPreview ? null : (
+            <div className="segmented">
+              <button
+                type="button"
+                className={tab === 'system' ? 'active' : ''}
+                onClick={() => setTab('system')}
+              >
+                Design System
+              </button>
+              <button
+                type="button"
+                className={tab === 'files' ? 'active' : ''}
+                onClick={() => setTab('files')}
+              >
+                Design Files
+              </button>
+              {system.hasReactBundle ? (
+                <button
+                  type="button"
+                  className={tab === 'criteria' ? 'active' : ''}
+                  onClick={() => (onOpenCriteria ? onOpenCriteria(system.id) : setTab('criteria'))}
+                >
+                  Danh mục review
+                </button>
+              ) : null}
+            </div>
+          )}
+          <DesignSystemShareButton system={system} />
         </header>
 
-        {tab === 'system' ? (
+        {figmaPreview ? (
+          <DesignSystemFigmaUpdateWorkspace systemId={system.id} title={system.title} initialUpdateOpen={section === 'figma-update'}>
+            <FigmaDsPreviewTabs systemId={system.id} />
+          </DesignSystemFigmaUpdateWorkspace>
+        ) : tab === 'criteria' ? (
+          <DesignSystemCriteriaPanel
+            systemId={system.id}
+            onOpenProject={onOpenProject}
+          />
+        ) : tab === 'system' ? (
           <div className="ds-review-column">
             <h1>Review draft design system</h1>
             <div className="ds-review-rule" aria-hidden />
@@ -1860,6 +1963,18 @@ export function DesignSystemDetailView({
               ) : null}
             </div>
             <DesignSystemPackageCard system={system} />
+            {system.hasReactBundle ? (
+              <section className="ds-edit-preview" aria-label="Design system preview">
+                <div className="ds-edit-preview__heading">
+                  <div>
+                    <span className="ds-edit-preview__eyebrow">LIVE PREVIEW</span>
+                    <h2>Design system preview</h2>
+                  </div>
+                  <span className="ds-edit-preview__hint">Showcase · components · review rules</span>
+                </div>
+                <FigmaDsPreviewTabs systemId={system.id} />
+              </section>
+            ) : null}
             <div className="ds-warning-card">
               <Icon name="help-circle" />
               <span>
@@ -1978,6 +2093,43 @@ export function DesignSystemDetailView({
       </main>
     </div>
   );
+}
+
+const DEFAULT_CRITERIA_REVIEW_STATE: FigmaDsPreviewViewState = {
+  tab: 'showcase',
+  documentView: { components: 'current', rules: 'current' },
+};
+
+function criteriaReviewViewStateKey(systemId: string): string {
+  return `open-design.ds-criteria-view.${systemId}`;
+}
+
+function readCriteriaReviewViewState(systemId: string): FigmaDsPreviewViewState {
+  if (typeof window === 'undefined') return DEFAULT_CRITERIA_REVIEW_STATE;
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(criteriaReviewViewStateKey(systemId)) ?? 'null') as Partial<FigmaDsPreviewViewState> | null;
+    const tab = value?.tab === 'components' || value?.tab === 'rules' || value?.tab === 'showcase'
+      ? value.tab
+      : 'showcase';
+    return {
+      tab,
+      documentView: {
+        components: value?.documentView?.components === 'draft' ? 'draft' : 'current',
+        rules: value?.documentView?.rules === 'draft' ? 'draft' : 'current',
+      },
+    };
+  } catch {
+    return DEFAULT_CRITERIA_REVIEW_STATE;
+  }
+}
+
+function writeCriteriaReviewViewState(systemId: string, state: FigmaDsPreviewViewState): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(criteriaReviewViewStateKey(systemId), JSON.stringify(state));
+  } catch {
+    // Session storage is a convenience only; navigation still works without it.
+  }
 }
 
 function buildDesignSystemChatMessages({
@@ -2461,6 +2613,237 @@ function SourceContextCard({ provenance }: { provenance?: DesignSystemProvenance
           <small>{row.value}</small>
         </div>
       ))}
+    </div>
+  );
+}
+
+export type CriteriaPanelResult = Exclude<Awaited<ReturnType<typeof getDesignSystemCriteria>>, { error: string }>;
+type CriteriaJob = NonNullable<CriteriaPanelResult['job']>;
+export type RulesPanelResult = Exclude<Awaited<ReturnType<typeof getDesignSystemRules>>, { error: string }>;
+
+
+function formatCriteriaDuration(createdAt: string, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - Date.parse(createdAt)) / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+export function DesignSystemCriteriaPanel({
+  systemId,
+  onOpenProject,
+}: {
+  systemId: string;
+  onOpenProject?: (projectId: string, conversationId?: string | null) => void;
+}) {
+  const [criteria, setCriteria] = useState<CriteriaPanelResult | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [rules, setRules] = useState<RulesPanelResult | null>(null);
+  const [startingRules, setStartingRules] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const update = useDesignSystemFigmaUpdateState(systemId);
+  const job = criteria?.job ?? null;
+  const rulesJob = rules?.job ?? null;
+  const active = job?.status === 'queued' || job?.status === 'running';
+  const rulesActive = rulesJob?.status === 'queued' || rulesJob?.status === 'running';
+  const existing = (criteria?.components ?? 0) > 0;
+  const existingRules = (rules?.rules ?? 0) > 0;
+
+  const refresh = useCallback(async () => {
+    const next = await getDesignSystemCriteria(systemId);
+    if (!('error' in next)) setCriteria(next);
+  }, [systemId]);
+
+  const refreshRules = useCallback(async () => {
+    const next = await getDesignSystemRules(systemId);
+    if (!('error' in next)) setRules(next);
+  }, [systemId]);
+
+  useEffect(() => { void refreshRules(); }, [refreshRules]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // Depend on the returned job object, not a derived boolean. Each response
+  // must be able to schedule the next poll while status stays unchanged.
+  useEffect(() => {
+    if (!job || !active) return undefined;
+    const timer = window.setTimeout(() => { void refresh(); }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [job, active, refresh]);
+
+  useEffect(() => {
+    if ((!job || !active) && (!rulesJob || !rulesActive)) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [job, active, rulesJob, rulesActive]);
+
+  useEffect(() => {
+    if (!rulesJob || !rulesActive) return undefined;
+    const timer = window.setTimeout(() => { void refreshRules(); }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [rulesJob, rulesActive, refreshRules]);
+
+  useEffect(() => {
+    if (job?.status === 'succeeded' || rulesJob?.status === 'succeeded') {
+      void update.refresh();
+    }
+  }, [job?.status, rulesJob?.status, update.refresh]);
+
+  async function start() {
+    if (starting || active) return;
+    setStarting(true);
+    const result = await generateDesignSystemCriteria(systemId);
+    if (!('error' in result)) await refresh();
+    setStarting(false);
+  }
+
+  async function startRules() {
+    if (startingRules || rulesActive) return;
+    setStartingRules(true);
+    const result = await generateDesignSystemRules(systemId);
+    if (!('error' in result)) await refreshRules();
+    setStartingRules(false);
+  }
+
+  const cardState = job?.status === 'failed' ? 'is-failed' : active ? 'is-running' : existing ? 'is-succeeded' : 'is-empty';
+  const headIcon = job?.status === 'failed' ? 'help-circle' : active ? 'spinner' : existing ? 'check' : 'blocks';
+
+  return (
+    <div className="ds-review-column" aria-label="Danh mục review">
+      <header className="ds-review-head">
+        <span className="ds-review-head__eyebrow">Design system</span>
+        <h1>Danh mục review</h1>
+      </header>
+      <div className="ds-review-rule" aria-hidden />
+      <DesignSystemCriteriaUpdateReview
+        systemId={systemId}
+        state={update.state}
+        onStateChange={update.setState}
+      />
+      <h2 className="ds-review-section-title">Danh mục component</h2>
+      <section className={`ds-generation-review-card ds-criteria-card ${cardState}`}>
+        <div className="ds-criteria-card__head">
+          <span className={`ds-criteria-card__badge ${cardState}`} aria-hidden>
+            <Icon name={headIcon} />
+          </span>
+          <div className="ds-criteria-card__title">
+            <strong>
+              {job?.status === 'failed'
+                ? 'Sinh danh mục thất bại'
+                : existing
+                  ? 'Danh mục component đã sẵn sàng'
+                  : active
+                    ? 'Đang sinh danh mục component…'
+                    : 'Chưa sinh danh mục component'}
+            </strong>
+            <div className="ds-criteria-card__meta">
+              {existing ? (
+                <span className="ds-criteria-chip is-count">{criteria?.components ?? 0} component</span>
+              ) : null}
+              {existing && criteria?.meta?.generatedAt ? (
+                <span className="ds-criteria-chip">Cập nhật {new Date(criteria.meta.generatedAt).toLocaleString('vi-VN')}</span>
+              ) : null}
+              <CriteriaStaleBadge
+                state={update.state?.criteria.components}
+                candidateVersion={update.state?.candidateVersion}
+              />
+            </div>
+          </div>
+        </div>
+
+        <p className="ds-criteria-card__desc">
+          Danh mục này hỗ trợ bước “Màn hình → Component” trong workflow Docs → Review tài liệu đối chiếu;
+          agent đọc catalog của chính design system, mất khoảng 6–7 phút.
+        </p>
+        {existing ? (
+          <p className="ds-criteria-card__note">
+            {update.state?.candidateVersion
+              ? 'Kết quả mới được giữ ở bản nháp. File đang dùng chỉ đổi sau khi bạn duyệt.'
+              : <>Chạy lại sẽ ghi đè <code>components.md</code> hiện tại.</>}
+          </p>
+        ) : null}
+
+        <div className="ds-criteria-card__actions">
+          <button type="button" className="primary" disabled={active || starting} onClick={() => void start()}>
+            {active ? 'Đang chạy…' : existing ? 'Sinh lại' : 'Sinh danh mục'}
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            disabled={!job?.projectId || !job.conversationId}
+            onClick={() => { if (job?.projectId && job.conversationId) onOpenProject?.(job.projectId, job.conversationId); }}
+          >
+            <Icon name="comment" />
+            Mở hội thoại
+          </button>
+          {active && job ? (
+            <span className="ds-criteria-card__timer">Đã chạy {formatCriteriaDuration(job.createdAt, now)}</span>
+          ) : null}
+        </div>
+
+        <ol className="ds-criteria-steps">
+          {(['read-catalog', 'generate', 'validate'] as const).map((id, index) => {
+            const step = job?.steps.find((item) => item.id === id);
+            const status = step?.status ?? 'pending';
+            return (
+              <li key={id} className={`is-${status}`}>
+                <span className="ds-criteria-steps__marker" aria-hidden>
+                  {status === 'succeeded' ? <Icon name="check" /> : status === 'running' ? <Icon name="spinner" /> : index + 1}
+                </span>
+                <span className="ds-criteria-steps__label">
+                  {step?.title ?? id}
+                  {step?.message ? <em>{step.message}</em> : null}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+      </section>
+
+      <h2 className="ds-review-section-title">Quy tắc review</h2>
+      {(() => {
+        const rulesCardState = rulesJob?.status === 'failed' ? 'is-failed' : rulesActive ? 'is-running' : existingRules ? 'is-succeeded' : 'is-empty';
+        const rulesHeadIcon = rulesJob?.status === 'failed' ? 'help-circle' : rulesActive ? 'spinner' : existingRules ? 'check' : 'file';
+        return (
+          <section className={`ds-generation-review-card ds-criteria-card ${rulesCardState}`}>
+            <div className="ds-criteria-card__head">
+              <span className={`ds-criteria-card__badge ${rulesCardState}`} aria-hidden><Icon name={rulesHeadIcon} /></span>
+              <div className="ds-criteria-card__title">
+                <strong>{rulesJob?.status === 'failed' ? 'Sinh quy tắc thất bại' : existingRules ? 'Đã có quy tắc review' : rulesActive ? 'Đang sinh quy tắc…' : 'Chưa sinh quy tắc'}</strong>
+                <div className="ds-criteria-card__meta">
+                  {existingRules ? <span className="ds-criteria-chip is-count">{rules?.rules ?? 0} quy tắc</span> : null}
+                  <CriteriaStaleBadge
+                    state={update.state?.criteria.rules}
+                    candidateVersion={update.state?.candidateVersion}
+                  />
+                </div>
+              </div>
+            </div>
+            <p className="ds-criteria-card__desc">Agent đọc showcase, token và catalog của design system để sinh các quy tắc review.</p>
+            {existingRules ? (
+              <p className="ds-criteria-card__note">
+                {update.state?.candidateVersion
+                  ? 'Kết quả mới được giữ ở bản nháp. File đang dùng chỉ đổi sau khi bạn duyệt.'
+                  : <>Chạy lại sẽ ghi đè <code>rules.md</code> hiện tại.</>}
+              </p>
+            ) : null}
+            <div className="ds-criteria-card__actions">
+              <button type="button" className="primary" disabled={rulesActive || startingRules} onClick={() => void startRules()}>
+                {rulesActive ? 'Đang chạy…' : existingRules ? 'Sinh lại' : 'Sinh quy tắc'}
+              </button>
+              <button type="button" className="ghost" aria-label="Mở hội thoại quy tắc" disabled={!rulesJob?.projectId || !rulesJob.conversationId} onClick={() => { if (rulesJob?.projectId && rulesJob.conversationId) onOpenProject?.(rulesJob.projectId, rulesJob.conversationId); }}>
+                <Icon name="comment" /> Mở hội thoại
+              </button>
+              {rulesActive && rulesJob ? <span className="ds-criteria-card__timer">Đã chạy {formatCriteriaDuration(rulesJob.createdAt, now)}</span> : null}
+            </div>
+            <ol className="ds-criteria-steps">
+              {(['read-showcase', 'generate', 'validate'] as const).map((id, index) => {
+                const step = rulesJob?.steps.find((item) => item.id === id);
+                const status = step?.status ?? 'pending';
+                return <li key={id} className={`is-${status}`}><span className="ds-criteria-steps__marker" aria-hidden>{status === 'succeeded' ? <Icon name="check" /> : status === 'running' ? <Icon name="spinner" /> : index + 1}</span><span className="ds-criteria-steps__label">{step?.title ?? id}{step?.message ? <em>{step.message}</em> : null}</span></li>;
+              })}
+            </ol>
+          </section>
+        );
+      })()}
     </div>
   );
 }

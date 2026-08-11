@@ -38,9 +38,44 @@ export function openDatabase(projectRoot: string, { dataDir }: { dataDir?: strin
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   migrate(db);
+  sweepOrphanedPipelineRuns(db);
   dbInstance = db;
   dbFile = file;
   return db;
+}
+
+// Pipeline run là tiến trình con IN-MEMORY của daemon — daemon chết/restart
+// thì không run nào sống sót, nhưng status 'running'/'queued' trong
+// metadata.pipelines nằm lại vĩnh viễn: feature hiện "Đang chạy" mãi dù không
+// có gì chạy. Mở DB = một tiến trình daemon mới toanh, nên mọi trạng thái
+// đang-chạy còn sót đều là run mồ côi → đánh 'failed' cho trung thực.
+function sweepOrphanedPipelineRuns(db: SqliteDb): void {
+  const rows = db
+    .prepare(`SELECT id, metadata_json AS metadataJson FROM projects WHERE metadata_json LIKE '%"pipelines"%'`)
+    .all() as Array<{ id: string; metadataJson: string | null }>;
+  const update = db.prepare(`UPDATE projects SET metadata_json = ? WHERE id = ?`);
+  for (const row of rows) {
+    if (!row.metadataJson) continue;
+    let metadata: unknown;
+    try {
+      metadata = JSON.parse(row.metadataJson);
+    } catch {
+      continue;
+    }
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) continue;
+    const pipelines = (metadata as Record<string, unknown>).pipelines;
+    if (!pipelines || typeof pipelines !== 'object' || Array.isArray(pipelines)) continue;
+    let changed = false;
+    for (const entry of Object.values(pipelines as Record<string, unknown>)) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const state = entry as { status?: unknown };
+      if (state.status === 'running' || state.status === 'queued') {
+        state.status = 'failed';
+        changed = true;
+      }
+    }
+    if (changed) update.run(JSON.stringify(metadata), row.id);
+  }
 }
 
 export function closeDatabase() {
@@ -205,6 +240,12 @@ function migrate(db: SqliteDb): void {
 
     CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
       ON routine_runs(routine_id, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS pipeline_apps (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
   // Forward-compatible column add for databases created before metadata_json.
   // SQLite has no IF NOT EXISTS for ALTER, so we check pragma_table_info.
@@ -214,6 +255,10 @@ function migrate(db: SqliteDb): void {
   }
   if (!cols.some((c: DbRow) => c.name === 'custom_instructions')) {
     db.exec(`ALTER TABLE projects ADD COLUMN custom_instructions TEXT`);
+  }
+  const pipelineAppCols = db.prepare(`PRAGMA table_info(pipeline_apps)`).all() as DbRow[];
+  if (!pipelineAppCols.some((c: DbRow) => c.name === 'design_system_id')) {
+    db.exec(`ALTER TABLE pipeline_apps ADD COLUMN design_system_id TEXT`);
   }
   const messageCols = db.prepare(`PRAGMA table_info(messages)`).all() as DbRow[];
   if (!messageCols.some((c: DbRow) => c.name === 'agent_id')) {
@@ -606,6 +651,13 @@ interface PipelineRunStateRow {
   lastPlatform?: string;
   /** Per-task conversations of a fan-out run (list behind a stage button). */
   subConversations?: Array<{ id: string; title: string; status: string }>;
+  /** Short human-readable reason the LAST run failed (fail-fast validation,
+   *  the underlying agent run's own error, or a generic fallback) — so the
+   *  FE's "Xem lỗi" has something to show instead of an empty failed status.
+   *  `| undefined` (not just optional) so setProjectPipelineStatus can
+   *  explicitly clear a stale error on a later succeeded/running patch under
+   *  `exactOptionalPropertyTypes`. */
+  error?: string | undefined;
 }
 
 export function getProjectPipelineState(
@@ -635,6 +687,9 @@ export function setProjectPipelineStatus(
     lastSource?: unknown;
     lastPlatform?: string;
     subConversations?: Array<{ id: string; title: string; status: string }>;
+    /** Short reason THIS patch's failure happened — only meaningful alongside
+     *  `status: 'failed'`. See the invariant note on PipelineRunStateRow.error. */
+    error?: string;
   },
 ) {
   const project = getProject(db, projectId);
@@ -648,7 +703,19 @@ export function setProjectPipelineStatus(
       ? { ...(metadata.pipelines as Record<string, PipelineRunStateRow>) }
       : {};
   const prev = pipelines[pipelineId] ?? { status: 'idle' };
-  pipelines[pipelineId] = { ...prev, ...patch, updatedAt: Date.now() };
+  // A status transition to anything OTHER than 'failed' implicitly clears a
+  // previously-stored error — a stale "why did it fail" from an earlier run
+  // must never survive onto a later succeeded/running/idle status. A caller
+  // setting `status: 'failed'` is expected to pass `error` itself; when it
+  // doesn't (a handful of legacy call sites), this leaves any prior error in
+  // place rather than inventing one.
+  const clearsError = patch.status !== undefined && patch.status !== 'failed' && patch.error === undefined;
+  pipelines[pipelineId] = {
+    ...prev,
+    ...patch,
+    ...(clearsError ? { error: undefined } : {}),
+    updatedAt: Date.now(),
+  };
   metadata.pipelines = pipelines;
   return updateProject(db, projectId, { metadata });
 }
@@ -689,6 +756,63 @@ function normalizeProjectRunStatus(status: unknown) {
     return status;
   }
   return 'not_started';
+}
+
+// ---------- pipeline apps ----------
+// App container (cha của các feature) tạo cục bộ mà CHƯA có feature nào. Một App
+// có feature không cần row ở đây: nó đã tồn tại dưới dạng {appId, appName}
+// denormalize trong metadata.studioConfig của từng feature (xem
+// GET /api/pipelines/apps). Bảng này chỉ để App 0 feature không biến mất.
+
+export function listPipelineApps(db: SqliteDb) {
+  return (db
+    .prepare(`SELECT id, name, design_system_id AS designSystemId, created_at AS createdAt FROM pipeline_apps ORDER BY created_at ASC`)
+    .all() as DbRow[])
+    .map((r: DbRow) => ({ id: r.id as string, name: r.name as string, designSystemId: (r.designSystemId as string | null) ?? null, createdAt: Number(r.createdAt) }));
+}
+
+export function getPipelineApp(db: SqliteDb, id: string) {
+  const r = db
+    .prepare(`SELECT id, name, design_system_id AS designSystemId, created_at AS createdAt FROM pipeline_apps WHERE id = ?`)
+    .get(id) as DbRow | undefined;
+  return r ? { id: r.id as string, name: r.name as string, designSystemId: (r.designSystemId as string | null) ?? null, createdAt: Number(r.createdAt) } : null;
+}
+
+export function insertPipelineApp(db: SqliteDb, a: { id: string; name: string; designSystemId?: string | null; createdAt: number }) {
+  db.prepare(`INSERT INTO pipeline_apps (id, name, design_system_id, created_at) VALUES (?, ?, ?, ?)`)
+    .run(a.id, a.name, a.designSystemId ?? null, a.createdAt);
+  return getPipelineApp(db, a.id);
+}
+
+// Đổi tên hiển thị của App. UPSERT vì App có feature KHÔNG có row ở đây (tên
+// chỉ nằm denormalize trên feature) — rename nó phải tạo row shadow để tên mới
+// sống được cả khi feature cuối bị gỡ khỏi app.
+export function upsertPipelineAppName(
+  db: SqliteDb,
+  a: { id: string; name: string; createdAt: number },
+) {
+  db.prepare(
+    `INSERT INTO pipeline_apps (id, name, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name`,
+  ).run(a.id, a.name, a.createdAt);
+  return getPipelineApp(db, a.id);
+}
+
+/** Đặt (hoặc gỡ, khi `designSystemId` là null) DS của một App.
+ * UPSERT vì App có feature chưa chắc đã có row `pipeline_apps`.
+ */
+export function setPipelineAppDesignSystem(
+  db: SqliteDb,
+  args: { id: string; name?: string; designSystemId: string | null; createdAt: number },
+): void {
+  db.prepare(
+    `INSERT INTO pipeline_apps (id, name, design_system_id, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET design_system_id = excluded.design_system_id`,
+  ).run(args.id, args.name ?? args.id, args.designSystemId, args.createdAt);
+}
+
+export function deletePipelineApp(db: SqliteDb, id: string) {
+  db.prepare(`DELETE FROM pipeline_apps WHERE id = ?`).run(id);
 }
 
 // ---------- templates ----------

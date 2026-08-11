@@ -227,6 +227,7 @@ export const zhTW: Dict = {
   'settings.agentInstallGroup': '可安裝（{count}）',
   'settings.agentAuthRequired': '需要認證',
   'settings.agentAuthUnknown': '認證狀態未知',
+  'settings.agentAuthOk': '已登入',
   'settings.apiSection': 'API 設定',
   'settings.quickFillProvider': '快速填入提供方',
   'settings.customProvider': '自訂提供方',
@@ -403,6 +404,7 @@ export const zhTW: Dict = {
   'entry.navNewProject': '新建專案',
   'entry.navHome': '主頁',
   'entry.navProjects': '專案',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navIntegrations': '整合',
   'entry.navDesignSystems': '設計體系',
   'designSystemPicker.select': '選擇設計系統',
@@ -891,9 +893,13 @@ export const zhTW: Dict = {
   'ds.categoryAll': '全部',
   'ds.categoryUncategorized': '未分類',
   'ds.showcase': '展示',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Token',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': '正在載入 DESIGN.md…',
+  'ds.reactStats': '{components} 個元件 · {icons} 個圖示',
+  'ds.reactDetailToggle': '元件庫',
+  'ds.reactDetailLoading': '正在載入元件庫…',
 
   'avatar.title': '帳號與設定',
   'avatar.localCli': '本機 CLI',
@@ -966,6 +972,9 @@ export const zhTW: Dict = {
   'chat.comments.clear': 'Clear',
   'chat.conversationsTitle': '對話紀錄',
   'chat.conversationsAria': '對話紀錄',
+  'chat.displayModeAria': '切換技術細節',
+  'chat.displayModeSimpleTitle': '簡潔檢視 — 已隱藏技術步驟。點擊即可顯示。',
+  'chat.displayModeFullTitle': '詳細檢視 — 正在顯示技術步驟。點擊即可簡化。',
   'chat.newConversation': '新建對話',
   'chat.newConversationsTitle': '新建對話',
   'chat.conversationsHeading': '對話',
@@ -1721,6 +1730,11 @@ export const zhTW: Dict = {
   'settings.designSystemsSource': '來源',
   'settings.designSystemsSourceLocal': '本機',
   'settings.designSystemsSourceGithub': 'GitHub',
+  'settings.designSystemsSourceFigma': 'Figma IR',
+  'settings.designSystemsFigmaFiles': 'Figma IR 檔案',
+  'settings.designSystemsFigmaFilesHelp': '選擇 Fig Pipeline 外掛匯出的 .ir.json 檔案或 .zip 套件。合併順序按檔名排序——用 01-、02- 前綴，foundation（權杖）檔案放最前。',
+  'settings.designSystemsImportFigma': '匯入 Figma IR',
+  'settings.designSystemsImportWarnings': '{count} 則匯入警告',
   'settings.designSystemsStructure': '結構',
   'settings.designSystemsModeHybrid': '混合',
   'settings.designSystemsModeNormalized': '規範化',
@@ -2020,4 +2034,37 @@ export const zhTW: Dict = {
   'settings.sandboxMissing': '缺少',
   'settings.sandboxRunCmd': '執行：{cmd}',
   'settings.sandboxDaemonOffline': '守護程式離線 — 無法取得沙箱狀態。',
+  'settings.sandboxClaudeTitle': 'Claude runtime',
+  'settings.sandboxClaudeHint': 'Claude keeps the existing account switcher and usage controls.',
+  'settings.sandboxCodexTitle': 'Codex runtime',
+  'settings.sandboxCodexHint': 'Codex uses browser-based device code login and never displays tokens.',
+  'settings.sandboxRuntimeReady': 'Ready',
+  'settings.sandboxRuntimeNotReady': 'Not ready',
+  'settings.sandboxCodexLoginStart': 'Start login',
+  'settings.sandboxCodexLoginDisconnect': 'Disconnect',
+
+  // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
+  'pipelines.runAllClear.title': 'Old results will be cleared',
+  'pipelines.runAllClear.body': 'Running now will delete the existing results of: {stages}.',
+  'pipelines.runAllClear.historyNote':
+    'The current results are saved to project history first, so you can restore them afterward.',
+  'pipelines.runAllClear.confirm': 'Run and clear old results',
+  'pipelines.runAllClear.staleOnlyTitle': 'Some inputs are from outside this run',
+  'pipelines.runAllClear.confirmContinue': 'Run',
+  'pipelines.runAllClear.staleSectionTitle': 'Using input from outside this run',
+  'pipelines.runAllClear.staleLine': "{stage} will use {source}'s result from {time}.",
+  'pipelines.runAllClear.staleNote':
+    'Each source stage above is outside this run, so its result stays exactly as it is — the stage that depends on it will use that same version.',
+
+  // Pipelines — dependency gate is now a SUGGESTION, not a lock (spec
+  // g2-ui-suggestion-not-gate). Every stage is runnable once step 1 (docs
+  // ingest) has run; these strings replace the old "must finish X first"
+  // blocking copy with informational notes that never disable Save/Run.
+  'pipelines.runAllPicker.ingestRequired': '{stage} (step 1) must finish first — the steps below need ingested documents to run.',
+  'pipelines.runAllPicker.softNote': "Will run with current data; {stages} won't run this time.",
+  'pipelines.runAllPicker.hint':
+    "Tick exactly the steps you want to run — ticking one won't drag in others. A step whose dependency isn't ticked and hasn't finished yet runs with whatever data already exists (see the note under it).",
+  'pipelines.rail.usuallyAfter': 'Usually runs after {stages}',
+  'pipelines.rail.needsDocs': 'Needs {stage} first — no documents ingested yet',
+  'pipelines.rail.staleNeedsDocs': 'This result is from old data — rerun {stage} to sync',
 };

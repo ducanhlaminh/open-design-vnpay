@@ -96,12 +96,12 @@ export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
     }
   }, []);
 
-  // Switching changes the active credentials → nudge the quota meter to re-poll
-  // immediately (its own poll + the server cache would otherwise lag ~1 minute).
+  // The switch endpoint drops the daemon's cached usage, so the next open of the
+  // Local CLI dropdown reads the new account's quota. Nothing to nudge here —
+  // the usage panel is not mounted unless that dropdown is open.
   const switchTo = useCallback(
     async (label: string) => {
       await call('/api/sandbox/accounts/switch', JSON_POST(label));
-      window.dispatchEvent(new Event('od:claude-usage-refresh'));
     },
     [call],
   );
@@ -136,14 +136,18 @@ export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
                   dead
                     ? st?.error ?? 'Token lỗi'
                     : a.active
-                      ? 'Đang dùng'
+                      ? `Đang dùng · ${a.label}`
                       : `Chuyển sang "${a.label}"`
                 }
               >
                 <span className={`${styles.dot}${dead ? ' ' + styles.dotDead : ''}`} aria-hidden="true">
                   {dead ? '⚠' : a.active ? '●' : '○'}
                 </span>
-                <span className={styles.accName}>{a.label}</span>
+                <span className={styles.accName}>
+                  {/* Prefer the real email over the derived slug — with
+                      auto-saved accounts the label is only a filename. */}
+                  {a.identity?.emailAddress ?? a.label}
+                </span>
                 {/* Token health (OK / lỗi) shows for EVERY checked account,
                     including the active one, alongside its "đang dùng" tag. */}
                 {st ? (
@@ -221,7 +225,8 @@ export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
         onSuccess={() => {
           setJustLoggedIn(true);
           void refresh();
-          window.dispatchEvent(new Event('od:claude-usage-refresh'));
+          // No usage-refresh dispatch here — EmbeddedClaudeLogin fires it for
+          // every host of the flow, this one included.
         }}
       />
 

@@ -4,11 +4,13 @@ import { useT } from '../i18n';
 import type { AppConfig, DesignSystemSummary } from '../types';
 import {
   fetchDesignSystems,
+  importFigmaDesignSystem,
   importGitHubDesignSystem,
   importLocalDesignSystem,
   updateDesignSystemDraft,
 } from '../providers/registry';
 import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
+import { FigmaDesignSystemDetailModal } from './FigmaDesignSystemDetailModal';
 import { Icon } from './Icon';
 import { orderDesignSystemGroups } from './design-system-group-order';
 
@@ -45,7 +47,16 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
   // moved on cannot clobber a newer session's modal state.
   const renameSessionRef = useRef(0);
   const [importPath, setImportPath] = useState('');
-  const [importSource, setImportSource] = useState<'local' | 'github'>('local');
+  // Figma là đường import CHÍNH (zip từ plugin Fig Pipeline) — mặc định luôn,
+  // chọn file là bấm Import được ngay. Local/GitHub là nguồn phụ cho DS dạng
+  // CSS/token (ui-html), giữ sau nút Figma.
+  const [importSource, setImportSource] = useState<'local' | 'github' | 'figma'>('figma');
+  // Figma IR uploads: .ir.json and/or plugin .zip bundles. The daemon merges
+  // in NATURAL FILENAME ORDER (01-, 02-, … — foundation/token export first),
+  // so selection order here does not matter.
+  const [importIrFiles, setImportIrFiles] = useState<File[]>([]);
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
+  const [importCriteria, setImportCriteria] = useState<{ rules: boolean; components: boolean } | null>(null);
   const [packageImportMode, setPackageImportMode] = useState<'normalized' | 'hybrid' | 'verbatim'>('hybrid');
   const [craftApplies, setCraftApplies] = useState<string[]>([]);
   const [addOpen, setAddOpen] = useState(false);
@@ -59,6 +70,7 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
   useEffect(() => {
     fetchDesignSystems().then(setDesignSystems);
   }, []);
+
 
   const disabledDS = useMemo(
     () => new Set(cfg.disabledDesignSystems ?? []),
@@ -199,37 +211,55 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
     setImportError(null);
     setImportMessage(null);
     setImportedDesignSystem(null);
+    setImportWarnings([]);
+    setImportCriteria(null);
   }
 
   async function handleLocalImport(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const importTarget = importPath.trim();
-    if (!importTarget || importing) return;
+    if (importing) return;
+    if (importSource === 'figma' ? importIrFiles.length === 0 : !importTarget) return;
     setImporting(true);
     setImportError(null);
     setImportMessage(null);
     setImportedDesignSystem(null);
+    setImportWarnings([]);
     const importOptions = {
       importMode: packageImportMode,
       craftApplies,
     };
-    const result =
-      importSource === 'github'
-        ? await importGitHubDesignSystem({ githubUrl: importTarget, ...importOptions })
-        : await importLocalDesignSystem({ baseDir: importTarget, ...importOptions });
+    let importWarningsNext: string[] = [];
+    let result: Awaited<ReturnType<typeof importLocalDesignSystem>>;
+    if (importSource === 'figma') {
+      const figmaResult = await importFigmaDesignSystem({ files: importIrFiles, craftApplies });
+      if (!('error' in figmaResult)) importWarningsNext = figmaResult.warnings;
+      result = figmaResult;
+    } else if (importSource === 'github') {
+      result = await importGitHubDesignSystem({ githubUrl: importTarget, ...importOptions });
+    } else {
+      result = await importLocalDesignSystem({ baseDir: importTarget, ...importOptions });
+    }
     setImporting(false);
     if ('error' in result) {
       setImportError(result.error.message);
       return;
     }
+    const importedSystem = result.designSystem;
     setDesignSystems((current) => {
-      const withoutDuplicate = current.filter((system) => system.id !== result.designSystem.id);
-      return [...withoutDuplicate, result.designSystem].sort((a, b) => a.title.localeCompare(b.title));
+      const withoutDuplicate = current.filter((system) => system.id !== importedSystem.id);
+      return [...withoutDuplicate, importedSystem].sort((a, b) => a.title.localeCompare(b.title));
     });
     setPreviewSystem(null);
     setImportPath('');
-    setImportedDesignSystem(result.designSystem);
-    setImportMessage(result.designSystem.title);
+    setImportIrFiles([]);
+    setImportWarnings(importWarningsNext);
+    setImportedDesignSystem(importedSystem);
+    const criteria = 'criteria' in result && result.criteria && typeof result.criteria === 'object'
+      ? result.criteria as { rules: boolean; components: boolean }
+      : null;
+    setImportCriteria(criteria);
+    setImportMessage(importedSystem.title);
   }
 
   function viewImportedDesignSystem() {
@@ -297,6 +327,16 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                 <div className="seg-control library-import-source-control">
                   <button
                     type="button"
+                    className={importSource === 'figma' ? 'active' : ''}
+                    onClick={() => {
+                      setImportSource('figma');
+                      clearImportFeedback();
+                    }}
+                  >
+                    {t('settings.designSystemsSourceFigma')}
+                  </button>
+                  <button
+                    type="button"
                     className={importSource === 'local' ? 'active' : ''}
                     onClick={() => {
                       setImportSource('local');
@@ -317,7 +357,9 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                   </button>
                 </div>
               </div>
-              <div className="library-import-row">
+              {/* Import mode only applies to scanned project imports; Figma IR
+                  is compiled verbatim by design. */}
+              <div className="library-import-row" hidden={importSource === 'figma'}>
                 <span className="library-import-option-label">
                   {t('settings.designSystemsStructure')}
                 </span>
@@ -345,7 +387,10 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                   </button>
                 </div>
               </div>
-              <div className="library-import-row">
+              {/* Craft rules chỉ có nghĩa cho DS dạng CSS/token (ui-html) —
+                  đường Figma react-ds đã gắn craft theo SKILL, checkbox ở đây
+                  là bước thừa nên ẩn: chọn zip là Import được ngay. */}
+              <div className="library-import-row" hidden={importSource === 'figma'}>
                 <span className="library-import-option-label">
                   {t('settings.designSystemsCraft')}
                 </span>
@@ -378,36 +423,77 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
               </div>
               <div className="library-import-row">
                 <span className="library-import-option-label">
-                  {importSource === 'github'
-                    ? t('settings.designSystemsGithubUrl')
-                    : t('settings.designSystemsProjectPath')}
+                  {importSource === 'figma'
+                    ? t('settings.designSystemsFigmaFiles')
+                    : importSource === 'github'
+                      ? t('settings.designSystemsGithubUrl')
+                      : t('settings.designSystemsProjectPath')}
                 </span>
                 <div className="library-install-row">
-                  <input
-                    type="text"
-                    className="library-import-input"
-                    placeholder={importSource === 'github' ? 'https://github.com/owner/repo' : '/path/to/project'}
-                    value={importPath}
-                    onChange={(e) => {
-                      setImportPath(e.target.value);
-                      clearImportFeedback();
-                    }}
-                  />
+                  {importSource === 'figma' ? (
+                    <input
+                      type="file"
+                      className="library-import-input"
+                      accept=".json,.zip,.md,application/json,application/zip,text/markdown"
+                      multiple
+                      onChange={(e) => {
+                        setImportIrFiles(Array.from(e.target.files ?? []));
+                        clearImportFeedback();
+                      }}
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      className="library-import-input"
+                      placeholder={importSource === 'github' ? 'https://github.com/owner/repo' : '/path/to/project'}
+                      value={importPath}
+                      onChange={(e) => {
+                        setImportPath(e.target.value);
+                        clearImportFeedback();
+                      }}
+                    />
+                  )}
                   <button
                     type="submit"
                     className="library-install-submit"
-                    disabled={importing || importPath.trim().length === 0}
+                    disabled={
+                      importing ||
+                      (importSource === 'figma'
+                        ? importIrFiles.length === 0
+                        : importPath.trim().length === 0)
+                    }
                   >
                     {importing
                       ? t('settings.libraryLoading')
-                      : importSource === 'github'
-                        ? t('settings.designSystemsImportGithub')
-                        : t('settings.designSystemsImportProject')}
+                      : importSource === 'figma'
+                        ? t('settings.designSystemsImportFigma')
+                        : importSource === 'github'
+                          ? t('settings.designSystemsImportGithub')
+                          : t('settings.designSystemsImportProject')}
                   </button>
                 </div>
               </div>
+              {importSource === 'figma' ? (
+                <p className="library-install-hint">
+                  {t('settings.designSystemsFigmaFilesHelp')} Có thể kéo kèm 1 file `.md` là bộ quy tắc UX dùng khi review tài liệu — tuỳ chọn, không có cũng nạp được.
+                </p>
+              ) : null}
             </div>
             {importError ? <p className="library-install-error">{importError}</p> : null}
+            {importWarnings.length > 0 ? (
+              <details className="library-install-warnings">
+                <summary>
+                  {t('settings.designSystemsImportWarnings', { count: importWarnings.length })}
+                </summary>
+                <ul>
+                  {importWarnings.slice(0, 30).map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+            {importCriteria?.rules ? <p className="library-install-status">Đã nạp bộ quy tắc review (rules.md).</p> : null}
+            {importedDesignSystem && !importCriteria?.components ? <p className="library-install-status">Danh mục component chưa sinh, mở trang design system để chạy.</p> : null}
             {importMessage ? (
               <p className="library-install-status">
                 <span>{t('settings.designSystemsImportedStatus', { title: importMessage })}</span>
@@ -554,10 +640,17 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
         )}
       </div>
       {previewSystem ? (
-        <DesignSystemPreviewModal
-          system={previewSystem}
-          onClose={() => setPreviewSystem(null)}
-        />
+        previewSystem.hasReactBundle ? (
+          <FigmaDesignSystemDetailModal
+            system={previewSystem}
+            onClose={() => setPreviewSystem(null)}
+          />
+        ) : (
+          <DesignSystemPreviewModal
+            system={previewSystem}
+            onClose={() => setPreviewSystem(null)}
+          />
+        )
       ) : null}
       {renameTarget ? (
         <div className="modal-backdrop" onClick={cancelRename}>

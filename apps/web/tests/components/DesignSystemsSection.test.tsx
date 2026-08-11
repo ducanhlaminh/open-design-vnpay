@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DesignSystemSummary } from '@open-design/contracts';
 
 import { DesignSystemsSection } from '../../src/components/DesignSystemsSection';
-import { fetchDesignSystems, updateDesignSystemDraft } from '../../src/providers/registry';
+import { fetchDesignSystems, importFigmaDesignSystem, updateDesignSystemDraft, generateDesignSystemCriteria } from '../../src/providers/registry';
 import type { AppConfig } from '../../src/types';
 
 const editable: DesignSystemSummary = {
@@ -38,6 +38,8 @@ vi.mock('../../src/providers/registry', async () => {
   return {
     ...actual,
     fetchDesignSystems: vi.fn(async () => [editable, builtIn]),
+    importFigmaDesignSystem: vi.fn(async () => ({ designSystem: { ...editable, id: 'user:imported', title: 'Imported DS' }, criteria: { rules: true, components: false }, warnings: [] })),
+    generateDesignSystemCriteria: vi.fn(),
     updateDesignSystemDraft: vi.fn(async () => ({ ...editable, title: 'Acme v2', body: '' })),
   };
 });
@@ -124,4 +126,15 @@ describe('DesignSystemsSection rename (issue #2811)', () => {
     await screen.findByText('Linear');
     expect(screen.queryByRole('button', { name: /Rename Linear/i })).toBeNull();
   });
+  it('does not generate criteria automatically after Figma import', async () => {
+    render(<DesignSystemsSection cfg={cfg} setCfg={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Add design system/i }));
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(['{}'], 'catalog.zip', { type: 'application/zip' })] } });
+    fireEvent.click(screen.getByRole('button', { name: /Import Figma IR/i }));
+    await waitFor(() => expect(screen.getByText('Đã nạp bộ quy tắc review (rules.md).')).toBeTruthy());
+    expect(vi.mocked(importFigmaDesignSystem)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(generateDesignSystemCriteria)).not.toHaveBeenCalled();
+  });
+
 });

@@ -131,7 +131,11 @@ export class MediaClient {
     throw new Error(`ensureFolder: could not resolve folder for ${projectId}`);
   }
 
-  private async findFolderId(projectId: string): Promise<string | null> {
+  /** Resolve a folder id WITHOUT creating it. Callers that must not
+   *  materialise an empty folder as a side effect (staging decision receipts,
+   *  which are read speculatively on every push) use this instead of
+   *  ensureFolder. */
+  async findFolderId(projectId: string): Promise<string | null> {
     const res = await fetch(this.url('/api/v1/folders'), { headers: this.headers() });
     await this.assertOk(res, 'listFolders');
     const body = (await res.json()) as { folders?: RawFolder[] };
@@ -222,15 +226,24 @@ export class MediaClient {
 
   /** KgsClient-compatible: list a project's files as `{path, stage, ...}` rows
    *  (consumed by pull + deriveStateFromKgsFiles, which re-derives the owning
-   *  stage(s) from `path`; the `stage` tag is retained for reference/debug). */
+   *  stage(s) from `path`; the `stage` tag is retained for reference/debug).
+   *
+   *  A READ MUST NOT CREATE THE FOLDER. This used to call ensureFolder, which
+   *  meant merely opening the Push-all modal (it runs a sync-status diff per
+   *  project) materialised an empty folder for a project that only exists
+   *  locally — and an empty folder is indistinguishable from a real remote
+   *  project, so the next push would resolve to "already on the studio" and
+   *  skip the approval step entirely. Absent folder → no files. */
   async listFiles(projectId: string): Promise<Array<Record<string, unknown>>> {
-    const folderId = await this.ensureFolder(projectId);
+    const folderId = await this.findFolderId(projectId);
+    if (!folderId) return [];
     const files = await this.listAllFiles(folderId);
     return files.map((f) => ({ path: f.path, stage: f.stage, checksum: f.checksum, id: f.id, mime: f.mime }));
   }
 
   async downloadFile(projectId: string, filePath: string): Promise<Buffer> {
-    const folderId = await this.ensureFolder(projectId);
+    const folderId = await this.findFolderId(projectId);
+    if (!folderId) throw new Error(`downloadFile: no folder for ${projectId}`);
     const files = await this.listAllFiles(folderId);
     const match = files.find((f) => f.path === filePath);
     if (!match) throw new Error(`downloadFile: not found ${projectId}/${filePath}`);

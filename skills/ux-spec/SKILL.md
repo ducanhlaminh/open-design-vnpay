@@ -52,11 +52,26 @@ it and shows it on `/ux-spec`, scoped to the project.
 The docs→UI workflow is `docs → cj → ux`: there is NO feature-analysis step and
 NO `./features/` folder — do not look for one. Your inputs are:
 
+**Docs layouts.** App-linked projects use `./docs-feature/` as the primary source; read `./docs-app/_index.md` first only for cross-feature context, and never build screens from `./docs-app/`. When authoring flow navigation, also read `./docs-app/_index.md` and relevant pages in `./docs-app/` to establish the documented entry path; this is an exception because navigation is part of the flow deliverable. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
+
 **Docs (primary input):** the ingested Markdown under `./docs/` (e.g.
-`./docs/confluence/**/*.md`, `./docs/jira/**/*.md`). Read these to understand the
+`./docs/confluence/**/*.md`, `./docs/jira/**/*.md`, or `./docs-feature/**/*.md`). Read these to understand the
 domain and derive the screens — each doc section that needs a UI becomes a
 screen. Only when no docs are present at all, take the screens from the user's
 request.
+
+> **URD/PRD visual-policy — requirements over illustrations.** Treat the
+> written requirements (actors, rules, fields, actions, states, acceptance
+> criteria) and any explicitly marked **flow diagram source** as the inputs to
+> this UX Spec. Embedded screenshots, mockups, and UI images in URD/PRD are
+> illustrative context only: do **not** open them to decide screen layout,
+> component choice, visual style, hierarchy, or wireframe structure; never
+> copy, trace, or "match" them. Resolve those decisions from the requirements,
+> Customer Journey, UX Research, and the selected Design System instead. A
+> contradiction between prose and an illustration is a documentation issue to
+> flag; the prose wins. This rule does not demote a source `.drawio` flow
+> diagram explicitly marked by ingest — it remains evidence for process order
+> and branches, not a visual-layout reference.
 
 **Context pages — `./docs/context/` (do NOT build from these):** link-followed
 background pages. Read for domain understanding only; NEVER turn them into
@@ -78,8 +93,18 @@ The kickoff message may name a **target platform** for this run:
   web-appropriate patterns: data **tables** instead of card lists where the
   content is tabular, **sidebar or top navigation** instead of bottom tab bars,
   wider **multi-column forms**, hover-revealed row actions.
+
+  Websites are **RESPONSIVE**: give every screen a `responsive_notes` string
+  field describing how its layout adapts from desktop (~1440px) down to mobile
+  (≤768px) — navigation collapse (sidebar → drawer/hamburger), tables degrading
+  to cards or stacked lists, grid column count, which actions move into menus.
+  The wireframe stays **desktop-first** (ONE wireframe per screen — never a
+  second mobile wireframe); `responsive_notes` is the contract the UI stages
+  implement the breakpoints from.
 - **MOBILE** (`platform: mobile`) → set `layout: "mobile"` on every screen, with
-  mobile patterns (bottom action bars, single-column forms, list rows).
+  mobile patterns (bottom action bars, single-column forms, list rows). The app
+  renders in a FIXED phone viewport — no responsive behavior, no
+  `responsive_notes`.
 - **No platform named** → default to `layout: "mobile"` (the legacy behavior —
   do not guess web from the docs' content).
 
@@ -134,6 +159,67 @@ journey stage/flow names, sources). Read it and author AGAINST it:
 If the report is absent (stage skipped on this machine), continue without it —
 do not block.
 
+### 0b3. Read the Design System criteria — `./criteria/rules.md` + `./criteria/components.md` (when present)
+When this feature's App has a Design System attached, the daemon stages that
+DS's review criteria into the run cwd, as `./criteria/rules.md` and/or
+`./criteria/components.md`, before this stage runs. Read whichever of the two
+actually exists — **absence of either (or both) is normal, not an error**: no
+linked App, an App with no DS, or a DS that hasn't generated `components.md`
+yet all mean this section is a no-op. Do not block or ask for them.
+
+- **`./criteria/components.md`** is the DS's **VALID component catalog** — spec
+  only components that appear in it. Vietnamese names in the docs match by
+  **MEANING**, not literal string equality (e.g. docs saying "Hộp thoại" match
+  a catalog entry titled "Dialog").
+- **`./criteria/catalog.md`** is the DS's full catalog and the **SOURCE OF KNOWLEDGE
+  FOR COMPONENT SELECTION**. Before assigning a component to a screen role, read
+  its "Dùng khi", "Khác với <component khác>", and "Không dùng khi" sections,
+  plus the `## Screen scaffolding` table mapping screen-frame roles (app bar /
+  bottom sheet / card / list item / button / input) to components AVAILABLE in
+  this DS, including roles this DS does not provide.
+- **`./criteria/examples.md`** is the index of compositions compiled from Figma
+  component `_example`s. Read it to understand which components CONTAIN which
+  other components — the DS's actual nesting structure.
+- **`./criteria/components.md`** remains the **CLOSED** set of valid components;
+  `catalog.md` explains that set and does not expand it. On conflict,
+  `components.md` wins for validity; `catalog.md` wins for role selection.
+- Missing either or both reference files is normal (the DS may be absent or may
+  not ship a React bundle). Do not block or ask for them.
+- **`./criteria/rules.md`** is **MANDATORY** when authoring screens (step 1) and
+  wireframes (step 1b). This file may be hand-authored (uploaded on import) OR
+  **auto-generated by the daemon** from the DS's showcase + tokens — so besides
+  the UX-decision anchors below it can also carry **color/theme, typography,
+  spacing, elevation/radius and component-usage** rules (anchors like
+  `R-COLOR-*`, `R-TYPE-*`, `R-SPACING-*`). **Read the actual file and apply
+  whatever anchors it contains; do not assume a fixed anchor set.** The anchors
+  below are the common hand-authored convention — apply them WHEN PRESENT:
+  - **`R-OVERLAY`** — Modal vs. Drawer vs. a dedicated page. A short, single-step
+    confirmation is a Modal (`overlay_kind` / wireframe `overlay`: `"dialog"`); a
+    longer form or multi-field task is a Drawer (`"drawer"`); a genuinely
+    multi-step flow gets its own screen (no overlay at all).
+  - **`R-FEEDBACK`** — Dialog vs. Toast vs. Alert for a system response. A
+    destructive/irreversible action (delete, cancel, revoke) needs a confirming
+    Dialog, never a dismissible Toast.
+  - **`R-TABLE`** + **`R-TABLE-ACTION`** — every list/table screen needs a
+    toolbar (search / filter / show-hide columns) and a paginated footer;
+    per-row actions render inline when there are fewer than 3, and collapse
+    into a menu at 3 or more.
+  - **`R-BADGE`** — status badges use the 5-level semantic scale, matched to the
+    actual meaning of the state (never picked for look alone).
+  - **`R-HEURISTIC`** — exactly ONE Primary button per section/screen; any
+    dangerous/destructive action gets an explicit warning step before it
+    commits.
+- When a rule DECIDES a design choice, cite its code in that screen's
+  `screen_intent` — same style as citing a `ux-research` criterion id (0b2) or a
+  Mobbin reference (0c), e.g. "Drawer (R-OVERLAY) vì form có 8 trường." Use the
+  **exact anchor as written in this DS's `rules.md`** (e.g. a color/spacing rule
+  might be `R-COLOR-BRAND-PRIMARY`), not a guessed one.
+- **Conflicts resolve in favor of the docs** (they are the requirements), same
+  as 0b2's ux-research criteria. When a rule would push a different design than
+  the docs describe, follow the docs and record the deviation in
+  `screen_intent` (e.g. "Docs vẽ Modal cho luồng 3 bước — giữ theo tài liệu,
+  lệch R-OVERLAY").
+
 ### 0c. Gather real-world references from Mobbin (when the `mobbin` MCP is available)
 If the run exposes Mobbin MCP tools (server id `mobbin`), use them BEFORE
 authoring screens — this is how the spec inherits real-market patterns instead
@@ -187,41 +273,35 @@ See `assets/example-ux-spec.json` for a complete, valid example.
 > its pages + tells you to write your slice to `ux/<module-key>/ux-spec.json`.
 > In that case: author screens ONLY for your module, and **prefix EVERY screen
 > id with `<module-key>__`** (the kickoff gives the exact prefix) so ids — and
-> the `wireframes/<screen-id>.wire.json` files that name them — never collide
+> the `wireframes/<screen-id>.html` files that name them — never collide
 > across modules. Still write each screen's wireframe + each flow's flowchart
 > into the SHARED `wireframes/` and `flows/` dirs. Do NOT write the root
 > `-ux-spec.json` — the daemon merges every module's screens (and reconciles
 > personas + cross-module navigation). Follow the kickoff's output path + id
 > prefix verbatim.
 
-### 1b. Author one wireframe per screen (layout tree, DSL v2)
-For EVERY screen, also write `./wireframes/<SCREEN-ID>.wire.json` following
-`references/wireframe.md`. Describe the screen as a **layout TREE** (`stack` /
-`row` containers + component leaves) — like writing HTML/JSX structure, NOT pixel
-coordinates. The host lays it out with flexbox so it never overlaps. Compose a
-real screen (mobile → one vertical stack of full-width fields, sections, chips,
-a primary CTA; web → nav + a row of sidebar + main), matching the archetype and
-worked example in `references/wireframe.md`.
+### 1b. Author one wireframe per screen (HTML)
+For EVERY screen, write `./wireframes/<SCREEN-ID>.html` following
+`references/wireframe.md`. The file is a self-contained HTML document: its DOM
+is the layout, nested blocks preserve the real component composition,
+`data-comp` records the component anchor chosen by the agent or reviewer, and
+`data-nav` records the explicit destination. Agent điền `data-comp` theo hiểu
+biết từ `criteria/catalog.md`; khi sinh lại một màn mà file `.html` cũ đã có
+`data-comp` trên block tương ứng, PHẢI giữ nguyên giá trị đó — đó là lựa chọn
+người review đã chốt qua UI gán component, agent không được ghi đè.
 
-Two hard requirements:
+Read `criteria/catalog.md` for scaffolding and role selection,
+`criteria/components.md` for the valid anchor set, and `criteria/examples.md`
+for DS nesting examples. A reviewer-assigned `data-comp` is a contract: when
+editing an existing file, do not remove it. Keep the wireframe low-fidelity,
+gray and structural; do not copy brand colors, imagery, shadows, or visual
+polish from the DS.
 
-- **`"dslVersion": 2`** and every leaf is `{ "c": "<slug>", "props": { … } }`,
-  where `<slug>` comes from the CLOSED registry in
-  **`references/wire-components.md`** (generated from `wire-registry.json`).
-  Slugs are named after shadcn/ui because the `ui-react` terminal builds with
-  exactly that set — the slug you pick IS the component it builds. Anything not
-  in the registry is an error, not a free-text hint.
-- **Validate before you finish** (zero errors is the bar). `<SKILL-ROOT>` is the
-  `.od-skills/…` path in the preamble at the top of this skill — the script and
-  its registry live there, your wireframes live in the working directory:
-  ```bash
-  node <SKILL-ROOT>/scripts/validate-wire.mjs ./wireframes --spec ./<feature>-ux-spec.json
-  ```
-  It catches unknown slugs, wrong prop types, missing required props, screens
-  with no wireframe, wireframes with no screen, and web screens missing their
-  `layouts.tablet` / `layouts.mobile` redesign.
-
-The Wireframe view renders it, and it still exports to wiretext.app for hand-tweaks.
+For web screens, author one desktop-first DOM tree with real `@media` rules at
+834px and 390px, guided by `responsive_notes`. For overlays, keep the screen
+separate and place `data-overlay` / `data-overlay-of` on `<body>`; include only
+the overlay content. Copy `skills/ux-spec/assets/wireframe.css` into each
+file's `<style>` and add only minimal screen-specific layout rules.
 
 ### 1c. Author one RULE FLOWCHART per user flow (`flows/<FLOW-ID>.flow.json`)
 The wireframes are the SCREENS; the user flow is expressed as wireframes + a
@@ -272,6 +352,27 @@ screens serve), write `./flows/<FLOW-ID>.flow.json`.
   ]
 }
 ```
+
+`entry` VẪN là màn đầu tiên của feature (đây là chỗ wireframe bắt đầu). Trước
+`entry`, flow PHẢI có các node điều hướng khai tường minh trong `nodes[]` với
+`"kind": "nav"` và `label` là tên màn/bước điều hướng thật, ví dụ
+`{"id":"NAV-HOME","kind":"nav","label":"Trang chủ"}`, nối bằng edges tới
+`entry`. Node `nav` không phải màn của feature nên không có wireframe — đó là
+bình thường. Chỉ thêm nav khi có căn cứ trong câu mô tả cách vào của tài liệu
+feature hoặc trong `docs-app/_index.md` và các trang liên quan của `docs-app/`;
+không suy đoán tên menu, không tự chế bước như "Đăng nhập". Không có căn cứ thì
+bỏ hẳn phần nav và flow bắt đầu ở `entry` như cũ.
+
+`kind` hợp lệ giờ là `decision | end | nav` (màn vẫn ngầm định).
+
+**Nhãn không được để mã màn trần.** Người xem sơ đồ không mở tài liệu bên cạnh,
+mà mã màn (`SCR-001`, `MH1`…) còn đánh lại từ đầu trong từng tài liệu URD nên
+đứng một mình là vô nghĩa. Trong `label` của node `nav`/`decision`/`end` và
+trong nhãn cạnh, luôn gọi TÊN màn như tài liệu đặt, mã chỉ đi kèm trong ngoặc:
+`"Trên màn Danh sách Khách hàng (SCR-001), nhấn Thêm mới"` — không viết
+`"Trên SCR-001, nhấn Thêm mới"`. (`screens[].id` vẫn là mã như bình thường:
+khung nhìn tự tra `screens[].name` để hiện tên, nên `name` phải là tên thật của
+màn, không phải chép lại mã.)
 
 Rules:
 - **Every screen referenced must exist in the spec** (`screens[].id`) — the
