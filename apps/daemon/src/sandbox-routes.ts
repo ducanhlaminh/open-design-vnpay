@@ -23,6 +23,7 @@ import type {
   SandboxAccountsResponse,
   SandboxAccountsCheckResponse,
   SandboxBuildResponse,
+  DockerSetupResponse,
 } from '@open-design/contracts';
 import type { RouteDeps } from './server-context.js';
 import { readAppConfig, type AppConfigPrefs } from './app-config.js';
@@ -51,10 +52,12 @@ import {
   sandboxAuthVolume,
   seedPackagedSandboxAuth,
   clearSandboxRuntimeAuth,
+  resolveDockerCommand,
   sandboxImageTag,
   SANDBOX_AUTH_VOLUME,
   SANDBOX_IMAGE_NAME,
 } from './agent-sandbox.js';
+import { getDockerSetupStatus, startDockerSetup } from './docker-setup.js';
 
 const execFileAsync = promisify(execFile);
 const SANDBOX_RUNTIME_IDS: readonly SandboxRuntimeId[] = ['claude', 'codex'];
@@ -83,7 +86,7 @@ export function resolveSandboxFallbackRuntimeId(
 }
 
 async function dockerText(args: string[], timeoutMs = 10_000): Promise<string> {
-  const { stdout } = await execFileAsync('docker', args, { timeout: timeoutMs });
+  const { stdout } = await execFileAsync(resolveDockerCommand(), args, { timeout: timeoutMs });
   return stdout.trim();
 }
 
@@ -134,7 +137,7 @@ async function probeRuntimeAuthStatus(image: string, runtimeId: SandboxRuntimeId
   }
   try {
     const { stdout, stderr } = await execFileAsync(
-      'docker',
+      resolveDockerCommand(),
       ['run', '--rm', '-v', `${sandboxAuthVolume('codex')}:${sandboxAuthDir('codex')}`, '-e', `CODEX_HOME=${sandboxAuthDir('codex')}`, image, 'codex', 'login', 'status'],
       { timeout: 30_000 },
     );
@@ -201,7 +204,7 @@ function stopCodexDeviceLoginSession(session: CodexDeviceLoginSession): void {
   } catch {
     /* already stopped */
   }
-  void execFileAsync('docker', ['rm', '-f', session.containerName], { timeout: 10_000 }).catch(() => {});
+  void execFileAsync(resolveDockerCommand(), ['rm', '-f', session.containerName], { timeout: 10_000 }).catch(() => {});
 }
 
 function codexDeviceLoginStatus(): SandboxCodexDeviceLoginStatus {
@@ -245,7 +248,7 @@ function startCodexDeviceLogin(image: string): SandboxCodexDeviceLoginStatus {
   clearCodexDeviceLogin();
   const containerName = `od.sandbox.codex.login.${Date.now()}`;
   const child = spawn(
-    'docker',
+    resolveDockerCommand(),
     [
       'run',
       '-i',
@@ -316,7 +319,7 @@ function startCodexDeviceLogin(image: string): SandboxCodexDeviceLoginStatus {
           session.phase = 'done';
           if (session.verifyTimer) clearInterval(session.verifyTimer);
           clearTimeout(session.deadline);
-          void execFileAsync('docker', ['rm', '-f', session.containerName], { timeout: 10_000 }).catch(() => {});
+          void execFileAsync(resolveDockerCommand(), ['rm', '-f', session.containerName], { timeout: 10_000 }).catch(() => {});
           return;
         }
         if (status === 'missing') {
@@ -396,6 +399,14 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
     } catch (err) {
       return sendApiError(res, 500, 'INTERNAL_ERROR', `sandbox status failed: ${(err as Error).message}`);
     }
+  });
+
+  app.get('/api/sandbox/docker/setup', async (_req, res) => {
+    res.json(await getDockerSetupStatus() satisfies DockerSetupResponse);
+  });
+
+  app.post('/api/sandbox/docker/setup', (_req, res) => {
+    res.status(202).json(startDockerSetup() satisfies DockerSetupResponse);
   });
 
   // ── Claude account switching (Docker-only) ────────────────────────────────

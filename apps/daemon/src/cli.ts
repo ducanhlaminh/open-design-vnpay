@@ -5978,7 +5978,7 @@ async function runStatus(args) {
 }
 
 // ---------------------------------------------------------------------------
-// Subcommand: od sandbox <status|enable|disable|build|login|logout|ps|kill>
+// Subcommand: od sandbox <status|setup|enable|disable|build|login|logout|ps|kill>
 //
 // CLI surface of the agent-in-sandbox capability (see
 // docs/agent-in-sandbox-spec-plan.md in the parent repo and
@@ -5993,6 +5993,8 @@ const SANDBOX_USAGE = `Usage:
   od sandbox status [--json] [--probe-auth]   Daemon/docker/image/auth health.
                                               --probe-auth starts a short-lived
                                               container to verify credentials.
+  od sandbox setup [--json]                  Install/start Docker Desktop and wait
+                                              until the engine is ready.
   od sandbox enable | disable                 Toggle sandbox.enabled in app config.
   od sandbox build [--force]                  Build the od-agent-sandbox image.
   od sandbox login [--runtime claude|codex]    Login to the selected sandbox runtime.
@@ -6113,6 +6115,28 @@ async function runSandbox(args) {
     }
     console.log(`  active runs: ${status.activeContainers.length ? status.activeContainers.join(', ') : 'none'}`);
     if (!status.enabled) console.log('\nEnable with: od sandbox enable');
+    return;
+  }
+
+  if (sub === 'setup') {
+    const base = await cliDaemonBaseUrl(flags);
+    let resp = await fetch(`${base}/api/sandbox/docker/setup`, { method: 'POST' });
+    if (!resp.ok) await structuredHttpFailure(resp);
+    let setup = await resp.json();
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    while (setup.running) {
+      if (!flags.json) {
+        const latest = setup.log?.at?.(-1);
+        if (latest) console.log(latest);
+      }
+      await sleep(2_000);
+      resp = await fetch(`${base}/api/sandbox/docker/setup`);
+      if (!resp.ok) await structuredHttpFailure(resp);
+      setup = await resp.json();
+    }
+    if (flags.json) process.stdout.write(JSON.stringify(setup, null, 2) + '\n');
+    else console.log(setup.dockerOk ? 'Docker is ready.' : `Docker setup failed: ${setup.error ?? 'unknown error'}`);
+    if (!setup.dockerOk) process.exit(1);
     return;
   }
 

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { loadConfigMock } = vi.hoisted(() => ({
@@ -115,5 +115,46 @@ describe('InfraSetupGate runtime selection', () => {
     expect(screen.getByTestId('codex-login')).toBeTruthy();
     expect(screen.queryByTestId('claude-login')).toBeNull();
     expect((screen.getByRole('button', { name: 'Bắt đầu sử dụng' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('offers in-app Docker installation when the engine is missing', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) {
+        return jsonResponse({
+          enabled: true,
+          dockerOk: false,
+          image: 'od-agent-sandbox:latest',
+          imageOk: false,
+          authVolumeOk: false,
+          authLoggedIn: null,
+          activeContainers: [],
+          runtimes: ['claude'],
+          skills: ['*'],
+          timeoutMinutes: 30,
+          builderDir: '/tmp/builder',
+          runtimeStatuses: [{
+            id: 'claude', version: null, imageAvailable: false,
+            authVolume: 'od-claude-auth', authVolumeAvailable: false,
+            authStatus: 'unknown', loginMethod: 'interactive',
+          }],
+        });
+      }
+      if (url.endsWith('/sandbox/build')) {
+        return jsonResponse({ building: false, ok: null, error: null, log: [] });
+      }
+      if (url.endsWith('/sandbox/docker/setup') && init?.method === 'POST') {
+        return jsonResponse({ phase: 'installing', running: true, dockerOk: false, error: null, log: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(<InfraSetupGate daemonLive={true} onOpenSettings={vi.fn()} />);
+    const install = await screen.findByRole('button', { name: 'Cài Docker tự động' });
+    fireEvent.click(install);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sandbox/docker/setup', { method: 'POST' });
+    });
   });
 });
