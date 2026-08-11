@@ -178,7 +178,6 @@ export function renderMacPackagedConfig(options: {
       ...(options.config.googleClientId == null ? {} : { googleClientId: options.config.googleClientId }),
       ...(options.config.googleClientSecret == null ? {} : { googleClientSecret: options.config.googleClientSecret }),
       ...(options.config.identityUrl == null ? {} : { identityUrl: options.config.identityUrl }),
-      ...(options.config.identityServiceToken == null ? {} : { identityServiceToken: options.config.identityServiceToken }),
       ...(options.config.authDomainLock == null ? {} : { authDomainLock: options.config.authDomainLock }),
       ...(options.config.sandboxDefault == null ? {} : { sandboxDefault: options.config.sandboxDefault }),
       ...(options.config.sandboxSkills == null ? {} : { sandboxSkills: options.config.sandboxSkills }),

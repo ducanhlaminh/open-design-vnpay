@@ -148,7 +148,7 @@ export type ToolPackConfig = {
    * Google SSO + preview-identity auth, sourced from process.env at packaging
    * time and baked into open-design-config.json so the packaged daemon runs
    * with login bật sẵn (SESSION_SECRET/GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/
-   * IDENTITY_URL/IDENTITY_SERVICE_TOKEN — auth-routes.ts authConfigFromEnv; auth là opt-in theo
+   * IDENTITY_URL — auth-routes.ts authConfigFromEnv; auth là opt-in theo
    * SESSION_SECRET nên thiếu là bản packaged chạy KHÔNG login và pull-all
    * không lọc membership). WARNING: googleClientSecret + authSessionSecret
    * nằm trong bundle (trích được) — SESSION_SECRET chung nghĩa là ai có nó
@@ -160,7 +160,6 @@ export type ToolPackConfig = {
   googleClientId?: string;
   googleClientSecret?: string;
   identityUrl?: string;
-  identityServiceToken?: string;
   authDomainLock?: string;
   /**
    * Personal API key (`phx_...`) used by the @posthog/cli sourcemap helper to
@@ -465,7 +464,6 @@ export function resolveToolPackConfig(
     googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() || undefined,
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET?.trim() || undefined,
     identityUrl: process.env.IDENTITY_URL?.trim() || undefined,
-    identityServiceToken: process.env.IDENTITY_SERVICE_TOKEN?.trim() || undefined,
     authDomainLock: process.env.OD_AUTH_DOMAIN_LOCK?.trim() || undefined,
     posthogCliApiKey: resolveToolPackPosthogCliApiKey(
       process.env.POSTHOG_CLI_API_KEY ?? process.env.POSTHOG_PERSONAL_API_KEY,

@@ -78,7 +78,7 @@ export type RawPackagedConfig = {
   // re-deriving it from its own version string.
   updateChannel?: string;
   // Google SSO + preview-identity auth baked by tools/pack (SESSION_SECRET/
-  // GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/IDENTITY_URL/IDENTITY_SERVICE_TOKEN/
+  // GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/IDENTITY_URL/
   // OD_AUTH_DOMAIN_LOCK).
   // Forwarded to the daemon spawn env so the packaged app runs with Google
   // login + membership-scoped pull. Secrets embedded in the bundle — nội bộ,
@@ -87,7 +87,6 @@ export type RawPackagedConfig = {
   googleClientId?: string;
   googleClientSecret?: string;
   identityUrl?: string;
-  identityServiceToken?: string;
   authDomainLock?: string;
   webSidecarEntryRelative?: string;
   webStandaloneRoot?: string;
@@ -124,7 +123,6 @@ export type PackagedConfig = {
   googleClientId: string | null;
   googleClientSecret: string | null;
   identityUrl: string | null;
-  identityServiceToken: string | null;
   authDomainLock: string | null;
   webSidecarEntry: string | null;
   webStandaloneRoot: string | null;
@@ -268,7 +266,6 @@ export async function readPackagedConfig(): Promise<PackagedConfig> {
     googleClientId: cleanOptionalString(raw.googleClientId),
     googleClientSecret: cleanOptionalString(raw.googleClientSecret),
     identityUrl: cleanOptionalString(raw.identityUrl),
-    identityServiceToken: cleanOptionalString(raw.identityServiceToken),
     authDomainLock: cleanOptionalString(raw.authDomainLock),
     webSidecarEntry,
     webStandaloneRoot,

@@ -18,7 +18,6 @@ env:
   GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
   GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
   IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
-  IDENTITY_SERVICE_TOKEN: ${{ secrets.IDENTITY_SERVICE_TOKEN }}
   SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
   OPEN_DESIGN_TELEMETRY_RELAY_URL: ${{ vars.OPEN_DESIGN_TELEMETRY_RELAY_URL }}
   # Default Confluence credential for the packaged app. tools-pack embeds it

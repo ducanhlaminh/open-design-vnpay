@@ -126,7 +126,6 @@ async function main(): Promise<void> {
     googleClientId: config.googleClientId,
     googleClientSecret: config.googleClientSecret,
     identityUrl: config.identityUrl,
-    identityServiceToken: config.identityServiceToken,
     authDomainLock: config.authDomainLock,
     // PR #974 round-5 (lefarcen P2): the Electron entry runs desktop
     // main alongside the daemon, so the import-folder gate must be

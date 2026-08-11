@@ -22,10 +22,12 @@ import { isIdentityUuid } from '../auth-routes.js';
 const SERVICE_EMAIL = 'service@pipeline-studio.local';
 
 export interface RegistryOwner {
-  /** preview-identity user id (auth-routes machine user `sub`). */
+  /** Canonical preview-identity user UUID. */
   id: string;
   email: string;
   name?: string;
+  /** User-scoped preview-identity bearer issued during Google login. */
+  accessToken?: string;
 }
 
 export type RegisterOutcome = 'registered' | 'exists' | 'skipped' | 'error';
@@ -39,10 +41,16 @@ async function idFetch(
   path: string,
   init: RequestInit = {},
   actorId = 'open-design',
+  accessToken?: string,
 ): Promise<{ ok: boolean; status: number; json: unknown }> {
   const res = await fetch(`${base}${path}`, {
     ...init,
-    headers: { 'content-type': 'application/json', 'x-user-id': actorId, ...(init.headers ?? {}) },
+    headers: {
+      'content-type': 'application/json',
+      'x-user-id': actorId,
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...(init.headers ?? {}),
+    },
   });
   const text = await res.text();
   let json: unknown = null;
@@ -56,10 +64,10 @@ async function idFetch(
 
 let serviceIdCache: string | null = null;
 
-async function serviceAccountId(base: string): Promise<string | null> {
+async function serviceAccountId(base: string, actor?: RegistryOwner): Promise<string | null> {
   if (serviceIdCache) return serviceIdCache;
   try {
-    const found = await idFetch(base, `/api/v1/admin/users?search=${encodeURIComponent(SERVICE_EMAIL)}&limit=5`);
+    const found = await idFetch(base, `/api/v1/admin/users?search=${encodeURIComponent(SERVICE_EMAIL)}&limit=5`, {}, actor?.id, actor?.accessToken);
     const o = (found.json ?? {}) as Record<string, unknown>;
     const arr = (o.users ?? o.items ?? o.data ?? []) as Array<{ id?: string; email?: string }>;
     const match = (Array.isArray(arr) ? arr : []).find(
@@ -76,7 +84,7 @@ async function serviceAccountId(base: string): Promise<string | null> {
         name: 'Pipeline Studio Service',
         password: randomBytes(24).toString('base64url'),
       }),
-    });
+    }, actor?.id, actor?.accessToken);
     const c = (created.json ?? {}) as { user?: { id?: string }; id?: string };
     serviceIdCache = c.user?.id ?? c.id ?? null;
     return serviceIdCache;
@@ -110,13 +118,13 @@ const kgsIdOf = (p: IdentityProject): string => {
 let registeredCache: { at: number; ids: Set<string> } | null = null;
 const REGISTERED_TTL_MS = 15_000;
 
-async function registeredIds(base: string): Promise<Set<string> | null> {
+async function registeredIds(base: string, actor?: RegistryOwner): Promise<Set<string> | null> {
   if (registeredCache && Date.now() - registeredCache.at < REGISTERED_TTL_MS) {
     return registeredCache.ids;
   }
-  const svc = await serviceAccountId(base);
+  const svc = await serviceAccountId(base, actor);
   if (!svc) return null;
-  const out = await idFetch(base, '/api/v1/projects?limit=200', {}, svc);
+  const out = await idFetch(base, '/api/v1/projects?limit=200', {}, svc, actor?.accessToken);
   if (!out.ok) return null;
   const o = (out.json ?? {}) as Record<string, unknown>;
   const arr = (o.projects ?? (o.data as Record<string, unknown> | undefined)?.projects ?? []) as IdentityProject[];
@@ -136,6 +144,7 @@ const MEMBER_ACCESS_TTL_MS = 15_000;
 /** Effective per-project roles returned by identity for this exact user. */
 export async function memberProjectAccess(
   userId: string,
+  accessToken?: string,
 ): Promise<Map<string, RemoteAccessRole> | null> {
   const base = identityUrl();
   if (!base || !isIdentityUuid(userId)) return null;
@@ -146,7 +155,7 @@ export async function memberProjectAccess(
     ) {
       return memberAccessCache.roles;
     }
-    const out = await idFetch(base, '/api/v1/projects?limit=200', {}, userId);
+    const out = await idFetch(base, '/api/v1/projects?limit=200', {}, userId, accessToken);
     if (!out.ok) return null;
     const o = (out.json ?? {}) as Record<string, unknown>;
     const arr = (o.projects ?? (o.data as Record<string, unknown> | undefined)?.projects ?? []) as IdentityProject[];
@@ -166,8 +175,8 @@ export async function memberProjectAccess(
 
 /** KGS project ids the identity user is a member/owner of. Null when
  * identity is unreachable (caller decides fail-open vs fail-closed). */
-export async function memberProjectIds(userId: string): Promise<Set<string> | null> {
-  const access = await memberProjectAccess(userId);
+export async function memberProjectIds(userId: string, accessToken?: string): Promise<Set<string> | null> {
+  const access = await memberProjectAccess(userId, accessToken);
   return access ? new Set(access.keys()) : null;
 }
 
@@ -175,17 +184,17 @@ let adminCache: { at: number; ids: Set<string> } | null = null;
 
 /** Whether the user holds the identity RBAC role `admin` (app admin — sees
  *  every project, mirroring pipeline-studio's resolveIsAdmin). */
-export async function isIdentityAdmin(userId: string): Promise<boolean> {
+export async function isIdentityAdmin(userId: string, accessToken?: string): Promise<boolean> {
   const base = identityUrl();
   if (!base || !isIdentityUuid(userId)) return false;
   try {
     if (!adminCache || Date.now() - adminCache.at > 30_000) {
-      const list = await idFetch(base, '/api/v1/admin/roles');
+      const list = await idFetch(base, '/api/v1/admin/roles', {}, userId, accessToken);
       const o = (list.json ?? {}) as Record<string, unknown>;
       const roles = (o.roles ?? o.data ?? []) as Array<{ id?: string; name?: string }>;
       const admin = (Array.isArray(roles) ? roles : []).find((r) => r.name === 'admin');
       if (!admin?.id) return false;
-      const out = await idFetch(base, `/api/v1/admin/roles/${admin.id}/users`);
+      const out = await idFetch(base, `/api/v1/admin/roles/${admin.id}/users`, {}, userId, accessToken);
       const oo = (out.json ?? {}) as Record<string, unknown>;
       const users = (oo.users ?? oo.data ?? []) as Array<{ id?: string }>;
       adminCache = {
@@ -206,6 +215,7 @@ export async function isIdentityAdmin(userId: string): Promise<boolean> {
  *  - chưa đăng nhập → không thấy gì (fail-closed, kèm reason cho UI). */
 export async function pullScopeFor(
   userId: string | null,
+  accessToken?: string,
 ): Promise<{ all: boolean; ids: Set<string>; reason?: string }> {
   if (!identityUrl()) {
     return {
@@ -220,8 +230,8 @@ export async function pullScopeFor(
   if (!isIdentityUuid(userId)) {
     return { all: false, ids: new Set(), reason: 'tài khoản chưa kết nối với preview-identity' };
   }
-  if (await isIdentityAdmin(userId)) return { all: true, ids: new Set() };
-  const ids = await memberProjectIds(userId);
+  if (await isIdentityAdmin(userId, accessToken)) return { all: true, ids: new Set() };
+  const ids = await memberProjectIds(userId, accessToken);
   if (!ids) {
     return { all: false, ids: new Set(), reason: 'không liên lạc được preview-identity — thử lại sau' };
   }
@@ -240,7 +250,7 @@ export async function ensureProjectRegistered(
   const base = identityUrl();
   if (!base || !owner || !isIdentityUuid(owner.id)) return 'skipped';
   try {
-    const existing = await registeredIds(base);
+    const existing = await registeredIds(base, owner);
     if (!existing) return 'error';
     if (existing.has(projectId)) return 'exists';
 
@@ -261,6 +271,7 @@ export async function ensureProjectRegistered(
         }),
       },
       owner.id,
+      owner.accessToken,
     );
     if (!created.ok) return 'error';
     const project = ((created.json as Record<string, unknown>)?.project ?? {}) as { id?: string };
@@ -268,13 +279,14 @@ export async function ensureProjectRegistered(
     // Grant the shared service account viewer so the studio's registry
     // resolver sees the project. Best-effort — owner attribution stands
     // regardless.
-    const svc = await serviceAccountId(base);
+    const svc = await serviceAccountId(base, owner);
     if (svc && project.id) {
       await idFetch(
         base,
         `/api/v1/projects/${project.id}/members/users`,
         { method: 'POST', body: JSON.stringify({ userId: svc, role: 'viewer' }) },
         owner.id,
+        owner.accessToken,
       ).catch(() => {});
     }
     registeredCache = null;

@@ -17,7 +17,7 @@ import {
   type RemoteDeleteScope,
 } from '@open-design/contracts';
 import type { RouteDeps } from './server-context.js';
-import { getMachineIdentityUser, identityUserIdOf } from './auth-routes.js';
+import { getMachineIdentityUser, identityAccessTokenOf, identityUserIdOf } from './auth-routes.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import { pullProject } from './kg-sync/pull.js';
@@ -99,10 +99,11 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     });
   }
 
-  async function identityActor(): Promise<{ id: string; email: string; name: string } | null> {
+  async function identityActor(): Promise<{ id: string; email: string; name: string; accessToken: string } | null> {
     const machine = await getMachineIdentityUser();
     const id = identityUserIdOf(machine);
-    return machine && id ? { id, email: machine.email, name: machine.name } : null;
+    const accessToken = identityAccessTokenOf(machine);
+    return machine && id && accessToken ? { id, email: machine.email, name: machine.name, accessToken } : null;
   }
 
   async function publishOne(
@@ -236,7 +237,7 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     const now = Date.now();
     try {
       const actor = await identityActor();
-      const scope = await pullScopeFor(actor?.id ?? null);
+      const scope = await pullScopeFor(actor?.id ?? null, actor?.accessToken);
       const appId = scope.all || scope.ids.has(projectId) ? null : await resolveAppId(projectId);
       if (!isProjectVisible(projectId, appId, scope)) {
         return sendApiError(res, 403, 'PROJECT_FORBIDDEN', scope.reason ?? 'Bạn không có quyền lấy dự án này.');
@@ -283,7 +284,7 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       // án mà machine user (Google login gần nhất) được add vào; app admin
       // thấy tất; identity chưa cấu hình → legacy pull-everything.
       const actor = await identityActor();
-      const scope = await pullScopeFor(actor?.id ?? null);
+      const scope = await pullScopeFor(actor?.id ?? null, actor?.accessToken);
       if (!scope.all && scope.ids.size === 0) {
         return res.json({
           ok: true,
@@ -445,11 +446,11 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       const kgs = new KgsClient(kgsConfigFromEnv());
       const media = new MediaClient(mediaConfigFromEnv());
       const actor = await identityActor();
-      const scope = await pullScopeFor(actor?.id ?? null);
+      const scope = await pullScopeFor(actor?.id ?? null, actor?.accessToken);
       // `scope.all` is an app-admin discovery override, not a project-level
       // role. Never fabricate `admin` in summaries; only surface roles that
       // identity actually returned for this caller.
-      const roles = !scope.all && actor ? await memberProjectAccess(actor.id) : null;
+      const roles = !scope.all && actor ? await memberProjectAccess(actor.id, actor.accessToken) : null;
       const data = await loadRemoteProjects(kgs, media);
       // App → Feature grouping (mirrors pipeline-studio's App concept): a
       // feature's project.json optionally carries an appId linking it to its

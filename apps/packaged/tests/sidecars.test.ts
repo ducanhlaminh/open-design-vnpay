@@ -215,10 +215,8 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       daemonCliEntry: null,
       legacyDataDir: null,
       requireDesktopAuth: false,
-      identityServiceToken: 'test-service-token',
     });
 
-    expect(env.IDENTITY_SERVICE_TOKEN).toBe('test-service-token');
   });
 
   it('forwards OD_LEGACY_DATA_DIR only when set, irrespective of requireDesktopAuth', () => {

@@ -47,7 +47,6 @@ export function createPackagedConfig(
     ...(config.googleClientId == null ? {} : { googleClientId: config.googleClientId }),
     ...(config.googleClientSecret == null ? {} : { googleClientSecret: config.googleClientSecret }),
     ...(config.identityUrl == null ? {} : { identityUrl: config.identityUrl }),
-    ...(config.identityServiceToken == null ? {} : { identityServiceToken: config.identityServiceToken }),
     ...(config.authDomainLock == null ? {} : { authDomainLock: config.authDomainLock }),
     ...(config.sandboxDefault == null ? {} : { sandboxDefault: config.sandboxDefault }),
     ...(config.sandboxSkills == null ? {} : { sandboxSkills: config.sandboxSkills }),

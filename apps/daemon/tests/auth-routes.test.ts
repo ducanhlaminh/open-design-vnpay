@@ -40,7 +40,6 @@ const cfg = (over: Partial<AuthConfig> = {}): AuthConfig => ({
   // Port 0 → the fixed-callback listener binds an ephemeral port in tests.
   callbackOrigin: 'http://127.0.0.1:0',
   identityUrl: '',
-  identityServiceToken: 'identity-service-test-token',
   domainLock: false,
   allowedEmails: [],
   allowedDomains: [],
@@ -78,7 +77,12 @@ describe('identity sync state', () => {
     expect(isIdentityUuid('google:123')).toBe(false);
     expect(identityUserIdOf({ ...USER, sub: 'google:123' })).toBeNull();
     expect(identityUserIdOf({ ...USER, identityUserId: uuid })).toBe(uuid);
-    expect(authSyncStateOf({ ...USER, identityUserId: uuid })).toEqual({
+    expect(authSyncStateOf({
+      ...USER,
+      identityUserId: uuid,
+      identityAccessToken: 'user-token',
+      identityAccessExpiresAt: Date.now() + 60_000,
+    })).toEqual({
       syncReady: true,
       identityUserId: uuid,
       syncIssue: null,
@@ -269,25 +273,34 @@ describe('gate middleware (integration)', () => {
     });
   });
 
-  it('/me reconciles a degraded Google session to an identity UUID by email', async () => {
+  it('/me refreshes an expiring identity user token and loads roles with that bearer', async () => {
     const identityUuid = '65edc73c-56a4-4c48-8651-d7cb07a5e10d';
     const identity = express();
     identity.use(express.json());
-    identity.post('/api/v1/auth/external/resolve', (req, res) => {
-      expect(req.headers['x-user-id']).toBe('open-design');
-      expect(req.headers.authorization).toBe('Bearer identity-service-test-token');
-      expect(req.body).toMatchObject({ provider: 'google', externalId: 'google-sub', email: USER.email });
-      res.json({ user: { id: identityUuid, email: USER.email, name: USER.name } });
+    identity.post('/api/v1/auth/refresh', (req, res) => {
+      expect(req.body).toEqual({ refresh_token: 'user-refresh' });
+      res.json({ access_token: 'refreshed-user-token', expires_in: 86_400 });
     });
-    identity.get('/api/v1/admin/users/:id/roles', (_req, res) => res.json({ roles: [] }));
+    identity.get('/api/v1/auth/me', (req, res) => {
+      expect(req.headers.authorization).toBe('Bearer refreshed-user-token');
+      res.json({ data: { roles: [{ name: 'designer' }] } });
+    });
     const identityServer: Server = await new Promise((resolve) => {
       const s = identity.listen(0, '127.0.0.1', () => resolve(s));
     });
     try {
       const identityPort = (identityServer.address() as AddressInfo).port;
       await withApp(cfg({ identityUrl: `http://127.0.0.1:${identityPort}` }), async (base) => {
-        const degraded: AuthSessionUser = { ...USER, sub: 'google-sub', googleSubject: 'google-sub' };
-        const token = signSession('s3cret', degraded);
+        const session: AuthSessionUser = {
+          ...USER,
+          sub: 'google-sub',
+          googleSubject: 'google-sub',
+          identityUserId: identityUuid,
+          identityAccessToken: 'expired-user-token',
+          identityRefreshToken: 'user-refresh',
+          identityAccessExpiresAt: Date.now() - 1,
+        };
+        const token = signSession('s3cret', session);
         const me = await fetch(`${base}/api/auth/me`, {
           headers: { cookie: `od_session=${encodeURIComponent(token)}` },
         });
@@ -298,7 +311,7 @@ describe('gate middleware (integration)', () => {
             email: USER.email,
             name: USER.name,
             provider: 'google',
-            roles: [],
+            roles: ['designer'],
           },
           syncReady: true,
           identityUserId: identityUuid,
@@ -311,27 +324,31 @@ describe('gate middleware (integration)', () => {
     }
   });
 
-  it('keeps a Google session local-only while identity is down, then reconciles it when identity recovers', async () => {
+  it('keeps the app local-only while identity refresh is down, then recovers without a service token', async () => {
     const identityUuid = '65edc73c-56a4-4c48-8651-d7cb07a5e10d';
     let available = false;
     const identity = express();
     identity.use(express.json());
-    identity.post('/api/v1/auth/external/resolve', (_req, res) => {
+    identity.post('/api/v1/auth/refresh', (_req, res) => {
       if (!available) return res.status(503).json({ error: 'temporarily unavailable' });
-      res.json({ user: { id: identityUuid } });
+      res.json({ access_token: 'recovered-user-token', expires_in: 86_400 });
     });
-    // Older deployment fallback endpoints also stay unavailable during the
-    // outage; once recovery begins the atomic exchange succeeds first.
-    identity.get('/api/v1/admin/users', (_req, res) => res.status(503).json({}));
-    identity.post('/api/v1/admin/users', (_req, res) => res.status(503).json({}));
-    identity.get('/api/v1/admin/users/:id/roles', (_req, res) => res.json({ roles: [] }));
+    identity.get('/api/v1/auth/me', (_req, res) => res.json({ data: { roles: [] } }));
     const identityServer: Server = await new Promise((resolve) => {
       const s = identity.listen(0, '127.0.0.1', () => resolve(s));
     });
     try {
       const identityPort = (identityServer.address() as AddressInfo).port;
       await withApp(cfg({ identityUrl: `http://127.0.0.1:${identityPort}` }), async (base) => {
-        const token = signSession('s3cret', { ...USER, sub: 'google-sub', googleSubject: 'google-sub' });
+        const token = signSession('s3cret', {
+          ...USER,
+          sub: 'google-sub',
+          googleSubject: 'google-sub',
+          identityUserId: identityUuid,
+          identityAccessToken: 'expired-user-token',
+          identityRefreshToken: 'user-refresh',
+          identityAccessExpiresAt: Date.now() - 1,
+        });
         const first = await fetch(`${base}/api/auth/me`, {
           headers: { cookie: `od_session=${encodeURIComponent(token)}` },
         });
