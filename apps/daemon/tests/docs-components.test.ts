@@ -251,7 +251,10 @@ test('validateComponentReport: verdict ok nhưng component BỊA (không có tro
 
 test('validateComponentReport: verdict ok mà thiếu hẳn component => lỗi', () => {
   const catalog = collectComponentCatalog(CATALOG_MD);
-  const report = reportWith([okElement({ component: undefined, rule_id: undefined })]);
+  const element = okElement();
+  delete element.component;
+  delete element.rule_id;
+  const report = reportWith([element]);
   const errors = validateComponentReport(DOC_MD, report, catalog);
   assert.equal(errors.length, 1);
   assert.match(errors[0]!, /bắt buộc phải có 'component'/);
@@ -268,7 +271,9 @@ test('validateComponentReport: rule_id không khớp danh mục của chính com
 
 test('validateComponentReport: có component nhưng thiếu rule_id => lỗi', () => {
   const catalog = collectComponentCatalog(CATALOG_MD);
-  const report = reportWith([okElement({ rule_id: undefined })]);
+  const element = okElement();
+  delete element.rule_id;
+  const report = reportWith([element]);
   const errors = validateComponentReport(DOC_MD, report, catalog);
   assert.equal(errors.length, 1);
   assert.match(errors[0]!, /bắt buộc phải có 'rule_id'/);
