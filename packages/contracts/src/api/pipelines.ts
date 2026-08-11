@@ -1,3 +1,5 @@
+import type { AppContextManifest, FeatureContextBinding } from './app-context-version.js';
+
 // Pipelines: a per-project, dependency-gated chain of skill-driven agent runs
 // (the docs→UI flow). Each pipeline is a fixed skill; pressing "run" seeds a new
 // conversation in the current project with that skill active and the UI switches
@@ -39,12 +41,21 @@ export interface UiTargetDef {
   label: string;
   /** Per-target cwd subfolder under the workflow dir (`<workflow>/<dir>/…`). */
   dir: string;
+  /**
+   * Whether this target's generated UI must be RESPONSIVE. Every target ships
+   * web tech (HTML/React — there is no native/RN track); the difference is
+   * viewport semantics: the mobile app renders in a FIXED phone viewport (no
+   * media queries), the two website targets must adapt across breakpoints
+   * (mobile ≤768px ↔ desktop). Drives the ux/ui kickoff directives, the
+   * ui-react-ds verify gate, and the Figma-capture viewport set.
+   */
+  responsive: boolean;
 }
 
 export const UI_TARGETS: Record<UiTarget, UiTargetDef> = {
-  mobile: { id: 'mobile', platform: 'mobile', audience: 'user', label: 'Mobile app', dir: 'mobile' },
-  'web-user': { id: 'web-user', platform: 'web', audience: 'user', label: 'Website (người dùng)', dir: 'web-user' },
-  'web-backoffice': { id: 'web-backoffice', platform: 'web', audience: 'backoffice', label: 'Website (backoffice)', dir: 'web-backoffice' },
+  mobile: { id: 'mobile', platform: 'mobile', audience: 'user', label: 'Mobile app', dir: 'mobile', responsive: false },
+  'web-user': { id: 'web-user', platform: 'web', audience: 'user', label: 'Website (người dùng)', dir: 'web-user', responsive: true },
+  'web-backoffice': { id: 'web-backoffice', platform: 'web', audience: 'backoffice', label: 'Website (backoffice)', dir: 'web-backoffice', responsive: true },
 };
 
 export const UI_TARGET_IDS: UiTarget[] = ['mobile', 'web-user', 'web-backoffice'];
@@ -66,25 +77,54 @@ export function isUiTarget(v: unknown): v is UiTarget {
 export interface TargetsConfig {
   /** Schema marker so a reader can recognize the file without inferring shape. */
   kind: 'od-targets';
-  version: 1;
+  /** 1 = targets/platform/audience only; 2 adds responsiveByTarget +
+   *  designSystemByTarget. Readers must tolerate missing v2 fields. */
+  version: 1 | 2;
   /** UI targets to build, in pick order. */
   targets: UiTarget[];
   /** Per-target platform (drives each screen's `layout`). */
   platformByTarget: Record<UiTarget, TargetPlatform>;
   /** Per-target audience (drives which flows/screens the ux-spec authors). */
   audienceByTarget: Record<UiTarget, 'user' | 'backoffice'>;
+  /** Per-target responsive requirement (see UiTargetDef.responsive). v2+. */
+  responsiveByTarget?: Partial<Record<UiTarget, boolean>>;
+  /**
+   * Per-target design system id (v2+). Each target picks its OWN library —
+   * the mobile app and the websites come from different Figma libs, so one
+   * project-wide id cannot serve a multi-target build. Resolution order for a
+   * UI stage run: explicit per-run designSystemId → this map → the app-config
+   * default. Missing entries simply fall through.
+   */
+  designSystemByTarget?: Partial<Record<UiTarget, string>>;
 }
 
-/** Build the `targets.json` payload from a target selection (platform/audience
- *  resolved from the static `UI_TARGETS` descriptor). */
-export function buildTargetsConfig(targets: UiTarget[]): TargetsConfig {
+/** Build the `targets.json` payload from a target selection (platform/
+ *  audience/responsive resolved from the static `UI_TARGETS` descriptor;
+ *  `designSystemByTarget` recorded when the caller picked per-target DS). */
+export function buildTargetsConfig(
+  targets: UiTarget[],
+  designSystemByTarget?: Partial<Record<UiTarget, string>>,
+): TargetsConfig {
   const platformByTarget = {} as Record<UiTarget, TargetPlatform>;
   const audienceByTarget = {} as Record<UiTarget, 'user' | 'backoffice'>;
+  const responsiveByTarget: Partial<Record<UiTarget, boolean>> = {};
   for (const t of targets) {
     platformByTarget[t] = UI_TARGETS[t].platform;
     audienceByTarget[t] = UI_TARGETS[t].audience;
+    responsiveByTarget[t] = UI_TARGETS[t].responsive;
   }
-  return { kind: 'od-targets', version: 1, targets, platformByTarget, audienceByTarget };
+  const dsEntries = Object.entries(designSystemByTarget ?? {}).filter(
+    ([t, id]) => typeof id === 'string' && id && targets.includes(t as UiTarget),
+  );
+  return {
+    kind: 'od-targets',
+    version: 2,
+    targets,
+    platformByTarget,
+    audienceByTarget,
+    responsiveByTarget,
+    ...(dsEntries.length > 0 ? { designSystemByTarget: Object.fromEntries(dsEntries) } : {}),
+  };
 }
 
 /** Canonical relative path (under the docs-to-ui workflow dir) of the config. */
@@ -147,6 +187,16 @@ export interface PipelineView {
    */
   acceptsPlatform?: boolean;
   /**
+   * When true, this stage accepts a MANUAL file upload from the UI — a
+   * secondary "Tải file lên" button next to Run (not folded into the Run
+   * flow: a stage can also have `inputPlaceholder`, and Run's dispatch is
+   * mutually exclusive on those fields, so upload needs its own affordance).
+   * The upload itself goes through the existing project-files route; this
+   * flag only controls whether the button renders. Today only the
+   * `docs-review` workflow's `dr-docs` stage sets it.
+   */
+  acceptsUpload?: boolean;
+  /**
    * Output path patterns this pipeline produces in the project cwd (from the
    * daemon registry). The UI surfaces a stage's result files ("Quick result")
    * by matching these against `GET /api/projects/:id/files`. Patterns:
@@ -171,6 +221,14 @@ export interface PipelineView {
   lastSource?: PipelineRunSource;
   /** Target platform of the LAST run (stages with `acceptsPlatform`). */
   lastPlatform?: TargetPlatform;
+  /**
+   * Short human-readable reason the stage's LAST run failed — a fail-fast
+   * validation message (e.g. no docs-ingest source configured), the
+   * underlying agent run's own error, or a generic fallback when neither is
+   * available. Only present when `status === 'failed'`; the FE's "Xem lỗi"
+   * renders this instead of an empty panel. Absent for every other status.
+   */
+  error?: string;
 }
 
 export interface PipelinesResponse {
@@ -186,6 +244,16 @@ export interface PipelinesResponse {
    *  THIS mode; the UI also shows it so the reason a stage is greyed out is
    *  visible on the stepper instead of hidden in a modal chosen an hour ago. */
   runMode: PipelineRunMode;
+  /** Multi-target project: the configured targets (targets.json order). Absent
+   *  → single build. Clients use it for the target switcher and to send
+   *  `RunPipelineRequest.target` on stage runs / build / capture. */
+  targets?: UiTarget[];
+  /** Per-target, FILE-derived stage statuses (the DB run state is
+   *  stage-global): which stages have outputs under `<wf>/<target>/`. Only the
+   *  states a file scan can prove (succeeded) appear; missing = no outputs. */
+  statusByTarget?: Partial<Record<UiTarget, Record<string, PipelineStatus>>>;
+  /** targets.json v2 per-target design systems, when configured. */
+  designSystemByTarget?: Partial<Record<UiTarget, string>>;
 }
 
 /** Which stages a project's chain runs: `lean` drops the analysis stages
@@ -245,6 +313,19 @@ export interface Workflow {
   description?: string;
   /** Ordered pipeline ids that make up this workflow's DAG. */
   pipelineIds: string[];
+  /**
+   * Human-readable name for each id in `pipelineIds`, in the SAME order. Both
+   * fields exist because they serve different readers: `pipelineIds` is the
+   * bare-id list every gating/filtering/ordering call site already keys off
+   * (stepper grouping, output attribution, sync scoping — see
+   * apps/daemon/src/pipelines.ts) and must stay a plain `string[]` for that;
+   * `stages` is purely a display lookup so a client (e.g. the Pull/Push stage
+   * picker) can render "UX Spec" instead of the raw id "ux" without hand-
+   * mirroring the daemon's `PipelineDef.name` registry. Optional so existing
+   * consumers built before this field keep working; a client reading it should
+   * still fall back to the raw id when a name is missing.
+   */
+  stages?: Array<{ id: string; name: string }>;
 }
 
 export interface WorkflowsResponse {
@@ -279,10 +360,20 @@ export interface RunAllConfig {
    *  ignored (each target carries its own). Omitted/empty → single build using
    *  `platform` (legacy). */
   targets?: UiTarget[];
+  /**
+   * Per-target design system ids (multi-target run): each target's UI stages
+   * run against its OWN library. Recorded into `targets.json` so later
+   * single-stage re-runs resolve the same DS. Falls back per target to
+   * `designSystemId`, then the app-config default.
+   */
+  designSystemByTarget?: Partial<Record<UiTarget, string>>;
   followLinks?: boolean;
   /** Docs stage: also fetch the whole sub-tree under each seed page
    *  (folder-structured), independent of followLinks. Omitted → false. */
   includeDescendants?: boolean;
+  /** Last run started from HAND-UPLOADED documents rather than a Confluence
+   *  fetch (see RunWorkflowRequest.docsFromUpload). */
+  docsFromUpload?: boolean;
   skipSucceeded?: boolean;
   /**
    * LEAN run: drop the analysis stages (customer journey, UX research, the
@@ -292,6 +383,38 @@ export interface RunAllConfig {
    * the run you hand over. Omitted → the full chain.
    */
   lean?: boolean;
+  /**
+   * Danh sách id bước sẽ chạy, do người dùng tick trong panel cấu hình. Có mặt
+   * và KHÔNG rỗng → chạy ĐÚNG các bước này theo thứ tự của workflow, bỏ qua
+   * `lean` và `skipSucceeded` (người dùng đã chọn tay thì lựa chọn đó thắng —
+   * kể cả khi họ tick lại một bước đã succeeded để chạy lại).
+   * Vắng mặt → giữ nguyên hành vi cũ (`lean` + `skipSucceeded`), nên mọi cấu
+   * hình đã lưu và mọi lệnh CLI hiện có vẫn chạy y như trước.
+   */
+  stageIds?: string[];
+  /**
+   * App Docs Pool (docs/app-docs-pool-spec.md §2.2): trang CHÍNH đã tick từ
+   * pool tài liệu của App sở hữu dự án này — nguồn thay thế cho
+   * `confluencePages` khi dự án dùng pool thay vì picker Confluence lẻ. Run-all
+   * PUT PRESERVE field này khi body không nhắc tới key (giống `appFiles` cũ);
+   * `null` (3-state, cùng ngữ nghĩa `designSystemId`) XÓA field đã lưu — mỗi
+   * lần Lưu nguồn tài liệu phải resend cả ba nhánh loại trừ nhau
+   * (`confluencePages` / `docsFromUpload` / `appPool`).
+   * Run copies selected pages from the App pool into the feature's `docs-feature/`
+   * root; the full pool is available read-only under `docs-app/`.
+   */
+  appPool?: { appId: string; paths: string[] } | null;
+}
+
+/** Tiến độ của MỘT workflow trên một feature (`PipelineProject.workflows`).
+ *  `done`/`total`/`running` đếm y như các field cùng tên ở cấp project, chỉ
+ *  khác là theo workflow này chứ không theo workflow của query. */
+export interface PipelineWorkflowSummary {
+  id: string;
+  name: string;
+  done: number;
+  total: number;
+  running: number;
 }
 
 // A KGS app/project available for pipelines. These are projects pulled from the
@@ -309,6 +432,12 @@ export interface PipelineProject {
    * (`running`/`queued`) — drives the picker card's live running spinner.
    * 0 when nothing is running. */
   running: number;
+  /** Bước đang chạy của workflow được query (bước đầu tiên có status
+   *  running/queued theo thứ tự pipelineIds). Picker card hiện "Đang chạy:
+   *  <name> · N phút" thay cho dải progress. `startedAt` = updatedAt của lần
+   *  bước đó chuyển trạng thái (mốc tính thời gian đã chạy). Absent khi không
+   *  có bước nào đang chạy. */
+  runningStage?: { id: string; name: string; startedAt?: number };
   /** Cấu hình từ Pipeline Studio (project.json trên store, mirror về khi
    *  pull): Run tự điền nguồn tài liệu (link Confluence HOẶC tài liệu BAS đã
    *  chọn) + design system từ đây — vẫn cho override từng lần chạy. */
@@ -323,10 +452,75 @@ export interface PipelineProject {
    *  feature này thuộc về — mirror từ `project.json.appId` lúc pull. Picker
    *  dùng nó để nhóm các feature theo app; thiếu = feature chưa gán app. */
   app?: { id: string; name?: string };
+  /** Immutable App Context intentionally selected for this Feature. */
+  appContextBinding?: FeatureContextBinding;
+  /** Trạng thái của TỪNG workflow trong registry — `done`/`total`/`running` ở
+   *  trên chỉ nói về MỘT workflow (cái của query, mặc định là workflow đầu
+   *  tiên), nên một feature đang chạy workflow khác vẫn đọc thành "Chưa chạy".
+   *  Row feature xổ ra dùng mảng này. Optional: client cũ / server cũ vẫn phải
+   *  chạy được, nên nơi đọc phải fallback về các field ở trên khi nó vắng. */
+  workflows?: PipelineWorkflowSummary[];
 }
 
 export interface PipelineProjectsResponse {
   projects: PipelineProject[];
+}
+
+// Request body for `POST /api/pipelines/projects` (Phase B: local
+// Project/feature creation). `appId`/`appName` are optional — when set the
+// new project is mirrored under that App in the picker (see `PipelineApp`).
+export interface CreatePipelineProjectRequest {
+  projectId: string;
+  name?: string;
+  appId?: string;
+  appName?: string;
+}
+
+export interface CreatePipelineProjectResponse {
+  id: string;
+  name: string;
+}
+
+// One App container offered as the parent of a new feature (`GET
+// /api/pipelines/apps`). `local` Apps only exist denormalized on local
+// features' `PipelineProject.app`; `remote` Apps come from the central
+// KGS/media registry's `{isApp: true}` rows.
+export interface PipelineApp {
+  id: string;
+  name?: string;
+  origin: 'local' | 'remote';
+  /**
+   * Design System (bản nạp từ Figma) gắn cho App này — NGUỒN BỘ TIÊU CHÍ
+   * REVIEW của mọi feature thuộc App. Bước `dr-docs` tra ngược
+   * feature → `studioConfig.appId` → App này, rồi chép
+   * `<ds>/criteria/components.md` (+ `rules.md` nếu có) vào `<workflow>/criteria/`.
+   *
+   * Vì sao ở cấp App chứ không phải từng feature: một App dùng MỘT bộ design
+   * system, và bộ tiêu chí review là thuộc tính của bộ đó — bắt mỗi feature
+   * chọn lại là mời gọi hai feature cùng App review theo hai danh mục khác nhau.
+   *
+   * CỐ Ý KHÔNG denormalize xuống `studioConfig` của feature (khác `appName`):
+   * đổi DS của App phải có hiệu lực ngay với mọi feature, không đợi ghi lại
+   * từng dự án.
+   *
+   * App remote (từ Pipeline Studio) vẫn đặt được — lựa chọn nằm ở row
+   * `pipeline_apps` local, y như cách tên local phủ lên tên remote.
+   *
+   * Vắng mặt / rỗng → App chưa chọn DS; docs-review chạy với bộ tiêu chí mặc
+   * định trong skill.
+   */
+  designSystemId?: string | null;
+  /** Version information for the tree Push/Pull UI. Absent on legacy/server-only Apps. */
+  context?: {
+    current: AppContextManifest | null;
+    latestVersion: `v${number}` | null;
+    latestDigest: `sha256:${string}` | null;
+    localCurrentDigest: `sha256:${string}` | null;
+  };
+}
+
+export interface PipelineAppsResponse {
+  apps: PipelineApp[];
 }
 
 export interface RunPipelineRequest {
@@ -358,6 +552,24 @@ export interface RunPipelineRequest {
    * skill's default (mobile), preserving pre-existing behavior.
    */
   platform?: TargetPlatform;
+  /**
+   * Multi-target project (`targets.json` present): WHICH target this single
+   * stage run builds. The daemon resolves it to the per-target subfolder
+   * (`<workflow>/<target>/`) plus that target's platform/audience — the same
+   * scoping the run-all orchestrator applies. Rules on a multi-target project:
+   * omitted + exactly one configured target → that target is used
+   * automatically; omitted + several targets → the run is rejected (the caller
+   * must say which product to build); a target not in `targets.json` → rejected.
+   * Ignored by the shared stages (docs ingest & sharedAcrossTargets) and by
+   * single-build (no `targets.json`) projects.
+   */
+  target?: UiTarget;
+  /**
+   * Docs stage of a multi-target run: per-target design system ids, recorded
+   * into `targets.json` alongside the chosen targets so every later stage run
+   * (and re-run) resolves each target's OWN library. Ignored on other stages.
+   */
+  designSystemByTarget?: Partial<Record<UiTarget, string>>;
   /**
    * Docs stage, deterministic Confluence path: also fetch the pages each seed
    * page LINKS to (same wiki, depth 1, capped) so referenced sibling docs (BO
@@ -405,6 +617,15 @@ export type PipelineRunSource =
       documentId: string;
       /** Chosen feature ids within that document; empty/absent → whole document. */
       featureIds?: string[];
+    }
+  | {
+      /** App Docs Pool (docs/app-docs-pool-spec.md §2.2): copy the ticked MAIN
+       *  pages (deterministic, incl. images/attachments) into `<wf>/docs/`,
+       *  same status semantics as the plain Confluence path — gated on every
+       *  pool page being present (parsed at `parseRunSource`). */
+      kind: 'app-pool';
+      appId: string;
+      paths: string[];
     };
 
 // A KG document in BAS (from `kg_list_documents`) — the top level of the BAS
@@ -431,10 +652,52 @@ export interface ConfluencePageHit {
   title: string;
   url?: string;
   space?: string;
+  /** Ancestor page TITLES, top→down, excluding this page itself — lets a
+   *  search result with a title shared by pages in different dự án be told
+   *  apart (App-root combobox). Optional: the direct-PAT search path can
+   *  supply it (CQL `expand=ancestors`); the BAS-gateway fallback path
+   *  cannot, so it stays undefined there rather than guessing. */
+  ancestors?: string[];
+  /** Whether this page has at least one child page — lets the App-root search
+   *  dropdown only render an expand arrow on pages that actually have
+   *  children. `undefined` = unknown (the BAS-gateway fallback path has no
+   *  equivalent field, and the direct-PAT path leaves it undefined too when
+   *  Confluence's response omits the children block for a result). */
+  hasChildren?: boolean;
 }
 
 export interface ConfluencePagesResponse {
   pages: ConfluencePageHit[];
+}
+
+// ── App Docs Pool (docs/app-docs-pool-spec.md §2) ────────────────────────────
+// One Confluence fetch per App: pages land in `<appId>/docs/` + a manifest.
+
+/** One page in an App's pool (`<appId>/docs/_manifest.json` entry). */
+export interface AppPoolPage {
+  pageId: string;
+  /** Relative path under `<appId>/docs/`. */
+  path: string;
+  title: string;
+  /** Slug of the top-level branch (phân hệ) this page belongs to. */
+  branch: string;
+  contentHash: string;
+  fetchedAt: number;
+  /** Trang vào pool qua "Quét tài liệu liên quan" (depth-1) chứ không phải
+   *  do user tick trực tiếp — UI tách nhóm "Docs liên quan" riêng. */
+  related?: boolean;
+}
+
+/** `GET /api/pipelines/apps/:appId/pool`. */
+export interface AppPoolResponse {
+  pages: AppPoolPage[];
+}
+
+/** `POST /api/pipelines/apps/:appId/import-confluence` response. */
+export interface AppPoolImportResponse {
+  imported: number;
+  updated: number;
+  pages: AppPoolPage[];
 }
 
 // A feature within a KG document (from kg_get_document_subgraph's FEATURE nodes).
@@ -490,8 +753,10 @@ export interface RunPipelineResponse {
 // idle). Progress surfaces through the existing per-stage statuses
 // (GET /api/pipelines) — the stepper animates through the chain.
 
-/** Which UI-Spec terminal(s) the full run ends with. */
-export type WorkflowTerminal = 'ui-html' | 'ui-react' | 'both';
+/** Which UI-Spec terminal(s) the full run ends with. `both` = html + react
+ *  (legacy pair); `ui-react-ds` is always an explicit single choice since it
+ *  hard-requires a react-bundle design system. */
+export type WorkflowTerminal = 'ui-html' | 'ui-react' | 'ui-react-ds' | 'both';
 
 export interface RunWorkflowRequest {
   projectId: string;
@@ -512,6 +777,11 @@ export interface RunWorkflowRequest {
    * into `savedRunAll` so a later Run-all modal open can restore the picker
    * with titles instead of just bare URLs. */
   confluencePages?: ConfluencePageRef[];
+  /** App Docs Pool nguồn (docs/app-docs-pool-spec.md §2.2) — trang CHÍNH đã
+   *  tick từ pool của App. Có mặt → daemon GATE (mọi trang pool `distilled`)
+   *  rồi copy deterministic vào `<wf>/docs/`, cùng semantics `confluencePages`
+   *  nhưng đọc từ pool thay vì fetch trực tiếp. `null` xóa lựa chọn đã lưu. */
+  appPool?: { appId: string; paths: string[] } | null;
   /** Design system for the UI terminal(s) — same semantics as RunPipelineRequest. */
   designSystemId?: string | null;
   /** Target platform for the UX stage — same semantics as RunPipelineRequest.
@@ -526,6 +796,15 @@ export interface RunWorkflowRequest {
    *  RunPipelineRequest.includeDescendants. */
   includeDescendants?: boolean;
   /**
+   * The workflow's DOCS INGEST stage is skipped because its documents were
+   * uploaded by hand (`acceptsUpload` stages — Docs → Review tài liệu): the
+   * files already sit in `<workflow>/docs/`, which IS that stage's declared
+   * output, so running it would clear them and then fetch nothing. The chain
+   * therefore starts at the stage after the ingest. Ignored by workflows whose
+   * first stage has no upload affordance.
+   */
+  docsFromUpload?: boolean;
+  /**
    * When true, stages already `succeeded` are SKIPPED (resume: only the
    * missing stages run, each clearing just its own outputs). Default false: a
    * full fresh run — the project RESETS up front (the first stage runs with a
@@ -535,6 +814,15 @@ export interface RunWorkflowRequest {
    */
   lean?: boolean;
   skipSucceeded?: boolean;
+  /**
+   * Danh sách id bước sẽ chạy — cùng ngữ nghĩa với `RunAllConfig.stageIds`:
+   * có mặt và KHÔNG rỗng → chạy ĐÚNG các bước này theo thứ tự của workflow và
+   * bỏ qua `lean` + `skipSucceeded`. Vắng mặt → hành vi cũ. Daemon TỪ CHỐI
+   * (400) khi danh sách chứa id không thuộc workflow, hoặc khi một bước được
+   * chọn có phụ thuộc vừa không được chọn vừa chưa `succeeded` — run-all không
+   * hỏi gating, nên bước thiếu input sẽ chạy thật và cho ra kết quả rác.
+   */
+  stageIds?: string[];
 }
 
 export interface RunWorkflowResponse {
@@ -562,6 +850,9 @@ export interface PipelineRunState {
    *  conversation of each task so the UI can list them individually. Absent /
    *  empty for a single-agent run (its one conversation is lastConversationId). */
   subConversations?: PipelineSubConversation[];
+  /** Short reason the last run failed — only meaningful alongside
+   *  `status: 'failed'`; a later succeeded/running/idle status clears it. */
+  error?: string;
 }
 
 export interface PipelineSubConversation {
@@ -648,4 +939,29 @@ export interface RestoreHistoryResponse {
   commit?: string;
   /** Files written (version restore) / touched (commit restore). */
   files: number;
+}
+
+/**
+ * POST /api/pipelines/figma-capture — capture the built UI-Spec (React DS)
+ * app into Figma screen JSON (figma-h2d IR with component-instance markers)
+ * under `react-ds/figma-screens/`. The `screensJson` file feeds the design-v3
+ * Fig Pipeline plugin's "Screen JSON → Figma" tab, which rebuilds the screens
+ * with real component instances bound to Figma variables by token name.
+ */
+export interface FigmaCaptureRequest {
+  projectId: string;
+}
+
+export interface FigmaCaptureResponse {
+  ok: boolean;
+  /** Screens/states captured (one Figma frame each). */
+  screens: number;
+  /** Component-instance markers captured across all screens. */
+  markers: number;
+  /** Stage-relative path of the merged screens.json (under react-ds/). */
+  screensJson: string;
+  /** Project-cwd-relative path — fetch via GET /api/projects/:id/raw/<rawPath>. */
+  rawPath: string;
+  /** Runner log tail (per-screen node/marker counts). */
+  output: string;
 }

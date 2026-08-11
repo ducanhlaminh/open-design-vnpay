@@ -213,3 +213,24 @@ describe('MediaClient', () => {
     expect(remaining).toHaveLength(1);
   });
 });
+
+// Reads must not have side effects on the store. This is load-bearing for the
+// staging/approval gate: a project that only exists locally has no media
+// folder, and the Push-all modal runs a per-project sync-status diff (which
+// calls listFiles) BEFORE the user pushes. If that read created the folder, the
+// remote registry would then report the project as already living on the
+// studio, the push would resolve to "overwrite origin", and the approval step
+// would be skipped without anyone noticing. See docs/guides/staging-approval-design.md.
+describe('MediaClient reads never materialise a folder', () => {
+  it('listFiles on an unknown project returns [] and creates nothing', async () => {
+    const before = db.folders.size;
+    expect(await client.listFiles('never-pushed')).toEqual([]);
+    expect(db.folders.size).toBe(before);
+  });
+
+  it('downloadFile on an unknown project throws and creates nothing', async () => {
+    const before = db.folders.size;
+    await expect(client.downloadFile('never-pushed', 'project.json')).rejects.toThrow();
+    expect(db.folders.size).toBe(before);
+  });
+});

@@ -3,6 +3,7 @@
 import './load-local-env.js'; // fill missing env (KGS creds) from .env.local before anything reads it
 import { runDaemonCliStartup } from './daemon-startup.js';
 import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
+import { runOverviewMcpServer } from './mcp-overview-server.js';
 import { runArtifactsCli } from './artifacts-cli.js';
 import { runProjectHandoff } from './handoff-cli.js';
 import { runConnectorsToolCli } from './tools-connectors-cli.js';
@@ -39,7 +40,7 @@ const argv = process.argv.slice(2);
 // initialization") and crash every `od media …` invocation.
 // `od sandbox …` flag sets — hoisted here for the same TDZ reason as the
 // media flags above (SUBCOMMAND_MAP dispatch runs during module evaluation).
-const SANDBOX_STRING_FLAGS = new Set(['daemon-url']);
+const SANDBOX_STRING_FLAGS = new Set(['daemon-url', 'runtime']);
 const SANDBOX_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'probe-auth', 'force', 'all', 'yes']);
 
 const MEDIA_GENERATE_STRING_FLAGS = new Set([
@@ -175,6 +176,9 @@ const AUTOMATION_BOOLEAN_FLAGS = new Set([
 ]);
 const PIPELINE_STRING_FLAGS = new Set([
   'daemon-url', 'project', 'name', 'input',
+  // `od pipeline new`: optional parent App to mirror onto the new project's
+  // metadata.studioConfig (Phase B local creation) — --app <appId> --app-name <name>
+  'app', 'app-name',
   // history/restore (version hóa output): --version v3 | --commit <sha> [--path <p>] [--stage <id>]
   'version', 'commit', 'path', 'stage',
   // Pipeline-1 structured source (Confluence/BAS via the BAS gateway):
@@ -187,7 +191,7 @@ const PIPELINE_STRING_FLAGS = new Set([
   'platform',
   // run-all: which UI-Spec terminal(s) to finish with: ui-html | ui-react | both
   'terminal',
-  'rating', 'issue', 'comment', 'run', 'workflow',
+  'rating', 'issue', 'comment', 'run', 'workflow', 'confirmation',
 ]);
 const PIPELINE_BOOLEAN_FLAGS = new Set([
   'help', 'h', 'json',
@@ -202,6 +206,9 @@ const PIPELINE_BOOLEAN_FLAGS = new Set([
   // seed page (folder-structured). Aliases: --all-pages / --include-descendants.
   'all-pages',
   'include-descendants',
+  // run-all: the workflow's docs were uploaded by hand, so DROP its ingest
+  // stage (running it would clear <workflow>/docs/ — its declared output).
+  'docs-from-upload',
 ]);
 const MEMORY_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'description', 'type', 'body', 'body-file',
@@ -331,6 +338,9 @@ async function runKg(args) {
                              --stages <id,id,…> pushes only those pipelines' output files.
                              --workflow <id> shorthand for --stages = that workflow's pipelines.
   od kg status <project-id>   Show local mirror counts.
+  od kg app-context status <app-id>              List local App Context versions.
+  od kg app-context push <app-id> [--version vN] Publish an App, even with zero Features.
+  od kg app-context pull <app-id> [--version vN] Download an App Context without changing Feature bindings.
   od kg diff                 Per-pipeline local↔store file diff (what a push/pull would move).
                              --projects <id,id,…> narrows to those projects.
   od kg remote list           List projects on the remote stores (KGS graph + media files).
@@ -353,7 +363,7 @@ Common options:
   const sub = args[0];
   const rest = args.slice(1);
   const flags = parseFlags(rest, {
-    string: ['daemon-url', 'on-conflict', 'scope', 'projects', 'stages', 'workflow'],
+    string: ['daemon-url', 'on-conflict', 'scope', 'projects', 'stages', 'workflow', 'version', 'remote-app-id'],
     boolean: ['json', 'yes'],
   });
   const id = rest.find((a) => !a.startsWith('-'));
@@ -362,6 +372,42 @@ Common options:
   // body filters; omitted → everything, mirroring the UI modals).
   const csvFlag = (v) =>
     typeof v === 'string' ? v.split(',').map((s) => s.trim()).filter(Boolean) : [];
+
+  if (sub === 'app-context') {
+    const action = rest[0];
+    const appId = rest[1];
+    if (!['status', 'push', 'pull'].includes(action) || !appId || appId.startsWith('-')) {
+      console.error('Usage: od kg app-context status|push|pull <app-id> [--version vN]');
+      process.exit(2);
+    }
+    const endpoint = action === 'status'
+      ? `/api/pipelines/apps/${encodeURIComponent(appId)}/context`
+      : `/api/pipelines/apps/${encodeURIComponent(appId)}/context/${action}`;
+    const resp = await fetch(`${base}${endpoint}`, action === 'status' ? undefined : {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...(typeof flags.version === 'string' && flags.version ? { contextVersion: flags.version } : {}),
+        ...(typeof flags['remote-app-id'] === 'string' && flags['remote-app-id'] ? { remoteAppId: flags['remote-app-id'] } : {}),
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.error(data?.error?.message ?? data?.data?.message ?? `HTTP ${resp.status}`);
+      process.exit(1);
+    }
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    const result = data?.data ?? data;
+    if (action === 'status') {
+      console.log(`${result.appName ?? appId}: ${result.current?.contextVersion ?? 'chưa có version'} (${result.versions?.length ?? 0} version)`);
+    } else if (action === 'push') {
+      console.log(`${appId}: ${result.status}${result.requestId ? ` → ${result.requestId}` : ''} ${result.manifest?.contextVersion ?? ''}`.trim());
+    } else {
+      console.log(`${appId}: ${result.status} ${result.manifest?.contextVersion ?? ''}`.trim());
+    }
+    return;
+  }
 
   // Pull/push ALL: bare `od kg pull`/`push` (no id) or explicit *-all.
   if (sub === 'pull-all' || (sub === 'pull' && !id)) {
@@ -402,9 +448,20 @@ Common options:
     const data = await resp.json();
     if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
     const d = data?.data ?? {};
-    console.log(`pushed ${d.pushed ?? 0} project(s) to KGS`);
+    console.log(`processed ${d.pushed ?? 0} project(s)`);
     for (const r of d.results ?? []) {
-      console.log(`  • ${r.projectId}: ${r.status} (${r.nodesPushed ?? 0} nodes, ${r.edgesPushed ?? 0} edges, ${r.filesUploaded ?? 0} files, ws:${r.workspace ?? '?'})${r.error ? ` — ${r.error}` : ''}`);
+      if (r.status === 'published') {
+        console.log(`  • ${r.projectId}: published → ${r.approvedProjectId} (${r.nodesPushed ?? 0} nodes, ${r.edgesPushed ?? 0} edges, ${r.filesUploaded ?? 0} files)`);
+      } else if (r.status === 'pending_approval') {
+        console.log(`  • ${r.projectId}: pending approval → ${r.requestId}`);
+      } else if (r.status === 'rejected') {
+        console.log(`  • ${r.projectId}: rejected — ${r.reason}`);
+      } else if (r.status === 'auth_required') {
+        console.log(`  • ${r.projectId}: auth required — ${r.message}`);
+      } else {
+        console.log(`  • ${r.projectId}: error — ${r.message ?? 'unknown error'}`);
+      }
+      for (const caveat of r.caveats ?? []) console.log(`      ⚠ ${caveat}`);
     }
     return;
   }
@@ -551,11 +608,17 @@ Common options:
       const data = await resp.json();
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       const d = data?.data ?? {};
-      console.log(
-        `pushed ${d.nodesPushed} nodes, ${d.edgesPushed} edges (${d.status})` +
-          (d.errors?.length ? ` — ${d.errors.length} errors` : '') +
-          (d.caveats?.length ? ` — ${d.caveats.length} caveats` : ''),
-      );
+      if (d.status === 'published') {
+        console.log(`published ${d.projectId} → ${d.approvedProjectId} (${d.nodesPushed} nodes, ${d.edgesPushed} edges, ${d.filesUploaded} files)`);
+      } else if (d.status === 'pending_approval') {
+        console.log(`pending approval: ${d.requestId}`);
+      } else if (d.status === 'rejected') {
+        console.log(`rejected: ${d.reason}`);
+      } else if (d.status === 'auth_required') {
+        console.log(`auth required: ${d.message}`);
+      } else {
+        console.log(`error: ${d.message ?? 'unknown error'}`);
+      }
       if (!flags.json && d.caveats?.length) for (const c of d.caveats) console.log(`  ⚠ ${c}`);
       return;
     }
@@ -597,6 +660,7 @@ const SUBCOMMAND_MAP = {
   conversation: runConversation,
   daemon: runDaemon,
   atoms: runAtoms,
+  agents: runAgents,
   skills: runSkills,
   'design-systems': runDesignSystems,
   craft: runCraft,
@@ -607,6 +671,17 @@ const SUBCOMMAND_MAP = {
   doctor: runDoctor,
   config: runConfig,
 };
+
+if (argv[0] === 'mcp' && argv[1] === 'overview') {
+  try {
+    const { exitCode } = await runOverviewMcpServer();
+    process.exit(exitCode);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${JSON.stringify({ ok: false, error: { message } })}\n`);
+    process.exit(1);
+  }
+}
 
 if (argv[0] === 'mcp' && argv[1] === 'live-artifacts') {
   try {
@@ -681,6 +756,9 @@ function printRootHelp() {
   od mcp live-artifacts
       Start the MCP server exposing live-artifact and connector tools.
 
+  od mcp overview
+      Start the read-only MCP server exposing App/Feature progress and outputs.
+
   od research search --query <text> [--max-sources 5] [--daemon-url <url>]
       Run agent-callable Tavily research through the local daemon.
 
@@ -708,6 +786,11 @@ function printRootHelp() {
 
   od ui <list|show|respond|revoke|prefill> [args]
       Read and answer GenUI surfaces (form / choice / confirmation / oauth-prompt) headlessly.
+
+  od agents [--json]
+      List the code-agent CLIs detected on this machine and whether each one
+      is signed in. Same listing as Settings → Local CLI; exits 4 when an
+      installed CLI needs a sign-in.
 
   od diagnostics export [<path>] [--json]
       Bundle daemon/web/desktop logs, machine info, and recent crash reports
@@ -5641,13 +5724,142 @@ async function runLibraryList(name, args) {
 async function runSkills(args)        { return runLibraryList('skills', args); }
 async function runCraft(args)         { return runLibraryList('craft', args); }
 
+// od agents [--json]
+//
+// CLI mirror of `GET /api/agents` — the same listing Settings → Local CLI
+// renders, including each detected CLI's login state (`authStatus`). External
+// agents driving Open Design through `od` need this to tell "no CLI installed"
+// apart from "CLI installed but signed out", which are different fixes.
+//
+// Exit code 4 when a detected CLI is signed out, so a script can gate a run on
+// it without parsing the table.
+async function runAgents(args) {
+  const flags = parseFlags(args, {
+    string: LIBRARY_STRING_FLAGS,
+    boolean: LIBRARY_BOOLEAN_FLAGS,
+  });
+  if (flags.help || flags.h) {
+    console.log(`Usage:
+  od agents [--json] [--daemon-url <url>]   List detected code-agent CLIs.
+
+Prints one row per runtime: id, availability, login state, and version.
+Login state is 'ok' (signed in), 'missing' (needs sign-in), 'unknown'
+(could not verify), or '-' when the runtime has no login probe.
+
+Exit codes:
+  0  every available CLI is signed in (or has no login probe)
+  4  an available CLI is signed out`);
+    process.exit(0);
+  }
+  const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
+  const resp = await fetch(`${base}/api/agents`);
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  const agents = data?.agents ?? [];
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  } else if (agents.length === 0) {
+    console.log('no code-agent CLI detected on PATH');
+  } else {
+    for (const agent of agents) {
+      const auth = agent.authStatus ?? '-';
+      const where = agent.sandbox?.owns ? 'docker' : (agent.path ?? '-');
+      console.log(
+        [
+          agent.id,
+          agent.available ? 'available' : 'not-installed',
+          `login=${auth}`,
+          agent.version ?? '-',
+          where,
+        ].join('\t'),
+      );
+      if (agent.authMessage && auth !== 'ok') console.log(`  ${agent.authMessage}`);
+    }
+  }
+  if (agents.some((a) => a.available && a.authStatus === 'missing')) process.exit(4);
+}
+
 async function runDesignSystems(args) {
   if (args[0] === 'rename') return runDesignSystemRename(args.slice(1));
+  if (args[0] === 'import-figma') return runDesignSystemImportFigma(args.slice(1));
+  if (args[0] === 'sync') return runDesignSystemSync(args.slice(1));
   if (!args[0] || isDesignSystemsHelpArg(args[0])) {
     console.log(DESIGN_SYSTEMS_USAGE);
     process.exit(isDesignSystemsHelpArg(args[0]) ? 0 : 2);
   }
   return runLibraryList('design-systems', args);
+}
+
+async function runDesignSystemSync(args) {
+  if (!args[0] || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od design-systems sync list [--query <text>] [--json]
+  od design-systems sync status <local-id> [--json]
+  od design-systems sync push <local-id> [--expected-remote-digest <sha256:...>] [--json]
+  od design-systems sync pull-plan <remote-id> [--version vN] [--local-id <id>] [--json]
+  od design-systems sync pull <remote-id> [--version vN] [--local-id <id>]
+      [--resolution use_remote|keep_local] [--expected-local-digest <sha256:...>] [--json]
+
+Push/pull calls the same daemon API as Open Design. Pull never changes App or Feature bindings.`);
+    process.exit(args[0] === 'help' || args.includes('--help') || args.includes('-h') ? 0 : 2);
+  }
+  const flags = parseFlags(args, {
+    string: new Set([...LIBRARY_STRING_FLAGS, 'query', 'version', 'local-id', 'resolution', 'expected-remote-digest', 'expected-local-digest']),
+    boolean: LIBRARY_BOOLEAN_FLAGS,
+  });
+  const positionals = [];
+  const stringNames = new Set(['daemon-url', 'query', 'version', 'local-id', 'resolution', 'expected-remote-digest', 'expected-local-digest']);
+  for (let i = 0; i < args.length; i++) {
+    const value = args[i];
+    if (value?.startsWith('--')) { if (!value.includes('=') && stringNames.has(value.slice(2))) i++; continue; }
+    if (value !== '-h') positionals.push(value);
+  }
+  const action = positionals[0];
+  const id = positionals[1];
+  const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
+  let endpoint;
+  let method = 'GET';
+  let body;
+  if (action === 'list') {
+    const query = typeof flags.query === 'string' && flags.query ? `?q=${encodeURIComponent(flags.query)}` : '';
+    endpoint = `/api/design-systems/sync/remote${query}`;
+  } else if (action === 'status' && id) {
+    endpoint = `/api/design-systems/${encodeURIComponent(id)}/sync/status`;
+  } else if (action === 'push' && id) {
+    endpoint = `/api/design-systems/${encodeURIComponent(id)}/sync/push`; method = 'POST';
+    body = { ...(typeof flags['expected-remote-digest'] === 'string' ? { expectedRemoteDigest: flags['expected-remote-digest'] } : {}) };
+  } else if ((action === 'pull-plan' || action === 'pull') && id) {
+    endpoint = action === 'pull-plan' ? '/api/design-systems/sync/pull/plan' : '/api/design-systems/sync/pull'; method = 'POST';
+    body = { remoteDesignSystemId: id,
+      ...(typeof flags.version === 'string' ? { version: flags.version } : {}),
+      ...(typeof flags['local-id'] === 'string' ? { localDesignSystemId: flags['local-id'] } : {}),
+      ...(action === 'pull' && typeof flags.resolution === 'string' ? { resolution: flags.resolution } : {}),
+      ...(action === 'pull' && typeof flags['expected-local-digest'] === 'string' ? { expectedLocalDigest: flags['expected-local-digest'] } : {}) };
+  } else {
+    console.error('Usage: od design-systems sync list|status|push|pull-plan|pull [id]');
+    process.exit(2);
+  }
+  const resp = await fetch(`${base}${endpoint}`, method === 'GET' ? undefined : {
+    method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    console.error(data?.data?.message ?? data?.error?.message ?? `HTTP ${resp.status}`);
+    process.exit(1);
+  }
+  if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  const result = data?.data ?? data;
+  if (action === 'list') {
+    for (const item of result.items ?? []) console.log(`${item.remoteDesignSystemId}\t${item.name}\t${item.currentVersion}\t${item.owner?.name ?? item.owner?.id ?? ''}`);
+    if (!(result.items ?? []).length) console.log('Chưa có bộ Design System nào trên kho chung.');
+  } else if (action === 'status') {
+    console.log(`${result.localDesignSystemId}: ${result.canPush ? 'sẵn sàng chia sẻ' : `bị chặn (${result.blockReason})`} · ${result.changes?.length ?? 0} thay đổi`);
+  } else if (action === 'pull-plan') {
+    console.log(`${result.remote?.name ?? id} → ${result.localDesignSystemId}: ${result.changes?.length ?? 0} thay đổi${result.conflict ? ' · có xung đột' : ''}`);
+  } else {
+    console.log(`${result.status}${result.summary?.currentVersion ? ` · ${result.summary.currentVersion}` : result.manifest?.version ? ` · ${result.manifest.version}` : ''}`);
+  }
 }
 
 // od design-systems rename <id> --title <new-title> [--json]
@@ -5686,6 +5898,80 @@ Renames an editable (user-created) design system. Built-in systems are read-only
   console.log(`Renamed ${parsed.id} -> ${renamed.title ?? parsed.title}`);
 }
 
+// od design-systems import-figma <file.ir.json...> [--name <name>] [--json]
+// Uploads fig-export IR JSON files to POST /api/design-systems/import/figma in
+// argument order (merge order — the merge is last-writer-wins, so the
+// foundation/token export comes first) and prints the imported catalog entry
+// plus compile errors and merge warnings.
+async function runDesignSystemImportFigma(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od design-systems import-figma <file.ir.json|bundle.zip ...> [--name <name>] [--json] [--daemon-url <url>]
+
+Imports Fig Pipeline exports (raw .ir.json and/or the plugin's .zip bundle) as
+a React design system. Merge order follows natural filename order — prefix
+files 01-, 02-, … with the foundation (token) export first.`);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const stringFlags = new Set([...LIBRARY_STRING_FLAGS, 'name']);
+  const flags = parseFlags(args, { string: stringFlags, boolean: LIBRARY_BOOLEAN_FLAGS });
+  const filePaths = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (typeof a === 'string' && a.startsWith('--')) {
+      // A string flag written as `--name value` consumes the next token.
+      if (!a.includes('=') && stringFlags.has(a.slice(2))) i++;
+      continue;
+    }
+    filePaths.push(a);
+  }
+  if (filePaths.length === 0) {
+    console.error('Usage: od design-systems import-figma <file.ir.json...>');
+    process.exit(2);
+  }
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const form = new FormData();
+  for (const filePath of filePaths) {
+    let buf;
+    try {
+      buf = fs.readFileSync(filePath);
+    } catch (err) {
+      console.error(`cannot read ${filePath}: ${err?.message ?? err}`);
+      process.exit(2);
+    }
+    form.append(
+      'files',
+      new Blob([new Uint8Array(buf)], {
+        type: filePath.toLowerCase().endsWith('.zip') ? 'application/zip' : 'application/json',
+      }),
+      path.basename(filePath),
+    );
+  }
+  if (typeof flags.name === 'string' && flags.name.trim()) form.append('name', flags.name);
+  const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
+  const resp = await fetch(`${base}/api/design-systems/import/figma`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  const ds = data.designSystem ?? {};
+  const summary = data.summary ?? {};
+  console.log(`Imported ${ds.title ?? ds.id ?? '?'} (${ds.id ?? '?'})`);
+  console.log(
+    `  ${summary.components ?? 0}/${summary.componentSets ?? 0} component sets, ${summary.icons ?? 0} icons, ${summary.variables ?? 0} tokens, ${summary.tokenClasses ?? 0} token classes${summary.images ? `, ${summary.images} images` : ''}`,
+  );
+  for (const err of summary.errors ?? []) console.error(`  x ${err}`);
+  const warnings = data.warnings ?? [];
+  if (warnings.length > 0) {
+    console.log(`  ${warnings.length} warning(s):`);
+    for (const warning of warnings.slice(0, 20)) console.log(`  ! ${warning}`);
+    if (warnings.length > 20) console.log(`  ... ${warnings.length - 20} more`);
+  }
+}
+
 async function runStatus(args) {
   // Alias of `od daemon status`.
   return runDaemon(['status', ...args]);
@@ -5698,9 +5984,9 @@ async function runStatus(args) {
 // docs/agent-in-sandbox-spec-plan.md in the parent repo and
 // apps/daemon/src/agent-sandbox.ts). `status` / `enable` / `disable` go
 // through the daemon HTTP API (same data the Settings card reads);
-// `build` / `login` / `logout` / `ps` / `kill` are machine-local docker
-// operations (login needs a TTY, build streams docker output), so they run
-// docker directly — the daemon only supplies builderDir/image via status.
+// `build` / `ps` / `kill` stay local docker operations. `login` / `logout`
+// now route through the daemon for Codex device auth so the CLI can poll the
+// shared login state, while Claude still uses the direct TTY flow.
 // ---------------------------------------------------------------------------
 
 const SANDBOX_USAGE = `Usage:
@@ -5709,9 +5995,11 @@ const SANDBOX_USAGE = `Usage:
                                               container to verify credentials.
   od sandbox enable | disable                 Toggle sandbox.enabled in app config.
   od sandbox build [--force]                  Build the od-agent-sandbox image.
-  od sandbox login                            Claude CLI OAuth login into the shared
-                                              auth volume (interactive, needs a TTY).
-  od sandbox logout --yes                     Delete the auth volume (credentials!).
+  od sandbox login [--runtime claude|codex]    Login to the selected sandbox runtime.
+                                              claude opens the TTY flow; codex starts
+                                              device auth and polls to completion.
+  od sandbox logout --yes [--runtime claude|codex]
+                                              Delete the selected runtime auth volume.
   od sandbox account list [--json]            List saved Claude accounts (* = active).
   od sandbox account save <label>             Save the CURRENT login as <label>.
   od sandbox account switch <label>           Make <label> the active Claude login.
@@ -5797,6 +6085,12 @@ async function runSandbox(args) {
   const nodePath = await import('node:path');
   const runDocker = (dockerArgs, opts = {}) =>
     spawnSync('docker', dockerArgs, { stdio: 'inherit', ...opts });
+  const runtime = typeof flags.runtime === 'string' && flags.runtime.trim() ? flags.runtime.trim() : 'claude';
+  const validRuntime = runtime === 'claude' || runtime === 'codex';
+  if (!validRuntime) {
+    console.error(`usage: od sandbox ${sub} --runtime claude|codex`);
+    process.exit(2);
+  }
 
   if (sub === 'status') {
     const status = await sandboxFetchStatus(flags, flags['probe-auth'] === true);
@@ -5812,6 +6106,11 @@ async function runSandbox(args) {
     if (status.claudeVersion) console.log(`  claude cli:  ${status.claudeVersion} (pinned in image)`);
     console.log(`  auth volume: ${yn(status.authVolumeOk)}${status.authVolumeOk === false ? ' (run: od sandbox login)' : ''}`);
     console.log(`  logged in:   ${yn(status.authLoggedIn)}`);
+    for (const runtimeStatus of status.runtimeStatuses ?? []) {
+      console.log(
+        `  ${runtimeStatus.id}:      version=${runtimeStatus.version ?? '-'} image=${yn(runtimeStatus.imageAvailable)} auth-volume=${runtimeStatus.authVolume}(${yn(runtimeStatus.authVolumeAvailable)}) auth=${runtimeStatus.authStatus} login=${runtimeStatus.loginMethod}`,
+      );
+    }
     console.log(`  active runs: ${status.activeContainers.length ? status.activeContainers.join(', ') : 'none'}`);
     if (!status.enabled) console.log('\nEnable with: od sandbox enable');
     return;
@@ -5857,23 +6156,81 @@ async function runSandbox(args) {
       console.error(`image ${status.image} missing — run: od sandbox build`);
       process.exit(1);
     }
-    console.log('Opening Claude CLI login inside the sandbox (credentials persist in the od-claude-auth volume)…');
-    const result = runDocker([
-      'run', '-it', '--rm',
-      '-v', 'od-claude-auth:/home/node/.claude',
-      status.image,
-      'claude', '/login',
-    ]);
-    process.exit(result.status ?? 1);
+    if (runtime === 'claude') {
+      console.log('Opening Claude CLI login inside the sandbox (credentials persist in the od-claude-auth volume)…');
+      const result = runDocker([
+        'run', '-it', '--rm',
+        '-v', 'od-claude-auth:/home/node/.claude',
+        status.image,
+        'claude', '/login',
+      ]);
+      process.exit(result.status ?? 1);
+    }
+    const base = await cliDaemonBaseUrl(flags);
+    try {
+      const startResp = await fetch(`${base}/api/sandbox/codex-login`, { method: 'POST' });
+      if (!startResp.ok) await structuredHttpFailure(startResp);
+      let loginStatus = await startResp.json();
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const printCodexLoginStatus = (state) => {
+        if (flags.json) return;
+        console.log(`Codex device login: ${state.phase}`);
+        if (state.url) console.log(`  verification: ${state.url}`);
+        if (state.code) console.log(`  code:         ${state.code}`);
+        if (state.error) console.log(`  error:        ${state.error}`);
+      };
+      printCodexLoginStatus(loginStatus);
+      while (loginStatus.phase === 'starting' || loginStatus.phase === 'awaiting-user' || loginStatus.phase === 'verifying') {
+        await sleep(2000);
+        const pollResp = await fetch(`${base}/api/sandbox/codex-login`);
+        if (!pollResp.ok) await structuredHttpFailure(pollResp);
+        loginStatus = await pollResp.json();
+        printCodexLoginStatus(loginStatus);
+      }
+      if (flags.json) {
+        process.stdout.write(JSON.stringify(loginStatus, null, 2) + '\n');
+        return;
+      }
+      if (loginStatus.phase === 'done') {
+        console.log('Codex device login complete.');
+        return;
+      }
+      console.error(loginStatus.error ?? 'Codex device login failed.');
+      process.exit(1);
+    } catch (err) {
+      console.error(`cannot reach daemon at ${base}: ${err?.message ?? err}`);
+      process.exit(1);
+    }
   }
 
   if (sub === 'logout') {
     if (!flags.yes) {
-      console.error('This deletes the od-claude-auth volume (your sandbox Claude credentials). Re-run with --yes to confirm.');
+      console.error('This signs out the selected sandbox runtime. Re-run with --yes to confirm.');
       process.exit(2);
     }
-    const result = runDocker(['volume', 'rm', 'od-claude-auth']);
-    process.exit(result.status ?? 1);
+    if (runtime === 'claude') {
+      const status = await sandboxBuilderContext(flags);
+      const result = runDocker([
+        'run', '--rm', '-v', 'od-claude-auth:/home/node/.claude',
+        '--entrypoint', 'sh', status.image, '-c',
+        'rm -f .credentials.json; printf logged-out > .od-auth-seed-consumed',
+      ]);
+      process.exit(result.status ?? 1);
+    }
+    const base = await cliDaemonBaseUrl(flags);
+    try {
+      const resp = await fetch(`${base}/api/sandbox/codex-logout`, { method: 'POST' });
+      if (!resp.ok) await structuredHttpFailure(resp);
+      if (flags.json) {
+        process.stdout.write(JSON.stringify(await resp.json(), null, 2) + '\n');
+        return;
+      }
+      console.log('Codex signed out.');
+      return;
+    } catch (err) {
+      console.error(`cannot reach daemon at ${base}: ${err?.message ?? err}`);
+      process.exit(1);
+    }
   }
 
   if (sub === 'ps') {
@@ -5924,7 +6281,11 @@ async function runSandbox(args) {
         );
         return;
       }
-      for (const a of data.accounts) console.log(`${a.active ? '* ' : '  '}${a.label}`);
+      for (const a of data.accounts) {
+        const who = a.identity?.emailAddress ? ` — ${a.identity.emailAddress}` : '';
+        const plan = a.identity?.organizationType ? ` [${a.identity.organizationType}]` : '';
+        console.log(`${a.active ? '* ' : '  '}${a.label}${who}${plan}${a.auto ? ' (tự lưu)' : ''}`);
+      }
       if (data.activeUnsaved) console.log('  (login hiện tại chưa được lưu — od sandbox account save <label>)');
     };
     if (action === 'list') {
@@ -6774,13 +7135,18 @@ Common options:
 }
 
 function printPipelineHelp() {
-  console.log(`Usage: od pipeline <projects|list|run|run-all|feedback|upload|pull|build|demo|history|restore> [options]
+  console.log(`Usage: od pipeline <new|apps|projects|list|run|run-all|confirm-docs-review|feedback|feedback-forms|feedback-summary|target-ds|upload|pull|build|demo|figma-capture|figma-audit|history|restore> [options]
 
-Dự án khai sinh ở Pipeline Studio (kèm link Confluence + design system + phân
-quyền); kéo về máy bằng \`od kg pull-all\` rồi chạy pipeline tại đây.
+Dự án tạo cục bộ ngay tại đây (kind: pipeline) HOẶC pull về từ Pipeline Studio
+(\`od kg pull-all\`) — cả hai chạy pipeline giống nhau tại đây; Push mới chọn
+đích Shared Project (ghi đè project đã có hoặc tạo project shared mới ngay).
 
 Commands:
-  projects             List the KGS apps available for pipelines (pulled via od kg pull).
+  new <projectId>      Create a NEW pipeline project locally (projectId IS the KGS
+                       project_id). [--name "<name>"] [--app <appId>] [--app-name "<name>"]
+  apps                 List the App containers (local + remote) a new feature can be
+                       grouped under.
+  projects             List the KGS apps available for pipelines (created here or pulled via od kg pull).
   list                 List the docs→UI pipelines for a KGS project (status + gating).
   run <pipelineId>     Run one pipeline — seeds a conversation with its skill active.
                        Source for pipeline 1 (docs), one of:
@@ -6795,33 +7161,60 @@ Commands:
                        --design-system none forces no design system; omit to use the default.
                        For the UX stage: --platform <mobile|web> sets the target platform of
                        every screen (its layout field); omit for the default (mobile).
+                       Multi-target project (targets.json): --target <mobile|web-user|web-backoffice>
+                       chọn target cho lần chạy stage này — chạy vào <workflow>/<target>/.
+                       Bỏ qua khi dự án chỉ có 1 target (tự chọn) hoặc chưa chia target.
                        Re-run: --reset-downstream also clears the stale downstream stages
                        (default clears only this stage's outputs so the agent regenerates).
   run-all              Run the WHOLE workflow with no per-stage review: the daemon chains
                        every stage (docs → cj → ux-research → ux → ux-review → UI-Spec)
                        automatically as each one succeeds. Takes the same source flags as
                        'run' (--input / --source ...) plus:
-                         --terminal <ui-html|ui-react|both>   final UI-Spec option (default ui-html)
+                         --terminal <ui-html|ui-react|ui-react-ds|both>  final UI-Spec option (default ui-html)
                          --platform <mobile|web>              UX-stage target platform
-                         --design-system <id|none>            for the UI terminal(s)
+                         --design-system <id|none>            for the UI terminal(s); multi-target:
+                                                              mobile=<id>,web-user=<id>,… (DS RIÊNG
+                                                              từng target, ghi vào targets.json)
                          --skip-succeeded                     resume: only run the missing stages
                          --lean                               chỉ docs → UX Spec → UI (bỏ cj,
                                                               ux-research, ux-review) — riêng
                                                               docs-to-ui; workflow khác bỏ qua cờ này
+                         --docs-from-upload                   tài liệu đã nạp tay vào
+                                                              <workflow>/docs/ → BỎ bước ingest khỏi
+                                                              chuỗi (chạy nó sẽ xóa đúng file đó)
+  target-ds            Gán design system cho MỘT target (multi-target): --target <id>
+                       --design-system <dsId|none>. Ghi targets.json.designSystemByTarget;
+                       panel "Gán component" của preview ux-spec dùng DS này.
   upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
   pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
   build                Build/rebuild the ui-react app from synced sources (react/dist/ never
                        syncs — after a pull, run this to make the app previewable). Needs Docker.
+                       Multi-target: --target <id> builds THAT target's tree (mặc định: target
+                       đầu tiên có source theo targets.json; build/demo/figma-capture giống nhau).
   demo                 Prototype auto-demo: Playwright drives the BUILT react app through the
                        flow.json use cases and records video + per-step screenshots into
                        react/prototype-demo/ (deterministic — no agent/LLM). First run installs
                        a pinned Playwright + Chromium into the daemon data dir (one-time).
+  figma-audit          Audit "Preview ↔ Figma" (Lớp 1): soi tĩnh capture đối chiếu bộ DS,
+                       báo trước icon sẽ unmatched / variant sẽ fallback / layer tràn khung
+                       TRƯỚC khi dán JSON vào Figma. Ghi figma-screens/audit.json.
+  figma-capture        Capture the BUILT UI-Spec (React DS) app into Figma screen JSON
+                       (react-ds/figma-screens/): one figma-h2d IR per screen/state with
+                       component-instance markers. Paste the screens.json into the Fig
+                       Pipeline plugin's "Screen JSON → Figma" tab (UI Lib file open).
   history              Changelog: published versions (store _v/) + local .odhistory commits.
   restore              Rewind outputs: --version v3 (store snapshot) or --commit <sha> [--path <p>].
                        --stage <pipeline-id> limits a version-restore to one pipeline's files.
                        The current state is committed first, so restore is always undoable.
   feedback <stage>     Submit run pulse feedback: --run <id> --rating <ready|minor_edits|major_edits|unusable>
                        [--issue <comma-separated codes>] [--comment <text>].
+  feedback-forms       List feedback form versions on the project media store.
+                       --project <projectId> [--json]
+  feedback-summary     Dump all feedback submissions (merged across installs).
+                       --project <projectId> [--json]
+  confirm-docs-review  Confirm the final docs-review output and publish its
+                       add/edited/delete metrics. --project <projectId>
+                       [--confirmation <id>] [--run <sourceRunId>] [--json]
 
 Options:
   --project <id>       KGS project id (required for list/run/pull). This is a KGS app
@@ -6912,6 +7305,20 @@ Options:
   process.exit(2);
 }
 
+// Multi-target flag shared by run/build/demo/figma-capture: which configured
+// target (targets.json) the command addresses. Exits on an invalid value;
+// undefined when the flag is absent (daemon auto-resolves single-target
+// projects and probes all targets for build/demo/capture).
+function parseUiTargetFlag(raw) {
+  if (raw === undefined) return undefined;
+  const t = String(raw).trim();
+  if (t !== 'mobile' && t !== 'web-user' && t !== 'web-backoffice') {
+    console.error('Invalid --target; expected "mobile", "web-user" or "web-backoffice".');
+    process.exit(2);
+  }
+  return t;
+}
+
 async function runPipeline(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     printPipelineHelp();
@@ -6969,13 +7376,119 @@ async function runPipeline(args) {
     return;
   }
 
+  // Hai lệnh đọc của hệ feedback form (builder + thống kê) — mirror GET
+  // /api/pipelines/feedback/forms|summary để giữ khép kín UI/CLI dual-track.
+  if (sub === 'feedback-forms' || sub === 'feedback-summary') {
+    const projectId = flags.project ?? positional[0];
+    if (!projectId) {
+      console.error(`Usage: od pipeline ${sub} --project <projectId> [--json]`);
+      process.exit(2);
+    }
+    const path = sub === 'feedback-forms' ? 'forms' : 'summary';
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/feedback/${path}?projectId=${encodeURIComponent(projectId)}`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`storeReachable: ${data.storeReachable}`);
+    if (sub === 'feedback-forms') {
+      for (const form of data.forms ?? []) {
+        const shape = form.sections?.length ? `${form.sections.length} phần / ${form.questions.length} câu` : `${form.questions.length} câu`;
+        console.log(`v${form.version}\t${form.title}\t${shape}${form.createdBy ? `\t${form.createdBy}` : ''}`);
+      }
+      return;
+    }
+    const submissions = data.submissions ?? [];
+    console.log(`${submissions.length} submission(s)`);
+    for (const s of submissions) {
+      console.log([new Date(s.createdAt).toISOString(), `v${s.formVersion}`, s.channel, s.user, s.workflowId, `${Object.keys(s.answers ?? {}).length} câu trả lời`, `${(s.attachments ?? []).length} đính kèm`].join('\t'));
+    }
+    return;
+  }
+
+  if (sub === 'confirm-docs-review') {
+    const projectId = flags.project ?? positional[0];
+    if (!projectId) {
+      console.error('Usage: od pipeline confirm-docs-review --project <projectId> [--confirmation <id>] [--run <sourceRunId>] [--json]');
+      process.exit(2);
+    }
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/projects/${encodeURIComponent(projectId)}/docs-review/confirm`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...(flags.confirmation ? { confirmationId: flags.confirmation } : {}),
+          ...(flags.run ? { sourceRunId: flags.run } : {}),
+        }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Confirmed docs-review: ${data.artifact?.confirmationId ?? '-'}`);
+    console.log(`  media: ${data.mediaPath}`);
+    console.log(`  agent: ${JSON.stringify(data.artifact?.agent ?? {})}`);
+    console.log(`  user:  ${JSON.stringify(data.artifact?.userChanges ?? {})}`);
+    return;
+  }
+
   if (sub === 'new' || sub === 'create') {
-    // Dự án giờ khai sinh ở Pipeline Studio (kèm link Confluence + design
-    // system + phân quyền) — open-design chỉ pull về làm.
-    console.error(
-      'od pipeline new đã bị gỡ: tạo dự án trên Pipeline Studio (nút "Dự án mới"), rồi `od kg pull-all` để kéo về.',
-    );
-    process.exit(2);
+    const id = positional[0];
+    if (!id) {
+      console.error('Usage: od pipeline new <projectId> [--name "<name>"] [--app <appId>] [--app-name "<name>"]   (projectId IS the KGS project_id)');
+      process.exit(2);
+    }
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/projects`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          projectId: id,
+          name: flags.name || id,
+          ...(flags.app ? { appId: flags.app } : {}),
+          ...(flags['app-name'] ? { appName: flags['app-name'] } : {}),
+        }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Created pipeline project "${data.id ?? id}".`);
+    return;
+  }
+
+  if (sub === 'apps') {
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/apps`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    const list = data.apps ?? [];
+    if (list.length === 0) {
+      console.log('No apps yet. Create a project with an app: od pipeline new <id> --app <appId> --app-name "<name>".');
+      return;
+    }
+    console.log('# id\tname\torigin');
+    for (const a of list) console.log([a.id, a.name ?? '', a.origin].join('\t'));
+    return;
   }
 
   const projectId = flags.project || process.env.OD_PROJECT_ID;
@@ -7082,6 +7595,10 @@ async function runPipeline(args) {
     // Re-run scope: `--reset-downstream` also clears every stage that depends on
     // this one (they go stale); default clears only this stage's own outputs.
     const resetScope = flags['reset-downstream'] ? 'downstream' : undefined;
+    // Multi-target project: `--target <mobile|web-user|web-backoffice>` picks
+    // WHICH configured target this stage run builds; omit when the project has
+    // exactly one target (auto) or is single-build.
+    const target = parseUiTargetFlag(flags.target);
     let resp;
     try {
       resp = await fetch(`${base}/api/pipelines/${encodeURIComponent(pipelineId)}/run`, {
@@ -7092,6 +7609,7 @@ async function runPipeline(args) {
           ...(source ? { source } : flags.input ? { input: flags.input } : {}),
           ...(designSystemId !== undefined ? { designSystemId } : {}),
           ...(platform !== undefined ? { platform } : {}),
+          ...(target !== undefined ? { target } : {}),
           ...(resetScope !== undefined ? { resetScope } : {}),
           ...(flags['no-follow-links'] ? { followLinks: false } : {}),
           ...(flags['all-pages'] || flags['include-descendants'] ? { includeDescendants: true } : {}),
@@ -7136,16 +7654,33 @@ async function runPipeline(args) {
     let terminal;
     if (flags.terminal !== undefined) {
       const t = String(flags.terminal).trim().toLowerCase();
-      if (t !== 'ui-html' && t !== 'ui-react' && t !== 'both') {
-        console.error('Invalid --terminal; expected "ui-html", "ui-react" or "both".');
+      if (t !== 'ui-html' && t !== 'ui-react' && t !== 'ui-react-ds' && t !== 'both') {
+        console.error('Invalid --terminal; expected "ui-html", "ui-react", "ui-react-ds" or "both".');
         process.exit(2);
       }
       terminal = t;
     }
+    // --design-system takes either ONE id for every target ("<id>" | "none"),
+    // or a per-target map for multi-target runs:
+    //   --design-system mobile=<id>,web-user=<id>,web-backoffice=<id>
+    // (each target's UI stages then run against its OWN library).
     let designSystemId;
+    let designSystemByTarget;
     if (flags['design-system'] !== undefined) {
       const ds = String(flags['design-system']).trim();
-      designSystemId = ds && ds.toLowerCase() !== 'none' ? ds : null;
+      if (ds.includes('=')) {
+        designSystemByTarget = {};
+        for (const pair of ds.split(',')) {
+          const [t, id] = pair.split('=').map((s) => s.trim());
+          if (!id || (t !== 'mobile' && t !== 'web-user' && t !== 'web-backoffice')) {
+            console.error(`Invalid --design-system entry "${pair}"; expected <mobile|web-user|web-backoffice>=<dsId>.`);
+            process.exit(2);
+          }
+          designSystemByTarget[t] = id;
+        }
+      } else {
+        designSystemId = ds && ds.toLowerCase() !== 'none' ? ds : null;
+      }
     }
     let platform;
     if (flags.platform !== undefined) {
@@ -7166,6 +7701,7 @@ async function runPipeline(args) {
           ...(source ? { source } : flags.input ? { input: flags.input } : {}),
           ...(terminal !== undefined ? { terminal } : {}),
           ...(designSystemId !== undefined ? { designSystemId } : {}),
+          ...(designSystemByTarget !== undefined ? { designSystemByTarget } : {}),
           ...(platform !== undefined ? { platform } : {}),
           // Multi-target build (docs-to-ui): --target mobile,web-user,web-backoffice
           ...(flags.target
@@ -7180,6 +7716,11 @@ async function runPipeline(args) {
           ...(flags['lean'] ? { lean: true } : {}),
           ...(flags['no-follow-links'] ? { followLinks: false } : {}),
           ...(flags['all-pages'] || flags['include-descendants'] ? { includeDescendants: true } : {}),
+          // Docs already uploaded by hand (`od files upload`, or the Run-all
+          // modal's upload branch): drop the ingest stage from the chain rather
+          // than let it clear <workflow>/docs/ — its own declared output — and
+          // then fetch nothing.
+          ...(flags['docs-from-upload'] ? { docsFromUpload: true } : {}),
         }),
       });
     } catch (err) {
@@ -7241,13 +7782,51 @@ async function runPipeline(args) {
   // from synced sources. dist/ never syncs (syncExclude), so this is the
   // cross-device "make it previewable" step. Requires Docker on the daemon
   // machine.
+  // od pipeline target-ds — gán/đổi design system cho MỘT target của dự án
+  // multi-target (ghi targets.json.designSystemByTarget). --design-system none
+  // để gỡ gán. Mirror của PUT /api/pipelines/target-design-system (UI: panel
+  // "Gán component" trong preview ux-spec).
+  if (sub === 'target-ds') {
+    const target = parseUiTargetFlag(flags.target);
+    if (!target) {
+      console.error('Usage: od pipeline target-ds --project <id> --target <mobile|web-user|web-backoffice> --design-system <dsId|none>');
+      process.exit(2);
+    }
+    const rawDs = String(flags['design-system'] ?? '').trim();
+    if (!rawDs) {
+      console.error('--design-system <dsId|none> là bắt buộc.');
+      process.exit(2);
+    }
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/target-design-system`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          target,
+          designSystemId: rawDs.toLowerCase() === 'none' ? null : rawDs,
+        }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const data = await resp.json();
+    if (flags.json) return writeJson(data);
+    console.log(`Target "${target}" → design system: ${data.designSystemId ?? '(đã gỡ)'}.`);
+    return;
+  }
+
   if (sub === 'build') {
+    const target = parseUiTargetFlag(flags.target);
     let resp;
     try {
       resp = await fetch(`${base}/api/pipelines/react-build`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({ projectId, ...(target !== undefined ? { target } : {}) }),
       });
     } catch (err) {
       surfaceFetchError(err, base);
@@ -7268,12 +7847,13 @@ async function runPipeline(args) {
   // cases from flow.json, drive the real app, record video + step screenshots
   // under react/prototype-demo/ (deterministic, no agent).
   if (sub === 'demo') {
+    const target = parseUiTargetFlag(flags.target);
     let resp;
     try {
       resp = await fetch(`${base}/api/pipelines/react-demo`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({ projectId, ...(target !== undefined ? { target } : {}) }),
       });
     } catch (err) {
       surfaceFetchError(err, base);
@@ -7286,6 +7866,74 @@ async function runPipeline(args) {
     }
     if (flags.json) return writeJson(data);
     console.log(`Đã dựng ${data.cases ?? 0} kịch bản demo → react/prototype-demo/ (video + screenshot từng bước)`);
+    if (data.output) console.log(String(data.output).split('\n').slice(-6).join('\n'));
+    return;
+  }
+
+  // od pipeline figma-capture — capture the BUILT UI-Spec (React DS) app into
+  // Figma screen JSON (react-ds/figma-screens/): full figma-h2d IR per
+  // screen/state with component-instance markers, ready for the Fig Pipeline
+  // plugin's "Screen JSON → Figma" tab.
+  // od pipeline figma-audit — Lớp 1 audit "Preview ↔ Figma": soi tĩnh capture
+  // đối chiếu bộ DS, báo trước những gì sẽ hỏng khi dán vào Figma.
+  if (sub === 'figma-audit') {
+    const target = parseUiTargetFlag(flags.target);
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/figma-audit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, ...(target !== undefined ? { target } : {}) }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      console.error(`figma-audit failed:\n${data.error ?? resp.statusText}`);
+      process.exit(1);
+    }
+    if (flags.json) return writeJson(data);
+    const findings = data.findings ?? [];
+    console.log(
+      `Audit ${data.screens ?? 0} frame (${data.markers ?? 0} instance marker) → ${findings.length} phát hiện (${
+        Object.entries(data.summary ?? {}).map(([k, v]) => `${k}: ${v}`).join(', ') || 'sạch'
+      })`,
+    );
+    for (const f of findings) {
+      const where = (f.screens ?? []).length > 1 ? `${f.screens.length} màn/state` : (f.screens ?? [])[0] ?? '';
+      console.log(`  [${f.level}] ${f.rule}${f.comp ? ` · ${f.comp}` : ''}${where ? ` · ${where}` : ''}`);
+      console.log(`      ${f.detail}`);
+      console.log(`      → ${f.fix}`);
+    }
+    console.log(`Báo cáo: ${data.rawPath ?? 'figma-screens/audit.json'}`);
+    return;
+  }
+
+  if (sub === 'figma-capture') {
+    const target = parseUiTargetFlag(flags.target);
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/pipelines/figma-capture`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, ...(target !== undefined ? { target } : {}) }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      console.error(`figma-capture failed:\n${data.error ?? resp.statusText}`);
+      process.exit(1);
+    }
+    if (flags.json) return writeJson(data);
+    console.log(
+      `Đã capture ${data.screens ?? 0} màn (${data.markers ?? 0} instance marker) → react-ds/${data.screensJson ?? 'figma-screens/'}`,
+    );
+    console.log('Mở file UI Lib trong Figma → plugin Fig Pipeline → tab "Screen JSON → Figma" → dán nội dung file screens.json.');
     if (data.output) console.log(String(data.output).split('\n').slice(-6).join('\n'));
     return;
   }

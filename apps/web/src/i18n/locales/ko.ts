@@ -225,6 +225,7 @@ export const ko: Dict = {
   'settings.agentInstallGroup': '설치 가능 ({count})',
   'settings.agentAuthRequired': '인증 필요',
   'settings.agentAuthUnknown': '인증 상태를 알 수 없음',
+  'settings.agentAuthOk': '로그인됨',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': '제공자 빠른 입력',
   'settings.customProvider': '사용자 지정 제공자',
@@ -354,6 +355,7 @@ export const ko: Dict = {
   'entry.useEverywhereAria': '‘어디서나 사용’ 가이드 열기 (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': '새 프로젝트',
   'entry.navHome': '홈',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': '프로젝트',
   'entry.navDesignSystems': '디자인 시스템',
   'entry.helpAria': '도움말',
@@ -696,9 +698,13 @@ export const ko: Dict = {
   'ds.categoryAll': '전체',
   'ds.categoryUncategorized': '미분류',
   'ds.showcase': '쇼케이스',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': '토큰',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'DESIGN.md 불러오는 중…',
+  'ds.reactStats': '{components}개 컴포넌트 · {icons}개 아이콘',
+  'ds.reactDetailToggle': '컴포넌트 라이브러리',
+  'ds.reactDetailLoading': '컴포넌트 라이브러리 불러오는 중…',
 
   'avatar.title': '계정 및 설정',
   'avatar.localCli': '로컬 CLI',
@@ -775,6 +781,9 @@ export const ko: Dict = {
   'chat.inspect.commentHint': 'Click an element in the canvas to add a comment.',
   'chat.conversationsTitle': '대화 목록',
   'chat.conversationsAria': '대화 내역',
+  'chat.displayModeAria': '기술 세부 정보 표시 전환',
+  'chat.displayModeSimpleTitle': '간단히 보기 — 기술 단계가 숨겨져 있습니다. 클릭하면 표시됩니다.',
+  'chat.displayModeFullTitle': '자세히 보기 — 기술 단계가 표시됩니다. 클릭하면 간단해집니다.',
   'chat.newConversation': '새 대화 시작',
   'chat.newConversationsTitle': '새 대화',
   'chat.conversationsHeading': '대화 목록',
@@ -1492,6 +1501,11 @@ export const ko: Dict = {
   'settings.designSystemsSource': '소스',
   'settings.designSystemsSourceLocal': '로컬',
   'settings.designSystemsSourceGithub': 'GitHub',
+  'settings.designSystemsSourceFigma': 'Figma IR',
+  'settings.designSystemsFigmaFiles': 'Figma IR 파일',
+  'settings.designSystemsFigmaFilesHelp': 'Fig Pipeline 플러그인의 .ir.json 내보내기 또는 .zip 번들을 선택하세요. 병합 순서는 파일명 순서를 따릅니다 — 01-, 02-, … 접두사를 붙이고 foundation(토큰) 파일을 먼저.',
+  'settings.designSystemsImportFigma': 'Figma IR 가져오기',
+  'settings.designSystemsImportWarnings': '가져오기 경고 {count}건',
   'settings.designSystemsStructure': '구조',
   'settings.designSystemsModeHybrid': '하이브리드',
   'settings.designSystemsModeNormalized': '정규화',
@@ -1770,4 +1784,37 @@ export const ko: Dict = {
   'settings.sandboxMissing': '없음',
   'settings.sandboxRunCmd': '실행: {cmd}',
   'settings.sandboxDaemonOffline': '데몬 오프라인 — 샌드박스 상태를 확인할 수 없습니다.',
+  'settings.sandboxClaudeTitle': 'Claude runtime',
+  'settings.sandboxClaudeHint': 'Claude keeps the existing account switcher and usage controls.',
+  'settings.sandboxCodexTitle': 'Codex runtime',
+  'settings.sandboxCodexHint': 'Codex uses browser-based device code login and never displays tokens.',
+  'settings.sandboxRuntimeReady': 'Ready',
+  'settings.sandboxRuntimeNotReady': 'Not ready',
+  'settings.sandboxCodexLoginStart': 'Start login',
+  'settings.sandboxCodexLoginDisconnect': 'Disconnect',
+
+  // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
+  'pipelines.runAllClear.title': 'Old results will be cleared',
+  'pipelines.runAllClear.body': 'Running now will delete the existing results of: {stages}.',
+  'pipelines.runAllClear.historyNote':
+    'The current results are saved to project history first, so you can restore them afterward.',
+  'pipelines.runAllClear.confirm': 'Run and clear old results',
+  'pipelines.runAllClear.staleOnlyTitle': 'Some inputs are from outside this run',
+  'pipelines.runAllClear.confirmContinue': 'Run',
+  'pipelines.runAllClear.staleSectionTitle': 'Using input from outside this run',
+  'pipelines.runAllClear.staleLine': "{stage} will use {source}'s result from {time}.",
+  'pipelines.runAllClear.staleNote':
+    'Each source stage above is outside this run, so its result stays exactly as it is — the stage that depends on it will use that same version.',
+
+  // Pipelines — dependency gate is now a SUGGESTION, not a lock (spec
+  // g2-ui-suggestion-not-gate). Every stage is runnable once step 1 (docs
+  // ingest) has run; these strings replace the old "must finish X first"
+  // blocking copy with informational notes that never disable Save/Run.
+  'pipelines.runAllPicker.ingestRequired': '{stage} (step 1) must finish first — the steps below need ingested documents to run.',
+  'pipelines.runAllPicker.softNote': "Will run with current data; {stages} won't run this time.",
+  'pipelines.runAllPicker.hint':
+    "Tick exactly the steps you want to run — ticking one won't drag in others. A step whose dependency isn't ticked and hasn't finished yet runs with whatever data already exists (see the note under it).",
+  'pipelines.rail.usuallyAfter': 'Usually runs after {stages}',
+  'pipelines.rail.needsDocs': 'Needs {stage} first — no documents ingested yet',
+  'pipelines.rail.staleNeedsDocs': 'This result is from old data — rerun {stage} to sync',
 };

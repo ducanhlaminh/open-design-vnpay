@@ -499,6 +499,29 @@
   text-decoration: underline;
 }
 
+/* Figma IR import (DesignSystemsSection): file-order hint + merge warnings. */
+.library-install-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin: 0;
+}
+
+.library-install-warnings {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.library-install-warnings summary {
+  cursor: pointer;
+  color: #d97706;
+  font-weight: 600;
+}
+
+.library-install-warnings ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
 @media (max-width: 720px) {
   .library-import-controls {
     display: flex;

@@ -63,10 +63,10 @@ import type {
 import { CenteredLoader } from './Loading';
 import { DesignsTab } from './DesignsTab';
 import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
+import { FigmaDesignSystemDetailModal } from './FigmaDesignSystemDetailModal';
 import { DesignSystemsTab } from './DesignSystemsTab';
 import { EntryNavRail, type EntryView as EntryViewKind } from './EntryNavRail';
 import { UpdaterPopup } from './UpdaterPopup';
-import { GithubStarBadge } from './GithubStarBadge';
 import { HomeView } from './HomeView';
 import {
   createPluginAuthoringHandoff,
@@ -87,7 +87,7 @@ import type {
   PluginShareProjectOutcome,
 } from '../state/projects';
 import { TasksView } from './TasksView';
-import { PipelinesView } from './PipelinesView';
+import { PipelinesRoute } from './pipelines/PipelinesRoute';
 import {
   API_KEY_PLACEHOLDERS,
   API_PROTOCOL_TABS,
@@ -97,6 +97,7 @@ import { KNOWN_PROVIDERS } from '../state/config';
 import type { KnownProvider } from '../state/config';
 import { testApiProvider } from '../providers/connection-test';
 import { fetchProviderModels } from '../providers/provider-models';
+import { FeedbackHomeView } from './feedback/FeedbackSummaryRoute';
 
 // The topbar chips (GitHub star, model switcher, Use everywhere)
 // collapse into the settings dropdown when the viewport gets
@@ -270,6 +271,7 @@ interface Props {
     },
   ) => ReactNode;
   onOpenDesignSystem?: (id: string) => void;
+  onOpenDesignSystemCriteria?: (id: string) => void;
   onDesignSystemsRefresh?: () => Promise<void> | void;
   onPersistComposioKey: (composio: AppConfig['composio']) => Promise<void> | void;
   onOpenSettings: (
@@ -310,6 +312,9 @@ function navElementForView(
     case 'home':
       return 'home';
     case 'projects':
+    // Workspaces là tên mới của màn Projects — analytics giữ enum cũ để không
+    // gãy dashboard.
+    case 'workspaces':
       return 'projects';
     case 'tasks':
       return 'automations';
@@ -365,6 +370,7 @@ export function EntryShell({
   onCreateDesignSystem,
   renderDesignSystemCreation,
   onOpenDesignSystem,
+  onOpenDesignSystemCriteria,
   onDesignSystemsRefresh,
   onPersistComposioKey,
   onOpenSettings,
@@ -378,9 +384,22 @@ export function EntryShell({
   const route = useRoute();
   // The full-page Quick result route lives under the pipelines shell — render
   // the pipelines view so PipelinesView can swap in PipelineResultView.
+  // Mọi cấp của drill-down Pipelines (App → Feature → Pipeline → Chạy) và
+  // route Quick result đều sống dưới cùng một shell; PipelinesView tự đọc
+  // route để quyết định render cấp nào.
   const view: EntryViewKind =
-    route.kind === 'home' ? route.view : route.kind === 'pipeline-result' ? 'pipelines' : 'home';
+    route.kind === 'home'
+      ? route.view
+      : route.kind === 'pipeline-result' ||
+          route.kind === 'pipelines-app' ||
+          route.kind === 'pipelines-feature' ||
+          route.kind === 'pipelines-run'
+        ? 'pipelines'
+        : 'home';
   const [previewSystemId, setPreviewSystemId] = useState<string | null>(null);
+  // Card corner "Fullscreen" action: open the react-bundle detail modal
+  // already expanded to the viewport.
+  const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectInitialTab, setNewProjectInitialTab] =
     useState<CreateTab>('prototype');
@@ -482,44 +501,13 @@ export function EntryShell({
   // projectKind='other', so the agent asks for the exact task type
   // before continuing.
   function handlePluginLoopSubmit(payload: PluginLoopSubmit) {
-    const head = payload.prompt.trim().split(/\s+/).slice(0, 8).join(' ');
-    const firstAttachmentName = payload.attachments?.[0]?.name ?? '';
-    const fallbackName = head.length > 0 ? head : firstAttachmentName || 'Untitled';
-    const name =
-      payload.pluginTitle && payload.pluginTitle.trim().length > 0
-        ? payload.pluginTitle.trim()
-        : fallbackName;
-    const metadata: ProjectMetadata = {
-      ...(payload.projectMetadata ?? {}),
-      kind: payload.projectKind ?? payload.projectMetadata?.kind ?? 'prototype',
-      nameSource: 'prompt',
-      ...(payload.contextPlugins && payload.contextPlugins.length > 0
-        ? { contextPlugins: payload.contextPlugins }
-        : {}),
-      ...(payload.contextMcpServers && payload.contextMcpServers.length > 0
-        ? { contextMcpServers: payload.contextMcpServers }
-        : {}),
-      ...(payload.contextConnectors && payload.contextConnectors.length > 0
-        ? { contextConnectors: payload.contextConnectors }
-        : {}),
-      ...(payload.workingDir ? { userWorkingDir: payload.workingDir } : {}),
-    };
-    onCreateProject({
-      name,
-      skillId: payload.skillId ?? null,
-      designSystemId: payload.designSystemId ?? null,
-      metadata,
-      pendingPrompt: payload.prompt,
-      ...(payload.pluginId ? { pluginId: payload.pluginId } : {}),
-      ...(payload.appliedPluginSnapshotId
-        ? { appliedPluginSnapshotId: payload.appliedPluginSnapshotId }
-        : {}),
-      ...(payload.pluginInputs ? { pluginInputs: payload.pluginInputs } : {}),
-      ...(payload.attachments && payload.attachments.length > 0
-        ? { pendingFiles: payload.attachments }
-        : {}),
-      autoSendFirstMessage: true,
-    });
+    const prompt = payload.prompt.trim();
+    if (!prompt) return;
+    sessionStorage.setItem(
+      'od-overview-seed',
+      JSON.stringify({ prompt, at: Date.now(), startNewConversation: true }),
+    );
+    navigate({ kind: 'project', projectId: 'overview', conversationId: null, fileName: null });
   }
 
   function finishOnboarding() {
@@ -574,17 +562,9 @@ export function EntryShell({
         <main className="entry-main entry-main--scroll">
           <div className="entry-main__topbar">
             <div className="entry-main__topbar-chips">
-              <GithubStarBadge />
-              <a
-                className="entry-discord-badge"
-                href="https://discord.gg/mHAjSMV6gz"
-                aria-label="Join the Open Design Discord"
-                title="Join the Open Design Discord"
-                data-testid="entry-discord-badge"
-              >
-                <Icon name="discord" size={14} className="entry-discord-badge__icon" />
-                <span className="entry-discord-badge__label">Join Discord</span>
-              </a>
+              {/* Chrome marketing của upstream (GitHub Star / Discord / Use
+                  everywhere) đã gỡ — đây là nền tảng nội bộ, topbar chỉ giữ
+                  những gì thao tác được: switcher model, updater, settings. */}
               <InlineModelSwitcher
                 config={config}
                 agents={agents}
@@ -596,28 +576,6 @@ export function EntryShell({
                 onApiModelChange={onApiModelChange}
                 onOpenSettings={onOpenSettings}
               />
-              <button
-                type="button"
-                className="use-everywhere-chip"
-                onClick={() => {
-                  trackHomeToolbarClick(analytics.track, {
-                    page_name: 'home',
-                    area: 'toolbar',
-                    element: 'use_everywhere',
-                  });
-                  openIntegrationTab('use-everywhere');
-                }}
-                title={t('entry.useEverywhereTitle')}
-                aria-label={t('entry.useEverywhereAria')}
-                data-testid="entry-use-everywhere-button"
-              >
-                <span className="use-everywhere-chip__icon" aria-hidden>
-                  <Icon name="hammer" size={13} />
-                </span>
-                <span className="use-everywhere-chip__label">
-                  {t('entry.useEverywhereTitle')}
-                </span>
-              </button>
             </div>
             <UpdaterPopup />
             {avatarMenu}
@@ -652,13 +610,13 @@ export function EntryShell({
                 promptTemplates={promptTemplates}
               />
             ) : null}
-            {view === 'projects' ? (
+            {view === 'projects' || view === 'workspaces' ? (
               projectsLoading || skillsLoading || designSystemsLoading ? (
                 <CenteredLoader label={t('common.loading')} />
               ) : (
                 <div className="entry-section">
                   <header className="entry-section__head">
-                    <h1 className="entry-section__title">{t('entry.navProjects')}</h1>
+                    <h1 className="entry-section__title">{t('entry.navWorkspaces')}</h1>
                     {onProjectsRefresh ? (
                       <button
                         type="button"
@@ -696,7 +654,8 @@ export function EntryShell({
                 connectorsLoading={connectorsLoading}
               />
             ) : null}
-            {view === 'pipelines' ? <PipelinesView /> : null}
+            {view === 'pipelines' ? <PipelinesRoute /> : null}
+            {view === 'feedback' ? <FeedbackHomeView /> : null}
             {view === 'plugins' ? (
               <PluginsView
                 onCreatePlugin={startPluginAuthoring}
@@ -719,8 +678,16 @@ export function EntryShell({
                     onSelect={onChangeDefaultDesignSystem}
                     onCreate={onCreateDesignSystem}
                     onOpenSystem={onOpenDesignSystem}
+                    onOpenCriteria={onOpenDesignSystemCriteria}
                     onSystemsRefresh={onDesignSystemsRefresh}
-                    onPreview={(id) => setPreviewSystemId(id)}
+                    onPreview={(id) => {
+                      setPreviewFullscreen(false);
+                      setPreviewSystemId(id);
+                    }}
+                    onPreviewFullscreen={(id) => {
+                      setPreviewFullscreen(true);
+                      setPreviewSystemId(id);
+                    }}
                   />
                 </div>
               )
@@ -737,10 +704,18 @@ export function EntryShell({
         </main>
       </div>
       {previewSystem ? (
-        <DesignSystemPreviewModal
-          system={previewSystem}
-          onClose={() => setPreviewSystemId(null)}
-        />
+        previewSystem.hasReactBundle ? (
+          <FigmaDesignSystemDetailModal
+            system={previewSystem}
+            initialFullscreen={previewFullscreen}
+            onClose={() => setPreviewSystemId(null)}
+          />
+        ) : (
+          <DesignSystemPreviewModal
+            system={previewSystem}
+            onClose={() => setPreviewSystemId(null)}
+          />
+        )
       ) : null}
       <NewProjectModal
         open={newProjectOpen}

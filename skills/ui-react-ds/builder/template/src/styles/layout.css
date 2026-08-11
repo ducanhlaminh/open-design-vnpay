@@ -1,0 +1,23 @@
+/* layout.css — the ONLY stylesheet the agent may edit, and it is LAYOUT-ONLY.
+ *
+ * Purpose: responsive breakpoints (websites) and reusable layout classes that
+ * inline `style` cannot express. Rules:
+ *   - Every class defined here MUST be prefixed `ly-` (the verify gate maps
+ *     used `ly-*` classNames back to this file).
+ *   - LAYOUT properties only: display/flex*/grid*/gap/position/inset/z-index/
+ *     width/height/min-*/max-*/padding/margin/overflow/order/aspect-ratio.
+ *     NO styling values — no colors, fonts, radii, shadows, and no `tk-*`
+ *     re-declarations. Styling stays on tk-* classes; verify FAILS the build
+ *     on any styling declaration in this file.
+ *   - Responsive targets (web-user / web-backoffice): put the breakpoints
+ *     here — desktop-first, adapt at `@media (max-width: 768px)`.
+ *   - The mobile-app target is a FIXED viewport: media queries in this file
+ *     fail verify for that target.
+ *
+ * Example (responsive website):
+ *   .ly-shell { display: grid; grid-template-columns: 260px 1fr; }
+ *   @media (max-width: 768px) {
+ *     .ly-shell { grid-template-columns: 1fr; }
+ *     .ly-sidebar { display: none; }
+ *   }
+ */

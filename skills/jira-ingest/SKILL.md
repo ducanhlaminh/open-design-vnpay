@@ -23,6 +23,8 @@ od:
 
 # jira-ingest — Jira → Markdown (pipeline P1)
 
+> **App-pool source note:** App-pool sources do NOT go through this skill — the daemon copies selected pages directly into `./docs-feature/` and loads the full pool into `./docs-app/` (no agent is involved).
+
 First stage of the **docs → UI** pipeline. You pull the raw requirement docs out
 of Jira and freeze them as Markdown files in the project, so every later stage
 (feature analysis → UX → customer journey → UI) works from a stable, reviewable

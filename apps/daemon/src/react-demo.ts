@@ -138,7 +138,7 @@ export function parseDemoScenarios(
   });
 }
 
-function execBuffered(
+export function execBuffered(
   cmd: string,
   args: string[],
   opts: { cwd?: string; timeout?: number; env?: NodeJS.ProcessEnv },
@@ -154,8 +154,9 @@ function execBuffered(
 }
 
 /** One-time (then no-op) runner env: npm-install the pinned playwright into an
- * isolated dir outside the workspace, then make sure chromium is present. */
-async function ensureRunnerEnv(runnerDir: string): Promise<void> {
+ * isolated dir outside the workspace, then make sure chromium is present.
+ * Shared with figma-capture.ts so both Playwright features reuse ONE env. */
+export async function ensureRunnerEnv(runnerDir: string): Promise<void> {
   await fs.promises.mkdir(runnerDir, { recursive: true });
   const pkgPath = path.join(runnerDir, 'package.json');
   await fs.promises.writeFile(

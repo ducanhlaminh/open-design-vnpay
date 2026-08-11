@@ -10,12 +10,15 @@ import {
   basListFeatures,
   extractPageId,
   fetchConfluencePages,
+  discoverLinkedConfluencePages,
   fetchSourceFiles,
   listDescendantPages,
   naturalSegsCompare,
   looksLikeConfluenceRef,
+  looksLikeJiraInput,
   renderConfluenceIndex,
   resolveBasEndpoint,
+  searchConfluencePages,
 } from '../src/bas/bas-client.js';
 import { parseRunSource } from '../src/pipeline-routes.js';
 
@@ -153,6 +156,32 @@ test('looksLikeConfluenceRef gates the deterministic docs path (page id resolvab
   assert.equal(looksLikeConfluenceRef('https://wiki.test/x/AbCd'), false);
   assert.equal(looksLikeConfluenceRef('PROJ-123'), false);
   assert.equal(looksLikeConfluenceRef('project = PROJ ORDER BY created'), false);
+});
+
+test('looksLikeJiraInput gates the LEGACY agent path — only real JIRA keys/JQL pass, everything else (incl. corpus paths, plain text) is rejected', () => {
+  // Issue key, one per line, and a bare project key ("give me the whole project").
+  assert.equal(looksLikeJiraInput('PROJ-123'), true);
+  assert.equal(looksLikeJiraInput('PROJ-123\nABC-9'), true);
+  assert.equal(looksLikeJiraInput('PROJ'), true);
+  assert.equal(looksLikeJiraInput('  PROJ-123  \n\n'), true); // surrounding blank lines tolerated
+  // JQL: any of the three documented hints, anywhere in the (possibly
+  // multi-line) input.
+  assert.equal(looksLikeJiraInput('project = PROJ'), true);
+  assert.equal(looksLikeJiraInput('project = PROJ ORDER BY created DESC'), true);
+  assert.equal(looksLikeJiraInput('assignee = currentUser()'), true);
+  assert.equal(looksLikeJiraInput('status = "In Progress" ORDER BY updated'), true);
+
+  // Ghost-run vectors this heuristic exists to reject — corpus file paths,
+  // plain text, a stray non-key uppercase word, an empty/whitespace string.
+  assert.equal(looksLikeJiraInput('Overview.md'), false);
+  assert.equal(looksLikeJiraInput('nested/sub/dir/page.md'), false);
+  assert.equal(looksLikeJiraInput('Đây là văn bản tiếng Việt bình thường'), false);
+  assert.equal(looksLikeJiraInput('random text pasted by mistake'), false);
+  assert.equal(looksLikeJiraInput(''), false);
+  assert.equal(looksLikeJiraInput('   \n  '), false);
+  // A MIX of one real key + one non-key line must NOT pass — every line
+  // must qualify, matching looksLikeConfluenceRef's own "every line" gate.
+  assert.equal(looksLikeJiraInput('PROJ-123\nOverview.md'), false);
 });
 
 test('fetchConfluencePages (gateway fallback) fetches every ref as a final docs/confluence/ deliverable', async () => {
@@ -314,6 +343,108 @@ test('listDescendantPages returns the whole sub-tree with folder path relative t
   ]);
 });
 
+test('searchConfluencePages (direct PAT) maps each hit\'s ancestors (root→down, page excluded) and hasChildren (existence-only) so the App-root dropdown can distinguish + expand pages correctly', async () => {
+  globalThis.fetch = vi.fn(async (url: any) => {
+    const u = String(url);
+    assert.match(u, /\/rest\/api\/content\/search\?cql=/);
+    assert.match(u, /expand=space,ancestors,children\.page/);
+    return makeRes(
+      JSON.stringify({
+        results: [
+          {
+            id: '301',
+            title: 'Đăng nhập',
+            space: { key: 'XPOS' },
+            _links: { webui: '/spaces/XPOS/pages/301/Dang-nhap' },
+            ancestors: [
+              { id: '1', title: 'Space XPOS' },
+              { id: '100', title: 'Dự án XPOS' },
+            ],
+          },
+          {
+            // Same title, DIFFERENT dự án — ancestors is what tells them apart.
+            id: '777',
+            title: 'Đăng nhập',
+            space: { key: 'VNPAY' },
+            ancestors: [
+              { id: '2', title: 'Space VNPAY' },
+              { id: '200', title: 'Dự án VNPAY' },
+            ],
+          },
+          // No ancestors on this hit (top-level page, or field omitted) →
+          // the mapped hit must not carry an empty/garbage ancestors array.
+          { id: '888', title: 'Trang gốc' },
+          // Has children (non-empty children.page.results, no `size`) → true.
+          { id: '111', title: 'Thư mục cha', children: { page: { results: [{ id: '112' }] } } },
+          // Empty children.page.results → false.
+          { id: '222', title: 'Trang lá', children: { page: { results: [] } } },
+          // No children block at all → undefined (unknown, not "no children").
+          { id: '333', title: 'Không rõ' },
+        ],
+      }),
+    ) as any;
+  }) as any;
+
+  const hits = await searchConfluencePages(null, 'Đăng nhập', 25, { base: 'https://wiki.test', token: 'pat' });
+  assert.deepEqual(hits, [
+    {
+      id: '301',
+      title: 'Đăng nhập',
+      url: 'https://wiki.test/spaces/XPOS/pages/301/Dang-nhap',
+      space: 'XPOS',
+      ancestors: ['Space XPOS', 'Dự án XPOS'],
+    },
+    {
+      id: '777',
+      title: 'Đăng nhập',
+      space: 'VNPAY',
+      ancestors: ['Space VNPAY', 'Dự án VNPAY'],
+    },
+    { id: '888', title: 'Trang gốc' },
+    { id: '111', title: 'Thư mục cha', hasChildren: true },
+    { id: '222', title: 'Trang lá', hasChildren: false },
+    { id: '333', title: 'Không rõ' },
+  ]);
+  // Every existing field stayed intact for the no-ancestors hit — no stray
+  // `ancestors: []` key.
+  assert.equal('ancestors' in hits[2]!, false);
+  // The unknown-children hit must not carry a guessed `hasChildren` key.
+  assert.equal('hasChildren' in hits[5]!, false);
+});
+
+test('searchConfluencePages (direct PAT) prefers children.page.size over results.length when both are present', async () => {
+  globalThis.fetch = vi.fn(async () =>
+    makeRes(
+      JSON.stringify({
+        results: [
+          // size says 3 children even though this page's results array (the
+          // default-limited preview) happens to be empty.
+          { id: '444', title: 'Size wins (true)', children: { page: { size: 3, results: [] } } },
+          // size says 0 even though a stale/truncated results array is non-empty.
+          { id: '555', title: 'Size wins (false)', children: { page: { size: 0, results: [{ id: '556' }] } } },
+        ],
+      }),
+    ) as any,
+  ) as any;
+
+  const hits = await searchConfluencePages(null, 'x', 25, { base: 'https://wiki.test', token: 'pat' });
+  assert.deepEqual(hits, [
+    { id: '444', title: 'Size wins (true)', hasChildren: true },
+    { id: '555', title: 'Size wins (false)', hasChildren: false },
+  ]);
+});
+
+test('searchConfluencePages (BAS gateway fallback) leaves ancestors and hasChildren undefined — the tool has no equivalent field', async () => {
+  stubFetch((name) => {
+    assert.equal(name, 'confluence_search');
+    return makeRes(toolResult(2, [{ page_id: '301', title: 'Đăng nhập', space_key: 'XPOS' }]));
+  });
+  const hits = await searchConfluencePages(EP, 'Đăng nhập');
+  assert.deepEqual(hits, [{ id: '301', title: 'Đăng nhập', space: 'XPOS' }]);
+  assert.equal('ancestors' in hits[0]!, false);
+  assert.equal('hasChildren' in hits[0]!, false);
+});
+
 test('fetchConfluencePages nests sub-tree pages into folders and depth-corrects the image prefix', async () => {
   const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-tree-'));
   try {
@@ -352,6 +483,234 @@ test('fetchConfluencePages nests sub-tree pages into folders and depth-corrects 
     assert.equal(child.viaTree, true);
     // A page one folder deep reaches the shared attachments dir via ../.
     assert.match(child.content, /!\[mh\]\(\.\.\/attachments\/pic\.png\)/);
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+// Regression: App-pool import (apps/daemon/src/app-pool.ts) reported a broken
+// pool tree — direct children of a picked page landed FLAT (top-level)
+// instead of nested under it, and some folders showed a raw un-paired slug
+// with no title. Root cause: 'flat' layout was reusing the 'confluence'
+// layout's "fold ALL picked pages' shared ancestor PREFIX away" logic, which
+// is right for a single feature's doc bundle but wrong for a pool meant to
+// MIRROR the real tree. Fixed by computing `dir` from each page's OWN real
+// ancestors, filtered to ancestors that are THEMSELVES part of this fetch —
+// so a folder segment always pairs with the ancestor page's own file (same
+// `slug()` call on the same title), at whatever depth the picked set reaches.
+function directPageRes(page: {
+  title: string;
+  ancestors?: Array<{ id: string; title: string }>;
+}) {
+  return makeRes(
+    JSON.stringify({
+      title: page.title,
+      body: { view: { value: `<p>${page.title}</p>` } },
+      ancestors: page.ancestors ?? [],
+      _links: { base: 'https://wiki.test', webui: '/x' },
+    }),
+  );
+}
+
+function directLinkedPageRes(page: {
+  title: string;
+  html?: string;
+  ancestors?: Array<{ id: string; title: string }>;
+}, status = 200) {
+  return makeRes(
+    JSON.stringify({
+      title: page.title,
+      body: { view: { value: page.html ?? `<p>${page.title}</p>` } },
+      ancestors: page.ancestors ?? [],
+      _links: { base: 'https://wiki.test', webui: '/x' },
+    }),
+    { status },
+  );
+}
+
+test('discoverLinkedConfluencePages discovers unique depth-1 links with seed provenance and ancestors', async () => {
+  const pages: Record<string, ReturnType<typeof directLinkedPageRes>> = {
+    '1': directLinkedPageRes({ title: 'Seed A', html: '<a href="/pages/3/X">X</a><a href="/pages/2/B">B</a><a href="/pages/1/A">A</a>' }),
+    '2': directLinkedPageRes({ title: 'Seed B', html: '<a href="/pages/3/X">X</a>' }),
+    '3': directLinkedPageRes({ title: 'X', ancestors: [{ id: '0', title: 'Root' }, { id: '9', title: 'Parent' }] }),
+  };
+  globalThis.fetch = vi.fn(async (url: any) => pages[/\/content\/(\d+)\?/.exec(String(url))?.[1] ?? ''] as any);
+  const result = await discoverLinkedConfluencePages({ base: 'https://wiki.test', token: 'pat' }, ['1', '2']);
+  assert.deepEqual(result, [{ pageId: '3', title: 'X', ancestors: ['Root', 'Parent'], linkedFrom: 'Seed A' }]);
+  assert.equal((globalThis.fetch as any).mock.calls.length, 3);
+});
+
+test('discoverLinkedConfluencePages applies cap and skips failed candidates', async () => {
+  const pages: Record<string, ReturnType<typeof directLinkedPageRes>> = {
+    '1': directLinkedPageRes({ title: 'Seed', html: '<a href="/pages/2/A">A</a><a href="/pages/3/B">B</a>' }),
+    '2': directLinkedPageRes({ title: 'A' }),
+    '3': directLinkedPageRes({ title: 'B' }, 404),
+  };
+  globalThis.fetch = vi.fn(async (url: any) => pages[/\/content\/(\d+)\?/.exec(String(url))?.[1] ?? ''] as any);
+  const capped = await discoverLinkedConfluencePages({ base: 'https://wiki.test', token: 'pat' }, ['1'], { cap: 1 });
+  assert.deepEqual(capped.map((p) => p.pageId), ['2']);
+
+  pages['2'] = directLinkedPageRes({ title: 'A' }, 404);
+  const afterError = await discoverLinkedConfluencePages({ base: 'https://wiki.test', token: 'pat' }, ['1']);
+  assert.deepEqual(afterError, []);
+});
+
+test('fetchConfluencePages (flat pathLayout) mirrors the FULL real ancestor chain for a sub-tree scan — nested at every level, not flattened', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-flat-tree-'));
+  try {
+    const byId: Record<string, ReturnType<typeof directPageRes>> = {
+      '2': directPageRes({ title: 'Parent Doc' }),
+      '21': directPageRes({ title: 'Child A', ancestors: [{ id: '2', title: 'Parent Doc' }] }),
+      '211': directPageRes({
+        title: 'Grandchild B',
+        ancestors: [
+          { id: '2', title: 'Parent Doc' },
+          { id: '21', title: 'Child A' },
+        ],
+      }),
+    };
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const m = /\/rest\/api\/content\/(\d+)\?/.exec(String(url));
+      if (m && byId[m[1]!]) return byId[m[1]!] as any;
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as any;
+
+    const pages = await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['2'], {
+      attachmentsDir,
+      followLinks: false,
+      pathLayout: 'flat',
+      treePages: [
+        { pageId: '21', title: 'Child A', treePath: ['Parent Doc'] },
+        { pageId: '211', title: 'Grandchild B', treePath: ['Parent Doc', 'Child A'] },
+      ],
+    });
+
+    const parent = pages.find((p) => p.pageId === '2')!;
+    const child = pages.find((p) => p.pageId === '21')!;
+    const grandchild = pages.find((p) => p.pageId === '211')!;
+
+    // Every level nests under its OWN parent — not flattened to siblings.
+    assert.equal(parent.relPath, 'docs/Parent-Doc.md');
+    assert.equal(child.relPath, 'docs/Parent-Doc/Child-A.md');
+    assert.equal(grandchild.relPath, 'docs/Parent-Doc/Child-A/Grandchild-B.md');
+
+    // Slug pairing BY CONSTRUCTION: the folder segment a child nests under is
+    // the SAME string as that ancestor's own file basename (both `slug(title)`
+    // on the identical title) — no orphan raw-slug folder with no title.
+    assert.equal(parent.relPath.replace(/^docs\//, '').replace(/\.md$/, ''), 'Parent-Doc');
+    assert.ok(child.relPath.startsWith('docs/Parent-Doc/'));
+    assert.equal(child.relPath.replace(/^docs\/Parent-Doc\//, '').replace(/\.md$/, ''), 'Child-A');
+    assert.ok(grandchild.relPath.startsWith('docs/Parent-Doc/Child-A/'));
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages (flat pathLayout) with MANY individually-ticked seeds still mirrors real per-page ancestors — NOT the commonLen-fold "flatten siblings" behavior', async () => {
+  // Reproduces the actual App-pool import shape: every page (root AND every
+  // descendant) is ticked individually via the search picker, so ALL of them
+  // arrive as separate `refs` (seeds) — no treePages/includeDescendants.
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-flat-seeds-'));
+  try {
+    const byId: Record<string, ReturnType<typeof directPageRes>> = {
+      '2': directPageRes({ title: 'Parent Doc' }),
+      '21': directPageRes({ title: 'Child A', ancestors: [{ id: '2', title: 'Parent Doc' }] }),
+      '211': directPageRes({
+        title: 'Grandchild B',
+        ancestors: [
+          { id: '2', title: 'Parent Doc' },
+          { id: '21', title: 'Child A' },
+        ],
+      }),
+    };
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const m = /\/rest\/api\/content\/(\d+)\?/.exec(String(url));
+      if (m && byId[m[1]!]) return byId[m[1]!] as any;
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as any;
+
+    const pages = await fetchConfluencePages(
+      { creds: { base: 'https://wiki.test', token: 'pat' } },
+      ['2', '21', '211'], // all three ticked as PEER seeds — this is the ≥2-seed path
+      { attachmentsDir, followLinks: false, pathLayout: 'flat' },
+    );
+
+    const parent = pages.find((p) => p.pageId === '2')!;
+    const child = pages.find((p) => p.pageId === '21')!;
+    const grandchild = pages.find((p) => p.pageId === '211')!;
+
+    // With the OLD (non-flat) fold-by-commonLen behavior, "Child A" (a direct
+    // child of the shared root) would land FLAT at the same level as the
+    // root — this asserts it stays nested instead.
+    assert.equal(parent.relPath, 'docs/Parent-Doc.md');
+    assert.equal(child.relPath, 'docs/Parent-Doc/Child-A.md');
+    assert.equal(grandchild.relPath, 'docs/Parent-Doc/Child-A/Grandchild-B.md');
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages (flat pathLayout) giữ cấp của tổ tiên KHÔNG được fetch — tick lá mà không tick cha thì cha vẫn thành folder (cây soi gương Confluence gốc)', async () => {
+  // Bug thật từ App-pool import: user tick trang gốc + các trang lá, KHÔNG
+  // tick trang giữa ("2.2 …") → hành vi cũ lọc tổ tiên theo fetched-set làm
+  // các lá bị đôn lên thành sibling của trang gốc. Hành vi mới: chuỗi tổ
+  // tiên dùng nguyên văn (trừ prefix chung), tổ tiên chưa fetch = folder trơn.
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-flat-unfetched-anc-'));
+  try {
+    const byId: Record<string, ReturnType<typeof directPageRes>> = {
+      '2': directPageRes({ title: 'Parent Doc' }),
+      '221': directPageRes({
+        title: 'Leaf One',
+        ancestors: [
+          { id: '2', title: 'Parent Doc' },
+          { id: '22', title: 'Sub Section' }, // KHÔNG nằm trong refs
+        ],
+      }),
+      '222': directPageRes({
+        title: 'Leaf Two',
+        ancestors: [
+          { id: '2', title: 'Parent Doc' },
+          { id: '22', title: 'Sub Section' },
+        ],
+      }),
+    };
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const m = /\/rest\/api\/content\/(\d+)\?/.exec(String(url));
+      if (m && byId[m[1]!]) return byId[m[1]!] as any;
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as any;
+
+    const pages = await fetchConfluencePages(
+      { creds: { base: 'https://wiki.test', token: 'pat' } },
+      ['2', '221', '222'],
+      { attachmentsDir, followLinks: false, pathLayout: 'flat' },
+    );
+
+    assert.equal(pages.find((p) => p.pageId === '2')!.relPath, 'docs/Parent-Doc.md');
+    // Cấp "Sub Section" GIỮ NGUYÊN dù trang 22 không được fetch.
+    assert.equal(pages.find((p) => p.pageId === '221')!.relPath, 'docs/Parent-Doc/Sub-Section/Leaf-One.md');
+    assert.equal(pages.find((p) => p.pageId === '222')!.relPath, 'docs/Parent-Doc/Sub-Section/Leaf-Two.md');
+  } finally {
+    await rm(attachmentsDir, { recursive: true, force: true });
+  }
+});
+
+test('fetchConfluencePages slug() collapses runs of dashes from " - " in a title (no "---" artifacts)', async () => {
+  const attachmentsDir = await mkdtemp(join(tmpdir(), 'bas-slug-dash-'));
+  try {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      if (/\/rest\/api\/content\/2\?/.test(String(url))) {
+        return directPageRes({ title: '2.2. URD - Danh muc vat tu hang hoa' }) as any;
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as any;
+    const pages = await fetchConfluencePages({ creds: { base: 'https://wiki.test', token: 'pat' } }, ['2'], {
+      attachmentsDir,
+      followLinks: false,
+      pathLayout: 'flat',
+    });
+    assert.equal(pages[0]!.relPath, 'docs/2.2.-URD-Danh-muc-vat-tu-hang-hoa.md');
+    assert.doesNotMatch(pages[0]!.relPath, /--/);
   } finally {
     await rm(attachmentsDir, { recursive: true, force: true });
   }
@@ -896,7 +1255,7 @@ test('parseRunSource rejects a bas source with no documentId', () => {
 });
 
 test('parseRunSource rejects an unknown source kind', () => {
-  assert.throws(() => parseRunSource({ kind: 'sharepoint', ref: 'x' }), /must be "confluence" or "bas"/);
+  assert.throws(() => parseRunSource({ kind: 'sharepoint', ref: 'x' }), /must be "confluence", "bas" or "app-pool"/);
 });
 
 // --- Multi-page draw.io splitting (drawio-render.ts) ----------------------

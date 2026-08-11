@@ -1,12 +1,24 @@
-// Agent-in-sandbox status surface. One read-only endpoint: the web Settings
-// card and `od sandbox status` both consume it. Enable/disable persists
-// through the existing `PUT /api/app-config` (`sandbox` section) — no
-// dedicated mutation endpoint here. Build/login are terminal-interactive
-// docker operations and live in the CLI (`od sandbox build|login`), which
-// resolves the scripts through `builderDir` from this response.
+// Agent-in-sandbox status surface. The web Settings card and `od sandbox
+// status` both consume it. Enable/disable persists through the existing
+// `PUT /api/app-config` (`sandbox` section) — no dedicated mutation endpoint
+// here. Build/login are terminal-interactive docker operations and live in the
+// CLI (`od sandbox build|login`), which resolves the scripts through
+// `builderDir` from this response.
+//
+// This module also owns the Codex device-login session state machine. The
+// device flow is specific to the Docker sandbox so it lives next to the other
+// sandbox auth routes, while the fallback resolver is exported for server.ts to
+// keep agent selection in one place.
 import path from 'node:path';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { Express, Response } from 'express';
 import type {
+  SandboxCodexDeviceLoginStatus,
+  SandboxRuntimeAuthStatus,
+  SandboxRuntimeId,
+  SandboxRuntimeLoginMethod,
+  SandboxRuntimeStatus,
   SandboxStatusResponse,
   SandboxAccountsResponse,
   SandboxAccountsCheckResponse,
@@ -21,6 +33,7 @@ import {
   dockerVolumePresent,
   listSandboxContainers,
   listSandboxAccounts,
+  autoSaveSandboxLogin,
   saveSandboxAccount,
   switchSandboxAccount,
   removeSandboxAccount,
@@ -33,10 +46,342 @@ import {
   ensureSandboxImage,
   resolveSandboxConfig,
   sandboxAuthLoggedIn,
+  sandboxAuthDir,
+  sandboxAuthFile,
+  sandboxAuthVolume,
+  seedPackagedSandboxAuth,
+  clearSandboxRuntimeAuth,
   sandboxImageTag,
   SANDBOX_AUTH_VOLUME,
   SANDBOX_IMAGE_NAME,
 } from './agent-sandbox.js';
+
+const execFileAsync = promisify(execFile);
+const SANDBOX_RUNTIME_IDS: readonly SandboxRuntimeId[] = ['claude', 'codex'];
+const SANDBOX_RUNTIME_LOGIN_METHODS: Record<SandboxRuntimeId, SandboxRuntimeLoginMethod> = {
+  claude: 'interactive',
+  codex: 'device',
+};
+
+export function sandboxRuntimeIsGated(
+  cfg: { enabled: boolean; runtimes: string[]; skills: string[] },
+  runtimeId: SandboxRuntimeId,
+): boolean {
+  return (
+    cfg.enabled &&
+    cfg.skills.includes('*') &&
+    (cfg.runtimes.includes('*') || cfg.runtimes.includes(runtimeId))
+  );
+}
+
+export function resolveSandboxFallbackRuntimeId(
+  cfg: { enabled: boolean; runtimes: string[]; skills: string[] },
+): SandboxRuntimeId | null {
+  if (sandboxRuntimeIsGated(cfg, 'claude')) return 'claude';
+  if (sandboxRuntimeIsGated(cfg, 'codex')) return 'codex';
+  return null;
+}
+
+async function dockerText(args: string[], timeoutMs = 10_000): Promise<string> {
+  const { stdout } = await execFileAsync('docker', args, { timeout: timeoutMs });
+  return stdout.trim();
+}
+
+async function dockerPresent(args: string[], timeoutMs = 10_000): Promise<boolean> {
+  try {
+    await dockerText(args, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function probeRuntimeVersion(image: string, runtimeId: SandboxRuntimeId): Promise<string | null> {
+  try {
+    return (await dockerText(['run', '--rm', image, runtimeId, '--version'], 30_000)).split('\n')[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function runtimeAuthVolume(runtimeId: SandboxRuntimeId): string {
+  return sandboxAuthVolume(runtimeId);
+}
+
+function runtimeLoginMethod(runtimeId: SandboxRuntimeId): SandboxRuntimeLoginMethod {
+  return SANDBOX_RUNTIME_LOGIN_METHODS[runtimeId];
+}
+
+function authStatusFromText(text: string, runtimeId: SandboxRuntimeId): SandboxRuntimeAuthStatus {
+  const normalized = text.toLowerCase();
+  if (runtimeId === 'claude') {
+    if (normalized.includes('logged in') || normalized.includes('authenticated')) return 'logged-in';
+    if (normalized.includes('not logged in') || normalized.includes('sign in') || normalized.includes('login')) {
+      return 'missing';
+    }
+    return 'unknown';
+  }
+  if (normalized.includes('logged in') || normalized.includes('authenticated')) return 'logged-in';
+  if (normalized.includes('not logged in') || normalized.includes('sign in') || normalized.includes('login')) {
+    return 'missing';
+  }
+  return 'unknown';
+}
+
+async function probeRuntimeAuthStatus(image: string, runtimeId: SandboxRuntimeId): Promise<SandboxRuntimeAuthStatus> {
+  if (runtimeId === 'claude') {
+    return (await sandboxAuthLoggedIn(image)) ? 'logged-in' : 'missing';
+  }
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      'docker',
+      ['run', '--rm', '-v', `${sandboxAuthVolume('codex')}:${sandboxAuthDir('codex')}`, '-e', `CODEX_HOME=${sandboxAuthDir('codex')}`, image, 'codex', 'login', 'status'],
+      { timeout: 30_000 },
+    );
+    return authStatusFromText(`${stdout}\n${stderr}`, runtimeId);
+  } catch (err) {
+    const stdout = typeof err === 'object' && err && 'stdout' in err ? String((err as { stdout?: unknown }).stdout ?? '') : '';
+    const stderr = typeof err === 'object' && err && 'stderr' in err ? String((err as { stderr?: unknown }).stderr ?? '') : '';
+    return authStatusFromText(`${stdout}\n${stderr}`, runtimeId);
+  }
+}
+
+export async function buildSandboxRuntimeStatuses(
+  image: string,
+  probeAuth: boolean,
+  dockerOk: boolean,
+): Promise<SandboxRuntimeStatus[]> {
+  const imageAvailable = dockerOk && (await dockerPresent(['image', 'inspect', '--format', '{{.Id}}', image]));
+  return Promise.all(
+    SANDBOX_RUNTIME_IDS.map(async (runtimeId) => {
+      const authVolume = runtimeAuthVolume(runtimeId);
+      const authVolumeAvailable = dockerOk && (await dockerPresent(['volume', 'inspect', '--format', '{{.Name}}', authVolume]));
+      const authStatus =
+        !dockerOk || !imageAvailable
+          ? 'unknown'
+          : !authVolumeAvailable
+            ? 'missing'
+          : probeAuth
+            ? await probeRuntimeAuthStatus(image, runtimeId)
+            : 'unknown';
+      return {
+        id: runtimeId,
+        version: imageAvailable ? await probeRuntimeVersion(image, runtimeId) : null,
+        imageAvailable,
+        authVolume,
+        authVolumeAvailable,
+        authStatus,
+        loginMethod: runtimeLoginMethod(runtimeId),
+      };
+    }),
+  );
+}
+
+type CodexDeviceLoginSession = {
+  phase: SandboxCodexDeviceLoginStatus['phase'];
+  verificationUrl: string | null;
+  userCode: string | null;
+  error: string | null;
+  image: string;
+  containerName: string;
+  child: ChildProcess;
+  output: string;
+  verifyTimer: NodeJS.Timeout | null;
+  deadline: NodeJS.Timeout;
+  expiresAt: string;
+};
+
+let codexDeviceLogin: CodexDeviceLoginSession | null = null;
+
+function stopCodexDeviceLoginSession(session: CodexDeviceLoginSession): void {
+  if (session.verifyTimer) clearInterval(session.verifyTimer);
+  clearTimeout(session.deadline);
+  try {
+    session.child.kill('SIGKILL');
+  } catch {
+    /* already stopped */
+  }
+  void execFileAsync('docker', ['rm', '-f', session.containerName], { timeout: 10_000 }).catch(() => {});
+}
+
+function codexDeviceLoginStatus(): SandboxCodexDeviceLoginStatus {
+  if (!codexDeviceLogin) return { phase: 'idle', url: null, code: null, expiresAt: null, error: null };
+  const { phase, verificationUrl, userCode, expiresAt, error } = codexDeviceLogin;
+  return { phase, url: verificationUrl, code: userCode, expiresAt, error };
+}
+
+function clearCodexDeviceLogin(): void {
+  if (codexDeviceLogin) {
+    stopCodexDeviceLoginSession(codexDeviceLogin);
+    codexDeviceLogin = null;
+  }
+}
+
+function cancelCodexDeviceLogin(): SandboxCodexDeviceLoginStatus {
+  if (codexDeviceLogin) {
+    stopCodexDeviceLoginSession(codexDeviceLogin);
+    codexDeviceLogin.phase = 'error';
+    codexDeviceLogin.error = 'Đăng nhập Codex đã bị hủy.';
+  }
+  return codexDeviceLoginStatus();
+}
+
+export function parseCodexDeviceLoginOutput(output: string): { verificationUrl: string | null; userCode: string | null } {
+  // Codex colors the URL/code even without a TTY. Parse the visible text,
+  // otherwise fragments such as `90mOpenAI` can be mistaken for a device code
+  // and the URL retains an ESC suffix that breaks browser navigation.
+  const compact = output
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '\n');
+  const urlMatch = compact.match(/https:\/\/[^\s]+\/codex\/device\b/i) ?? compact.match(/https:\/\/[^\s]+/i);
+  const codeMatch = compact.match(/\b[A-Z0-9]{4,6}-[A-Z0-9]{4,6}\b/i);
+  return {
+    verificationUrl: urlMatch ? urlMatch[0] : null,
+    userCode: codeMatch ? codeMatch[0] : null,
+  };
+}
+
+function startCodexDeviceLogin(image: string): SandboxCodexDeviceLoginStatus {
+  clearCodexDeviceLogin();
+  const containerName = `od.sandbox.codex.login.${Date.now()}`;
+  const child = spawn(
+    'docker',
+    [
+      'run',
+      '-i',
+      '--rm',
+      '--name',
+      containerName,
+      '-v',
+      `${sandboxAuthVolume('codex')}:${sandboxAuthDir('codex')}`,
+      '-e',
+      `CODEX_HOME=${sandboxAuthDir('codex')}`,
+      image,
+      'codex',
+      'login',
+      '--device-auth',
+      '-c',
+      'cli_auth_credentials_store="file"',
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  const session: CodexDeviceLoginSession = {
+    phase: 'starting',
+    verificationUrl: null,
+    userCode: null,
+    error: null,
+    image,
+    containerName,
+    child,
+    output: '',
+    verifyTimer: null,
+    expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+    deadline: setTimeout(() => {
+      if (codexDeviceLogin !== session) return;
+      session.phase = 'error';
+      session.error = 'Đăng nhập Codex hết thời gian chờ — thử lại.';
+      stopCodexDeviceLoginSession(session);
+    }, 15 * 60_000),
+  };
+  session.deadline.unref();
+  const onData = (chunk: Buffer) => {
+    if (codexDeviceLogin !== session) return;
+    session.output = `${session.output}${chunk.toString('utf8')}`.slice(-16_384);
+    if (session.phase === 'starting' || session.phase === 'awaiting-user') {
+      const parsed = parseCodexDeviceLoginOutput(session.output);
+      if (parsed.verificationUrl) session.verificationUrl = parsed.verificationUrl;
+      if (parsed.userCode) session.userCode = parsed.userCode;
+      if (session.verificationUrl && session.userCode) {
+        session.phase = 'awaiting-user';
+      }
+    }
+  };
+  child.stdout?.on('data', onData);
+  child.stderr?.on('data', onData);
+  child.on('error', (err) => {
+    if (codexDeviceLogin !== session) return;
+    session.phase = 'error';
+    session.error = `Không chạy được docker: ${err.message}`;
+    if (session.verifyTimer) clearInterval(session.verifyTimer);
+    clearTimeout(session.deadline);
+  });
+  child.on('close', () => {
+    if (codexDeviceLogin !== session) return;
+    session.phase = 'verifying';
+    session.verifyTimer = setInterval(() => {
+      if (codexDeviceLogin !== session) return;
+      void probeRuntimeAuthStatus(image, 'codex').then((status) => {
+        if (codexDeviceLogin !== session) return;
+        if (status === 'logged-in') {
+          session.phase = 'done';
+          if (session.verifyTimer) clearInterval(session.verifyTimer);
+          clearTimeout(session.deadline);
+          void execFileAsync('docker', ['rm', '-f', session.containerName], { timeout: 10_000 }).catch(() => {});
+          return;
+        }
+        if (status === 'missing') {
+          session.phase = 'error';
+          session.error = 'Codex chưa xác thực xong — thử lại.';
+          if (session.verifyTimer) clearInterval(session.verifyTimer);
+          clearTimeout(session.deadline);
+        }
+      });
+    }, 2000);
+    session.verifyTimer.unref();
+  });
+  codexDeviceLogin = session;
+  return codexDeviceLoginStatus();
+}
+
+async function resolveSandboxStatusBody(
+  req: { query: Record<string, unknown> },
+  ctx: RegisterSandboxRoutesDeps,
+): Promise<SandboxStatusResponse> {
+  const { RUNTIME_DATA_DIR, SKILLS_DIR } = ctx.paths;
+  const builderDir = path.join(SKILLS_DIR, 'ui-react', 'builder');
+  const prefs = await readAppConfig(RUNTIME_DATA_DIR).catch(
+    (): AppConfigPrefs => ({}),
+  );
+  const cfg = resolveSandboxConfig(prefs.sandbox, process.env);
+
+  let image = `${SANDBOX_IMAGE_NAME}:unknown`;
+  let claudeVersion: string | null = null;
+  try {
+    image = sandboxImageTag(builderDir);
+    const { readFileSync } = await import('node:fs');
+    claudeVersion = readFileSync(
+      path.join(builderDir, 'sandbox', 'claude.version'),
+      'utf8',
+    ).trim();
+  } catch {
+    // Builder pins unreadable (skill missing/moved) — report unknown.
+  }
+
+  const dockerOk = await dockerAvailable();
+  const imageOk = dockerOk && (await dockerImagePresent(image));
+  if (imageOk) await seedPackagedSandboxAuth(image);
+  const authVolumeOk = dockerOk && (await dockerVolumePresent(SANDBOX_AUTH_VOLUME));
+  const probeAuth = req.query.probeAuth === '1';
+  const authLoggedIn = probeAuth && imageOk && authVolumeOk ? await sandboxAuthLoggedIn(image) : null;
+  const runtimeStatuses = await buildSandboxRuntimeStatuses(image, probeAuth, dockerOk);
+  const activeContainers = dockerOk ? await listSandboxContainers() : [];
+
+  return {
+    enabled: cfg.enabled,
+    runtimes: cfg.runtimes,
+    skills: cfg.skills,
+    timeoutMinutes: cfg.timeoutMinutes,
+    dockerOk,
+    image,
+    imageOk,
+    claudeVersion,
+    authVolumeOk,
+    authLoggedIn,
+    runtimeStatuses,
+    activeContainers,
+    builderDir,
+  };
+}
 
 export interface RegisterSandboxRoutesDeps extends RouteDeps<'http' | 'paths'> {}
 
@@ -47,49 +392,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
 
   app.get('/api/sandbox/status', async (req, res) => {
     try {
-      const prefs = await readAppConfig(RUNTIME_DATA_DIR).catch(
-        (): AppConfigPrefs => ({}),
-      );
-      const cfg = resolveSandboxConfig(prefs.sandbox, process.env);
-
-      let image = `${SANDBOX_IMAGE_NAME}:unknown`;
-      let claudeVersion: string | null = null;
-      try {
-        image = sandboxImageTag(builderDir);
-        const { readFileSync } = await import('node:fs');
-        claudeVersion = readFileSync(
-          path.join(builderDir, 'sandbox', 'claude.version'),
-          'utf8',
-        ).trim();
-      } catch {
-        // Builder pins unreadable (skill missing/moved) — report unknown.
-      }
-
-      const dockerOk = await dockerAvailable();
-      const imageOk = dockerOk && (await dockerImagePresent(image));
-      const authVolumeOk = dockerOk && (await dockerVolumePresent(SANDBOX_AUTH_VOLUME));
-      // Deep probe only when requested (`?probeAuth=1`): it starts a
-      // short-lived container, too slow for a settings-panel poll.
-      const probeAuth = req.query.probeAuth === '1';
-      const authLoggedIn =
-        probeAuth && imageOk && authVolumeOk ? await sandboxAuthLoggedIn(image) : null;
-      const activeContainers = dockerOk ? await listSandboxContainers() : [];
-
-      const body: SandboxStatusResponse = {
-        enabled: cfg.enabled,
-        runtimes: cfg.runtimes,
-        skills: cfg.skills,
-        timeoutMinutes: cfg.timeoutMinutes,
-        dockerOk,
-        image,
-        imageOk,
-        claudeVersion,
-        authVolumeOk,
-        authLoggedIn,
-        activeContainers,
-        builderDir,
-      };
-      res.json(body);
+      res.json(await resolveSandboxStatusBody(req, ctx));
     } catch (err) {
       return sendApiError(res, 500, 'INTERNAL_ERROR', `sandbox status failed: ${(err as Error).message}`);
     }
@@ -140,6 +443,29 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
     }
   };
 
+  // `loggedIn` as of the previous listing, so we can spot the moment it turns
+  // on. `null` = never observed yet (a first listing that is already logged in
+  // must still invalidate: the daemon may have cached a signed-out verdict
+  // before the user logged in through a terminal).
+  let lastLoggedIn: boolean | null = null;
+
+  /**
+   * Drop the cached Claude usage the moment this listing reports a login that
+   * the previous one did not. This listing IS the signal behind the green
+   * "đã đăng nhập" check, so tying invalidation to it keeps the quota meter and
+   * the check in step no matter HOW the login happened — embedded flow,
+   * terminal fallback, or a `claude /login` run outside the app entirely.
+   *
+   * Invalidating when the *code is submitted* is too early and was the original
+   * bug: the credentials land a few seconds later, so any usage read in that
+   * window re-cached "signed out" and the meter stayed hidden for a further
+   * minute after the check had already gone green.
+   */
+  const noteLoginState = (loggedIn: boolean): void => {
+    if (loggedIn && lastLoggedIn !== true) invalidateClaudeUsageCache();
+    lastLoggedIn = loggedIn;
+  };
+
   app.get('/api/sandbox/accounts', async (_req, res) => {
     try {
       const { supported, image, ready } = await accountsContext();
@@ -147,7 +473,28 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
         res.json(emptyAccounts(supported));
         return;
       }
-      res.json(await listSandboxAccounts(image));
+      let accounts = await listSandboxAccounts(image);
+      const isNewLogin = accounts.loggedIn === true && lastLoggedIn !== true;
+      noteLoginState(accounts.loggedIn === true);
+
+      // A login that just appeared gets filed into the account list under a name
+      // derived from its own email, so the user never has to invent one. Runs
+      // BEFORE responding so the very first listing after a login already shows
+      // the account, and never throws — a failed auto-save just leaves the
+      // existing "name this login" prompt in place.
+      if (isNewLogin) {
+        const result = await autoSaveSandboxLogin(image);
+        if (result.saved) {
+          console.log(
+            `[sandbox] auto-saved Claude login as "${result.label}"` +
+              (result.reused ? ' (refreshed existing account)' : ''),
+          );
+          accounts = await listSandboxAccounts(image);
+        } else if (result.reason !== 'already-saved') {
+          console.warn(`[sandbox] auto-save skipped: ${result.reason}`);
+        }
+      }
+      res.json(accounts);
     } catch (err) {
       return sendApiError(res, 500, 'INTERNAL_ERROR', `list accounts failed: ${(err as Error).message}`);
     }
@@ -295,10 +642,11 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   app.post('/api/sandbox/embedded-login/code', (req, res) => {
     const code = typeof req.body?.code === 'string' ? req.body.code : '';
     try {
+      // No usage-cache invalidation here on purpose: submitting the code only
+      // STARTS the exchange, and the credentials appear seconds later. The
+      // cache is dropped by `noteLoginState` once a listing actually reports
+      // the login — see the comment there.
       const status = submitEmbeddedLoginCode(code);
-      // Fresh credentials may land within seconds — drop the usage cache so
-      // the quota meter picks up the new login promptly.
-      invalidateClaudeUsageCache();
       res.json(status);
     } catch (err) {
       sendApiError(res, 400, 'BAD_REQUEST', (err as Error).message);
@@ -308,4 +656,66 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   app.delete('/api/sandbox/embedded-login', (_req, res) => {
     res.json(cancelEmbeddedLogin());
   });
+
+  const codexContext = async (): Promise<{ supported: boolean; image: string | null; ready: boolean }> => {
+    const prefs = await readAppConfig(RUNTIME_DATA_DIR).catch((): AppConfigPrefs => ({}));
+    const cfg = resolveSandboxConfig(prefs.sandbox, process.env);
+    // Login/logout are setup operations, not run-gating decisions. Allow them
+    // whenever the sandbox is enabled and the image contains Codex; otherwise
+    // a legacy persisted `runtimes: ['claude']` creates an HTTP 400 loop that
+    // prevents the user from ever enabling/authenticating Codex.
+    const supported = cfg.enabled;
+    let image: string | null = null;
+    try {
+      image = sandboxImageTag(builderDir);
+    } catch {
+      image = null;
+    }
+    const ready = supported && !!image && (await dockerAvailable()) && !!image && (await dockerImagePresent(image));
+    return { supported, image, ready };
+  };
+
+  const getCodexLogin = (_req: unknown, res: Response) => {
+    res.json(codexDeviceLoginStatus());
+  };
+  app.get('/api/sandbox/codex-login', getCodexLogin);
+  app.get('/api/sandbox/runtimes/codex/login', getCodexLogin);
+
+  const postCodexLogin = async (_req: unknown, res: Response) => {
+    const { supported, image, ready } = await codexContext();
+    if (!supported) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi sandbox sở hữu Codex (Docker-only).');
+    }
+    if (!ready || !image) {
+      return sendApiError(res, 503, 'SANDBOX_UNAVAILABLE', 'Docker/sandbox image chưa sẵn sàng.');
+    }
+    res.json(startCodexDeviceLogin(image));
+  };
+  app.post('/api/sandbox/codex-login', postCodexLogin);
+  app.post('/api/sandbox/runtimes/codex/login', postCodexLogin);
+
+  const cancelCodexLogin = (_req: unknown, res: Response) => {
+    res.json(cancelCodexDeviceLogin());
+  };
+  app.delete('/api/sandbox/codex-login', cancelCodexLogin);
+  app.post('/api/sandbox/runtimes/codex/login/cancel', cancelCodexLogin);
+
+  const logoutCodex = async (_req: unknown, res: Response) => {
+    const { supported, image, ready } = await codexContext();
+    if (!supported) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi sandbox sở hữu Codex (Docker-only).');
+    }
+    if (!ready || !image) {
+      return sendApiError(res, 503, 'SANDBOX_UNAVAILABLE', 'Docker/sandbox image chưa sẵn sàng.');
+    }
+    cancelCodexDeviceLogin();
+    try {
+      await clearSandboxRuntimeAuth(image, 'codex');
+    } catch {
+      // Missing volume is fine; logout is best-effort.
+    }
+    res.json({ ok: true });
+  };
+  app.post('/api/sandbox/codex-logout', logoutCodex);
+  app.delete('/api/sandbox/runtimes/codex/auth', logoutCodex);
 }

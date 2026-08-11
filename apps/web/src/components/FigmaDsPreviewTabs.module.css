@@ -1,0 +1,110 @@
+:global(.figma-ds-preview__document-stage) {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--bg-elevated, #fff);
+}
+
+:global(.figma-ds-preview__document-toolbar) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-subtle, #e4e7ec);
+  background: var(--bg-elevated, #fff);
+}
+
+:global(.figma-ds-preview__document-toolbar > div:first-child) {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+:global(.figma-ds-preview__document-toolbar strong) {
+  color: var(--text-strong, #17191d);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+:global(.figma-ds-preview__document-toolbar span) {
+  color: var(--text-muted, #696c73);
+  font-size: 12px;
+}
+
+:global(.figma-ds-preview__version-switch) {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle, #e4e7ec);
+  border-radius: 9px;
+  background: var(--bg-subtle, #f0f2f5);
+}
+
+:global(.figma-ds-preview__version-switch button) {
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 9px;
+  color: var(--text-muted, #696c73);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+:global(.figma-ds-preview__version-switch button.active) {
+  color: var(--accent, #146fbe);
+  background: var(--bg-elevated, #fff);
+  box-shadow: 0 1px 3px rgb(33 50 77 / 10%);
+}
+
+:global(.figma-ds-preview__version-switch button:focus-visible),
+:global(.figma-ds-preview__generate:focus-visible) {
+  outline: 3px solid color-mix(in srgb, var(--accent, #146fbe) 26%, transparent);
+  outline-offset: 2px;
+}
+
+:global(.figma-ds-preview__empty-icon) {
+  width: 42px;
+  height: 42px;
+  display: inline-grid;
+  place-items: center;
+  margin-bottom: 4px;
+  border-radius: 12px;
+  color: var(--accent, #146fbe);
+  background: color-mix(in srgb, var(--accent, #146fbe) 10%, #fff);
+}
+
+:global(.figma-ds-preview__generate) {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent, #146fbe) 72%, #fff);
+  border-radius: 8px;
+  padding: 8px 13px;
+  color: #fff;
+  background: var(--accent, #146fbe);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+@media (max-width: 680px) {
+  :global(.figma-ds-preview__document-toolbar) {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  :global(.figma-ds-preview__version-switch) {
+    align-self: flex-start;
+  }
+}

@@ -40,6 +40,64 @@ export interface KgPushResult {
   caveats: string[];
 }
 
+export interface ApprovedProjectMapping {
+  localProjectId: string;
+  approvedProjectId: string;
+  approvedAppId?: string;
+  pendingId: string;
+  decidedAt: string;
+  decidedBy?: { id: string; email?: string; name?: string } | null;
+}
+
+export type PublishResult =
+  | {
+      status: 'published';
+      projectId: string;
+      approvedProjectId: string;
+      filesUploaded: number;
+      filesConverted: number;
+      nodesPushed: number;
+      edgesPushed: number;
+      workspace: 'created' | 'exists' | 'error';
+      mapping?: ApprovedProjectMapping;
+      caveats: string[];
+    }
+  | {
+      status: 'pending_approval';
+      projectId: string;
+      requestId: string;
+      requestedProjectId: string;
+      filesUploaded: number;
+      filesConverted: number;
+      caveats: string[];
+    }
+  | {
+      status: 'rejected';
+      projectId: string;
+      requestId: string;
+      reason: string;
+      caveats: string[];
+    }
+  | {
+      status: 'auth_required';
+      projectId: string;
+      message: string;
+      code: 'SYNC_IDENTITY_REQUIRED';
+      caveats: string[];
+    }
+  | {
+      status: 'error';
+      projectId: string;
+      message: string;
+      code?: string;
+      caveats: string[];
+    };
+
+export interface KgPushAllResponse {
+  ok: boolean;
+  data: { pushed: number; results: PublishResult[] };
+}
+
 export interface KgSyncCounts {
   projectId: string;
   nodes: number;

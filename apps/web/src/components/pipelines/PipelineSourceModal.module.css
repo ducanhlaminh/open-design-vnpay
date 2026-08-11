@@ -3,9 +3,12 @@
    feature picker). Scoped to the run-source modal; reuses the global pl-* input
    and button primitives for everything else. */
 
+/* `auto-fit` chứ không phải `1fr 1fr` cố định: dự án GẮN App chỉ còn đúng một
+   thẻ nguồn, và lưới hai cột cứng để nó nằm chỏng chơ nửa hàng bên trái với một
+   khoảng trống bằng chính nó bên phải. */
 .cards {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 10px;
   margin-bottom: 4px;
 }
@@ -15,23 +18,33 @@
   flex-direction: column;
   gap: 6px;
   padding: 14px;
-  border: 1px solid var(--pl-border, rgba(120, 120, 130, 0.28));
+  border: 1px solid var(--border-strong, rgba(120, 120, 130, 0.28));
   border-radius: 12px;
-  background: var(--pl-surface, rgba(255, 255, 255, 0.02));
+  background: var(--bg-panel, #fff);
+  box-shadow: var(--shadow-xs);
   cursor: pointer;
   text-align: left;
   transition:
     border-color 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    box-shadow 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 200ms cubic-bezier(0.23, 1, 0.32, 1),
     background 200ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .card:hover {
   border-color: var(--accent, #0066b3);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
 }
 
+/* Thẻ đang chọn NỔI lên (bóng + viền accent) thay vì chỉ đổi màu nền — nền
+   nhạt 8% một mình quá gần nền panel để đọc ra "cái này đang được chọn". */
 .cardSelected {
   border-color: var(--accent, #0066b3);
-  background: color-mix(in srgb, var(--accent, #0066b3) 8%, transparent);
+  background: color-mix(in srgb, var(--accent, #0066b3) 6%, var(--bg-panel, #fff));
+  box-shadow:
+    0 0 0 1px var(--accent, #0066b3) inset,
+    var(--shadow-sm);
 }
 
 .cardTop {
@@ -59,6 +72,174 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* ── Panel chọn trang từ pool tài liệu App ────────────────────────────────
+   BA TẦNG rõ rệt, cố ý: khung ngoài lõm (bg-subtle) → thanh công cụ và chân
+   panel nằm trên nền lõm đó → vùng cây NỔI lên bằng bg-panel + bóng. Cây tài
+   liệu là thứ người dùng thao tác, nên nó phải là mặt phẳng cao nhất; mọi thứ
+   khác lùi lại một tầng. */
+.poolPicker {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong, rgba(120, 120, 130, 0.28));
+  border-radius: var(--radius-lg, 16px);
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+
+.poolHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+/* Ô tìm: bọc icon + input trong MỘT vỏ, để icon nằm trong ô chứ không đứng
+   cạnh nó. Vỏ mới là thứ vẽ viền/nền; input bên trong trong suốt hoàn toàn. */
+.poolSearch {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong, rgba(120, 120, 130, 0.35));
+  border-radius: var(--radius-sm, 9px);
+  background: var(--bg-panel, #fff);
+  color: var(--text-soft);
+  box-shadow: var(--shadow-xs);
+  transition:
+    border-color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    box-shadow 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.poolSearch:focus-within {
+  border-color: var(--accent, #0066b3);
+  box-shadow: 0 0 0 3px var(--accent-soft, rgba(0, 102, 179, 0.18));
+}
+
+/* Chiều cao đến từ `.poolSearch`, KHÔNG từ input — input toàn cục của app có
+   luật pill kéo mọi <input> ra full-width kèm padding riêng, nên ở đây phải
+   trung hoà hết: không viền, không nền, không bóng, không chiều cao riêng. */
+.poolSearchInput {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+}
+
+.poolSearchInput:focus {
+  outline: none;
+  border: none;
+  box-shadow: none;
+}
+
+.poolSearchInput::placeholder {
+  color: var(--text-soft);
+}
+
+/* Ẩn nút "x" mặc định của type=search trên WebKit: nó vẽ đè lên viền vỏ. */
+.poolSearchInput::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.poolCount {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong, rgba(120, 120, 130, 0.3));
+  border-radius: 999px;
+  background: var(--bg-panel, #fff);
+  color: var(--text-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.poolCountOn {
+  border-color: color-mix(in srgb, var(--accent, #0066b3) 45%, transparent);
+  background: color-mix(in srgb, var(--accent, #0066b3) 10%, var(--bg-panel, #fff));
+  color: var(--accent, #0066b3);
+}
+
+/* Vùng cây: mặt phẳng CAO NHẤT của panel + vùng cuộn riêng. Không giới hạn
+   chiều cao ở đây thì cây dài đẩy nút Lưu ra khỏi tầm nhìn và cả modal thành
+   một trang cuộn dài. */
+.poolTree {
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0 12px;
+  padding: 6px;
+  border: 1px solid var(--border-soft, rgba(120, 120, 130, 0.2));
+  border-radius: var(--radius-sm, 9px);
+  background: var(--bg-panel, #fff);
+  box-shadow: var(--shadow-xs);
+}
+
+.poolFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 12px 11px;
+}
+
+.poolFootHint {
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: 11.5px;
+}
+
+.poolFootHint code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-panel, #fff);
+  border: 1px solid var(--border-soft, rgba(120, 120, 130, 0.25));
+  font-size: 11px;
+}
+
+.poolImportBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 5px 11px;
+  border: 1px solid var(--border-strong, rgba(120, 120, 130, 0.3));
+  border-radius: 999px;
+  background: var(--bg-panel, #fff);
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.poolImportBtn:hover {
+  color: var(--accent, #0066b3);
+  border-color: var(--accent, #0066b3);
+}
+
+/* Nhập thêm từ Confluence: panel RIÊNG dưới picker, không nhét vào trong nó —
+   đây là một tác vụ khác (sửa pool của App), không phải một phần của việc chọn
+   trang cho lần chạy này. */
+.poolImportPanel {
+  padding: 12px;
+  border: 1px dashed var(--border-strong, rgba(120, 120, 130, 0.4));
+  border-radius: var(--radius-lg, 16px);
+  background: var(--bg-panel, #fff);
 }
 
 /* Hàng lối tắt dưới panel nguồn (dán link tay / Advanced JQL): ghost-chip
@@ -280,6 +461,15 @@
 .treeNameFolder {
   font-weight: 600;
 }
+.treeMuted {
+  flex-shrink: 0;
+  max-width: 40%;
+  font-size: 11px;
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .treeAdded {
   flex-shrink: 0;
   font-size: 11px;
@@ -310,8 +500,294 @@
   opacity: 0.62;
 }
 
+/* Nhấn mạnh trong body modal xác nhận: chữ đậm, độ tương phản đầy đủ
+   (không bị .hint làm mờ vì nằm trong span riêng). */
+.clearConfirmSection .em {
+  font-weight: 700;
+  opacity: 1;
+}
+/* Cảnh báo phá huỷ (tên các bước sẽ bị xoá): đậm + màu nguy hiểm. */
+.clearConfirmSection .danger {
+  font-weight: 700;
+  opacity: 1;
+  color: var(--pl-danger, #c0392b);
+}
+/* Body cảnh báo đọc rõ hơn .hint mặc định (đây là câu chính, không phải chú thích). */
+.clearConfirmBody {
+  font-size: 12.5px;
+  opacity: 0.85;
+  line-height: 1.5;
+}
+
+/* RunAllClearConfirmModal: each "mục" (lost output / stale inputs) is one of
+   these, stacked as a block so its own lines lay out top-to-bottom even
+   though `.hint`/`.sectionLabel` are inline `<span>`s — a flex column turns
+   every direct child into its own line regardless of the JSX whitespace
+   collapsed between adjacent sibling elements. */
+.clearConfirmSection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.clearConfirmSection + .clearConfirmSection {
+  margin-top: 14px;
+}
+
 .empty {
   font-size: 12.5px;
   opacity: 0.6;
   padding: 10px 2px;
+}
+
+/* ── "Các bước sẽ chạy" (RunAllModal, focus 'stages') ──────────────────────
+   Danh sách checkbox thật cho từng bước của workflow + hàng nút preset. Dùng
+   checkbox gốc (không phải ô vuông vẽ tay như .checkbox ở trên) vì đây là một
+   lựa chọn nhiều-giá-trị có bàn phím/screen-reader đi kèm, không phải một hàng
+   bấm-để-chọn. */
+.stagePresets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.stageList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.stageItem {
+  position: relative;
+}
+
+/* Đoạn nối giữa hai hàng: thứ biến một chồng checkbox rời rạc thành một CHUỖI
+   có thứ tự. Canh đúng tâm ô số (1px viền + 11px padding + 10px nửa ô = 22px). */
+.stageItem + .stageItem::before {
+  content: '';
+  position: absolute;
+  left: 21px;
+  top: -6px;
+  width: 2px;
+  height: 6px;
+  background: var(--pl-border, rgba(120, 120, 130, 0.28));
+}
+
+.stageRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border: 1px solid var(--pl-border, rgba(120, 120, 130, 0.28));
+  border-radius: 9px;
+  background: var(--pl-surface, rgba(255, 255, 255, 0.02));
+  cursor: pointer;
+  transition: border-color 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.stageRow:hover {
+  border-color: var(--accent, #0066b3);
+}
+
+.stageRow:has(.stageCheckbox:checked) {
+  border-color: color-mix(in oklab, var(--accent, #0066b3) 55%, transparent);
+  background: color-mix(in oklab, var(--accent, #0066b3) 8%, transparent);
+}
+
+/* Ô tick phải giữ đúng 16px: input pill toàn cục của app kéo mọi <input> ra
+   full-width và làm hàng bước vỡ ngang. */
+.stageCheckbox {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent, #0066b3);
+  cursor: pointer;
+}
+
+.stageName {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stageBadge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 2px 7px;
+  line-height: 1.2;
+}
+
+.stageBadgeDone {
+  color: oklch(42% 0.09 155);
+  background: oklch(95% 0.04 155);
+}
+
+.stageBadgeFailed {
+  color: oklch(48% 0.16 25);
+  background: oklch(95% 0.04 25);
+}
+
+.stageBadgeIdle {
+  color: var(--text-soft, #6b7280);
+  background: color-mix(in oklab, currentColor 10%, transparent);
+}
+
+/* Số thứ tự chạy. Chỉ là NHÃN đọc-hiểu, không phải điều khiển: bước bỏ tick vẫn
+   giữ số của nó, vì số nói "vị trí trong chuỗi workflow", không nói "bước thứ
+   mấy của lần chạy này". */
+.stageNum {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft, #6b7280);
+  background: color-mix(in oklab, currentColor 12%, transparent);
+}
+
+.stageRow:has(.stageCheckbox:checked) .stageNum {
+  color: var(--accent, #0066b3);
+  background: color-mix(in oklab, var(--accent, #0066b3) 16%, transparent);
+}
+
+/* "tuỳ chọn" / "chọn 1 trong 3" — viền đứt để không đọc nhầm thành chip trạng
+   thái đặc ở cuối hàng. */
+.stageOptional {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--text-soft, #6b7280);
+  border: 1px dashed var(--pl-border, rgba(120, 120, 130, 0.35));
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+/* Bước 1 (tài liệu nạp) chưa xong — điều kiện DUY NHẤT còn lại sau khi cổng
+   phụ thuộc theo bước bị bỏ. Không phải lỗi (mọi bước vẫn tick/chạy được),
+   nhưng cũng không phải một chú thích tuỳ-chọn — nên đứng riêng, ngay dưới
+   label section, trước khi người dùng tick linh tinh rồi bị API từ chối. */
+.stageIngestNote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 8px;
+  font-size: 12px;
+  color: var(--text-soft, #6b7280);
+}
+
+/* Chú thích MỀM dưới một hàng bước ĐANG tick: nó có phụ thuộc chưa tick và
+   chưa `succeeded`, nên sẽ chạy với dữ liệu hiện có thay vì input mới. Thông
+   tin, không phải lỗi — cố tình không dùng màu đỏ/cam hay icon cảnh báo, và
+   không bao giờ chặn nút Lưu (xem `missingRunDeps` ở PipelineModals.tsx). */
+.stageSoftNote {
+  margin: 4px 0 0 30px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-soft, #6b7280);
+}
+
+/* ── Bước cuối: nhóm radio ba đầu ra UI-Spec ───────────────────────────────
+   Hàng tick và nhóm lựa chọn dính liền thành MỘT khối để đọc ra "một bước",
+   không phải "một bước + một section rời". */
+.stageItemFork > .stageRow {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.forkOptions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  padding-left: 30px;
+  border: 1px solid var(--pl-border, rgba(120, 120, 130, 0.28));
+  border-top: none;
+  border-radius: 0 0 9px 9px;
+  background: var(--pl-surface, rgba(255, 255, 255, 0.02));
+}
+
+/* Bước cuối đang tắt: nhóm mờ đi nhưng VẪN bấm được — bấm một lựa chọn là cách
+   bật lại bước, không cần quay lên tick ô vuông trước. */
+.forkOptionsOff {
+  opacity: 0.55;
+}
+
+.forkOption {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    border-color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.forkOption:hover:not(:disabled) {
+  border-color: var(--accent, #0066b3);
+}
+
+.forkOption:disabled {
+  cursor: default;
+}
+
+.forkOptionOn {
+  border-color: color-mix(in oklab, var(--accent, #0066b3) 55%, transparent);
+  background: color-mix(in oklab, var(--accent, #0066b3) 8%, transparent);
+}
+
+.forkDot {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid var(--pl-border, rgba(120, 120, 130, 0.45));
+  background: transparent;
+}
+
+.forkOptionOn .forkDot {
+  border-color: var(--accent, #0066b3);
+  background: radial-gradient(circle, var(--accent, #0066b3) 0 3px, transparent 3.5px);
+}
+
+.forkLabel {
+  flex: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.forkDesc {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-soft, #6b7280);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

@@ -35,7 +35,7 @@ export interface DocSection {
  *  key `I.-T-i-kho-n`, so a section's overview page and its children group
  *  together. */
 export function sectionKey(mdRelPath: string): string {
-  const rest = mdRelPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^docs\/confluence\//, '');
+  const rest = mdRelPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^docs-feature\//, '').replace(/^docs\/confluence\//, '');
   const parts = rest.split('/');
   return parts.length > 1 ? parts[0]! : parts[0]!.replace(/\.md$/i, '');
 }
@@ -52,7 +52,8 @@ function titleFromFrontmatter(md: string, fallback: string): string {
 /** List all markdown pages under docs/confluence (excluding _index.md and
  *  anything under attachments/), each with its title. */
 async function listPages(cwd: string): Promise<Array<{ mdPath: string; title: string }>> {
-  const root = path.join(cwd, 'docs', 'confluence');
+  const featureRoot = path.join(cwd, 'docs-feature');
+  const root = (await hasMarkdown(featureRoot)) ? featureRoot : path.join(cwd, 'docs', 'confluence');
   const out: Array<{ mdPath: string; title: string }> = [];
   const walk = async (dir: string): Promise<void> => {
     let entries: import('node:fs').Dirent[];
@@ -78,6 +79,23 @@ async function listPages(cwd: string): Promise<Array<{ mdPath: string; title: st
   return out;
 }
 
+async function hasMarkdown(root: string): Promise<boolean> {
+  const pages = await listMarkdown(root);
+  return pages.length > 0;
+}
+
+async function listMarkdown(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => [] as import('node:fs').Dirent[]);
+  for (const entry of entries) {
+    if (entry.name === 'attachments') continue;
+    const abs = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...(await listMarkdown(abs)));
+    else if (entry.name.toLowerCase().endsWith('.md') && entry.name.toLowerCase() !== '_index.md') out.push(abs);
+  }
+  return out;
+}
+
 /** Group the doc pages into top-level sections. The section title prefers its
  *  overview page (the top-level `<key>.md`, whose mdPath == docs/confluence/<key>.md). */
 export async function listSections(cwd: string): Promise<DocSection[]> {
@@ -92,7 +110,7 @@ export async function listSections(cwd: string): Promise<DocSection[]> {
     }
     g.mdPaths.push(p.mdPath);
     // The section overview page (docs/confluence/<key>.md) names the section.
-    if (p.mdPath === `docs/confluence/${key}.md`) g.title = p.title;
+    if (p.mdPath === `docs-feature/${key}.md` || p.mdPath === `docs/confluence/${key}.md`) g.title = p.title;
   }
   return [...byKey.values()]
     .map((g) => ({ key: g.key, title: g.title ?? g.key.replace(/[-_]+/g, ' ').trim(), mdPaths: g.mdPaths.sort() }))

@@ -45,6 +45,39 @@ export interface SkillStagingResult {
   reason?: string;
 }
 
+/** Hàng đợi tuần tự theo ĐÍCH staging (`<cwd>/.od-skills/<folder>`).
+ *
+ *  Vì sao bắt buộc: staging là "xoá sạch rồi copy lại" (xem stageActiveSkill).
+ *  Khi NHIỀU agent cùng chạy trong CÙNG một cwd với CÙNG một skill — đúng
+ *  trường hợp fan-out theo section của docs-review, 4 lượt khởi động cùng lúc —
+ *  thì `rm` của lượt này rơi vào giữa `cp` của lượt kia. Triệu chứng đo được
+ *  trên máy thật: `EEXIST … mkdir` và `ENOTEMPTY … rmdir`, và nguy hiểm hơn cả
+ *  hai lỗi đó là ca im lặng — một agent đang ĐỌC thư mục skill thì bị lượt khác
+ *  xoá mất giữa chừng, nên nó chạy với skill khuyết và chết ngay từ đầu mà
+ *  không để lại chữ nào.
+ *
+ *  Khoá này chỉ trong MỘT tiến trình daemon. Đó là đủ cho mọi đường gọi hiện
+ *  có (mọi agent đều do daemon spawn); hai daemon cùng trỏ vào một cwd vẫn có
+ *  thể đua nhau, nhưng đó là cấu hình không được hỗ trợ sẵn. */
+const stagingLocks = new Map<string, Promise<unknown>>();
+
+function withStagingLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = stagingLocks.get(key) ?? Promise.resolve();
+  // `.then(fn, fn)` chứ không phải `.then(fn)`: lượt trước hỏng thì lượt sau
+  // vẫn phải chạy, nếu không một lỗi đơn lẻ sẽ khoá vĩnh viễn mọi lượt kế tiếp.
+  const next = prev.then(fn, fn);
+  const guard = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  stagingLocks.set(key, guard);
+  void guard.then(() => {
+    // Dọn khoá khi mình là lượt cuối, để Map không phình theo số cwd đã dùng.
+    if (stagingLocks.get(key) === guard) stagingLocks.delete(key);
+  });
+  return next;
+}
+
 export function skillCwdAliasSegment(dir: string): string {
   const folder = path.basename(dir) || 'skill';
   const normalizedDir = path.resolve(dir).replaceAll('\\', '/');
@@ -118,26 +151,30 @@ export async function stageActiveSkill(
     // does not exist — created by `cp` below
   }
 
-  try {
-    // Wipe a stale per-skill copy first so a removed source file is
-    // reflected and a partially-failed previous run cannot leave junk
-    // behind.
-    await rm(stagedPath, { recursive: true, force: true });
-    await cp(sourceDir, stagedPath, {
-      recursive: true,
-      // Resolve every symlink we find inside the skill so the staged
-      // copy is a fully self-contained set of regular files. This is
-      // what makes the copy a true write barrier — no entry under
-      // `.od-skills/...` can resolve back to a real file outside the
-      // project cwd.
-      dereference: true,
-      preserveTimestamps: true,
-    });
-    return { staged: true, stagedPath };
-  } catch (err) {
-    log(`[od] skill-stage failed: ${(err as Error).message}`);
-    return { staged: false, reason: (err as Error).message };
-  }
+  // Wipe + copy chạy DƯỚI KHOÁ theo `stagedPath` — xem withStagingLock ở trên
+  // để biết vì sao (nhiều agent cùng cwd, cùng skill, khởi động cùng lúc).
+  return withStagingLock(stagedPath, async () => {
+    try {
+      // Wipe a stale per-skill copy first so a removed source file is
+      // reflected and a partially-failed previous run cannot leave junk
+      // behind.
+      await rm(stagedPath, { recursive: true, force: true });
+      await cp(sourceDir, stagedPath, {
+        recursive: true,
+        // Resolve every symlink we find inside the skill so the staged
+        // copy is a fully self-contained set of regular files. This is
+        // what makes the copy a true write barrier — no entry under
+        // `.od-skills/...` can resolve back to a real file outside the
+        // project cwd.
+        dereference: true,
+        preserveTimestamps: true,
+      });
+      return { staged: true, stagedPath };
+    } catch (err) {
+      log(`[od] skill-stage failed: ${(err as Error).message}`);
+      return { staged: false, reason: (err as Error).message };
+    }
+  });
 }
 
 const UNSAFE_ALIAS_RE = /[\\/]|\0/;

@@ -86,10 +86,20 @@ function pickAttributes(realm: Realm, el: Element): Record<string, string> {
 // tokens. Shape: `kg:<slot>|<attr>=<val>;…` (identity/internal attrs excluded). Paste keeps the
 // layer name, so this survives the clipboard even though pluginData does not.
 const KG_MARKER_SKIP = new Set(["data-node-id", "data-name", "data-testid"]);
-function kgComponentMarker(el: Element): string | undefined {
-  // lucide <svg> icons: name the layer `icon/<name>` so the swap plugin can
-  // replace it with the design system's Icon/<name> component.
+export function kgComponentMarker(el: Element): string | undefined {
   if (el.tagName.toLowerCase() === "svg") {
+    // Design-system icons: the fig-import compiler stamps `data-fig-icon`
+    // (+ `data-fig-icon-key`) into the generated SVG markup. Those icons ARE
+    // Figma components, so route them through the same `kg:fig` channel the
+    // plugin already uses for component swap — key first, name as fallback.
+    // Without this the icon serialises as a plain <svg> and pastes as a frame.
+    const figIcon = el.getAttribute("data-fig-icon");
+    if (figIcon) {
+      const key = el.getAttribute("data-fig-icon-key");
+      return `kg:fig|fig-comp=${figIcon}${key ? `;fig-key=${key}` : ""}`;
+    }
+    // lucide <svg> icons: name the layer `icon/<name>` so the swap plugin can
+    // replace it with the design system's Icon/<name> component.
     const m = (el.getAttribute("class") ?? "").match(/lucide-([a-z0-9-]+)/);
     return m ? `icon/${m[1]}` : undefined;
   }

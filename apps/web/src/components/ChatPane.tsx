@@ -26,6 +26,7 @@ import {
 } from './ChatComposer';
 import type { PluginFolderAgentAction } from './design-files/pluginFolderActions';
 import { Icon } from './Icon';
+import { useChatDisplayMode } from '../state/chatDisplayMode';
 import { repoConnectCopy } from './design-system-github-evidence';
 import type { SettingsSection } from './SettingsDialog';
 
@@ -219,6 +220,9 @@ interface Props {
   // without project context.
   projectKindForTracking?: TrackingProjectKind | null;
   projectFiles: ProjectFile[];
+  /** Đè placeholder composer — surface không sinh-nội-dung (workspace tổng
+   *  chỉ-đọc) cần lời mời đúng việc. */
+  composerPlaceholder?: string;
   hasActiveDesignSystem?: boolean;
   activeDesignSystem?: DesignSystemSummary | null;
   sendDisabled?: boolean;
@@ -339,6 +343,7 @@ export function ChatPane({
   projectId,
   projectKindForTracking = null,
   projectFiles,
+  composerPlaceholder,
   hasActiveDesignSystem = false,
   activeDesignSystem = null,
   projectFileNames,
@@ -763,6 +768,10 @@ export function ChatPane({
   const titleEditClosedRef = useRef(false);
   const [editingActiveTitle, setEditingActiveTitle] = useState(false);
   const [activeTitleDraft, setActiveTitleDraft] = useState('');
+  // Simple mode is the default so the transcript reads as a conversation
+  // rather than an agent log; the header toggle is the escape hatch.
+  const [displayMode, setDisplayMode] = useChatDisplayMode();
+  const simpleMode = displayMode === 'simple';
 
   useEffect(() => {
     if (editingActiveTitle) return;
@@ -865,6 +874,21 @@ export function ChatPane({
           )}
         </div>
         <div className="chat-header-actions">
+          <button
+            type="button"
+            className={`icon-only chat-display-mode-toggle${simpleMode ? ' is-simple' : ''}`}
+            data-testid="chat-display-mode-toggle"
+            aria-pressed={!simpleMode}
+            aria-label={t('chat.displayModeAria')}
+            title={
+              simpleMode
+                ? t('chat.displayModeSimpleTitle')
+                : t('chat.displayModeFullTitle')
+            }
+            onClick={() => setDisplayMode(simpleMode ? 'full' : 'simple')}
+          >
+            <Icon name={simpleMode ? 'eye-off' : 'eye'} size={15} />
+          </button>
           <div
             className={`chat-history-wrap${showConvList ? ' open' : ''}`}
             ref={historyWrapRef}
@@ -1095,6 +1119,7 @@ export function ChatPane({
                         projectFiles={projectFiles}
                         projectFileNames={projectFileNames}
                         skillsCatalog={skills}
+                        simpleMode={simpleMode}
                         onRequestOpenFile={onRequestOpenFile}
                         onRequestPluginFolderAgentAction={onRequestPluginFolderAgentAction}
                         activePluginActionPaths={activePluginActionPaths}
@@ -1177,6 +1202,7 @@ export function ChatPane({
             sendDisabled={sendDisabled}
             initialDraft={initialDraft}
             draftStorageKey={composerDraftStorageKey}
+            {...(composerPlaceholder ? { placeholder: composerPlaceholder } : {})}
             onEnsureProject={onEnsureProject}
             commentAttachments={commentsToAttachments(attachedComments)}
             onRemoveCommentAttachment={onDetachComment}

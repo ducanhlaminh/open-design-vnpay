@@ -225,6 +225,7 @@ export const tr: Dict = {
   'settings.agentInstallGroup': 'Kurulabilir ({count})',
   'settings.agentAuthRequired': 'Kimlik doğrulama gerekli',
   'settings.agentAuthUnknown': 'Kimlik doğrulama durumu bilinmiyor',
+  'settings.agentAuthOk': 'Oturum açıldı',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'Sağlayıcıyı hızlı doldur',
   'settings.customProvider': 'Özel sağlayıcı',
@@ -344,6 +345,7 @@ export const tr: Dict = {
   'entry.useEverywhereAria': '“Her yerde kullan” kılavuzunu aç (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': 'Yeni proje',
   'entry.navHome': 'Ana sayfa',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'Projeler',
   'entry.navDesignSystems': 'Tasarım sistemleri',
   'entry.helpAria': 'Yardım',
@@ -685,9 +687,13 @@ export const tr: Dict = {
   'ds.categoryAll': 'Tümü',
   'ds.categoryUncategorized': 'Kategorilendirilmemiş',
   'ds.showcase': 'Tanıtım',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'Tokenler',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'DESIGN.md yükleniyor…',
+  'ds.reactStats': '{components} bileşen · {icons} simge',
+  'ds.reactDetailToggle': 'Bileşen kitaplığı',
+  'ds.reactDetailLoading': 'Bileşen kitaplığı yükleniyor…',
 
   'avatar.title': 'Hesap & ayarlar',
   'avatar.localCli': 'Yerel CLI',
@@ -764,6 +770,9 @@ export const tr: Dict = {
   'chat.inspect.commentHint': 'Click an element in the canvas to add a comment.',
   'chat.conversationsTitle': 'Konuşmalar',
   'chat.conversationsAria': 'Konuşma geçmişi',
+  'chat.displayModeAria': 'Teknik ayrıntıları göster veya gizle',
+  'chat.displayModeSimpleTitle': 'Basit görünüm — teknik adımlar gizli. Göstermek için tıklayın.',
+  'chat.displayModeFullTitle': 'Ayrıntılı görünüm — teknik adımlar görünür. Basitleştirmek için tıklayın.',
   'chat.newConversation': 'Yeni konuşma',
   'chat.newConversationsTitle': 'Yeni Konuşma',
   'chat.conversationsHeading': 'Konuşmalar',
@@ -1429,6 +1438,11 @@ export const tr: Dict = {
   'settings.designSystemsSource': 'Kaynak',
   'settings.designSystemsSourceLocal': 'Yerel',
   'settings.designSystemsSourceGithub': 'GitHub',
+  'settings.designSystemsSourceFigma': 'Figma IR',
+  'settings.designSystemsFigmaFiles': 'Figma IR dosyaları',
+  'settings.designSystemsFigmaFilesHelp': 'Fig Pipeline eklentisinin .ir.json dışa aktarımlarını ve/veya .zip paketini seçin. Birleştirme sırası dosya adı sırasını izler — 01-, 02-, … öneki, foundation (token) dosyası önce.',
+  'settings.designSystemsImportFigma': 'Figma IR içe aktar',
+  'settings.designSystemsImportWarnings': '{count} içe aktarma uyarısı',
   'settings.designSystemsStructure': 'Yapı',
   'settings.designSystemsModeHybrid': 'Hibrit',
   'settings.designSystemsModeNormalized': 'Normalize',
@@ -1707,4 +1721,37 @@ export const tr: Dict = {
   'settings.sandboxMissing': 'eksik',
   'settings.sandboxRunCmd': 'çalıştır: {cmd}',
   'settings.sandboxDaemonOffline': 'Daemon çevrimdışı — sandbox durumu alınamıyor.',
+  'settings.sandboxClaudeTitle': 'Claude runtime',
+  'settings.sandboxClaudeHint': 'Claude keeps the existing account switcher and usage controls.',
+  'settings.sandboxCodexTitle': 'Codex runtime',
+  'settings.sandboxCodexHint': 'Codex uses browser-based device code login and never displays tokens.',
+  'settings.sandboxRuntimeReady': 'Ready',
+  'settings.sandboxRuntimeNotReady': 'Not ready',
+  'settings.sandboxCodexLoginStart': 'Start login',
+  'settings.sandboxCodexLoginDisconnect': 'Disconnect',
+
+  // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
+  'pipelines.runAllClear.title': 'Old results will be cleared',
+  'pipelines.runAllClear.body': 'Running now will delete the existing results of: {stages}.',
+  'pipelines.runAllClear.historyNote':
+    'The current results are saved to project history first, so you can restore them afterward.',
+  'pipelines.runAllClear.confirm': 'Run and clear old results',
+  'pipelines.runAllClear.staleOnlyTitle': 'Some inputs are from outside this run',
+  'pipelines.runAllClear.confirmContinue': 'Run',
+  'pipelines.runAllClear.staleSectionTitle': 'Using input from outside this run',
+  'pipelines.runAllClear.staleLine': "{stage} will use {source}'s result from {time}.",
+  'pipelines.runAllClear.staleNote':
+    'Each source stage above is outside this run, so its result stays exactly as it is — the stage that depends on it will use that same version.',
+
+  // Pipelines — dependency gate is now a SUGGESTION, not a lock (spec
+  // g2-ui-suggestion-not-gate). Every stage is runnable once step 1 (docs
+  // ingest) has run; these strings replace the old "must finish X first"
+  // blocking copy with informational notes that never disable Save/Run.
+  'pipelines.runAllPicker.ingestRequired': '{stage} (step 1) must finish first — the steps below need ingested documents to run.',
+  'pipelines.runAllPicker.softNote': "Will run with current data; {stages} won't run this time.",
+  'pipelines.runAllPicker.hint':
+    "Tick exactly the steps you want to run — ticking one won't drag in others. A step whose dependency isn't ticked and hasn't finished yet runs with whatever data already exists (see the note under it).",
+  'pipelines.rail.usuallyAfter': 'Usually runs after {stages}',
+  'pipelines.rail.needsDocs': 'Needs {stage} first — no documents ingested yet',
+  'pipelines.rail.staleNeedsDocs': 'This result is from old data — rerun {stage} to sync',
 };

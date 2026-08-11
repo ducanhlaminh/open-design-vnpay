@@ -40,6 +40,17 @@ test('listSections groups pages by top-level section with the overview title', a
   assert.equal(s2.mdPaths.length, 1);
 });
 
+test('listSections prefers docs-feature when it contains markdown', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'od-section-feature-'));
+  await mkdir(join(cwd, 'docs-feature', 'payments'), { recursive: true });
+  await writeFile(join(cwd, 'docs-feature', 'payments', 'page.md'), '# Payments');
+  await mkdir(join(cwd, 'docs', 'confluence'), { recursive: true });
+  await writeFile(join(cwd, 'docs', 'confluence', 'legacy.md'), '# Legacy');
+  const sections = await listSections(cwd);
+  assert.deepEqual(sections.map((s) => s.key), ['payments']);
+  await rm(cwd, { recursive: true, force: true });
+});
+
 test('mergeCjSections unions personas by name and concatenates journeys tagged by section', () => {
   const merged = mergeCjSections([
     {

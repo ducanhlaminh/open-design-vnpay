@@ -4203,6 +4203,7 @@ export function ProjectView({
               designSystems={designSystems}
               selectedId={project.designSystemId ?? null}
               onChange={handleChangeDesignSystemId}
+              variant="compact"
             />
             {hasProjectInstructions ? (
               <button
@@ -4413,6 +4414,13 @@ export function ProjectView({
           filesRefreshKey={filesRefresh}
           onRefreshFiles={() => {
             void refreshWorkspaceItems();
+          }}
+          onReloadPreview={async () => {
+            // Both halves are needed: refreshWorkspaceItems refetches the file
+            // list, but only filesRefresh flows down as filesRefreshKey to
+            // FileViewer, which is what changes the preview iframe's src.
+            await refreshWorkspaceItems();
+            setFilesRefresh((n) => n + 1);
           }}
           isDeck={isDeck}
           onExportAsPptx={handleExportAsPptx}

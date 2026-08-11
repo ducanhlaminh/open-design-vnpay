@@ -113,7 +113,13 @@ export async function fetchClaudeUsage(opts?: {
     }
   }
   if (!oauth?.accessToken) {
-    cache = { at: Date.now(), value: UNAVAILABLE };
+    // Deliberately NOT cached. "Signed out" is the one verdict that can be
+    // invalidated by something outside this process (the user finishing
+    // `/login`), and caching it means a reading taken seconds before the
+    // credentials land keeps the meter hidden for a further minute after the
+    // account switcher already shows a green check. The cache exists to spare
+    // the network/docker read under load, but the meter is the only caller and
+    // it polls once a minute, so there is no load to spare here.
     return UNAVAILABLE;
   }
   try {

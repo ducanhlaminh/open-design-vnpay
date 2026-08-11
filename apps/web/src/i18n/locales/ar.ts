@@ -225,6 +225,7 @@ export const ar: Dict = {
   'settings.agentInstallGroup': 'متاحة للتثبيت ({count})',
   'settings.agentAuthRequired': 'المصادقة مطلوبة',
   'settings.agentAuthUnknown': 'حالة المصادقة غير معروفة',
+  'settings.agentAuthOk': 'تم تسجيل الدخول',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'ملء المزوّد سريعًا',
   'settings.customProvider': 'مزوّد مخصص',
@@ -355,6 +356,7 @@ export const ar: Dict = {
   'entry.navNewProject': 'مشروع جديد',
   'entry.navHome': 'الرئيسية',
   'entry.navProjects': 'المشاريع',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navDesignSystems': 'أنظمة التصميم',
   'entry.helpAria': 'المساعدة',
   'entry.helpMenuAria': 'قائمة المساعدة',
@@ -696,9 +698,13 @@ export const ar: Dict = {
   'ds.categoryAll': 'الكل',
   'ds.categoryUncategorized': 'غير مصنف',
   'ds.showcase': 'عرض',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'الرموز',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'جاري تحميل DESIGN.md...',
+  'ds.reactStats': '{components} مكوّنات · {icons} أيقونات',
+  'ds.reactDetailToggle': 'مكتبة المكوّنات',
+  'ds.reactDetailLoading': 'جاري تحميل مكتبة المكوّنات...',
 
   'avatar.title': 'الحساب والإعدادات',
   'avatar.localCli': 'CLI محلي',
@@ -775,6 +781,9 @@ export const ar: Dict = {
   'chat.inspect.commentHint': 'Click an element in the canvas to add a comment.',
   'chat.conversationsTitle': 'المحادثات',
   'chat.conversationsAria': 'سجل المحادثات',
+  'chat.displayModeAria': 'إظهار التفاصيل التقنية أو إخفاؤها',
+  'chat.displayModeSimpleTitle': 'عرض مبسط — الخطوات التقنية مخفية. انقر لإظهارها.',
+  'chat.displayModeFullTitle': 'عرض تفصيلي — الخطوات التقنية ظاهرة. انقر للتبسيط.',
   'chat.newConversation': 'محادثة جديدة',
   'chat.newConversationsTitle': 'محادثة جديدة',
   'chat.conversationsHeading': 'المحادثات',
@@ -1442,6 +1451,11 @@ export const ar: Dict = {
   'settings.designSystemsSource': 'المصدر',
   'settings.designSystemsSourceLocal': 'محلي',
   'settings.designSystemsSourceGithub': 'GitHub',
+  'settings.designSystemsSourceFigma': 'Figma IR',
+  'settings.designSystemsFigmaFiles': 'ملفات Figma IR',
+  'settings.designSystemsFigmaFilesHelp': 'اختر ملفات .ir.json المصدَّرة و/أو حزمة .zip من إضافة Fig Pipeline. ترتيب الدمج يتبع ترتيب أسماء الملفات — بادئة 01-، 02-، …، وملف foundation (الرموز) أولًا.',
+  'settings.designSystemsImportFigma': 'استيراد Figma IR',
+  'settings.designSystemsImportWarnings': 'تحذيرات الاستيراد: {count}',
   'settings.designSystemsStructure': 'البنية',
   'settings.designSystemsModeHybrid': 'مختلط',
   'settings.designSystemsModeNormalized': 'مطبّع',
@@ -1721,4 +1735,37 @@ export const ar: Dict = {
   'settings.sandboxMissing': 'مفقود',
   'settings.sandboxRunCmd': 'شغّل: {cmd}',
   'settings.sandboxDaemonOffline': 'الخدمة غير متصلة — حالة البيئة المعزولة غير متاحة.',
+  'settings.sandboxClaudeTitle': 'Claude runtime',
+  'settings.sandboxClaudeHint': 'Claude keeps the existing account switcher and usage controls.',
+  'settings.sandboxCodexTitle': 'Codex runtime',
+  'settings.sandboxCodexHint': 'Codex uses browser-based device code login and never displays tokens.',
+  'settings.sandboxRuntimeReady': 'Ready',
+  'settings.sandboxRuntimeNotReady': 'Not ready',
+  'settings.sandboxCodexLoginStart': 'Start login',
+  'settings.sandboxCodexLoginDisconnect': 'Disconnect',
+
+  // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
+  'pipelines.runAllClear.title': 'Old results will be cleared',
+  'pipelines.runAllClear.body': 'Running now will delete the existing results of: {stages}.',
+  'pipelines.runAllClear.historyNote':
+    'The current results are saved to project history first, so you can restore them afterward.',
+  'pipelines.runAllClear.confirm': 'Run and clear old results',
+  'pipelines.runAllClear.staleOnlyTitle': 'Some inputs are from outside this run',
+  'pipelines.runAllClear.confirmContinue': 'Run',
+  'pipelines.runAllClear.staleSectionTitle': 'Using input from outside this run',
+  'pipelines.runAllClear.staleLine': "{stage} will use {source}'s result from {time}.",
+  'pipelines.runAllClear.staleNote':
+    'Each source stage above is outside this run, so its result stays exactly as it is — the stage that depends on it will use that same version.',
+
+  // Pipelines — dependency gate is now a SUGGESTION, not a lock (spec
+  // g2-ui-suggestion-not-gate). Every stage is runnable once step 1 (docs
+  // ingest) has run; these strings replace the old "must finish X first"
+  // blocking copy with informational notes that never disable Save/Run.
+  'pipelines.runAllPicker.ingestRequired': '{stage} (step 1) must finish first — the steps below need ingested documents to run.',
+  'pipelines.runAllPicker.softNote': "Will run with current data; {stages} won't run this time.",
+  'pipelines.runAllPicker.hint':
+    "Tick exactly the steps you want to run — ticking one won't drag in others. A step whose dependency isn't ticked and hasn't finished yet runs with whatever data already exists (see the note under it).",
+  'pipelines.rail.usuallyAfter': 'Usually runs after {stages}',
+  'pipelines.rail.needsDocs': 'Needs {stage} first — no documents ingested yet',
+  'pipelines.rail.staleNeedsDocs': 'This result is from old data — rerun {stage} to sync',
 };

@@ -7,6 +7,7 @@
 @import './styles/primitives.css';
 @import './styles/shell.css';
 @import './styles/chat.css';
+@import './styles/overview-workspace.css';
 @import './styles/workspace/mention-home.css';
 @import './styles/workspace/artifacts.css';
 @import './styles/workspace/connectors.css';

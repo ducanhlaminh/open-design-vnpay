@@ -8,8 +8,12 @@
 // - PipelineResultModal:     preview a finished pipeline's output files inline
 //                            (file rail + embedded FileViewer), no workspace nav.
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  AppPoolPage,
+  AppPoolResponse,
+  AppContextManifest,
+  FeatureContextBinding,
   BasDocument,
   BasDocumentsResponse,
   BasFeature,
@@ -17,10 +21,13 @@ import type {
   ChatRunStatusResponse,
   DesignSystemSummary,
   PipelineRunSource,
+  PipelineAppsResponse,
+  PipelineStatus,
   PipelineView,
   ProjectFile,
   ProjectSyncStatus,
-  RemoteProject,
+  RemoteProjectSummary,
+  RunAllConfig,
   TargetPlatform,
   UiTarget,
   Workflow,
@@ -30,11 +37,32 @@ import type { TrackingProjectKind } from '@open-design/contracts/analytics';
 
 import { Icon, type IconName } from '../Icon';
 import { FileViewer } from '../FileViewer';
+import { useT } from '../../i18n';
+import { relativeTimeLong } from '../../utils/chatTime';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
+import { AppPoolTree } from './AppPoolTree';
 import { PlModal } from './PlModal';
+import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzone';
+import { ConfluenceTreeImport } from './ConfluenceTreeImport';
 import styles from './PipelineSourceModal.module.css';
 import sp from './StagePicker.module.css';
+import { accessRoleLabel, projectTransferLabel, stepDifferenceLabel, SYNC_COPY } from './sync-copy';
+import {
+  contextNeedsUpdate,
+  contextVersionsForSelection,
+  contextVersionLabel,
+  diffContextManifests,
+  emptyContextSelection,
+  featureHasNewContext,
+  selectionForFeatures,
+  serializeContextSelection,
+  type AppContextSyncInfo,
+  type ContextFileChange,
+  type ContextTreeApp,
+  type ContextTreeSelection,
+  type ContextTreeSelectionPayload,
+} from './context-sync-tree';
 
 /** What the run-source modal hands back: either a structured BAS/Confluence
  * source (pre-fetched by the daemon) or a legacy free-text input (JIRA/JQL). */
@@ -81,6 +109,40 @@ function FollowLinksToggle({
   );
 }
 
+/** Shared "fetch cả cây con" toggle. Distinct from FollowLinksToggle: that one
+ *  follows HYPERLINKS out of the seed page (depth 1, any parent); this one walks
+ *  the page TREE under each seed (every level). Folder-structured specs put the
+ *  detail on child pages that nothing links to, so link-follow alone misses them.
+ *  Honoured only on the deterministic Confluence path (`runDocsDeterministic`). */
+function IncludeDescendantsToggle({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="pl-runall-toggle">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(ev) => onChange(ev.target.checked)}
+        disabled={disabled}
+      />
+      <span className="pl-runall-toggle__body">
+        <span className="pl-runall-toggle__title">Fetch cả cây con của trang đã chọn</span>
+        <span className="pl-runall-toggle__desc">
+          Spec hay tổ chức theo thư mục: trang cha chỉ là mục lục, nội dung nằm ở các trang con (mọi
+          cấp) mà không trang nào link tới. Tick để daemon quét trọn sub-tree dưới mỗi trang đã chọn
+          — số trang có thể lớn, chỉ bật khi trang cha đúng là một thư mục.
+        </span>
+      </span>
+    </label>
+  );
+}
+
 const RUN_STATUS_LABEL: Record<string, string> = {
   queued: 'Queued',
   running: 'Running',
@@ -91,8 +153,10 @@ const RUN_STATUS_LABEL: Record<string, string> = {
 
 // Mirror of the daemon's apps/daemon/src/pipelines.ts `outputMatches`. Kept in
 // sync by hand (the patterns are stable); used to attribute a project file to a
-// pipeline stage from its declared `outputs` globs.
-function outputMatches(rel: string, pattern: string): boolean {
+// pipeline stage from its declared `outputs` globs. Exported so
+// tests/components/pipelines/pipeline-result-files.test.ts can pin the
+// workflow-id-mirror invariant directly (must_not: no behavior change).
+export function outputMatches(rel: string, pattern: string): boolean {
   if (pattern.endsWith('/')) return rel === pattern.slice(0, -1) || rel.startsWith(pattern);
   if (pattern.startsWith('*') || pattern.startsWith('-')) {
     return rel.endsWith(pattern.startsWith('*') ? pattern.slice(1) : pattern);
@@ -109,10 +173,10 @@ function outputMatches(rel: string, pattern: string): boolean {
 // "No output files yet" for stages that plainly succeeded. Legacy unprefixed
 // paths pass through unchanged. MUST be kept in sync with daemon `WORKFLOWS`
 // (pipelines.ts) — every workflow id added there needs its id added here too.
-const WORKFLOW_DIR_RE = /^(docs-to-ui|docs-to-prd|docs-to-html|docs-to-react)\//;
+const WORKFLOW_DIR_RE = /^(docs-to-ui|docs-to-prd|docs-review|docs-to-html|docs-to-react)\//;
 // Every folder head the daemon may prefix an output with. A file whose first
 // segment is NOT one of these has no workflow prefix (legacy flat output).
-const KNOWN_WORKFLOW_DIRS = new Set(['docs-to-ui', 'docs-to-prd', 'docs-to-html', 'docs-to-react']);
+const KNOWN_WORKFLOW_DIRS = new Set(['docs-to-ui', 'docs-to-prd', 'docs-review', 'docs-to-html', 'docs-to-react']);
 // A workflow's outputs may live under its own id OR a retired twin's folder head
 // (LEGACY_WORKFLOW_DIRS in pipelines.ts): docs-to-html / docs-to-react were
 // merged into docs-to-ui and old projects keep those prefixes on disk.
@@ -140,7 +204,8 @@ function targetOfFile(rel: string): UiTarget | null {
   const m = UI_TARGET_SEG_RE.exec(rel.replace(WORKFLOW_DIR_RE, ''));
   return m ? (m[1] as UiTarget) : null;
 }
-function stripWorkflowDir(rel: string): string {
+// Exported for the same test-pinning reason as `outputMatches` above.
+export function stripWorkflowDir(rel: string): string {
   return rel.replace(WORKFLOW_DIR_RE, '').replace(UI_TARGET_SEG_RE, '');
 }
 
@@ -648,6 +713,7 @@ export function RunInputModal({
   // dán link, tick chọn nhiều). Seeded từ config dự án trên studio.
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
   const [followLinks, setFollowLinks] = useState(true);
+  const [includeDescendants, setIncludeDescendants] = useState(false);
   // docs-to-ui: which UI products to build. Recorded as targets.json when the
   // docs run starts. Default to the last run's targets, else a single mobile app.
   const [targets, setTargets] = useState<UiTarget[]>(
@@ -748,6 +814,7 @@ export function RunInputModal({
         payload = {
           input: refs.join('\n'),
           ...(followLinks ? {} : { followLinks: false }),
+          ...(includeDescendants ? { includeDescendants: true } : {}),
         };
       } else {
         const featureIds = [...selected];
@@ -780,7 +847,7 @@ export function RunInputModal({
       footer={
         <>
           <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
-            Cancel
+            Hủy
           </button>
           <button
             type="button"
@@ -789,7 +856,7 @@ export function RunInputModal({
             disabled={busy || !canRun}
           >
             <Icon name={busy ? 'spinner' : 'play'} size={14} />
-            <span>{busy ? 'Starting…' : 'Run pipeline'}</span>
+            <span>{busy ? 'Starting…' : 'Chạy bước này'}</span>
           </button>
         </>
       }
@@ -889,6 +956,11 @@ export function RunInputModal({
             <>
               <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
               <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
+              <IncludeDescendantsToggle
+                checked={includeDescendants}
+                onChange={setIncludeDescendants}
+                disabled={busy}
+              />
             </>
           ) : (
             <div className={styles.panel}>
@@ -988,6 +1060,7 @@ export function RunInputModal({
 export function DesignSystemRunModal({
   pipelineName,
   defaultId,
+  requireReactBundle,
   onClose,
   onRun,
 }: {
@@ -995,6 +1068,10 @@ export function DesignSystemRunModal({
   /** Design system cấu hình sẵn từ Pipeline Studio (project.json) — chọn sẵn
    *  trong danh sách, user vẫn đổi được cho từng lần chạy. */
   defaultId?: string;
+  /** UI-Spec (React DS): chỉ liệt kê design system có bộ React (import từ
+   *  Figma IR) — KỂ CẢ bản draft (DS import mặc định là draft), và bắt buộc
+   *  chọn một cái mới cho Run. */
+  requireReactBundle?: boolean;
   onClose: () => void;
   onRun: (designSystemId: string | null) => Promise<void>;
 }) {
@@ -1009,7 +1086,11 @@ export function DesignSystemRunModal({
       try {
         const all = await fetchDesignSystems();
         if (cancelled) return;
-        setSystems(all.filter((s) => s.status !== 'draft'));
+        setSystems(
+          requireReactBundle
+            ? all.filter((s) => s.hasReactBundle)
+            : all.filter((s) => s.status !== 'draft'),
+        );
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
@@ -1020,7 +1101,7 @@ export function DesignSystemRunModal({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [requireReactBundle]);
 
   const submit = async () => {
     if (busy) return;
@@ -1044,22 +1125,24 @@ export function DesignSystemRunModal({
       footer={
         <>
           <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
-            Cancel
+            Hủy
           </button>
           <button
             type="button"
             className="pl-btn pl-btn--run"
             onClick={() => void submit()}
-            disabled={busy || systems === null}
+            disabled={busy || systems === null || (requireReactBundle && !selected)}
           >
             <Icon name={busy ? 'spinner' : 'play'} size={14} />
-            <span>{busy ? 'Starting…' : 'Run pipeline'}</span>
+            <span>{busy ? 'Starting…' : 'Chạy bước này'}</span>
           </button>
         </>
       }
     >
       <div className="pl-modal-field pl-modal-field--ds">
-        <span className="pl-modal-field__label">Design system (optional)</span>
+        <span className="pl-modal-field__label">
+          {requireReactBundle ? 'Design system (bắt buộc — bộ React từ Figma)' : 'Design system (optional)'}
+        </span>
         {/* Same swatch + live-theme-preview picker as the chat composer. It
             portals its popover to <body>; popoverZIndex lifts it above the
             modal backdrop (z 1000) so it isn't hidden behind the overlay. The
@@ -1073,13 +1156,26 @@ export function DesignSystemRunModal({
           popoverZIndex={1100}
         />
         <span className="pl-modal-field__hint">
-          Applies a brand's <code>DESIGN.md</code> + tokens to the generated HTML. Leave as{' '}
-          <strong>None</strong> for a generic, design-led prototype. Only published systems
-          appear — publish a draft (e.g. one created from a <code>.fig</code>) to use it here.
+          {requireReactBundle ? (
+            <>
+              Chỉ liệt kê design system có bộ React (import từ Figma IR trong Settings →
+              Design systems) — màn hình sẽ được ghép từ đúng component + token của bộ này.
+            </>
+          ) : (
+            <>
+              Applies a brand's <code>DESIGN.md</code> + tokens to the generated HTML. Leave as{' '}
+              <strong>None</strong> for a generic, design-led prototype. Only published systems
+              appear — publish a draft (e.g. one created from a <code>.fig</code>) to use it here.
+            </>
+          )}
         </span>
       </div>
       {systems !== null && systems.length === 0 ? (
-        <p className="pl-modal-empty">No published design systems yet — running with None.</p>
+        <p className="pl-modal-empty">
+          {requireReactBundle
+            ? 'Chưa có design system nào có bộ React — import file .ir.json từ plugin fig-export trong Settings → Design systems trước.'
+            : 'No published design systems yet — running with None.'}
+        </p>
       ) : null}
       {error ? (
         <div className="pl-modal-error" role="alert">
@@ -1131,7 +1227,7 @@ export function PlatformRunModal({
       footer={
         <>
           <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
-            Cancel
+            Hủy
           </button>
           <button
             type="button"
@@ -1140,7 +1236,7 @@ export function PlatformRunModal({
             disabled={busy}
           >
             <Icon name={busy ? 'spinner' : 'play'} size={14} />
-            <span>{busy ? 'Starting…' : 'Run pipeline'}</span>
+            <span>{busy ? 'Starting…' : 'Chạy bước này'}</span>
           </button>
         </>
       }
@@ -1201,13 +1297,13 @@ export function PlatformRunModal({
   );
 }
 
-// ── Run FULL workflow (no per-stage review) ─────────────────────────────────
-// One dialog collects every choice the per-stage modals would ask (source for
-// the docs stage, platform for UX, design system + terminal option for the
-// UI-Spec step), then the daemon chains all stages automatically — each one
-// starts as its predecessor succeeds, no user review in between. Progress
-// shows on the normal stepper.
-export type WorkflowTerminalChoice = 'ui-html' | 'ui-react' | 'both';
+// ── Cấu hình pipeline (một modal, không chạy gì) ─────────────────────────────
+// Modal gom mọi lựa chọn mà các modal từng-bước sẽ hỏi (nguồn cho bước Docs,
+// target cho UX, design system + kiểu output cho bước UI-Spec) và CHỈ LƯU chúng
+// vào cấu hình dự án (`PUT /api/pipelines/projects/:id/run-config`). Chạy full
+// workflow là hành động NGOÀI modal: nút "Chạy pipeline" trên màn Chạy đọc
+// đúng cấu hình đã lưu này rồi POST run-all thẳng.
+export type WorkflowTerminalChoice = 'ui-html' | 'ui-react' | 'ui-react-ds' | 'both';
 
 export interface RunAllPayload {
   input?: string;
@@ -1220,32 +1316,207 @@ export interface RunAllPayload {
    *  ≥1, the post-docs chain runs once per target; empty → single build. */
   targets?: UiTarget[];
   designSystemId: string | null;
+  /** Multi-target run (≥2 targets): each target's OWN design system — mobile
+   *  and web come from different Figma libs. Recorded into targets.json so
+   *  later single-stage re-runs resolve the same DS per target. */
+  designSystemByTarget?: Partial<Record<UiTarget, string>>;
   skipSucceeded: boolean;
+  /** Danh sách id bước sẽ chạy (người dùng tự tick ở section "Các bước sẽ
+   *  chạy"). Có mặt và không rỗng → daemon chạy ĐÚNG các bước này theo thứ tự
+   *  workflow, bỏ qua `lean`/`skipSucceeded`. Vắng mặt → hành vi cũ. */
+  stageIds?: string[];
   /** true → run only docs → UX Spec → UI, dropping the analysis stages. */
   lean?: boolean;
   /** false → docs stage fetches ONLY the picked pages (no link-follow). */
   followLinks?: boolean;
   /** true → docs stage also scans the whole sub-tree under each seed page. */
   includeDescendants?: boolean;
+  /** The docs were UPLOADED from this modal, so the daemon must DROP the ingest
+   *  stage from the chain — that stage's declared output is the very folder the
+   *  files landed in, so running it would delete them and fetch nothing. */
+  docsFromUpload?: boolean;
+  /** App Docs Pool nguồn — trang CHÍNH đã tick; daemon copy các trang này vào `<wf>/docs/`. */
+  appPool?: { appId: string; paths: string[] };
 }
+
+/** Section duy nhất mà modal hiển thị khi mở từ nút "Đổi" của một dòng trên rail
+ *  cấu hình — cùng modal, nhưng chỉ đúng phần người dùng bấm vào. Không truyền =
+ *  modal đầy đủ (mọi section). Cả hai chế độ footer đều là "Hủy / Lưu". */
+export type RunAllFocus = 'source' | 'designSystem' | 'targets' | 'stages' | 'mode';
+
+const RUN_ALL_FOCUS_TITLES: Record<RunAllFocus, string> = {
+  source: 'Nguồn tài liệu',
+  designSystem: 'Design system',
+  targets: 'Sản phẩm cần build',
+  stages: 'Các bước sẽ chạy',
+  mode: 'Chế độ chạy',
+};
+
+/**
+ * Ba đầu ra UI-Spec của `docs-to-ui` — BA LỰA CHỌN THAY THẾ NHAU, không phải ba
+ * bước nối tiếp: cả ba cùng `dependsOn: ['ux-review']` nên ở cùng một tầng của
+ * đồ thị, và một lần chạy chỉ nên ra một loại prototype.
+ *
+ * Vì sao là một danh sách KHAI BÁO chứ không suy ra từ đồ thị: "cùng tầng" KHÔNG
+ * đồng nghĩa với "chọn một". Workflow `docs-review` có `dr-comp` và `dr-flow`
+ * cũng cùng phụ thuộc `dr-docs`, cũng cùng tầng — nhưng CẢ HAI đều phải chạy vì
+ * `dr-review` đọc output của cả hai. Suy ra từ hình dạng đồ thị sẽ biến workflow
+ * đó thành một lựa-chọn-một sai hoàn toàn.
+ */
+export const UI_TERMINAL_STAGE_IDS: ReadonlySet<string> = new Set([
+  'ui-html',
+  'ui-react',
+  'ui-react-ds',
+]);
+
+/** Nhãn + mô tả của từng đầu ra UI-Spec, dùng cho nhóm radio ở bước cuối. */
+const UI_TERMINAL_LABELS: Record<string, { label: string; desc: string }> = {
+  'ui-html': { label: 'HTML prototype', desc: 'Prototype HTML tương tác, mỗi màn một file.' },
+  'ui-react': { label: 'React app', desc: 'App Vite + React 19 thật (cần Docker).' },
+  'ui-react-ds': {
+    label: 'React DS',
+    desc: 'App React ghép từ bộ design system đã import (cần DS Figma).',
+  },
+};
+
+/** Một bước của workflow như section "Các bước sẽ chạy" cần biết — tập con của
+ *  `PipelineView`, nên caller truyền thẳng danh sách pipeline vào được. */
+export interface RunStageOption {
+  id: string;
+  name: string;
+  /** Phụ thuộc TĨNH của registry (mode-independent). Cố ý KHÔNG dùng
+   *  `effectiveDependsOn`: lựa chọn bước giờ tự quyết chuỗi chạy, nên cái phải
+   *  giữ đúng là "bước này đọc output của bước nào", không phải cổng gating của
+   *  một chế độ chạy nào đó. */
+  dependsOn: string[];
+  status: PipelineStatus;
+  /** Chế độ chạy hiện tại của dự án bỏ bước này (daemon: `skippedInLeanRun`). */
+  skipped?: boolean;
+}
+
+/** Các bước mà chế độ "Tiết kiệm" bỏ — MIRROR bằng tay của `skippedInLeanRun`
+ *  trong `apps/daemon/src/pipelines.ts` (contracts không mang cờ đó; `skipped`
+ *  chỉ bật khi dự án ĐANG chạy lean, nên một mình nó không đủ để dựng preset ở
+ *  chế độ Đầy đủ). Sai lệch chỉ làm preset thiếu/thừa một bước — người dùng vẫn
+ *  tick tay được — nên đây là mirror an toàn, không phải nguồn sự thật. */
+const LEAN_SKIPPABLE_STAGE_IDS = new Set(['cj', 'ux-research', 'ux-review']);
+
+export function isLeanSkippableStage(stage: RunStageOption): boolean {
+  return stage.skipped === true || LEAN_SKIPPABLE_STAGE_IDS.has(stage.id);
+}
+
+/** Lựa chọn ban đầu: khôi phục đúng `stageIds` đã lưu; chưa có thì tick các bước
+ *  CHƯA `succeeded` (chạy tiếp phần còn thiếu). Mọi bước đều đã xong thì tick
+ *  hết — mặc định rỗng sẽ khoá luôn nút Lưu mà không nói được vì sao. */
+export function initialStageSelection(
+  stages: readonly RunStageOption[],
+  savedStageIds?: readonly string[],
+): Set<string> {
+  const known = new Set(stages.map((s) => s.id));
+  const restored = (savedStageIds ?? []).filter((id) => known.has(id));
+  if (restored.length > 0) return new Set(restored);
+  const pending = stages.filter((s) => s.status !== 'succeeded').map((s) => s.id);
+  return new Set(pending.length > 0 ? pending : stages.map((s) => s.id));
+}
+
+/**
+ * Tick MỘT bước ⇒ CHỈ thêm đúng bước đó vào lựa chọn.
+ *
+ * Cổng phụ thuộc theo bước đã bỏ — điều kiện duy nhất còn lại là bước 1 (tài
+ * liệu nạp), gate ở ngoài picker này. Trước đây hàm này kéo theo mọi phụ
+ * thuộc CHƯA `succeeded`, đệ quy; giờ người dùng có toàn quyền tick một bước
+ * dù phụ thuộc của nó chưa tick/chưa xong — bước đó sẽ chạy với dữ liệu hiện
+ * có trên đĩa, không còn bị chặn ở đây. `missingRunDeps` bên dưới tính đúng
+ * phần "sẽ chạy thiếu gì" đó để hiện chú thích mềm trong danh sách, không
+ * phải để ép tick lại. Tên hàm giữ nguyên (còn nhiều call-site trong file
+ * này); tham số `stages` giữ để chữ ký không đổi qua các lần gọi hiện có.
+ */
+export function selectStageWithDeps(
+  stageId: string,
+  stages: readonly RunStageOption[],
+  selected: ReadonlySet<string>,
+): Set<string> {
+  void stages;
+  const next = new Set(selected);
+  next.add(stageId);
+  return next;
+}
+
+/**
+ * Bỏ tick MỘT bước ⇒ CHỈ bỏ đúng bước đó khỏi lựa chọn.
+ *
+ * Mặt đối xứng của `selectStageWithDeps` ở trên: trước đây bỏ tick một bước
+ * kéo theo mọi bước đang tick "vì thế mất input", đệ quy; giờ không còn cascade
+ * nào cả — bỏ tick một bước không đổi trạng thái tick của bước nào khác, kể cả
+ * bước phụ thuộc nó. `missingRunDeps` nói rõ hệ quả (bước nào sẽ chạy thiếu
+ * input) thay vì âm thầm bỏ hộ người dùng.
+ */
+export function deselectStageWithDependents(
+  stageId: string,
+  stages: readonly RunStageOption[],
+  selected: ReadonlySet<string>,
+): Set<string> {
+  void stages;
+  const next = new Set(selected);
+  next.delete(stageId);
+  return next;
+}
+
+/**
+ * Phụ thuộc TĨNH của `stage` mà hiện KHÔNG nằm trong `selected` và cũng CHƯA
+ * `succeeded` trên đĩa — tức nếu `stage` chạy ngay bây giờ, nó sẽ chạy với dữ
+ * liệu hiện có thay vì input mới từ những phụ thuộc này. Nguồn cho chú thích
+ * MỀM trong danh sách bước (không phải lỗi): cổng phụ thuộc theo bước đã bỏ,
+ * người dùng có toàn quyền chọn vậy — họ chỉ cần được nói cho biết.
+ */
+export function missingRunDeps(
+  stage: RunStageOption,
+  stages: readonly RunStageOption[],
+  selected: ReadonlySet<string>,
+): RunStageOption[] {
+  const byId = new Map(stages.map((s) => [s.id, s]));
+  const out: RunStageOption[] = [];
+  for (const depId of stage.dependsOn) {
+    const dep = byId.get(depId);
+    if (dep && dep.status !== 'succeeded' && !selected.has(dep.id)) out.push(dep);
+  }
+  return out;
+}
+
+const STAGE_BADGES: Record<string, string> = {
+  succeeded: 'Xong',
+  failed: 'Lỗi',
+  running: 'Đang chạy',
+  queued: 'Đang chờ',
+};
 
 export function RunAllModal({
   workflowName,
   defaultConfluencePages,
   defaultDesignSystemId,
+  defaultDesignSystemByTarget,
   defaultTerminal,
   defaultPlatform,
   defaultTargets,
   defaultFollowLinks,
+  defaultIncludeDescendants,
+  defaultDocsFromUpload,
+  defaultAppPool,
   defaultSkipSucceeded,
   defaultLean,
+  stages = [],
+  defaultStageIds,
   hasPlatform = true,
   hasTerminal = true,
   hasDesignSystem = true,
+  hasUpload = false,
+  appId,
   supportsLean = true,
   anySucceeded,
+  focus,
   onClose,
-  onRun,
+  onSaveConfig,
+  onUploadDocs,
 }: {
   workflowName: string;
   /** Nguồn điền sẵn — ưu tiên cấu hình Run-all ĐÃ LƯU từ lần chạy gần nhất
@@ -1254,19 +1525,46 @@ export function RunAllModal({
    *  modal chỉ biết "đây là giá trị khởi tạo". */
   defaultConfluencePages?: ConfluencePageRefLike[];
   defaultDesignSystemId?: string | null;
+  /** DS RIÊNG từng target, prefilled từ lần chạy trước (multi-target). */
+  defaultDesignSystemByTarget?: Partial<Record<UiTarget, string>>;
   defaultTerminal?: WorkflowTerminalChoice;
   defaultPlatform?: TargetPlatform;
   /** UI targets prefilled from the last run (docs-to-ui multi-target). */
   defaultTargets?: UiTarget[];
   defaultFollowLinks?: boolean;
+  /** Chỉ caller ở chế độ focus truyền: modal khi đó đang SỬA giá trị đã lưu nên
+   *  checkbox phải hiện đúng trạng thái cũ. Luồng chạy full để trống (không tick). */
+  defaultIncludeDescendants?: boolean;
+  /** Cũng chỉ dành cho chế độ focus: mở sẵn đúng nhánh nguồn đang lưu, để dòng
+   *  rail "File tải lên" không mở ra một modal trông như đang dùng Confluence. */
+  defaultDocsFromUpload?: boolean;
+  /** App Docs Pool đã lưu (docs/app-docs-pool-spec.md §2.2) — trang CHÍNH đã
+   *  tick từ pool của App. Chỉ có nghĩa khi `appId` khớp App của dự án. */
+  defaultAppPool?: { appId: string; paths: string[] } | null;
   defaultSkipSucceeded?: boolean;
   defaultLean?: boolean;
+  /** Mọi bước của workflow đang mở, ĐÚNG thứ tự stepper — nguồn của section
+   *  "Các bước sẽ chạy" (tên, trạng thái, và `dependsOn` để tick lan lên phụ
+   *  thuộc). Rỗng = workflow không có bước nào; focus 'stages' báo không dùng
+   *  được thay vì mở một danh sách trống. */
+  stages?: RunStageOption[];
+  /** `stageIds` đã lưu của lần cấu hình trước. Vắng mặt → mặc định tick các
+   *  bước chưa `succeeded`. */
+  defaultStageIds?: string[];
   /** Whether the active workflow HAS a stage that uses each picker — a
    *  workflow with no UX/UI stages (e.g. Docs → PRD Review) hides them so the
    *  modal only shows config it actually consumes. Default true (docs-to-ui). */
   hasPlatform?: boolean;
   hasTerminal?: boolean;
   hasDesignSystem?: boolean;
+  /** Bước ingest của workflow có affordance "Tải file lên" (`acceptsUpload`)
+   *  không — có thì modal mở thêm nhánh nguồn "Tải file .md lên" bên cạnh
+   *  Confluence, đúng như nút Run của riêng bước đó. */
+  hasUpload?: boolean;
+  /** App sở hữu dự án đang mở (`PipelineProject.app.id`) — khi có VÀ pool của
+   *  App đó không rỗng, modal thêm thẻ nguồn "Tài liệu App" (docs/app-docs-pool-spec.md
+   *  §WP-6). Vắng mặt (dự án chưa gán App) → không có thẻ này, hành vi y hệt cũ. */
+  appId?: string;
   /** Lean là khái niệm CHỈ của docs-to-ui (bỏ hành trình/research/rà soát để
    *  tới UI nhanh hơn). docs-to-prd không có bước nào bỏ được — hành trình +
    *  research chính là bằng chứng của bài review — nên workflow đó ẩn hẳn
@@ -1274,15 +1572,83 @@ export function RunAllModal({
   supportsLean?: boolean;
   /** Có bước nào đã xong chưa — quyết định hiện checkbox "chỉ chạy bước còn thiếu". */
   anySucceeded: boolean;
+  /** Mở từ nút "Đổi" của một dòng rail: chỉ hiện section đó. Bỏ trống = hiện
+   *  mọi section. Footer giống nhau ở cả hai chế độ ("Hủy / Lưu"). */
+  focus?: RunAllFocus;
   onClose: () => void;
-  onRun: (payload: RunAllPayload) => Promise<void>;
+  /** Bấm "Lưu": ghi cấu hình dự án (PUT /api/pipelines/projects/:id/run-config,
+   *  owner là PipelinesView). Chế độ focus chỉ gửi field của section đang mở;
+   *  chế độ đầy đủ gửi mọi section modal đang hiện. Reject → modal hiện lỗi,
+   *  không đóng. */
+  onSaveConfig?: (patch: Partial<RunAllConfig>) => Promise<void>;
+  /** Ghi các file `.md` đã chọn vào `<workflow>/docs/` ngay khi bấm Lưu (nguồn
+   *  "Tải file lên" chỉ có nghĩa khi file đã nằm trong `docs/`). Owner là
+   *  PipelinesView (nó giữ projectId/workflowId); modal chỉ gom file. Bắt buộc
+   *  có khi `hasUpload`. Reject → modal hiện lỗi, không lưu. */
+  onUploadDocs?: (files: File[]) => Promise<void>;
 }) {
+  const t = useT();
   // Same shared Confluence picker as the per-stage Docs modal (search by name
   // + paste links, multi-select); prefill from the studio project config. The
   // run input is one page URL/id per line, built from the picked pages.
   const [confPages, setConfPages] = useState<ConfluencePageRefLike[]>(defaultConfluencePages ?? []);
   const [followLinks, setFollowLinks] = useState(defaultFollowLinks ?? true);
-  const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(defaultTerminal ?? 'ui-html');
+  const [includeDescendants, setIncludeDescendants] = useState(defaultIncludeDescendants ?? false);
+  // Nguồn tài liệu cho bước ingest: fetch từ Confluence, tự tải file `.md`
+  // lên, hoặc tick trang có sẵn trong pool tài liệu của App. Ba nhánh loại
+  // trừ nhau — 'upload' khiến daemon BỎ HẲN bước ingest khỏi chuỗi
+  // (docsFromUpload), vì chạy nó sẽ xóa đúng file vừa nạp; 'app-pool' copy
+  // deterministic các trang đã tick (§2.4), không cần agent.
+  // Dự án GẮN App: nguồn tài liệu của workflow CHỈ còn là pool của App
+  // (nạp/import ở bước tạo App) — mode Confluence bị ẩn hẳn, khỏi fetch lại
+  // thứ App đã có. Dự án không gắn App giữ đường Confluence cũ.
+  const [docsSource, setDocsSource] = useState<'confluence' | 'upload' | 'app-pool'>(
+    defaultDocsFromUpload ? 'upload' : appId !== undefined ? 'app-pool' : defaultAppPool?.paths?.length ? 'app-pool' : 'confluence',
+  );
+  const [pendingDocs, setPendingDocs] = useState<PendingFile[]>([]);
+  const uploading = docsSource === 'upload' && hasUpload;
+
+  // ── App Docs Pool (§WP-6) ─────────────────────────────────────────────────
+  // Pool của App sở hữu dự án — fetch một lần khi có appId, đủ để quyết định
+  // thẻ "Tài liệu App" có hiện hay không (pool rỗng → không hiện thẻ, y hệt
+  // App chưa từng import gì).
+  const [appPoolPages, setAppPoolPages] = useState<AppPoolPage[] | null>(null);
+  const [appPoolLoading, setAppPoolLoading] = useState(false);
+  const [appPoolError, setAppPoolError] = useState<string | null>(null);
+  const [appPoolImportOpen, setAppPoolImportOpen] = useState(false);
+  // Ô search lọc cây pool (thay cho picker tìm-Confluence cũ của workflow).
+  const [appPoolQuery, setAppPoolQuery] = useState('');
+  // Trang CHÍNH đã tick, keyed theo `path` (khớp `RunAllConfig.appPool.paths`).
+  const [appPoolPaths, setAppPoolPaths] = useState<Set<string>>(
+    new Set(appId && defaultAppPool?.appId === appId ? (defaultAppPool?.paths ?? []) : []),
+  );
+
+  const refreshAppPool = useCallback(
+    async (background = false) => {
+      if (!appId) return;
+      if (!background) setAppPoolLoading(true);
+      try {
+        const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/pool`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const j = (await res.json()) as AppPoolResponse;
+        setAppPoolPages(j.pages);
+        setAppPoolError(null);
+      } catch (cause) {
+        setAppPoolError(cause instanceof Error ? cause.message : 'Không tải được tài liệu App.');
+      } finally {
+        if (!background) setAppPoolLoading(false);
+      }
+    },
+    [appId],
+  );
+
+  useEffect(() => {
+    setAppPoolPages(null);
+    void refreshAppPool();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appId]);
+
+  const appPoolAvailable = appId !== undefined && (appPoolPages?.length ?? 0) > 0;
   // Legacy single-platform (docs-to-prd has no UI stage / non-target callers).
   // docs-to-ui uses the `targets` multi-select below; platform is derived from
   // the first target in submit when targets are set.
@@ -1296,7 +1662,93 @@ export function RunAllModal({
   const [designSystemId, setDesignSystemId] = useState<string | null>(
     defaultDesignSystemId === undefined ? null : defaultDesignSystemId,
   );
+  // DS RIÊNG từng target (≥2 target): mobile và web đến từ lib Figma khác
+  // nhau nên một id chung không phục vụ được multi-target build.
+  const [dsByTarget, setDsByTarget] = useState<Partial<Record<UiTarget, string>>>(
+    defaultDesignSystemByTarget ?? {},
+  );
   const [skipSucceeded, setSkipSucceeded] = useState(defaultSkipSucceeded ?? false);
+  // Các bước sẽ chạy ở lần "Chạy pipeline" tới. Khởi tạo một lần (lazy init):
+  // modal chỉ sống trong lúc mở nên không cần đồng bộ lại với props.
+  const [stageIds, setStageIdsState] = useState<Set<string>>(() =>
+    initialStageSelection(stages, defaultStageIds),
+  );
+  // Người dùng đã ĐỘNG vào lựa chọn bước trong lần mở này chưa. Chế độ đầy đủ
+  // (mở từ "Chạy pipeline" khi chưa có nguồn tài liệu) hiện section này cùng 5
+  // section khác, và mặc định của nó là "các bước chưa xong" — ghi thẳng nó vào
+  // cấu hình sẽ âm thầm biến một lần Lưu-nguồn-tài-liệu thành "từ nay đừng chạy
+  // lại các bước đã xong". Chỉ ghi khi người dùng thật sự chọn (hoặc khi cấu
+  // hình đã có sẵn `stageIds` từ trước, lúc đó ghi lại chính nó là vô hại).
+  const [stagesTouched, setStagesTouched] = useState(false);
+  const setStageIds = (next: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+    setStagesTouched(true);
+    setStageIdsState(next);
+  };
+  const toggleStage = (id: string) =>
+    setStageIds((prev) =>
+      prev.has(id)
+        ? deselectStageWithDependents(id, stages, prev)
+        : selectStageWithDeps(id, stages, prev),
+    );
+  // Thứ tự workflow, không phải thứ tự tick — dòng tóm tắt phải đọc đúng thứ tự
+  // daemon sẽ chạy.
+  const selectedStages = stages.filter((s) => stageIds.has(s.id));
+  // Bước 1 (tài liệu nạp) — điều kiện DUY NHẤT còn lại sau khi cổng phụ thuộc
+  // theo bước bị bỏ. Nhận diện bằng `dependsOn` rỗng (đúng cho cả ba workflow:
+  // docs / prd-docs / dr-docs), không phải theo vị trí trong mảng, để không lệ
+  // thuộc thứ tự caller truyền `stages` vào.
+  const ingestStage = stages.find((s) => s.dependsOn.length === 0);
+  const ingestPending = ingestStage !== undefined && ingestStage.status !== 'succeeded';
+
+  // ── Bước cuối: BA đầu ra UI-Spec gộp thành MỘT bước, chọn một ─────────────
+  // `forkStages` rỗng hoặc chỉ có một phần tử (docs-to-prd, docs-review) → không
+  // có gì để chọn, mọi bước render thành hàng đánh số bình thường.
+  const forkStages = hasTerminal ? stages.filter((s) => UI_TERMINAL_STAGE_IDS.has(s.id)) : [];
+  const hasFork = forkStages.length >= 2;
+  const stepStages = hasFork ? stages.filter((s) => !UI_TERMINAL_STAGE_IDS.has(s.id)) : stages;
+  // Đầu ra đang chọn. Nguồn ưu tiên là `stageIds` (bước ĐANG tick), vì đó mới là
+  // thứ quyết định lần chạy tới; `defaultTerminal` chỉ đỡ khi chưa tick nhánh
+  // nào. `both` là giá trị cấu hình CŨ (html + react cùng lượt) — bề mặt mới chỉ
+  // cho chọn một, nên nó rơi về nhánh đầu tiên thay vì để radio trống.
+  const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(() => {
+    const initial = initialStageSelection(stages, defaultStageIds);
+    const ticked = stages.find((s) => UI_TERMINAL_STAGE_IDS.has(s.id) && initial.has(s.id));
+    if (ticked) return ticked.id as WorkflowTerminalChoice;
+    if (defaultTerminal && defaultTerminal !== 'both') return defaultTerminal;
+    return 'ui-html';
+  });
+  // Bước cuối có đang chạy không = có nhánh nào được tick không.
+  const forkEnabled = forkStages.some((s) => stageIds.has(s.id));
+  /** Bỏ tick MỌI nhánh đầu ra — qua `deselectStageWithDependents` chứ không xoá
+   *  thẳng khỏi Set, để bất biến "bước được tick luôn đủ input" do một hàm duy
+   *  nhất giữ (hôm nay nhánh cuối chưa có bước nào phụ thuộc nó, ngày mai có). */
+  const clearFork = (from: ReadonlySet<string>): Set<string> => {
+    let out = new Set(from);
+    for (const s of forkStages) {
+      if (out.has(s.id)) out = deselectStageWithDependents(s.id, stages, out);
+    }
+    return out;
+  };
+  /** Chọn một đầu ra ⇒ BẬT luôn bước cuối và bỏ nhánh đang chọn trước đó. Bấm
+   *  vào "React app" nghĩa là muốn React, không phải "ghi nhớ để lát nữa tick". */
+  const pickTerminal = (id: string) => {
+    setTerminal(id as WorkflowTerminalChoice);
+    setStageIds((prev) => selectStageWithDeps(id, stages, clearFork(prev)));
+  };
+  const toggleForkStep = () =>
+    setStageIds((prev) => (forkEnabled ? clearFork(prev) : selectStageWithDeps(terminal, stages, prev)));
+  /** Preset (Tất cả / Chỉ bước chưa xong / Tiết kiệm) thao tác trên CẢ danh sách
+   *  nên tự nhiên tick cả ba nhánh đầu ra — thu về đúng một nhánh, ưu tiên nhánh
+   *  đang chọn, để bề mặt không bao giờ mâu thuẫn với luật "chọn 1 trong 3". */
+  const applyPreset = (next: Set<string>) => {
+    const picked = forkStages.filter((s) => next.has(s.id));
+    if (picked.length > 1) {
+      const keep = picked.find((s) => s.id === terminal) ?? picked[0]!;
+      for (const s of picked) if (s.id !== keep.id) next.delete(s.id);
+      if (keep.id !== terminal) setTerminal(keep.id as WorkflowTerminalChoice);
+    }
+    setStageIds(next);
+  };
   // Workflow không hỗ trợ lean thì bỏ qua cả default đã lưu (cờ đó là của lần
   // chạy docs-to-ui trên cùng project, không phải của workflow này).
   const [lean, setLean] = useState(supportsLean ? (defaultLean ?? false) : false);
@@ -1307,8 +1759,10 @@ export function RunAllModal({
     let cancelled = false;
     void (async () => {
       try {
+        // Keep the FULL list; the picker filters per terminal below (React DS
+        // needs react-bundle systems, which default to draft after import).
         const all = await fetchDesignSystems();
-        if (!cancelled) setSystems(all.filter((s) => s.status !== 'draft'));
+        if (!cancelled) setSystems(all);
       } catch {
         if (!cancelled) setSystems([]);
       }
@@ -1318,30 +1772,132 @@ export function RunAllModal({
     };
   }, []);
 
-  // docs-to-ui (hasPlatform) needs ≥1 target chosen; other workflows don't.
-  const canRun = (confPages.length > 0 || skipSucceeded) && (!hasPlatform || targets.length > 0);
-  const submit = async () => {
-    if (busy || !canRun) return;
+  // Nguồn: nhánh upload cần ≥1 file, nhánh App-pool cần ≥1 trang đã tick,
+  // nhánh Confluence cần ≥1 trang.
+  const hasSource = uploading
+    ? pendingDocs.length > 0
+    : docsSource === 'app-pool'
+      ? appPoolPaths.size > 0
+      : confPages.length > 0;
+  // Nhánh upload ĐANG là nguồn đã lưu: file cũ vẫn nằm trong `docs/` nên không
+  // bắt tải lại — Lưu khi đó chỉ xác nhận lại lựa chọn nguồn.
+  const sourceOk = hasSource || (uploading && defaultDocsFromUpload === true);
+  // Validate theo ĐÚNG các section đang hiện: chế độ focus chỉ đòi section đó
+  // hợp lệ, chế độ đầy đủ đòi nguồn tài liệu + (docs-to-ui) ≥1 target.
+  const canSave = focus
+    ? focus === 'source'
+      ? sourceOk
+      : focus === 'targets'
+        ? targets.length > 0
+        : focus === 'stages'
+          ? // Chạy 0 bước không có nghĩa gì — Lưu một danh sách rỗng chỉ tạo ra
+            // một nút "Chạy pipeline" không làm gì cả.
+            stageIds.size > 0
+          : true
+    : (sourceOk || skipSucceeded) &&
+      (!hasPlatform || targets.length > 0) &&
+      (stages.length === 0 || stageIds.size > 0);
+  // DS RIÊNG từng target, lọc còn đúng các target ĐANG chọn (multi-target).
+  const dsByTargetForSelected = (): Partial<Record<UiTarget, string>> =>
+    Object.fromEntries(
+      targets.flatMap((t) => (dsByTarget[t] ? [[t, dsByTarget[t]!]] : [])),
+    ) as Partial<Record<UiTarget, string>>;
+
+  // Patch config của MỘT section — field ngoài section giữ nguyên giá trị đã
+  // lưu (daemon merge shallow vào `metadata.runAllConfig`).
+  const configPatchFor = (section: RunAllFocus): Partial<RunAllConfig> => {
+    switch (section) {
+      case 'source':
+        // Ba nhánh loại trừ nhau — mỗi lần Lưu section này PHẢI resend cả ba
+        // field (`confluencePages` / `docsFromUpload` / `appPool`), kể cả để
+        // XÓA hai nhánh không chọn: field vắng mặt trong patch được daemon
+        // PRESERVE giá trị cũ (bài học appFiles, xem spec §2.2), nên chỉ gửi
+        // đúng field của nhánh đang chọn sẽ để sót giá trị cũ của nhánh khác.
+        if (uploading) return { docsFromUpload: true, confluencePages: [], appPool: null };
+        if (docsSource === 'app-pool' && appId) {
+          return {
+            docsFromUpload: false,
+            confluencePages: [],
+            appPool: { appId, paths: [...appPoolPaths] },
+          };
+        }
+        return {
+          confluencePages: confPages,
+          followLinks,
+          includeDescendants,
+          docsFromUpload: false,
+          appPool: null,
+        };
+      case 'designSystem':
+        return {
+          designSystemId,
+          ...(hasPlatform && targets.length >= 2
+            ? { designSystemByTarget: dsByTargetForSelected() }
+            : {}),
+        };
+      case 'targets':
+        return { targets };
+      case 'stages':
+        // `terminal` đi CÙNG `stageIds` vì bước cuối giờ là một phần của section
+        // này. Hai field không thừa nhau: `stageIds` chi phối lần chạy tick tay,
+        // còn `terminal` là thứ DUY NHẤT chỉ định đầu ra cho đường chạy tự động
+        // (`selectRunStages` bỏ qua `terminal` khi `stageIds` không rỗng, và bỏ
+        // qua `stageIds` khi nó rỗng) — ghi lệch nhau thì hai đường chạy cùng
+        // một cấu hình sẽ ra hai kết quả khác nhau.
+        return { stageIds: selectedStages.map((s) => s.id), ...(hasTerminal ? { terminal } : {}) };
+      case 'mode':
+        return { lean };
+    }
+  };
+
+  // Cấu hình gửi lên khi bấm Lưu: focus = đúng một section, đầy đủ = mọi section
+  // modal ĐANG hiện. Section bị ẩn (workflow không có bước dùng nó) phải nằm
+  // ngoài patch — gửi giá trị mặc định của state sẽ âm thầm ghi đè cấu hình cũ.
+  const configPatch = (): Partial<RunAllConfig> =>
+    focus
+      ? configPatchFor(focus)
+      : {
+          ...configPatchFor('source'),
+          ...(stages.length > 0 && (stagesTouched || (defaultStageIds?.length ?? 0) > 0)
+            ? configPatchFor('stages')
+            : {}),
+          // Workflow không có bước target (docs-to-prd): giữ field platform
+          // legacy để lần chạy tới vẫn có giá trị, thay vì rơi về mặc định.
+          ...(hasPlatform ? configPatchFor('targets') : { platform }),
+          ...(supportsLean ? configPatchFor('mode') : {}),
+          ...(hasDesignSystem ? configPatchFor('designSystem') : {}),
+          ...(hasTerminal ? { terminal } : {}),
+          ...(anySucceeded ? { skipSucceeded } : {}),
+        };
+
+  // Chế độ focus render ĐÚNG một section (nút "Đổi" của dòng rail tương ứng);
+  // không focus thì hiện tất cả như modal "Chạy full workflow" cũ.
+  const shows = (section: RunAllFocus) => !focus || focus === section;
+  // Workflow đang chạy có thể không có section vừa bấm (vd Docs → PRD Review
+  // không có bước UI nên không có target/design system, cũng không có chế độ
+  // Tiết kiệm). Nói thẳng ra thay vì mở một modal trống rỗng.
+  const focusUnavailable =
+    (focus === 'designSystem' && !hasDesignSystem) ||
+    (focus === 'targets' && !hasPlatform) ||
+    // Workflow không có bước nào để chọn — gần như không xảy ra (một workflow
+    // rỗng cũng không render được stepper), nhưng section này đọc dữ liệu từ
+    // caller nên vẫn phải có nhánh cho "caller chưa truyền gì".
+    (focus === 'stages' && stages.length === 0) ||
+    (focus === 'mode' && !supportsLean);
+
+  const save = async () => {
+    if (busy || !canSave || focusUnavailable) return;
     setBusy(true);
     setError(null);
     try {
-      const input = confPages
-        .map((p) => p.url ?? p.id)
-        .filter((x): x is string => Boolean(x))
-        .join('\n');
-      await onRun({
-        ...(input ? { input } : {}),
-        ...(confPages.length ? { confluencePages: confPages } : {}),
-        terminal,
-        // platform kept for legacy/back-compat; per-target platform is derived
-        // daemon-side from `targets` when present.
-        platform: hasPlatform && targets[0] ? UI_TARGETS[targets[0]].platform : platform,
-        ...(hasPlatform ? { targets } : {}),
-        designSystemId,
-        skipSucceeded,
-        ...(supportsLean && lean ? { lean: true } : {}),
-        ...(followLinks ? {} : { followLinks: false }),
-      });
+      // Nhánh upload: file vẫn phải nằm trong `<workflow>/docs/` — chỉ lưu cờ
+      // docsFromUpload mà không ghi file thì bước sau không có gì để đọc.
+      if (uploading && pendingDocs.length > 0) {
+        if (!onUploadDocs) throw new Error('Chưa có handler tải file lên');
+        await onUploadDocs(pendingDocs.map((p) => p.file));
+      }
+      if (!onSaveConfig) throw new Error('Chưa có handler lưu cấu hình');
+      await onSaveConfig(configPatch());
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1349,28 +1905,7 @@ export function RunAllModal({
     }
   };
 
-  const terminalCard = (value: WorkflowTerminalChoice, label: string, desc: string) => (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={terminal === value}
-      className={`${styles.card}${terminal === value ? ' ' + styles.cardSelected : ''}`}
-      onClick={() => setTerminal(value)}
-    >
-      <span className={styles.cardTop}>
-        <Icon name={value === 'ui-react' ? 'blocks' : value === 'both' ? 'sparkles' : 'file-code'} size={16} />
-        {label}
-        {terminal === value ? (
-          <span className={styles.cardCheck} aria-hidden="true">
-            <Icon name="check" size={14} />
-          </span>
-        ) : null}
-      </span>
-      <span className={styles.cardDesc}>{desc}</span>
-    </button>
-  );
-
-  // Same card shape as the terminal picker so the two choices read as one set.
+  // Card shape shared with the target picker so the choices read as one set.
   const modeCard = (value: boolean, label: string, desc: string, icon: IconName) => (
     <button
       type="button"
@@ -1394,48 +1929,277 @@ export function RunAllModal({
   );
 
   return (
-    <PlModal
-      title={`Chạy full workflow · ${workflowName}`}
-      icon="play"
+    <>
+      <PlModal
+      title={focus ? RUN_ALL_FOCUS_TITLES[focus] : `Cấu hình pipeline · ${workflowName}`}
+      icon="sliders"
       size="md"
       busy={busy}
       onClose={onClose}
       footer={
         <>
           <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
-            Cancel
+            Hủy
           </button>
+          {/* Modal CHỈ lưu cấu hình — chạy full workflow là nút "Chạy pipeline"
+              ngoài modal, đọc đúng cấu hình vừa lưu này. */}
           <button
             type="button"
-            className="pl-btn pl-btn--run"
-            onClick={() => void submit()}
-            disabled={busy || !canRun}
-            title={canRun ? undefined : 'Chọn ít nhất một trang Confluence (hoặc tick "chỉ chạy bước còn thiếu" khi Docs đã xong)'}
+            className="pl-btn pl-btn--primary"
+            onClick={() => void save()}
+            disabled={busy || !canSave || focusUnavailable}
+            title={
+              canSave
+                ? undefined
+                : focus === 'targets' || (!focus && hasPlatform && targets.length === 0)
+                  ? 'Chọn ít nhất một sản phẩm cần build'
+                  : focus === 'stages' || (!focus && stages.length > 0 && stageIds.size === 0)
+                    ? 'Tick ít nhất một bước sẽ chạy'
+                  : uploading
+                    ? 'Chọn ít nhất một file .md'
+                    : docsSource === 'app-pool'
+                      ? 'Tick ít nhất một trang trong tài liệu dự án'
+                      : focus
+                        ? 'Chọn ít nhất một trang Confluence'
+                        : 'Chọn ít nhất một trang Confluence (hoặc tick "chỉ chạy bước còn thiếu" khi Docs đã xong)'
+            }
           >
-            <Icon name={busy ? 'spinner' : 'play'} size={14} />
-            <span>{busy ? 'Đang khởi động…' : 'Chạy tất cả các bước'}</span>
+            <Icon name={busy ? 'spinner' : 'check'} size={14} />
+            <span>{busy ? 'Đang lưu…' : 'Lưu'}</span>
           </button>
         </>
       }
     >
+      {focusUnavailable ? (
+        <p className="pl-modal-empty">Workflow này không có lựa chọn đó.</p>
+      ) : null}
+      {focus ? null : (
       <p className={styles.hint} style={{ marginTop: 0 }}>
-        Toàn bộ các bước chạy <strong>tự động nối tiếp</strong> — bước sau khởi động ngay khi bước
-        trước xong, không cần duyệt output từng bước. Theo dõi tiến độ trên stepper; một bước lỗi
-        sẽ dừng chuỗi tại đó.
+        Bấm <strong>Lưu</strong> chỉ ghi cấu hình cho dự án, <strong>không chạy gì</strong>. Muốn
+        chạy thì bấm <strong>Chạy pipeline</strong> ở màn Chạy — toàn bộ các bước chạy tự động nối
+        tiếp bằng đúng cấu hình này, một bước lỗi sẽ dừng chuỗi tại đó.
       </p>
+      )}
+      {shows('source') ? (
       <div className="pl-modal-field">
-        <span className="pl-modal-field__label">Nguồn tài liệu (bước Docs)</span>
-        {/* Cùng picker với nút Run của riêng bước Docs: tìm trang theo tên,
-            tick chọn nhiều, hoặc dán link/page id. */}
-        <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
-        <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
+        <span className="pl-modal-field__label">Tài liệu đầu vào cho 3 workflow</span>
         <span className="pl-modal-field__hint">
-          Điền sẵn từ cấu hình dự án trên Pipeline Studio (nếu có). Link/id Confluence được daemon
-          fetch trực tiếp (không cần agent); dán JIRA key/JQL như một dòng nếu muốn chạy qua agent.
-          Nguồn BAS đang bảo trì.
+          Chọn <strong>URD</strong> của tính năng/sản phẩm làm tài liệu chính (bắt buộc). Có thể chọn thêm
+          <strong> PRD</strong> làm tài liệu bổ sung để agent nắm nhanh bối cảnh dự án. Các tài liệu này được dùng
+          chung khi chạy cả 3 workflow.
         </span>
+        {/* Workflow có bước ingest nhận file tay (`acceptsUpload`, ví dụ Docs →
+            Review tài liệu) thì cho chọn nguồn ngay tại đây. Dự án GẮN App:
+            thẻ Confluence bị ẨN — tài liệu chỉ chọn từ pool App (mọi workflow
+            dùng chung modal này, chung một nguồn). */}
+        {hasUpload || appPoolAvailable ? (
+          <div className={styles.cards} role="radiogroup" aria-label="Nguồn tài liệu">
+            {appId === undefined ? (
+            <button
+              type="button"
+              role="radio"
+              aria-checked={docsSource === 'confluence'}
+              className={`${styles.card}${docsSource === 'confluence' ? ' ' + styles.cardSelected : ''}`}
+              onClick={() => setDocsSource('confluence')}
+              disabled={busy}
+            >
+              <span className={styles.cardTop}>
+                <Icon name="import" size={16} />
+                Confluence
+                {docsSource === 'confluence' ? (
+                  <span className={styles.cardCheck} aria-hidden="true">
+                    <Icon name="check" size={14} />
+                  </span>
+                ) : null}
+              </span>
+              <span className={styles.cardDesc}>
+                Chọn URD trước; chọn thêm PRD nếu có. Daemon tải các trang đã chọn về Markdown.
+              </span>
+            </button>
+            ) : null}
+            {appPoolAvailable ? (
+              <button
+                type="button"
+                role="radio"
+                aria-checked={docsSource === 'app-pool'}
+                className={`${styles.card}${docsSource === 'app-pool' ? ' ' + styles.cardSelected : ''}`}
+                onClick={() => setDocsSource('app-pool')}
+                disabled={busy}
+              >
+                <span className={styles.cardTop}>
+                  <Icon name="blocks" size={16} />
+                  Tài liệu dự án
+                  {docsSource === 'app-pool' ? (
+                    <span className={styles.cardCheck} aria-hidden="true">
+                      <Icon name="check" size={14} />
+                    </span>
+                  ) : null}
+                </span>
+                <span className={styles.cardDesc}>
+                  Tick URD của tính năng làm tài liệu chính; PRD chỉ là ngữ cảnh bổ sung. Bước 1 copy các trang
+                  này vào docs-feature/ — toàn bộ kho luôn sẵn ở docs-app/ để agent nắm toàn cảnh dự án.
+                </span>
+              </button>
+            ) : null}
+            {hasUpload ? (
+              <button
+                type="button"
+                role="radio"
+                aria-checked={docsSource === 'upload'}
+                className={`${styles.card}${docsSource === 'upload' ? ' ' + styles.cardSelected : ''}`}
+                onClick={() => setDocsSource('upload')}
+                disabled={busy}
+              >
+                <span className={styles.cardTop}>
+                  <Icon name="upload" size={16} />
+                  Tải file .md lên
+                  {docsSource === 'upload' ? (
+                    <span className={styles.cardCheck} aria-hidden="true">
+                      <Icon name="check" size={14} />
+                    </span>
+                  ) : null}
+                </span>
+                <span className={styles.cardDesc}>
+                  Tải URD làm tài liệu chính; có thể thêm PRD để bổ sung bối cảnh. Bỏ bước fetch và chạy từ bước
+                  sau.
+                </span>
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {uploading ? (
+          <>
+            <UploadDropzone
+              pending={pendingDocs}
+              onAdd={(files) => {
+                const next = toPendingFiles(files);
+                if (next.length) setPendingDocs((cur) => [...cur, ...next]);
+              }}
+              onRemove={(id) => setPendingDocs((cur) => cur.filter((p) => p.id !== id))}
+              disabled={busy}
+            />
+            <span className="pl-modal-field__hint">
+              File được ghi vào <code>{'<workflow>'}/docs/</code> ngay khi bấm Lưu, và bước "Tài liệu
+              → Markdown" bị <strong>bỏ khỏi chuỗi</strong> khi chạy — thư mục đó chính là output của
+              bước ấy, chạy nó sẽ xóa sạch file bạn vừa nạp.
+            </span>
+          </>
+        ) : docsSource === 'app-pool' && appPoolAvailable ? (
+          <>
+            {appPoolError ? <p className={styles.empty}>{appPoolError}</p> : null}
+            {/* Một PANEL có tầng: thanh công cụ (tìm + đếm) → vùng cây nổi lên
+                trên nền lõm → chân panel. Trước đây ô tìm và cây đổ thẳng ra
+                nền modal nên cả khối đọc như một danh sách phẳng không đầu
+                không cuối, không biết cây bắt đầu và kết thúc ở đâu. */}
+            <div className={styles.poolPicker}>
+              <div className={styles.poolHead}>
+                <span className={styles.poolSearch}>
+                  <Icon name="search" size={14} />
+                  {/* KHÔNG dùng `.pl-proj-search` toàn cục ở đây: class đó là
+                      `flex: 0 1 260px`, dựng cho thanh công cụ NẰM NGANG. Trong
+                      `.pl-modal-field` (flex column) thì 260px rơi vào chiều
+                      CAO, và `border-radius: 999px` biến ô tìm thành một hình
+                      bầu dục cao nửa modal. */}
+                  <input
+                    type="search"
+                    className={styles.poolSearchInput}
+                    value={appPoolQuery}
+                    onChange={(event) => setAppPoolQuery(event.target.value)}
+                    placeholder="Tìm URD hoặc PRD trong tài liệu dự án…"
+                    aria-label="Tìm URD hoặc PRD trong tài liệu dự án"
+                    disabled={busy}
+                  />
+                </span>
+                <span
+                  className={`${styles.poolCount}${appPoolPaths.size > 0 ? ' ' + styles.poolCountOn : ''}`}
+                >
+                  {appPoolPaths.size > 0 ? `${appPoolPaths.size} trang đã tick` : 'Chưa tick trang nào'}
+                </span>
+              </div>
+              <div className={styles.poolTree}>
+                <AppPoolTree
+                  pages={appPoolPages ?? []}
+                  query={appPoolQuery}
+                  selection={{ ticked: appPoolPaths, onToggle: setAppPoolPaths, disabled: busy }}
+                />
+              </div>
+              <div className={styles.poolFoot}>
+                <span className={styles.poolFootHint}>
+                  Trang đã tick nạp vào <code>docs-feature/</code>
+                </span>
+                <button
+                  type="button"
+                  className={styles.poolImportBtn}
+                  onClick={() => setAppPoolImportOpen((open) => !open)}
+                >
+                  <Icon name="import" size={13} />
+                  {appPoolImportOpen ? 'Ẩn nhập tài liệu' : 'Import thêm từ Confluence'}
+                </button>
+              </div>
+            </div>
+            {/* Panel nhập thêm chỉ dựng khi MỞ. Trước đây nó là một khối có
+                `border-top` luôn render, nên lúc đóng vẫn để lại một vạch kẻ
+                lửng lơ dưới cây — thứ trông y như lỗi layout. */}
+            {appPoolImportOpen && appId ? (
+              <div className={styles.poolImportPanel}>
+                <ConfluenceTreeImport
+                  appId={appId}
+                  onImported={(result) => {
+                    setAppPoolImportOpen(false);
+                    // Tick sẵn đúng các trang vừa nhập/cập nhật — người dùng
+                    // không phải tìm lại chúng trong cây vừa mới dài thêm ra.
+                    setAppPoolPaths((prev) => {
+                      const next = new Set(prev);
+                      for (const p of result.pages) next.add(p.path);
+                      return next;
+                    });
+                    void refreshAppPool(true);
+                  }}
+                  onPartialImport={(result) => {
+                    // KHÔNG đóng panel — importError vẫn cần hiện ở đó. Vẫn
+                    // tick + refresh vì phần đã nhập đã nằm trong pool rồi.
+                    setAppPoolPaths((prev) => {
+                      const next = new Set(prev);
+                      for (const p of result.pages) next.add(p.path);
+                      return next;
+                    });
+                    void refreshAppPool(true);
+                  }}
+                />
+              </div>
+            ) : null}
+          </>
+        ) : docsSource === 'app-pool' ? (
+          <>
+            {/* Dự án gắn App nhưng pool RỖNG: không rơi về picker Confluence —
+                tài liệu phải nạp ở màn App trước. */}
+            {appPoolError ? <p className={styles.empty}>{appPoolError}</p> : null}
+            <p className="pl-modal-field__hint">
+              Dự án này chưa có tài liệu nào trong kho. Nạp tài liệu ở màn <b>Dự án</b> (mục "Tài liệu
+              App" — Import từ Confluence) rồi quay lại đây tick trang cho workflow.
+            </p>
+          </>
+        ) : (
+          <>
+            {/* Cùng picker với nút Run của riêng bước Docs: tìm trang theo tên,
+                tick chọn nhiều, hoặc dán link/page id. */}
+            <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
+            <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
+            <IncludeDescendantsToggle
+              checked={includeDescendants}
+              onChange={setIncludeDescendants}
+              disabled={busy}
+            />
+            <span className="pl-modal-field__hint">
+              Điền sẵn từ cấu hình dự án trên Pipeline Studio (nếu có). Link/id Confluence được daemon
+              fetch trực tiếp (không cần agent); dán JIRA key/JQL như một dòng nếu muốn chạy qua agent.
+              Nguồn BAS đang bảo trì.
+            </span>
+          </>
+        )}
       </div>
-      {hasPlatform ? (
+      ) : null}
+      {hasPlatform && shows('targets') ? (
       <div className="pl-modal-field">
         <span className="pl-modal-field__label">Sản phẩm cần build (chọn ≥1)</span>
         <TargetCards targets={targets} onToggle={toggleTarget} />
@@ -1445,7 +2209,200 @@ export function RunAllModal({
         </span>
       </div>
       ) : null}
-      {supportsLean ? (
+      {stages.length > 0 && shows('stages') ? (
+      <div className="pl-modal-field">
+        <span className="pl-modal-field__label">Các bước sẽ chạy</span>
+        {ingestPending && ingestStage ? (
+          // Điều kiện duy nhất còn lại (bước 1) phải nêu rõ TRƯỚC khi người
+          // dùng tick linh tinh các bước sau rồi bị API từ chối — mọi bước
+          // khác giờ tick/bỏ tick tự do, nhưng không bước nào chạy ra dữ liệu
+          // thật nếu bước 1 chưa xong.
+          <span className={styles.stageIngestNote}>
+            <Icon name="info" size={12} />
+            {t('pipelines.runAllPicker.ingestRequired', { stage: ingestStage.name })}
+          </span>
+        ) : null}
+        <div className={styles.stagePresets}>
+          <button
+            type="button"
+            className="pl-btn pl-btn--xs"
+            onClick={() => applyPreset(new Set(stages.map((s) => s.id)))}
+            disabled={busy}
+          >
+            Tất cả
+          </button>
+          <button
+            type="button"
+            className="pl-btn pl-btn--xs"
+            onClick={() =>
+              applyPreset(new Set(stages.filter((s) => s.status !== 'succeeded').map((s) => s.id)))
+            }
+            disabled={busy}
+          >
+            Chỉ bước chưa xong
+          </button>
+          {/* Chế độ "Tiết kiệm" cũ, dựng lại thành MỘT preset: tick mọi bước
+              không nằm trong nhóm bị bỏ khi chạy lean. Không còn cần một công
+              tắc riêng đứng cạnh danh sách bước và nói ngược lại nó. */}
+          {stages.some(isLeanSkippableStage) ? (
+            <button
+              type="button"
+              className="pl-btn pl-btn--xs"
+              onClick={() =>
+                applyPreset(new Set(stages.filter((s) => !isLeanSkippableStage(s)).map((s) => s.id)))
+              }
+              disabled={busy}
+              title="Bỏ các bước phân tích (hành trình, research, rà soát) — đúng chuỗi của chế độ Tiết kiệm cũ"
+            >
+              Tiết kiệm
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="pl-btn pl-btn--xs"
+            onClick={() => setStageIds(new Set())}
+            disabled={busy}
+          >
+            Bỏ chọn hết
+          </button>
+        </div>
+        {/* Danh sách ĐÁNH SỐ theo đúng thứ tự daemon chạy. Ba đầu ra UI-Spec
+            không phải bước 7-8-9 nối tiếp mà là ba lựa chọn thay thế nhau, nên
+            chúng gộp vào MỘT hàng cuối có nhóm radio — thứ mà danh sách phẳng
+            (và cả sơ đồ node trước đây) đều không nói được. */}
+        <ol className={styles.stageList}>
+          {stepStages.map((stage, i) => {
+            const badge = STAGE_BADGES[stage.status] ?? 'Chưa chạy';
+            // Chú thích MỀM — không phải lỗi, không chặn Lưu: bước này đang
+            // tick nhưng có phụ thuộc chưa tick và chưa `succeeded`, nên nó sẽ
+            // chạy với dữ liệu hiện có thay vì input mới từ phụ thuộc đó.
+            const missing = stageIds.has(stage.id) ? missingRunDeps(stage, stages, stageIds) : [];
+            return (
+              <li key={stage.id} className={styles.stageItem}>
+                <label className={styles.stageRow}>
+                  <span className={styles.stageNum} aria-hidden="true">
+                    {i + 1}
+                  </span>
+                  <input
+                    type="checkbox"
+                    className={styles.stageCheckbox}
+                    checked={stageIds.has(stage.id)}
+                    onChange={() => toggleStage(stage.id)}
+                    disabled={busy}
+                  />
+                  <span className={styles.stageName}>{stage.name}</span>
+                  {isLeanSkippableStage(stage) ? (
+                    <span
+                      className={styles.stageOptional}
+                      title="Chế độ Tiết kiệm bỏ bước này — không bước nào chờ nó"
+                    >
+                      tuỳ chọn
+                    </span>
+                  ) : null}
+                  <span
+                    className={`${styles.stageBadge} ${
+                      stage.status === 'succeeded'
+                        ? styles.stageBadgeDone
+                        : stage.status === 'failed'
+                          ? styles.stageBadgeFailed
+                          : styles.stageBadgeIdle
+                    }`}
+                  >
+                    {badge}
+                  </span>
+                </label>
+                {missing.length > 0 ? (
+                  <p className={styles.stageSoftNote}>
+                    {t('pipelines.runAllPicker.softNote', {
+                      stages: missing.map((m) => m.name).join(', '),
+                    })}
+                  </p>
+                ) : null}
+              </li>
+            );
+          })}
+          {hasFork ? (() => {
+            // Chú thích mềm áp cho ĐẦU RA đang chọn (terminal) — ba nhánh đều
+            // dùng chung `ux-review` nên chỉ cần tính trên nhánh hiện bật.
+            const chosen = forkEnabled ? forkStages.find((s) => s.id === terminal) : undefined;
+            const forkMissing = chosen ? missingRunDeps(chosen, stages, stageIds) : [];
+            return (
+            <li className={`${styles.stageItem} ${styles.stageItemFork}`}>
+              <label className={styles.stageRow}>
+                <span className={styles.stageNum} aria-hidden="true">
+                  {stepStages.length + 1}
+                </span>
+                <input
+                  type="checkbox"
+                  className={styles.stageCheckbox}
+                  checked={forkEnabled}
+                  onChange={toggleForkStep}
+                  disabled={busy}
+                />
+                <span className={styles.stageName}>Kết quả UI-Spec</span>
+                <span className={styles.stageOptional}>chọn 1 trong {forkStages.length}</span>
+              </label>
+              <div
+                className={`${styles.forkOptions}${forkEnabled ? '' : ' ' + styles.forkOptionsOff}`}
+                role="radiogroup"
+                aria-label="Kết quả UI-Spec"
+              >
+                {forkStages.map((s) => {
+                  const meta = UI_TERMINAL_LABELS[s.id];
+                  const on = forkEnabled && terminal === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={on}
+                      className={`${styles.forkOption}${on ? ' ' + styles.forkOptionOn : ''}`}
+                      onClick={() => pickTerminal(s.id)}
+                      disabled={busy}
+                    >
+                      <span className={styles.forkDot} aria-hidden="true" />
+                      <span className={styles.forkLabel}>{meta?.label ?? s.name}</span>
+                      <span className={styles.forkDesc}>{meta?.desc ?? ''}</span>
+                      <span
+                        className={`${styles.stageBadge} ${
+                          s.status === 'succeeded'
+                            ? styles.stageBadgeDone
+                            : s.status === 'failed'
+                              ? styles.stageBadgeFailed
+                              : styles.stageBadgeIdle
+                        }`}
+                      >
+                        {STAGE_BADGES[s.status] ?? 'Chưa chạy'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {forkMissing.length > 0 ? (
+                <p className={styles.stageSoftNote}>
+                  {t('pipelines.runAllPicker.softNote', {
+                    stages: forkMissing.map((m) => m.name).join(', '),
+                  })}
+                </p>
+              ) : null}
+            </li>
+            );
+          })() : null}
+        </ol>
+        <span className="pl-modal-field__hint">
+          {selectedStages.length > 0 ? (
+            <>
+              Sẽ chạy {selectedStages.length} bước:{' '}
+              <strong>{selectedStages.map((s) => s.name).join(' → ')}</strong>
+            </>
+          ) : (
+            'Chưa tick bước nào — chọn ít nhất một bước thì mới lưu được.'
+          )}
+        </span>
+        <span className="pl-modal-field__hint">{t('pipelines.runAllPicker.hint')}</span>
+      </div>
+      ) : null}
+      {supportsLean && shows('mode') ? (
       <div className="pl-modal-field">
         <span className="pl-modal-field__label">Chế độ chạy</span>
         <div className={styles.cards} role="radiogroup" aria-label="Chế độ chạy">
@@ -1460,21 +2417,58 @@ export function RunAllModal({
         ) : null}
       </div>
       ) : null}
-      {hasTerminal ? (
-      <div className="pl-modal-field">
-        <span className="pl-modal-field__label">Kết quả UI-Spec (bước cuối)</span>
-        <div className={styles.cards} role="radiogroup" aria-label="UI-Spec terminal">
-          {terminalCard('ui-html', 'HTML prototype', 'Prototype HTML tương tác, mỗi màn một file.')}
-          {terminalCard('ui-react', 'React app', 'App Vite + React 19 thật (cần Docker).')}
-          {terminalCard('both', 'Cả hai', 'HTML trước, React sau.')}
+      {hasDesignSystem && shows('designSystem') && hasPlatform && targets.length >= 2 ? (
+        // ≥2 target: DS RIÊNG từng target — mobile và web đến từ lib Figma
+        // khác nhau. Ghi vào targets.json để re-run stage lẻ resolve đúng DS.
+        <div className="pl-modal-field pl-modal-field--ds">
+          <span className="pl-modal-field__label">
+            {terminal === 'ui-react-ds'
+            ? 'Design system TỪNG TARGET (bắt buộc — bộ React từ Figma)'
+              : 'Design system TỪNG TARGET (tùy chọn)'}
+          </span>
+          {targets.map((t) => (
+            <div key={t} className="pl-modal-field__dsrow">
+              <span className="pl-modal-field__dsrow-label">{UI_TARGETS[t].label}</span>
+              <ProjectDesignSystemPicker
+                designSystems={(systems ?? []).filter(
+                  (s) =>
+                    (terminal === 'ui-react-ds' ? s.hasReactBundle : s.status !== 'draft') &&
+                    // Thẻ platform của DS phải khớp target (DS chưa gắn thẻ
+                    // hiện ở mọi target): app mobile không nhận lib web và
+                    // ngược lại.
+                    (UI_TARGETS[t].platform === 'mobile'
+                      ? s.platform !== 'web'
+                      : s.platform !== 'mobile'),
+                )}
+                selectedId={dsByTarget[t] ?? null}
+                loading={systems === null}
+                onChange={(id) =>
+                  setDsByTarget((cur) => {
+                    const next = { ...cur };
+                    if (id) next[t] = id;
+                    else delete next[t];
+                    return next;
+                  })
+                }
+                popoverZIndex={1100}
+              />
+            </div>
+          ))}
+          <span className="pl-modal-field__hint">
+            Target chưa chọn DS sẽ dùng DS chung/mặc định của dự án.
+          </span>
         </div>
-      </div>
-      ) : null}
-      {hasDesignSystem ? (
+      ) : hasDesignSystem && shows('designSystem') ? (
       <div className="pl-modal-field pl-modal-field--ds">
-        <span className="pl-modal-field__label">Design system (tùy chọn)</span>
+        <span className="pl-modal-field__label">
+          {terminal === 'ui-react-ds'
+            ? 'Design system (bắt buộc — bộ React từ Figma)'
+              : 'Design system (tùy chọn)'}
+        </span>
         <ProjectDesignSystemPicker
-          designSystems={systems ?? []}
+          designSystems={(systems ?? []).filter((s) =>
+            terminal === 'ui-react-ds' ? s.hasReactBundle : s.status !== 'draft',
+          )}
           selectedId={designSystemId}
           loading={systems === null}
           onChange={setDesignSystemId}
@@ -1482,7 +2476,7 @@ export function RunAllModal({
         />
       </div>
       ) : null}
-      {anySucceeded ? (
+      {anySucceeded && !focus ? (
         // Checkbox hardening lives in .pl-runall-toggle (pipelines.css) — the
         // app's global input pill styles would otherwise stretch it full-width
         // and blow the modal out horizontally.
@@ -1496,8 +2490,8 @@ export function RunAllModal({
           <span className="pl-runall-toggle__body">
             <span className="pl-runall-toggle__title">Chỉ chạy các bước còn thiếu</span>
             <span className="pl-runall-toggle__desc">
-              Giữ kết quả các bước đã xong. Bỏ tick = chạy lại từ đầu — output cũ được snapshot vào
-              lịch sử trước khi xóa.
+              Áp dụng cho lần chạy tới: giữ kết quả các bước đã xong. Bỏ tick = chạy lại từ đầu —
+              output cũ được snapshot vào lịch sử trước khi xóa.
             </span>
           </span>
         </label>
@@ -1509,6 +2503,7 @@ export function RunAllModal({
         </div>
       ) : null}
     </PlModal>
+    </>
   );
 }
 
@@ -1559,7 +2554,9 @@ export function RerunScopeModal({
           </button>
           <button
             type="button"
-            className="pl-btn pl-btn--run"
+            // 'downstream' xóa luôn kết quả các bước phụ thuộc — nặng tay hơn hẳn
+            // 'stage' (chỉ xóa đúng bước này), nên chỉ scope này đọc như phá hủy.
+            className={`pl-btn ${scope === 'downstream' ? 'pl-btn--danger' : 'pl-btn--run'}`}
             onClick={() => void submit()}
             disabled={busy}
           >
@@ -1628,6 +2625,101 @@ export function RerunScopeModal({
   );
 }
 
+/**
+ * Pre-flight confirm for "Chạy pipeline" (run-all), covering TWO independent
+ * questions `PipelinesView` asks before every run-all POST — either one alone
+ * is enough to open this dialog (an EMPTY answer to both runs straight
+ * through, no dialog: nothing to say, so nothing to ask — see the spec's
+ * `must_not`):
+ *
+ *  - `stageNames` (`stagesLosingOutputForRunAll`): the about-to-run set
+ *    currently has a result for at least one stage that this run will erase.
+ *  - `staleInputs` (`staleInputsForRunAll`): a stage about to run will read
+ *    its primary input from an ancestor that is NOT part of this run and
+ *    already succeeded a while ago — the rail's "· ngoài chế độ" case. This
+ *    never loses anything (that ancestor's result is untouched), so it must
+ *    still surface even when `stageNames` is empty (first-ever `ux` run, but
+ *    `cj` is stale — nothing to clear, everything to say).
+ *
+ * Each becomes its own section, hidden entirely when empty, so the dialog
+ * only ever shows what actually applies. Named-action confirm button (never
+ * a bare "OK"); wording states facts, not scares — the daemon commits the
+ * current output to project history BEFORE clearing it (`commitHistory`,
+ * ahead of the re-run clear in `runPipeline`), so a clear is always
+ * restorable, and a stale input is simply "still exactly what it was", not
+ * "wrong". */
+export function RunAllClearConfirmModal({
+  stageNames,
+  staleInputs = [],
+  onClose,
+  onConfirm,
+}: {
+  /** Display NAMES (not raw ids) of every stage about to lose its current
+   *  result. */
+  stageNames: string[];
+  /** Every about-to-run stage whose primary input still comes from an older,
+   *  out-of-run ancestor — resolved to display names by the caller (mirrors
+   *  `stageNames` above), `updatedAt` is that ancestor's own last-run time.
+   *  Absent/empty when no about-to-run stage's input chain is stale. */
+  staleInputs?: Array<{ stageName: string; sourceName: string; updatedAt: number }>;
+  onClose: () => void;
+  onConfirm: () => void | Promise<void>;
+}) {
+  const t = useT();
+  const willLoseOutput = stageNames.length > 0;
+  const hasStaleInputs = staleInputs.length > 0;
+  return (
+    <PlModal
+      title={willLoseOutput ? 'Sẽ xoá kết quả cũ' : 'Vài đầu vào lấy từ ngoài lần chạy này'}
+      icon="refresh"
+      onClose={onClose}
+      footer={
+        <>
+          {/* Cancel is the DEFAULT — autofocused, so an accidental Enter
+           *  never fires the (possibly destructive) confirm action. */}
+          <button type="button" className="pl-btn" onClick={onClose} autoFocus>
+            Huỷ
+          </button>
+          <button
+            type="button"
+            className={willLoseOutput ? 'pl-btn pl-btn--danger' : 'pl-btn pl-btn--primary'}
+            onClick={() => void onConfirm()}
+          >
+            <Icon name="refresh" size={14} />
+            <span>{willLoseOutput ? 'Chạy và xoá kết quả cũ' : 'Chạy'}</span>
+          </button>
+        </>
+      }
+    >
+      {willLoseOutput ? (
+        <div className={styles.clearConfirmSection}>
+          <span className={styles.clearConfirmBody}>
+            Chạy bây giờ sẽ <span className={styles.danger}>xoá kết quả hiện có</span> của:{' '}
+            <span className={styles.em}>{stageNames.join(', ')}</span>.
+          </span>
+          <span className={styles.clearConfirmBody}>
+            Kết quả cũ được <span className={styles.em}>lưu vào lịch sử dự án</span> trước khi xoá — có thể khôi phục lại sau.
+          </span>
+        </div>
+      ) : null}
+      {hasStaleInputs ? (
+        <div className={styles.clearConfirmSection}>
+          <span className={styles.sectionLabel}>Đầu vào lấy từ ngoài lần chạy này</span>
+          {staleInputs.map((row, i) => (
+            <span key={`${row.stageName}-${row.sourceName}-${i}`} className={styles.clearConfirmBody}>
+              <span className={styles.em}>{row.stageName}</span> sẽ dùng kết quả của{' '}
+              <span className={styles.em}>{row.sourceName}</span> từ {relativeTimeLong(row.updatedAt, t)}.
+            </span>
+          ))}
+          <span className={styles.clearConfirmBody}>
+            Mỗi bước nguồn ở trên nằm ngoài lần chạy này nên kết quả của nó <span className={styles.em}>giữ nguyên</span> — bước phụ thuộc sẽ dùng đúng bản đó.
+          </span>
+        </div>
+      ) : null}
+    </PlModal>
+  );
+}
+
 // ── Req 3: Compact run-status modal ──────────────────────────────────────────
 function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -1643,6 +2735,22 @@ const TASK_STATUS_META: Record<string, { icon: IconName; label: string; cls: str
   failed: { icon: 'close', label: 'Lỗi', cls: 'failed' },
 };
 
+/** `PipelineView.error` — a contract addition landing alongside this UI
+ *  change (BE task, in parallel): a short, human fail-fast/failure reason
+ *  per stage on `GET /api/pipelines` (an unconfigured-source ingest run's
+ *  fail-fast message, or a short agent-failure summary) — the thing "Xem
+ *  lỗi" is supposed to show but couldn't when the run row itself was gone
+ *  (e.g. after a daemon restart) or never carried an error string. Declared
+ *  locally so this modal can read it ahead of/independent from
+ *  packages/contracts picking it up; safe to drop once `PipelineView` itself
+ *  carries it. */
+type PipelineViewWithError = PipelineView & { error?: string };
+
+/** Fallback when the daemon has genuinely lost every trace of why a stage
+ *  failed (old run row gone, and BE hasn't sent a fail-fast `error` either)
+ *  — "Xem lỗi" must never render a blank dialog for a failed stage. */
+const NO_ERROR_DETAIL_FALLBACK = 'Không còn chi tiết lỗi (daemon có thể đã khởi động lại). Chạy lại bước để tái hiện.';
+
 export function PipelineStatusModal({
   pipeline,
   projectId,
@@ -1651,7 +2759,7 @@ export function PipelineStatusModal({
   onOpenTask,
   onRefresh,
 }: {
-  pipeline: PipelineView;
+  pipeline: PipelineViewWithError;
   projectId: string;
   onClose: () => void;
   onOpenChat: (() => void) | null;
@@ -1825,7 +2933,25 @@ export function PipelineStatusModal({
           </ul>
         </div>
       ) : !runId ? (
-        <p className="pl-modal-empty">No run for this pipeline yet.</p>
+        // No run row to poll (never run, OR the old run's state is gone —
+        // e.g. a daemon restart between the run and opening this dialog).
+        // That second case is exactly why "Xem lỗi" could render blank: a
+        // failed stage with no runId had NOTHING to show. `pipeline.error`
+        // (BE fail-fast/failure reason, independent of any run row) is now
+        // the primary content whenever it's there; a genuinely lost failure
+        // still gets the explicit fallback instead of silence.
+        pipeline.error ? (
+          <div className="pl-status-detail">
+            <div className={`pl-status-detail__badge pl-status--${pipeline.status}`}>
+              <span>{RUN_STATUS_LABEL[pipeline.status] ?? pipeline.status}</span>
+            </div>
+            <pre className="pl-status-detail__error">{pipeline.error}</pre>
+          </div>
+        ) : pipeline.status === 'failed' ? (
+          <p className="pl-modal-empty">{NO_ERROR_DETAIL_FALLBACK}</p>
+        ) : (
+          <p className="pl-modal-empty">No run for this pipeline yet.</p>
+        )
       ) : (
         <div className="pl-status-detail">
           <div className={`pl-status-detail__badge pl-status--${status}`}>
@@ -1844,7 +2970,14 @@ export function PipelineStatusModal({
               <dd className="pl-mono">{runId}</dd>
             </div>
           </dl>
-          {run?.error ? (
+          {/* `pipeline.error` (BE fail-fast/failure reason) is the PRIMARY
+              error content when present; the run's own `error` (agent stdout
+              summary from GET /api/runs/:id) stays visible too, as secondary
+              detail, unless it's the exact same string. Neither existing is
+              the "legitimately empty" case this whole fix is for — a failed
+              stage never shows a blank body once BE sends anything at all. */}
+          {pipeline.error ? <pre className="pl-status-detail__error">{pipeline.error}</pre> : null}
+          {run?.error && run.error !== pipeline.error ? (
             <pre className="pl-status-detail__error">{run.error}</pre>
           ) : null}
           {error ? (
@@ -1852,6 +2985,9 @@ export function PipelineStatusModal({
               <Icon name="info" size={14} />
               <span>{error}</span>
             </div>
+          ) : null}
+          {!pipeline.error && !run?.error && !error && status === 'failed' ? (
+            <p className="pl-modal-empty">{NO_ERROR_DETAIL_FALLBACK}</p>
           ) : null}
           {isRunning ? (
             <p className="pl-status-detail__hint">
@@ -1893,6 +3029,11 @@ const isScreenFile = (name: string) =>
 function isUiPreviewFile(name: string): boolean {
   const lower = name.toLowerCase();
   const base = lower.split('/').pop() ?? '';
+  // dr-review's "the run produced no review" note (sibling of `review/`, see
+  // apps/daemon/src/docs-review.ts's DOCS_REVIEW_FAILURE_NOTE) — surfaced here
+  // so Quick result shows the readable failure reason instead of an empty
+  // list when the stage failed before any page succeeded.
+  if (base === 'review-khong-chay-duoc.md') return true;
   if (base === 'screen.json') return true;
   // UI-Spec previews: React per-screen pages + HTML prototype (not the
   // dist/index.html bundle, dev entry, or build assets).
@@ -1907,6 +3048,9 @@ function isUiPreviewFile(name: string): boolean {
   if (/(^|\/)docs\/.+\.md$/.test(lower)) return base !== '_index.md';
   // Primary visual spec docs (UX Spec / Customer Journey).
   if (/-ux-spec\.json$/.test(base) || /-(customer-journey|journey|cj)\.json$/.test(base)) return true;
+  // docs-review's digest (review/summary.md) — the clone pages themselves
+  // already match the docs/**/*.md rule above.
+  if (/(^|\/)review\/summary\.md$/.test(lower)) return true;
   // Visual report previews — UX Heuristic Review + UX Research + docs-to-prd's
   // PRD Mockup Review (DocsReviewPreview).
   return /(^|\/)(heuristic-review|ux-research|review)\/[^/]*\.json$/.test(lower);
@@ -2181,8 +3325,8 @@ function PipelineResultBody({
   if (files.length === 0) {
     return (
       <p className="pl-modal-empty">
-        No output files yet for this stage. Run it (or <strong>Pull all</strong> from KGS) to
-        produce its {outputs.join(', ') || 'outputs'}.
+        Bước này chưa có tệp kết quả. Hãy chạy bước hoặc dùng <strong>Lấy dự án về máy</strong>{' '}
+        để nhận {outputs.join(', ') || 'kết quả'}.
       </p>
     );
   }
@@ -2325,7 +3469,9 @@ export function PipelineResultView({
       <header className="pl-result-page__header">
         <button type="button" className="pl-btn pl-result-page__back" onClick={onBack}>
           <Icon name="arrow-left" size={14} />
-          <span>Pipelines</span>
+          {/* Đích của Back là màn Chạy của chính bước này (lùi một cấp), không
+              phải trang Pipelines ngoài cùng — nhãn phải nói đúng điều đó. */}
+          <span>Quay lại</span>
         </button>
         <div className="pl-result-page__title">
           <Icon name="file-code" size={16} />
@@ -2363,6 +3509,19 @@ export function PipelineResultView({
 // "đồng bộ" — aggregated over the projects currently selected in the modal.
 export function allStageIds(workflows: Workflow[]): Set<string> {
   return new Set(workflows.flatMap((w) => w.pipelineIds));
+}
+
+// StagePicker resolves each stage chip's human name from `Workflow.stages`
+// (packages/contracts/src/api/pipelines.ts) — populated by the daemon from
+// its `PipelineDef.name` registry (apps/daemon/src/pipelines.ts), so there is
+// no mirror to keep in sync here. A pid missing a `stages` entry (or an older
+// daemon that omits the optional field) falls back to the raw id.
+function stageNamesOf(workflows: Workflow[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const w of workflows) {
+    for (const s of w.stages ?? []) names.set(s.id, s.name);
+  }
+  return names;
 }
 
 interface StageDiff {
@@ -2446,18 +3605,38 @@ function StagePicker({
     else next.add(id);
     onChange(next);
   };
+  const stageNames = useMemo(() => stageNamesOf(workflows), [workflows]);
+  // Chỉ đưa vào đây những bước đã thực sự sinh ra kết quả ở máy hoặc ở bản
+  // được chia sẻ. Không nên cho người dùng chọn một workflow chưa từng chạy:
+  // nó không có gì để chuyển và chỉ làm danh sách dài, khó hiểu.
+  const visibleWorkflows = useMemo(() => {
+    if (!diffByStage) return [];
+    return workflows
+      .map((workflow) => ({
+        ...workflow,
+        pipelineIds: workflow.pipelineIds.filter((pipelineId) => {
+          const status = diffByStage.get(pipelineId);
+          return Boolean(status && status.local + status.remote > 0);
+        }),
+      }))
+      .filter((workflow) => workflow.pipelineIds.length > 0);
+  }, [diffByStage, workflows]);
+  const visibleStageIds = visibleWorkflows.flatMap((workflow) => workflow.pipelineIds);
+  const selectedVisibleCount = visibleStageIds.filter((id) => selected.has(id)).length;
+
+  if (diffLoading || visibleWorkflows.length === 0) return null;
   return (
-    <section className={sp.section} aria-label="Pipelines">
+    <section className={sp.section} aria-label="Các bước">
       <div className={sp.head}>
-        <span className={sp.title}>Pipelines</span>
+        <span className={sp.title}>Các bước cần đồng bộ</span>
         <span className={sp.hint}>
-          {diffLoading ? 'đang so với store…' : 'bỏ tích bước nào thì output bước đó không đồng bộ'}
+          {diffLoading ? 'Đang kiểm tra thay đổi…' : 'Bỏ chọn bước không cần chuyển kết quả'}
         </span>
         <span className={sp.count}>
-          {selected.size}/{allStageIds(workflows).size}
+          {selectedVisibleCount}/{visibleStageIds.length}
         </span>
       </div>
-      {workflows.map((w) => (
+      {visibleWorkflows.map((w) => (
         <div key={w.id} className={sp.wf}>
           <div className={sp.wfname}>{w.name}</div>
           <div className={sp.chips}>
@@ -2466,15 +3645,18 @@ function StagePicker({
               const parts = d
                 ? [
                     d.changed > 0 ? `${d.changed} file thay đổi` : '',
-                    d.localOnly > 0 ? `${d.localOnly} file chỉ có local` : '',
-                    d.remoteOnly > 0 ? `${d.remoteOnly} file chỉ có trên store` : '',
+                    d.localOnly > 0 ? `${d.localOnly} tệp chỉ có trên máy` : '',
+                    d.remoteOnly > 0 ? `${d.remoteOnly} tệp chỉ có ở bản đã chia sẻ` : '',
                   ].filter(Boolean)
                 : [];
-              const title = d
+              const diffTitle = d
                 ? d.differs
-                  ? `Khác store: ${parts.join(', ')}`
-                  : `Đồng bộ với store (local ${d.local} / store ${d.remote} file)`
-                : 'Chưa có dữ liệu so sánh với store';
+                  ? `Có thay đổi: ${parts.join(', ')}`
+                  : `Đã cập nhật (trên máy ${d.local} / bản chia sẻ ${d.remote} tệp)`
+                : 'Chưa có dữ liệu so sánh';
+              // Nhãn hiển thị là tên người-đọc-được; id kỹ thuật thô (docs, ux,
+              // ui-html…) vẫn hữu ích khi debug nên giữ lại trong tooltip.
+              const title = `${pid} — ${diffTitle}`;
               return (
                 <button
                   key={pid}
@@ -2487,12 +3669,12 @@ function StagePicker({
                   <span className={sp.tick} aria-hidden="true">
                     ✓
                   </span>
-                  <span className={sp.id}>{pid}</span>
+                  <span className={sp.id}>{stageNames.get(pid) ?? pid}</span>
                   {d ? (
                     d.differs ? (
-                      <span className={`${sp.badge} ${sp.badgeDiff}`}>≠ remote</span>
+                      <span className={`${sp.badge} ${sp.badgeDiff}`}>{stepDifferenceLabel(true, true)}</span>
                     ) : d.local + d.remote > 0 ? (
-                      <span className={`${sp.badge} ${sp.badgeSync}`}>đồng bộ</span>
+                      <span className={`${sp.badge} ${sp.badgeSync}`}>{stepDifferenceLabel(false, true)}</span>
                     ) : null
                   ) : null}
                 </button>
@@ -2503,6 +3685,106 @@ function StagePicker({
       ))}
     </section>
   );
+}
+
+export interface ContextTransferSelection extends ContextTreeSelectionPayload {
+  /** Resolution is sent only for Apps whose local and shared Context have
+   * both changed. It never changes a Feature binding implicitly. */
+  contextConflictResolutions?: Record<string, 'keep_local' | 'use_shared'>;
+  /** Historical Feature bindings plus current App version, in install order. */
+  contextVersions?: Record<string, string[]>;
+}
+
+export interface ContextSyncAppInput extends ContextTreeApp {
+  ownerName?: string | null;
+  lastPublishedAt?: string | null;
+  alreadyOnThisDevice?: boolean;
+}
+
+type ContextCarrier = {
+  context?: AppContextSyncInfo | null;
+  appContext?: AppContextManifest | {
+    current: AppContextManifest;
+    localCurrentDigest?: string | null;
+  } | null;
+  contextManifest?: AppContextManifest | null;
+  contextVersion?: string | null;
+  currentContextVersion?: string | null;
+  latestContextVersion?: string | null;
+  sharedContextVersion?: string | null;
+  contextDigest?: string | null;
+  sharedContextDigest?: string | null;
+  contextChangedFiles?: AppContextSyncInfo['changedFiles'];
+  appContextBinding?: { contextVersion?: string | null } | null;
+};
+
+function contextInfoOf(value: ContextCarrier | undefined): AppContextSyncInfo | null {
+  if (!value) return null;
+  const nested = value.context ?? null;
+  const manifest = value.appContext && 'current' in value.appContext
+    ? value.appContext.current
+    : value.appContext ?? value.contextManifest ?? null;
+  const currentVersion = nested?.currentVersion ?? manifest?.contextVersion ?? value.currentContextVersion ?? value.contextVersion ?? null;
+  const sharedVersion = nested?.sharedVersion ?? value.sharedContextVersion ?? null;
+  const latestVersion = nested?.latestVersion ?? value.latestContextVersion ?? currentVersion;
+  const info: AppContextSyncInfo = {
+    currentVersion,
+    sharedVersion,
+    latestVersion,
+    localDigest: nested?.localDigest ?? manifest?.contentDigest ?? value.contextDigest ?? null,
+    sharedDigest: nested?.sharedDigest ?? value.sharedContextDigest ?? null,
+    changedFiles: nested?.changedFiles ?? value.contextChangedFiles ?? [],
+  };
+  return Object.values(info).some((field) => Array.isArray(field) ? field.length > 0 : Boolean(field)) ? info : null;
+}
+
+function featureBindingOf(value: ContextCarrier | undefined): string | null {
+  return value?.appContextBinding?.contextVersion ?? value?.contextVersion ?? null;
+}
+
+/** Context is mandatory with an App/Feature transfer, so it belongs in an
+ * unobtrusive hover explanation rather than another selectable tree row. */
+function AppContextPopover({ appName, version }: { appName: string; version?: string | null }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span
+      className="pl-pullall__context-popover"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+    >
+      <button type="button" className="pl-pullall__version pl-pullall__context-badge-toggle" aria-label={`Thông tin tài liệu dùng chung của ${appName}`} aria-expanded={open}>
+        Bản chung {contextVersionLabel(version)}
+      </button>
+      {open ? (
+        <span className="pl-pullall__context-tooltip" role="tooltip">
+          <strong>Tài liệu dùng chung của {appName}</strong>
+          <span>Tài liệu tham khảo và tiêu chuẩn thiết kế. Luôn đi kèm khi chia sẻ hoặc lấy dự án này.</span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function FolderExpander({ open, label, onToggle }: { open: boolean; label: string; onToggle: () => void }) {
+  return (
+    <button type="button" className="pl-pullall__tree-toggle" aria-expanded={open} aria-label={`${open ? 'Thu gọn' : 'Mở'} ${label}`} onClick={onToggle}>
+      <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} />
+    </button>
+  );
+}
+
+/** A transfer is deliberately scoped to one Feature. Its parent App Context
+ * travels automatically, but users compare and confirm one Feature at a time. */
+function selectOneFeature(app: ContextTreeApp, featureId: string, selection: ContextTreeSelection): ContextTreeSelection {
+  if (selection.featureIds.size === 1 && selection.featureIds.has(featureId)) return emptyContextSelection();
+  return { appIds: new Set([app.id]), featureIds: new Set([featureId]) };
+}
+
+function selectOneUngroupedFeature(featureId: string, selection: ContextTreeSelection): ContextTreeSelection {
+  if (selection.featureIds.size === 1 && selection.featureIds.has(featureId)) return emptyContextSelection();
+  return { appIds: new Set(), featureIds: new Set([featureId]) };
 }
 
 // ── PullAllModal — pick WHICH remote projects to pull (Req: "Pull all" was
@@ -2518,6 +3800,8 @@ export function PullAllModal({
   initialSelectedIds,
   onClose,
   onConfirm,
+  syncReady,
+  onReconnect,
 }: {
   /** Project ids already mirrored locally (badge + preselect-none hint). */
   localIds: ReadonlySet<string>;
@@ -2532,24 +3816,38 @@ export function PullAllModal({
   initialSelectedIds?: readonly string[];
   onClose: () => void;
   /** Always receives the explicit stage list of the scoped workflow. */
-  onConfirm: (projectIds: string[], stages: string[]) => Promise<void>;
+  onConfirm: (selection: ContextTransferSelection, stages: string[]) => Promise<void>;
+  syncReady: boolean;
+  onReconnect: () => void;
 }) {
-  const [rows, setRows] = useState<RemoteProject[] | null>(null);
+  const [rows, setRows] = useState<RemoteProjectSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [localAppContexts, setLocalAppContexts] = useState<Record<string, {
+    version: string | null;
+    digest: string | null;
+  }>>({});
   // Membership scope note from the daemon (e.g. "chưa đăng nhập") — shown as
   // the empty state so the user knows WHY the list is empty.
   const [scopeReason, setScopeReason] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<ReadonlySet<string>>(
-    () => new Set(initialSelectedIds ?? []),
-  );
+  const [selection, setSelection] = useState<ContextTreeSelection>(() => ({
+    appIds: new Set<string>(),
+    featureIds: new Set(initialSelectedIds?.slice(0, 1) ?? []),
+  }));
   const [stageSel, setStageSel] = useState<ReadonlySet<string>>(() => allStageIds(workflows));
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
+  const [collapsedApps, setCollapsedApps] = useState<ReadonlySet<string>>(() => new Set());
+  const [conflictResolutions, setConflictResolutions] = useState<Record<string, 'keep_local' | 'use_shared'>>({});
   // Local↔store diff for the stage chips' badges (only locally-mirrored
   // projects have a local side to compare; remote-only ones contribute none).
   const syncStatus = useSyncStatus();
-  const diffByStage = aggregateDiff(syncStatus, selected);
+  const diffByStage = aggregateDiff(syncStatus, selection.featureIds);
+  const toggleFolder = (appId: string) => setCollapsedApps((current) => {
+    const next = new Set(current);
+    if (next.has(appId)) next.delete(appId); else next.add(appId);
+    return next;
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -2559,7 +3857,7 @@ export function PullAllModal({
         const j = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(j?.error?.message || j?.error || `remote list failed: ${res.status}`);
         if (!cancelled) {
-          setRows((j?.data ?? []) as RemoteProject[]);
+          setRows((j?.data ?? []) as RemoteProjectSummary[]);
           setScopeReason(typeof j?.reason === 'string' ? j.reason : null);
         }
       } catch (err) {
@@ -2570,67 +3868,92 @@ export function PullAllModal({
       cancelled = true;
     };
   }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/pipelines/apps')
+      .then(async (response) => response.ok ? await response.json() as PipelineAppsResponse : null)
+      .then((payload) => {
+        if (cancelled || !payload) return;
+        setLocalAppContexts(Object.fromEntries(payload.apps.map((app) => [app.id, {
+          version: app.context?.current?.contextVersion ?? null,
+          digest: app.context?.localCurrentDigest ?? null,
+        }])));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   const q = search.trim().toLowerCase();
-  const matchesQuery = (r: RemoteProject) =>
-    !q || r.name.toLowerCase().includes(q) || r.projectId.toLowerCase().includes(q);
+  const rawApps = (rows ?? []).filter((row) => row.isApp);
+  const rawFeatures = (rows ?? []).filter((row) => !row.isApp);
+  const appsById = new Map(rawApps.map((row) => [row.projectId, row]));
+  const remoteApps: ContextSyncAppInput[] = rawApps.map((row) => ({
+    id: row.projectId,
+    name: row.displayName || row.name,
+    context: row.appContext ? {
+      currentVersion: row.appContext.current.contextVersion,
+      latestVersion: row.appContext.current.contextVersion,
+      sharedVersion: row.appContext.current.contextVersion,
+      sharedDigest: row.appContext.current.contentDigest,
+      localDigest: localAppContexts[row.projectId]?.digest ?? row.appContext.localCurrentDigest ?? null,
+      ...(localAppContexts[row.projectId]?.version
+        ? { currentVersion: localAppContexts[row.projectId]!.version }
+        : {}),
+    } : contextInfoOf(row as RemoteProjectSummary & ContextCarrier),
+    ownerName: row.ownerName,
+    lastPublishedAt: row.lastPublishedAt,
+    alreadyOnThisDevice: row.alreadyOnThisDevice || localIds.has(row.projectId) || row.projectId in localAppContexts,
+    features: rawFeatures
+      .filter((feature) => feature.appId === row.projectId)
+      .map((feature) => ({
+        id: feature.projectId,
+        name: feature.displayName,
+        boundVersion: feature.appContextBinding?.contextVersion
+          ?? featureBindingOf(feature as RemoteProjectSummary & ContextCarrier),
+      })),
+  }));
+  const ungrouped = rawFeatures.filter((feature) => !feature.appId || !appsById.has(feature.appId));
+  const filteredApps = remoteApps.filter((app) => {
+    if (!q) return true;
+    return app.name.toLowerCase().includes(q)
+      || app.id.toLowerCase().includes(q)
+      || app.features.some((feature) => feature.name.toLowerCase().includes(q) || feature.id.toLowerCase().includes(q));
+  });
+  const filteredUngrouped = ungrouped.filter((row) => !q
+    || row.displayName.toLowerCase().includes(q)
+    || row.projectId.toLowerCase().includes(q));
+  useEffect(() => {
+    if (remoteApps.length === 0 || selection.featureIds.size === 0) return;
+    const missingParent = remoteApps.some((app) =>
+      !selection.appIds.has(app.id) && app.features.some((feature) => selection.featureIds.has(feature.id)),
+    );
+    if (missingParent) setSelection(selectionForFeatures(remoteApps, [...selection.featureIds]));
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Apps group features but have no KGS workspace of their own (mirrors
-  // pipeline-studio's server/apps.ts) — never individually pullable, so they
-  // never enter `filtered`/`selected`; they're only rendered as headers.
-  const appsById = new Map((rows ?? []).filter((r) => r.isApp).map((r) => [r.projectId, r]));
-  const features = (rows ?? []).filter((r) => !r.isApp);
-  const filtered = features.filter(matchesQuery);
-  const allVisibleSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.projectId));
-
-  // Group visible features by parent app (pipeline-studio App → Feature
-  // hierarchy); features with no appId, or whose app isn't in this list
-  // (filtered by scope), stay in the "ungrouped" bucket.
-  const grouped = new Map<string, RemoteProject[]>();
-  const ungrouped: RemoteProject[] = [];
-  for (const r of filtered) {
-    const appId = r.appId && appsById.has(r.appId) ? r.appId : null;
-    if (!appId) {
-      ungrouped.push(r);
-      continue;
-    }
-    const list = grouped.get(appId) ?? [];
-    list.push(r);
-    grouped.set(appId, list);
-  }
-  const appGroups = [...grouped.entries()]
-    .map(([appId, items]) => ({ app: appsById.get(appId)!, items }))
-    .sort((a, b) => a.app.name.localeCompare(b.app.name));
-
-  const toggle = (id: string) => {
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelected(next);
-  };
-  const toggleAllVisible = () => {
-    const next = new Set(selected);
-    if (allVisibleSelected) for (const r of filtered) next.delete(r.projectId);
-    else for (const r of filtered) next.add(r.projectId);
-    setSelected(next);
-  };
-  const renderRow = (r: RemoteProject, nested: boolean) => {
-    const isLocal = localIds.has(r.projectId);
+  const renderUngroupedRow = (r: RemoteProjectSummary) => {
+    const isLocal = r.alreadyOnThisDevice || localIds.has(r.projectId);
     return (
       <li key={r.projectId}>
-        <label className={`pl-pullall__row${nested ? ' pl-pullall__row--nested' : ''}`}>
-          <input type="checkbox" checked={selected.has(r.projectId)} onChange={() => toggle(r.projectId)} />
+        <label className="pl-pullall__row">
+          <input
+            type="checkbox"
+            checked={selection.featureIds.has(r.projectId)}
+            onChange={() => setSelection((current) => selectOneUngroupedFeature(r.projectId, current))}
+          />
           <span className="pl-pullall__avatar" aria-hidden="true">
             <Icon name="folder" size={15} />
           </span>
           <span className="pl-pullall__text">
-            <span className="pl-pullall__name">{r.name}</span>
-            {r.name !== r.projectId ? <span className="pl-pullall__id">{r.projectId}</span> : null}
+            <span className="pl-pullall__name">{r.displayName}</span>
+            <span className="pl-pullall__id">
+              {[r.appName, r.ownerName ? `Phụ trách: ${r.ownerName}` : null, r.version ? `Bản ${r.version}` : null, accessRoleLabel(r.accessRole)]
+                .filter(Boolean).join(' · ') || r.projectId}
+            </span>
           </span>
           <span className="pl-pullall__meta">
-            {isLocal ? <span className="pl-pullall__badge">local</span> : null}
+            <span className="pl-pullall__badge">{projectTransferLabel(isLocal)}</span>
             <span className="pl-pullall__files">
-              {r.files > 0 ? `${r.files} files` : r.inKgs ? 'graph only' : '—'}
+              {r.availableOutputs.length > 0 ? `${r.availableOutputs.length} nhóm kết quả` : r.files > 0 ? `${r.files} tệp` : 'Chưa có tệp kết quả'}
             </span>
           </span>
         </label>
@@ -2639,14 +3962,22 @@ export function PullAllModal({
   };
 
   const submit = async () => {
-    if (selected.size === 0 || stageSel.size === 0 || busy) return;
+    if (!syncReady || (selection.appIds.size === 0 && selection.featureIds.size === 0) || busy) return;
+    if (selection.featureIds.size > 0 && stageSel.size === 0) return;
     setBusy(true);
     setError(null);
     try {
       // Always send the explicit stage list: the picker is scoped to the
       // active workflow, so even "all checked" must not sync the OTHER
       // workflow's outputs.
-      await onConfirm([...selected], [...stageSel]);
+      await onConfirm(
+        {
+          ...serializeContextSelection(selection),
+          contextConflictResolutions: conflictResolutions,
+          contextVersions: contextVersionsForSelection(remoteApps, selection),
+        },
+        [...stageSel],
+      );
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2657,7 +3988,7 @@ export function PullAllModal({
 
   return (
     <PlModal
-      title={`Pull projects from KGS${scopeName ? ` — ${scopeName}` : ''}`}
+      title={`${SYNC_COPY.downloadTitle}${scopeName ? ` — ${scopeName}` : ''}`}
       icon="download"
       size="md"
       busy={busy}
@@ -2665,29 +3996,41 @@ export function PullAllModal({
       footer={
         <>
           <span className="pl-pullall__footcount" aria-live="polite">
-            {selected.size > 0 ? `${selected.size} of ${features.length} selected` : ''}
+            {selection.featureIds.size > 0
+              ? `Đang chọn ${selection.featureIds.size} tính năng`
+              : ''}
           </span>
           <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
-            Cancel
+            Hủy
           </button>
           <button
             type="button"
-            className="pl-btn pl-btn--primary"
+            // Pull ghi đè file local bằng bản trên store — không phải một hành
+            // động "an toàn", nên không dùng style primary/run.
+            className="pl-btn pl-btn--danger"
             onClick={() => void submit()}
-            disabled={busy || selected.size === 0 || stageSel.size === 0}
+            disabled={!syncReady || busy
+              || selection.featureIds.size === 0
+              || (selection.featureIds.size > 0 && stageSel.size === 0)}
           >
             <Icon name={busy ? 'spinner' : 'download'} size={14} />
             <span>
               {busy
-                ? 'Pulling…'
-                : selected.size === 0
-                  ? 'Pull'
-                  : `Pull ${selected.size} project${selected.size > 1 ? 's' : ''}`}
+                ? 'Đang lấy về…'
+                : selection.featureIds.size === 0
+                  ? 'Lấy về máy'
+                  : `Lấy tính năng đã chọn`}
             </span>
           </button>
         </>
       }
     >
+      {!syncReady ? (
+        <div className="pl-modal-error" role="alert">
+          <span>{SYNC_COPY.reconnectHint}</span>{' '}
+          <button type="button" className="pl-btn pl-btn--xs" onClick={onReconnect}>{SYNC_COPY.reconnect}</button>
+        </div>
+      ) : null}
       {loadError ? (
         <div className="pl-modal-error" role="alert">
           {loadError}
@@ -2695,66 +4038,100 @@ export function PullAllModal({
       ) : rows === null ? (
         <div className="pl-pullall__state">
           <Icon name="spinner" size={16} />
-          <span>Loading remote projects…</span>
+          <span>{SYNC_COPY.loadingProjects}</span>
         </div>
-      ) : features.length === 0 ? (
+      ) : rawApps.length === 0 && rawFeatures.length === 0 ? (
         <div className="pl-pullall__state">
-          {scopeReason ?? 'Không có dự án nào bạn được tham gia trên store — nhờ quản lý add bạn vào dự án trên Pipeline Studio.'}
+          {scopeReason ?? SYNC_COPY.noSharedProjects}
         </div>
       ) : (
         <>
           <p className="pl-pullall__hint">
-            Choose which remote projects to mirror locally — graph and output files are pulled
-            together.
+            Chọn dự án và các bước cần lấy kết quả. Dự án mới sẽ được tạo trên máy; dự án đã có sẽ
+            được cập nhật. Nếu có thay đổi ở cả hai phía, bạn sẽ được chọn cách xử lý trước khi ghi.
           </p>
-          {features.length > 8 ? (
-            <input
-              type="search"
-              className="pl-pullall__search"
-              placeholder="Search by name or id…"
-              value={search}
-              onChange={(ev) => setSearch(ev.target.value)}
+          <div className="pl-pullall__picker">
+            <div className="pl-pullall__picker-head">
+              <div className="pl-pullall__searchbox">
+                <Icon name="search" size={18} aria-hidden="true" />
+                <input
+                  type="search"
+                  className="pl-pullall__search"
+                  aria-label="Tìm dự án hoặc tính năng"
+                  placeholder="Tìm dự án hoặc tính năng…"
+                  value={search}
+                  onChange={(ev) => setSearch(ev.target.value)}
+                />
+              </div>
+              {q ? <button type="button" className="pl-pullall__search-done" onClick={() => setSearch('')}>Xong</button> : null}
+              <span className="pl-pullall__picker-count">
+                {selection.featureIds.size > 0 ? 'Đã chọn 1 tính năng' : 'Chọn một tính năng'}
+              </span>
+            </div>
+            <div className="pl-pullall__list" role="group" aria-label="Tính năng được chia sẻ">
+            <ul className="pl-pullall__items">
+              {filteredApps.map((app) => {
+                const conflict = Boolean(app.alreadyOnThisDevice && contextNeedsUpdate(app.context));
+                const open = !collapsedApps.has(app.id);
+                return (
+                  <li key={app.id} className="pl-pullall__app-node">
+                    <div className="pl-pullall__group pl-pullall__group--selectable">
+                      <Icon name="folder-filled" size={15} />
+                      <span className="pl-pullall__group-name">{app.name}</span>
+                      <AppContextPopover appName={app.name} version={app.context?.latestVersion ?? app.context?.currentVersion} />
+                      <FolderExpander open={open} label={app.name} onToggle={() => toggleFolder(app.id)} />
+                    </div>
+                    {selection.featureIds.size > 0 && selection.appIds.has(app.id) && conflict ? (
+                      <fieldset className="pl-pullall__conflict">
+                        <legend>Tài liệu dùng chung trên máy cũng đã được sửa. Bạn muốn dùng bản nào?</legend>
+                        <label><input type="radio" name={`context-conflict-${app.id}`} checked={conflictResolutions[app.id] === 'keep_local'} onChange={() => setConflictResolutions((current) => ({ ...current, [app.id]: 'keep_local' }))} /> Giữ bản trên máy</label>
+                        <label><input type="radio" name={`context-conflict-${app.id}`} checked={conflictResolutions[app.id] !== 'keep_local'} onChange={() => setConflictResolutions((current) => ({ ...current, [app.id]: 'use_shared' }))} /> Dùng bản được chia sẻ</label>
+                      </fieldset>
+                    ) : null}
+                    {open ? <ul className="pl-pullall__items pl-pullall__branch">
+                      {app.features.map((feature) => {
+                        const latest = app.context?.latestVersion ?? app.context?.currentVersion;
+                        const stale = featureHasNewContext(feature, app.context);
+                        return (
+                          <li key={feature.id}>
+                            <label className="pl-pullall__row pl-pullall__row--feature">
+                              <input type="checkbox" checked={selection.featureIds.has(feature.id)} onChange={() => setSelection((current) => selectOneFeature(app, feature.id, current))} />
+                              <span className="pl-pullall__avatar" aria-hidden="true"><Icon name="folder" size={15} /></span>
+                              <span className="pl-pullall__text">
+                                <span className="pl-pullall__name">{feature.name}</span>
+                                <span className="pl-pullall__id">Đang dùng bộ tài liệu {contextVersionLabel(feature.boundVersion)}</span>
+                              </span>
+                              {stale ? <span className="pl-pullall__version pl-pullall__version--stale">Có bản {contextVersionLabel(latest)} mới</span> : null}
+                            </label>
+                          </li>
+                        );
+                      })}
+                    </ul> : null}
+                  </li>
+                );
+              })}
+              {filteredUngrouped.map(renderUngroupedRow)}
+              {filteredApps.length === 0 && filteredUngrouped.length === 0 ? (
+                <li className="pl-pullall__state">{SYNC_COPY.noSearchResults(search)}</li>
+              ) : null}
+              </ul>
+            </div>
+          </div>
+          {selection.featureIds.size > 0 ? (
+            <StagePicker
+              workflows={workflows}
+              selected={stageSel}
+              onChange={setStageSel}
+              diffByStage={diffByStage}
+              diffLoading={syncStatus === null}
             />
           ) : null}
-          <div className="pl-pullall__list" role="group" aria-label="Remote projects">
-            <label className="pl-pullall__head">
-              <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} />
-              <span className="pl-pullall__headlabel">
-                Select all{q ? ' matches' : ''}
-              </span>
-              <span className="pl-pullall__headcount">
-                {selected.size}/{features.length}
-              </span>
-            </label>
-            <ul className="pl-pullall__items">
-              {/* App → Feature hierarchy (pipeline-studio's App concept): each
-                  app is a non-checkable group header — it has no KGS
-                  workspace of its own — with its features nested underneath. */}
-              {appGroups.map(({ app, items }) => (
-                <li key={app.projectId}>
-                  <div className="pl-pullall__group">
-                    <Icon name="folder-filled" size={13} />
-                    <span>{app.name}</span>
-                  </div>
-                  <ul className="pl-pullall__items">{items.map((r) => renderRow(r, true))}</ul>
-                </li>
-              ))}
-              {ungrouped.map((r) => renderRow(r, false))}
-              {filtered.length === 0 ? (
-                <li className="pl-pullall__state">No project matches “{search}”.</li>
-              ) : null}
-            </ul>
-          </div>
-          <StagePicker
-            workflows={workflows}
-            selected={stageSel}
-            onChange={setStageSel}
-            diffByStage={diffByStage}
-            diffLoading={syncStatus === null}
-          />
-          {stageSel.size === 0 ? (
+          {selection.appIds.size === 0 && selection.featureIds.size === 0 ? (
+            <div className="pl-modal-error" role="alert">{SYNC_COPY.chooseProject}</div>
+          ) : null}
+          {selection.featureIds.size > 0 && stageSel.size === 0 ? (
             <div className="pl-modal-error" role="alert">
-              Chọn ít nhất một pipeline để pull.
+              {SYNC_COPY.chooseStep}
             </div>
           ) : null}
           {error ? (
@@ -2774,14 +4151,26 @@ export function PullAllModal({
 // hands ids (+ stages when narrowed) to PipelinesView → POST /api/kg/push-all.
 export function PushAllModal({
   projects,
+  apps,
   workflows,
   scopeName,
   initialSelectedIds,
   onClose,
   onConfirm,
+  syncReady,
+  onReconnect,
+  onUpgradeFeatureContext,
 }: {
   /** Local pipeline projects (the push-eligible set). */
-  projects: Array<{ id: string; name: string }>;
+  projects: Array<{
+    id: string;
+    name: string;
+    app?: { id: string; name?: string };
+    contextVersion?: string | null;
+    appContextBinding?: { contextVersion?: string | null } | null;
+  }>;
+  /** Complete App list, including Apps with zero Feature. */
+  apps?: ContextSyncAppInput[];
   /** The workflow(s) in scope — only the active tab's workflow is passed. */
   workflows: Workflow[];
   /** Active workflow name, shown in the modal title. */
@@ -2791,37 +4180,163 @@ export function PushAllModal({
   initialSelectedIds?: readonly string[];
   onClose: () => void;
   /** Always receives the explicit stage list of the scoped workflow. */
-  onConfirm: (projectIds: string[], stages: string[]) => Promise<void>;
+  onConfirm: (selection: ContextTransferSelection, stages: string[]) => Promise<void>;
+  syncReady: boolean;
+  onReconnect: () => void;
+  onUpgradeFeatureContext?: (
+    featureId: string,
+    appId: string,
+    contextVersion: string,
+    contentDigest: string,
+  ) => Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [contextData, setContextData] = useState<Record<string, {
+    current: AppContextManifest | null;
+    versions: AppContextManifest[];
+    bindings: Array<{ featureId: string; binding: FeatureContextBinding }>;
+  }>>({});
   // Preselect the caller's project when given (pushing YOUR project is the
   // common case — confirm-only); else every project, the classic Push all.
-  const [selected, setSelected] = useState<ReadonlySet<string>>(
-    () => new Set(initialSelectedIds?.length ? initialSelectedIds : projects.map((p) => p.id)),
-  );
+  const groupedProjects = new Map<string, ContextSyncAppInput>();
+  for (const app of apps ?? []) groupedProjects.set(app.id, { ...app, features: [...app.features] });
+  const ungroupedProjects: typeof projects = [];
+  for (const project of projects) {
+    if (!project.app) {
+      ungroupedProjects.push(project);
+      continue;
+    }
+    const group = groupedProjects.get(project.app.id) ?? {
+      id: project.app.id,
+      name: project.app.name ?? project.app.id,
+      context: contextInfoOf(project.app as typeof project.app & ContextCarrier),
+      features: [],
+    };
+    if (!group.features.some((feature) => feature.id === project.id)) {
+      group.features.push({
+        id: project.id,
+        name: project.name,
+        boundVersion: featureBindingOf(project as typeof project & ContextCarrier),
+      });
+    }
+    groupedProjects.set(group.id, group);
+  }
+  const appGroups = [...groupedProjects.values()].map((app) => {
+    const loaded = contextData[app.id];
+    if (!loaded) return app;
+    return {
+      ...app,
+      context: loaded.current ? {
+        currentVersion: loaded.current.contextVersion,
+        latestVersion: loaded.current.contextVersion,
+        localDigest: loaded.current.contentDigest,
+        sharedDigest: app.context?.sharedDigest,
+        changedFiles: diffContextManifests(
+          loaded.current,
+          loaded.versions.find((manifest) => manifest.contextVersion === loaded.current?.previousVersion),
+        ),
+      } : app.context,
+      features: app.features.map((feature) => ({
+        ...feature,
+        boundVersion: loaded.bindings.find((item) => item.featureId === feature.id)?.binding.contextVersion
+          ?? feature.boundVersion,
+      })),
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  const appIdsKey = [...groupedProjects.keys()].sort().join('\u0000');
+  useEffect(() => {
+    let cancelled = false;
+    const appIds = appIdsKey ? appIdsKey.split('\u0000') : [];
+    void Promise.all(appIds.map(async (appId) => {
+      try {
+        const response = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/context`);
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload?.data) return null;
+        return [appId, {
+          current: payload.data.current ?? null,
+          versions: Array.isArray(payload.data.versions) ? payload.data.versions : [],
+          bindings: Array.isArray(payload.data.bindings) ? payload.data.bindings : [],
+        }] as const;
+      } catch {
+        return null;
+      }
+    })).then((entries) => {
+      if (cancelled) return;
+      const next = Object.fromEntries(entries.filter((entry): entry is readonly [string, { current: AppContextManifest | null; versions: AppContextManifest[]; bindings: Array<{ featureId: string; binding: FeatureContextBinding }> }] => entry !== null));
+      setContextData(next);
+    });
+    return () => { cancelled = true; };
+  }, [appIdsKey]);
+  const initialFeatureIds = initialSelectedIds?.slice(0, 1) ?? [];
+  const [selection, setSelection] = useState<ContextTreeSelection>(() => {
+    const base = selectionForFeatures(appGroups, initialFeatureIds);
+    return base;
+  });
   const [stageSel, setStageSel] = useState<ReadonlySet<string>>(() => allStageIds(workflows));
+  const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
+  const [upgradeBusy, setUpgradeBusy] = useState<string | null>(null);
+  const [upgradedFeatures, setUpgradedFeatures] = useState<ReadonlySet<string>>(() => new Set());
+  const [pendingUpgrade, setPendingUpgrade] = useState<{
+    featureId: string;
+    featureName: string;
+    appId: string;
+    fromVersion: string | null;
+    toVersion: string;
+    contentDigest: string;
+    changedFiles: ContextFileChange[];
+  } | null>(null);
+  const [collapsedApps, setCollapsedApps] = useState<ReadonlySet<string>>(() => new Set());
   const syncStatus = useSyncStatus();
-  const diffByStage = aggregateDiff(syncStatus, selected);
-
-  const allSelected = projects.length > 0 && projects.every((p) => selected.has(p.id));
-  const toggle = (id: string) => {
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelected(next);
-  };
-  const toggleAll = () => {
-    setSelected(allSelected ? new Set() : new Set(projects.map((p) => p.id)));
-  };
+  const diffByStage = aggregateDiff(syncStatus, selection.featureIds);
+  const toggleFolder = (appId: string) => setCollapsedApps((current) => {
+    const next = new Set(current);
+    if (next.has(appId)) next.delete(appId); else next.add(appId);
+    return next;
+  });
+  const searchQuery = search.trim().toLowerCase();
+  const filteredAppGroups = appGroups
+    .map((app) => {
+      if (!searchQuery || app.name.toLowerCase().includes(searchQuery) || app.id.toLowerCase().includes(searchQuery)) return app;
+      return {
+        ...app,
+        features: app.features.filter((feature) =>
+          feature.name.toLowerCase().includes(searchQuery) || feature.id.toLowerCase().includes(searchQuery),
+        ),
+      };
+    })
+    .filter((app) => app.features.length > 0 || app.name.toLowerCase().includes(searchQuery) || app.id.toLowerCase().includes(searchQuery));
+  const filteredUngroupedProjects = ungroupedProjects.filter((project) => !searchQuery
+    || project.name.toLowerCase().includes(searchQuery)
+    || project.id.toLowerCase().includes(searchQuery));
+  const renderUngroupedProject = (project: (typeof projects)[number]) => (
+    <li key={project.id}>
+      <label className="pl-pullall__row">
+        <input
+          type="checkbox"
+          checked={selection.featureIds.has(project.id)}
+          onChange={() => setSelection((current) => selectOneUngroupedFeature(project.id, current))}
+        />
+        <span className="pl-pullall__avatar" aria-hidden="true"><Icon name="folder" size={15} /></span>
+        <span className="pl-pullall__text">
+          <span className="pl-pullall__name">{project.name}</span>
+          {project.name !== project.id ? <span className="pl-pullall__id">{project.id}</span> : null}
+        </span>
+      </label>
+    </li>
+  );
 
   const submit = async () => {
-    if (selected.size === 0 || stageSel.size === 0 || busy) return;
+    if (!syncReady || (selection.appIds.size === 0 && selection.featureIds.size === 0) || busy) return;
+    if (selection.featureIds.size > 0 && stageSel.size === 0) return;
     setBusy(true);
     setError(null);
     try {
       // Explicit stage list always — see PullAllModal.submit.
-      await onConfirm([...selected], [...stageSel]);
+      await onConfirm({
+        ...serializeContextSelection(selection),
+        contextVersions: contextVersionsForSelection(appGroups, selection),
+      }, [...stageSel]);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2832,7 +4347,7 @@ export function PushAllModal({
 
   return (
     <PlModal
-      title={`Push projects to KGS${scopeName ? ` — ${scopeName}` : ''}`}
+      title={`${SYNC_COPY.shareTitle}${scopeName ? ` — ${scopeName}` : ''}`}
       icon="upload"
       size="md"
       busy={busy}
@@ -2840,76 +4355,197 @@ export function PushAllModal({
       footer={
         <>
           <span className="pl-pullall__footcount" aria-live="polite">
-            {selected.size > 0 ? `${selected.size} of ${projects.length} selected` : ''}
+            {selection.featureIds.size > 0
+              ? `Đang chọn ${selection.featureIds.size} tính năng`
+              : ''}
           </span>
           <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
-            Cancel
+            Hủy
           </button>
           <button
             type="button"
-            className="pl-btn pl-btn--primary"
+            // Push ghi đè bản trên store (mirror-prune còn xóa file trên store
+            // không còn ở local) — cùng lý do PullAllModal đổi sang danger.
+            className="pl-btn pl-btn--danger"
             onClick={() => void submit()}
-            disabled={busy || selected.size === 0 || stageSel.size === 0}
+            disabled={!syncReady || busy
+              || selection.featureIds.size === 0
+              || (selection.featureIds.size > 0 && stageSel.size === 0)}
           >
             <Icon name={busy ? 'spinner' : 'upload'} size={14} />
             <span>
               {busy
-                ? 'Pushing…'
-                : selected.size === 0
-                  ? 'Push'
-                  : `Push ${selected.size} project${selected.size > 1 ? 's' : ''}`}
+                ? 'Đang chia sẻ…'
+                : selection.featureIds.size === 0
+                  ? 'Chia sẻ'
+                  : 'Chia sẻ tính năng đã chọn'}
             </span>
           </button>
         </>
       }
     >
-      {projects.length === 0 ? (
-        <div className="pl-pullall__state">Chưa có project local nào để push.</div>
+      {!syncReady ? (
+        <div className="pl-modal-error" role="alert">
+          <span>{SYNC_COPY.reconnectHint}</span>{' '}
+          <button type="button" className="pl-btn pl-btn--xs" onClick={onReconnect}>{SYNC_COPY.reconnect}</button>
+        </div>
+      ) : null}
+      {appGroups.length === 0 && projects.length === 0 ? (
+        <div className="pl-pullall__state">Chưa có dự án hoặc tính năng nào trên máy để chia sẻ.</div>
       ) : (
         <>
           <p className="pl-pullall__hint">
-            Chọn project và pipeline muốn đẩy lên store — graph luôn push cả project, phần
-            pipeline chỉ lọc file output.
+            Chọn một tính năng để chia sẻ. Tài liệu dùng chung của dự án sẽ luôn đi kèm để đảm bảo kết quả dùng đúng tiêu chuẩn.
           </p>
-          <div className="pl-pullall__list" role="group" aria-label="Local projects">
-            <label className="pl-pullall__head">
-              <input type="checkbox" checked={allSelected} onChange={toggleAll} />
-              <span className="pl-pullall__headlabel">Select all</span>
-              <span className="pl-pullall__headcount">
-                {selected.size}/{projects.length}
+          <div className="pl-pullall__picker">
+            <div className="pl-pullall__picker-head">
+              <div className="pl-pullall__searchbox">
+                <Icon name="search" size={18} aria-hidden="true" />
+                <input
+                  type="search"
+                  className="pl-pullall__search"
+                  aria-label="Tìm dự án hoặc tính năng"
+                  placeholder="Tìm dự án hoặc tính năng…"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </div>
+              {searchQuery ? <button type="button" className="pl-pullall__search-done" onClick={() => setSearch('')}>Xong</button> : null}
+              <span className="pl-pullall__picker-count">
+                {selection.featureIds.size > 0 ? 'Đã chọn 1 tính năng' : 'Chọn một tính năng'}
               </span>
-            </label>
+            </div>
+            <div className="pl-pullall__list" role="group" aria-label="Tính năng trên máy">
             <ul className="pl-pullall__items">
-              {projects.map((p) => (
-                <li key={p.id}>
-                  <label className="pl-pullall__row">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(p.id)}
-                      onChange={() => toggle(p.id)}
-                    />
-                    <span className="pl-pullall__avatar" aria-hidden="true">
-                      <Icon name="folder" size={15} />
-                    </span>
-                    <span className="pl-pullall__text">
-                      <span className="pl-pullall__name">{p.name}</span>
-                      {p.name !== p.id ? <span className="pl-pullall__id">{p.id}</span> : null}
-                    </span>
-                  </label>
+              {filteredAppGroups.map((app) => {
+                const version = app.context?.currentVersion ?? app.context?.latestVersion;
+                const open = !collapsedApps.has(app.id);
+                return (
+                  <li key={app.id} className="pl-pullall__app-node">
+                    <div className="pl-pullall__group pl-pullall__group--selectable">
+                      <Icon name="folder-filled" size={15} />
+                      <span className="pl-pullall__group-name">{app.name}</span>
+                      <AppContextPopover appName={app.name} version={version} />
+                      <FolderExpander open={open} label={app.name} onToggle={() => toggleFolder(app.id)} />
+                    </div>
+                    {open ? <ul className="pl-pullall__items pl-pullall__branch">
+                      {app.features.map((feature) => {
+                        const latest = app.context?.latestVersion ?? app.context?.currentVersion;
+                        const stale = !upgradedFeatures.has(feature.id) && featureHasNewContext(feature, app.context);
+                        return (
+                          <li key={feature.id}>
+                            <div className="pl-pullall__row pl-pullall__row--feature">
+                              <input type="checkbox" aria-label={`Chọn Feature ${feature.name}`} checked={selection.featureIds.has(feature.id)} onChange={() => setSelection((current) => selectOneFeature(app, feature.id, current))} />
+                              <span className="pl-pullall__avatar" aria-hidden="true"><Icon name="folder" size={15} /></span>
+                              <span className="pl-pullall__text">
+                                <span className="pl-pullall__name">{feature.name}</span>
+                                <span className="pl-pullall__id">Đang dùng bộ tài liệu {contextVersionLabel(upgradedFeatures.has(feature.id) ? latest : feature.boundVersion)}</span>
+                              </span>
+                              {stale ? (
+                                <button
+                                  type="button"
+                                  className="pl-pullall__upgrade"
+                                  disabled={!onUpgradeFeatureContext || upgradeBusy === feature.id || !latest || !app.context?.localDigest}
+                                  title={onUpgradeFeatureContext ? 'Xem thay đổi trước khi dùng bộ tài liệu mới' : 'Cần cập nhật ứng dụng để dùng bản mới'}
+                                  onClick={() => {
+                                    if (!onUpgradeFeatureContext || !latest || !app.context?.localDigest) return;
+                                    setPendingUpgrade({
+                                      featureId: feature.id,
+                                      featureName: feature.name,
+                                      appId: app.id,
+                                      fromVersion: feature.boundVersion ?? null,
+                                      toVersion: latest,
+                                      contentDigest: app.context.localDigest,
+                                      changedFiles: [...(app.context.changedFiles ?? [])],
+                                    });
+                                  }}
+                                >
+                                  {upgradeBusy === feature.id ? 'Đang cập nhật…' : 'Xem thay đổi'}
+                                </button>
+                              ) : <span className="pl-pullall__version">Đang dùng bản mới nhất</span>}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul> : null}
+                  </li>
+                );
+              })}
+              {filteredUngroupedProjects.length ? (
+                <li>
+                  <div className="pl-pullall__group"><Icon name="folder" size={13} /><span>Chưa thuộc dự án</span></div>
+                  <ul className="pl-pullall__items">{filteredUngroupedProjects.map(renderUngroupedProject)}</ul>
                 </li>
-              ))}
-            </ul>
+              ) : null}
+              {filteredAppGroups.length === 0 && filteredUngroupedProjects.length === 0 ? (
+                <li className="pl-pullall__state">Không tìm thấy dự án hoặc tính năng phù hợp.</li>
+              ) : null}
+              </ul>
+            </div>
           </div>
-          <StagePicker
-            workflows={workflows}
-            selected={stageSel}
-            onChange={setStageSel}
-            diffByStage={diffByStage}
-            diffLoading={syncStatus === null}
-          />
-          {stageSel.size === 0 ? (
+          {pendingUpgrade ? (
+            <section className="pl-pullall__conflict" role="dialog" aria-label={`Xác nhận nâng Context cho ${pendingUpgrade.featureName}`}>
+              <strong>Xem thay đổi trước khi dùng bản mới</strong>
+              <p>
+                {pendingUpgrade.featureName} đang dùng {contextVersionLabel(pendingUpgrade.fromVersion)} và sẽ chuyển sang{' '}
+                {contextVersionLabel(pendingUpgrade.toVersion)} cho các lần chạy tiếp theo. Kết quả và Context của các lần chạy cũ vẫn được giữ nguyên.
+              </p>
+              {pendingUpgrade.changedFiles.length > 0 ? (
+                <ul aria-label="Các tệp Context thay đổi">
+                  {pendingUpgrade.changedFiles.map((change) => (
+                    <li key={`${change.operation}:${change.path}`}>
+                      {change.operation === 'add' ? 'Thêm' : change.operation === 'delete' ? 'Xóa' : 'Sửa'}: {change.path}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>Không có chi tiết tệp; hãy kiểm tra version trước khi xác nhận.</p>
+              )}
+              <div>
+                <button type="button" className="pl-btn pl-btn--xs" disabled={upgradeBusy === pendingUpgrade.featureId} onClick={() => setPendingUpgrade(null)}>
+                  Giữ bản đang dùng
+                </button>{' '}
+                <button
+                  type="button"
+                  className="pl-btn pl-btn--xs pl-btn--danger"
+                  disabled={upgradeBusy === pendingUpgrade.featureId}
+                  onClick={() => {
+                    setUpgradeBusy(pendingUpgrade.featureId);
+                    setError(null);
+                    void onUpgradeFeatureContext?.(
+                      pendingUpgrade.featureId,
+                      pendingUpgrade.appId,
+                      pendingUpgrade.toVersion,
+                      pendingUpgrade.contentDigest,
+                    )
+                      .then(() => {
+                        setUpgradedFeatures((current) => new Set(current).add(pendingUpgrade.featureId));
+                        setPendingUpgrade(null);
+                      })
+                      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
+                      .finally(() => setUpgradeBusy(null));
+                  }}
+                >
+                  {upgradeBusy === pendingUpgrade.featureId ? 'Đang cập nhật…' : `Xác nhận dùng ${contextVersionLabel(pendingUpgrade.toVersion)}`}
+                </button>
+              </div>
+            </section>
+          ) : null}
+          {selection.featureIds.size > 0 ? (
+            <StagePicker
+              workflows={workflows}
+              selected={stageSel}
+              onChange={setStageSel}
+              diffByStage={diffByStage}
+              diffLoading={syncStatus === null}
+            />
+          ) : null}
+          {selection.appIds.size === 0 && selection.featureIds.size === 0 ? (
+            <div className="pl-modal-error" role="alert">{SYNC_COPY.chooseProject}</div>
+          ) : null}
+          {selection.featureIds.size > 0 && stageSel.size === 0 ? (
             <div className="pl-modal-error" role="alert">
-              Chọn ít nhất một pipeline để push.
+              {SYNC_COPY.chooseStep}
             </div>
           ) : null}
           {error ? (
@@ -2922,3 +4558,11 @@ export function PushAllModal({
     </PlModal>
   );
 }
+
+// The old dual-mode NewProjectModal is gone: creating an App and creating a
+// Feature are two separate, single-purpose forms now (./NewAppModal.tsx and
+// ./NewFeatureModal.tsx, both built on the fresh PipelineFormModal
+// primitives). Only the Feature one is re-exported here, because that is the
+// one PipelinesView.tsx pulls from this module alongside the other pipelines
+// modals; the App form is used from PipelinesRoute.tsx directly.
+export { NewFeatureModal } from './NewFeatureModal';

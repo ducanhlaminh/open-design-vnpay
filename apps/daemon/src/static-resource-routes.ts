@@ -1,4 +1,5 @@
 import type { Express } from 'express';
+import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
 import {
@@ -18,6 +19,8 @@ import {
   importLocalDesignSystemProject,
 } from './design-system-import.js';
 import { importGitHubDesignSystemProject } from './design-system-github-import.js';
+import { importFigmaIRDesignSystem } from './figma-ds-import.js';
+import { decodeMultipartFilename } from './projects.js';
 import { renderDesignSystemPreview } from './design-system-preview.js';
 import { renderDesignSystemShowcase } from './design-system-showcase.js';
 import { listPromptTemplates, readPromptTemplate } from './prompt-templates.js';
@@ -25,6 +28,19 @@ import { installFromTarget, uninstallById } from './library-install.js';
 import type { RouteDeps } from './server-context.js';
 
 export interface RegisterStaticResourceRoutesDeps extends RouteDeps<'http' | 'paths' | 'resources'> {}
+
+// Fig Pipeline uploads are IR JSON or plugin .zip bundles. A real product
+// library is far heavier than the ~90MB this once assumed: the iPay lib alone
+// carries 431 IMAGE fills, and the plugin's .zip is store-only AND ships the
+// compiled React bundle next to ir.json, so it lands near a quarter gigabyte.
+// Uploading ir.json on its own is roughly half the bytes and loses nothing —
+// the importer recompiles the bundle anyway.
+const FIGMA_IR_UPLOAD_LIMIT = 512 * 1024 * 1024;
+const figmaIrUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: FIGMA_IR_UPLOAD_LIMIT, files: 16 },
+});
+
 
 export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticResourceRoutesDeps) {
   const {
@@ -697,6 +713,96 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       sendApiError(res, 500, 'INTERNAL_ERROR', String(err));
     }
   });
+
+  // POST /api/design-systems/import/figma — multipart upload of one or more
+  // Fig Pipeline exports (field `files`): raw .ir.json files and/or the .zip
+  // bundle downloaded from the plugin (ir.json is extracted from it). Merge is
+  // last-writer-wins in NATURAL FILENAME ORDER (prefix 01-, 02-, … with the
+  // foundation/token export first). Compiles a self-contained React bundle
+  // into <id>/react/ plus the standard prompt-facing design-system files.
+  // multer rejects oversized uploads inside its own middleware, so without this
+  // wrapper the failure escapes as a bare 500 "MulterError: File too large" —
+  // no size, no limit, no hint about what to do next.
+  const figmaIrUploadMiddleware = (req: any, res: any, next: (err?: unknown) => void) => {
+    figmaIrUpload.array('files', 16)(req, res, (err: any) => {
+      if (!err) return next();
+      if (err?.code === 'LIMIT_FILE_SIZE') {
+        const mb = Math.round(FIGMA_IR_UPLOAD_LIMIT / 1024 / 1024);
+        return sendApiError(
+          res,
+          413,
+          'PAYLOAD_TOO_LARGE',
+          `upload exceeds the ${mb}MB limit. The plugin .zip bundles the compiled React output next to ir.json — upload ir.json on its own instead (the importer recompiles it), or re-export fewer pages and merge the IRs.`,
+        );
+      }
+      if (err?.code === 'LIMIT_FILE_COUNT') {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'at most 16 files per import');
+      }
+      return sendApiError(res, 400, 'BAD_REQUEST', String(err?.message ?? err));
+    });
+  };
+
+  app.post(
+    '/api/design-systems/import/figma',
+    figmaIrUploadMiddleware,
+    async (req, res) => {
+      if (!requireLocalOrigin(req, res)) return;
+      try {
+        const uploads = (req.files ?? []) as Array<{ originalname: string; buffer: Buffer }>;
+        if (uploads.length === 0) {
+          return sendApiError(
+            res,
+            400,
+            'BAD_REQUEST',
+            'at least one .ir.json or plugin .zip file is required (multipart field "files")',
+          );
+        }
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const craftApplies = normalizeDesignSystemCraftApplies(
+          Array.isArray(body.craftApplies)
+            ? body.craftApplies
+            : typeof body.craftApplies === 'string'
+              ? [body.craftApplies]
+              : undefined,
+        );
+        const before = await listAllDesignSystems();
+        const result = await importFigmaIRDesignSystem(
+          uploads.map((file) => ({
+            filename: decodeMultipartFilename(file.originalname),
+            // Raw bytes — the import module detects .zip bundles vs JSON text.
+            content: file.buffer,
+          })),
+          USER_DESIGN_SYSTEMS_DIR,
+          {
+            ...(typeof body.name === 'string' && body.name.trim() ? { name: body.name } : {}),
+            ...(craftApplies ? { craftApplies } : {}),
+            reservedIds: designSystemDirIdsFromCatalog(before),
+          },
+        );
+        const systems = await listAllDesignSystems();
+        const designSystem = findUserDesignSystemInCatalog(systems, result.id);
+        if (!designSystem) {
+          return sendApiError(
+            res,
+            500,
+            'INTERNAL_ERROR',
+            `imported design system was not found in catalog: ${result.dir}`,
+          );
+        }
+        res.status(201).json({
+          designSystem,
+          warnings: result.warnings,
+          summary: result.summary,
+          criteria: { rules: result.criteria.rules, components: false },
+        });
+      } catch (err: any) {
+        if (err instanceof LocalDesignSystemImportError) {
+          return sendApiError(res, err.code === 'BAD_REQUEST' ? 400 : 500, err.code, err.message);
+        }
+        sendApiError(res, 500, 'INTERNAL_ERROR', String(err));
+      }
+    },
+  );
 
   app.delete('/api/design-systems/:id', async (req, res, next) => {
     if (!requireLocalOrigin(req, res)) return;

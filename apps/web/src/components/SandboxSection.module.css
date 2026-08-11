@@ -111,3 +111,156 @@
   background: var(--bg-panel);
   border: 1px solid var(--border-soft);
 }
+
+.runtimeGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.runtimeCard {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  overflow: clip;
+}
+
+.runtimeToggle {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.runtimeToggle::-webkit-details-marker {
+  display: none;
+}
+
+.runtimeToggle::before {
+  content: '';
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.runtimeCard[open] > .runtimeToggle::before {
+  transform: rotate(90deg);
+}
+
+.runtimeToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.runtimeToggleCopy {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.runtimeToggleCopy h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
+.runtimeToggleCopy span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtimeExpanded {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+  gap: 14px;
+  padding: 14px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-subtle);
+}
+
+.runtimeBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.runtimeSummary {
+  min-width: 180px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-panel);
+}
+
+.runtimeReady {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.runtimeMissing {
+  color: var(--danger, #c0392b);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.runtimeSpecs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.runtimeSpecs li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.runtimeSpecs li span {
+  color: var(--text-muted);
+}
+
+.runtimeSpecs li code {
+  justify-self: end;
+  font-size: 11.5px;
+}
+
+@media (max-width: 900px) {
+  .runtimeExpanded {
+    grid-template-columns: 1fr;
+  }
+
+  .runtimeSummary {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .runtimeToggleCopy span {
+    display: none;
+  }
+}

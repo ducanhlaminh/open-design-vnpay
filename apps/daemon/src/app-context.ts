@@ -89,6 +89,58 @@ export async function stageAppContext(appId: string, runCwd: string): Promise<st
 }
 
 /**
+ * Stage mutable local context and lazily import the legacy media-only layout
+ * when a local App has no context yet. Open Design owns these imported bytes;
+ * subsequent edits/runs never re-read media implicitly.
+ */
+export async function stageLocalAppContext(
+  projectsDir: string,
+  appId: string,
+  runCwd: string,
+): Promise<string[]> {
+  const source = path.join(projectsDir, appId, APP_CONTEXT_DIR);
+  const listLocal = async (): Promise<string[]> => {
+    const result: string[] = [];
+    const walk = async (dir: string, rel = ''): Promise<void> => {
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        const next = rel ? `${rel}/${entry.name}` : entry.name;
+        const absolute = path.join(dir, entry.name);
+        if (entry.isDirectory()) await walk(absolute, next);
+        else if (entry.isFile()) result.push(next);
+      }
+    };
+    await walk(source);
+    return result.sort();
+  };
+  let local = await listLocal();
+  if (local.length === 0) {
+    const media = new MediaClient(mediaConfigFromEnv());
+    const legacy = await listAppContextFiles(media, appId).catch(() => [] as string[]);
+    for (const remotePath of legacy) {
+      const inner = remotePath.slice(APP_CONTEXT_DIR.length + 1);
+      const content = await media.downloadFile(appId, remotePath);
+      const target = path.join(source, ...inner.split('/'));
+      await fs.promises.mkdir(path.dirname(target), { recursive: true });
+      await fs.promises.writeFile(target, content, { flag: 'wx' }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'EEXIST') throw error;
+      });
+    }
+    local = await listLocal();
+  }
+  if (local.length === 0) return [];
+  const staged = path.join(runCwd, STAGED_APP_CONTEXT);
+  await fs.promises.rm(staged, { recursive: true, force: true });
+  for (const relative of local) {
+    const target = path.join(staged, ...relative.split('/'));
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.copyFile(path.join(source, ...relative.split('/')), target);
+  }
+  return local;
+}
+
+/**
  * The kickoff directive appended for a feature that inherits app context. Pure
  * (no I/O) so it is unit-testable; returns '' when nothing was staged, keeping
  * the kickoff byte-identical to the legacy one for unlinked features.

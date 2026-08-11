@@ -34,6 +34,10 @@
       "types": "./dist/api/providerModels.d.ts",
       "default": "./dist/api/providerModels.mjs"
     },
+    "./api/sandbox": {
+      "types": "./dist/api/sandbox.d.ts",
+      "default": "./dist/api/sandbox.mjs"
+    },
     "./api/research": {
       "types": "./dist/api/research.d.ts",
       "default": "./dist/api/research.mjs"

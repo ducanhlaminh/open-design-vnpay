@@ -35,7 +35,9 @@ exactly, but sequence them through the two phases here.
 ## Run in two ordered phases (do NOT interleave)
 
 ### Phase 1 — Feature Analysis → `./features/`
-Follow the **feature-analysis** workflow exactly: read `./docs/jira/*.md` (+
+**Docs layouts.** App-linked projects use `./docs-feature/` as the selected feature source; read `./docs-app/_index.md` first and individual `./docs-app/` pages only for cross-feature reference. Never build features or journeys from `./docs-app/`. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
+
+Follow the **feature-analysis** workflow exactly: for an App-linked project read the selected source pages under `./docs-feature/**/*.md`; otherwise read `./docs/jira/*.md` (+
 `./docs/confluence/`) produced by *Docs → Markdown*, distil into one file per
 feature under `./features/<Feature Name>.md` plus `./features/_index.json`. If
 `./docs/jira/` is missing or empty, STOP and tell the user to run **Docs →

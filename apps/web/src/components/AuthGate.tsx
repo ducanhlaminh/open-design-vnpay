@@ -11,15 +11,9 @@
 // where the app runs, webview included.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import type { AuthSessionUserDto } from '@open-design/contracts';
 
-interface AuthUser {
-  sub: string;
-  email: string;
-  name: string;
-  picture?: string;
-  /** Role names from preview-identity (managed in pipeline-studio /roles). */
-  roles?: string[];
-}
+type AuthUser = AuthSessionUserDto;
 
 type GateState =
   | { phase: 'checking' }

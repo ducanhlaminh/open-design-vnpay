@@ -295,7 +295,10 @@ export async function searchConfluencePages(
 ): Promise<ConfluencePageHit[]> {
   if (creds) {
     const cql = `type=page AND title~"${q.replace(/["\\]/g, ' ').trim()}" order by lastmodified desc`;
-    const url = `${creds.base}/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=${Math.min(Math.max(limit, 1), 50)}&expand=space`;
+    // `children.page` with NO size override rides Confluence's default child
+    // limit (small) — enough to tell existence apart from emptiness without
+    // fetching more than we need (we only read presence, never the list).
+    const url = `${creds.base}/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=${Math.min(Math.max(limit, 1), 50)}&expand=space,ancestors,children.page`;
     const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` } });
     const text = await res.text();
     if (!res.ok) throw new Error(`Confluence search HTTP ${res.status}: ${text.slice(0, 200)}`);
@@ -305,15 +308,38 @@ export async function searchConfluencePages(
         title?: string;
         space?: { key?: string };
         _links?: { webui?: string };
+        // Confluence returns these root→down, page itself excluded — the
+        // App-root combobox needs this to tell apart same-titled pages that
+        // live under different dự án.
+        ancestors?: Array<{ title?: string }>;
+        // Existence-only signal for the App-root search dropdown's expand
+        // arrow — `size` is Confluence's own child COUNT (preferred, doesn't
+        // depend on how many child rows the default page limit returned);
+        // `results` is the fallback when `size` is absent.
+        children?: { page?: { size?: number; results?: unknown[] } };
       }>;
     };
     return (body.results ?? [])
-      .map((r) => ({
-        id: String(r.id ?? ''),
-        title: r.title ?? String(r.id ?? ''),
-        ...(r._links?.webui ? { url: `${creds.base}${r._links.webui}` } : {}),
-        ...(r.space?.key ? { space: r.space.key } : {}),
-      }))
+      .map((r) => {
+        const ancestors = (r.ancestors ?? []).map((a) => a.title ?? '').filter(Boolean);
+        const childPage = r.children?.page;
+        const hasChildren =
+          childPage === undefined
+            ? undefined
+            : typeof childPage.size === 'number'
+              ? childPage.size > 0
+              : Array.isArray(childPage.results)
+                ? childPage.results.length > 0
+                : undefined;
+        return {
+          id: String(r.id ?? ''),
+          title: r.title ?? String(r.id ?? ''),
+          ...(r._links?.webui ? { url: `${creds.base}${r._links.webui}` } : {}),
+          ...(r.space?.key ? { space: r.space.key } : {}),
+          ...(ancestors.length ? { ancestors } : {}),
+          ...(hasChildren !== undefined ? { hasChildren } : {}),
+        };
+      })
       .filter((r) => r.id);
   }
   if (!ep) {
@@ -477,7 +503,18 @@ function deaccentVietnamese(s: string): string {
 }
 
 function slug(s: string): string {
-  return deaccentVietnamese(s).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'doc';
+  return (
+    deaccentVietnamese(s)
+      .replace(/[^A-Za-z0-9._-]+/g, '-')
+      // A literal '-' in the title is an ALLOWED char (kept as-is above) —
+      // adjacent to a replaced run (e.g. " - " → space→'-', '-' kept, space→'-')
+      // that produces runs of 2+ dashes ("---"). Collapse them: real titles
+      // like "2.2. URD - Danh mục vật tư hàng hoá" must not slug to
+      // "2.2.-URD---Danh-muc-...".
+      .replace(/-{2,}/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || 'doc'
+  );
 }
 
 // Source-order comparison for doc titles/segments. Confluence pages are
@@ -593,6 +630,39 @@ export function looksLikeConfluenceRef(ref: string): boolean {
   } catch {
     return false;
   }
+}
+
+// A JIRA issue key ("PROJ-123") or a bare project key ("PROJ" — "give me the
+// whole project"). Deliberately requires 2+ letters/digits after the leading
+// letter in the bare-key form so a stray short uppercase word (an acronym
+// pasted by mistake) doesn't misfire; JIRA project keys are conventionally
+// 2-10 chars.
+const JIRA_ISSUE_KEY_RE = /^[A-Z][A-Z0-9]+-\d+$/;
+const JIRA_BARE_PROJECT_KEY_RE = /^[A-Z][A-Z0-9]{1,9}$/;
+// JQL query hint: `project =`, an `ORDER BY` clause, or any bare ` = `
+// comparison (JQL's own field=value syntax) — matches across the whole
+// (possibly multi-line) input, not per line.
+const JQL_HINT_RE = /\bproject\s*=|\bORDER\s+BY\b|\s=\s/i;
+
+/** Whether `input` is JIRA-shaped: the ONLY route the jira-ingest stage's
+ * legacy agent path (Atlassian MCP) is for. Deliberately conservative — the
+ * jira-ingest dispatch (server.ts's runPipeline) must NEVER hand the agent
+ * input it can't act on: a corpus file path, random text, or anything else
+ * that isn't a real JIRA key/JQL makes the agent "look around, find
+ * nothing, and succeed empty" (the ghost-run class of bug this heuristic
+ * closes). A JQL hint anywhere in the input wins outright (JQL is normally
+ * one query, not line-oriented); otherwise EVERY non-empty line must be a
+ * JIRA issue key or a bare project key. */
+export function looksLikeJiraInput(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) return false;
+  if (JQL_HINT_RE.test(trimmed)) return true;
+  const lines = trimmed
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return false;
+  return lines.every((l) => JIRA_ISSUE_KEY_RE.test(l) || JIRA_BARE_PROJECT_KEY_RE.test(l));
 }
 
 /** One deterministically-fetched Confluence page, ready to write into the docs
@@ -1049,6 +1119,18 @@ export { htmlToMarkdown };
  * `data-diagramdata` blob, which is the only way to reach a diagram's SOURCE
  * mxfile and render pages 2..N. `export_view` flattens that macro to the
  * page-1 preview PNG — the same limitation the browser export ships with. */
+// Shared direct-PAT REST call for one page's metadata/body — used by the
+// fetchConfluencePages pipeline below (seed fetch, link-follow, tree scan)
+// without duplicating the request shape three times.
+export interface LinkedPageCandidate {
+  pageId: string;
+  title: string;
+  /** Chuỗi TITLE tổ tiên thật (root → cha gần nhất) — FE hiện làm breadcrumb. */
+  ancestors: string[];
+  /** Title trang seed đầu tiên nhắc tới nó. */
+  linkedFrom: string;
+}
+
 async function fetchConfluencePageDirect(
   creds: ConfluenceCreds,
   pageId: string,
@@ -1097,6 +1179,53 @@ export function extractLinkedPageIds(html: string, base: string): string[] {
   return [...ids];
 }
 
+/** Khám phá các trang được link trực tiếp từ các seed, không ghi xuống đĩa. */
+export async function discoverLinkedConfluencePages(
+  creds: { base: string; token: string },
+  refs: string[],
+  opts: { cap?: number } = {},
+): Promise<LinkedPageCandidate[]> {
+  if (!creds.base.trim() || !creds.token.trim()) {
+    throw new Error('Thiếu credential Confluence PAT');
+  }
+  const cap = Math.max(0, opts.cap ?? FOLLOW_MAX_TOTAL);
+  const seedIds = new Set(refs.map(extractPageId));
+  const seeds: Array<{ title: string; html: string }> = [];
+  for (const ref of refs) {
+    const pageId = extractPageId(ref);
+    try {
+      const page = await fetchConfluencePageDirect(creds, pageId);
+      seeds.push(page);
+    } catch (err) {
+      console.warn(`[bas] seed Confluence page ${pageId} skipped:`, err);
+    }
+  }
+
+  const candidates = new Map<string, string>();
+  for (const seed of seeds) {
+    for (const pageId of extractLinkedPageIds(seed.html, creds.base)) {
+      if (seedIds.has(pageId) || candidates.has(pageId)) continue;
+      candidates.set(pageId, seed.title);
+    }
+  }
+
+  const pages: LinkedPageCandidate[] = [];
+  for (const [pageId, linkedFrom] of [...candidates].slice(0, cap)) {
+    try {
+      const page = await fetchConfluencePageDirect(creds, pageId);
+      pages.push({
+        pageId,
+        title: page.title,
+        ancestors: page.ancestors.map((a) => a.title),
+        linkedFrom,
+      });
+    } catch (err) {
+      console.warn(`[bas] linked Confluence page ${pageId} skipped:`, err);
+    }
+  }
+  return pages;
+}
+
 /** What the deterministic docs fetch authenticates with — direct PAT is
  * preferred (the SAME creds that power the page search picker); the BAS
  * gateway's `confluence_fetch_page` is only a fallback because most gateway
@@ -1143,6 +1272,20 @@ export async function fetchConfluencePages(
     /** Enables headless rendering of multi-page draw.io diagrams (needs a
      *  writable runtime dir for the chromium runner). */
     runtimeDataDir?: string;
+    /**
+     * Folder-root convention for the returned `relPath`/attachments layout.
+     * `'confluence'` (default) is the original dr-docs shape:
+     * `docs/confluence/**` for seeds/sub-tree pages, `docs/context/**` for
+     * link-followed pages, images under `docs/confluence/attachments`.
+     * `'flat'` drops the `confluence`/`context` split — every page lands at
+     * `docs/<ancestor-dir>/<slug>.md` (or `docs/<slug>.md` when it has no
+     * shared ancestor), images under `docs/attachments`. Used by the App
+     * pool importer, whose manifest `path` is relative to `docs/` with the
+     * ancestor folder AS the branch (§app-docs-pool-spec.md §2.1) — a
+     * `confluence`/`context` prefix would make every page's branch the same
+     * constant instead of its subsystem.
+     */
+    pathLayout?: 'confluence' | 'flat';
   } = {},
 ): Promise<ConfluenceDocPage[]> {
   if (!src.creds && !src.ep) throw new Error('no Confluence credential (PAT) and no BAS gateway configured');
@@ -1244,14 +1387,26 @@ export async function fetchConfluencePages(
     }
   }
 
+  const flat = opts.pathLayout === 'flat';
+
   // Fold a MULTI-page selection into folders: when ≥2 seed pages were picked
   // (e.g. from the tree picker), nest each under the ancestor titles it does NOT
   // share with the others — so a checkbox pick of pages across a Confluence tree
   // lands folder-structured (docs/confluence/<module>/…/<page>.md) exactly like
   // the old sub-tree scan, driving the module grouping in the review UI. A
   // single seed (or a treePage that already carries its path) stays as-is.
+  //
+  // 'flat' layout (App pool) does NOT use this — collapsing the ancestor
+  // prefix EVERY seed shares is right for "N pages that together form one
+  // feature's doc bundle" (dr-docs), but wrong for a pool meant to MIRROR the
+  // real Confluence tree: it flattens direct children (their own remaining
+  // chain below the shared prefix is empty) while still nesting grandchildren
+  // under an ancestor title that itself has no fetched page/file to pair with
+  // — the exact "flat siblings + orphan raw-slug folder" bug this replaces.
+  // `dir` for flat is computed per-page below instead, straight from real
+  // Confluence ancestors, filtered to ones actually IN this fetch (see pass 2).
   const seedPages = seedIds.map((id) => fetched.get(id)).filter((p): p is RawPage => !!p && !p.treePath);
-  if (seedPages.length >= 2) {
+  if (!flat && seedPages.length >= 2) {
     const chains = seedPages.map((p) => (p.ancestors ?? []).map((a) => a.id));
     // Longest common leading ancestor prefix shared by EVERY seed.
     let commonLen = Math.min(...chains.map((c) => c.length));
@@ -1270,6 +1425,7 @@ export async function fetchConfluencePages(
   }
 
   // ── Pass 2: assign files, then convert with cross-page links rewritten ────
+  const attachmentsRoot = flat ? 'docs/attachments' : 'docs/confluence/attachments';
   const pages: ConfluenceDocPage[] = [];
   const takenPaths = new Set<string>();
   const relByPageId = new Map<string, string>();
@@ -1290,8 +1446,21 @@ export async function fetchConfluencePages(
     // distinctly from the main pages. Seeds + sub-tree pages stay under
     // docs/confluence/ (sub-tree nested by wiki hierarchy, seeds flat).
     const isContext = !!p.linked && !p.treePath;
-    const dir = (p.treePath ?? []).map(slug).filter(Boolean);
-    const folder = ['docs', isContext ? 'context' : 'confluence', ...dir].join('/');
+    // flat: mirror the page's REAL Confluence ancestor chain — NGUYÊN VĂN,
+    // TUYỆT ĐỐI (không lọc theo fetched-set, không cắt prefix chung). Hai
+    // cách cắt trước đây đều sinh bug: lọc theo fetched-set làm mất cấp khi
+    // tick lá không tick cha; cắt prefix-chung-của-đợt-fetch thì import chia
+    // BATCH (mỗi batch một lần fetch) ra prefix khác nhau → cùng một trang
+    // cha nằm hai độ sâu. Path tuyệt đối thì mọi batch đều ra một kết quả;
+    // phần gốc chung do TẦNG TRÊN xử lý (app-pool: branch tính sau prefix
+    // pool-wide; AppPoolTree: ẩn chuỗi folder gốc đơn-con khi render).
+    // Non-flat keeps the existing treePath convention.
+    const dir = flat
+      ? (p.ancestors ?? []).map((a) => slug(a.title)).filter(Boolean)
+      : (p.treePath ?? []).map(slug).filter(Boolean);
+    const folder = flat
+      ? ['docs', ...dir].join('/')
+      : ['docs', isContext ? 'context' : 'confluence', ...dir].join('/');
     let relPath = `${folder}/${slug(p.title)}.md`;
     if (takenPaths.has(relPath)) relPath = `${folder}/${slug(p.title)}-${p.pageId}.md`;
     takenPaths.add(relPath);
@@ -1316,7 +1485,7 @@ export async function fetchConfluencePages(
     // relative path keeps context pages' images resolving (../confluence/…).
     const attachmentsPrefix = path.posix.relative(
       path.posix.dirname(relPath),
-      'docs/confluence/attachments',
+      attachmentsRoot,
     );
     let body: string;
     if (p.html !== undefined) {
@@ -1452,6 +1621,12 @@ export async function fetchSourceFiles(ep: BasEndpoint, source: PipelineRunSourc
   }
 
   // BAS: KG document → selected feature(s), else the whole document subgraph.
+  // (The App-pool source is pre-fetched by app-pool.ts's own deterministic
+  // path and never reaches this BAS-gateway fetcher — narrow it out here so
+  // the union below is exhaustive.)
+  if (source.kind !== 'bas') {
+    throw new Error(`fetchSourceFiles does not handle source.kind "${(source as { kind: string }).kind}"`);
+  }
   const files: SourceFile[] = [];
   const featIds = source.featureIds ?? [];
   if (featIds.length > 0) {

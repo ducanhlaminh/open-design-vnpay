@@ -252,3 +252,31 @@ describe('stageActiveSkill', () => {
     },
   );
 });
+
+describe('stageActiveSkill dưới tải song song', () => {
+  // Regression: docs-review fan-out theo section khởi động 4 agent CÙNG LÚC
+  // trong CÙNG một cwd với CÙNG một skill. Staging là "xoá sạch rồi copy lại",
+  // nên không có khoá thì `rm` của lượt này rơi vào giữa `cp` của lượt kia —
+  // đo được trên máy thật là `EEXIST … mkdir` / `ENOTEMPTY … rmdir`, và ca im
+  // lặng nguy hiểm hơn: agent đang đọc thì thư mục skill bị xoá mất giữa chừng.
+  it('nhiều lượt staging đồng thời cùng một đích đều thành công và để lại bản copy đầy đủ', async () => {
+    const root = fresh();
+    const sourceDir = writeSampleSkill(root, 'docs-spec-review');
+    const cwd = path.join(root, 'project');
+    mkdirSync(cwd, { recursive: true });
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => stageActiveSkill(cwd, 'docs-spec-review-abc123', sourceDir)),
+    );
+
+    for (const result of results) {
+      expect(result.staged).toBe(true);
+      expect(result.reason).toBeUndefined();
+    }
+    // Bản copy cuối cùng phải NGUYÊN VẸN, không phải tàn dư của một lượt bị
+    // lượt khác xoá giữa chừng.
+    const staged = path.join(cwd, SKILLS_CWD_ALIAS, 'docs-spec-review-abc123');
+    expect(readFileSync(path.join(staged, 'SKILL.md'), 'utf8')).toContain('# original SKILL');
+    expect(lstatSync(path.join(staged, 'references')).isDirectory()).toBe(true);
+  });
+});

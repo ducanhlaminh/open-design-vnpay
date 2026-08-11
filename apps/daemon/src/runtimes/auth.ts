@@ -1,5 +1,13 @@
+import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
 import { execAgentFile } from './invocation.js';
 import type { RuntimeEnv } from './types.js';
+
+const execFileAsync = promisify(execFile);
 
 export type AgentAuthProbeResult = {
   status: 'ok' | 'missing' | 'unknown';
@@ -100,11 +108,134 @@ function withProbeTails(
   return result;
 }
 
+// ── Claude Code (Local CLI) login detection ──────────────────────────────
+// Claude Code stores OAuth credentials in `<configDir>/.credentials.json`
+// (Linux/Windows) or in the macOS Keychain item "Claude Code-credentials".
+// There is no non-interactive `claude auth status`, so the probe reads the
+// same on-disk state the CLI itself consults.
+
+const CLAUDE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
+
+const CLAUDE_AUTH_GUIDANCE =
+  'Claude Code chưa đăng nhập trên máy này. Mở terminal, chạy `claude` rồi dùng `/login`; đăng nhập xong bấm Quét lại.';
+
+const CLAUDE_AUTH_UNKNOWN =
+  'Không xác minh được trạng thái đăng nhập Claude Code trên máy này.';
+
+export function claudeAuthGuidance(): string {
+  return CLAUDE_AUTH_GUIDANCE;
+}
+
+/**
+ * A credentials blob counts as a login only when it actually carries a
+ * non-empty accessToken — an aborted `/login` leaves a hollow file behind
+ * (same contract as the sandbox-side `sandboxAuthLoggedIn`).
+ */
+export function claudeCredentialsCarryLogin(text: string): boolean {
+  return /"accessToken"\s*:\s*"[^"]/.test(text);
+}
+
+// Windows env-var names are case-insensitive at the kernel level; compare
+// case-insensitively so `Anthropic_Api_Key` still counts (mirrors
+// claude-diagnostics.ts / env.ts).
+function envLookup(env: RuntimeEnv, key: string): string | null {
+  const upper = key.toUpperCase();
+  const found = Object.keys(env).find((k) => k.toUpperCase() === upper);
+  if (!found) return null;
+  const value = (env as Record<string, unknown>)[found];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/** Injectable IO so tests never touch the real home dir or Keychain. */
+export type ClaudeAuthProbeIO = {
+  readFile?: (filePath: string) => Promise<string>;
+  /** Whether the macOS Keychain holds the Claude Code credentials item. */
+  keychainHasCredentials?: () => Promise<boolean>;
+  platform?: NodeJS.Platform;
+  homedir?: () => string;
+};
+
+async function defaultKeychainHasCredentials(): Promise<boolean> {
+  // Attribute lookup only (no `-w`): reading the secret payload can pop the
+  // macOS "wants to use your confidential information" ACL prompt from a
+  // background daemon; the item's existence alone answers "logged in?".
+  try {
+    await execFileAsync(
+      'security',
+      ['find-generic-password', '-s', CLAUDE_KEYCHAIN_SERVICE],
+      { timeout: 3000, maxBuffer: 64 * 1024 },
+    );
+    return true;
+  } catch (error) {
+    // `security` itself missing/broken — rethrow so the caller degrades to
+    // 'unknown' instead of a false "chưa đăng nhập".
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') throw error;
+    return false; // non-zero exit (44) = item not found
+  }
+}
+
+export async function probeClaudeAuthStatus(
+  env: RuntimeEnv,
+  io: ClaudeAuthProbeIO = {},
+): Promise<AgentAuthProbeResult> {
+  const platform = io.platform ?? process.platform;
+  const home = io.homedir ?? os.homedir;
+  const read = io.readFile ?? ((filePath: string) => readFile(filePath, 'utf8'));
+
+  // External auth paths make `/login` irrelevant: an intentional API key
+  // (spawnEnvForAgent only keeps ANTHROPIC_API_KEY alongside a custom
+  // ANTHROPIC_BASE_URL) or Bedrock/Vertex routing.
+  if (
+    envLookup(env, 'ANTHROPIC_API_KEY') ||
+    envLookup(env, 'CLAUDE_CODE_USE_BEDROCK') ||
+    envLookup(env, 'CLAUDE_CODE_USE_VERTEX')
+  ) {
+    return { status: 'ok' };
+  }
+
+  const configDir = envLookup(env, 'CLAUDE_CONFIG_DIR') ?? path.join(home(), '.claude');
+  // A read that failed for any reason other than "file absent" means we
+  // could not actually answer — degrade to 'unknown', never a false
+  // "chưa đăng nhập".
+  let degraded = false;
+
+  try {
+    if (claudeCredentialsCarryLogin(await read(path.join(configDir, '.credentials.json')))) {
+      return { status: 'ok' };
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') degraded = true;
+  }
+
+  // settings.json apiKeyHelper = user-scripted credential source.
+  try {
+    if (/"apiKeyHelper"\s*:\s*"[^"]/.test(await read(path.join(configDir, 'settings.json')))) {
+      return { status: 'ok' };
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') degraded = true;
+  }
+
+  if (platform === 'darwin') {
+    try {
+      if (await (io.keychainHasCredentials ?? defaultKeychainHasCredentials)()) {
+        return { status: 'ok' };
+      }
+    } catch {
+      degraded = true;
+    }
+  }
+
+  if (degraded) return { status: 'unknown', message: CLAUDE_AUTH_UNKNOWN };
+  return { status: 'missing', message: CLAUDE_AUTH_GUIDANCE };
+}
+
 export async function probeAgentAuthStatus(
   agentId: string,
   resolvedBin: string,
   env: RuntimeEnv,
 ): Promise<AgentAuthProbeResult | null> {
+  if (agentId === 'claude') return probeClaudeAuthStatus(env);
   if (agentId !== 'cursor-agent') return null;
   try {
     const { stdout, stderr } = await execAgentFile(resolvedBin, ['status'], {

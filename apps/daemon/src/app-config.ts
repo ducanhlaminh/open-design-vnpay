@@ -96,7 +96,11 @@ export interface SandboxConfigPrefs {
   enabled: boolean;
   /** Agent runtime ids allowed to sandbox (default ['claude']). */
   runtimes?: string[];
-  /** Skill ids gated into the sandbox (default ['ui-react']). */
+  /**
+   * Skill ids gated into the sandbox (default ['*'] — every run). A list that
+   * matches an OLD default is ignored as a leftover; see
+   * LEGACY_DEFAULT_SKILL_GATES in agent-sandbox.ts.
+   */
   skills?: string[];
   /** Hard kill for a sandboxed run, minutes (default 30). */
   timeoutMinutes?: number;

@@ -24,6 +24,7 @@ SimStudio's `/ux-spec` after Pull All.
   "screen_type":   "list",                     // list | form | detail | confirmation | dialog | drawer | sheet | …
   "screen_intent": "Tìm và chọn đơn để hoàn",  // shown on the UX Spec header
   "layout":        "mobile",                   // "mobile" | "web" — this screen's target platform
+  "responsive_notes": "…",                     // web screens only: desktop→mobile adaptation contract (see SKILL 0b)
                                                //   (from the run's platform choice, see SKILL.md 0b;
                                                //   no choice → "mobile"). ui-html/ui-react render per this.
   "primary_actor": "actor-owner",              // accepts "actor_id" as an alias
@@ -42,7 +43,7 @@ primary_actor(=actor_id), permissions[], navigation_group, overlay_kind,
 overlay_of, project_id`.
 
 The wireframe of an overlay screen must MIRROR these: set `overlay` +
-`overlayOf` in its `wire.json` (see `references/wireframe.md`) so the preview
+`data-overlay-of` in its `.html` (see `references/wireframe.md`) so the preview
 frames it as that layer over the dimmed base screen.
 
 ## Component  → KGS `DP_UI_COMPONENT`  → SimStudio `ui_components` table
@@ -69,7 +70,7 @@ frames it as that layer over the dimmed base screen.
   `DP_UI_COMPONENT.component_type` and drives the `/ux-spec` box-text mockup) —
   it is NOT the wireframe leaf slug. The same control appears twice, once per
   vocabulary: `component_type: "input"` here, `c: "shadcn:Input"` in the
-  `wire.json`. Keep the two consistent in MEANING (same control, same label,
+  `.html`. Keep the two consistent in MEANING (same control, same label,
   same order); do not put a `shadcn:*` slug in `component_type`.
 - The component links to its screen by the **`screen_id` PROP** (the script sets
   it from the parent screen id) — NOT a graph edge.

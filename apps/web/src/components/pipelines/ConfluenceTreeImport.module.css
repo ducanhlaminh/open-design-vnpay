@@ -1,0 +1,568 @@
+/* Confluence eager parent/child tree picker — ConfluenceTreeImport.tsx.
+   Styling ported from the pre-revert PipelineFormModal.module.css
+   `.combo*` rules (git show cfef0fe^:…PipelineFormModal.module.css), kept
+   self-contained here since this component is used outside
+   PipelineFormModal's own dialogs too (AppPoolSection, PipelineModals). */
+
+.wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── Panel picker ─────────────────────────────────────────────────────────
+   Cùng ba tầng với picker "Nguồn tài liệu" (PipelineSourceModal.module.css
+   `.poolPicker`): khung ngoài LÕM → vùng danh sách NỔI lên → chân panel. Trước
+   đây ô tìm và nút quét đổ thẳng ra nền modal, nên phần "Tài liệu Confluence"
+   không có đầu không có cuối và trông như hai control lạc lõng. */
+.picker {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+
+.pickerHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.pickerCount {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--text-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pickerCountOn {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-panel));
+  color: var(--accent);
+}
+
+/* Chỉ hiện khi đang tìm: đường thoát rõ ràng trở về danh sách đã tick. Không
+   có dropdown thì cũng không còn "bấm ra ngoài để đóng" — thiếu nút này người
+   dùng phải tự xoá sạch ô tìm mới thấy lại thứ mình đã chọn. */
+.searchClear {
+  flex: none;
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.16s cubic-bezier(0.23, 1, 0.32, 1), color 0.16s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.searchClear:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Vùng danh sách: mặt phẳng CAO NHẤT + cuộn riêng. Đây là khung nhìn DUY NHẤT
+   của picker — vừa là kết quả tìm, vừa là danh sách đã tick — nên nó phải đủ
+   cao để duyệt một cây thật, mà vẫn không đẩy nút Tạo ra khỏi tầm nhìn. */
+.pickerBody {
+  max-height: 320px;
+  min-height: 76px;
+  overflow-y: auto;
+  margin: 0 12px;
+  padding: 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-xs);
+}
+
+.pickerEmpty {
+  margin: 0;
+  padding: 14px 10px;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.groupHead {
+  margin: 2px 0 4px;
+  padding: 0 4px;
+  color: var(--text-soft);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.groupHeadRelated {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* Hàng trang ĐÃ TICK — chỉ đọc + nút bỏ tick. Cố ý KHÔNG bấm-cả-hàng-để-bỏ
+   như hàng kết quả tìm kiếm: ở đây một cú bấm nhầm sẽ âm thầm gỡ mất trang
+   người dùng vừa chọn, nên hành động phá phải nằm ở đúng một nút. */
+.pickedRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.pickedRow:hover {
+  background: var(--bg-subtle);
+}
+
+.pickedTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pickedTag {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-soft);
+  font-size: 10px;
+}
+
+.pickedRemove {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: background 0.14s cubic-bezier(0.23, 1, 0.32, 1), color 0.14s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.pickedRemove:hover:not(:disabled) {
+  background: var(--red-bg);
+  color: var(--red);
+}
+
+.pickedRemove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pickerFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 12px 11px;
+}
+
+.pickerFootMsg {
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: 11.5px;
+}
+
+.searchField {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
+  height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-soft);
+  box-shadow: var(--shadow-xs);
+  transition: border-color 0.16s cubic-bezier(0.23, 1, 0.32, 1), box-shadow 0.16s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.searchField:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Chiều cao đến từ `.searchField`; input bên trong trung hoà HẾT luật input
+   toàn cục (primitives.css đặt viền + bo góc + padding + width:100% cho mọi
+   <input>), nếu không ô tìm sẽ có hai lớp viền lồng nhau. */
+.searchInput {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+}
+
+.searchInput:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.searchInput:disabled {
+  opacity: 0.55;
+}
+
+/* Hàng kết quả tìm: ô tick + tiêu đề/breadcrumb + mũi tên mở cây con (bên
+   PHẢI). Cột trái dành riêng cho ô tick nên nó thẳng hàng ở mọi hàng, mọi độ
+   sâu — trước đây mũi tên đứng trước ô tick, nên trang có con và trang không
+   có con lệch nhau 16px và mắt phải tìm lại ô tick ở từng hàng. */
+.hitRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 8px 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background 0.14s cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 0.14s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* Mỗi kết quả tìm là một wrapper riêng (để chứa cả cây con), vì vậy border
+   phải đặt ở wrapper kế tiếp chứ không thể dùng `.hitRow + .hitRow`. */
+.pickerBody > div + div {
+  border-top: 1px solid color-mix(in srgb, var(--border-strong, var(--border)) 68%, transparent);
+}
+
+.hitRow:hover {
+  background: var(--bg-subtle);
+}
+
+/* Hàng ĐÃ TICK phải đọc được từ xa, không chỉ bằng một ô vuông 15px: khi cuộn
+   một danh sách vài chục kết quả, dấu tick lẫn hết vào các ô chưa tick. */
+.rowOn {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.rowOn:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.rowOn .optionTitle {
+  color: var(--accent-strong, var(--accent));
+}
+
+/* Nested descendant row (inside an expanded hit's sub-tree) — same shape,
+   single-line title, indented per depth (inline `paddingLeft`). */
+.nodeRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background 0.14s cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 0.14s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.nodeRow:hover {
+  background: var(--bg-subtle);
+}
+
+/* Hàng KHÔNG có cây con: không có gì để mở nên cả hàng không bấm được, chỉ ô
+   tick còn là điều khiển. Giữ con trỏ mặc định để nói đúng điều đó. */
+.rowLeaf {
+  cursor: default;
+}
+
+.rowLeaf:hover {
+  background: transparent;
+}
+
+.rowLeaf.rowOn:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* Nút mở/đóng cây tách khỏi nội dung để designer nhận diện ngay đó là một
+   hành động. Nền accent nhẹ vẫn đủ gọn để không lấn át radio chọn tài liệu. */
+.chevron {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-panel));
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.14s cubic-bezier(0.23, 1, 0.32, 1), border-color 0.14s cubic-bezier(0.23, 1, 0.32, 1), color 0.14s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.hitRow:hover .chevron,
+.nodeRow:hover .chevron {
+  background: color-mix(in srgb, var(--accent) 15%, var(--bg-panel));
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+}
+
+.chevronOpen {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.chevron:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.checkbox {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  padding: 0;
+  border-radius: 5px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--bg-panel);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  transition: background 0.14s cubic-bezier(0.23, 1, 0.32, 1), border-color 0.14s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* Ô tick là ĐIỀU KHIỂN RIÊNG (bấm hàng chỉ mở/đóng cây con), nên nó cần vùng
+   bấm thật. 16px là kích thước NHÌN; `::after` nong vùng bấm ra 24px mà không
+   đụng gì tới layout.
+   -4px chứ không rộng hơn: hàng cây con chỉ cao 28px và các hàng dính liền
+   nhau, nên một vùng bấm nong quá sẽ TRÀN sang hàng kế bên và nuốt cú bấm ô
+   tick của hàng đó — bấm trang này lại tick trang khác. */
+.checkboxBtn {
+  position: relative;
+  cursor: pointer;
+}
+
+.checkboxBtn::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+
+.checkboxBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.checkboxBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Đã tick / nửa tick phải THẮNG mọi luật hover. Viết hai class (0,2,0) chứ
+   không phải `.checkboxOn` trơn (0,1,0): `.checkboxBtn:hover` cũng là (0,2,0)
+   và đứng trước, nên một `.checkboxOn` trơn sẽ thua nó ở đúng thuộc tính nền —
+   ô đang tick nhìn thành CHƯA TICK ngay khi rê chuột lên. */
+.checkbox.checkboxOn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.checkbox.checkboxPartial {
+  background: var(--bg-panel);
+  border-color: var(--accent);
+  /* Dấu gạch lấy màu accent — icon kế thừa `currentColor`; để #fff như ô đã
+     tick thì gạch trắng trên nền trắng, mất tăm. */
+  color: var(--accent);
+}
+
+/* Hover CHỈ được làm đậm thêm, không được đổi trạng thái nhìn thấy. */
+.checkbox.checkboxBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.checkbox.checkboxOn.checkboxBtn:hover:not(:disabled) {
+  background: var(--accent-hover, var(--accent));
+  border-color: var(--accent-hover, var(--accent));
+}
+
+.checkbox.checkboxPartial.checkboxBtn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+}
+
+/* Picker này chỉ chọn một tài liệu đầu vào, vì vậy dùng radio thay cho ô tick
+   nhiều lựa chọn. Giữ kích thước/vùng bấm của checkbox cũ để các hàng cây
+   thẳng hàng, nhưng hình tròn nói đúng hành vi một lựa chọn. */
+.radio {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  padding: 0;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  transition: border-color 0.14s cubic-bezier(0.23, 1, 0.32, 1), background 0.14s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.radioBtn { position: relative; cursor: pointer; }
+.radioBtn::after { content: ''; position: absolute; inset: -4px; }
+.radioBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.radioBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+.radioBtn:hover:not(:disabled), .radioOn { border-color: var(--accent); }
+.radioDot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; }
+
+.optionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Tiêu đề được XUỐNG DÒNG (tối đa 2 dòng) chứ không cắt cụt bằng "…": tên
+   trang Confluence phân biệt nhau ở ĐUÔI ("2.10.1. URD - Số dư tài khoản" vs
+   "…ngân hàng"), nên cắt đuôi là bỏ đi đúng phần cần đọc để chọn. Breadcrumb
+   bên dưới thì ngược lại — nó là ngữ cảnh, một dòng cắt cụt là đủ. */
+.optionTitle {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 570;
+  line-height: 1.35;
+  color: var(--text-strong);
+}
+
+/* Trong cây con, tiêu đề là flex item duy nhất co giãn — phải tự chiếm chỗ để
+   `margin-left: auto` của mũi tên có gì mà đẩy. */
+.nodeRow > .optionTitle {
+  flex: 1;
+  min-width: 0;
+  -webkit-line-clamp: 1;
+}
+
+.optionMeta {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg {
+  margin: 0;
+  padding: 7px 9px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.summaryRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.primaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--bg-panel);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.16s cubic-bezier(0.23, 1, 0.32, 1), transform 0.12s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.primaryButton:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.primaryButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.primaryButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.error {
+  margin: 0;
+  color: var(--red);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* ── Tài liệu liên quan (quét link depth-1, user tự tick) ─────────────────── */
+/* Nút quét ở chân panel — cùng hình pill với "Import thêm từ Confluence" của
+   picker "Nguồn tài liệu", để hai panel đọc như một họ. */
+.relatedScan {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 5px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.16s cubic-bezier(0.23, 1, 0.32, 1), border-color 0.16s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.relatedScan:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.relatedScan:disabled { opacity: 0.5; cursor: not-allowed; }

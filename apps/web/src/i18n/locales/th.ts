@@ -223,6 +223,7 @@ export const th: Dict = {
   'settings.agentInstalledGroup': 'CLI ของคุณ ({count})',
   'settings.agentInstallGroup': 'พร้อมให้ติดตั้ง ({count})',
   'settings.agentAuthUnknown': 'ไม่ทราบสถานะการยืนยันตัวตน',
+  'settings.agentAuthOk': 'เข้าสู่ระบบแล้ว',
   'settings.apiSection': 'Anthropic API',
   'settings.quickFillProvider': 'เลือกผู้ให้บริการอย่างรวดเร็ว',
   'settings.customProvider': 'กำหนดผู้ให้บริการเอง',
@@ -327,6 +328,7 @@ export const th: Dict = {
   'settings.alreadyLatest': 'คุณใช้เวอร์ชันล่าสุดอยู่แล้ว',
 
   'entry.tabDesigns': 'ดีไซน์',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.tabTemplates': 'ตัวอย่าง',
   'entry.tabDesignSystems': 'ระบบการออกแบบ',
   'entry.tabConnectors': 'ตัวเชื่อมต่อ',
@@ -670,9 +672,13 @@ export const th: Dict = {
   'ds.categoryAll': 'ทั้งหมด',
   'ds.categoryUncategorized': 'ไม่มีหมวดหมู่',
   'ds.showcase': 'โชว์เคส',
+  'ds.wireframeMap': 'Wireframe map',
   'ds.tokens': 'โทเค็น',
   'ds.specToggle': 'DESIGN.md',
   'ds.specLoading': 'กำลังโหลด…',
+  'ds.reactStats': '{components} คอมโพเนนต์ · {icons} ไอคอน',
+  'ds.reactDetailToggle': 'ไลบรารีคอมโพเนนต์',
+  'ds.reactDetailLoading': 'กำลังโหลดไลบรารีคอมโพเนนต์…',
 
   'avatar.title': 'บัญชีและการตั้งค่า',
   'avatar.localCli': 'Local CLI',
@@ -731,6 +737,9 @@ export const th: Dict = {
   'chat.inspect.commentHint': 'Click an element in the canvas to add a comment.',
   'chat.conversationsTitle': 'การสนทนา',
   'chat.conversationsAria': 'ประวัติ',
+  'chat.displayModeAria': 'สลับการแสดงรายละเอียดทางเทคนิค',
+  'chat.displayModeSimpleTitle': 'มุมมองแบบย่อ — ซ่อนขั้นตอนทางเทคนิคไว้ คลิกเพื่อแสดง',
+  'chat.displayModeFullTitle': 'มุมมองแบบเต็ม — แสดงขั้นตอนทางเทคนิค คลิกเพื่อย่อ',
   'chat.newConversation': 'สนทนาใหม่',
   'chat.newConversationsTitle': 'เริ่มใหม่',
   'chat.conversationsHeading': 'บทสนทนาทั้งหมด',
@@ -1522,6 +1531,11 @@ export const th: Dict = {
   'settings.designSystemsSource': 'แหล่งที่มา',
   'settings.designSystemsSourceLocal': 'ในเครื่อง',
   'settings.designSystemsSourceGithub': 'GitHub',
+  'settings.designSystemsSourceFigma': 'Figma IR',
+  'settings.designSystemsFigmaFiles': 'ไฟล์ Figma IR',
+  'settings.designSystemsFigmaFilesHelp': 'เลือกไฟล์ส่งออก .ir.json และ/หรือบันเดิล .zip จากปลั๊กอิน Fig Pipeline ลำดับการรวมเป็นไปตามลำดับชื่อไฟล์ — ใส่คำนำหน้า 01-, 02-, … โดยไฟล์ foundation (โทเคน) มาก่อน',
+  'settings.designSystemsImportFigma': 'นำเข้า Figma IR',
+  'settings.designSystemsImportWarnings': 'คำเตือนการนำเข้า {count} รายการ',
   'settings.designSystemsStructure': 'โครงสร้าง',
   'settings.designSystemsModeHybrid': 'ไฮบริด',
   'settings.designSystemsModeNormalized': 'ปรับมาตรฐาน',
@@ -1553,4 +1567,37 @@ export const th: Dict = {
   'settings.sandboxMissing': 'ขาดหาย',
   'settings.sandboxRunCmd': 'รัน: {cmd}',
   'settings.sandboxDaemonOffline': 'เดมอนออฟไลน์ — ไม่สามารถดูสถานะแซนด์บ็อกซ์ได้',
+  'settings.sandboxClaudeTitle': 'Claude runtime',
+  'settings.sandboxClaudeHint': 'Claude keeps the existing account switcher and usage controls.',
+  'settings.sandboxCodexTitle': 'Codex runtime',
+  'settings.sandboxCodexHint': 'Codex uses browser-based device code login and never displays tokens.',
+  'settings.sandboxRuntimeReady': 'Ready',
+  'settings.sandboxRuntimeNotReady': 'Not ready',
+  'settings.sandboxCodexLoginStart': 'Start login',
+  'settings.sandboxCodexLoginDisconnect': 'Disconnect',
+
+  // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
+  'pipelines.runAllClear.title': 'Old results will be cleared',
+  'pipelines.runAllClear.body': 'Running now will delete the existing results of: {stages}.',
+  'pipelines.runAllClear.historyNote':
+    'The current results are saved to project history first, so you can restore them afterward.',
+  'pipelines.runAllClear.confirm': 'Run and clear old results',
+  'pipelines.runAllClear.staleOnlyTitle': 'Some inputs are from outside this run',
+  'pipelines.runAllClear.confirmContinue': 'Run',
+  'pipelines.runAllClear.staleSectionTitle': 'Using input from outside this run',
+  'pipelines.runAllClear.staleLine': "{stage} will use {source}'s result from {time}.",
+  'pipelines.runAllClear.staleNote':
+    'Each source stage above is outside this run, so its result stays exactly as it is — the stage that depends on it will use that same version.',
+
+  // Pipelines — dependency gate is now a SUGGESTION, not a lock (spec
+  // g2-ui-suggestion-not-gate). Every stage is runnable once step 1 (docs
+  // ingest) has run; these strings replace the old "must finish X first"
+  // blocking copy with informational notes that never disable Save/Run.
+  'pipelines.runAllPicker.ingestRequired': '{stage} (step 1) must finish first — the steps below need ingested documents to run.',
+  'pipelines.runAllPicker.softNote': "Will run with current data; {stages} won't run this time.",
+  'pipelines.runAllPicker.hint':
+    "Tick exactly the steps you want to run — ticking one won't drag in others. A step whose dependency isn't ticked and hasn't finished yet runs with whatever data already exists (see the note under it).",
+  'pipelines.rail.usuallyAfter': 'Usually runs after {stages}',
+  'pipelines.rail.needsDocs': 'Needs {stage} first — no documents ingested yet',
+  'pipelines.rail.staleNeedsDocs': 'This result is from old data — rerun {stage} to sync',
 };

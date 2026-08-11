@@ -1694,6 +1694,161 @@
   opacity: 0.55;
   cursor: not-allowed;
 }
+.project-ds-picker--form {
+  display: flex;
+  width: 100%;
+}
+.project-ds-picker--form .project-ds-picker-trigger {
+  width: 100%;
+  max-width: none;
+  min-height: 46px;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 0 13px;
+  border-radius: 10px;
+  border-color: color-mix(in srgb, var(--border) 82%, var(--text-muted));
+  background: var(--bg-panel);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bg-panel) 70%, transparent);
+  font-size: 13px;
+  line-height: 1.3;
+}
+.project-ds-picker--form .project-ds-picker-trigger:hover:not(:disabled),
+.project-ds-picker--form.open .project-ds-picker-trigger {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
+  background: color-mix(in srgb, var(--accent) 3%, var(--bg-panel));
+}
+.project-ds-picker--form.open .project-ds-picker-trigger {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.project-ds-picker--form .project-ds-picker-label {
+  flex: 1 1 auto;
+  text-align: left;
+}
+.project-ds-picker--form .project-ds-picker-trigger > svg:last-child {
+  flex: 0 0 auto;
+  margin-left: auto;
+  opacity: 0.72;
+}
+.project-ds-picker--form .project-ds-picker-swatch {
+  width: 12px;
+  height: 12px;
+}
+.project-ds-picker--form {
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-panel) 88%, var(--bg-subtle, var(--bg-panel)));
+}
+.project-ds-picker-inline-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, var(--text-muted));
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+}
+.project-ds-picker-inline-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.project-ds-picker-inline-search input {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.project-ds-picker-inline-count {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 650;
+}
+.project-ds-picker--form .project-ds-picker-platform {
+  padding: 0 10px 8px;
+}
+.project-ds-picker-inline-list {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.project-ds-picker-inline-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 9px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.project-ds-picker-inline-option:last-child { border-bottom: 0; }
+.project-ds-picker-inline-option:hover { background: color-mix(in srgb, var(--text-muted) 6%, transparent); }
+.project-ds-picker-inline-option.active { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.project-ds-picker-inline-option strong,
+.project-ds-picker-inline-copy strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.project-ds-picker-inline-option small,
+.project-ds-picker-inline-copy small {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-ds-picker-inline-radio {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid color-mix(in srgb, var(--border) 80%, var(--text-muted));
+  border-radius: 999px;
+  color: var(--accent);
+}
+.project-ds-picker-inline-option.active .project-ds-picker-inline-radio {
+  border-color: var(--accent);
+}
+.project-ds-picker-inline-radio > span { width: 7px; height: 7px; border-radius: 999px; background: currentColor; }
+.project-ds-picker-inline-icon,
+.project-ds-picker-inline-swatches {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 8px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.project-ds-picker-inline-swatches { gap: 2px; padding: 4px; flex-wrap: wrap; align-content: center; }
+.project-ds-picker-inline-swatches > span { width: 8px; height: 8px; border-radius: 2px; }
+.project-ds-picker-inline-copy { min-width: 0; flex: 1 1 auto; }
 .project-ds-picker-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1717,8 +1872,8 @@
   max-height: 60vh;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--shadow-md, 0 24px 64px rgba(0, 0, 0, 0.14));
+  border-radius: 14px;
+  box-shadow: var(--shadow-md, 0 22px 54px rgba(0, 0, 0, 0.16));
   display: flex;
   flex-direction: column;
   z-index: 140;
@@ -1728,8 +1883,12 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+  margin: 10px 10px 6px;
+  padding: 0 11px;
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-subtle, var(--bg-panel));
   color: var(--text-muted);
 }
 .project-ds-picker-search input {
@@ -1743,12 +1902,20 @@
 .project-ds-picker-body {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.2fr);
+  /* One row that may SHRINK below its content (minmax(0, …)) — otherwise the
+     implicit row grows with the list and the columns can't scroll. */
+  grid-template-rows: minmax(0, 1fr);
   min-height: 240px;
-  max-height: calc(60vh - 42px);
+  /* Fill whatever the popover (max-height 60vh, overflow hidden) leaves after
+     the search row AND the optional platform-tab row — a hardcoded
+     `calc(60vh - 42px)` only accounted for the search row, so the extra row
+     pushed the body past the popover edge and clipped the list. */
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 .project-ds-picker-list {
   overflow-y: auto;
-  padding: 6px;
+  padding: 6px 8px 10px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1758,19 +1925,19 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
-  padding: 8px 10px;
+  gap: 5px;
+  padding: 10px 11px;
   border: 0;
   background: transparent;
-  border-radius: 8px;
+  border-radius: 10px;
   text-align: left;
   cursor: pointer;
 }
 .project-ds-picker-option:hover {
-  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+  background: color-mix(in srgb, var(--text-muted) 7%, var(--bg-panel));
 }
 .project-ds-picker-option.active {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-panel));
 }
 .project-ds-picker-option-head {
   display: flex;
@@ -1981,7 +2148,6 @@
 @media (max-width: 720px) {
   .project-ds-picker-body {
     grid-template-columns: 1fr;
-    max-height: calc(70vh - 42px);
   }
   .project-ds-picker-list {
     border-right: 0;
@@ -1999,4 +2165,30 @@
     height: calc(100vh - 24px);
     border-radius: 10px;
   }
+}
+
+/* DS picker: platform filter tabs (All/Mobile/Web) under the search box.
+   Rendered only when the catalog has at least one platform-tagged system. */
+.project-ds-picker-platform {
+  display: flex;
+  gap: 4px;
+  padding: 0 12px 7px;
+}
+.project-ds-picker-platform button {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 200ms cubic-bezier(0.23, 1, 0.32, 1), color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.project-ds-picker-platform button:hover {
+  color: var(--foreground);
+}
+.project-ds-picker-platform button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-foreground, #fff);
 }

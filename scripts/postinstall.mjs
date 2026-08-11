@@ -17,6 +17,8 @@ const buildTargets = [
   "packages/sidecar-proto",
   "packages/sidecar",
   "packages/diagnostics",
+  "packages/figma-h2d",
+  "packages/wire-render",
   "tools/dev",
   "tools/pack",
   "tools/serve",

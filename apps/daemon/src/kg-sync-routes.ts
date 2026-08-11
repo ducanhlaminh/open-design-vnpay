@@ -11,12 +11,13 @@
 import type { Express } from 'express';
 import {
   ERR_PLAN_EXPIRED,
+  type PublishResult,
   type PullApplyRequest,
   type PullResolution,
   type RemoteDeleteScope,
 } from '@open-design/contracts';
 import type { RouteDeps } from './server-context.js';
-import { getMachineUser } from './auth-routes.js';
+import { getMachineIdentityUser, identityUserIdOf } from './auth-routes.js';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import { pullProject } from './kg-sync/pull.js';
@@ -28,8 +29,11 @@ import {
   loadRemoteProjects,
   projectIdFromWorkspace,
 } from './kg-sync/remote-registry.js';
-import { pullScopeFor } from './kg-sync/identity-registry.js';
+import { ensureProjectRegistered, memberProjectAccess, pullScopeFor } from './kg-sync/identity-registry.js';
+import { planPush } from './kg-sync/push-plan.js';
+import { StagingBlockedError, studioConfigOf } from './kg-sync/push-dest.js';
 import { resolveAppId } from './app-context.js';
+import { featureContextBindingFromMetadata, parseAppContextManifest } from './app-context-version.js';
 import { WORKFLOWS } from './pipelines.js';
 import { listProjects } from './db.js';
 
@@ -95,12 +99,148 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     });
   }
 
+  async function identityActor(): Promise<{ id: string; email: string; name: string } | null> {
+    const machine = await getMachineIdentityUser();
+    const id = identityUserIdOf(machine);
+    return machine && id ? { id, email: machine.email, name: machine.name } : null;
+  }
+
+  async function publishOne(
+    project: { id: string; name?: string },
+    stages?: string[],
+  ): Promise<PublishResult> {
+    const owner = await identityActor();
+    // Local work remains usable during an identity outage, but every sync
+    // operation requires the shared UUID. This keeps provider subjects out of
+    // media, KGS and role/membership APIs and prevents orphaned submissions.
+    if (!owner) {
+      return {
+        status: 'auth_required',
+        projectId: project.id,
+        code: 'SYNC_IDENTITY_REQUIRED',
+        message: 'Tài khoản Google chưa được kết nối với kho dự án. Hãy kết nối lại rồi thử lại.',
+        caveats: [],
+      };
+    }
+
+    const cfg = kgsConfigFromEnv();
+    const kgs = new KgsClient(cfg);
+    const media = new MediaClient({
+      ...mediaConfigFromEnv(),
+      ...(owner ? { userId: owner.id } : {}),
+    });
+    try {
+      const plan = await planPush({ db, projectId: project.id, kgs, media, submitter: owner });
+      if (plan.reconciled?.status === 'rejected') {
+        return {
+          status: 'rejected',
+          projectId: project.id,
+          requestId: plan.reconciled.pendingId,
+          reason: plan.reconciled.reason ?? 'Yêu cầu chia sẻ đã bị từ chối.',
+          caveats: [],
+        };
+      }
+
+      let workspace: 'created' | 'exists' | 'error' = 'exists';
+      let nodesPushed = 0;
+      let edgesPushed = 0;
+      const caveats: string[] = [];
+      if (!plan.staged) {
+        try {
+          workspace = await kgs.ensureWorkspace(plan.destId, project.name ?? project.id, owner);
+        } catch (err) {
+          workspace = 'error';
+          caveats.push(`workspace: ${(err as Error).message}`);
+        }
+        const graph = await pushProject(db, project.id, cfg, Date.now(), randomId(), plan.destId);
+        nodesPushed = graph.nodesPushed;
+        edgesPushed = graph.edgesPushed;
+        caveats.push(...graph.caveats, ...graph.errors);
+
+        // A direct push needs registry membership as well as KGS/media data,
+        // otherwise it would not appear in another user's Shared Projects list.
+        const studio = studioConfigOf((getProject(db, project.id) as { metadata?: unknown } | null)?.metadata);
+        if (studio.appId && studio.appId !== plan.destId) {
+          try {
+            await kgs.ensureWorkspace(studio.appId, studio.appName ?? studio.appId, owner);
+          } catch (err) {
+            caveats.push(`app workspace: ${(err as Error).message}`);
+          }
+          if (await ensureProjectRegistered(studio.appId, studio.appName ?? studio.appId, owner) === 'error') {
+            caveats.push('app registry: không thể đăng ký Shared Project');
+          }
+        }
+        if (await ensureProjectRegistered(plan.destId, project.name ?? project.id, owner) === 'error') {
+          caveats.push('project registry: không thể đăng ký Shared Project');
+        }
+      }
+
+      let filesUploaded = 0;
+      let filesConverted = 0;
+      try {
+        const uploaded = await pipelines.uploadFiles(project.id, stages, plan);
+        filesUploaded = uploaded.uploaded;
+        filesConverted = uploaded.converted;
+      } catch (err) {
+        caveats.push(`files: ${(err as Error).message}`);
+      }
+
+      if (plan.staged) {
+        return {
+          status: 'pending_approval',
+          projectId: project.id,
+          requestId: plan.destId,
+          requestedProjectId: project.id,
+          filesUploaded,
+          filesConverted,
+          caveats,
+        };
+      }
+      const current = getProject(db, project.id) as { metadata?: unknown } | null;
+      const mapping = studioConfigOf(current?.metadata).approvedMapping;
+      return {
+        status: 'published',
+        projectId: project.id,
+        approvedProjectId: plan.destId,
+        filesUploaded,
+        filesConverted,
+        nodesPushed,
+        edgesPushed,
+        workspace,
+        ...(mapping ? { mapping } : {}),
+        caveats,
+      };
+    } catch (err) {
+      if (err instanceof StagingBlockedError) {
+        return {
+          status: 'auth_required',
+          projectId: project.id,
+          code: 'SYNC_IDENTITY_REQUIRED',
+          message: err.message,
+          caveats: [],
+        };
+      }
+      return {
+        status: 'error',
+        projectId: project.id,
+        message: (err as Error).message,
+        caveats: [],
+      };
+    }
+  }
+
   // POST /api/projects/:id/kg-pull — KGS (design-v3) → local SQLite mirror.
   app.post('/api/projects/:id/kg-pull', async (req, res) => {
     const projectId = req.params.id;
     if (!projectId) return sendApiError(res, 400, 'BAD_REQUEST', 'project id required');
     const now = Date.now();
     try {
+      const actor = await identityActor();
+      const scope = await pullScopeFor(actor?.id ?? null);
+      const appId = scope.all || scope.ids.has(projectId) ? null : await resolveAppId(projectId);
+      if (!isProjectVisible(projectId, appId, scope)) {
+        return sendApiError(res, 403, 'PROJECT_FORBIDDEN', scope.reason ?? 'Bạn không có quyền lấy dự án này.');
+      }
       ensureProject(projectId, now);
       const result = await pullProject(db, projectId, kgsConfigFromEnv(), now, randomId());
       res.json({ ok: result.status === 'ok', data: result });
@@ -114,13 +254,9 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     const projectId = req.params.id;
     if (!projectId) return sendApiError(res, 400, 'BAD_REQUEST', 'project id required');
     if (!getProject(db, projectId)) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
-    const now = Date.now();
-    try {
-      const result = await pushProject(db, projectId, kgsConfigFromEnv(), now, randomId());
-      res.json({ ok: result.status === 'ok', data: result });
-    } catch (err) {
-      sendApiError(res, 502, 'KG_PUSH_FAILED', (err as Error).message);
-    }
+    const project = getProject(db, projectId) as { id: string; name?: string };
+    const result = await publishOne(project, stageFilterOf(req.body));
+    res.json({ ok: result.status !== 'error', data: result });
   });
 
   // GET /api/projects/:id/kg-status — mirror counts (for UI/CLI status).
@@ -146,7 +282,8 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       // Membership scope: dự án khai sinh ở studio → máy này chỉ pull các dự
       // án mà machine user (Google login gần nhất) được add vào; app admin
       // thấy tất; identity chưa cấu hình → legacy pull-everything.
-      const scope = await pullScopeFor(getMachineUser()?.sub ?? null);
+      const actor = await identityActor();
+      const scope = await pullScopeFor(actor?.id ?? null);
       if (!scope.all && scope.ids.size === 0) {
         return res.json({
           ok: true,
@@ -219,56 +356,12 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       const requestedList = stringList(req.body?.projectIds);
       const requested = requestedList ? new Set(requestedList) : null;
       const stages = stageFilterOf(req.body);
-      const cfg = kgsConfigFromEnv();
-      const client = new KgsClient(cfg);
       const projects = listProjects(db)
         .filter((p: { metadata?: unknown }) => isKgsProject(p))
         .filter((p: { id: string }) => !requested || requested.has(p.id));
       const results = [];
       for (const p of projects as Array<{ id: string; name?: string }>) {
-        try {
-          // Ensure the project's DP_UI_WORKSPACE node exists so another device's
-          // pull-all (which discovers projects by enumerating DP_UI_WORKSPACE) can
-          // find it. A locally-created project has no workspace node until now.
-          // Owner attribution = the machine's last Google login (may be null).
-          const machine = getMachineUser();
-          const owner = machine && !machine.sub.startsWith('google:')
-            ? { id: machine.sub, email: machine.email, name: machine.name }
-            : null;
-          let workspace: 'created' | 'exists' | 'error' = 'exists';
-          try {
-            workspace = await client.ensureWorkspace(p.id, p.name ?? p.id, owner);
-          } catch {
-            workspace = 'error';
-          }
-          const r = await pushProject(db, p.id, cfg, Date.now(), randomId());
-          // Also upload the project's current output files to the KGS file store
-          // (and B2-convert convertToGraph stages), so push-all sends graph +
-          // files. Best-effort: a file-upload failure must not fail the
-          // already-succeeded graph push.
-          let filesUploaded = 0;
-          let filesConverted = 0;
-          let filesError: string | undefined;
-          try {
-            const u = await pipelines.uploadFiles(p.id, stages);
-            filesUploaded = u.uploaded;
-            filesConverted = u.converted;
-          } catch (err) {
-            filesError = (err as Error).message;
-          }
-          results.push({
-            projectId: p.id,
-            workspace,
-            nodesPushed: r.nodesPushed,
-            edgesPushed: r.edgesPushed,
-            filesUploaded,
-            filesConverted,
-            status: r.status,
-            ...(filesError ? { filesError } : {}),
-          });
-        } catch (err) {
-          results.push({ projectId: p.id, status: 'error', error: (err as Error).message });
-        }
+        results.push(await publishOne(p, stages));
       }
       res.json({ ok: true, data: { pushed: results.length, results } });
     } catch (err) {
@@ -351,7 +444,12 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     try {
       const kgs = new KgsClient(kgsConfigFromEnv());
       const media = new MediaClient(mediaConfigFromEnv());
-      const scope = await pullScopeFor(getMachineUser()?.sub ?? null);
+      const actor = await identityActor();
+      const scope = await pullScopeFor(actor?.id ?? null);
+      // `scope.all` is an app-admin discovery override, not a project-level
+      // role. Never fabricate `admin` in summaries; only surface roles that
+      // identity actually returned for this caller.
+      const roles = !scope.all && actor ? await memberProjectAccess(actor.id) : null;
       const data = await loadRemoteProjects(kgs, media);
       // App → Feature grouping (mirrors pipeline-studio's App concept): a
       // feature's project.json optionally carries an appId linking it to its
@@ -370,7 +468,81 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
           }),
       );
       const visible = filterVisibleProjects(data, scope);
-      res.json({ ok: true, data: visible, ...(scope.reason ? { reason: scope.reason } : {}) });
+      const localIds = new Set(listProjects(db).map((p: { id: string }) => p.id));
+      const byId = new Map(data.map((p) => [p.projectId, p]));
+      const summaries = await Promise.all(
+        visible.map(async (project) => {
+          const files = await media.listFiles(project.projectId).catch(() => []);
+          const availableOutputs = [
+            ...new Set(
+              files
+                .map((f) => (typeof f.stage === 'string' ? f.stage : ''))
+                .filter((stage) => stage && stage !== 'staging'),
+            ),
+          ].sort();
+          let lastPublishedAt: string | null = null;
+          let version: string | null = null;
+          try {
+            const raw = JSON.parse(
+              (await media.downloadFile(project.projectId, 'changelog.json')).toString('utf8'),
+            ) as Array<{ at?: string; verId?: string }>;
+            const latest = Array.isArray(raw) ? raw.at(-1) : null;
+            lastPublishedAt = typeof latest?.at === 'string' ? latest.at : null;
+            version = typeof latest?.verId === 'string' ? latest.verId : null;
+          } catch {
+            // Legacy projects may not have a changelog yet.
+          }
+          let appContext: {
+            current: NonNullable<ReturnType<typeof parseAppContextManifest>>;
+            localCurrentDigest?: `sha256:${string}` | null;
+          } | undefined;
+          if (project.isApp) {
+            try {
+              const pointer = JSON.parse(
+                (await media.downloadFile(project.projectId, 'context/current.json')).toString('utf8'),
+              ) as Record<string, unknown>;
+              const contextVersion = typeof pointer.contextVersion === 'string' && /^v[1-9]\d*$/.test(pointer.contextVersion)
+                ? pointer.contextVersion
+                : null;
+              if (contextVersion) {
+                const current = parseAppContextManifest(JSON.parse(
+                  (await media.downloadFile(project.projectId, `context/versions/${contextVersion}/manifest.json`)).toString('utf8'),
+                ));
+                if (current) appContext = { current, localCurrentDigest: null };
+              }
+            } catch {
+              // Legacy App without versioned context.
+            }
+          }
+          let appContextBinding;
+          if (!project.isApp) {
+            try {
+              const config = JSON.parse(
+                (await media.downloadFile(project.projectId, 'project.json')).toString('utf8'),
+              ) as Record<string, unknown>;
+              appContextBinding = featureContextBindingFromMetadata({ appContextBinding: config.appContextBinding });
+            } catch {
+              // Legacy Feature without a binding.
+            }
+          }
+          return {
+            ...project,
+            displayName: project.name || project.projectId,
+            appName: project.appId ? (byId.get(project.appId)?.name ?? project.appId) : null,
+            ownerName: null,
+            lastPublishedAt,
+            version,
+            availableOutputs,
+            alreadyOnThisDevice: localIds.has(project.projectId),
+            accessRole: roles?.get(project.projectId)
+              ?? (project.appId ? roles?.get(project.appId) : undefined)
+              ?? ('viewer' as const),
+            ...(appContext ? { appContext } : {}),
+            ...(appContextBinding ? { appContextBinding } : {}),
+          };
+        }),
+      );
+      res.json({ ok: true, data: summaries, ...(scope.reason ? { reason: scope.reason } : {}) });
     } catch (err) {
       sendApiError(res, 502, 'KG_REMOTE_FAILED', (err as Error).message);
     }

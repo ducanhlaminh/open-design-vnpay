@@ -1,0 +1,126 @@
+/* UploadFilesModal — target picker (docs/ vs criteria/) + drag-drop zone +
+   pending file list. Reuses the global pl-* button/error primitives; only the
+   card/dropzone/list layout below is this modal's own. */
+
+.targets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.targetCard {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 13px;
+  border: 1px solid var(--pl-border, rgba(120, 120, 130, 0.28));
+  border-radius: 10px;
+  background: var(--pl-surface, rgba(255, 255, 255, 0.02));
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 200ms cubic-bezier(0.23, 1, 0.32, 1), background 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.targetCard:hover {
+  border-color: var(--accent, #0066b3);
+}
+.targetCardSelected {
+  border-color: var(--accent, #0066b3);
+  background: color-mix(in srgb, var(--accent, #0066b3) 8%, transparent);
+}
+
+.targetTitle {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text, #1a1a1a);
+}
+.targetPath {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+}
+
+.warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--amber, #b45309) 35%, transparent);
+  background: color-mix(in srgb, var(--amber, #b45309) 10%, transparent);
+  color: var(--amber, #b45309);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.warning code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 26px 16px;
+  border: 1.5px dashed var(--pl-border, rgba(120, 120, 130, 0.32));
+  border-radius: 12px;
+  color: var(--text-muted, #6b7280);
+  font-size: 12.5px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 140ms cubic-bezier(0.23, 1, 0.32, 1), background 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.dropzone:hover,
+.dropzoneActive {
+  border-color: var(--accent, #0066b3);
+  background: color-mix(in srgb, var(--accent, #0066b3) 6%, transparent);
+  color: var(--accent, #0066b3);
+}
+
+.fileList {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fileItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--pl-border, rgba(120, 120, 130, 0.24));
+  border-radius: 8px;
+  background: var(--pl-surface, rgba(255, 255, 255, 0.02));
+}
+.fileName {
+  font-size: 12.5px;
+  color: var(--text, #1a1a1a);
+  word-break: break-all;
+}
+.fileRemove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted, #6b7280);
+  cursor: pointer;
+}
+.fileRemove:hover:not(:disabled) {
+  background: var(--bg-subtle, #f5f6f8);
+  color: var(--text, #1a1a1a);
+}
+.fileRemove:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

@@ -74,10 +74,14 @@ downstream stages still get criteria to follow.
 
 ### 1. Read the inputs (from the project cwd)
 
-- **Docs (primary):** `./docs/**/*.md` — the domain, the features, constraints.
+**Docs layouts.** App-linked projects work from `./docs-feature/` as the primary source; `./docs-app/` is read-only cross-feature context after reading `./docs-app/_index.md`, and never a deliverable source. Legacy projects use `./docs/confluence/`, `./docs/jira/`, and `./docs/context/`.
+
+- **Docs (primary):** `./docs/**/*.md` or `./docs-feature/**/*.md` — the domain, the features, constraints. `./docs-app/` is reference-only.
 - **Customer Journey (primary):** `./*-customer-journey.json` / `./*-cj.json` or
   under `./customer-journey/`. Its STAGES are your unit of analysis: each
   stage's goal, pain points, and emotion tell you which UX topics matter.
+
+Được phép đọc `./docs-app/_index.md` để hiểu bối cảnh toàn App khi rút tiêu chí; không tạo deliverable từ `./docs-app/`.
 
 From these, write down (for yourself): the **domain** (banking, e-commerce,
 healthcare, …), the **target users**, and the **3–7 key flows** (onboarding,

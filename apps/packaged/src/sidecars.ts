@@ -260,6 +260,8 @@ export type PackagedDaemonSpawnEnvOptions = {
   atlassianConfluenceToken?: string | null;
   sandboxDefault?: string | null;
   sandboxSkills?: string | null;
+  sandboxClaudeAuthSeedB64?: string | null;
+  sandboxCodexAuthSeedB64?: string | null;
   authSessionSecret?: string | null;
   googleClientId?: string | null;
   googleClientSecret?: string | null;
@@ -358,6 +360,12 @@ export function buildPackagedDaemonSpawnEnv(
     ...(options.sandboxSkills == null || options.sandboxSkills.length === 0
       ? {}
       : { OD_SANDBOX_SKILLS: options.sandboxSkills }),
+    ...(options.sandboxClaudeAuthSeedB64 == null || options.sandboxClaudeAuthSeedB64.length === 0
+      ? {}
+      : { OD_SANDBOX_CLAUDE_AUTH_SEED_B64: options.sandboxClaudeAuthSeedB64 }),
+    ...(options.sandboxCodexAuthSeedB64 == null || options.sandboxCodexAuthSeedB64.length === 0
+      ? {}
+      : { OD_SANDBOX_CODEX_AUTH_SEED_B64: options.sandboxCodexAuthSeedB64 }),
     // Google SSO + preview-identity auth baked by tools/pack. The daemon reads
     // these in auth-routes.ts authConfigFromEnv — auth is opt-in on
     // SESSION_SECRET, so an unconfigured build simply runs with login off.
@@ -469,6 +477,8 @@ export async function startPackagedSidecars(
     atlassianConfluenceToken: string | null;
     sandboxDefault: string | null;
     sandboxSkills: string | null;
+    sandboxClaudeAuthSeedB64: string | null;
+    sandboxCodexAuthSeedB64: string | null;
     authSessionSecret: string | null;
     googleClientId: string | null;
     googleClientSecret: string | null;
@@ -525,6 +535,8 @@ export async function startPackagedSidecars(
         atlassianConfluenceToken: options.atlassianConfluenceToken,
         sandboxDefault: options.sandboxDefault,
         sandboxSkills: options.sandboxSkills,
+        sandboxClaudeAuthSeedB64: options.sandboxClaudeAuthSeedB64,
+        sandboxCodexAuthSeedB64: options.sandboxCodexAuthSeedB64,
         authSessionSecret: options.authSessionSecret,
         googleClientId: options.googleClientId,
         googleClientSecret: options.googleClientSecret,

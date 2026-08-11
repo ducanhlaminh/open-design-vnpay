@@ -240,6 +240,7 @@ export interface Dict {
   'settings.agentInstallGroup': string;
   'settings.agentAuthRequired': string;
   'settings.agentAuthUnknown': string;
+  'settings.agentAuthOk': string;
   'settings.advanced': string;
   'settings.apiSection': string;
   'settings.quickFillProvider': string;
@@ -392,6 +393,11 @@ export interface Dict {
   'settings.designSystemsSource': string;
   'settings.designSystemsSourceLocal': string;
   'settings.designSystemsSourceGithub': string;
+  'settings.designSystemsSourceFigma': string;
+  'settings.designSystemsFigmaFiles': string;
+  'settings.designSystemsFigmaFilesHelp': string;
+  'settings.designSystemsImportFigma': string;
+  'settings.designSystemsImportWarnings': string;
   'settings.designSystemsStructure': string;
   'settings.designSystemsModeHybrid': string;
   'settings.designSystemsModeNormalized': string;
@@ -666,6 +672,14 @@ export interface Dict {
   'settings.sandboxMissing': string;
   'settings.sandboxRunCmd': string;
   'settings.sandboxDaemonOffline': string;
+  'settings.sandboxClaudeTitle': string;
+  'settings.sandboxClaudeHint': string;
+  'settings.sandboxCodexTitle': string;
+  'settings.sandboxCodexHint': string;
+  'settings.sandboxRuntimeReady': string;
+  'settings.sandboxRuntimeNotReady': string;
+  'settings.sandboxCodexLoginStart': string;
+  'settings.sandboxCodexLoginDisconnect': string;
 
   // Notifications (settings + system notifications)
   'settings.notifications': string;
@@ -735,8 +749,10 @@ export interface Dict {
   'entry.navNewProject': string;
   'entry.navHome': string;
   'entry.navProjects': string;
+  'entry.navWorkspaces': string;
   'entry.navTasks': string;
   'entry.navPipelines': string;
+  'entry.navFeedback': string;
   'entry.navPlugins': string;
   'entry.navDesignSystems': string;
   'entry.navIntegrations': string;
@@ -1616,9 +1632,13 @@ export interface Dict {
   'ds.categoryAll': string;
   'ds.categoryUncategorized': string;
   'ds.showcase': string;
+  'ds.wireframeMap': string;
   'ds.tokens': string;
   'ds.specToggle': string;
   'ds.specLoading': string;
+  'ds.reactStats': string;
+  'ds.reactDetailToggle': string;
+  'ds.reactDetailLoading': string;
 
   // Avatar menu (project topbar)
   'avatar.title': string;
@@ -1700,6 +1720,9 @@ export interface Dict {
   'chat.inspect.commentHint': string;
   'chat.conversationsTitle': string;
   'chat.conversationsAria': string;
+  'chat.displayModeAria': string;
+  'chat.displayModeSimpleTitle': string;
+  'chat.displayModeFullTitle': string;
   'chat.newConversation': string;
   'chat.newConversationsTitle': string;
   'chat.conversationsHeading': string;
@@ -1811,6 +1834,19 @@ export interface Dict {
   'workspace.openFromDesignFiles': string;
   'workspace.designFilesLink': string;
   'workspace.loadingSketch': string;
+  'workspace.previewMenu': string;
+  'workspace.reloadPreview': string;
+  'workspace.previewNotReady': string;
+  'workspace.previewStage.docsMap': string;
+  'workspace.previewStage.cj': string;
+  'workspace.previewStage.uxResearch': string;
+  'workspace.previewStage.ux': string;
+  'workspace.previewStage.uxReview': string;
+  'workspace.previewStage.uiHtml': string;
+  'workspace.previewStage.uiReact': string;
+  'workspace.previewStage.uiReactDs': string;
+  'workspace.previewStage.prdReview': string;
+  'workspace.previewStage.drReview': string;
   'designFiles.title': string;
   'designFiles.upload': string;
   'designFiles.pasteText': string;
@@ -2488,4 +2524,28 @@ export interface Dict {
   'diagnostics.exporting': string;
   'diagnostics.exportSuccess': string;
   'diagnostics.exportFailed': string;
+
+  // Pipelines — run-all pre-flight "this will clear old results" confirm
+  'pipelines.runAllClear.title': string;
+  'pipelines.runAllClear.body': string;
+  'pipelines.runAllClear.historyNote': string;
+  'pipelines.runAllClear.confirm': string;
+  // Pipelines — run-all pre-flight "stale input" section (same dialog, no
+  // output loss involved — see PipelineModals.tsx RunAllClearConfirmModal)
+  'pipelines.runAllClear.staleOnlyTitle': string;
+  'pipelines.runAllClear.confirmContinue': string;
+  'pipelines.runAllClear.staleSectionTitle': string;
+  'pipelines.runAllClear.staleLine': string;
+  'pipelines.runAllClear.staleNote': string;
+
+  // Pipelines — dependency gate is now a SUGGESTION, not a lock (spec
+  // g2-ui-suggestion-not-gate). Every stage is runnable once step 1 (docs
+  // ingest) has run; these strings replace the old "must finish X first"
+  // blocking copy with informational notes that never disable Save/Run.
+  'pipelines.runAllPicker.ingestRequired': string;
+  'pipelines.runAllPicker.softNote': string;
+  'pipelines.runAllPicker.hint': string;
+  'pipelines.rail.usuallyAfter': string;
+  'pipelines.rail.needsDocs': string;
+  'pipelines.rail.staleNeedsDocs': string;
 }
