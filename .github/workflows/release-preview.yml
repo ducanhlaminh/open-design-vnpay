@@ -12,6 +12,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # Required by the packaged daemon to reconcile the Google session with the
+  # shared-project identity service. Omitting these produces syncIssue:
+  # identity_not_configured even though Google login itself succeeds.
+  GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+  GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+  IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
+  IDENTITY_SERVICE_TOKEN: ${{ secrets.IDENTITY_SERVICE_TOKEN }}
+  SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
   OPEN_DESIGN_TELEMETRY_RELAY_URL: ${{ vars.OPEN_DESIGN_TELEMETRY_RELAY_URL }}
   # Default Confluence credential for the packaged app. tools-pack embeds it
   # only in official installers; the daemon seeds it on a fresh install and

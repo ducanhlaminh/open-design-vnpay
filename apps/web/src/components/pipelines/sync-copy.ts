@@ -19,6 +19,21 @@ export const SYNC_COPY = {
   shareError: 'Không thể chia sẻ kết quả',
 } as const;
 
+/** Explain the actual sync prerequisite; `syncReady=false` is not always an
+ * expired Google session (for example a release can be missing IDENTITY_URL). */
+export function syncIssueHint(issue: string | null | undefined): string {
+  switch (issue) {
+    case 'identity_not_configured':
+      return 'Bản ứng dụng này chưa được kết nối với kho dự án. Hãy cập nhật bản ứng dụng hoặc liên hệ quản trị viên.';
+    case 'identity_unavailable':
+      return 'Kho dự án đang tạm thời không kết nối được. Vui lòng thử lại sau.';
+    case 'identity_user_unresolved':
+      return 'Tài khoản này chưa được kết nối với kho dự án. Hãy kết nối lại để tiếp tục.';
+    default:
+      return SYNC_COPY.reconnectHint;
+  }
+}
+
 export function projectTransferLabel(isLocal: boolean): string {
   return isLocal ? 'Cập nhật bản trên máy' : 'Dự án mới';
 }

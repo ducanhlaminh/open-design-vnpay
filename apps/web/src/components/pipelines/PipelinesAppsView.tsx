@@ -11,7 +11,7 @@ import { navigate } from '../../router';
 import { RowActionsMenu } from './RowActionsMenu';
 import { isFeatureDone } from './usePipelineNav';
 import type { NavApp, PipelineNav } from './usePipelineNav';
-import { SYNC_COPY } from './sync-copy';
+import { SYNC_COPY, syncIssueHint } from './sync-copy';
 import styles from './PipelineNavViews.module.css';
 
 interface Props {
@@ -29,6 +29,7 @@ interface Props {
   onPushAll?: () => void;
   onReconnectSync?: () => void;
   syncReady?: boolean;
+  syncIssue?: string | null;
   pullBusy?: boolean;
   pushBusy?: boolean;
 }
@@ -124,10 +125,13 @@ export function PipelinesAppsView({
   onPushAll,
   onReconnectSync,
   syncReady = false,
+  syncIssue,
   pullBusy = false,
   pushBusy = false,
 }: Props): JSX.Element {
   const [recent] = useState<RecentEntry[]>(() => readRecent());
+  const syncHint = syncIssueHint(syncIssue);
+  const canReconnect = syncIssue !== 'identity_not_configured' && syncIssue !== 'identity_unavailable';
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
 
@@ -174,7 +178,7 @@ export function PipelinesAppsView({
                     className={`${styles.btn} ${styles.syncButton}`}
                     onClick={onPullAll}
                     disabled={pullBusy || !syncReady}
-                    title={syncReady ? 'Chọn dự án đã chia sẻ để lấy về máy này' : SYNC_COPY.reconnectHint}
+                    title={syncReady ? 'Chọn dự án đã chia sẻ để lấy về máy này' : syncHint}
                   >
                     <Icon name={pullBusy ? 'spinner' : 'download'} size={14} />
                     {pullBusy ? 'Đang lấy về…' : SYNC_COPY.downloadTitle}
@@ -186,7 +190,7 @@ export function PipelinesAppsView({
                     className={`${styles.btn} ${styles.syncButton}`}
                     onClick={onPushAll}
                     disabled={pushBusy || !syncReady || nav.apps.length === 0}
-                    title={syncReady ? 'Chọn tài liệu chung và tính năng muốn chia sẻ' : SYNC_COPY.reconnectHint}
+                    title={syncReady ? 'Chọn tài liệu chung và tính năng muốn chia sẻ' : syncHint}
                   >
                     <Icon name={pushBusy ? 'spinner' : 'upload'} size={14} />
                     {pushBusy ? 'Đang chia sẻ…' : 'Chia sẻ'}
@@ -207,8 +211,8 @@ export function PipelinesAppsView({
       {onPullAll && !syncReady ? (
         <div className={styles.error} role="alert">
           <Icon name="info" size={16} />
-          <span>{SYNC_COPY.reconnectHint}</span>
-          {onReconnectSync ? (
+          <span>{syncHint}</span>
+          {onReconnectSync && canReconnect ? (
             <button type="button" className={styles.btn} onClick={onReconnectSync}>{SYNC_COPY.reconnect}</button>
           ) : null}
         </div>

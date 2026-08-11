@@ -49,6 +49,8 @@ concurrency:
 # sandbox owning all Claude runs and the host CLI is never used. Users can still
 # turn it off in Settings → Sandbox.
 env:
+  # Required for Google session → shared-project identity reconciliation.
+  IDENTITY_SERVICE_TOKEN: ${{ secrets.IDENTITY_SERVICE_TOKEN }}
   OD_SANDBOX_DEFAULT: "1"
   OD_SANDBOX_SKILLS: "*"
   # OAuth credential-file seeds for the Docker-only Claude/Codex runtimes.
