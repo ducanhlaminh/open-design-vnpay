@@ -13,8 +13,9 @@ description: |
   `component` lens is NOT re-derived here — the upstream `dr-comp` stage
   already audited every screen against the catalogue and wrote
   `comp/<page-slug>.components.json`; read that file and turn each
-  non-`ok` verdict into a note. Open mockup images only when the flow / gap /
-  edge-case lenses actually need to see one. Edit the clone in place with
+  non-`ok` verdict into a note. Embedded mockups/screenshots are illustrative
+  only and must not be opened or used as evidence for flow, gap, edge-case, or
+  component findings. Edit the clone in place with
   targeted Edit calls, then declare every change made in a
   `.s<NN>.changes.json` file and every finding that cannot be fixed by editing
   text in a `.s<NN>.notes.json` file — the daemon validates both.
@@ -120,31 +121,18 @@ làm hỏng cả trang, y như một anchor bịa trong `criteria/`.
 
 Khi daemon đã stage `criteria/rules.md`, đọc file này trước khi review và dùng anchor thật (`criteria/rules.md#R-...`) cho finding/pass liên quan. File này có thể do người dùng nạp tay HOẶC do daemon tự sinh từ showcase + token của DS, nên ngoài quyết định UX nó còn có thể phủ màu, typography, spacing, elevation/radius, component-usage — trích đúng anchor CÓ THẬT trong file, đừng giả định một tập anchor cố định. Nếu có `criteria/components.md`, dùng nó làm danh mục component hợp lệ đóng; không suy đoán từ trí nhớ. Thiếu một hoặc cả hai file là hợp lệ.
 
-## Bước 0.5 — mở ảnh mockup KHI CẦN (flow / gap / edge-case)
+## Bước 0.5 — tách yêu cầu khỏi ảnh minh hoạ
 
-Mỗi `![alt](attachments/…)` nằm trong phạm vi section của bạn là một **file
-ảnh có thật** nằm cạnh bản clone — daemon nhân bản NGUYÊN cây `docs/` kể cả
-thư mục `attachments/`, nên đường dẫn tương đối trong bản clone trỏ đúng file.
-Kickoff liệt kê nguyên văn danh sách ảnh của section.
+Mọi `![alt](attachments/…)` trong URD/PRD là **minh hoạ, không phải đặc tả hay
+hướng thiết kế**. Không mở ảnh và không suy diễn từ ảnh về flow, màn hình,
+component, variant, layout, state, hay khoảng trống của tài liệu. Một chi tiết
+chỉ xuất hiện trong mockup không phải là yêu cầu; một yêu cầu chỉ xuất hiện
+trong chữ không được coi là thiếu chỉ vì mockup không vẽ nó.
 
-**Mở ảnh khi bạn cần nó cho nhóm `flow`, `gap`, hoặc `edge-case`** — nghĩa là
-khi câu chữ trong section không đủ để biết một luồng kết thúc ở đâu, một màn
-hình được nhắc tới có thật sự được mô tả không, hay một trạng thái rỗng/lỗi có
-được nêu ở đâu đó ngoài đoạn văn không. Trong những ca đó ảnh vẫn là bằng
-chứng, và bạn vẫn phải nhìn trước khi kết luận.
-
-**Không còn bắt buộc mở MỌI ảnh của section.** Trước đây luật này tồn tại vì
-nhóm `component` — thứ duy nhất bắt buộc phải NHÌN mới phán được: biến thể của
-Button, việc ghim cột bảng, Modal hay Drawer. Nay `dr-comp` đã chạy trước bạn,
-đã mở đúng những ảnh đó **một lần cho cả trang** và ghi kết luận thành dữ liệu
-ở `comp/<page-slug>.components.json` (xem Bước 1, nhóm 5). Bắt bạn mở lại toàn
-bộ ảnh ở đây là **trả tiền hai lần cho cùng một việc nhìn** — mỗi section của
-cùng một trang lại nhìn lại đúng những ảnh đó, và mỗi lượt còn có thể ra một
-kết luận khác lượt trước.
-
-Khi có mở ảnh cho flow/gap/edge-case, `criteria/rules.md` vẫn là thứ để đối
-chiếu: `R-OVERLAY` (khi nào được dùng overlay), `R-TABLE*` (bảng, ghim cột),
-`R-BADGE`, `R-FEEDBACK`, `R-LAYOUT`, `R-MENU`.
+Đánh giá dựa trên văn bản, bảng yêu cầu, tiêu chí Design System và (nếu ingest
+đánh dấu rõ) file nguồn `.drawio` cho thứ tự/nhánh nghiệp vụ. Nếu chữ và ảnh
+mâu thuẫn, ghi note yêu cầu chủ tài liệu làm rõ/chỉnh phần chữ; không chọn ảnh
+làm nguồn đúng và không hướng dẫn đội thiết kế sao chép ảnh.
 
 ## Bước 1 — review theo 5 nhóm
 
@@ -175,13 +163,10 @@ chiếu: `R-OVERLAY` (khi nào được dùng overlay), `R-TABLE*` (bảng, ghim
    Element có `verdict: "ok"` hoặc `"internal"` → **không ghi gì**. Element
    thuộc màn hình nằm ngoài section của bạn → để cho lượt chạy của section đó.
 
-   **Vì sao đọc file thay vì tự phán:** đọc lại cả tài liệu và mở lại cả loạt
-   ảnh chỉ để kết luận về component là **làm hai lần cùng một việc** — `dr-comp`
-   vừa làm xong trên đúng trang này. Tệ hơn: lượt sau thường ra kết quả khác
-   lượt trước (cùng một ô bảng, lần này gọi là `Select`, lần sau gọi là
-   `Combobox`), nên cùng một trang có 6 section sẽ cho 6 phiên bản sự thật
-   không khớp nhau. Một nguồn duy nhất, đã ghi thành file, là thứ người đọc
-   phản biện được.
+   **Vì sao đọc file thay vì tự phán:** `dr-comp` đã map khai báo chữ trong
+   tài liệu vào danh mục một lần cho cả trang. Một nguồn dữ liệu duy nhất giữ
+   kết luận nhất quán giữa các section mà không biến ảnh minh hoạ thành hướng
+   thiết kế.
 
    **Không có file `comp/…`** (dự án chạy từ trước khi có bước `dr-comp`) →
    quay về luật cũ: chỉ làm nhóm này khi `criteria/` có danh sách component,
@@ -309,7 +294,7 @@ tiêu chí nào.** Nhắm dưới 160 ký tự.
 đây chúng không có chỗ nào để đi, nên hoặc bị bỏ qua hoàn toàn, hoặc bị nhét
 vào tài liệu dưới dạng chú giải — cả hai đều sai. Ghi note khi bạn thấy:
 
-- dùng overlay/Modal/Drawer sai ngữ cảnh (sai `R-OVERLAY`);
+- văn bản yêu cầu dùng overlay/Modal/Drawer sai ngữ cảnh (sai `R-OVERLAY`);
 - mỗi element có `verdict != "ok"` trong `comp/<page-slug>.components.json`
   thuộc section của bạn — `not-in-catalog` (dùng thứ không có trong danh mục),
   `variant-mismatch` (sai biến thể/trạng thái), `ambiguous` (tài liệu khai hai
@@ -329,7 +314,7 @@ Nội dung là một mảng `DocNote`:
     "severity": "major",
     "rule_id": "criteria/rules.md#R-OVERLAY",
     "anchor": "Hệ thống hiển thị hộp thoại xác nhận chuyển khoản",
-    "finding": "Ảnh mockup dùng Modal cho một tác vụ nhiều bước có nhập liệu; R-OVERLAY chỉ cho phép Modal với xác nhận một bước, không có form.",
+    "finding": "Tài liệu yêu cầu Modal cho một tác vụ nhiều bước có nhập liệu; R-OVERLAY chỉ cho phép Modal với xác nhận một bước, không có form.",
     "suggestion": "Chuyển sang Drawer hoặc một màn riêng, giữ Modal cho bước xác nhận cuối."
   }
 ]

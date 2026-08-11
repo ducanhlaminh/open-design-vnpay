@@ -355,6 +355,7 @@ export const ko: Dict = {
   'entry.useEverywhereAria': '‘어디서나 사용’ 가이드 열기 (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': '새 프로젝트',
   'entry.navHome': '홈',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': '프로젝트',
   'entry.navDesignSystems': '디자인 시스템',
   'entry.helpAria': '도움말',

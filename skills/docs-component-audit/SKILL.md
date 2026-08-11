@@ -3,8 +3,8 @@ name: docs-component-audit
 description: |
   MIDDLE stage of the `docs-review` workflow (pipeline `dr-comp`) — runs after
   `dr-docs` has ingested the pages and BEFORE `dr-review` reviews/edits them.
-  Read ONE ingested page (`docs/<page>.md`, strictly read-only) together with
-  every mockup image it embeds, list WHICH COMPONENT EACH SCREEN uses (screens
+  Read ONE ingested page (`docs/<page>.md`, strictly read-only) and list WHICH
+  COMPONENT EACH SCREEN declares (screens
   are declared as `###### Màn hình 1: SCR-001 — …` headings; elements come from
   each screen table's "Kiểu hiển thị" column), map every declared type onto the
   project's valid component catalogue (`criteria/components.md`) BY MEANING,
@@ -39,16 +39,14 @@ dr-docs (nạp tài liệu)  →  dr-comp (BẠN Ở ĐÂY)  →  dr-review (rev
 ```
 
 Upstream, `dr-docs` đã nạp tài liệu (Confluence hoặc `.md` người dùng tải lên)
-vào `docs/`, kèm ảnh mockup trong `attachments/` cạnh mỗi trang. Downstream,
+vào `docs/`. Ảnh mockup có thể nằm trong `attachments/`, nhưng chỉ là minh hoạ,
+không phải đầu vào để xác định component hay hướng thiết kế. Downstream,
 `dr-review` sẽ **đọc file kết quả của bạn** thay vì tự phán lại xem màn hình
 dùng component gì.
 
-Vì sao tách thành một bước riêng: phán đoán component là việc **nhìn ảnh + tra
-danh mục 48 component**, tốn nhất trong cả workflow. Trước đây `dr-review` vừa
-phải làm việc đó vừa phải review câu chữ/luồng/gap trên từng lát cắt section —
-nghĩa là cùng một trang bị "nhìn" lại nhiều lần, mỗi section một lần, và mỗi
-lượt lại ra một kết luận hơi khác lượt trước. Tách ra: nhìn **một lần cho cả
-trang**, ghi thành dữ liệu, các lượt sau chỉ việc đọc.
+Vì sao tách thành một bước riêng: map component từ **khai báo chữ trong URD/PRD**
+với danh mục hợp lệ là một quyết định cần nhất quán cho cả trang. `dr-review`
+chỉ việc đọc dữ liệu đã chốt, không tự suy lại theo từng section.
 
 **Bạn chỉ xử lý MỘT TRANG mỗi lần chạy.** Daemon fan-out stage này theo trang —
 kickoff nêu đích danh đường dẫn trang bạn phụ trách và đường dẫn file JSON bạn
@@ -102,7 +100,8 @@ sáu dấu thăng). Với mỗi màn, lấy:
   tự. Đây là toạ độ để giao diện nhảy tới đúng màn.
 - `images` — mọi `![alt](attachments/…)` nằm **trong phạm vi màn đó**: từ dòng
   heading của màn tới ngay trước heading màn kế tiếp (hoặc hết mục). Ghi đường
-  dẫn tương đối đúng như trong tài liệu.
+  dẫn tương đối đúng như trong tài liệu, **chỉ để trace nguồn**. Không mở ảnh,
+  không dùng ảnh để map component, variant, state hay layout.
 
 Element của màn nằm trong **bảng** ngay dưới heading. Cột thứ 3 tên
 **"Kiểu hiển thị"** là component **tài liệu tự khai**. Giá trị thật gặp được:
@@ -110,25 +109,17 @@ Element của màn nằm trong **bảng** ngay dưới heading. Cột thứ 3 t�
 `Label / Card`, `Tab`, `Multi-select combobox`, `Link`, `Badge`, `Date picker`,
 `Icon menu`, `Chip / Tag list`.
 
-## Bước 2 — MỞ MỌI ẢNH của màn (bắt buộc)
+## Bước 2 — giữ mockup ngoài quyết định audit
 
-Dùng Read trên từng file trong `images` trước khi kết luận bất cứ điều gì về
-màn đó. **Đây là việc NHÌN, không phải việc đọc chữ.**
+**Không mở ảnh trong `images`.** Mockup/screenshot nhúng trong URD/PRD là minh
+hoạ, không phải "thứ thật sự sẽ được dựng" và không được dùng để phủ định hay
+bổ sung cho bảng/đoạn yêu cầu. `images` vẫn xuất hiện trong JSON để người đọc
+biết tài liệu có minh hoạ gì, nhưng không có tác dụng đánh giá.
 
-Vì sao bắt buộc: bảng "Kiểu hiển thị" là thứ tài liệu **TỰ KHAI**, còn ảnh
-mockup là thứ **thật sự sẽ được dựng**. Hai thứ đó lệch nhau chính là phát hiện
-đáng giá nhất của cả bước này — bảng khai `Label` nhưng ảnh vẽ một Card có
-viền và nút; bảng khai `Table` nhưng ảnh ghim cột trái và có hàng mở rộng;
-bảng khai `Button` nhưng ảnh vẽ một biến thể ghost không có trong bảng biến thể
-của Button. Không mở ảnh thì bạn chỉ chép lại bảng, và một bước chỉ chép lại
-bảng thì không đáng tồn tại.
-
-**Không mở ảnh thì KHÔNG được kết luận `variant-mismatch`.** Verdict đó nói về
-biến thể/trạng thái *nhìn thấy được*; suy ra nó từ mấy chữ trong ô bảng là đoán
-mò đội lốt bằng chứng.
-
-Màn không có ảnh nào thì `images` là mảng rỗng — hợp lệ, và khi đó bạn chỉ được
-phán trên những gì bảng khai.
+Chỉ dùng component, variant và state **được viết rõ trong tài liệu** cùng
+`criteria/components.md`. Nếu tài liệu không ghi rõ variant/state thì không suy
+ra từ ảnh và không phát hành `variant-mismatch`; ghi `ok` khi component map được
+hoặc `ambiguous` khi chính văn bản khai hai kiểu.
 
 ## Bước 3 — map `doc_type` sang danh mục
 
@@ -165,24 +156,22 @@ hồ thì để verdict nói ra.
 
 `verdict` là tập ĐÓNG đúng 5 giá trị:
 
-- **`ok`** — map được sang **đúng một** component có trong danh mục, và biến
-  thể/trạng thái mô tả (trong bảng và trong ảnh) đều tồn tại trong bảng biến
-  thể của component đó. Ghi cả `component` lẫn `rule_id`.
+- **`ok`** — map được sang **đúng một** component có trong danh mục, và mọi
+  biến thể/trạng thái **được văn bản mô tả** đều tồn tại trong bảng biến thể của
+  component đó. Ghi cả `component` lẫn `rule_id`.
 - **`not-in-catalog`** — tài liệu dùng thứ **không có** trong danh mục. Ví dụ
   đo được: `Icon menu`, `Link`. **BẮT BUỘC có `note` nói nên dùng gì thay
   thế** — một dòng "không có trong danh mục" mà không kèm lối ra chỉ chuyển
   việc suy nghĩ sang người đọc, và người đọc thường không có danh mục mở sẵn
   như bạn lúc này.
-- **`variant-mismatch`** — component **có thật** trong danh mục, nhưng tài liệu
-  hoặc ảnh mô tả một **biến thể/trạng thái không tồn tại** trong bảng biến thể
-  của chính nó (ví dụ Badge màu tím trong khi danh mục chỉ có
-  success/warning/error/info). Chỉ dùng verdict này khi **đã mở ảnh** (Bước 2).
-  Vẫn ghi `component` + `rule_id` — component đúng, chỉ biến thể sai.
+- **`variant-mismatch`** — component **có thật** trong danh mục, nhưng **văn
+  bản tài liệu** mô tả một biến thể/trạng thái không tồn tại trong bảng biến thể
+  của chính nó. Không bao giờ kết luận từ ảnh minh hoạ. Vẫn ghi `component` +
+  `rule_id` — component đúng, chỉ biến thể sai.
 - **`ambiguous`** — tài liệu khai **hai kiểu cho một phần tử**: `Label / Card`,
-  `Button / Toggle`. Đây không phải lỗi map của bạn, đây là chỗ tài liệu chưa
-  chốt. **Phải chốt một cái** trong `component` (cái mà ảnh cho thấy, nếu ảnh
-  cho thấy) và nêu trong `note` là đã chốt cái nào, vì sao, cái kia bị loại.
-  Bỏ lửng cả hai thì bước sau lại phải mở lại đúng ảnh này.
+  `Button / Toggle`. Đây là chỗ tài liệu chưa chốt. Không chọn hộ theo ảnh;
+  để `component` trống và nêu trong `note` rằng chủ tài liệu cần chọn một kiểu
+  từ danh mục.
 - **`internal`** — mảnh dựng nội bộ, không phải component người dùng thấy: tên
   bắt đầu bằng **dấu chấm** (`.row-actions`, `.cell-empty`) hoặc được đánh dấu
   `[Internal]` trong danh mục. **Bỏ qua, không bắt lỗi**, không cần `note`.
@@ -267,5 +256,6 @@ chùm note bịa ra ở bản review cuối.
   của mọi trang vào đó sau khi tất cả các lượt chạy xong. Bạn tự ghi thì lượt
   chạy song song của trang khác sẽ ghi đè, và bản gộp cuối sẽ chỉ còn dữ liệu
   của một trang.
-- **Không mở ảnh thì không được kết luận `variant-mismatch`** (xem Bước 2).
+- **Không mở ảnh để đưa ra bất kỳ verdict nào.** Ảnh trong `images[]` chỉ là
+  metadata traceability (xem Bước 2).
 - File-only: không đẩy bất cứ gì lên KGS.

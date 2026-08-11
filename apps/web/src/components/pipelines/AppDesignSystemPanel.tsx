@@ -53,13 +53,13 @@ export function AppDesignSystemPanel({ appId, designSystemId }: Props) {
   );
 
   if (!designSystemId) {
-    return <section className={styles.section} aria-label="Design System"><p className={styles.empty}>App chưa chọn Design System. Chọn DS ở <strong>Sửa App</strong>.</p></section>;
+    return <section className={styles.section} aria-label="Design System"><p className={styles.empty}>Dự án chưa chọn Design System. Chọn DS ở <strong>Sửa dự án</strong>.</p></section>;
   }
 
   return (
     <section className={styles.section} aria-label="Design System">
       <div className={styles.header}>
-        <div><h2 className={styles.heading}>{title}</h2><p className={styles.muted}>Design System gắn cho App này.</p></div>
+        <div><h2 className={styles.heading}>{title}</h2><p className={styles.muted}>Design System gắn cho dự án này.</p></div>
       </div>
       <div className={styles.modeBar} role="tablist" aria-label="Nội dung Design System">
         <button type="button" role="tab" aria-selected={view === 'showcase'} className={`${styles.modeButton}${view === 'showcase' ? ` ${styles.modeButtonActive}` : ''}`} onClick={() => setView('showcase')}>Showcase</button>

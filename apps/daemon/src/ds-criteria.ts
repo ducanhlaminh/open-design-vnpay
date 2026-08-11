@@ -139,6 +139,17 @@ export async function commitGeneratedRulesMd(
   return result;
 }
 
+/** Validate an agent-produced rules draft without approving/renaming it. */
+export async function validateGeneratedRulesMdDraft(
+  dsDir: string,
+): Promise<{ ok: boolean; errors: string[]; rules: number }> {
+  const nextPath = path.join(dsCriteriaDir(dsDir), 'rules.md.next');
+  const text = await readFile(nextPath, 'utf8').catch(() => null);
+  return text === null
+    ? { ok: false, errors: ['Agent kết thúc nhưng không sinh ra "criteria/rules.md.next" — không có bản nháp để duyệt.'], rules: 0 }
+    : validateRulesMd(text);
+}
+
 export async function commitGeneratedComponentsMd(
   dsDir: string,
   opts: { now?: Date } = {},
@@ -194,6 +205,17 @@ export async function commitGeneratedComponentsMd(
     return { ok: false, errors: [error instanceof Error ? error.message : String(error)], components: 0 };
   }
   return result;
+}
+
+/** Validate an agent-produced component draft without approving/renaming it. */
+export async function validateGeneratedComponentsMdDraft(
+  dsDir: string,
+): Promise<{ ok: boolean; errors: string[]; components: number }> {
+  const nextPath = path.join(dsCriteriaDir(dsDir), 'components.md.next');
+  const text = await readFile(nextPath, 'utf8').catch(() => null);
+  return text === null
+    ? { ok: false, errors: ['Agent kết thúc nhưng không sinh ra "criteria/components.md.next" — không có bản nháp để duyệt.'], components: 0 }
+    : validateComponentsMd(text);
 }
 
 /** Chép bộ tiêu chí review của một Design System vào `<wf>/criteria/`.

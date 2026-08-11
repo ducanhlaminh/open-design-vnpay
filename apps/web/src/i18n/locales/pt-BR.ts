@@ -355,6 +355,7 @@ export const ptBR: Dict = {
   'entry.navNewProject': 'Novo projeto',
   'entry.navHome': 'Início',
   'entry.navProjects': 'Projetos',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navDesignSystems': 'Design systems',
   'entry.helpAria': 'Ajuda',
   'entry.helpMenuAria': 'Menu de ajuda',

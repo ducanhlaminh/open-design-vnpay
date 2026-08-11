@@ -447,6 +447,7 @@ export const id: Dict = {
   'entry.useEverywhereAria': 'Buka panduan “Gunakan di mana saja” (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': 'Proyek baru',
   'entry.navHome': 'Beranda',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'Proyek',
   'entry.navDesignSystems': 'Sistem desain',
   'entry.helpAria': 'Bantuan',

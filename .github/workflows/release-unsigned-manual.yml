@@ -51,6 +51,11 @@ concurrency:
 env:
   OD_SANDBOX_DEFAULT: "1"
   OD_SANDBOX_SKILLS: "*"
+  # OAuth credential-file seeds for the Docker-only Claude/Codex runtimes.
+  # They are intentionally repository secrets: tools-pack embeds them in the
+  # installer, and daemon copies each seed only to a brand-new auth volume.
+  OD_SANDBOX_CLAUDE_AUTH_SEED_B64: ${{ secrets.OD_SANDBOX_CLAUDE_AUTH_SEED_B64 }}
+  OD_SANDBOX_CODEX_AUTH_SEED_B64: ${{ secrets.OD_SANDBOX_CODEX_AUTH_SEED_B64 }}
 
 jobs:
   verify:

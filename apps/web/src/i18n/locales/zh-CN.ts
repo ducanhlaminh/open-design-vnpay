@@ -412,6 +412,7 @@ export const zhCN: Dict = {
   'entry.navNewProject': '新建项目',
   'entry.navHome': '主页',
   'entry.navProjects': '项目',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navTasks': '自动化',
   'entry.navPipelines': '流水线',
   'entry.navFeedback': '反馈',

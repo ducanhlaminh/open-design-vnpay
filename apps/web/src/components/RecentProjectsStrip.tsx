@@ -12,7 +12,7 @@ import { useT } from '../i18n';
 import { fetchProjectFiles, projectFileUrl } from '../providers/registry';
 import type { DesignSystemSummary, Project, ProjectDisplayStatus, ProjectFile } from '../types';
 import { Icon } from './Icon';
-import { STATUS_LABEL_KEYS } from './DesignsTab';
+import { INFRA_PROJECT_KINDS, STATUS_LABEL_KEYS } from './DesignsTab';
 import { isDesignSystemProject, isPublishedDesignSystemProject } from './design-system-project';
 
 interface Props {
@@ -47,7 +47,7 @@ export function RecentProjectsStrip({
     () => [...projects]
       // Keep infrastructure criteria projects available to project routes and
       // WorkspaceTabsBar; hide them only from this user-facing Recent rail.
-      .filter((project) => String(project.metadata?.kind) !== 'ds-criteria')
+      .filter((project) => !INFRA_PROJECT_KINDS.includes(String(project.metadata?.kind) as (typeof INFRA_PROJECT_KINDS)[number]))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, limit),
     [projects, limit],

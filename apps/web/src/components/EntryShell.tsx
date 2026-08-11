@@ -312,6 +312,9 @@ function navElementForView(
     case 'home':
       return 'home';
     case 'projects':
+    // Workspaces là tên mới của màn Projects — analytics giữ enum cũ để không
+    // gãy dashboard.
+    case 'workspaces':
       return 'projects';
     case 'tasks':
       return 'automations';
@@ -498,44 +501,13 @@ export function EntryShell({
   // projectKind='other', so the agent asks for the exact task type
   // before continuing.
   function handlePluginLoopSubmit(payload: PluginLoopSubmit) {
-    const head = payload.prompt.trim().split(/\s+/).slice(0, 8).join(' ');
-    const firstAttachmentName = payload.attachments?.[0]?.name ?? '';
-    const fallbackName = head.length > 0 ? head : firstAttachmentName || 'Untitled';
-    const name =
-      payload.pluginTitle && payload.pluginTitle.trim().length > 0
-        ? payload.pluginTitle.trim()
-        : fallbackName;
-    const metadata: ProjectMetadata = {
-      ...(payload.projectMetadata ?? {}),
-      kind: payload.projectKind ?? payload.projectMetadata?.kind ?? 'prototype',
-      nameSource: 'prompt',
-      ...(payload.contextPlugins && payload.contextPlugins.length > 0
-        ? { contextPlugins: payload.contextPlugins }
-        : {}),
-      ...(payload.contextMcpServers && payload.contextMcpServers.length > 0
-        ? { contextMcpServers: payload.contextMcpServers }
-        : {}),
-      ...(payload.contextConnectors && payload.contextConnectors.length > 0
-        ? { contextConnectors: payload.contextConnectors }
-        : {}),
-      ...(payload.workingDir ? { userWorkingDir: payload.workingDir } : {}),
-    };
-    onCreateProject({
-      name,
-      skillId: payload.skillId ?? null,
-      designSystemId: payload.designSystemId ?? null,
-      metadata,
-      pendingPrompt: payload.prompt,
-      ...(payload.pluginId ? { pluginId: payload.pluginId } : {}),
-      ...(payload.appliedPluginSnapshotId
-        ? { appliedPluginSnapshotId: payload.appliedPluginSnapshotId }
-        : {}),
-      ...(payload.pluginInputs ? { pluginInputs: payload.pluginInputs } : {}),
-      ...(payload.attachments && payload.attachments.length > 0
-        ? { pendingFiles: payload.attachments }
-        : {}),
-      autoSendFirstMessage: true,
-    });
+    const prompt = payload.prompt.trim();
+    if (!prompt) return;
+    sessionStorage.setItem(
+      'od-overview-seed',
+      JSON.stringify({ prompt, at: Date.now(), startNewConversation: true }),
+    );
+    navigate({ kind: 'project', projectId: 'overview', conversationId: null, fileName: null });
   }
 
   function finishOnboarding() {
@@ -638,13 +610,13 @@ export function EntryShell({
                 promptTemplates={promptTemplates}
               />
             ) : null}
-            {view === 'projects' ? (
+            {view === 'projects' || view === 'workspaces' ? (
               projectsLoading || skillsLoading || designSystemsLoading ? (
                 <CenteredLoader label={t('common.loading')} />
               ) : (
                 <div className="entry-section">
                   <header className="entry-section__head">
-                    <h1 className="entry-section__title">{t('entry.navProjects')}</h1>
+                    <h1 className="entry-section__title">{t('entry.navWorkspaces')}</h1>
                     {onProjectsRefresh ? (
                       <button
                         type="button"

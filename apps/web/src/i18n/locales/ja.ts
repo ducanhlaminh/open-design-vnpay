@@ -354,6 +354,7 @@ export const ja: Dict = {
   'entry.useEverywhereAria': '「どこでも使う」ガイドを開く（CLI、MCP、HTTP、Skills）',
   'entry.navNewProject': '新規プロジェクト',
   'entry.navHome': 'ホーム',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'プロジェクト',
   'entry.navDesignSystems': 'デザインシステム',
   'entry.helpAria': 'ヘルプ',

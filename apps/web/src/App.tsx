@@ -23,6 +23,8 @@ import { PetOverlay, type PetTaskCenter } from './components/pet/PetOverlay';
 import { buildPetTaskCenter } from './components/pet/taskCenter';
 import { migrateCustomPetAtlas } from './components/pet/pets';
 import { ProjectView } from './components/ProjectView';
+import { OverviewWorkspace } from './components/OverviewWorkspace';
+import { CriteriaGenerationWorkspace } from './components/CriteriaGenerationWorkspace';
 import { openWorkspaceTab, WorkspaceTabsBar } from './components/WorkspaceTabsBar';
 import {
   DesignSystemCreationFlow,
@@ -48,6 +50,7 @@ import {
   uploadProjectFiles,
 } from './providers/registry';
 import { RUNS_CHANGED_EVENT, listProjectRuns } from './providers/daemon';
+import { startCriteriaGeneration } from './providers/design-system-criteria';
 import { navigate, useRoute } from './router';
 import { useUiPreviewAutoOpen } from './components/pipeline-preview/ui-preview-watch';
 import {
@@ -172,6 +175,51 @@ export function resolveSettingsCloseConfig(
 ): AppConfig {
   const base = latestPersisted === rendered ? rendered : latestPersisted;
   return base.onboardingCompleted ? base : { ...base, onboardingCompleted: true };
+}
+
+// Prompt gieo từ Home cho workspace tổng. Đọc-rồi-xoá sessionStorage phải là
+// once-guard Ở MODULE: StrictMode chạy initializer/useMemo hai lần khi mount —
+// lần 1 xoá key, lần 2 đọc null và seed biến mất. Cache lại giá trị đã lấy
+// (kèm mốc hết hạn) để lần gọi thứ hai nhận đúng seed thay vì null.
+type OverviewSeed = {
+  prompt: string;
+  startNewConversation: boolean;
+  expiresAt: number;
+};
+
+let consumedOverviewSeed: OverviewSeed | null = null;
+function consumeOverviewSeed(): OverviewSeed | null {
+  const now = Date.now();
+  if (consumedOverviewSeed && consumedOverviewSeed.expiresAt > now) {
+    return consumedOverviewSeed;
+  }
+  try {
+    const raw = sessionStorage.getItem('od-overview-seed');
+    sessionStorage.removeItem('od-overview-seed');
+    if (!raw) return null;
+    const seed = JSON.parse(raw) as {
+      prompt?: unknown;
+      at?: unknown;
+      startNewConversation?: unknown;
+    };
+    if (typeof seed.prompt !== 'string' || typeof seed.at !== 'number') return null;
+    if (now - seed.at > 60_000) return null;
+    consumedOverviewSeed = {
+      prompt: seed.prompt,
+      // Legacy seeds intentionally retain the prior behavior; every new Home
+      // submit writes this flag and therefore always starts a new workspace.
+      startNewConversation: seed.startNewConversation === true,
+      expiresAt: seed.at + 60_000,
+    };
+    return consumedOverviewSeed;
+  } catch {
+    try {
+      sessionStorage.removeItem('od-overview-seed');
+    } catch {
+      // best-effort
+    }
+    return null;
+  }
 }
 
 export function App() {
@@ -1358,6 +1406,11 @@ export function App() {
   // /marketplace and /marketplace/:id routes render outside the
   // EntryView / ProjectView split so the discovery surface stays
   // independent of any active project.
+  const overviewSeed = useMemo(() => {
+    if (route.kind !== 'project' || route.projectId !== 'overview') return null;
+    return consumeOverviewSeed();
+  }, [route.kind, route.kind === 'project' ? route.projectId : null]);
+
   let appMain: ReactNode;
   if (route.kind === 'marketplace') {
     appMain = <MarketplaceView />;
@@ -1387,6 +1440,24 @@ export function App() {
         onOpenConnectorsTab={() => openSettings('composio')}
       />
     );
+  } else if (route.kind === 'design-system-criteria-workspace') {
+    appMain = (
+      <CriteriaGenerationWorkspace
+        designSystemId={route.designSystemId}
+        kind={route.criteriaKind}
+        onBack={() => navigate({
+          kind: 'design-system-detail',
+          designSystemId: route.designSystemId,
+          section: 'criteria',
+        })}
+        onOpenConversation={(projectId, conversationId) => navigate({
+          kind: 'project',
+          projectId,
+          conversationId,
+          fileName: null,
+        })}
+      />
+    );
   } else if (route.kind === 'design-system-detail') {
     appMain = (
       <DesignSystemDetailView
@@ -1402,6 +1473,21 @@ export function App() {
         onSystemsRefresh={refreshDesignSystems}
         onProjectsRefresh={refreshProjects}
         onOpenCriteria={(id) => navigate({ kind: 'design-system-detail', designSystemId: id, section: 'criteria' })}
+        onOpenFigmaUpdate={(id) => navigate({ kind: 'design-system-detail', designSystemId: id, section: 'figma-update' })}
+        onGenerateCriteria={async (id, kind) => {
+          await startCriteriaGeneration(id, kind);
+          navigate({ kind: 'design-system-criteria-workspace', designSystemId: id, criteriaKind: kind });
+        }}
+      />
+    );
+  } else if (route.kind === 'project' && route.projectId === 'overview') {
+    appMain = (
+      <OverviewWorkspace
+        config={config}
+        agents={agents}
+        onBack={handleBack}
+        seedPrompt={overviewSeed?.prompt ?? null}
+        startNewConversation={overviewSeed?.startNewConversation ?? false}
       />
     );
   } else if (activeProject) {

@@ -355,6 +355,7 @@ export const pl: Dict = {
   'entry.useEverywhereAria': 'Otwórz przewodnik „Używaj wszędzie” (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': 'Nowy projekt',
   'entry.navHome': 'Strona główna',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'Projekty',
   'entry.navDesignSystems': 'Systemy projektowe',
   'entry.helpAria': 'Pomoc',

@@ -25,6 +25,27 @@ import { Toast } from "./Toast";
 
 type SubTab = "recent" | "yours";
 type ViewMode = "grid" | "kanban";
+type WorkspaceScope = "overview" | "pipeline" | "ds-figma";
+
+export const INFRA_PROJECT_KINDS = ["ds-criteria", "ds-rules", "overview"] as const;
+
+function isInfrastructureProject(p: { metadata?: unknown }): boolean {
+	const kind = p.metadata && typeof p.metadata === "object" && !Array.isArray(p.metadata)
+		? (p.metadata as unknown as Record<string, unknown>).kind
+		: undefined;
+	return INFRA_PROJECT_KINDS.includes(String(kind) as (typeof INFRA_PROJECT_KINDS)[number]);
+}
+
+function isFigmaDesignSystemProject(p: Project): boolean {
+	if (isInfrastructureProject(p)) return false;
+	const metadata = p.metadata;
+	return Boolean(
+		metadata &&
+		typeof metadata === "object" &&
+		!Array.isArray(metadata) &&
+		(metadata as unknown as Record<string, unknown>).importedFrom === "design-system",
+	);
+}
 
 // A pipeline project is a KGS app (created on the Pipelines page or mirrored
 // via kg-pull) — mirrors the daemon's isKgsProject. Everything else is a
@@ -134,19 +155,20 @@ export function DesignsTab({
 			return "grid";
 		}
 	});
-	// Chat vs Pipeline projects are different worlds (ad-hoc conversations vs
-	// KGS docs→prototype apps), so the list is split instead of interleaved.
+	// Workspaces are split into the overview, pipeline, and Figma DS worlds.
 	// Persisted like the grid/kanban view choice.
-	const [scope, setScope] = useState<"chat" | "pipeline">(() => {
-		if (typeof window === "undefined") return "chat";
+	const [scope, setScope] = useState<WorkspaceScope>(() => {
+		if (typeof window === "undefined") return "pipeline";
 		try {
 			const stored = window.localStorage.getItem("od-designs-scope");
-			return stored === "pipeline" ? "pipeline" : "chat";
+			return stored === "overview" || stored === "pipeline" || stored === "ds-figma"
+				? stored
+				: "pipeline";
 		} catch {
-			return "chat";
+			return "pipeline";
 		}
 	});
-	const changeScope = (next: "chat" | "pipeline") => {
+	const changeScope = (next: WorkspaceScope) => {
 		setScope(next);
 		try {
 			window.localStorage.setItem("od-designs-scope", next);
@@ -288,12 +310,32 @@ export function DesignsTab({
 
 	// The scope split happens before every other derivation so search, sort,
 	// live artifacts and both view modes all operate on one world at a time.
-	const scopedProjects = useMemo(
-		() => projects.filter((p) => isPipelineProject(p) === (scope === "pipeline")),
-		[projects, scope],
+	const overviewProject = useMemo(
+		() => ({
+			id: "overview",
+			name: "Tổng",
+			skillId: null,
+			designSystemId: null,
+			createdAt: 0,
+			updatedAt: 0,
+			status: { value: "not_started" as const },
+			metadata: { kind: "overview" },
+		} as unknown as Project),
+		[],
 	);
+	const scopedProjects = useMemo(() => {
+		if (scope === "overview") return [overviewProject];
+		return projects.filter((p) => {
+			if (isInfrastructureProject(p)) return false;
+			return scope === "pipeline" ? isPipelineProject(p) : isFigmaDesignSystemProject(p);
+		});
+	}, [overviewProject, projects, scope]);
 	const pipelineCount = useMemo(
-		() => projects.filter((p) => isPipelineProject(p)).length,
+		() => projects.filter((p) => !isInfrastructureProject(p) && isPipelineProject(p)).length,
+		[projects],
+	);
+	const dsFigmaCount = useMemo(
+		() => projects.filter((p) => isFigmaDesignSystemProject(p)).length,
 		[projects],
 	);
 
@@ -454,21 +496,14 @@ export function DesignsTab({
 			<div className="tab-panel-toolbar designs-toolbar">
 				<div className="toolbar-left">
 					<div className="subtab-pill" role="group" aria-label="Project scope">
-						<button
-							aria-pressed={scope === "chat"}
-							className={scope === "chat" ? "active" : ""}
-							onClick={() => changeScope("chat")}
-							title="Regular chat projects"
-						>
-							Chat ({projects.length - pipelineCount})
+						<button aria-pressed={scope === "overview"} className={scope === "overview" ? "active" : ""} onClick={() => changeScope("overview")}>
+							Tổng
 						</button>
-						<button
-							aria-pressed={scope === "pipeline"}
-							className={scope === "pipeline" ? "active" : ""}
-							onClick={() => changeScope("pipeline")}
-							title="KGS pipeline projects (docs → prototype workflows)"
-						>
-							Pipelines ({pipelineCount})
+						<button aria-pressed={scope === "pipeline"} className={scope === "pipeline" ? "active" : ""} onClick={() => changeScope("pipeline")} title="KGS pipeline projects (docs → prototype workflows)">
+							Pipeline ({pipelineCount})
+						</button>
+						<button aria-pressed={scope === "ds-figma"} className={scope === "ds-figma" ? "active" : ""} onClick={() => changeScope("ds-figma")}>
+							DS Figma ({dsFigmaCount})
 						</button>
 					</div>
 					<div

@@ -355,6 +355,7 @@ export const fr: Dict = {
   'entry.useEverywhereAria': 'Ouvrir le guide « Utiliser partout » (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': 'Nouveau projet',
   'entry.navHome': 'Accueil',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'Projets',
   'entry.navDesignSystems': 'Systèmes de design',
   'designSystemPicker.select': 'Choisir un design system',

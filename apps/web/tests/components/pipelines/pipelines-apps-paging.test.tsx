@@ -113,7 +113,7 @@ describe('phân trang lưới App', () => {
     expect(screen.queryByText('App 01')).not.toBeNull();
     expect(screen.queryByText('App 13')).toBeNull();
     expect(screen.queryByLabelText('Phân trang')).not.toBeNull();
-    expect(screen.queryByText('1–12 trong 13 app')).not.toBeNull();
+    expect(screen.queryByText('1–12 trong 13 dự án')).not.toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /Sau/ }));
     expect(screen.queryByText('App 13')).not.toBeNull();
@@ -141,11 +141,11 @@ describe('phân trang lưới App', () => {
     fireEvent.click(screen.getByLabelText('Trang 3'));
     expect(screen.queryByText('App 25')).not.toBeNull();
 
-    fireEvent.change(screen.getByLabelText('Tìm app'), { target: { value: 'App 0' } });
+    fireEvent.change(screen.getByLabelText('Tìm dự án'), { target: { value: 'App 0' } });
     // 9 kết quả (App 01..09) → gọn trong một trang, và không còn pager.
     expect(screen.getAllByText(/^App \d\d$/)).toHaveLength(9);
     expect(screen.queryByLabelText('Phân trang')).toBeNull();
-    expect(screen.queryByText('9 app')).not.toBeNull();
+    expect(screen.queryByText('9 dự án')).not.toBeNull();
   });
 
   it('danh sách co lại dưới trang đang đứng → kẹp về trang cuối, không để lưới trống', () => {
@@ -166,7 +166,7 @@ describe('phân trang lưới App', () => {
     fireEvent.click(screen.getByLabelText('Trang 3'));
     // Query khớp cả 30 app: pager vẫn còn, nên đây kiểm đúng việc "về trang 1"
     // chứ không phải việc pager biến mất.
-    fireEvent.change(screen.getByLabelText('Tìm app'), { target: { value: 'app' } });
+    fireEvent.change(screen.getByLabelText('Tìm dự án'), { target: { value: 'app' } });
     expect(screen.getByLabelText('Trang 1').getAttribute('aria-current')).toBe('page');
     expect(screen.queryByText('App 01')).not.toBeNull();
   });
@@ -175,21 +175,40 @@ describe('phân trang lưới App', () => {
 describe('toolbar', () => {
   it('ô tìm hiện cả khi ít app (trước đây chỉ >8 mới hiện)', () => {
     render(<PipelinesAppsView nav={navFor(appsOf(2))} />);
-    expect(screen.queryByLabelText('Tìm app')).not.toBeNull();
-    expect(screen.queryByText('2 app')).not.toBeNull();
+    expect(screen.queryByLabelText('Tìm dự án')).not.toBeNull();
+    expect(screen.queryByText('2 dự án')).not.toBeNull();
   });
 
   it('không khớp gì thì báo rõ thay vì lưới trống', () => {
     render(<PipelinesAppsView nav={navFor(appsOf(2))} />);
-    fireEvent.change(screen.getByLabelText('Tìm app'), { target: { value: 'zzz' } });
-    expect(screen.queryByText('0 app')).not.toBeNull();
-    expect(screen.queryByText(/Không có App nào khớp/)).not.toBeNull();
+    fireEvent.change(screen.getByLabelText('Tìm dự án'), { target: { value: 'zzz' } });
+    expect(screen.queryByText('0 dự án')).not.toBeNull();
+    expect(screen.queryByText(/Không có dự án nào khớp/)).not.toBeNull();
   });
 
   it('lưới trống hoàn toàn thì vẫn là hero empty-state, không phải toolbar', () => {
     render(<PipelinesAppsView nav={navFor([])} />);
-    expect(screen.queryByLabelText('Tìm app')).toBeNull();
-    expect(screen.queryByText('Chưa có App nào trên máy này')).not.toBeNull();
+    expect(screen.queryByLabelText('Tìm dự án')).toBeNull();
+    expect(screen.queryByText('Chưa có dự án nào trên máy này')).not.toBeNull();
+  });
+
+  it('lưới trống vẫn có điểm vào lấy dự án đã chia sẻ về máy', () => {
+    const onPullAll = vi.fn();
+    render(<PipelinesAppsView nav={navFor([])} onPullAll={onPullAll} syncReady />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Lấy dự án về máy' }));
+    expect(onPullAll).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Chưa có dự án nào trên máy này')).not.toBeNull();
+  });
+
+  it('khóa lấy dự án khi chưa kết nối kho và cho kết nối lại ngay tại trang App', () => {
+    const reconnect = vi.fn();
+    render(<PipelinesAppsView nav={navFor([])} onPullAll={() => {}} onReconnectSync={reconnect} syncReady={false} />);
+
+    expect((screen.getByRole('button', { name: 'Lấy dự án về máy' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('alert').textContent).toContain('Kết nối lại');
+    fireEvent.click(screen.getByRole('button', { name: 'Kết nối lại' }));
+    expect(reconnect).toHaveBeenCalledOnce();
   });
 });
 
@@ -204,7 +223,7 @@ describe('card App', () => {
   it('hiện monogram + meta + chip "đang chạy" (không còn nhãn %)', () => {
     render(<PipelinesAppsView nav={navFor(projects)} />);
     expect(screen.queryByText('RE')).not.toBeNull();
-    expect(screen.queryByText('3 feature · 1 xong')).not.toBeNull();
+    expect(screen.queryByText('3 tính năng · 1 xong')).not.toBeNull();
     // % đã bỏ theo yêu cầu — con số nói được điều gì đang DIỄN RA là số
     // feature đang chạy.
     expect(screen.queryByText(/%/)).toBeNull();
@@ -219,7 +238,7 @@ describe('card App', () => {
 
   it('app rỗng (0 feature) không có thanh tiến độ lẫn nhãn %', () => {
     render(<PipelinesAppsView nav={navFor([], [{ id: 'empty', name: 'Trống' }])} />);
-    expect(screen.queryByText('0 feature · 0 xong')).not.toBeNull();
+    expect(screen.queryByText('0 tính năng · 0 xong')).not.toBeNull();
     expect(screen.queryByText('0%')).toBeNull();
   });
 

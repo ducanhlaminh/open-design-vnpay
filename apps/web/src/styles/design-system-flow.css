@@ -525,8 +525,15 @@
     flex: 1;
   }
 }
+/* Màn này nằm trong `.workspace-shell__body`, vốn `overflow: hidden` — shell
+   giao việc cuộn cho từng view tự lo. `min-height: 100vh` vì thế là sai: cột
+   phải dài hơn shell thì phần dư bị CẮT, không cuộn được bằng bất kỳ cách nào
+   (đo thật: nội dung 1302px trong khung 1014px). Khoá đúng chiều cao shell rồi
+   trả việc cuộn cho từng cột bên trong. */
 .ds-workspace {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   background: var(--bg);
@@ -541,13 +548,20 @@
   gap: 16px;
   min-height: 100vh;
 }
+/* Cột chat khoá đúng chiều cao ô grid; trước đây `min-height: 100vh` khiến nó
+   bị kéo cao bằng cột phải (đo được 7162px ở tab Design System) và ô nhập chat
+   ở đáy rơi khỏi vùng nhìn — người dùng tưởng màn này không có chat. */
 .ds-project-chat {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   min-width: 0;
   border-right: 1px solid var(--border);
   background: var(--bg-panel);
   display: flex;
   flex-direction: column;
+}
+.ds-project-chat__pane {
+  min-height: 0;
 }
 .ds-project-chat__bar {
   height: 44px;
@@ -701,10 +715,12 @@
 }
 .ds-review-main {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
 .ds-review-tabs {
+  flex: none;
   height: 56px;
   display: flex;
   align-items: center;
@@ -740,7 +756,13 @@
   background: var(--bg-elevated);
   color: var(--text);
 }
+/* Cột nội dung là chỗ CUỘN của khung phải (header tab đứng yên ở trên).
+   `.ds-workspace` đã khoá chiều cao nên nếu cột này không tự cuộn thì phần
+   vượt quá màn hình bị shell cắt mất. */
 .ds-review-column {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   width: min(720px, calc(100vw - 420px));
   margin: 0 auto;
   padding: 44px 0 64px;
@@ -1849,6 +1871,13 @@
   padding: 14px 18px;
   border-top: 1px solid var(--border);
 }
+.ds-user-row:has(.ds-user-row__menu) {
+  position: relative;
+  z-index: 40;
+}
+.ds-settings-card:has(.ds-user-row__menu) {
+  overflow: visible;
+}
 .ds-user-row__open {
   appearance: none;
   min-width: 0;
@@ -1888,12 +1917,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: wrap;
   gap: 8px;
-}
-.ds-user-row__actions .compact {
-  padding: 5px 10px;
-  font-size: 12px;
 }
 .ds-user-row__actions .icon-btn {
   width: 30px;
@@ -1905,6 +1929,81 @@
 }
 .ds-user-row__actions .icon-btn.danger {
   color: var(--danger, #c0392b);
+}
+.ds-user-row__status {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.ds-user-row__status.is-published {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+.ds-user-row__menu-wrap {
+  position: relative;
+}
+.ds-user-row__menu {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  min-width: 205px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+}
+.ds-user-row__menu button {
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.ds-user-row__menu button:hover { background: var(--bg-subtle); }
+.ds-user-row__menu button.danger { color: var(--danger, #c0392b); }
+.ds-type-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-subtle);
+}
+.ds-type-switch button {
+  min-width: 48px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+.ds-type-switch button:hover { color: var(--text); }
+.ds-type-switch button[aria-pressed='true'] {
+  background: var(--bg-elevated);
+  color: var(--accent);
+  box-shadow: var(--shadow-xs);
+}
+.ds-type-switch button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .ds-status-toggle {
   display: inline-flex;

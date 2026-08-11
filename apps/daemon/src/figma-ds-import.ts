@@ -39,6 +39,9 @@ export type FigmaIRImportOptions = {
   name?: string;
   reservedIds?: Iterable<string>;
   craftApplies?: string[];
+  /** Exact directory/id for controlled replacement flows. The caller must use
+   *  an isolated staging root; this importer replaces generated files there. */
+  targetId?: string;
 };
 
 export type FigmaIRImportSummary = {
@@ -126,7 +129,9 @@ export async function importFigmaIRDesignSystem(
   const { summary } = compiled;
 
   const displayName = cleanDisplayName(options.name ?? defaultDisplayName(merged.ir));
-  const id = await nextAvailableSlug(userDesignSystemsRoot, slugify(displayName), options.reservedIds);
+  const id = options.targetId
+    ? validateTargetId(options.targetId)
+    : await nextAvailableSlug(userDesignSystemsRoot, slugify(displayName), options.reservedIds);
   const outDir = path.join(userDesignSystemsRoot, id);
   await mkdir(outDir, { recursive: true });
 
@@ -250,6 +255,14 @@ export async function importFigmaIRDesignSystem(
       sources,
     },
   };
+}
+
+function validateTargetId(value: string): string {
+  const id = value.replace(/^user:/, '');
+  if (!id || id === '.' || id === '..' || id.includes('/') || id.includes('\\')) {
+    throw new LocalDesignSystemImportError('BAD_REQUEST', 'invalid target design system id');
+  }
+  return id;
 }
 
 // Local patch on top of the verbatim vendored compiler: the showcase icon

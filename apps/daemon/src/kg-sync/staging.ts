@@ -19,6 +19,7 @@
 // Đối chiếu phía studio: ui/pipeline-studio/server/staging.ts (mirror hằng số).
 
 import { randomBytes } from 'node:crypto';
+import type { FeatureContextBinding } from '@open-design/contracts';
 
 /** Prefix đánh dấu một media folder là yêu cầu chờ duyệt.
  *  `--` chứ không phải `:` — media-service cấm `/ \ ? * < > | :` trong tên
@@ -93,13 +94,13 @@ export type StagingStatus = 'pending' | 'approved' | 'rejected';
 /** App đích của yêu cầu: đã tồn tại trên studio (case 1) hay phải tạo mới
  *  cùng lúc với feature (case 2). */
 export type StagingAppTarget =
-  | { mode: 'existing'; id: string; name?: string }
-  | { mode: 'create'; desiredId: string; displayName: string };
+  | { mode: 'existing'; id: string; name?: string; designSystemId?: string | null }
+  | { mode: 'create'; desiredId: string; displayName: string; designSystemId?: string | null };
 
 /** `request.json` — phiếu yêu cầu, ghi ngay sau khi tạo folder chờ và TRƯỚC
  *  khi sync file, để một push đứt giữa đường vẫn để lại thứ đọc được. */
 export interface StagingRequest {
-  schema: 1;
+  schema: 1 | 2;
   status: StagingStatus;
   /** 1 = App đã có, chỉ thiếu feature. 2 = chưa có cả hai. */
   case: 1 | 2;
@@ -113,9 +114,18 @@ export interface StagingRequest {
      *  ON UPDATE, và id cũng là tên thư mục cwd), nên máy local học id cuối
      *  cùng bằng cách lưu `remoteId` chứ không tự đổi tên mình. */
     localId: string;
+    /** Immutable App Context selected by the Feature. Studio rewrites only
+     * appId when approval renames the App; version/digest stay unchanged. */
+    appContextBinding?: FeatureContextBinding;
   };
   app: StagingAppTarget;
   machine?: { host?: string; odVersion?: string };
+  /** Human-review summary. Added in schema 2; legacy readers may ignore it. */
+  publish?: { stages: string[]; outputTypes: string[] };
+  /** App-owned files are carried beside this feature only while it waits for
+   * approval. Studio moves them into the App folder before it renames the
+   * feature folder, so a feature never ends up containing App documents. */
+  appPublish?: { files: number; includesDocsPool: boolean };
   history: Array<{ at: string; event: string; note?: string }>;
   /** Chỉ có sau khi quyết. */
   finalId?: string;
@@ -127,6 +137,8 @@ export interface StagingRequest {
 
 /** Biên nhận đọc bởi Open Design để học kết quả (xem DECISIONS_FOLDER). */
 export interface StagingDecision {
+  /** Missing means the legacy v1 receipt. New writers emit 2. */
+  schema?: 1 | 2;
   pendingId: string;
   status: 'approved' | 'rejected';
   /** id cuối cùng trên studio (chỉ khi approved). */
@@ -159,10 +171,11 @@ export function parseStagingRequest(raw: unknown): StagingRequest | null {
           mode: 'create',
           desiredId: String(r.app.desiredId ?? ''),
           displayName: String(r.app.displayName ?? r.app.desiredId ?? ''),
+          ...(typeof r.app.designSystemId === 'string' ? { designSystemId: r.app.designSystemId } : {}),
         }
-      : { mode: 'existing', id: String(r.app?.id ?? ''), ...(r.app?.name ? { name: String(r.app.name) } : {}) };
+      : { mode: 'existing', id: String(r.app?.id ?? ''), ...(r.app?.name ? { name: String(r.app.name) } : {}), ...(typeof r.app?.designSystemId === 'string' ? { designSystemId: r.app.designSystemId } : {}) };
   return {
-    schema: 1,
+    schema: r.schema === 2 ? 2 : 1,
     status,
     case: r.case === 1 ? 1 : 2,
     submittedAt: typeof r.submittedAt === 'string' ? r.submittedAt : '',
@@ -175,9 +188,27 @@ export function parseStagingRequest(raw: unknown): StagingRequest | null {
       desiredId: feature.desiredId,
       displayName: typeof feature.displayName === 'string' && feature.displayName ? feature.displayName : feature.desiredId,
       localId: typeof feature.localId === 'string' ? feature.localId : feature.desiredId,
+      ...(feature.appContextBinding && typeof feature.appContextBinding === 'object'
+        ? { appContextBinding: feature.appContextBinding as FeatureContextBinding }
+        : {}),
     },
     app,
     ...(r.machine && typeof r.machine === 'object' ? { machine: r.machine } : {}),
+    ...(r.publish && typeof r.publish === 'object'
+      ? {
+          publish: {
+            stages: Array.isArray(r.publish.stages)
+              ? r.publish.stages.filter((x: unknown): x is string => typeof x === 'string')
+              : [],
+            outputTypes: Array.isArray(r.publish.outputTypes)
+              ? r.publish.outputTypes.filter((x: unknown): x is string => typeof x === 'string')
+              : [],
+          },
+        }
+      : {}),
+    ...(r.appPublish && typeof r.appPublish === 'object'
+      ? { appPublish: { files: typeof r.appPublish.files === 'number' ? r.appPublish.files : 0, includesDocsPool: r.appPublish.includesDocsPool === true } }
+      : {}),
     history: Array.isArray(r.history)
       ? r.history.filter((h: any) => h && typeof h.at === 'string' && typeof h.event === 'string')
       : [],

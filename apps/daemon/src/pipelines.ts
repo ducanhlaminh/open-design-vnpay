@@ -285,19 +285,17 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // and `outputs` must each point at THIS workflow's own sibling ids.
   { id: 'prd-docs',         name: 'Tài liệu (nạp)',                skillId: 'jira-ingest',           dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
   // NO skippedInLeanRun anywhere in docs-to-prd: lean is a docs-to-ui-only
-  // concept. The journey + research here are the review's evidence base — a
-  // mockup review without them is not a cheaper review, it is a different and
-  // weaker product. The Run-all lean toggle is therefore inert for this
+  // concept. The journey + research here are the requirements review's evidence
+  // base. The Run-all lean toggle is therefore inert for this
   // workflow (and the UI hides it).
   { id: 'prd-cj',           name: 'Customer Journey',          skillId: 'customer-journey-spec', dependsOn: ['prd-docs'],    outputs: ['-customer-journey.json', '-journey.json', '-cj.json', 'customer-journey/', 'cj/'] },
   { id: 'prd-ux-research',  name: 'UX Research',               skillId: 'ux-research',           dependsOn: ['prd-cj'],      outputs: ['ux-research/'] },
-  // PRD Mockup Review: reviews the MOCKUP IMAGES embedded in the source
-  // Confluence docs (not a generated wireframe like ux-review) against the
-  // surrounding text + customer journey + UX research criteria: does each
-  // mockup actually deliver the feature its own doc text describes. FILE-ONLY,
-  // one report keyed by image (not by screen — there is no UX Spec here, this
-  // workflow never reaches `ux`/`ux-review`).
-  { id: 'prd-review',       name: 'PRD Mockup Review',         skillId: 'docs-mockup-review',    dependsOn: ['prd-ux-research'], outputs: ['review/'], usesDesignSystemCriteria: true },
+  // PRD Requirements Review: assesses the written URD/PRD against its Customer
+  // Journey + UX research criteria. Embedded mockups are illustrative only:
+  // they must never become visual direction, a wireframe source, or a basis for
+  // adding/removing a textual requirement. The current report remains keyed by
+  // attachment for preview compatibility, but its conclusions are text-first.
+  { id: 'prd-review',       name: 'PRD Requirements Review',  skillId: 'docs-mockup-review',    dependsOn: ['prd-ux-research'], outputs: ['review/'], usesDesignSystemCriteria: true },
 
   // ── `docs-review` workflow — fully INDEPENDENT of docs-to-ui AND docs-to-prd ─
   // Three stages: ingest (same jira-ingest skill, its own dr-docs id/folder —
@@ -316,12 +314,10 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // đối chiếu với danh mục hợp lệ `criteria/components.md`, ghi ra
   // `comp/<page-slug>.components.json`.
   //
-  // Vì sao tách thành một bước riêng thay vì để dr-review tự làm: nhóm
-  // `component` là nhóm DUY NHẤT bắt buộc phải NHÌN ảnh mockup mới phán được.
-  // Mà dr-review fan-out theo SECTION, nên cùng một trang 9 section sẽ mở lại
-  // đúng những ảnh đó 9 lần — và mỗi lượt có thể ra một kết luận khác lượt
-  // trước ("Combobox" hay "Select"?). Làm một lần cho cả trang ở đây biến việc
-  // đó thành DỮ LIỆU: dr-review chỉ đọc file và chép sang note.
+  // Vì sao tách thành một bước riêng thay vì để dr-review tự làm: component
+  // được map một lần từ khai báo chữ trong URD/PRD tới danh mục hợp lệ. Ảnh
+  // mockup chỉ là minh hoạ, không được dùng để suy component/variant/layout;
+  // nhờ vậy các section không thể tạo kết luận mâu thuẫn từ cùng một ảnh.
   //
   // `comp/` nằm ở GỐC workflow-dir, KHÔNG lồng trong `review/` — cùng lý do đã
   // ghi cho `flows/` bên dưới: lồng vào đó thì mỗi lần re-run dr-review sẽ xoá
@@ -339,6 +335,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // theo workflow nên `docs-review/flows/…` chỉ khớp stage của workflow này.
   { id: 'dr-flow',          name: 'Sơ đồ luồng màn hình',      skillId: 'docs-flow-extract',     dependsOn: ['dr-docs'],          outputs: ['flows/'] },
   { id: 'dr-review',        name: 'Review tài liệu',           skillId: 'docs-spec-review',      dependsOn: ['dr-docs', 'dr-comp', 'dr-flow'], outputs: ['review/'], usesDesignSystemCriteria: true },
+  { id: 'dr-confirm',       name: 'Xác nhận hoàn tất',         skillId: 'docs-review-confirm',   dependsOn: ['dr-review'], outputs: ['confirmation/'] },
 ];
 
 // Named docs→output flows. Each is an ordered subset of PIPELINE_DEFS. The
@@ -367,17 +364,17 @@ const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
   },
   {
     id: 'docs-to-prd',
-    name: 'Docs → PRD Review',
+    name: 'Docs → PRD Requirements Review',
     description:
-      'Product docs (Confluence, with embedded mockup images) → Customer Journey → UX Research → a review of every mockup against the feature text next to it — editable in the preview, exportable with all its images. Independent of Docs → UI-Spec: its own docs/journey/research run.',
+      'Product docs → Customer Journey → UX Research → text-first PRD requirements coverage review. Any embedded mockup is illustrative only; requirements, UX research, and the Design System drive downstream design rather than copied screens. Independent of Docs → UI-Spec: its own docs/journey/research run.',
     pipelineIds: ['prd-docs', 'prd-cj', 'prd-ux-research', 'prd-review'],
   },
   {
     id: 'docs-review',
     name: 'Docs → Review tài liệu',
     description:
-      'Độc lập hoàn toàn với Docs → UI-Spec và Docs → PRD Review: nạp tài liệu (Confluence hoặc file .md) riêng cho workflow này, đối chiếu component của từng màn hình với danh mục hợp lệ, review theo bộ tiêu chí của bạn (đặt trong criteria/, tuỳ chọn — thiếu thì dùng bộ mặc định của skill) và trả về bản sao đã sửa kèm chú giải từng chỗ sửa, rồi rút sơ đồ luồng màn hình của từng nghiệp vụ từ bản đã review.',
-    pipelineIds: ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review'],
+      'Độc lập hoàn toàn với Docs → UI-Spec và Docs → PRD Requirements Review: nạp tài liệu (Confluence hoặc file .md) riêng cho workflow này, đối chiếu component được khai báo trong chữ với danh mục hợp lệ, review theo bộ tiêu chí của bạn (đặt trong criteria/, tuỳ chọn — thiếu thì dùng bộ mặc định của skill) và trả về bản sao đã sửa kèm chú giải từng chỗ sửa, rồi rút sơ đồ luồng màn hình của từng nghiệp vụ từ bản đã review. Ảnh mockup nhúng chỉ để minh hoạ, không phải hướng thiết kế.',
+    pipelineIds: ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review', 'dr-confirm'],
   },
 ];
 

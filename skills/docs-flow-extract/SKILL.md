@@ -42,6 +42,10 @@ liệu đã nói thành sơ đồ.
 
 - **Nguồn:** `./docs/**/*.md` hoặc `./docs-feature/**/*.md` — tài liệu `dr-docs` đã nạp. Ngoại lệ cho việc xác định đường vào: đọc `./docs-app/_index.md` và các trang liên quan trong `./docs-app/`; đường vào là một phần của deliverable. Không audit hoặc tạo deliverable khác từ `./docs-app/`. Không có file `.md`
   nào thì không có gì để làm — dừng lại và nói rõ, đừng bịa sơ đồ.
+- **Mockup/screenshot chỉ minh hoạ:** không mở hoặc suy luồng từ ảnh UI nhúng
+  trong URD/PRD. Trích node, nhánh và điều kiện từ chữ trong tài liệu; chỉ file
+  nguồn `.drawio` được ingest đánh dấu là `flow-diagram` mới là căn cứ bổ sung
+  cho thứ tự/nhánh nghiệp vụ. Nó không cung cấp hướng layout hay wireframe.
 - **CHỈ ĐỌC.** Stage này không sửa bất cứ file nào dưới `docs/`; nó chỉ GHI
   vào `flows/`.
 - Bỏ qua các file phụ trợ không phải nội dung nghiệp vụ (`*.changes.json`,

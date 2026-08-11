@@ -18,6 +18,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 const PENDING_START_GRACE_MS = 60_000;
 import type {
   DesignSystemSummary,
+  AuthMeResponse,
+  PublishResult,
   PipelineProject,
   PipelineProjectsResponse,
   PipelineRunMode,
@@ -54,6 +56,7 @@ import {
   type RunAllPayload,
   type RunStageOption,
   type RunSourcePayload,
+  type ContextTransferSelection,
 } from './pipelines/PipelineModals';
 import { UploadFilesModal } from './pipelines/UploadFilesModal';
 import { fetchDesignSystems, writeProjectTextFileDetailed } from '../providers/registry';
@@ -65,6 +68,8 @@ import navStyles from './pipelines/PipelineNavViews.module.css';
 import { pullApply, pullPlan } from '../providers/pullConflict';
 import { useT } from '../i18n';
 import { relativeTimeLong } from '../utils/chatTime';
+import { publishedDestinationNote, SYNC_COPY } from './pipelines/sync-copy';
+import { bindFeatureContext, transferSelectedAppContexts } from './pipelines/context-sync-api';
 
 // Max project cards shown before the picker collapses behind "Show all" —
 // keeps the pipeline stepper (the page's real content) above the fold.
@@ -518,6 +523,21 @@ export function PipelinesView() {
   const [error, setError] = useState<string | null>(null);
 
   const [syncBusy, setSyncBusy] = useState<null | 'pull' | 'push'>(null);
+  const [syncAccess, setSyncAccess] = useState<Pick<AuthMeResponse, 'syncReady' | 'syncIssue'> | null>(null);
+  const refreshSyncAccess = useCallback(async () => {
+    try {
+      const response = await fetch('/api/auth/me');
+      const body = (await response.json().catch(() => ({}))) as Partial<AuthMeResponse>;
+      setSyncAccess({ syncReady: response.ok && body.syncReady === true, syncIssue: body.syncIssue ?? null });
+    } catch {
+      setSyncAccess({ syncReady: false, syncIssue: 'identity_unavailable' });
+    }
+  }, []);
+  useEffect(() => { void refreshSyncAccess(); }, [refreshSyncAccess]);
+  const reconnectSync = useCallback(async () => {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
+    window.location.reload();
+  }, []);
   // Project history (version hóa output), scoped per PIPELINE CARD: the card's
   // Lịch sử button opens a panel listing the store versions whose snapshot
   // contains THAT stage's outputs (v.stages) + this machine's commits for the
@@ -893,7 +913,7 @@ export function PipelinesView() {
   // `projectIds` narrows to the projects chosen in the Pull all / Push all modal;
   // `stages` narrows which pipelines' OUTPUT FILES travel (graph stays whole-
   // project). Either omitted → legacy everything.
-  const syncAll = async (kind: 'pull' | 'push', projectIds?: string[], stages?: string[]) => {
+  const syncAll = async (kind: 'pull' | 'push', selection?: ContextTransferSelection, stages?: string[]) => {
     setSyncBusy(kind);
     setError(null);
     try {
@@ -901,7 +921,11 @@ export function PipelinesView() {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          ...(projectIds?.length ? { projectIds } : {}),
+          ...(selection?.projectIds.length ? { projectIds: selection.projectIds } : {}),
+          ...(selection?.appIds.length ? { appIds: selection.appIds } : {}),
+          ...(selection?.contextConflictResolutions
+            ? { contextConflictResolutions: selection.contextConflictResolutions }
+            : {}),
           ...(stages?.length ? { stages } : {}),
         }),
       });
@@ -913,40 +937,30 @@ export function PipelinesView() {
       }
       // push-all/pull-all now round-trip output files too (graph + files); show
       // the file count so the user can see the artifacts moved, not just nodes.
-      const results = (j?.data?.results ?? []) as Array<Record<string, any>>;
+      const results = (j?.data?.results ?? []) as PublishResult[];
       const projectCount = results.length;
       const fileCount = results.reduce(
-        (sum, r) => sum + (kind === 'pull' ? r.files ?? 0 : r.filesUploaded ?? 0),
+        (sum, r) => sum + (kind === 'pull' ? Number((r as Record<string, unknown>).files ?? 0) : 'filesUploaded' in r ? r.filesUploaded : 0),
         0,
       );
-      // A project that doesn't exist on Pipeline Studio yet doesn't land in the
-      // main list — it goes into a folder awaiting approval. Saying "pushed"
-      // for those would be a lie: nothing is visible to anyone else until a
-      // reviewer admits it, so they get their own line in the toast.
-      const staged = results.filter((r) => r.staged);
-      const blocked = results.filter((r) => r.code === 'STAGING_NO_SUBMITTER');
-      const approved = results.filter((r) => r.reconciled?.status === 'approved');
-      const rejected = results.filter((r) => r.reconciled?.status === 'rejected');
-      const notes = [
-        staged.length ? `${staged.length} dự án mới đang chờ duyệt trên Pipeline Studio` : '',
-        approved.length ? `${approved.length} dự án đã được duyệt — từ giờ push thẳng lên bản gốc` : '',
-        rejected.length ? `${rejected.length} yêu cầu bị từ chối (xem lý do trong Pipeline Studio)` : '',
-        blocked.length
-          ? `${blocked.length} dự án chưa push được: đăng nhập Google rồi thử lại`
-          : '',
-      ].filter(Boolean);
+      // Every push lands directly in Shared Projects. Keep the result notes so
+      // older daemon responses still display a useful migration message.
+      const notes = kind === 'push'
+        ? results.map((result) => publishedDestinationNote(result as unknown as Record<string, unknown>)).filter((note): note is string => !!note)
+        : [];
+      const blocked = results.filter((result) => result.status === 'auth_required');
       pushToast({
         message:
           kind === 'pull'
-            ? `Pulled ${projectCount} project(s) from KGS — ${fileCount} file(s)`
-            : `Pushed ${projectCount} project(s) to KGS — ${fileCount} file(s)`,
+            ? SYNC_COPY.downloadSuccess(projectCount, fileCount)
+            : SYNC_COPY.shareSuccess(projectCount, fileCount),
         ...(notes.length ? { details: notes.join(' · ') } : {}),
         ...(blocked.length ? { code: 'error' as const } : {}),
       });
       return true;
     } catch (err) {
       pushToast({
-        message: kind === 'pull' ? "Couldn't pull from KGS" : "Couldn't push to KGS",
+        message: kind === 'pull' ? SYNC_COPY.downloadError : SYNC_COPY.shareError,
         details: err instanceof Error ? err.message : String(err),
         code: 'error',
       });
@@ -1183,15 +1197,15 @@ export function PipelinesView() {
         });
         void load(pid, { background: true });
         pushToast({
-          message: `Pulled “${pid}” — ${result.downloaded} new file(s)`,
-          ...(result.stale.length ? { details: `${result.stale.length} skipped (remote changed)`, code: 'warn' } : {}),
+          message: `Đã cập nhật “${pid}” trên máy · ${result.downloaded} tệp mới`,
+          ...(result.stale.length ? { details: `${result.stale.length} tệp chưa cập nhật vì bản chia sẻ đã thay đổi`, code: 'warn' } : {}),
         });
       } else {
         setPullPlanState(plan);
       }
     } catch (err) {
       pushToast({
-        message: "Couldn't pull from KGS",
+        message: SYNC_COPY.downloadError,
         details: err instanceof Error ? err.message : String(err),
         code: 'error',
       });
@@ -1620,7 +1634,7 @@ export function PipelinesView() {
   const railProject = projects.find((pr) => pr.id === projectId);
   const railCfg: RunAllConfig | undefined = railProject?.savedRunAll ?? railProject?.config;
   const railSourceSummary = railCfg?.appPool?.paths?.length
-    ? `Tài liệu App · ${railCfg.appPool.paths.length} trang`
+    ? `Tài liệu dự án · ${railCfg.appPool.paths.length} trang`
     : railCfg?.confluencePages?.length
       ? railCfg.confluencePages.length === 1
         ? (railCfg.confluencePages[0]!.title ?? railCfg.confluencePages[0]!.url ?? railCfg.confluencePages[0]!.id ?? 'Confluence')
@@ -1678,11 +1692,11 @@ export function PipelinesView() {
         : `${railStageIds.size}/${runStageOptions.length} bước`;
   const railDiffStages = syncStatus?.stages.filter((s) => s.differs).length ?? 0;
   const railSyncSummary = syncStatusLoading
-    ? 'Đang so với remote…'
+    ? 'Đang kiểm tra thay đổi…'
     : syncStatus
       ? railDiffStages > 0
-        ? `${railDiffStages} bước ≠ remote`
-        : 'Đã đồng bộ với remote'
+        ? `${railDiffStages} bước có thay đổi`
+        : 'Kết quả đã cập nhật'
       : 'Chưa có dữ liệu';
 
   // Panel co giãn theo WORKFLOW đang mở: workflow không có input nào thì hàng
@@ -1737,30 +1751,35 @@ export function PipelinesView() {
         </button>
       </div>
       <div className="pl-rail-row pl-rail-row--sync">
-        <span className="pl-rail-row__label">Đồng bộ</span>
+        <span className="pl-rail-row__label">Chia sẻ</span>
         <span className="pl-rail-row__value">{railSyncSummary}</span>
         <div className="pl-rail-row__sync-actions">
           <button
             type="button"
             className="pl-btn pl-btn--xs"
             onClick={() => setPullAllOpen(true)}
-            disabled={syncBusy !== null}
-            title="Tải dự án từ kho chung (KGS) về máy — hộp thoại cho chọn feature và bước; feature đang chọn được tick sẵn"
+            disabled={syncBusy !== null || syncAccess?.syncReady !== true}
+            title={syncAccess?.syncReady === false ? SYNC_COPY.reconnectHint : 'Chọn dự án và kết quả cần lấy về máy'}
           >
             <Icon name={syncBusy === 'pull' ? 'spinner' : 'download'} size={13} />
-            <span>{syncBusy === 'pull' ? 'Đang tải…' : 'Tải dự án về…'}</span>
+            <span>{syncBusy === 'pull' ? 'Đang lấy về…' : 'Lấy dự án về máy'}</span>
           </button>
           <button
             type="button"
             className="pl-btn pl-btn--xs"
             onClick={() => setPushAllOpen(true)}
-            disabled={syncBusy !== null}
-            title="Đẩy kết quả lên kho chung (KGS) để studio / máy khác thấy — hộp thoại cho chọn feature và bước; feature đang chọn được tick sẵn"
+            disabled={syncBusy !== null || syncAccess?.syncReady !== true}
+            title={syncAccess?.syncReady === false ? SYNC_COPY.reconnectHint : 'Chọn dự án và kết quả cần chia sẻ'}
           >
             <Icon name={syncBusy === 'push' ? 'spinner' : 'upload'} size={13} />
-            <span>{syncBusy === 'push' ? 'Đang đẩy…' : 'Đẩy kết quả lên…'}</span>
+            <span>{syncBusy === 'push' ? 'Đang chia sẻ…' : 'Chia sẻ kết quả'}</span>
           </button>
         </div>
+        {syncAccess?.syncReady === false ? (
+          <button type="button" className="pl-rail-row__change" onClick={() => void reconnectSync()}>
+            {SYNC_COPY.reconnect}
+          </button>
+        ) : null}
       </div>
     </>
   );
@@ -1850,7 +1869,7 @@ export function PipelinesView() {
             className={navStyles.breadcrumbLink}
             onClick={() => navigate({ kind: 'home', view: 'pipelines' })}
           >
-            Apps
+            Dự án
           </button>
           <span className={navStyles.breadcrumbSep}>›</span>
           <button
@@ -1858,7 +1877,7 @@ export function PipelinesView() {
             className={navStyles.breadcrumbLink}
             onClick={() => navigate({ kind: 'pipelines-app', appId: route.appId })}
           >
-            {projects.find((p) => p.id === projectId)?.app?.name || 'App'}
+            {projects.find((p) => p.id === projectId)?.app?.name || 'Dự án'}
           </button>
           <span className={navStyles.breadcrumbSep}>›</span>
           <button
@@ -1976,10 +1995,10 @@ export function PipelinesView() {
           in-progress → untouched → complete) + collapsed grid (first
           PROJECT_CARD_LIMIT cards) with an explicit "Show all" toggle. */}
       {inRunScreen ? null : (
-      <section className="pipelines-projects" aria-label="Feature">
+      <section className="pipelines-projects" aria-label="Tính năng">
         <div className="pl-proj-toolbar">
           <span className="pl-field__label">
-            Feature
+            Tính năng
             {projects.length > 0 ? (
               <span className="pl-proj-count"> · {projects.length}</span>
             ) : null}
@@ -1988,10 +2007,10 @@ export function PipelinesView() {
             <input
               type="search"
               className="pl-proj-search"
-              placeholder="Tìm feature…"
+              placeholder="Tìm tính năng…"
               value={projectSearch}
               onChange={(ev) => setProjectSearch(ev.target.value)}
-              aria-label="Tìm feature"
+              aria-label="Tìm tính năng"
             />
           ) : null}
           {/* Dự án khai sinh được ngay tại đây trở lại: đích trên Pipeline
@@ -2001,10 +2020,10 @@ export function PipelinesView() {
             type="button"
             className="pl-btn pl-btn--xs"
             onClick={() => setNewProjectOpen(true)}
-            title="Tạo một feature mới ngay tại đây; chọn đích khi Push"
+            title="Tạo một tính năng mới ngay tại đây; chọn nơi chia sẻ khi hoàn tất"
           >
             <Icon name="plus" size={13} />
-            <span>Feature mới</span>
+            <span>Tính năng mới</span>
           </button>
         </div>
         {(() => {
@@ -2055,7 +2074,7 @@ export function PipelinesView() {
                   type="button"
                   className="pl-proj-card pl-proj-card--more"
                   onClick={() => setShowAllProjects(true)}
-                  title="Xem tất cả feature"
+                  title="Xem tất cả tính năng"
                 >
                   <span className="pl-proj-more__count">+{hiddenProjectCount}</span>
                   <span>Xem tất cả</span>
@@ -2066,7 +2085,7 @@ export function PipelinesView() {
                   type="button"
                   className="pl-proj-card pl-proj-card--more"
                   onClick={() => setShowAllProjects(false)}
-                  title="Thu gọn về các feature liên quan nhất"
+                  title="Thu gọn về các tính năng liên quan nhất"
                 >
                   <span className="pl-proj-more__chevron">
                     <Icon name="chevron-down" size={16} />
@@ -2109,8 +2128,8 @@ export function PipelinesView() {
                       <Icon name={g.key ? 'blocks' : 'folder'} size={14} />
                       <span className="pl-app-group__name">{g.name}</span>
                       <span className="pl-app-group__meta">
-                        {g.projects.length} feature · {done}/{total} done
-                        {running > 0 ? ` · ${running} running` : ''}
+                        {g.projects.length} tính năng · {done}/{total} hoàn thành
+                        {running > 0 ? ` · ${running} đang chạy` : ''}
                       </span>
                     </button>
                     {!collapsed ? <div className="pl-card-grid">{g.projects.map(projectCard)}</div> : null}
@@ -2122,7 +2141,7 @@ export function PipelinesView() {
           );
         })()}
         {projectSearch && visibleProjects.length === 0 ? (
-          <div className="pl-proj-noresult">Không có feature nào khớp “{projectSearch}”.</div>
+          <div className="pl-proj-noresult">Không có tính năng nào khớp “{projectSearch}”.</div>
         ) : null}
       </section>
       )}
@@ -2141,14 +2160,13 @@ export function PipelinesView() {
             <Icon name="pipeline" size={22} />
           </span>
           <div className="pipelines-empty__body">
-            <strong>Chưa có feature nào trên máy này</strong>
+            <strong>Chưa có tính năng nào trên máy này</strong>
             <p>
-              Bấm <strong>Feature mới</strong> ở trên để tạo một feature ngay tại đây và chạy thử —
-              lúc Đẩy kết quả lên mới phải chọn đích, và feature chưa có trên studio sẽ được gửi
-              chờ duyệt.
+              Bấm <strong>Tính năng mới</strong> ở trên để tạo một tính năng ngay tại đây và chạy thử —
+              khi chia sẻ, tính năng sẽ được đưa thẳng vào <strong>Dự án đã chia sẻ</strong>.
             </p>
             <p>
-              Feature đã có sẵn trên <strong>Pipeline Studio</strong> thì nhờ quản lý thêm bạn vào,
+              Tính năng đã có sẵn trên <strong>Pipeline Studio</strong> thì nhờ quản lý thêm bạn vào,
               rồi bấm <strong>Tải dự án về…</strong> để kéo về máy.
             </p>
           </div>
@@ -2638,10 +2656,10 @@ export function PipelinesView() {
               className="pl-btn pl-btn--run"
               onClick={() => void runAllWithSavedConfig()}
               disabled={!projectId || pipelines.length === 0 || runAllBusy}
-              title="Chạy toàn bộ pipeline bằng cấu hình đang hiện ở rail bên cạnh — đổi cấu hình trước bằng nút Đổi nếu cần khác đi"
+              title="Chạy full luồng từ các bước đã chọn ở rail bên cạnh và XOÁ kết quả cũ của những bước đó (đã lưu vào lịch sử trước khi xoá) — đổi cấu hình trước bằng nút Đổi nếu cần khác đi"
             >
               <Icon name={runAllBusy ? 'spinner' : 'play'} size={14} />
-              <span>{runAllBusy ? 'Đang khởi động…' : 'Chạy pipeline'}</span>
+              <span>{runAllBusy ? 'Đang khởi động…' : 'Chạy full luồng'}</span>
             </button>
           )}
           {/* Chế độ đang lưu của dự án. Chỉ hiện khi Tiết kiệm — ở chế độ Đầy
@@ -2722,7 +2740,7 @@ export function PipelinesView() {
                 onClose={() => setHistoryForId(null)}
               >
                 <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
-                  Bản đã push chứa output bước này ({vers.length})
+                  Bản đã chia sẻ có kết quả bước này ({vers.length})
                 </div>
                 {historyBusy && !historyData ? (
                   <div style={{ fontSize: 12, opacity: 0.6 }}>Đang tải…</div>
@@ -2752,7 +2770,7 @@ export function PipelinesView() {
                 ))}
                 {historyData && vers.length === 0 ? (
                   <div style={{ fontSize: 12, opacity: 0.6 }}>
-                    Chưa có bản nào trên store chứa output của bước này — chạy bước rồi push để tạo.
+                    Chưa có bản chia sẻ nào chứa kết quả bước này — chạy bước rồi chia sẻ để tạo.
                   </div>
                 ) : null}
                 {cms.length > 0 ? (
@@ -2930,7 +2948,7 @@ export function PipelinesView() {
                               className="pl-btn"
                               onClick={() => void buildReactApp()}
                               disabled={buildBusy || demoBusy || !projectId}
-                              title="Build lại app từ source — react/dist/ không được sync, nên sau khi Pull dự án cần build lại để preview. Cần Docker trên máy này."
+                              title="Build lại app từ source — sau khi lấy dự án về máy cần build lại để preview. Cần Docker trên máy này."
                             >
                               <Icon name={buildBusy ? 'spinner' : 'play'} size={14} />
                               <span>{buildBusy ? 'Đang build…' : 'Build app'}</span>
@@ -2980,7 +2998,7 @@ export function PipelinesView() {
                               setHistoryForId(o.id);
                               if (projectId) void loadHistory(projectId);
                             }}
-                            title="Các bản đã push chứa output của định dạng này"
+                            title="Các bản đã chia sẻ có chứa kết quả của định dạng này"
                           >
                             <Icon name="history" size={14} />
                             <span>Lịch sử</span>
@@ -3000,21 +3018,29 @@ export function PipelinesView() {
           workflows={activeWorkflows}
           scopeName={activeWorkflows[0]?.name}
           initialSelectedIds={projectId ? [projectId] : undefined}
+          syncReady={syncAccess?.syncReady === true}
+          onReconnect={() => void reconnectSync()}
           onClose={() => setPullAllOpen(false)}
-          onConfirm={async (ids, stages) => {
+          onConfirm={async (selection, stages) => {
+            const appResults = await transferSelectedAppContexts('pull', selection);
             // Exactly ONE locally-mirrored project + full stage scope → the
             // conflict-aware path (PLAN → RESOLVE → APPLY), so local edits are
             // never overwritten silently. Anything broader takes the bulk
             // endpoint (blind overwrite behind a pre-pull .odhistory snapshot).
             const allStages = activeWorkflows[0]?.pipelineIds.length ?? 0;
-            const pid = ids.length === 1 ? ids[0]! : null;
-            if (pid && projects.some((pr) => pr.id === pid) && stages.length >= allStages) {
+            const pid = selection.projectIds.length === 1 ? selection.projectIds[0]! : null;
+            if (pid && selection.appIds.length === 0 && projects.some((pr) => pr.id === pid) && stages.length >= allStages) {
               setProjectId(pid);
               await pullProject(pid);
               return;
             }
-            const ok = await syncAll('pull', ids, stages);
-            if (!ok) throw new Error('Pull failed — see the toast for details.');
+            if (selection.projectIds.length > 0) {
+              const ok = await syncAll('pull', { ...selection, appIds: [] }, stages);
+              if (!ok) throw new Error('Không thể lấy dự án về máy. Xem thông báo để biết chi tiết.');
+            } else {
+              pushToast({ message: `Đã lấy ${appResults.length} bộ tài liệu chung về máy. Liên kết của tính năng được giữ nguyên.` });
+              await loadProjects();
+            }
           }}
         />
       ) : null}
@@ -3029,14 +3055,31 @@ export function PipelinesView() {
       ) : null}
       {pushAllOpen ? (
         <PushAllModal
-          projects={projects.map((pr) => ({ id: pr.id, name: pr.name }))}
+          projects={projects.map((pr) => ({
+            id: pr.id,
+            name: pr.name,
+            ...(pr.app ? { app: pr.app } : {}),
+            appContextBinding: pr.appContextBinding,
+          }))}
           workflows={activeWorkflows}
           scopeName={activeWorkflows[0]?.name}
           initialSelectedIds={projectId ? [projectId] : undefined}
+          syncReady={syncAccess?.syncReady === true}
+          onReconnect={() => void reconnectSync()}
           onClose={() => setPushAllOpen(false)}
-          onConfirm={async (ids, stages) => {
-            const ok = await syncAll('push', ids, stages);
-            if (!ok) throw new Error('Push failed — see the toast for details.');
+          onConfirm={async (selection, stages) => {
+            const appResults = await transferSelectedAppContexts('push', selection);
+            if (selection.projectIds.length > 0) {
+              const ok = await syncAll('push', { ...selection, appIds: [] }, stages);
+              if (!ok) throw new Error('Không thể chia sẻ kết quả. Xem thông báo để biết chi tiết.');
+            } else {
+              pushToast({ message: `Đã xử lý ${appResults.length} bộ tài liệu chung.` });
+            }
+          }}
+          onUpgradeFeatureContext={async (featureId, appId, contextVersion, contentDigest) => {
+            await bindFeatureContext({ featureId, appId, contextVersion, contentDigest });
+            pushToast({ message: `Tính năng sẽ dùng bản tài liệu chung ${contextVersion} ở lần chạy tiếp theo.` });
+            await loadProjects();
           }}
         />
       ) : null}

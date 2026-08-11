@@ -191,7 +191,7 @@ export function NewAppModal({
 
   return (
     <PipelineFormModal
-      title="App mới"
+      title="Dự án mới"
       icon="blocks"
       busy={busy}
       wide
@@ -208,13 +208,13 @@ export function NewAppModal({
       }
     >
       <FormField
-        label="Tên App"
+        label="Tên dự án"
         hint={
           duplicate
-            ? 'App đã tồn tại — chọn tên khác, hoặc mở App đó và thêm feature vào.'
+            ? 'Dự án đã tồn tại — chọn tên khác, hoặc mở dự án đó và thêm tính năng vào.'
             : nameTrim
-              ? `Mã App: ${toSlugId(nameTrim)}`
-              : 'Tên sản phẩm/hệ thống, vd Retail, BIDV. Mã App sinh tự động từ tên này.'
+              ? `Mã dự án: ${toSlugId(nameTrim)}`
+              : 'Tên sản phẩm/hệ thống, vd Retail, BIDV. Mã dự án sinh tự động từ tên này.'
         }
       >
         {(fieldProps) => (
@@ -233,7 +233,7 @@ export function NewAppModal({
 
       <FormField
         label="Design System (Figma)"
-        hint="Tuỳ chọn. DS này là nguồn bộ tiêu chí review cho mọi feature của App; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/."
+        hint="Tuỳ chọn. Bộ này là nguồn tiêu chuẩn review cho mọi tính năng của dự án; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/."
       >
         {(fieldProps) => (
           <div {...fieldProps}>
@@ -243,6 +243,7 @@ export function NewAppModal({
               loading={systems === null}
               onChange={setDesignSystemId}
               popoverZIndex={1100}
+              variant="form"
             />
           </div>
         )}
@@ -254,8 +255,8 @@ export function NewAppModal({
         // còn nói điều panel không nói được: chuyện gì xảy ra khi bấm Tạo.
         hint={
           ticked.size > 0
-            ? 'Các trang này được nhập vào pool tài liệu của App ngay khi bấm Tạo.'
-            : 'Tìm và tick trang muốn nhập ngay khi tạo App, hoặc bỏ qua và nhập sau ở màn Sửa App.'
+            ? 'Các trang này được nhập vào kho tài liệu của dự án ngay khi bấm Tạo.'
+            : 'Tìm và tick trang muốn nhập ngay khi tạo dự án, hoặc bỏ qua và nhập sau ở màn Sửa dự án.'
         }
       >
         {(fieldProps) => (
@@ -263,7 +264,7 @@ export function NewAppModal({
         )}
       </FormField>
 
-      {phase === 'creating' ? <FormText>Đang tạo App…</FormText> : null}
+      {phase === 'creating' ? <FormText>Đang tạo dự án…</FormText> : null}
       {phase === 'importing' ? (
         importProgress ? (
           <ProgressBar

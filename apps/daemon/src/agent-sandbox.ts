@@ -84,6 +84,7 @@ export const SANDBOX_AUTH_VOLUME = SANDBOX_CLAUDE_AUTH_VOLUME;
 export const CONTAINER_CLAUDE_AUTH_DIR = SANDBOX_RUNTIME_SPECS.claude.authDir;
 export const CONTAINER_CODEX_AUTH_DIR = SANDBOX_RUNTIME_SPECS.codex.authDir;
 const CONTAINER_AUTH_DIR = CONTAINER_CLAUDE_AUTH_DIR;
+const SANDBOX_AUTH_SEED_MARKER = '.od-auth-seed-consumed';
 
 function sandboxRuntimeSpec(runtimeId: SandboxRuntimeId): SandboxRuntimeSpec {
   return SANDBOX_RUNTIME_SPECS[runtimeId];
@@ -516,6 +517,90 @@ export async function dockerVolumePresent(volume: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function dockerWriteStdin(args: string[], input: Buffer, timeoutMs = 30_000): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('docker', args, { stdio: ['pipe', 'ignore', 'pipe'] });
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('docker credential seed timed out'));
+    }, timeoutMs);
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      code === 0 ? resolve() : reject(new Error(stderr.trim() || `docker exited with ${code}`));
+    });
+    child.stdin.end(input);
+  });
+}
+
+function authSeedCarriesToken(runtimeId: SandboxRuntimeId, raw: string): boolean {
+  return sandboxRuntimeAuthStateFromRaw(runtimeId, raw) === 'logged-in';
+}
+
+/**
+ * Seed a packaged OAuth credential exactly once into a runtime's named volume.
+ * The seed contains only the credential-file contents (base64 encoded), never
+ * a host path or a directory archive. A marker survives logout so users can
+ * replace the bundled account without the default account coming back.
+ */
+export async function seedSandboxRuntimeAuth(
+  image: string,
+  runtimeId: SandboxRuntimeId,
+  seedB64: string | undefined,
+): Promise<boolean> {
+  if (!seedB64) return false;
+  let raw: string;
+  try {
+    raw = Buffer.from(seedB64, 'base64').toString('utf8');
+  } catch {
+    return false;
+  }
+  if (!authSeedCarriesToken(runtimeId, raw)) return false;
+
+  const spec = sandboxRuntimeSpec(runtimeId);
+  try {
+    await docker(['volume', 'create', spec.authVolume]);
+    const alreadyInitialized = await docker([
+      'run', '--rm', '-v', `${spec.authVolume}:${spec.authDir}`,
+      '--entrypoint', 'sh', image, '-c',
+      `[ -e ${JSON.stringify(spec.authFile)} ] || [ -e ${JSON.stringify(SANDBOX_AUTH_SEED_MARKER)} ]`,
+    ]).then(() => true).catch(() => false);
+    if (alreadyInitialized) return false;
+    await dockerWriteStdin([
+      'run', '--rm', '-i', '-v', `${spec.authVolume}:${spec.authDir}`,
+      '--entrypoint', 'sh', image, '-c',
+      `umask 077; cat > ${JSON.stringify(spec.authFile)} && printf seeded > ${JSON.stringify(SANDBOX_AUTH_SEED_MARKER)}`,
+    ], Buffer.from(raw, 'utf8'));
+    return true;
+  } catch {
+    // A missing/old Docker image must not make startup or status fail.
+    return false;
+  }
+}
+
+/** Seed credentials for an internal packaged build without ever logging them. */
+export async function seedPackagedSandboxAuth(image: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  await Promise.all([
+    seedSandboxRuntimeAuth(image, 'claude', env.OD_SANDBOX_CLAUDE_AUTH_SEED_B64),
+    seedSandboxRuntimeAuth(image, 'codex', env.OD_SANDBOX_CODEX_AUTH_SEED_B64),
+  ]);
+}
+
+/** Clear a runtime credential while retaining the seed-consumed marker. */
+export async function clearSandboxRuntimeAuth(image: string, runtimeId: SandboxRuntimeId): Promise<void> {
+  const spec = sandboxRuntimeSpec(runtimeId);
+  await docker([
+    'run', '--rm', '-v', `${spec.authVolume}:${spec.authDir}`,
+    '--entrypoint', 'sh', image, '-c',
+    `rm -f ${JSON.stringify(spec.authFile)}; printf logged-out > ${JSON.stringify(SANDBOX_AUTH_SEED_MARKER)}`,
+  ], 30_000);
 }
 
 /**

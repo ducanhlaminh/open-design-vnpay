@@ -60,6 +60,19 @@ domain and derive the screens — each doc section that needs a UI becomes a
 screen. Only when no docs are present at all, take the screens from the user's
 request.
 
+> **URD/PRD visual-policy — requirements over illustrations.** Treat the
+> written requirements (actors, rules, fields, actions, states, acceptance
+> criteria) and any explicitly marked **flow diagram source** as the inputs to
+> this UX Spec. Embedded screenshots, mockups, and UI images in URD/PRD are
+> illustrative context only: do **not** open them to decide screen layout,
+> component choice, visual style, hierarchy, or wireframe structure; never
+> copy, trace, or "match" them. Resolve those decisions from the requirements,
+> Customer Journey, UX Research, and the selected Design System instead. A
+> contradiction between prose and an illustration is a documentation issue to
+> flag; the prose wins. This rule does not demote a source `.drawio` flow
+> diagram explicitly marked by ingest — it remains evidence for process order
+> and branches, not a visual-layout reference.
+
 **Context pages — `./docs/context/` (do NOT build from these):** link-followed
 background pages. Read for domain understanding only; NEVER turn them into
 screens. Every screen must come from `./docs/confluence/` (or `./docs/jira/`) —

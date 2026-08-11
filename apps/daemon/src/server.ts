@@ -33,6 +33,7 @@ import { createCommandInvocation } from '@open-design/platform';
 import { SIDECAR_DEFAULTS, SIDECAR_ENV } from '@open-design/sidecar-proto';
 import {
   buildLiveArtifactsMcpServersForAgent,
+  buildOverviewMcpServersForAgent,
   checkPromptArgvBudget,
   checkWindowsCmdShimCommandLineBudget,
   checkWindowsDirectExeCommandLineBudget,
@@ -64,8 +65,12 @@ export {
   signDesktopImportToken,
   verifyDesktopImportToken,
 } from './desktop-auth.js';
-import { getMachineUser, registerAuthRoutes } from './auth-routes.js';
-import { ensureProjectRegistered } from './kg-sync/identity-registry.js';
+import {
+  getMachineIdentityUser,
+  getMachineUser,
+  identityUserIdOf,
+  registerAuthRoutes,
+} from './auth-routes.js';
 import { commitHistory, listHistory, restoreCommit } from './project-history.js';
 import {
   findSkillById,
@@ -319,6 +324,7 @@ import {
   removeSandboxCodexProfile,
   sandboxAuthVolume,
   sandboxCodexProfileName,
+  seedPackagedSandboxAuth,
   wrapInvocationInSandbox,
 } from './agent-sandbox.js';
 import {
@@ -362,7 +368,7 @@ import {
 } from './projects.js';
 import { validateArtifactManifestInput } from './artifact-manifest.js';
 import { ArtifactPublicationBlockedError } from './artifact-publication-guard.js';
-import { readCurrentAppVersionInfo } from './app-version.js';
+import { isPackagedRuntime, readCurrentAppVersionInfo } from './app-version.js';
 import {
   appendMessageAgentEvent,
   appendMessageStatusEvent,
@@ -390,6 +396,7 @@ import {
   listMessages,
   listPreviewComments,
   listProjects,
+  listPipelineApps,
   listRoutines,
   listRoutineRuns,
   listTabs,
@@ -442,8 +449,12 @@ import { registerHandoffRoutes } from './handoff-routes.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './handoff-design.js';
 import { TranscriptExportLockedError } from './transcript-export.js';
 import { publishFeedback, pullMergedFeedback } from './feedback.js';
+import { confirmDocsReview } from './docs-review-feedback.js';
 import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
+import { registerDesignSystemUpdateRoutes } from './design-system-update-routes.js';
+import { registerDesignSystemSyncRoutes } from './design-system-sync-routes.js';
+import { isCriteriaGenerationJobActive, registerDesignSystemCriteriaWorkspaceRoutes } from './design-system-criteria-workspace.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { registerPipelineRoutes } from './pipeline-routes.js';
 import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isExportArtifact, isHistoryArtifact, isSyncExcluded, isTargetScopedWfDir, mergePipelineState, pickRunTarget, relClearedByRegen, relClearedByRunAllLaunch, selectRunStages, stageForOutput, stagesForOutput, stageRegenSet, upstreamStages, wfDirForStage, workflowDirForPipeline } from './pipelines.js';
@@ -474,7 +485,7 @@ import {
 import { buildReactDemo } from './react-demo.js';
 import { iconNameMapFromIrDir, rewriteIconMarkersInDir, runFigmaCapture } from './figma-capture.js';
 import { runFigmaAudit } from './figma-audit.js';
-import { listMockupPages, mergePageReports } from './prd-review-fanout.js';
+import { listRequirementPages, mergePageReports } from './prd-review-fanout.js';
 import {
   listDocPages,
   cloneDocsForReview,
@@ -517,7 +528,14 @@ import {
 import { listSections, mergeCjSections, mergeUxrSections, mergeUxSpecSections, type DocSection } from './section-fanout.js';
 import { listScreens, mergeHeuristicScreens, renderPrototypeIndex, type UiScreen } from './ui-fanout.js';
 import { pushUxKb, resolveUxKbDir } from './ux-kb-sync.js';
-import { appContextDirective, resolveAppId, stageAppContext } from './app-context.js';
+import { appContextDirective, resolveAppId, stageAppContext, stageLocalAppContext } from './app-context.js';
+import {
+  createAppContextVersion,
+  featureContextBindingFromMetadata,
+  filesForFeatureContextPublish,
+  metadataWithFeatureContextBinding,
+  stageBoundAppContextForRun,
+} from './app-context-version.js';
 import {
   appDocsDir,
   appDocsPoolDirective,
@@ -525,7 +543,11 @@ import {
   stageAppDocsPool,
 } from './app-pool.js';
 import { registerAppPoolRoutes } from './app-pool-routes.js';
-import { commitGeneratedComponentsMd, commitGeneratedRulesMd, copyDsCriteriaIntoWorkflow, readDsCriteriaState } from './ds-criteria.js';
+import { registerAppContextRoutes } from './app-context-routes.js';
+import { registerOverviewRoutes } from './overview-routes.js';
+import { copyDsCriteriaIntoWorkflow, readDsCriteriaState, validateGeneratedComponentsMdDraft, validateGeneratedRulesMdDraft } from './ds-criteria.js';
+import { designSystemCriteriaWorkDir, markDesignSystemCriteriaDraft } from './design-system-update.js';
+import type { CriteriaGenerationJob, CriteriaGenerationKind } from '@open-design/contracts';
 import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv, sha256hex, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
@@ -1473,6 +1495,18 @@ const dsDirForId = async (designSystemId: string): Promise<string | null> => {
     if (await fs.promises.stat(dir).then((s) => s.isDirectory()).catch(() => false)) return dir;
   }
   return null;
+};
+const versionAppsUsingDesignSystem = async (designSystemId: string, dsDir: string) => {
+  const apps = listPipelineApps(db).filter((item) => item.designSystemId === designSystemId);
+  return Promise.all(apps.map(async (item) => {
+    try {
+      const result = await createAppContextVersion({ projectsDir: PROJECTS_DIR, appId: item.id,
+        appName: item.name, designSystemId, designSystemDir: dsDir });
+      return { appId: item.id, status: result.status, contextVersion: result.manifest.contextVersion };
+    } catch (error) {
+      return { appId: item.id, status: 'failed', contextVersion: null, error: String(error) };
+    }
+  }));
 };
 let routineService = null;
 
@@ -5647,6 +5681,17 @@ export async function startServer({
       mimeFor,
     },
   });
+  registerDesignSystemUpdateRoutes(app, {
+    userDesignSystemsDir: USER_DESIGN_SYSTEMS_DIR,
+    isLocalSameOrigin,
+    resolvedPortRef,
+    versionAppContexts: versionAppsUsingDesignSystem,
+  });
+  registerDesignSystemSyncRoutes(app, {
+    db,
+    paths: pathDeps,
+    http: httpDeps,
+  });
   registerProjectArtifactRoutes(app, {
     http: httpDeps,
     uploads: uploadDeps,
@@ -6362,49 +6407,101 @@ export async function startServer({
   // cwd của agent là chính thư mục DS, có được nhờ một project row ẩn mang
   // `metadata.baseDir` — `startChatRun` đọc đúng field đó để chọn cwd. Một row
   // dùng lại cho mọi lần sinh của cùng một DS.
-  type DsCriteriaJobStep = { id: string; title: string; status: 'pending' | 'running' | 'succeeded' | 'failed'; message?: string };
-  type DsCriteriaJob = {
-    id: string;
-    designSystemId: string;
-    status: 'queued' | 'running' | 'succeeded' | 'failed';
-    message: string;
-    steps: DsCriteriaJobStep[];
-    createdAt: string;
-    updatedAt: string;
+  type DsCriteriaJob = CriteriaGenerationJob & {
     /** Run của agent, có mặt từ lúc bước `generate` khởi động. UI mở
      *  `GET /api/runs/<runId>/events` để xem log agent chạy trực tiếp — job này
      *  KHÔNG tự tích luỹ log: stream đã có sẵn và một bản sao trong RAM chỉ tổ
      *  phình theo mỗi lần sinh mà không ai đọc lại. */
-    runId?: string;
+    runId: string;
     /** Hội thoại chứa transcript của run, và project ẩn sở hữu nó. Đủ để UI mở
      *  thẳng màn chat (`navigate({kind:'project', projectId, conversationId})`)
      *  — người dùng xem agent chạy tới đâu bằng chính giao diện chat quen thuộc,
      *  không cần một khung log riêng dựng lại từ đầu. */
-    conversationId?: string;
-    projectId?: string;
-    /** Log đã kết thúc: vài dòng tóm tắt daemon tự ghi, luôn có kể cả khi run
-     *  đã bị thu hồi nên `/events` không còn phát gì. */
-    notes: string[];
+    conversationId: string;
+    projectId: string;
   };
   const dsCriteriaJobs = new Map<string, DsCriteriaJob>();
   /** designSystemId → id của job GẦN NHẤT. GET /criteria trả job này, nên UI
    *  vẫn thấy được lý do thất bại sau khi tải lại trang. */
   const dsCriteriaJobByDs = new Map<string, string>();
 
-  const startDsCriteriaJob = (designSystemId: string, dsDir: string): DsCriteriaJob => {
+  const resolveCriteriaAgent = async () => {
+    const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+    let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
+    if (!agentId) {
+      const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
+      agentId = agents.find((agent) => agent.available)?.id ?? null;
+    }
+    if (!agentId) agentId = await sandboxFallbackRuntimeId();
+    if (!agentId) throw new Error('Chưa cấu hình agent nào khả dụng — chọn agent trong Cài đặt trước.');
+    return { agentId, modelPrefs: appConfig.agentModels?.[agentId] ?? {} };
+  };
+
+  const startDsCriteriaJob = (
+    designSystemId: string,
+    dsDir: string,
+    execution: Awaited<ReturnType<typeof resolveCriteriaAgent>>,
+  ): DsCriteriaJob => {
     const now = () => new Date().toISOString();
+    const projectId = `ds-criteria-${designSystemId.replace(/^user:/, '')}`;
+    const rowNow = Date.now();
+    const existingProject = getProject(db, projectId);
+    if (!existingProject) {
+      insertProject(db, {
+        id: projectId,
+        name: `Bộ tiêu chí · ${designSystemId}`,
+        skillId: null,
+        designSystemId: null,
+        pendingPrompt: null,
+        metadata: { kind: 'ds-criteria', baseDir: dsDir, designSystemId },
+        createdAt: rowNow,
+        updatedAt: rowNow,
+      });
+    } else {
+      updateProject(db, projectId, {
+        metadata: { ...(existingProject.metadata ?? {}), kind: 'ds-criteria', baseDir: dsDir, designSystemId },
+      });
+    }
+    const conversationId = `ds-criteria-conv-${randomUUID()}`;
+    insertConversation(db, {
+      id: conversationId,
+      projectId,
+      title: `Sinh danh mục component · ${new Date(rowNow).toLocaleString('vi-VN')}`,
+      createdAt: rowNow,
+      updatedAt: rowNow,
+    });
+    const assistantMessageId = `ds-criteria-assistant-${randomUUID()}`;
+    const kickoff =
+      `Áp skill "ds-criteria-extract" cho design system "${designSystemId}". ` +
+      `cwd của bạn LÀ thư mục DS: đọc "react/docs/catalog.md" (nguồn chính), "react/STYLE-GUIDE.md" và "DESIGN.md". ` +
+      `Ghi kết quả ra ĐÚNG MỘT file: "criteria/components.md.next". ` +
+      `TUYỆT ĐỐI KHÔNG ghi đè "criteria/components.md" — daemon validate bản nháp trước khi người dùng duyệt. ` +
+      `KHÔNG đụng "criteria/rules.md" và không sửa bất cứ thứ gì trong "react/" hay "ir/".`;
+    const run = design.runs.create({
+      projectId,
+      conversationId,
+      assistantMessageId,
+      clientRequestId: `ds-criteria-${randomUUID()}`,
+      agentId: execution.agentId,
+    });
     const job: DsCriteriaJob = {
       id: randomUUID(),
       designSystemId,
+      kind: 'components',
       status: 'queued',
       message: 'Đã xếp hàng',
+      error: null,
       steps: [
         { id: 'read-catalog', title: 'Đọc catalog của DS', status: 'pending' },
         { id: 'generate', title: 'Agent sinh danh mục component', status: 'pending' },
-        { id: 'validate', title: 'Kiểm tra & ghi đè components.md', status: 'pending' },
+        { id: 'validate', title: 'Kiểm tra bản nháp components.md', status: 'pending' },
       ],
       createdAt: now(),
       updatedAt: now(),
+      workspace: { projectId, conversationId, runId: run.id },
+      projectId,
+      conversationId,
+      runId: run.id,
       notes: [],
     };
     dsCriteriaJobs.set(job.id, job);
@@ -6440,60 +6537,7 @@ export async function startServer({
         job.message = 'Agent đang đọc catalog…';
         touch();
 
-        const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
-        let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
-        if (!agentId) {
-          const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
-          agentId = agents.find((a) => a.available)?.id ?? null;
-        }
-        if (!agentId) {
-          const sandboxAgentId = await sandboxFallbackRuntimeId();
-          if (sandboxAgentId) agentId = sandboxAgentId;
-        }
-        if (!agentId) throw new Error('Chưa cấu hình agent nào khả dụng — chọn agent trong Cài đặt trước.');
-
-        // Project row ẩn trỏ vào thư mục DS. Dùng lại theo DS (không tạo mới mỗi
-        // lần sinh) để lịch sử hội thoại của một DS nằm chung một chỗ.
-        const projectId = `ds-criteria-${designSystemId.replace(/^user:/, '')}`;
-        const rowNow = Date.now();
-        if (!getProject(db, projectId)) {
-          insertProject(db, {
-            id: projectId,
-            name: `Bộ tiêu chí · ${designSystemId}`,
-            skillId: null,
-            designSystemId: null,
-            pendingPrompt: null,
-            metadata: { kind: 'ds-criteria', baseDir: dsDir, designSystemId },
-            createdAt: rowNow,
-            updatedAt: rowNow,
-          });
-        }
-        const conversationId = `ds-criteria-conv-${randomUUID()}`;
-        insertConversation(db, {
-          id: conversationId,
-          projectId,
-          title: `Sinh danh mục component · ${new Date(rowNow).toLocaleString('vi-VN')}`,
-          createdAt: rowNow,
-          updatedAt: rowNow,
-        });
-        const assistantMessageId = `ds-criteria-assistant-${randomUUID()}`;
-        const kickoff =
-          `Áp skill "ds-criteria-extract" cho design system "${designSystemId}". ` +
-          `cwd của bạn LÀ thư mục DS: đọc "${catalogRel}" (nguồn chính), "react/STYLE-GUIDE.md" và "DESIGN.md". ` +
-          `Ghi kết quả ra ĐÚNG MỘT file: "criteria/components.md.next". ` +
-          `TUYỆT ĐỐI KHÔNG ghi đè "criteria/components.md" — daemon validate file .next rồi mới rename; ghi thẳng vào file thật là bỏ qua bước kiểm và có thể phá danh mục đang dùng. ` +
-          `KHÔNG đụng "criteria/rules.md" (file của người dùng) và không sửa bất cứ thứ gì trong "react/" hay "ir/".`;
-        const run = design.runs.create({
-          projectId,
-          conversationId,
-          assistantMessageId,
-          clientRequestId: `ds-criteria-${randomUUID()}`,
-          agentId,
-        });
-        job.runId = run.id;
-        job.conversationId = conversationId;
-        job.projectId = projectId;
-        note(`Agent "${agentId}" khởi động (run ${run.id.slice(0, 8)})`);
+        note(`Agent "${execution.agentId}" khởi động (run ${run.id.slice(0, 8)})`);
         // KHÔNG đăng ký vào `activeRuns`: cái Set đó là sổ hủy CỦA MỘT LƯỢT
         // CHẠY PIPELINE (khai bên trong runner, xem `registerPipelineCanceler`)
         // — nó không tồn tại ở phạm vi này. Job sinh danh mục cũng không có nút
@@ -6503,24 +6547,23 @@ export async function startServer({
           id: assistantMessageId,
           role: 'assistant',
           content: '',
-          agentId,
-          agentName: getAgentDef(agentId)?.name ?? agentId,
+          agentId: execution.agentId,
+          agentName: getAgentDef(execution.agentId)?.name ?? execution.agentId,
           runId: run.id,
           runStatus: 'queued',
           startedAt: Date.now(),
         });
-        const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
         design.runs.start(run, () =>
           startChatRun(
             {
-              agentId,
+              agentId: execution.agentId,
               projectId,
               conversationId,
               assistantMessageId,
               clientRequestId: run.clientRequestId,
               skillId: 'ds-criteria-extract',
-              model: modelPrefs.model ?? null,
-              reasoning: modelPrefs.reasoning ?? null,
+              model: execution.modelPrefs.model ?? null,
+              reasoning: execution.modelPrefs.reasoning ?? null,
               message: kickoff,
               systemPrompt:
                 'Bạn đang chạy một job không có người ngồi cạnh. Không hỏi lại, không chờ input — chọn mặc định hợp lý và hoàn thành.',
@@ -6539,7 +6582,7 @@ export async function startServer({
 
         step('validate').status = 'running';
         touch();
-        const committed = await commitGeneratedComponentsMd(dsDir);
+        const committed = await validateGeneratedComponentsMdDraft(dsDir);
         if (!committed.ok) {
           step('validate').status = 'failed';
           step('validate').message = committed.errors.join('; ');
@@ -6547,8 +6590,10 @@ export async function startServer({
         }
         step('validate').status = 'succeeded';
         job.status = 'succeeded';
-        job.message = `${committed.components} component`;
-        note(`Ghi criteria/components.md — ${committed.components} component`);
+        job.message = `${committed.components} component chờ duyệt`;
+        note(`Đã tạo bản nháp criteria/components.md — ${committed.components} component, chờ duyệt`);
+        const liveDsDir = await dsDirForId(designSystemId);
+        if (liveDsDir) await markDesignSystemCriteriaDraft(liveDsDir, designSystemId, 'components');
         touch();
       } catch (error) {
         const detail = String((error as Error)?.message ?? error);
@@ -6560,6 +6605,7 @@ export async function startServer({
         }
         job.status = 'failed';
         job.message = detail;
+        job.error = detail;
         touch();
         console.warn(`[ds-criteria] sinh danh mục cho "${designSystemId}" thất bại:`, detail);
       }
@@ -6572,14 +6618,21 @@ export async function startServer({
   app.post('/api/design-systems/:id/criteria/generate', async (req, res) => {
     try {
       const id = req.params.id;
-      const dsDir = await dsDirForId(id);
-      if (!dsDir) return res.status(404).json({ error: `design system not found: ${id}` });
+      const liveDsDir = await dsDirForId(id);
+      if (!liveDsDir) return res.status(404).json({ error: `design system not found: ${id}` });
+      const dsDir = await designSystemCriteriaWorkDir(liveDsDir, id);
       const existingId = dsCriteriaJobByDs.get(id);
       const existing = existingId ? dsCriteriaJobs.get(existingId) : undefined;
       if (existing && (existing.status === 'queued' || existing.status === 'running')) {
         return res.status(202).json({ jobId: existing.id, job: existing });
       }
-      const job = startDsCriteriaJob(id, dsDir);
+      const execution = await resolveCriteriaAgent();
+      const racedId = dsCriteriaJobByDs.get(id);
+      const raced = racedId ? dsCriteriaJobs.get(racedId) : undefined;
+      if (raced && (raced.status === 'queued' || raced.status === 'running')) {
+        return res.status(202).json({ jobId: raced.id, job: raced });
+      }
+      const job = startDsCriteriaJob(id, dsDir, execution);
       res.status(202).json({ jobId: job.id, job });
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -6604,15 +6657,57 @@ export async function startServer({
 
   const dsRulesJobs = new Map<string, DsCriteriaJob>();
   const dsRulesJobByDs = new Map<string, string>();
-  const startDsRulesJob = (designSystemId: string, dsDir: string): DsCriteriaJob => {
+  const startDsRulesJob = (
+    designSystemId: string,
+    dsDir: string,
+    execution: Awaited<ReturnType<typeof resolveCriteriaAgent>>,
+  ): DsCriteriaJob => {
     const now = () => new Date().toISOString();
+    const projectId = `ds-rules-${designSystemId.replace(/^user:/, '')}`;
+    const rowNow = Date.now();
+    const existingProject = getProject(db, projectId);
+    if (!existingProject) {
+      insertProject(db, {
+        id: projectId,
+        name: `Quy tắc review · ${designSystemId}`,
+        skillId: null,
+        designSystemId: null,
+        pendingPrompt: null,
+        metadata: { kind: 'ds-rules', baseDir: dsDir, designSystemId },
+        createdAt: rowNow,
+        updatedAt: rowNow,
+      });
+    } else {
+      updateProject(db, projectId, {
+        metadata: { ...(existingProject.metadata ?? {}), kind: 'ds-rules', baseDir: dsDir, designSystemId },
+      });
+    }
+    const conversationId = `ds-rules-conv-${randomUUID()}`;
+    insertConversation(db, {
+      id: conversationId,
+      projectId,
+      title: `Sinh quy tắc · ${new Date(rowNow).toLocaleString('vi-VN')}`,
+      createdAt: rowNow,
+      updatedAt: rowNow,
+    });
+    const assistantMessageId = `ds-rules-assistant-${randomUUID()}`;
+    const kickoff = `Áp skill "ds-rules-extract" cho design system "${designSystemId}". cwd của bạn LÀ thư mục DS. Đọc "react/showcase/index.html" nếu có, "preview/*.html", "react/STYLE-GUIDE.md", "react/docs/catalog.md", "DESIGN.md". KHÔNG đọc "react/showcase/showcase-data.js". Ghi đúng một file "criteria/rules.md.next", không ghi đè "criteria/rules.md", không tạo "_meta.json" hay file khác, không đụng "react/" hay "ir/".`;
+    const run = design.runs.create({
+      projectId,
+      conversationId,
+      assistantMessageId,
+      clientRequestId: `ds-rules-${randomUUID()}`,
+      agentId: execution.agentId,
+    });
     const job: DsCriteriaJob = {
-      id: randomUUID(), designSystemId, status: 'queued', message: 'Đã xếp hàng',
+      id: randomUUID(), designSystemId, kind: 'rules', status: 'queued', message: 'Đã xếp hàng', error: null,
       steps: [
         { id: 'read-showcase', title: 'Đọc showcase của DS', status: 'pending' },
         { id: 'generate', title: 'Agent sinh quy tắc', status: 'pending' },
-        { id: 'validate', title: 'Kiểm tra & ghi đè rules.md', status: 'pending' },
-      ], createdAt: now(), updatedAt: now(), notes: [],
+        { id: 'validate', title: 'Kiểm tra bản nháp rules.md', status: 'pending' },
+      ], createdAt: now(), updatedAt: now(),
+      workspace: { projectId, conversationId, runId: run.id },
+      projectId, conversationId, runId: run.id, notes: [],
     };
     dsRulesJobs.set(job.id, job); dsRulesJobByDs.set(designSystemId, job.id);
     const step = (id: string) => job.steps.find((item) => item.id === id)!;
@@ -6631,42 +6726,22 @@ export async function startServer({
         step('read-showcase').status = 'succeeded'; note(`Nguồn showcase: ${hasShowcase ? 'react/showcase/index.html' : 'preview/*.html'}`);
 
         step('generate').status = 'running'; job.message = 'Agent đang đọc showcase…'; touch();
-        const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
-        let agentId = typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
-        if (!agentId) {
-          const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
-          agentId = agents.find((a) => a.available)?.id ?? null;
-        }
-        if (!agentId) {
-          const sandboxAgentId = await sandboxFallbackRuntimeId();
-          if (sandboxAgentId) agentId = sandboxAgentId;
-        }
-        if (!agentId) throw new Error('Chưa cấu hình agent nào khả dụng — chọn agent trong Cài đặt trước.');
-        const projectId = `ds-rules-${designSystemId.replace(/^user:/, '')}`;
-        const rowNow = Date.now();
-        if (!getProject(db, projectId)) insertProject(db, { id: projectId, name: `Quy tắc review · ${designSystemId}`, skillId: null, designSystemId: null, pendingPrompt: null, metadata: { kind: 'ds-rules', baseDir: dsDir, designSystemId }, createdAt: rowNow, updatedAt: rowNow });
-        const conversationId = `ds-rules-conv-${randomUUID()}`;
-        insertConversation(db, { id: conversationId, projectId, title: `Sinh quy tắc · ${new Date(rowNow).toLocaleString('vi-VN')}`, createdAt: rowNow, updatedAt: rowNow });
-        const assistantMessageId = `ds-rules-assistant-${randomUUID()}`;
-        const kickoff = `Áp skill "ds-rules-extract" cho design system "${designSystemId}". cwd của bạn LÀ thư mục DS. Đọc "react/showcase/index.html" nếu có, "preview/*.html", "react/STYLE-GUIDE.md", "react/docs/catalog.md", "DESIGN.md". KHÔNG đọc "react/showcase/showcase-data.js". Ghi đúng một file "criteria/rules.md.next", không ghi đè "criteria/rules.md", không tạo "_meta.json" hay file khác, không đụng "react/" hay "ir/".`;
-        const run = design.runs.create({ projectId, conversationId, assistantMessageId, clientRequestId: `ds-rules-${randomUUID()}`, agentId });
-        job.runId = run.id; job.conversationId = conversationId; job.projectId = projectId; note(`Agent "${agentId}" khởi động (run ${run.id.slice(0, 8)})`);
+        note(`Agent "${execution.agentId}" khởi động (run ${run.id.slice(0, 8)})`);
         upsertMessage(db, conversationId, { id: `ds-rules-user-${run.id}`, role: 'user', content: kickoff });
-        upsertMessage(db, conversationId, { id: assistantMessageId, role: 'assistant', content: '', agentId, agentName: getAgentDef(agentId)?.name ?? agentId, runId: run.id, runStatus: 'queued', startedAt: Date.now() });
-        const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
-        design.runs.start(run, () => startChatRun({ agentId, projectId, conversationId, assistantMessageId, clientRequestId: run.clientRequestId, skillId: 'ds-rules-extract', model: modelPrefs.model ?? null, reasoning: modelPrefs.reasoning ?? null, message: kickoff, systemPrompt: 'Bạn đang chạy một job không có người ngồi cạnh. Không hỏi lại, không chờ input — chọn mặc định hợp lý và hoàn thành.' }, run));
+        upsertMessage(db, conversationId, { id: assistantMessageId, role: 'assistant', content: '', agentId: execution.agentId, agentName: getAgentDef(execution.agentId)?.name ?? execution.agentId, runId: run.id, runStatus: 'queued', startedAt: Date.now() });
+        design.runs.start(run, () => startChatRun({ agentId: execution.agentId, projectId, conversationId, assistantMessageId, clientRequestId: run.clientRequestId, skillId: 'ds-rules-extract', model: execution.modelPrefs.model ?? null, reasoning: execution.modelPrefs.reasoning ?? null, message: kickoff, systemPrompt: 'Bạn đang chạy một job không có người ngồi cạnh. Không hỏi lại, không chờ input — chọn mặc định hợp lý và hoàn thành.' }, run));
         const final = await design.runs.wait(run);
         db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
         if (final.status !== 'succeeded') throw new Error(`Agent kết thúc với trạng thái "${final.status}".`);
         step('generate').status = 'succeeded'; note('Agent xong, đang kiểm tra kết quả');
         step('validate').status = 'running'; touch();
-        const committed = await commitGeneratedRulesMd(dsDir);
+        const committed = await validateGeneratedRulesMdDraft(dsDir);
         if (!committed.ok) { step('validate').status = 'failed'; step('validate').message = committed.errors.join('; '); throw new Error(committed.errors.join('; ')); }
-        step('validate').status = 'succeeded'; job.status = 'succeeded'; job.message = `${committed.rules} quy tắc`; note(`Ghi criteria/rules.md — ${committed.rules} quy tắc`); touch();
+        step('validate').status = 'succeeded'; job.status = 'succeeded'; job.message = `${committed.rules} quy tắc chờ duyệt`; note(`Đã tạo bản nháp criteria/rules.md — ${committed.rules} quy tắc, chờ duyệt`); const liveDsDir = await dsDirForId(designSystemId); if (liveDsDir) await markDesignSystemCriteriaDraft(liveDsDir, designSystemId, 'rules'); touch();
       } catch (error) {
         const detail = String((error as Error)?.message ?? error); note(`LỖI: ${detail}`);
         const active = job.steps.find((item) => item.status === 'running'); if (active) { active.status = 'failed'; active.message = active.message ?? detail; }
-        job.status = 'failed'; job.message = detail; touch(); console.warn(`[ds-rules] sinh quy tắc cho "${designSystemId}" thất bại:`, detail);
+        job.status = 'failed'; job.message = detail; job.error = detail; touch(); console.warn(`[ds-rules] sinh quy tắc cho "${designSystemId}" thất bại:`, detail);
       }
     })();
     return job;
@@ -6674,11 +6749,15 @@ export async function startServer({
 
   app.post('/api/design-systems/:id/rules/generate', async (req, res) => {
     try {
-      const id = req.params.id; const dsDir = await dsDirForId(id);
-      if (!dsDir) return res.status(404).json({ error: `design system not found: ${id}` });
+      const id = req.params.id; const liveDsDir = await dsDirForId(id);
+      if (!liveDsDir) return res.status(404).json({ error: `design system not found: ${id}` });
+      const dsDir = await designSystemCriteriaWorkDir(liveDsDir, id);
       const existingId = dsRulesJobByDs.get(id); const existing = existingId ? dsRulesJobs.get(existingId) : undefined;
       if (existing && (existing.status === 'queued' || existing.status === 'running')) return res.status(202).json({ jobId: existing.id, job: existing });
-      const job = startDsRulesJob(id, dsDir); res.status(202).json({ jobId: job.id, job });
+      const execution = await resolveCriteriaAgent();
+      const racedId = dsRulesJobByDs.get(id); const raced = racedId ? dsRulesJobs.get(racedId) : undefined;
+      if (raced && (raced.status === 'queued' || raced.status === 'running')) return res.status(202).json({ jobId: raced.id, job: raced });
+      const job = startDsRulesJob(id, dsDir, execution); res.status(202).json({ jobId: job.id, job });
     } catch (err) { res.status(500).json({ error: String(err) }); }
   });
 
@@ -6690,6 +6769,37 @@ export async function startServer({
       const job = jobId ? (dsRulesJobs.get(jobId) ?? null) : null;
       res.json({ hasRules: state.hasRules, rules: state.rules, job });
     } catch (err) { res.status(500).json({ error: String(err) }); }
+  });
+
+  const criteriaJobFor = (designSystemId: string, kind: CriteriaGenerationKind): DsCriteriaJob | null => {
+    const byDs = kind === 'components' ? dsCriteriaJobByDs : dsRulesJobByDs;
+    const jobs = kind === 'components' ? dsCriteriaJobs : dsRulesJobs;
+    const jobId = byDs.get(designSystemId);
+    return jobId ? (jobs.get(jobId) ?? null) : null;
+  };
+  const startCriteriaJob = async (designSystemId: string, kind: CriteriaGenerationKind) => {
+    const existing = criteriaJobFor(designSystemId, kind);
+    if (isCriteriaGenerationJobActive(existing)) {
+      return { job: existing, reused: true };
+    }
+    const liveDsDir = await dsDirForId(designSystemId);
+    if (!liveDsDir) throw new Error(`design system not found: ${designSystemId}`);
+    const workDir = await designSystemCriteriaWorkDir(liveDsDir, designSystemId);
+    const execution = await resolveCriteriaAgent();
+    // Agent discovery can yield; close the small race before creating a run.
+    const raced = criteriaJobFor(designSystemId, kind);
+    if (isCriteriaGenerationJobActive(raced)) {
+      return { job: raced, reused: true };
+    }
+    const job = kind === 'components'
+      ? startDsCriteriaJob(designSystemId, workDir, execution)
+      : startDsRulesJob(designSystemId, workDir, execution);
+    return { job, reused: false };
+  };
+  registerDesignSystemCriteriaWorkspaceRoutes(app, {
+    resolveDesignSystemDir: dsDirForId,
+    getJob: criteriaJobFor,
+    startJob: startCriteriaJob,
   });
 
   app.post('/api/design-systems/:id/revision-jobs', async (req, res) => {
@@ -11111,6 +11221,33 @@ export async function startServer({
     // `listSkills()` scan in `startChatRun`. critiqueShouldRun threads
     // the same panel-eligibility decision down to the spawn-path
     // orchestrator gate so prompt and orchestrator stay in lockstep.
+    //
+    // Workspace tổng (project hạ tầng `overview`): phiên TRA CỨU CHỈ ĐỌC về
+    // tiến độ App/Feature. MCP stdio không tới được Claude Code trong sandbox
+    // (không có `od` CLI trong container — OD_BIN rỗng), nên chỉ dẫn endpoint
+    // qua system prompt: mọi runtime đều curl được qua OD_DAEMON_URL. Nghiệm
+    // thu thật 2026-08-10: thiếu khối này agent phải probe mò hàng chục
+    // endpoint 404 rồi lắp ráp từ /api/projects thô (lẫn project hạ tầng).
+    if (metadata?.kind === 'overview') {
+      const overviewPrompt = [
+        '',
+        '## Workspace tổng — tra cứu tiến độ App/Feature',
+        'Bạn đang ở phiên hỏi-đáp tổng quan. Trả lời bằng dữ liệu thật từ daemon (base URL trong env `OD_DAEMON_URL`):',
+        '- `GET $OD_DAEMON_URL/api/overview/summary` — số App, số Feature, tiến độ TỪNG workflow của từng feature ({done,total,running}), cờ `localFiles`.',
+        '- `GET $OD_DAEMON_URL/api/overview/outputs?projectId=<id>` — danh sách file output (đường dẫn tương đối) của một feature.',
+        '- `GET $OD_DAEMON_URL/api/projects/<id>/raw/<đường dẫn>` — đọc nội dung một file output (chỉ file text).',
+        'KHÔNG dùng `/api/projects` thô để đếm — nó lẫn project hạ tầng (kind overview/ds-criteria/ds-rules) và project không phải feature.',
+        'Feature có `localFiles: false` là chưa pull về máy này — nói thẳng như vậy, đừng đoán bước.',
+        'Với DỮ LIỆU PIPELINE bạn CHỈ ĐỌC: không sửa/xoá file của project khác, không chạy pipeline, không POST/PATCH/DELETE.',
+        'NGOẠI LỆ DUY NHẤT: khi người dùng yêu cầu xuất BÁO CÁO (HTML/Markdown/CSV…), hãy ghi file vào ĐÚNG thư mục làm việc hiện tại của bạn (cwd = thư mục riêng của workspace tổng, có cây thư mục hiển thị bên phải màn hình). Đặt tên rõ ràng, vd `bao-cao-tien-do-2026-08-10.html`.',
+      ].join('\n');
+      return {
+        prompt: `${prompt}\n${overviewPrompt}`,
+        activeSkillDir,
+        activeSkillDirs,
+        critiqueShouldRun,
+      };
+    }
     return { prompt, activeSkillDir, activeSkillDirs, critiqueShouldRun };
   };
 
@@ -11648,6 +11785,16 @@ export async function startServer({
       command: process.execPath,
       argsPrefix: [OD_BIN],
     });
+    // Workspace tổng (project hạ tầng `overview`): thêm bộ tool MCP chỉ-đọc
+    // về tiến độ App/Feature. Hàm tự gate projectId === 'overview' nên mọi
+    // run khác nhận mảng rỗng.
+    mcpServers.push(
+      ...buildOverviewMcpServersForAgent(def, {
+        command: process.execPath,
+        argsPrefix: [OD_BIN],
+        ...(typeof projectId === 'string' && projectId ? { projectId } : {}),
+      }),
+    );
 
     // External MCP servers configured by the user in Settings → External MCP.
     // Open Design relays them to the agent so the model can call those tools.
@@ -12078,6 +12225,10 @@ export async function startServer({
         if (!built.ok) failure = built.reason ?? 'sandbox image auto-build failed';
       }
       if (image && !failure) {
+        // Packaged internal builds may carry OAuth file seeds. Apply them
+        // before preflight so a first ever chat can use the selected CLI;
+        // the helper is idempotent and never replaces a user credential.
+        await seedPackagedSandboxAuth(image);
         const preflight = await sandboxPreflight(image, agentId === 'codex' ? 'codex' : 'claude');
         if (!preflight.ok) failure = preflight.reason ?? 'sandbox preflight failed';
         if (!failure && sandboxCodexProfile) {
@@ -14097,14 +14248,12 @@ export async function startServer({
     const files = await snapshotPipelineCwd(cwd);
     const kgs = new KgsClient(kgsConfigFromEnv());
     const projectName = getProject(db, projectId)?.name ?? projectId;
-    // Attribution: everything this push writes is stamped with the machine's
-    // owner (last Google login — auth-routes getMachineUser). `sub` is the
-    // preview-identity user id, so the media store's owner_id and the
-    // identity project registration line up across apps. No login yet →
-    // legacy behavior (od-service, no owner props, no registration).
-    const machine = getMachineUser();
-    const owner = machine && !machine.sub.startsWith('google:')
-      ? { id: machine.sub, email: machine.email, name: machine.name }
+    // Attribution uses only the reconciled preview-identity UUID. A Google
+    // subject is login provenance, never a media/identity owner id.
+    const machine = await getMachineIdentityUser();
+    const identityUserId = identityUserIdOf(machine);
+    const owner = machine && identityUserId
+      ? { id: identityUserId, email: machine.email, name: machine.name }
       : null;
     const media = new MediaClient({
       ...mediaConfigFromEnv(),
@@ -14114,6 +14263,95 @@ export async function startServer({
     // `projectId` from here on means only "this machine's local project".
     const dest = plan ?? (await planPush({ db, projectId, kgs, media, submitter: owner }));
     const destId = dest.destId;
+    // An App is a first-class publishable unit.  Its local metadata and shared
+    // document pool travel with every Feature publish, but under a reserved
+    // prefix while the Feature is waiting for approval.  Studio extracts this
+    // prefix into the App folder before it promotes the Feature folder.
+    const appFiles: LocalSyncFile[] = [];
+    let syntheticProjectJson: Buffer | null = null;
+    const localCfg = getProject(db, projectId) as { metadata?: unknown } | null;
+    const appCfg = studioConfigOf(localCfg?.metadata);
+    if (appCfg.appId) {
+      const app = getPipelineApp(db, appCfg.appId);
+      const appName = app?.name ?? appCfg.appName ?? appCfg.appId;
+      const designSystemId = app?.designSystemId ?? appCfg.designSystemId ?? null;
+      const contextSnapshot = await createAppContextVersion({
+        projectsDir: PROJECTS_DIR,
+        appId: appCfg.appId,
+        appName,
+        designSystemId,
+        designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
+      });
+      let featureBinding = featureContextBindingFromMetadata(localCfg?.metadata);
+      if (!featureBinding || featureBinding.appId !== appCfg.appId) {
+        featureBinding = {
+          schemaVersion: 1,
+          appId: appCfg.appId,
+          contextVersion: contextSnapshot.manifest.contextVersion,
+          contentDigest: contextSnapshot.manifest.contentDigest,
+          boundAt: new Date().toISOString(),
+        };
+        if (localCfg) {
+          updateProject(db, projectId, {
+            metadata: metadataWithFeatureContextBinding(localCfg.metadata, featureBinding),
+          });
+        }
+      }
+      const appJson = Buffer.from(`${JSON.stringify({
+        kind: 'app',
+        name: appName,
+        ...(designSystemId ? { designSystemId } : {}),
+        contextVersion: contextSnapshot.manifest.contextVersion,
+        contextDigest: contextSnapshot.manifest.contentDigest,
+      }, null, 2)}\n`);
+      appFiles.push({ path: 'app.json', stage: 'app', mime: 'application/json', content: appJson });
+      const docsRoot = appDocsDir(PROJECTS_DIR, appCfg.appId);
+      const walkAppDocs = async (dir: string, rel = ''): Promise<void> => {
+        const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+        for (const entry of entries) {
+          if (entry.name.startsWith('.')) continue;
+          const next = rel ? `${rel}/${entry.name}` : entry.name;
+          const abs = path.join(dir, entry.name);
+          if (entry.isDirectory()) { await walkAppDocs(abs, next); continue; }
+          if (!entry.isFile()) continue;
+          const content = await fs.promises.readFile(abs).catch(() => null);
+          if (content) appFiles.push({ path: `docs/${next}`, stage: 'app', mime: pipelineFileMime(next), content });
+        }
+      };
+      await walkAppDocs(docsRoot);
+      const contextFiles = await filesForFeatureContextPublish({
+        projectsDir: PROJECTS_DIR,
+        appId: appCfg.appId,
+        currentContextVersion: contextSnapshot.manifest.contextVersion,
+        binding: featureBinding,
+      });
+      for (const file of contextFiles) {
+        appFiles.push({
+          path: file.path,
+          stage: 'app-context',
+          mime: pipelineFileMime(file.path),
+          content: file.content,
+        });
+      }
+      if (dest.request) {
+        dest.request.appPublish = { files: appFiles.length, includesDocsPool: appFiles.some((f) => f.path.startsWith('docs/')) };
+        if (dest.request.app.mode === 'create' && designSystemId) dest.request.app.designSystemId = designSystemId;
+        dest.request.feature.appContextBinding = featureBinding;
+      }
+      const existingProjectJson = await media.downloadFile(destId, 'project.json').then(
+        (content) => JSON.parse(content.toString('utf8')) as Record<string, unknown>,
+        () => ({} as Record<string, unknown>),
+      );
+      const publishedAppId = appCfg.approvedMapping?.approvedAppId ?? appCfg.appId;
+      syntheticProjectJson = Buffer.from(`${JSON.stringify({
+        ...existingProjectJson,
+        name: projectName,
+        appId: publishedAppId,
+        appContextBinding: publishedAppId === featureBinding.appId
+          ? featureBinding
+          : { ...featureBinding, appId: publishedAppId },
+      }, null, 2)}\n`);
+    }
     if (dest.staged) {
       // A staged push writes NOTHING to KGS or preview-identity: KGS has no
       // node-update API, so a workspace node under a `pending--…` id could
@@ -14123,6 +14361,10 @@ export async function startServer({
       // create, under the final id and AS the submitter (that is what makes
       // the submitter its owner).
       rememberPendingId(db, projectId, destId);
+      if (dest.request) {
+        dest.request.schema = 2;
+        dest.request.publish = { stages: stages ?? [], outputTypes: [] };
+      }
       // Ticket first, files second: a push that dies halfway must still leave
       // something the reviewer can read.
       if (dest.request) await writeStagingRequest(media, destId, dest.request);
@@ -14131,12 +14373,15 @@ export async function startServer({
       // upload also makes it discoverable by another device's pull-all. Best-effort
       // (idempotent) — a workspace-ensure failure must not block the file upload.
       await kgs.ensureWorkspace(destId, projectName, owner).catch(() => {});
-      // Register into preview-identity (owner = machine user) so pipeline-studio
-      // shows the project as owned without an admin registering it by hand.
-      // Best-effort by contract — never fails the push.
-      await ensureProjectRegistered(destId, projectName, owner);
+      // Identity project registration is deliberately owned by Pipeline Studio
+      // approval.  Do not create a registry record from Open Design: a folder
+      // discovered through a legacy/media-only path must not become approved
+      // merely because it was pushed again.
     }
     const syncFiles: LocalSyncFile[] = [];
+    if (syntheticProjectJson) {
+      syncFiles.push({ path: 'project.json', stage: 'config', mime: 'application/json', content: syntheticProjectJson });
+    }
     const toConvert: Array<{ pipelineId: string; skillId: string; rel: string }> = [];
     for (const rel of files.keys()) {
       // History metadata never re-enters the push set: changelog.json/_v/ live
@@ -14163,6 +14408,25 @@ export async function startServer({
       if (!content) continue;
       syncFiles.push({ path: rel, stage: def?.id ?? 'misc', mime: pipelineFileMime(rel), content });
       if (def?.convertToGraph) toConvert.push({ skillId: def.skillId, rel });
+    }
+    if (dest.staged && dest.request) {
+      dest.request.publish = {
+        stages: [...new Set(syncFiles.map((f) => f.stage).filter(Boolean))],
+        outputTypes: [
+          ...new Set(
+            syncFiles.map((f) => path.extname(f.path).slice(1).toLowerCase()).filter(Boolean),
+          ),
+        ],
+      };
+      await writeStagingRequest(media, destId, dest.request);
+    }
+    if (appFiles.length) {
+      if (dest.staged) {
+        await media.syncProjectFiles(destId, appFiles.map((file) => ({ ...file, path: `__open_design_app__/${file.path}` })));
+      } else if (appCfg.appId) {
+        // Approved App: update its own folder as well as the selected Feature.
+        await media.syncProjectFiles(appCfg.approvedMapping?.approvedAppId ?? appCfg.appId, appFiles);
+      }
     }
     const synced = await media.syncProjectFiles(destId, syncFiles);
     // MIRROR prune — push is an OVERRIDE, not a merge: any store file that
@@ -14296,7 +14560,8 @@ export async function startServer({
   // The machine's owner (last Google login) as a history-commit author.
   const historyActor = () => {
     const m = getMachineUser();
-    return m ? { id: m.sub, email: m.email, name: m.name } : null;
+    const id = identityUserIdOf(m);
+    return m && id ? { id, email: m.email, name: m.name } : null;
   };
 
   // Regenerate a project's pipeline files from the media-service file store into
@@ -14658,7 +14923,7 @@ export async function startServer({
     return { projectId, completion };
   };
 
-  // PRD Mockup Review runs PER PAGE in parallel: one agent run per doc page
+  // PRD Requirements Review runs PER PAGE in parallel: one agent run per doc page
   // (bounded pool), each writing review/<slug>/report.json, then the daemon
   // merges them into review/index.json + summary.md. All page runs share ONE
   // conversation (one entry in the list, per-page messages for transcripts);
@@ -14743,31 +15008,25 @@ export async function startServer({
           if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
         }
 
-        const pages = await listMockupPages(cwd);
+        const pages = await listRequirementPages(cwd);
         if (pages.length === 0) {
           // Nothing to review — the stage ran no agent, so it did NOT succeed.
-          // Reporting 'succeeded' here (the old behavior) was indistinguishable
-          // from a real pass: Run went green in ~5s, the preview was blank and
-          // the summary read "Đạt 0/100". A review with no mockups in it is a
-          // broken input, not a clean bill of health — fail loudly and say what
-          // to check, so the docs stage gets re-run instead of trusted.
+          // Reporting 'succeeded' here would be indistinguishable from a real
+          // pass. A requirements review with no source pages is a broken input,
+          // not a clean bill of health — fail loudly so docs ingest is re-run.
           const { index } = mergePageReports([]);
           await fs.promises.mkdir(path.join(cwd, 'review'), { recursive: true });
           await fs.promises.writeFile(path.join(cwd, 'review/index.json'), JSON.stringify(index, null, 2), 'utf8');
           await fs.promises.writeFile(
             path.join(cwd, 'review/summary.md'),
             [
-              '# PRD Mockup Review — không chạy được',
+              '# PRD Requirements Review — không chạy được',
               '',
-              'Không tìm thấy mockup nào trong `docs/confluence/` nên không có gì để review.',
-              '',
-              'Một trang chỉ được review khi file `.md` của nó có tham chiếu ảnh dạng',
-              '`![...](attachments/...)`. Cần kiểm tra:',
+              'Không tìm thấy trang URD/PRD nào để review yêu cầu.',
               '',
               '- Bước **Docs → Markdown** đã chạy cho workflow này chưa (thư mục `docs/confluence/` có trang không).',
-              '- Trang nguồn có ảnh mockup nhúng thật không (trang rỗng / chỉ mục lục thì không có gì để chấm).',
-              '- Ảnh đã tải về `docs/confluence/attachments/` chưa — nếu thư mục có ảnh mà file `.md` không có',
-              '  tham chiếu `![](attachments/...)` nào thì bước Docs đã nuốt ảnh: chạy lại bước Docs.',
+              '- Đã chọn/nạp trang URD chính chưa (PRD chỉ là tài liệu bổ sung ngữ cảnh).',
+              '- Thư mục nguồn có trang Markdown thực tế, không chỉ `_index.md` hoặc thư mục `attachments/`, chưa.',
               '',
               'Sau khi khắc phục, chạy lại bước này.',
               '',
@@ -14777,9 +15036,9 @@ export async function startServer({
           setProjectPipelineStatus(db, projectId, pipelineId, {
             status: 'failed',
             subConversations: [],
-            error: 'Không tìm thấy mockup nào trong docs/confluence/ — chạy bước Docs → Markdown (JIRA) trước, rồi chạy lại bước này.',
+            error: 'Không tìm thấy trang URD/PRD để review — chạy bước Docs → Markdown trước, rồi chạy lại bước này.',
           });
-          console.warn(`[prd-review] no mockup pages under ${cwd}/docs/confluence — nothing to review`);
+          console.warn(`[prd-review] no requirement pages under ${cwd} — nothing to review`);
           return 'failed' as const;
         }
 
@@ -14812,10 +15071,11 @@ export async function startServer({
           persistTasks();
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
           const kickoff =
-            `Run the "docs-mockup-review" review for ONE page of feature "${projectId}". ` +
-            `Review ONLY the mockups embedded in "${pg.mdPath}" (title: ${pg.page}) against that page's own text, ` +
-            `plus the shared Customer Journey + UX Research context in this cwd. ` +
-            `Write your result to "review/${pg.slug}/report.json" using the per-image schema. ` +
+            `Run the text-first PRD requirements review for ONE page of feature "${projectId}". ` +
+            `Review ONLY the written requirements in "${pg.mdPath}" (title: ${pg.page}) against that page's text, ` +
+            `plus the shared Customer Journey, UX Research, and Design System criteria in this cwd. ` +
+            `Embedded mockups/screenshots are illustrative only: do NOT open, score, copy, or use them as design or wireframe direction. ` +
+            `Write your result to "review/${pg.slug}/report.json" using the compatible attachment-keyed schema; base every finding on text. ` +
             `Do NOT review any other page, and do NOT write review/index.json or review/summary.md — the pipeline aggregates those from every page's report.${graphNote}`;
           const run = design.runs.create({
             projectId,
@@ -16900,6 +17160,42 @@ export async function startServer({
     // drift on what "this stage's directory" means.
     const { baseWfDir, wfDir } = wfDirForStage(pipelineId, targetDir);
 
+    // Final docs-review confirmation is deterministic: aggregate the current
+    // annotation ledger and publish one idempotent media artifact; no agent.
+    if (def.skillId === 'docs-review-confirm') {
+      const docsReviewConfirmation = (async () => {
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+        try {
+          const config = await readAppConfig(RUNTIME_DATA_DIR);
+          const machine = getMachineUser();
+          const installationId = config.installationId || 'unknown-install';
+          const result = await confirmDocsReview({
+            projectId,
+            workflowRoot: path.join(PROJECTS_DIR, projectId, baseWfDir ?? 'docs-review'),
+            installationId,
+            user: machine?.email || config.feedbackUsername?.trim() || installationId,
+            channel: isPackagedRuntime() ? 'packaged' : 'dev',
+            ...(opts.docsReviewConfirmationId ? { confirmationId: opts.docsReviewConfirmationId } : {}),
+            ...(opts.docsReviewSourceRunId ? { sourceRunId: opts.docsReviewSourceRunId } : {}),
+          });
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
+          void commitHistory(path.join(PROJECTS_DIR, projectId), { kind: 'run', pipelineId, status: 'succeeded', by: historyActor() }).catch(() => null);
+          console.log(`[docs-review-confirm] ${projectId} → ${result.mediaPath}`);
+          return result;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          console.warn(`[docs-review-confirm] ${projectId} failed:`, message);
+          throw error;
+        }
+      })();
+      const completion = docsReviewConfirmation.then(
+        () => 'succeeded' as const,
+        () => 'failed' as const,
+      );
+      return { projectId, completion, docsReviewConfirmation };
+    }
+
     // Docs step run with UI targets picked (docs-to-ui): record targets.json
     // next to the shared docs so the post-docs stages know which products to
     // build. Written up front, independent of the docs fetch itself.
@@ -16942,7 +17238,45 @@ export async function startServer({
           : source === undefined && inputRefs.length > 0 && inputRefs.every(looksLikeConfluenceRef)
             ? inputRefs
             : null;
-      if (refs) return runDocsDeterministic(pipelineId, projectId, wfDir, refs, input, source, resetScope, followLinks, includeDescendants);
+      if (refs) {
+        const deterministicStudioCfg = (project.metadata as Record<string, unknown> | undefined)?.studioConfig as Record<string, unknown> | undefined;
+        const deterministicAppId = typeof deterministicStudioCfg?.appId === 'string' ? deterministicStudioCfg.appId.trim() : '';
+        if (deterministicAppId) {
+          const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+          const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+          await stageLocalAppContext(PROJECTS_DIR, deterministicAppId, runCwd);
+          const localApp = getPipelineApp(db, deterministicAppId);
+          const designSystemId = localApp?.designSystemId ?? criteriaDesignSystemForProject(projectId) ?? null;
+          const snapshot = await createAppContextVersion({
+            projectsDir: PROJECTS_DIR,
+            appId: deterministicAppId,
+            appName: localApp?.name ?? deterministicAppId,
+            designSystemId,
+            designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
+          });
+          let binding = featureContextBindingFromMetadata(project.metadata);
+          if (!binding || binding.appId !== deterministicAppId) {
+            binding = {
+              schemaVersion: 1,
+              appId: deterministicAppId,
+              contextVersion: snapshot.manifest.contextVersion,
+              contentDigest: snapshot.manifest.contentDigest,
+              boundAt: new Date().toISOString(),
+            };
+            updateProject(db, projectId, { metadata: metadataWithFeatureContextBinding(project.metadata, binding) });
+          }
+          await stageBoundAppContextForRun({
+            projectsDir: PROJECTS_DIR,
+            appId: deterministicAppId,
+            featureId: projectId,
+            runId: `pipeline-docs-${randomUUID()}`,
+            ...(baseWfDir ? { workflowId: baseWfDir } : {}),
+            runCwd,
+            binding,
+          });
+        }
+        return runDocsDeterministic(pipelineId, projectId, wfDir, refs, input, source, resetScope, followLinks, includeDescendants);
+      }
 
       // Reached only with NO Confluence ref, and free-text input (if any)
       // that ISN'T JIRA-shaped either — i.e. nothing this daemon knows how
@@ -17021,7 +17355,7 @@ export async function startServer({
       }
     }
 
-    // PRD Mockup Review → parallel per-page fan-out (its own runner, one agent
+    // PRD Requirements Review → parallel per-page fan-out (its own runner, one agent
     // run per doc page, daemon-merged into review/index.json). Not a normal
     // single-agent stage.
     if (def.skillId === 'docs-mockup-review') {
@@ -17243,85 +17577,111 @@ export async function startServer({
           ' The daemon verified there is NO UX knowledge base available (no env override, nothing on the media store, no local folder) — produce the fallback report (knowledge_base: "unavailable") without hunting for it.';
       }
     }
-    // App context (shared cross-feature charter / IA / domain): if this feature
-    // is linked to an App (project.json.appId on the media store), stage the
-    // app's `app-context/**` into the run cwd as `./.app-context` and tell the
-    // agent to honor it, so every feature of the app stays consistent. Only the
-    // design stages consume it — the `docs` ingestion stage has nothing to align.
-    // Best-effort: unlinked features and any media error keep the kickoff
-    // byte-identical to the legacy one (appCtxDirective stays '').
-    let appCtxDirective = '';
-    if (def.id !== 'docs') {
-      try {
-        const appId = await resolveAppId(projectId);
-        if (appId) {
-          const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
-          const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
-          const staged = await stageAppContext(appId, runCwd);
-          appCtxDirective = appContextDirective(staged);
-        }
-      } catch (error) {
-        console.warn('[app-context] staging failed (continuing without it):', error);
-      }
-    }
     // App > feature scoping: the pipeline runs for a FEATURE; its parent App
-    // (from the Studio config mirrored on pull) is named too when present.
+    // is local metadata. Media is a publish target and is never consulted to
+    // choose a run's context version.
     const studioCfg = (project.metadata as Record<string, unknown> | undefined)?.studioConfig as
       | Record<string, unknown>
       | undefined;
+    const localAppId = typeof studioCfg?.appId === 'string' ? studioCfg.appId.trim() : '';
     const featureAppName =
       studioCfg && typeof studioCfg.appName === 'string' ? studioCfg.appName : '';
     const featureScope = featureAppName
       ? `feature "${projectId}" of app "${featureAppName}"`
       : `feature "${projectId}"`;
-    // App Docs Pool (docs/app-docs-pool-spec.md §2.4): MỌI stage (kể cả
-    // `docs` khi nó chạy bằng agent — nguồn Confluence trực tiếp/JIRA) của
-    // project gắn App được nạp CẢ pool trang gốc read-only vào `docs-app/`
-    // + directive ghim trong kickoff: đọc `_index.md` để nắm danh mục, làm
-    // việc chính trên `docs-feature/` (mặc định mọi workflow — quyết định
-    // 2026-08-08, thay cho tầng chưng cất `.app-docs` đã gỡ).
-    // Best-effort: an App with no pool yet (or any staging error) keeps the
-    // kickoff byte-identical to the legacy one (appDocsDirective stays '').
+
+    // Snapshot the App's LOCAL mutable context, then stage the immutable
+    // version deliberately bound to this Feature. A legacy Feature receives a
+    // one-time binding to current; an existing binding never auto-upgrades.
+    let appCtxDirective = '';
     let appDocsDirective = '';
-    {
+    let dsCriteriaKickoffDirective = '';
+    let versionedContextStaged = false;
+    if (localAppId) {
       try {
-        const poolAppId = typeof studioCfg?.appId === 'string' ? studioCfg.appId.trim() : '';
-        if (poolAppId) {
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+        // Compatibility import: old App context lived only on media. Import it
+        // once into the local mutable source before creating the first version.
+        await stageLocalAppContext(PROJECTS_DIR, localAppId, runCwd);
+        const localApp = getPipelineApp(db, localAppId);
+        const designSystemId = localApp?.designSystemId ?? criteriaDesignSystemForProject(projectId) ?? null;
+        const snapshot = await createAppContextVersion({
+          projectsDir: PROJECTS_DIR,
+          appId: localAppId,
+          appName: (localApp?.name ?? featureAppName) || localAppId,
+          designSystemId,
+          designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
+        });
+        let binding = featureContextBindingFromMetadata(project.metadata);
+        if (!binding || binding.appId !== localAppId) {
+          binding = {
+            schemaVersion: 1,
+            appId: localAppId,
+            contextVersion: snapshot.manifest.contextVersion,
+            contentDigest: snapshot.manifest.contentDigest,
+            boundAt: new Date().toISOString(),
+          };
+          updateProject(db, projectId, {
+            metadata: metadataWithFeatureContextBinding(project.metadata, binding),
+          });
+        }
+        const staged = await stageBoundAppContextForRun({
+          projectsDir: PROJECTS_DIR,
+          appId: localAppId,
+          featureId: projectId,
+          runId: conversationId,
+          ...(baseWfDir ? { workflowId: baseWfDir } : {}),
+          runCwd,
+          binding,
+        });
+        versionedContextStaged = true;
+        if (def.id !== 'docs') appCtxDirective = appContextDirective(staged.stagedAppContext);
+        appDocsDirective = appDocsPoolDirective(
+          staged.stagedDocs > 0 ? ['_versioned-context'] : [],
+          def.id,
+        );
+        if (def.usesDesignSystemCriteria) {
+          dsCriteriaKickoffDirective = dsCriteriaDirective({
+            hasRules: staged.stagedDesignSystem.includes('criteria/rules.md'),
+            hasComponents: staged.stagedDesignSystem.includes('criteria/components.md'),
+          });
+        }
+      } catch (error) {
+        // A bound immutable version is a reproducibility guarantee. Never
+        // silently substitute current App data when it is corrupt/missing.
+        throw error;
+      }
+    }
+
+    // Legacy fallback for unversioned/unlinked projects only.
+    if (!versionedContextStaged) {
+      try {
+        if (localAppId) {
           const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
           const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
-          const { staged } = await stageAppDocsPool(PROJECTS_DIR, poolAppId, runCwd);
+          const { staged } = await stageAppDocsPool(PROJECTS_DIR, localAppId, runCwd);
           appDocsDirective = appDocsPoolDirective(staged, def.id);
         }
       } catch (error) {
         console.warn('[app-pool] staging docs-app failed (continuing without it):', error);
       }
-    }
-    // Design System review criteria (stages with usesDesignSystemCriteria,
-    // today only `ux`): the DS attached to this feature's APP (not a
-    // per-run picker — see criteriaDesignSystemForProject) is the source of
-    // the same `criteria/rules.md` + `criteria/components.md` docs-review
-    // already reads at its own docs step. Staged into the RUN cwd (not the
-    // workflow root) because a multi-target run executes this stage inside
-    // <workflow>/<target>/ and the sandbox bind-mounts only that directory —
-    // a workflow-root copy would be invisible to the agent. Best-effort: no
-    // linked App, no DS, or a DS with no criteria/ yet all keep the kickoff
-    // byte-identical (dsCriteriaKickoffDirective stays '').
-    let dsCriteriaKickoffDirective = '';
-    if (def.usesDesignSystemCriteria) {
-      try {
-        const criteriaDsId = criteriaDesignSystemForProject(projectId);
-        if (criteriaDsId) {
-          const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
-          const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
-          await copyDsCriteriaIntoWorkflow(criteriaDsId, runCwd, dsDirForId);
-          const [hasRules, hasComponents] = await Promise.all([
-            fs.promises.stat(path.join(runCwd, 'criteria', 'rules.md')).then((s) => s.isFile()).catch(() => false),
-            fs.promises.stat(path.join(runCwd, 'criteria', 'components.md')).then((s) => s.isFile()).catch(() => false),
-          ]);
-          dsCriteriaKickoffDirective = dsCriteriaDirective({ hasRules, hasComponents });
+      if (def.usesDesignSystemCriteria) {
+        try {
+          const criteriaDsId = criteriaDesignSystemForProject(projectId);
+          if (criteriaDsId) {
+            const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+            const runCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+            await copyDsCriteriaIntoWorkflow(criteriaDsId, runCwd, dsDirForId);
+            const [hasRules, hasComponents] = await Promise.all([
+              fs.promises.stat(path.join(runCwd, 'criteria', 'rules.md')).then((s) => s.isFile()).catch(() => false),
+              fs.promises.stat(path.join(runCwd, 'criteria', 'components.md')).then((s) => s.isFile()).catch(() => false),
+            ]);
+            dsCriteriaKickoffDirective = dsCriteriaDirective({ hasRules, hasComponents });
+          }
+        } catch (error) {
+          console.warn('[ds-criteria] staging into run cwd failed (continuing without it):', error);
         }
-      } catch (error) {
-        console.warn('[ds-criteria] staging into run cwd failed (continuing without it):', error);
       }
     }
     // UI terminals (ui-html / ui-react / ui-react-ds) get the target-viewport
@@ -18466,6 +18826,14 @@ export async function startServer({
     db,
     paths: pathDeps,
   });
+
+  registerAppContextRoutes(app, {
+    db,
+    paths: pathDeps,
+    http: httpDeps,
+  });
+
+  registerOverviewRoutes(app, { db, paths: pathDeps, pipelines: pipelineDeps });
 
   // KG sync (pull-all/push-all) is registered here — after the pipeline file
   // helpers exist — so push-all can also upload output files and pull-all can

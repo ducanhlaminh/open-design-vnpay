@@ -37,6 +37,7 @@ import {
   workflowForPipeline,
 } from './pipelines.js';
 import type { RouteDeps } from './server-context.js';
+import { createAppContextVersion, featureContextBindingFromMetadata, parseAppContextManifest, readCurrentAppContextManifest } from './app-context-version.js';
 
 // `{ target: dsId }` request field → validated map. Unknown targets and
 // non-string/empty ids drop silently (same tolerance as the `targets` list);
@@ -202,7 +203,7 @@ import { publishPipelineEvaluation, readPipelineEvaluations } from './feedback.j
 // (`od kg pull`, metadata.source === 'kg-pull') OR created fresh for pipelines
 // (metadata.kind === 'pipeline'). Either way its id IS the KGS project_id.
 // Ephemeral chat/orbit/routine workspaces are NOT eligible.
-function isKgsProject(project: { metadata?: unknown } | null | undefined): boolean {
+export function isKgsProject(project: { metadata?: unknown } | null | undefined): boolean {
   const metadata = project?.metadata;
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
   const m = metadata as Record<string, unknown>;
@@ -256,7 +257,7 @@ function explicitStageSelectionFor(
 // project "xong" không được đọc thành dở dang vì các stage nó cố tình bỏ).
 // Tách ra khỏi route vì giờ có hai người gọi: badge tổng (theo workflow của
 // query) và mảng `workflows` (mọi workflow trong registry).
-function countWorkflowProgress(
+export function countWorkflowProgress(
   project: { metadata?: Record<string, unknown> } | null | undefined,
   state: ProjectPipelineState,
   pipelineIds: readonly string[],
@@ -274,6 +275,28 @@ function countWorkflowProgress(
       0,
     ),
   };
+}
+
+// Bước đang chạy của workflow: bước ĐẦU TIÊN (theo thứ tự pipelineIds) có
+// status running/queued. Trả tên hiển thị từ registry + updatedAt của lần đổi
+// trạng thái (mốc để FE tính "đã chạy N phút"). Tách riêng khỏi
+// countWorkflowProgress để không đổi chữ ký hàm đó (overview-routes.ts import).
+export function runningStageOf(
+  state: ProjectPipelineState,
+  pipelineIds: readonly string[],
+): { id: string; name: string; startedAt?: number } | undefined {
+  for (const id of pipelineIds) {
+    const st = state[id];
+    if (st?.status === 'running' || st?.status === 'queued') {
+      const def = getPipelineDef(id);
+      return {
+        id,
+        name: def?.name ?? id,
+        ...(typeof st.updatedAt === 'number' ? { startedAt: st.updatedAt } : {}),
+      };
+    }
+  }
+  return undefined;
 }
 
 // Validate the optional structured run source from the request body. Returns
@@ -329,6 +352,28 @@ export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines'
 
 export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutesDeps) {
   const { db } = ctx;
+
+  const snapshotKnownApp = async (appId: string) => {
+    const localApp = getPipelineApp(db, appId);
+    if (!localApp) return null;
+    let dsDir: string | null = null;
+    if (localApp.designSystemId) {
+      const bare = localApp.designSystemId.replace(/^user:/, '');
+      if (bare && !bare.includes('/') && !bare.includes('\\') && !bare.includes('..')) {
+        for (const root of [ctx.paths.USER_DESIGN_SYSTEMS_DIR, ctx.paths.DESIGN_SYSTEMS_DIR].filter((value): value is string => typeof value === 'string' && !!value)) {
+          const candidate = path.join(root, bare);
+          if (await fs.promises.stat(candidate).then((s) => s.isDirectory(), () => false)) { dsDir = candidate; break; }
+        }
+      }
+    }
+    return createAppContextVersion({
+      projectsDir: ctx.paths.PROJECTS_DIR,
+      appId,
+      appName: localApp.name,
+      designSystemId: localApp.designSystemId,
+      designSystemDir: dsDir,
+    });
+  };
 
   // Cross-device pipeline state = this device's local run metadata (transient
   // running/failed) merged with the media-service file store (durable "done"
@@ -388,6 +433,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       kgsProjects.map(async (p: { id: string; name: string; metadata?: Record<string, unknown> }) => {
         const { state } = await loadMergedState(p.id);
         const { done, total, running } = countWorkflowProgress(p, state, wf.pipelineIds);
+        const runningStage = runningStageOf(state, wf.pipelineIds);
         // Trạng thái của TỪNG workflow, đếm trên CÙNG state vừa nạp (không nạp
         // lại lần nào): badge một-workflow ở trên không nói được workflow nào
         // đang chạy, nên một feature đang chạy workflow khác vẫn báo "Chưa
@@ -419,10 +465,14 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           done,
           total,
           running,
+          ...(runningStage ? { runningStage } : {}),
           workflows,
           ...(config ? { config } : {}),
           ...(savedRunAll ? { savedRunAll } : {}),
           ...(appId ? { app: { id: appId, ...(appName ? { name: appName } : {}) } } : {}),
+          ...(featureContextBindingFromMetadata(p.metadata)
+            ? { appContextBinding: featureContextBindingFromMetadata(p.metadata)! }
+            : {}),
         };
       }),
     );
@@ -578,6 +628,10 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       /* stores unreachable → chỉ dựa vào check cục bộ ở trên */
     }
     insertPipelineApp(db, { id: appId, name, designSystemId, createdAt: Date.now() });
+    // A truly empty App has no Context bytes yet. Its first pool/context edit,
+    // DS assignment, run, or Push creates v1; assigning a DS at creation is
+    // already meaningful context and snapshots immediately.
+    if (designSystemId) await snapshotKnownApp(appId);
     res.status(201).json({ id: appId, name, designSystemId });
   });
 
@@ -614,13 +668,39 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     } catch {
       /* stores unreachable → local-only picker */
     }
-    const apps = Array.from(byId.values())
+    const media = new MediaClient(mediaConfigFromEnv());
+    const apps = await Promise.all(Array.from(byId.values())
       .sort((a, b) => a.id.localeCompare(b.id))
-      .map((e) => ({
-        id: e.id,
-        ...(e.name ? { name: e.name } : {}),
-        designSystemId: e.designSystemId,
-        origin: e.origin,
+      .map(async (e) => {
+        const localCurrent = await readCurrentAppContextManifest(ctx.paths.PROJECTS_DIR, e.id);
+        let current = localCurrent;
+        if (!current && e.origin === 'remote') {
+          try {
+            const pointer = JSON.parse((await media.downloadFile(e.id, 'context/current.json')).toString('utf8')) as Record<string, unknown>;
+            const version = typeof pointer.contextVersion === 'string' && /^v[1-9]\d*$/.test(pointer.contextVersion)
+              ? pointer.contextVersion
+              : null;
+            if (version) {
+              current = parseAppContextManifest(JSON.parse(
+                (await media.downloadFile(e.id, `context/versions/${version}/manifest.json`)).toString('utf8'),
+              ));
+            }
+          } catch {
+            // Legacy remote App: no version metadata.
+          }
+        }
+        return {
+          id: e.id,
+          ...(e.name ? { name: e.name } : {}),
+          designSystemId: e.designSystemId,
+          origin: e.origin,
+          ...(current || localCurrent ? { context: {
+              current,
+              latestVersion: current?.contextVersion ?? null,
+              latestDigest: current?.contentDigest ?? null,
+              localCurrentDigest: localCurrent?.contentDigest ?? null,
+            } } : {}),
+        };
       }));
     res.json({ apps });
   });
@@ -702,6 +782,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       setPipelineAppDesignSystem(db, { id: appId, ...(hasName && name ? { name } : {}), designSystemId, createdAt: Date.now() });
     }
     const updated = getPipelineApp(db, appId);
+    await snapshotKnownApp(appId);
     res.json({ id: appId, name: updated?.name ?? name, designSystemId: updated?.designSystemId ?? null });
   });
 
@@ -945,6 +1026,26 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       installationId: config.installationId || 'unknown-install',
     };
   };
+
+  app.post('/api/projects/:id/docs-review/confirm', async (req, res) => {
+    const projectId = req.params.id;
+    if (!getProject(db, projectId)) return res.status(404).json({ error: 'project not found' });
+    const confirmationId = typeof req.body?.confirmationId === 'string' ? req.body.confirmationId : undefined;
+    const sourceRunId = typeof req.body?.sourceRunId === 'string' ? req.body.sourceRunId : undefined;
+    try {
+      // Go through the deterministic `dr-confirm` runner rather than calling
+      // the uploader directly: this is what makes the UI/CLI confirmation
+      // visible as the final pipeline stage and records its normal history.
+      const started = await ctx.pipelines.runPipeline(projectId, 'dr-confirm', {
+        ...(confirmationId ? { docsReviewConfirmationId: confirmationId } : {}),
+        ...(sourceRunId ? { docsReviewSourceRunId: sourceRunId } : {}),
+      });
+      if (!started.docsReviewConfirmation) throw new Error('docs-review confirmation runner is unavailable');
+      res.status(201).json(await started.docsReviewConfirmation);
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
 
   app.get('/api/pipelines/feedback/forms', (req, res) => {
     const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
@@ -1630,7 +1731,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
             (t: unknown) => t === 'mobile' || t === 'web-user' || t === 'web-backoffice',
           ) as import('@open-design/contracts').UiTarget[])
         : undefined;
-      const { completion: _completion, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, {
+      const { completion: _completion, docsReviewConfirmation: _docsReviewConfirmation, ...start } = await ctx.pipelines.runPipeline(projectId, def.id, {
         input,
         source,
         designSystemId,

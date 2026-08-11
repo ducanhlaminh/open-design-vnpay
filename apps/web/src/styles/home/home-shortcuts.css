@@ -1,0 +1,181 @@
+/* ============================================================
+   Home — phím tắt workspace dưới composer (OverviewShortcutTabs).
+   Bố cục Tabs + Content: một dải tab (App | Feature | Design
+   System Figma), khung nội dung hiện card của tab đang chọn.
+   Card kiểu hàng ngang (icon + tên + meta + chevron), bám token
+   chung để ăn theme.
+   ============================================================ */
+
+.home-shortcuts {
+  width: min(960px, 100%);
+  margin: 36px auto 8px;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* --- Dải tab ------------------------------------------------ */
+.home-shortcuts__tabs {
+  align-self: center;
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-subtle);
+}
+.home-shortcuts__tab {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 9px;
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+.home-shortcuts__tab:hover {
+  color: var(--text);
+}
+.home-shortcuts__tab.is-active {
+  color: var(--text);
+  background: var(--bg-panel);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+}
+.home-shortcuts__count {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.home-shortcuts__tab.is-active .home-shortcuts__count {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-subtle));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--accent);
+}
+
+/* --- Khung nội dung ---------------------------------------- */
+.home-shortcuts__panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.home-shortcuts__card {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+.home-shortcuts__card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+.home-shortcuts__card:hover .home-shortcuts__chevron {
+  opacity: 1;
+  transform: translateX(2px);
+}
+
+.home-shortcuts__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+/* Design System Figma nhận accent đỏ thương hiệu, khớp lối
+   recent-projects đánh dấu project design-system. */
+.home-shortcuts__icon.is-ds {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 40%, var(--border));
+  background: color-mix(in srgb, var(--red) 8%, var(--bg-subtle));
+}
+
+.home-shortcuts__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.home-shortcuts__body strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-shortcuts__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.home-shortcuts__app-badge {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  font-size: 10.5px;
+}
+
+.home-shortcuts__progress {
+  flex: 1;
+  min-width: 24px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.home-shortcuts__progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, transparent));
+  transition: width 200ms ease;
+}
+.home-shortcuts__ratio {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.home-shortcuts__chevron {
+  flex: none;
+  color: var(--text-muted);
+  opacity: 0.35;
+  transition: opacity 120ms ease, transform 120ms ease;
+}

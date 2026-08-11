@@ -358,6 +358,7 @@ export const fa: Dict = {
   'entry.navNewProject': 'پروژه جدید',
   'entry.navHome': 'خانه',
   'entry.navProjects': 'پروژه‌ها',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navDesignSystems': 'سیستم‌های طراحی',
   'entry.helpAria': 'راهنما',
   'entry.helpMenuAria': 'منوی راهنما',

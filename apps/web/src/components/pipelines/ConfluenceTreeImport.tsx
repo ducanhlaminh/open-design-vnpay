@@ -236,10 +236,6 @@ function buildConfluenceDescTree(
 
 /** Every descendant id under a node, NOT including the node itself — what a
  *  cascade-tick on this node must also add/remove from the ticked set. */
-function collectDescendantIds(node: ConfluenceDescNode): string[] {
-  return node.children.flatMap((c) => [c.id, ...collectDescendantIds(c)]);
-}
-
 /** Indexes every node (top-level hit AND every nested descendant) across
  *  every subtree fetched so far, by pageId — cascade-tick needs to resolve
  *  ANY ticked id (not just top-level hit ids) to its node, since the user can
@@ -256,6 +252,10 @@ function buildConfluenceNodeIndex(
     if (tree && tree !== 'loading' && tree !== 'error') walk(tree);
   }
   return idx;
+}
+
+function collectDescendantIds(node: ConfluenceDescNode): string[] {
+  return node.children.flatMap((child) => [child.id, ...collectDescendantIds(child)]);
 }
 
 export interface ConfluenceTreePickerProps {
@@ -423,39 +423,34 @@ export function ConfluenceTreePicker({
     });
   }, [hits, nodeIndex, related]);
 
-  // Cascade tick: checking a node checks its whole loaded subtree too;
-  // unchecking mirrors it. If the subtree isn't fetched yet, only the node's
-  // own id moves — the effect below catches the subtree up once it loads.
+  // Checkbox cho phép chọn nhiều tài liệu; chọn trang cha sẽ chọn cả cây con
+  // đã nạp để khi nhập không mất các trang liên quan trong cùng nhánh.
   const toggleNode = (id: string) => {
     const node = nodeIndex.get(id);
-    const descendantIds = node ? collectDescendantIds(node) : [];
+    const descendants = node ? collectDescendantIds(node) : [];
     const next = new Set(ticked);
     if (next.has(id)) {
       next.delete(id);
-      descendantIds.forEach((d) => next.delete(d));
+      descendants.forEach((childId) => next.delete(childId));
     } else {
       next.add(id);
-      descendantIds.forEach((d) => next.add(d));
+      descendants.forEach((childId) => next.add(childId));
     }
     onTickedChange(next);
   };
 
-  // A subtree can finish loading AFTER its root was already ticked (the
-  // eager fetch races the user's click) — once that data lands, cascade the
-  // tick down onto whatever descendant ids are still missing so "checking a
-  // parent checks its whole subtree" holds regardless of fetch timing.
   useEffect(() => {
     const missing = new Set<string>();
     for (const id of ticked) {
       const node = nodeIndex.get(id);
       if (!node) continue;
-      for (const d of collectDescendantIds(node)) {
-        if (!ticked.has(d)) missing.add(d);
+      for (const childId of collectDescendantIds(node)) {
+        if (!ticked.has(childId)) missing.add(childId);
       }
     }
     if (missing.size === 0) return;
     const next = new Set(ticked);
-    missing.forEach((d) => next.add(d));
+    missing.forEach((childId) => next.add(childId));
     onTickedChange(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeIndex]);
@@ -473,13 +468,18 @@ export function ConfluenceTreePicker({
         >
           {renderTickBox(node.id, node.title, () => toggleNode(node.id))}
           <span className={styles.optionTitle}>{node.title}</span>
-          {/* Mũi tên ở BÊN PHẢI: cột trái thuộc về ô tick — thứ người dùng bấm
-              liên tục — nên nó phải thẳng hàng ở mọi độ sâu, không bị đẩy tới
-              lui tuỳ trang đó có con hay không. */}
+          {/* Nút tròn ở mép phải chỉ dùng để mở/đóng cây, tách hẳn khỏi radio
+              chọn tài liệu ở bên trái. */}
           {hasKids ? (
-            <span className={styles.chevron} aria-hidden="true">
+            <button
+              type="button"
+              className={`${styles.chevron}${isExpanded ? ' ' + styles.chevronOpen : ''}`}
+              aria-label={`${isExpanded ? 'Thu gọn' : 'Mở'} ${node.title}`}
+              aria-expanded={isExpanded}
+              onClick={(event) => { event.stopPropagation(); toggleExpandedNode(node.id); }}
+            >
               <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
-            </span>
+            </button>
           ) : null}
         </div>
         {isExpanded ? node.children.map((c) => renderDescNode(c, depth + 1)) : null}
@@ -524,9 +524,15 @@ export function ConfluenceTreePicker({
             <span className={styles.optionMeta}>{meta.text}</span>
           </span>
           {showChevron ? (
-            <span className={styles.chevron} aria-hidden="true">
+            <button
+              type="button"
+              className={`${styles.chevron}${isExpanded ? ' ' + styles.chevronOpen : ''}`}
+              aria-label={`${isExpanded ? 'Thu gọn' : 'Mở'} ${h.title}`}
+              aria-expanded={isExpanded}
+              onClick={(event) => { event.stopPropagation(); toggleExpandedNode(h.id); }}
+            >
               <Icon name={desc === 'loading' ? 'spinner' : isExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
-            </span>
+            </button>
           ) : null}
         </div>
         {isExpanded && desc === 'loading' ? (
@@ -549,48 +555,30 @@ export function ConfluenceTreePicker({
     );
   };
 
-  /**
-   * Trạng thái ô tick của một trang, xét CẢ cây con của nó.
-   *
-   * Ba giá trị chứ không phải hai, vì cây này cho tick lẻ từng trang con: tick
-   * trang cha kéo cả cây con theo, nhưng bỏ tick một trang con KHÔNG bỏ tick
-   * trang cha. Không có trạng thái giữa thì trang cha đó hiện dấu tick đầy đủ
-   * trong khi cây con của nó đã thủng lỗ chỗ — người dùng đóng cây lại là mất
-   * hẳn dấu vết, và tin rằng cả nhánh sẽ được nhập.
-   *
-   * Trang chưa nạp cây con (hoặc là lá) chỉ có hai trạng thái như thường.
-   */
-  const tickStateOf = (pageId: string): 'on' | 'partial' | 'off' => {
-    const self = ticked.has(pageId);
-    const node = nodeIndex.get(pageId);
-    const kids = node ? collectDescendantIds(node) : [];
-    if (kids.length === 0) return self ? 'on' : 'off';
-    if (self && kids.every((k) => ticked.has(k))) return 'on';
-    if (self || kids.some((k) => ticked.has(k))) return 'partial';
-    return 'off';
-  };
-
-  /** Ô tick dùng chung cho hàng kết quả và hàng cây con — điều khiển RIÊNG,
-   *  không ăn theo cú bấm mở/đóng của cả hàng. */
+  /** Checkbox dùng chung cho hàng kết quả và hàng cây con. */
   const renderTickBox = (pageId: string, title: string, onToggle: () => void) => {
-    const state = tickStateOf(pageId);
+    const selected = ticked.has(pageId);
+    const node = nodeIndex.get(pageId);
+    const children = node ? collectDescendantIds(node) : [];
+    const partial = children.length > 0 && (
+      selected
+        ? children.some((childId) => !ticked.has(childId))
+        : children.some((childId) => ticked.has(childId))
+    );
     return (
       <button
         type="button"
-        className={`${styles.checkbox} ${styles.checkboxBtn}${
-          state === 'on' ? ' ' + styles.checkboxOn : state === 'partial' ? ' ' + styles.checkboxPartial : ''
-        }`}
-        aria-checked={state === 'on' ? 'true' : state === 'partial' ? 'mixed' : 'false'}
+        className={`${styles.checkbox} ${styles.checkboxBtn}${selected ? ' ' + styles.checkboxOn : partial ? ' ' + styles.checkboxPartial : ''}`}
+        aria-checked={partial ? 'mixed' : selected}
         role="checkbox"
-        aria-label={`${state === 'off' ? 'Tick' : 'Bỏ tick'} ${title}`}
+        aria-label={`${selected ? 'Bỏ chọn' : 'Chọn'} ${title}`}
         disabled={disabled}
         onClick={(e) => {
           e.stopPropagation();
           onToggle();
         }}
       >
-        {state === 'on' ? <Icon name="check" size={11} /> : null}
-        {state === 'partial' ? <Icon name="minus" size={11} /> : null}
+        {selected ? <Icon name="check" size={11} /> : partial ? <Icon name="minus" size={11} /> : null}
       </button>
     );
   };
@@ -649,14 +637,14 @@ export function ConfluenceTreePicker({
           </button>
         ) : null}
         <span className={`${styles.pickerCount}${ticked.size > 0 ? ' ' + styles.pickerCountOn : ''}`}>
-          {ticked.size > 0 ? `${ticked.size} trang đã tick` : 'Chưa tick trang nào'}
+          {ticked.size > 0 ? `${ticked.size} trang đã chọn` : 'Chưa tick trang nào'}
         </span>
       </div>
 
       {/* MỘT vùng, hai chế độ: đang gõ → kết quả tìm; ô tìm trống → các trang
           đã tick (+ tài liệu liên quan nếu đã quét). Chip đếm ở đầu panel luôn
           hiện tổng, nên chuyển chế độ không bao giờ làm mất dấu con số. */}
-      <div className={styles.pickerBody} id={`${id ?? 'confluence-picker'}-results`} role="listbox">
+      <div className={styles.pickerBody} id={`${id ?? 'confluence-picker'}-results`} role="listbox" aria-label="Chọn tài liệu Confluence">
         {searching ? (
           loading ? (
             <p className={styles.msg}>Đang tìm…</p>
@@ -670,17 +658,15 @@ export function ConfluenceTreePicker({
         ) : null}
         {!searching && ticked.size === 0 && !related?.length ? (
           <p className={styles.pickerEmpty}>
-            Gõ tên trang vào ô trên để tìm. Tick một trang cha sẽ tick cả cây con của nó.
+            Gõ tên trang vào ô trên để tìm, rồi chọn các tài liệu cần dùng.
           </p>
         ) : null}
         {!searching && ticked.size > 0 ? (
           <>
-            <p className={styles.groupHead}>Trang đã tick</p>
+            <p className={styles.groupHead}>Tài liệu đã chọn</p>
             {[...ticked].map((id) => (
               <div key={id} className={styles.pickedRow}>
-                <span className={`${styles.checkbox} ${styles.checkboxOn}`}>
-                  <Icon name="check" size={11} />
-                </span>
+                <span className={`${styles.checkbox} ${styles.checkboxOn}`} aria-hidden><Icon name="check" size={11} /></span>
                 <span className={styles.pickedTitle} title={titleCache[id] ?? id}>
                   {titleCache[id] ?? id}
                 </span>
@@ -729,13 +715,13 @@ export function ConfluenceTreePicker({
             ? relatedError
             : related && related.length === 0
               ? 'Không tìm thấy tài liệu liên quan từ các trang đã tick.'
-              : 'Quét để tìm trang được link từ những trang đã tick.'}
+              : 'Quét để tìm tài liệu liên quan từ những trang đã tick.'}
         </span>
         <button
           type="button"
           className={styles.relatedScan}
           disabled={disabled || relatedLoading || ticked.size === 0}
-          title={ticked.size === 0 ? 'Tick ít nhất một trang trước rồi quét' : 'Tìm các trang được link từ những trang đã tick (depth-1)'}
+          title={ticked.size === 0 ? 'Tick ít nhất một trang trước rồi quét' : 'Tìm các trang được link từ những trang đã tick'}
           onClick={() => void scanRelated()}
         >
           <Icon name={relatedLoading ? 'spinner' : 'link'} size={13} />

@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ComponentProps } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DesignSystemSummary } from '../../src/types';
 
@@ -12,9 +12,6 @@ vi.mock('../../src/providers/registry', () => ({
 
 import { ProjectDesignSystemPicker } from '../../src/components/ProjectDesignSystemPicker';
 import { I18nProvider, type Locale } from '../../src/i18n';
-import { fetchDesignSystemPreview } from '../../src/providers/registry';
-
-const fetchDesignSystemPreviewMock = vi.mocked(fetchDesignSystemPreview);
 
 const designSystems: DesignSystemSummary[] = [
   {
@@ -32,10 +29,6 @@ const designSystems: DesignSystemSummary[] = [
     swatches: ['#111111', '#f7f0e8'],
   },
 ];
-
-beforeEach(() => {
-  fetchDesignSystemPreviewMock.mockResolvedValue('<html><body><h1>Preview</h1></body></html>');
-});
 
 afterEach(() => {
   cleanup();
@@ -59,47 +52,30 @@ describe('ProjectDesignSystemPicker', () => {
     );
   }
 
-  it('checks the active project design system and previews it by default', async () => {
+  it('renders the active design system directly in the form list', () => {
     renderPicker();
 
-    fireEvent.click(screen.getByTestId('project-ds-picker-trigger'));
-
-    const activeOption = await screen.findByTestId('project-ds-picker-option-noir');
-    expect(activeOption.getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByTestId('project-ds-picker-option-noir-check')).toBeTruthy();
-
-    await waitFor(() => {
-      expect(fetchDesignSystemPreviewMock).toHaveBeenCalledWith('noir');
-    });
-    expect(await screen.findByTestId('project-ds-picker-preview-frame')).toBeTruthy();
+    const activeOption = screen.getByTestId('project-ds-picker-option-noir');
+    expect(activeOption.getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByTestId('project-ds-picker-trigger')).toBeNull();
   });
 
-  it('updates the preview target on hover and opens the fullscreen preview', async () => {
-    renderPicker();
+  it('filters and selects directly without opening a dropdown', () => {
+    const onChange = vi.fn();
+    renderPicker({ onChange });
 
-    fireEvent.click(screen.getByTestId('project-ds-picker-trigger'));
-    await screen.findByTestId('project-ds-picker-preview-frame');
-
-    fireEvent.mouseEnter(screen.getByTestId('project-ds-picker-option-clay'));
-    await waitFor(() => {
-      expect(fetchDesignSystemPreviewMock).toHaveBeenCalledWith('clay');
-    });
-
-    fireEvent.click(await screen.findByTestId('project-ds-picker-preview-expand'));
-    expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(screen.getAllByText('Clay').length).toBeGreaterThan(0);
-
-    fireEvent.click(screen.getByLabelText('关闭全屏预览'));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.change(screen.getByTestId('project-ds-picker-search'), { target: { value: 'Clay' } });
+    expect(screen.getByTestId('project-ds-picker-option-clay')).toBeTruthy();
+    expect(screen.queryByTestId('project-ds-picker-option-noir')).toBeNull();
+    fireEvent.click(screen.getByTestId('project-ds-picker-option-clay'));
+    expect(onChange).toHaveBeenCalledWith('clay');
   });
 
-  it('uses localized picker copy and design-system category labels', async () => {
+  it('uses localized picker copy and design-system category labels', () => {
     renderPicker({}, 'fr');
 
-    fireEvent.click(screen.getByTestId('project-ds-picker-trigger'));
-
     expect(screen.getByPlaceholderText('Rechercher des design systems')).toBeTruthy();
-    expect(await screen.findByText('Produit')).toBeTruthy();
+    expect(screen.getByText(/Produit ·/)).toBeTruthy();
     expect(screen.getByText('Aucun design system')).toBeTruthy();
   });
 });

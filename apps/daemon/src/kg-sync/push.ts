@@ -32,6 +32,8 @@ export async function pushProject(
   cfg: KgsClientConfig,
   now: number,
   logId: string,
+  /** Approved remote id. Local rows/logs remain keyed by projectId. */
+  remoteProjectId: string = projectId,
 ): Promise<KgPushResult> {
   const client = new KgsClient(cfg);
   const repo = new KgSyncRepo(db);
@@ -54,7 +56,7 @@ export async function pushProject(
       continue;
     }
     const key = nodeKey(n);
-    const props = { ...n.props, id: key, app_id: cfg.appId, project_id: projectId };
+    const props = { ...n.props, id: key, app_id: cfg.appId, project_id: remoteProjectId };
     try {
       const res = await client.createNode(label, props);
       if (res === 'exists' && n.provenance === 'local-edited') {
@@ -88,7 +90,7 @@ export async function pushProject(
       await client.createEdge(e.fromId, e.toId, e.relType, {
         ...e.props,
         app_id: cfg.appId,
-        project_id: projectId,
+        project_id: remoteProjectId,
       });
       repo.markEdgePushed(projectId, e.edgeId, now);
       edgesPushed++;

@@ -812,6 +812,265 @@
 .dismissed { opacity: .58; }
 .badgeEdited { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10.5px; font-weight: 650; background: rgba(37, 99, 235, .12); color: #1d4ed8; }
 
+.originAgent,
+.originUser {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.originAgent {
+  color: var(--accent, #0066b3);
+  background: color-mix(in srgb, var(--accent, #0066b3) 10%, transparent);
+}
+
+.originUser {
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.1);
+}
+
+.userToolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-panel, #fff);
+}
+
+.userToolbarHint {
+  margin-right: 2px;
+  color: var(--text-muted, #6b7280);
+  font-size: 11px;
+}
+
+.userToolbar button,
+.annotationComposer button {
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg-panel, #fff);
+  color: var(--text, #1a1a1a);
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.userToolbar button:hover,
+.annotationComposer button:hover {
+  border-color: var(--accent, #0066b3);
+}
+
+.userToolbar button:active,
+.annotationComposer button:active,
+.confirmButton:active {
+  transform: translateY(1px);
+}
+
+.toolbarError {
+  color: var(--red, #dc2626);
+  font-size: 11px;
+}
+
+.annotationComposer {
+  flex: 0 0 auto;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: color-mix(in srgb, var(--accent, #0066b3) 5%, var(--bg-panel, #fff));
+}
+
+.annotationComposerHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.selectedQuote {
+  margin: 0 0 8px;
+  color: var(--text-muted, #6b7280);
+  font-size: 11px;
+}
+
+.annotationComposer textarea,
+.annotationComposer input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text, #1a1a1a);
+  font: inherit;
+  font-size: 12px;
+}
+
+.annotationComposer textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.annotationComposer textarea:focus,
+.annotationComposer input:focus {
+  border-color: var(--accent, #0066b3);
+  outline: 2px solid color-mix(in srgb, var(--accent, #0066b3) 18%, transparent);
+  outline-offset: 1px;
+}
+
+.confirmPanel {
+  margin-top: auto;
+  padding: 14px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 10px;
+  background: var(--bg-subtle, #f5f6f8);
+}
+
+.confirmHeading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.confirmHeading h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-strong, #1a1a1a);
+}
+
+.confirmHeading p,
+.confirmDetail,
+.confirmHint {
+  margin: 3px 0 0;
+  color: var(--text-muted, #6b7280);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.metricRows {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.metricRows > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  padding: 8px;
+  border: 1px solid var(--border-soft, #edf0f4);
+  border-radius: 8px;
+  background: var(--bg-panel, #fff);
+}
+
+.metricRows span {
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.metricRows strong {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.metricRows small {
+  grid-column: 1 / -1;
+  color: var(--text-muted, #6b7280);
+  font-size: 9.5px;
+}
+
+.receipt,
+.staleReceipt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 9px;
+  padding: 8px;
+  border-radius: 8px;
+  font-size: 10.5px;
+}
+
+.receipt {
+  color: #166534;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.staleReceipt {
+  color: var(--amber, #b45309);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.receipt code,
+.staleReceipt code {
+  overflow-wrap: anywhere;
+  font-size: 9.5px;
+}
+
+.confirmedBadge {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 6px;
+  color: #166534;
+  background: rgba(34, 197, 94, 0.12);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.confirmError {
+  margin: 8px 0 0;
+  color: var(--red, #dc2626);
+  font-size: 10.5px;
+}
+
+.confirmButton {
+  width: 100%;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--accent, #0066b3);
+  border-radius: 7px;
+  background: var(--accent, #0066b3);
+  color: #fff;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.confirmButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 760px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .docCol {
+    min-height: 50vh;
+  }
+
+  .rail {
+    height: auto;
+    max-height: 52vh;
+    border-top: 1px solid var(--border, #e1e5eb);
+    border-left: 0;
+  }
+
+  .metricRows {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── Đánh số map lỗi ↔ vùng bôi ─────────────────────────────────────────────
    Cùng một số hiện ở BA nơi: badge đầu thẻ lý do, con số nhỏ dính vào vùng bôi
    trong tài liệu (mark[data-od-idx] — component dán attr, CSS vẽ), và cột STT

@@ -356,6 +356,7 @@ export const ar: Dict = {
   'entry.navNewProject': 'مشروع جديد',
   'entry.navHome': 'الرئيسية',
   'entry.navProjects': 'المشاريع',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navDesignSystems': 'أنظمة التصميم',
   'entry.helpAria': 'المساعدة',
   'entry.helpMenuAria': 'قائمة المساعدة',

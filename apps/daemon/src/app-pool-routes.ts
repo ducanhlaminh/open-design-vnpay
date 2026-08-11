@@ -4,7 +4,11 @@
 
 import type { Express } from 'express';
 
-import { listPipelineApps, listProjects } from './db.js';
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { getPipelineApp, listPipelineApps, listProjects } from './db.js';
+import { createAppContextVersion } from './app-context-version.js';
 import {
   deletePoolPages,
   importConfluenceIntoPool,
@@ -18,6 +22,8 @@ export interface RegisterAppPoolRoutesDeps {
   paths: {
     PROJECTS_DIR: string;
     RUNTIME_DATA_DIR: string;
+    DESIGN_SYSTEMS_DIR: string;
+    USER_DESIGN_SYSTEMS_DIR: string;
   };
 }
 
@@ -38,6 +44,37 @@ function appExistsLocally(db: any, appId: string): boolean {
 
 export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDeps) {
   const { db, paths } = ctx;
+
+  const versionAfterMutation = async (appId: string) => {
+    const app = getPipelineApp(db, appId);
+    const linked = listProjects(db).find((p: { metadata?: Record<string, unknown> }) => {
+      const sc = p.metadata?.studioConfig;
+      return sc && typeof sc === 'object' && !Array.isArray(sc) && (sc as Record<string, unknown>).appId === appId;
+    }) as { metadata?: Record<string, unknown> } | undefined;
+    const sc = linked?.metadata?.studioConfig as Record<string, unknown> | undefined;
+    const appName = app?.name ?? (typeof sc?.appName === 'string' ? sc.appName : appId);
+    const designSystemId = app?.designSystemId ?? (typeof sc?.designSystemId === 'string' ? sc.designSystemId : null);
+    let designSystemDir: string | null = null;
+    if (designSystemId) {
+      const bare = designSystemId.replace(/^user:/, '');
+      if (bare && !bare.includes('/') && !bare.includes('\\') && !bare.includes('..')) {
+        for (const root of [paths.USER_DESIGN_SYSTEMS_DIR, paths.DESIGN_SYSTEMS_DIR]) {
+          const candidate = path.join(root, bare);
+          if (await fs.promises.stat(candidate).then((s) => s.isDirectory(), () => false)) {
+            designSystemDir = candidate;
+            break;
+          }
+        }
+      }
+    }
+    return createAppContextVersion({
+      projectsDir: paths.PROJECTS_DIR,
+      appId,
+      appName,
+      designSystemId,
+      designSystemDir,
+    });
+  };
 
   // POST /api/pipelines/confluence/linked-pages — discover depth-1 linked pages.
   app.post('/api/pipelines/confluence/linked-pages', async (req, res) => {
@@ -90,7 +127,8 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
         followLinks,
         includeDescendants,
       });
-      res.json(result);
+      const contextVersion = await versionAfterMutation(appId);
+      res.json({ ...result, contextVersion: contextVersion.manifest });
     } catch (err: any) {
       res.status(502).json({ error: String(err?.message ?? err) });
     }
@@ -123,7 +161,8 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
     if (pageIds.length === 0) return res.status(400).json({ error: 'pageIds is required' });
     try {
       const manifest = await deletePoolPages(paths.PROJECTS_DIR, appId, pageIds);
-      res.json({ ok: true, pages: manifest.pages });
+      const contextVersion = await versionAfterMutation(appId);
+      res.json({ ok: true, pages: manifest.pages, contextVersion: contextVersion.manifest });
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
     }

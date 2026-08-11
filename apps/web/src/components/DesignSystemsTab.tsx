@@ -23,6 +23,7 @@ import {
 } from '../providers/registry';
 import { buildSrcdoc } from '../runtime/srcdoc';
 import { Icon } from './Icon';
+import { DesignSystemSyncActions } from './DesignSystemSync';
 import type { DesignSystemSummary, ProjectTemplate, Surface } from '../types';
 
 interface Props {
@@ -141,6 +142,7 @@ export function DesignSystemsTab({
   const [filter, setFilter] = useState('');
   const [userFilter, setUserFilter] = useState<UserListFilter>('all');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionMenuId, setActionMenuId] = useState<string | null>(null);
   // Import trực tiếp từ zip của plugin Fig Pipeline ngay trên trang này —
   // chọn file là import luôn (không form phụ); xong thì refresh danh sách.
   // Lọc theo product family: app mobile (fixed viewport) vs website
@@ -551,6 +553,11 @@ export function DesignSystemsTab({
           </select>
         </div>
 
+        <DesignSystemSyncActions
+          systems={systems}
+          onSystemsRefresh={onSystemsRefresh}
+        />
+
         {onCreate ? (
           <button type="button" className="ds-create-row" onClick={onCreate}>
             <span>
@@ -636,104 +643,39 @@ export function DesignSystemsTab({
                     </span>
                     <span className="ds-user-row__meta">
                       You · updated {formatShortDate(system.updatedAt)}
+                      {system.platform ? ` · ${system.platform === 'mobile' ? 'Mobile' : 'Web'}` : ''}
                     </span>
                   </button>
                   <div className="ds-user-row__actions">
-                    {/* Gắn thẻ platform một chạm (bấm lại = gỡ) — nguồn cho
-                        tab Mobile/Web ở trên và picker DS per target. */}
-                    <button
-                      type="button"
-                      className={`ghost compact${system.platform === 'mobile' ? ' active' : ''}`}
-                      onClick={() => void setSystemPlatform(system, 'mobile')}
-                      disabled={busy || platformBusyId === system.id}
-                      title="Gắn thẻ Mobile (app fixed viewport)"
-                      aria-pressed={system.platform === 'mobile'}
-                    >
-                      M
-                    </button>
-                    <button
-                      type="button"
-                      className={`ghost compact${system.platform === 'web' ? ' active' : ''}`}
-                      onClick={() => void setSystemPlatform(system, 'web')}
-                      disabled={busy || platformBusyId === system.id}
-                      title="Gắn thẻ Web (website responsive)"
-                      aria-pressed={system.platform === 'web'}
-                    >
-                      W
-                    </button>
-                    {onOpenSystem ? (
-                      <button
-                        type="button"
-                        className="ghost compact"
-                        onClick={() => onOpenSystem(system.id)}
-                        disabled={busy}
-                      >
-                        Edit
-                      </button>
-                    ) : null}
-                    {system.hasReactBundle && onOpenCriteria ? (
-                      <button
-                        type="button"
-                        className="ghost compact"
-                        onClick={() => onOpenCriteria(system.id)}
-                        disabled={busy}
-                      >
-                        Danh mục review
-                      </button>
-                    ) : null}
-                    {!selected && canUseInProjects ? (
-                      <button
-                        type="button"
-                        className="ghost compact"
-                        onClick={() => handleMakeDefaultClick(system)}
-                        disabled={busy}
-                      >
-                        Make default
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className={`ds-status-toggle ${status === 'published' ? 'is-on' : ''}`}
-                      aria-pressed={status === 'published'}
-                      onClick={() => void togglePublished(system)}
-                      disabled={busy}
-                    >
-                      <span>{status === 'published' ? 'Published' : 'Draft'}</span>
-                      <i aria-hidden />
-                    </button>
-                    {/* DS Figma (có react bundle): nút này mở PREVIEW toàn màn
-                        hình 3 tab Showcase / Thành phần / Nguyên tắc. Với DS
-                        thường thì giữ hành vi cũ là mở màn chi tiết — nút
-                        "Edit" ngay bên trái đã lo đường vào màn Edit rồi. */}
-                    {system.hasReactBundle && onPreviewFullscreen ? (
+                    <span className={`ds-user-row__status ${status === 'published' ? 'is-published' : ''}`}>
+                      {status === 'published' ? 'Đã xuất bản' : 'Bản nháp'}
+                    </span>
+                    <div className="ds-type-switch" role="group" aria-label="Loại Design System">
+                      <button type="button" aria-pressed={system.platform === 'mobile'} onClick={() => void setSystemPlatform(system, 'mobile')}>Mobile</button>
+                      <button type="button" aria-pressed={system.platform === 'web'} onClick={() => void setSystemPlatform(system, 'web')}>Web</button>
+                    </div>
+                    <div className="ds-user-row__menu-wrap">
                       <button
                         type="button"
                         className="icon-btn"
-                        aria-label={`Preview ${system.title}`}
-                        title="Preview toàn màn hình (Showcase / Thành phần / Nguyên tắc)"
-                        onClick={() => onPreviewFullscreen(system.id)}
+                        aria-label={`Thao tác với ${system.title}`}
+                        aria-expanded={actionMenuId === system.id}
+                        onClick={() => setActionMenuId((current) => current === system.id ? null : system.id)}
+                        disabled={busy}
                       >
-                        <Icon name="external-link" />
+                        <Icon name="more-horizontal" />
                       </button>
-                    ) : onOpenSystem ? (
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label={`Open ${system.title}`}
-                        onClick={() => onOpenSystem(system.id)}
-                      >
-                        <Icon name="external-link" />
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="icon-btn danger"
-                      aria-label={`Delete ${system.title}`}
-                      onClick={() => void deleteSystem(system)}
-                      disabled={busy}
-                    >
-                      <Icon name="close" />
-                    </button>
+                      {actionMenuId === system.id ? (
+                        <div className="ds-user-row__menu" role="menu" aria-label={`Thao tác với ${system.title}`}>
+                          {system.hasReactBundle && onOpenCriteria ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); onOpenCriteria(system.id); }}>Danh mục review</button> : null}
+                          {!selected && canUseInProjects ? <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); handleMakeDefaultClick(system); }}>Đặt làm mặc định</button> : null}
+                          <button type="button" role="menuitem" onClick={() => { setActionMenuId(null); void togglePublished(system); }}>
+                            {status === 'published' ? 'Chuyển về bản nháp' : 'Xuất bản'}
+                          </button>
+                          <button type="button" role="menuitem" className="danger" onClick={() => { setActionMenuId(null); void deleteSystem(system); }}>Xóa bộ Design System</button>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               );

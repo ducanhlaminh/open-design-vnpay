@@ -71,13 +71,18 @@ describe('DesignSystemCriteriaPanel', () => {
   });
 
 
-  it('opens criteria immediately without auto-opening the workspace', async () => {
+  it('opens the full-window review catalog without auto-opening the workspace', async () => {
     vi.mocked(fetchDesignSystem).mockResolvedValue(detail);
     vi.mocked(fetchDesignSystemRevisions).mockResolvedValue([]);
     vi.mocked(getDesignSystemCriteria).mockResolvedValue(empty());
     const open = vi.fn();
     render(<DesignSystemDetailView id={detail.id} section="criteria" selectedId={null} config={config} agents={[]} onBack={vi.fn()} onSetDefault={vi.fn()} onOpenProject={open} />);
-    expect((await screen.findByRole('button', { name: 'Danh mục review' })).className).toContain('active');
+    expect(await screen.findByRole('dialog', { name: 'Danh mục review' })).toBeTruthy();
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'Showcase',
+      'Thành phần',
+      'Nguyên tắc',
+    ]);
     await act(async () => { await Promise.resolve(); });
     expect(open).not.toHaveBeenCalled();
     expect(ensureDesignSystemWorkspace).not.toHaveBeenCalled();

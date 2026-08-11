@@ -164,8 +164,8 @@ export function PipelinesFeaturesView({
             type="button"
             className={styles.backBtn}
             onClick={() => navigate({ kind: 'home', view: 'pipelines' })}
-            aria-label="Quay lại Apps"
-            title="Quay lại Apps"
+            aria-label="Quay lại dự án"
+            title="Quay lại dự án"
           >
             <Icon name="arrow-left" size={14} />
           </button>
@@ -174,18 +174,18 @@ export function PipelinesFeaturesView({
             className={styles.breadcrumbLink}
             onClick={() => navigate({ kind: 'home', view: 'pipelines' })}
           >
-            Apps
+            Dự án
           </button>
         </div>
         <div className={styles.notFound}>
-          <span>Không tìm thấy app này.</span>
+          <span>Không tìm thấy dự án này.</span>
           <button
             type="button"
             className={`${styles.btn}`}
             onClick={() => navigate({ kind: 'home', view: 'pipelines' })}
           >
             <Icon name="arrow-left" size={14} />
-            Về Apps
+            Về dự án
           </button>
         </div>
       </div>
@@ -202,8 +202,8 @@ export function PipelinesFeaturesView({
           type="button"
           className={styles.backBtn}
           onClick={() => navigate({ kind: 'home', view: 'pipelines' })}
-          aria-label="Quay lại Apps"
-          title="Quay lại Apps"
+          aria-label="Quay lại dự án"
+          title="Quay lại dự án"
         >
           <Icon name="arrow-left" size={14} />
         </button>
@@ -212,7 +212,7 @@ export function PipelinesFeaturesView({
           className={styles.breadcrumbLink}
           onClick={() => navigate({ kind: 'home', view: 'pipelines' })}
         >
-          Apps
+          Dự án
         </button>
         <span className={styles.breadcrumbSep}>›</span>
         <span className={styles.breadcrumbCurrent}>{appName}</span>
@@ -224,14 +224,14 @@ export function PipelinesFeaturesView({
         <div className={styles.headerCopy}>
           <h1 className={styles.title}>{appName}</h1>
           <p className={styles.lede}>
-            {counts.all} feature · {counts.done} xong — chọn feature để chạy pipeline.
+            {counts.all} tính năng · {counts.done} xong — chọn tính năng để chạy quy trình.
           </p>
         </div>
         {onNewFeature && hasFeatures && tab === 'features' ? (
           <div className={styles.headerActions}>
             <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={onNewFeature}>
               <Icon name="plus" size={13} />
-              <span>Feature mới</span>
+              <span>Tính năng mới</span>
             </button>
           </div>
         ) : null}
@@ -239,7 +239,7 @@ export function PipelinesFeaturesView({
 
       <section className={styles.panel}>
         {hasDocsTab ? (
-          <div className={styles.detailTabs} role="tablist" aria-label="Chi tiết App">
+          <div className={styles.detailTabs} role="tablist" aria-label="Chi tiết dự án">
             <button
               type="button"
               role="tab"
@@ -297,7 +297,7 @@ export function PipelinesFeaturesView({
                   right above already names this section; keeping both read
                   as a duplicate heading. */}
               <span className={styles.listHeadHint}>
-                Mỗi dòng là một feature — bấm để xổ trạng thái từng workflow bên trong.
+                Mỗi dòng là một tính năng — bấm để xem trạng thái từng quy trình bên trong.
               </span>
             </div>
             <div className={styles.toolbarGroup}>
@@ -338,7 +338,7 @@ export function PipelinesFeaturesView({
               <input
                 type="search"
                 className={styles.search}
-                placeholder="Tìm feature…"
+                placeholder="Tìm tính năng…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
@@ -353,11 +353,11 @@ export function PipelinesFeaturesView({
             <Icon name="pipeline" size={24} />
           </div>
           <div className={styles.emptyBody}>
-            <p className={styles.emptyTitle}>App này chưa có feature nào</p>
+            <p className={styles.emptyTitle}>Dự án này chưa có tính năng nào</p>
             <p className={styles.emptyText}>
               {onNewFeature
-                ? 'Tạo feature đầu tiên để bắt đầu chạy pipeline.'
-                : 'Nhờ quản lý cấp quyền tạo, hoặc kéo feature đã có trên Pipeline Studio về bằng "Tải dự án về…" trên màn Chạy.'}
+                ? 'Tạo tính năng đầu tiên để bắt đầu chạy quy trình.'
+                : 'Nhờ quản lý cấp quyền tạo, hoặc lấy tính năng đã có trên Pipeline Studio về bằng “Lấy dự án về máy”.'}
             </p>
             {/* Chỉ render CTA khi thật sự bấm được. Câu hướng dẫn trỏ vào một
                 nút đang bị ẩn là ngõ cụt — đúng lỗi đang có ở màn Apps của
@@ -370,7 +370,7 @@ export function PipelinesFeaturesView({
                   onClick={onNewFeature}
                 >
                   <Icon name="plus" size={13} />
-                  <span>Feature mới</span>
+                  <span>Tính năng mới</span>
                 </button>
               </div>
             ) : null}

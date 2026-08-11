@@ -220,6 +220,9 @@ interface Props {
   // without project context.
   projectKindForTracking?: TrackingProjectKind | null;
   projectFiles: ProjectFile[];
+  /** Đè placeholder composer — surface không sinh-nội-dung (workspace tổng
+   *  chỉ-đọc) cần lời mời đúng việc. */
+  composerPlaceholder?: string;
   hasActiveDesignSystem?: boolean;
   activeDesignSystem?: DesignSystemSummary | null;
   sendDisabled?: boolean;
@@ -340,6 +343,7 @@ export function ChatPane({
   projectId,
   projectKindForTracking = null,
   projectFiles,
+  composerPlaceholder,
   hasActiveDesignSystem = false,
   activeDesignSystem = null,
   projectFileNames,
@@ -1198,6 +1202,7 @@ export function ChatPane({
             sendDisabled={sendDisabled}
             initialDraft={initialDraft}
             draftStorageKey={composerDraftStorageKey}
+            {...(composerPlaceholder ? { placeholder: composerPlaceholder } : {})}
             onEnsureProject={onEnsureProject}
             commentAttachments={commentsToAttachments(attachedComments)}
             onRemoveCommentAttachment={onDetachComment}

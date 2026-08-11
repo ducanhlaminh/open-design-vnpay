@@ -105,7 +105,7 @@ export function NewFeatureModal({
 
   return (
     <PipelineFormModal
-      title="Feature mới"
+      title="Tính năng mới"
       icon="folder"
       busy={busy}
       onClose={onClose}
@@ -121,11 +121,11 @@ export function NewFeatureModal({
       }
     >
       <FormField
-        label="Tên Feature"
+        label="Tên tính năng"
         hint={
           featureNameTrim
             ? `Thư mục làm việc: ${toSlugId(featureNameTrim)}`
-            : 'Tên nghiệp vụ của feature, vd Thanh toán. Mã/thư mục làm việc sinh tự động từ tên này.'
+            : 'Tên nghiệp vụ của tính năng, vd Thanh toán. Mã/thư mục làm việc sinh tự động từ tên này.'
         }
       >
         {(fieldProps) => (
@@ -144,13 +144,13 @@ export function NewFeatureModal({
           gán thêm tuỳ chọn. */}
       {appFromInput ? (
         <FormField
-          label="Thuộc App (tuỳ chọn)"
+          label="Thuộc dự án (tuỳ chọn)"
           hint={
             matchedApp
-              ? 'Đã có App trùng tên — feature sẽ được thêm vào App đó thay vì tạo App mới.'
+              ? 'Đã có dự án trùng tên — tính năng sẽ được thêm vào dự án đó thay vì tạo dự án mới.'
               : appNameTrim
-                ? `Mã App: ${toSlugId(appNameTrim)}`
-                : 'Bỏ trống nếu feature không thuộc App nào. Gõ tên App có sẵn hoặc một tên mới.'
+                ? `Mã dự án: ${toSlugId(appNameTrim)}`
+                : 'Bỏ trống nếu tính năng không thuộc dự án nào. Gõ tên dự án có sẵn hoặc một tên mới.'
           }
         >
           {(fieldProps) => (
@@ -168,7 +168,7 @@ export function NewFeatureModal({
           )}
         </FormField>
       ) : (
-        <FormField label="Thuộc App">
+        <FormField label="Thuộc dự án">
           {(fieldProps) => <TextInput {...fieldProps} value={lockedAppLabel} disabled readOnly />}
         </FormField>
       )}

@@ -333,6 +333,7 @@ export const it: Dict = {
   'settings.versionUnavailable': 'Le informazioni sulla versione non sono disponibili quando il daemon è offline.',
 
   'entry.tabDesigns': 'Design',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.tabTemplates': 'Modelli',
   'entry.tabDesignSystems': 'Design system',
   'entry.tabConnectors': 'Connettori',

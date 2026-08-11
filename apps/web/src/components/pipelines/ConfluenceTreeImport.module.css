@@ -256,8 +256,10 @@
     border-color 0.14s cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.hitRow + .hitRow {
-  margin-top: 2px;
+/* Mỗi kết quả tìm là một wrapper riêng (để chứa cả cây con), vì vậy border
+   phải đặt ở wrapper kế tiếp chứ không thể dùng `.hitRow + .hitRow`. */
+.pickerBody > div + div {
+  border-top: 1px solid color-mix(in srgb, var(--border-strong, var(--border)) 68%, transparent);
 }
 
 .hitRow:hover {
@@ -313,10 +315,8 @@
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-/* Mũi tên giờ chỉ là CHỈ BÁO (cả hàng đã là vùng bấm mở/đóng), nên nó là
-   <span> chứ không phải nút — hai nút lồng nhau cùng làm một việc chỉ thêm
-   một điểm dừng tab vô nghĩa. `margin-left: auto` là thứ ghim nó vào mép phải
-   bất kể tiêu đề dài ngắn. */
+/* Nút mở/đóng cây tách khỏi nội dung để designer nhận diện ngay đó là một
+   hành động. Nền accent nhẹ vẫn đủ gọn để không lấn át radio chọn tài liệu. */
 .chevron {
   flex: none;
   display: inline-flex;
@@ -324,16 +324,32 @@
   justify-content: center;
   align-self: center;
   margin-left: auto;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-sm);
-  color: var(--text-soft);
-  transition: color 0.14s cubic-bezier(0.23, 1, 0.32, 1);
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-panel));
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.14s cubic-bezier(0.23, 1, 0.32, 1), border-color 0.14s cubic-bezier(0.23, 1, 0.32, 1), color 0.14s cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .hitRow:hover .chevron,
 .nodeRow:hover .chevron {
-  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, var(--bg-panel));
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+}
+
+.chevronOpen {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.chevron:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .checkbox {
@@ -410,6 +426,31 @@
 .checkbox.checkboxPartial.checkboxBtn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
 }
+
+/* Picker này chỉ chọn một tài liệu đầu vào, vì vậy dùng radio thay cho ô tick
+   nhiều lựa chọn. Giữ kích thước/vùng bấm của checkbox cũ để các hàng cây
+   thẳng hàng, nhưng hình tròn nói đúng hành vi một lựa chọn. */
+.radio {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  padding: 0;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  transition: border-color 0.14s cubic-bezier(0.23, 1, 0.32, 1), background 0.14s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.radioBtn { position: relative; cursor: pointer; }
+.radioBtn::after { content: ''; position: absolute; inset: -4px; }
+.radioBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.radioBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+.radioBtn:hover:not(:disabled), .radioOn { border-color: var(--accent); }
+.radioDot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; }
 
 .optionBody {
   display: flex;

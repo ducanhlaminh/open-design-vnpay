@@ -355,6 +355,7 @@ export const hu: Dict = {
   'entry.useEverywhereAria': '„Használat bárhol” útmutató megnyitása (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': 'Új projekt',
   'entry.navHome': 'Kezdőlap',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'Projektek',
   'entry.navDesignSystems': 'Tervezőrendszerek',
   'entry.helpAria': 'Súgó',

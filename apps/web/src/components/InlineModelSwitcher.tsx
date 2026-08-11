@@ -15,6 +15,7 @@ import type { AgentInfo, ApiProtocol, AppConfig, ExecMode } from '../types';
 import { apiProtocolLabel } from '../utils/apiProtocol';
 import { AgentIcon } from './AgentIcon';
 import { ClaudeUsagePanel } from './ClaudeUsagePanel';
+import { CodexUsagePanel } from './CodexUsagePanel';
 import { Icon } from './Icon';
 import { renderModelOptions } from './modelOptions';
 
@@ -317,10 +318,10 @@ export function InlineModelSwitcher({
                 </div>
               ) : null}
 
-              {/* Quota is a Claude-account concept, so it only shows when Claude
-                  is the selected CLI. Mounted only while this popover is open,
-                  which is what makes the read lazy. */}
+              {/* Claude exposes account windows; Codex currently exposes no
+                  quota endpoint, so its panel states that limitation honestly. */}
               {currentAgent?.id === 'claude' ? <ClaudeUsagePanel /> : null}
+              {currentAgent?.id === 'codex' ? <CodexUsagePanel /> : null}
             </>
           ) : (
             <>

@@ -37,7 +37,7 @@ describe('parseRoute / buildPath (issue #1505)', () => {
       fileName: null,
     };
     expect(roundTrip(route)).toEqual(route);
-    expect(buildPath(route)).toBe('/projects/p-1');
+    expect(buildPath(route)).toBe('/workspaces/p-1');
   });
 
   it('round-trips a project + file route (no conversation)', () => {
@@ -48,7 +48,7 @@ describe('parseRoute / buildPath (issue #1505)', () => {
       fileName: 'src/index.tsx',
     };
     expect(roundTrip(route)).toEqual(route);
-    expect(buildPath(route)).toBe('/projects/p-1/files/src/index.tsx');
+    expect(buildPath(route)).toBe('/workspaces/p-1/files/src/index.tsx');
   });
 
   it('round-trips a project + conversation route', () => {
@@ -59,7 +59,7 @@ describe('parseRoute / buildPath (issue #1505)', () => {
       fileName: null,
     };
     expect(roundTrip(route)).toEqual(route);
-    expect(buildPath(route)).toBe('/projects/p-1/conversations/conv-abc');
+    expect(buildPath(route)).toBe('/workspaces/p-1/conversations/conv-abc');
   });
 
   it('round-trips a project + conversation + file route', () => {
@@ -70,7 +70,7 @@ describe('parseRoute / buildPath (issue #1505)', () => {
       fileName: 'index.html',
     };
     expect(roundTrip(route)).toEqual(route);
-    expect(buildPath(route)).toBe('/projects/p-1/conversations/conv-abc/files/index.html');
+    expect(buildPath(route)).toBe('/workspaces/p-1/conversations/conv-abc/files/index.html');
   });
 
   it('percent-encodes ids and file names with reserved characters', () => {
@@ -107,8 +107,49 @@ describe('parseRoute / buildPath (issue #1505)', () => {
     });
   });
 
+  it('round-trips a Design System criteria workspace', () => {
+    const components: Route = {
+      kind: 'design-system-criteria-workspace',
+      designSystemId: 'ds/with space',
+      criteriaKind: 'components',
+    };
+    const rules: Route = {
+      kind: 'design-system-criteria-workspace',
+      designSystemId: 'ds-2',
+      criteriaKind: 'rules',
+    };
+
+    expect(buildPath(components)).toBe('/design-systems/ds%2Fwith%20space/criteria/components/workspace');
+    expect(roundTrip(components)).toEqual(components);
+    expect(roundTrip(rules)).toEqual(rules);
+  });
+
+  it('keeps the legacy criteria deep link on the review catalog', () => {
+    expect(parseRoute('/design-systems/ds-1/criteria')).toEqual({
+      kind: 'design-system-detail',
+      designSystemId: 'ds-1',
+      section: 'criteria',
+    });
+  });
+
+
+  it('parses canonical workspace routes and legacy project aliases', () => {
+    const paths = [
+      '/workspaces/abc',
+      '/workspaces/abc/conversations/c1',
+      '/workspaces/abc/conversations/c1/files/x/y.md',
+      '/workspaces/abc/files/x.md',
+    ];
+    for (const path of paths) {
+      const canonical = parseRoute(path);
+      expect(parseRoute(path.replace('/workspaces', '/projects'))).toEqual(canonical);
+    }
+    expect(parseRoute('/workspaces')).toEqual({ kind: 'home', view: 'workspaces' });
+  });
+
   it('falls back to home when the URL is unrecognized', () => {
     expect(parseRoute('/something/else')).toEqual({ kind: 'home', view: 'home' });
-    expect(parseRoute('/projects')).toEqual({ kind: 'home', view: 'projects' });
+    expect(parseRoute('/workspaces')).toEqual({ kind: 'home', view: 'workspaces' });
+    expect(parseRoute('/projects')).toEqual({ kind: 'home', view: 'workspaces' });
   });
 });

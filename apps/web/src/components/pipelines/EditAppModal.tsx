@@ -80,7 +80,7 @@ export function EditAppModal({
 
   return (
     <PipelineFormModal
-      title="Đổi tên App"
+      title="Đổi tên dự án"
       icon="blocks"
       busy={busy}
       onClose={onClose}
@@ -96,11 +96,11 @@ export function EditAppModal({
       }
     >
       <FormField
-        label="Tên App"
+        label="Tên dự án"
         hint={
           duplicate
-            ? 'Đã có App khác dùng tên này — chọn tên khác.'
-            : `Mã App giữ nguyên: ${app.id}`
+            ? 'Đã có dự án khác dùng tên này — chọn tên khác.'
+            : `Mã dự án giữ nguyên: ${app.id}`
         }
       >
         {(fieldProps) => (
@@ -119,7 +119,7 @@ export function EditAppModal({
 
       <FormField
         label="Design System (Figma)"
-        hint="Nguồn bộ tiêu chí review cho mọi feature của App; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/."
+        hint="Nguồn tiêu chuẩn review cho mọi tính năng của dự án; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/."
       >
         {(fieldProps) => (
           <div {...fieldProps}>
@@ -129,6 +129,7 @@ export function EditAppModal({
               loading={systems === null}
               onChange={setDesignSystemId}
               popoverZIndex={1100}
+              variant="form"
             />
           </div>
         )}

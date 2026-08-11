@@ -49,6 +49,8 @@ import {
   sandboxAuthDir,
   sandboxAuthFile,
   sandboxAuthVolume,
+  seedPackagedSandboxAuth,
+  clearSandboxRuntimeAuth,
   sandboxImageTag,
   SANDBOX_AUTH_VOLUME,
   SANDBOX_IMAGE_NAME,
@@ -357,6 +359,7 @@ async function resolveSandboxStatusBody(
 
   const dockerOk = await dockerAvailable();
   const imageOk = dockerOk && (await dockerImagePresent(image));
+  if (imageOk) await seedPackagedSandboxAuth(image);
   const authVolumeOk = dockerOk && (await dockerVolumePresent(SANDBOX_AUTH_VOLUME));
   const probeAuth = req.query.probeAuth === '1';
   const authLoggedIn = probeAuth && imageOk && authVolumeOk ? await sandboxAuthLoggedIn(image) : null;
@@ -707,12 +710,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
     }
     cancelCodexDeviceLogin();
     try {
-      await dockerText([
-        'run', '--rm',
-        '-v', `${sandboxAuthVolume('codex')}:${sandboxAuthDir('codex')}`,
-        '--entrypoint', 'sh', image, '-c',
-        `rm -f ${JSON.stringify(sandboxAuthFile('codex'))}`,
-      ], 30_000);
+      await clearSandboxRuntimeAuth(image, 'codex');
     } catch {
       // Missing volume is fine; logout is best-effort.
     }

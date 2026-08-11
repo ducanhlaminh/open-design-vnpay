@@ -404,6 +404,7 @@ export const zhTW: Dict = {
   'entry.navNewProject': '新建專案',
   'entry.navHome': '主頁',
   'entry.navProjects': '專案',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navIntegrations': '整合',
   'entry.navDesignSystems': '設計體系',
   'designSystemPicker.select': '選擇設計系統',

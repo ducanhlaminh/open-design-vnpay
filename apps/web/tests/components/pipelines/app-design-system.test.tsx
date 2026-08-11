@@ -31,7 +31,6 @@ describe('EditAppModal · Design System', () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={app} onClose={() => {}} onSaved={() => {}} />);
     await act(async () => {});
-    fireEvent.click(screen.getByTestId('project-ds-picker-trigger'));
     fireEvent.click(screen.getByTestId('project-ds-picker-option-figma-ds'));
     fireEvent.click(screen.getByRole('button', { name: 'Lưu' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
@@ -46,7 +45,7 @@ describe('EditAppModal · Design System', () => {
   it('chỉ đổi tên thì PATCH name, không gửi designSystemId', async () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail', designSystemId: 'old-ds' }} onClose={() => {}} onSaved={() => {}} />);
-    fireEvent.change(screen.getByLabelText('Tên App'), { target: { value: 'Retail VN' } });
+    fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail VN' } });
     fireEvent.click(screen.getByRole('button', { name: 'Lưu' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
     const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/apps/') && c[1]?.method === 'PATCH');
@@ -57,8 +56,7 @@ describe('EditAppModal · Design System', () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail', designSystemId: 'old-ds' }} onClose={() => {}} onSaved={() => {}} />);
     await act(async () => {});
-    fireEvent.click(screen.getByTestId('project-ds-picker-trigger'));
-    fireEvent.click(screen.getByRole('option', { name: /No design system/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /No design system/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Lưu' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
     const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/apps/') && c[1]?.method === 'PATCH');
@@ -75,7 +73,7 @@ describe('NewAppModal · Design System', () => {
   it('không chọn DS thì POST không có designSystemId', async () => {
     const fetchMock = vi.mocked(fetch);
     render(<NewAppModal onClose={() => {}} onCreated={() => {}} />);
-    fireEvent.change(screen.getByLabelText('Tên App'), { target: { value: 'Retail' } });
+    fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail' } });
     fireEvent.click(screen.getByRole('button', { name: 'Tạo' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => call[0] === '/api/pipelines/apps' && call[1]?.method === 'POST')).toBe(true));
     const call = fetchMock.mock.calls.find((c) => c[0] === '/api/pipelines/apps' && c[1]?.method === 'POST');

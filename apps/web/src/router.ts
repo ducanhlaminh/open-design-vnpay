@@ -13,6 +13,7 @@ export type EntryHomeView =
   | 'home'
   | 'onboarding'
   | 'projects'
+  | 'workspaces'
   | 'tasks'
   | 'pipelines'
   | 'feedback'
@@ -23,7 +24,12 @@ export type EntryHomeView =
 export type Route =
   | { kind: 'home'; view: EntryHomeView }
   | { kind: 'design-system-create' }
-  | { kind: 'design-system-detail'; designSystemId: string; section?: 'criteria' }
+  | { kind: 'design-system-detail'; designSystemId: string; section?: 'criteria' | 'figma-update' }
+  | {
+      kind: 'design-system-criteria-workspace';
+      designSystemId: string;
+      criteriaKind: 'components' | 'rules';
+    }
   | {
       kind: 'project';
       projectId: string;
@@ -63,10 +69,10 @@ export function parseRoute(pathname: string): Route {
   if (parts[0] === 'onboarding') {
     return { kind: 'home', view: 'onboarding' };
   }
-  if (parts[0] === 'projects') {
+  if (parts[0] === 'workspaces' || parts[0] === 'projects') {
     if (parts[1]) {
       const projectId = decodeURIComponent(parts[1]);
-      // /projects/:id/conversations/:cid[/files/...]
+      // /workspaces/:id/conversations/:cid[/files/...]
       if (parts[2] === 'conversations' && parts[3]) {
         const conversationId = decodeURIComponent(parts[3]);
         if (parts[4] === 'files' && parts[5]) {
@@ -79,7 +85,7 @@ export function parseRoute(pathname: string): Route {
         }
         return { kind: 'project', projectId, conversationId, fileName: null };
       }
-      // /projects/:id/files/...
+      // /workspaces/:id/files/...
       if (parts[2] === 'files' && parts[3]) {
         return {
           kind: 'project',
@@ -90,17 +96,29 @@ export function parseRoute(pathname: string): Route {
       }
       return { kind: 'project', projectId, conversationId: null, fileName: null };
     }
-    return { kind: 'home', view: 'projects' };
+    return { kind: 'home', view: 'workspaces' };
   }
   if (parts[0] === 'design-systems') {
     if (parts[1] === 'create') {
       return { kind: 'design-system-create' };
     }
     if (parts[1]) {
+      if (
+        parts[2] === 'criteria'
+        && (parts[3] === 'components' || parts[3] === 'rules')
+        && parts[4] === 'workspace'
+      ) {
+        return {
+          kind: 'design-system-criteria-workspace',
+          designSystemId: decodeURIComponent(parts[1]),
+          criteriaKind: parts[3],
+        };
+      }
       return {
         kind: 'design-system-detail',
         designSystemId: decodeURIComponent(parts[1]),
         ...(parts[2] === 'criteria' ? { section: 'criteria' as const } : {}),
+        ...(parts[2] === 'figma-update' ? { section: 'figma-update' as const } : {}),
       };
     }
     return { kind: 'home', view: 'design-systems' };
@@ -167,7 +185,8 @@ export function parseRoute(pathname: string): Route {
 export function buildPath(route: Route): string {
   if (route.kind === 'home') {
     if (route.view === 'onboarding') return '/onboarding';
-    if (route.view === 'projects') return '/projects';
+    if (route.view === 'projects') return '/workspaces';
+    if (route.view === 'workspaces') return '/workspaces';
     if (route.view === 'tasks') return '/automations';
     if (route.view === 'pipelines') return '/pipelines';
     if (route.view === 'feedback') return '/feedback';
@@ -194,8 +213,14 @@ export function buildPath(route: Route): string {
   if (route.kind === 'marketplace') return '/marketplace';
   if (route.kind === 'marketplace-detail') return `/marketplace/${encodeURIComponent(route.pluginId)}`;
   if (route.kind === 'design-system-create') return '/design-systems/create';
+  if (route.kind === 'design-system-criteria-workspace') {
+    return (
+      `/design-systems/${encodeURIComponent(route.designSystemId)}`
+      + `/criteria/${route.criteriaKind}/workspace`
+    );
+  }
   if (route.kind === 'design-system-detail') {
-    return `/design-systems/${encodeURIComponent(route.designSystemId)}${route.section === 'criteria' ? '/criteria' : ''}`;
+    return `/design-systems/${encodeURIComponent(route.designSystemId)}${route.section === 'criteria' ? '/criteria' : route.section === 'figma-update' ? '/figma-update' : ''}`;
   }
   const id = encodeURIComponent(route.projectId);
   const file = route.fileName
@@ -204,10 +229,10 @@ export function buildPath(route: Route): string {
   if (route.conversationId) {
     const cid = encodeURIComponent(route.conversationId);
     return file
-      ? `/projects/${id}/conversations/${cid}/files/${file}`
-      : `/projects/${id}/conversations/${cid}`;
+      ? `/workspaces/${id}/conversations/${cid}/files/${file}`
+      : `/workspaces/${id}/conversations/${cid}`;
   }
-  return file ? `/projects/${id}/files/${file}` : `/projects/${id}`;
+  return file ? `/workspaces/${id}/files/${file}` : `/workspaces/${id}`;
 }
 
 // Centralized navigation. Components call this instead of mutating

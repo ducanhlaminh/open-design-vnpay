@@ -70,6 +70,14 @@ async function renderSource() {
 }
 
 describe('RunAllModal · nguồn "Tài liệu App"', () => {
+  it('nói rõ URD là đầu vào chính, PRD là bổ sung và nguồn này dùng chung cho các workflow', async () => {
+    const { dialog } = await renderSource();
+    expect(dialog.textContent).toContain('Tài liệu đầu vào cho 3 workflow');
+    expect(dialog.textContent).toContain('URD');
+    expect(dialog.textContent).toContain('PRD');
+    expect(dialog.textContent).toContain('dùng chung khi chạy cả 3 workflow');
+  });
+
   it('ô tìm KHÔNG dùng class toàn cục .pl-proj-search (flex-basis 260px = oval khổng lồ)', async () => {
     const { dialog } = await renderSource();
     const search = dialog.querySelector('input[type="search"]')!;

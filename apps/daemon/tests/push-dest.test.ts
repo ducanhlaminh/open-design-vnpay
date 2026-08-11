@@ -9,12 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RemoteProject } from '@open-design/contracts';
 
-import {
-  StagingBlockedError,
-  pendingResolved,
-  resolvePushDest,
-  studioConfigOf,
-} from '../src/kg-sync/push-dest.js';
+import { pendingResolved, resolvePushDest, studioConfigOf } from '../src/kg-sync/push-dest.js';
 import {
   DECISIONS_FOLDER,
   PENDING_PREFIX,
@@ -25,6 +20,7 @@ import {
   pendingNonce,
   stagedFolderName,
 } from '../src/kg-sync/staging.js';
+import { parseStagingDecision, writeStagingRequest } from '../src/kg-sync/staging-store.js';
 
 const remoteRow = (projectId: string, isApp = false): RemoteProject => ({
   projectId,
@@ -94,89 +90,35 @@ describe('resolvePushDest', () => {
     expect(dest.destId).toBe('checkout-2');
   });
 
-  it('case 3 KHÔNG được kích hoạt bởi remoteId trỏ vào thứ đã biến mất', () => {
-    // Bản gốc bị xoá bên studio: rơi lại về vùng chờ, không phải ghi đè mù.
+  it('remoteId trỏ vào dự án đã mất → tạo lại Shared Project bằng id local', () => {
     const dest = resolvePushDest({
       projectId: 'checkout',
       metadata: { studioConfig: { remoteId: 'gone', appId: 'app--retail' } },
       remote: [remoteRow('app--retail', true)],
       submitter,
     });
-    expect(dest.staged).toBe(true);
-    expect(dest.case).toBe(1);
+    expect(dest).toEqual({ destId: 'checkout', staged: false, case: 3, targetApp: null });
   });
 
-  it('case 1 — App đã có, feature chưa → chờ duyệt, giữ App làm đích', () => {
+  it('Feature mới trong App có sẵn → publish trực tiếp vào Shared Projects', () => {
     const dest = resolvePushDest({
       projectId: 'checkout',
       metadata: { studioConfig: { appId: 'app--retail', appName: 'Retail' } },
       remote: [remoteRow('app--retail', true)],
       submitter,
-      nonce: 'a1b2c3',
     });
-    expect(dest.staged).toBe(true);
-    expect(dest.case).toBe(1);
-    expect(dest.destId).toBe('pending--checkout--a1b2c3');
-    expect(dest.targetApp).toEqual({ mode: 'existing', id: 'app--retail', name: 'Retail' });
-    expect(dest.request?.status).toBe('pending');
-    expect(dest.request?.feature).toMatchObject({ desiredId: 'checkout', localId: 'checkout' });
+    expect(dest).toEqual({ destId: 'checkout', staged: false, case: 3, targetApp: null });
   });
 
-  it('case 2 — chưa có gì → chờ duyệt, App cũng phải tạo khi duyệt', () => {
+  it('Feature và App mới → Feature publish trực tiếp với id local', () => {
     const dest = resolvePushDest({
       projectId: 'checkout',
       projectName: 'Thanh toán',
       metadata: { studioConfig: { appId: 'app--retail', appName: 'Retail' } },
       remote: [],
       submitter,
-      nonce: 'a1b2c3',
     });
-    expect(dest.case).toBe(2);
-    expect(dest.targetApp).toEqual({
-      mode: 'create',
-      desiredId: 'app--retail',
-      displayName: 'Retail',
-    });
-    expect(dest.request?.feature.displayName).toBe('Thanh toán');
-  });
-
-  it('chặn push chờ duyệt khi chưa đăng nhập — không có ai để làm owner sau khi duyệt', () => {
-    expect(() =>
-      resolvePushDest({ projectId: 'checkout', remote: [], submitter: null }),
-    ).toThrow(StagingBlockedError);
-  });
-
-  it('máy chưa đăng nhập VẪN push được lên dự án đã có (case 3 không cần submitter)', () => {
-    const dest = resolvePushDest({
-      projectId: 'checkout',
-      remote: [remoteRow('checkout')],
-      submitter: null,
-    });
-    expect(dest.case).toBe(3);
-  });
-
-  it('re-push tái dùng đúng folder chờ cũ thay vì đẻ thêm cái thứ hai', () => {
-    const dest = resolvePushDest({
-      projectId: 'checkout',
-      metadata: { studioConfig: { pendingId: 'pending--checkout--old111' } },
-      remote: [remoteRow('pending--checkout--old111')],
-      submitter,
-      nonce: 'new222',
-    });
-    expect(dest.destId).toBe('pending--checkout--old111');
-    expect(dest.reusedPending).toBe(true);
-  });
-
-  it('folder chờ cũ đã biến mất → tạo folder mới, không bơm file vào chỗ không còn tồn tại', () => {
-    const dest = resolvePushDest({
-      projectId: 'checkout',
-      metadata: { studioConfig: { pendingId: 'pending--checkout--old111' } },
-      remote: [],
-      submitter,
-      nonce: 'new222',
-    });
-    expect(dest.destId).toBe('pending--checkout--new222');
-    expect(dest.reusedPending).toBe(false);
+    expect(dest).toEqual({ destId: 'checkout', staged: false, case: 3, targetApp: null });
   });
 });
 
@@ -211,6 +153,18 @@ describe('studioConfigOf', () => {
     expect(studioConfigOf({ studioConfig: [1, 2] })).toEqual({});
     expect(studioConfigOf({ studioConfig: { appId: 42 } })).toEqual({});
   });
+
+  it('tolerantly reads a persisted local-to-approved mapping', () => {
+    const approvedMapping = {
+      localProjectId: 'checkout-local',
+      approvedProjectId: 'checkout-v2',
+      approvedAppId: 'app--retail',
+      pendingId: 'pending--checkout-local--abc123',
+      decidedAt: '2026-08-10T00:00:00.000Z',
+    };
+    expect(studioConfigOf({ studioConfig: { approvedMapping } }).approvedMapping).toEqual(approvedMapping);
+    expect(studioConfigOf({ studioConfig: { approvedMapping: { approvedProjectId: 'missing-fields' } } })).toEqual({});
+  });
 });
 
 describe('parseStagingRequest', () => {
@@ -232,5 +186,76 @@ describe('parseStagingRequest', () => {
       feature: { desiredId: 'checkout', displayName: 'checkout', localId: 'checkout' },
     });
     expect(parsed?.history).toHaveLength(1);
+  });
+
+  it('đọc schema 2 publish summary nhưng vẫn chấp nhận phiếu schema 1', () => {
+    const v2 = parseStagingRequest({
+      schema: 2,
+      feature: { desiredId: 'checkout' },
+      submitter: { id: '65edc73c-56a4-4c48-8651-d7cb07a5e10d' },
+      publish: { stages: ['ux-spec', 42], outputTypes: ['json', null] },
+    });
+    expect(v2).toMatchObject({
+      schema: 2,
+      publish: { stages: ['ux-spec'], outputTypes: ['json'] },
+    });
+    expect(parseStagingRequest({
+      feature: { desiredId: 'legacy' },
+      submitter: { id: '65edc73c-56a4-4c48-8651-d7cb07a5e10d' },
+    })?.schema).toBe(1);
+  });
+});
+
+describe('parseStagingDecision', () => {
+  it('reads legacy v1 receipts and preserves the approved destination', () => {
+    expect(parseStagingDecision({
+      pendingId: 'pending--checkout--abc123',
+      status: 'approved',
+      finalId: 'checkout-v2',
+      decidedAt: '2026-08-10T00:00:00.000Z',
+    })).toEqual({
+      schema: 1,
+      pendingId: 'pending--checkout--abc123',
+      status: 'approved',
+      finalId: 'checkout-v2',
+      decidedAt: '2026-08-10T00:00:00.000Z',
+    });
+  });
+
+  it('rejects malformed approval receipts rather than guessing an id', () => {
+    expect(parseStagingDecision({
+      schema: 2,
+      pendingId: 'pending--checkout--abc123',
+      status: 'approved',
+      decidedAt: '2026-08-10T00:00:00.000Z',
+    })).toBeNull();
+  });
+});
+
+describe('staging publish summary contract', () => {
+  it('persists the final v2 stages and output types in the ticket Studio reads', async () => {
+    let uploaded: Buffer | undefined;
+    const media = {
+      uploadFile: async (_folder: string, _stage: string, path: string, _mime: string, body: Buffer) => {
+        expect(path).toBe('request.json');
+        uploaded = body;
+      },
+    };
+    await writeStagingRequest(media as never, 'pending--checkout--abc123', {
+      schema: 2,
+      status: 'pending',
+      case: 2,
+      submittedAt: '2026-08-10T00:00:00.000Z',
+      submitter,
+      feature: { desiredId: 'checkout', displayName: 'Checkout', localId: 'checkout' },
+      app: { mode: 'create', desiredId: 'app--retail', displayName: 'Retail' },
+      publish: { stages: ['docs', 'ux-spec'], outputTypes: ['json', 'md'] },
+      history: [{ at: '2026-08-10T00:00:00.000Z', event: 'pushed' }],
+    });
+    expect(uploaded).toBeDefined();
+    expect(parseStagingRequest(JSON.parse(uploaded!.toString('utf8')))).toMatchObject({
+      schema: 2,
+      publish: { stages: ['docs', 'ux-spec'], outputTypes: ['json', 'md'] },
+    });
   });
 });

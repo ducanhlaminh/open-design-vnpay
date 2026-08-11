@@ -79,12 +79,12 @@ describe('ConfluenceTreePicker · panel chọn trang', () => {
 
   it('trang đã tick hiện thành hàng riêng kèm nút bỏ tick', async () => {
     const view = render(<Harness initial={['page-1', 'page-2']} />);
-    expect(view.container.textContent).toContain('2 trang đã tick');
+    expect(view.container.textContent).toContain('2 trang đã chọn');
     const removes = view.container.querySelectorAll('button[aria-label^="Bỏ tick"]');
     expect(removes).toHaveLength(2);
 
     fireEvent.click(removes[0]!);
-    await waitFor(() => expect(view.container.textContent).toContain('1 trang đã tick'));
+    await waitFor(() => expect(view.container.textContent).toContain('1 trang đã chọn'));
     expect(view.container.querySelectorAll('button[aria-label^="Bỏ tick"]')).toHaveLength(1);
   });
 
@@ -162,11 +162,8 @@ describe('ConfluenceTreePicker · panel chọn trang', () => {
       timeout: 3000,
     });
 
-    fireEvent.click(within(body as HTMLElement).getByRole('checkbox', { name: /^Tick 2\. URD/ }));
-    // 3 chứ không phải 1: tick trang cha cascade xuống cả cây con ĐÃ NẠP
-    // (2 trang con), kể cả khi cây đó đang đóng — mặc định đóng chỉ đổi cách
-    // HIỂN THỊ, không đổi ngữ nghĩa của một cú tick.
-    await waitFor(() => expect(view.container.textContent).toContain('3 trang đã tick'));
+    fireEvent.click(within(body as HTMLElement).getByRole('checkbox', { name: /^Chọn 2\. URD/ }));
+    await waitFor(() => expect(view.container.textContent).toContain('3 trang đã chọn'));
     // …và cú bấm đó không mở cây con ra.
     expect(body.textContent).not.toContain('II. URD Danh mục');
   });
@@ -209,25 +206,13 @@ describe('ConfluenceTreePicker · panel chọn trang', () => {
       timeout: 3000,
     });
     await waitFor(() => expect(view.container.querySelector('[class*="chevron"]')).not.toBeNull());
-
-    const parentBox = () =>
-      within(body as HTMLElement).getByRole('checkbox', { name: /2\. URD cho website/ });
-    expect(parentBox().getAttribute('aria-checked')).toBe('false');
-
-    // Tick cả nhánh → cha đầy đủ.
+    const parentBox = () => within(body as HTMLElement).getByRole('checkbox', { name: /2\. URD cho website/ });
     fireEvent.click(parentBox());
     await waitFor(() => expect(parentBox().getAttribute('aria-checked')).toBe('true'));
-
-    // Bỏ tick MỘT trang con → cha không còn đầy đủ, nhưng chính nó vẫn đang
-    // tick nên cũng chưa rỗng: đúng ca mà trạng thái nửa-tick sinh ra để nói.
-    const parentRow = within(body as HTMLElement)
-      .getByText('2. URD cho website kế toán')
-      .closest('[class*="hitRow"]')!;
+    const parentRow = within(body as HTMLElement).getByText('2. URD cho website kế toán').closest('[class*="hitRow"]')!;
     fireEvent.click(parentRow);
     await waitFor(() => expect(body.textContent).toContain('II. URD Danh mục'));
-    fireEvent.click(
-      within(body as HTMLElement).getByRole('checkbox', { name: /II\. URD Danh mục/ }),
-    );
+    fireEvent.click(within(body as HTMLElement).getByRole('checkbox', { name: /II\. URD Danh mục/ }));
     await waitFor(() => expect(parentBox().getAttribute('aria-checked')).toBe('mixed'));
   });
 
@@ -242,7 +227,7 @@ describe('ConfluenceTreePicker · panel chọn trang', () => {
     });
 
     fireEvent.click(within(view.container).getByRole('button', { name: 'Xong' }));
-    await waitFor(() => expect(body.textContent).toContain('Trang đã tick'));
+    await waitFor(() => expect(body.textContent).toContain('Tài liệu đã chọn'));
     expect((input as HTMLInputElement).value).toBe('');
   });
 

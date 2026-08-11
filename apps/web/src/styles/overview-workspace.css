@@ -1,0 +1,127 @@
+/* ============================================================
+   Workspace tổng (/workspaces/overview) — chat chỉ-đọc hỏi tiến
+   độ App/Feature. Bố cục: header mỏng + cột chat căn giữa chiếm
+   trọn chiều cao còn lại (ChatPane tự cuộn), chip câu hỏi gợi ý
+   nổi phía trên composer khi hội thoại còn trắng.
+   ============================================================ */
+
+.overview-workspace {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* --- Header ------------------------------------------------- */
+.overview-workspace__header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+.overview-workspace__badge {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-subtle));
+}
+.overview-workspace__title {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.overview-workspace__title strong {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text);
+}
+.overview-workspace__title span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.overview-workspace__readonly {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+/* --- Thân 2 cột: chat trái + cây thư mục/preview phải -------- */
+.overview-workspace__body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
+}
+.overview-workspace__chat {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  border-right: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+/* ChatPane (root class `.pane`) chiếm trọn cột. */
+.overview-workspace__chat > .pane {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+}
+/* Cột phải tái dùng FileWorkspace (root `.workspace` tự cuộn nội bộ). */
+.overview-workspace__files {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+.overview-workspace__files > .workspace {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* --- Chip câu hỏi gợi ý -------------------------------------- */
+.overview-workspace__suggestions {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 132px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  width: calc(100% - 32px);
+  pointer-events: none;
+}
+.overview-workspace__suggestion {
+  pointer-events: auto;
+  appearance: none;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+.overview-workspace__suggestion:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  transform: translateY(-1px);
+}

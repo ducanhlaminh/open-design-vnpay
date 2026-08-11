@@ -1,181 +1,170 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { CriteriaGenerationKind } from '@open-design/contracts';
 import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
 import { Icon } from './Icon';
+import './FigmaDsPreviewTabs.module.css';
 
-// Preview 3 phần của một Design System nạp từ Figma (DS có react bundle):
-//
-//   Showcase    — trang compiled từ react/ source, serve tại
-//                 /api/design-systems/:id/showcase
-//   Thành phần  — criteria/components.md (danh mục component hợp lệ)
-//   Nguyên tắc  — criteria/rules.md (quy tắc review, anchor `R-XXX`)
-//
-// Dùng CHUNG ở hai chỗ nên tab bar + nút tải lại nằm luôn trong component:
-//   1. modal toàn màn hình mở từ hàng DS (FigmaDesignSystemDetailModal)
-//   2. khung preview của màn Edit (DesignSystemFlow) — nơi agent sửa file qua
-//      chat, nên nút "Tải lại" là bắt buộc: nó nạp lại CẢ ba tab, kể cả
-//      iframe showcase (đổi cache-buster ⇒ iframe remount).
-//
-// Hai file .md do job bên daemon sinh ra (criteria/rules generate), có thể
-// CHƯA tồn tại — route trả 404 và tab hiển thị empty state thay vì lỗi.
+export type FigmaDsPreviewTab = 'showcase' | 'components' | 'rules';
+export type CriteriaDocumentKind = CriteriaGenerationKind;
+export type CriteriaDocumentView = 'current' | 'draft';
 
-type TabId = 'showcase' | 'components' | 'rules';
+export interface CriteriaDocumentVersion {
+  content: string;
+  updatedAt?: string;
+  count?: number;
+  status?: 'current' | 'stale' | 'draft';
+}
+
+export interface CriteriaDocumentSnapshot {
+  kind: CriteriaDocumentKind;
+  current: CriteriaDocumentVersion | null;
+  draft: CriteriaDocumentVersion | null;
+}
+
+export type CriteriaDocumentLoader = (
+  systemId: string,
+  kind: CriteriaDocumentKind,
+  options: { signal: AbortSignal; cache: 'no-store' },
+) => Promise<CriteriaDocumentSnapshot>;
+
+export interface FigmaDsPreviewViewState {
+  tab: FigmaDsPreviewTab;
+  documentView: Record<CriteriaDocumentKind, CriteriaDocumentView>;
+}
 
 interface DocSpec {
-  id: Exclude<TabId, 'showcase'>;
+  id: CriteriaDocumentKind;
   label: string;
-  path: string;
-  /** Hướng dẫn khi file chưa được sinh. */
-  emptyTitle: string;
-  emptyHint: string;
+  missingTitle: string;
+  missingHint: string;
+  generationLabel: string;
 }
 
 const DOCS: DocSpec[] = [
   {
     id: 'components',
     label: 'Thành phần',
-    path: 'criteria/components.md',
-    emptyTitle: 'Chưa có danh mục component',
-    emptyHint:
-      'File criteria/components.md chưa được sinh. Mở "Danh mục review" của design system này rồi bấm Sinh để tạo.',
+    missingTitle: 'Chưa có danh mục thành phần',
+    missingHint: 'Tạo danh mục để agent nhận biết đúng các thành phần trong bộ Design System này.',
+    generationLabel: 'Mở workspace để sinh danh mục',
   },
   {
     id: 'rules',
     label: 'Nguyên tắc',
-    path: 'criteria/rules.md',
-    emptyTitle: 'Chưa có quy tắc review',
-    emptyHint:
-      'File criteria/rules.md chưa được sinh. Mở "Danh mục review" của design system này rồi bấm Sinh để tạo.',
+    missingTitle: 'Chưa có nguyên tắc thiết kế',
+    missingHint: 'Tạo tài liệu nguyên tắc để agent review thiết kế theo đúng tiêu chuẩn của bộ này.',
+    generationLabel: 'Mở workspace để sinh nguyên tắc',
   },
 ];
 
 type DocState =
   | { status: 'loading' }
-  | { status: 'empty' }
   | { status: 'error'; message: string }
-  | { status: 'ready'; html: string; updatedAt?: string };
+  | { status: 'ready'; snapshot: CriteriaDocumentSnapshot };
 
-interface Props {
+export interface FigmaDsPreviewTabsProps {
   systemId: string;
-  /** Tab mở sẵn khi mount. */
-  initialTab?: TabId;
+  initialTab?: FigmaDsPreviewTab;
+  initialDocumentView?: Partial<Record<CriteriaDocumentKind, CriteriaDocumentView>>;
   className?: string;
+  loadCriteriaDocument?: CriteriaDocumentLoader;
+  onGenerate?: (kind: CriteriaDocumentKind) => void | Promise<void>;
+  onReload?: () => void | Promise<void>;
+  onViewStateChange?: (state: FigmaDsPreviewViewState) => void;
 }
 
-export function FigmaDsPreviewTabs({ systemId, initialTab = 'showcase', className }: Props) {
-  const [tab, setTab] = useState<TabId>(initialTab);
-  // Tăng mỗi lần bấm "Tải lại". Vừa là dependency của effect nạp .md, vừa là
-  // cache-buster + key của iframe showcase.
+/**
+ * Read-only preview shared by the Design System review modal and the compact
+ * editor preview. Generation and navigation are intentionally callbacks so
+ * this surface never needs to know about application routes.
+ */
+export function FigmaDsPreviewTabs({
+  systemId,
+  initialTab = 'showcase',
+  initialDocumentView,
+  className,
+  loadCriteriaDocument = loadCriteriaDocumentFromApi,
+  onGenerate,
+  onReload,
+  onViewStateChange,
+}: FigmaDsPreviewTabsProps) {
+  const [tab, setTab] = useState<FigmaDsPreviewTab>(initialTab);
+  const [documentView, setDocumentView] = useState<Record<CriteriaDocumentKind, CriteriaDocumentView>>({
+    components: initialDocumentView?.components ?? 'current',
+    rules: initialDocumentView?.rules ?? 'current',
+  });
   const [reloadToken, setReloadToken] = useState(0);
-  const [docs, setDocs] = useState<Record<DocSpec['id'], DocState>>({
+  const [reloadPending, setReloadPending] = useState(false);
+  const [docs, setDocs] = useState<Record<CriteriaDocumentKind, DocState>>({
     components: { status: 'loading' },
     rules: { status: 'loading' },
   });
 
   const loadDoc = useCallback(
     async (spec: DocSpec, signal: AbortSignal) => {
-      setDocs((prev) => ({ ...prev, [spec.id]: { status: 'loading' } }));
+      setDocs((previous) => ({ ...previous, [spec.id]: { status: 'loading' } }));
       try {
-        const resp = await fetch(
-          `/api/design-systems/${encodeURIComponent(systemId)}/file?path=${encodeURIComponent(spec.path)}`,
-          { cache: 'no-store', signal },
-        );
+        const snapshot = await loadCriteriaDocument(systemId, spec.id, { signal, cache: 'no-store' });
         if (signal.aborted) return;
-        // 404 = file chưa sinh. Đây là trạng thái BÌNH THƯỜNG của một DS mới
-        // nạp, không phải lỗi — hiển thị hướng dẫn thay vì báo đỏ.
-        if (resp.status === 404) {
-          setDocs((prev) => ({ ...prev, [spec.id]: { status: 'empty' } }));
-          return;
-        }
-        if (!resp.ok) {
-          setDocs((prev) => ({
-            ...prev,
-            [spec.id]: { status: 'error', message: `Không đọc được ${spec.path} (HTTP ${resp.status}).` },
-          }));
-          return;
-        }
-        const json = (await resp.json()) as {
-          file?: { content?: string; updatedAt?: string };
-          error?: string;
-        };
+        setDocs((previous) => ({ ...previous, [spec.id]: { status: 'ready', snapshot } }));
+      } catch (error) {
         if (signal.aborted) return;
-        const content = json.file?.content;
-        if (typeof content !== 'string' || content.trim() === '') {
-          setDocs((prev) => ({ ...prev, [spec.id]: { status: 'empty' } }));
-          return;
-        }
-        setDocs((prev) => ({
-          ...prev,
-          [spec.id]: {
-            status: 'ready',
-            html: renderMarkdownToSafeHtml(content),
-            ...(json.file?.updatedAt ? { updatedAt: json.file.updatedAt } : {}),
-          },
-        }));
-      } catch (err) {
-        if (signal.aborted) return;
-        setDocs((prev) => ({
-          ...prev,
+        setDocs((previous) => ({
+          ...previous,
           [spec.id]: {
             status: 'error',
-            message: err instanceof Error ? err.message : `Không đọc được ${spec.path}.`,
+            message: error instanceof Error ? error.message : 'Không thể đọc nội dung lúc này.',
           },
         }));
       }
     },
-    [systemId],
+    [loadCriteriaDocument, systemId],
   );
 
-  // Nạp cả hai file ngay từ đầu (không lazy theo tab): chúng chỉ vài chục KB,
-  // và nạp sẵn giúp chuyển tab không chớp trạng thái loading.
   useEffect(() => {
     const controller = new AbortController();
     for (const spec of DOCS) void loadDoc(spec, controller.signal);
     return () => controller.abort();
   }, [loadDoc, reloadToken]);
 
-  const reloading = DOCS.some((spec) => docs[spec.id].status === 'loading');
+  useEffect(() => {
+    onViewStateChange?.({ tab, documentView });
+  }, [documentView, onViewStateChange, tab]);
 
+  const reloading = reloadPending || DOCS.some((spec) => docs[spec.id].status === 'loading');
   const showcaseSrc = useMemo(
-    () =>
-      `/api/design-systems/${encodeURIComponent(systemId)}/showcase${
-        reloadToken > 0 ? `?r=${reloadToken}` : ''
-      }`,
-    [systemId, reloadToken],
+    () => `/api/design-systems/${encodeURIComponent(systemId)}/showcase?r=${reloadToken}`,
+    [reloadToken, systemId],
   );
+
+  const reloadAll = async () => {
+    if (reloadPending) return;
+    setReloadPending(true);
+    try {
+      await onReload?.();
+    } catch {
+      // The no-cache document reload below remains the source of truth and
+      // will surface its own readable error state if the service is down.
+    } finally {
+      setReloadToken((value) => value + 1);
+      setReloadPending(false);
+    }
+  };
 
   return (
     <div className={`figma-ds-preview ${className ?? ''}`.trim()}>
       <div className="figma-ds-preview__bar">
-        <div className="figma-ds-preview__tabs" role="tablist" aria-label="Preview design system">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'showcase'}
-            className={`figma-ds-preview__tab ${tab === 'showcase' ? 'active' : ''}`}
-            onClick={() => setTab('showcase')}
-          >
+        <div className="figma-ds-preview__tabs" role="tablist" aria-label="Nội dung Design System">
+          <button type="button" role="tab" aria-selected={tab === 'showcase'} className={`figma-ds-preview__tab ${tab === 'showcase' ? 'active' : ''}`} onClick={() => setTab('showcase')}>
             Showcase
           </button>
           {DOCS.map((spec) => (
-            <button
-              key={spec.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === spec.id}
-              className={`figma-ds-preview__tab ${tab === spec.id ? 'active' : ''}`}
-              onClick={() => setTab(spec.id)}
-            >
+            <button key={spec.id} type="button" role="tab" aria-selected={tab === spec.id} className={`figma-ds-preview__tab ${tab === spec.id ? 'active' : ''}`} onClick={() => setTab(spec.id)}>
               {spec.label}
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          className="figma-ds-preview__reload"
-          onClick={() => setReloadToken((value) => value + 1)}
-          disabled={reloading}
-          title="Nạp lại nội dung mới nhất từ đĩa (sau khi agent sửa file qua chat)"
-        >
+        <button type="button" className="figma-ds-preview__reload" onClick={() => void reloadAll()} disabled={reloading} title="Nạp nội dung mới nhất">
           <Icon name={reloading ? 'spinner' : 'refresh'} size={14} />
           {reloading ? 'Đang tải…' : 'Tải lại'}
         </button>
@@ -183,53 +172,124 @@ export function FigmaDsPreviewTabs({ systemId, initialTab = 'showcase', classNam
 
       <div className="figma-ds-preview__stage">
         {tab === 'showcase' ? (
-          // URL-load thay vì srcDoc: showcase compiled lazy-fetch icon SVG từ
-          // route react-assets, chỉ iframe same-origin mới mang được auth của app.
-          <iframe
-            key={showcaseSrc}
-            className="figma-ds-showcase-frame"
-            title="Design system showcase"
-            src={showcaseSrc}
-          />
+          <iframe key={showcaseSrc} className="figma-ds-showcase-frame" title="Showcase Design System" src={showcaseSrc} />
         ) : null}
-        {DOCS.map((spec) =>
-          tab === spec.id ? <DocPane key={spec.id} spec={spec} state={docs[spec.id]} /> : null,
-        )}
+        {DOCS.map((spec) => tab === spec.id ? (
+          <DocPane
+            key={spec.id}
+            spec={spec}
+            state={docs[spec.id]}
+            view={documentView[spec.id]}
+            onViewChange={(view) => setDocumentView((previous) => ({ ...previous, [spec.id]: view }))}
+            onGenerate={onGenerate ? () => onGenerate(spec.id) : undefined}
+          />
+        ) : null)}
       </div>
     </div>
   );
 }
 
-function DocPane({ spec, state }: { spec: DocSpec; state: DocState }) {
+function DocPane({
+  spec,
+  state,
+  view,
+  onViewChange,
+  onGenerate,
+}: {
+  spec: DocSpec;
+  state: DocState;
+  view: CriteriaDocumentView;
+  onViewChange: (view: CriteriaDocumentView) => void;
+  onGenerate?: () => void | Promise<void>;
+}) {
   if (state.status === 'loading') {
-    return <div className="figma-ds-preview__empty">Đang đọc {spec.path}…</div>;
-  }
-  if (state.status === 'empty') {
-    return (
-      <div className="figma-ds-preview__empty">
-        <strong>{spec.emptyTitle}</strong>
-        <p>{spec.emptyHint}</p>
-      </div>
-    );
+    return <div className="figma-ds-preview__empty">Đang tải {spec.label.toLowerCase()}…</div>;
   }
   if (state.status === 'error') {
     return (
       <div className="figma-ds-preview__empty is-error">
-        <strong>Không đọc được {spec.label.toLowerCase()}</strong>
+        <strong>Chưa tải được {spec.label.toLowerCase()}</strong>
         <p>{state.message}</p>
       </div>
     );
   }
+
+  const { current, draft } = state.snapshot;
+  const selectedView: CriteriaDocumentView = view === 'draft' && draft ? 'draft' : view;
+  const selected = selectedView === 'draft' ? draft : current;
+
   return (
-    <div className="figma-ds-preview__doc">
-      {state.updatedAt ? (
-        <div className="figma-ds-preview__doc-meta">
-          {spec.path} · cập nhật {new Date(state.updatedAt).toLocaleString('vi-VN')}
+    <section className="figma-ds-preview__document-stage" aria-label={spec.label}>
+      <div className="figma-ds-preview__document-toolbar">
+        <div>
+          <strong>{spec.label}</strong>
+          <span>{selectedView === 'draft' ? 'Bản mới đang chờ bạn duyệt' : 'Bản Design System đang dùng'}</span>
         </div>
-      ) : null}
-      {/* Safe by contract: renderMarkdownToSafeHtml escape HTML thô và chặn
-          link protocol lạ — cùng đường render với DocRedlinePreview. */}
-      <article className="markdown-rendered" dangerouslySetInnerHTML={{ __html: state.html }} />
-    </div>
+        {draft ? (
+          <div className="figma-ds-preview__version-switch" role="group" aria-label={`Chọn bản ${spec.label.toLowerCase()}`}>
+            <button type="button" aria-pressed={selectedView === 'current'} className={selectedView === 'current' ? 'active' : ''} onClick={() => onViewChange('current')}>Bản đang dùng</button>
+            <button type="button" aria-pressed={selectedView === 'draft'} className={selectedView === 'draft' ? 'active' : ''} onClick={() => onViewChange('draft')}>Bản nháp</button>
+          </div>
+        ) : null}
+      </div>
+
+      {selected ? (
+        <div className="figma-ds-preview__doc">
+          <div className="figma-ds-preview__doc-meta">
+            {selected.status === 'stale' ? 'Cần cập nhật cho bản Figma hiện tại' : selectedView === 'draft' ? 'Chưa được áp dụng cho Design System' : 'Đang được dùng cho Design System'}
+            {selected.updatedAt ? ` · cập nhật ${new Date(selected.updatedAt).toLocaleString('vi-VN')}` : ''}
+          </div>
+          <article className="markdown-rendered" dangerouslySetInnerHTML={{ __html: renderMarkdownToSafeHtml(selected.content) }} />
+        </div>
+      ) : (
+        <div className="figma-ds-preview__empty">
+          <span className="figma-ds-preview__empty-icon" aria-hidden><Icon name="file" size={22} /></span>
+          <strong>{selectedView === 'draft' ? 'Chưa có bản nháp' : spec.missingTitle}</strong>
+          <p>{selectedView === 'draft' ? 'Hãy sinh một bản mới trước khi duyệt và áp dụng.' : spec.missingHint}</p>
+          {onGenerate ? <button type="button" className="figma-ds-preview__generate" onClick={() => void onGenerate()}><Icon name="sparkles" size={15} />{spec.generationLabel}</button> : null}
+        </div>
+      )}
+    </section>
   );
+}
+
+/** Default adapter for the versioned criteria endpoint, with a legacy read
+ * fallback while older daemons are still in use. */
+export const loadCriteriaDocumentFromApi: CriteriaDocumentLoader = async (systemId, kind, options) => {
+  const endpoint = `/api/design-systems/${encodeURIComponent(systemId)}/criteria/${kind}`;
+  const response = await fetch(endpoint, options);
+  if (response.ok) {
+    const payload = (await response.json()) as Partial<CriteriaDocumentSnapshot>;
+    return {
+      kind,
+      current: normalizeVersion(payload.current),
+      draft: normalizeVersion(payload.draft),
+    };
+  }
+  if (response.status !== 404) throw new Error('Không thể đọc nội dung mới nhất. Hãy thử tải lại.');
+
+  const path = kind === 'components' ? 'criteria/components.md' : 'criteria/rules.md';
+  const legacy = await fetch(`/api/design-systems/${encodeURIComponent(systemId)}/file?path=${encodeURIComponent(path)}`, options);
+  if (legacy.status === 404) return { kind, current: null, draft: null };
+  if (!legacy.ok) throw new Error('Không thể đọc nội dung mới nhất. Hãy thử tải lại.');
+  const json = (await legacy.json()) as { file?: { content?: unknown; updatedAt?: unknown } };
+  const content = typeof json.file?.content === 'string' ? json.file.content : '';
+  return {
+    kind,
+    current: content.trim() ? { content, status: 'current', ...(typeof json.file?.updatedAt === 'string' ? { updatedAt: json.file.updatedAt } : {}) } : null,
+    draft: null,
+  };
+};
+
+function normalizeVersion(value: unknown): CriteriaDocumentVersion | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.content !== 'string' || !candidate.content.trim()) return null;
+  const status = candidate.status === 'current' || candidate.status === 'stale' || candidate.status === 'draft' ? candidate.status : undefined;
+  return {
+    content: candidate.content,
+    ...(typeof candidate.updatedAt === 'string' ? { updatedAt: candidate.updatedAt } : {}),
+    ...(typeof candidate.count === 'number' ? { count: candidate.count } : {}),
+    ...(status ? { status } : {}),
+  };
 }

@@ -2,6 +2,7 @@ import type { Express } from 'express';
 import type {
   BasDocument,
   BasFeature,
+  ConfirmDocsReviewResponse,
   ConfluencePageMeta,
   PipelineRunSource,
   PullApplyResult,
@@ -105,6 +106,11 @@ export interface RunPipelineOptions {
   designSystemByTarget?:
     | Partial<Record<import('@open-design/contracts').UiTarget, string>>
     | undefined;
+  /** The explicit UI/CLI confirmation identity for the deterministic final
+   * docs-review stage. These stay internal to the stage runner so both
+   * surfaces share its status and history lifecycle. */
+  docsReviewConfirmationId?: string | undefined;
+  docsReviewSourceRunId?: string | undefined;
 }
 
 /** Outcome of a manual/push-all file upload.
@@ -144,6 +150,10 @@ export interface PipelineDeps {
      * Consumed by the run-all orchestrator; routes must strip it before
      * JSON-serializing the start payload. */
     completion: Promise<'succeeded' | 'failed' | 'idle'>;
+    /** Present only for `dr-confirm`. The dedicated confirmation endpoint
+     * awaits this result; the generic pipeline route deliberately omits it
+     * from its asynchronous start response. */
+    docsReviewConfirmation?: Promise<ConfirmDocsReviewResponse>;
   }>;
   /** UX knowledge base (media-store backed, see ux-kb-sync.ts): status
    * resolves the active KB source (env → media cache → home folder); push

@@ -749,6 +749,7 @@ export interface Dict {
   'entry.navNewProject': string;
   'entry.navHome': string;
   'entry.navProjects': string;
+  'entry.navWorkspaces': string;
   'entry.navTasks': string;
   'entry.navPipelines': string;
   'entry.navFeedback': string;

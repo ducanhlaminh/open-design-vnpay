@@ -500,6 +500,25 @@
   opacity: 0.62;
 }
 
+/* Nhấn mạnh trong body modal xác nhận: chữ đậm, độ tương phản đầy đủ
+   (không bị .hint làm mờ vì nằm trong span riêng). */
+.clearConfirmSection .em {
+  font-weight: 700;
+  opacity: 1;
+}
+/* Cảnh báo phá huỷ (tên các bước sẽ bị xoá): đậm + màu nguy hiểm. */
+.clearConfirmSection .danger {
+  font-weight: 700;
+  opacity: 1;
+  color: var(--pl-danger, #c0392b);
+}
+/* Body cảnh báo đọc rõ hơn .hint mặc định (đây là câu chính, không phải chú thích). */
+.clearConfirmBody {
+  font-size: 12.5px;
+  opacity: 0.85;
+  line-height: 1.5;
+}
+
 /* RunAllClearConfirmModal: each "mục" (lost output / stale inputs) is one of
    these, stacked as a block so its own lines lay out top-to-bottom even
    though `.hint`/`.sectionLabel` are inline `<span>`s — a flex column turns

@@ -67,6 +67,14 @@ pages fetched ONLY as background. Read them to understand the domain / business
 rules, but do NOT derive any actor, journey, or stage from them. Build the
 journeys strictly from `./docs/confluence/` and `./docs/jira/`.
 
+**URD/PRD illustrations are not flow authority.** Ignore embedded UI mockups,
+screenshots, and other screen images when deriving actors, steps, states, or
+component behavior. They are explanatory illustrations, not a specification to
+reconstruct. The written requirements are authoritative. The only image-adjacent
+exception is a source `.drawio` file explicitly marked as a flow diagram: read
+its labels and arrows for documented branch/order only, never its geometry or
+styling as design direction.
+
 3. **Flow diagrams (AUTHORITATIVE for the order of steps):** the ingest saves
    every draw.io diagram embedded in the docs as its SOURCE file next to the
    page — `./docs/confluence/attachments/<name>.drawio` — and marks it in the

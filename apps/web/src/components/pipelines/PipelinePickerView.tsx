@@ -66,20 +66,27 @@ function recordRecent(entry: Omit<RecentEntry, 'at'>): void {
 }
 
 // ── Per-workflow progress for this feature ──────────────────────────────
+type RunningStage = { id: string; name: string; startedAt?: number };
 type WfProgress =
   | { status: 'loading' }
-  | { status: 'ok'; done: number; total: number; running: number }
+  | { status: 'ok'; done: number; total: number; running: number; runningStage?: RunningStage }
   | { status: 'error' };
 
 function hasWorkInProgress(p: WfProgress): boolean {
   return p.status === 'ok' && (p.running > 0 || (p.done > 0 && p.done < p.total));
 }
 
+// "N phút" đã trôi kể từ `startedAt`. < 1 phút hiện "vừa xong / dưới 1 phút".
+function elapsedMinutes(startedAt: number, nowMs: number): string {
+  const mins = Math.floor(Math.max(0, nowMs - startedAt) / 60_000);
+  return mins < 1 ? 'dưới 1 phút' : `${mins} phút`;
+}
+
 function statusLabel(p: WfProgress): string {
   if (p.status === 'loading') return '…';
   if (p.status === 'error') return 'chưa rõ tiến độ';
   if (p.done === 0 && p.running === 0) return 'Chưa chạy';
-  if (p.running > 0) return `Đang chạy · bước ${p.done + 1}/${p.total}`;
+  if (p.running > 0) return 'Đang chạy';
   if (isFeatureDone(p)) return 'Xong';
   return `${p.done}/${p.total}`;
 }
@@ -95,6 +102,9 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
   const [workflows, setWorkflows] = useState<Workflow[] | null>(null);
   const [workflowsError, setWorkflowsError] = useState<string | null>(null);
   const [progress, setProgress] = useState<Record<string, WfProgress>>({});
+  // Nhịp đồng hồ để "đã chạy N phút" tự tăng mà không cần refetch. Chỉ chạy
+  // khi có ít nhất một workflow đang chạy (bật/tắt ở effect bên dưới).
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     let cancelled = false;
@@ -122,7 +132,13 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
               setProgress((prev) => ({
                 ...prev,
                 [w.id]: proj
-                  ? { status: 'ok', done: proj.done, total: proj.total, running: proj.running }
+                  ? {
+                      status: 'ok',
+                      done: proj.done,
+                      total: proj.total,
+                      running: proj.running,
+                      ...(proj.runningStage ? { runningStage: proj.runningStage } : {}),
+                    }
                   : { status: 'ok', done: 0, total: 0, running: 0 },
               }));
             })
@@ -140,6 +156,17 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
       cancelled = true;
     };
   }, [featureId]);
+
+  // Có ít nhất một workflow đang chạy (để bật đồng hồ đếm phút).
+  const anyRunning = useMemo(
+    () => Object.values(progress).some((p) => p.status === 'ok' && p.running > 0),
+    [progress],
+  );
+  useEffect(() => {
+    if (!anyRunning) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [anyRunning]);
 
   const app = nav.appById(appId);
   const feature = nav.featureOf(appId, featureId);
@@ -175,7 +202,7 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
         <div className={styles.header}>
           <div className={styles.headerCopy}>
             <h1 className={styles.title}>Pipelines</h1>
-            <p className={styles.lede}>Chọn quy trình để chạy cho feature này.</p>
+            <p className={styles.lede}>Chọn quy trình để chạy cho tính năng này.</p>
           </div>
         </div>
         <div className={styles.breadcrumb}>
@@ -193,18 +220,18 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
             className={styles.breadcrumbLink}
             onClick={() => navigate({ kind: 'home', view: 'pipelines' })}
           >
-            Apps
+            Dự án
           </button>
         </div>
         <div className={styles.notFound}>
-          <span>Không tìm thấy feature này.</span>
+          <span>Không tìm thấy tính năng này.</span>
           <button
             type="button"
             className={styles.btn}
             onClick={() => navigate({ kind: 'home', view: 'pipelines' })}
           >
             <Icon name="arrow-left" size={14} />
-            Về Apps
+            Về dự án
           </button>
         </div>
       </div>
@@ -239,7 +266,7 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
           className={styles.breadcrumbLink}
           onClick={() => navigate({ kind: 'home', view: 'pipelines' })}
         >
-          Apps
+          Dự án
         </button>
         <span className={styles.breadcrumbSep}>›</span>
         <button
@@ -263,7 +290,7 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
               {featureStatusText}
             </span>
           </div>
-          <p className={styles.lede}>Chọn quy trình để chạy cho feature này.</p>
+          <p className={styles.lede}>Chọn quy trình để chạy cho tính năng này.</p>
         </div>
       </div>
 
@@ -272,12 +299,20 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
           <div className={styles.listHead}>
             <h2 className={styles.listHeadTitle}>Danh sách quy trình</h2>
             <span className={styles.listHeadHint}>
-              Mỗi thẻ là một workflow chạy trên feature này — tiến độ đếm riêng từng workflow.
+              Mỗi thẻ là một quy trình chạy trên tính năng này — tiến độ được tính riêng cho từng quy trình.
             </span>
           </div>
         </div>
 
         <div className={styles.panelBody}>
+      <aside className={styles.workflowInputCallout} aria-label="Tài liệu đầu vào dùng chung">
+        <span className={styles.workflowInputTitle}>Tài liệu đầu vào dùng chung cho 3 workflow</span>
+        <span className={styles.workflowInputText}>
+          Chọn <strong>URD</strong> của tính năng/sản phẩm làm tài liệu chính (bắt buộc). Có thể chọn thêm
+          <strong> PRD</strong> làm tài liệu bổ sung để agent nắm nhanh bối cảnh dự án. Bạn sẽ chọn các tài liệu này
+          sau khi bấm Mở workflow.
+        </span>
+      </aside>
       {workflowsError ? (
         <div className={styles.error}>
           <Icon name="info" size={16} />
@@ -313,21 +348,22 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
                     {wf.description}
                   </p>
                 ) : null}
-                {p.status === 'ok' && p.total > 0 ? (
-                  <span className={styles.segments}>
-                    {Array.from({ length: p.total }).map((_, i) => (
-                      // eslint-disable-next-line react/no-array-index-key -- fixed-count step segments
-                      <span
-                        key={i}
-                        className={styles.segment}
-                        data-state={i < p.done ? 'done' : i < p.done + p.running ? 'running' : 'idle'}
-                      />
-                    ))}
-                  </span>
+                {p.status === 'ok' && p.running > 0 && p.runningStage ? (
+                  <div className={styles.runningNow}>
+                    <span className={styles.runningDot} aria-hidden />
+                    <span className={styles.runningStageName} title={p.runningStage.name}>
+                      {p.runningStage.name}
+                    </span>
+                    {p.runningStage.startedAt ? (
+                      <span className={styles.runningElapsed}>
+                        · {elapsedMinutes(p.runningStage.startedAt, now)}
+                      </span>
+                    ) : null}
+                  </div>
                 ) : null}
                 <div className={styles.pipelineCardFoot}>
                   <span className={styles.pipelineCardCount}>
-                    {p.status === 'ok' ? `${p.done}/${p.total} bước` : ''}
+                    {p.status === 'ok' && p.running === 0 ? `${p.done}/${p.total} bước` : ''}
                   </span>
                   <button
                     type="button"

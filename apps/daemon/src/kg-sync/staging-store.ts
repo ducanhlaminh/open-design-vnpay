@@ -20,6 +20,48 @@ function toBuf(value: unknown): Buffer {
   return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+/**
+ * Defensive, backward-compatible reader for approval receipts. Version 1 did
+ * not carry `schema`; version 2 adds the local id and actor metadata. A bad
+ * receipt must not make a later publish guess a destination.
+ */
+export function parseStagingDecision(raw: unknown): StagingDecision | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.pendingId !== 'string' || !r.pendingId ||
+    (r.status !== 'approved' && r.status !== 'rejected') ||
+    typeof r.decidedAt !== 'string' || !r.decidedAt
+  ) {
+    return null;
+  }
+  // An approval without its final id can never be reconciled safely.
+  if (r.status === 'approved' && (typeof r.finalId !== 'string' || !r.finalId)) return null;
+  const actor = r.decidedBy;
+  const actorRecord = actor && typeof actor === 'object' && !Array.isArray(actor)
+    ? actor as Record<string, unknown>
+    : null;
+  const actorId = actorRecord?.id;
+  const decidedBy = typeof actorId === 'string'
+    ? {
+        id: actorId,
+        ...(typeof actorRecord?.email === 'string' ? { email: actorRecord.email } : {}),
+        ...(typeof actorRecord?.name === 'string' ? { name: actorRecord.name } : {}),
+      }
+    : undefined;
+  return {
+    ...(r.schema === 2 ? { schema: 2 as const } : { schema: 1 as const }),
+    pendingId: r.pendingId,
+    status: r.status,
+    ...(typeof r.finalId === 'string' && r.finalId ? { finalId: r.finalId } : {}),
+    ...(typeof r.finalAppId === 'string' && r.finalAppId ? { finalAppId: r.finalAppId } : {}),
+    ...(typeof r.localId === 'string' && r.localId ? { localId: r.localId } : {}),
+    ...(typeof r.reason === 'string' && r.reason ? { reason: r.reason } : {}),
+    decidedAt: r.decidedAt,
+    ...(decidedBy ? { decidedBy } : {}),
+  };
+}
+
 /** Ghi phiếu yêu cầu vào gốc folder chờ. Gọi TRƯỚC khi sync file: một push đứt
  *  giữa đường vẫn phải để lại thứ người duyệt đọc được. */
 export async function writeStagingRequest(
@@ -51,9 +93,7 @@ export async function readStagingDecision(
   try {
     if (!(await media.findFolderId(DECISIONS_FOLDER))) return null;
     const buf = await media.downloadFile(DECISIONS_FOLDER, decisionPath(pendingId));
-    const raw = JSON.parse(buf.toString('utf8')) as StagingDecision;
-    if (!raw || (raw.status !== 'approved' && raw.status !== 'rejected')) return null;
-    return raw;
+    return parseStagingDecision(JSON.parse(buf.toString('utf8')));
   } catch {
     return null;
   }
@@ -68,6 +108,6 @@ export async function writeStagingDecision(
     STAGING_STAGE,
     decisionPath(decision.pendingId),
     JSON_MIME,
-    toBuf(decision),
+    toBuf({ ...decision, schema: 2 }),
   );
 }

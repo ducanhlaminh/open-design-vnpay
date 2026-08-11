@@ -345,6 +345,7 @@ export const tr: Dict = {
   'entry.useEverywhereAria': '“Her yerde kullan” kılavuzunu aç (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': 'Yeni proje',
   'entry.navHome': 'Ana sayfa',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'Projeler',
   'entry.navDesignSystems': 'Tasarım sistemleri',
   'entry.helpAria': 'Yardım',

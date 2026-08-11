@@ -110,16 +110,16 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
     })();
   };
 
-  if (loading) return <section className={styles.section}><p className={styles.muted}>Đang tải tài liệu App…</p></section>;
+  if (loading) return <section className={styles.section}><p className={styles.muted}>Đang tải tài liệu dự án…</p></section>;
   if (error && !pool) return <section className={styles.section}><p className={styles.error}>{error}</p><button className={styles.secondaryButton} onClick={() => void loadPool()}>Thử lại</button></section>;
   if (!pool) return null;
 
 
   return (
-    <section className={styles.section} aria-label="Tài liệu App">
+    <section className={styles.section} aria-label="Tài liệu dự án">
       <div className={styles.header}>
         <div>
-          <h2 className={styles.heading}>Tài liệu App</h2>
+          <h2 className={styles.heading}>Tài liệu dự án</h2>
           <p className={styles.muted}>
             {pool.pages.length === 0 ? 'Chưa có tài liệu trong pool.' : `${pool.pages.length} trang`}
             {refreshing ? ' · đang cập nhật…' : ''}

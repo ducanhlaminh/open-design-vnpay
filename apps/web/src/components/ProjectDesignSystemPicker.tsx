@@ -37,6 +37,9 @@ interface Props {
    * pass a value above the modal so the popover isn't hidden behind the overlay.
    */
   popoverZIndex?: number;
+  /** Form fields need the same clear, full-width affordance as the document picker.
+   * The project chrome keeps the compact treatment. */
+  variant?: 'compact' | 'form';
 }
 
 export function ProjectDesignSystemPicker({
@@ -45,6 +48,7 @@ export function ProjectDesignSystemPicker({
   loading,
   onChange,
   popoverZIndex,
+  variant = 'form',
 }: Props) {
   const { locale, t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -202,10 +206,109 @@ export function ProjectDesignSystemPicker({
     });
   }, [query, designSystems, locale, hasPlatformTags, platformTab]);
 
+  // Trong form, DS là một quyết định cần so sánh chứ không phải một giá trị
+  // ngắn để chọn rồi quên. Giữ picker ngay trong luồng cuộn của form, giống
+  // bộ chọn tài liệu Confluence: tìm → đọc danh sách → tick một bộ. Điều này
+  // cũng tránh dropdown/preview nổi che footer của modal.
+  if (variant === 'form') {
+    return (
+      <div className="project-ds-picker project-ds-picker--form" data-testid="project-ds-picker">
+        <div className="project-ds-picker-inline-search">
+          <Icon name="search" size={16} />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t('designSystemPicker.searchCompactPlaceholder')}
+            aria-label={t('designSystemPicker.searchCompactPlaceholder')}
+            disabled={loading}
+            data-testid="project-ds-picker-search"
+          />
+          {selected ? <span className="project-ds-picker-inline-count">Đã chọn</span> : null}
+        </div>
+        {hasPlatformTags ? (
+          <div className="project-ds-picker-platform" role="tablist" aria-label="Lọc theo nền tảng">
+            {(['all', 'mobile', 'web'] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={platformTab === tab}
+                className={platformTab === tab ? 'active' : ''}
+                onClick={() => setPlatformTab(tab)}
+              >
+                {tab === 'all' ? 'Tất cả' : tab === 'mobile' ? 'Mobile' : 'Web'}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="project-ds-picker-inline-list" role="radiogroup" aria-label="Chọn Design System">
+          <button
+            type="button"
+            className={`project-ds-picker-inline-option${selectedId == null ? ' active' : ''}`}
+            role="radio"
+            aria-checked={selectedId == null}
+            onClick={() => onChange(null)}
+          >
+            <span className="project-ds-picker-inline-radio" aria-hidden>
+              {selectedId == null ? <span /> : null}
+            </span>
+            <span>
+              <strong>{t('designSystemPicker.noneTitle')}</strong>
+              <small>{t('designSystemPicker.noneSummary')}</small>
+            </span>
+          </button>
+          {filtered.map((d) => {
+            const active = d.id === selectedId;
+            const localizedSummary = localizeDesignSystemSummary(locale, d);
+            return (
+              <button
+                key={d.id}
+                type="button"
+                className={`project-ds-picker-inline-option${active ? ' active' : ''}`}
+                role="radio"
+                aria-checked={active}
+                onClick={() => onChange(d.id)}
+                data-testid={`project-ds-picker-option-${d.id}`}
+              >
+                <span className="project-ds-picker-inline-radio" aria-hidden>
+                  {active ? <span /> : null}
+                </span>
+                {d.swatches && d.swatches.length > 0 ? (
+                  <span className="project-ds-picker-inline-swatches" aria-hidden>
+                    {d.swatches.slice(0, 4).map((sw, index) => (
+                      <span key={`${d.id}-inline-${index}`} style={{ background: sw }} />
+                    ))}
+                  </span>
+                ) : (
+                  <span className="project-ds-picker-inline-icon" aria-hidden><Icon name="palette" size={17} /></span>
+                )}
+                <span className="project-ds-picker-inline-copy">
+                  <strong>{d.title}</strong>
+                  <small>
+                    {[
+                      d.platform === 'mobile' ? 'Mobile' : d.platform === 'web' ? 'Web' : null,
+                      d.category ? localizeDesignSystemCategory(locale, d.category) : null,
+                      localizedSummary,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ') || 'Bộ tiêu chuẩn thiết kế'}
+                  </small>
+                </span>
+              </button>
+            );
+          })}
+          {loading ? <div className="project-ds-picker-empty">{t('designSystemPicker.loading')}</div> : null}
+          {!loading && filtered.length === 0 ? <div className="project-ds-picker-empty">{t('designSystemPicker.empty')}</div> : null}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       ref={wrapRef}
-      className={`project-ds-picker${open ? ' open' : ''}`}
+      className={`project-ds-picker project-ds-picker--${variant}${open ? ' open' : ''}`}
       data-testid="project-ds-picker"
     >
       <button

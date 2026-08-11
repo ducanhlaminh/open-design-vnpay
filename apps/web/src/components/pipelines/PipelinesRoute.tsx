@@ -10,10 +10,11 @@
 // trả lời — ba lần fetch riêng là ba cách đếm tiến độ khác nhau, và người dùng
 // sẽ thấy màn 1 nói 4/6 còn màn 2 nói 3/6.
 
-import { useState } from 'react';
-import type { PipelineProject } from '@open-design/contracts';
+import { useCallback, useEffect, useState } from 'react';
+import type { AuthMeResponse, PipelineProject, Workflow, WorkflowsResponse } from '@open-design/contracts';
 
 import { UNASSIGNED_APP, navigate, useRoute } from '../../router';
+import { Toast } from '../Toast';
 import { PipelinesView } from '../PipelinesView';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { EditAppModal } from './EditAppModal';
@@ -23,7 +24,10 @@ import { NewFeatureModal } from './NewFeatureModal';
 import { PipelinesAppsView } from './PipelinesAppsView';
 import { PipelinesFeaturesView } from './PipelinesFeaturesView';
 import { PipelinePickerView } from './PipelinePickerView';
-import { usePipelineNav } from './usePipelineNav';
+import { PullAllModal, PushAllModal, type ContextTransferSelection } from './PipelineModals';
+import { SYNC_COPY } from './sync-copy';
+import { bindFeatureContext, transferSelectedAppContexts } from './context-sync-api';
+import { appIdOf, usePipelineNav } from './usePipelineNav';
 import type { NavApp } from './usePipelineNav';
 
 // Một App/Feature bị xóa thì màn đang xem nó không còn nghĩa gì — lùi lên một
@@ -47,6 +51,103 @@ async function deleteFeature(featureId: string): Promise<void> {
 export function PipelinesRoute() {
   const route = useRoute();
   const nav = usePipelineNav();
+  const [pullAllOpen, setPullAllOpen] = useState(false);
+  const [pushAllOpen, setPushAllOpen] = useState(false);
+  const [pullBusy, setPullBusy] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [syncAccess, setSyncAccess] = useState<Pick<AuthMeResponse, 'syncReady' | 'syncIssue'> | null>(null);
+  const [syncToast, setSyncToast] = useState<{ message: string; details?: string; error?: boolean } | null>(null);
+
+  const refreshSyncAccess = useCallback(async () => {
+    try {
+      const response = await fetch('/api/auth/me');
+      const body = (await response.json().catch(() => ({}))) as Partial<AuthMeResponse>;
+      setSyncAccess({ syncReady: response.ok && body.syncReady === true, syncIssue: body.syncIssue ?? null });
+    } catch {
+      setSyncAccess({ syncReady: false, syncIssue: 'identity_unavailable' });
+    }
+  }, []);
+  useEffect(() => { void refreshSyncAccess(); }, [refreshSyncAccess]);
+  useEffect(() => {
+    void fetch('/api/workflows')
+      .then(async (response) => response.ok ? (await response.json()) as WorkflowsResponse : null)
+      .then((data) => setWorkflows(data?.workflows ?? []))
+      .catch(() => setWorkflows([]));
+  }, []);
+  const reconnectSync = useCallback(async () => {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
+    window.location.reload();
+  }, []);
+  const pullAll = useCallback(async (selection: ContextTransferSelection, stages: string[]) => {
+    setPullBusy(true);
+    try {
+      const contextResults = await transferSelectedAppContexts('pull', selection);
+      let data: Record<string, any> = { data: { results: [] } };
+      if (selection.projectIds.length > 0) {
+        const response = await fetch('/api/kg/pull-all', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ projectIds: selection.projectIds, stages }),
+        });
+        data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data?.error || `pull-all failed: ${response.status}`);
+      }
+      await nav.reload();
+      const results = Array.isArray(data?.data?.results) ? data.data.results : [];
+      const fileCount = results.reduce((sum: number, result: { files?: unknown }) => sum + Number(result.files ?? 0), 0);
+      setSyncToast({
+        message: selection.projectIds.length > 0
+          ? `${SYNC_COPY.downloadSuccess(results.length, fileCount)} · ${contextResults.length} bộ tài liệu chung`
+          : `Đã lấy ${contextResults.length} bộ tài liệu chung về máy. Tính năng hiện tại chưa bị đổi phiên bản.`,
+      });
+      if (selection.projectIds.length === 1) {
+        // reload updates the App screen; this read is only for immediate route
+        // resolution, before React has committed that state update.
+        const localResponse = await fetch('/api/pipelines/projects');
+        const localData = await localResponse.json().catch(() => ({}));
+        const localProjects = localResponse.ok && Array.isArray(localData?.projects)
+          ? localData.projects as PipelineProject[]
+          : [];
+        const imported = localProjects.find((project) => project.id === selection.projectIds[0]);
+        if (imported) navigate({ kind: 'pipelines-feature', appId: appIdOf(imported), featureId: imported.id });
+      }
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      setSyncToast({ message: SYNC_COPY.downloadError, details, error: true });
+      throw error;
+    } finally {
+      setPullBusy(false);
+    }
+  }, [nav]);
+  const pushAll = useCallback(async (selection: ContextTransferSelection, stages: string[]) => {
+    setPushBusy(true);
+    try {
+      const contextResults = await transferSelectedAppContexts('push', selection);
+      let data: Record<string, any> = { data: { results: [] } };
+      if (selection.projectIds.length > 0) {
+        const response = await fetch('/api/kg/push-all', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ projectIds: selection.projectIds, stages }),
+        });
+        data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data?.error || `push-all failed: ${response.status}`);
+      }
+      const results = Array.isArray(data?.data?.results) ? data.data.results : [];
+      const fileCount = results.reduce((sum: number, result: { filesUploaded?: unknown }) => sum + Number(result.filesUploaded ?? 0), 0);
+      setSyncToast({
+        message: `Đã xử lý ${contextResults.length} bộ tài liệu chung và ${selection.projectIds.length} tính năng · ${fileCount} tệp`,
+      });
+      await nav.reload();
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      setSyncToast({ message: SYNC_COPY.shareError, details, error: true });
+      throw error;
+    } finally {
+      setPushBusy(false);
+    }
+  }, [nav]);
   // Đang tạo gì. Dùng union chứ không dùng một chuỗi "rỗng nghĩa là App": App
   // và Feature giờ là hai form khác nhau, và appId là dữ liệu người dùng nhập
   // nên không có giá trị nào của nó đủ an toàn để làm cờ chọn form.
@@ -104,13 +205,13 @@ export function PipelinesRoute() {
       <EditFeatureModal feature={acting.feature} onClose={closeActing} onSaved={() => nav.reload()} />
     ) : acting.kind === 'delete-app' ? (
       <ConfirmDeleteModal
-        title={`Xóa App "${acting.app.name}"?`}
+        title={`Xóa dự án "${acting.app.name}"?`}
         body={
           (acting.app.features.length > 0
-            ? `${acting.app.features.length} feature sẽ chuyển về "Chưa gán app". `
+            ? `${acting.app.features.length} tính năng sẽ chuyển về "Chưa thuộc dự án". `
             : '') + 'Không xóa gì trên Pipeline Studio.'
         }
-        confirmLabel="Xóa App"
+        confirmLabel="Xóa dự án"
         onClose={closeActing}
         onConfirm={async () => {
           await deleteApp(acting.app.id);
@@ -123,12 +224,12 @@ export function PipelinesRoute() {
       />
     ) : (
       <ConfirmDeleteModal
-        title={`Xóa Feature "${acting.feature.name}"?`}
+        title={`Xóa tính năng "${acting.feature.name}"?`}
         body={
           'Xóa thư mục làm việc và trạng thái chạy trên máy này. ' +
           'Bản đã Push trên Pipeline Studio không bị ảnh hưởng.'
         }
-        confirmLabel="Xóa Feature"
+        confirmLabel="Xóa tính năng"
         onClose={closeActing}
         onConfirm={async () => {
           await deleteFeature(acting.feature.id);
@@ -178,9 +279,65 @@ export function PipelinesRoute() {
         onNewApp={() => setCreating({ kind: 'app' })}
         onEditApp={(app) => setActing({ kind: 'edit-app', app })}
         onDeleteApp={(app) => setActing({ kind: 'delete-app', app })}
+        onPullAll={() => setPullAllOpen(true)}
+        onPushAll={() => setPushAllOpen(true)}
+        onReconnectSync={() => void reconnectSync()}
+        syncReady={syncAccess?.syncReady === true}
+        pullBusy={pullBusy}
+        pushBusy={pushBusy}
       />
+      {pullAllOpen ? (
+        <PullAllModal
+          localIds={new Set(nav.projects.map((project) => project.id))}
+          workflows={workflows}
+          scopeName="Tất cả workflow"
+          syncReady={syncAccess?.syncReady === true}
+          onReconnect={() => void reconnectSync()}
+          onClose={() => setPullAllOpen(false)}
+          onConfirm={pullAll}
+        />
+      ) : null}
+      {pushAllOpen ? (
+        <PushAllModal
+          projects={nav.projects.map((project) => ({
+            id: project.id,
+            name: project.name,
+            ...(project.app ? { app: project.app } : {}),
+            appContextBinding: project.appContextBinding,
+          }))}
+          apps={nav.apps.filter((app) => !app.unassigned).map((app) => ({
+            id: app.id,
+            name: app.name,
+            context: app.context,
+            features: app.features.map((feature) => ({
+              id: feature.id,
+              name: feature.name,
+              boundVersion: feature.appContextBinding?.contextVersion,
+            })),
+          }))}
+          workflows={workflows}
+          scopeName="Tất cả workflow"
+          syncReady={syncAccess?.syncReady === true}
+          onReconnect={() => void reconnectSync()}
+          onClose={() => setPushAllOpen(false)}
+          onConfirm={pushAll}
+          onUpgradeFeatureContext={async (featureId, appId, contextVersion, contentDigest) => {
+            await bindFeatureContext({ featureId, appId, contextVersion, contentDigest });
+            setSyncToast({ message: `Tính năng sẽ dùng bản tài liệu chung ${contextVersion} ở lần chạy tiếp theo.` });
+            await nav.reload();
+          }}
+        />
+      ) : null}
       {createModal}
       {actionModal}
+      {syncToast ? (
+        <Toast
+          message={syncToast.message}
+          details={syncToast.details}
+          role={syncToast.error ? "alert" : "status"}
+          onDismiss={() => setSyncToast(null)}
+        />
+      ) : null}
     </>
   );
 }

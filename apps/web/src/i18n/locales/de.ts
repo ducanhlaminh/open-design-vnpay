@@ -355,6 +355,7 @@ export const de: Dict = {
   'entry.navNewProject': 'Neues Projekt',
   'entry.navHome': 'Start',
   'entry.navProjects': 'Projekte',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navDesignSystems': 'Design-Systeme',
   'entry.helpAria': 'Hilfe',
   'entry.helpMenuAria': 'Hilfemenü',

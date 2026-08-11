@@ -1,3 +1,5 @@
+import type { AppContextManifest, FeatureContextBinding } from './app-context-version.js';
+
 // Pipelines: a per-project, dependency-gated chain of skill-driven agent runs
 // (the docs→UI flow). Each pipeline is a fixed skill; pressing "run" seeds a new
 // conversation in the current project with that skill active and the UI switches
@@ -430,6 +432,12 @@ export interface PipelineProject {
    * (`running`/`queued`) — drives the picker card's live running spinner.
    * 0 when nothing is running. */
   running: number;
+  /** Bước đang chạy của workflow được query (bước đầu tiên có status
+   *  running/queued theo thứ tự pipelineIds). Picker card hiện "Đang chạy:
+   *  <name> · N phút" thay cho dải progress. `startedAt` = updatedAt của lần
+   *  bước đó chuyển trạng thái (mốc tính thời gian đã chạy). Absent khi không
+   *  có bước nào đang chạy. */
+  runningStage?: { id: string; name: string; startedAt?: number };
   /** Cấu hình từ Pipeline Studio (project.json trên store, mirror về khi
    *  pull): Run tự điền nguồn tài liệu (link Confluence HOẶC tài liệu BAS đã
    *  chọn) + design system từ đây — vẫn cho override từng lần chạy. */
@@ -444,6 +452,8 @@ export interface PipelineProject {
    *  feature này thuộc về — mirror từ `project.json.appId` lúc pull. Picker
    *  dùng nó để nhóm các feature theo app; thiếu = feature chưa gán app. */
   app?: { id: string; name?: string };
+  /** Immutable App Context intentionally selected for this Feature. */
+  appContextBinding?: FeatureContextBinding;
   /** Trạng thái của TỪNG workflow trong registry — `done`/`total`/`running` ở
    *  trên chỉ nói về MỘT workflow (cái của query, mặc định là workflow đầu
    *  tiên), nên một feature đang chạy workflow khác vẫn đọc thành "Chưa chạy".
@@ -500,6 +510,13 @@ export interface PipelineApp {
    * định trong skill.
    */
   designSystemId?: string | null;
+  /** Version information for the tree Push/Pull UI. Absent on legacy/server-only Apps. */
+  context?: {
+    current: AppContextManifest | null;
+    latestVersion: `v${number}` | null;
+    latestDigest: `sha256:${string}` | null;
+    localCurrentDigest: `sha256:${string}` | null;
+  };
 }
 
 export interface PipelineAppsResponse {

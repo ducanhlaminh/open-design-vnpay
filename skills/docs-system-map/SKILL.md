@@ -57,6 +57,10 @@ Two things carry the "one system" meaning, and both are required:
 - **Docs (source of truth):** every Markdown file under `./docs/confluence/`, `./docs/jira/`, or `./docs-feature/` is authoritative. In the legacy layout, every Markdown file under `./docs/confluence/`,
   `./docs/jira/`. Read `./docs/context/` for background only — a context page
   never becomes a document entry in the map.
+- **Illustration policy:** embedded UI mockups/screenshots are not evidence for
+  application ownership, handoffs, screens, or visual direction. Classify from
+  written requirements and explicitly marked source flow diagrams only; images
+  remain downloaded solely as document attachments.
 - **Flow diagrams (best evidence for the seams):** the ingest saved each draw.io
   diagram's SOURCE next to its page —
   `./docs/confluence/attachments/<pageId>-<name>.drawio` or `./docs-feature/attachments/<pageId>-<name>.drawio`. A sequence diagram's

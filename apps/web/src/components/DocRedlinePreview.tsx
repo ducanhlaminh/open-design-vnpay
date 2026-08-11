@@ -23,6 +23,11 @@
 // đã thực sự làm vùng bôi biến mất.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type {
+  ConfirmDocsReviewResponse,
+  DocReviewAnnotationEvent,
+  DocReviewAnnotationFileV2,
+} from '@open-design/contracts';
 import type { ProjectFile } from '../types';
 import { fetchProjectFileText } from '../providers/registry';
 import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
@@ -59,7 +64,11 @@ export interface DocRedlineChange {
    *  shape để không phải parse lại khi màn hình có chỗ hiển thị. */
   doc_refs?: string[];
   reason: string;
-  status?: 'dismissed' | 'edited';
+  origin?: 'agent' | 'user';
+  operation?: 'add' | 'edited' | 'delete';
+  initialBefore?: string;
+  initialQuote?: string;
+  status?: 'active' | 'dismissed' | 'edited';
 }
 
 /** Mirrors apps/daemon/src/docs-review.ts's `DocNote` — cùng lý do như
@@ -101,7 +110,20 @@ type ChangesState =
   /** File exists but is not a JSON array — render the doc without reasons
    *  rather than fail the whole preview. */
   | { status: 'malformed' }
-  | { status: 'ok'; changes: DocRedlineChange[] };
+  | { status: 'ok'; changes: DocRedlineChange[]; events: DocReviewAnnotationEvent[] };
+
+interface DraftAnnotation {
+  operation: 'add' | 'edited' | 'delete';
+  selected: string;
+  replacement: string;
+  reason: string;
+}
+
+type ConfirmState =
+  | { status: 'idle' }
+  | { status: 'submitting'; confirmationId: string }
+  | { status: 'error'; confirmationId: string; message: string }
+  | { status: 'success'; response: ConfirmDocsReviewResponse; stale: boolean };
 
 const KIND_LABEL: Record<DocRedlineChangeKind, string> = {
   'ux-writing': 'UX writing',
@@ -143,21 +165,30 @@ function claimUniqueId(id: string, seen: Set<string>): string {
  *  the whole preview behind a strict schema a hand-edited file could easily
  *  break. Returns null only when the file as a whole is unusable (not JSON,
  *  or not an array). */
-export function parseDocChanges(raw: string): DocRedlineChange[] | null {
+export function parseDocChangesFile(raw: string): { changes: DocRedlineChange[]; events: DocReviewAnnotationEvent[] } | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     return null;
   }
-  if (!Array.isArray(parsed)) return null;
+  const source = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object'
+      && (parsed as { schemaVersion?: unknown }).schemaVersion === 2
+      && Array.isArray((parsed as { annotations?: unknown }).annotations)
+      ? (parsed as { annotations: unknown[] }).annotations
+      : null;
+  if (!source) return null;
   const out: DocRedlineChange[] = [];
   const seenIds = new Set<string>();
-  for (const item of parsed) {
+  for (const item of source) {
     if (!item || typeof item !== 'object') continue;
     const c = item as Record<string, unknown>;
     if (typeof c.id !== 'string' || !c.id.trim()) continue;
-    if (typeof c.reason !== 'string' || !c.reason.trim()) continue;
+    const before = typeof c.before === 'string' && c.before.trim() ? c.before : undefined;
+    const quote = typeof c.quote === 'string' && c.quote.trim() ? c.quote : undefined;
+    if (!before && !quote) continue;
     out.push({
       id: claimUniqueId(c.id, seenIds),
       kind: (typeof c.kind === 'string' && KIND_SET.has(c.kind) ? c.kind : 'gap') as DocRedlineChangeKind,
@@ -165,17 +196,36 @@ export function parseDocChanges(raw: string): DocRedlineChange[] | null {
         ? c.severity
         : 'minor') as DocRedlineSeverity,
       rule_id: typeof c.rule_id === 'string' && c.rule_id.trim() ? c.rule_id : undefined,
-      before: typeof c.before === 'string' && c.before.trim() ? c.before : undefined,
-      quote: typeof c.quote === 'string' && c.quote.trim() ? c.quote : undefined,
+      before,
+      quote,
       anchor: typeof c.anchor === 'string' && c.anchor.trim() ? c.anchor : undefined,
       doc_refs: Array.isArray(c.doc_refs)
         ? c.doc_refs.filter((ref): ref is string => typeof ref === 'string' && !!ref.trim())
         : undefined,
-      reason: c.reason,
-      status: c.status === 'dismissed' || c.status === 'edited' ? c.status : undefined,
+      reason: typeof c.reason === 'string' && c.reason.trim() ? c.reason : 'Người dùng tự chỉnh tài liệu.',
+      origin: c.origin === 'user' ? 'user' : 'agent',
+      operation: c.operation === 'add' || c.operation === 'edited' || c.operation === 'delete'
+        ? c.operation
+        : before && quote ? 'edited' : quote ? 'add' : 'delete',
+      initialBefore: typeof c.initialBefore === 'string' ? c.initialBefore : before,
+      initialQuote: typeof c.initialQuote === 'string' ? c.initialQuote : quote,
+      status: c.status === 'dismissed' || c.status === 'edited' || c.status === 'active' ? c.status : undefined,
     });
   }
-  return out;
+  const events = !Array.isArray(parsed) && Array.isArray((parsed as { events?: unknown }).events)
+    ? (parsed as { events: unknown[] }).events.filter((event): event is DocReviewAnnotationEvent => {
+        if (!event || typeof event !== 'object') return false;
+        const value = event as Record<string, unknown>;
+        return typeof value.id === 'string' && typeof value.annotationId === 'string'
+          && (value.type === 'create' || value.type === 'edit' || value.type === 'dismiss' || value.type === 'restore')
+          && (value.actor === 'agent' || value.actor === 'user') && typeof value.at === 'number';
+      })
+    : [];
+  return { changes: out, events };
+}
+
+export function parseDocChanges(raw: string): DocRedlineChange[] | null {
+  return parseDocChangesFile(raw)?.changes ?? null;
 }
 
 /** Cùng tinh thần khoan dung như parseDocChanges: phần tử hỏng bị bỏ qua chứ
@@ -241,6 +291,63 @@ export function insertAfterUniqueAnchor(source: string, anchor: string, insertio
   if (first < 0 || source.indexOf(anchor, first + anchor.length) >= 0) return null;
   const end = first + anchor.length;
   return `${source.slice(0, end)}${insertion}${source.slice(end)}`;
+}
+
+function uniqueOccurrenceIndex(source: string, value: string): number | null {
+  const first = source.indexOf(value);
+  if (first < 0 || source.indexOf(value, first + value.length) >= 0) return null;
+  return first;
+}
+
+/** Pick a surviving, unique piece of text immediately before a deletion. It is
+ * kept as the tombstone anchor so the deleted annotation remains visible. */
+export function deletionAnchor(source: string, selected: string): string | null {
+  const index = uniqueOccurrenceIndex(source, selected);
+  if (index == null || index === 0) return null;
+  const prefix = source.slice(0, index).trimEnd();
+  for (const length of [120, 80, 48, 24]) {
+    const candidate = prefix.slice(-length).trim();
+    if (candidate && uniqueOccurrenceIndex(source, candidate) != null) return candidate;
+  }
+  const line = prefix.split(/\r?\n/).filter(Boolean).at(-1)?.trim();
+  return line && uniqueOccurrenceIndex(source, line) != null ? line : null;
+}
+
+function uid(prefix: string): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return `${prefix}-${uuid ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+}
+
+function eventFor(
+  annotationId: string,
+  type: DocReviewAnnotationEvent['type'],
+  values: Pick<DocRedlineChange, 'before' | 'quote' | 'anchor'>,
+): DocReviewAnnotationEvent {
+  return {
+    id: uid('event'),
+    annotationId,
+    type,
+    actor: 'user',
+    at: Date.now(),
+    ...(values.before ? { before: values.before } : {}),
+    ...(values.quote ? { quote: values.quote } : {}),
+    ...(values.anchor ? { anchor: values.anchor } : {}),
+  };
+}
+
+function sidecarJson(changes: DocRedlineChange[], events: DocReviewAnnotationEvent[]): string {
+  const envelope: DocReviewAnnotationFileV2 = {
+    schemaVersion: 2,
+    annotations: changes.map((change) => ({
+      ...change,
+      origin: change.origin ?? 'agent',
+      operation: change.operation ?? (change.before && change.quote ? 'edited' : change.quote ? 'add' : 'delete'),
+      initialBefore: change.initialBefore ?? change.before,
+      initialQuote: change.initialQuote ?? change.quote,
+    })),
+    events,
+  };
+  return `${JSON.stringify(envelope, null, 2)}\n`;
 }
 
 function changeOp(c: DocRedlineChange): 'add' | 'del' | 'edit' {
@@ -474,8 +581,13 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [errorById, setErrorById] = useState<Record<string, string>>({});
-  // Chỉ những lần bỏ không đụng markdown mới được hoàn tác trong phiên này.
+  const [draft, setDraft] = useState<DraftAnnotation | null>(null);
+  const [draftError, setDraftError] = useState('');
+  const [confirmState, setConfirmState] = useState<ConfirmState>({ status: 'idle' });
+  // Snapshot markdown trước khi bỏ cho phép hoàn tác an toàn trong phiên này;
+  // reload sẽ xoá snapshot, tránh áp lại một bản tài liệu đã cũ.
   const [undoableIds, setUndoableIds] = useState<Set<string>>(new Set());
+  const undoTextRef = useRef<Map<string, string>>(new Map());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const docColRef = useRef<HTMLDivElement | null>(null);
   // Mọi <mark> của một change: một quote trải trên nhiều text node (ví dụ băng
@@ -527,8 +639,11 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
         setChangesState({ status: 'none' });
         return;
       }
-      const parsed = parseDocChanges(raw);
-      setChangesState(parsed == null ? { status: 'malformed' } : { status: 'ok', changes: parsed });
+      const parsed = parseDocChangesFile(raw);
+      setChangesRaw(raw);
+      setChangesState(parsed == null
+        ? { status: 'malformed' }
+        : { status: 'ok', changes: parsed.changes, events: parsed.events });
     });
     return () => {
       cancelled = true;
@@ -537,6 +652,10 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
 
   const changes = useMemo(
     () => (changesState.status === 'ok' ? changesState.changes : NO_CHANGES),
+    [changesState],
+  );
+  const events = useMemo(
+    () => (changesState.status === 'ok' ? changesState.events : []),
     [changesState],
   );
 
@@ -729,6 +848,31 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     for (const c of changes) if (c.status !== 'dismissed') out[changeOp(c)] += 1;
     return out;
   }, [changes]);
+  const feedbackPreview = useMemo(() => {
+    const agent = { add: 0, edited: 0, delete: 0, total: 0, accepted: 0, editedByUser: 0, dismissed: 0 };
+    const user = { add: 0, edited: 0, delete: 0, total: 0 };
+    for (const change of changes) {
+      const operation = change.operation ?? (change.before && change.quote ? 'edited' : change.quote ? 'add' : 'delete');
+      if ((change.origin ?? 'agent') === 'user') {
+        if (change.status !== 'dismissed') {
+          user[operation] += 1;
+          user.total += 1;
+        }
+        continue;
+      }
+      agent[operation] += 1;
+      agent.total += 1;
+      const editedByUser = change.status === 'edited'
+        || events.some((event) => event.annotationId === change.id && event.actor === 'user' && event.type === 'edit');
+      if (change.status === 'dismissed') agent.dismissed += 1;
+      else if (editedByUser) {
+        agent.editedByUser += 1;
+        user.edited += 1;
+        user.total += 1;
+      } else agent.accepted += 1;
+    }
+    return { agent, user };
+  }, [changes, events]);
   // Khai báo ở ĐÂY chứ không ở gần chỗ render, vì effect uỷ quyền click ở dưới
   // lấy `loading` làm dependency: mảng dependency được đánh giá trong lúc
   // render, nên một `const` khai báo sau useEffect sẽ vướng vùng chết (TDZ).
@@ -880,7 +1024,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
   // (injectDeletedRuns), nên thẻ của nó là button nhảy tới được như mọi thẻ
   // khác; chỗ xoá KHÔNG có `anchor` (dữ liệu từ trước khi có field này) thì
   // không có gì để neo vào — đó là đúng chứ không phải lỗi.
-  async function saveAction(id: string, action: () => { text?: string; changes?: DocRedlineChange[]; notes?: DocRedlineNote[]; changedMd: boolean }) {
+  async function saveAction(id: string, action: () => { text?: string; changes?: DocRedlineChange[]; events?: DocReviewAnnotationEvent[]; notes?: DocRedlineNote[]; changedMd: boolean }) {
     if (busyId) return;
     setBusyId(id); setErrorById((prev) => ({ ...prev, [id]: '' }));
     const beforeChanges = changesState; const beforeNotes = notes; const beforeText = editedText;
@@ -888,43 +1032,67 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
       const result = action();
       const writes: Array<[string, string]> = [];
       if (result.changedMd && result.text != null) writes.push([file.name, result.text]);
-      if (result.changes) writes.push([file.name.replace(/\.md$/i, '.changes.json'), JSON.stringify(result.changes, null, 2)]);
+      if (result.changes) writes.push([
+        file.name.replace(/\.md$/i, '.changes.json'),
+        sidecarJson(result.changes, result.events ?? events),
+      ]);
       if (result.notes) writes.push([file.name.replace(/\.md$/i, '.notes.json'), JSON.stringify(result.notes, null, 2)]);
       for (const [name, content] of writes) {
         const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, content }) });
         if (!response.ok) throw new Error('Không ghi được file');
       }
       if (result.text != null) setEditedText(result.text);
-      if (result.changes) { setChangesRaw(JSON.stringify(result.changes)); setChangesState({ status: 'ok', changes: result.changes }); }
+      if (result.changes) {
+        const nextEvents = result.events ?? events;
+        setChangesRaw(sidecarJson(result.changes, nextEvents));
+        setChangesState({ status: 'ok', changes: result.changes, events: nextEvents });
+      }
       if (result.notes) { setNotesRaw(JSON.stringify(result.notes)); setNotes(result.notes); }
       setEditingId(null);
+      setDraft(null);
+      setConfirmState((state) => state.status === 'success' ? { ...state, stale: true } : state);
     } catch (error) { setChangesState(beforeChanges); setNotes(beforeNotes); setEditedText(beforeText); setErrorById((prev) => ({ ...prev, [id]: error instanceof Error ? error.message : 'Lỗi ghi file' })); }
     finally { setBusyId(null); }
   }
 
-  function updateChange(c: DocRedlineChange, next: Partial<DocRedlineChange>, changedMd: boolean, text?: string) {
+  function updateChange(c: DocRedlineChange, next: Partial<DocRedlineChange>, changedMd: boolean, text?: string, eventType?: DocReviewAnnotationEvent['type']) {
     const list = changes.map((item) => item.id === c.id ? { ...item, ...next } : item);
-    return { changes: list, changedMd, text };
+    const changed = list.find((item) => item.id === c.id) ?? c;
+    return {
+      changes: list,
+      events: eventType ? [...events, eventFor(c.id, eventType, changed)] : events,
+      changedMd,
+      text,
+    };
   }
 
   async function editChange(c: DocRedlineChange) {
     const next = editDocText(editedText ?? '', c.quote ?? '', editText);
     if (next == null) throw new Error('Không tìm thấy vùng sửa trong tài liệu');
-    await saveAction(c.id, () => updateChange(c, { quote: editText, status: 'edited' }, true, next));
+    await saveAction(c.id, () => updateChange(c, { quote: editText, status: 'edited' }, true, next, 'edit'));
   }
 
   async function dismissChange(c: DocRedlineChange) {
     if (c.status === 'dismissed') {
       if (!undoableIds.has(c.id)) return;
-      await saveAction(c.id, () => updateChange(c, { status: undefined }, false, editedText ?? undefined));
+      const restoreText = undoTextRef.current.get(c.id);
+      await saveAction(c.id, () => updateChange(
+        c,
+        { status: 'active' },
+        restoreText != null,
+        restoreText ?? editedText ?? undefined,
+        'restore',
+      ));
       setUndoableIds((prev) => { const next = new Set(prev); next.delete(c.id); return next; });
+      undoTextRef.current.delete(c.id);
       return;
     }
     const changedMd = Boolean(c.quote || c.before);
     const next = changedMd ? revertDocText(editedText ?? '', c) : editedText;
     if (changedMd && next == null) throw new Error(c.before && !c.quote ? 'Không tìm thấy anchor duy nhất để chèn lại.' : 'Không tìm thấy vùng sửa trong tài liệu');
-    await saveAction(c.id, () => updateChange(c, { status: 'dismissed' }, changedMd, next ?? undefined));
-    if (!changedMd) setUndoableIds((prev) => new Set(prev).add(c.id));
+    if (editedText != null) undoTextRef.current.set(c.id, editedText);
+    await saveAction(c.id, () => updateChange(c, { status: 'dismissed' }, changedMd, next ?? undefined, 'dismiss'));
+    setUndoableIds((prev) => new Set(prev).add(c.id));
   }
 
   async function dismissNote(n: DocRedlineNote) {
@@ -937,6 +1105,106 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     }
     await saveAction(id, () => ({ notes: notes.map((item) => item.id === n.id ? { ...item, status: 'dismissed' } : item), changedMd: false }));
     setUndoableIds((prev) => new Set(prev).add(id));
+  }
+
+  function startUserAnnotation(operation: DraftAnnotation['operation']) {
+    const selection = window.getSelection();
+    const selected = selection?.toString().trim() ?? '';
+    const anchorNode = selection?.anchorNode;
+    if (!selected || !anchorNode || !docColRef.current?.contains(anchorNode)) {
+      setDraftError('Hãy bôi đen một đoạn trong tài liệu trước.');
+      return;
+    }
+    if (uniqueOccurrenceIndex(editedText ?? '', selected) == null) {
+      setDraftError('Đoạn đã chọn phải xuất hiện đúng một lần trong mã nguồn tài liệu.');
+      return;
+    }
+    if (operation === 'delete' && !deletionAnchor(editedText ?? '', selected)) {
+      setDraftError('Không tìm được đoạn neo duy nhất ngay trước phần cần xoá.');
+      return;
+    }
+    setDraftError('');
+    setDraft({ operation, selected, replacement: '', reason: '' });
+  }
+
+  async function createUserAnnotation() {
+    if (!draft || editedText == null) return;
+    const replacement = draft.replacement.trim();
+    if (draft.operation !== 'delete' && !replacement) {
+      setDraftError('Nội dung mới không được để trống.');
+      return;
+    }
+    let nextText: string | null = null;
+    let before: string | undefined;
+    let quote: string | undefined;
+    let anchor: string | undefined;
+    if (draft.operation === 'edited') {
+      before = draft.selected;
+      quote = replacement;
+      nextText = replaceOneOccurrence(editedText, draft.selected, replacement);
+    } else if (draft.operation === 'delete') {
+      before = draft.selected;
+      anchor = deletionAnchor(editedText, draft.selected) ?? undefined;
+      nextText = replaceOneOccurrence(editedText, draft.selected, '');
+    } else {
+      quote = replacement;
+      anchor = draft.selected;
+      nextText = insertAfterUniqueAnchor(editedText, draft.selected, `\n\n${replacement}`);
+    }
+    if (nextText == null) {
+      setDraftError('Tài liệu đã thay đổi. Hãy chọn lại đoạn cần thao tác.');
+      return;
+    }
+    const id = uid('user');
+    const change: DocRedlineChange = {
+      id,
+      kind: 'gap',
+      severity: 'minor',
+      reason: draft.reason.trim() || 'Người dùng tự chỉnh tài liệu.',
+      origin: 'user',
+      operation: draft.operation,
+      status: 'active',
+      ...(before ? { before, initialBefore: before } : {}),
+      ...(quote ? { quote, initialQuote: quote } : {}),
+      ...(anchor ? { anchor } : {}),
+    };
+    await saveAction(id, () => ({
+      text: nextText,
+      changes: [...changes, change],
+      events: [...events, eventFor(id, 'create', change)],
+      changedMd: true,
+    }));
+  }
+
+  async function confirmDocsReview() {
+    if (confirmState.status === 'submitting') return;
+    const confirmationId = confirmState.status === 'error'
+      ? confirmState.confirmationId
+      : uid('confirm');
+    setConfirmState({ status: 'submitting', confirmationId });
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/docs-review/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmationId }),
+      });
+      const body = await response.json().catch(() => null) as ConfirmDocsReviewResponse | { message?: string; error?: string } | null;
+      if (!response.ok || !body || !('ok' in body) || body.ok !== true) {
+        const message = body && 'message' in body && body.message
+          ? body.message
+          : body && 'error' in body && body.error
+            ? body.error
+            : 'Không thể gửi số liệu xác nhận.';
+        throw new Error(message);
+      }
+      setConfirmState({ status: 'success', response: body, stale: false });
+    } catch (error) {
+      setConfirmState({
+        status: 'error',
+        confirmationId,
+        message: error instanceof Error ? error.message : 'Không thể gửi số liệu xác nhận.',
+      });
+    }
   }
 
   const isAnchored = (c: DocRedlineChange) => anchored.has(c.id);
@@ -1014,6 +1282,43 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                 </span>
               </div>
             )}
+            <div className={styles.userToolbar}>
+              <span className={styles.userToolbarHint}>Bôi đen một đoạn để tự chỉnh:</span>
+              <button type="button" onClick={() => startUserAnnotation('edited')}>Sửa đoạn chọn</button>
+              <button type="button" onClick={() => startUserAnnotation('delete')}>Xoá đoạn chọn</button>
+              <button type="button" onClick={() => startUserAnnotation('add')}>Thêm sau đoạn chọn</button>
+              {draftError && !draft ? <span className={styles.toolbarError}>{draftError}</span> : null}
+            </div>
+            {draft ? (
+              <div className={styles.annotationComposer} role="group" aria-label="Tạo thay đổi của người dùng">
+                <div className={styles.annotationComposerHead}>
+                  <strong>{draft.operation === 'edited' ? 'Sửa đoạn đã chọn' : draft.operation === 'delete' ? 'Xoá đoạn đã chọn' : 'Thêm sau đoạn đã chọn'}</strong>
+                  <button type="button" onClick={() => { setDraft(null); setDraftError(''); }}>Đóng</button>
+                </div>
+                <p className={styles.selectedQuote}>“{refLabel(draft.selected)}”</p>
+                {draft.operation !== 'delete' ? (
+                  <textarea
+                    aria-label="Nội dung mới"
+                    placeholder={draft.operation === 'add' ? 'Nội dung cần thêm' : 'Nội dung thay thế'}
+                    value={draft.replacement}
+                    onChange={(event) => setDraft((current) => current ? { ...current, replacement: event.target.value } : current)}
+                  />
+                ) : null}
+                <input
+                  aria-label="Lý do thay đổi"
+                  placeholder="Lý do (không bắt buộc)"
+                  value={draft.reason}
+                  onChange={(event) => setDraft((current) => current ? { ...current, reason: event.target.value } : current)}
+                />
+                {draftError ? <p className={styles.error}>{draftError}</p> : null}
+                <div className={styles.actions}>
+                  <button type="button" disabled={busyId != null} onClick={() => void createUserAnnotation()}>
+                    {busyId ? 'Đang lưu...' : 'Lưu thay đổi'}
+                  </button>
+                  <button type="button" disabled={busyId != null} onClick={() => { setDraft(null); setDraftError(''); }}>Huỷ</button>
+                </div>
+              </div>
+            ) : null}
             <div className={styles.grid}>
               <div className={styles.docCol} ref={docColRef}>
                 {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML
@@ -1042,7 +1347,7 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                         onJumpRef={(i) =>
                           openRefModal(`${REF_ID_PREFIX}${c.id}:${i}`, (c.doc_refs ?? [])[i] ?? '')
                         }
-                        busy={busyId === c.id} error={errorById[c.id]} showActions={isAnchored(c)} undoable={undoableIds.has(c.id)} editing={editingId === c.id} editText={editText} onEditText={setEditText} onEdit={() => { setEditingId(c.id); setEditText(c.quote ?? ''); }} onSaveEdit={() => { if (!editText.trim()) { setErrorById((p) => ({ ...p, [c.id]: 'Nội dung sửa không được để trống' })); return; } void editChange(c); }} onCancelEdit={() => setEditingId(null)} onDismiss={() => { if (c.status === 'dismissed') { void dismissChange(c); } else if (window.confirm('Hành động này sẽ sửa tài liệu và không thể hoàn tác trong phiên. Tiếp tục?')) void dismissChange(c); }}
+                        busy={busyId === c.id} error={errorById[c.id]} showActions={isAnchored(c) || c.status === 'dismissed'} undoable={undoableIds.has(c.id)} editing={editingId === c.id} editText={editText} onEditText={setEditText} onEdit={() => { setEditingId(c.id); setEditText(c.quote ?? ''); }} onSaveEdit={() => { if (!editText.trim()) { setErrorById((p) => ({ ...p, [c.id]: 'Nội dung sửa không được để trống' })); return; } void editChange(c); }} onCancelEdit={() => setEditingId(null)} onDismiss={() => { if (c.status === 'dismissed') { void dismissChange(c); } else if (window.confirm('Bỏ thay đổi này khỏi tài liệu? Bạn có thể hoàn tác trong phiên hiện tại.')) void dismissChange(c); }}
                       />
                     );
                     // `div role="button"` chứ không phải `<button>` thật: thẻ
@@ -1153,6 +1458,12 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                     ) : null}
                   </>
                 )}
+                <ConfirmPanel
+                  preview={feedbackPreview}
+                  state={confirmState}
+                  disabled={busyId != null || changesState.status !== 'ok'}
+                  onConfirm={() => void confirmDocsReview()}
+                />
               </div>
             </div>
           </div>
@@ -1286,6 +1597,74 @@ function HighlightFilters({
         );
       })}
     </div>
+  );
+}
+
+function ConfirmPanel({
+  preview,
+  state,
+  disabled,
+  onConfirm,
+}: {
+  preview: {
+    agent: { add: number; edited: number; delete: number; total: number; accepted: number; editedByUser: number; dismissed: number };
+    user: { add: number; edited: number; delete: number; total: number };
+  };
+  state: ConfirmState;
+  disabled: boolean;
+  onConfirm: () => void;
+}) {
+  const complete = state.status === 'success' && !state.stale;
+  return (
+    <section className={styles.confirmPanel} aria-label="Xác nhận hoàn tất review">
+      <div className={styles.confirmHeading}>
+        <div>
+          <h3>Xác nhận hoàn tất</h3>
+          <p>Số liệu trang hiện tại trước khi tổng hợp toàn bộ tài liệu.</p>
+        </div>
+        {complete ? <span className={styles.confirmedBadge}>Đã gửi</span> : null}
+      </div>
+      <div className={styles.metricRows}>
+        <div>
+          <span>Agent</span>
+          <strong>{preview.agent.total}</strong>
+          <small>{preview.agent.edited} sửa, {preview.agent.add} thêm, {preview.agent.delete} xoá</small>
+        </div>
+        <div>
+          <span>Người dùng</span>
+          <strong>{preview.user.total}</strong>
+          <small>{preview.user.edited} sửa, {preview.user.add} thêm, {preview.user.delete} xoá</small>
+        </div>
+      </div>
+      <p className={styles.confirmDetail}>
+        Agent: {preview.agent.accepted} giữ nguyên, {preview.agent.editedByUser} được sửa tay, {preview.agent.dismissed} đã bỏ.
+      </p>
+      {state.status === 'success' ? (
+        <div className={state.stale ? styles.staleReceipt : styles.receipt}>
+          <strong>{state.stale ? 'Tài liệu đã thay đổi sau lần xác nhận.' : 'Đã tổng hợp và gửi số liệu.'}</strong>
+          <span>{new Date(state.response.artifact.confirmedAt).toLocaleString('vi-VN')}</span>
+          <code>{state.response.mediaPath}</code>
+        </div>
+      ) : null}
+      {state.status === 'error' ? <p className={styles.confirmError}>{state.message}</p> : null}
+      <button
+        type="button"
+        className={styles.confirmButton}
+        disabled={disabled || state.status === 'submitting' || complete}
+        onClick={onConfirm}
+      >
+        {state.status === 'submitting'
+          ? 'Đang tổng hợp...'
+          : state.status === 'error'
+            ? 'Thử gửi lại'
+            : state.status === 'success' && state.stale
+              ? 'Xác nhận bản mới'
+              : complete
+                ? 'Đã xác nhận'
+                : 'Xác nhận hoàn tất'}
+      </button>
+      {disabled && state.status === 'idle' ? <p className={styles.confirmHint}>Cần có chú giải review hợp lệ trước khi xác nhận.</p> : null}
+    </section>
   );
 }
 
@@ -1431,7 +1810,11 @@ function ChangeDetail({ change: c, idx, ruleOpen, ruleBody, onToggleRule, isRefA
       <div className={styles.cardHead}>
         {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
         <span className={styles.cardKind}>{KIND_LABEL[c.kind]}</span>
-        <span className={styles.sevBadge}>{SEV_LABEL[c.severity]}</span>{c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : c.status === 'edited' ? <span className={styles.badgeEdited}>Đã sửa tay</span> : null}
+        <span className={styles.sevBadge}>{SEV_LABEL[c.severity]}</span>
+        <span className={c.origin === 'user' ? styles.originUser : styles.originAgent}>
+          {c.origin === 'user' ? 'Người dùng' : 'Agent'}
+        </span>
+        {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : c.status === 'edited' ? <span className={styles.badgeEdited}>Đã sửa tay</span> : null}
       </div>
       {c.rule_id ? <RuleChip ruleId={c.rule_id} open={ruleOpen} body={ruleBody} onToggle={onToggleRule} /> : null}
       <p className={styles.reason}>{c.reason}</p>

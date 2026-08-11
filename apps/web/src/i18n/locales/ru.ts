@@ -354,6 +354,7 @@ export const ru: Dict = {
   'entry.useEverywhereAria': 'Открыть руководство «Использовать везде» (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': 'Новый проект',
   'entry.navHome': 'Главная',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'Проекты',
   'entry.navDesignSystems': 'Дизайн-системы',
   'entry.helpAria': 'Помощь',

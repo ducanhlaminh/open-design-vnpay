@@ -12,6 +12,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type {
   AppPoolPage,
   AppPoolResponse,
+  AppContextManifest,
+  FeatureContextBinding,
   BasDocument,
   BasDocumentsResponse,
   BasFeature,
@@ -19,11 +21,12 @@ import type {
   ChatRunStatusResponse,
   DesignSystemSummary,
   PipelineRunSource,
+  PipelineAppsResponse,
   PipelineStatus,
   PipelineView,
   ProjectFile,
   ProjectSyncStatus,
-  RemoteProject,
+  RemoteProjectSummary,
   RunAllConfig,
   TargetPlatform,
   UiTarget,
@@ -44,6 +47,22 @@ import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzo
 import { ConfluenceTreeImport } from './ConfluenceTreeImport';
 import styles from './PipelineSourceModal.module.css';
 import sp from './StagePicker.module.css';
+import { accessRoleLabel, projectTransferLabel, stepDifferenceLabel, SYNC_COPY } from './sync-copy';
+import {
+  contextNeedsUpdate,
+  contextVersionsForSelection,
+  contextVersionLabel,
+  diffContextManifests,
+  emptyContextSelection,
+  featureHasNewContext,
+  selectionForFeatures,
+  serializeContextSelection,
+  type AppContextSyncInfo,
+  type ContextFileChange,
+  type ContextTreeApp,
+  type ContextTreeSelection,
+  type ContextTreeSelectionPayload,
+} from './context-sync-tree';
 
 /** What the run-source modal hands back: either a structured BAS/Confluence
  * source (pre-fetched by the daemon) or a legacy free-text input (JIRA/JQL). */
@@ -1939,7 +1958,7 @@ export function RunAllModal({
                   : uploading
                     ? 'Chọn ít nhất một file .md'
                     : docsSource === 'app-pool'
-                      ? 'Tick ít nhất một trang trong Tài liệu App'
+                      ? 'Tick ít nhất một trang trong tài liệu dự án'
                       : focus
                         ? 'Chọn ít nhất một trang Confluence'
                         : 'Chọn ít nhất một trang Confluence (hoặc tick "chỉ chạy bước còn thiếu" khi Docs đã xong)'
@@ -1963,7 +1982,12 @@ export function RunAllModal({
       )}
       {shows('source') ? (
       <div className="pl-modal-field">
-        <span className="pl-modal-field__label">Nguồn tài liệu (bước 1 — nạp vào workspace)</span>
+        <span className="pl-modal-field__label">Tài liệu đầu vào cho 3 workflow</span>
+        <span className="pl-modal-field__hint">
+          Chọn <strong>URD</strong> của tính năng/sản phẩm làm tài liệu chính (bắt buộc). Có thể chọn thêm
+          <strong> PRD</strong> làm tài liệu bổ sung để agent nắm nhanh bối cảnh dự án. Các tài liệu này được dùng
+          chung khi chạy cả 3 workflow.
+        </span>
         {/* Workflow có bước ingest nhận file tay (`acceptsUpload`, ví dụ Docs →
             Review tài liệu) thì cho chọn nguồn ngay tại đây. Dự án GẮN App:
             thẻ Confluence bị ẨN — tài liệu chỉ chọn từ pool App (mọi workflow
@@ -1988,7 +2012,9 @@ export function RunAllModal({
                   </span>
                 ) : null}
               </span>
-              <span className={styles.cardDesc}>Daemon tự fetch các trang đã chọn về Markdown.</span>
+              <span className={styles.cardDesc}>
+                Chọn URD trước; chọn thêm PRD nếu có. Daemon tải các trang đã chọn về Markdown.
+              </span>
             </button>
             ) : null}
             {appPoolAvailable ? (
@@ -2002,14 +2028,17 @@ export function RunAllModal({
               >
                 <span className={styles.cardTop}>
                   <Icon name="blocks" size={16} />
-                  Tài liệu App
+                  Tài liệu dự án
                   {docsSource === 'app-pool' ? (
                     <span className={styles.cardCheck} aria-hidden="true">
                       <Icon name="check" size={14} />
                     </span>
                   ) : null}
                 </span>
-                <span className={styles.cardDesc}>Tick trang từ pool tài liệu đã nhập khi tạo App. Bước 1 copy các trang này vào docs-feature/ — toàn bộ pool luôn sẵn ở docs-app/ để agent nắm toàn cảnh App.</span>
+                <span className={styles.cardDesc}>
+                  Tick URD của tính năng làm tài liệu chính; PRD chỉ là ngữ cảnh bổ sung. Bước 1 copy các trang
+                  này vào docs-feature/ — toàn bộ kho luôn sẵn ở docs-app/ để agent nắm toàn cảnh dự án.
+                </span>
               </button>
             ) : null}
             {hasUpload ? (
@@ -2030,7 +2059,10 @@ export function RunAllModal({
                     </span>
                   ) : null}
                 </span>
-                <span className={styles.cardDesc}>Có sẵn tài liệu — bỏ luôn bước fetch, chạy thẳng từ bước sau.</span>
+                <span className={styles.cardDesc}>
+                  Tải URD làm tài liệu chính; có thể thêm PRD để bổ sung bối cảnh. Bỏ bước fetch và chạy từ bước
+                  sau.
+                </span>
               </button>
             ) : null}
           </div>
@@ -2073,8 +2105,8 @@ export function RunAllModal({
                     className={styles.poolSearchInput}
                     value={appPoolQuery}
                     onChange={(event) => setAppPoolQuery(event.target.value)}
-                    placeholder="Tìm trang trong tài liệu App…"
-                    aria-label="Tìm trang trong tài liệu App"
+                    placeholder="Tìm URD hoặc PRD trong tài liệu dự án…"
+                    aria-label="Tìm URD hoặc PRD trong tài liệu dự án"
                     disabled={busy}
                   />
                 </span>
@@ -2143,7 +2175,7 @@ export function RunAllModal({
                 tài liệu phải nạp ở màn App trước. */}
             {appPoolError ? <p className={styles.empty}>{appPoolError}</p> : null}
             <p className="pl-modal-field__hint">
-              App này chưa có tài liệu nào trong pool. Nạp tài liệu ở màn <b>App</b> (mục "Tài liệu
+              Dự án này chưa có tài liệu nào trong kho. Nạp tài liệu ở màn <b>Dự án</b> (mục "Tài liệu
               App" — Import từ Confluence) rồi quay lại đây tick trang cho workflow.
             </p>
           </>
@@ -2638,7 +2670,7 @@ export function RunAllClearConfirmModal({
   const hasStaleInputs = staleInputs.length > 0;
   return (
     <PlModal
-      title={willLoseOutput ? t('pipelines.runAllClear.title') : t('pipelines.runAllClear.staleOnlyTitle')}
+      title={willLoseOutput ? 'Sẽ xoá kết quả cũ' : 'Vài đầu vào lấy từ ngoài lần chạy này'}
       icon="refresh"
       onClose={onClose}
       footer={
@@ -2646,7 +2678,7 @@ export function RunAllClearConfirmModal({
           {/* Cancel is the DEFAULT — autofocused, so an accidental Enter
            *  never fires the (possibly destructive) confirm action. */}
           <button type="button" className="pl-btn" onClick={onClose} autoFocus>
-            {t('common.cancel')}
+            Huỷ
           </button>
           <button
             type="button"
@@ -2654,32 +2686,34 @@ export function RunAllClearConfirmModal({
             onClick={() => void onConfirm()}
           >
             <Icon name="refresh" size={14} />
-            <span>{t(willLoseOutput ? 'pipelines.runAllClear.confirm' : 'pipelines.runAllClear.confirmContinue')}</span>
+            <span>{willLoseOutput ? 'Chạy và xoá kết quả cũ' : 'Chạy'}</span>
           </button>
         </>
       }
     >
       {willLoseOutput ? (
         <div className={styles.clearConfirmSection}>
-          <span className={styles.hint}>
-            {t('pipelines.runAllClear.body', { stages: stageNames.join(', ') })}
+          <span className={styles.clearConfirmBody}>
+            Chạy bây giờ sẽ <span className={styles.danger}>xoá kết quả hiện có</span> của:{' '}
+            <span className={styles.em}>{stageNames.join(', ')}</span>.
           </span>
-          <span className={styles.hint}>{t('pipelines.runAllClear.historyNote')}</span>
+          <span className={styles.clearConfirmBody}>
+            Kết quả cũ được <span className={styles.em}>lưu vào lịch sử dự án</span> trước khi xoá — có thể khôi phục lại sau.
+          </span>
         </div>
       ) : null}
       {hasStaleInputs ? (
         <div className={styles.clearConfirmSection}>
-          <span className={styles.sectionLabel}>{t('pipelines.runAllClear.staleSectionTitle')}</span>
+          <span className={styles.sectionLabel}>Đầu vào lấy từ ngoài lần chạy này</span>
           {staleInputs.map((row, i) => (
-            <span key={`${row.stageName}-${row.sourceName}-${i}`} className={styles.hint}>
-              {t('pipelines.runAllClear.staleLine', {
-                stage: row.stageName,
-                source: row.sourceName,
-                time: relativeTimeLong(row.updatedAt, t),
-              })}
+            <span key={`${row.stageName}-${row.sourceName}-${i}`} className={styles.clearConfirmBody}>
+              <span className={styles.em}>{row.stageName}</span> sẽ dùng kết quả của{' '}
+              <span className={styles.em}>{row.sourceName}</span> từ {relativeTimeLong(row.updatedAt, t)}.
             </span>
           ))}
-          <span className={styles.hint}>{t('pipelines.runAllClear.staleNote')}</span>
+          <span className={styles.clearConfirmBody}>
+            Mỗi bước nguồn ở trên nằm ngoài lần chạy này nên kết quả của nó <span className={styles.em}>giữ nguyên</span> — bước phụ thuộc sẽ dùng đúng bản đó.
+          </span>
         </div>
       ) : null}
     </PlModal>
@@ -3291,8 +3325,8 @@ function PipelineResultBody({
   if (files.length === 0) {
     return (
       <p className="pl-modal-empty">
-        No output files yet for this stage. Run it (or <strong>Tải dự án về…</strong> from KGS) to
-        produce its {outputs.join(', ') || 'outputs'}.
+        Bước này chưa có tệp kết quả. Hãy chạy bước hoặc dùng <strong>Lấy dự án về máy</strong>{' '}
+        để nhận {outputs.join(', ') || 'kết quả'}.
       </p>
     );
   }
@@ -3572,18 +3606,37 @@ function StagePicker({
     onChange(next);
   };
   const stageNames = useMemo(() => stageNamesOf(workflows), [workflows]);
+  // Chỉ đưa vào đây những bước đã thực sự sinh ra kết quả ở máy hoặc ở bản
+  // được chia sẻ. Không nên cho người dùng chọn một workflow chưa từng chạy:
+  // nó không có gì để chuyển và chỉ làm danh sách dài, khó hiểu.
+  const visibleWorkflows = useMemo(() => {
+    if (!diffByStage) return [];
+    return workflows
+      .map((workflow) => ({
+        ...workflow,
+        pipelineIds: workflow.pipelineIds.filter((pipelineId) => {
+          const status = diffByStage.get(pipelineId);
+          return Boolean(status && status.local + status.remote > 0);
+        }),
+      }))
+      .filter((workflow) => workflow.pipelineIds.length > 0);
+  }, [diffByStage, workflows]);
+  const visibleStageIds = visibleWorkflows.flatMap((workflow) => workflow.pipelineIds);
+  const selectedVisibleCount = visibleStageIds.filter((id) => selected.has(id)).length;
+
+  if (diffLoading || visibleWorkflows.length === 0) return null;
   return (
-    <section className={sp.section} aria-label="Pipelines">
+    <section className={sp.section} aria-label="Các bước">
       <div className={sp.head}>
-        <span className={sp.title}>Pipelines</span>
+        <span className={sp.title}>Các bước cần đồng bộ</span>
         <span className={sp.hint}>
-          {diffLoading ? 'đang so với store…' : 'bỏ tích bước nào thì output bước đó không đồng bộ'}
+          {diffLoading ? 'Đang kiểm tra thay đổi…' : 'Bỏ chọn bước không cần chuyển kết quả'}
         </span>
         <span className={sp.count}>
-          {selected.size}/{allStageIds(workflows).size}
+          {selectedVisibleCount}/{visibleStageIds.length}
         </span>
       </div>
-      {workflows.map((w) => (
+      {visibleWorkflows.map((w) => (
         <div key={w.id} className={sp.wf}>
           <div className={sp.wfname}>{w.name}</div>
           <div className={sp.chips}>
@@ -3592,15 +3645,15 @@ function StagePicker({
               const parts = d
                 ? [
                     d.changed > 0 ? `${d.changed} file thay đổi` : '',
-                    d.localOnly > 0 ? `${d.localOnly} file chỉ có local` : '',
-                    d.remoteOnly > 0 ? `${d.remoteOnly} file chỉ có trên store` : '',
+                    d.localOnly > 0 ? `${d.localOnly} tệp chỉ có trên máy` : '',
+                    d.remoteOnly > 0 ? `${d.remoteOnly} tệp chỉ có ở bản đã chia sẻ` : '',
                   ].filter(Boolean)
                 : [];
               const diffTitle = d
                 ? d.differs
-                  ? `Khác store: ${parts.join(', ')}`
-                  : `Đồng bộ với store (local ${d.local} / store ${d.remote} file)`
-                : 'Chưa có dữ liệu so sánh với store';
+                  ? `Có thay đổi: ${parts.join(', ')}`
+                  : `Đã cập nhật (trên máy ${d.local} / bản chia sẻ ${d.remote} tệp)`
+                : 'Chưa có dữ liệu so sánh';
               // Nhãn hiển thị là tên người-đọc-được; id kỹ thuật thô (docs, ux,
               // ui-html…) vẫn hữu ích khi debug nên giữ lại trong tooltip.
               const title = `${pid} — ${diffTitle}`;
@@ -3619,9 +3672,9 @@ function StagePicker({
                   <span className={sp.id}>{stageNames.get(pid) ?? pid}</span>
                   {d ? (
                     d.differs ? (
-                      <span className={`${sp.badge} ${sp.badgeDiff}`}>≠ remote</span>
+                      <span className={`${sp.badge} ${sp.badgeDiff}`}>{stepDifferenceLabel(true, true)}</span>
                     ) : d.local + d.remote > 0 ? (
-                      <span className={`${sp.badge} ${sp.badgeSync}`}>đồng bộ</span>
+                      <span className={`${sp.badge} ${sp.badgeSync}`}>{stepDifferenceLabel(false, true)}</span>
                     ) : null
                   ) : null}
                 </button>
@@ -3632,6 +3685,106 @@ function StagePicker({
       ))}
     </section>
   );
+}
+
+export interface ContextTransferSelection extends ContextTreeSelectionPayload {
+  /** Resolution is sent only for Apps whose local and shared Context have
+   * both changed. It never changes a Feature binding implicitly. */
+  contextConflictResolutions?: Record<string, 'keep_local' | 'use_shared'>;
+  /** Historical Feature bindings plus current App version, in install order. */
+  contextVersions?: Record<string, string[]>;
+}
+
+export interface ContextSyncAppInput extends ContextTreeApp {
+  ownerName?: string | null;
+  lastPublishedAt?: string | null;
+  alreadyOnThisDevice?: boolean;
+}
+
+type ContextCarrier = {
+  context?: AppContextSyncInfo | null;
+  appContext?: AppContextManifest | {
+    current: AppContextManifest;
+    localCurrentDigest?: string | null;
+  } | null;
+  contextManifest?: AppContextManifest | null;
+  contextVersion?: string | null;
+  currentContextVersion?: string | null;
+  latestContextVersion?: string | null;
+  sharedContextVersion?: string | null;
+  contextDigest?: string | null;
+  sharedContextDigest?: string | null;
+  contextChangedFiles?: AppContextSyncInfo['changedFiles'];
+  appContextBinding?: { contextVersion?: string | null } | null;
+};
+
+function contextInfoOf(value: ContextCarrier | undefined): AppContextSyncInfo | null {
+  if (!value) return null;
+  const nested = value.context ?? null;
+  const manifest = value.appContext && 'current' in value.appContext
+    ? value.appContext.current
+    : value.appContext ?? value.contextManifest ?? null;
+  const currentVersion = nested?.currentVersion ?? manifest?.contextVersion ?? value.currentContextVersion ?? value.contextVersion ?? null;
+  const sharedVersion = nested?.sharedVersion ?? value.sharedContextVersion ?? null;
+  const latestVersion = nested?.latestVersion ?? value.latestContextVersion ?? currentVersion;
+  const info: AppContextSyncInfo = {
+    currentVersion,
+    sharedVersion,
+    latestVersion,
+    localDigest: nested?.localDigest ?? manifest?.contentDigest ?? value.contextDigest ?? null,
+    sharedDigest: nested?.sharedDigest ?? value.sharedContextDigest ?? null,
+    changedFiles: nested?.changedFiles ?? value.contextChangedFiles ?? [],
+  };
+  return Object.values(info).some((field) => Array.isArray(field) ? field.length > 0 : Boolean(field)) ? info : null;
+}
+
+function featureBindingOf(value: ContextCarrier | undefined): string | null {
+  return value?.appContextBinding?.contextVersion ?? value?.contextVersion ?? null;
+}
+
+/** Context is mandatory with an App/Feature transfer, so it belongs in an
+ * unobtrusive hover explanation rather than another selectable tree row. */
+function AppContextPopover({ appName, version }: { appName: string; version?: string | null }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span
+      className="pl-pullall__context-popover"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+    >
+      <button type="button" className="pl-pullall__version pl-pullall__context-badge-toggle" aria-label={`Thông tin tài liệu dùng chung của ${appName}`} aria-expanded={open}>
+        Bản chung {contextVersionLabel(version)}
+      </button>
+      {open ? (
+        <span className="pl-pullall__context-tooltip" role="tooltip">
+          <strong>Tài liệu dùng chung của {appName}</strong>
+          <span>Tài liệu tham khảo và tiêu chuẩn thiết kế. Luôn đi kèm khi chia sẻ hoặc lấy dự án này.</span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function FolderExpander({ open, label, onToggle }: { open: boolean; label: string; onToggle: () => void }) {
+  return (
+    <button type="button" className="pl-pullall__tree-toggle" aria-expanded={open} aria-label={`${open ? 'Thu gọn' : 'Mở'} ${label}`} onClick={onToggle}>
+      <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} />
+    </button>
+  );
+}
+
+/** A transfer is deliberately scoped to one Feature. Its parent App Context
+ * travels automatically, but users compare and confirm one Feature at a time. */
+function selectOneFeature(app: ContextTreeApp, featureId: string, selection: ContextTreeSelection): ContextTreeSelection {
+  if (selection.featureIds.size === 1 && selection.featureIds.has(featureId)) return emptyContextSelection();
+  return { appIds: new Set([app.id]), featureIds: new Set([featureId]) };
+}
+
+function selectOneUngroupedFeature(featureId: string, selection: ContextTreeSelection): ContextTreeSelection {
+  if (selection.featureIds.size === 1 && selection.featureIds.has(featureId)) return emptyContextSelection();
+  return { appIds: new Set(), featureIds: new Set([featureId]) };
 }
 
 // ── PullAllModal — pick WHICH remote projects to pull (Req: "Pull all" was
@@ -3647,6 +3800,8 @@ export function PullAllModal({
   initialSelectedIds,
   onClose,
   onConfirm,
+  syncReady,
+  onReconnect,
 }: {
   /** Project ids already mirrored locally (badge + preselect-none hint). */
   localIds: ReadonlySet<string>;
@@ -3661,24 +3816,38 @@ export function PullAllModal({
   initialSelectedIds?: readonly string[];
   onClose: () => void;
   /** Always receives the explicit stage list of the scoped workflow. */
-  onConfirm: (projectIds: string[], stages: string[]) => Promise<void>;
+  onConfirm: (selection: ContextTransferSelection, stages: string[]) => Promise<void>;
+  syncReady: boolean;
+  onReconnect: () => void;
 }) {
-  const [rows, setRows] = useState<RemoteProject[] | null>(null);
+  const [rows, setRows] = useState<RemoteProjectSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [localAppContexts, setLocalAppContexts] = useState<Record<string, {
+    version: string | null;
+    digest: string | null;
+  }>>({});
   // Membership scope note from the daemon (e.g. "chưa đăng nhập") — shown as
   // the empty state so the user knows WHY the list is empty.
   const [scopeReason, setScopeReason] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<ReadonlySet<string>>(
-    () => new Set(initialSelectedIds ?? []),
-  );
+  const [selection, setSelection] = useState<ContextTreeSelection>(() => ({
+    appIds: new Set<string>(),
+    featureIds: new Set(initialSelectedIds?.slice(0, 1) ?? []),
+  }));
   const [stageSel, setStageSel] = useState<ReadonlySet<string>>(() => allStageIds(workflows));
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
+  const [collapsedApps, setCollapsedApps] = useState<ReadonlySet<string>>(() => new Set());
+  const [conflictResolutions, setConflictResolutions] = useState<Record<string, 'keep_local' | 'use_shared'>>({});
   // Local↔store diff for the stage chips' badges (only locally-mirrored
   // projects have a local side to compare; remote-only ones contribute none).
   const syncStatus = useSyncStatus();
-  const diffByStage = aggregateDiff(syncStatus, selected);
+  const diffByStage = aggregateDiff(syncStatus, selection.featureIds);
+  const toggleFolder = (appId: string) => setCollapsedApps((current) => {
+    const next = new Set(current);
+    if (next.has(appId)) next.delete(appId); else next.add(appId);
+    return next;
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -3688,7 +3857,7 @@ export function PullAllModal({
         const j = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(j?.error?.message || j?.error || `remote list failed: ${res.status}`);
         if (!cancelled) {
-          setRows((j?.data ?? []) as RemoteProject[]);
+          setRows((j?.data ?? []) as RemoteProjectSummary[]);
           setScopeReason(typeof j?.reason === 'string' ? j.reason : null);
         }
       } catch (err) {
@@ -3699,67 +3868,92 @@ export function PullAllModal({
       cancelled = true;
     };
   }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/pipelines/apps')
+      .then(async (response) => response.ok ? await response.json() as PipelineAppsResponse : null)
+      .then((payload) => {
+        if (cancelled || !payload) return;
+        setLocalAppContexts(Object.fromEntries(payload.apps.map((app) => [app.id, {
+          version: app.context?.current?.contextVersion ?? null,
+          digest: app.context?.localCurrentDigest ?? null,
+        }])));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   const q = search.trim().toLowerCase();
-  const matchesQuery = (r: RemoteProject) =>
-    !q || r.name.toLowerCase().includes(q) || r.projectId.toLowerCase().includes(q);
+  const rawApps = (rows ?? []).filter((row) => row.isApp);
+  const rawFeatures = (rows ?? []).filter((row) => !row.isApp);
+  const appsById = new Map(rawApps.map((row) => [row.projectId, row]));
+  const remoteApps: ContextSyncAppInput[] = rawApps.map((row) => ({
+    id: row.projectId,
+    name: row.displayName || row.name,
+    context: row.appContext ? {
+      currentVersion: row.appContext.current.contextVersion,
+      latestVersion: row.appContext.current.contextVersion,
+      sharedVersion: row.appContext.current.contextVersion,
+      sharedDigest: row.appContext.current.contentDigest,
+      localDigest: localAppContexts[row.projectId]?.digest ?? row.appContext.localCurrentDigest ?? null,
+      ...(localAppContexts[row.projectId]?.version
+        ? { currentVersion: localAppContexts[row.projectId]!.version }
+        : {}),
+    } : contextInfoOf(row as RemoteProjectSummary & ContextCarrier),
+    ownerName: row.ownerName,
+    lastPublishedAt: row.lastPublishedAt,
+    alreadyOnThisDevice: row.alreadyOnThisDevice || localIds.has(row.projectId) || row.projectId in localAppContexts,
+    features: rawFeatures
+      .filter((feature) => feature.appId === row.projectId)
+      .map((feature) => ({
+        id: feature.projectId,
+        name: feature.displayName,
+        boundVersion: feature.appContextBinding?.contextVersion
+          ?? featureBindingOf(feature as RemoteProjectSummary & ContextCarrier),
+      })),
+  }));
+  const ungrouped = rawFeatures.filter((feature) => !feature.appId || !appsById.has(feature.appId));
+  const filteredApps = remoteApps.filter((app) => {
+    if (!q) return true;
+    return app.name.toLowerCase().includes(q)
+      || app.id.toLowerCase().includes(q)
+      || app.features.some((feature) => feature.name.toLowerCase().includes(q) || feature.id.toLowerCase().includes(q));
+  });
+  const filteredUngrouped = ungrouped.filter((row) => !q
+    || row.displayName.toLowerCase().includes(q)
+    || row.projectId.toLowerCase().includes(q));
+  useEffect(() => {
+    if (remoteApps.length === 0 || selection.featureIds.size === 0) return;
+    const missingParent = remoteApps.some((app) =>
+      !selection.appIds.has(app.id) && app.features.some((feature) => selection.featureIds.has(feature.id)),
+    );
+    if (missingParent) setSelection(selectionForFeatures(remoteApps, [...selection.featureIds]));
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Apps group features but have no KGS workspace of their own (mirrors
-  // pipeline-studio's server/apps.ts) — never individually pullable, so they
-  // never enter `filtered`/`selected`; they're only rendered as headers.
-  const appsById = new Map((rows ?? []).filter((r) => r.isApp).map((r) => [r.projectId, r]));
-  const features = (rows ?? []).filter((r) => !r.isApp);
-  const filtered = features.filter(matchesQuery);
-  const allVisibleSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.projectId));
-
-  // Group visible features by parent app (pipeline-studio App → Feature
-  // hierarchy); features with no appId, or whose app isn't in this list
-  // (filtered by scope), stay in the "ungrouped" bucket.
-  const grouped = new Map<string, RemoteProject[]>();
-  const ungrouped: RemoteProject[] = [];
-  for (const r of filtered) {
-    const appId = r.appId && appsById.has(r.appId) ? r.appId : null;
-    if (!appId) {
-      ungrouped.push(r);
-      continue;
-    }
-    const list = grouped.get(appId) ?? [];
-    list.push(r);
-    grouped.set(appId, list);
-  }
-  const appGroups = [...grouped.entries()]
-    .map(([appId, items]) => ({ app: appsById.get(appId)!, items }))
-    .sort((a, b) => a.app.name.localeCompare(b.app.name));
-
-  const toggle = (id: string) => {
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelected(next);
-  };
-  const toggleAllVisible = () => {
-    const next = new Set(selected);
-    if (allVisibleSelected) for (const r of filtered) next.delete(r.projectId);
-    else for (const r of filtered) next.add(r.projectId);
-    setSelected(next);
-  };
-  const renderRow = (r: RemoteProject, nested: boolean) => {
-    const isLocal = localIds.has(r.projectId);
+  const renderUngroupedRow = (r: RemoteProjectSummary) => {
+    const isLocal = r.alreadyOnThisDevice || localIds.has(r.projectId);
     return (
       <li key={r.projectId}>
-        <label className={`pl-pullall__row${nested ? ' pl-pullall__row--nested' : ''}`}>
-          <input type="checkbox" checked={selected.has(r.projectId)} onChange={() => toggle(r.projectId)} />
+        <label className="pl-pullall__row">
+          <input
+            type="checkbox"
+            checked={selection.featureIds.has(r.projectId)}
+            onChange={() => setSelection((current) => selectOneUngroupedFeature(r.projectId, current))}
+          />
           <span className="pl-pullall__avatar" aria-hidden="true">
             <Icon name="folder" size={15} />
           </span>
           <span className="pl-pullall__text">
-            <span className="pl-pullall__name">{r.name}</span>
-            {r.name !== r.projectId ? <span className="pl-pullall__id">{r.projectId}</span> : null}
+            <span className="pl-pullall__name">{r.displayName}</span>
+            <span className="pl-pullall__id">
+              {[r.appName, r.ownerName ? `Phụ trách: ${r.ownerName}` : null, r.version ? `Bản ${r.version}` : null, accessRoleLabel(r.accessRole)]
+                .filter(Boolean).join(' · ') || r.projectId}
+            </span>
           </span>
           <span className="pl-pullall__meta">
-            {isLocal ? <span className="pl-pullall__badge">local</span> : null}
+            <span className="pl-pullall__badge">{projectTransferLabel(isLocal)}</span>
             <span className="pl-pullall__files">
-              {r.files > 0 ? `${r.files} files` : r.inKgs ? 'graph only' : '—'}
+              {r.availableOutputs.length > 0 ? `${r.availableOutputs.length} nhóm kết quả` : r.files > 0 ? `${r.files} tệp` : 'Chưa có tệp kết quả'}
             </span>
           </span>
         </label>
@@ -3768,14 +3962,22 @@ export function PullAllModal({
   };
 
   const submit = async () => {
-    if (selected.size === 0 || stageSel.size === 0 || busy) return;
+    if (!syncReady || (selection.appIds.size === 0 && selection.featureIds.size === 0) || busy) return;
+    if (selection.featureIds.size > 0 && stageSel.size === 0) return;
     setBusy(true);
     setError(null);
     try {
       // Always send the explicit stage list: the picker is scoped to the
       // active workflow, so even "all checked" must not sync the OTHER
       // workflow's outputs.
-      await onConfirm([...selected], [...stageSel]);
+      await onConfirm(
+        {
+          ...serializeContextSelection(selection),
+          contextConflictResolutions: conflictResolutions,
+          contextVersions: contextVersionsForSelection(remoteApps, selection),
+        },
+        [...stageSel],
+      );
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -3786,7 +3988,7 @@ export function PullAllModal({
 
   return (
     <PlModal
-      title={`Pull projects from KGS${scopeName ? ` — ${scopeName}` : ''}`}
+      title={`${SYNC_COPY.downloadTitle}${scopeName ? ` — ${scopeName}` : ''}`}
       icon="download"
       size="md"
       busy={busy}
@@ -3794,7 +3996,9 @@ export function PullAllModal({
       footer={
         <>
           <span className="pl-pullall__footcount" aria-live="polite">
-            {selected.size > 0 ? `${selected.size} of ${features.length} selected` : ''}
+            {selection.featureIds.size > 0
+              ? `Đang chọn ${selection.featureIds.size} tính năng`
+              : ''}
           </span>
           <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
             Hủy
@@ -3805,20 +4009,28 @@ export function PullAllModal({
             // động "an toàn", nên không dùng style primary/run.
             className="pl-btn pl-btn--danger"
             onClick={() => void submit()}
-            disabled={busy || selected.size === 0 || stageSel.size === 0}
+            disabled={!syncReady || busy
+              || selection.featureIds.size === 0
+              || (selection.featureIds.size > 0 && stageSel.size === 0)}
           >
             <Icon name={busy ? 'spinner' : 'download'} size={14} />
             <span>
               {busy
-                ? 'Pulling…'
-                : selected.size === 0
-                  ? 'Pull'
-                  : `Pull ${selected.size} project${selected.size > 1 ? 's' : ''}`}
+                ? 'Đang lấy về…'
+                : selection.featureIds.size === 0
+                  ? 'Lấy về máy'
+                  : `Lấy tính năng đã chọn`}
             </span>
           </button>
         </>
       }
     >
+      {!syncReady ? (
+        <div className="pl-modal-error" role="alert">
+          <span>{SYNC_COPY.reconnectHint}</span>{' '}
+          <button type="button" className="pl-btn pl-btn--xs" onClick={onReconnect}>{SYNC_COPY.reconnect}</button>
+        </div>
+      ) : null}
       {loadError ? (
         <div className="pl-modal-error" role="alert">
           {loadError}
@@ -3826,67 +4038,100 @@ export function PullAllModal({
       ) : rows === null ? (
         <div className="pl-pullall__state">
           <Icon name="spinner" size={16} />
-          <span>Loading remote projects…</span>
+          <span>{SYNC_COPY.loadingProjects}</span>
         </div>
-      ) : features.length === 0 ? (
+      ) : rawApps.length === 0 && rawFeatures.length === 0 ? (
         <div className="pl-pullall__state">
-          {scopeReason ?? 'Không có dự án nào bạn được tham gia trên store — nhờ quản lý add bạn vào dự án trên Pipeline Studio.'}
+          {scopeReason ?? SYNC_COPY.noSharedProjects}
         </div>
       ) : (
         <>
           <p className="pl-pullall__hint">
-            Choose which remote projects to mirror locally — graph and output files are pulled
-            together. Kéo về sẽ <strong>ghi đè</strong> file local hiện có bằng bản trên store (bản
-            local hiện tại được lưu vào Lịch sử trước khi ghi đè, khôi phục được nếu cần).
+            Chọn dự án và các bước cần lấy kết quả. Dự án mới sẽ được tạo trên máy; dự án đã có sẽ
+            được cập nhật. Nếu có thay đổi ở cả hai phía, bạn sẽ được chọn cách xử lý trước khi ghi.
           </p>
-          {features.length > 8 ? (
-            <input
-              type="search"
-              className="pl-pullall__search"
-              placeholder="Search by name or id…"
-              value={search}
-              onChange={(ev) => setSearch(ev.target.value)}
+          <div className="pl-pullall__picker">
+            <div className="pl-pullall__picker-head">
+              <div className="pl-pullall__searchbox">
+                <Icon name="search" size={18} aria-hidden="true" />
+                <input
+                  type="search"
+                  className="pl-pullall__search"
+                  aria-label="Tìm dự án hoặc tính năng"
+                  placeholder="Tìm dự án hoặc tính năng…"
+                  value={search}
+                  onChange={(ev) => setSearch(ev.target.value)}
+                />
+              </div>
+              {q ? <button type="button" className="pl-pullall__search-done" onClick={() => setSearch('')}>Xong</button> : null}
+              <span className="pl-pullall__picker-count">
+                {selection.featureIds.size > 0 ? 'Đã chọn 1 tính năng' : 'Chọn một tính năng'}
+              </span>
+            </div>
+            <div className="pl-pullall__list" role="group" aria-label="Tính năng được chia sẻ">
+            <ul className="pl-pullall__items">
+              {filteredApps.map((app) => {
+                const conflict = Boolean(app.alreadyOnThisDevice && contextNeedsUpdate(app.context));
+                const open = !collapsedApps.has(app.id);
+                return (
+                  <li key={app.id} className="pl-pullall__app-node">
+                    <div className="pl-pullall__group pl-pullall__group--selectable">
+                      <Icon name="folder-filled" size={15} />
+                      <span className="pl-pullall__group-name">{app.name}</span>
+                      <AppContextPopover appName={app.name} version={app.context?.latestVersion ?? app.context?.currentVersion} />
+                      <FolderExpander open={open} label={app.name} onToggle={() => toggleFolder(app.id)} />
+                    </div>
+                    {selection.featureIds.size > 0 && selection.appIds.has(app.id) && conflict ? (
+                      <fieldset className="pl-pullall__conflict">
+                        <legend>Tài liệu dùng chung trên máy cũng đã được sửa. Bạn muốn dùng bản nào?</legend>
+                        <label><input type="radio" name={`context-conflict-${app.id}`} checked={conflictResolutions[app.id] === 'keep_local'} onChange={() => setConflictResolutions((current) => ({ ...current, [app.id]: 'keep_local' }))} /> Giữ bản trên máy</label>
+                        <label><input type="radio" name={`context-conflict-${app.id}`} checked={conflictResolutions[app.id] !== 'keep_local'} onChange={() => setConflictResolutions((current) => ({ ...current, [app.id]: 'use_shared' }))} /> Dùng bản được chia sẻ</label>
+                      </fieldset>
+                    ) : null}
+                    {open ? <ul className="pl-pullall__items pl-pullall__branch">
+                      {app.features.map((feature) => {
+                        const latest = app.context?.latestVersion ?? app.context?.currentVersion;
+                        const stale = featureHasNewContext(feature, app.context);
+                        return (
+                          <li key={feature.id}>
+                            <label className="pl-pullall__row pl-pullall__row--feature">
+                              <input type="checkbox" checked={selection.featureIds.has(feature.id)} onChange={() => setSelection((current) => selectOneFeature(app, feature.id, current))} />
+                              <span className="pl-pullall__avatar" aria-hidden="true"><Icon name="folder" size={15} /></span>
+                              <span className="pl-pullall__text">
+                                <span className="pl-pullall__name">{feature.name}</span>
+                                <span className="pl-pullall__id">Đang dùng bộ tài liệu {contextVersionLabel(feature.boundVersion)}</span>
+                              </span>
+                              {stale ? <span className="pl-pullall__version pl-pullall__version--stale">Có bản {contextVersionLabel(latest)} mới</span> : null}
+                            </label>
+                          </li>
+                        );
+                      })}
+                    </ul> : null}
+                  </li>
+                );
+              })}
+              {filteredUngrouped.map(renderUngroupedRow)}
+              {filteredApps.length === 0 && filteredUngrouped.length === 0 ? (
+                <li className="pl-pullall__state">{SYNC_COPY.noSearchResults(search)}</li>
+              ) : null}
+              </ul>
+            </div>
+          </div>
+          {selection.featureIds.size > 0 ? (
+            <StagePicker
+              workflows={workflows}
+              selected={stageSel}
+              onChange={setStageSel}
+              diffByStage={diffByStage}
+              diffLoading={syncStatus === null}
             />
           ) : null}
-          <div className="pl-pullall__list" role="group" aria-label="Remote projects">
-            <label className="pl-pullall__head">
-              <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} />
-              <span className="pl-pullall__headlabel">
-                Select all{q ? ' matches' : ''}
-              </span>
-              <span className="pl-pullall__headcount">
-                {selected.size}/{features.length}
-              </span>
-            </label>
-            <ul className="pl-pullall__items">
-              {/* App → Feature hierarchy (pipeline-studio's App concept): each
-                  app is a non-checkable group header — it has no KGS
-                  workspace of its own — with its features nested underneath. */}
-              {appGroups.map(({ app, items }) => (
-                <li key={app.projectId}>
-                  <div className="pl-pullall__group">
-                    <Icon name="folder-filled" size={13} />
-                    <span>{app.name}</span>
-                  </div>
-                  <ul className="pl-pullall__items">{items.map((r) => renderRow(r, true))}</ul>
-                </li>
-              ))}
-              {ungrouped.map((r) => renderRow(r, false))}
-              {filtered.length === 0 ? (
-                <li className="pl-pullall__state">No project matches “{search}”.</li>
-              ) : null}
-            </ul>
-          </div>
-          <StagePicker
-            workflows={workflows}
-            selected={stageSel}
-            onChange={setStageSel}
-            diffByStage={diffByStage}
-            diffLoading={syncStatus === null}
-          />
-          {stageSel.size === 0 ? (
+          {selection.appIds.size === 0 && selection.featureIds.size === 0 ? (
+            <div className="pl-modal-error" role="alert">{SYNC_COPY.chooseProject}</div>
+          ) : null}
+          {selection.featureIds.size > 0 && stageSel.size === 0 ? (
             <div className="pl-modal-error" role="alert">
-              Chọn ít nhất một pipeline để pull.
+              {SYNC_COPY.chooseStep}
             </div>
           ) : null}
           {error ? (
@@ -3906,14 +4151,26 @@ export function PullAllModal({
 // hands ids (+ stages when narrowed) to PipelinesView → POST /api/kg/push-all.
 export function PushAllModal({
   projects,
+  apps,
   workflows,
   scopeName,
   initialSelectedIds,
   onClose,
   onConfirm,
+  syncReady,
+  onReconnect,
+  onUpgradeFeatureContext,
 }: {
   /** Local pipeline projects (the push-eligible set). */
-  projects: Array<{ id: string; name: string }>;
+  projects: Array<{
+    id: string;
+    name: string;
+    app?: { id: string; name?: string };
+    contextVersion?: string | null;
+    appContextBinding?: { contextVersion?: string | null } | null;
+  }>;
+  /** Complete App list, including Apps with zero Feature. */
+  apps?: ContextSyncAppInput[];
   /** The workflow(s) in scope — only the active tab's workflow is passed. */
   workflows: Workflow[];
   /** Active workflow name, shown in the modal title. */
@@ -3923,37 +4180,163 @@ export function PushAllModal({
   initialSelectedIds?: readonly string[];
   onClose: () => void;
   /** Always receives the explicit stage list of the scoped workflow. */
-  onConfirm: (projectIds: string[], stages: string[]) => Promise<void>;
+  onConfirm: (selection: ContextTransferSelection, stages: string[]) => Promise<void>;
+  syncReady: boolean;
+  onReconnect: () => void;
+  onUpgradeFeatureContext?: (
+    featureId: string,
+    appId: string,
+    contextVersion: string,
+    contentDigest: string,
+  ) => Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [contextData, setContextData] = useState<Record<string, {
+    current: AppContextManifest | null;
+    versions: AppContextManifest[];
+    bindings: Array<{ featureId: string; binding: FeatureContextBinding }>;
+  }>>({});
   // Preselect the caller's project when given (pushing YOUR project is the
   // common case — confirm-only); else every project, the classic Push all.
-  const [selected, setSelected] = useState<ReadonlySet<string>>(
-    () => new Set(initialSelectedIds?.length ? initialSelectedIds : projects.map((p) => p.id)),
-  );
+  const groupedProjects = new Map<string, ContextSyncAppInput>();
+  for (const app of apps ?? []) groupedProjects.set(app.id, { ...app, features: [...app.features] });
+  const ungroupedProjects: typeof projects = [];
+  for (const project of projects) {
+    if (!project.app) {
+      ungroupedProjects.push(project);
+      continue;
+    }
+    const group = groupedProjects.get(project.app.id) ?? {
+      id: project.app.id,
+      name: project.app.name ?? project.app.id,
+      context: contextInfoOf(project.app as typeof project.app & ContextCarrier),
+      features: [],
+    };
+    if (!group.features.some((feature) => feature.id === project.id)) {
+      group.features.push({
+        id: project.id,
+        name: project.name,
+        boundVersion: featureBindingOf(project as typeof project & ContextCarrier),
+      });
+    }
+    groupedProjects.set(group.id, group);
+  }
+  const appGroups = [...groupedProjects.values()].map((app) => {
+    const loaded = contextData[app.id];
+    if (!loaded) return app;
+    return {
+      ...app,
+      context: loaded.current ? {
+        currentVersion: loaded.current.contextVersion,
+        latestVersion: loaded.current.contextVersion,
+        localDigest: loaded.current.contentDigest,
+        sharedDigest: app.context?.sharedDigest,
+        changedFiles: diffContextManifests(
+          loaded.current,
+          loaded.versions.find((manifest) => manifest.contextVersion === loaded.current?.previousVersion),
+        ),
+      } : app.context,
+      features: app.features.map((feature) => ({
+        ...feature,
+        boundVersion: loaded.bindings.find((item) => item.featureId === feature.id)?.binding.contextVersion
+          ?? feature.boundVersion,
+      })),
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  const appIdsKey = [...groupedProjects.keys()].sort().join('\u0000');
+  useEffect(() => {
+    let cancelled = false;
+    const appIds = appIdsKey ? appIdsKey.split('\u0000') : [];
+    void Promise.all(appIds.map(async (appId) => {
+      try {
+        const response = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/context`);
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload?.data) return null;
+        return [appId, {
+          current: payload.data.current ?? null,
+          versions: Array.isArray(payload.data.versions) ? payload.data.versions : [],
+          bindings: Array.isArray(payload.data.bindings) ? payload.data.bindings : [],
+        }] as const;
+      } catch {
+        return null;
+      }
+    })).then((entries) => {
+      if (cancelled) return;
+      const next = Object.fromEntries(entries.filter((entry): entry is readonly [string, { current: AppContextManifest | null; versions: AppContextManifest[]; bindings: Array<{ featureId: string; binding: FeatureContextBinding }> }] => entry !== null));
+      setContextData(next);
+    });
+    return () => { cancelled = true; };
+  }, [appIdsKey]);
+  const initialFeatureIds = initialSelectedIds?.slice(0, 1) ?? [];
+  const [selection, setSelection] = useState<ContextTreeSelection>(() => {
+    const base = selectionForFeatures(appGroups, initialFeatureIds);
+    return base;
+  });
   const [stageSel, setStageSel] = useState<ReadonlySet<string>>(() => allStageIds(workflows));
+  const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
+  const [upgradeBusy, setUpgradeBusy] = useState<string | null>(null);
+  const [upgradedFeatures, setUpgradedFeatures] = useState<ReadonlySet<string>>(() => new Set());
+  const [pendingUpgrade, setPendingUpgrade] = useState<{
+    featureId: string;
+    featureName: string;
+    appId: string;
+    fromVersion: string | null;
+    toVersion: string;
+    contentDigest: string;
+    changedFiles: ContextFileChange[];
+  } | null>(null);
+  const [collapsedApps, setCollapsedApps] = useState<ReadonlySet<string>>(() => new Set());
   const syncStatus = useSyncStatus();
-  const diffByStage = aggregateDiff(syncStatus, selected);
-
-  const allSelected = projects.length > 0 && projects.every((p) => selected.has(p.id));
-  const toggle = (id: string) => {
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelected(next);
-  };
-  const toggleAll = () => {
-    setSelected(allSelected ? new Set() : new Set(projects.map((p) => p.id)));
-  };
+  const diffByStage = aggregateDiff(syncStatus, selection.featureIds);
+  const toggleFolder = (appId: string) => setCollapsedApps((current) => {
+    const next = new Set(current);
+    if (next.has(appId)) next.delete(appId); else next.add(appId);
+    return next;
+  });
+  const searchQuery = search.trim().toLowerCase();
+  const filteredAppGroups = appGroups
+    .map((app) => {
+      if (!searchQuery || app.name.toLowerCase().includes(searchQuery) || app.id.toLowerCase().includes(searchQuery)) return app;
+      return {
+        ...app,
+        features: app.features.filter((feature) =>
+          feature.name.toLowerCase().includes(searchQuery) || feature.id.toLowerCase().includes(searchQuery),
+        ),
+      };
+    })
+    .filter((app) => app.features.length > 0 || app.name.toLowerCase().includes(searchQuery) || app.id.toLowerCase().includes(searchQuery));
+  const filteredUngroupedProjects = ungroupedProjects.filter((project) => !searchQuery
+    || project.name.toLowerCase().includes(searchQuery)
+    || project.id.toLowerCase().includes(searchQuery));
+  const renderUngroupedProject = (project: (typeof projects)[number]) => (
+    <li key={project.id}>
+      <label className="pl-pullall__row">
+        <input
+          type="checkbox"
+          checked={selection.featureIds.has(project.id)}
+          onChange={() => setSelection((current) => selectOneUngroupedFeature(project.id, current))}
+        />
+        <span className="pl-pullall__avatar" aria-hidden="true"><Icon name="folder" size={15} /></span>
+        <span className="pl-pullall__text">
+          <span className="pl-pullall__name">{project.name}</span>
+          {project.name !== project.id ? <span className="pl-pullall__id">{project.id}</span> : null}
+        </span>
+      </label>
+    </li>
+  );
 
   const submit = async () => {
-    if (selected.size === 0 || stageSel.size === 0 || busy) return;
+    if (!syncReady || (selection.appIds.size === 0 && selection.featureIds.size === 0) || busy) return;
+    if (selection.featureIds.size > 0 && stageSel.size === 0) return;
     setBusy(true);
     setError(null);
     try {
       // Explicit stage list always — see PullAllModal.submit.
-      await onConfirm([...selected], [...stageSel]);
+      await onConfirm({
+        ...serializeContextSelection(selection),
+        contextVersions: contextVersionsForSelection(appGroups, selection),
+      }, [...stageSel]);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -3964,7 +4347,7 @@ export function PushAllModal({
 
   return (
     <PlModal
-      title={`Push projects to KGS${scopeName ? ` — ${scopeName}` : ''}`}
+      title={`${SYNC_COPY.shareTitle}${scopeName ? ` — ${scopeName}` : ''}`}
       icon="upload"
       size="md"
       busy={busy}
@@ -3972,7 +4355,9 @@ export function PushAllModal({
       footer={
         <>
           <span className="pl-pullall__footcount" aria-live="polite">
-            {selected.size > 0 ? `${selected.size} of ${projects.length} selected` : ''}
+            {selection.featureIds.size > 0
+              ? `Đang chọn ${selection.featureIds.size} tính năng`
+              : ''}
           </span>
           <button type="button" className="pl-btn" onClick={onClose} disabled={busy}>
             Hủy
@@ -3983,69 +4368,184 @@ export function PushAllModal({
             // không còn ở local) — cùng lý do PullAllModal đổi sang danger.
             className="pl-btn pl-btn--danger"
             onClick={() => void submit()}
-            disabled={busy || selected.size === 0 || stageSel.size === 0}
+            disabled={!syncReady || busy
+              || selection.featureIds.size === 0
+              || (selection.featureIds.size > 0 && stageSel.size === 0)}
           >
             <Icon name={busy ? 'spinner' : 'upload'} size={14} />
             <span>
               {busy
-                ? 'Pushing…'
-                : selected.size === 0
-                  ? 'Push'
-                  : `Push ${selected.size} project${selected.size > 1 ? 's' : ''}`}
+                ? 'Đang chia sẻ…'
+                : selection.featureIds.size === 0
+                  ? 'Chia sẻ'
+                  : 'Chia sẻ tính năng đã chọn'}
             </span>
           </button>
         </>
       }
     >
-      {projects.length === 0 ? (
-        <div className="pl-pullall__state">Chưa có project local nào để push.</div>
+      {!syncReady ? (
+        <div className="pl-modal-error" role="alert">
+          <span>{SYNC_COPY.reconnectHint}</span>{' '}
+          <button type="button" className="pl-btn pl-btn--xs" onClick={onReconnect}>{SYNC_COPY.reconnect}</button>
+        </div>
+      ) : null}
+      {appGroups.length === 0 && projects.length === 0 ? (
+        <div className="pl-pullall__state">Chưa có dự án hoặc tính năng nào trên máy để chia sẻ.</div>
       ) : (
         <>
           <p className="pl-pullall__hint">
-            Chọn project và pipeline muốn đẩy lên store — graph luôn push cả project, phần
-            pipeline chỉ lọc file output. Đẩy sẽ <strong>ghi đè</strong> bản trên store bằng file
-            local — file trên store không còn tồn tại ở local sẽ bị xóa theo; bản cũ trên store vẫn
-            xem lại được ở tab Lịch sử.
+            Chọn một tính năng để chia sẻ. Tài liệu dùng chung của dự án sẽ luôn đi kèm để đảm bảo kết quả dùng đúng tiêu chuẩn.
           </p>
-          <div className="pl-pullall__list" role="group" aria-label="Local projects">
-            <label className="pl-pullall__head">
-              <input type="checkbox" checked={allSelected} onChange={toggleAll} />
-              <span className="pl-pullall__headlabel">Select all</span>
-              <span className="pl-pullall__headcount">
-                {selected.size}/{projects.length}
+          <div className="pl-pullall__picker">
+            <div className="pl-pullall__picker-head">
+              <div className="pl-pullall__searchbox">
+                <Icon name="search" size={18} aria-hidden="true" />
+                <input
+                  type="search"
+                  className="pl-pullall__search"
+                  aria-label="Tìm dự án hoặc tính năng"
+                  placeholder="Tìm dự án hoặc tính năng…"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </div>
+              {searchQuery ? <button type="button" className="pl-pullall__search-done" onClick={() => setSearch('')}>Xong</button> : null}
+              <span className="pl-pullall__picker-count">
+                {selection.featureIds.size > 0 ? 'Đã chọn 1 tính năng' : 'Chọn một tính năng'}
               </span>
-            </label>
+            </div>
+            <div className="pl-pullall__list" role="group" aria-label="Tính năng trên máy">
             <ul className="pl-pullall__items">
-              {projects.map((p) => (
-                <li key={p.id}>
-                  <label className="pl-pullall__row">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(p.id)}
-                      onChange={() => toggle(p.id)}
-                    />
-                    <span className="pl-pullall__avatar" aria-hidden="true">
-                      <Icon name="folder" size={15} />
-                    </span>
-                    <span className="pl-pullall__text">
-                      <span className="pl-pullall__name">{p.name}</span>
-                      {p.name !== p.id ? <span className="pl-pullall__id">{p.id}</span> : null}
-                    </span>
-                  </label>
+              {filteredAppGroups.map((app) => {
+                const version = app.context?.currentVersion ?? app.context?.latestVersion;
+                const open = !collapsedApps.has(app.id);
+                return (
+                  <li key={app.id} className="pl-pullall__app-node">
+                    <div className="pl-pullall__group pl-pullall__group--selectable">
+                      <Icon name="folder-filled" size={15} />
+                      <span className="pl-pullall__group-name">{app.name}</span>
+                      <AppContextPopover appName={app.name} version={version} />
+                      <FolderExpander open={open} label={app.name} onToggle={() => toggleFolder(app.id)} />
+                    </div>
+                    {open ? <ul className="pl-pullall__items pl-pullall__branch">
+                      {app.features.map((feature) => {
+                        const latest = app.context?.latestVersion ?? app.context?.currentVersion;
+                        const stale = !upgradedFeatures.has(feature.id) && featureHasNewContext(feature, app.context);
+                        return (
+                          <li key={feature.id}>
+                            <div className="pl-pullall__row pl-pullall__row--feature">
+                              <input type="checkbox" aria-label={`Chọn Feature ${feature.name}`} checked={selection.featureIds.has(feature.id)} onChange={() => setSelection((current) => selectOneFeature(app, feature.id, current))} />
+                              <span className="pl-pullall__avatar" aria-hidden="true"><Icon name="folder" size={15} /></span>
+                              <span className="pl-pullall__text">
+                                <span className="pl-pullall__name">{feature.name}</span>
+                                <span className="pl-pullall__id">Đang dùng bộ tài liệu {contextVersionLabel(upgradedFeatures.has(feature.id) ? latest : feature.boundVersion)}</span>
+                              </span>
+                              {stale ? (
+                                <button
+                                  type="button"
+                                  className="pl-pullall__upgrade"
+                                  disabled={!onUpgradeFeatureContext || upgradeBusy === feature.id || !latest || !app.context?.localDigest}
+                                  title={onUpgradeFeatureContext ? 'Xem thay đổi trước khi dùng bộ tài liệu mới' : 'Cần cập nhật ứng dụng để dùng bản mới'}
+                                  onClick={() => {
+                                    if (!onUpgradeFeatureContext || !latest || !app.context?.localDigest) return;
+                                    setPendingUpgrade({
+                                      featureId: feature.id,
+                                      featureName: feature.name,
+                                      appId: app.id,
+                                      fromVersion: feature.boundVersion ?? null,
+                                      toVersion: latest,
+                                      contentDigest: app.context.localDigest,
+                                      changedFiles: [...(app.context.changedFiles ?? [])],
+                                    });
+                                  }}
+                                >
+                                  {upgradeBusy === feature.id ? 'Đang cập nhật…' : 'Xem thay đổi'}
+                                </button>
+                              ) : <span className="pl-pullall__version">Đang dùng bản mới nhất</span>}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul> : null}
+                  </li>
+                );
+              })}
+              {filteredUngroupedProjects.length ? (
+                <li>
+                  <div className="pl-pullall__group"><Icon name="folder" size={13} /><span>Chưa thuộc dự án</span></div>
+                  <ul className="pl-pullall__items">{filteredUngroupedProjects.map(renderUngroupedProject)}</ul>
                 </li>
-              ))}
-            </ul>
+              ) : null}
+              {filteredAppGroups.length === 0 && filteredUngroupedProjects.length === 0 ? (
+                <li className="pl-pullall__state">Không tìm thấy dự án hoặc tính năng phù hợp.</li>
+              ) : null}
+              </ul>
+            </div>
           </div>
-          <StagePicker
-            workflows={workflows}
-            selected={stageSel}
-            onChange={setStageSel}
-            diffByStage={diffByStage}
-            diffLoading={syncStatus === null}
-          />
-          {stageSel.size === 0 ? (
+          {pendingUpgrade ? (
+            <section className="pl-pullall__conflict" role="dialog" aria-label={`Xác nhận nâng Context cho ${pendingUpgrade.featureName}`}>
+              <strong>Xem thay đổi trước khi dùng bản mới</strong>
+              <p>
+                {pendingUpgrade.featureName} đang dùng {contextVersionLabel(pendingUpgrade.fromVersion)} và sẽ chuyển sang{' '}
+                {contextVersionLabel(pendingUpgrade.toVersion)} cho các lần chạy tiếp theo. Kết quả và Context của các lần chạy cũ vẫn được giữ nguyên.
+              </p>
+              {pendingUpgrade.changedFiles.length > 0 ? (
+                <ul aria-label="Các tệp Context thay đổi">
+                  {pendingUpgrade.changedFiles.map((change) => (
+                    <li key={`${change.operation}:${change.path}`}>
+                      {change.operation === 'add' ? 'Thêm' : change.operation === 'delete' ? 'Xóa' : 'Sửa'}: {change.path}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>Không có chi tiết tệp; hãy kiểm tra version trước khi xác nhận.</p>
+              )}
+              <div>
+                <button type="button" className="pl-btn pl-btn--xs" disabled={upgradeBusy === pendingUpgrade.featureId} onClick={() => setPendingUpgrade(null)}>
+                  Giữ bản đang dùng
+                </button>{' '}
+                <button
+                  type="button"
+                  className="pl-btn pl-btn--xs pl-btn--danger"
+                  disabled={upgradeBusy === pendingUpgrade.featureId}
+                  onClick={() => {
+                    setUpgradeBusy(pendingUpgrade.featureId);
+                    setError(null);
+                    void onUpgradeFeatureContext?.(
+                      pendingUpgrade.featureId,
+                      pendingUpgrade.appId,
+                      pendingUpgrade.toVersion,
+                      pendingUpgrade.contentDigest,
+                    )
+                      .then(() => {
+                        setUpgradedFeatures((current) => new Set(current).add(pendingUpgrade.featureId));
+                        setPendingUpgrade(null);
+                      })
+                      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
+                      .finally(() => setUpgradeBusy(null));
+                  }}
+                >
+                  {upgradeBusy === pendingUpgrade.featureId ? 'Đang cập nhật…' : `Xác nhận dùng ${contextVersionLabel(pendingUpgrade.toVersion)}`}
+                </button>
+              </div>
+            </section>
+          ) : null}
+          {selection.featureIds.size > 0 ? (
+            <StagePicker
+              workflows={workflows}
+              selected={stageSel}
+              onChange={setStageSel}
+              diffByStage={diffByStage}
+              diffLoading={syncStatus === null}
+            />
+          ) : null}
+          {selection.appIds.size === 0 && selection.featureIds.size === 0 ? (
+            <div className="pl-modal-error" role="alert">{SYNC_COPY.chooseProject}</div>
+          ) : null}
+          {selection.featureIds.size > 0 && stageSel.size === 0 ? (
             <div className="pl-modal-error" role="alert">
-              Chọn ít nhất một pipeline để push.
+              {SYNC_COPY.chooseStep}
             </div>
           ) : null}
           {error ? (

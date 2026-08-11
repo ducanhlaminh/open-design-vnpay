@@ -88,7 +88,7 @@ export function EditFeatureModal({
 
   return (
     <PipelineFormModal
-      title="Sửa Feature"
+      title="Sửa tính năng"
       icon="folder"
       busy={busy}
       onClose={onClose}
@@ -103,7 +103,7 @@ export function EditFeatureModal({
         </>
       }
     >
-      <FormField label="Tên Feature" hint={`Thư mục làm việc giữ nguyên: ${feature.id}`}>
+      <FormField label="Tên tính năng" hint={`Thư mục làm việc giữ nguyên: ${feature.id}`}>
         {(fieldProps) => (
           <TextInput
             {...fieldProps}
@@ -117,13 +117,13 @@ export function EditFeatureModal({
       </FormField>
 
       <FormField
-        label="Thuộc App (tuỳ chọn)"
+        label="Thuộc dự án (tuỳ chọn)"
         hint={
           !appNameTrim
-            ? 'Bỏ trống = gỡ feature khỏi App, nó về nhóm "Chưa gán app".'
+            ? 'Bỏ trống = gỡ tính năng khỏi dự án, nó về nhóm “Chưa thuộc dự án”.'
             : matchedApp
-              ? 'Đã có App trùng tên — feature sẽ chuyển vào App đó thay vì tạo App mới.'
-              : `App mới sẽ được tạo, mã App: ${toSlugId(appNameTrim)}`
+              ? 'Đã có dự án trùng tên — tính năng sẽ chuyển vào dự án đó thay vì tạo dự án mới.'
+              : `Dự án mới sẽ được tạo, mã dự án: ${toSlugId(appNameTrim)}`
         }
       >
         {(fieldProps) => (

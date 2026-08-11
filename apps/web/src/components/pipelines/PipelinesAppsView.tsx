@@ -11,6 +11,7 @@ import { navigate } from '../../router';
 import { RowActionsMenu } from './RowActionsMenu';
 import { isFeatureDone } from './usePipelineNav';
 import type { NavApp, PipelineNav } from './usePipelineNav';
+import { SYNC_COPY } from './sync-copy';
 import styles from './PipelineNavViews.module.css';
 
 interface Props {
@@ -23,6 +24,13 @@ interface Props {
    *  xóa. */
   onEditApp?: (app: NavApp) => void;
   onDeleteApp?: (app: NavApp) => void;
+  /** App-level import remains available before the machine has any App. */
+  onPullAll?: () => void;
+  onPushAll?: () => void;
+  onReconnectSync?: () => void;
+  syncReady?: boolean;
+  pullBusy?: boolean;
+  pushBusy?: boolean;
 }
 
 // ── "Gần đây" — last few features opened from Screen 3 ──────────────────────
@@ -107,7 +115,18 @@ export function pageItems(current: number, total: number): Array<number | 'gap'>
   return [1, 'gap', ...range(cur - 1, cur + 1), 'gap', total];
 }
 
-export function PipelinesAppsView({ nav, onNewApp, onEditApp, onDeleteApp }: Props): JSX.Element {
+export function PipelinesAppsView({
+  nav,
+  onNewApp,
+  onEditApp,
+  onDeleteApp,
+  onPullAll,
+  onPushAll,
+  onReconnectSync,
+  syncReady = false,
+  pullBusy = false,
+  pushBusy = false,
+}: Props): JSX.Element {
   const [recent] = useState<RecentEntry[]>(() => readRecent());
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -143,17 +162,57 @@ export function PipelinesAppsView({ nav, onNewApp, onEditApp, onDeleteApp }: Pro
       <div className={styles.header}>
         <div className={styles.headerCopy}>
           <h1 className={styles.title}>Pipelines</h1>
-          <p className={styles.lede}>Chọn App để xem các feature bên trong.</p>
+          <p className={styles.lede}>Chọn dự án để xem các tính năng bên trong.</p>
         </div>
-        {onNewApp ? (
+        {onNewApp || onPullAll || onPushAll ? (
           <div className={styles.headerActions}>
-            <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={onNewApp}>
-              <Icon name="plus" size={14} />
-              App mới
-            </button>
+            {onPullAll || onPushAll ? (
+              <div className={styles.syncActions} aria-label="Đồng bộ dự án">
+                {onPullAll ? (
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${styles.syncButton}`}
+                    onClick={onPullAll}
+                    disabled={pullBusy || !syncReady}
+                    title={syncReady ? 'Chọn dự án đã chia sẻ để lấy về máy này' : SYNC_COPY.reconnectHint}
+                  >
+                    <Icon name={pullBusy ? 'spinner' : 'download'} size={14} />
+                    {pullBusy ? 'Đang lấy về…' : SYNC_COPY.downloadTitle}
+                  </button>
+                ) : null}
+                {onPushAll ? (
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${styles.syncButton}`}
+                    onClick={onPushAll}
+                    disabled={pushBusy || !syncReady || nav.apps.length === 0}
+                    title={syncReady ? 'Chọn tài liệu chung và tính năng muốn chia sẻ' : SYNC_COPY.reconnectHint}
+                  >
+                    <Icon name={pushBusy ? 'spinner' : 'upload'} size={14} />
+                    {pushBusy ? 'Đang chia sẻ…' : 'Chia sẻ'}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {onNewApp ? (
+              <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={onNewApp}>
+                <Icon name="plus" size={14} />
+                Dự án mới
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
+
+      {onPullAll && !syncReady ? (
+        <div className={styles.error} role="alert">
+          <Icon name="info" size={16} />
+          <span>{SYNC_COPY.reconnectHint}</span>
+          {onReconnectSync ? (
+            <button type="button" className={styles.btn} onClick={onReconnectSync}>{SYNC_COPY.reconnect}</button>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Panel KHÔNG overflow:hidden — popover kebab của card cần thò ra
           ngoài mép. */}
@@ -188,15 +247,15 @@ export function PipelinesAppsView({ nav, onNewApp, onEditApp, onDeleteApp }: Pro
             {/* Tên danh sách đứng đầu toolbar — người mới nhìn vào biết ngay
                 lưới dưới là gì mà không phải suy từ nội dung card. */}
             <div className={styles.listHead}>
-              <h2 className={styles.listHeadTitle}>Danh sách App</h2>
-              <span className={styles.listHeadHint}>Mỗi App là một sản phẩm, gom các feature bên trong.</span>
+              <h2 className={styles.listHeadTitle}>Danh sách dự án</h2>
+              <span className={styles.listHeadHint}>Mỗi dự án là một sản phẩm, gom các tính năng bên trong.</span>
             </div>
             <div className={styles.toolbarSearch}>
               <input
                 type="search"
                 className={styles.search}
-                placeholder="Tìm app…"
-                aria-label="Tìm app"
+                placeholder="Tìm dự án…"
+                aria-label="Tìm dự án"
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
@@ -204,7 +263,7 @@ export function PipelinesAppsView({ nav, onNewApp, onEditApp, onDeleteApp }: Pro
                   setPage(1);
                 }}
               />
-              <span className={styles.toolbarCount}>{filtered.length} app</span>
+              <span className={styles.toolbarCount}>{filtered.length} dự án</span>
             </div>
           </div>
         ) : null}
@@ -223,24 +282,24 @@ export function PipelinesAppsView({ nav, onNewApp, onEditApp, onDeleteApp }: Pro
             <Icon name="blocks" size={24} />
           </div>
           <div className={styles.emptyBody}>
-            <p className={styles.emptyTitle}>Chưa có App nào trên máy này</p>
+            <p className={styles.emptyTitle}>Chưa có dự án nào trên máy này</p>
             <p className={styles.emptyText}>
               {onNewApp
-                ? 'Tạo App mới để bắt đầu chạy pipeline.'
-                : 'Nếu App đã có trên Pipeline Studio, mở một Feature của nó rồi dùng "Tải dự án về…" trên màn Chạy để kéo về máy này.'}
+                ? 'Tạo dự án mới để bắt đầu chạy quy trình.'
+                : 'Dự án đã được chia sẻ? Chọn “Lấy dự án về máy” ở phía trên để bắt đầu.'}
             </p>
             {onNewApp ? (
               <div className={styles.emptyActions}>
                 <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={onNewApp}>
                   <Icon name="plus" size={14} />
-                  App mới
+                  Dự án mới
                 </button>
               </div>
             ) : null}
           </div>
         </div>
       ) : filtered.length === 0 ? (
-        <div className={styles.notFound}>Không có App nào khớp “{query.trim()}”.</div>
+        <div className={styles.notFound}>Không có dự án nào khớp “{query.trim()}”.</div>
       ) : (
         <>
           <div className={styles.grid}>
@@ -266,7 +325,7 @@ export function PipelinesAppsView({ nav, onNewApp, onEditApp, onDeleteApp }: Pro
                       <span className={styles.cardHeadText}>
                         <span className={styles.cardName}>{displayName(app)}</span>
                         <span className={styles.cardMeta}>
-                          {n} feature · {m} xong
+                          {n} tính năng · {m} xong
                         </span>
                       </span>
                     </span>
@@ -323,7 +382,7 @@ export function PipelinesAppsView({ nav, onNewApp, onEditApp, onDeleteApp }: Pro
           {totalPages > 1 ? (
             <nav className={styles.pager} aria-label="Phân trang">
               <span className={styles.pagerRange}>
-                {start + 1}–{start + visible.length} trong {filtered.length} app
+                {start + 1}–{start + visible.length} trong {filtered.length} dự án
               </span>
               <div className={styles.pagerControls}>
                 <button

@@ -17,6 +17,7 @@ export type EntryView =
   | 'home'
   | 'onboarding'
   | 'projects'
+  | 'workspaces'
   | 'tasks'
   | 'feedback'
   | 'pipelines'
@@ -98,10 +99,10 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
           <Icon name="home" size={18} />
         </NavButton>
         <NavButton
-          active={view === 'projects'}
-          ariaLabel={t('entry.navProjects')}
-          tooltip={t('entry.navProjects')}
-          onClick={() => onViewChange('projects')}
+          active={view === 'projects' || view === 'workspaces'}
+          ariaLabel={t('entry.navWorkspaces')}
+          tooltip={t('entry.navWorkspaces')}
+          onClick={() => onViewChange('workspaces')}
           testId="entry-nav-projects"
         >
           <Icon name="folder" size={18} />

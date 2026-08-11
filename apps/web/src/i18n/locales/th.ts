@@ -328,6 +328,7 @@ export const th: Dict = {
   'settings.alreadyLatest': 'คุณใช้เวอร์ชันล่าสุดอยู่แล้ว',
 
   'entry.tabDesigns': 'ดีไซน์',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.tabTemplates': 'ตัวอย่าง',
   'entry.tabDesignSystems': 'ระบบการออกแบบ',
   'entry.tabConnectors': 'ตัวเชื่อมต่อ',

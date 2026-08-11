@@ -356,6 +356,7 @@ export const uk: Dict = {
   'entry.useEverywhereAria': 'Відкрити довідник «Використовувати скрізь» (CLI, MCP, HTTP, Skills)',
   'entry.navNewProject': 'Новий проєкт',
   'entry.navHome': 'Головна',
+  'entry.navWorkspaces': 'Workspaces',
   'entry.navProjects': 'Проєкти',
   'entry.navDesignSystems': 'Дизайн-системи',
   'entry.helpAria': 'Довідка',

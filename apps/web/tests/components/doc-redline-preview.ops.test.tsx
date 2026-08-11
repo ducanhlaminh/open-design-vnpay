@@ -156,8 +156,10 @@ describe('DocRedlinePreview — ba màu theo phép sửa', () => {
   it('chỗ xoá CÓ anchor nhảy tới được; chỗ xoá KHÔNG anchor vẫn là thẻ chết', async () => {
     const container = await renderRedline();
 
-    // Neo được ⇒ <button> thật (bàn phím + trình đọc màn hình cần một control).
-    expect(itemOf(container, 'd1').tagName.toLowerCase()).toBe('button');
+    // Neo được ⇒ control có role button. Dùng div có role thay vì <button>
+    // thật vì thẻ chứa các nút con (Sửa, Bỏ, rule help); button lồng button là
+    // HTML không hợp lệ và trình duyệt sẽ tự sửa sai cây DOM.
+    expect(itemOf(container, 'd1').getAttribute('role')).toBe('button');
     // Không có anchor ⇒ không có gì để neo vào, giữ hành vi cũ.
     const dead = itemOf(container, 'd2');
     expect(dead.tagName.toLowerCase()).not.toBe('button');

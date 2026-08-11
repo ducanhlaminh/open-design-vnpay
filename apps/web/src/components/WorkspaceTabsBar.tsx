@@ -129,6 +129,7 @@ function reviveTab(value: unknown): WorkspaceChromeTab | null {
     if (
       view === 'home'
       || view === 'projects'
+      || view === 'workspaces'
       || view === 'tasks'
       || view === 'plugins'
       || view === 'design-systems'
@@ -171,24 +172,26 @@ function uniqueIdForTab(tab: WorkspaceChromeTab): string {
 function normalizeTabsState(state: WorkspaceTabsState): WorkspaceTabsState {
   let sourceTabs = state.tabs.length > 0 ? state.tabs : [createEntryTab('home')];
 
-  // Deduplicate Home tabs (singleton constraint)
-  const homeTabs = sourceTabs.filter((tab) => tab.kind === 'entry' && tab.view === 'home');
-  if (homeTabs.length > 1) {
-    // Find canonical Home tab:
-    // 1. Is one of them currently active?
-    // 2. Otherwise, pick the one with highest lastActiveAt.
-    // 3. Otherwise, pick the first one.
-    let canonicalHome = homeTabs.find((tab) => tab.id === state.activeTabId);
-    if (!canonicalHome) {
-      canonicalHome = homeTabs.reduce((newest, currentTab) =>
+  // Deduplicate entry tabs — singleton PER VIEW, not just Home. Trước đây chỉ
+  // Home được dedupe nên mỗi lần rời /workspaces rồi quay lại là mọc thêm một
+  // tab "Workspaces" (đo thật: 4 tab trùng trong localStorage). Với mỗi view:
+  // 1. Ưu tiên tab đang active; 2. không thì tab có lastActiveAt lớn nhất.
+  const entryViews = new Set(
+    sourceTabs.flatMap((tab) => (tab.kind === 'entry' ? [tab.view] : [])),
+  );
+  for (const view of entryViews) {
+    const viewTabs = sourceTabs.filter((tab) => tab.kind === 'entry' && tab.view === view);
+    if (viewTabs.length <= 1) continue;
+    let canonical = viewTabs.find((tab) => tab.id === state.activeTabId);
+    if (!canonical) {
+      canonical = viewTabs.reduce((newest, currentTab) =>
         currentTab.lastActiveAt > newest.lastActiveAt ? currentTab : newest,
-        homeTabs[0]!
+        viewTabs[0]!
       );
     }
-    // Filter out all duplicate Home tabs except the canonical one
     sourceTabs = sourceTabs.filter((tab) => {
-      if (tab.kind === 'entry' && tab.view === 'home') {
-        return tab.id === canonicalHome!.id;
+      if (tab.kind === 'entry' && tab.view === view) {
+        return tab.id === canonical!.id;
       }
       return true;
     });
@@ -242,28 +245,33 @@ function syncStateToRoute(state: WorkspaceTabsState, route: Route): WorkspaceTab
   const current = normalizeTabsState(state);
   const currentActive = current.tabs.find((tab) => tab.id === current.activeTabId) ?? null;
 
-  // 1. If we are navigating to Home:
-  if (route.kind === 'home' && route.view === 'home') {
-    const existingHomeTab = current.tabs.find(
-      (tab) => tab.kind === 'entry' && tab.view === 'home',
+  // 1. If we are navigating to an entry view (Home, Workspaces, …): reuse the
+  // existing tab for that view instead of morphing the active tab into a
+  // duplicate. Entry tabs are singletons per view (see normalizeTabsState).
+  if (route.kind === 'home') {
+    const existingEntryTab = current.tabs.find(
+      (tab) => tab.kind === 'entry' && tab.view === route.view,
     );
-    if (existingHomeTab) {
+    if (existingEntryTab) {
       return normalizeTabsState({
         ...current,
         tabs: current.tabs.map((tab) =>
-          tab.id === existingHomeTab.id
+          tab.id === existingEntryTab.id
             ? { ...tab, lastActiveAt: timestamp }
             : tab,
         ),
-        activeTabId: existingHomeTab.id,
+        activeTabId: existingEntryTab.id,
       });
-    } else {
+    } else if (route.view === 'home') {
       const nextTab = tabFromRoute(route, timestamp);
       return normalizeTabsState({
         tabs: [...current.tabs, nextTab],
         activeTabId: nextTab.id,
       });
     }
+    // Non-home entry views fall through: morph the current active tab in
+    // place (drill-in behaviour) — the per-view singleton above guarantees
+    // this can no longer mint duplicates.
   }
 
   // 2. If we are navigating to a project, and that project tab already exists:
@@ -773,6 +781,7 @@ function displayTabFor(
     home: t('entry.navHome'),
     onboarding: t('settings.welcomeTitle'),
     projects: t('entry.navProjects'),
+    workspaces: t('entry.navWorkspaces'),
     tasks: t('entry.navTasks'),
     pipelines: t('entry.navPipelines'),
     feedback: t('entry.navFeedback'),
@@ -784,6 +793,7 @@ function displayTabFor(
     home: 'home',
     onboarding: 'sparkles',
     projects: 'folder',
+    workspaces: 'folder',
     tasks: 'kanban',
     pipelines: 'pipeline',
     feedback: 'comment',

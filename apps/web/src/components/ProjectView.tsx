@@ -4203,6 +4203,7 @@ export function ProjectView({
               designSystems={designSystems}
               selectedId={project.designSystemId ?? null}
               onChange={handleChangeDesignSystemId}
+              variant="compact"
             />
             {hasProjectInstructions ? (
               <button
