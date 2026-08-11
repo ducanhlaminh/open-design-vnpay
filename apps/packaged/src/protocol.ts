@@ -2,6 +2,18 @@ import { protocol } from "electron";
 
 const OD_SCHEME = "od";
 const OD_ENTRY_URL = `${OD_SCHEME}://app/`;
+const SESSION_COOKIE_NAME = "od_session";
+
+/**
+ * Electron's custom `od://` scheme does not reliably persist a Set-Cookie
+ * returned by a proxied localhost response. Keep the HttpOnly session cookie
+ * in the main process for this desktop session and attach it to later API
+ * requests. This is deliberately in-memory: closing the desktop app still
+ * requires a fresh Google sign-in when Chromium has not retained the cookie.
+ */
+export interface OdProtocolSession {
+  cookie: string | null;
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -45,6 +57,32 @@ function buildProxyErrorResponse(error: unknown, target: string): Response {
   );
 }
 
+function sessionCookieFromResponse(response: Response): string | null | undefined {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  const values = headers.getSetCookie?.() ?? (headers.get('set-cookie') ? [headers.get('set-cookie')!] : []);
+  for (const value of values) {
+    const match = new RegExp(`^${SESSION_COOKIE_NAME}=([^;]*)`, 'i').exec(value.trim());
+    if (!match) continue;
+    if (/(?:^|;)\s*Max-Age=0(?:;|$)/i.test(value)) return null;
+    return `${SESSION_COOKIE_NAME}=${match[1]}`;
+  }
+  return undefined;
+}
+
+function requestWithSessionCookie(request: Request, target: string, session?: OdProtocolSession): Request {
+  const proxied = new Request(target, request);
+  if (!session?.cookie) return proxied;
+
+  const headers = new Headers(proxied.headers);
+  const current = headers.get('cookie');
+  const otherCookies = (current ?? '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part && !part.toLowerCase().startsWith(`${SESSION_COOKIE_NAME}=`));
+  headers.set('cookie', [...otherCookies, session.cookie].join('; '));
+  return new Request(proxied, { headers });
+}
+
 /**
  * Inner request handler for the `od://` Electron protocol — every
  * renderer fetch flows through here and gets proxied to the local web
@@ -67,10 +105,14 @@ export async function handleOdRequest(
   request: Request,
   webRuntimeUrl: string,
   fetchImpl: typeof fetch = fetch,
+  session?: OdProtocolSession,
 ): Promise<Response> {
   const target = toWebRuntimeUrl(webRuntimeUrl, request.url);
   try {
-    return await fetchImpl(new Request(target, request));
+    const response = await fetchImpl(requestWithSessionCookie(request, target, session));
+    const nextCookie = sessionCookieFromResponse(response);
+    if (session && nextCookie !== undefined) session.cookie = nextCookie;
+    return response;
   } catch (error) {
     return buildProxyErrorResponse(error, target);
   }
@@ -81,7 +123,8 @@ export function packagedEntryUrl(): string {
 }
 
 export function registerOdProtocol(webRuntimeUrl: string): void {
+  const session: OdProtocolSession = { cookie: null };
   protocol.handle(OD_SCHEME, async (request) => {
-    return await handleOdRequest(request, webRuntimeUrl);
+    return await handleOdRequest(request, webRuntimeUrl, fetch, session);
   });
 }
