@@ -266,6 +266,7 @@ export type PackagedDaemonSpawnEnvOptions = {
   googleClientId?: string | null;
   googleClientSecret?: string | null;
   identityUrl?: string | null;
+  identityServiceToken?: string | null;
   authDomainLock?: string | null;
 };
 
@@ -381,6 +382,9 @@ export function buildPackagedDaemonSpawnEnv(
     ...(options.identityUrl == null || options.identityUrl.length === 0
       ? {}
       : { IDENTITY_URL: options.identityUrl }),
+    ...(options.identityServiceToken == null || options.identityServiceToken.length === 0
+      ? {}
+      : { IDENTITY_SERVICE_TOKEN: options.identityServiceToken }),
     ...(options.authDomainLock == null || options.authDomainLock.length === 0
       ? {}
       : { OD_AUTH_DOMAIN_LOCK: options.authDomainLock }),
@@ -483,6 +487,7 @@ export async function startPackagedSidecars(
     googleClientId: string | null;
     googleClientSecret: string | null;
     identityUrl: string | null;
+    identityServiceToken: string | null;
     authDomainLock: string | null;
     /**
      * PR #974 round-5 (lefarcen P2): caller asserts whether a desktop
@@ -541,6 +546,7 @@ export async function startPackagedSidecars(
         googleClientId: options.googleClientId,
         googleClientSecret: options.googleClientSecret,
         identityUrl: options.identityUrl,
+        identityServiceToken: options.identityServiceToken,
         authDomainLock: options.authDomainLock,
       }),
       nodeCommand: options.nodeCommand,

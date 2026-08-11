@@ -83,6 +83,7 @@ function resolveHeadlessConfig(): PackagedConfig {
     googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() || null,
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET?.trim() || null,
     identityUrl: process.env.IDENTITY_URL?.trim() || null,
+    identityServiceToken: process.env.IDENTITY_SERVICE_TOKEN?.trim() || null,
     authDomainLock: process.env.OD_AUTH_DOMAIN_LOCK?.trim() || null,
     webSidecarEntry: null,
     webStandaloneRoot: null,
@@ -157,6 +158,7 @@ async function main(): Promise<void> {
     googleClientId: config.googleClientId,
     googleClientSecret: config.googleClientSecret,
     identityUrl: config.identityUrl,
+    identityServiceToken: config.identityServiceToken,
     authDomainLock: config.authDomainLock,
     // PR #974 round-5 (lefarcen P2): headless packaged mode runs daemon
     // + web only, no Electron, no privileged shell.openPath surface.

@@ -209,6 +209,18 @@ describe('buildPackagedDaemonSpawnEnv', () => {
     expect(env.OD_APP_VERSION).toBeUndefined();
   });
 
+  it('forwards the identity service credential required to reconcile a Google login', () => {
+    const env = buildPackagedDaemonSpawnEnv(fakePaths(), {
+      appVersion: null,
+      daemonCliEntry: null,
+      legacyDataDir: null,
+      requireDesktopAuth: false,
+      identityServiceToken: 'test-service-token',
+    });
+
+    expect(env.IDENTITY_SERVICE_TOKEN).toBe('test-service-token');
+  });
+
   it('forwards OD_LEGACY_DATA_DIR only when set, irrespective of requireDesktopAuth', () => {
     const withLegacy = buildPackagedDaemonSpawnEnv(fakePaths(), {
       appVersion: null,
