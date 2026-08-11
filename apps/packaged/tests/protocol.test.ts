@@ -30,7 +30,7 @@ vi.mock('electron', () => ({
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { handleOdRequest } from '../src/protocol.js';
+import { handleOdRequest, type OdProtocolSession } from '../src/protocol.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -70,6 +70,32 @@ describe('od:// protocol proxy', () => {
     // `Request` strips the hash fragment per the Fetch spec, but the
     // pathname + search above are the values the proxy is responsible
     // for getting right. Pin those.
+  });
+
+  it('keeps the login session returned by the daemon and sends it on the next od:// request', async () => {
+    const session: OdProtocolSession = { cookie: null };
+    const seen: Request[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const request = input as Request;
+      seen.push(request);
+      if (request.url.endsWith('/api/auth/login-request/claim')) {
+        return new Response('{"status":"ok"}', {
+          headers: { 'set-cookie': 'od_session=signed-session; Path=/; HttpOnly; Max-Age=604800' },
+        });
+      }
+      return new Response('ok');
+    };
+
+    await handleOdRequest(
+      new Request('od://app/api/auth/login-request/claim', { method: 'POST' }),
+      'http://127.0.0.1:17579/',
+      fetchImpl,
+      session,
+    );
+    await handleOdRequest(new Request('od://app/api/auth/me'), 'http://127.0.0.1:17579/', fetchImpl, session);
+
+    expect(session.cookie).toBe('od_session=signed-session');
+    expect(seen[1]!.headers.get('cookie')).toBe('od_session=signed-session');
   });
 
   // The flagship #895 regression: undici can throw `setTypeOfService

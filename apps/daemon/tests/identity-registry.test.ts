@@ -31,7 +31,9 @@ describe('identity-scoped project discovery', () => {
   it('lists only memberships for a canonical identity UUID', async () => {
     process.env.IDENTITY_URL = 'http://identity.test';
     const userId = '65edc73c-56a4-4c48-8651-d7cb07a5e10d';
+    const accessToken = 'identity-user-access';
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      expect((init?.headers as Record<string, string>).Authorization).toBe(`Bearer ${accessToken}`);
       if (url.endsWith('/api/v1/admin/roles')) {
         return new Response(JSON.stringify({ roles: [] }), { status: 200 });
       }
@@ -46,7 +48,7 @@ describe('identity-scoped project discovery', () => {
       return new Response('{}', { status: 404 });
     }));
 
-    const scope = await pullScopeFor(userId);
+    const scope = await pullScopeFor(userId, accessToken);
     expect(scope.all).toBe(false);
     expect([...scope.ids]).toEqual(['checkout']);
   });
@@ -54,14 +56,18 @@ describe('identity-scoped project discovery', () => {
   it('keeps the actual role returned by identity instead of fabricating admin', async () => {
     process.env.IDENTITY_URL = 'http://identity.roles.test';
     const userId = 'b5e6c9de-0b8d-4d62-bb0e-57a4c2b37ae9';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+    const accessToken = 'identity-user-access';
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      expect((init?.headers as Record<string, string>).Authorization).toBe(`Bearer ${accessToken}`);
+      return new Response(JSON.stringify({
       projects: [
         { id: 'p1', name: 'Owned', role: 'owner', metadata: { kgsProjectId: 'owned' } },
         { id: 'p2', name: 'Shared', role: 'viewer', metadata: { kgsProjectId: 'shared' } },
       ],
-    }), { status: 200 })));
+      }), { status: 200 });
+    }));
 
-    const roles = await memberProjectAccess(userId);
+    const roles = await memberProjectAccess(userId, accessToken);
     expect(roles?.get('owned')).toBe('owner');
     expect(roles?.get('shared')).toBe('viewer');
   });

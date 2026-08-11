@@ -2,9 +2,10 @@
 // pipeline-studio's server/identity.ts (the battle-tested VNPAY setup).
 //
 // THIS daemon owns the OAuth authorization-code dance with Google, issues its
-// own HMAC-SHA256 session cookie (od_session), and (best-effort) upserts the
-// user into preview-identity so the same account works across pipeline-studio
-// and Open Design. Google is the ONLY login method — no local email/password.
+// own HMAC-SHA256 session cookie (od_session), and exchanges Google's verified
+// ID token for a user-scoped preview-identity access/refresh session so the
+// same account works across pipeline-studio and Open Design. Google is the
+// ONLY login method — no local email/password.
 //
 // OPT-IN: everything here is inert unless the env carries
 //   SESSION_SECRET + GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET
@@ -20,7 +21,7 @@
 // from loopback. A LAN visitor opening the web UI hits the login screen.
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { AuthSyncIssue, AuthSyncState } from '@open-design/contracts';
@@ -36,6 +37,11 @@ export interface AuthSessionUser {
   googleSubject?: string;
   /** Canonical preview-identity UUID. The only id allowed at identity APIs. */
   identityUserId?: string;
+  /** User-scoped preview-identity credentials. They are issued only after
+   * preview-identity verifies Google's ID token itself. */
+  identityAccessToken?: string;
+  identityRefreshToken?: string;
+  identityAccessExpiresAt?: number;
   syncIssue?: AuthSyncIssue;
   email: string;
   name: string;
@@ -76,11 +82,8 @@ export interface AuthConfig {
    *  ignored), so a session cookie set on this origin is visible to the web
    *  UI on any other localhost port. */
   callbackOrigin: string;
-  /** preview-identity base URL — optional, upsert is best-effort. */
+  /** preview-identity base URL — required only for shared-project sync. */
   identityUrl: string;
-  /** Bearer credential for the identity service principal that may exchange
-   * verified OAuth identities. It must carry `user:manage:global`. */
-  identityServiceToken: string;
   /** Master switch for the allowlists below (OD_AUTH_DOMAIN_LOCK=1|true).
    *  OFF (dev default) → any verified Google account may sign in, lists are
    *  ignored. ON → only allowedEmails/allowedDomains pass; with both lists
@@ -105,7 +108,6 @@ export function authConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AuthCon
     appUrl: (env.OD_APP_URL ?? `http://localhost:${env.OD_WEB_PORT || '52564'}`).replace(/\/+$/, ''),
     callbackOrigin: (env.OD_AUTH_CALLBACK_URL ?? 'http://localhost:52564').replace(/\/+$/, ''),
     identityUrl: (env.IDENTITY_URL ?? '').replace(/\/+$/, ''),
-    identityServiceToken: env.IDENTITY_SERVICE_TOKEN ?? '',
     domainLock: env.OD_AUTH_DOMAIN_LOCK === '1' || env.OD_AUTH_DOMAIN_LOCK === 'true',
     allowedEmails: list(env.OD_AUTH_ALLOWED_EMAILS),
     allowedDomains: list(env.OD_AUTH_ALLOWED_DOMAINS),
@@ -221,6 +223,9 @@ function rememberMachineUser(user: AuthSessionUser): void {
           sub: user.sub,
           googleSubject: googleSubjectOf(user),
           identityUserId: identityUserIdOf(user),
+          identityAccessToken: user.identityAccessToken ?? null,
+          identityRefreshToken: user.identityRefreshToken ?? null,
+          identityAccessExpiresAt: user.identityAccessExpiresAt ?? null,
           syncIssue: user.syncIssue ?? null,
           email: user.email,
           name: user.name,
@@ -231,7 +236,9 @@ function rememberMachineUser(user: AuthSessionUser): void {
         null,
         2,
       ),
+      { mode: 0o600 },
     );
+    chmodSync(join(machineUserDir, MACHINE_USER_FILE), 0o600);
   } catch {
     /* disk hiccup — in-memory copy still serves this daemon's lifetime */
   }
@@ -249,6 +256,11 @@ export function getMachineUser(): AuthSessionUser | null {
           sub: raw.sub,
           ...(typeof raw.googleSubject === 'string' ? { googleSubject: raw.googleSubject } : {}),
           ...(isIdentityUuid(raw.identityUserId) ? { identityUserId: raw.identityUserId } : {}),
+          ...(typeof raw.identityAccessToken === 'string' ? { identityAccessToken: raw.identityAccessToken } : {}),
+          ...(typeof raw.identityRefreshToken === 'string' ? { identityRefreshToken: raw.identityRefreshToken } : {}),
+          ...(typeof raw.identityAccessExpiresAt === 'number'
+            ? { identityAccessExpiresAt: raw.identityAccessExpiresAt }
+            : {}),
           ...(typeof raw.syncIssue === 'string' ? { syncIssue: raw.syncIssue as AuthSyncIssue } : {}),
           email: raw.email,
           name: raw.name ?? raw.email,
@@ -344,107 +356,105 @@ function handoffResultPage(ok: boolean, detail: string): string {
 </body></html>`;
 }
 
-/* ── preview-identity best-effort upsert (same account as pipeline-studio) ── */
+/* ── preview-identity user session (same account as pipeline-studio) ── */
 
-type IdentityResolution =
-  | { ok: true; id: string }
-  | { ok: false; issue: AuthSyncIssue };
+interface IdentityLoginResponse {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  user?: { id?: string };
+}
 
-async function upsertIdentityUser(
+export function identityAccessTokenOf(user: AuthSessionUser | null): string | null {
+  return user && typeof user.identityAccessToken === 'string' && user.identityAccessToken
+    ? user.identityAccessToken
+    : null;
+}
+
+function identitySessionReady(user: AuthSessionUser | null): boolean {
+  return Boolean(
+    identityUserIdOf(user)
+    && identityAccessTokenOf(user)
+    && !user?.syncIssue
+    && (user?.identityAccessExpiresAt ?? 0) > Date.now(),
+  );
+}
+
+async function identityRequest(
   cfg: AuthConfig,
-  input: { externalId: string; email: string; name: string; picture?: string },
-): Promise<IdentityResolution> {
-  if (!cfg.identityUrl) return { ok: false, issue: 'identity_not_configured' };
-  if (!cfg.identityServiceToken) return { ok: false, issue: 'identity_not_configured' };
-  const idFetch = async (path: string, init: RequestInit = {}) => {
-    const res = await fetch(`${cfg.identityUrl}${path}`, {
-      ...init,
-      signal: init.signal ?? AbortSignal.timeout(5_000),
-      headers: { 'content-type': 'application/json', 'x-user-id': 'open-design', ...(init.headers ?? {}) },
-    });
-    const text = await res.text();
-    return { ok: res.ok, status: res.status, json: text ? (JSON.parse(text) as unknown) : null };
-  };
-  const usersOf = (body: unknown): Array<{ id?: string; email?: string }> => {
-    if (!body || typeof body !== 'object') return [];
-    const b = body as Record<string, unknown>;
-    if (Array.isArray(b.users)) return b.users as Array<{ id?: string; email?: string }>;
-    if (Array.isArray(b.items)) return b.items as Array<{ id?: string; email?: string }>;
-    if (Array.isArray(body)) return body as Array<{ id?: string; email?: string }>;
-    return [];
-  };
-  try {
-    // Preferred atomic exchange. It is idempotent on email and returns the
-    // canonical UUID even when another first-party app created the user.
-    const resolved = await idFetch('/api/v1/auth/external/resolve', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${cfg.identityServiceToken}` },
-      body: JSON.stringify({
-        provider: 'google',
-        externalId: input.externalId || input.email,
-        email: input.email,
-        name: input.name,
-        ...(input.picture ? { avatarUrl: input.picture } : {}),
-      }),
-    });
-    const resolvedBody = resolved.json as { user?: { id?: string } } | null;
-    if (resolved.ok && isIdentityUuid(resolvedBody?.user?.id)) {
-      return { ok: true, id: resolvedBody!.user!.id! };
-    }
-    // A deployed identity service is temporarily unavailable. Do not turn a
-    // recoverable outage into "unresolved" merely because the legacy
-    // fallback endpoints cannot answer either.
-    if (resolved.status >= 500) return { ok: false, issue: 'identity_unavailable' };
+  path: string,
+  init: RequestInit,
+): Promise<{ ok: boolean; status: number; body: IdentityLoginResponse }> {
+  const response = await fetch(`${cfg.identityUrl}${path}`, {
+    ...init,
+    signal: init.signal ?? AbortSignal.timeout(5_000),
+    headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
+  });
+  const body = (await response.json().catch(() => ({}))) as IdentityLoginResponse;
+  return { ok: response.ok, status: response.status, body };
+}
 
-    // Tolerate an older identity deployment during rolling upgrades.
-    const found = await idFetch(`/api/v1/admin/users?search=${encodeURIComponent(input.email)}&limit=10`);
-    if (found.status >= 500) return { ok: false, issue: 'identity_unavailable' };
-    const match = usersOf(found.json).find(
-      (u) => typeof u.email === 'string' && u.email.toLowerCase() === input.email.toLowerCase(),
-    );
-    if (isIdentityUuid(match?.id)) return { ok: true, id: match.id };
-    const created = await idFetch('/api/v1/admin/users', {
+async function exchangeIdentitySession(
+  cfg: AuthConfig,
+  googleIDToken: string,
+): Promise<{ ok: true; session: Pick<AuthSessionUser, 'identityUserId' | 'identityAccessToken' | 'identityRefreshToken' | 'identityAccessExpiresAt'> }
+  | { ok: false; issue: AuthSyncIssue }> {
+  if (!cfg.identityUrl) return { ok: false, issue: 'identity_not_configured' };
+  try {
+    const result = await identityRequest(cfg, '/api/v1/auth/external/exchange', {
       method: 'POST',
-      body: JSON.stringify({
-        email: input.email,
-        name: input.name,
-        password: randomBytes(24).toString('base64url'),
-      }),
+      body: JSON.stringify({ provider: 'google', idToken: googleIDToken }),
     });
-    if (created.status >= 500) return { ok: false, issue: 'identity_unavailable' };
-    const u = created.json as { user?: { id?: string }; id?: string } | null;
-    const id = u?.user?.id ?? u?.id;
-    return isIdentityUuid(id)
-      ? { ok: true, id }
-      : { ok: false, issue: 'identity_user_unresolved' };
+    if (result.status >= 500) return { ok: false, issue: 'identity_unavailable' };
+    const { access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn, user } = result.body;
+    if (!result.ok || !isIdentityUuid(user?.id) || !accessToken || !refreshToken) {
+      return { ok: false, issue: 'identity_user_unresolved' };
+    }
+    return {
+      ok: true,
+      session: {
+        identityUserId: user.id,
+        identityAccessToken: accessToken,
+        identityRefreshToken: refreshToken,
+        identityAccessExpiresAt: Date.now() + Math.max(60, expiresIn ?? 86_400) * 1_000,
+      },
+    };
   } catch {
     return { ok: false, issue: 'identity_unavailable' };
   }
 }
 
-async function reconcileIdentityUser(cfg: AuthConfig, user: AuthSessionUser): Promise<AuthSessionUser> {
-  const existing = identityUserIdOf(user);
-  if (existing) {
+async function refreshIdentitySession(cfg: AuthConfig, user: AuthSessionUser): Promise<AuthSessionUser> {
+  const userId = identityUserIdOf(user);
+  const accessToken = identityAccessTokenOf(user);
+  const expiresAt = user.identityAccessExpiresAt ?? 0;
+  if (userId && accessToken && expiresAt > Date.now() + 60_000) {
     const { syncIssue: _syncIssue, ...rest } = user;
-    return { ...rest, identityUserId: existing };
+    return rest;
   }
-  const resolved = await upsertIdentityUser(cfg, {
-    externalId: googleSubjectOf(user),
-    email: user.email,
-    name: user.name,
-    ...(user.picture ? { picture: user.picture } : {}),
-  });
-  if (!resolved.ok) {
-    const { identityUserId: _identityUserId, ...rest } = user;
-    return { ...rest, syncIssue: resolved.issue };
+  if (!cfg.identityUrl) return { ...user, syncIssue: 'identity_not_configured' };
+  if (!userId || !user.identityRefreshToken) return { ...user, syncIssue: 'identity_user_unresolved' };
+  try {
+    const result = await identityRequest(cfg, '/api/v1/auth/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ refresh_token: user.identityRefreshToken }),
+    });
+    if (result.status >= 500) return { ...user, syncIssue: 'identity_unavailable' };
+    if (!result.ok || !result.body.access_token) return { ...user, syncIssue: 'identity_user_unresolved' };
+    const { syncIssue: _syncIssue, ...rest } = user;
+    return {
+      ...rest,
+      identityAccessToken: result.body.access_token,
+      identityAccessExpiresAt: Date.now() + Math.max(60, result.body.expires_in ?? 86_400) * 1_000,
+    };
+  } catch {
+    return { ...user, syncIssue: 'identity_unavailable' };
   }
-  const { syncIssue: _syncIssue, ...rest } = user;
-  return { ...rest, identityUserId: resolved.id };
 }
 
 export function authSyncStateOf(user: AuthSessionUser | null): AuthSyncState {
   const identityUserId = identityUserIdOf(user);
-  return identityUserId
+  return identityUserId && identitySessionReady(user)
     ? { syncReady: true, identityUserId, syncIssue: null }
     : {
         syncReady: false,
@@ -457,15 +467,10 @@ export function authSyncStateOf(user: AuthSessionUser | null): AuthSyncState {
 export async function getMachineIdentityUser(): Promise<AuthSessionUser | null> {
   const user = getMachineUser();
   if (!user) return null;
-  // A previously reconciled UUID remains a valid sync identity while the
-  // identity service is temporarily unreachable or a daemon restart has not
-  // loaded IDENTITY_URL yet.  Never manufacture a provider subject here.
-  if (identityUserIdOf(user)) return user;
   if (!activeAuthConfig?.identityUrl) return null;
-  if (user.syncIssue && machineUserCache && Date.now() - machineUserCache.at < 10_000) return null;
-  const next = await reconcileIdentityUser(activeAuthConfig, user);
+  const next = await refreshIdentitySession(activeAuthConfig, user);
   rememberMachineUser(next);
-  return identityUserIdOf(next) ? next : null;
+  return identitySessionReady(next) ? next : null;
 }
 
 /* ── registration ── */
@@ -598,16 +603,11 @@ export function registerAuthRoutes(
       if (!emailAllowed(cfg, info.email)) return fail(`Tài khoản ${info.email} không được phép truy cập`);
 
       const name = info.name || info.email.split('@')[0]!;
-      const identity = await upsertIdentityUser(cfg, {
-        externalId: info.sub ?? info.email,
-        email: info.email,
-        name,
-        ...(info.picture ? { picture: info.picture } : {}),
-      });
+      const identity = await exchangeIdentitySession(cfg, token.id_token);
       const session: AuthSessionUser = {
         sub: info.sub ?? info.email,
         googleSubject: info.sub ?? '',
-        ...(identity.ok ? { identityUserId: identity.id } : { syncIssue: identity.issue }),
+        ...(identity.ok ? identity.session : { syncIssue: identity.issue }),
         email: info.email,
         name,
         ...(info.picture ? { picture: info.picture } : {}),
@@ -705,28 +705,25 @@ export function registerAuthRoutes(
   // /me probe instead of surviving 7 days inside a stale token.
   const rolesCache = new Map<string, { at: number; roles: string[] }>();
   const ROLES_TTL_MS = 30_000;
-  async function rolesOf(sub: string): Promise<string[]> {
-    if (!cfg.identityUrl || sub.startsWith('google:')) return [];
-    const hit = rolesCache.get(sub);
+  async function rolesOf(user: AuthSessionUser): Promise<string[]> {
+    const userId = identityUserIdOf(user);
+    const accessToken = identityAccessTokenOf(user);
+    if (!cfg.identityUrl || !userId || !accessToken) return [];
+    const hit = rolesCache.get(userId);
     if (hit && Date.now() - hit.at < ROLES_TTL_MS) return hit.roles;
     try {
-      const res = await fetch(`${cfg.identityUrl}/api/v1/admin/users/${encodeURIComponent(sub)}/roles`, {
-        headers: { 'content-type': 'application/json', 'x-user-id': 'open-design' },
+      const res = await fetch(`${cfg.identityUrl}/api/v1/auth/me`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
       });
-      type RoleRow = { role_name?: string; name?: string; role?: { name?: string } };
-      const body = (await res.json().catch(() => null)) as
-        | { roles?: RoleRow[] }
-        | RoleRow[]
-        | null;
-      const rows = Array.isArray(body) ? body : body?.roles ?? [];
-      // identity's ListUserRoles emits assignment rows with `role_name`;
-      // tolerate `name`/`role.name` for older/other deploy shapes.
+      type RoleRow = { name?: string };
+      const body = (await res.json().catch(() => null)) as { data?: { roles?: RoleRow[] } } | null;
+      const rows = body?.data?.roles ?? [];
       const roles = [...new Set(
         rows
-          .map((r) => r?.role_name ?? r?.name ?? r?.role?.name ?? '')
+          .map((r) => r?.name ?? '')
           .filter((n): n is string => Boolean(n)),
       )];
-      rolesCache.set(sub, { at: Date.now(), roles });
+      rolesCache.set(userId, { at: Date.now(), roles });
       return roles;
     } catch {
       return hit?.roles ?? []; // identity down → last known (or none)
@@ -739,9 +736,14 @@ export function registerAuthRoutes(
       res.status(401).json({ error: { code: 'UNAUTHENTICATED', message: 'chưa đăng nhập' } });
       return;
     }
-    const user = await reconcileIdentityUser(cfg, sessionUser);
+    const user = await refreshIdentitySession(cfg, sessionUser);
     const identityUserId = identityUserIdOf(user);
-    if (identityUserId !== identityUserIdOf(sessionUser) || user.syncIssue !== sessionUser.syncIssue) {
+    if (
+      identityUserId !== identityUserIdOf(sessionUser)
+      || user.syncIssue !== sessionUser.syncIssue
+      || user.identityAccessToken !== sessionUser.identityAccessToken
+      || user.identityAccessExpiresAt !== sessionUser.identityAccessExpiresAt
+    ) {
       const refreshed = signSession(cfg.sessionSecret, user);
       setCookie(res, cfg.appUrl, SESSION_COOKIE, refreshed, SESSION_TTL_S);
       rememberMachineUser(user);
@@ -753,13 +755,22 @@ export function registerAuthRoutes(
         name: user.name,
         ...(user.picture ? { picture: user.picture } : {}),
         provider: user.provider,
-        roles: identityUserId ? await rolesOf(identityUserId) : [],
+        roles: identityUserId ? await rolesOf(user) : [],
       },
       ...authSyncStateOf(user),
     });
   });
 
-  app.post('/api/auth/logout', (_req, res) => {
+  app.post('/api/auth/logout', async (req, res) => {
+    const user = verifySession(cfg.sessionSecret, readCookie(req, SESSION_COOKIE));
+    const accessToken = identityAccessTokenOf(user);
+    if (cfg.identityUrl && accessToken) {
+      await fetch(`${cfg.identityUrl}/api/v1/auth/logout`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(3_000),
+      }).catch(() => undefined);
+    }
     setCookie(res, cfg.appUrl, SESSION_COOKIE, '', 0);
     res.status(204).end();
   });

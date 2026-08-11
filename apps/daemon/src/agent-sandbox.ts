@@ -15,12 +15,13 @@
 //     wholesale.
 //   - probe/kill/sweep helpers for preflight, cancel, and orphan cleanup.
 import path from 'node:path';
-import { tmpdir } from 'node:os';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { SandboxConfigPrefs } from './app-config.js';
 import type {
+  CodexUsageResponse,
   SandboxAccount,
   SandboxAccountIdentity,
   SandboxAccountsResponse,
@@ -32,6 +33,21 @@ import {
 } from '@open-design/contracts';
 
 const execFileAsync = promisify(execFile);
+
+/** GUI-launched packaged apps often do not inherit Homebrew/Docker's PATH. */
+export function resolveDockerCommand(): string {
+  const candidates = process.platform === 'darwin'
+    ? [
+        '/Applications/Docker.app/Contents/Resources/bin/docker',
+        path.join(homedir(), 'Applications', 'Docker.app', 'Contents', 'Resources', 'bin', 'docker'),
+        '/opt/homebrew/bin/docker',
+        '/usr/local/bin/docker',
+      ]
+    : process.platform === 'win32'
+      ? [`${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Docker\\Docker\\resources\\bin\\docker.exe`]
+      : ['/usr/bin/docker', '/usr/local/bin/docker'];
+  return candidates.find((candidate) => existsSync(candidate)) ?? 'docker';
+}
 
 export const SANDBOX_IMAGE_NAME = 'od-agent-sandbox';
 export const SANDBOX_CONTAINER_PREFIX = 'od-sbx-';
@@ -482,13 +498,13 @@ export function wrapInvocationInSandbox(input: SandboxWrapInput): {
     }
   }
   dockerArgs.push(image, agentBin, ...containerArgs);
-  return { command: 'docker', args: dockerArgs, containerName };
+  return { command: resolveDockerCommand(), args: dockerArgs, containerName };
 }
 
 // ── docker-side helpers (preflight, cancel, sweep, status) ───────────────────
 
 async function docker(args: string[], timeoutMs = DOCKER_TIMEOUT_MS): Promise<string> {
-  const { stdout } = await execFileAsync('docker', args, { timeout: timeoutMs });
+  const { stdout } = await execFileAsync(resolveDockerCommand(), args, { timeout: timeoutMs });
   return stdout.trim();
 }
 
@@ -521,7 +537,7 @@ export async function dockerVolumePresent(volume: string): Promise<boolean> {
 
 async function dockerWriteStdin(args: string[], input: Buffer, timeoutMs = 30_000): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn('docker', args, { stdio: ['pipe', 'ignore', 'pipe'] });
+    const child = spawn(resolveDockerCommand(), args, { stdio: ['pipe', 'ignore', 'pipe'] });
     let stderr = '';
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
@@ -537,6 +553,94 @@ async function dockerWriteStdin(args: string[], input: Buffer, timeoutMs = 30_00
       code === 0 ? resolve() : reject(new Error(stderr.trim() || `docker exited with ${code}`));
     });
     child.stdin.end(input);
+  });
+}
+
+/**
+ * Ask Codex's local app-server for the allowance belonging to the credentials
+ * in its Docker volume. The JSON-RPC process is short-lived and its output is
+ * parsed before it is killed, so OAuth tokens never leave the container.
+ */
+export async function readSandboxCodexUsage(image: string): Promise<CodexUsageResponse> {
+  const spec = sandboxRuntimeSpec('codex');
+  return new Promise<CodexUsageResponse>((resolve, reject) => {
+    // Codex >=0.146 creates a small SQLite runtime state beneath CODEX_HOME.
+    // Mounting the auth volume read-only directly at CODEX_HOME therefore made
+    // the app-server exit before it could read usage. Copy only auth.json into
+    // this throwaway container filesystem; the named credential volume remains
+    // read-only and tokens never leave Docker.
+    const runtimeHome = '/home/node/.codex-runtime';
+    const child = spawn(resolveDockerCommand(), [
+      'run', '--rm', '-i', '-v', `${spec.authVolume}:/auth:ro`,
+      '-e', `CODEX_HOME=${runtimeHome}`, '--entrypoint', 'sh', image,
+      '-lc', `mkdir -p ${runtimeHome} && cp /auth/${spec.authFile} ${runtimeHome}/${spec.authFile} && exec codex app-server --stdio`,
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let buffer = '';
+    let stderr = '';
+    let settled = false;
+    let initialized = false;
+    const finish = (value: CodexUsageResponse | Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill('SIGKILL');
+      value instanceof Error ? reject(value) : resolve(value);
+    };
+    const timer = setTimeout(() => finish(new Error('Codex usage check timed out')), 15_000);
+    timer.unref();
+    const parseLines = (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        try {
+          const message = JSON.parse(line) as { id?: number; result?: { rateLimits?: unknown } };
+          // Codex 0.146 rejects/ignores account calls received before it has
+          // acknowledged initialize. Keep the JSON-RPC ordering explicit.
+          if (message.id === 1 && !initialized) {
+            initialized = true;
+            child.stdin.write([
+              JSON.stringify({ method: 'initialized', params: {} }),
+              JSON.stringify({ id: 2, method: 'account/rateLimits/read', params: null }),
+              '',
+            ].join('\n'));
+            continue;
+          }
+          if (message.id !== 2 || !message.result?.rateLimits) continue;
+          const limits = message.result.rateLimits as {
+            primary?: { usedPercent?: unknown; resetsAt?: unknown; windowDurationMins?: unknown };
+            secondary?: { usedPercent?: unknown; resetsAt?: unknown; windowDurationMins?: unknown } | null;
+            planType?: unknown;
+            credits?: { hasCredits?: unknown };
+          };
+          const window = (entry: typeof limits.primary): CodexUsageResponse['primary'] => ({
+            utilization: typeof entry?.usedPercent === 'number' ? entry.usedPercent : null,
+            resetsAt: typeof entry?.resetsAt === 'number' ? entry.resetsAt : null,
+            durationMinutes: typeof entry?.windowDurationMins === 'number' ? entry.windowDurationMins : null,
+          });
+          finish({
+            available: true,
+            primary: window(limits.primary),
+            secondary: limits.secondary ? window(limits.secondary) : null,
+            planType: typeof limits.planType === 'string' ? limits.planType : null,
+            hasCredits: typeof limits.credits?.hasCredits === 'boolean' ? limits.credits.hasCredits : null,
+          });
+        } catch {
+          // app-server diagnostics are not JSON-RPC results; keep reading.
+        }
+      }
+    };
+    child.stdout.on('data', parseLines);
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once('error', (error) => finish(error));
+    child.once('exit', (code) => {
+      if (!settled) finish(new Error(stderr.trim() || `Codex usage process exited with ${code}`));
+    });
+    child.stdin.write(`${JSON.stringify({
+      id: 1,
+      method: 'initialize',
+      params: { clientInfo: { name: 'open-design', version: '1.0' }, capabilities: { experimentalApi: true } },
+    })}\n`);
   });
 }
 
@@ -1722,7 +1826,7 @@ function nativeDockerPlatform(): string {
 // (these take minutes, so no capture-with-timeout). Rejects on non-zero exit.
 function dockerStream(argv: string[], onLog?: (line: string) => void): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn('docker', argv, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(resolveDockerCommand(), argv, { stdio: ['ignore', 'pipe', 'pipe'] });
     const pipe = (buf: Buffer) => onLog?.(buf.toString());
     child.stdout?.on('data', pipe);
     child.stderr?.on('data', pipe);

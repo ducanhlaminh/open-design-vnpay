@@ -218,3 +218,24 @@ export interface SandboxBuildResponse {
   /** Tail of the docker build output (most-recent lines, capped). */
   log: string[];
 }
+
+export type DockerSetupPhase =
+  | 'idle'
+  | 'installing'
+  | 'starting'
+  | 'waiting'
+  | 'ready'
+  | 'error';
+
+/** Machine-level Docker Desktop installation/startup driven by the daemon. */
+export interface DockerSetupResponse {
+  phase: DockerSetupPhase;
+  /** True while an install/start/wait operation is still active. */
+  running: boolean;
+  /** Whether the Docker engine answered the latest probe. */
+  dockerOk: boolean;
+  /** Human-readable failure suitable for the onboarding UI. */
+  error: string | null;
+  /** Tail of installer/startup output for diagnostics. */
+  log: string[];
+}

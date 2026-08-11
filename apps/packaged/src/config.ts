@@ -78,7 +78,8 @@ export type RawPackagedConfig = {
   // re-deriving it from its own version string.
   updateChannel?: string;
   // Google SSO + preview-identity auth baked by tools/pack (SESSION_SECRET/
-  // GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/IDENTITY_URL/OD_AUTH_DOMAIN_LOCK).
+  // GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/IDENTITY_URL/
+  // OD_AUTH_DOMAIN_LOCK).
   // Forwarded to the daemon spawn env so the packaged app runs with Google
   // login + membership-scoped pull. Secrets embedded in the bundle — nội bộ,
   // rotate được.

@@ -9,11 +9,12 @@
 // passes, and "Để sau" skips it — Settings → Execution keeps the same
 // controls for later. Vietnamese-only copy on purpose — this fork's UI is
 // Vietnamese and we avoid new i18n keys here (see ClaudeAccountSwitcher).
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../i18n';
 import type {
   SandboxAccountsResponse,
   SandboxBuildResponse,
+  DockerSetupResponse,
 } from '@open-design/contracts';
 import { EmbeddedClaudeLogin } from './EmbeddedClaudeLogin';
 import { CodexDeviceLogin } from './CodexDeviceLogin';
@@ -56,6 +57,8 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   const [status, setStatus] = useState<SandboxUiStatusResponse | null>(null);
   const [accounts, setAccounts] = useState<SandboxAccountsResponse | null>(null);
   const [build, setBuild] = useState<SandboxBuildResponse | null>(null);
+  const [dockerSetup, setDockerSetup] = useState<DockerSetupResponse | null>(null);
+  const autoBuildStarted = useRef(false);
   const [selectedRuntime] = useState(() => getStoredSandboxRuntime());
   // True once the FIRST full evaluation decided the gate must show. Before
   // that we render nothing, so fully-provisioned machines never see a flash.
@@ -138,6 +141,40 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
       // Daemon unreachable — leave the button for a retry.
     }
   }, []);
+
+  const startDockerSetup = useCallback(async () => {
+    try {
+      const r = await fetch('/api/sandbox/docker/setup', { method: 'POST' });
+      const j = (await r.json().catch(() => null)) as DockerSetupResponse | null;
+      if (j) setDockerSetup(j);
+    } catch {
+      setDockerSetup({
+        phase: 'error', running: false, dockerOk: false,
+        error: 'Không kết nối được dịch vụ cài đặt.', log: [],
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!active || !dockerSetup?.running) return;
+    const id = window.setInterval(() => {
+      void fetch('/api/sandbox/docker/setup')
+        .then((r) => (r.ok ? (r.json() as Promise<DockerSetupResponse>) : null))
+        .then((j) => {
+          if (!j) return;
+          setDockerSetup(j);
+          if (j.dockerOk) void refreshStatus();
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [active, dockerSetup?.running, refreshStatus]);
+
+  useEffect(() => {
+    if (!dockerSetup?.dockerOk || status?.imageOk || build?.building || autoBuildStarted.current) return;
+    autoBuildStarted.current = true;
+    void startBuild();
+  }, [dockerSetup?.dockerOk, status?.imageOk, build?.building, startBuild]);
 
   // Manual "Kiểm tra lại": one immediate re-probe of everything the gate
   // shows, for users who don't want to wait out the 4s poll (or whose login
@@ -223,9 +260,39 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
             trong cấu hình hiện tại; các runtime khác không chặn bước bắt đầu.
           </p>
           <ol className={styles.steps}>
+            <li className={`${styles.step}${status.dockerOk ? ' ' + styles.stepOk : ''}`}>
+              <span className={styles.stepBadge} aria-hidden="true">{status.dockerOk ? '✓' : '1'}</span>
+              <div className={styles.stepBody}>
+                <div className={styles.stepTitle}>
+                  Docker Desktop
+                  {status.dockerOk ? <span className={styles.stepDone}>xong</span> : null}
+                </div>
+                {!status.dockerOk ? (
+                  <>
+                    <p className={styles.stepHint}>
+                      App sẽ tự cài và mở Docker Desktop. Hệ điều hành có thể yêu cầu bạn xác nhận quyền quản trị.
+                    </p>
+                    <div className={styles.actionRow}>
+                      <button
+                        type="button"
+                        className={styles.primaryBtn}
+                        disabled={dockerSetup?.running}
+                        onClick={() => void startDockerSetup()}
+                      >
+                        {dockerSetup?.running ? 'Đang cài đặt…' : 'Cài Docker tự động'}
+                      </button>
+                    </div>
+                    {dockerSetup?.log.length ? (
+                      <code className={styles.buildLog}>{dockerSetup.log[dockerSetup.log.length - 1]}</code>
+                    ) : null}
+                    {dockerSetup?.error ? <p className={styles.stepErr}>{dockerSetup.error}</p> : null}
+                  </>
+                ) : null}
+              </div>
+            </li>
             <li className={`${styles.step}${selectedRuntimeReady ? ' ' + styles.stepOk : ''}`}>
               <span className={styles.stepBadge} aria-hidden="true">
-                {selectedRuntimeReady ? '✓' : '1'}
+                {selectedRuntimeStatus?.imageAvailable ? '✓' : '2'}
               </span>
               <div className={styles.stepBody}>
                 <div className={styles.stepTitle}>
@@ -265,11 +332,28 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
                     </li>
                   </ul>
                 </div>
+                {!selectedRuntimeStatus?.imageAvailable ? (
+                  !status.dockerOk ? (
+                    <p className={styles.stepHint}>Chờ Docker hoàn tất ở bước trên.</p>
+                  ) : (
+                    <div className={styles.actionRow}>
+                      <button
+                        type="button"
+                        className={styles.primaryBtn}
+                        disabled={build?.building}
+                        onClick={() => void startBuild()}
+                      >
+                        {build?.building ? 'Đang chuẩn bị…' : 'Chuẩn bị môi trường'}
+                      </button>
+                    </div>
+                  )
+                ) : null}
+                {build?.error ? <p className={styles.stepErr}>{build.error}</p> : null}
               </div>
             </li>
             <li className={`${styles.step}${selectedRuntimeReady ? ' ' + styles.stepOk : ''}`}>
               <span className={styles.stepBadge} aria-hidden="true">
-                {selectedRuntimeReady ? '✓' : '2'}
+                {selectedRuntimeReady ? '✓' : '3'}
               </span>
               <div className={styles.stepBody}>
                 <div className={styles.stepTitle}>
@@ -342,15 +426,19 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
               : 'Cần Docker để chạy agent thiết kế trong môi trường cách ly. Cài Docker Desktop, mở app lên rồi chờ vài giây — trạng thái sẽ tự cập nhật.'}
           </p>
           <div className={styles.actionRow}>
-            <a
+            <button
+              type="button"
               className={styles.linkBtn}
-              href="https://www.docker.com/products/docker-desktop/"
-              target="_blank"
-              rel="noreferrer"
+              disabled={dockerSetup?.running}
+              onClick={() => void startDockerSetup()}
             >
-              Tải Docker Desktop
-            </a>
+              {dockerSetup?.running ? 'Đang cài đặt…' : 'Cài Docker tự động'}
+            </button>
           </div>
+          {dockerSetup?.log.length ? (
+            <code className={styles.buildLog}>{dockerSetup.log[dockerSetup.log.length - 1]}</code>
+          ) : null}
+          {dockerSetup?.error ? <p className={styles.stepErr}>{dockerSetup.error}</p> : null}
         </>
       ),
     },

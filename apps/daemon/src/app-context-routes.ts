@@ -10,7 +10,7 @@ import type {
   PublishAppContextResult,
 } from '@open-design/contracts';
 
-import { getMachineIdentityUser, identityUserIdOf } from './auth-routes.js';
+import { getMachineIdentityUser, identityAccessTokenOf, identityUserIdOf } from './auth-routes.js';
 import {
   getPipelineApp,
   getProject,
@@ -199,7 +199,8 @@ export function registerAppContextRoutes(app: Express, deps: RegisterAppContextR
     try {
       const machine = await getMachineIdentityUser();
       const userId = identityUserIdOf(machine);
-      if (!machine || !userId) {
+      const accessToken = identityAccessTokenOf(machine);
+      if (!machine || !userId || !accessToken) {
         const data: PublishAppContextResult = {
           status: 'auth_required', appId, code: 'SYNC_IDENTITY_REQUIRED',
           message: 'Tài khoản chưa được kết nối với kho dự án.',
@@ -235,7 +236,7 @@ export function registerAppContextRoutes(app: Express, deps: RegisterAppContextR
         ...packageFiles.map((file) => ({ path: file.path, stage: 'app-context', mime: mimeForContext(file.path), content: file.content })),
       ];
       await media.syncProjectFiles(destination, syncFiles);
-      const owner = { id: userId, email: machine.email, name: machine.name };
+      const owner = { id: userId, email: machine.email, name: machine.name, accessToken };
       await new KgsClient(kgsConfigFromEnv()).ensureWorkspace(destination, localApp.name, owner).catch((error) => {
         console.warn(`[app-context] workspace registration failed for ${destination}:`, error);
       });

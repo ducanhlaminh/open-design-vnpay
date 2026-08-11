@@ -283,6 +283,7 @@ export function PipelinesRoute() {
         onPushAll={() => setPushAllOpen(true)}
         onReconnectSync={() => void reconnectSync()}
         syncReady={syncAccess?.syncReady === true}
+        syncIssue={syncAccess?.syncIssue}
         pullBusy={pullBusy}
         pushBusy={pushBusy}
       />

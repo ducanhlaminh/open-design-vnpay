@@ -144,7 +144,7 @@ describe('wrapInvocationInSandbox', () => {
 
   it('produces a docker run invocation ending with the agent command', () => {
     const { command, args, containerName } = wrap();
-    expect(command).toBe('docker');
+    expect(command.endsWith('docker') || command.endsWith('docker.exe')).toBe(true);
     expect(containerName).toBe('od-sbx-run-42');
     expect(args.slice(0, 2)).toEqual(['run', '-i']);
     const imageIdx = args.indexOf('od-agent-sandbox:0.1.0');
