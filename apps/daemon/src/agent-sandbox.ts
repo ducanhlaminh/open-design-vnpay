@@ -564,14 +564,21 @@ async function dockerWriteStdin(args: string[], input: Buffer, timeoutMs = 30_00
 export async function readSandboxCodexUsage(image: string): Promise<CodexUsageResponse> {
   const spec = sandboxRuntimeSpec('codex');
   return new Promise<CodexUsageResponse>((resolve, reject) => {
+    // Codex >=0.146 creates a small SQLite runtime state beneath CODEX_HOME.
+    // Mounting the auth volume read-only directly at CODEX_HOME therefore made
+    // the app-server exit before it could read usage. Copy only auth.json into
+    // this throwaway container filesystem; the named credential volume remains
+    // read-only and tokens never leave Docker.
+    const runtimeHome = '/home/node/.codex-runtime';
     const child = spawn(resolveDockerCommand(), [
-      'run', '--rm', '-i', '-v', `${spec.authVolume}:${spec.authDir}:ro`,
-      '-e', `CODEX_HOME=${spec.authDir}`, '--entrypoint', 'codex', image,
-      'app-server', '--stdio',
+      'run', '--rm', '-i', '-v', `${spec.authVolume}:/auth:ro`,
+      '-e', `CODEX_HOME=${runtimeHome}`, '--entrypoint', 'sh', image,
+      '-lc', `mkdir -p ${runtimeHome} && cp /auth/${spec.authFile} ${runtimeHome}/${spec.authFile} && exec codex app-server --stdio`,
     ], { stdio: ['pipe', 'pipe', 'pipe'] });
     let buffer = '';
     let stderr = '';
     let settled = false;
+    let initialized = false;
     const finish = (value: CodexUsageResponse | Error) => {
       if (settled) return;
       settled = true;
@@ -588,6 +595,17 @@ export async function readSandboxCodexUsage(image: string): Promise<CodexUsageRe
       for (const line of lines) {
         try {
           const message = JSON.parse(line) as { id?: number; result?: { rateLimits?: unknown } };
+          // Codex 0.146 rejects/ignores account calls received before it has
+          // acknowledged initialize. Keep the JSON-RPC ordering explicit.
+          if (message.id === 1 && !initialized) {
+            initialized = true;
+            child.stdin.write([
+              JSON.stringify({ method: 'initialized', params: {} }),
+              JSON.stringify({ id: 2, method: 'account/rateLimits/read', params: null }),
+              '',
+            ].join('\n'));
+            continue;
+          }
           if (message.id !== 2 || !message.result?.rateLimits) continue;
           const limits = message.result.rateLimits as {
             primary?: { usedPercent?: unknown; resetsAt?: unknown; windowDurationMins?: unknown };
@@ -618,12 +636,11 @@ export async function readSandboxCodexUsage(image: string): Promise<CodexUsageRe
     child.once('exit', (code) => {
       if (!settled) finish(new Error(stderr.trim() || `Codex usage process exited with ${code}`));
     });
-    child.stdin.write([
-      JSON.stringify({ id: 1, method: 'initialize', params: { clientInfo: { name: 'open-design', version: '1.0' }, capabilities: { experimentalApi: true } } }),
-      JSON.stringify({ method: 'initialized', params: {} }),
-      JSON.stringify({ id: 2, method: 'account/rateLimits/read', params: null }),
-      '',
-    ].join('\n'));
+    child.stdin.write(`${JSON.stringify({
+      id: 1,
+      method: 'initialize',
+      params: { clientInfo: { name: 'open-design', version: '1.0' }, capabilities: { experimentalApi: true } },
+    })}\n`);
   });
 }
 
