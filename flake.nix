@@ -51,12 +51,15 @@
         "packages/sidecar"
         "packages/platform"
         "packages/diagnostics"
+        "packages/figma-h2d"
         "apps/daemon"
+        "tools/kg"
       ];
       # Keep in sync with .github/workflows/ci.yml change_scopes
       # nix_validation_required filter.
       webWorkspacePaths = [
         "packages/contracts"
+        "packages/figma-h2d"
         "packages/host"
         "packages/platform"
         "packages/sidecar"
