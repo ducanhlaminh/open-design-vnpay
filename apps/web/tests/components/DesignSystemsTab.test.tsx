@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesignSystemSummary } from '@open-design/contracts';
 
 import { DesignSystemsTab } from '../../src/components/DesignSystemsTab';
+import { updateDesignSystemDraft } from '../../src/providers/registry';
 
 vi.mock('../../src/providers/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/registry')>(
@@ -102,7 +103,7 @@ describe('DesignSystemsTab', () => {
     fireEvent.click(screen.getByText('Create'));
     expect(onCreate).toHaveBeenCalledOnce();
 
-    fireEvent.click(screen.getByText('Edit'));
+    fireEvent.click(screen.getByRole('button', { name: 'Mở Acme Design System' }));
     expect(onOpenSystem).toHaveBeenCalledWith('user:acme');
   });
 
@@ -127,6 +128,43 @@ describe('DesignSystemsTab', () => {
 
     expect(onPreview).toHaveBeenCalledWith('linear');
     expect(onOpenSystem).not.toHaveBeenCalledWith('linear');
+  });
+
+  it('renames a Figma design system from its action menu without changing its id', async () => {
+    const onSystemsRefresh = vi.fn(async () => {});
+    vi.mocked(updateDesignSystemDraft).mockResolvedValueOnce({
+      id: 'user:acme',
+      title: 'Acme Figma UI',
+      category: 'Custom',
+      summary: 'Internal product system.',
+      surface: 'web',
+      source: 'user',
+      status: 'draft',
+      isEditable: true,
+      body: '',
+    });
+    render(
+      <DesignSystemsTab
+        systems={systems}
+        selectedId={null}
+        onSelect={() => {}}
+        onPreview={() => {}}
+        onSystemsRefresh={onSystemsRefresh}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Thao tác với Acme Design System'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Đổi tên' }));
+    fireEvent.change(screen.getByLabelText('Tên bộ Design System'), {
+      target: { value: 'Acme Figma UI' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu tên mới' }));
+
+    await waitFor(() =>
+      expect(updateDesignSystemDraft).toHaveBeenCalledWith('user:acme', { title: 'Acme Figma UI' }),
+    );
+    expect(onSystemsRefresh).toHaveBeenCalledOnce();
+    await waitFor(() => expect(screen.queryByLabelText('Đổi tên bộ Design System')).toBeNull());
   });
 });
 
