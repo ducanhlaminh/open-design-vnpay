@@ -21,6 +21,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { SandboxConfigPrefs } from './app-config.js';
 import type {
+  CodexUsageResponse,
   SandboxAccount,
   SandboxAccountIdentity,
   SandboxAccountsResponse,
@@ -552,6 +553,77 @@ async function dockerWriteStdin(args: string[], input: Buffer, timeoutMs = 30_00
       code === 0 ? resolve() : reject(new Error(stderr.trim() || `docker exited with ${code}`));
     });
     child.stdin.end(input);
+  });
+}
+
+/**
+ * Ask Codex's local app-server for the allowance belonging to the credentials
+ * in its Docker volume. The JSON-RPC process is short-lived and its output is
+ * parsed before it is killed, so OAuth tokens never leave the container.
+ */
+export async function readSandboxCodexUsage(image: string): Promise<CodexUsageResponse> {
+  const spec = sandboxRuntimeSpec('codex');
+  return new Promise<CodexUsageResponse>((resolve, reject) => {
+    const child = spawn(resolveDockerCommand(), [
+      'run', '--rm', '-i', '-v', `${spec.authVolume}:${spec.authDir}:ro`,
+      '-e', `CODEX_HOME=${spec.authDir}`, '--entrypoint', 'codex', image,
+      'app-server', '--stdio',
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let buffer = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (value: CodexUsageResponse | Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill('SIGKILL');
+      value instanceof Error ? reject(value) : resolve(value);
+    };
+    const timer = setTimeout(() => finish(new Error('Codex usage check timed out')), 15_000);
+    timer.unref();
+    const parseLines = (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        try {
+          const message = JSON.parse(line) as { id?: number; result?: { rateLimits?: unknown } };
+          if (message.id !== 2 || !message.result?.rateLimits) continue;
+          const limits = message.result.rateLimits as {
+            primary?: { usedPercent?: unknown; resetsAt?: unknown; windowDurationMins?: unknown };
+            secondary?: { usedPercent?: unknown; resetsAt?: unknown; windowDurationMins?: unknown } | null;
+            planType?: unknown;
+            credits?: { hasCredits?: unknown };
+          };
+          const window = (entry: typeof limits.primary): CodexUsageResponse['primary'] => ({
+            utilization: typeof entry?.usedPercent === 'number' ? entry.usedPercent : null,
+            resetsAt: typeof entry?.resetsAt === 'number' ? entry.resetsAt : null,
+            durationMinutes: typeof entry?.windowDurationMins === 'number' ? entry.windowDurationMins : null,
+          });
+          finish({
+            available: true,
+            primary: window(limits.primary),
+            secondary: limits.secondary ? window(limits.secondary) : null,
+            planType: typeof limits.planType === 'string' ? limits.planType : null,
+            hasCredits: typeof limits.credits?.hasCredits === 'boolean' ? limits.credits.hasCredits : null,
+          });
+        } catch {
+          // app-server diagnostics are not JSON-RPC results; keep reading.
+        }
+      }
+    };
+    child.stdout.on('data', parseLines);
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once('error', (error) => finish(error));
+    child.once('exit', (code) => {
+      if (!settled) finish(new Error(stderr.trim() || `Codex usage process exited with ${code}`));
+    });
+    child.stdin.write([
+      JSON.stringify({ id: 1, method: 'initialize', params: { clientInfo: { name: 'open-design', version: '1.0' }, capabilities: { experimentalApi: true } } }),
+      JSON.stringify({ method: 'initialized', params: {} }),
+      JSON.stringify({ id: 2, method: 'account/rateLimits/read', params: null }),
+      '',
+    ].join('\n'));
   });
 }
 

@@ -21,3 +21,25 @@ export interface ClaudeUsageResponse {
   /** e.g. "max", "pro" — surfaced for the popover, null if unknown. */
   subscriptionType: string | null;
 }
+
+/** A Codex account limit window reported by the Codex CLI app-server. */
+export interface CodexUsageWindow {
+  /** Percentage of the account allowance consumed (0–100). */
+  utilization: number | null;
+  /** Unix seconds at which this rolling window resets. */
+  resetsAt: number | null;
+  /** Duration of the rolling window, when Codex reports it. */
+  durationMinutes: number | null;
+}
+
+/**
+ * Codex account allowance from `account/rateLimits/read`. It is deliberately
+ * separate from OpenAI API-key billing/rate limits.
+ */
+export interface CodexUsageResponse {
+  available: boolean;
+  primary: CodexUsageWindow;
+  secondary: CodexUsageWindow | null;
+  planType: string | null;
+  hasCredits: boolean | null;
+}

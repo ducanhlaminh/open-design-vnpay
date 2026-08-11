@@ -50,6 +50,7 @@ const config = {
 } as unknown as AppConfig;
 
 let usageCalls = 0;
+let codexUsageCalls = 0;
 let usageBody: unknown = AVAILABLE_USAGE;
 let usageOk = true;
 
@@ -74,10 +75,25 @@ const openDropdown = () =>
 
 beforeEach(() => {
   usageCalls = 0;
+  codexUsageCalls = 0;
   usageBody = AVAILABLE_USAGE;
   usageOk = true;
   vi.stubGlobal('fetch', async (url: string) => {
     if (String(url).includes('/api/usage/claude')) usageCalls += 1;
+    if (String(url).includes('/api/usage/codex')) {
+      codexUsageCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          available: true,
+          primary: { utilization: 43, resetsAt: null, durationMinutes: 10080 },
+          secondary: null,
+          planType: 'plus',
+          hasCredits: false,
+        }),
+      } as Response;
+    }
     return { ok: usageOk, status: usageOk ? 200 : 500, json: async () => usageBody } as Response;
   });
 });
@@ -127,7 +143,7 @@ describe('Claude quota in the Local CLI dropdown', () => {
     expect(usageCalls).toBe(2);
   });
 
-  it('stays hidden for a non-Claude CLI', async () => {
+  it('reads the real Codex allowance once when the Codex Local CLI is opened', async () => {
     const codex = { ...claude, id: 'codex', name: 'Codex' } as AgentInfo;
     render(
       <InlineModelSwitcher
@@ -144,7 +160,9 @@ describe('Claude quota in the Local CLI dropdown', () => {
     );
     openDropdown();
 
-    expect(screen.queryByText(/Mức dùng tài khoản Claude/)).toBeNull();
+    await waitFor(() => expect(screen.getByText('43%')).toBeTruthy());
+    expect(screen.getByText('plus')).toBeTruthy();
     expect(usageCalls).toBe(0);
+    expect(codexUsageCalls).toBe(1);
   });
 });

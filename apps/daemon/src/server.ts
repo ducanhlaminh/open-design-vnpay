@@ -314,6 +314,7 @@ import {
   dockerVolumePresent,
   ensureSandboxImage,
   readSandboxClaudeCredentials,
+  readSandboxCodexUsage,
   resolveSandboxConfig,
   sandboxImageTag,
   sandboxPreflight,
@@ -13800,6 +13801,24 @@ export async function startServer({
         sevenDay: { utilization: null, resetsAt: null },
         subscriptionType: null,
       } satisfies import('@open-design/contracts').ClaudeUsageResponse);
+    }
+  });
+
+  // Read once when the Local CLI menu is opened. This uses Codex's own
+  // app-server protocol against the sandbox volume; no credential is sent to
+  // the browser and no background polling is performed.
+  app.get('/api/usage/codex', async (_req, res) => {
+    try {
+      const image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
+      res.json(await readSandboxCodexUsage(image));
+    } catch {
+      res.json({
+        available: false,
+        primary: { utilization: null, resetsAt: null, durationMinutes: null },
+        secondary: null,
+        planType: null,
+        hasCredits: null,
+      } satisfies import('@open-design/contracts').CodexUsageResponse);
     }
   });
 
