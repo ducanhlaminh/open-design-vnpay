@@ -657,6 +657,18 @@ function authSeedCarriesToken(runtimeId: SandboxRuntimeId, raw: string): boolean
   return sandboxRuntimeAuthStateFromRaw(runtimeId, raw) === 'logged-in';
 }
 
+export function shouldSeedSandboxRuntimeAuth(
+  runtimeId: SandboxRuntimeId,
+  existingCredential: string | null,
+  seedMarker: string | null,
+): boolean {
+  if (sandboxRuntimeAuthStateFromRaw(runtimeId, existingCredential) === 'logged-in') return false;
+  // An explicit logout must survive app restarts and upgrades. A prior
+  // successful seed is repairable, though: old builds could leave a hollow
+  // credential while marking the volume initialized.
+  return seedMarker?.trim() !== 'logged-out';
+}
+
 /**
  * Seed a packaged OAuth credential exactly once into a runtime's named volume.
  * The seed contains only the credential-file contents (base64 encoded), never
@@ -682,12 +694,12 @@ export async function seedSandboxRuntimeAuth(
   const seedMarkerPath = sandboxAuthSeedMarkerPath(runtimeId);
   try {
     await docker(['volume', 'create', spec.authVolume]);
-    const alreadyInitialized = await docker([
-      'run', '--rm', '-v', `${spec.authVolume}:${spec.authDir}`,
-      '--entrypoint', 'sh', image, '-c',
-      `[ -e ${JSON.stringify(credentialPath)} ] || [ -e ${JSON.stringify(seedMarkerPath)} ]`,
-    ]).then(() => true).catch(() => false);
-    if (alreadyInitialized) return false;
+    const existingCredential = await readSandboxRuntimeCredentials(image, runtimeId);
+    const seedMarker = await docker([
+      'run', '--rm', '-v', `${spec.authVolume}:${spec.authDir}:ro`,
+      '--entrypoint', 'cat', image, seedMarkerPath,
+    ], 30_000).catch(() => null);
+    if (!shouldSeedSandboxRuntimeAuth(runtimeId, existingCredential, seedMarker)) return false;
     await dockerWriteStdin([
       'run', '--rm', '-i', '-v', `${spec.authVolume}:${spec.authDir}`,
       '--entrypoint', 'sh', image, '-c',

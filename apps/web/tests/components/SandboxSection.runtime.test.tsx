@@ -103,4 +103,45 @@ describe('SandboxSection runtime split', () => {
 
     expect(screen.queryByText('Docker engine')).toBeNull();
   });
+
+  it('offers manual Docker setup in Execution even when runtimeStatuses are present', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) {
+        return jsonResponse({
+          enabled: true,
+          dockerOk: false,
+          image: 'od-agent-sandbox:0.2.1',
+          imageOk: false,
+          authVolumeOk: false,
+          authLoggedIn: null,
+          activeContainers: [],
+          runtimes: ['claude', 'codex'],
+          skills: ['*'],
+          timeoutMinutes: 30,
+          builderDir: '/tmp/builder',
+          runtimeStatuses: [{
+            id: 'claude', version: null, imageAvailable: false,
+            authVolume: 'od-claude-auth', authVolumeAvailable: false,
+            authStatus: 'missing', loginMethod: 'interactive',
+          }],
+        });
+      }
+      if (url.endsWith('/sandbox/build')) {
+        return jsonResponse({ building: false, ok: null, error: null, log: [] });
+      }
+      if (url.endsWith('/sandbox/docker/setup') && init?.method === 'POST') {
+        return jsonResponse({ phase: 'installing', running: true, dockerOk: false, error: null, log: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(<SandboxSection daemonLive={true} />);
+    const install = await screen.findByRole('button', { name: 'Cài Docker tự động' });
+    fireEvent.click(install);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sandbox/docker/setup', { method: 'POST' });
+    });
+  });
 });

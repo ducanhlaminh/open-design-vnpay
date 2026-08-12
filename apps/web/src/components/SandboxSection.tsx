@@ -4,7 +4,7 @@
 // other worktree, so this file keeps a local shadow of the new shape and falls
 // back to the legacy summary view when the runtime list is still absent.
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { SandboxBuildResponse } from '@open-design/contracts';
+import type { DockerSetupResponse, SandboxBuildResponse } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { ClaudeAccountSwitcher } from './ClaudeAccountSwitcher';
 import { CodexDeviceLogin } from './CodexDeviceLogin';
@@ -19,6 +19,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
   const t = useT();
   const [status, setStatus] = useState<SandboxStatusResponse | null>(null);
   const [build, setBuild] = useState<SandboxBuildResponse | null>(null);
+  const [dockerSetup, setDockerSetup] = useState<DockerSetupResponse | null>(null);
 
   const refresh = useCallback(async () => {
     if (!daemonLive) return;
@@ -55,6 +56,34 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
       // Daemon unreachable — leave the button as-is for a retry.
     }
   }, []);
+
+  const startDockerSetup = useCallback(async () => {
+    try {
+      const response = await fetch('/api/sandbox/docker/setup', { method: 'POST' });
+      const next = (await response.json().catch(() => null)) as DockerSetupResponse | null;
+      if (next) setDockerSetup(next);
+    } catch {
+      setDockerSetup({
+        phase: 'error', running: false, dockerOk: false,
+        error: 'Không kết nối được dịch vụ cài đặt Docker.', log: [],
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!dockerSetup?.running) return;
+    const id = window.setInterval(() => {
+      void fetch('/api/sandbox/docker/setup')
+        .then((response) => (response.ok ? response.json() as Promise<DockerSetupResponse> : null))
+        .then((next) => {
+          if (!next) return;
+          setDockerSetup(next);
+          if (!next.running || next.dockerOk) void refresh();
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [dockerSetup?.running, refresh]);
 
   // While a build runs, poll progress; when it finishes, refresh the status list
   // so the image row flips to OK and the Build button disappears.
@@ -147,7 +176,44 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
       </div>
       {!daemonLive || !status ? (
         <small className="hint">{t('settings.sandboxDaemonOffline')}</small>
-      ) : hasRuntimeStatuses ? (
+      ) : (
+        <>
+          {!status.dockerOk ? (
+            <div className={styles.setupPanel} data-testid="sandbox-docker-setup">
+              <div>
+                <strong>Docker chưa sẵn sàng</strong>
+                <p>Cài Docker Desktop để Open Design chạy Claude và Codex trong môi trường cách ly.</p>
+              </div>
+              <button
+                type="button"
+                className={styles.buildBtn}
+                disabled={dockerSetup?.running}
+                onClick={() => void startDockerSetup()}
+              >
+                {dockerSetup?.running ? 'Đang cài Docker…' : 'Cài Docker tự động'}
+              </button>
+              {dockerSetup?.log.length ? (
+                <code className={styles.buildLog}>{dockerSetup.log[dockerSetup.log.length - 1]}</code>
+              ) : null}
+              {dockerSetup?.error ? <p className={styles.buildErr}>{dockerSetup.error}</p> : null}
+            </div>
+          ) : !status.imageOk ? (
+            <div className={styles.setupPanel} data-testid="sandbox-image-setup">
+              <div>
+                <strong>Môi trường agent chưa có trên máy</strong>
+                <p>Open Design sẽ tải image phù hợp với máy; nếu không tải được, hệ thống tự build tại máy.</p>
+              </div>
+              <button
+                type="button"
+                className={styles.buildBtn}
+                disabled={build?.building}
+                onClick={() => void startBuild()}
+              >
+                {build?.building ? 'Đang chuẩn bị…' : 'Chuẩn bị môi trường'}
+              </button>
+            </div>
+          ) : null}
+          {hasRuntimeStatuses ? (
         <div className={styles.runtimeGrid}>
           <details className={styles.runtimeCard} data-testid="sandbox-runtime-claude">
             <summary className={styles.runtimeToggle}>
@@ -192,7 +258,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
             </div>
           </details>
         </div>
-      ) : (
+          ) : (
         <>
           <p className="hint" style={{ margin: '0 0 4px' }}>
             Mặc định chạy qua Docker sandbox · runtime: <code>{status.runtimes.join(', ')}</code> · skills:{' '}
@@ -254,6 +320,8 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
           ) : null}
 
           <ClaudeAccountSwitcher daemonLive={daemonLive} />
+        </>
+          )}
         </>
       )}
     </section>

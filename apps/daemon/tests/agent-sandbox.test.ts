@@ -11,6 +11,7 @@ import {
   rewriteUrlForContainer,
   sandboxContainerName,
   sandboxRuntimeAuthStateFromRaw,
+  shouldSeedSandboxRuntimeAuth,
   sandboxRuntimeForwardedEnvKeys,
   sandboxRuntimeLoginCommand,
   sandboxRuntimeVersionBin,
@@ -26,6 +27,19 @@ describe('sandbox auth volume paths', () => {
     expect(sandboxAuthSeedMarkerPath('claude')).toBe('/home/node/.claude/.od-auth-seed-consumed');
     expect(sandboxAuthCredentialPath('codex')).toBe('/home/node/.codex/auth.json');
     expect(sandboxAuthSeedMarkerPath('codex')).toBe('/home/node/.codex/.od-auth-seed-consumed');
+  });
+
+  it('repairs missing or hollow credentials without undoing an explicit logout', () => {
+    const claudeSeed = JSON.stringify({ claudeAiOauth: { accessToken: 'claude-token' } });
+    const codexSeed = JSON.stringify({ tokens: { access_token: 'codex-token' } });
+
+    expect(shouldSeedSandboxRuntimeAuth('claude', null, null)).toBe(true);
+    expect(shouldSeedSandboxRuntimeAuth('claude', '{}', 'seeded')).toBe(true);
+    expect(shouldSeedSandboxRuntimeAuth('claude', claudeSeed, null)).toBe(false);
+    expect(shouldSeedSandboxRuntimeAuth('claude', null, 'logged-out')).toBe(false);
+    expect(shouldSeedSandboxRuntimeAuth('codex', '{}', 'seeded')).toBe(true);
+    expect(shouldSeedSandboxRuntimeAuth('codex', codexSeed, null)).toBe(false);
+    expect(shouldSeedSandboxRuntimeAuth('codex', null, 'logged-out')).toBe(false);
   });
 });
 

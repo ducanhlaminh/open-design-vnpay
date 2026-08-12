@@ -39,6 +39,7 @@ describe('InfraSetupGate runtime selection', () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
+    window.localStorage.clear();
     fetchMock.mockReset();
     loadConfigMock.mockReturnValue({ agentId: null });
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
@@ -156,5 +157,52 @@ describe('InfraSetupGate runtime selection', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/sandbox/docker/setup', { method: 'POST' });
     });
+  });
+
+  it('reopens setup when Docker was removed after setup had previously completed', async () => {
+    window.localStorage.setItem('od-infra-setup-done', '1');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) {
+        return jsonResponse({
+          enabled: true,
+          dockerOk: false,
+          image: 'od-agent-sandbox:0.2.1',
+          imageOk: false,
+          authVolumeOk: false,
+          authLoggedIn: null,
+          activeContainers: [],
+          runtimes: ['claude', 'codex'],
+          skills: ['*'],
+          timeoutMinutes: 30,
+          builderDir: '/tmp/builder',
+          runtimeStatuses: [{
+            id: 'claude', version: null, imageAvailable: false,
+            authVolume: 'od-claude-auth', authVolumeAvailable: false,
+            authStatus: 'missing', loginMethod: 'interactive',
+          }],
+        });
+      }
+      if (url.endsWith('/sandbox/build')) {
+        return jsonResponse({ building: false, ok: null, error: null, log: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(<InfraSetupGate daemonLive={true} onOpenSettings={vi.fn()} />);
+
+    expect(await screen.findByTestId('infra-setup-gate')).toBeTruthy();
+    expect(window.localStorage.getItem('od-infra-setup-done')).toBeNull();
+  });
+
+  it('keeps "Để sau" scoped to the current session instead of persisting stale readiness', async () => {
+    loadConfigMock.mockReturnValue({ agentId: 'codex' });
+    render(<InfraSetupGate daemonLive={true} onOpenSettings={vi.fn()} />);
+
+    const skip = await screen.findByRole('button', { name: 'Để sau (mở lại trong Cài đặt)' });
+    fireEvent.click(skip);
+
+    expect(screen.queryByTestId('infra-setup-gate')).toBeNull();
+    expect(window.localStorage.getItem('od-infra-setup-done')).toBeNull();
   });
 });

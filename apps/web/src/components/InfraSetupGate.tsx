@@ -4,10 +4,11 @@
 // `GET /api/sandbox/accounts`; actions reuse the existing build/login
 // endpoints, so `od sandbox status|build|login` stays the CLI mirror.
 //
-// Dismissal is a per-machine localStorage flag (infra is machine state, not
-// user config): the gate self-dismisses silently when every check already
-// passes, and "Để sau" skips it — Settings → Execution keeps the same
-// controls for later. Vietnamese-only copy on purpose — this fork's UI is
+// The gate self-dismisses silently when every check already passes, and
+// "Để sau" skips it for the current app session — Settings → Execution keeps
+// the same controls for later. Completion is deliberately not persisted:
+// Docker, images and auth volumes can be removed independently from the app.
+// Vietnamese-only copy on purpose — this fork's UI is
 // Vietnamese and we avoid new i18n keys here (see ClaudeAccountSwitcher).
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../i18n';
@@ -27,22 +28,13 @@ import {
 } from './sandbox-runtime';
 import styles from './InfraSetupGate.module.css';
 
-const DISMISS_KEY = 'od-infra-setup-done';
-
-function readDismissed(): boolean {
+function clearPersistedDismissal(): void {
   try {
-    return window.localStorage.getItem(DISMISS_KEY) === '1';
+    // Migrate the old permanent flag. Readiness is now derived from the live
+    // daemon status on every launch instead of a stale browser-side bit.
+    window.localStorage.removeItem('od-infra-setup-done');
   } catch {
-    return false;
-  }
-}
-
-function persistDismissed(): void {
-  try {
-    window.localStorage.setItem(DISMISS_KEY, '1');
-  } catch {
-    // Storage unavailable — the gate will re-evaluate next open, which is
-    // harmless (it only shows while something is actually missing).
+    // Storage unavailable — component state still reopens the gate.
   }
 }
 
@@ -54,7 +46,8 @@ interface Props {
 
 export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Element | null {
   const t = useT();
-  const [dismissed, setDismissed] = useState(readDismissed);
+  const [dismissed, setDismissed] = useState(false);
+  const [skippedThisSession, setSkippedThisSession] = useState(false);
   const [status, setStatus] = useState<SandboxUiStatusResponse | null>(null);
   const [accounts, setAccounts] = useState<SandboxAccountsResponse | null>(null);
   const [build, setBuild] = useState<SandboxBuildResponse | null>(null);
@@ -69,7 +62,11 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   // that we render nothing, so fully-provisioned machines never see a flash.
   const [evaluated, setEvaluated] = useState(false);
 
-  const active = daemonLive && !dismissed;
+  // Even a previously completed setup must be probed on every launch. Docker,
+  // its image, or its auth volumes can be removed independently from the app;
+  // treating the localStorage flag as permanent hid onboarding forever on
+  // those machines. "Để sau" remains a session-only escape hatch.
+  const active = daemonLive && !skippedThisSession;
   const runtimeStatuses = status?.runtimeStatuses ?? [];
   const runtimeById = new Map(runtimeStatuses.map((runtime) => [runtime.id, runtime] as const));
   const selectedRuntimeStatus = runtimeById.get(selectedRuntime);
@@ -251,8 +248,15 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   // without ever rendering; an incomplete one locks `evaluated` so the wizard
   // stays up until the user finishes or skips.
   const dismiss = useCallback(() => {
-    persistDismissed();
     setDismissed(true);
+  }, []);
+
+  const skip = useCallback(() => {
+    setSkippedThisSession(true);
+  }, []);
+
+  useEffect(() => {
+    clearPersistedDismissal();
   }, []);
 
   useEffect(() => {
@@ -263,6 +267,10 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
     }
     if (usingRuntimeStatuses) {
       if (!selectedRuntimeStatus || !selectedRuntimeReady) {
+        if (dismissed) {
+          clearPersistedDismissal();
+          setDismissed(false);
+        }
         setEvaluated(true);
         return;
       }
@@ -270,6 +278,10 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
       return;
     }
     if (!status.dockerOk || !status.imageOk) {
+      if (dismissed) {
+        clearPersistedDismissal();
+        setDismissed(false);
+      }
       setEvaluated(true);
       return;
     }
@@ -279,10 +291,14 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
       dismiss();
       return;
     }
+    if (dismissed) {
+      clearPersistedDismissal();
+      setDismissed(false);
+    }
     setEvaluated(true);
-  }, [active, evaluated, status, accounts, dismiss, usingRuntimeStatuses, selectedRuntimeStatus, selectedRuntimeReady]);
+  }, [active, evaluated, status, accounts, dismissed, dismiss, usingRuntimeStatuses, selectedRuntimeStatus, selectedRuntimeReady]);
 
-  if (!active || !evaluated || !status) return null;
+  if (!active || dismissed || !evaluated || !status) return null;
   const allOk = selectedRuntimeReady;
 
   // One installer only (Docker Desktop, the cross-platform choice) so a
@@ -679,7 +695,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
             >
               {rechecking ? 'Đang kiểm tra…' : 'Kiểm tra lại'}
             </button>
-            <button type="button" className={styles.skipBtn} onClick={dismiss}>
+            <button type="button" className={styles.skipBtn} onClick={skip}>
               Để sau (mở lại trong Cài đặt)
             </button>
           </div>

@@ -88,6 +88,36 @@
   flex-direction: column;
   gap: 6px;
 }
+
+.setupPanel {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border-soft));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-panel));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.setupPanel strong {
+  display: block;
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.setupPanel p {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.setupPanel > .buildLog,
+.setupPanel > .buildErr {
+  grid-column: 1 / -1;
+}
 .buildHint {
   margin: 0;
   font-size: 12px;
