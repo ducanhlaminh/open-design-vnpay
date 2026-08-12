@@ -1,5 +1,5 @@
 import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -44,6 +44,7 @@ async function dockerReady(): Promise<boolean> {
 }
 
 async function spawnAndWait(command: string, args: string[]): Promise<void> {
+  const logStart = state.log.length;
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: false, env: process.env });
     child.stdout?.on('data', (chunk: Buffer) => appendLog(chunk.toString('utf8')));
@@ -51,7 +52,12 @@ async function spawnAndWait(command: string, args: string[]): Promise<void> {
     child.once('error', reject);
     child.once('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`${command} kết thúc với mã ${code ?? 'không rõ'}.`));
+      else {
+        const detail = state.log.slice(logStart).slice(-8).join('\n');
+        reject(new Error(
+          `${path.basename(command)} kết thúc với mã ${code ?? 'không rõ'}.${detail ? `\n${detail}` : ''}`,
+        ));
+      }
     });
   });
 }
@@ -68,37 +74,77 @@ async function firstAccessible(paths: string[]): Promise<string | null> {
   return null;
 }
 
+export function dockerDesktopMacDownload(nodeArch: string): { arch: 'arm64' | 'amd64'; url: string } {
+  const arch = nodeArch === 'arm64' ? 'arm64' : 'amd64';
+  return { arch, url: `https://desktop.docker.com/mac/main/${arch}/Docker.dmg` };
+}
+
+export const MAC_DOCKER_INSTALLER_APPLESCRIPT = [
+  'on run argv',
+  '  set installerPath to item 1 of argv',
+  '  set targetUser to item 2 of argv',
+  '  do shell script quoted form of installerPath & " --user=" & quoted form of targetUser with administrator privileges',
+  'end run',
+].join('\n');
+
+async function validMacDockerApp(): Promise<string | null> {
+  const candidates = [
+    '/Applications/Docker.app',
+    path.join(homedir(), 'Applications', 'Docker.app'),
+  ];
+  for (const candidate of candidates) {
+    if (!(await firstAccessible([candidate]))) continue;
+    try {
+      await execFileAsync('/usr/bin/codesign', ['--verify', '--deep', '--strict', candidate], { timeout: 30_000 });
+      return candidate;
+    } catch {
+      appendLog(`Docker Desktop tại ${candidate} chưa hoàn chỉnh; app sẽ cài lại bản chính thức.`);
+    }
+  }
+  return null;
+}
+
 async function installDockerDesktop(): Promise<void> {
   if (process.platform === 'darwin') {
-    const brew = await firstAccessible(['/opt/homebrew/bin/brew', '/usr/local/bin/brew']);
-    if (brew) {
-      appendLog('Đang cài Docker Desktop qua Homebrew…');
-      await spawnAndWait(brew, ['install', '--cask', 'docker']);
-      return;
-    }
-    // Low-tech Macs commonly have no Homebrew. Install the official app in
-    // ~/Applications so the flow stays inside Open Design and needs no sudo.
+    // Never run Homebrew in this background daemon: cask installation can
+    // require an interactive administrator password and exits with code 1
+    // when no TTY is available. Docker's signed installer is invoked through
+    // AppleScript so macOS owns the native password dialog instead.
     const scratch = await mkdtemp(path.join(tmpdir(), 'open-design-docker-'));
     const dmg = path.join(scratch, 'Docker.dmg');
     const mount = path.join(scratch, 'mount');
-    const applications = path.join(homedir(), 'Applications');
-    const destination = path.join(applications, 'Docker.app');
-    const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+    const download = dockerDesktopMacDownload(process.arch);
     let attached = false;
     try {
       await mkdir(mount);
-      await mkdir(applications, { recursive: true });
-      appendLog('Đang tải Docker Desktop chính thức…');
-      await spawnAndWait('curl', ['-fL', '--retry', '3', '-o', dmg, `https://desktop.docker.com/mac/main/${arch}/Docker.dmg`]);
-      appendLog('Đang cài Docker Desktop…');
-      await spawnAndWait('hdiutil', ['attach', dmg, '-nobrowse', '-mountpoint', mount]);
+      appendLog(`Đang tải Docker Desktop chính thức cho Mac ${download.arch === 'arm64' ? 'Apple Silicon' : 'Intel'}…`);
+      await spawnAndWait('/usr/bin/curl', ['-fL', '--retry', '3', '-o', dmg, download.url]);
+      await spawnAndWait('/usr/bin/hdiutil', ['attach', dmg, '-nobrowse', '-mountpoint', mount]);
       attached = true;
-      await rm(destination, { recursive: true, force: true });
-      await spawnAndWait('ditto', [path.join(mount, 'Docker.app'), destination]);
-      await spawnAndWait('hdiutil', ['detach', mount]);
+      const installer = path.join(mount, 'Docker.app', 'Contents', 'MacOS', 'install');
+      await access(installer);
+      appendLog('macOS sẽ yêu cầu mật khẩu quản trị để hoàn tất cài đặt Docker Desktop…');
+      try {
+        await spawnAndWait('/usr/bin/osascript', [
+          '-e',
+          MAC_DOCKER_INSTALLER_APPLESCRIPT,
+          installer,
+          userInfo().username,
+        ]);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/canceled|cancelled|-128/i.test(message)) {
+          throw new Error('Bạn đã hủy yêu cầu quyền quản trị. Docker Desktop chưa được cài.');
+        }
+        throw new Error(`Không thể cài Docker Desktop bằng quyền quản trị.\n${message}`);
+      }
+      if (!(await validMacDockerApp())) {
+        throw new Error('Docker Desktop đã được chép nhưng chữ ký ứng dụng không hợp lệ hoặc bộ cài chưa hoàn tất.');
+      }
+      await spawnAndWait('/usr/bin/hdiutil', ['detach', mount]);
       attached = false;
     } finally {
-      if (attached) await execFileAsync('hdiutil', ['detach', mount], { timeout: 30_000 }).catch(() => {});
+      if (attached) await execFileAsync('/usr/bin/hdiutil', ['detach', mount], { timeout: 30_000 }).catch(() => {});
       await rm(scratch, { recursive: true, force: true }).catch(() => {});
     }
     return;
@@ -121,11 +167,13 @@ async function startDockerDesktop(): Promise<void> {
   state.phase = 'starting';
   appendLog('Đang mở Docker Desktop…');
   if (process.platform === 'darwin') {
+    const systemApp = '/Applications/Docker.app';
     const userApp = path.join(homedir(), 'Applications', 'Docker.app');
-    if (await firstAccessible([userApp])) {
-      await execFileAsync('open', [userApp], { timeout: 15_000 });
+    const installedApp = await firstAccessible([systemApp, userApp]);
+    if (installedApp) {
+      await execFileAsync('/usr/bin/open', [installedApp], { timeout: 15_000 });
     } else {
-      await execFileAsync('open', ['-a', 'Docker'], { timeout: 15_000 });
+      await execFileAsync('/usr/bin/open', ['-a', 'Docker'], { timeout: 15_000 });
     }
     return;
   }
@@ -154,14 +202,25 @@ async function waitForDocker(): Promise<void> {
 
 async function runSetup(): Promise<void> {
   try {
-    const resolvedDocker = resolveDockerCommand();
-    if (resolvedDocker === 'docker' && !(await commandExists('docker'))) {
-      state.phase = 'installing';
-      await installDockerDesktop();
-    }
-    if (!(await dockerReady())) {
-      await startDockerDesktop();
-      await waitForDocker();
+    if (process.platform === 'darwin') {
+      if (!(await dockerReady())) {
+        if (!(await validMacDockerApp())) {
+          state.phase = 'installing';
+          await installDockerDesktop();
+        }
+        await startDockerDesktop();
+        await waitForDocker();
+      }
+    } else {
+      const resolvedDocker = resolveDockerCommand();
+      if (resolvedDocker === 'docker' && !(await commandExists('docker'))) {
+        state.phase = 'installing';
+        await installDockerDesktop();
+      }
+      if (!(await dockerReady())) {
+        await startDockerDesktop();
+        await waitForDocker();
+      }
     }
     state = { ...state, phase: 'ready', running: false, dockerOk: true, error: null };
     appendLog('Docker đã sẵn sàng.');

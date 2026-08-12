@@ -54,7 +54,7 @@ RUN mkdir -p /home/node/.claude && chown -R node:node /home/node
 RUN mkdir -p /home/node/.codex && chown -R node:node /home/node
 
 LABEL org.opencontainers.image.title="od-agent-sandbox" \
-      org.opencontainers.image.description="Claude Code agent + VNPAY React toolkit sandbox for docs-to-react"
+      org.opencontainers.image.description="Claude Code and Codex agents + VNPAY React toolkit sandbox"
 
 USER node
 # Pre-warm the pinned Atlassian MCP server into uv's cache NOW, at image

@@ -88,11 +88,13 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   // ── Cheap infra poll (docker version / image inspect / volume inspect).
   // 4s while the gate is relevant, so finishing a step flips it green live.
   useEffect(() => {
-    if (!active) return;
+    // Do not invoke Docker CLI while the signed macOS app is being installed.
+    // Calling CLI symlinks during the bundle copy can leave Docker.app partial.
+    if (!active || dockerSetup?.running) return;
     void refreshStatus();
     const id = window.setInterval(() => void refreshStatus(), 4000);
     return () => window.clearInterval(id);
-  }, [active, refreshStatus]);
+  }, [active, dockerSetup?.running, refreshStatus]);
 
   useEffect(() => {
     if (!active || !isWindows || status?.dockerOk !== false) return;

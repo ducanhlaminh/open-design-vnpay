@@ -4,7 +4,8 @@
 # first-run wizard / `od sandbox build` instead of a 10-minute local build.
 #
 # Run this after bumping any of: base/toolkit.version, sandbox/sandbox.version,
-# sandbox/claude.version — then commit the bumped pins so pullers match.
+# sandbox/claude.version, sandbox/codex.version — then commit the bumped pins
+# so pullers match.
 #
 # Prereqs (one-time):
 #   1. docker login ghcr.io -u <github-user>
@@ -26,6 +27,7 @@ registry="${OD_SANDBOX_REGISTRY:-$(tr -d '[:space:]' < "$here/registry")}"
 toolkit="$(tr -d '[:space:]' < "$here/base/toolkit.version")"
 sandbox_version="$(tr -d '[:space:]' < "$here/sandbox/sandbox.version")"
 claude_version="$(tr -d '[:space:]' < "$here/sandbox/claude.version")"
+codex_version="$(tr -d '[:space:]' < "$here/sandbox/codex.version")"
 platforms="${OD_GHCR_PLATFORMS:-linux/arm64,linux/amd64}"
 
 # Multi-arch needs a buildx builder (the default docker driver can't assemble
@@ -46,12 +48,13 @@ docker buildx build \
 # The sandbox Dockerfile FROMs BASE_IMAGE; point it at the ref just pushed so
 # buildx resolves a multi-arch base (a locally-built single-arch uireact-base
 # would fail the cross-platform half of the build).
-echo "[push-ghcr] od-agent-sandbox:$sandbox_version → $registry ($platforms, claude $claude_version)…"
+echo "[push-ghcr] od-agent-sandbox:$sandbox_version → $registry ($platforms, claude $claude_version, codex $codex_version)…"
 docker buildx build \
   --builder "$builder_name" \
   --platform "$platforms" \
   --build-arg TOOLKIT_VERSION="$toolkit" \
   --build-arg CLAUDE_CODE_VERSION="$claude_version" \
+  --build-arg CODEX_VERSION="$codex_version" \
   --build-arg BASE_IMAGE="$registry/uireact-base:$toolkit" \
   -t "$registry/od-agent-sandbox:$sandbox_version" \
   -t "$registry/od-agent-sandbox:latest" \
