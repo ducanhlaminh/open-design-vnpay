@@ -471,13 +471,10 @@ test('stagesForOutput/deriveStateFromLocalFiles: NGƯỢC LẠI — bất kỳ f
     stagesForOutput('docs-review/review/summary.md').map((d) => d.id),
     ['dr-review'],
   );
-  // Vì vậy: tín hiệu file THẮNG tín hiệu DB (mergePipelineState) — một stage
-  // vừa ghi 'failed' vào DB mà còn để lại BẤT KỲ file nào dưới review/ (kể cả
-  // chỉ review/summary.md, kể cả file báo "không chạy được" nếu lỡ ghi vào
-  // trong review/) vẫn đọc ra 'succeeded' từ đĩa — đúng cái bug pass này sửa.
-  // Đây là lý do runDocsReviewFanout PHẢI xoá sạch review/ (writeDocsReviewFailureNote)
-  // ở mọi đường thoát khác 'succeeded' khi không trang nào thành công, thay
-  // vì ghi thông báo lỗi VÀO review/.
+  // Tín hiệu file chỉ cho biết có nội dung có thể preview. mergePipelineState
+  // vẫn phải ưu tiên lần chạy hiện tại nếu nó running/failed, nên một file dở
+  // không thể biến lượt chạy lỗi thành succeeded. Fan-out vẫn dọn output lỗi
+  // để preview không hiển thị nội dung không hợp lệ.
   const state = deriveStateFromLocalFiles(['docs-review/review/summary.md']);
   assert.equal(state['dr-review']?.status, 'succeeded');
 });

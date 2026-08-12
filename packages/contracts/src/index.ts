@@ -19,6 +19,7 @@ export * from './api/design-system-update.js';
 export * from './api/design-system-sync.js';
 export * from './api/host-tools.js';
 export * from './api/kg-sync.js';
+export * from './api/project-sync.js';
 export * from './api/finalize.js';
 export * from './api/github.js';
 export * from './api/handoff.js';

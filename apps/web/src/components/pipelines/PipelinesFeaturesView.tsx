@@ -15,14 +15,16 @@
 // no real App entity, so no pool), so both the tab bar and the tab default
 // only apply once a real App is resolved.
 import { useEffect, useMemo, useState } from 'react';
-import type { AppPoolResponse, DesignSystemSummary, PipelineProject, PipelineWorkflowSummary } from '@open-design/contracts';
+import type { AppPoolResponse, DesignSystemSummary, PipelineProject, PipelineWorkflowSummary, ProjectSyncScopeStatus } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
+import { SyncStateBadge } from '../project-sync';
 import { navigate } from '../../router';
 import { AppPoolSection } from './AppPoolSection';
 import { AppDesignSystemPanel } from './AppDesignSystemPanel';
 import { fetchDesignSystems } from '../../providers/registry';
 import { RowActionsMenu } from './RowActionsMenu';
+import { syncIssueHint } from './sync-copy';
 import { featureStatus, isFeatureDone, isFeatureUntouched, runningWorkflows } from './usePipelineNav';
 import type { PipelineNav } from './usePipelineNav';
 import styles from './PipelineNavViews.module.css';
@@ -35,6 +37,11 @@ interface Props {
   /** Mở hộp thoại tạo feature với App này điền sẵn. Vắng mặt → không render
    *  nút tạo, và phần copy rỗng bên dưới cũng phải không nhắc tới nó. */
   onNewFeature?: () => void;
+  syncStatusByFeatureId?: ReadonlyMap<string, ProjectSyncScopeStatus>;
+  onPushFeature?: (feature: PipelineProject) => void;
+  onPullFeature?: (feature: PipelineProject) => void;
+  syncReady?: boolean;
+  syncIssue?: string | null;
   /** Sửa / xóa một feature. Vắng mặt → không render mục tương ứng trong kebab. */
   onEditFeature?: (feature: PipelineProject) => void;
   onDeleteFeature?: (feature: PipelineProject) => void;
@@ -69,6 +76,11 @@ export function PipelinesFeaturesView({
   nav,
   appId,
   onNewFeature,
+  syncStatusByFeatureId,
+  onPushFeature,
+  onPullFeature,
+  syncReady = false,
+  syncIssue,
   onEditFeature,
   onDeleteFeature,
 }: Props): JSX.Element {
@@ -155,8 +167,8 @@ export function PipelinesFeaturesView({
       <div className={styles.page}>
         <div className={styles.header}>
           <div className={styles.headerCopy}>
-            <h1 className={styles.title}>Pipelines</h1>
-            <p className={styles.lede}>Chọn feature để chạy pipeline.</p>
+            <h1 className={styles.title}>Tính năng</h1>
+            <p className={styles.lede}>Chọn tính năng để chạy quy trình.</p>
           </div>
         </div>
         <div className={styles.breadcrumb}>
@@ -390,6 +402,13 @@ export function PipelinesFeaturesView({
           {filtered.map((f) => {
             const status = featureStatus(f);
             const running = runningWorkflows(f);
+            const syncStatus = syncStatusByFeatureId?.get(f.id);
+            const canPullFromShared = Boolean(syncStatus?.mappingValid && syncStatus.origin?.visibility === 'visible');
+            const pullTitle = !syncReady
+              ? syncIssueHint(syncIssue)
+              : canPullFromShared
+                ? 'Lấy riêng Tính năng này từ kho chung'
+                : 'Tính năng này chưa có bản trên kho chung';
             const open = expanded.has(f.id);
             const panelId = `pnv-wf-${f.id}`;
             const openFeature = () => navigate({ kind: 'pipelines-feature', appId, featureId: f.id });
@@ -428,7 +447,20 @@ export function PipelinesFeaturesView({
                   onClick={onRowClick}
                 >
                   <span className={styles.rowKey}>{keyOf(f.name)}</span>
-                  <span className={styles.rowName}>{f.name}</span>
+                  <span className={styles.rowFeatureInfo}>
+                    <span className={styles.rowName}>{f.name}</span>
+                    <span className={styles.rowFeatureMeta}>
+                      <span className={styles.statusChip} data-status={status}>
+                        {statusLabel(status, running)}
+                      </span>
+                      {syncStatus ? (
+                        <span className={styles.syncBadgeStack}>
+                          <SyncStateBadge state={syncStatus.state} />
+                          {!syncStatus.mappingValid ? <span className={styles.syncBackupHint}>Chỉ có trên máy · Đưa lên kho chung để tránh mất dữ liệu</span> : null}
+                        </span>
+                      ) : null}
+                    </span>
+                  </span>
                   {/* Row đại diện cả feature nên progress đếm theo WORKFLOW
                       (mỗi vạch một workflow, x/y = workflow xong) — tiến độ
                       từng bước của một workflow nằm trong phần xổ. Server cũ
@@ -458,40 +490,41 @@ export function PipelinesFeaturesView({
                       ? `${f.workflows.filter((w) => workflowStatus(w) === 'done').length}/${f.workflows.length} wf`
                       : `${f.done}/${f.total}`}
                   </span>
-                  <span className={styles.statusChip} data-status={status}>
-                    {statusLabel(status, running)}
-                  </span>
                 </button>
                 {/* "Xem chi tiết" là hành động chính nên đứng NGOÀI kebab —
                     một icon button thấy ngay được, không bắt user mò dropdown. */}
-                <button
-                  type="button"
-                  className={styles.rowDetailBtn}
-                  title="Xem chi tiết"
-                  aria-label={`Xem chi tiết ${f.name}`}
-                  onClick={openFeature}
-                >
-                  <Icon name="eye" size={15} />
-                </button>
-                <RowActionsMenu
-                  label={`Thao tác với ${f.name}`}
-                  actions={[
-                    ...(onEditFeature
-                      ? [{ key: 'rename', label: 'Đổi tên', icon: 'pencil' as const, onSelect: () => onEditFeature(f) }]
-                      : []),
-                    ...(onDeleteFeature
-                      ? [
-                          {
-                            key: 'delete',
-                            label: 'Xóa',
-                            icon: 'trash' as const,
-                            danger: true,
-                            onSelect: () => onDeleteFeature(f),
-                          },
-                        ]
-                      : []),
-                  ]}
-                />
+                <div className={styles.rowActionGroup} aria-label={`Hành động với ${f.name}`}>
+                  <button
+                    type="button"
+                    className={styles.rowDetailBtn}
+                    title="Xem chi tiết"
+                    aria-label={`Xem chi tiết ${f.name}`}
+                    onClick={openFeature}
+                  >
+                    <Icon name="eye" size={15} />
+                  </button>
+                  {onPullFeature ? <button type="button" className={styles.rowSyncBtn} onClick={() => onPullFeature(f)} disabled={!syncReady || !canPullFromShared} aria-label={`Lấy Tính năng ${f.name} từ kho chung`} title={pullTitle}><Icon name="download" size={13} /></button> : null}
+                  {onPushFeature ? <button type="button" className={styles.rowSyncBtn} onClick={() => onPushFeature(f)} disabled={!syncReady} aria-label={`Chia sẻ kết quả của Tính năng ${f.name}`} title={syncReady ? 'Chia sẻ riêng kết quả của Tính năng này' : syncIssueHint(syncIssue)}><Icon name="upload" size={13} /></button> : null}
+                  <RowActionsMenu
+                    label={`Thao tác với ${f.name}`}
+                    actions={[
+                      ...(onEditFeature
+                        ? [{ key: 'rename', label: 'Đổi tên', icon: 'pencil' as const, onSelect: () => onEditFeature(f) }]
+                        : []),
+                      ...(onDeleteFeature
+                        ? [
+                            {
+                              key: 'delete',
+                              label: 'Xóa',
+                              icon: 'trash' as const,
+                              danger: true,
+                              onSelect: () => onDeleteFeature(f),
+                            },
+                          ]
+                        : []),
+                    ]}
+                  />
+                </div>
                 {/* Accordion dùng cặp class canonical của repo (grid-template-rows
                     0fr→1fr) — xem AGENTS.md "UI animation philosophy". Giữ
                     nguyên trong DOM khi đóng để còn thấy transition đóng. */}

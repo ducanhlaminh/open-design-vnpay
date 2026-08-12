@@ -621,6 +621,7 @@ export function PipelinesView() {
   }, []);
   const [configDrawerOpen, setConfigDrawerOpen] = useState(false);
   const [runAllBusy, setRunAllBusy] = useState(false);
+  const [docsReviewConfirmBusy, setDocsReviewConfirmBusy] = useState(false);
   // "Chạy pipeline" đang chờ xác nhận vì lần chạy này sẽ xoá kết quả có sẵn
   // của (những) bước trong `stageNames`, HOẶC (những) bước sắp chạy sẽ đọc
   // đầu vào từ một bước cũ ngoài lượt (`staleInputs`) — payload đã dựng sẵn,
@@ -852,7 +853,38 @@ export function PipelinesView() {
   // refresh its status until everything settles. When the last run finishes,
   // refresh the project cards too so their done/total badge updates.
   const anyRunning = pipelines.some((p) => p.status === 'running' || p.status === 'queued');
+  const docsReviewReadyToConfirm =
+    workflowId === 'docs-review' &&
+    pipelines.length > 0 &&
+    pipelines.every((pipeline) => pipeline.status === 'succeeded');
   const prevRunningRef = useRef(false);
+
+  const confirmDocsReview = useCallback(async () => {
+    if (!projectId || !docsReviewReadyToConfirm || docsReviewConfirmBusy) return;
+    setDocsReviewConfirmBusy(true);
+    try {
+      const review = pipelines.find((pipeline) => pipeline.id === 'dr-review');
+      const response = await fetch(
+        `/api/projects/${encodeURIComponent(projectId)}/docs-review/confirm`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...(review?.lastRunId ? { sourceRunId: review.lastRunId } : {}) }),
+        },
+      );
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(body.error || `confirm failed: ${response.status}`);
+      pushToast({ message: 'Đã xác nhận hoàn tất và gửi số liệu review.' });
+      await load(projectId, { background: true });
+      await loadProjects();
+    } catch (cause) {
+      pushToast({
+        message: cause instanceof Error ? cause.message : 'Không thể xác nhận hoàn tất.',
+      });
+    } finally {
+      setDocsReviewConfirmBusy(false);
+    }
+  }, [projectId, docsReviewReadyToConfirm, docsReviewConfirmBusy, pipelines, pushToast, load, loadProjects]);
 
   // Dừng cả pipeline = hủy MỌI bước đang chạy của nó. Endpoint cancel là theo
   // từng bước (`/:projectId/:pipelineId/cancel`, đã dùng trong modal Status),
@@ -1842,7 +1874,7 @@ export function PipelinesView() {
       {inRunScreen && route.kind === 'pipelines-run' ? (
         <div className={navStyles.header}>
           <div className={navStyles.headerCopy}>
-            <h1 className={navStyles.title}>Pipelines</h1>
+            <h1 className={navStyles.title}>Quy trình</h1>
             <p className={navStyles.lede}>Chạy và theo dõi từng bước của quy trình.</p>
           </div>
         </div>
@@ -1910,10 +1942,10 @@ export function PipelinesView() {
         <div className="pipelines-page__copy">
           <span className="pipelines-page__eyebrow">
             <Icon name="pipeline" size={13} />
-            Docs → UI
+            Quy trình thiết kế
           </span>
           <h1 id="pipelines-title" className="pipelines-page__title">
-            Pipelines
+            Quy trình
           </h1>
           <p className="pipelines-page__lede">Chạy và theo dõi từng bước của quy trình.</p>
           {/* Mồi 3 bước CHỈ hiện khi máy chưa có dự án nào. Trước đây nó hiện
@@ -2639,6 +2671,7 @@ export function PipelinesView() {
           {/* Một nút, hai trạng thái. Trước đây chỉ có Chạy: đang chạy thì nút
               xám đi và cách duy nhất để dừng là mở modal Status của ĐÚNG bước
               đang chạy rồi bấm Cancel run — người dùng phải đoán bước nào. */}
+          <div className="pl-run-primary-actions">
           {anyRunning ? (
             <button
               type="button"
@@ -2662,6 +2695,23 @@ export function PipelinesView() {
               <span>{runAllBusy ? 'Đang khởi động…' : 'Chạy full luồng'}</span>
             </button>
           )}
+          {workflowId === 'docs-review' ? (
+            <button
+              type="button"
+              className="pl-btn pl-btn--confirm-workflow"
+              onClick={() => void confirmDocsReview()}
+              disabled={!docsReviewReadyToConfirm || docsReviewConfirmBusy || anyRunning}
+              title={
+                docsReviewReadyToConfirm
+                  ? 'Tổng hợp số liệu chỉnh sửa và xác nhận hoàn tất workflow Review tài liệu.'
+                  : 'Hoàn tất tất cả các bước phía trên để bật nút này.'
+              }
+            >
+              <Icon name={docsReviewConfirmBusy ? 'spinner' : 'check'} size={14} />
+              <span>{docsReviewConfirmBusy ? 'Đang xác nhận…' : 'Xác nhận hoàn tất'}</span>
+            </button>
+          ) : null}
+          </div>
           {/* Chế độ đang lưu của dự án. Chỉ hiện khi Tiết kiệm — ở chế độ Đầy
               đủ không có bước nào bị bỏ nên không có gì phải giải thích. Bấm
               vào mở đúng modal đã chọn ra nó. */}

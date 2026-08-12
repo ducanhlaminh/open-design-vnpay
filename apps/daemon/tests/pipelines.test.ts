@@ -514,7 +514,7 @@ test('deriveStateFromKgsFiles re-derives owning stage(s) from file path, not the
   assert.equal(state['cj']?.status, 'succeeded');
 });
 
-test('mergePipelineState: KGS done is authoritative, local fills transient state', () => {
+test('mergePipelineState: the current failed run is not hidden by preview files', () => {
   const local: ProjectPipelineState = {
     docs: { status: 'failed' }, // local says failed...
     cj: { status: 'running' },
@@ -523,21 +523,34 @@ test('mergePipelineState: KGS done is authoritative, local fills transient state
     docs: { status: 'succeeded' }, // ...but KGS has files → done (cross-device)
   };
   const merged = mergePipelineState(local, kgs);
-  // KGS file presence wins over a stale local 'failed'.
-  assert.equal(merged['docs']?.status, 'succeeded');
+  // Output files can belong to an older successful run or a partial failed
+  // run. The current attempt must finish successfully before the step is done.
+  assert.equal(merged['docs']?.status, 'failed');
   // No KGS files for cj → keep this device's in-flight 'running'.
   assert.equal(merged['cj']?.status, 'running');
-  // 2026-08 docs-only gate: docs is already succeeded in the merged state
-  // (KGS-authoritative), so cj is active regardless of docs-map's status.
-  assert.equal(computeActive(merged, def('cj')), true);
-  assert.equal(computeActive({ ...merged, 'docs-map': { status: 'succeeded' } }, def('cj')), true);
+  assert.equal(computeActive(merged, def('cj')), false);
+  assert.equal(computeActive({ ...merged, 'docs-map': { status: 'succeeded' } }, def('cj')), false);
 });
 
-test('mergePipelineState: a local in-flight re-run (running) shows over old KGS files', () => {
-  const local: ProjectPipelineState = { ux: { status: 'running' } };
-  const kgs: ProjectPipelineState = { ux: { status: 'succeeded' } };
-  const merged = mergePipelineState(local, kgs);
+test('mergePipelineState: an unfinished current attempt shows over old preview files', () => {
+  const kgs: ProjectPipelineState = {
+    ux: { status: 'succeeded' },
+    cj: { status: 'succeeded' },
+    'ux-review': { status: 'succeeded' },
+  };
+  const merged = mergePipelineState({
+    ux: { status: 'running', lastRunId: 'run-running' },
+    cj: { status: 'queued', lastRunId: 'run-queued' },
+    'ux-review': { status: 'idle', lastRunId: 'run-canceled' },
+  }, kgs);
   assert.equal(merged['ux']?.status, 'running');
+  assert.equal(merged['cj']?.status, 'queued');
+  assert.equal(merged['ux-review']?.status, 'idle');
+});
+
+test('mergePipelineState: pulled preview files still recover legacy stages without a local attempt', () => {
+  const merged = mergePipelineState({}, { ux: { status: 'succeeded' } });
+  assert.equal(merged['ux']?.status, 'succeeded');
 });
 
 // ── syncExclude: react/ generated entries + template scaffold never sync ─────

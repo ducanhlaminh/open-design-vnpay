@@ -13,6 +13,7 @@ import { parseDesignSystemRenameArgs } from './design-system-rename-args.js';
 import { runLiveArtifactsToolCli } from './tools-live-artifacts-cli.js';
 import { splitResearchSubcommand } from './research/cli-args.js';
 import { resolveDaemonUrl } from './daemon-url.js';
+import { parseProjectSyncResolutionArgs } from './project-sync.js';
 
 const argv = process.argv.slice(2);
 
@@ -637,9 +638,75 @@ Common options:
   }
 }
 
+// `od project-sync …` is intentionally a thin HTTP client. This keeps CLI and
+// web on the same immutable PLAN/APPLY contract (no direct filesystem writes).
+async function runProjectSync(args) {
+  if (!args.length || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od project-sync origins [--kind app|feature] [--app-id <id>] [--q <text>] --json
+  od project-sync status [--project <id>] [--kind app|feature] [--app-id <id>] --json
+  od project-sync plan --direction pull|push --project <id> --kind app|feature [--app-id <id>] [--origin <id>|--new-origin <id>] --json
+  od project-sync apply --plan-id <id> [--resolution <path>=pull|push|skip] --json`);
+    process.exit(args.length ? 0 : 2);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  const flags = parseFlags(rest, {
+    string: new Set(['daemon-url', 'kind', 'app-id', 'q', 'project', 'direction', 'origin', 'new-origin', 'plan-id', 'resolution']),
+    boolean: new Set(['json']),
+  });
+  const base = await cliDaemonBaseUrl(flags);
+  const print = async (resp) => {
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      if (flags.json) {
+        process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+        process.exitCode = 1;
+        return null;
+      }
+      console.error(data?.error?.message ?? `HTTP ${resp.status}`);
+      process.exit(1);
+    }
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    return data;
+  };
+  if (sub === 'origins') {
+    const query = new URLSearchParams();
+    if (flags.kind) query.set('kind', flags.kind);
+    if (flags['app-id']) query.set('appId', flags['app-id']);
+    if (flags.q) query.set('q', flags.q);
+    const output = await print(await fetch(`${base}/api/project-sync/origins${query.size ? `?${query}` : ''}`));
+    if (!flags.json && output) for (const origin of output.data?.origins ?? []) console.log(`${origin.originId}\t${origin.name}\t${origin.kind}`);
+    return;
+  }
+  if (sub === 'status') {
+    const scope = flags.project ? [{ kind: flags.kind ?? 'feature', projectId: flags.project, ...(flags['app-id'] ? { appId: flags['app-id'] } : {}) }] : undefined;
+    const output = await print(await fetch(`${base}/api/project-sync/status`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(scope ? { scopes: scope } : {}) }));
+    if (!flags.json && output) for (const row of output.data?.results ?? []) console.log(`${row.scope.projectId}: ${row.state}${row.mappingValid ? '' : ' (liên kết kho chung không hợp lệ)'}`);
+    return;
+  }
+  if (sub === 'plan') {
+    if (!flags.project || !flags.kind || (flags.direction !== 'pull' && flags.direction !== 'push')) { console.error('plan requires --direction pull|push --project <id> --kind app|feature'); process.exit(2); }
+    const origin = flags['new-origin'] ? { mode: 'new', originId: flags['new-origin'] } : flags.origin ? { mode: 'existing', originId: flags.origin } : undefined;
+    const output = await print(await fetch(`${base}/api/project-sync/plan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ direction: flags.direction, scope: { kind: flags.kind, projectId: flags.project, ...(flags['app-id'] ? { appId: flags['app-id'] } : {}) }, ...(origin ? { origin } : {}) }) }));
+    if (!flags.json && output) console.log(`${output.data.planId}: ${output.data.summary.created} tạo mới, ${output.data.summary.changed} thay đổi, ${output.data.summary.deleted} đã xóa`);
+    return;
+  }
+  if (sub === 'apply') {
+    if (!flags['plan-id']) { console.error('apply requires --plan-id <id>'); process.exit(2); }
+    const resolutions = parseProjectSyncResolutionArgs(rest);
+    const output = await print(await fetch(`${base}/api/project-sync/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ planId: flags['plan-id'], ...(Object.keys(resolutions).length ? { resolutions } : {}) }) }));
+    if (!flags.json && output) console.log(`đã áp dụng ${output.data.applied}, bỏ qua ${output.data.skipped}, cần tải lại ${output.data.stale.length}`);
+    return;
+  }
+  console.error(`unknown project-sync subcommand: ${sub}`);
+  process.exit(2);
+}
+
 const SUBCOMMAND_MAP = {
   kb: runKb,
   kg: runKg,
+  'project-sync': runProjectSync,
   artifacts: runArtifacts,
   figma: runFigma,
   media: runMedia,
@@ -699,7 +766,7 @@ if (first && SUBCOMMAND_MAP[first]) {
   const idx = argv.indexOf(first);
   const rest = [...argv.slice(0, idx), ...argv.slice(idx + 1)];
   await SUBCOMMAND_MAP[first](rest);
-  process.exit(0);
+  process.exit(process.exitCode ?? 0);
 }
 
 if (argv[0] === 'tools' && argv[1] === 'live-artifacts') {

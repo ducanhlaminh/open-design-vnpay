@@ -149,8 +149,17 @@ export function deriveUseCases(doc: FlowchartDoc): FlowUseCaseResult {
     }
   };
 
+  // A path is not identified by nodes alone: two labelled edges may connect
+  // the same pair of nodes (for example two permission outcomes converging on
+  // one "Kết thúc" screen). Include the selected edge answer in the stable id
+  // so React keys and scenario selection remain unique.
+  const pathId = (steps: UseCaseStep[]): string =>
+    steps
+      .map((step) => `${encodeURIComponent(step.node.id)}${step.answer ? `~${encodeURIComponent(step.answer)}` : ''}`)
+      .join('>');
+
   const finish = (steps: UseCaseStep[], outcome: UseCaseOutcome): FlowUseCase => ({
-    id: `${doc.id || 'flow'}::${steps.map((s) => s.node.id).join('>')}`,
+    id: `${encodeURIComponent(doc.id || 'flow')}::${pathId(steps)}`,
     title: titleOf(steps, outcome),
     description: describe(steps),
     outcome,
@@ -159,20 +168,25 @@ export function deriveUseCases(doc: FlowchartDoc): FlowUseCaseResult {
 
   for (const entry of entries) walk([{ node: entry }], new Set([entry.id]));
 
+  // Malformed/generated flow files occasionally repeat the exact same edge.
+  // Such a duplicate represents the same scenario, not another card. Remove
+  // it here instead of merely appending an arbitrary React-key suffix.
+  const uniqueUseCases = [...new Map(useCases.map((useCase) => [useCase.id, useCase])).values()];
+
   // Hai kịch bản trùng tên (cùng kết thúc, khác đường) — thêm ngã rẽ khác biệt
   // vào tên để thẻ listing không hiện hai dòng y hệt nhau.
   const seenTitles = new Map<string, number>();
-  for (const useCase of useCases) {
+  for (const useCase of uniqueUseCases) {
     const count = (seenTitles.get(useCase.title) ?? 0) + 1;
     seenTitles.set(useCase.title, count);
   }
-  for (const useCase of useCases) {
+  for (const useCase of uniqueUseCases) {
     if ((seenTitles.get(useCase.title) ?? 0) < 2) continue;
     const last = useCase.description.split(' · ').pop();
     if (last) useCase.title = `${useCase.title} (${last})`;
   }
 
-  return { useCases, truncated };
+  return { useCases: uniqueUseCases, truncated };
 }
 
 /** Tách tiền tố giống nhau khỏi các kịch bản để đường vào chỉ hiện một lần. */

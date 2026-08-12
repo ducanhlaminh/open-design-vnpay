@@ -14,6 +14,7 @@ import {
   DangerButton,
   FormError,
   FormText,
+  FormWarning,
   PipelineFormModal,
   QuietButton,
 } from './PipelineFormModal';
@@ -21,12 +22,14 @@ import {
 export function ConfirmDeleteModal({
   title,
   body,
+  warning,
   confirmLabel,
   onConfirm,
   onClose,
 }: {
   title: string;
   body: string;
+  warning?: string | null;
   confirmLabel: string;
   /** Ném lỗi để hiện thông báo và giữ hộp thoại mở. */
   onConfirm: () => Promise<void>;
@@ -66,6 +69,7 @@ export function ConfirmDeleteModal({
       }
     >
       <FormText>{body}</FormText>
+      {warning ? <FormWarning>{warning}</FormWarning> : null}
       {error ? <FormError>{error}</FormError> : null}
     </PipelineFormModal>
   );

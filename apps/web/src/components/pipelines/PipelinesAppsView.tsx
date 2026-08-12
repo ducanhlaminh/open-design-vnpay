@@ -7,11 +7,13 @@
 import { useMemo, useState } from 'react';
 
 import { Icon } from '../Icon';
+import { SyncStateBadge } from '../project-sync';
 import { navigate } from '../../router';
 import { RowActionsMenu } from './RowActionsMenu';
 import { isFeatureDone } from './usePipelineNav';
 import type { NavApp, PipelineNav } from './usePipelineNav';
 import { SYNC_COPY, syncIssueHint } from './sync-copy';
+import type { ProjectSyncScopeStatus } from '@open-design/contracts';
 import styles from './PipelineNavViews.module.css';
 
 interface Props {
@@ -32,6 +34,11 @@ interface Props {
   syncIssue?: string | null;
   pullBusy?: boolean;
   pushBusy?: boolean;
+  /** Origin status comes from the new status/plan/apply engine; absent while
+   * the local tree is still loading its first snapshot. */
+  syncStatusByAppId?: ReadonlyMap<string, ProjectSyncScopeStatus>;
+  onPushApp?: (app: NavApp) => void;
+  onPullApp?: (app: NavApp) => void;
 }
 
 // ── "Gần đây" — last few features opened from Screen 3 ──────────────────────
@@ -128,6 +135,9 @@ export function PipelinesAppsView({
   syncIssue,
   pullBusy = false,
   pushBusy = false,
+  syncStatusByAppId,
+  onPushApp,
+  onPullApp,
 }: Props): JSX.Element {
   const [recent] = useState<RecentEntry[]>(() => readRecent());
   const syncHint = syncIssueHint(syncIssue);
@@ -165,8 +175,9 @@ export function PipelinesAppsView({
           phần dữ liệu: dải Gần đây → toolbar → thân lưới + phân trang. */}
       <div className={styles.header}>
         <div className={styles.headerCopy}>
-          <h1 className={styles.title}>Pipelines</h1>
-          <p className={styles.lede}>Chọn dự án để xem các tính năng bên trong.</p>
+          <span className={styles.headerEyebrow}>Dự án</span>
+          <h1 className={styles.title}>Quy trình tự động hóa</h1>
+          <p className={styles.lede}>Chọn dự án bên dưới để chạy quy trình.</p>
         </div>
         {onNewApp || onPullAll || onPushAll ? (
           <div className={styles.headerActions}>
@@ -311,6 +322,13 @@ export function PipelinesAppsView({
               const n = app.features.length;
               const m = app.doneFeatures;
               const running = app.runningFeatures;
+              const syncStatus = syncStatusByAppId?.get(app.id);
+              const canPullFromShared = Boolean(syncStatus?.mappingValid && syncStatus.origin?.visibility === 'visible');
+              const pullTitle = !syncReady
+                ? syncHint
+                : canPullFromShared
+                  ? 'Lấy toàn bộ Dự án và các Tính năng từ kho chung'
+                  : 'Dự án này chưa có bản trên kho chung';
               // Card là <button> điều hướng, nên kebab phải nằm NGOÀI nó (HTML
               // cấm button lồng button) — shell giữ chỗ neo cho cả hai.
               return (
@@ -331,6 +349,12 @@ export function PipelinesAppsView({
                         <span className={styles.cardMeta}>
                           {n} tính năng · {m} xong
                         </span>
+                        {syncStatus ? (
+                          <span className={styles.syncBadgeStack}>
+                            <SyncStateBadge state={syncStatus.state} />
+                            {!syncStatus.mappingValid ? <span className={styles.syncBackupHint}>Chỉ có trên máy · Đưa lên kho chung để tránh mất dữ liệu</span> : null}
+                          </span>
+                        ) : null}
                       </span>
                     </span>
                     {n > 0 ? (
@@ -357,25 +381,29 @@ export function PipelinesAppsView({
                     ) : null}
                   </button>
                   {!app.unassigned ? (
-                    <RowActionsMenu
-                      label={`Thao tác với ${displayName(app)}`}
-                      actions={[
-                        ...(onEditApp
-                          ? [{ key: 'rename', label: 'Đổi tên', icon: 'pencil' as const, onSelect: () => onEditApp(app) }]
+                    <div className={styles.cardActionGroup} aria-label={`Hành động với ${displayName(app)}`}>
+                      {onPullApp ? <button type="button" className={styles.cardSyncBtn} onClick={() => onPullApp(app)} disabled={!syncReady || !canPullFromShared} aria-label={`Lấy Dự án ${displayName(app)} từ kho chung`} title={pullTitle}><Icon name="download" size={13} /></button> : null}
+                      {onPushApp ? <button type="button" className={styles.cardSyncBtn} onClick={() => onPushApp(app)} disabled={!syncReady} aria-label={`Chia sẻ kết quả của Dự án ${displayName(app)}`} title={syncReady ? 'Chia sẻ toàn bộ Dự án, Tính năng và tài liệu dùng chung' : syncHint}><Icon name="upload" size={13} /></button> : null}
+                      <RowActionsMenu
+                        label={`Thao tác với ${displayName(app)}`}
+                        actions={[
+                          ...(onEditApp
+                            ? [{ key: 'edit', label: 'Chỉnh sửa dự án', icon: 'pencil' as const, onSelect: () => onEditApp(app) }]
+                            : []),
+                          ...(onDeleteApp
+                            ? [
+                                {
+                                  key: 'delete',
+                                  label: 'Xóa khỏi máy',
+                                  icon: 'trash' as const,
+                                  danger: true,
+                                  onSelect: () => onDeleteApp(app),
+                                },
+                              ]
                           : []),
-                        ...(onDeleteApp
-                          ? [
-                              {
-                                key: 'delete',
-                                label: 'Xóa khỏi máy',
-                                icon: 'trash' as const,
-                                danger: true,
-                                onSelect: () => onDeleteApp(app),
-                              },
-                            ]
-                          : []),
-                      ]}
-                    />
+                        ]}
+                      />
+                    </div>
                   ) : null}
                 </div>
               );

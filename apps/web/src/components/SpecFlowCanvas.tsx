@@ -584,12 +584,46 @@ export function SpecFlowCanvas({
     );
   }
 
-  const renderStepExtra = (node: import('./FlowchartPreview').FlowchartNode) => {
-    if (node.type !== 'action' && node.type !== 'start') return null;
-    const wire = wireframes?.[node.id];
+  const renderStepExtra = (node: import('./FlowchartPreview').FlowchartNode, surface: 'card' | 'carousel' = 'card') => {
+    // A declared flow node may point at a screen through `screen`, so its node
+    // id is not necessarily the wireframe filename. Resolve that indirection
+    // before reading the HTML; otherwise the UX Spec has a screen preview but
+    // the scenario detail incorrectly looks text-only.
+    const screenId = (flow.nodes ?? []).find((item) => item.id === node.id)?.screen ?? node.id;
+    const wire = wireframes?.[screenId];
     if (!wire) return null;
-    const platform = platforms?.[node.id] ?? 'mobile';
+    const rawPlatform = platforms?.[screenId] ?? 'mobile';
+    const platform = rawPlatform === 'web' || rawPlatform === 'website' || rawPlatform === 'desktop' ? 'web' : 'mobile';
     const natural = platform === 'web' ? DEVICE_WIDTHS.desktop : DEVICE_WIDTHS.mobile;
+    if (surface === 'carousel') {
+      return (
+        <div className={`${readerStyles.screenPreview} ${platform === 'web' ? readerStyles.screenPreviewWeb : readerStyles.screenPreviewMobile}`}>
+          <div className={readerStyles.screenPreviewHeader}>
+            <span className={readerStyles.screenPreviewPlatform}>{platform === 'web' ? 'Website' : 'Mobile App'}</span>
+            <span className={readerStyles.screenPreviewName}>{node.label}</span>
+          </div>
+          {platform === 'web' ? (
+            <div className={readerStyles.browserFrame}>
+              <div className={readerStyles.browserChrome} aria-hidden="true">
+                <span /><span /><span />
+                <i>{screenId}</i>
+              </div>
+              <div className={readerStyles.browserViewport}>
+                <WireBlocks html={wire} platform="web" device="desktop" />
+              </div>
+            </div>
+          ) : (
+            <div className={readerStyles.mobileFrame}>
+              <span className={readerStyles.mobileNotch} aria-hidden="true" />
+              <div className={readerStyles.mobileViewport}>
+                <WireBlocks html={wire} platform="mobile" />
+              </div>
+              <span className={readerStyles.mobileHome} aria-hidden="true" />
+            </div>
+          )}
+        </div>
+      );
+    }
     const scale = 174 / natural;
     return (
       <div style={{ height: 142, marginTop: 10, overflow: 'hidden', position: 'relative', borderRadius: 5, background: 'var(--bg-subtle, #f5f6f8)' }}>
@@ -611,27 +645,28 @@ export function SpecFlowCanvas({
         </button>
       </div>
       {effective.length > 1 ? (
-        <div style={{ display: 'flex', gap: 6, padding: '8px 12px', borderBottom: `1px solid ${T.border}`, flexWrap: 'wrap' }}>
-          {effective.map((f, i) => (
-            <button
-              key={f.id}
-              type="button"
-              onClick={() => setIdx(i)}
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                padding: '3px 10px',
-                borderRadius: 999,
-                cursor: 'pointer',
-                border: `1px solid ${i === idx ? T.accent : T.border}`,
-                background: i === idx ? 'var(--accent-tint, #e6f0f8)' : 'transparent',
-                color: i === idx ? T.accent : T.muted,
-              }}
-            >
-              {f.name ?? f.id}
-            </button>
-          ))}
-        </div>
+        <nav className={readerStyles.flowGroupBar} aria-label="Nhóm kịch bản">
+          <div className={readerStyles.flowGroupHeading}>
+            <span>Nhóm kịch bản</span>
+            <strong>{idx + 1}/{effective.length}</strong>
+          </div>
+          <div className={readerStyles.flowGroupTabs} role="tablist" aria-label="Chọn nhóm kịch bản">
+            {effective.map((f, i) => (
+              <button
+                key={f.id}
+                type="button"
+                role="tab"
+                aria-selected={i === idx}
+                className={`${readerStyles.flowGroupButton} ${i === idx ? readerStyles.flowGroupButtonActive : ''}`}
+                onClick={() => setIdx(i)}
+                title={f.name ?? f.id}
+              >
+                <span className={readerStyles.flowGroupIndex}>{i + 1}</span>
+                <span className={readerStyles.flowGroupName}>{f.name ?? f.id}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
       ) : null}
       {mode === 'scenarios' && chart ? <UseCaseReader doc={chart} renderStepExtra={renderStepExtra} /> : null}
       {mode === 'graph' ? <>

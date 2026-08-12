@@ -59,7 +59,7 @@ beforeEach(() => {
 
 vi.mock('../../../src/components/Icon', () => ({ Icon: () => null }));
 
-const { ConfluenceTreePicker } = await import(
+const { ConfluenceTreePicker, rankConfluenceHits } = await import(
   '../../../src/components/pipelines/ConfluenceTreeImport'
 );
 
@@ -71,6 +71,16 @@ function Harness({ initial }: { initial?: string[] }) {
 }
 
 describe('ConfluenceTreePicker · panel chọn trang', () => {
+  it('xếp fuzzy không dấu theo tiêu đề, breadcrumb và chấp nhận lỗi đảo ký tự', () => {
+    const hits = [
+      { id: '3', title: 'Thông báo nghỉ lễ', space: 'HR' },
+      { id: '2', title: 'Báo cáo tài chính', ancestors: ['Khối nghiệp vụ', 'Kế toán'] },
+      { id: '1', title: '2. URD cho website kế toán', space: 'VNPPMKT' },
+    ];
+    expect(rankConfluenceHits('ke taon', hits).map((hit) => hit.id)).toEqual(['1', '2', '3']);
+    expect(rankConfluenceHits('tai chinh', hits).map((hit) => hit.id)[0]).toBe('2');
+  });
+
   it('chưa tick gì thì nói rõ phải làm gì, không để một vùng trống', () => {
     const view = render(<Harness />);
     expect(view.container.textContent).toContain('Chưa tick trang nào');

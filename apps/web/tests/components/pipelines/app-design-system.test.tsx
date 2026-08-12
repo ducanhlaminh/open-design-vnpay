@@ -32,7 +32,7 @@ describe('EditAppModal · Design System', () => {
     render(<EditAppModal app={app} onClose={() => {}} onSaved={() => {}} />);
     await act(async () => {});
     fireEvent.click(screen.getByTestId('project-ds-picker-option-figma-ds'));
-    fireEvent.click(screen.getByRole('button', { name: 'Lưu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
     const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/apps/') && c[1]?.method === 'PATCH');
     return JSON.parse(String(call?.[1]?.body));
@@ -46,7 +46,7 @@ describe('EditAppModal · Design System', () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail', designSystemId: 'old-ds' }} onClose={() => {}} onSaved={() => {}} />);
     fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail VN' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Lưu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
     const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/apps/') && c[1]?.method === 'PATCH');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ name: 'Retail VN' });
@@ -57,7 +57,7 @@ describe('EditAppModal · Design System', () => {
     render(<EditAppModal app={{ id: 'retail', name: 'Retail', designSystemId: 'old-ds' }} onClose={() => {}} onSaved={() => {}} />);
     await act(async () => {});
     fireEvent.click(screen.getByRole('radio', { name: /No design system/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Lưu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
     const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/apps/') && c[1]?.method === 'PATCH');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ designSystemId: null });
@@ -65,7 +65,7 @@ describe('EditAppModal · Design System', () => {
 
   it('không đổi gì thì disabled Lưu', async () => {
     render(<EditAppModal app={{ id: 'retail', name: 'Retail', designSystemId: 'figma-ds' }} onClose={() => {}} onSaved={() => {}} />);
-    expect((screen.getByRole('button', { name: 'Lưu' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Lưu thay đổi' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

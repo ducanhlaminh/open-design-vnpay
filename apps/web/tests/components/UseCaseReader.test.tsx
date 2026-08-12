@@ -33,13 +33,12 @@ describe('UseCaseReader', () => {
     expect(screen.getAllByText('Thành công').length).toBeGreaterThan(0);
     expect(screen.getByText('Báo lỗi')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Báo lỗi/ }));
-    // Bước chung ở đầu nằm trong khối gộp — bung ra mới thấy (và mới gọi
-    // renderStepExtra cho node đó).
-    const shared = screen.queryByRole('button', { name: /Các bước chung/ });
-    if (shared) fireEvent.click(shared);
-    expect(screen.getByText('Nhập thông tin')).toBeTruthy();
+    // Detail là carousel: mỗi bước chiếm trọn khung đọc, chọn nhanh bằng rail.
+    fireEvent.click(screen.getByRole('tab', { name: /2\s*Nhập thông tin/ }));
+    expect(screen.getByRole('heading', { name: 'Nhập thông tin' })).toBeTruthy();
     expect(screen.getByText('thumbnail-action')).toBeTruthy();
     expect(extra).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: /4\s*Báo lỗi/ }));
     expect(screen.getByText(/Quay lại bước #2/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /← Kịch bản/ }));

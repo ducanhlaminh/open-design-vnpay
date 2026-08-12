@@ -24,10 +24,12 @@ import { pullProject } from './kg-sync/pull.js';
 import { pushProject } from './kg-sync/push.js';
 import { KgSyncRepo } from './kg-sync/persistence.js';
 import {
+  filterLifecycleVisibleProjects,
   filterVisibleProjects,
+  isLifecycleHidden,
   isProjectVisible,
   loadRemoteProjects,
-  projectIdFromWorkspace,
+  PROJECT_LIFECYCLE_PATH,
 } from './kg-sync/remote-registry.js';
 import { ensureProjectRegistered, memberProjectAccess, pullScopeFor } from './kg-sync/identity-registry.js';
 import { planPush } from './kg-sync/push-plan.js';
@@ -39,9 +41,6 @@ import { listProjects } from './db.js';
 
 export interface RegisterKgSyncRoutesDeps
   extends RouteDeps<'db' | 'http' | 'ids' | 'projectStore' | 'pipelines'> {}
-
-// projectIdFromWorkspace now lives in kg-sync/remote-registry.ts (shared with the
-// remote registry) and is imported above.
 
 // A pipeline-eligible KGS app: either pulled from KGS (`source: 'kg-pull'`) OR
 // created fresh for pipelines (`kind: 'pipeline'`). push-all must cover BOTH —
@@ -238,9 +237,23 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     try {
       const actor = await identityActor();
       const scope = await pullScopeFor(actor?.id ?? null, actor?.accessToken);
-      const appId = scope.all || scope.ids.has(projectId) ? null : await resolveAppId(projectId);
+      // Resolve the parent even for admins/direct members: lifecycle hiding
+      // cascades from App → Feature independently from membership scope.
+      const appId = await resolveAppId(projectId);
       if (!isProjectVisible(projectId, appId, scope)) {
         return sendApiError(res, 403, 'PROJECT_FORBIDDEN', scope.reason ?? 'Bạn không có quyền lấy dự án này.');
+      }
+      const registry = await loadRemoteProjects(
+        new KgsClient(kgsConfigFromEnv()),
+        new MediaClient(mediaConfigFromEnv()),
+      );
+      if (isLifecycleHidden(registry, projectId, appId)) {
+        return sendApiError(
+          res,
+          410,
+          'PROJECT_HIDDEN',
+          'Dự án này đã được ẩn khỏi kho chung và không thể lấy về máy.',
+        );
       }
       ensureProject(projectId, now);
       const result = await pullProject(db, projectId, kgsConfigFromEnv(), now, randomId());
@@ -293,14 +306,20 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       }
       const cfg = kgsConfigFromEnv();
       const client = new KgsClient(cfg);
-      const workspaces = await client.queryEntities(['DP_UI_WORKSPACE'], {});
-      const candidateIds = Array.from(
-        new Set(
-          workspaces
-            .map((ws) => projectIdFromWorkspace(ws as { entityId?: string; properties?: Record<string, unknown> }))
-            .filter((x): x is string => Boolean(x)),
-        ),
-      ).filter((id) => !requested || requested.size === 0 || requested.has(id));
+      const media = new MediaClient(mediaConfigFromEnv());
+      const registry = await loadRemoteProjects(client, media);
+      await Promise.all(
+        registry
+          .filter((project) => !project.isApp)
+          .map(async (project) => {
+            project.appId = await resolveAppId(project.projectId);
+          }),
+      );
+      const lifecycleVisible = filterLifecycleVisibleProjects(registry);
+      const candidateIds = lifecycleVisible
+        .filter((project) => project.inKgs)
+        .map((project) => project.projectId)
+        .filter((id) => !requested || requested.size === 0 || requested.has(id));
       // Membership cascades App → Feature (see isProjectVisible) — resolve
       // each candidate's appId only when actually needed (scope.all skips
       // this entirely; a direct scope.ids hit also skips the network call).
@@ -378,9 +397,47 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
     try {
       const requestedList = stringList(req.body?.projectIds);
       const requested = requestedList ? new Set(requestedList) : null;
-      const projects = listProjects(db)
+      let projects = listProjects(db)
         .filter((p: { metadata?: unknown }) => isKgsProject(p))
         .filter((p: { id: string }) => !requested || requested.has(p.id));
+      // Compare against the currently available Pipeline Studio registry.
+      // Soft-hidden rows remain in media for history, but must not generate a
+      // false local-vs-remote diff in the Share modal. If the registry is
+      // temporarily unavailable, retain the old local-only behavior rather
+      // than hiding valid work.
+      try {
+        const registry = await loadRemoteProjects(
+          new KgsClient(kgsConfigFromEnv()),
+          new MediaClient(mediaConfigFromEnv()),
+        );
+        const hiddenIds = new Set(registry.filter((project) => project.visibility === 'hidden').map((project) => project.projectId));
+        const visibleRemoteIds = new Set(registry.filter((project) => project.visibility !== 'hidden').map((project) => project.projectId));
+        projects = projects.filter((project: { id: string }) => {
+          // A local project that is no longer present in Pipeline Studio is
+          // not part of the local↔shared comparison. This prevents stale
+          // local files from showing a false "Có thay đổi" badge after the
+          // shared project was hidden/removed.
+          if (!visibleRemoteIds.has(project.id) || hiddenIds.has(project.id)) return false;
+          // A hidden App also hides its local Features. Resolve the parent
+          // only for rows that are not themselves App containers.
+          if (project.id.startsWith('app--')) return true;
+          return true;
+        });
+        if (hiddenIds.size > 0) {
+          const visibleProjects: typeof projects = [];
+          for (const project of projects) {
+            if (project.id.startsWith('app--')) {
+              visibleProjects.push(project);
+              continue;
+            }
+            const appId = await resolveAppId(project.id).catch(() => null);
+            if (!appId || !hiddenIds.has(appId)) visibleProjects.push(project);
+          }
+          projects = visibleProjects;
+        }
+      } catch {
+        // Store unavailable: keep local rows so sync diagnostics remain useful.
+      }
       const results = [];
       for (const p of projects as Array<{ id: string }>) {
         try {
@@ -468,7 +525,8 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
             p.appId = await resolveAppId(p.projectId);
           }),
       );
-      const visible = filterVisibleProjects(data, scope);
+      const lifecycleVisible = filterLifecycleVisibleProjects(data);
+      const visible = filterVisibleProjects(lifecycleVisible, scope);
       const localIds = new Set(listProjects(db).map((p: { id: string }) => p.id));
       const byId = new Map(data.map((p) => [p.projectId, p]));
       const summaries = await Promise.all(
@@ -477,6 +535,7 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
           const availableOutputs = [
             ...new Set(
               files
+                .filter((file) => file.path !== PROJECT_LIFECYCLE_PATH)
                 .map((f) => (typeof f.stage === 'string' ? f.stage : ''))
                 .filter((stage) => stage && stage !== 'staging'),
             ),
@@ -546,6 +605,22 @@ export function registerKgSyncRoutes(app: Express, ctx: RegisterKgSyncRoutesDeps
       res.json({ ok: true, data: summaries, ...(scope.reason ? { reason: scope.reason } : {}) });
     } catch (err) {
       sendApiError(res, 502, 'KG_REMOTE_FAILED', (err as Error).message);
+    }
+  });
+
+  // The Push picker is local-first, so it also needs to know which of those
+  // local rows were soft-hidden in Pipeline Studio. Keep this control read
+  // separate from the visible Pull registry: an absent remote row can simply
+  // mean the local project has never been shared.
+  app.get('/api/kg/hidden-projects', async (_req, res) => {
+    try {
+      const registry = await loadRemoteProjects(
+        new KgsClient(kgsConfigFromEnv()),
+        new MediaClient(mediaConfigFromEnv()),
+      );
+      res.json({ ok: true, projectIds: registry.filter((project) => project.visibility === 'hidden').map((project) => project.projectId) });
+    } catch (err) {
+      sendApiError(res, 502, 'KG_REGISTRY_FAILED', (err as Error).message);
     }
   });
 

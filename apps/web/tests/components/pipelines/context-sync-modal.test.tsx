@@ -75,7 +75,8 @@ describe('PushAllModal · App Context tree', () => {
       />,
     );
 
-    const featureRow = screen.getByText('Thanh toán QR').closest('.pl-pullall__row');
+    const featureName = screen.getAllByText('Thanh toán QR').find((node) => node.classList.contains('pl-pullall__name'));
+    const featureRow = featureName?.closest('.pl-pullall__row');
     if (!featureRow) throw new Error('Không thấy hàng Feature');
     expect(within(featureRow as HTMLElement).queryByText('Đang dùng bộ tài liệu v2')).not.toBeNull();
     fireEvent.click(within(featureRow as HTMLElement).getByRole('button', { name: 'Xem thay đổi' }));
@@ -107,7 +108,7 @@ describe('PushAllModal · App Context tree', () => {
       />,
     );
 
-    const search = screen.getByRole('searchbox', { name: 'Tìm App hoặc tính năng' });
+    const search = screen.getByRole('searchbox', { name: 'Tìm dự án hoặc tính năng' });
     fireEvent.change(search, { target: { value: 'thuế' } });
     expect(screen.queryByText('Kế toán thuế')).not.toBeNull();
     expect(screen.queryByText('Thanh toán')).toBeNull();
@@ -144,7 +145,70 @@ describe('PushAllModal · App Context tree', () => {
     expect(screen.queryByText('Chưa chạy')).toBeNull();
   });
 
-  it('chỉ cho chọn một Feature để đối chiếu và chia sẻ', () => {
+  it('tách Các bước cần đồng bộ theo từng Feature trong một App', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/kg/sync-status') {
+        return new Response(JSON.stringify({ data: { results: [
+          {
+            projectId: 'feature-a',
+            stages: [{ stage: 'docs', local: 1, remote: 0, changed: 0, localOnly: 1, remoteOnly: 0, differs: true }],
+          },
+          {
+            projectId: 'feature-b',
+            stages: [{ stage: 'ux', local: 1, remote: 0, changed: 0, localOnly: 1, remoteOnly: 0, differs: true }],
+          },
+        ] } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: { results: [] } }), { status: 200 });
+    }));
+    const onConfirm = vi.fn(async (
+      _selection: ContextTransferSelection,
+      _stages: string[],
+      _stagesByFeature?: Record<string, string[]>,
+    ) => undefined);
+    render(
+      <PushAllModal
+        projects={[
+          { id: 'feature-a', name: 'Tính năng A', app: { id: 'app-a', name: 'Dự án A' } },
+          { id: 'feature-b', name: 'Tính năng B', app: { id: 'app-a', name: 'Dự án A' } },
+        ]}
+        apps={[{ id: 'app-a', name: 'Dự án A', features: [
+          { id: 'feature-a', name: 'Tính năng A' },
+          { id: 'feature-b', name: 'Tính năng B' },
+        ] }]}
+        workflows={[
+          { id: 'docs', name: 'URD/PRD → UI-Spec', pipelineIds: ['docs'], stages: [{ id: 'docs', name: 'Tài liệu' }] },
+          { id: 'ux', name: 'Nghiên cứu UX', pipelineIds: ['ux'], stages: [{ id: 'ux', name: 'UX Research' }] },
+        ]}
+        initialSelectedIds={['feature-a', 'feature-b']}
+        initialAppIds={['app-a']}
+        selectionLocked
+        syncReady
+        onReconnect={() => {}}
+        onClose={() => {}}
+        onConfirm={onConfirm}
+      />,
+    );
+
+    const stepsA = await screen.findByRole('region', { name: 'Các bước của Tính năng A' });
+    const stepsB = screen.getByRole('region', { name: 'Các bước của Tính năng B' });
+    expect(within(stepsA).queryByText('URD/PRD → UI-Spec')).not.toBeNull();
+    expect(within(stepsA).queryByText('Nghiên cứu UX')).toBeNull();
+    expect(within(stepsB).queryByText('Nghiên cứu UX')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Thu gọn các bước của Tính năng A' })).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Mở các bước của Tính năng B' }));
+    expect(within(stepsB).queryByText('Nghiên cứu UX')).not.toBeNull();
+    expect(within(stepsB).queryByText('URD/PRD → UI-Spec')).toBeNull();
+
+    fireEvent.click(within(stepsA).getByRole('button', { name: /Tài liệu/ }));
+    expect((screen.getByRole('button', { name: 'Chia sẻ 2 tính năng đã chọn' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(stepsA).getByRole('button', { name: /Tài liệu/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Chia sẻ 2 tính năng đã chọn' }));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0]?.[2]).toEqual({ 'feature-a': ['docs'], 'feature-b': ['ux'] });
+  });
+
+  it('cho chọn nhiều Feature thuộc App để chia sẻ', () => {
     render(
       <PushAllModal
         projects={[
@@ -163,7 +227,8 @@ describe('PushAllModal · App Context tree', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Chọn Feature Tính năng A' }));
     expect(screen.getByText('Đã chọn 1 tính năng')).not.toBeNull();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Chọn Feature Tính năng B' }));
-    expect((screen.getByRole('checkbox', { name: 'Chọn Feature Tính năng A' }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: 'Chọn Feature Tính năng A' }) as HTMLInputElement).checked).toBe(true);
     expect((screen.getByRole('checkbox', { name: 'Chọn Feature Tính năng B' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText('Đã chọn 2 tính năng')).not.toBeNull();
   });
 });

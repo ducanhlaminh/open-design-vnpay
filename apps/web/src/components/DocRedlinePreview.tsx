@@ -24,7 +24,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type {
-  ConfirmDocsReviewResponse,
   DocReviewAnnotationEvent,
   DocReviewAnnotationFileV2,
 } from '@open-design/contracts';
@@ -118,12 +117,6 @@ interface DraftAnnotation {
   replacement: string;
   reason: string;
 }
-
-type ConfirmState =
-  | { status: 'idle' }
-  | { status: 'submitting'; confirmationId: string }
-  | { status: 'error'; confirmationId: string; message: string }
-  | { status: 'success'; response: ConfirmDocsReviewResponse; stale: boolean };
 
 const KIND_LABEL: Record<DocRedlineChangeKind, string> = {
   'ux-writing': 'UX writing',
@@ -583,7 +576,6 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
   const [errorById, setErrorById] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<DraftAnnotation | null>(null);
   const [draftError, setDraftError] = useState('');
-  const [confirmState, setConfirmState] = useState<ConfirmState>({ status: 'idle' });
   // Snapshot markdown trước khi bỏ cho phép hoàn tác an toàn trong phiên này;
   // reload sẽ xoá snapshot, tránh áp lại một bản tài liệu đã cũ.
   const [undoableIds, setUndoableIds] = useState<Set<string>>(new Set());
@@ -848,31 +840,6 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     for (const c of changes) if (c.status !== 'dismissed') out[changeOp(c)] += 1;
     return out;
   }, [changes]);
-  const feedbackPreview = useMemo(() => {
-    const agent = { add: 0, edited: 0, delete: 0, total: 0, accepted: 0, editedByUser: 0, dismissed: 0 };
-    const user = { add: 0, edited: 0, delete: 0, total: 0 };
-    for (const change of changes) {
-      const operation = change.operation ?? (change.before && change.quote ? 'edited' : change.quote ? 'add' : 'delete');
-      if ((change.origin ?? 'agent') === 'user') {
-        if (change.status !== 'dismissed') {
-          user[operation] += 1;
-          user.total += 1;
-        }
-        continue;
-      }
-      agent[operation] += 1;
-      agent.total += 1;
-      const editedByUser = change.status === 'edited'
-        || events.some((event) => event.annotationId === change.id && event.actor === 'user' && event.type === 'edit');
-      if (change.status === 'dismissed') agent.dismissed += 1;
-      else if (editedByUser) {
-        agent.editedByUser += 1;
-        user.edited += 1;
-        user.total += 1;
-      } else agent.accepted += 1;
-    }
-    return { agent, user };
-  }, [changes, events]);
   // Khai báo ở ĐÂY chứ không ở gần chỗ render, vì effect uỷ quyền click ở dưới
   // lấy `loading` làm dependency: mảng dependency được đánh giá trong lúc
   // render, nên một `const` khai báo sau useEffect sẽ vướng vùng chết (TDZ).
@@ -1050,7 +1017,6 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
       if (result.notes) { setNotesRaw(JSON.stringify(result.notes)); setNotes(result.notes); }
       setEditingId(null);
       setDraft(null);
-      setConfirmState((state) => state.status === 'success' ? { ...state, stale: true } : state);
     } catch (error) { setChangesState(beforeChanges); setNotes(beforeNotes); setEditedText(beforeText); setErrorById((prev) => ({ ...prev, [id]: error instanceof Error ? error.message : 'Lỗi ghi file' })); }
     finally { setBusyId(null); }
   }
@@ -1174,37 +1140,6 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
       events: [...events, eventFor(id, 'create', change)],
       changedMd: true,
     }));
-  }
-
-  async function confirmDocsReview() {
-    if (confirmState.status === 'submitting') return;
-    const confirmationId = confirmState.status === 'error'
-      ? confirmState.confirmationId
-      : uid('confirm');
-    setConfirmState({ status: 'submitting', confirmationId });
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/docs-review/confirm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmationId }),
-      });
-      const body = await response.json().catch(() => null) as ConfirmDocsReviewResponse | { message?: string; error?: string } | null;
-      if (!response.ok || !body || !('ok' in body) || body.ok !== true) {
-        const message = body && 'message' in body && body.message
-          ? body.message
-          : body && 'error' in body && body.error
-            ? body.error
-            : 'Không thể gửi số liệu xác nhận.';
-        throw new Error(message);
-      }
-      setConfirmState({ status: 'success', response: body, stale: false });
-    } catch (error) {
-      setConfirmState({
-        status: 'error',
-        confirmationId,
-        message: error instanceof Error ? error.message : 'Không thể gửi số liệu xác nhận.',
-      });
-    }
   }
 
   const isAnchored = (c: DocRedlineChange) => anchored.has(c.id);
@@ -1458,12 +1393,6 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                     ) : null}
                   </>
                 )}
-                <ConfirmPanel
-                  preview={feedbackPreview}
-                  state={confirmState}
-                  disabled={busyId != null || changesState.status !== 'ok'}
-                  onConfirm={() => void confirmDocsReview()}
-                />
               </div>
             </div>
           </div>
@@ -1597,74 +1526,6 @@ function HighlightFilters({
         );
       })}
     </div>
-  );
-}
-
-function ConfirmPanel({
-  preview,
-  state,
-  disabled,
-  onConfirm,
-}: {
-  preview: {
-    agent: { add: number; edited: number; delete: number; total: number; accepted: number; editedByUser: number; dismissed: number };
-    user: { add: number; edited: number; delete: number; total: number };
-  };
-  state: ConfirmState;
-  disabled: boolean;
-  onConfirm: () => void;
-}) {
-  const complete = state.status === 'success' && !state.stale;
-  return (
-    <section className={styles.confirmPanel} aria-label="Xác nhận hoàn tất review">
-      <div className={styles.confirmHeading}>
-        <div>
-          <h3>Xác nhận hoàn tất</h3>
-          <p>Số liệu trang hiện tại trước khi tổng hợp toàn bộ tài liệu.</p>
-        </div>
-        {complete ? <span className={styles.confirmedBadge}>Đã gửi</span> : null}
-      </div>
-      <div className={styles.metricRows}>
-        <div>
-          <span>Agent</span>
-          <strong>{preview.agent.total}</strong>
-          <small>{preview.agent.edited} sửa, {preview.agent.add} thêm, {preview.agent.delete} xoá</small>
-        </div>
-        <div>
-          <span>Người dùng</span>
-          <strong>{preview.user.total}</strong>
-          <small>{preview.user.edited} sửa, {preview.user.add} thêm, {preview.user.delete} xoá</small>
-        </div>
-      </div>
-      <p className={styles.confirmDetail}>
-        Agent: {preview.agent.accepted} giữ nguyên, {preview.agent.editedByUser} được sửa tay, {preview.agent.dismissed} đã bỏ.
-      </p>
-      {state.status === 'success' ? (
-        <div className={state.stale ? styles.staleReceipt : styles.receipt}>
-          <strong>{state.stale ? 'Tài liệu đã thay đổi sau lần xác nhận.' : 'Đã tổng hợp và gửi số liệu.'}</strong>
-          <span>{new Date(state.response.artifact.confirmedAt).toLocaleString('vi-VN')}</span>
-          <code>{state.response.mediaPath}</code>
-        </div>
-      ) : null}
-      {state.status === 'error' ? <p className={styles.confirmError}>{state.message}</p> : null}
-      <button
-        type="button"
-        className={styles.confirmButton}
-        disabled={disabled || state.status === 'submitting' || complete}
-        onClick={onConfirm}
-      >
-        {state.status === 'submitting'
-          ? 'Đang tổng hợp...'
-          : state.status === 'error'
-            ? 'Thử gửi lại'
-            : state.status === 'success' && state.stale
-              ? 'Xác nhận bản mới'
-              : complete
-                ? 'Đã xác nhận'
-                : 'Xác nhận hoàn tất'}
-      </button>
-      {disabled && state.status === 'idle' ? <p className={styles.confirmHint}>Cần có chú giải review hợp lệ trước khi xác nhận.</p> : null}
-    </section>
   );
 }
 

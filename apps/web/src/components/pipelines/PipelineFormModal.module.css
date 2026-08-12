@@ -292,6 +292,26 @@
   color: var(--text-muted);
 }
 
+.warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 11px 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--amber-bg) 62%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--amber) 38%, var(--border));
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 570;
+  line-height: 1.5;
+}
+
+.warning > svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--amber);
+}
+
 /* ---- Error banner ---------------------------------------------------------- */
 .error {
   display: flex;

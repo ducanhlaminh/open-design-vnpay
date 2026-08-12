@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { PipelineProjectsResponse, Workflow, WorkflowsResponse } from '@open-design/contracts';
 
-import { Icon } from '../Icon';
+import { Icon, type IconName } from '../Icon';
 import { navigate } from '../../router';
 import { isFeatureDone } from './usePipelineNav';
 import type { PipelineNav } from './usePipelineNav';
@@ -97,6 +97,26 @@ function statusDataAttr(p: WfProgress): 'idle' | 'running' | 'done' {
   if (isFeatureDone(p)) return 'done';
   return 'idle';
 }
+
+// Ba luồng có cùng nguồn vào nhưng mục tiêu khác nhau. Giữ phần mô tả ngắn
+// tại đây để thẻ dễ quét; mô tả kỹ thuật đầy đủ vẫn nằm trong registry backend.
+const WORKFLOW_CARD_COPY: Record<string, { label: string; description: string; icon: IconName }> = {
+  'docs-to-ui': {
+    label: 'Từ yêu cầu đến giao diện',
+    description: 'Tạo hành trình, đặc tả trải nghiệm và bản xem trước giao diện.',
+    icon: 'draw',
+  },
+  'docs-to-prd': {
+    label: 'Kiểm tra độ đầy đủ yêu cầu',
+    description: 'Đối chiếu URD/PRD, hành trình người dùng và các điểm còn thiếu.',
+    icon: 'search',
+  },
+  'docs-review': {
+    label: 'Rà soát chất lượng tài liệu',
+    description: 'Kiểm tra nội dung, luồng màn hình và đề xuất chỉnh sửa rõ ràng.',
+    icon: 'eye',
+  },
+};
 
 export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Element {
   const [workflows, setWorkflows] = useState<Workflow[] | null>(null);
@@ -201,7 +221,7 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
       <div className={styles.page}>
         <div className={styles.header}>
           <div className={styles.headerCopy}>
-            <h1 className={styles.title}>Pipelines</h1>
+            <h1 className={styles.title}>Quy trình</h1>
             <p className={styles.lede}>Chọn quy trình để chạy cho tính năng này.</p>
           </div>
         </div>
@@ -326,26 +346,36 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
           ))}
         </div>
       ) : (
-        <div className={styles.pipelineGrid}>
-          {sortedWorkflows.map((wf) => {
+        <div className={styles.pipelineGrid} data-workflow-count={sortedWorkflows.length}>
+          {sortedWorkflows.map((wf, index) => {
             const p: WfProgress = progress[wf.id] ?? { status: 'loading' };
             const wip = hasWorkInProgress(p);
             const canStart = p.status === 'ok' && p.done === 0 && p.running === 0;
             const open = () => navigate({ kind: 'pipelines-run', appId, featureId, pipelineId: wf.id });
+            const cardCopy = WORKFLOW_CARD_COPY[wf.id];
             return (
               <div
                 key={wf.id}
                 className={`${styles.pipelineCard} ${wip ? styles.pipelineCardAccent : ''}`}
               >
+                <div className={styles.pipelineCardTop}>
+                  <span className={styles.pipelineCardIcon} aria-hidden>
+                    <Icon name={cardCopy?.icon ?? 'pipeline'} size={18} />
+                  </span>
+                  <span className={styles.pipelineCardIndex}>0{index + 1}</span>
+                </div>
                 <div className={styles.pipelineCardHead}>
-                  <span className={styles.pipelineCardName}>{wf.name}</span>
+                  <div className={styles.pipelineCardTitleGroup}>
+                    {cardCopy ? <span className={styles.pipelineCardLabel}>{cardCopy.label}</span> : null}
+                    <span className={styles.pipelineCardName}>{wf.name}</span>
+                  </div>
                   <span className={styles.statusChip} data-status={statusDataAttr(p)}>
                     {statusLabel(p)}
                   </span>
                 </div>
-                {wf.description ? (
-                  <p className={styles.pipelineCardDesc} title={wf.description}>
-                    {wf.description}
+                {cardCopy?.description || wf.description ? (
+                  <p className={styles.pipelineCardDesc} title={cardCopy?.description ?? wf.description}>
+                    {cardCopy?.description ?? wf.description}
                   </p>
                 ) : null}
                 {p.status === 'ok' && p.running > 0 && p.runningStage ? (

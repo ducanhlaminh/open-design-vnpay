@@ -23,6 +23,8 @@ import type {
   PipelineRunSource,
   PipelineAppsResponse,
   PipelineStatus,
+  ProjectSyncOrigin,
+  ProjectSyncOriginSelection,
   PipelineView,
   ProjectFile,
   ProjectSyncStatus,
@@ -3591,6 +3593,10 @@ function StagePicker({
   onChange,
   diffByStage,
   diffLoading = false,
+  subjectName,
+  showEmpty = false,
+  collapsible = false,
+  defaultExpanded = true,
 }: {
   workflows: Workflow[];
   selected: ReadonlySet<string>;
@@ -3598,7 +3604,16 @@ function StagePicker({
   /** Aggregated local↔store diff per stage; absent key → no badge. */
   diffByStage?: ReadonlyMap<string, StageDiff>;
   diffLoading?: boolean;
+  /** When present, this picker belongs to one independent Feature workflow. */
+  subjectName?: string;
+  /** App-level sharing keeps one section per Feature, even before it has output. */
+  showEmpty?: boolean;
+  /** Keep large App transfers compact by showing each Feature as an accordion row. */
+  collapsible?: boolean;
+  /** Only the first Feature is expanded when an App contains many Features. */
+  defaultExpanded?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const toggle = (id: string) => {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
@@ -3623,25 +3638,59 @@ function StagePicker({
   }, [diffByStage, workflows]);
   const visibleStageIds = visibleWorkflows.flatMap((workflow) => workflow.pipelineIds);
   const selectedVisibleCount = visibleStageIds.filter((id) => selected.has(id)).length;
+  const canCollapse = collapsible && Boolean(subjectName);
+  const showDetails = !canCollapse || expanded;
 
-  if (diffLoading || visibleWorkflows.length === 0) return null;
+  if ((diffLoading || visibleWorkflows.length === 0) && !showEmpty) return null;
   return (
-    <section className={sp.section} aria-label="Các bước">
-      <div className={sp.head}>
-        <span className={sp.title}>Các bước cần đồng bộ</span>
-        <span className={sp.hint}>
-          {diffLoading ? 'Đang kiểm tra thay đổi…' : 'Bỏ chọn bước không cần chuyển kết quả'}
-        </span>
-        <span className={sp.count}>
-          {selectedVisibleCount}/{visibleStageIds.length}
-        </span>
-      </div>
-      {visibleWorkflows.map((w) => (
-        <div key={w.id} className={sp.wf}>
-          <div className={sp.wfname}>{w.name}</div>
-          <div className={sp.chips}>
-            {w.pipelineIds.map((pid) => {
+    <section className={sp.section} aria-label={subjectName ? `Các bước của ${subjectName}` : 'Các bước'}>
+      {subjectName ? (
+        canCollapse ? (
+          <button
+            type="button"
+            className={sp.subject}
+            aria-expanded={expanded}
+            aria-label={`${expanded ? 'Thu gọn' : 'Mở'} các bước của ${subjectName}`}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            <span className={sp.subjectLabel}>Tính năng</span>
+            <strong>{subjectName}</strong>
+            <span className={sp.subjectMeta}>
+              {diffLoading ? 'Đang kiểm tra' : `${selectedVisibleCount}/${visibleStageIds.length} bước`}
+            </span>
+            <span className={sp.subjectChevron} aria-hidden="true">
+              <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={14} />
+            </span>
+          </button>
+        ) : (
+          <div className={sp.subject}>
+            <span className={sp.subjectLabel}>Tính năng</span>
+            <strong>{subjectName}</strong>
+          </div>
+        )
+      ) : null}
+      {showDetails ? (
+        <>
+          <div className={sp.head}>
+            <span className={sp.title}>Chọn kết quả muốn đồng bộ</span>
+            <span className={sp.hint}>
+              {diffLoading ? 'Đang kiểm tra thay đổi…' : 'Bấm vào từng bước để chọn hoặc bỏ chọn kết quả'}
+            </span>
+            <span className={sp.count}>
+              {selectedVisibleCount}/{visibleStageIds.length}
+            </span>
+          </div>
+          {diffLoading ? <div className={sp.empty}>Đang kiểm tra kết quả đã chạy…</div> : null}
+          {!diffLoading && visibleWorkflows.length === 0 ? (
+            <div className={sp.empty}>Tính năng này chưa có kết quả workflow để đồng bộ.</div>
+          ) : null}
+          {visibleWorkflows.map((w) => (
+            <div key={w.id} className={sp.wf}>
+              <div className={sp.wfname}>{w.name}</div>
+              <div className={sp.chips}>
+                {w.pipelineIds.map((pid) => {
               const d = diffByStage?.get(pid);
+              const stageLabel = stageNames.get(pid) ?? pid;
               const parts = d
                 ? [
                     d.changed > 0 ? `${d.changed} file thay đổi` : '',
@@ -3657,32 +3706,35 @@ function StagePicker({
               // Nhãn hiển thị là tên người-đọc-được; id kỹ thuật thô (docs, ux,
               // ui-html…) vẫn hữu ích khi debug nên giữ lại trong tooltip.
               const title = `${pid} — ${diffTitle}`;
-              return (
-                <button
-                  key={pid}
-                  type="button"
-                  className={sp.chip}
-                  aria-pressed={selected.has(pid)}
-                  onClick={() => toggle(pid)}
-                  title={title}
-                >
-                  <span className={sp.tick} aria-hidden="true">
-                    ✓
-                  </span>
-                  <span className={sp.id}>{stageNames.get(pid) ?? pid}</span>
-                  {d ? (
-                    d.differs ? (
-                      <span className={`${sp.badge} ${sp.badgeDiff}`}>{stepDifferenceLabel(true, true)}</span>
-                    ) : d.local + d.remote > 0 ? (
-                      <span className={`${sp.badge} ${sp.badgeSync}`}>{stepDifferenceLabel(false, true)}</span>
-                    ) : null
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ))}
+                  return (
+                    <button
+                      key={pid}
+                      type="button"
+                      className={sp.chip}
+                      aria-pressed={selected.has(pid)}
+                      aria-label={`${selected.has(pid) ? 'Bỏ chọn' : 'Chọn'} kết quả ${stageLabel}`}
+                      onClick={() => toggle(pid)}
+                      title={title}
+                    >
+                      <span className={sp.tick} aria-hidden="true">
+                        ✓
+                      </span>
+                      <span className={sp.id}>{stageLabel}</span>
+                      {d ? (
+                        d.differs ? (
+                          <span className={`${sp.badge} ${sp.badgeDiff}`}>{stepDifferenceLabel(true, true)}</span>
+                        ) : d.local + d.remote > 0 ? (
+                          <span className={`${sp.badge} ${sp.badgeSync}`}>{stepDifferenceLabel(false, true)}</span>
+                        ) : null
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </>
+      ) : null}
     </section>
   );
 }
@@ -3694,6 +3746,10 @@ export interface ContextTransferSelection extends ContextTreeSelectionPayload {
   /** Historical Feature bindings plus current App version, in install order. */
   contextVersions?: Record<string, string[]>;
 }
+
+/** Each Feature owns an independent workflow run, so stage selection must not
+ * be flattened when an App contains multiple Features. */
+export type FeatureStageSelections = Record<string, string[]>;
 
 export interface ContextSyncAppInput extends ContextTreeApp {
   ownerName?: string | null;
@@ -3775,8 +3831,32 @@ function FolderExpander({ open, label, onToggle }: { open: boolean; label: strin
   );
 }
 
-/** A transfer is deliberately scoped to one Feature. Its parent App Context
- * travels automatically, but users compare and confirm one Feature at a time. */
+/** Toggle one Feature while keeping its mandatory parent Context selected.
+ * App-scoped sharing may include any subset of the App's Features. */
+function toggleFeatureSelection(
+  app: ContextTreeApp,
+  featureId: string,
+  selection: ContextTreeSelection,
+  pinnedAppIds: ReadonlySet<string> = new Set(),
+): ContextTreeSelection {
+  const featureIds = new Set(selection.featureIds);
+  const appIds = new Set(selection.appIds);
+  if (featureIds.has(featureId)) featureIds.delete(featureId);
+  else featureIds.add(featureId);
+  const appStillSelected = app.features.some((feature) => featureIds.has(feature.id));
+  if (appStillSelected || pinnedAppIds.has(app.id)) appIds.add(app.id);
+  else appIds.delete(app.id);
+  return { appIds, featureIds };
+}
+
+function toggleUngroupedFeature(featureId: string, selection: ContextTreeSelection): ContextTreeSelection {
+  const featureIds = new Set(selection.featureIds);
+  if (featureIds.has(featureId)) featureIds.delete(featureId);
+  else featureIds.add(featureId);
+  return { appIds: new Set(selection.appIds), featureIds };
+}
+
+/** Pull remains a one-Feature-at-a-time comparison flow. */
 function selectOneFeature(app: ContextTreeApp, featureId: string, selection: ContextTreeSelection): ContextTreeSelection {
   if (selection.featureIds.size === 1 && selection.featureIds.has(featureId)) return emptyContextSelection();
   return { appIds: new Set([app.id]), featureIds: new Set([featureId]) };
@@ -3990,7 +4070,7 @@ export function PullAllModal({
     <PlModal
       title={`${SYNC_COPY.downloadTitle}${scopeName ? ` — ${scopeName}` : ''}`}
       icon="download"
-      size="md"
+      size="lg"
       busy={busy}
       onClose={onClose}
       footer={
@@ -4155,6 +4235,13 @@ export function PushAllModal({
   workflows,
   scopeName,
   initialSelectedIds,
+  initialAppIds,
+  destination,
+  destinations,
+  newDestinationId,
+  defaultNewDestinationName,
+  onDestinationChange,
+  selectionLocked = false,
   onClose,
   onConfirm,
   syncReady,
@@ -4178,9 +4265,26 @@ export function PushAllModal({
   /** Preselected project ids (the currently-selected project). Absent → every
    *  project, the classic Push all. */
   initialSelectedIds?: readonly string[];
+  /** Allows an App with no Feature to share its common context by itself. */
+  initialAppIds?: readonly string[];
+  /** Optional real origin chooser, used by App/Feature share actions. */
+  destination?: ProjectSyncOriginSelection | null;
+  destinations?: readonly ProjectSyncOrigin[];
+  /** Stable generated id used when switching from an existing destination to a new copy. */
+  newDestinationId?: string;
+  /** Local App/Feature name used when the optional custom name is blank. */
+  defaultNewDestinationName?: string;
+  onDestinationChange?: (destination: ProjectSyncOriginSelection) => void;
+  /** A row action already has a fixed App/Feature scope; don't let its
+   * selection UI imply that another tree will be transferred instead. */
+  selectionLocked?: boolean;
   onClose: () => void;
   /** Always receives the explicit stage list of the scoped workflow. */
-  onConfirm: (selection: ContextTransferSelection, stages: string[]) => Promise<void>;
+  onConfirm: (
+    selection: ContextTransferSelection,
+    stages: string[],
+    stagesByFeature?: FeatureStageSelections,
+  ) => Promise<void>;
   syncReady: boolean;
   onReconnect: () => void;
   onUpgradeFeatureContext?: (
@@ -4267,13 +4371,16 @@ export function PushAllModal({
     });
     return () => { cancelled = true; };
   }, [appIdsKey]);
-  const initialFeatureIds = initialSelectedIds?.slice(0, 1) ?? [];
+  const initialFeatureIds = initialSelectedIds ?? [];
   const [selection, setSelection] = useState<ContextTreeSelection>(() => {
     const base = selectionForFeatures(appGroups, initialFeatureIds);
-    return base;
+    return { appIds: new Set([...base.appIds, ...(initialAppIds ?? [])]), featureIds: base.featureIds };
   });
-  const [stageSel, setStageSel] = useState<ReadonlySet<string>>(() => allStageIds(workflows));
+  const [stageSelByFeature, setStageSelByFeature] = useState<Record<string, ReadonlySet<string>>>({});
   const [search, setSearch] = useState('');
+  const [newDestinationName, setNewDestinationName] = useState(
+    destination?.mode === 'new' ? destination.name ?? '' : '',
+  );
   const [busy, setBusy] = useState(false);
   const [upgradeBusy, setUpgradeBusy] = useState<string | null>(null);
   const [upgradedFeatures, setUpgradedFeatures] = useState<ReadonlySet<string>>(() => new Set());
@@ -4288,7 +4395,26 @@ export function PushAllModal({
   } | null>(null);
   const [collapsedApps, setCollapsedApps] = useState<ReadonlySet<string>>(() => new Set());
   const syncStatus = useSyncStatus();
-  const diffByStage = aggregateDiff(syncStatus, selection.featureIds);
+  const featureNameById = useMemo(() => {
+    const names = new Map(projects.map((project) => [project.id, project.name]));
+    for (const app of appGroups) for (const feature of app.features) names.set(feature.id, feature.name);
+    return names;
+  }, [appGroups, projects]);
+  const visibleStagesForFeature = (featureId: string): ReadonlySet<string> => {
+    if (!syncStatus) return new Set();
+    const diff = aggregateDiff(syncStatus, new Set([featureId]));
+    return new Set(workflows.flatMap((workflow) => workflow.pipelineIds).filter((stageId) => {
+      const status = diff?.get(stageId);
+      return Boolean(status && status.local + status.remote > 0);
+    }));
+  };
+  const selectedStagesForFeature = (featureId: string): ReadonlySet<string> =>
+    stageSelByFeature[featureId] ?? visibleStagesForFeature(featureId);
+  const selectedFeatureIds = [...selection.featureIds];
+  const hasFeatureWithNoSelectedOutput = selectedFeatureIds.some((featureId) => {
+    const visible = visibleStagesForFeature(featureId);
+    return visible.size > 0 && selectedStagesForFeature(featureId).size === 0;
+  });
   const toggleFolder = (appId: string) => setCollapsedApps((current) => {
     const next = new Set(current);
     if (next.has(appId)) next.delete(appId); else next.add(appId);
@@ -4315,7 +4441,8 @@ export function PushAllModal({
         <input
           type="checkbox"
           checked={selection.featureIds.has(project.id)}
-          onChange={() => setSelection((current) => selectOneUngroupedFeature(project.id, current))}
+          disabled={selectionLocked}
+          onChange={() => setSelection((current) => toggleUngroupedFeature(project.id, current))}
         />
         <span className="pl-pullall__avatar" aria-hidden="true"><Icon name="folder" size={15} /></span>
         <span className="pl-pullall__text">
@@ -4328,15 +4455,20 @@ export function PushAllModal({
 
   const submit = async () => {
     if (!syncReady || (selection.appIds.size === 0 && selection.featureIds.size === 0) || busy) return;
-    if (selection.featureIds.size > 0 && stageSel.size === 0) return;
+    if (syncStatus === null || hasFeatureWithNoSelectedOutput) return;
     setBusy(true);
     setError(null);
     try {
       // Explicit stage list always — see PullAllModal.submit.
+      const stagesByFeature = Object.fromEntries(selectedFeatureIds.map((featureId) => [
+        featureId,
+        [...selectedStagesForFeature(featureId)],
+      ]));
+      const stageUnion = [...new Set(Object.values(stagesByFeature).flat())];
       await onConfirm({
         ...serializeContextSelection(selection),
         contextVersions: contextVersionsForSelection(appGroups, selection),
-      }, [...stageSel]);
+      }, stageUnion, stagesByFeature);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -4349,7 +4481,7 @@ export function PushAllModal({
     <PlModal
       title={`${SYNC_COPY.shareTitle}${scopeName ? ` — ${scopeName}` : ''}`}
       icon="upload"
-      size="md"
+      size="lg"
       busy={busy}
       onClose={onClose}
       footer={
@@ -4368,9 +4500,9 @@ export function PushAllModal({
             // không còn ở local) — cùng lý do PullAllModal đổi sang danger.
             className="pl-btn pl-btn--danger"
             onClick={() => void submit()}
-            disabled={!syncReady || busy
+            disabled={!syncReady || busy || syncStatus === null
               || selection.featureIds.size === 0
-              || (selection.featureIds.size > 0 && stageSel.size === 0)}
+              || hasFeatureWithNoSelectedOutput}
           >
             <Icon name={busy ? 'spinner' : 'upload'} size={14} />
             <span>
@@ -4378,7 +4510,9 @@ export function PushAllModal({
                 ? 'Đang chia sẻ…'
                 : selection.featureIds.size === 0
                   ? 'Chia sẻ'
-                  : 'Chia sẻ tính năng đã chọn'}
+                  : selection.featureIds.size > 1
+                      ? `Chia sẻ ${selection.featureIds.size} tính năng đã chọn`
+                      : 'Chia sẻ tính năng đã chọn'}
             </span>
           </button>
         </>
@@ -4390,12 +4524,67 @@ export function PushAllModal({
           <button type="button" className="pl-btn pl-btn--xs" onClick={onReconnect}>{SYNC_COPY.reconnect}</button>
         </div>
       ) : null}
+      {destination && onDestinationChange ? (
+        <div className="pl-pullall__destination">
+          <label htmlFor="pl-share-destination">Chia sẻ vào</label>
+          <select
+            id="pl-share-destination"
+            aria-label="Chia sẻ vào"
+            value={destination.mode === 'existing' ? `existing:${destination.originId}` : 'new'}
+            disabled={busy}
+            onChange={(event) => {
+              const value = event.target.value;
+              onDestinationChange(value === 'new'
+                ? {
+                    mode: 'new',
+                    originId: newDestinationId ?? destination.originId,
+                    ...(newDestinationName.trim() ? { name: newDestinationName.trim() } : {}),
+                  }
+                : { mode: 'existing', originId: value.slice('existing:'.length) });
+            }}
+          >
+            {(destinations ?? []).map((item) => (
+              <option key={item.originId} value={`existing:${item.originId}`}>{item.name}</option>
+            ))}
+            <option value="new">Tạo bản chia sẻ mới</option>
+          </select>
+          {destination.mode === 'new' ? (
+            <div className="pl-pullall__destination-new">
+              <label>
+                <span>Tên hiển thị mới <em>(không bắt buộc)</em></span>
+                <input
+                  type="text"
+                  aria-label="Tên hiển thị mới trên kho chung"
+                  maxLength={160}
+                  value={newDestinationName}
+                  placeholder={defaultNewDestinationName ? `Giữ tên hiện tại: ${defaultNewDestinationName}` : 'Giữ tên hiện tại'}
+                  disabled={busy}
+                  onChange={(event) => {
+                    const name = event.target.value;
+                    setNewDestinationName(name);
+                    onDestinationChange({
+                      mode: 'new',
+                      originId: newDestinationId ?? destination.originId,
+                      ...(name.trim() ? { name: name.trim() } : {}),
+                    });
+                  }}
+                />
+              </label>
+              <small>Hệ thống tự tạo mã. Nếu để trống, bản chia sẻ sẽ giữ tên hiện tại.</small>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {appGroups.length === 0 && projects.length === 0 ? (
         <div className="pl-pullall__state">Chưa có dự án hoặc tính năng nào trên máy để chia sẻ.</div>
       ) : (
         <>
           <p className="pl-pullall__hint">
-            Chọn một tính năng để chia sẻ. Tài liệu dùng chung của dự án sẽ luôn đi kèm để đảm bảo kết quả dùng đúng tiêu chuẩn.
+            {selectionLocked
+              ? 'Tính năng này sẽ được chia sẻ cùng tài liệu dùng chung của dự án.'
+              : (initialAppIds?.length ?? 0) > 0
+                ? 'Chọn các tính năng muốn chia sẻ. Tài liệu dùng chung của dự án luôn đi kèm.'
+                : 'Chọn các tính năng muốn chia sẻ. Tài liệu dùng chung của dự án sẽ luôn đi kèm để đảm bảo kết quả dùng đúng tiêu chuẩn.'}
           </p>
           <div className="pl-pullall__picker">
             <div className="pl-pullall__picker-head">
@@ -4412,7 +4601,7 @@ export function PushAllModal({
               </div>
               {searchQuery ? <button type="button" className="pl-pullall__search-done" onClick={() => setSearch('')}>Xong</button> : null}
               <span className="pl-pullall__picker-count">
-                {selection.featureIds.size > 0 ? 'Đã chọn 1 tính năng' : 'Chọn một tính năng'}
+                {selection.featureIds.size > 0 ? `Đã chọn ${selection.featureIds.size} tính năng` : 'Chưa chọn tính năng'}
               </span>
             </div>
             <div className="pl-pullall__list" role="group" aria-label="Tính năng trên máy">
@@ -4435,7 +4624,18 @@ export function PushAllModal({
                         return (
                           <li key={feature.id}>
                             <div className="pl-pullall__row pl-pullall__row--feature">
-                              <input type="checkbox" aria-label={`Chọn Feature ${feature.name}`} checked={selection.featureIds.has(feature.id)} onChange={() => setSelection((current) => selectOneFeature(app, feature.id, current))} />
+                              <input
+                                type="checkbox"
+                                aria-label={`Chọn Feature ${feature.name}`}
+                                checked={selection.featureIds.has(feature.id)}
+                                disabled={selectionLocked}
+                                onChange={() => setSelection((current) => toggleFeatureSelection(
+                                  app,
+                                  feature.id,
+                                  current,
+                                  new Set(initialAppIds ?? []),
+                                ))}
+                              />
                               <span className="pl-pullall__avatar" aria-hidden="true"><Icon name="folder" size={15} /></span>
                               <span className="pl-pullall__text">
                                 <span className="pl-pullall__name">{feature.name}</span>
@@ -4531,19 +4731,24 @@ export function PushAllModal({
               </div>
             </section>
           ) : null}
-          {selection.featureIds.size > 0 ? (
+          {selectedFeatureIds.map((featureId, index) => (
             <StagePicker
+              key={featureId}
               workflows={workflows}
-              selected={stageSel}
-              onChange={setStageSel}
-              diffByStage={diffByStage}
+              subjectName={featureNameById.get(featureId) ?? featureId}
+              showEmpty
+              selected={selectedStagesForFeature(featureId)}
+              onChange={(next) => setStageSelByFeature((current) => ({ ...current, [featureId]: next }))}
+              diffByStage={aggregateDiff(syncStatus, new Set([featureId]))}
               diffLoading={syncStatus === null}
+              collapsible
+              defaultExpanded={index === 0}
             />
-          ) : null}
+          ))}
           {selection.appIds.size === 0 && selection.featureIds.size === 0 ? (
             <div className="pl-modal-error" role="alert">{SYNC_COPY.chooseProject}</div>
           ) : null}
-          {selection.featureIds.size > 0 && stageSel.size === 0 ? (
+          {hasFeatureWithNoSelectedOutput ? (
             <div className="pl-modal-error" role="alert">
               {SYNC_COPY.chooseStep}
             </div>

@@ -18,7 +18,7 @@ import { PipelinesFeaturesView } from '../../../src/components/pipelines/Pipelin
 import { EditFeatureModal } from '../../../src/components/pipelines/EditFeatureModal';
 import { EditAppModal } from '../../../src/components/pipelines/EditAppModal';
 import { ConfirmDeleteModal } from '../../../src/components/pipelines/ConfirmDeleteModal';
-import { appDeleteMessage, deleteAppFromMachine } from '../../../src/components/pipelines/PipelinesRoute';
+import { appDeleteMessage, appDeleteWarning, deleteAppFromMachine } from '../../../src/components/pipelines/PipelinesRoute';
 import { groupByApp, localPipelineApps } from '../../../src/components/pipelines/usePipelineNav';
 
 function feature(o: Partial<PipelineProject> & { id: string; name: string }): PipelineProject {
@@ -68,7 +68,7 @@ describe('kebab trên card App', () => {
     expect(screen.queryByLabelText('Thao tác với Chưa gán app')).toBeNull();
   });
 
-  it('bấm kebab không điều hướng vào App, và chọn được Đổi tên / Xóa', () => {
+  it('bấm kebab không điều hướng vào Dự án, và chọn được Chỉnh sửa / Xóa', () => {
     const onEditApp = vi.fn();
     const onDeleteApp = vi.fn();
     render(<PipelinesAppsView nav={navFor(projects)} onEditApp={onEditApp} onDeleteApp={onDeleteApp} />);
@@ -76,7 +76,7 @@ describe('kebab trên card App', () => {
     fireEvent.click(screen.getByLabelText('Thao tác với Retail'));
     expect(window.location.pathname).toBe('/pipelines');
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Đổi tên' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Chỉnh sửa dự án' }));
     expect(onEditApp).toHaveBeenCalledOnce();
     expect(onEditApp.mock.calls[0]?.[0].id).toBe('retail');
 
@@ -176,8 +176,9 @@ describe('EditAppModal', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail' }} onClose={() => {}} onSaved={() => {}} />);
+    expect(screen.getByRole('dialog', { name: 'Thông tin dự án' })).not.toBeNull();
     fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail VN' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Lưu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
     await waitFor(() => expect(screen.queryByText('tên đã dùng')).not.toBeNull());
     const patch = fetchMock.mock.calls.find((c) => c[1]?.method === 'PATCH');
     expect(patch?.[1]?.method).toBe('PATCH');
@@ -186,6 +187,14 @@ describe('EditAppModal', () => {
 });
 
 describe('ConfirmDeleteModal', () => {
+  it('warns when the project only exists locally or contains Features', () => {
+    expect(appDeleteWarning(2, false)).toBe('Dự án này chỉ có trên máy và đang chứa 2 tính năng. Xóa dự án có thể làm mất toàn bộ dữ liệu này.');
+    expect(appDeleteWarning(0, false)).toBe('Dự án này chỉ có trên máy. Hãy đưa lên kho chung trước nếu bạn muốn giữ một bản sao.');
+    expect(appDeleteWarning(2, true)).toBe('Thao tác này sẽ xóa cả 2 tính năng và dữ liệu chạy bên trong khỏi máy.');
+    expect(appDeleteWarning(0, true)).toBeNull();
+    expect(appDeleteMessage(0, false)).toContain('bạn sẽ không thể lấy lại sau khi xóa');
+  });
+
   it('giữ hộp thoại mở và hiện nguyên văn lỗi server', async () => {
     const onClose = vi.fn();
     render(
@@ -199,7 +208,7 @@ describe('ConfirmDeleteModal', () => {
         }}
       />,
     );
-    expect(screen.queryByText('2 tính năng và toàn bộ dữ liệu của dự án trên máy này sẽ bị xóa. Bản đã chia sẻ trong kho chung không bị ảnh hưởng. Bạn có thể lấy lại dự án sau.')).not.toBeNull();
+    expect(screen.queryByText('2 tính năng và toàn bộ dữ liệu của dự án trên máy này sẽ bị xóa. Bản trong kho chung không bị ảnh hưởng. Bạn có thể lấy lại dự án sau.')).not.toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Xóa khỏi máy' }));
     await waitFor(() =>
       expect(screen.queryByText('Không thể xóa dữ liệu trên máy')).not.toBeNull(),

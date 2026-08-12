@@ -2,13 +2,16 @@
 // source-agnostic loadRemoteProjects driven by fakes — no KGS/media boot. Proves
 // the LIST half of the remote registry (KGS ⊕ media, merged by projectId).
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
+  filterLifecycleVisibleProjects,
   filterVisibleProjects,
+  isLifecycleHidden,
   isProjectVisible,
   loadRemoteProjects,
   mergeRemoteProjects,
+  PROJECT_LIFECYCLE_PATH,
   projectIdFromWorkspace,
   type FolderSource,
   type WorkspaceSource,
@@ -41,9 +44,9 @@ describe('mergeRemoteProjects', () => {
       ],
     );
     expect(merged).toEqual([
-      { projectId: 'a-kgs', name: 'KgsOnly', inKgs: true, inMedia: false, files: 0, isApp: false },
-      { projectId: 'b-both', name: 'Both', inKgs: true, inMedia: true, files: 5, isApp: false },
-      { projectId: 'c-media', name: 'c-media', inKgs: false, inMedia: true, files: 2, isApp: false },
+      { projectId: 'a-kgs', name: 'KgsOnly', inKgs: true, inMedia: false, files: 0, isApp: false, visibility: 'visible' },
+      { projectId: 'b-both', name: 'Both', inKgs: true, inMedia: true, files: 5, isApp: false, visibility: 'visible' },
+      { projectId: 'c-media', name: 'c-media', inKgs: false, inMedia: true, files: 2, isApp: false, visibility: 'visible' },
     ]);
   });
 
@@ -90,6 +93,7 @@ describe('loadRemoteProjects', () => {
       inMedia: true,
       files: 3,
       isApp: false,
+      visibility: 'visible',
     });
     expect(byId['media-only']).toEqual({
       projectId: 'media-only',
@@ -98,6 +102,7 @@ describe('loadRemoteProjects', () => {
       inMedia: true,
       files: 1,
       isApp: false,
+      visibility: 'visible',
     });
   });
 
@@ -131,8 +136,63 @@ describe('loadRemoteProjects', () => {
     };
     const rows = await loadRemoteProjects(kgs, media);
     expect(rows).toEqual([
-      { projectId: 'XPOS', name: 'XPOS', inKgs: false, inMedia: true, files: 2, isApp: false },
+      { projectId: 'XPOS', name: 'XPOS', inKgs: false, inMedia: true, files: 2, isApp: false, visibility: 'visible' },
     ]);
+  });
+
+  it('reads a valid Studio lifecycle sidecar without creating any folder', async () => {
+    const kgs: WorkspaceSource = { queryEntities: async () => [] };
+    const downloads: string[] = [];
+    const media: FolderSource = {
+      listFolders: async () => [{ id: 'folder-old', name: 'old-project' }],
+      listAllFiles: async () => [{ path: 'project.json' }, { path: PROJECT_LIFECYCLE_PATH }],
+      downloadFile: async (projectId, filePath) => {
+        downloads.push(`${projectId}/${filePath}`);
+        return Buffer.from(JSON.stringify({
+          schemaVersion: 1,
+          projectId,
+          visibility: 'hidden',
+          hiddenAt: '2026-08-12T00:00:00.000Z',
+        }));
+      },
+    };
+
+    await expect(loadRemoteProjects(kgs, media)).resolves.toEqual([
+      expect.objectContaining({
+        projectId: 'old-project',
+        files: 1,
+        visibility: 'hidden',
+        hiddenAt: '2026-08-12T00:00:00.000Z',
+      }),
+    ]);
+    expect(downloads).toEqual([`old-project/${PROJECT_LIFECYCLE_PATH}`]);
+  });
+
+  it('keeps legacy and malformed lifecycle projects visible and isolates the warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const downloads: string[] = [];
+    const media: FolderSource = {
+      listFolders: async () => [
+        { id: 'legacy-folder', name: 'legacy' },
+        { id: 'bad-folder', name: 'bad' },
+      ],
+      listAllFiles: async (folderId) => folderId === 'bad-folder'
+        ? [{ path: PROJECT_LIFECYCLE_PATH }]
+        : [{ path: 'project.json' }],
+      downloadFile: async (projectId) => {
+        downloads.push(projectId);
+        return Buffer.from('{not-json');
+      },
+    };
+
+    const rows = await loadRemoteProjects({ queryEntities: async () => [] }, media);
+    expect(rows.map(({ projectId, visibility }) => ({ projectId, visibility }))).toEqual([
+      { projectId: 'bad', visibility: 'visible' },
+      { projectId: 'legacy', visibility: 'visible' },
+    ]);
+    expect(downloads).toEqual(['bad']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 });
 
@@ -186,5 +246,18 @@ describe('isProjectVisible / filterVisibleProjects', () => {
     const scope = { all: false, ids: new Set(['app--bidv']) };
     const visible = filterVisibleProjects(data, scope);
     expect(visible.map((p) => p.projectId)).toEqual(['app--bidv', 'TN1']);
+  });
+
+  it('filters a hidden project and cascades a hidden App to its Features', () => {
+    const data: RemoteProject[] = [
+      { projectId: 'app--old', name: 'Old', inKgs: true, inMedia: true, files: 1, isApp: true, visibility: 'hidden' },
+      { projectId: 'child', name: 'Child', inKgs: true, inMedia: true, files: 1, isApp: false, appId: 'app--old', visibility: 'visible' },
+      { projectId: 'standalone-hidden', name: 'Hidden', inKgs: true, inMedia: true, files: 1, isApp: false, visibility: 'hidden' },
+      { projectId: 'visible', name: 'Visible', inKgs: true, inMedia: true, files: 1, isApp: false, visibility: 'visible' },
+    ];
+
+    expect(filterLifecycleVisibleProjects(data).map((p) => p.projectId)).toEqual(['visible']);
+    expect(isLifecycleHidden(data, 'child', 'app--old')).toBe(true);
+    expect(isLifecycleHidden(data, 'visible', null)).toBe(false);
   });
 });

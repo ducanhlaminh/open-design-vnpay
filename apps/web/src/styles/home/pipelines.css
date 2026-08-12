@@ -264,6 +264,105 @@
   justify-content: flex-end;
 }
 
+.pl-run-primary-actions {
+  display: flex;
+  flex: 1 1 100%;
+  align-self: stretch;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  width: 100%;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--bg-subtle) 76%, var(--bg-panel));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--bg-panel) 82%, transparent), var(--shadow-xs);
+}
+
+/* Toolbar này nằm trong rail cấu hình. Parent trước đây shrink-to-content và
+   justify-end, nên `width: 100%` của cụm nút chỉ rộng bằng phần co ở bên phải. */
+.pl-config-rail .pipelines-toolbar {
+  width: 100%;
+  align-items: stretch;
+}
+
+.pl-config-rail .pipelines-toolbar__group--actions {
+  flex: 1 1 100%;
+  width: 100%;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.pl-run-primary-actions > .pl-btn {
+  width: 100%;
+  min-height: 40px;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 7px;
+  box-shadow: none;
+  font-size: 12.5px;
+  font-weight: 680;
+  transition: border-color 180ms var(--pl-ease), background 180ms var(--pl-ease),
+    color 180ms var(--pl-ease), transform 180ms var(--pl-ease), box-shadow 180ms var(--pl-ease);
+}
+
+/* Trong cụm hành động, Run là CTA chính — không dùng bản tint nhạt của nút
+   chạy từng stage vì hai cấp hành động phải đọc khác nhau ngay lập tức. */
+.pl-run-primary-actions > .pl-btn--run {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.pl-run-primary-actions > .pl-btn--run > svg {
+  color: #fff;
+}
+
+.pl-run-primary-actions > .pl-btn--run:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  color: #fff;
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 28%, transparent);
+  transform: translateY(-1px);
+}
+
+.pl-run-primary-actions > .pl-btn--danger {
+  border-color: var(--red-border);
+  background: var(--red-bg);
+}
+
+.pl-btn--confirm-workflow {
+  border-color: transparent;
+  background: var(--bg-panel);
+  color: var(--green, #19713b);
+}
+
+.pl-btn--confirm-workflow > svg {
+  color: currentColor;
+}
+
+.pl-btn--confirm-workflow:hover:not(:disabled) {
+  border-color: var(--green, #19713b);
+  background: var(--green-bg, #e5f5eb);
+  color: var(--green, #19713b);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--green, #19713b) 14%, transparent);
+  transform: translateY(-1px);
+}
+
+.pl-btn--confirm-workflow:disabled {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-soft);
+  box-shadow: none;
+  opacity: 0.52;
+}
+
+.pl-run-primary-actions > .pl-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* Small uppercase label naming a toolbar button group ("Dự án đang chọn" /
    "Tất cả dự án") so first-time users see which scope each button acts on. */
 .pipelines-toolbar__label {
@@ -399,6 +498,91 @@
   margin: 0 0 8px;
   font-size: 12px;
   color: var(--text-soft);
+}
+
+.pl-pullall__destination {
+  display: grid;
+  grid-template-columns: minmax(7.5rem, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pl-pullall__destination select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 30px 0 10px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pl-pullall__destination select:focus-visible {
+  outline: 2px solid var(--selected);
+  outline-offset: 2px;
+}
+
+.pl-pullall__destination small {
+  grid-column: 2;
+  color: var(--text-soft);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.pl-pullall__destination-new {
+  grid-column: 2;
+  display: grid;
+  gap: 5px;
+}
+
+.pl-pullall__destination-new label {
+  display: grid;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.pl-pullall__destination-new em {
+  color: var(--text-soft);
+  font-style: normal;
+  font-weight: 500;
+}
+
+.pl-pullall__destination-new input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pl-pullall__destination-new input:focus-visible {
+  outline: 2px solid var(--selected);
+  outline-offset: 2px;
+}
+
+.pl-pullall__destination-new small {
+  grid-column: auto;
 }
 
 .pl-pullall__state {
@@ -1939,6 +2123,8 @@
 }
 
 .pl-modal__body {
+  min-height: 0;
+  flex: 1 1 auto;
   padding: 18px;
   overflow-y: auto;
   /* Never scroll sideways: a single overflowing row (e.g. an unhardened
@@ -2497,6 +2683,8 @@
 /* ── Full-page Quick result (route: /pipelines/:id/result/:pid).
    Replaces the cramped xl modal — the preview now owns the whole panel. */
 .pl-result-page {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
@@ -2504,40 +2692,82 @@
   /* Fill the entry-main inner column; the 128px accounts for the app header
      + page padding so the FileViewer gets a tall, near-viewport stage. */
   height: calc(100vh - 128px);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
+  height: calc(100dvh - 128px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  background: var(--bg-panel);
-  box-shadow: var(--shadow-sm);
+  background: var(--bg-app);
+  box-shadow: var(--shadow-md);
 }
 
 .pl-result-page__header {
   flex: none;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--bg-subtle);
+  gap: 14px;
+  min-height: 64px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
 }
 
 .pl-result-page__back {
   flex: none;
+  min-height: 38px;
+  border-color: var(--border);
+  background: var(--bg-subtle);
+  font-weight: 650;
+  transition: border-color 0.18s var(--pl-ease), background 0.18s var(--pl-ease),
+    color 0.18s var(--pl-ease), transform 0.18s var(--pl-ease);
+}
+
+.pl-result-page__back:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  transform: translateX(-1px);
+}
+
+.pl-result-page__back:active {
+  transform: translateX(-1px) translateY(1px);
 }
 
 .pl-result-page__title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
   flex: 1 1 auto;
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 520;
   color: var(--text-muted);
+}
+
+.pl-result-page__title > svg {
+  box-sizing: content-box;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.pl-result-page__title > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pl-result-page__title strong {
   color: var(--text-strong);
-  font-weight: 650;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .pl-result-page__actions {
@@ -2547,10 +2777,94 @@
   gap: 8px;
 }
 
+.pl-result-page__actions .pl-btn {
+  min-height: 38px;
+  border-color: var(--border);
+  background: var(--bg-panel);
+  font-weight: 650;
+  transition: border-color 0.18s var(--pl-ease), background 0.18s var(--pl-ease),
+    color 0.18s var(--pl-ease), transform 0.18s var(--pl-ease);
+}
+
+.pl-result-page__actions .pl-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  transform: translateY(-1px);
+}
+
 .pl-result-page__body {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
+  padding: 10px;
+  overflow: hidden;
+  background: var(--bg-app);
+}
+
+/* The route page gets a framed work surface; the legacy modal keeps its
+   compact flush treatment. */
+.pl-result-page .pl-result-preview {
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius-lg) - 5px);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-sm);
+}
+
+.pl-result-page .pl-result-rail {
+  width: clamp(238px, 21vw, 292px);
+  gap: 3px;
+  padding: 12px 10px 16px;
+  border-right-color: var(--border);
+  background: color-mix(in srgb, var(--bg-subtle) 78%, var(--bg-panel));
+  scrollbar-width: thin;
+}
+
+.pl-result-page .pl-result-rail__targets {
+  position: sticky;
+  z-index: 1;
+  top: -12px;
+  margin: -2px -2px 9px;
+  padding: 8px 2px 10px;
+  background: color-mix(in srgb, var(--bg-subtle) 92%, var(--bg-panel));
+}
+
+.pl-result-page .pl-result-rail__target {
+  border-radius: 7px;
+  padding: 5px 9px;
+  transition: border-color 0.16s var(--pl-ease), background 0.16s var(--pl-ease),
+    color 0.16s var(--pl-ease);
+}
+
+.pl-result-page .pl-result-rail__target:hover,
+.pl-result-page .pl-result-rail__target--active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.pl-result-page .pl-result-rail__folder {
+  min-height: 36px;
+  border-radius: 7px;
+}
+
+.pl-result-page .pl-result-rail__item {
+  position: relative;
+  min-height: 40px;
+  border-radius: 7px;
+}
+
+.pl-result-page .pl-result-rail__item--active {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  box-shadow: inset 3px 0 0 var(--accent), 0 3px 10px rgba(28, 50, 72, 0.06);
+}
+
+.pl-result-page .pl-result-stage {
+  background: var(--bg-panel);
 }
 
 /* Empty / loading / error states get comfortable padding on the page. */
@@ -2558,6 +2872,10 @@
 .pl-result-page__body > .pl-modal-error {
   margin: auto;
   padding: 32px;
+}
+
+.pl-result-page--gate .pl-result-page__header {
+  grid-template-columns: auto 1fr;
 }
 
 @keyframes pl-fade-in {
@@ -2588,6 +2906,10 @@
   .pipelines-toolbar__group--actions {
     justify-content: flex-start;
   }
+  .pl-run-primary-actions {
+    width: 100%;
+    max-width: none;
+  }
   .pl-step__card {
     flex-wrap: wrap;
   }
@@ -2600,6 +2922,38 @@
     width: 100%;
     max-width: none;
   }
+  .pl-result-page {
+    height: calc(100vh - 96px);
+    height: calc(100dvh - 96px);
+    border-radius: var(--radius-md);
+  }
+  .pl-result-page__header {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    min-height: 58px;
+    padding: 9px 10px;
+  }
+  .pl-result-page__title > svg { display: none; }
+  .pl-result-page__title strong { font-size: 14px; }
+  .pl-result-page__actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+  .pl-result-page__body { padding: 7px; }
+  .pl-result-page .pl-result-preview { flex-direction: column; }
+  .pl-result-page .pl-result-rail {
+    width: 100%;
+    max-height: min(220px, 31dvh);
+    padding: 8px 9px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .pl-result-page .pl-result-rail__targets {
+    top: -8px;
+    margin-top: 0;
+    padding-top: 4px;
+  }
+  .pl-result-page .pl-result-stage { min-height: 320px; }
 }
 
 /* ---- Project-card running spinner + per-stage last-run ------------------- */

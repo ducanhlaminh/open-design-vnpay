@@ -62,6 +62,11 @@ describe('PipelinesRoute · xóa Dự án khỏi máy', () => {
       if (url === '/api/workflows') {
         return new Response(JSON.stringify({ workflows: [] }), { status: 200 });
       }
+      if (url === '/api/project-sync/status') {
+        return new Response(JSON.stringify({ data: { results: [
+          { scope: { kind: 'app', projectId: 'retail' }, state: 'unchanged', mappingValid: true, origin: { originId: 'retail-cloud', name: 'Retail', kind: 'app', visibility: 'visible', inKgs: true, inMedia: true }, features: [], summary: { created: 0, unchanged: 1, changed: 0, deleted: 0 }, entries: [] },
+        ] } }), { status: 200 });
+      }
       if (url === '/api/pipelines/apps/retail' && init?.method === 'DELETE') {
         return new Response(JSON.stringify({ ok: true, deletedFeatures: 2, localOnly: true }), { status: 200 });
       }
@@ -70,6 +75,7 @@ describe('PipelinesRoute · xóa Dự án khỏi máy', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     render(<PipelinesRoute />);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/project-sync/status')).toBe(true));
     fireEvent.click(screen.getByLabelText('Thao tác với Retail'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Xóa khỏi máy' }));
 

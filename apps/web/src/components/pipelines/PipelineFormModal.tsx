@@ -279,6 +279,17 @@ export function FormText({ children }: { children: ReactNode }) {
   return <p className={styles.text}>{children}</p>;
 }
 
+/** Warning shown before a destructive action when local data may be the only
+ * copy or the action affects nested items. */
+export function FormWarning({ children }: { children: ReactNode }) {
+  return (
+    <div className={styles.warning} role="alert">
+      <Icon name="info" size={14} />
+      <span>{children}</span>
+    </div>
+  );
+}
+
 /** Inline error banner, matching the old `.pl-modal-error` treatment. */
 export function FormError({ children }: { children: ReactNode }) {
   return (

@@ -357,24 +357,27 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
 const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
   {
     id: 'docs-to-ui',
-    name: 'Docs → UI-Spec',
+    name: 'URD/PRD → UI-Spec',
     description:
       'Product docs → UX Research (evidence-based criteria) → UX Spec → a heuristic review gate → UI-Spec: an interactive HTML prototype or a real Vite + React 19 app — pick either (or both) at the final stage.',
     pipelineIds: ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review', 'ui-html', 'ui-react', 'ui-react-ds'],
   },
   {
     id: 'docs-to-prd',
-    name: 'Docs → PRD Requirements Review',
+    name: 'URD/PRD → Rà soát yêu cầu',
     description:
       'Product docs → Customer Journey → UX Research → text-first PRD requirements coverage review. Any embedded mockup is illustrative only; requirements, UX research, and the Design System drive downstream design rather than copied screens. Independent of Docs → UI-Spec: its own docs/journey/research run.',
     pipelineIds: ['prd-docs', 'prd-cj', 'prd-ux-research', 'prd-review'],
   },
   {
     id: 'docs-review',
-    name: 'Docs → Review tài liệu',
+    name: 'URD/PRD → Rà soát tài liệu',
     description:
       'Độc lập hoàn toàn với Docs → UI-Spec và Docs → PRD Requirements Review: nạp tài liệu (Confluence hoặc file .md) riêng cho workflow này, đối chiếu component được khai báo trong chữ với danh mục hợp lệ, review theo bộ tiêu chí của bạn (đặt trong criteria/, tuỳ chọn — thiếu thì dùng bộ mặc định của skill) và trả về bản sao đã sửa kèm chú giải từng chỗ sửa, rồi rút sơ đồ luồng màn hình của từng nghiệp vụ từ bản đã review. Ảnh mockup nhúng chỉ để minh hoạ, không phải hướng thiết kế.',
-    pipelineIds: ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review', 'dr-confirm'],
+    // `dr-confirm` is an internal deterministic action, not a processing
+    // stage. The UI exposes it as a dedicated completion CTA after every real
+    // stage succeeds, so it must not appear in the stepper or Run All.
+    pipelineIds: ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review'],
   },
 ];
 
@@ -1053,10 +1056,12 @@ export function deriveStateFromLocalFiles(relPaths: string[]): ProjectPipelineSt
   return state;
 }
 
-// Merge cross-device KGS "done" state with this device's local run metadata.
-// KGS (has files) is authoritative for the durable done-signal; local fills in
-// transient states (running/failed/idle) for stages KGS doesn't have yet. A
-// local in-flight re-run ('running') is shown even if KGS already has old files.
+// Merge file-derived preview availability with this device's local run state.
+// Files are only a compatibility signal for pulled/legacy results; they must
+// never turn the current attempt green. A failed run can leave a partial file,
+// and a re-run can still have preview files from an older successful attempt.
+// In both cases the latest explicit run state is authoritative until that run
+// itself reaches `succeeded`.
 export function mergePipelineState(
   local: ProjectPipelineState,
   kgs: ProjectPipelineState,
@@ -1065,7 +1070,12 @@ export function mergePipelineState(
   for (const def of PIPELINE_DEFS) {
     const l = local[def.id];
     const k = kgs[def.id];
-    if (k && l?.status === 'running') {
+    const currentAttemptIsNotSuccessful =
+      l?.status === 'queued' ||
+      l?.status === 'running' ||
+      l?.status === 'failed' ||
+      (l?.status === 'idle' && typeof l.lastRunId === 'string' && l.lastRunId.length > 0);
+    if (k && currentAttemptIsNotSuccessful) {
       merged[def.id] = l;
     } else if (k) {
       merged[def.id] = { ...(l ?? {}), ...k };

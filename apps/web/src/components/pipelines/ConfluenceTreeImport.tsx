@@ -57,6 +57,77 @@ import styles from './ConfluenceTreeImport.module.css';
 // bar, with no daemon change needed.
 export const CONFLUENCE_IMPORT_BATCH_SIZE = 8;
 
+function normalizeConfluenceSearch(value: string): string {
+  return value
+    .replace(/[đĐ]/g, 'd')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLocaleLowerCase('vi')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function editDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        (current[rightIndex - 1] ?? 0) + 1,
+        (previous[rightIndex] ?? 0) + 1,
+        (previous[rightIndex - 1] ?? 0) + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[right.length] ?? Math.max(left.length, right.length);
+}
+
+function fuzzyTokenScore(queryToken: string, candidateToken: string): number {
+  if (queryToken === candidateToken) return 0;
+  if (candidateToken.startsWith(queryToken)) return 2;
+  if (candidateToken.includes(queryToken)) return 4;
+  if (queryToken.length === candidateToken.length) {
+    for (let index = 0; index < queryToken.length - 1; index += 1) {
+      const swapped = `${queryToken.slice(0, index)}${queryToken[index + 1]}${queryToken[index]}${queryToken.slice(index + 2)}`;
+      if (swapped === candidateToken) return 7;
+    }
+  }
+  const distance = editDistance(queryToken, candidateToken);
+  const allowed = queryToken.length >= 6 ? 2 : queryToken.length >= 4 ? 1 : 0;
+  return distance <= allowed ? 6 + distance : Number.POSITIVE_INFINITY;
+}
+
+/** Accent-insensitive fuzzy rank for the Confluence picker. Title matches
+ * lead, followed by breadcrumb/space/id matches; misspelled tokens are
+ * tolerated without hiding the upstream results entirely. */
+export function rankConfluenceHits(query: string, hits: readonly ConfluencePageHit[]): ConfluencePageHit[] {
+  const normalizedQuery = normalizeConfluenceSearch(query);
+  if (!normalizedQuery) return [...hits];
+  const queryTokens = normalizedQuery.split(' ');
+  return hits
+    .map((hit, index) => {
+      const title = normalizeConfluenceSearch(hit.title);
+      const titleTokens = title.split(' ').filter(Boolean);
+      const metadata = normalizeConfluenceSearch([hit.space, ...(hit.ancestors ?? []), hit.id].filter(Boolean).join(' '));
+      let score: number;
+      if (title === normalizedQuery) score = 0;
+      else if (title.startsWith(normalizedQuery)) score = 5;
+      else if (title.includes(normalizedQuery)) score = 10 + title.indexOf(normalizedQuery);
+      else {
+        const tokenScores = queryTokens.map((token) => {
+          const titleScore = Math.min(...titleTokens.map((candidate) => fuzzyTokenScore(token, candidate)));
+          if (Number.isFinite(titleScore)) return titleScore;
+          return metadata.includes(token) ? 18 : 80;
+        });
+        score = 24 + tokenScores.reduce((total, value) => total + value, 0);
+      }
+      return { hit, score, index };
+    })
+    .sort((left, right) => left.score - right.score || left.index - right.index)
+    .map(({ hit }) => hit);
+}
+
 /** Thrown when a batch POST fails mid-import. Earlier batches already landed
  *  server-side (no rollback — `import-confluence` writes files + the
  *  manifest per call), so this carries what succeeded so far rather than
@@ -144,9 +215,11 @@ function useConfluenceTitleSearch(q: string): {
 
   useEffect(() => {
     clearTimeout(timer.current);
+    let cancelled = false;
     const query = q.trim();
     if (query.length < 2) {
       setHits(null);
+      setLoading(false);
       setError(null);
       return undefined;
     }
@@ -155,19 +228,40 @@ function useConfluenceTitleSearch(q: string): {
       setError(null);
       void (async () => {
         try {
-          const res = await fetch(`/api/pipelines/confluence/pages?q=${encodeURIComponent(query)}`);
-          const j = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(j?.error || `HTTP ${res.status}`);
-          setHits((j as { pages?: ConfluencePageHit[] }).pages ?? []);
+          const search = async (value: string): Promise<ConfluencePageHit[]> => {
+            const res = await fetch(`/api/pipelines/confluence/pages?q=${encodeURIComponent(value)}`);
+            const j = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(j?.error || `HTTP ${res.status}`);
+            return (j as { pages?: ConfluencePageHit[] }).pages ?? [];
+          };
+          let pages = await search(query);
+          // Confluence searches the full CQL phrase. When that returns no
+          // rows, use up to two meaningful words to obtain a candidate set,
+          // then rank it against the original phrase locally.
+          if (pages.length === 0) {
+            const fallbackTerms = [...new Set(query.split(/\s+/).filter((term) => normalizeConfluenceSearch(term).length >= 2))]
+              .sort((left, right) => right.length - left.length)
+              .slice(0, 2);
+            const fallback = await Promise.all(fallbackTerms.map(search));
+            const byId = new Map(fallback.flat().map((page) => [page.id, page]));
+            pages = [...byId.values()];
+          }
+          if (!cancelled) setHits(rankConfluenceHits(query, pages));
         } catch (err) {
-          setError(err instanceof Error ? err.message : String(err));
-          setHits([]);
+          if (!cancelled) {
+            setError(err instanceof Error ? err.message : String(err));
+            setHits([]);
+          }
         } finally {
-          setLoading(false);
+          if (!cancelled) setLoading(false);
         }
       })();
+      timer.current = undefined;
     }, 350);
-    return () => clearTimeout(timer.current);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer.current);
+    };
   }, [q]);
 
   return { hits, loading, error };

@@ -405,10 +405,9 @@ test('mergeComponentReports: danh sách rỗng => index đếm 0, summary vẫn 
 // ------------------------------------------------------- fail-shut cấp stage
 //
 // Vì sao nhóm test này tồn tại: `deriveStateFromLocalFiles` suy trạng thái
-// stage từ SỰ CÓ MẶT của file dưới `outputs` của nó, và tín hiệu đĩa đó THẮNG
-// trạng thái ghi trong DB. Nên khi dr-comp tuyên bố 'failed', chỉ cần một file
-// còn sót dưới `comp/` là stage vẫn hiện XANH. Cặp khẳng định dưới đây khoá
-// đúng hai vế đối lập của quy ước đó.
+// stage từ SỰ CÓ MẶT của file dưới `outputs` của nó. Tín hiệu này phục hồi
+// preview được pull/legacy nhưng không được thắng trạng thái running/failed
+// của lần chạy hiện tại. Fan-out vẫn dọn file lỗi để không preview dữ liệu dở.
 
 let cwd: string;
 beforeEach(async () => {

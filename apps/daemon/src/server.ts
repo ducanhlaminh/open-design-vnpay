@@ -448,6 +448,7 @@ import { registerMediaRoutes } from './media-routes.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes } from './project-routes.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
 import { registerKgSyncRoutes } from './kg-sync-routes.js';
+import { registerProjectSyncRoutes } from './project-sync-routes.js';
 import { registerHandoffRoutes } from './handoff-routes.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './handoff-design.js';
 import { TranscriptExportLockedError } from './transcript-export.js';
@@ -18889,6 +18890,7 @@ export async function startServer({
     projectStore: projectStoreDeps,
     pipelines: pipelineDeps,
   });
+  registerProjectSyncRoutes(app, { db, http: httpDeps, paths: pathDeps });
 
   // proxy routes (anthropic / openai / azure / google / ollama) live
   // in chat-routes.ts now — garnet had a partial duplicate here that

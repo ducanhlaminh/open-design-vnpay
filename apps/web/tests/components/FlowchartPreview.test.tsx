@@ -189,26 +189,25 @@ describe('FlowchartPreview', () => {
     expect(document.querySelector('.react-flow')).toBeNull();
   });
 
-  it('bấm một thẻ → chi tiết hiện dãy khối, khối rẽ nhánh mang chip "Chọn: …"; ← quay lại danh sách', async () => {
+  it('bấm một thẻ → chi tiết carousel từng bước, khối rẽ nhánh mang lựa chọn; ← quay lại danh sách', async () => {
     FILES['review/flows/FLOW-login.flowchart.json'] = JSON.stringify(LOGIN);
     render(<FlowchartPreview projectId="p1" file={file('review/flows/FLOW-login.flowchart.json')} />);
 
     await waitFor(() => expect(screen.getByText('Vào màn hình chính')).toBeTruthy());
     await act(async () => { fireEvent.click(screen.getByText('Vào màn hình chính')); });
 
-    // Ngã rẽ + phần riêng của kịch bản hiện ngay; các bước ĐẦU dùng chung với
-    // mọi kịch bản khác nằm trong khối gộp, bung ra mới thấy.
-    await waitFor(() => expect(screen.getByText('Thông tin hợp lệ?')).toBeTruthy());
-    expect(screen.queryByText('Nhập tên đăng nhập + mật khẩu')).toBeNull();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Các bước chung/ })); });
-    expect(screen.getByText('Nhập tên đăng nhập + mật khẩu')).toBeTruthy();
-    expect(screen.getAllByText('Bắt đầu').length).toBeGreaterThanOrEqual(2);
+    // Rail cho biết toàn bộ các bước; slide chỉ phóng lớn đúng bước đang chọn.
+    await waitFor(() => expect(screen.getByRole('tablist', { name: 'Chọn bước' })).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /2\s*Nhập tên đăng nhập/ })); });
+    expect(screen.getByRole('heading', { name: 'Nhập tên đăng nhập + mật khẩu' })).toBeTruthy();
+    expect(screen.getAllByText('Bắt đầu').length).toBeGreaterThanOrEqual(1);
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /3\s*Thông tin hợp lệ/ })); });
     expect(screen.getAllByText('Rẽ nhánh').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Chọn:\s*Có/)).toBeTruthy();
+    expect(screen.getByText(/Lựa chọn:\s*Có/)).toBeTruthy();
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /← Kịch bản/ })); });
     await waitFor(() => expect(screen.getByText('Báo lỗi sai thông tin')).toBeTruthy());
-    expect(screen.queryByText(/Chọn:\s*Có/)).toBeNull();
+    expect(screen.queryByText(/Lựa chọn:\s*Có/)).toBeNull();
   });
 
   it('chuyển sang "Sơ đồ đầy đủ" thì React Flow mới dựng — bản vẽ cũ không mất', async () => {
@@ -230,7 +229,7 @@ describe('FlowchartPreview', () => {
 
     await waitFor(() => expect(screen.getByText('Báo lỗi sai thông tin')).toBeTruthy());
     await act(async () => { fireEvent.click(screen.getByText('Báo lỗi sai thông tin')); });
-
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /4\s*Báo lỗi sai thông tin/ })); });
     await waitFor(() => expect(screen.getByText(/Quay lại bước #2/)).toBeTruthy());
   });
 

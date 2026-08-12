@@ -1,6 +1,6 @@
-// ── Đổi tên App ──────────────────────────────────────────────────────────────
-// CHỈ đổi tên hiển thị. Mã App (id) là tên thư mục / khoá KGS nên không sửa
-// được ở đây — đổi mã là chuyện di trú dữ liệu, không phải chuyện sửa nhãn.
+// ── Chỉnh sửa thông tin Dự án ────────────────────────────────────────────────
+// Form sửa tên hiển thị và Design System áp dụng cho Dự án. Mã Dự án (id) là
+// tên thư mục nội bộ nên không sửa ở đây.
 //
 // Cấu hình workflow không thuộc form này (nó ở RunAllModal / RunInputModal /
 // registry), giống hai form khai sinh cạnh đây.
@@ -80,7 +80,7 @@ export function EditAppModal({
 
   return (
     <PipelineFormModal
-      title="Đổi tên dự án"
+      title="Thông tin dự án"
       icon="blocks"
       busy={busy}
       onClose={onClose}
@@ -90,7 +90,7 @@ export function EditAppModal({
             Hủy
           </QuietButton>
           <PrimaryButton icon="check" busy={busy} onClick={() => void submit()} disabled={busy || !canSubmit}>
-            {busy ? 'Đang lưu…' : 'Lưu'}
+            {busy ? 'Đang lưu…' : 'Lưu thay đổi'}
           </PrimaryButton>
         </>
       }

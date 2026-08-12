@@ -1,5 +1,18 @@
 import type { AppContextManifest, FeatureContextBinding } from './app-context-version.js';
 
+export type ProjectVisibility = 'visible' | 'hidden';
+
+/** Studio-owned lifecycle metadata stored alongside, but independently from,
+ *  the Open Design-owned project.json artifact. */
+export interface ProjectLifecycle {
+  schemaVersion: 1;
+  projectId: string;
+  visibility: ProjectVisibility;
+  hiddenAt?: string;
+  hiddenBy?: string;
+  reason?: string;
+}
+
 // Remote registry DTOs — list + delete projects that live on the remote stores.
 //
 // "Remote" is two independent kewords: the KGS graph (DP_UI_WORKSPACE + nodes)
@@ -29,6 +42,10 @@ export interface RemoteProject {
    *  (apps/daemon/src/app-context.ts resolveAppId). Undefined/null when
    *  ungrouped, or when this entry is itself an App. */
   appId?: string | null;
+  /** Missing on older callers/fixtures; remote readers normalize it to
+   *  `visible`. A hidden App also hides its child Features from Pull. */
+  visibility?: ProjectVisibility;
+  hiddenAt?: string;
 }
 
 /** Product-facing project summary returned by `/api/kg/remote-projects`. */

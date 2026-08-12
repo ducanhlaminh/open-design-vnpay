@@ -77,6 +77,40 @@ describe('deriveUseCases', () => {
     expect(success.steps[success.steps.length - 1]!.answer).toBeUndefined();
   });
 
+  it('tạo id khác nhau khi hai nhánh dùng cùng chuỗi node nhưng khác câu trả lời', () => {
+    const converged: FlowchartDoc = {
+      id: 'same-nodes',
+      nodes: [
+        { id: 'start', type: 'start', label: 'Bắt đầu' },
+        { id: 'decision', type: 'decision', label: 'Chọn cách xử lý' },
+        { id: 'done', type: 'end', label: 'Hoàn tất' },
+      ],
+      edges: [
+        { from: 'start', to: 'decision' },
+        { from: 'decision', to: 'done', label: 'Tự xử lý' },
+        { from: 'decision', to: 'done', label: 'Gửi duyệt' },
+      ],
+    };
+    const result = deriveUseCases(converged);
+    expect(result.useCases).toHaveLength(2);
+    expect(new Set(result.useCases.map((useCase) => useCase.id)).size).toBe(2);
+  });
+
+  it('loại edge trùng hoàn toàn để không render hai card cùng một kịch bản', () => {
+    const duplicated: FlowchartDoc = {
+      id: 'duplicate-edge',
+      nodes: [
+        { id: 'start', type: 'start', label: 'Bắt đầu' },
+        { id: 'done', type: 'end', label: 'Hoàn tất' },
+      ],
+      edges: [
+        { from: 'start', to: 'done', label: 'Tiếp tục' },
+        { from: 'start', to: 'done', label: 'Tiếp tục' },
+      ],
+    };
+    expect(deriveUseCases(duplicated).useCases).toHaveLength(1);
+  });
+
   it('sơ đồ thiếu node start vẫn chẻ được (lấy node không có cạnh vào)', () => {
     const noStart: FlowchartDoc = {
       id: 'x',

@@ -142,7 +142,7 @@ describe('GET /api/pipelines/projects — workflows[]', () => {
     const listed = await listProjects();
     const p = listed.body.projects[0];
 
-    expect(wfById(listed.body, 'docs-review')).toMatchObject({ done: 1, total: 5, running: 1 });
+    expect(wfById(listed.body, 'docs-review')).toMatchObject({ done: 1, total: 4, running: 1 });
     expect(wfById(listed.body, 'docs-to-prd')).toMatchObject({ done: 1, total: 4, running: 1 });
     expect(wfById(listed.body, 'docs-to-ui')).toMatchObject({ done: 0, running: 0 });
 
@@ -156,7 +156,7 @@ describe('GET /api/pipelines/projects — workflows[]', () => {
     insertFeature('checkout', { 'dr-docs': { status: 'succeeded' } });
     const listed = await listProjects({ workflowId: 'docs-review' });
     const p = listed.body.projects[0];
-    expect({ done: p.done, total: p.total, running: p.running }).toEqual({ done: 1, total: 5, running: 0 });
+    expect({ done: p.done, total: p.total, running: p.running }).toEqual({ done: 1, total: 4, running: 0 });
     expect(p.workflows.map((w: any) => w.id)).toEqual(WORKFLOWS.map((w) => w.id));
     expect(wfById(listed.body, 'docs-to-ui').done).toBe(0);
   });
@@ -169,7 +169,7 @@ describe('GET /api/pipelines/projects — workflows[]', () => {
     expect(wfById(listed.body, 'docs-to-ui').total).toBe(uiWf.pipelineIds.length - 3);
     // lean là khái niệm riêng của docs-to-ui — hai workflow còn lại không đổi.
     expect(wfById(listed.body, 'docs-to-prd').total).toBe(4);
-    expect(wfById(listed.body, 'docs-review').total).toBe(5);
+    expect(wfById(listed.body, 'docs-review').total).toBe(4);
   });
 
   it('trả runningStage (bước running/queued đầu tiên + tên + startedAt) cho workflow của query', async () => {

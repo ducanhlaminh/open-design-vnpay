@@ -38,6 +38,15 @@
   min-width: 0;
 }
 
+.headerEyebrow {
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0.065em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
 .title {
   margin: 0;
   font-size: 30px;
@@ -523,8 +532,8 @@
 /* ---- Card grid (Screen 1 — Apps) -------------------------------- */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
 }
 
 /* Card App giờ có hai phần tử anh em: <button> điều hướng (.card) và kebab
@@ -592,6 +601,7 @@
   align-items: center;
   gap: 12px;
   min-width: 0;
+  padding-right: 104px;
 }
 
 /* Ô chữ cái đầu — thứ duy nhất phân biệt được hai card ở tầm nhìn liếc qua,
@@ -619,8 +629,6 @@
 }
 
 .cardName {
-  /* Chừa chỗ cho kebab ở góc trên phải. */
-  padding-right: 26px;
   font-size: 15px;
   font-weight: 640;
   color: var(--text-strong);
@@ -688,6 +696,88 @@
 .cardUpdated {
   font-size: 11.5px;
   color: var(--text-faint);
+}
+
+.syncBadgeStack {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.syncBackupHint {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.cardActionGroup {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  box-shadow: var(--shadow-xs);
+}
+
+.cardActionGroup .cardSyncBtn,
+.cardActionGroup .actionsTrigger {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--bg-subtle);
+  color: var(--text-soft);
+  opacity: 1;
+}
+
+.cardActionGroup .cardSyncBtn:hover:not(:disabled),
+.cardActionGroup .actionsTrigger:hover {
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+}
+
+.cardActionGroup .cardSyncBtn:disabled {
+  background: var(--bg-muted);
+  color: var(--text-faint);
+  opacity: 0.48;
+}
+
+.cardSyncBtn,
+.rowSyncBtn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: color 0.16s var(--pnv-ease), background 0.16s var(--pnv-ease);
+}
+
+.cardSyncBtn:hover,
+.rowSyncBtn:hover {
+  color: var(--accent-strong);
+  background: var(--accent-tint);
+}
+
+.cardSyncBtn:focus-visible,
+.rowSyncBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cardSyncBtn:disabled,
+.rowSyncBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* ---- Segmented progress bar (shared: app card / feature row / pipeline card) */
@@ -865,16 +955,11 @@
   border-top: 1px solid var(--border-soft);
 }
 
-.rowShell > .actionsMenu {
-  flex: none;
-  margin-right: 10px;
-}
-
 .row {
   display: grid;
-  /* Cột: key • tên • segments • done/total • chip trạng thái. Không còn
-     chevron-phải — click row giờ là xổ/đóng, vào chi tiết đi qua kebab. */
-  grid-template-columns: auto 1fr 140px auto auto;
+  /* Hai dòng nội dung ở cột chính giữ trạng thái local/origin dễ quét mà
+     không đẩy cụm hành động ra khỏi hàng. */
+  grid-template-columns: auto minmax(190px, 1fr) minmax(90px, 140px) auto;
   align-items: center;
   gap: 14px;
   /* Shell là flex-wrap (nút xổ + row + kebab một dòng, .wfPanel rơi xuống
@@ -922,6 +1007,36 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.rowFeatureInfo {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.rowFeatureMeta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.rowFeatureMeta .statusChip {
+  height: 20px;
+  padding-inline: 8px;
+}
+
+.rowFeatureMeta .syncBadgeStack {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.rowFeatureMeta .syncBackupHint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rowProgress {
@@ -1012,6 +1127,44 @@
   outline-offset: 2px;
 }
 
+.rowSyncBtn {
+  flex: none;
+}
+
+.rowActionGroup {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 10px;
+  padding: 3px 4px 3px 9px;
+  border-left: 1px solid var(--border-soft);
+}
+
+.rowActionGroup .rowDetailBtn,
+.rowActionGroup .rowSyncBtn,
+.rowActionGroup .actionsTrigger {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--bg-subtle);
+  color: var(--text-soft);
+  opacity: 1;
+}
+
+.rowActionGroup .rowDetailBtn:hover,
+.rowActionGroup .rowSyncBtn:hover:not(:disabled),
+.rowActionGroup .actionsTrigger:hover {
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+}
+
+.rowActionGroup .rowSyncBtn:disabled {
+  background: var(--bg-muted);
+  color: var(--text-faint);
+  opacity: 0.48;
+}
+
 /* ---- Phần xổ: trạng thái TỪNG workflow của một feature --------------- */
 /* Chuyển động do cặp class global .accordion-collapsible /
    -inner lo (grid-template-rows 0fr→1fr) — ở đây chỉ có chỗ đứng và nền. */
@@ -1077,9 +1230,8 @@
 }
 
 /* ---- Kebab "…" (đổi tên / xóa) --------------------------------------- */
-/* Ẩn ở trạng thái nghỉ để lưới card và danh sách row không bị nhiễu; hiện khi
-   hover, khi có gì đó bên trong đang focus, và khi menu đang mở. Ẩn bằng
-   opacity (không phải display) nên Tab vẫn tới được nút. */
+/* Card giữ hành vi gọn khi nghỉ. Riêng row Tính năng ghi đè opacity trong
+   .rowActionGroup để More luôn hiện đồng bộ với các nút bên cạnh. */
 .actionsMenu {
   position: relative;
   display: flex;
@@ -1212,13 +1364,14 @@
 
 /* ---- Pipeline cards (Screen 3 — pick a pipeline) ------------------------ */
 .workflowInputCallout {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 12px 14px;
-  border: 1px solid var(--accent-soft);
-  border-radius: var(--radius-sm);
-  background: var(--accent-tint);
+  display: grid;
+  grid-template-columns: minmax(176px, 0.55fr) minmax(0, 1.45fr);
+  align-items: baseline;
+  gap: 8px 18px;
+  padding: 11px 14px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: color-mix(in srgb, var(--accent-tint) 62%, var(--bg-panel));
 }
 
 .workflowInputTitle {
@@ -1229,8 +1382,9 @@
 
 .workflowInputText {
   font-size: 12.5px;
-  line-height: 1.5;
+  line-height: 1.45;
   color: var(--text-muted);
+  max-width: 78ch;
 }
 
 .workflowInputText strong {
@@ -1239,19 +1393,31 @@
 
 .pipelineGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.pipelineGrid[data-workflow-count='3'] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .pipelineCard {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 18px;
-  border-radius: var(--radius);
+  display: grid;
+  grid-template-rows: auto auto minmax(38px, 1fr) auto auto;
+  gap: 9px;
+  min-width: 0;
+  padding: 16px;
+  border-radius: calc(var(--radius) + 2px);
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  box-shadow: var(--shadow-xs);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 5%, transparent);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.pipelineCard:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--accent) 10%, transparent);
+  transform: translateY(-1px);
 }
 
 .pipelineCardAccent {
@@ -1266,22 +1432,58 @@
   gap: 10px;
 }
 
+.pipelineCardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pipelineCardIcon {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: var(--accent);
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-soft);
+}
+
+.pipelineCardIndex {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+}
+
+.pipelineCardTitleGroup {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pipelineCardLabel {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.015em;
+}
+
 .pipelineCardName {
-  font-size: 15px;
-  font-weight: 640;
+  font-size: 15.5px;
+  line-height: 1.28;
+  font-weight: 680;
   color: var(--text-strong);
   min-width: 0;
 }
 
 .pipelineCardDesc {
   margin: 0;
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
   font-size: 12.5px;
-  line-height: 1.45;
+  line-height: 1.5;
   color: var(--text-muted);
+  text-wrap: pretty;
 }
 
 .pipelineCardFoot {
@@ -1289,13 +1491,31 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-top: auto;
+  margin-top: 2px;
 }
 
 .pipelineCardCount {
   font-size: 11.5px;
   color: var(--text-soft);
   font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1080px) {
+  .pipelineGrid[data-workflow-count='3'] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .workflowInputCallout {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .pipelineGrid,
+  .pipelineGrid[data-workflow-count='3'] {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* "Đang chạy: <tên bước> · N phút" — thay dải segments cũ. Một dòng, chấm
@@ -1595,6 +1815,20 @@
   .rowProgress,
   .rowCount {
     display: none;
+  }
+  .rowActionGroup {
+    margin-right: 6px;
+    padding-left: 6px;
+  }
+  .rowFeatureMeta .syncBackupHint {
+    display: none;
+  }
+  .cardHead {
+    padding-right: 94px;
+  }
+  .cardActionGroup {
+    right: 8px;
+    top: 8px;
   }
   .pager {
     flex-direction: column;
