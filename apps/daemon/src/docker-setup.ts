@@ -79,6 +79,26 @@ export function dockerDesktopMacDownload(nodeArch: string): { arch: 'arm64' | 'a
   return { arch, url: `https://desktop.docker.com/mac/main/${arch}/Docker.dmg` };
 }
 
+export function dockerDesktopWindowsDownload(nodeArch: string): { arch: 'arm64' | 'amd64'; url: string } {
+  const arch = nodeArch === 'arm64' ? 'arm64' : 'amd64';
+  return {
+    arch,
+    url: `https://desktop.docker.com/win/main/${arch}/Docker%20Desktop%20Installer.exe`,
+  };
+}
+
+export function dockerDesktopWindowsInstallArgs(): string[] {
+  return ['install', '--user', '--accept-license', '--backend=wsl-2'];
+}
+
+export function dockerDesktopWindowsPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  return [
+    `${env.LOCALAPPDATA ?? ''}\\Programs\\DockerDesktop\\Docker Desktop.exe`,
+    `${env.ProgramFiles ?? 'C:\\Program Files'}\\Docker\\Docker\\Docker Desktop.exe`,
+    `${env.LOCALAPPDATA ?? ''}\\Docker\\Docker Desktop.exe`,
+  ];
+}
+
 export const MAC_DOCKER_INSTALLER_APPLESCRIPT = [
   'on run argv',
   '  set installerPath to item 1 of argv',
@@ -150,14 +170,39 @@ async function installDockerDesktop(): Promise<void> {
     return;
   }
   if (process.platform === 'win32') {
-    if (!(await commandExists('winget'))) {
-      throw new Error('Máy chưa có WinGet/App Installer. Hãy cập nhật App Installer trong Microsoft Store rồi thử lại.');
+    if (await commandExists('winget')) {
+      appendLog('Đang cài Docker Desktop qua WinGet…');
+      try {
+        await spawnAndWait('winget', [
+          'install', '--id', 'Docker.DockerDesktop', '-e',
+          '--accept-source-agreements', '--accept-package-agreements',
+        ]);
+        return;
+      } catch {
+        appendLog('WinGet không cài được Docker Desktop; chuyển sang bộ cài chính thức của Docker…');
+      }
     }
-    appendLog('Đang cài Docker Desktop qua WinGet…');
-    await spawnAndWait('winget', [
-      'install', '--id', 'Docker.DockerDesktop', '-e',
-      '--accept-source-agreements', '--accept-package-agreements',
-    ]);
+
+    const scratch = await mkdtemp(path.join(tmpdir(), 'open-design-docker-'));
+    const installer = path.join(scratch, 'Docker Desktop Installer.exe');
+    const download = dockerDesktopWindowsDownload(process.arch);
+    try {
+      appendLog(`Đang tải bộ cài Docker Desktop chính thức cho Windows ${download.arch === 'arm64' ? 'ARM64' : 'x86_64'}…`);
+      await spawnAndWait('powershell.exe', [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-Command',
+        '$ProgressPreference = "SilentlyContinue"; Invoke-WebRequest -UseBasicParsing -Uri $args[0] -OutFile $args[1]',
+        download.url,
+        installer,
+      ]);
+      appendLog('Đang cài Docker Desktop cho tài khoản Windows hiện tại…');
+      await spawnAndWait(installer, dockerDesktopWindowsInstallArgs());
+      if (!(await firstAccessible(dockerDesktopWindowsPaths()))) {
+        throw new Error('Bộ cài đã chạy nhưng không tìm thấy Docker Desktop. Hãy kiểm tra yêu cầu WSL 2 rồi thử lại.');
+      }
+    } finally {
+      await rm(scratch, { recursive: true, force: true }).catch(() => {});
+    }
     return;
   }
   throw new Error('Cài Docker tự động hiện hỗ trợ macOS và Windows.');
@@ -178,10 +223,7 @@ async function startDockerDesktop(): Promise<void> {
     return;
   }
   if (process.platform === 'win32') {
-    const executable = await firstAccessible([
-      `${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Docker\\Docker\\Docker Desktop.exe`,
-      `${process.env.LOCALAPPDATA ?? ''}\\Docker\\Docker Desktop.exe`,
-    ]);
+    const executable = await firstAccessible(dockerDesktopWindowsPaths());
     if (!executable) throw new Error('Đã cài nhưng không tìm thấy Docker Desktop để khởi động.');
     const child = spawn(executable, [], { detached: true, windowsHide: false, stdio: 'ignore' });
     child.unref();
