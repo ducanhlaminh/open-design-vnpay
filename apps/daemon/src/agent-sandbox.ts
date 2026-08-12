@@ -118,6 +118,15 @@ export function sandboxAuthFile(runtimeId: SandboxRuntimeId): string {
   return sandboxRuntimeSpec(runtimeId).authFile;
 }
 
+export function sandboxAuthCredentialPath(runtimeId: SandboxRuntimeId): string {
+  const spec = sandboxRuntimeSpec(runtimeId);
+  return path.posix.join(spec.authDir, spec.authFile);
+}
+
+export function sandboxAuthSeedMarkerPath(runtimeId: SandboxRuntimeId): string {
+  return path.posix.join(sandboxRuntimeSpec(runtimeId).authDir, SANDBOX_AUTH_SEED_MARKER);
+}
+
 export function sandboxRuntimeLoginCommand(runtimeId: SandboxRuntimeId, image: string): string {
   const spec = sandboxRuntimeSpec(runtimeId);
   const forcedEnv = Object.entries(spec.forcedEnv)
@@ -669,18 +678,20 @@ export async function seedSandboxRuntimeAuth(
   if (!authSeedCarriesToken(runtimeId, raw)) return false;
 
   const spec = sandboxRuntimeSpec(runtimeId);
+  const credentialPath = sandboxAuthCredentialPath(runtimeId);
+  const seedMarkerPath = sandboxAuthSeedMarkerPath(runtimeId);
   try {
     await docker(['volume', 'create', spec.authVolume]);
     const alreadyInitialized = await docker([
       'run', '--rm', '-v', `${spec.authVolume}:${spec.authDir}`,
       '--entrypoint', 'sh', image, '-c',
-      `[ -e ${JSON.stringify(spec.authFile)} ] || [ -e ${JSON.stringify(SANDBOX_AUTH_SEED_MARKER)} ]`,
+      `[ -e ${JSON.stringify(credentialPath)} ] || [ -e ${JSON.stringify(seedMarkerPath)} ]`,
     ]).then(() => true).catch(() => false);
     if (alreadyInitialized) return false;
     await dockerWriteStdin([
       'run', '--rm', '-i', '-v', `${spec.authVolume}:${spec.authDir}`,
       '--entrypoint', 'sh', image, '-c',
-      `umask 077; cat > ${JSON.stringify(spec.authFile)} && printf seeded > ${JSON.stringify(SANDBOX_AUTH_SEED_MARKER)}`,
+      `umask 077; cat > ${JSON.stringify(credentialPath)} && printf seeded > ${JSON.stringify(seedMarkerPath)}`,
     ], Buffer.from(raw, 'utf8'));
     return true;
   } catch {
@@ -700,10 +711,12 @@ export async function seedPackagedSandboxAuth(image: string, env: NodeJS.Process
 /** Clear a runtime credential while retaining the seed-consumed marker. */
 export async function clearSandboxRuntimeAuth(image: string, runtimeId: SandboxRuntimeId): Promise<void> {
   const spec = sandboxRuntimeSpec(runtimeId);
+  const credentialPath = sandboxAuthCredentialPath(runtimeId);
+  const seedMarkerPath = sandboxAuthSeedMarkerPath(runtimeId);
   await docker([
     'run', '--rm', '-v', `${spec.authVolume}:${spec.authDir}`,
     '--entrypoint', 'sh', image, '-c',
-    `rm -f ${JSON.stringify(spec.authFile)}; printf logged-out > ${JSON.stringify(SANDBOX_AUTH_SEED_MARKER)}`,
+    `rm -f ${JSON.stringify(credentialPath)}; printf logged-out > ${JSON.stringify(seedMarkerPath)}`,
   ], 30_000);
 }
 

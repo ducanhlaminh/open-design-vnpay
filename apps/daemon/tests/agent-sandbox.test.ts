@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildSandboxCodexProfileMaterializationScript,
+  sandboxAuthCredentialPath,
   sandboxAuthDir,
   sandboxAuthFile,
+  sandboxAuthSeedMarkerPath,
   sandboxAuthVolume,
   sandboxCodexProfileName,
   resolveSandboxConfig,
@@ -17,6 +19,15 @@ import {
 } from '../src/agent-sandbox.js';
 
 const cfg = resolveSandboxConfig({ enabled: true }, {});
+
+describe('sandbox auth volume paths', () => {
+  it('targets credential and seed marker files inside each mounted auth directory', () => {
+    expect(sandboxAuthCredentialPath('claude')).toBe('/home/node/.claude/.credentials.json');
+    expect(sandboxAuthSeedMarkerPath('claude')).toBe('/home/node/.claude/.od-auth-seed-consumed');
+    expect(sandboxAuthCredentialPath('codex')).toBe('/home/node/.codex/auth.json');
+    expect(sandboxAuthSeedMarkerPath('codex')).toBe('/home/node/.codex/.od-auth-seed-consumed');
+  });
+});
 
 describe('resolveSandboxConfig', () => {
   it('defaults to ENABLED, Claude and Codex runtimes, and EVERY run in scope (skills *)', () => {
