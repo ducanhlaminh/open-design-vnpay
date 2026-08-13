@@ -19,7 +19,16 @@ const JSON_POST = (label: string): RequestInit => ({
   body: JSON.stringify({ label }),
 });
 
-export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
+export function ClaudeAccountSwitcher({
+  daemonLive,
+  hostMode = false,
+}: {
+  daemonLive: boolean;
+  /** True when the daemon is running in host mode (WP4 default) — Claude
+   *  auth lives entirely with the host CLI's own `claude /login`, not
+   *  something Open Design tracks accounts for. */
+  hostMode?: boolean;
+}) {
   const [data, setData] = useState<SandboxAccountsResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [saveLabel, setSaveLabel] = useState('');
@@ -54,14 +63,14 @@ export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!daemonLive) return;
+    if (!daemonLive || hostMode) return;
     try {
       const r = await fetch('/api/sandbox/accounts');
       if (r.ok) setData((await r.json()) as SandboxAccountsResponse);
     } catch {
       /* daemon unreachable — keep the last snapshot */
     }
-  }, [daemonLive]);
+  }, [daemonLive, hostMode]);
 
   useEffect(() => {
     void refresh();
@@ -105,6 +114,17 @@ export function ClaudeAccountSwitcher({ daemonLive }: { daemonLive: boolean }) {
     },
     [call],
   );
+
+  // Host mode (WP4 default): no account concept — Claude auth is whatever
+  // `claude /login` already did on the machine, not something Open Design
+  // manages saved logins for.
+  if (hostMode) {
+    return (
+      <p className={styles.hint}>
+        Không áp dụng — chế độ Host CLI dùng tài khoản của Claude CLI đã đăng nhập trên máy.
+      </p>
+    );
+  }
 
   // Hidden unless the sandbox owns Claude (Docker-only) — no account concept otherwise.
   if (!daemonLive || !data || !data.supported) return null;

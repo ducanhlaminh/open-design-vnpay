@@ -9,12 +9,9 @@
 // trong TAG (`path:<rel>`) chứ không phải cột, nên rename là lossless: `_v/…`
 // và `changelog.json` sống nguyên vẹn, không phải copy byte nào.
 //
-// Vì sao staged push KHÔNG chạm KGS/identity: KGS không có API update node
-// (kgs-client.ts ensureWorkspace), nên một `DP_UI_WORKSPACE` tạo dưới tên
-// `pending--…` là rác vĩnh viễn — và nó làm dự án chưa duyệt hiện ngay trong
-// danh sách chính của studio (studio liệt kê project TỪ workspace KGS). Cùng lẽ
-// đó, identity project phải do người duyệt tạo với id cuối cùng, tạo AS người
-// submit để identity set họ làm owner.
+// Vì sao staged push KHÔNG chạm identity: identity project phải do người
+// duyệt tạo với id cuối cùng, tạo AS người submit để identity set họ làm
+// owner — đăng ký dưới tên `pending--…` sẽ là rác vĩnh viễn.
 //
 // Đối chiếu phía studio: ui/pipeline-studio/server/staging.ts (mirror hằng số).
 

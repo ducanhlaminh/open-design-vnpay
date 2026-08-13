@@ -11,7 +11,6 @@ import { randomUUID } from 'node:crypto';
 import { migrateCritique } from './critique/persistence.js';
 import { migrateMediaTasks } from './media-tasks.js';
 import { migratePlugins } from './plugins/persistence.js';
-import { migrateKgSync } from './kg-sync/persistence.js';
 
 type SqliteDb = Database.Database;
 type DbRow = Record<string, any>;
@@ -331,7 +330,6 @@ function migrate(db: SqliteDb): void {
   migrateCritique(db);
   migrateMediaTasks(db);
   migratePlugins(db);
-  migrateKgSync(db);
 }
 
 // ---------- deployments ----------
@@ -643,7 +641,8 @@ interface PipelineRunStateRow {
   lastRunId?: string;
   lastConversationId?: string;
   updatedAt?: number;
-  /** Free-text input of the last run (Confluence URL / JIRA key / JQL). */
+  /** Free-text input of the last run (a Confluence URL — legacy runs from
+   *  before WP8, 2026-08 may still carry a JIRA key/JQL string here). */
   lastInput?: string;
   /** Structured source of the last run (Confluence ref or BAS document). */
   lastSource?: unknown;

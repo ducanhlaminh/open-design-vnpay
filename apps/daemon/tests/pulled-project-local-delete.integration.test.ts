@@ -34,7 +34,6 @@ type RemoteProject = {
   projectId: string;
   name: string;
   isApp: boolean;
-  inKgs: boolean;
   inMedia: boolean;
   files: number;
 };
@@ -43,7 +42,6 @@ const REMOTE_APP: RemoteProject = {
   projectId: 'REMOTE-APP',
   name: 'Dự án dùng chung',
   isApp: true,
-  inKgs: true,
   inMedia: true,
   files: 4,
 };

@@ -67,7 +67,8 @@ import {
 } from './context-sync-tree';
 
 /** What the run-source modal hands back: either a structured BAS/Confluence
- * source (pre-fetched by the daemon) or a legacy free-text input (JIRA/JQL). */
+ * source (pre-fetched by the daemon) or free-text `input` — newline-joined
+ * Confluence page URL/ids for the docs stage's deterministic fetch. */
 export interface RunSourcePayload {
   source?: PipelineRunSource;
   input?: string;
@@ -272,13 +273,15 @@ function naturalPathCompare(a: string, b: string): number {
 }
 
 // ── Req 4: Run source (Confluence link or BAS document) ──────────────────────
-// Pipeline 1 (jira-ingest) ingests its source docs from the BAS MCP gateway. The
-// user picks ONE of two cards:
+// Pipeline 1 (confluence-ingest) ingests its source docs from Confluence
+// (deterministic REST fetch, no agent) or the BAS MCP gateway. The user picks
+// ONE of two cards:
 //   • Confluence — paste a page URL/id; a preview panel shows the page metadata
 //     fetched via the daemon's BAS proxy.
 //   • BAS — pick a BAS workspace, then check the feature(s)/document(s) to ingest.
-// The daemon pre-fetches the choice into the project cwd before the run. A small
-// "Advanced" toggle keeps the legacy free-text JIRA key / JQL path.
+// The daemon pre-fetches the choice into the project cwd before the run. WP8
+// (2026-08) removed the legacy free-text JIRA key / JQL "Advanced" path — this
+// pipeline only ever takes a Confluence URL now.
 type SourceKind = 'confluence' | 'bas';
 
 export interface ConfluencePageRefLike {
@@ -709,7 +712,6 @@ export function RunInputModal({
   // dự án từ studio có sẵn basDocumentId (nó vẫn được giữ trong project.json —
   // mở khóa là dùng lại được).
   const [kind, setKind] = useState<SourceKind>('confluence');
-  const [advanced, setAdvanced] = useState(false);
 
   // Confluence branch — dùng picker chung ConfluencePagePicker (tìm theo tên +
   // dán link, tick chọn nhiều). Seeded từ config dự án trên studio.
@@ -730,15 +732,12 @@ export function RunInputModal({
   const [basFeatLoading, setBasFeatLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Advanced (legacy JQL / JIRA key) branch
-  const [jql, setJql] = useState('');
-
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Lazy-load BAS documents the first time the BAS card is shown.
   useEffect(() => {
-    if (advanced || kind !== 'bas' || basDocuments !== null || basDocLoading) return;
+    if (kind !== 'bas' || basDocuments !== null || basDocLoading) return;
     setBasDocLoading(true);
     setError(null);
     void (async () => {
@@ -754,7 +753,7 @@ export function RunInputModal({
         setBasDocLoading(false);
       }
     })();
-  }, [advanced, kind, basDocuments, basDocLoading]);
+  }, [kind, basDocuments, basDocLoading]);
 
   const loadFeatures = async (docId: string) => {
     setBasDocumentId(docId);
@@ -793,11 +792,7 @@ export function RunInputModal({
       return next;
     });
 
-  const canRun = advanced
-    ? true // JQL is optional — the skill prompts if empty
-    : kind === 'confluence'
-      ? confPages.length > 0
-      : basDocumentId.length > 0; // features optional → whole document
+  const canRun = kind === 'confluence' ? confPages.length > 0 : basDocumentId.length > 0; // features optional → whole document
 
   const submit = async () => {
     if (busy || !canRun) return;
@@ -805,13 +800,12 @@ export function RunInputModal({
     setError(null);
     try {
       let payload: RunSourcePayload;
-      if (advanced) {
-        payload = { input: jql.trim() };
-      } else if (kind === 'confluence') {
+      if (kind === 'confluence') {
         // One page URL/id per line. When every line parses to a page id the
         // daemon runs the docs stage DETERMINISTICALLY (fetches the pages
-        // itself via the BAS gateway — no agent); a short-link/opaque URL
-        // falls back to the agent path.
+        // itself via the BAS gateway — no agent). A short-link/opaque URL that
+        // doesn't parse to a page id fails fast instead (WP8: no more agent
+        // fallback path).
         const refs = confPages.map((p) => p.url ?? p.id).filter((x): x is string => Boolean(x));
         payload = {
           input: refs.join('\n'),
@@ -873,172 +867,133 @@ export function RunInputModal({
           </span>
         </div>
       ) : null}
-      {advanced ? (
-        <>
-          <label className="pl-modal-field">
-            <span className="pl-modal-field__label">JIRA key / JQL</span>
-            <input
-              type="text"
-              className="pl-input"
-              autoFocus
-              placeholder={placeholder}
-              value={jql}
-              onChange={(e) => setJql(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void submit();
+      <div className={styles.cards} role="radiogroup" aria-label="Document source">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={kind === 'confluence'}
+          className={`${styles.card}${kind === 'confluence' ? ' ' + styles.cardSelected : ''}`}
+          onClick={() => setKind('confluence')}
+        >
+          <span className={styles.cardTop}>
+            <Icon name="import" size={16} />
+            Confluence
+            {kind === 'confluence' ? (
+              <span className={styles.cardCheck} aria-hidden="true">
+                <Icon name="check" size={14} />
+              </span>
+            ) : null}
+          </span>
+          <span className={styles.cardDesc}>Paste a Confluence page link — preview its metadata, then ingest.</span>
+        </button>
+        {/* Nguồn BAS ĐANG KHÓA BẢO TRÌ — card disabled, BE cũng chặn 503
+            (BAS_SOURCE_LOCKED, pipeline-routes.ts). Mở lại: bỏ disabled +
+            khôi phục onClick setKind('bas') + gỡ cờ BE/CLI. */}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={false}
+          aria-disabled="true"
+          disabled
+          className={styles.card}
+          style={{ opacity: 0.55, cursor: 'not-allowed' }}
+          title="Nguồn BAS đang bảo trì"
+        >
+          <span className={styles.cardTop}>
+            <Icon name="folder" size={16} />
+            BAS
+            <span
+              style={{
+                marginLeft: 'auto',
+                fontSize: 10.5,
+                fontWeight: 700,
+                padding: '1px 8px',
+                borderRadius: 999,
+                background: 'var(--warn-weak, #fff3e0)',
+                color: 'var(--warn, #b45309)',
               }}
-            />
-            <span className="pl-modal-field__hint">
-              Paste a JIRA project key or JQL. Leave empty to let the skill ask. Pulled via the
-              <code> mcp-atlassian</code> server (not BAS).
+            >
+              Đang bảo trì
             </span>
-          </label>
-          <div className={styles.footerLinks}>
-            <button type="button" className={styles.linkBtn} onClick={() => setAdvanced(false)}>
-              ← Quay lại chọn nguồn Confluence / BAS
-            </button>
-          </div>
+          </span>
+          <span className={styles.cardDesc}>Tạm khóa — dùng nguồn Confluence.</span>
+        </button>
+      </div>
+
+      {kind === 'confluence' ? (
+        <>
+          <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
+          <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
+          <IncludeDescendantsToggle
+            checked={includeDescendants}
+            onChange={setIncludeDescendants}
+            disabled={busy}
+          />
         </>
       ) : (
-        <>
-          <div className={styles.cards} role="radiogroup" aria-label="Document source">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={kind === 'confluence'}
-              className={`${styles.card}${kind === 'confluence' ? ' ' + styles.cardSelected : ''}`}
-              onClick={() => setKind('confluence')}
-            >
-              <span className={styles.cardTop}>
-                <Icon name="import" size={16} />
-                Confluence
-                {kind === 'confluence' ? (
-                  <span className={styles.cardCheck} aria-hidden="true">
-                    <Icon name="check" size={14} />
-                  </span>
-                ) : null}
-              </span>
-              <span className={styles.cardDesc}>Paste a Confluence page link — preview its metadata, then ingest.</span>
-            </button>
-            {/* Nguồn BAS ĐANG KHÓA BẢO TRÌ — card disabled, BE cũng chặn 503
-                (BAS_SOURCE_LOCKED, pipeline-routes.ts). Mở lại: bỏ disabled +
-                khôi phục onClick setKind('bas') + gỡ cờ BE/CLI. */}
-            <button
-              type="button"
-              role="radio"
-              aria-checked={false}
-              aria-disabled="true"
-              disabled
-              className={styles.card}
-              style={{ opacity: 0.55, cursor: 'not-allowed' }}
-              title="Nguồn BAS đang bảo trì"
-            >
-              <span className={styles.cardTop}>
-                <Icon name="folder" size={16} />
-                BAS
-                <span
-                  style={{
-                    marginLeft: 'auto',
-                    fontSize: 10.5,
-                    fontWeight: 700,
-                    padding: '1px 8px',
-                    borderRadius: 999,
-                    background: 'var(--warn-weak, #fff3e0)',
-                    color: 'var(--warn, #b45309)',
-                  }}
-                >
-                  Đang bảo trì
-                </span>
-              </span>
-              <span className={styles.cardDesc}>Tạm khóa — dùng nguồn Confluence (hoặc JIRA key/JQL ở Advanced).</span>
-            </button>
-          </div>
-
-          {kind === 'confluence' ? (
-            <>
-              <ConfluencePagePicker pages={confPages} onPagesChange={setConfPages} />
-              <FollowLinksToggle checked={followLinks} onChange={setFollowLinks} disabled={busy} />
-              <IncludeDescendantsToggle
-                checked={includeDescendants}
-                onChange={setIncludeDescendants}
-                disabled={busy}
-              />
-            </>
+        <div className={styles.panel}>
+          <span className={styles.sectionLabel}>BAS document</span>
+          {basDocLoading ? (
+            <p className={styles.empty}>Loading BAS documents…</p>
+          ) : !basDocuments || basDocuments.length === 0 ? (
+            <p className={styles.empty}>No BAS documents returned (check BAS configuration).</p>
           ) : (
-            <div className={styles.panel}>
-              <span className={styles.sectionLabel}>BAS document</span>
-              {basDocLoading ? (
-                <p className={styles.empty}>Loading BAS documents…</p>
-              ) : !basDocuments || basDocuments.length === 0 ? (
-                <p className={styles.empty}>No BAS documents returned (check BAS configuration).</p>
-              ) : (
-                <div className={styles.list}>
-                  {basDocuments.map((d) => (
-                    <button
-                      key={d.id}
-                      type="button"
-                      className={`${styles.row}${d.id === basDocumentId ? ' ' + styles.rowSelected : ''}`}
-                      onClick={() => void loadFeatures(d.id)}
-                    >
-                      <span className={`${styles.checkbox}${d.id === basDocumentId ? ' ' + styles.checkboxOn : ''}`}>
-                        {d.id === basDocumentId ? <Icon name="check" size={12} /> : null}
-                      </span>
-                      <span className={styles.rowBody}>
-                        <span className={styles.rowName}>{d.label || d.id}</span>
-                        {d.nodeCount !== undefined ? (
-                          <span className={styles.rowSummary}>{d.nodeCount} nodes</span>
-                        ) : null}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {basDocumentId ? (
-                <>
-                  <span className={styles.sectionLabel}>Features (leave empty to ingest the whole document)</span>
-                  {basFeatLoading ? (
-                    <p className={styles.empty}>Loading…</p>
-                  ) : !basFeatures || basFeatures.length === 0 ? (
-                    <p className={styles.empty}>No features found — running will ingest the whole document.</p>
-                  ) : (
-                    <div className={styles.list}>
-                      {basFeatures.map((f) => {
-                        const on = selected.has(f.id);
-                        return (
-                          <button
-                            key={f.id}
-                            type="button"
-                            className={`${styles.row}${on ? ' ' + styles.rowSelected : ''}`}
-                            onClick={() => toggle(f.id)}
-                            aria-pressed={on}
-                          >
-                            <span className={`${styles.checkbox}${on ? ' ' + styles.checkboxOn : ''}`}>
-                              {on ? <Icon name="check" size={12} /> : null}
-                            </span>
-                            <span className={styles.rowBody}>
-                              <span className={styles.rowName}>{f.name}</span>
-                              {f.summary ? <span className={styles.rowSummary}>{f.summary}</span> : null}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </>
-              ) : null}
+            <div className={styles.list}>
+              {basDocuments.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  className={`${styles.row}${d.id === basDocumentId ? ' ' + styles.rowSelected : ''}`}
+                  onClick={() => void loadFeatures(d.id)}
+                >
+                  <span className={`${styles.checkbox}${d.id === basDocumentId ? ' ' + styles.checkboxOn : ''}`}>
+                    {d.id === basDocumentId ? <Icon name="check" size={12} /> : null}
+                  </span>
+                  <span className={styles.rowBody}>
+                    <span className={styles.rowName}>{d.label || d.id}</span>
+                    {d.nodeCount !== undefined ? (
+                      <span className={styles.rowSummary}>{d.nodeCount} nodes</span>
+                    ) : null}
+                  </span>
+                </button>
+              ))}
             </div>
           )}
 
-          {/* Lối tắt phụ, gom một hàng ghost-chip — không tranh chú ý với picker. */}
-          <div className={styles.footerLinks}>
-            {/* "Dán link thủ công" giờ nằm TRONG ConfluencePagePicker. */}
-            <button type="button" className={styles.linkBtn} onClick={() => setAdvanced(true)}>
-              <Icon name="settings" size={12} />
-              <span>Advanced: JIRA key / JQL</span>
-            </button>
-          </div>
-        </>
+          {basDocumentId ? (
+            <>
+              <span className={styles.sectionLabel}>Features (leave empty to ingest the whole document)</span>
+              {basFeatLoading ? (
+                <p className={styles.empty}>Loading…</p>
+              ) : !basFeatures || basFeatures.length === 0 ? (
+                <p className={styles.empty}>No features found — running will ingest the whole document.</p>
+              ) : (
+                <div className={styles.list}>
+                  {basFeatures.map((f) => {
+                    const on = selected.has(f.id);
+                    return (
+                      <button
+                        key={f.id}
+                        type="button"
+                        className={`${styles.row}${on ? ' ' + styles.rowSelected : ''}`}
+                        onClick={() => toggle(f.id)}
+                        aria-pressed={on}
+                      >
+                        <span className={`${styles.checkbox}${on ? ' ' + styles.checkboxOn : ''}`}>
+                          {on ? <Icon name="check" size={12} /> : null}
+                        </span>
+                        <span className={styles.rowBody}>
+                          <span className={styles.rowName}>{f.name}</span>
+                          {f.summary ? <span className={styles.rowSummary}>{f.summary}</span> : null}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          ) : null}
+        </div>
       )}
 
       {error ? (
@@ -1394,6 +1349,11 @@ export interface RunStageOption {
   status: PipelineStatus;
   /** Chế độ chạy hiện tại của dự án bỏ bước này (daemon: `skippedInLeanRun`). */
   skipped?: boolean;
+  /** Stage đang HOLD, không chạy được từ bất kỳ đâu (2026-08 web-first — daemon
+   *  `PipelineView.held`, xem `HELD_STAGE_IDS` trong pipelines.ts). Picker phải
+   *  vô hiệu hoá lựa chọn này thay vì để người dùng tick rồi nhận lỗi 400/503 —
+   *  KHÔNG hard-code danh sách id ở đây, luôn đọc field này từ dữ liệu server. */
+  held?: boolean;
 }
 
 /** Các bước mà chế độ "Tiết kiệm" bỏ — MIRROR bằng tay của `skippedInLeanRun`
@@ -1409,16 +1369,23 @@ export function isLeanSkippableStage(stage: RunStageOption): boolean {
 
 /** Lựa chọn ban đầu: khôi phục đúng `stageIds` đã lưu; chưa có thì tick các bước
  *  CHƯA `succeeded` (chạy tiếp phần còn thiếu). Mọi bước đều đã xong thì tick
- *  hết — mặc định rỗng sẽ khoá luôn nút Lưu mà không nói được vì sao. */
+ *  hết — mặc định rỗng sẽ khoá luôn nút Lưu mà không nói được vì sao.
+ *
+ *  Stage `held` (2026-08 hold) không bao giờ vào lựa chọn KHỞI TẠO — kể cả khi
+ *  nó nằm trong `savedStageIds` đã lưu (cấu hình lưu từ trước lúc hold): picker
+ *  vô hiệu hoá checkbox của nó nên người dùng không tự tick lại được, và một
+ *  bước không tick được thì cũng không nên tự bật sẵn. Lưu lại (Save) sau đó
+ *  ghi đè `stageIds` KHÔNG còn id đó — dọn dần config cũ mỗi khi mở lại modal. */
 export function initialStageSelection(
   stages: readonly RunStageOption[],
   savedStageIds?: readonly string[],
 ): Set<string> {
-  const known = new Set(stages.map((s) => s.id));
+  const selectable = stages.filter((s) => !s.held);
+  const known = new Set(selectable.map((s) => s.id));
   const restored = (savedStageIds ?? []).filter((id) => known.has(id));
   if (restored.length > 0) return new Set(restored);
-  const pending = stages.filter((s) => s.status !== 'succeeded').map((s) => s.id);
-  return new Set(pending.length > 0 ? pending : stages.map((s) => s.id));
+  const pending = selectable.filter((s) => s.status !== 'succeeded').map((s) => s.id);
+  return new Set(pending.length > 0 ? pending : selectable.map((s) => s.id));
 }
 
 /**
@@ -1708,16 +1675,22 @@ export function RunAllModal({
   const forkStages = hasTerminal ? stages.filter((s) => UI_TERMINAL_STAGE_IDS.has(s.id)) : [];
   const hasFork = forkStages.length >= 2;
   const stepStages = hasFork ? stages.filter((s) => !UI_TERMINAL_STAGE_IDS.has(s.id)) : stages;
+  // MỌI đầu ra của bước cuối đang held (2026-08 hold) → cả hàng vô hiệu hoá,
+  // không riêng từng radio — không còn gì để "chọn 1 trong N" nữa.
+  const allForkHeld = forkStages.length > 0 && forkStages.every((s) => s.held === true);
   // Đầu ra đang chọn. Nguồn ưu tiên là `stageIds` (bước ĐANG tick), vì đó mới là
   // thứ quyết định lần chạy tới; `defaultTerminal` chỉ đỡ khi chưa tick nhánh
   // nào. `both` là giá trị cấu hình CŨ (html + react cùng lượt) — bề mặt mới chỉ
-  // cho chọn một, nên nó rơi về nhánh đầu tiên thay vì để radio trống.
+  // cho chọn một, nên nó rơi về nhánh đầu tiên thay vì để radio trống. Một
+  // `defaultTerminal` held (cấu hình lưu từ trước lúc hold) không được ưu tiên —
+  // rơi về đầu ra đầu tiên CHƯA held, nếu còn.
   const [terminal, setTerminal] = useState<WorkflowTerminalChoice>(() => {
     const initial = initialStageSelection(stages, defaultStageIds);
     const ticked = stages.find((s) => UI_TERMINAL_STAGE_IDS.has(s.id) && initial.has(s.id));
     if (ticked) return ticked.id as WorkflowTerminalChoice;
-    if (defaultTerminal && defaultTerminal !== 'both') return defaultTerminal;
-    return 'ui-html';
+    const defaultIsHeld = forkStages.find((s) => s.id === defaultTerminal)?.held === true;
+    if (defaultTerminal && defaultTerminal !== 'both' && !defaultIsHeld) return defaultTerminal;
+    return (forkStages.find((s) => !s.held)?.id as WorkflowTerminalChoice | undefined) ?? 'ui-html';
   });
   // Bước cuối có đang chạy không = có nhánh nào được tick không.
   const forkEnabled = forkStages.some((s) => stageIds.has(s.id));
@@ -1732,13 +1705,18 @@ export function RunAllModal({
     return out;
   };
   /** Chọn một đầu ra ⇒ BẬT luôn bước cuối và bỏ nhánh đang chọn trước đó. Bấm
-   *  vào "React app" nghĩa là muốn React, không phải "ghi nhớ để lát nữa tick". */
+   *  vào "React app" nghĩa là muốn React, không phải "ghi nhớ để lát nữa tick".
+   *  Guard `held` phòng thủ (nút render đã `disabled`, nên onClick không tới
+   *  đây trong UI thật — chỉ chặn thêm khi hàm bị gọi thẳng, ví dụ từ test). */
   const pickTerminal = (id: string) => {
+    if (forkStages.find((s) => s.id === id)?.held) return;
     setTerminal(id as WorkflowTerminalChoice);
     setStageIds((prev) => selectStageWithDeps(id, stages, clearFork(prev)));
   };
-  const toggleForkStep = () =>
+  const toggleForkStep = () => {
+    if (allForkHeld) return;
     setStageIds((prev) => (forkEnabled ? clearFork(prev) : selectStageWithDeps(terminal, stages, prev)));
+  };
   /** Preset (Tất cả / Chỉ bước chưa xong / Tiết kiệm) thao tác trên CẢ danh sách
    *  nên tự nhiên tick cả ba nhánh đầu ra — thu về đúng một nhánh, ưu tiên nhánh
    *  đang chọn, để bề mặt không bao giờ mâu thuẫn với luật "chọn 1 trong 3". */
@@ -2194,7 +2172,7 @@ export function RunAllModal({
             />
             <span className="pl-modal-field__hint">
               Điền sẵn từ cấu hình dự án trên Pipeline Studio (nếu có). Link/id Confluence được daemon
-              fetch trực tiếp (không cần agent); dán JIRA key/JQL như một dòng nếu muốn chạy qua agent.
+              fetch trực tiếp (không cần agent). Chỉ hỗ trợ Confluence — JIRA đã ngừng hỗ trợ.
               Nguồn BAS đang bảo trì.
             </span>
           </>
@@ -2339,10 +2317,16 @@ export function RunAllModal({
                   className={styles.stageCheckbox}
                   checked={forkEnabled}
                   onChange={toggleForkStep}
-                  disabled={busy}
+                  disabled={busy || allForkHeld}
+                  title={allForkHeld ? t('pipelines.held.tooltip') : undefined}
                 />
                 <span className={styles.stageName}>Kết quả UI-Spec</span>
                 <span className={styles.stageOptional}>chọn 1 trong {forkStages.length}</span>
+                {allForkHeld ? (
+                  <span className={styles.stageBadge} style={{ opacity: 0.75 }}>
+                    {t('pipelines.held.badge')}
+                  </span>
+                ) : null}
               </label>
               <div
                 className={`${styles.forkOptions}${forkEnabled ? '' : ' ' + styles.forkOptionsOff}`}
@@ -2358,23 +2342,28 @@ export function RunAllModal({
                       type="button"
                       role="radio"
                       aria-checked={on}
+                      aria-disabled={s.held ? 'true' : undefined}
                       className={`${styles.forkOption}${on ? ' ' + styles.forkOptionOn : ''}`}
                       onClick={() => pickTerminal(s.id)}
-                      disabled={busy}
+                      disabled={busy || s.held === true}
+                      style={s.held ? { opacity: 0.55, cursor: 'not-allowed' } : undefined}
+                      title={s.held ? t('pipelines.held.tooltip') : undefined}
                     >
                       <span className={styles.forkDot} aria-hidden="true" />
                       <span className={styles.forkLabel}>{meta?.label ?? s.name}</span>
                       <span className={styles.forkDesc}>{meta?.desc ?? ''}</span>
                       <span
                         className={`${styles.stageBadge} ${
-                          s.status === 'succeeded'
-                            ? styles.stageBadgeDone
-                            : s.status === 'failed'
-                              ? styles.stageBadgeFailed
-                              : styles.stageBadgeIdle
+                          s.held
+                            ? styles.stageBadgeIdle
+                            : s.status === 'succeeded'
+                              ? styles.stageBadgeDone
+                              : s.status === 'failed'
+                                ? styles.stageBadgeFailed
+                                : styles.stageBadgeIdle
                         }`}
                       >
-                        {STAGE_BADGES[s.status] ?? 'Chưa chạy'}
+                        {s.held ? t('pipelines.held.badge') : (STAGE_BADGES[s.status] ?? 'Chưa chạy')}
                       </span>
                     </button>
                   );
@@ -4225,8 +4214,8 @@ export function PullAllModal({
   );
 }
 
-// ── PushAllModal — pick WHICH local projects to push back to KGS and WHICH
-// pipelines' output files go with them (the graph push stays whole-project).
+// ── PushAllModal — pick WHICH local projects to push to the shared
+// media-service store and WHICH pipelines' output files go with them.
 // Mirrors PullAllModal but lists the LOCAL mirror (no fetch needed); Confirm
 // hands ids (+ stages when narrowed) to PipelinesView → POST /api/kg/push-all.
 export function PushAllModal({

@@ -280,11 +280,11 @@ async function doWrite(dataDir: string, body: unknown): Promise<McpConfig> {
 // external MCP servers live in <dataDir>/mcp-config.json (per-machine
 // runtime state) and are NOT part of the bundle. Without a seed, every new
 // machine starts with an empty server list. We seed HTTP servers (portable)
-// plus ONE stdio exception — `mcp-atlassian` — which is only added when its
-// tokens were baked from build env and whose `command` is the bare `uvx`
-// (resolved from PATH + auto-installed by ensureUvInstalled), never a
-// dev-machine absolute path. Other stdio servers stay machine-local because
-// their `command` points at a path (homebrew/fnm node) absent on the target.
+// only — a stdio server's `command` typically points at a machine-local path
+// (homebrew/fnm node) absent on the target, so those stay user-configured.
+// (WP8, 2026-08: the one stdio exception this used to carry — `mcp-atlassian`
+// — was removed; Confluence credentials now live in their own store, see
+// confluence-config.ts.)
 //
 // `ba-agent` authenticates with a static Bearer header. We deliberately do
 // NOT bake that token into source / the bundle (it would then be readable by
@@ -325,34 +325,11 @@ export function defaultMcpServers(
   }
   const servers: McpServerConfig[] = [server];
 
-  // Atlassian (Jira + Confluence Data Center) via the uvx-launched
-  // `mcp-atlassian` server. Unlike `ba-agent` (HTTP, fully portable) this is a
-  // stdio server, so we only seed it when its tokens were baked from build env
-  // (OD_ATLASSIAN_* → tools/pack → packaged config → daemon spawn env). The
-  // tokens are NEVER hardcoded in source. The command is the bare `uvx`,
-  // resolved from PATH: the packaged daemon augments PATH with ~/.local/bin and
-  // Homebrew (see resolvePackagedPathEnv / wellKnownUserToolchainBins), and
-  // `ensureUvInstalled` installs uv there on first run when the target machine
-  // lacks it. The org Jira/Confluence URLs are not secret, so they default
-  // inline and stay overridable via OD_ATLASSIAN_*_URL.
-  const jiraToken = env.OD_ATLASSIAN_JIRA_TOKEN?.trim();
-  const confluenceToken = env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim();
-  if (jiraToken || confluenceToken) {
-    servers.push({
-      id: 'mcp-atlassian',
-      label: 'Atlassian (Jira + Confluence Data Center)',
-      transport: 'stdio',
-      enabled: true,
-      command: 'uvx',
-      args: ['mcp-atlassian@0.21.1'],
-      env: {
-        JIRA_URL: env.OD_ATLASSIAN_JIRA_URL?.trim() || 'https://jr.servicehub.vn',
-        ...(jiraToken ? { JIRA_PERSONAL_TOKEN: jiraToken } : {}),
-        CONFLUENCE_URL: env.OD_ATLASSIAN_CONFLUENCE_URL?.trim() || 'https://wiki.servicehub.vn',
-        ...(confluenceToken ? { CONFLUENCE_PERSONAL_TOKEN: confluenceToken } : {}),
-      },
-    });
-  }
+  // WP8 (2026-08): the `mcp-atlassian` stdio-server seed (Jira + Confluence
+  // Data Center via uvx) was removed here — JIRA ingest is gone, and
+  // Confluence credentials now live in their own store (confluence-config.ts /
+  // confluence-config.json, Settings → Integrations → Confluence) independent
+  // of this external-MCP config entirely.
   return servers;
 }
 

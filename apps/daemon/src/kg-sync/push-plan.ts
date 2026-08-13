@@ -6,7 +6,6 @@ import type Database from 'better-sqlite3';
 import type { RemoteProject } from '@open-design/contracts';
 
 import { getProject, updateProject } from '../db.js';
-import type { KgsClient } from './kgs-client.js';
 import type { MediaClient } from './media-client.js';
 import { loadRemoteProjects } from './remote-registry.js';
 import { type PushDest, resolvePushDest, studioConfigOf } from './push-dest.js';
@@ -23,12 +22,11 @@ export function invalidateRemoteCache(): void {
 }
 
 async function remoteProjects(
-  kgs: KgsClient,
   media: MediaClient,
   fresh: boolean,
 ): Promise<RemoteProject[]> {
   if (!fresh && remoteCache && Date.now() - remoteCache.at < REMOTE_TTL_MS) return remoteCache.rows;
-  const rows = await loadRemoteProjects(kgs, media);
+  const rows = await loadRemoteProjects(media);
   remoteCache = { at: Date.now(), rows };
   return rows;
 }
@@ -36,7 +34,6 @@ async function remoteProjects(
 export interface PlanPushInput {
   db: SqliteDb;
   projectId: string;
-  kgs: KgsClient;
   media: MediaClient;
   submitter: StagingActor | null;
 }
@@ -59,13 +56,13 @@ export interface PushPlan extends PushDest {
  * Shared Project thật.
  */
 export async function planPush(input: PlanPushInput): Promise<PushPlan> {
-  const { db, projectId, kgs, media, submitter } = input;
+  const { db, projectId, media, submitter } = input;
   const project = getProject(db, projectId) as
     | { id: string; name?: string; metadata?: Record<string, unknown> | null }
     | null;
   const metadata = project?.metadata ?? null;
 
-  const remote = await remoteProjects(kgs, media, false);
+  const remote = await remoteProjects(media, false);
   const initialStudio = studioConfigOf(metadata);
   if (project && initialStudio.pendingId) {
     const nextStudio: Record<string, unknown> = { ...initialStudio };

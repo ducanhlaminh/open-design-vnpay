@@ -41,7 +41,9 @@ export type ComponentVerdict =
 export interface ScreenElement {
   /** Tên trường NGUYÊN VĂN trong bảng của tài liệu (cột "Tên trường"). */
   label: string;
-  /** NGUYÊN VĂN cột "Kiểu hiển thị" — thứ tài liệu tự khai. */
+  /** NGUYÊN VĂN cột "Kiểu hiển thị" — thứ tài liệu tự khai. Trong report đã
+   *  parse KHÔNG BAO GIỜ rỗng: dòng có tên nhưng trống cột này là dòng PHÂN
+   *  NHÓM của bảng, bị {@link parseComponentReport} loại từ đầu. */
   doc_type: string;
   /** Tên component trong danh mục. Bắt buộc khi verdict là 'ok' hoặc
    *  'variant-mismatch'; để trống với 'not-in-catalog'. */
@@ -146,7 +148,17 @@ export function collectComponentCatalog(text: string): Map<string, string> {
  *
  *  `page` / `doc_path` được chấp nhận khi vắng mặt (chuẩn hoá về chuỗi rỗng):
  *  chúng là siêu dữ liệu daemon tự biết và tự ghi đè, không phải kết luận của
- *  agent, nên đánh hỏng cả trang chỉ vì thiếu chúng là phạt sai chỗ. */
+ *  agent, nên đánh hỏng cả trang chỉ vì thiếu chúng là phạt sai chỗ.
+ *
+ *  DÒNG PHÂN NHÓM: bảng URD hay chèn dòng chỉ có "Tên trường" in đậm còn cột
+ *  "Kiểu hiển thị" trống ("Khối Thông tin pháp lý", "Nút thao tác"…) để chia
+ *  bảng thành cụm. Chúng không phải phần tử giao diện, nhưng prompt lại bắt
+ *  agent chép MỌI dòng — nên element có `label` hợp lệ mà `doc_type` là CHUỖI
+ *  RỖNG được LOẠI KHỎI report thay vì đánh lỗi: đánh hỏng cả trang vì một dòng
+ *  kẻ nhóm là phạt sai chỗ, y như `page`/`doc_path` ở trên. Chỉ chuỗi rỗng mới
+ *  mang nghĩa phân nhóm; `doc_type` vắng mặt hẳn hoặc sai kiểu vẫn là lỗi
+ *  shape như cũ — "" là agent CHÉP LẠI một ô trống có thật, còn thiếu field là
+ *  agent quên khai. */
 export function parseComponentReport(
   raw: string,
 ): { report: PageComponentReport } | { errors: string[] } {
@@ -219,6 +231,7 @@ export function parseComponentReport(
       return;
     }
 
+    const elements: ScreenElement[] = [];
     screen.elements.forEach((rawEl, ei) => {
       const where = `Màn hình thứ ${si}, phần tử thứ ${ei}`;
       if (typeof rawEl !== 'object' || rawEl === null || Array.isArray(rawEl)) {
@@ -226,13 +239,19 @@ export function parseComponentReport(
         return;
       }
       const el = rawEl as Record<string, unknown>;
-      for (const field of ['label', 'doc_type'] as const) {
-        const value = el[field];
-        if (typeof value !== 'string' || value.trim() === '') {
-          errors.push(
-            `${where}: '${field}' phải là chuỗi không rỗng, nhận được ${JSON.stringify(value)}.`,
-          );
-        }
+      if (typeof el.label !== 'string' || el.label.trim() === '') {
+        errors.push(
+          `${where}: 'label' phải là chuỗi không rỗng, nhận được ${JSON.stringify(el.label)}.`,
+        );
+      }
+      if (typeof el.doc_type !== 'string') {
+        errors.push(
+          `${where}: 'doc_type' phải là chuỗi, nhận được ${JSON.stringify(el.doc_type)}.`,
+        );
+      } else if (el.doc_type.trim() === '') {
+        // Dòng PHÂN NHÓM (xem doc comment của hàm): loại khỏi report, KHÔNG
+        // kiểm tiếp verdict/component — chúng chỉ có nghĩa với phần tử thật.
+        return;
       }
       if (!COMPONENT_VERDICTS.includes(el.verdict as ComponentVerdict)) {
         errors.push(
@@ -246,6 +265,7 @@ export function parseComponentReport(
           );
         }
       }
+      elements.push(el as unknown as ScreenElement);
     });
 
     screens.push({
@@ -253,7 +273,7 @@ export function parseComponentReport(
       name: String(screen.name ?? ''),
       anchor: String(screen.anchor ?? ''),
       images: Array.isArray(screen.images) ? (screen.images as string[]) : [],
-      elements: screen.elements as unknown as ScreenElement[],
+      elements,
     });
   });
 

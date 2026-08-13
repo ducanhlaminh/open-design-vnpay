@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 
 import { getProject } from '../src/db.js';
 import { planPush } from '../src/kg-sync/push-plan.js';
-import type { KgsClient } from '../src/kg-sync/kgs-client.js';
 import type { MediaClient } from '../src/kg-sync/media-client.js';
 
 function projectDb(metadata: Record<string, unknown>) {
@@ -35,9 +34,6 @@ describe('planPush direct publishing', () => {
   it('clears a legacy pending id and sends the project directly to Shared Projects', async () => {
     const pendingId = 'pending--checkout-local--abc123';
     const db = projectDb({ studioConfig: { pendingId } });
-    const kgs = {
-      queryEntities: async () => [],
-    } as unknown as KgsClient;
     const media = {
       listFolders: async () => [],
       listAllFiles: async () => [],
@@ -46,7 +42,6 @@ describe('planPush direct publishing', () => {
     const plan = await planPush({
       db,
       projectId: 'checkout-local',
-      kgs,
       media,
       submitter: { id: '65edc73c-56a4-4c48-8651-d7cb07a5e10d' },
     });

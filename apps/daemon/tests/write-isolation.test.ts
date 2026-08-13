@@ -11,20 +11,25 @@ import {
 } from '../src/write-isolation.js';
 
 describe('writeIsolationMode', () => {
-  it('defaults to off when the env var is unset', () => {
-    expect(writeIsolationMode({})).toBe('off');
+  it('defaults to on on darwin when the env var is unset (Phase 2 default)', () => {
+    expect(writeIsolationMode({}, 'darwin')).toBe('on');
   });
 
-  it('parses on/off/required', () => {
-    expect(writeIsolationMode({ OD_WRITE_ISOLATION: 'on' })).toBe('on');
-    expect(writeIsolationMode({ OD_WRITE_ISOLATION: 'off' })).toBe('off');
-    expect(writeIsolationMode({ OD_WRITE_ISOLATION: 'required' })).toBe('required');
+  it('defaults to off on non-darwin platforms when the env var is unset', () => {
+    expect(writeIsolationMode({}, 'linux')).toBe('off');
+    expect(writeIsolationMode({}, 'win32')).toBe('off');
   });
 
-  it('falls back to off on an unrecognized value — never behaves like on', () => {
-    expect(writeIsolationMode({ OD_WRITE_ISOLATION: 'yes' })).toBe('off');
-    expect(writeIsolationMode({ OD_WRITE_ISOLATION: '1' })).toBe('off');
-    expect(writeIsolationMode({ OD_WRITE_ISOLATION: '' })).toBe('off');
+  it('parses on/off/required, overriding the platform default in either direction', () => {
+    expect(writeIsolationMode({ OD_WRITE_ISOLATION: 'on' }, 'linux')).toBe('on');
+    expect(writeIsolationMode({ OD_WRITE_ISOLATION: 'off' }, 'darwin')).toBe('off');
+    expect(writeIsolationMode({ OD_WRITE_ISOLATION: 'required' }, 'linux')).toBe('required');
+  });
+
+  it('falls back to the platform default on an unrecognized value', () => {
+    expect(writeIsolationMode({ OD_WRITE_ISOLATION: 'yes' }, 'darwin')).toBe('on');
+    expect(writeIsolationMode({ OD_WRITE_ISOLATION: '1' }, 'linux')).toBe('off');
+    expect(writeIsolationMode({ OD_WRITE_ISOLATION: '' }, 'linux')).toBe('off');
   });
 });
 

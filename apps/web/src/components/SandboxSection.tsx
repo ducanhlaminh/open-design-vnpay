@@ -21,6 +21,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
   const [build, setBuild] = useState<SandboxBuildResponse | null>(null);
   const [dockerSetup, setDockerSetup] = useState<DockerSetupResponse | null>(null);
   const [windowsSetup, setWindowsSetup] = useState<WindowsFirmwareStatusResponse | null>(null);
+  const [modeSaving, setModeSaving] = useState(false);
   const isWindows = /Windows/i.test(navigator.userAgent);
 
   const refresh = useCallback(async () => {
@@ -36,6 +37,38 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // `status.mode` is undefined until the first status answer lands; fall
+  // back to `enabled` (also present from the first answer on) so the toggle
+  // never flashes the wrong side before settling.
+  const executionMode = status?.mode ?? (status?.enabled ? 'sandbox' : 'host');
+  const isHostMode = executionMode === 'host';
+
+  // Writes `sandbox.enabled` through the same PUT /api/app-config prefs path
+  // `od sandbox enable|disable` uses, so the CLI and this toggle never drift.
+  const setExecutionMode = useCallback(
+    async (enabled: boolean) => {
+      if (!daemonLive || modeSaving) return;
+      setModeSaving(true);
+      try {
+        const current = await fetch('/api/app-config')
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null) as { config?: { sandbox?: Record<string, unknown> } } | null;
+        const sandbox = { ...(current?.config?.sandbox ?? {}), enabled };
+        const resp = await fetch('/api/app-config', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sandbox }),
+        });
+        if (resp.ok) await refresh();
+      } catch {
+        // Daemon unreachable — leave the toggle as-is for a retry.
+      } finally {
+        setModeSaving(false);
+      }
+    },
+    [daemonLive, modeSaving, refresh],
+  );
 
   useEffect(() => {
     if (!daemonLive || !isWindows || status?.dockerOk !== false) {
@@ -135,7 +168,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
     return () => window.clearInterval(id);
   }, [build?.building, refresh]);
 
-  const okOrFix = (ok: boolean, fixCmd: string) =>
+  const okOrFix = (ok: boolean | undefined, fixCmd: string) =>
     ok ? (
       <span className={styles.ok}>{t('settings.sandboxOk')}</span>
     ) : (
@@ -214,6 +247,34 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
         <small className="hint">{t('settings.sandboxDaemonOffline')}</small>
       ) : (
         <>
+          <div className={styles.modeRow} data-testid="sandbox-execution-mode">
+            <div>
+              <h4>{t('settings.executionModeTitle')}</h4>
+              <p className="hint">{t('settings.executionModeHint')}</p>
+            </div>
+            <div className={styles.modeToggle} role="radiogroup" aria-label={t('settings.executionModeTitle')}>
+              <button
+                type="button"
+                className={isHostMode ? styles.modeBtnActive : styles.modeBtn}
+                role="radio"
+                aria-checked={isHostMode}
+                disabled={modeSaving}
+                onClick={() => void setExecutionMode(false)}
+              >
+                {t('settings.executionModeHost')}
+              </button>
+              <button
+                type="button"
+                className={!isHostMode ? styles.modeBtnActive : styles.modeBtn}
+                role="radio"
+                aria-checked={!isHostMode}
+                disabled={modeSaving}
+                onClick={() => void setExecutionMode(true)}
+              >
+                {t('settings.executionModeSandbox')}
+              </button>
+            </div>
+          </div>
           {!status.dockerOk ? (
             <div className={styles.setupPanel} data-testid="sandbox-docker-setup">
               <div>
@@ -268,7 +329,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
             <div className={styles.runtimeExpanded}>
               {renderRuntimeRow(claudeRuntime)}
               <div className={styles.runtimeBody}>
-                <ClaudeAccountSwitcher daemonLive={daemonLive} />
+                <ClaudeAccountSwitcher daemonLive={daemonLive} hostMode={isHostMode} />
               </div>
             </div>
           </details>
@@ -357,7 +418,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
             </div>
           ) : null}
 
-          <ClaudeAccountSwitcher daemonLive={daemonLive} />
+          <ClaudeAccountSwitcher daemonLive={daemonLive} hostMode={isHostMode} />
         </>
           )}
         </>

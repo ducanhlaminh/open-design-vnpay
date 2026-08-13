@@ -19,7 +19,13 @@ import path from 'node:path';
 
 import { closeDatabase, insertProject, openDatabase } from '../src/db.js';
 import { registerPipelineRoutes } from '../src/pipeline-routes.js';
-import { WORKFLOWS } from '../src/pipelines.js';
+import { WORKFLOWS, getPipelineDef } from '../src/pipelines.js';
+
+// Số stage KHÔNG held của một workflow — mẫu số `total` thật sự (2026-08 hold:
+// countWorkflowProgress bỏ 3 terminal UI-Spec khỏi mẫu số, xem HELD_STAGE_IDS
+// trong pipelines.ts). docs-to-prd/docs-review không có stage held nên không
+// đổi; chỉ docs-to-ui rút từ 9 xuống 6.
+const nonHeldCount = (ids: readonly string[]) => ids.filter((id) => !getPipelineDef(id)?.heldFromRun).length;
 
 vi.mock('../src/kg-sync/remote-registry.js', () => ({
   loadRemoteProjects: async () => {
@@ -123,10 +129,12 @@ describe('GET /api/pipelines/projects — workflows[]', () => {
     expect(listed.body.projects[0].workflows.map((w: any) => w.name)).toEqual(
       WORKFLOWS.map((w) => w.name),
     );
-    // Chưa chạy gì: mọi workflow 0 done / 0 running, total = số stage của nó.
+    // Chưa chạy gì: mọi workflow 0 done / 0 running, total = số stage KHÔNG
+    // held của nó (docs-to-ui: 9 - 3 terminal held = 6; các workflow khác
+    // không có stage held nên không đổi).
     for (const w of listed.body.projects[0].workflows) {
       expect({ done: w.done, running: w.running }).toEqual({ done: 0, running: 0 });
-      expect(w.total).toBe(WORKFLOWS.find((x) => x.id === w.id)!.pipelineIds.length);
+      expect(w.total).toBe(nonHeldCount(WORKFLOWS.find((x) => x.id === w.id)!.pipelineIds));
     }
   });
 
@@ -165,8 +173,10 @@ describe('GET /api/pipelines/projects — workflows[]', () => {
     insertFeature('checkout', {}, { runAllConfig: { lean: true } });
     const listed = await listProjects();
     const uiWf = WORKFLOWS.find((w) => w.id === 'docs-to-ui')!;
-    // 3 stage phân tích (cj / ux-research / ux-review) bị bỏ khỏi chuỗi lean.
-    expect(wfById(listed.body, 'docs-to-ui').total).toBe(uiWf.pipelineIds.length - 3);
+    // 3 stage phân tích (cj / ux-research / ux-review) bị bỏ khỏi chuỗi lean,
+    // CỘNG THÊM 3 terminal UI-Spec đang held (2026-08 hold) luôn bị bỏ khỏi
+    // mẫu số bất kể mode — 9 - 3 - 3 = 3.
+    expect(wfById(listed.body, 'docs-to-ui').total).toBe(nonHeldCount(uiWf.pipelineIds) - 3);
     // lean là khái niệm riêng của docs-to-ui — hai workflow còn lại không đổi.
     expect(wfById(listed.body, 'docs-to-prd').total).toBe(4);
     expect(wfById(listed.body, 'docs-review').total).toBe(4);

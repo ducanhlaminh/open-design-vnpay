@@ -31,21 +31,31 @@ describe('sandbox auth volume paths', () => {
 });
 
 describe('resolveSandboxConfig', () => {
-  it('defaults to ENABLED, Claude and Codex runtimes, and EVERY run in scope (skills *)', () => {
-    // This fork runs Claude through the Docker sandbox by default (no UI toggle);
-    // only an explicit prefs.enabled=false or OD_SANDBOX=0 opts out.
+  it('defaults to DISABLED (host CLI) — Claude/Codex runtime and skill defaults stay ready for when it IS enabled', () => {
+    // Web-first migration (WP4): every run spawns as a host CLI process by
+    // default; only an explicit prefs.enabled=true or OD_SANDBOX=1 opts INTO
+    // the Docker sandbox.
     const resolved = resolveSandboxConfig(undefined, {});
-    expect(resolved.enabled).toBe(true);
+    expect(resolved.enabled).toBe(false);
+    // Runtime/skill defaults are unchanged so opting in still behaves exactly
+    // like before (every gated runtime, every skill, in scope).
     expect(resolved.runtimes).toEqual(['claude', 'codex']);
-    // The sandbox owns ALL runs of gated runtimes by default — pipeline
-    // steps AND general chat / Orbit / routine turns.
     expect(resolved.skills).toEqual(['*']);
     expect(resolved.timeoutMinutes).toBe(30);
+  });
+
+  it('prefs.enabled=true opts into the Docker sandbox with the pre-WP4 defaults intact', () => {
+    const resolved = resolveSandboxConfig({ enabled: true }, {});
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.runtimes).toEqual(['claude', 'codex']);
+    expect(resolved.skills).toEqual(['*']);
   });
 
   it('OD_SANDBOX env overrides the persisted flag in both directions', () => {
     expect(resolveSandboxConfig({ enabled: false }, { OD_SANDBOX: '1' }).enabled).toBe(true);
     expect(resolveSandboxConfig({ enabled: true }, { OD_SANDBOX: '0' }).enabled).toBe(false);
+    // Unset prefs (the new default) still opts in via the escape hatch.
+    expect(resolveSandboxConfig(undefined, { OD_SANDBOX: '1' }).enabled).toBe(true);
   });
 
   it('keeps custom allowlists and limits', () => {
@@ -75,11 +85,26 @@ describe('resolveSandboxConfig', () => {
     // Any other narrow list is a real choice and survives untouched.
     expect(resolveSandboxConfig({ enabled: true, skills: ['ui-html'] }, {}).skills).toEqual(['ui-html']);
   });
+
+  it('a legacy skill gate does NOT re-enable the sandbox by itself — enabled stays OFF unless opted in', () => {
+    // Post-WP4: `enabled` defaults to false regardless of what `skills`
+    // carries. The legacy-gate migration only matters once the sandbox is
+    // actually turned on — it must not be read as an implicit opt-in.
+    for (const legacy of [
+      ['ui-react'],
+      ['jira-ingest', 'customer-journey-spec', 'ux-spec', 'ui-react', 'html-interactive-prototype'],
+    ]) {
+      const resolved = resolveSandboxConfig({ enabled: false, skills: legacy }, {});
+      expect(resolved.enabled).toBe(false);
+      expect(resolved.skills).toEqual(['*']);
+      expect(shouldSandboxRun({ agentId: 'claude', skillIds: legacy, cfg: resolved })).toBe(false);
+    }
+  });
 });
 
 describe('shouldSandboxRun', () => {
   it('sandboxes EVERY claude run by default — pipeline skills, ad-hoc skills, and skill-less chat', () => {
-    for (const skill of ['jira-ingest', 'customer-journey-spec', 'ux-spec', 'ui-react', 'html-interactive-prototype']) {
+    for (const skill of ['confluence-ingest', 'customer-journey-spec', 'ux-spec', 'ui-react', 'html-interactive-prototype']) {
       expect(shouldSandboxRun({ agentId: 'claude', skillIds: [skill], cfg })).toBe(true);
     }
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['ui-react', 'frontend-design'], cfg })).toBe(true);

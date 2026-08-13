@@ -190,7 +190,6 @@ function runAllConfigFromBody(input: unknown, opts?: { withDefaults?: boolean })
   return out;
 }
 
-import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import { loadRemoteProjects } from './kg-sync/remote-registry.js';
 import { StagingBlockedError } from './kg-sync/push-dest.js';
@@ -265,9 +264,12 @@ export function countWorkflowProgress(
   pipelineIds: readonly string[],
 ): { done: number; total: number; running: number } {
   const mode = runModeFor(project, state, pipelineIds);
+  // Held stages (2026-08 hold, see HELD_STAGE_IDS in pipelines.ts) drop out of
+  // the denominator too — a project can never finish them right now, so
+  // counting them would pin every docs-to-ui project's progress below 100%.
   const countedIds = pipelineIds.filter((id) => {
     const def = getPipelineDef(id);
-    return !def || !isStageSkipped(def, mode);
+    return !def || (!isStageSkipped(def, mode) && !def.heldFromRun);
   });
   return {
     total: countedIds.length,
@@ -344,7 +346,16 @@ export function parseRunSource(raw: unknown): PipelineRunSource | undefined {
 // này + hai mirror ở cli.ts và RunInputModal.
 const BAS_SOURCE_LOCKED = true;
 const BAS_LOCKED_MSG =
-  'Nguồn BAS đang bảo trì — chọn trang Confluence (hoặc nhập JIRA key/JQL) cho bước Docs.';
+  'Nguồn BAS đang bảo trì — chọn trang Confluence cho bước Docs.';
+
+// 3 stage sinh code UI (`ui-html`/`ui-react`/`ui-react-ds`, xem
+// `HELD_STAGE_IDS` trong pipelines.ts) đang HOLD (2026-08, web-first): không
+// route nào ở đây spawn được chúng nữa — output cũ giữ nguyên mọi hành vi
+// khác (attribution, syncExclude, history). Cùng khuôn fail-closed với
+// BAS_SOURCE_LOCKED ở trên. Mở lại: xóa id khỏi HELD_STAGE_IDS (pipelines.ts)
+// — route/CLI/UI đều đọc lại cờ đó, không cần sửa gì ở đây.
+const STAGE_HELD_MSG =
+  'Bước sinh code UI đang tạm khóa để tập trung bản web. Mở lại: xóa id khỏi HELD_STAGE_IDS trong pipelines.ts.';
 
 // The pipelines capability has no scheduler/service of its own (unlike routines):
 // runs are manual and one-shot. The route layer validates project + gating and
@@ -420,17 +431,18 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     return { state: merged, docsReady };
   };
 
-  // GET /api/pipelines/projects — the KGS apps available for pipelines (projects
-  // pulled from KGS; their id is the KGS project_id). Excludes ephemeral chat
-  // workspaces so the UI selector only offers real KGS apps.
+  // GET /api/pipelines/projects — the pipeline-eligible apps (projects created
+  // here or pulled from the shared store; their id is the shared project_id).
+  // Excludes ephemeral chat workspaces so the UI selector only offers real
+  // pipeline apps.
   app.get('/api/pipelines/projects', async (req, res) => {
     // Progress badges are scoped to the active workflow's pipelines.
     const wf = getWorkflow(typeof req.query.workflowId === 'string' ? req.query.workflowId : '')
       ?? getWorkflow(DEFAULT_WORKFLOW_ID)!;
     const kgsProjects = listProjects(db).filter((p: { metadata?: unknown }) => isKgsProject(p));
-    // Compute the merged (local + KGS) state per project. KGS calls run in
-    // parallel and fall back to local-only on failure (loadMergedState swallows
-    // KGS errors).
+    // Compute the merged state per project (local-only — see loadMergedState
+    // above; the media store is deliberately not consulted here). Runs in
+    // parallel across projects.
     const projects = await Promise.all(
       kgsProjects.map(async (p: { id: string; name: string; metadata?: Record<string, unknown> }) => {
         const { state } = await loadMergedState(p.id);
@@ -581,14 +593,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     return byId;
   };
 
-  // Các App có trên registry trung tâm (KGS/media). Ném lỗi khi store không
-  // với tới được — nơi gọi tự quyết định degrade (picker: local-only; tạo mới:
+  // Các App có trên registry trung tâm (media). Ném lỗi khi store không với
+  // tới được — nơi gọi tự quyết định degrade (picker: local-only; tạo mới:
   // bỏ qua check trùng remote).
   const loadRemoteApps = async (): Promise<Array<{ id: string; name?: string }>> => {
-    const remote = await loadRemoteProjects(
-      new KgsClient(kgsConfigFromEnv()),
-      new MediaClient(mediaConfigFromEnv()),
-    );
+    const remote = await loadRemoteProjects(new MediaClient(mediaConfigFromEnv()));
     return remote
       .filter((r) => r.isApp)
       .map((r) => ({
@@ -1191,7 +1200,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   });
 
   // POST /api/pipelines/pull-files { projectId } — regenerate the project's
-  // pipeline files from the KGS file store into the local project cwd. This is
+  // pipeline files from the media file store into the local project cwd. This is
   // the "pull on another device to continue" step (cross-device handoff).
   app.post('/api/pipelines/pull-files', async (req, res) => {
     try {
@@ -1210,8 +1219,8 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   });
 
   // POST /api/pipelines/upload { projectId } — MANUAL upload of the project's
-  // current output files to the KGS file store (+ B2 convert for convertToGraph
-  // stages). Replaces the old auto-upload-after-run.
+  // current output files to the media file store. Replaces the old
+  // auto-upload-after-run.
   app.post('/api/pipelines/upload', async (req, res) => {
     try {
       const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
@@ -1438,7 +1447,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       if (!project) return res.status(404).json({ error: 'project not found' });
       if (!isKgsProject(project)) {
         return res.status(400).json({
-          error: 'project is not a KGS app; pull it first with `od kg pull <project-id>`',
+          error: 'project is not a pipeline-eligible app; pull it first via the web UI (Pull all).',
         });
       }
       const workflowId = typeof req.body?.workflowId === 'string' ? req.body.workflowId : undefined;
@@ -1451,6 +1460,17 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
         rawTerminal !== 'both'
       ) {
         return res.status(400).json({ error: "terminal must be 'ui-html', 'ui-react', 'ui-react-ds' or 'both'" });
+      }
+      // Payload names a held terminal TƯỜNG MINH (2026-08 hold — HELD_STAGE_IDS
+      // in pipelines.ts) → 400 rather than silently dropping it. An OMITTED
+      // `terminal` is not "explicit": it falls through to `selectRunStages`
+      // below (via `runWorkflowAll`), which drops any held id from the plan
+      // without erroring — see that function's docblock.
+      if (rawTerminal !== undefined) {
+        const wantedTerminalIds = rawTerminal === 'both' ? ['ui-html', 'ui-react'] : [rawTerminal as string];
+        if (wantedTerminalIds.some((id) => getPipelineDef(id)?.heldFromRun)) {
+          return res.status(400).json({ error: STAGE_HELD_MSG, code: 'STAGE_HELD' });
+        }
       }
       const input = typeof req.body?.input === 'string' ? req.body.input : undefined;
       let source: PipelineRunSource | undefined;
@@ -1508,6 +1528,13 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       // gate bên dưới đọc `.lean` từ CHÍNH object này.
       const bodyRunConfig = runAllConfigFromBody(req.body);
       const stageIds = bodyRunConfig.stageIds;
+      // Người dùng tick tay TƯỜNG MINH một stage held (2026-08 hold —
+      // HELD_STAGE_IDS in pipelines.ts) → 400 ngay, cùng lý do với nhánh
+      // `terminal` ở trên: một lựa chọn tường minh mà chạy lặng lẽ mất đúng
+      // stage đó là hỏng im lặng.
+      if (stageIds && stageIds.some((id) => getPipelineDef(id)?.heldFromRun)) {
+        return res.status(400).json({ error: STAGE_HELD_MSG, code: 'STAGE_HELD' });
+      }
       if (stageIds && stageIds.length > 0) {
         // CHẶN NGAY một lựa chọn thiếu phụ thuộc, thay vì để nó chạy rồi hỏng:
         // run-all gọi thẳng runPipeline và KHÔNG hỏi gating (xem runWorkflowAll
@@ -1628,13 +1655,19 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     try {
       const def = getPipelineDef(req.params.id);
       if (!def) return res.status(404).json({ error: 'pipeline not found' });
+      // Fail-closed on a held stage (2026-08 hold — HELD_STAGE_IDS in
+      // pipelines.ts): checked right after the id resolves, before any
+      // project/gating work, mirroring BAS_SOURCE_LOCKED's position below.
+      if (def.heldFromRun) {
+        return res.status(503).json({ error: STAGE_HELD_MSG, code: 'STAGE_HELD' });
+      }
       const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
       if (!projectId) return res.status(400).json({ error: 'projectId is required' });
       const project = getProject(db, projectId);
       if (!project) return res.status(404).json({ error: 'project not found' });
       if (!isKgsProject(project)) {
         return res.status(400).json({
-          error: 'project is not a KGS app; pull it first with `od kg pull <project-id>`',
+          error: 'project is not a pipeline-eligible app; pull it first via the web UI (Pull all).',
         });
       }
       const { state, docsReady } = await loadMergedState(projectId);

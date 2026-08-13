@@ -2,7 +2,7 @@
 // Shared Projects; Pipeline Studio không còn là một approval gate.
 //
 // Hàm này THUẦN (không I/O): caller nạp `remote` (loadRemoteProjects, có memo)
-// rồi truyền vào. Nhờ vậy ba case test được bằng mảng, không cần dựng KGS/media
+// rồi truyền vào. Nhờ vậy ba case test được bằng mảng, không cần dựng media
 // — và quan trọng hơn: một quyết định sai ở đây khiến mirror-prune chạy vào
 // nhầm đích, nên nó phải là thứ dễ test nhất trong cả luồng.
 
@@ -67,7 +67,7 @@ export interface ResolvePushDestInput {
   projectId: string;
   projectName?: string | undefined;
   metadata?: unknown;
-  /** Danh sách dự án từ xa (KGS ⊕ media). */
+  /** Danh sách dự án từ xa (media-service). */
   remote: readonly RemoteProject[];
   /** Chủ nhân của push (machine user), used to register Shared Projects. */
   submitter: StagingActor | null;

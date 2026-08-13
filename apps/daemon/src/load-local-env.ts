@@ -1,11 +1,11 @@
 // Minimal local .env loader. The daemon reads configuration straight from
 // process.env (there is intentionally no dotenv dependency). For local dev we
-// still want persistent vars — notably the local KGS creds (KGS_URL /
-// KGS_APP_ID / KGS_TENANT / KGS_API_KEY) so `od kg pull` works without
-// re-exporting them on every launch. This fills MISSING vars from gitignored
-// `.env.local` (secrets) then committed `.env` (non-secret defaults) at the
-// open-design repo root. The real process environment always wins, so an
-// explicit `export KGS_API_KEY=…` still overrides the file.
+// still want persistent vars — notably the local media-service config
+// (MEDIA_URL / MEDIA_APP_ID / IDENTITY_URL) — without re-exporting them on
+// every launch. This fills MISSING vars from gitignored `.env.local`
+// (secrets) then committed `.env` (non-secret defaults) at the open-design
+// repo root. The real process environment always wins, so an explicit
+// `export MEDIA_URL=…` still overrides the file.
 //
 // Imported for its side effect at the top of the daemon entry points
 // (sidecar/index.ts, cli.ts).

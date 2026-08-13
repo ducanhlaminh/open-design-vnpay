@@ -32,14 +32,6 @@ export interface PipelineDef {
   /** Pipeline ids that must be `succeeded` before this one becomes active. */
   dependsOn: string[];
   /**
-   * B2 auto-convert: when true, after a successful run the daemon runs this
-   * skill's converter (skills/<skillId>/scripts/push_to_kgs.py) on the produced
-   * JSON output to push it into the KGS graph, then marks those files
-   * CONVERTED. Stages without a converter (or that stay file-only, e.g. raw
-   * docs) leave this false — the pipeline never depends on graph conversion.
-   */
-  convertToGraph?: boolean;
-  /**
    * Output path patterns this stage produces in the project cwd. Used by the
    * MANUAL upload to attribute each file to its stage (and decide B2). Patterns:
    * `dir/` = anything under that dir; `-suffix.json` / `*x` = endsWith; else an
@@ -83,11 +75,10 @@ export interface PipelineDef {
   acceptsUpload?: boolean;
   /**
    * When true, this stage's outputs stay LOCAL — they are never pushed to the
-   * media file store nor graph-converted on upload, so they do NOT round-trip to
-   * another device via push-all/pull-all. Reserve this for genuinely
-   * device-local scratch outputs; a stage's user-facing DELIVERABLE must stay
-   * syncable (file-only is fine — that's `convertToGraph` unset, not localOnly).
-   * No stage currently sets this.
+   * media file store on upload, so they do NOT round-trip to another device
+   * via push-all/pull-all. Reserve this for genuinely device-local scratch
+   * outputs; a stage's user-facing DELIVERABLE must stay syncable (file-only
+   * is fine — that's the default, not localOnly). No stage currently sets this.
    */
   localOnly?: boolean;
   /**
@@ -123,24 +114,50 @@ export interface PipelineDef {
    * pin a stale template over a newer toolkit on the pulling device.
    */
   syncExclude?: string[];
+  /**
+   * 2026-08 product decision (web-first): this stage cannot be RUN from any
+   * surface (UI, API, CLI, run-all) while the flag is set — everything else
+   * about it stays untouched (registry entry, `outputs`, `syncExclude`,
+   * `stagesForOutput` attribution, `relClearedByRegen`, history). A held
+   * stage's PAST output is still a real, syncable, attributable deliverable;
+   * only NEW runs are refused. Derived from `HELD_STAGE_IDS` below — never set
+   * this by hand on a `PipelineDef` literal, so the hold list has exactly one
+   * place that names ids. Reopen a stage by removing its id from
+   * `HELD_STAGE_IDS`; nothing else in this file needs to change.
+   */
+  heldFromRun?: true;
 }
 
-// ONE docs→UI-Spec workflow: three shared upstream stages (jira-ingest →
+// The SINGLE list that decides which stage ids are held from running (see
+// `PipelineDef.heldFromRun`'s docblock). Every consumer — `selectRunStages`
+// below, `pipeline-routes.ts`'s run/run-all routes, `cli.ts`'s pipeline
+// subcommands, and the web UI (via the `held` field `listPipelineStatus`
+// derives from this) — reads the hold state off `PipelineDef.heldFromRun`
+// (or, for `cli.ts`, off this exported constant directly), never off a second
+// hand-copied id array. Un-hold a stage by deleting its id here.
+export const HELD_STAGE_IDS = ['ui-html', 'ui-react', 'ui-react-ds'] as const;
+const HELD_STAGE_ID_SET: ReadonlySet<string> = new Set(HELD_STAGE_IDS);
+
+// ONE docs→UI-Spec workflow: three shared upstream stages (confluence-ingest →
 // customer-journey-spec → ux-spec) feeding TWO terminal OPTIONS — generate the
 // UI-Spec as an interactive HTML prototype (`ui-html`) or as a real React app
 // (`ui-react`). Both terminals depend on the shared `ux` stage; a project may
 // run either or both. (History: merged 2026-07 from the twin docs-to-html +
 // docs-to-react workflows, whose upstream stages duplicated the same skills
 // under workflow-scoped ids. The former Workflow A "docs → UI" — react-shadcn
-// screen.json, KGS graph projection via convertToGraph — was removed earlier.)
-export const PIPELINE_DEFS: readonly PipelineDef[] = [
+// screen.json, KGS graph projection — was removed earlier.)
+// Raw registry literal. `PIPELINE_DEFS` below derives `heldFromRun` from
+// `HELD_STAGE_IDS` for the ids that list names, so a stage's hold state is
+// never hand-duplicated onto its own literal entry here.
+const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // There is NO feature-analysis step: the Customer Journey is authored
   // DIRECTLY from the step-1 docs MD, and UX Spec is derived from those docs +
   // the journey.
   //   docs → cj (customer journey from docs) → ux-research → ux → ux-review → ui-html | ui-react
   // Confluence sources run DETERMINISTICALLY (daemon fetches via the BAS
-  // gateway — no agent, see runDocsDeterministic in server.ts); the skill/agent
-  // path remains only for JIRA key / JQL input. BAS source: locked (maintenance).
+  // gateway — no agent, see runDocsDeterministic in server.ts). WP8 (2026-08)
+  // removed the legacy JIRA agent path entirely — non-Confluence input now
+  // fails fast instead of falling through to an agent. BAS source: locked (maintenance).
   // `docs/context/` holds the LINK-FOLLOWED pages (bas-client.ts): background
   // reading the ux stage is told to understand but never to build screens from.
   // They are a real output of this stage and must be declared as one — the same
@@ -148,13 +165,13 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // stage-scoped pull, so leaving it out hid them from the rail AND kept them
   // off the media store, which left a second machine's ux run with none of the
   // domain background it is told to read.
-  { id: 'docs',             name: 'Tài liệu (nạp)',                skillId: 'jira-ingest',           dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
+  { id: 'docs',             name: 'Tài liệu (nạp)',                skillId: 'confluence-ingest',     dependsOn: [],                                       outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id' },
   // Customer Journey built straight from the ingested docs MD (no feature-analysis
   // upstream). Each STAGE carries `sources[]` — the key text excerpts from the
   // source MD — which the SpecPreview surfaces under each stage card.
-  // FILE-ONLY (no `convertToGraph`): every stage produces local file
-  // deliverables synced to the media store; nothing is projected into the
-  // KGS graph anymore (that was the removed react-shadcn workflow's job).
+  // FILE-ONLY: every stage produces local file deliverables synced to the
+  // media store; there is no graph store anymore (that was the removed
+  // react-shadcn workflow's job).
   // ── System map: which APPS the docs describe, and where they hand off ─────
   // Multi-app projects (a customer web app + a backoffice, say) are ONE system:
   // the docs describe flows that cross between them. Everything downstream runs
@@ -196,9 +213,9 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // authored screens and evaluates them against usability heuristics, emitting
   // a review report under `./heuristic-review/`. Both terminals depend on THIS
   // stage (not `ux` directly), so the review must run once before any UI is
-  // built — one gate protects both html + react. FILE-ONLY (convertToGraph
-  // unset): the report is a local deliverable synced to the media store, never
-  // projected into KGS. WCAG pixel gates are judged later, post-render.
+  // built — one gate protects both html + react. FILE-ONLY: the report is a
+  // local deliverable synced to the media store. WCAG pixel gates are judged
+  // later, post-render.
   { id: 'ux-review',        name: 'UX Heuristic Review',       skillId: 'heuristic-eval',        dependsOn: ['ux'], outputs: ['heuristic-review/'], skippedInLeanRun: true, usesDesignSystemCriteria: true },
   // ── Terminal option A: UI-Spec (HTML prototype) ────────────────────────────
   // ui-html also activates `frontend-design` (UI/UX craft) so the agent designs
@@ -206,7 +223,7 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // into craft rules (anti-ai-slop, laws-of-ux, typography, color, animation).
   // The `prototype/` HTML output IS the deliverable, so it syncs to the
   // media file store like every other stage (push-all/pull-all cross-device
-  // handoff). It is file-only — `convertToGraph` stays unset (not graph data).
+  // handoff). It is file-only (not graph data).
   // GATE 2 (post-render WCAG) rides along as `wcag-lint`: after the prototype is
   // produced, the agent runs the bundled static linter and writes
   // ./prototype/a11y-report.json (measured contrast / touch / manual notes).
@@ -219,11 +236,10 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   // ── Terminal option B: UI-Spec (React app) ─────────────────────────────────
   // The `ui-react` skill emits a REAL, buildable Vite + React 19 + Tailwind v4
   // shadcn app (built in an isolated Docker container) rather than static HTML.
-  // FILE-ONLY like ui-html: the react/ deliverable syncs to the media store but
-  // is never projected into the KGS graph (no convertToGraph).
+  // FILE-ONLY like ui-html: the react/ deliverable syncs to the media store.
   // Terminal ui-react activates the same design/craft skills as ui-html so the
   // app is genuinely designed; the built `react/` (source + dist) IS the
-  // deliverable and syncs to the media store (file-only, convertToGraph unset).
+  // deliverable and syncs to the media store (file-only).
   // Sync policy for the react/ tree: what the agent authored (src/screens,
   // App.tsx, main.tsx, index.css, flow.json) AND the built `dist/` travel.
   // dist/ syncs because remote consumers (pipeline-studio) preview the app
@@ -274,16 +290,17 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
     ] },
 
   // ── `docs-to-prd` workflow — fully INDEPENDENT of docs-to-ui ───────────────
-  // Same three ingredient skills as docs-to-ui's docs/cj/ux-research (jira-ingest,
-  // customer-journey-spec, ux-research — identical skills, so identical
-  // behavior), but under THEIR OWN pipeline ids and folder namespace. This is
+  // Same three ingredient skills as docs-to-ui's docs/cj/ux-research
+  // (confluence-ingest, customer-journey-spec, ux-research — identical
+  // skills, so identical behavior), but under THEIR OWN pipeline ids and
+  // folder namespace. This is
   // deliberate: docs-to-ui's output must never be usable as docs-to-prd's
   // input (or vice versa) — a project reviewing a PRD re-ingests its own docs
   // independently of whatever it separately ran for UI generation. Keep every
   // field here in sync with the `docs`/`cj`/`ux-research` defs above by hand;
   // there is no shared base def to factor out because `PipelineDef.dependsOn`
   // and `outputs` must each point at THIS workflow's own sibling ids.
-  { id: 'prd-docs',         name: 'Tài liệu (nạp)',                skillId: 'jira-ingest',           dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL' },
+  { id: 'prd-docs',         name: 'Tài liệu (nạp)',                skillId: 'confluence-ingest',     dependsOn: [],              outputs: ['docs/jira/', 'docs/confluence/', 'docs/context/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id' },
   // NO skippedInLeanRun anywhere in docs-to-prd: lean is a docs-to-ui-only
   // concept. The journey + research here are the requirements review's evidence
   // base. The Run-all lean toggle is therefore inert for this
@@ -298,17 +315,17 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   { id: 'prd-review',       name: 'PRD Requirements Review',  skillId: 'docs-mockup-review',    dependsOn: ['prd-ux-research'], outputs: ['review/'], usesDesignSystemCriteria: true },
 
   // ── `docs-review` workflow — fully INDEPENDENT of docs-to-ui AND docs-to-prd ─
-  // Three stages: ingest (same jira-ingest skill, its own dr-docs id/folder —
+  // Three stages: ingest (same confluence-ingest skill, its own dr-docs id/folder —
   // the independence rule above applies here too, so a docs-to-ui or
   // docs-to-prd ingest never counts as "already done" for this workflow), then
   // a review stage that clones every ingested page into `review/docs/` and edits
   // the CLONE against an optional `criteria/` folder the user drops in via
   // `od files upload --as docs-review/criteria/<name>.md` (criteria/ is not a
   // stage output of anything — see stagesForOutput — so it survives every
-  // re-run of dr-review untouched). skillId MUST stay 'jira-ingest' for
+  // re-run of dr-review untouched). skillId MUST stay 'confluence-ingest' for
   // dr-docs: runDocsDeterministic (server.ts) only takes the tool-only
   // Confluence path for that exact skillId.
-  { id: 'dr-docs',          name: 'Tài liệu (nạp)',                   skillId: 'jira-ingest',           dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id, or JIRA project key / JQL', acceptsUpload: true },
+  { id: 'dr-docs',          name: 'Tài liệu (nạp)',                   skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', acceptsUpload: true },
   // Bước GIỮA: đối chiếu component. Đọc `docs/` (bản GỐC, chưa review) và với
   // MỖI màn hình trong tài liệu, liệt kê phần tử nào dùng component nào rồi
   // đối chiếu với danh mục hợp lệ `criteria/components.md`, ghi ra
@@ -338,13 +355,21 @@ export const PIPELINE_DEFS: readonly PipelineDef[] = [
   { id: 'dr-confirm',       name: 'Xác nhận hoàn tất',         skillId: 'docs-review-confirm',   dependsOn: ['dr-review'], outputs: ['confirmation/'] },
 ];
 
+// The registry every consumer imports. Identical to `PIPELINE_DEFS_BASE`
+// except each `HELD_STAGE_IDS` entry additionally carries `heldFromRun: true`
+// — see `PipelineDef.heldFromRun`'s docblock for what that flag does and how
+// to reopen a stage.
+export const PIPELINE_DEFS: readonly PipelineDef[] = PIPELINE_DEFS_BASE.map((d) =>
+  HELD_STAGE_ID_SET.has(d.id) ? { ...d, heldFromRun: true } : d,
+);
+
 // Named docs→output flows. Each is an ordered subset of PIPELINE_DEFS. The
 // UI's workflow tab bar auto-hides when there is only one entry.
 //
 // Each pipeline id belongs to EXACTLY one workflow — `docs-to-ui` and
 // `docs-to-prd` are fully independent even though `prd-docs`/`prd-cj`/
 // `prd-ux-research` run the identical skills as `docs`/`cj`/`ux-research`
-// (jira-ingest / customer-journey-spec / ux-research): a project ingesting
+// (confluence-ingest / customer-journey-spec / ux-research): a project ingesting
 // docs for the PRD review must not see docs-to-ui's UI-generation run as
 // "already done", and vice versa — no folder, no state, no output crosses
 // between them. If you add a new workflow that genuinely wants a stage's
@@ -514,9 +539,8 @@ export function stagesForOutput(rel: string): PipelineDef[] {
 }
 
 // Which pipeline owns a produced file, for manual upload stage-attribution
-// (`stage` tag + `convertToGraph` decision). First match — workflow-scoped when
-// the path is namespaced, else first across all stages. Undefined → not a
-// declared stage output.
+// (`stage` tag). First match — workflow-scoped when the path is namespaced,
+// else first across all stages. Undefined → not a declared stage output.
 export function stageForOutput(rel: string): PipelineDef | undefined {
   return stagesForOutput(rel)[0];
 }
@@ -848,6 +872,14 @@ export function selectRunStages(
     }
   }
   if (opts.docsFromUpload) stages = stages.filter((id) => !getPipelineDef(id)?.acceptsUpload);
+  // HELD stages never make it into a run-all plan — manual (`stageIds`) and
+  // automatic (`lean`/`skipSucceeded`) branches both funnel through here, so
+  // this one filter is what keeps every run-all caller (route, CLI, the
+  // no-selection default) from ever spawning one. Ticking a held id by hand is
+  // a route-level 400 (`pipeline-routes.ts`) BEFORE this function is even
+  // called; this filter is the belt-and-suspenders guarantee that holds even
+  // if a caller skips that check.
+  stages = stages.filter((id) => !getPipelineDef(id)?.heldFromRun);
   return stages;
 }
 
@@ -1175,6 +1207,10 @@ export function listPipelineStatus(
       status: run?.status ?? 'idle',
       active: computeActive(state, def, mode, explicitSelection, docsReady),
       ...((picked ? !picked.has(def.id) : isStageSkipped(def, mode)) ? { skipped: true as const } : {}),
+      // Orthogonal to `active`/`skipped`: a held stage can still be `active`
+      // (docs-only gate) and still show its past `status` — `held` only tells
+      // a client "don't offer Run for this one" (route also fail-closes it).
+      ...(def.heldFromRun ? { held: true as const } : {}),
       ...(def.inputPlaceholder ? { inputPlaceholder: def.inputPlaceholder } : {}),
       ...(def.acceptsDesignSystem ? { acceptsDesignSystem: true } : {}),
       ...(def.acceptsPlatform ? { acceptsPlatform: true } : {}),

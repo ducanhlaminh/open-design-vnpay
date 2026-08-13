@@ -22,6 +22,70 @@
   font-size: 13px;
 }
 
+/* Execution mode toggle (Host CLI / Docker sandbox) — sits above the rest
+   of the panel, which stays Docker-focused regardless of the active mode so
+   a host-mode user can still prep Docker before switching over. */
+.modeRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 10px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.modeRow h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
+.modeRow p {
+  margin: 2px 0 0;
+}
+
+.modeToggle {
+  flex: none;
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.modeBtn,
+.modeBtnActive {
+  padding: 5px 12px;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 2px);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-muted);
+  transition: background 0.15s var(--pl-ease, ease), color 0.15s var(--pl-ease, ease);
+}
+
+.modeBtn:hover:not(:disabled) {
+  color: var(--text-strong);
+}
+
+.modeBtn:disabled,
+.modeBtnActive:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.modeBtnActive {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
 .statusList {
   list-style: none;
   margin: 8px 0 0;

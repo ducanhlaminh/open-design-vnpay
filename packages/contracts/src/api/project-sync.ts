@@ -24,7 +24,6 @@ export interface ProjectSyncOrigin {
   appId?: string | null;
   /** Present in status diagnostics. The origin picker endpoint only returns visible rows. */
   visibility: 'visible' | 'hidden';
-  inKgs: boolean;
   inMedia: boolean;
   /** Mapping is intentionally best-effort: old origins need not have it. */
   mappingVersion?: number | null;

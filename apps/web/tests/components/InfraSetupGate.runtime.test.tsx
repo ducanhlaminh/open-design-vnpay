@@ -206,3 +206,87 @@ describe('InfraSetupGate runtime selection', () => {
     expect(window.localStorage.getItem('od-infra-setup-done')).toBeNull();
   });
 });
+
+// WP4 (web-first migration): host mode is the default — the gate reads
+// /api/agents instead of the Docker/image/auth-volume wizard above.
+describe('InfraSetupGate host mode (WP4 default)', () => {
+  const fetchMock = vi.fn();
+
+  function hostAgentsResponse(claude: Record<string, unknown> | null) {
+    return jsonResponse({ agents: claude ? [{ id: 'claude', name: 'Claude Code', bin: 'claude', ...claude }] : [] });
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    fetchMock.mockReset();
+    loadConfigMock.mockReturnValue({ agentId: null });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('shows the 2-step host gate with an install hint when the Claude CLI is missing', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) {
+        return jsonResponse({ enabled: false, mode: 'host', hostClaude: { available: false, authStatus: 'missing' } });
+      }
+      if (url.endsWith('/api/agents')) {
+        return hostAgentsResponse({ available: false });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(<InfraSetupGate daemonLive={true} onOpenSettings={vi.fn()} />);
+
+    expect(await screen.findByTestId('infra-setup-gate')).toBeTruthy();
+    expect(screen.getByText('Claude CLI')).toBeTruthy();
+    expect(
+      screen.getByRole('link', { name: /Xem hướng dẫn cài đặt Claude CLI/ }).getAttribute('href'),
+    ).toBe('https://claude.ai/install.sh');
+    expect((screen.getByRole('button', { name: 'Bắt đầu sử dụng' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('shows a login hint when the Claude CLI is installed but not logged in', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) {
+        return jsonResponse({ enabled: false, mode: 'host', hostClaude: { available: true, authStatus: 'missing' } });
+      }
+      if (url.endsWith('/api/agents')) {
+        return hostAgentsResponse({ available: true, authStatus: 'missing', authMessage: 'Chưa đăng nhập Claude CLI.' });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(<InfraSetupGate daemonLive={true} onOpenSettings={vi.fn()} />);
+
+    expect(await screen.findByTestId('infra-setup-gate')).toBeTruthy();
+    expect(screen.getByText('Đăng nhập Claude')).toBeTruthy();
+    expect(screen.getByText('claude /login')).toBeTruthy();
+    expect(screen.getByText(/Chưa đăng nhập Claude CLI\..*Mở terminal và chạy lệnh:/)).toBeTruthy();
+  });
+
+  it('self-dismisses when the host Claude CLI is installed and logged in', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) {
+        return jsonResponse({ enabled: false, mode: 'host', hostClaude: { available: true, authStatus: 'ok' } });
+      }
+      if (url.endsWith('/api/agents')) {
+        return hostAgentsResponse({ available: true, authStatus: 'ok' });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(<InfraSetupGate daemonLive={true} onOpenSettings={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('infra-setup-gate')).toBeNull();
+    });
+  });
+});

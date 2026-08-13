@@ -1,4 +1,4 @@
-import "../load-local-env.js"; // fill missing env (KGS creds) from .env.local before the daemon reads it
+import "../load-local-env.js"; // fill missing env from .env.local before the daemon reads it
 import { APP_KEYS, OPEN_DESIGN_SIDECAR_CONTRACT } from "@open-design/sidecar-proto";
 import { bootstrapSidecarRuntime } from "@open-design/sidecar";
 import { readProcessStamp } from "@open-design/platform";

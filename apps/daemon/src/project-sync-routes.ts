@@ -31,7 +31,6 @@ import {
 import { featureContextBindingFromMetadata } from './app-context-version.js';
 import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import { loadRemoteProjects, PROJECT_LIFECYCLE_PATH } from './kg-sync/remote-registry.js';
-import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { studioConfigOf } from './kg-sync/push-dest.js';
 import { PROJECT_SYNC_PLAN_TTL_MS, ProjectSyncPlanStore, planProjectSync, projectSyncPlanIsFresh, type ProjectSyncSnapshotFile } from './project-sync.js';
 import { stageForOutput } from './pipelines.js';
@@ -165,7 +164,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
 
   const remoteOrigins = async (): Promise<ProjectSyncOrigin[]> => {
     const media = new MediaClient(mediaConfigFromEnv());
-    const rows = await loadRemoteProjects(new KgsClient(kgsConfigFromEnv()), media);
+    const rows = await loadRemoteProjects(media);
     await Promise.all(rows.filter((row) => !row.isApp).map(async (row) => {
       try {
         const config = JSON.parse((await media.downloadFile(row.projectId, 'project.json')).toString('utf8')) as { appId?: unknown };
@@ -174,7 +173,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     }));
     return rows.map((row) => ({
       originId: row.projectId, name: row.name || row.projectId, kind: row.isApp ? 'app' : 'feature',
-      appId: row.appId ?? null, visibility: row.visibility ?? 'visible', inKgs: row.inKgs, inMedia: row.inMedia,
+      appId: row.appId ?? null, visibility: row.visibility ?? 'visible', inMedia: row.inMedia,
       mappingVersion: null,
     }));
   };

@@ -18,6 +18,12 @@ export const API_ERROR_CODES = [
   // volume absent). The run fails loudly instead of silently falling back to
   // an unsandboxed host spawn — see apps/daemon/src/agent-sandbox.ts.
   'AGENT_SANDBOX_UNAVAILABLE',
+  // A Docker-only sandbox endpoint (build/accounts/embedded-login/…) was hit
+  // while the daemon is in host mode (`resolveSandboxConfig().enabled ===
+  // false`, the web-first migration default). 409, not 500 — the caller
+  // asked for a real capability that only makes sense once the sandbox is
+  // turned back on (`od sandbox enable` / OD_SANDBOX=1), not a server fault.
+  'SANDBOX_MODE_HOST',
   'PROJECT_NOT_FOUND',
   // Handoff (`POST /api/projects/:id/handoff`): the requested conversation
   // is not in the project, or has no messages to synthesize a handoff from.

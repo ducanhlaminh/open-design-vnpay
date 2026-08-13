@@ -27,24 +27,51 @@ export interface SandboxRuntimeStatus {
   loginMethod: SandboxRuntimeLoginMethod;
 }
 
+/**
+ * Effective execution mode, derived from `enabled` (`resolveSandboxConfig` /
+ * `OD_SANDBOX`): `'host'` = every run spawns as a host CLI process (default
+ * since the web-first migration); `'sandbox'` = the Docker sandbox owns gated
+ * runs. Kept as its own field (rather than making every consumer re-derive it
+ * from `enabled`) so web/CLI surfaces branch on one canonical value.
+ */
+export type SandboxMode = 'host' | 'sandbox';
+
+/** Host Claude CLI snapshot, always populated regardless of `mode` — cheap
+ *  (file/Keychain probe, no Docker) so the web Settings execution-mode toggle
+ *  can preview host readiness even while sandbox mode is active. */
+export interface SandboxHostClaudeStatus {
+  /** The `claude` binary resolves on PATH. */
+  available: boolean;
+  version?: string | null;
+  authStatus: 'ok' | 'missing' | 'unknown';
+  /** Human (Vietnamese) guidance when not `'ok'` — from `probeClaudeAuthStatus`. */
+  authMessage?: string;
+}
+
 export interface SandboxStatusResponse {
   /** Effective enabled flag (prefs + OD_SANDBOX env override). */
   enabled: boolean;
+  /** Same information as `enabled`, spelled as the mode web/CLI branch on. */
+  mode: SandboxMode;
   /** Agent runtime ids gated into the sandbox (default ['claude']). */
   runtimes: string[];
   /** Skill ids gated into the sandbox (default ['*'] — every run). */
   skills: string[];
   timeoutMinutes: number;
-  /** Docker engine reachable. */
-  dockerOk: boolean;
+  /**
+   * Docker engine reachable. Optional: a future caller/mode may report
+   * status without probing Docker at all; existing responses still always
+   * populate it today.
+   */
+  dockerOk?: boolean;
   /** Expected image tag (od-agent-sandbox:<sandbox.version>). */
   image: string;
-  /** Expected image tag present locally. */
-  imageOk: boolean;
+  /** Expected image tag present locally. Optional, see `dockerOk`. */
+  imageOk?: boolean;
   /** Claude CLI version pinned in the image recipe (sandbox/claude.version). */
   claudeVersion: string | null;
-  /** Shared auth volume exists. */
-  authVolumeOk: boolean;
+  /** Shared auth volume exists. Optional, see `dockerOk`. */
+  authVolumeOk?: boolean;
   /**
    * Auth volume holds Claude credentials. Probed with a short-lived
    * container, so only when docker + image are available; null = not probed.
@@ -60,6 +87,8 @@ export interface SandboxStatusResponse {
    * version pins.
    */
   builderDir: string;
+  /** Host Claude CLI snapshot — see `SandboxHostClaudeStatus`. */
+  hostClaude: SandboxHostClaudeStatus;
 }
 
 // ── Claude account switching (Docker-only sandbox) ──────────────────────────

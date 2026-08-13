@@ -49,7 +49,7 @@ phiên bản là thứ đầu tiên rụng.
 
 Cụ thể, khi `staged` các bước sau bị bỏ: `ensureWorkspace`, `ensureProjectRegistered`,
 `convertStageToGraph` (server.ts), và `ensureWorkspace` + `pushProject` ở tầng route
-(kg-sync-routes.ts). Lần push **đầu tiên sau khi được duyệt** chạy như case 3 và làm hết những
+(remote-projects-routes.ts). Lần push **đầu tiên sau khi được duyệt** chạy như case 3 và làm hết những
 việc đó.
 
 ## Vì sao nonce là bắt buộc
@@ -87,7 +87,7 @@ Phía Open Design (`apps/daemon/src/`):
 | `kg-sync/push-plan.ts` | Nạp registry (memo 30s), reconcile kết quả duyệt, gọi resolver. |
 | `kg-sync/staging-store.ts` | Đọc/ghi `request.json` + biên nhận qua MediaClient. |
 | `server.ts` `uploadProjectFiles` | Mọi thao tác media chạy trên `plan.destId`. |
-| `kg-sync-routes.ts` `push-all` | Phân giải plan MỘT lần/dự án rồi truyền xuống. |
+| `remote-projects-routes.ts` `push-all` | Phân giải plan MỘT lần/dự án rồi truyền xuống. |
 
 **Chỗ nguy hiểm nhất**: `uploadProjectFiles` có mirror-prune — nó **xoá** file trên store không
 còn bản local. Bỏ sót một chỗ khi đổi sang `destId` nghĩa là một push chưa duyệt đi liệt kê rồi

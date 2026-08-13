@@ -1,10 +1,11 @@
-// Pipelines page (docs → output). A per-KGS-app, dependency-gated flow of
+// Pipelines page (docs → output). A per-project, dependency-gated flow of
 // pipelines, rendered as a numbered vertical stepper that mirrors the actual
 // DAG of the docs-to-ui workflow: docs → cj → ux → then ONE step with two
 // UI-Spec options (ui-html | ui-react) — run either or both.
 //
-// The "project" here is a KGS app — a project pulled from the central KGS
-// (`od kg pull`), whose id is the KGS project_id. Runs happen in the BACKGROUND:
+// The "project" here is a pipeline-eligible project — created here or pulled
+// from the shared media-service store, whose id is the shared project_id.
+// Runs happen in the BACKGROUND:
 // pressing Run seeds a conversation + starts the agent on the daemon and we stay
 // on this page (the daemon already runs async; we just poll status). Each row
 // then exposes Status (compact run modal), Open chat (prompt more), and Quick
@@ -88,7 +89,7 @@ const STATUS_LABEL: Record<string, string> = {
 // Blurbs describe WHAT the step does (not ordering) — the stepper's gating shows
 // the DAG, which differs between workflows.
 const PIPELINE_META: Record<string, { icon: IconName; blurb: string }> = {
-  'jira-ingest': { icon: 'import', blurb: 'Pull Confluence / JIRA sources into clean Markdown docs.' },
+  'confluence-ingest': { icon: 'import', blurb: 'Pull Confluence sources into clean Markdown docs.' },
   'feature-analysis': { icon: 'search', blurb: 'Extract the feature set and requirements from the ingested docs.' },
   'ux-spec': { icon: 'draw', blurb: 'Generate UX specifications from the features and customer journey.' },
   'docs-map': { icon: 'blocks', blurb: 'Phân loại tài liệu theo app và ghi lại các điểm bàn giao giữa chúng — một hệ thống nhiều app, không phải nhiều sản phẩm rời. Chạy một lần cho cả dự án; sửa tay được ở docs/system-map.json.' },
@@ -118,7 +119,7 @@ const PIPELINE_META: Record<string, { icon: IconName; blurb: string }> = {
 // The merged workflow's stages reuse the upstream skills under short ids; map
 // them to the canonical meta so each step gets the right icon + blurb.
 const META_ALIAS: Record<string, string> = {
-  docs: 'jira-ingest',
+  docs: 'confluence-ingest',
   cj: 'customer-journey',
   ux: 'ux-spec',
 };
@@ -361,19 +362,32 @@ export function resolveStageRunConfig(
  *  the same "what does this payload run" question `stagesLosingOutputForRunAll`
  *  below answers as its first step, factored out so `staleInputsForRunAll`
  *  (further below) can ask it too without re-deriving the two daemon
- *  decisions it mirrors. */
-function willRunStageIdsForRunAll(
-  pipelines: Pick<PipelineView, 'id' | 'status' | 'skipped'>[],
+ *  decisions it mirrors.
+ *
+ *  Mirrors `selectRunStages`' held-stage filter (2026-08 hold — daemon
+ *  `PipelineView.held`, see `HELD_STAGE_IDS` in `pipelines.ts`) as its LAST
+ *  step, same as the daemon applies it last: a held id can reach this point
+ *  through either branch above (a stale saved `stageIds`, or the default
+ *  `terminal` fallback) and must never show up as "will run". Reads `held`
+ *  straight off the pipeline view the caller passed in — no hard-coded id
+ *  list here. */
+export function willRunStageIdsForRunAll(
+  pipelines: Pick<PipelineView, 'id' | 'status' | 'skipped' | 'held'>[],
   payload: Pick<RunAllPayload, 'stageIds' | 'terminal' | 'skipSucceeded'>,
 ): string[] {
   const manualIds = (payload.stageIds ?? []).filter((id) => pipelines.some((p) => p.id === id));
-  if (manualIds.length > 0) return manualIds;
-  const wanted = new Set(payload.terminal === 'both' ? ['ui-html', 'ui-react'] : [payload.terminal]);
-  return pipelines
-    .filter((p) => p.skipped !== true)
-    .filter((p) => !UI_TERMINAL_STAGE_IDS.has(p.id) || wanted.has(p.id))
-    .filter((p) => !payload.skipSucceeded || p.status !== 'succeeded')
-    .map((p) => p.id);
+  const base = manualIds.length > 0
+    ? manualIds
+    : (() => {
+        const wanted = new Set(payload.terminal === 'both' ? ['ui-html', 'ui-react'] : [payload.terminal]);
+        return pipelines
+          .filter((p) => p.skipped !== true)
+          .filter((p) => !UI_TERMINAL_STAGE_IDS.has(p.id) || wanted.has(p.id))
+          .filter((p) => !payload.skipSucceeded || p.status !== 'succeeded')
+          .map((p) => p.id);
+      })();
+  const heldIds = new Set(pipelines.filter((p) => p.held === true).map((p) => p.id));
+  return base.filter((id) => !heldIds.has(id));
 }
 
 /** Human NAMES of every stage that will lose its existing result if `payload`
@@ -400,7 +414,7 @@ function willRunStageIdsForRunAll(
  *  straight through, nothing to warn about" (see `must_not`: never ask when
  *  there is nothing to lose). */
 export function stagesLosingOutputForRunAll(
-  pipelines: Pick<PipelineView, 'id' | 'name' | 'status' | 'dependsOn' | 'skipped'>[],
+  pipelines: Pick<PipelineView, 'id' | 'name' | 'status' | 'dependsOn' | 'skipped' | 'held'>[],
   payload: Pick<RunAllPayload, 'stageIds' | 'terminal' | 'skipSucceeded'>,
 ): string[] {
   const manualIds = (payload.stageIds ?? []).filter((id) => pipelines.some((p) => p.id === id));
@@ -553,7 +567,7 @@ export function PipelinesView() {
   const [demoBusy, setDemoBusy] = useState(false);
   const [figmaCaptureBusy, setFigmaCaptureBusy] = useState(false);
   const [figmaAuditBusy, setFigmaAuditBusy] = useState(false);
-  // Project picker controls — with many KGS projects the raw card grid became
+  // Project picker controls — with many projects the raw card grid became
   // a wall pushing the actual pipeline flow below the fold.
   const [projectSearch, setProjectSearch] = useState('');
   const [showAllProjects, setShowAllProjects] = useState(false);
@@ -774,7 +788,8 @@ export function PipelinesView() {
     })();
   }, []);
 
-  // The selectable "projects" are KGS apps pulled from KGS, not chat workspaces.
+  // The selectable "projects" are pipeline apps (created here or pulled from
+  // the shared media-service store), not chat workspaces.
   // Progress badges are scoped to the active workflow, so refetch on switch.
   const loadProjects = useCallback(async () => {
     if (!workflowId) return;
@@ -941,10 +956,10 @@ export function PipelinesView() {
     return () => window.clearInterval(id);
   }, [anyProjectRunning, loadProjects]);
 
-  // Pull/push ALL KGS apps at once (not per-project). Pull refreshes the app list.
+  // Pull/push ALL projects at once (not per-project). Pull refreshes the app list.
   // `projectIds` narrows to the projects chosen in the Pull all / Push all modal;
-  // `stages` narrows which pipelines' OUTPUT FILES travel (graph stays whole-
-  // project). Either omitted → legacy everything.
+  // `stages` narrows which pipelines' OUTPUT FILES travel. Either omitted →
+  // legacy everything.
   const syncAll = async (kind: 'pull' | 'push', selection?: ContextTransferSelection, stages?: string[]) => {
     setSyncBusy(kind);
     setError(null);
@@ -1304,6 +1319,17 @@ export function PipelinesView() {
   // first planned stage to running; the poller tracks the rest of the chain.
   const startRunAll = async (payload: RunAllPayload) => {
     if (!projectId) return;
+    // 2026-08 hold (daemon `PipelineView.held`, see `HELD_STAGE_IDS` in
+    // pipelines.ts): never send an explicit `terminal`/`stageIds` entry that
+    // names a held stage — the daemon route 400s a request that does (defense-
+    // in-depth for direct API/CLI callers), so the UI must not be the one
+    // producing that request. Omitting `terminal` entirely (rather than
+    // sending a held one) still runs the rest of the chain — the daemon's
+    // `selectRunStages` silently drops a held id from an unspecified plan.
+    const heldIds = new Set(pipelines.filter((p) => p.held === true).map((p) => p.id));
+    const terminalIds = payload.terminal === 'both' ? ['ui-html', 'ui-react'] : [payload.terminal];
+    const terminalHeld = terminalIds.some((id) => heldIds.has(id));
+    const stageIdsForRequest = (payload.stageIds ?? []).filter((id) => !heldIds.has(id));
     const res = await fetch('/api/pipelines/run-all', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1313,12 +1339,12 @@ export function PipelinesView() {
         ...(payload.input ? { input: payload.input } : {}),
         ...(payload.confluencePages?.length ? { confluencePages: payload.confluencePages } : {}),
         ...(payload.appPool?.paths?.length ? { appPool: payload.appPool } : {}),
-        terminal: payload.terminal,
+        ...(terminalHeld ? {} : { terminal: payload.terminal }),
         platform: payload.platform,
         ...(payload.targets?.length ? { targets: payload.targets } : {}),
         designSystemId: payload.designSystemId,
         ...(payload.designSystemByTarget ? { designSystemByTarget: payload.designSystemByTarget } : {}),
-        ...(payload.stageIds?.length ? { stageIds: payload.stageIds } : {}),
+        ...(stageIdsForRequest.length ? { stageIds: stageIdsForRequest } : {}),
         ...(payload.skipSucceeded ? { skipSucceeded: true } : {}),
         ...(payload.lean ? { lean: true } : {}),
         ...(payload.followLinks === false ? { followLinks: false } : {}),
@@ -1696,6 +1722,7 @@ export function PipelinesView() {
     dependsOn: p.dependsOn,
     status: p.status,
     ...(p.skipped === true ? { skipped: true } : {}),
+    ...(p.held === true ? { held: true } : {}),
   }));
   // Rail nói ĐÚNG cái nút "Chạy pipeline" sẽ chạy, không phải cái modal sẽ tick
   // sẵn khi mở: chưa lưu `stageIds` lần nào thì lần chạy tới vẫn theo đường cũ
@@ -2022,7 +2049,7 @@ export function PipelinesView() {
           động CHẠY duy nhất và chạy THẲNG bằng cấu hình đã lưu (rail hiển thị
           đúng giá trị này); modal chỉ để CẤU HÌNH — mở từ "Đổi" trên rail, hoặc
           tự mở khi bấm Chạy mà chưa có nguồn tài liệu. */}
-      {/* Req 1 + 2: KGS project selection cards + New project card.
+      {/* Req 1 + 2: project selection cards + New project card.
           UX for many projects: search + smart order (selected → running →
           in-progress → untouched → complete) + collapsed grid (first
           PROJECT_CARD_LIMIT cards) with an explicit "Show all" toggle. */}
@@ -2242,6 +2269,12 @@ export function PipelinesView() {
               const anyDone = opts.some((o) => o.status === 'succeeded');
               const active = opts.some((o) => o.active);
               const groupStatus = anyRunning ? 'running' : anyDone ? 'succeeded' : 'idle';
+              // 2026-08 hold (daemon `PipelineView.held`) — derived from the API
+              // response, never a hard-coded id list here. Past output (anyDone)
+              // must stay viewable: the Run button still opens the picker so the
+              // user can reach "Xem kết quả"; only a BRAND NEW run is blocked
+              // (each option inside the picker disables its own Run/Chạy lại).
+              const allHeld = opts.every((o) => o.held === true);
               return (
                 <li
                   key={opts.map((o) => o.id).join('+')}
@@ -2273,6 +2306,15 @@ export function PipelinesView() {
                       <div className="pl-step__heading">
                         <span className="pl-step__name">UI-Spec</span>
                         {isNext ? <span className="pl-step__next">Bước tiếp theo</span> : null}
+                        {allHeld ? (
+                          <span
+                            className="pl-step__next"
+                            style={{ background: 'var(--warn-weak, #fff3e0)', color: 'var(--warn, #b45309)' }}
+                            title={t('pipelines.held.tooltip')}
+                          >
+                            {t('pipelines.held.badge')}
+                          </span>
+                        ) : null}
                         {opts.map((o) => (
                           <span key={o.id} className={`pl-status pl-status--${o.status}`}>
                             {uiSpecOptionLabel(o)}: {STATUS_LABEL[o.status] ?? o.status}
@@ -2317,8 +2359,12 @@ export function PipelinesView() {
                         type="button"
                         className="pl-btn pl-btn--run"
                         onClick={() => setUiSpecPickerOpen(true)}
-                        disabled={!active}
-                        title="Chọn định dạng UI-Spec (HTML / React) rồi chạy"
+                        // Held + chưa từng chạy: không còn gì để mở picker cho —
+                        // vô hiệu hoá hẳn. Held + đã có kết quả cũ vẫn mở được
+                        // (picker cho "Xem kết quả"; Run/Chạy lại của từng option
+                        // tự vô hiệu hoá bên trong).
+                        disabled={!active || (allHeld && !anyDone)}
+                        title={allHeld ? t('pipelines.held.tooltip') : 'Chọn định dạng UI-Spec (HTML / React) rồi chạy'}
                       >
                         <Icon name={anyRunning ? 'spinner' : 'play'} size={14} />
                         <span>{anyRunning ? 'Đang chạy…' : anyDone ? 'Chạy / kết quả' : 'Chạy'}</span>
@@ -2903,6 +2949,22 @@ export function PipelinesView() {
                           <span className={`pl-status pl-status--${o.status}`}>
                             {STATUS_LABEL[o.status] ?? o.status}
                           </span>
+                          {o.held ? (
+                            <span
+                              style={{
+                                marginLeft: 'auto',
+                                fontSize: 10.5,
+                                fontWeight: 700,
+                                padding: '1px 8px',
+                                borderRadius: 999,
+                                background: 'var(--warn-weak, #fff3e0)',
+                                color: 'var(--warn, #b45309)',
+                              }}
+                              title={t('pipelines.held.tooltip')}
+                            >
+                              {t('pipelines.held.badge')}
+                            </span>
+                          ) : null}
                         </div>
                         <p style={{ fontSize: 12, opacity: 0.75, margin: 0, flex: 1 }}>
                           {o.id === 'ui-react'
@@ -2936,7 +2998,8 @@ export function PipelinesView() {
                             <button
                               type="button"
                               className="pl-btn pl-btn--run"
-                              disabled={busyId === o.id || !o.active}
+                              disabled={busyId === o.id || !o.active || o.held === true}
+                              title={o.held ? t('pipelines.held.tooltip') : undefined}
                               onClick={() => {
                                 setUiSpecPickerOpen(false);
                                 onRunClick(o);

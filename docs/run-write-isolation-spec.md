@@ -159,7 +159,11 @@ if (!sandboxPlan) {
 ### Gate
 
 - App-config / env: `OD_WRITE_ISOLATION = on | off | required`
-  (default Phase 1: `off`; Phase 2: `on` for darwin).
+  (Phase 1 default was `off`; **Phase 2 landed (WP4 of the web-first
+  migration): default is now `on` on darwin**, still `off` on
+  Linux/Windows — those platforms have no enforcement mechanism yet.
+  `OD_WRITE_ISOLATION` always overrides the platform default explicitly,
+  in either direction.)
   `on` = isolate when possible, warn-and-run otherwise;
   `required` = refuse to run unisolated.
 - Per-run override for debugging (chat body flag), owner-only.
@@ -194,9 +198,12 @@ feature folder. The docker tier gets the equivalent via nested mounts:
   builder pure + unit-tested, planner, wrapper), server.ts seam, SSE flag,
   gate. Enable locally; run docs-review, docs-to-ui (ui-html + ui-react),
   docs-to-prd end-to-end; extend allowlist from real denials.
-- **Phase 2 — default on (darwin).** `writableStatePaths` filled in for the
-  runtimes actually used (codex, gemini, opencode…); `required` mode for
-  pipeline runs.
+- **Phase 2 — default on (darwin). DONE (WP4, web-first migration, 2026-08).**
+  `writeIsolationMode()` now defaults to `on` on darwin instead of `off`
+  (still `off` off-darwin, and `OD_WRITE_ISOLATION` still overrides in either
+  direction). Still open from the original Phase 2 scope: `writableStatePaths`
+  filled in for the runtimes actually used (codex, gemini, opencode…), and
+  `required` mode for pipeline runs — neither is wired yet.
 - **Phase 3 — app-workspace scope.** When feature-as-folder lands: writable
   root = `features/<current>`, app root readable; docker tier gets the
   `:ro`/`:rw` nested mounts. Optional: linked dirs become read-only.

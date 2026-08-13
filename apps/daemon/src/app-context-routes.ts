@@ -33,7 +33,6 @@ import {
   readAppContextManifest,
 } from './app-context-version.js';
 import { MediaClient, mediaConfigFromEnv, type LocalSyncFile } from './kg-sync/media-client.js';
-import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { ensureProjectRegistered } from './kg-sync/identity-registry.js';
 import { studioConfigOf } from './kg-sync/push-dest.js';
 import type { RouteDeps } from './server-context.js';
@@ -237,9 +236,6 @@ export function registerAppContextRoutes(app: Express, deps: RegisterAppContextR
       ];
       await media.syncProjectFiles(destination, syncFiles);
       const owner = { id: userId, email: machine.email, name: machine.name, accessToken };
-      await new KgsClient(kgsConfigFromEnv()).ensureWorkspace(destination, localApp.name, owner).catch((error) => {
-        console.warn(`[app-context] workspace registration failed for ${destination}:`, error);
-      });
       await ensureProjectRegistered(destination, localApp.name, owner).catch((error) => {
         console.warn(`[app-context] identity registration failed for ${destination}:`, error);
       });

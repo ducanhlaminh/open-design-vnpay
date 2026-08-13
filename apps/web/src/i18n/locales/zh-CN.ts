@@ -1,6 +1,21 @@
 import type { Dict } from '../types';
 
 export const zhCN: Dict = {
+  'confluenceConfig.title': 'Confluence',
+  'confluenceConfig.subtitle': 'Credential the docs pipeline uses to fetch Confluence pages directly — independent of the external MCP servers below.',
+  'confluenceConfig.baseLabel': 'Confluence base URL',
+  'confluenceConfig.basePlaceholder': 'https://wiki.example.com',
+  'confluenceConfig.tokenLabel': 'Personal Access Token',
+  'confluenceConfig.tokenSaved': 'Saved',
+  'confluenceConfig.tokenSavedTitle': 'A token is already saved for this daemon.',
+  'confluenceConfig.tokenPlaceholderSaved': '•••• saved — enter a new token to replace it',
+  'confluenceConfig.tokenPlaceholderEmpty': 'Paste your Confluence Personal Access Token',
+  'confluenceConfig.saveButton': 'Save',
+  'confluenceConfig.saving': 'Saving…',
+  'confluenceConfig.savedHint': 'Saved.',
+  'confluenceConfig.helpHint': 'Used by the Docs pipeline stages (docs, PRD, review) to fetch Confluence pages — no agent, no MCP server required.',
+  'confluenceConfig.loadError': 'Could not reach the local daemon. Make sure Open Design is running, then reopen this panel.',
+  'confluenceConfig.saveError': 'Save failed. Check that the daemon is running and try again.',
   'common.cancel': '取消',
   'common.save': '保存',
   'common.close': '关闭',
@@ -2463,6 +2478,10 @@ export const zhCN: Dict = {
   // Agent-in-sandbox (settings card + run badge)
   'assistant.sandboxedBadge': '沙箱',
   'assistant.sandboxedTitle': '此次运行在隔离的 Docker 沙箱中执行',
+  'settings.executionModeTitle': '执行模式',
+  'settings.executionModeHint': 'Host CLI 直接使用本机已安装的 Claude CLI 运行（默认）。Docker 沙箱会将代理隔离在容器中运行。',
+  'settings.executionModeHost': 'Host CLI（默认）',
+  'settings.executionModeSandbox': 'Docker 沙箱',
   'settings.sandboxTitle': '代理沙箱',
   'settings.sandboxHint': '在隔离的 Docker 容器中运行被允许的流水线代理。需要 Docker/OrbStack。',
   'settings.sandboxEnabled': '对 {skills} 技能的 {runtimes} 运行启用沙箱',
@@ -2507,4 +2526,6 @@ export const zhCN: Dict = {
   'pipelines.rail.usuallyAfter': 'Usually runs after {stages}',
   'pipelines.rail.needsDocs': 'Needs {stage} first — no documents ingested yet',
   'pipelines.rail.staleNeedsDocs': 'This result is from old data — rerun {stage} to sync',
+  'pipelines.held.badge': 'On hold',
+  'pipelines.held.tooltip': 'UI code-generation is temporarily on hold to focus on the web build. Earlier results stay available.',
 };

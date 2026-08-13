@@ -524,6 +524,14 @@ process.exit(result.status ?? 0);
       const capturePath = path.join(captureRoot, 'prompt.txt');
       const previousCapture = process.env.OD_PROMPT_CAPTURE;
       process.env.OD_PROMPT_CAPTURE = capturePath;
+      // WP2 host-env whitelist (buildHostAgentEnv) default-denies unknown
+      // env vars for host agent spawns; the in-process daemon started above
+      // (startServer) reads this same process.env at the spawn seam, so the
+      // fake "opencode" binary needs this test-only capture path opted in
+      // via the documented escape hatch instead of widening the production
+      // allowlist.
+      const previousPassthrough = process.env.OD_AGENT_ENV_PASSTHROUGH;
+      process.env.OD_AGENT_ENV_PASSTHROUGH = 'OD_PROMPT_CAPTURE';
       try {
         await withFakeAgent(
           'opencode',
@@ -571,6 +579,11 @@ process.stdin.on('end', () => {
           delete process.env.OD_PROMPT_CAPTURE;
         } else {
           process.env.OD_PROMPT_CAPTURE = previousCapture;
+        }
+        if (previousPassthrough === undefined) {
+          delete process.env.OD_AGENT_ENV_PASSTHROUGH;
+        } else {
+          process.env.OD_AGENT_ENV_PASSTHROUGH = previousPassthrough;
         }
         await rm(captureRoot, { recursive: true, force: true });
       }

@@ -1,6 +1,6 @@
 // SpecPreview — render a Customer Journey / UX Spec JSON (customer-journey-spec /
 // ux-spec skill output) as a visual spec, mirroring SimStudio's
-// /customer-journey and /ux-spec routes — but reading the file DIRECTLY (no KGS
+// /customer-journey and /ux-spec routes — but reading the file DIRECTLY (no
 // push / Pull All needed). Layout, sidebar grouping, emotion curve (SVG line),
 // stage cards and screen wireframe follow those routes; styled with open-design
 // theme tokens.

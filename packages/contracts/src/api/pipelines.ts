@@ -168,9 +168,21 @@ export interface PipelineView {
    */
   skipped?: boolean;
   /**
-   * When set, this pipeline accepts a free-text run input (e.g. a Confluence
-   * page URL / id, a JIRA project key or JQL). The UI renders an input box with
-   * this string as placeholder; the value is sent as `RunPipelineRequest.input`.
+   * 2026-08 product decision (web-first): this stage's gen-code UI terminal
+   * cannot be run from any surface right now (UI, API, CLI, run-all) — the
+   * daemon fail-closes every run attempt with `STAGE_HELD`. Orthogonal to
+   * `active`/`skipped`: a held stage can still be `active` and still carry a
+   * real `status` from a PAST run (its output, attribution, and sync stay
+   * exactly as before) — clients should hide/disable the Run affordance and
+   * show a short "on hold" indicator instead of treating this as a lock or a
+   * skip. Absent = runnable as normal.
+   */
+  held?: boolean;
+  /**
+   * When set, this pipeline accepts a free-text run input (a Confluence page
+   * URL / id — WP8, 2026-08 removed the legacy JIRA project key / JQL
+   * alternative). The UI renders an input box with this string as
+   * placeholder; the value is sent as `RunPipelineRequest.input`.
    */
   inputPlaceholder?: string;
   /**
@@ -213,7 +225,8 @@ export interface PipelineView {
   subConversations?: PipelineSubConversation[];
   updatedAt?: number;
   /**
-   * Free-text input of the LAST run (Confluence URL / JIRA key / JQL), kept so
+   * Free-text input of the LAST run (a Confluence URL — legacy runs from
+   * before WP8, 2026-08 may still carry a JIRA key/JQL string here), kept so
    * the source behind a stage's output stays reviewable after the run (the
    * per-stage "run info" panel).
    */
@@ -533,15 +546,20 @@ export interface DeletePipelineAppResponse extends OkResponse {
 export interface RunPipelineRequest {
   projectId: string;
   /** Optional free-text input for pipelines that declare `inputPlaceholder`
-   * (e.g. a JIRA project key / JQL for jira-ingest's advanced path). Folded into
-   * the run's kickoff message so the skill uses it as the source. Mutually
-   * exclusive with `source` — prefer `source` for the Confluence/BAS pickers. */
+   * (newline-joined Confluence page URL/ids for confluence-ingest's
+   * deterministic fetch — see runDocsDeterministic in server.ts. WP8, 2026-08:
+   * the legacy JIRA project key / JQL "advanced" path was removed; any
+   * non-Confluence value here now fails fast instead of reaching an agent).
+   * Folded into the run's kickoff message so the skill uses it as the source.
+   * Mutually exclusive with `source` — prefer `source` for the Confluence/BAS
+   * pickers. */
   input?: string;
   /**
-   * Structured source selection for pipeline 1 (jira-ingest). When set, the
-   * daemon fetches the referenced document(s) from the BAS MCP gateway BEFORE the
-   * agent run and writes them into the project cwd (`docs/source/…`); the skill
-   * then normalizes those local files. The agent never calls BAS itself.
+   * Structured source selection for pipeline 1 (confluence-ingest). When set,
+   * the daemon fetches the referenced document(s) from the BAS MCP gateway
+   * BEFORE the agent run and writes them into the project cwd
+   * (`docs/source/…`); the skill then normalizes those local files. The
+   * agent never calls BAS itself.
    */
   source?: PipelineRunSource;
   /**
@@ -581,7 +599,7 @@ export interface RunPipelineRequest {
    * Docs stage, deterministic Confluence path: also fetch the pages each seed
    * page LINKS to (same wiki, depth 1, capped) so referenced sibling docs (BO
    * specs, shared logic pages) land in ./docs too. Omitted → true. Ignored by
-   * other stages and by the agent (JIRA/JQL) path.
+   * other stages.
    */
   followLinks?: boolean;
   /**
@@ -590,8 +608,7 @@ export interface RunPipelineRequest {
    * preserving their folder structure under ./docs/confluence. Independent of
    * `followLinks` (that follows hyperlink REFERENCES; this walks the page
    * TREE). Omitted → false (only the seed pages). Soft-capped: a scan whose
-   * tree exceeds the cap still runs but warns. Ignored by other stages and by
-   * the agent (JIRA/JQL) path.
+   * tree exceeds the cap still runs but warns. Ignored by other stages.
    */
   includeDescendants?: boolean;
   /**
@@ -608,7 +625,7 @@ export interface RunPipelineRequest {
   resetScope?: 'stage' | 'downstream';
 }
 
-// ── BAS-sourced inputs for pipeline 1 (jira-ingest) ─────────────────────────
+// ── BAS-sourced inputs for pipeline 1 (confluence-ingest) ───────────────────
 // Both branches resolve their content through the BAS MCP gateway (the daemon's
 // BasClient). The picker is two-level for BAS: pick a KG document, then the
 // feature(s) within it (the gateway has no project→feature link, so the KG
@@ -775,7 +792,7 @@ export interface RunWorkflowRequest {
    * react).
    */
   terminal?: WorkflowTerminal;
-  /** Free-text input for the first stage (Confluence URL / JIRA key / JQL). */
+  /** Free-text input for the first stage (Confluence URL). */
   input?: string;
   /** Structured source for the first stage — same as RunPipelineRequest. */
   source?: PipelineRunSource;
@@ -847,7 +864,8 @@ export interface PipelineRunState {
   lastRunId?: string;
   lastConversationId?: string;
   updatedAt?: number;
-  /** Free-text input of the last run (Confluence URL / JIRA key / JQL). */
+  /** Free-text input of the last run (a Confluence URL — legacy runs from
+   *  before WP8, 2026-08 may still carry a JIRA key/JQL string here). */
   lastInput?: string;
   /** Structured source of the last run (Confluence ref or BAS document). */
   lastSource?: PipelineRunSource;

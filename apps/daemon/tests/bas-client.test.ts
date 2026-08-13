@@ -152,13 +152,15 @@ test('looksLikeConfluenceRef gates the deterministic docs path (page id resolvab
   assert.equal(looksLikeConfluenceRef('874352117'), true);
   assert.equal(looksLikeConfluenceRef('https://wiki.test/spaces/X/pages/874352117/Login'), true);
   assert.equal(looksLikeConfluenceRef('https://wiki.test/pages/viewpage.action?pageId=98765'), true);
-  // Opaque short links / JIRA keys / JQL → agent path, not deterministic.
+  // Opaque short links / JIRA keys / JQL → not a resolvable Confluence ref
+  // (WP8: neither route reaches an agent anymore — see looksLikeJiraInput
+  // below, which now only picks a rejection message).
   assert.equal(looksLikeConfluenceRef('https://wiki.test/x/AbCd'), false);
   assert.equal(looksLikeConfluenceRef('PROJ-123'), false);
   assert.equal(looksLikeConfluenceRef('project = PROJ ORDER BY created'), false);
 });
 
-test('looksLikeJiraInput gates the LEGACY agent path — only real JIRA keys/JQL pass, everything else (incl. corpus paths, plain text) is rejected', () => {
+test('looksLikeJiraInput identifies JIRA-shaped input (WP8: used only to pick a "no longer supported" rejection message, not to route to an agent) — real JIRA keys/JQL match, everything else (incl. corpus paths, plain text) does not', () => {
   // Issue key, one per line, and a bare project key ("give me the whole project").
   assert.equal(looksLikeJiraInput('PROJ-123'), true);
   assert.equal(looksLikeJiraInput('PROJ-123\nABC-9'), true);

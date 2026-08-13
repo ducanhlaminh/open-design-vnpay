@@ -32,8 +32,6 @@ import { userFacingAgentLabel } from './user-facing-agent-label.js';
 import { createCommandInvocation } from '@open-design/platform';
 import { SIDECAR_DEFAULTS, SIDECAR_ENV } from '@open-design/sidecar-proto';
 import {
-  buildLiveArtifactsMcpServersForAgent,
-  buildOverviewMcpServersForAgent,
   checkPromptArgvBudget,
   checkWindowsCmdShimCommandLineBudget,
   checkWindowsDirectExeCommandLineBudget,
@@ -41,6 +39,7 @@ import {
   getAgentDef,
   isKnownModel,
   applyAgentLaunchEnv,
+  buildHostAgentEnv,
   resolveAgentLaunch,
   sanitizeCustomModel,
   spawnEnvForAgent,
@@ -341,7 +340,6 @@ import {
   validateSchedule as validateRoutineSchedule,
   validateTarget as validateRoutineTarget,
 } from './routines.js';
-import { buildMcpInstallPayload } from './mcp-install-info.js';
 import { createDiagnosticsExportHandler } from './diagnostics-export.js';
 import { DIAGNOSTICS_EXPORT_PATH } from '@open-design/diagnostics';
 import {
@@ -439,6 +437,7 @@ import { registerConnectorRoutes } from './connectors/routes.js';
 import { registerActiveContextRoutes } from './active-context-routes.js';
 import { registerHostToolsRoutes } from './host-tools-routes.js';
 import { registerMcpRoutes } from './mcp-routes.js';
+import { registerConfluenceConfigRoutes } from './confluence-config-routes.js';
 import { registerXaiRoutes } from './xai-routes.js';
 import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
 import { registerDesignSystemToolRoutes } from './design-system-tool-routes.js';
@@ -447,7 +446,7 @@ import { registerSandboxRoutes } from './sandbox-routes.js';
 import { registerMediaRoutes } from './media-routes.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes } from './project-routes.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
-import { registerKgSyncRoutes } from './kg-sync-routes.js';
+import { registerRemoteProjectsRoutes } from './remote-projects-routes.js';
 import { registerProjectSyncRoutes } from './project-sync-routes.js';
 import { registerHandoffRoutes } from './handoff-routes.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './handoff-design.js';
@@ -552,7 +551,6 @@ import { registerOverviewRoutes } from './overview-routes.js';
 import { copyDsCriteriaIntoWorkflow, readDsCriteriaState, validateGeneratedComponentsMdDraft, validateGeneratedRulesMdDraft } from './ds-criteria.js';
 import { designSystemCriteriaWorkDir, markDesignSystemCriteriaDraft } from './design-system-update.js';
 import type { CriteriaGenerationJob, CriteriaGenerationKind } from '@open-design/contracts';
-import { KgsClient, kgsConfigFromEnv } from './kg-sync/kgs-client.js';
 import { MediaClient, mediaConfigFromEnv, sha256hex, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
 import { type PushPlan, planPush, rememberPendingId } from './kg-sync/push-plan.js';
@@ -1451,6 +1449,10 @@ const ARTIFACTS_DIR = path.join(RUNTIME_DATA_DIR, 'artifacts');
 // read path so project-membership, size, and CSP guards cannot be bypassed.
 const CRITIQUE_ARTIFACTS_DIR = path.join(RUNTIME_DATA_DIR, 'critique-artifacts');
 const PROJECTS_DIR = path.join(RUNTIME_DATA_DIR, 'projects');
+// WP3 (host process lifecycle): per-host-run pid bookkeeping so a daemon
+// restart mid-run can still find and reap the orphaned process tree at
+// boot. See specs/change/20260813-web-first/wp3-process-lifecycle.md.
+const RUNS_STATE_DIR = path.join(RUNTIME_DATA_DIR, 'runs');
 
 // Docs sub-tree scan (includeDescendants): above this many total pages the run
 // still proceeds but logs a warning — a soft cap, never a hard block.
@@ -5202,7 +5204,7 @@ export async function startServer({
 
   const analyticsService = createAnalyticsService({ dataDir: RUNTIME_DATA_DIR });
   const design = {
-    runs: createChatRunService({ createSseResponse, createSseErrorPayload }),
+    runs: createChatRunService({ createSseResponse, createSseErrorPayload, runsStateDir: RUNS_STATE_DIR }),
     analytics: analyticsService,
     getAppVersion: () => cachedAppVersion?.version ?? '0.0.0',
     readAnalyticsContext,
@@ -5624,6 +5626,13 @@ export async function startServer({
     http: httpDeps,
     paths: pathDeps,
     mcp: { pendingAuth: mcpPendingAuth, daemonUrlRef },
+  });
+  // Confluence credential (base URL + PAT) — its own store, independent of
+  // the generic external-MCP config above (WP8: JIRA ingest removed, no more
+  // mcp-atlassian row to piggyback creds on).
+  registerConfluenceConfigRoutes(app, {
+    http: httpDeps,
+    paths: pathDeps,
   });
   registerXaiRoutes(app, {
     http: httpDeps,
@@ -11784,21 +11793,11 @@ export async function startServer({
         ? (def.reasoningOptions.find((r) => r.id === reasoning)?.id ?? null)
         : null;
     const agentOptions = { model: safeModel, reasoning: safeReasoning };
-    const mcpServers = buildLiveArtifactsMcpServersForAgent(def, {
-      enabled: Boolean(toolTokenGrant?.token),
-      command: process.execPath,
-      argsPrefix: [OD_BIN],
-    });
-    // Workspace tổng (project hạ tầng `overview`): thêm bộ tool MCP chỉ-đọc
-    // về tiến độ App/Feature. Hàm tự gate projectId === 'overview' nên mọi
-    // run khác nhận mảng rỗng.
-    mcpServers.push(
-      ...buildOverviewMcpServersForAgent(def, {
-        command: process.execPath,
-        argsPrefix: [OD_BIN],
-        ...(typeof projectId === 'string' && projectId ? { projectId } : {}),
-      }),
-    );
+    // `mcpServers` starts empty; the two Open Design-internal MCP servers
+    // (open-design-live-artifacts / open-design-overview) that used to seed
+    // it were removed (WP9). It is still populated below by any external
+    // MCP servers the user configured in Settings → External MCP.
+    const mcpServers = [];
 
     // External MCP servers configured by the user in Settings → External MCP.
     // Open Design relays them to the agent so the model can call those tools.
@@ -12367,11 +12366,23 @@ export async function startServer({
         def.promptViaStdin || def.streamFormat === 'acp-json-rpc'
           ? 'pipe'
           : 'ignore';
+      // WP2 (env whitelist): a sandboxed run's docker CLIENT process
+      // (spawned locally to invoke `docker run ...`) still gets this same
+      // `env` value below, but that's harmless — the CONTAINER only ever
+      // receives its own separate `-e` whitelist from
+      // `wrapInvocationInSandbox` (agent-sandbox.ts forwardedEnvKeys), never
+      // this object. A true HOST spawn (no sandboxPlan — includes the
+      // write-isolation path, which is host-mode with a tighter write
+      // scope, not a separate env boundary) is where the full
+      // `process.env` spread used to leak KGS_API_KEY / OD_ATLASSIAN_* /
+      // SESSION_SECRET / etc. into the agent process — swap the base in
+      // for those runs. See specs/change/20260813-web-first/wp2-env-whitelist.md.
+      const hostSpawnBaseEnv = sandboxPlan ? process.env : buildHostAgentEnv(process.env);
       const env = applyAgentLaunchEnv({
         ...spawnEnvForAgent(
           def.id,
           {
-            ...createAgentRuntimeEnv(process.env, daemonUrl, toolTokenGrant),
+            ...createAgentRuntimeEnv(hostSpawnBaseEnv, daemonUrl, toolTokenGrant),
             ...(def.env || {}),
           },
           configuredAgentEnv,
@@ -12441,8 +12452,29 @@ export async function startServer({
         // cmd.exe; without this, Node re-escapes the inner command line and
         // breaks paths containing spaces (issue #315).
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        // WP3 (host process lifecycle): host runs (no sandboxPlan) become
+        // their own process GROUP leader so `killRunProcessTree` in runs.ts
+        // can reach the whole descendant tree (MCP stdio servers, vite,
+        // python, ...) via `process.kill(-pid, signal)` instead of just the
+        // agent CLI itself. Sandboxed runs keep the previous (non-detached)
+        // behavior — the spawned process there is the docker CLIENT, whose
+        // lifecycle is already tied to the container via
+        // `killSandboxContainer`, not to its own OS process group. Windows
+        // has no process-group signal Node can reach, so it stays
+        // non-detached there too; `killRunProcessTree` falls back to
+        // `taskkill /T /F` instead. See
+        // specs/change/20260813-web-first/wp3-process-lifecycle.md.
+        detached: !sandboxPlan && process.platform !== 'win32',
       });
-      run.child = child;
+      if (sandboxPlan) {
+        run.child = child;
+      } else {
+        // Records the pid (+ resolved command, for the boot-sweep's
+        // pid-reuse safety check) under RUNS_STATE_DIR so a daemon restart
+        // mid-run can still find and reap this process tree — see the
+        // `sweepOrphanHostRuns()` call near daemon startup below.
+        design.runs.attachHostChild(run, child, { command: invocation.command });
+      }
       // Mirrors the sandboxTimeout close-listener just below: an independent
       // `once('close', ...)` hook is where the run finishes regardless of
       // which downstream branch (critique orchestrator vs. legacy) decides
@@ -12471,6 +12503,25 @@ export async function startServer({
         }, sandboxDeadlineMs);
         sandboxTimeout.unref?.();
         child.once('close', () => clearTimeout(sandboxTimeout));
+      }
+      if (!sandboxPlan) {
+        // Wall-clock cap for a HOST run (WP3 design §2 —
+        // specs/change/20260813-web-first/wp3-process-lifecycle.md).
+        // Docker gives sandboxed runs the ceiling above for free; host runs
+        // previously had NO wall-clock cap at all — only the inactivity
+        // watchdog (`resolveChatRunInactivityTimeoutMs`), which only fires
+        // on silence and never on a chatty-but-endless run. Reuses the SAME
+        // `sandbox.timeoutMinutes` app-config key (default 30) so existing
+        // persisted prefs keep applying; `runTimeoutMinutes` is just a
+        // neutral rename of the local binding now that it covers both
+        // branches.
+        const runTimeoutMinutes = sandboxCfgForRun.timeoutMinutes;
+        design.runs.scheduleHostRunTimeout(run, {
+          timeoutMs: runTimeoutMinutes * 60_000,
+          timeoutMinutes: runTimeoutMinutes,
+          send,
+          createSseErrorPayload,
+        });
       }
       if (def.promptViaStdin && child.stdin && def.streamFormat !== 'pi-rpc') {
         // EPIPE from a fast-exiting CLI (bad auth, missing model, exit on
@@ -13808,19 +13859,29 @@ export async function startServer({
 
   // Read once when the Local CLI menu is opened. This uses Codex's own
   // app-server protocol against the sandbox volume; no credential is sent to
-  // the browser and no background polling is performed.
+  // the browser and no background polling is performed. Codex has no host
+  // usage source (unlike Claude's Keychain path), so this meter is
+  // sandbox-only by construction — when the sandbox is off, skip Docker
+  // entirely (no spawn, no ~15s app-server round trip) instead of letting the
+  // request run and fail into the same `available: false` shape.
   app.get('/api/usage/codex', async (_req, res) => {
+    const emptyUsage = {
+      available: false,
+      primary: { utilization: null, resetsAt: null, durationMinutes: null },
+      secondary: null,
+      planType: null,
+      hasCredits: null,
+    } satisfies import('@open-design/contracts').CodexUsageResponse;
     try {
+      const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+      if (!resolveSandboxConfig(appConfig.sandbox, process.env).enabled) {
+        res.json(emptyUsage);
+        return;
+      }
       const image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
       res.json(await readSandboxCodexUsage(image));
     } catch {
-      res.json({
-        available: false,
-        primary: { utilization: null, resetsAt: null, durationMinutes: null },
-        secondary: null,
-        planType: null,
-        hasCredits: null,
-      } satisfies import('@open-design/contracts').CodexUsageResponse);
+      res.json(emptyUsage);
     }
   });
 
@@ -14197,7 +14258,7 @@ export async function startServer({
   // Mirrors the Orbit run handler but reuses the project and drives the prompt
   // through `skillId` (composeDaemonSystemPrompt injects the SKILL.md body).
   // B1 helpers: snapshot the project cwd before a pipeline run and upload the
-  // files it produced/changed to the KGS file store afterwards (cross-device
+  // files it produced/changed to the media file store afterwards (cross-device
   // handoff + tracking). Pure file-diff, so no per-stage output globs needed.
   const pipelineFileMime = (p: string): string => {
     if (p.endsWith('.md')) return 'text/markdown';
@@ -14239,12 +14300,11 @@ export async function startServer({
     return out;
   };
   // MANUAL upload (button-triggered): push the project's CURRENT output files to
-  // the media-service file store (graph stays in KGS — see
-  // docs/guides/media-file-sync-design.md). Each file is attributed to its stage
-  // via the registry's `outputs` patterns (unmatched files → stage 'misc'); for
-  // a convertToGraph stage it also runs B2 (file → graph) right after. A single
-  // content-hash `syncProjectFiles` replaces the per-file upload loop (idempotent
-  // re-push is a no-op). Returns counts (`uploaded` = files present after sync).
+  // the media-service file store (see docs/guides/media-file-sync-design.md).
+  // Each file is attributed to its stage via the registry's `outputs` patterns
+  // (unmatched files → stage 'misc'). A single content-hash `syncProjectFiles`
+  // replaces the per-file upload loop (idempotent re-push is a no-op). Returns
+  // counts (`uploaded` = files present after sync).
   // `stages` (Push all modal / `od kg push-all --stages`) narrows the push to
   // those pipelines' outputs; absent/empty → everything (legacy). Unattributed
   // 'misc' files only travel on unfiltered pushes.
@@ -14267,7 +14327,6 @@ export async function startServer({
     // installed: a silently missing ui-html.md would lie downstream.
     await generateProjectExports(cwd, projectId);
     const files = await snapshotPipelineCwd(cwd);
-    const kgs = new KgsClient(kgsConfigFromEnv());
     const projectName = getProject(db, projectId)?.name ?? projectId;
     // Attribution uses only the reconciled preview-identity UUID. A Google
     // subject is login provenance, never a media/identity owner id.
@@ -14282,7 +14341,7 @@ export async function startServer({
     });
     // WHERE this push lands. Everything below addresses the store by `destId`;
     // `projectId` from here on means only "this machine's local project".
-    const dest = plan ?? (await planPush({ db, projectId, kgs, media, submitter: owner }));
+    const dest = plan ?? (await planPush({ db, projectId, media, submitter: owner }));
     const destId = dest.destId;
     // An App is a first-class publishable unit.  Its local metadata and shared
     // document pool travel with every Feature publish, but under a reserved
@@ -14374,13 +14433,9 @@ export async function startServer({
       }, null, 2)}\n`);
     }
     if (dest.staged) {
-      // A staged push writes NOTHING to KGS or preview-identity: KGS has no
-      // node-update API, so a workspace node under a `pending--…` id could
-      // never be renamed into place — and studio lists projects FROM workspace
-      // nodes, so creating one would put an unapproved project straight into
-      // the main list. The identity project is likewise the approver's to
-      // create, under the final id and AS the submitter (that is what makes
-      // the submitter its owner).
+      // A staged push writes NOTHING to preview-identity: the identity project
+      // is the approver's to create, under the final id and AS the submitter
+      // (that is what makes the submitter its owner).
       rememberPendingId(db, projectId, destId);
       if (dest.request) {
         dest.request.schema = 2;
@@ -14390,10 +14445,6 @@ export async function startServer({
       // something the reviewer can read.
       if (dest.request) await writeStagingRequest(media, destId, dest.request);
     } else {
-      // Ensure the project's DP_UI_WORKSPACE node exists so a manual single-project
-      // upload also makes it discoverable by another device's pull-all. Best-effort
-      // (idempotent) — a workspace-ensure failure must not block the file upload.
-      await kgs.ensureWorkspace(destId, projectName, owner).catch(() => {});
       // Identity project registration is deliberately owned by Pipeline Studio
       // approval.  Do not create a registry record from Open Design: a folder
       // discovered through a legacy/media-only path must not become approved
@@ -14403,7 +14454,6 @@ export async function startServer({
     if (syntheticProjectJson) {
       syncFiles.push({ path: 'project.json', stage: 'config', mime: 'application/json', content: syntheticProjectJson });
     }
-    const toConvert: Array<{ pipelineId: string; skillId: string; rel: string }> = [];
     for (const rel of files.keys()) {
       // History metadata never re-enters the push set: changelog.json/_v/ live
       // on the store (composed below), even if a stray copy lands in the cwd.
@@ -14419,7 +14469,7 @@ export async function startServer({
       const def = stageForOutput(rel);
       if (stages?.length && (!def || !stages.includes(def.id))) continue;
       // localOnly stages (e.g. ui-html → prototype/) stay on this device — never
-      // pushed to the KGS file store nor graph-converted.
+      // pushed to the media file store.
       if (def?.localOnly) continue;
       // syncExclude paths (react/dist/, generated entries, template scaffold)
       // never travel: derived artifacts are rebuilt on demand and scaffold is
@@ -14428,7 +14478,6 @@ export async function startServer({
       const content = await fs.promises.readFile(path.join(cwd, rel)).catch(() => null);
       if (!content) continue;
       syncFiles.push({ path: rel, stage: def?.id ?? 'misc', mime: pipelineFileMime(rel), content });
-      if (def?.convertToGraph) toConvert.push({ skillId: def.skillId, rel });
     }
     if (dest.staged && dest.request) {
       dest.request.publish = {
@@ -14493,16 +14542,10 @@ export async function startServer({
     } catch {
       /* listFiles unavailable — prune next push */
     }
-    let converted = 0;
-    // Graph conversion targets a KGS project id, so it is skipped while staged
-    // for the same reason ensureWorkspace is: rows written under `pending--…`
-    // could never be moved to the approved id (KGS has no update API). The
-    // first push AFTER approval runs as case 3 and converts them then.
-    if (!dest.staged) {
-      for (const { skillId, rel } of toConvert) {
-        converted += await convertStageToGraph(destId, skillId, cwd, [rel]);
-      }
-    }
+    // `converted` (graph conversion count) is always 0 now — the graph store
+    // this used to feed (KGS) has been removed; kept in the return shape for
+    // API compatibility with existing callers/CLI output.
+    const converted = 0;
     // ── Published version: freeze this push's deliverables under _v/<id> and
     // append the changelog entry pipeline-studio renders as the timeline.
     // Best-effort by contract — a history failure never fails the push.
@@ -14541,41 +14584,6 @@ export async function startServer({
       staged: dest.staged,
       case: dest.case,
     };
-  };
-
-  // B2: for a convertToGraph stage, run its skill's converter
-  // (skills/<skillId>/scripts/push_to_kgs.py, stdlib-only) on each produced JSON
-  // to push it into the KGS graph. Best-effort: missing converter / python
-  // failure is logged and skipped, never fails the run. KGS env
-  // (KGS_URL/KGS_APP_ID/KGS_API_KEY) is inherited from process.env (loaded by
-  // load-local-env). Idempotent vs the skill's own in-run push (409).
-  const convertStageToGraph = async (
-    projectId: string,
-    skillId: string,
-    cwd: string,
-    uploadedPaths: string[],
-  ): Promise<number> => {
-    const converter = path.join(SKILLS_DIR, skillId, 'scripts', 'push_to_kgs.py');
-    try {
-      await fs.promises.access(converter);
-    } catch {
-      return 0; // this stage has no graph converter — stays file-only
-    }
-    const jsons = uploadedPaths.filter((p) => p.toLowerCase().endsWith('.json'));
-    if (jsons.length === 0) return 0;
-    let converted = 0;
-    for (const rel of jsons) {
-      try {
-        await execFileBuffered('python3', [converter, path.join(cwd, rel), '--project-id', projectId], {
-          cwd,
-          timeout: 120_000,
-        });
-        converted += 1;
-      } catch (error) {
-        console.warn(`[pipelines] B2 convert failed for ${rel}:`, error);
-      }
-    }
-    return converted;
   };
 
   // The machine's owner (last Google login) as a history-commit author.
@@ -14756,7 +14764,7 @@ export async function startServer({
         ]);
         if (!creds && !ep) {
           throw new Error(
-            'Chưa có credential Confluence: thêm CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN vào server mcp-atlassian (Settings → MCP) hoặc cấu hình BAS gateway (BAS_MCP_URL + BAS_MCP_TOKEN).',
+            'Chưa có credential Confluence: thêm Base URL + Personal Access Token ở Settings → Integrations → Confluence, hoặc cấu hình BAS gateway (BAS_MCP_URL + BAS_MCP_TOKEN).',
           );
         }
         const cwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
@@ -14849,7 +14857,7 @@ export async function startServer({
 
   // ── App Docs Pool — deterministic copy (docs/app-docs-pool-spec.md §WP-4)
   // ────────────────────────────────────────────────────────────────────────
-  // jira-ingest with an `app-pool` source: no fetch, NO AGENT — bước 1 copy
+  // confluence-ingest with an `app-pool` source: no fetch, NO AGENT — bước 1 copy
   // THẲNG trang gốc được tick (+ attachments/ dùng chung) từ pool của App
   // vào `<wf>/docs/`. Tầng chưng cất đã gỡ hẳn (quyết định 2026-08-08:
   // docs gốc là nguồn làm việc duy nhất; các stage sau đọc cả pool qua
@@ -15468,6 +15476,7 @@ export async function startServer({
             `Run the "docs-component-audit" audit for ONE page of project "${projectId}". ` +
             `Read "${pg.mdPath}" (title: ${pg.page}) — CHỈ ĐỌC. TUYỆT ĐỐI KHÔNG sửa bất cứ file nào dưới "docs/": đó là bản gốc mà bước review phía sau dùng để đối chiếu, và bước này không có bản clone nào để sửa an toàn.${imageLine}${catalogLine} ` +
             `Liệt kê MỌI màn hình khai trong trang (heading dạng "Màn hình N: SCR-… — …", mọi cấp heading) và MỌI dòng trong bảng của từng màn, rồi ghi kết quả ra ĐÚNG MỘT file: "${outRel}". ` +
+            `NGOẠI LỆ duy nhất là dòng PHÂN NHÓM: dòng có "Tên trường" (thường in đậm, vd "Khối Thông tin pháp lý", "Nút thao tác") nhưng cột "Kiểu hiển thị" TRỐNG — nó chỉ chia bảng thành cụm, không phải phần tử giao diện, ĐỪNG đưa vào "elements" (daemon tự loại nếu bạn lỡ đưa vào với "doc_type" là chuỗi rỗng ""). ` +
             `"anchor" (nguyên văn cả dòng heading của màn) và "label" (nguyên văn ô tên trường) phải COPY từ tài liệu, đừng gõ lại — daemon đối chiếu lại với trang gốc và một chỗ trích sai làm hỏng CẢ TRANG (dấu "—" em dash và "-" hyphen là hai ký tự khác nhau). ` +
             `"verdict" là tập đóng 5 giá trị (ok | not-in-catalog | variant-mismatch | ambiguous | internal); verdict khác "ok" thì BẮT BUỘC có "note" một câu nói sai ở đâu và nên dùng gì. ` +
             `Trang không khai màn hình nào thì vẫn ghi file với "screens": [] — đừng nặn một màn hình ra từ một đoạn văn. ` +
@@ -17078,7 +17087,7 @@ export async function startServer({
     };
   };
 
-  // Whether a jira-ingest stage's own declared output (`<wfDir>/docs/`)
+  // Whether a confluence-ingest stage's own declared output (`<wfDir>/docs/`)
   // already has ANY content — the docsFromUpload case: the user manually
   // uploaded via POST /api/projects/:id/files (UploadFilesModal's existing
   // mechanism). Shallow (one readdir) is enough — any entry at all means
@@ -17235,14 +17244,17 @@ export async function startServer({
       }
     }
 
-    // Any stage running the jira-ingest skill (docs-to-ui's `docs`, docs-to-prd's
-    // `prd-docs` — same skill, independent workflows), Confluence source → the
-    // TOOL-ONLY path (runDocsDeterministic above): a structured confluence
-    // source, or a free-text input whose every line is a page URL/id, is
-    // fetched by the daemon itself — no agent. Only JIRA key / JQL input
-    // (needs the Atlassian MCP) still goes to the agent. (The BAS source is
-    // LOCKED for maintenance at the routes/CLI.)
-    if (def.skillId === 'jira-ingest') {
+    // Any stage running the confluence-ingest skill (docs-to-ui's `docs`,
+    // docs-to-prd's `prd-docs`, docs-review's `dr-docs` — same skill,
+    // independent workflows): Confluence source → the TOOL-ONLY path
+    // (runDocsDeterministic above): a structured confluence source, or a
+    // free-text input whose every line is a page URL/id, is fetched by the
+    // daemon itself — no agent, no MCP. WP8 removed the legacy JIRA agent
+    // path entirely: anything else (a JIRA key/JQL, a corpus file path,
+    // plain text) fails fast below — every branch of this block returns, so
+    // this skill NEVER reaches agent seeding. (The BAS source is LOCKED for
+    // maintenance at the routes/CLI.)
+    if (def.skillId === 'confluence-ingest') {
       // App Docs Pool source (§WP-4): GATE + deterministic copy, own runner —
       // evaluated before the Confluence-ref detection below (an app-pool
       // source carries no `ref`/free-text input to match against).
@@ -17299,9 +17311,8 @@ export async function startServer({
         return runDocsDeterministic(pipelineId, projectId, wfDir, refs, input, source, resetScope, followLinks, includeDescendants);
       }
 
-      // Reached only with NO Confluence ref, and free-text input (if any)
-      // that ISN'T JIRA-shaped either — i.e. nothing this daemon knows how
-      // to fetch. Evaluated HERE, before this function's own re-run-clear
+      // Reached only with NO Confluence ref and no source — i.e. nothing
+      // this daemon knows how to fetch. Evaluated HERE, before this function's own re-run-clear
       // block runs (that block sits further down, after readAppConfig/agent
       // detection — every branch below either `return`s out through a
       // sibling deterministic runner with its OWN internal clear, or through
@@ -17354,23 +17365,27 @@ export async function startServer({
         return { projectId, completion: Promise.resolve('failed' as const) };
       }
 
-      // HARD GATE: reached only with NON-empty input that isn't Confluence-
-      // shaped (the fail-fast above already caught the all-empty case). The
-      // ONLY thing worth handing to the legacy Atlassian-MCP agent path is
-      // input that's actually JIRA-shaped (looksLikeJiraInput — an issue key,
-      // a bare project key, or a JQL query). Anything else — a corpus file
-      // path pasted by mistake, plain text, a stale web bundle's leftover
-      // value — must NEVER reach the agent: it "looks around the project
-      // directory", finds nothing to act on, and succeeds empty. That is the
-      // exact ghost-run class of bug this closes (the live incident
-      // continued even after the previous fail-fast round because THIS
-      // fallthrough was still open).
-      if (inputRefs.length > 0 && source === undefined && !looksLikeJiraInput(input ?? '')) {
-        const message =
-          'Input không nhận dạng được (không phải link/id Confluence, không phải JIRA key/JQL). Chọn nguồn ở panel Nguồn tài liệu (Confluence) rồi chạy lại.';
+      // HARD GATE (WP8): reached only with NON-empty input that isn't
+      // Confluence-shaped (the fail-fast above already caught the all-empty
+      // case). JIRA ingest is REMOVED — there is no more agent+mcp-atlassian
+      // path to fall through to, so every input reaching here fails closed.
+      // `looksLikeJiraInput` is kept only to pick a more specific message: a
+      // real JIRA key/JQL (an issue key, a bare project key, or a JQL query)
+      // gets an explicit "no longer supported" message; anything else (a
+      // corpus file path pasted by mistake, plain text, a stale web bundle's
+      // leftover value) gets the generic "not recognized" message. Neither
+      // ever seeds a conversation — this closes the same ghost-run class of
+      // bug the fail-fast above guards against (the live incident continued
+      // after the first fail-fast round because this fallthrough used to
+      // stay open for JIRA-shaped input).
+      if (inputRefs.length > 0 && source === undefined) {
+        const jiraShaped = looksLikeJiraInput(input ?? '');
+        const message = jiraShaped
+          ? 'Chỉ hỗ trợ Confluence URL — JIRA đã ngừng hỗ trợ. Chọn trang Confluence ở panel Nguồn tài liệu rồi chạy lại.'
+          : 'Input không nhận dạng được (không phải link/id Confluence). Chọn nguồn ở panel Nguồn tài liệu (Confluence) rồi chạy lại.';
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
         console.warn(
-          `[pipelines] ${pipelineId} for ${projectId}: input matches neither Confluence refs nor JIRA key/JQL — failing fast (no agent seeded): ${JSON.stringify(input)}`,
+          `[pipelines] ${pipelineId} for ${projectId}: input matches no Confluence ref${jiraShaped ? ' (JIRA input — no longer supported)' : ''} — failing fast (no agent seeded): ${JSON.stringify(input)}`,
         );
         return { projectId, completion: Promise.resolve('failed' as const) };
       }
@@ -17501,8 +17516,7 @@ export async function startServer({
     const conversationId = `pipeline-conv-${randomUUID()}`;
     const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
     // projectId is the pipeline project's id. Named in the kickoff only to scope
-    // the run; the post-docs stages are FILE-ONLY (no KGS push) so it is not a
-    // push target.
+    // the run; every stage is FILE-ONLY so it is not a push target.
     const trimmedInput = typeof input === 'string' ? input.trim() : '';
     // A combined pipeline (extraSkillIds) activates several skills in one run; tell
     // the agent to complete EACH skill's workflow and produce ALL their outputs.
@@ -17525,16 +17539,10 @@ export async function startServer({
       : agentInput
         ? ` Input/source for this run: ${agentInput}. Fetch it YOURSELF via the Atlassian MCP (Jira + Confluence Data Center) — a Confluence page link via the skill's Confluence export, a JIRA key/JQL via the Jira tools — following the active skill's workflow.`
         : '';
-    // Graph push is gated on the stage's `convertToGraph` flag — the single
-    // source of truth for "this stage writes graph". A convertToGraph stage tells
-    // the agent to push to the project's KGS app; a file-only stage (e.g. the
-    // cj/ux stages) tells it explicitly NOT to push, so the produced
-    // JSON stays a local file (synced to the media store separately) and is never
-    // projected into the KGS graph. This mirrors the B2 upload gate in
-    // uploadProjectFiles, which also keys off convertToGraph.
-    const graphDirective = def.convertToGraph
-      ? ` When the skill pushes results to KGS, target project_id "${projectId}".`
-      : " This is a FILE-ONLY stage: produce the output file(s) only — the pipeline reads them directly. Do not push anything anywhere.";
+    // Every stage is file-only: produce the output file(s) only — the
+    // pipeline reads them directly and syncs them to the media store
+    // separately (uploadProjectFiles). There is no graph store to push to.
+    const graphDirective = " This is a FILE-ONLY stage: produce the output file(s) only — the pipeline reads them directly. Do not push anything anywhere.";
     // Target platform (UX stage picker / CLI --platform). Only emitted when the
     // stage opted in AND the caller chose one — no choice keeps the kickoff
     // byte-identical to the legacy one, so existing projects are unaffected.
@@ -17821,9 +17829,9 @@ export async function startServer({
     if (pipelineCwd) {
       try {
         const n = await pullPipelineFiles(projectId, pipelineCwd, upstreamStages(pipelineId), [...regenIds], true);
-        if (n) console.log(`[pipelines] pulled ${n} KGS input file(s) into cwd for ${projectId}`);
+        if (n) console.log(`[pipelines] pulled ${n} input file(s) into cwd for ${projectId}`);
       } catch (error) {
-        console.warn('[pipelines] pull KGS files failed (continuing):', error);
+        console.warn('[pipelines] pull input files failed (continuing):', error);
       }
     }
     // Stage the react bundle AFTER the re-run clear above — react-ds/** is this
@@ -17899,7 +17907,7 @@ export async function startServer({
         } catch (diagError) {
           console.warn('[pipelines] stage-end diagnostic logging failed (continuing):', diagError);
         }
-        // Upload to KGS is now MANUAL (the "Upload to KGS" button /
+        // Upload to the media store is MANUAL (the share button /
         // POST /api/pipelines/upload). The run only produces files locally and
         // updates the gate; the user uploads when ready.
         setProjectPipelineStatus(db, projectId, pipelineId, {
@@ -18469,9 +18477,9 @@ export async function startServer({
     listFeatures: async (documentId: string) => basListFeatures(await requireBasEndpoint(), documentId),
     confluenceMeta: async (ref: string) => basConfluenceMeta(await requireBasEndpoint(), ref),
     // Picker "tìm trang Confluence theo tên" (modal Run pipeline 1): creds
-    // per-user từ Settings → MCP (mcp-atlassian) trước, env daemon fallback,
-    // cuối cùng là BAS gateway — endpoint gateway optional nên không dùng
-    // requireBasEndpoint.
+    // per-user từ confluence-config.json (Settings → Integrations → Confluence,
+    // WP8) trước, env daemon fallback, cuối cùng là BAS gateway — endpoint
+    // gateway optional nên không dùng requireBasEndpoint.
     searchConfluencePages: async (q: string) =>
       searchConfluencePages(
         await resolveBasEndpoint(RUNTIME_DATA_DIR).catch(() => null),
@@ -18836,8 +18844,8 @@ export async function startServer({
     return { restored: 'version', verId: opts.verId, files };
   };
 
-  // Shared pipeline deps — passed to both the pipeline routes and the KG-sync
-  // routes (both type their `pipelines` as the full PipelineDeps).
+  // Shared pipeline deps — passed to both the pipeline routes and the remote
+  // project registry routes (both type their `pipelines` as the full PipelineDeps).
   const pipelineDeps = {
     runPipeline,
     runWorkflowAll,
@@ -18878,14 +18886,13 @@ export async function startServer({
 
   registerOverviewRoutes(app, { db, paths: pathDeps, pipelines: pipelineDeps });
 
-  // KG sync (pull-all/push-all) is registered here — after the pipeline file
-  // helpers exist — so push-all can also upload output files and pull-all can
-  // also restore them (full graph + files round-trip). Paths are distinct from
-  // other routes, so the later registration order is harmless.
-  registerKgSyncRoutes(app, {
+  // Remote project registry (pull-all/push-all) is registered here — after
+  // the pipeline file helpers exist — so push-all can also upload output
+  // files and pull-all can also restore them. Paths are distinct from other
+  // routes, so the later registration order is harmless.
+  registerRemoteProjectsRoutes(app, {
     db,
     http: httpDeps,
-    ids: idDeps,
     projectStore: projectStoreDeps,
     pipelines: pipelineDeps,
   });
@@ -18976,6 +18983,19 @@ export async function startServer({
           .then((killed) => {
             if (killed.length > 0) {
               console.warn(`[od] sandbox: reaped ${killed.length} orphaned container(s): ${killed.join(', ')}`);
+            }
+          })
+          .catch(() => {});
+        // WP3 (host process lifecycle): reap HOST run process trees
+        // orphaned by a previous daemon process. Run state is in-memory
+        // just like the sandbox sweep above, so any pid-file left under
+        // RUNS_STATE_DIR at startup belongs to a run whose daemon already
+        // died. Fire-and-forget: a missing/empty dir just means nothing to
+        // sweep. See specs/change/20260813-web-first/wp3-process-lifecycle.md.
+        void design.runs.sweepOrphanHostRuns()
+          .then((swept) => {
+            if (swept.length > 0) {
+              console.warn(`[od] host: reaped ${swept.length} orphaned run process tree(s): ${swept.map((s) => s.runId).join(', ')}`);
             }
           })
           .catch(() => {});

@@ -265,6 +265,81 @@ describe('RunAllModal · bước cuối "chọn 1 trong 3"', () => {
   });
 });
 
+// WP1 (2026-08 web-first hold): 3 terminal UI-Spec đang held — picker phải
+// render disabled + báo rõ, không cho tick lại được nữa. `held` đến từ
+// `PipelineView.held` (daemon) qua `RunStageOption.held`; component KHÔNG
+// hard-code danh sách id, chỉ đọc field này — nên fixture đánh dấu held bằng
+// tay đủ để canh cả 3 nhánh held lẫn nhánh không held (test "chọn 1 trong 3"
+// phía trên) mà không đổi hành vi cho nhau.
+const ALL_HELD_FORK_STAGES: RunStageOption[] = [
+  stage('ux', 'UX Spec', [], 'succeeded'),
+  stage('ux-review', 'UX Heuristic Review', ['ux'], 'idle'),
+  { ...stage('ui-html', 'UI-Spec (HTML)', ['ux-review'], 'idle'), held: true },
+  { ...stage('ui-react', 'UI-Spec (React)', ['ux-review'], 'idle'), held: true },
+  { ...stage('ui-react-ds', 'UI-Spec (React DS)', ['ux-review'], 'idle'), held: true },
+];
+
+// `renderFork` ở trên khoá cứng `FORK_STAGES` — dựng lại phần render cục bộ ở
+// đây với `ALL_HELD_FORK_STAGES` thay vì sửa helper dùng chung (helper đã có
+// nhiều test phụ thuộc hình dạng hiện tại của nó).
+function renderHeldFork() {
+  const saved: Array<Record<string, unknown>> = [];
+  const view = render(
+    <RunAllModal
+      workflowName="Docs → UI-Spec"
+      stages={ALL_HELD_FORK_STAGES}
+      anySucceeded
+      focus="stages"
+      onClose={() => {}}
+      onSaveConfig={async (patch) => {
+        saved.push(patch as Record<string, unknown>);
+      }}
+    />,
+  );
+  const dialog = within(view.baseElement).getByRole('dialog');
+  const radios = () => within(dialog).getAllByRole('radio') as HTMLButtonElement[];
+  const radio = (label: string) =>
+    radios().find((r) => r.textContent?.includes(label)) ??
+    (() => {
+      throw new Error(`Không thấy lựa chọn “${label}”`);
+    })();
+  const forkBox = () => {
+    const row = within(dialog).getByText('Kết quả UI-Spec').closest('label');
+    return row!.querySelector('input[type="checkbox"]') as HTMLInputElement;
+  };
+  const saveBtn = () => within(dialog).getByRole('button', { name: /Lưu/ }) as HTMLButtonElement;
+  return { ...view, dialog, radios, radio, forkBox, saveBtn, saved };
+}
+
+describe('RunAllModal · bước cuối held thật (2026-08 hold)', () => {
+  it('cả 3 option held → mỗi radio disabled, nhóm checkbox cũng disabled', () => {
+    const { radios, forkBox } = renderHeldFork();
+    for (const r of radios()) {
+      expect(r.disabled).toBe(true);
+    }
+    expect(forkBox().disabled).toBe(true);
+  });
+
+  it('cả 3 option held → không option nào được tick sẵn mặc định, Lưu vẫn khả dụng (đã có bước thường khác)', () => {
+    const { radios } = renderHeldFork();
+    for (const r of radios()) {
+      expect(r.getAttribute('aria-checked')).toBe('false');
+    }
+  });
+
+  it('click vào một radio held không đổi gì (picker chặn cả UI lẫn state)', async () => {
+    const { radio, saveBtn, saved } = renderHeldFork();
+    fireEvent.click(radio('React app'));
+    fireEvent.click(saveBtn());
+    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    // stageIds gửi lên KHÔNG chứa id held nào — chỉ ux-review còn tick sẵn
+    // (mặc định: mọi bước chưa succeeded được tick, trừ held).
+    expect(saved[0]!.stageIds).not.toEqual(
+      expect.arrayContaining(['ui-html', 'ui-react', 'ui-react-ds']),
+    );
+  });
+});
+
 // missingRunDeps: kênh THÔNG BÁO thay cho cascade cũ. Một bước đang tick mà
 // phụ thuộc tĩnh của nó chưa tick VÀ chưa succeeded trên đĩa thì hàm trả về
 // đúng phụ thuộc đó — không tick/bỏ tick hộ, chỉ để danh sách hiện chú thích

@@ -176,4 +176,55 @@ describe('SandboxSection runtime split', () => {
     fireEvent.click(install);
     expect(fetchMock).not.toHaveBeenCalledWith('/api/sandbox/docker/setup', { method: 'POST' });
   });
+
+  // WP4 (web-first migration): execution-mode toggle writes sandbox.enabled
+  // through the same PUT /api/app-config prefs path `od sandbox enable|disable` uses.
+  it('switches to host mode through PUT /api/app-config when the toggle is clicked', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) {
+        return jsonResponse({
+          enabled: true,
+          mode: 'sandbox',
+          dockerOk: true,
+          image: 'od-agent-sandbox:latest',
+          imageOk: true,
+          authVolumeOk: true,
+          authLoggedIn: true,
+          activeContainers: [],
+          runtimes: ['claude', 'codex'],
+          skills: ['*'],
+          timeoutMinutes: 30,
+          builderDir: '/tmp/builder',
+          runtimeStatuses: [],
+        });
+      }
+      if (url.endsWith('/sandbox/build')) {
+        return jsonResponse({ building: false, ok: true, error: null, log: [] });
+      }
+      if (url.endsWith('/api/app-config') && (!init || !init.method || init.method === 'GET')) {
+        return jsonResponse({ config: { sandbox: { enabled: true } } });
+      }
+      if (url.endsWith('/api/app-config') && init?.method === 'PUT') {
+        return jsonResponse({ config: { sandbox: { enabled: false } } });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(<SandboxSection daemonLive={true} />);
+
+    // `t()` resolves to the English dict by default in this test environment.
+    const hostBtn = await screen.findByRole('radio', { name: 'Host CLI (default)' });
+    fireEvent.click(hostBtn);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/app-config',
+        expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify({ sandbox: { enabled: false } }),
+        }),
+      );
+    });
+  });
 });

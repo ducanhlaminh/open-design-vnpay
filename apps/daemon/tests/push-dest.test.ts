@@ -4,7 +4,7 @@
 // kể cả MIRROR-PRUNE, thứ XOÁ file trên store không còn bản local. Trả sai
 // destId ở đây nghĩa là một push chưa được duyệt đi liệt kê rồi xoá file của
 // dự án THẬT. resolvePushDest được viết thuần chính là để ràng buộc đó test
-// được bằng mảng, không cần dựng KGS/media.
+// được bằng mảng, không cần dựng media.
 
 import { describe, expect, it } from 'vitest';
 import type { RemoteProject } from '@open-design/contracts';
@@ -25,7 +25,6 @@ import { parseStagingDecision, writeStagingRequest } from '../src/kg-sync/stagin
 const remoteRow = (projectId: string, isApp = false): RemoteProject => ({
   projectId,
   name: projectId,
-  inKgs: true,
   inMedia: true,
   files: 0,
   isApp,

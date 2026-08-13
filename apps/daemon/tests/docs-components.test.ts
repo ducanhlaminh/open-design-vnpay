@@ -150,6 +150,65 @@ test('parseComponentReport: element thiếu label => lỗi nêu chỉ số scree
   }
 });
 
+// Dòng PHÂN NHÓM — bảng URD thật chèn dòng chỉ có tên nhóm in đậm, cột "Kiểu
+// hiển thị" trống ("Khối Thông tin pháp lý", "Nút thao tác"…). Prompt bắt agent
+// chép MỌI dòng, nên parser phải LOẠI chúng thay vì đánh hỏng cả trang.
+
+test('parseComponentReport: dòng phân nhóm (label có, doc_type "") bị LOẠI khỏi report, không phải lỗi', () => {
+  const raw = JSON.stringify(
+    reportWith([
+      { label: 'Khối Thông tin pháp lý', doc_type: '', verdict: 'ok' } as ScreenElement,
+      okElement(),
+      { label: 'Nút thao tác', doc_type: '   ', verdict: 'internal' } as ScreenElement,
+    ]),
+  );
+  const result = parseComponentReport(raw);
+  assert.ok('report' in result, 'expected a report result, not errors');
+  if ('report' in result) {
+    const els = result.report.screens[0]!.elements;
+    assert.equal(els.length, 1);
+    assert.equal(els[0]!.label, 'Nút Tìm kiếm');
+  }
+});
+
+test('parseComponentReport: dòng phân nhóm được loại TRƯỚC khi kiểm verdict/component — thiếu verdict vẫn qua', () => {
+  const raw = JSON.stringify(
+    reportWith([
+      { label: 'Khối thông tin liên hệ', doc_type: '' } as unknown as ScreenElement,
+      okElement(),
+    ]),
+  );
+  const result = parseComponentReport(raw);
+  assert.ok('report' in result, 'expected a report result, not errors');
+  if ('report' in result) assert.equal(result.report.screens[0]!.elements.length, 1);
+});
+
+test('parseComponentReport: doc_type VẮNG MẶT hẳn (khác "" — agent quên khai) vẫn là lỗi shape', () => {
+  const raw = JSON.stringify(
+    reportWith([
+      { label: 'Nút Tìm kiếm', verdict: 'ok', component: 'Button' } as unknown as ScreenElement,
+    ]),
+  );
+  const result = parseComponentReport(raw);
+  assert.ok('errors' in result);
+  if ('errors' in result) {
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0]!, /doc_type/);
+  }
+});
+
+test('parseComponentReport: dòng rác (label rỗng + doc_type rỗng) vẫn lỗi ở label', () => {
+  const raw = JSON.stringify(
+    reportWith([{ label: '', doc_type: '', verdict: 'ok' } as ScreenElement]),
+  );
+  const result = parseComponentReport(raw);
+  assert.ok('errors' in result);
+  if ('errors' in result) {
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0]!, /label/);
+  }
+});
+
 test('parseComponentReport: verdict sai giá trị => lỗi liệt kê tập hợp lệ', () => {
   const raw = JSON.stringify(reportWith([okElement({ verdict: 'khong-biet' as never })]));
   const result = parseComponentReport(raw);

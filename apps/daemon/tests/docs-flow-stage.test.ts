@@ -43,8 +43,7 @@ test('dr-flow: skill docs-flow-extract, phụ thuộc dr-docs, output flows/ ở
   assert.equal(d.skillId, 'docs-flow-extract');
   assert.deepEqual(d.dependsOn, ['dr-docs']);
   assert.deepEqual(d.outputs, ['flows/']);
-  // File-only, không đẩy lên KGS; không nhận upload / design system / platform.
-  assert.equal(d.convertToGraph, undefined);
+  // File-only; không nhận upload / design system / platform.
   assert.equal(d.acceptsUpload, undefined);
   assert.equal(d.acceptsDesignSystem, undefined);
   // Namespace thư mục là của chính workflow này.

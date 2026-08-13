@@ -37,8 +37,6 @@ vi.mock('../src/kg-sync/media-client.js', () => ({
   },
   mediaConfigFromEnv: () => ({}),
 }));
-vi.mock('../src/kg-sync/kgs-client.js', () => ({ KgsClient: class {}, kgsConfigFromEnv: () => ({}) }));
-
 import { registerProjectSyncRoutes } from '../src/project-sync-routes.js';
 
 type Handler = (req: any, res: any) => Promise<void> | void;
@@ -58,9 +56,9 @@ describe('project-sync route contract', () => {
 
   it('filters origins to visible rows and supports the Feature App filter', async () => {
     state.origins = [
-      { projectId: 'app', name: 'App', isApp: true, inKgs: true, inMedia: true, visibility: 'visible' },
-      { projectId: 'feature-a', name: 'A', isApp: false, appId: 'app', inKgs: true, inMedia: true, visibility: 'visible' },
-      { projectId: 'feature-hidden', name: 'Hidden', isApp: false, appId: 'app', inKgs: true, inMedia: true, visibility: 'hidden' },
+      { projectId: 'app', name: 'App', isApp: true, inMedia: true, visibility: 'visible' },
+      { projectId: 'feature-a', name: 'A', isApp: false, appId: 'app', inMedia: true, visibility: 'visible' },
+      { projectId: 'feature-hidden', name: 'Hidden', isApp: false, appId: 'app', inMedia: true, visibility: 'hidden' },
     ];
     const out = await call(handlers().get('GET /api/project-sync/origins')!, {}, { kind: 'feature', appId: 'app' });
     expect(out.status).toBe(200);
@@ -97,12 +95,12 @@ describe('project-sync route contract', () => {
 
   it('keeps a hidden or wrong-kind mapping in the explicit new/remediation state', async () => {
     state.projects = [{ id: 'local', name: 'Local', metadata: { studioConfig: { remoteId: 'shared' } } }];
-    state.origins = [{ projectId: 'shared', name: 'Shared', isApp: false, inKgs: true, inMedia: true, visibility: 'hidden' }];
+    state.origins = [{ projectId: 'shared', name: 'Shared', isApp: false, inMedia: true, visibility: 'hidden' }];
     const table = handlers();
     const hidden = await call(table.get('POST /api/project-sync/status')!, { scopes: [{ kind: 'feature', projectId: 'local' }] });
     expect(hidden.body.data.results[0]).toMatchObject({ state: 'new', mappingValid: false, origin: { originId: 'shared', visibility: 'hidden' } });
 
-    state.origins = [{ projectId: 'shared', name: 'Shared app', isApp: true, inKgs: true, inMedia: true, visibility: 'visible' }];
+    state.origins = [{ projectId: 'shared', name: 'Shared app', isApp: true, inMedia: true, visibility: 'visible' }];
     const wrongKind = await call(table.get('POST /api/project-sync/status')!, { scopes: [{ kind: 'feature', projectId: 'local' }] });
     expect(wrongKind.body.data.results[0]).toMatchObject({ state: 'new', mappingValid: false });
   });
@@ -122,8 +120,8 @@ describe('project-sync route contract', () => {
         },
       }];
       state.origins = [
-        { projectId: 'shared-feature', name: 'Checkout', isApp: false, appId: 'shared-app', inKgs: true, inMedia: true, visibility: 'visible' },
-        { projectId: 'shared-app', name: 'Retail', isApp: true, inKgs: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'shared-feature', name: 'Checkout', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+        { projectId: 'shared-app', name: 'Retail', isApp: true, inMedia: true, visibility: 'visible' },
       ];
       state.mediaFiles = {
         'shared-feature': [{ path: 'project.json', checksum: 'remote-binding' }],

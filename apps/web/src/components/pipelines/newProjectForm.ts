@@ -1,7 +1,7 @@
 // Phần dùng chung của hai form khai sinh (NewAppModal / NewFeatureModal).
 //
 // Người dùng KHÔNG gõ mã (id) cho cả App lẫn Feature. Mã là tên thư mục làm
-// việc / khoá KGS project_id — kỹ thuật thuần tuý, người không rành convention
+// việc / khoá project_id chia sẻ — kỹ thuật thuần tuý, người không rành convention
 // dễ gõ sai (khoảng trắng, hoa/thường, dấu tiếng Việt). Mã sinh từ tên hiển thị
 // qua `toSlugId` bên dưới.
 

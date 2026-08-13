@@ -199,7 +199,11 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
     const runAllRes = await fetch(`${baseUrl}/api/pipelines/run-all`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ projectId, workflowId: 'docs-to-ui', terminal: 'ui-html', stageIds: ['docs'] }),
+      // KHÔNG gửi `terminal` tường minh: cả 3 terminal UI-Spec đang HOLD
+      // (2026-08 web-first — HELD_STAGE_IDS trong pipelines.ts), một giá trị
+      // tường minh giờ 400 (STAGE_HELD). `stageIds: ['docs']` đã đủ để chỉ
+      // chạy bước ingest — test này không cần terminal.
+      body: JSON.stringify({ projectId, workflowId: 'docs-to-ui', stageIds: ['docs'] }),
     });
     expect(runAllRes.status).toBe(202);
 
@@ -236,7 +240,9 @@ describe('App Docs Pool — GATE + deterministic copy + run-all preserve', () =>
     const runAllRes = await fetch(`${baseUrl}/api/pipelines/run-all`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ projectId, workflowId: 'docs-to-ui', terminal: 'ui-html' }),
+      // KHÔNG gửi `terminal` tường minh — xem chú thích ở test phía trên
+      // (2026-08 hold: một terminal UI-Spec tường minh nay 400 STAGE_HELD).
+      body: JSON.stringify({ projectId, workflowId: 'docs-to-ui' }),
     });
     expect(runAllRes.status).toBe(202);
 

@@ -13,23 +13,21 @@ export interface ProjectLifecycle {
   reason?: string;
 }
 
-// Remote registry DTOs — list + delete projects that live on the remote stores.
+// Remote registry DTOs — list + delete projects that live on the remote store.
 //
-// "Remote" is two independent kewords: the KGS graph (DP_UI_WORKSPACE + nodes)
-// and the media-service file store (one folder per project). A project can exist
-// in one, the other, or both. The registry merges them by projectId so the user
-// can see — and prune — what's on the server, independent of what's local.
+// "Remote" is the media-service file store (one folder per project). The
+// registry enumerates it so the user can see — and prune — what's on the
+// server, independent of what's local. (Prior to the KGS removal this also
+// merged a separate graph store; that half is gone — see docs/guides/
+// media-file-sync-design.md.)
 //
-// Phase 1 supports deleting FILES only (media folder). Graph deletion (`graph`/
-// `all`) is reserved but not yet implemented in the daemon — see
-// docs/guides/media-file-sync-design.md §5 and the KgsClient (no delete method).
+// Phase 1 supports deleting FILES only (media folder). `graph`/`all` scopes
+// are reserved but unimplemented — there is no separate graph store anymore.
 
 export interface RemoteProject {
   projectId: string;
-  /** KGS workspace name when present, else the projectId. */
+  /** Display name; falls back to the projectId. */
   name: string;
-  /** A DP_UI_WORKSPACE for this projectId exists in KGS. */
-  inKgs: boolean;
   /** A media-service folder for this projectId exists. */
   inMedia: boolean;
   /** File count in the media folder (0 when inMedia is false). */

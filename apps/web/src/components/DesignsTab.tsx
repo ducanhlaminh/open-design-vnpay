@@ -47,9 +47,10 @@ function isFigmaDesignSystemProject(p: Project): boolean {
 	);
 }
 
-// A pipeline project is a KGS app (created on the Pipelines page or mirrored
-// via kg-pull) — mirrors the daemon's isKgsProject. Everything else is a
-// regular chat project.
+// A pipeline project is created on the Pipelines page or mirrored from a
+// shared remote project (metadata.source === "kg-pull", legacy tag kept for
+// on-disk compatibility) — mirrors the daemon's isKgsProject. Everything else
+// is a regular chat project.
 function isPipelineProject(p: { metadata?: unknown }): boolean {
 	const m = p.metadata;
 	if (!m || typeof m !== "object" || Array.isArray(m)) return false;
@@ -499,7 +500,7 @@ export function DesignsTab({
 						<button aria-pressed={scope === "overview"} className={scope === "overview" ? "active" : ""} onClick={() => changeScope("overview")}>
 							Tổng
 						</button>
-						<button aria-pressed={scope === "pipeline"} className={scope === "pipeline" ? "active" : ""} onClick={() => changeScope("pipeline")} title="KGS pipeline projects (docs → prototype workflows)">
+						<button aria-pressed={scope === "pipeline"} className={scope === "pipeline" ? "active" : ""} onClick={() => changeScope("pipeline")} title="Pipeline projects (docs → prototype workflows)">
 							Pipeline ({pipelineCount})
 						</button>
 						<button aria-pressed={scope === "ds-figma"} className={scope === "ds-figma" ? "active" : ""} onClick={() => changeScope("ds-figma")}>

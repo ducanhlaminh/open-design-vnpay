@@ -1,5 +1,5 @@
 {
-  "$comment": "Example UX Spec (screens + personas, content only). Do NOT include project_id — it is filled at PUSH time from the conversation's bound KGS project (or the Push to KG dropdown / --project-id). The agent generates a file like this; the open-design-vnpay 'Push to KG' button or scripts/push_to_kgs.py then materialises it into the KGS open-design app and it shows on /ux-spec after Pull All. Each screen's `layout` is its target platform: the two refund screens are `mobile`; the admin screen shows the `web` shape (table + sidebar-friendly patterns) used when the run targets WEBSITE.",
+  "$comment": "Example UX Spec (screens + personas, content only). Do NOT include project_id — the file already lives inside this project's own working directory. The agent generates a file like this as a normal stage output; the daemon syncs it to the shared media-service store like every other docs-to-ui deliverable. Each screen's `layout` is its target platform: the two refund screens are `mobile`; the admin screen shows the `web` shape (table + sidebar-friendly patterns) used when the run targets WEBSITE.",
   "personas": [
     {
       "name": "Chủ cửa hàng",

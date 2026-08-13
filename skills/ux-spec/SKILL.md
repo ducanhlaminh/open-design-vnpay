@@ -1,16 +1,17 @@
 ---
 name: ux-spec
 description: |
-  Generate a UX Spec (the per-screen box-text mockup data) as a JSON file for an
-  EXISTING SimStudio project, then push it into the Knowledge Graph (KGS
-  open-design app) so it can be pulled back and viewed on SimStudio's /ux-spec
-  screen. open-design is the UX PRODUCER: this skill authors S_SCREEN_SPEC
-  (screens with type/intent/actor), DP_UI_COMPONENT (the fields/buttons on each
-  screen), and optionally UX_PERSONA_PROFILE, scoped to a project_id. Activate
+  Generate a UX Spec (the per-screen box-text mockup data) as a JSON file for a
+  pipeline project — a FILE-ONLY stage output, synced to the shared
+  media-service store alongside the other docs-to-ui deliverables. This skill
+  authors S_SCREEN_SPEC-shaped screens (with type/intent/actor),
+  DP_UI_COMPONENT-shaped components (the fields/buttons on each screen), and
+  optionally UX_PERSONA_PROFILE-shaped personas — the field names are kept
+  stable for compatibility with existing consumers of this schema. Activate
   when the user asks to "design a UX spec", "tạo UX spec", "spec màn hình",
-  "screen spec", "wireframe spec", or to push UX screen specs into KGS /
-  SimStudio for a given project. For customer-journey maps (USER_FLOW + STAGE
-  emotion curves) use the sibling `customer-journey-spec` skill instead.
+  "screen spec", or "wireframe spec" for a given project. For customer-journey
+  maps (USER_FLOW + STAGE emotion curves) use the sibling
+  `customer-journey-spec` skill instead.
 triggers:
   - "ux spec"
   - "ux specification"
@@ -20,31 +21,25 @@ triggers:
   - "màn hình spec"
   - "spec màn"
   - "tạo ux spec"
-  - "push ux spec to kgs"
 od:
   mode: utility
   category: ux-research
 ---
 
-# ux-spec — author UX Spec screens → KGS → SimStudio
+# ux-spec — author UX Spec screens
 
-open-design is the **UX producer** in a 3-app Knowledge Graph:
-- **design-v3 app** — UI (full screens / components / themes).
-- **open-design app** — UX (this skill writes here): screens specs, components,
-  personas.
-- **vnp-platform / SimStudio** — the consumer that pulls and renders.
-
-This skill produces a JSON file of UX Spec **screens** (+ their components) and
-pushes it to the open-design KGS app. SimStudio's **Pull All** then materialises
-it and shows it on `/ux-spec`, scoped to the project.
+This skill produces a JSON file of UX Spec **screens** (+ their components) as
+a normal pipeline stage output — the daemon syncs it (and the wireframes/flow
+files from steps 1b/1c) to the shared media-service store alongside every
+other docs-to-ui deliverable; no separate push step is needed.
 
 > Sibling skill: `customer-journey-spec` authors the Customer Journey
 > (USER_FLOW + STAGE emotion curves) for `/customer-journey`. Use that one for
 > journeys; use this one for screen specs. A persona can appear in either.
 
 ## When to use
-- The user wants to design / generate a UX Spec (screen-by-screen) to appear in
-  SimStudio's `/ux-spec`.
+- The user wants to design / generate a UX Spec (screen-by-screen) for a
+  pipeline project.
 
 ## Workflow (do these in order)
 
@@ -240,16 +235,16 @@ of guessed ones:
    pattern came from a reference.
 
 Rules: `./ux-refs/` is **reference material only** — it is NOT a stage output,
-never push it to KGS and never list it in the spec. Cap the effort (≤ ~15
+never sync it and never list it in the spec. Cap the effort (≤ ~15
 images total, one search pass per flow — no exhaustive crawling). If the
 `mobbin` tools are absent or every call errors (auth/plan), skip this step
 silently and continue — the stage must produce the same outputs without it.
 
 ### 1. Generate the JSON (content only — no project_id)
 Author a UX Spec file following `references/schema.md`. **Do NOT put a
-`project_id` in the file** — you are authoring CONTENT only. The target KGS
-project is chosen at PUSH time (conversation binding / Push to KG dropdown /
-`--project-id`), so a `project_id` invented here would be ignored. Key rules:
+`project_id` in the file** — you are authoring CONTENT only; the file already
+lives inside this project's own working directory, so an embedded id would be
+redundant (and stale the moment it's copied elsewhere). Key rules:
 - One or more **screens** (S_SCREEN_SPEC). Each has `screen_type`,
   `screen_intent`, `primary_actor`, `layout` (see 0b), and an ordered list of
   **components** (DP_UI_COMPONENT) — the inputs/buttons/lists that render the
@@ -388,45 +383,17 @@ Rules:
   navigation; the flow file ADDS the rule layer (conditions, ends) on top —
   don't contradict it.
 
-### 2. Push to KGS
-Two equivalent ways (both write via the KGS graph API → projected to Neo4j):
+### 2. Nothing further to do — the stage output syncs automatically
+The JSON file (+ `wireframes/` + `flows/`) is a normal stage output: once the
+run finishes, the daemon's file sync (manual upload button, or push-all)
+carries it to the shared media-service store like every other docs-to-ui
+deliverable. There is no separate push step and no project id to fill in.
 
-**a) open-design-vnpay button (recommended for users).** Open the generated JSON
-file in the open-design-vnpay FileViewer. A **"Push to KG"** button appears with
-a **project dropdown** (the list of SimStudio projects). Pick the target project
-and click — no env/CLI needed (the daemon holds the KGS credentials).
-
-**b) CLI / script.** Run the push script with the open-design app credentials
-(`<SKILL-ROOT>` = the `.od-skills/…` path from the preamble above — the script
-ships with this skill, it is NOT in your working directory):
-```bash
-KGS_URL=http://localhost:28001 \
-KGS_API_KEY=<open-design app key> \
-KGS_APP_ID=open-design-app \
-python3 <SKILL-ROOT>/scripts/push_to_kgs.py <your-ux-spec>.json --project-id <project_id>
-# or, against a running daemon:  od kg push <your-ux-spec>.json --project-id <project_id>
-# list targets:                  od kg projects
-```
-- Use `--dry-run` first to preview what will be written.
-- Writes via the KGS **graph write API** (`POST /v1/graph/nodes`), NOT a DB
-  insert — required so KGS projects the nodes to Neo4j, which is what SimStudio's
-  pull reads. Do NOT insert into Postgres/Neo4j directly.
-- 409 (already exists) is fine — re-pushing is idempotent per id.
-
-### 3. View in SimStudio
-Tell the user: open SimStudio → select the project → click **Pull All** in the
-header → open `/ux-spec`. The screens appear, filtered to that project, with the
-per-screen box-text mockup built from the components.
-
-## Mapping (why labels/props matter)
-SimStudio's `preview-content` maps KGS labels to its DB; keep these exact:
-| KGS label | → SimStudio | required props |
-|---|---|---|
-| `S_SCREEN_SPEC` | screens | `id, title(=name), screen_type, primary_actor, project_id` |
-| `DP_UI_COMPONENT` | ui_components | `id, screen_id, component_type, label, project_id` |
-| `UX_PERSONA_PROFILE` | ux_personas | `id, name, project_id` |
-
-Full field reference: `references/schema.md`.
+## Field reference
+Field names (`S_SCREEN_SPEC`-shaped screens, `DP_UI_COMPONENT`-shaped
+components, `UX_PERSONA_PROFILE`-shaped personas) are kept stable for
+compatibility with existing consumers of this schema. Full field reference:
+`references/schema.md`.
 
 ## Hard rules
 - **Docs are the source of truth; a flow diagram is the flow.** Where the ingest
@@ -434,10 +401,6 @@ Full field reference: `references/schema.md`.
   the documented flow, not the other way round. Inventing a branch the documents
   never specified, or silently dropping one they do, corrupts every stage built
   on this one.
-- **Never put `project_id` in the file.** It is filled at push time (conversation
-  binding / dropdown / `--project-id`) and applied to every node by the pusher.
-  A `project_id` you invent here is ignored by the Push to KG button.
+- **Never put `project_id` in the file.** The file already lives inside this
+  project's own working directory; an embedded id would be redundant.
 - **Components link to their screen by the `screen_id` PROP**, not a graph edge.
-- **Push only via `scripts/push_to_kgs.py` / `od kg push` / the Push to KG
-  button** (graph write API) — never edit KGS Postgres/Neo4j directly.
-- Target the **open-design app** (UX producer), never the design-v3 app.

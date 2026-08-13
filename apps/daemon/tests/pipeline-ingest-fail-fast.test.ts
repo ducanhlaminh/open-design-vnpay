@@ -1,30 +1,28 @@
-// Live incident regression: dr-docs (a jira-ingest stage) fired with NO
+// Live incident regression: dr-docs (a confluence-ingest stage) fired with NO
 // input/source/saved-config seeded an agent conversation that had nothing to
 // do — the agent politely no-op'd and the stage flipped 'succeeded' with an
 // empty docs/. The downstream stage then failed correctly but with NO error
 // text (GET /api/pipelines' per-stage payload had nothing for "Xem lỗi" to
 // show). Four fixes exercised here, all via the real server (real HTTP
-// round-trip — the deterministic-vs-agent branching and the conversation
-// seeding live deep inside server.ts's runPipeline, not reachable through a
-// fake-express harness):
+// round-trip — the deterministic-vs-fail-fast branching lives deep inside
+// server.ts's runPipeline, not reachable through a fake-express harness):
 //   1. FAIL-FAST: no explicit input/source, and the stage's own docs/ isn't
 //      already populated → fail the stage immediately, no conversation
 //      created.
 //   2. The 'failed' status now carries a short `error` string, round-tripped
 //      through GET /api/pipelines.
-//   3. HARD GATE (follow-up hardening — the incident continued after (1)
-//      because non-empty, non-Confluence, non-JIRA input still fell through
-//      to the legacy agent path): the ONLY route to the agent for a
-//      jira-ingest stage is input that's genuinely JIRA-shaped
+//   3. HARD GATE (WP8, 2026-08: JIRA ingest removed entirely — there is no
+//      more agent+mcp-atlassian path to fall through to). ALL non-empty,
+//      non-Confluence input fails fast now, including a genuine JIRA key/JQL
 //      (looksLikeJiraInput — see bas-client.test.ts for the heuristic's own
-//      unit coverage). Everything else (corpus file paths, plain text, a
-//      stale web bundle's leftover value) fails immediately instead.
+//      unit coverage, still used to pick a more specific rejection message).
+//      No conversation is ever seeded for this stage.
 //   4. SUCCESS shortcut (the OTHER half of the ghost-run this incident kept
-//      surfacing — "cần Atlassian MCP" on a project whose docs/ was already
-//      populated by hand): empty input/source but the stage's own docs/
-//      ALREADY has files → mark the stage succeeded immediately
-//      (docsFromUpload semantics — see server.ts's runPipeline), no fetch,
-//      no agent, docs left untouched.
+//      surfacing — a stale "needs configuring" state on a project whose
+//      docs/ was already populated by hand): empty input/source but the
+//      stage's own docs/ ALREADY has files → mark the stage succeeded
+//      immediately (docsFromUpload semantics — see server.ts's runPipeline),
+//      no fetch, no agent, docs left untouched.
 
 import type http from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -35,7 +33,7 @@ import { startServer } from '../src/server.js';
 
 const dataDir = process.env.OD_DATA_DIR as string;
 
-describe('jira-ingest fail-fast + persisted stage error', () => {
+describe('confluence-ingest fail-fast + persisted stage error', () => {
   let server: http.Server;
   let baseUrl: string;
 
@@ -102,16 +100,6 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     );
   });
 
-  // Best-effort: cancel a seeded run right after asserting it started, so a
-  // real agent CLI (when one happens to be detected in this environment —
-  // e.g. a local `claude` install) doesn't keep running unbounded as a side
-  // effect of proving the fail-fast gate was correctly bypassed. Never
-  // fails the test if cancellation itself 404s/errors.
-  async function cancelRun(agentRunId: string | undefined): Promise<void> {
-    if (!agentRunId) return;
-    await fetch(`${baseUrl}/api/runs/${agentRunId}/cancel`, { method: 'POST' }).catch(() => null);
-  }
-
   it('empty input/source + populated docs/ (docsFromUpload case) marks the stage succeeded immediately — no fetch, no agent, docs left intact', async () => {
     const projectId = uniqueId('docsfromupload');
     await createProject(projectId);
@@ -148,34 +136,37 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     expect(content).toBe('# Manually uploaded');
   });
 
-  it('a real JIRA-key input STILL reaches agent seeding (the one legitimate route left open)', async () => {
-    const projectId = uniqueId('jirakey');
+  // WP8 (2026-08): JIRA ingest was removed entirely. A genuine JIRA key/JQL
+  // no longer reaches agent seeding — it fails fast, same as any other
+  // non-Confluence input, but with a message that specifically says JIRA is
+  // no longer supported (looksLikeJiraInput is kept only to pick that
+  // message, see bas-client.test.ts for its own unit coverage).
+  it.each([
+    ['a real JIRA issue key', 'PROJ-123'],
+    ['a JQL query', 'project = PROJ ORDER BY created DESC'],
+  ])('JIRA-shaped input (%s) fails immediately with a "no longer supported" message — no conversation created', async (_label, jiraInput) => {
+    const projectId = uniqueId('jira');
     await createProject(projectId);
 
-    const res = await runDocs(projectId, { input: 'PROJ-123' });
+    const res = await runDocs(projectId, { input: jiraInput });
     expect(res.status).toBe(202);
     const start = (await res.json()) as { projectId: string; conversationId?: string; agentRunId?: string };
-    expect(start.conversationId).toBeTruthy();
-    expect(start.agentRunId).toBeTruthy();
-    await cancelRun(start.agentRunId);
+    expect(start).toEqual({ projectId });
+    expect(start.conversationId).toBeUndefined();
+    expect(start.agentRunId).toBeUndefined();
+
+    const view = await stageView(projectId, 'docs');
+    expect(view.status).toBe('failed');
+    expect(view.error).toBe(
+      'Chỉ hỗ trợ Confluence URL — JIRA đã ngừng hỗ trợ. Chọn trang Confluence ở panel Nguồn tài liệu rồi chạy lại.',
+    );
   });
 
-  it('a JQL-shaped input also reaches agent seeding', async () => {
-    const projectId = uniqueId('jql');
-    await createProject(projectId);
-
-    const res = await runDocs(projectId, { input: 'project = PROJ ORDER BY created DESC' });
-    expect(res.status).toBe(202);
-    const start = (await res.json()) as { projectId: string; conversationId?: string; agentRunId?: string };
-    expect(start.conversationId).toBeTruthy();
-    expect(start.agentRunId).toBeTruthy();
-    await cancelRun(start.agentRunId);
-  });
-
-  // The hardening this round adds: HARD GATE — non-empty input that is
-  // neither Confluence-shaped nor JIRA-shaped must fail immediately, not
-  // fall through to the agent (the exact ghost-run vector that kept the
-  // incident alive after the first fail-fast round).
+  // The hardening this round adds: HARD GATE — ANY non-empty input that
+  // isn't Confluence-shaped must fail immediately, never seed a
+  // conversation (the exact ghost-run vector that kept the incident alive
+  // after the first fail-fast round — now closed completely since there is
+  // no more agent fallback for this stage at all).
   it.each([
     ['a corpus file path', 'Overview.md'],
     ['a nested corpus file path', 'nested/sub/dir/page.md'],
@@ -195,7 +186,7 @@ describe('jira-ingest fail-fast + persisted stage error', () => {
     const view = await stageView(projectId, 'docs');
     expect(view.status).toBe('failed');
     expect(view.error).toBe(
-      'Input không nhận dạng được (không phải link/id Confluence, không phải JIRA key/JQL). Chọn nguồn ở panel Nguồn tài liệu (Confluence) rồi chạy lại.',
+      'Input không nhận dạng được (không phải link/id Confluence). Chọn nguồn ở panel Nguồn tài liệu (Confluence) rồi chạy lại.',
     );
   });
 

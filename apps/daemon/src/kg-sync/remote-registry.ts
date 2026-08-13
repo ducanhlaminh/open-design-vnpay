@@ -1,8 +1,10 @@
-// Remote registry: enumerate projects across the two remote stores (KGS graph +
-// media-service files) and merge them by projectId. The merge + loader are kept
-// here (no express, structural client interfaces) so they unit-test against fakes
-// without booting the daemon. The HTTP routes in kg-sync-routes.ts are thin
-// wrappers that construct the real KgsClient/MediaClient and call loadRemoteProjects.
+// Remote registry: enumerate projects on the remote media-service store. Kept
+// here (no express, structural client interface) so it unit-tests against a
+// fake without booting the daemon. The HTTP routes are thin wrappers that
+// construct the real MediaClient and call loadRemoteProjects.
+//
+// (Prior to the KGS removal this also merged a separate KGS-graph workspace
+// listing; that half is gone — every row now comes from media-service alone.)
 //
 // See docs/guides/media-file-sync-design.md and the pull-conflict spec.
 
@@ -10,28 +12,7 @@ import type { ProjectLifecycle, RemoteProject } from '@open-design/contracts';
 
 import { isPending } from './staging.js';
 
-// ── workspace → projectId ────────────────────────────────────────────────────
-// Derive a pull-able project id from a DP_UI_WORKSPACE entity: prefer the
-// explicit projectId property, else the conventional `ws-project-<ID>` entity id.
-// Returns null for non-project workspaces (e.g. shared `ws-catalog-*`).
-export function projectIdFromWorkspace(ws: {
-  entityId?: string;
-  properties?: Record<string, unknown>;
-}): string | null {
-  const pid = ws.properties?.projectId;
-  if (typeof pid === 'string' && pid.trim()) return pid.trim();
-  const m = /^ws-project-(.+)$/i.exec(ws.entityId ?? '');
-  return m && m[1] ? m[1] : null;
-}
-
-// ── structural sources (KgsClient / MediaClient satisfy these) ───────────────
-export interface WorkspaceSource {
-  queryEntities(
-    labels: string[],
-    propertyEq: Record<string, string>,
-  ): Promise<Array<{ entityId?: string; name?: string; properties?: Record<string, unknown> }>>;
-}
-
+// ── structural source (MediaClient satisfies this) ───────────────────────────
 export interface FolderSource {
   listFolders(): Promise<Array<{ id: string; name: string }>>;
   listAllFiles(folderId: string): Promise<Array<unknown>>;
@@ -40,10 +21,6 @@ export interface FolderSource {
   downloadFile?(projectId: string, filePath: string): Promise<Uint8Array>;
 }
 
-interface KgsRow {
-  projectId: string;
-  name: string;
-}
 interface MediaRow {
   projectId: string;
   files: number;
@@ -82,63 +59,29 @@ function filePathOf(value: unknown): string | null {
  *  UX-charter layer above features, never a pipeline target itself. */
 export const APP_PREFIX = 'app--';
 
-/** Merge the two remote sources into one project list, keyed by projectId and
- *  sorted by id. A project present in only one store still appears, with the
- *  matching `inKgs`/`inMedia` flag false. */
-export function mergeRemoteProjects(kgs: KgsRow[], media: MediaRow[]): RemoteProject[] {
+/** Build the project list from the media rows, sorted by id. */
+export function mergeRemoteProjects(media: MediaRow[]): RemoteProject[] {
   const byId = new Map<string, RemoteProject>();
-  for (const k of kgs) {
-    byId.set(k.projectId, {
-      projectId: k.projectId,
-      name: k.name || k.projectId,
-      inKgs: true,
-      inMedia: false,
-      files: 0,
-      isApp: k.projectId.startsWith(APP_PREFIX),
-      visibility: 'visible',
-    });
-  }
   for (const m of media) {
-    const existing = byId.get(m.projectId);
-    if (existing) {
-      existing.inMedia = true;
-      existing.files = m.files;
-      existing.visibility = m.visibility ?? 'visible';
-      if (m.hiddenAt) existing.hiddenAt = m.hiddenAt;
-      else delete existing.hiddenAt;
-    } else {
-      byId.set(m.projectId, {
-        projectId: m.projectId,
-        name: m.projectId,
-        inKgs: false,
-        inMedia: true,
-        files: m.files,
-        isApp: m.projectId.startsWith(APP_PREFIX),
-        visibility: m.visibility ?? 'visible',
-        ...(m.hiddenAt ? { hiddenAt: m.hiddenAt } : {}),
-      });
-    }
+    byId.set(m.projectId, {
+      projectId: m.projectId,
+      name: m.projectId,
+      inMedia: true,
+      files: m.files,
+      isApp: m.projectId.startsWith(APP_PREFIX),
+      visibility: m.visibility ?? 'visible',
+      ...(m.hiddenAt ? { hiddenAt: m.hiddenAt } : {}),
+    });
   }
   return [...byId.values()].sort((a, b) => a.projectId.localeCompare(b.projectId));
 }
 
-/** Query both stores (best-effort per store — one being down still lists the
- *  other) and return the merged registry. */
-export async function loadRemoteProjects(kgs: WorkspaceSource, media: FolderSource): Promise<RemoteProject[]> {
-  const workspaces = await kgs.queryEntities(['DP_UI_WORKSPACE'], {}).catch(() => []);
-  const kgsRows: KgsRow[] = [];
-  for (const ws of workspaces) {
-    const projectId = projectIdFromWorkspace(ws);
-    if (!projectId) continue;
-    const name = typeof ws.properties?.name === 'string' && ws.properties.name ? ws.properties.name : (ws.name ?? projectId);
-    kgsRows.push({ projectId, name });
-  }
-
-  // `pending--…` folders are approval requests, not projects. Studio hides them
-  // for free (it enumerates KGS workspaces, and a staged push writes no
-  // workspace node) but Open Design lists EVERY media folder — without this
-  // filter a request awaiting approval would show up as a pullable project on
-  // every machine in the app.
+/** Enumerate the registry from the media store (best-effort: an unreachable
+ *  store yields an empty list rather than throwing). */
+export async function loadRemoteProjects(media: FolderSource): Promise<RemoteProject[]> {
+  // `pending--…` folders are approval requests, not projects. Open Design
+  // lists EVERY media folder — without this filter a request awaiting
+  // approval would show up as a pullable project on every machine in the app.
   const folders = (await media.listFolders().catch(() => [])).filter((f) => !isPending(f.name));
   const mediaRows: MediaRow[] = await Promise.all(
     folders.map(async (f) => {
@@ -164,7 +107,7 @@ export async function loadRemoteProjects(kgs: WorkspaceSource, media: FolderSour
     }),
   );
 
-  return mergeRemoteProjects(kgsRows, mediaRows);
+  return mergeRemoteProjects(mediaRows);
 }
 
 /** Whether a single project is visible under the given pull scope. Membership

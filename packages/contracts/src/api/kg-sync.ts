@@ -1,44 +1,13 @@
-// design-v3 KG sync DTOs — shared between the daemon HTTP layer, the web UI, and
-// the `od kg …` CLI. open-design-vnpay pulls a remote KGS project (app_id =
-// design-v3) into its local SQLite mirror and pushes locally-authored rows back.
-// See apps/daemon/src/kg-sync/ and docs/sync-design-v3-spec-plan.md.
-
-export type KgSyncStatus = 'ok' | 'partial';
-
-/**
- * Body of `POST /api/kg/pull-all` and `push-all`. `projectIds` narrows to a
- * chosen subset of projects (the UI's Pull all / Push all modals / --projects);
- * `stages` narrows which pipelines' OUTPUT FILES travel (--stages) — the KG
- * graph always moves whole-project. `workflow` is a convenience for CLI/API
- * callers: when `stages` is absent it expands to that workflow's pipeline ids
- * (the UI modals are workflow-scoped and always send explicit `stages`).
- * Absent or empty → everything.
- */
-export interface KgPullAllRequest {
-  projectIds?: string[];
-  stages?: string[];
-  workflow?: string;
-}
-
-export interface KgPullResult {
-  projectId: string;
-  nodes: number;
-  edges: number;
-  skippedLocalNodes: number;
-  skippedLocalEdges: number;
-  status: KgSyncStatus;
-  errors: string[];
-}
-
-export interface KgPushResult {
-  projectId: string;
-  nodesPushed: number;
-  edgesPushed: number;
-  status: KgSyncStatus;
-  errors: string[];
-  // Non-fatal notes — e.g. an edit to a pulled node that KGS could not upsert.
-  caveats: string[];
-}
+// Remote project sync DTOs — shared between the daemon HTTP layer and the web
+// UI. open-design-vnpay pushes a project's pipeline output files to the
+// shared media-service store and reads the registry of what's already there.
+// See apps/daemon/src/remote-projects-routes.ts and
+// docs/sync-design-v3-spec-plan.md.
+//
+// (Prior to the KGS removal this also covered a separate graph-store mirror
+// — KgPullResult/KgPushResult/KgSyncCounts and their `/api/projects/:id/kg-*`
+// responses — that half is gone; PublishResult's nodesPushed/edgesPushed/
+// workspace fields are kept at 0/'exists' for response-shape compatibility.)
 
 export interface ApprovedProjectMapping {
   localProjectId: string;
@@ -98,30 +67,7 @@ export interface KgPushAllResponse {
   data: { pushed: number; results: PublishResult[] };
 }
 
-export interface KgSyncCounts {
-  projectId: string;
-  nodes: number;
-  edges: number;
-  localNodes: number;
-  localEdges: number;
-}
-
-export interface KgPullResponse {
-  ok: boolean;
-  data: KgPullResult;
-}
-
-export interface KgPushResponse {
-  ok: boolean;
-  data: KgPushResult;
-}
-
-export interface KgStatusResponse {
-  ok: true;
-  data: KgSyncCounts;
-}
-
-/** Per-stage local↔remote file diff (POST /api/kg/sync-status, `od kg diff`).
+/** Per-stage local↔remote file diff (POST /api/kg/sync-status).
  *  Counts follow the push/pull eligibility rules (history metadata, syncExclude
  *  and localOnly-stage files never travel → never counted), so `differs` always
  *  corresponds to something a push or pull would actually move. */

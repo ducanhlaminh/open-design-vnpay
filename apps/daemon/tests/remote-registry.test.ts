@@ -1,6 +1,6 @@
-// Remote registry merge + loader. Pure logic (mergeRemoteProjects) plus the
-// source-agnostic loadRemoteProjects driven by fakes — no KGS/media boot. Proves
-// the LIST half of the remote registry (KGS ⊕ media, merged by projectId).
+// Remote registry loader. Pure logic (mergeRemoteProjects) plus the
+// source-agnostic loadRemoteProjects driven by a fake — no media-service boot.
+// Proves the LIST half of the remote registry (media-service files).
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -12,69 +12,38 @@ import {
   loadRemoteProjects,
   mergeRemoteProjects,
   PROJECT_LIFECYCLE_PATH,
-  projectIdFromWorkspace,
   type FolderSource,
-  type WorkspaceSource,
 } from '../src/kg-sync/remote-registry.js';
 import type { RemoteProject } from '@open-design/contracts';
 
-describe('projectIdFromWorkspace', () => {
-  it('prefers the explicit projectId property', () => {
-    expect(projectIdFromWorkspace({ properties: { projectId: 'XPOS' } })).toBe('XPOS');
-  });
-  it('falls back to the ws-project-<id> entityId', () => {
-    expect(projectIdFromWorkspace({ entityId: 'ws-project-demo' })).toBe('demo');
-  });
-  it('returns null for non-project workspaces', () => {
-    expect(projectIdFromWorkspace({ entityId: 'ws-catalog-shadcn' })).toBeNull();
-    expect(projectIdFromWorkspace({})).toBeNull();
-  });
-});
-
 describe('mergeRemoteProjects', () => {
-  it('merges by projectId with correct flags + file counts, sorted by id', () => {
-    const merged = mergeRemoteProjects(
-      [
-        { projectId: 'b-both', name: 'Both' },
-        { projectId: 'a-kgs', name: 'KgsOnly' },
-      ],
-      [
-        { projectId: 'b-both', files: 5 },
-        { projectId: 'c-media', files: 2 },
-      ],
-    );
+  it('builds project rows from media, sorted by id', () => {
+    const merged = mergeRemoteProjects([
+      { projectId: 'b-both', files: 5 },
+      { projectId: 'c-media', files: 2 },
+    ]);
     expect(merged).toEqual([
-      { projectId: 'a-kgs', name: 'KgsOnly', inKgs: true, inMedia: false, files: 0, isApp: false, visibility: 'visible' },
-      { projectId: 'b-both', name: 'Both', inKgs: true, inMedia: true, files: 5, isApp: false, visibility: 'visible' },
-      { projectId: 'c-media', name: 'c-media', inKgs: false, inMedia: true, files: 2, isApp: false, visibility: 'visible' },
+      { projectId: 'b-both', name: 'b-both', inMedia: true, files: 5, isApp: false, visibility: 'visible' },
+      { projectId: 'c-media', name: 'c-media', inMedia: true, files: 2, isApp: false, visibility: 'visible' },
     ]);
   });
 
-  it('uses projectId as name when a media-only project has no KGS name', () => {
-    const merged = mergeRemoteProjects([], [{ projectId: 'orphan', files: 1 }]);
-    expect(merged[0]).toMatchObject({ projectId: 'orphan', name: 'orphan', inKgs: false, inMedia: true });
+  it('uses projectId as name', () => {
+    const merged = mergeRemoteProjects([{ projectId: 'orphan', files: 1 }]);
+    expect(merged[0]).toMatchObject({ projectId: 'orphan', name: 'orphan', inMedia: true });
   });
 
-  it('flags an App container (media folder app--<slug>) via isApp, whether seen from KGS or media', () => {
-    const fromKgs = mergeRemoteProjects([{ projectId: 'app--bidv', name: 'BIDV' }], []);
-    expect(fromKgs[0]).toMatchObject({ projectId: 'app--bidv', isApp: true });
-
-    const fromMedia = mergeRemoteProjects([], [{ projectId: 'app--bidv', files: 2 }]);
+  it('flags an App container (media folder app--<slug>) via isApp', () => {
+    const fromMedia = mergeRemoteProjects([{ projectId: 'app--bidv', files: 2 }]);
     expect(fromMedia[0]).toMatchObject({ projectId: 'app--bidv', isApp: true });
 
-    const feature = mergeRemoteProjects([{ projectId: 'BIDV-onboarding', name: 'Onboarding' }], []);
+    const feature = mergeRemoteProjects([{ projectId: 'BIDV-onboarding', files: 0 }]);
     expect(feature[0]).toMatchObject({ projectId: 'BIDV-onboarding', isApp: false });
   });
 });
 
 describe('loadRemoteProjects', () => {
-  it('combines KGS workspaces with media folders + per-folder file counts', async () => {
-    const kgs: WorkspaceSource = {
-      queryEntities: async () => [
-        { entityId: 'ws-project-XPOS', properties: { projectId: 'XPOS', name: 'X POS' } },
-        { entityId: 'ws-catalog-shadcn' }, // not a project → skipped
-      ],
-    };
+  it('lists media folders with per-folder file counts', async () => {
     const media: FolderSource = {
       listFolders: async () => [
         { id: 'f1', name: 'XPOS' },
@@ -83,13 +52,12 @@ describe('loadRemoteProjects', () => {
       listAllFiles: async (id) => (id === 'f1' ? [1, 2, 3] : [1]),
     };
 
-    const rows = await loadRemoteProjects(kgs, media);
+    const rows = await loadRemoteProjects(media);
     const byId = Object.fromEntries(rows.map((r) => [r.projectId, r]));
     expect(rows).toHaveLength(2);
     expect(byId.XPOS).toEqual({
       projectId: 'XPOS',
-      name: 'X POS',
-      inKgs: true,
+      name: 'XPOS',
       inMedia: true,
       files: 3,
       isApp: false,
@@ -98,7 +66,6 @@ describe('loadRemoteProjects', () => {
     expect(byId['media-only']).toEqual({
       projectId: 'media-only',
       name: 'media-only',
-      inKgs: false,
       inMedia: true,
       files: 1,
       isApp: false,
@@ -107,11 +74,9 @@ describe('loadRemoteProjects', () => {
   });
 
   it('hides `pending--…` folders — an approval request is not a pullable project', async () => {
-    // Studio hides them for free (it enumerates KGS workspaces and a staged
-    // push writes none); Open Design enumerates EVERY media folder, so without
-    // this filter every machine in the app would see other people's unapproved
-    // work as a project it could pull.
-    const kgs: WorkspaceSource = { queryEntities: async () => [] };
+    // Open Design enumerates EVERY media folder, so without this filter every
+    // machine in the app would see other people's unapproved work as a
+    // project it could pull.
     const media: FolderSource = {
       listFolders: async () => [
         { id: 'f1', name: 'checkout' },
@@ -120,28 +85,22 @@ describe('loadRemoteProjects', () => {
       ],
       listAllFiles: async () => [1],
     };
-    const rows = await loadRemoteProjects(kgs, media);
+    const rows = await loadRemoteProjects(media);
     expect(rows.map((r) => r.projectId)).toEqual(['checkout']);
   });
 
-  it('still lists media when KGS is down (best-effort per source)', async () => {
-    const kgs: WorkspaceSource = {
-      queryEntities: async () => {
-        throw new Error('KGS unreachable');
-      },
-    };
+  it('returns an empty list when media is unreachable (best-effort)', async () => {
     const media: FolderSource = {
-      listFolders: async () => [{ id: 'f1', name: 'XPOS' }],
-      listAllFiles: async () => [1, 2],
+      listFolders: async () => {
+        throw new Error('media unreachable');
+      },
+      listAllFiles: async () => [],
     };
-    const rows = await loadRemoteProjects(kgs, media);
-    expect(rows).toEqual([
-      { projectId: 'XPOS', name: 'XPOS', inKgs: false, inMedia: true, files: 2, isApp: false, visibility: 'visible' },
-    ]);
+    const rows = await loadRemoteProjects(media);
+    expect(rows).toEqual([]);
   });
 
   it('reads a valid Studio lifecycle sidecar without creating any folder', async () => {
-    const kgs: WorkspaceSource = { queryEntities: async () => [] };
     const downloads: string[] = [];
     const media: FolderSource = {
       listFolders: async () => [{ id: 'folder-old', name: 'old-project' }],
@@ -157,7 +116,7 @@ describe('loadRemoteProjects', () => {
       },
     };
 
-    await expect(loadRemoteProjects(kgs, media)).resolves.toEqual([
+    await expect(loadRemoteProjects(media)).resolves.toEqual([
       expect.objectContaining({
         projectId: 'old-project',
         files: 1,
@@ -185,7 +144,7 @@ describe('loadRemoteProjects', () => {
       },
     };
 
-    const rows = await loadRemoteProjects({ queryEntities: async () => [] }, media);
+    const rows = await loadRemoteProjects(media);
     expect(rows.map(({ projectId, visibility }) => ({ projectId, visibility }))).toEqual([
       { projectId: 'bad', visibility: 'visible' },
       { projectId: 'legacy', visibility: 'visible' },
@@ -223,11 +182,10 @@ describe('isProjectVisible / filterVisibleProjects', () => {
 
   it('filterVisibleProjects applies the cascade across a full project list', () => {
     const data: RemoteProject[] = [
-      { projectId: 'app--bidv', name: 'BIDV', inKgs: false, inMedia: true, files: 0, isApp: true },
+      { projectId: 'app--bidv', name: 'BIDV', inMedia: true, files: 0, isApp: true },
       {
         projectId: 'TN1',
         name: 'Tính năng 1',
-        inKgs: true,
         inMedia: true,
         files: 1,
         isApp: false,
@@ -236,7 +194,6 @@ describe('isProjectVisible / filterVisibleProjects', () => {
       {
         projectId: 'unrelated',
         name: 'Unrelated',
-        inKgs: true,
         inMedia: false,
         files: 0,
         isApp: false,
@@ -250,10 +207,10 @@ describe('isProjectVisible / filterVisibleProjects', () => {
 
   it('filters a hidden project and cascades a hidden App to its Features', () => {
     const data: RemoteProject[] = [
-      { projectId: 'app--old', name: 'Old', inKgs: true, inMedia: true, files: 1, isApp: true, visibility: 'hidden' },
-      { projectId: 'child', name: 'Child', inKgs: true, inMedia: true, files: 1, isApp: false, appId: 'app--old', visibility: 'visible' },
-      { projectId: 'standalone-hidden', name: 'Hidden', inKgs: true, inMedia: true, files: 1, isApp: false, visibility: 'hidden' },
-      { projectId: 'visible', name: 'Visible', inKgs: true, inMedia: true, files: 1, isApp: false, visibility: 'visible' },
+      { projectId: 'app--old', name: 'Old', inMedia: true, files: 1, isApp: true, visibility: 'hidden' },
+      { projectId: 'child', name: 'Child', inMedia: true, files: 1, isApp: false, appId: 'app--old', visibility: 'visible' },
+      { projectId: 'standalone-hidden', name: 'Hidden', inMedia: true, files: 1, isApp: false, visibility: 'hidden' },
+      { projectId: 'visible', name: 'Visible', inMedia: true, files: 1, isApp: false, visibility: 'visible' },
     ];
 
     expect(filterLifecycleVisibleProjects(data).map((p) => p.projectId)).toEqual(['visible']);

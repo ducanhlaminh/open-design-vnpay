@@ -283,22 +283,16 @@ function isLegacyDefaultSkillGate(skills: readonly string[]): boolean {
  * Prefs → effective config. `OD_SANDBOX=1|0` overrides the persisted
  * `enabled` flag for quick dev toggling without editing app-config.json.
  * A `'*'` entry in `runtimes`/`skills` matches everything.
- *
- * Packaged DEFAULTS (baked at build time, forwarded by apps/packaged as
- * spawn env): `OD_SANDBOX_DEFAULT=1` turns the sandbox on and
- * `OD_SANDBOX_SKILLS` (comma list, e.g. `*`) seeds the skill gate — but
- * ONLY while the user hasn't persisted their own prefs, so `od sandbox
- * disable` / an explicit app-config.json always wins over the baked default.
  */
 export function resolveSandboxConfig(
   prefs: SandboxConfigPrefs | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedSandboxConfig {
-  // Default ON: this fork runs Claude through the Docker sandbox by default (no
-  // enable toggle in the UI). Disabled only by an EXPLICIT opt-out —
-  // prefs.enabled === false, or OD_SANDBOX=0 (escape hatch for a machine with no
-  // Docker). OD_SANDBOX=1 still force-enables regardless of prefs.
-  let enabled = prefs?.enabled !== false;
+  // Default OFF (web-first migration, WP4): every run spawns as a host CLI
+  // process unless the user OPTS IN — prefs.enabled === true, or OD_SANDBOX=1
+  // (escape hatch for dev/debug without editing app-config.json). OD_SANDBOX=0
+  // still force-disables regardless of prefs, so it stays a two-way override.
+  let enabled = prefs?.enabled === true;
   if (env.OD_SANDBOX === '1') enabled = true;
   else if (env.OD_SANDBOX === '0') enabled = false;
   const envSkills = (env.OD_SANDBOX_SKILLS ?? '')

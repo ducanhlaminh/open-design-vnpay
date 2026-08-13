@@ -661,6 +661,12 @@ export interface Dict {
   // Agent-in-sandbox (settings card + run badge)
   'assistant.sandboxedBadge': string;
   'assistant.sandboxedTitle': string;
+  // Execution mode toggle (WP4 web-first migration): Host CLI (default) vs
+  // Docker sandbox (opt-in). Writes sandbox.enabled through PUT /api/app-config.
+  'settings.executionModeTitle': string;
+  'settings.executionModeHint': string;
+  'settings.executionModeHost': string;
+  'settings.executionModeSandbox': string;
   'settings.sandboxTitle': string;
   'settings.sandboxHint': string;
   'settings.sandboxEnabled': string;
@@ -974,6 +980,21 @@ export interface Dict {
   'integrations.tabHint.useEverywhere': string;
   'integrations.skillsTitle': string;
   'integrations.skillsBody': string;
+  'confluenceConfig.title': string;
+  'confluenceConfig.subtitle': string;
+  'confluenceConfig.baseLabel': string;
+  'confluenceConfig.basePlaceholder': string;
+  'confluenceConfig.tokenLabel': string;
+  'confluenceConfig.tokenSaved': string;
+  'confluenceConfig.tokenSavedTitle': string;
+  'confluenceConfig.tokenPlaceholderSaved': string;
+  'confluenceConfig.tokenPlaceholderEmpty': string;
+  'confluenceConfig.saveButton': string;
+  'confluenceConfig.saving': string;
+  'confluenceConfig.savedHint': string;
+  'confluenceConfig.helpHint': string;
+  'confluenceConfig.loadError': string;
+  'confluenceConfig.saveError': string;
   'mcpClient.title': string;
   'mcpClient.subtitle': string;
   'mcpClient.addServer': string;
@@ -2548,4 +2569,11 @@ export interface Dict {
   'pipelines.rail.usuallyAfter': string;
   'pipelines.rail.needsDocs': string;
   'pipelines.rail.staleNeedsDocs': string;
+
+  // Pipelines — gen-code UI stages (ui-html / ui-react / ui-react-ds) held
+  // from running (2026-08 web-first hold; see HELD_STAGE_IDS in
+  // apps/daemon/src/pipelines.ts). Past output stays fully usable; only new
+  // runs are blocked.
+  'pipelines.held.badge': string;
+  'pipelines.held.tooltip': string;
 }

@@ -3,6 +3,7 @@ import { test } from 'vitest';
 import type { PipelineView, ProjectPipelineState } from '@open-design/contracts';
 
 import {
+  HELD_STAGE_IDS,
   PIPELINE_DEFS,
   WORKFLOWS,
   computeActive,
@@ -61,15 +62,13 @@ test('docs-to-prd: fully independent of docs-to-ui — its own docs/cj/ux-resear
   assert.deepEqual(wf!.pipelineIds, ['prd-docs', 'prd-cj', 'prd-ux-research', 'prd-review']);
   // Same ingredient skills as docs-to-ui's docs/cj/ux-research, but distinct
   // ids — so nothing here is ever "already done" from a docs-to-ui run.
-  assert.equal(def('prd-docs').skillId, 'jira-ingest');
+  assert.equal(def('prd-docs').skillId, 'confluence-ingest');
   assert.equal(def('prd-cj').skillId, 'customer-journey-spec');
   assert.equal(def('prd-ux-research').skillId, 'ux-research');
   assert.deepEqual(def('prd-cj').dependsOn, ['prd-docs']);
   assert.deepEqual(def('prd-ux-research').dependsOn, ['prd-cj']);
   assert.deepEqual(def('prd-review').dependsOn, ['prd-ux-research']);
   assert.equal(def('prd-review').skillId, 'docs-mockup-review');
-  // File-only: never projected into KGS.
-  assert.equal(def('prd-review').convertToGraph, undefined);
   assert.deepEqual(def('prd-review').outputs, ['review/']);
   // Each id resolves to docs-to-prd's OWN folder — never docs-to-ui's.
   assert.equal(workflowDirForPipeline('prd-docs'), 'docs-to-prd');
@@ -87,7 +86,7 @@ test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -
   const wf = WORKFLOWS.find((w) => w.id === 'docs-review');
   assert.ok(wf, 'docs-review workflow should exist');
   assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review']);
-  assert.equal(def('dr-docs').skillId, 'jira-ingest');
+  assert.equal(def('dr-docs').skillId, 'confluence-ingest');
   assert.equal(def('dr-comp').skillId, 'docs-component-audit');
   assert.equal(def('dr-review').skillId, 'docs-spec-review');
   assert.equal(def('dr-flow').skillId, 'docs-flow-extract');
@@ -159,8 +158,6 @@ test('the ux-review gate sits between ux and the terminals (Gate 1: heuristic re
   const g = def('ux-review');
   assert.deepEqual(g.dependsOn, ['ux']);
   assert.equal(g.skillId, 'heuristic-eval');
-  // File-only review deliverable — never projected into KGS.
-  assert.equal(g.convertToGraph, undefined);
   assert.deepEqual(g.outputs, ['heuristic-review/']);
 });
 
@@ -886,11 +883,13 @@ function succeededState(...ids: string[]): ProjectPipelineState {
 }
 
 test('stageIds: chạy đúng các bước được tick, theo THỨ TỰ WORKFLOW chứ không theo thứ tự gửi', () => {
-  // Người dùng tick lộn xộn (ui-html trước docs) — chuỗi run-all chạy tuần tự,
-  // nên giữ thứ tự gửi sẽ cho bước sau chạy trước input của nó.
+  // Người dùng tick lộn xộn (ux-review trước docs) — chuỗi run-all chạy tuần
+  // tự, nên giữ thứ tự gửi sẽ cho bước sau chạy trước input của nó. Dùng
+  // `ux-review` (không held) thay vì một terminal UI-Spec — xem test riêng
+  // "held stages: selectRunStages luôn lọc bỏ" bên dưới cho hành vi held.
   assert.deepEqual(
-    selectRunStages(UI_IDS, { stageIds: ['ui-html', 'ux', 'docs'] }),
-    ['docs', 'ux', 'ui-html'],
+    selectRunStages(UI_IDS, { stageIds: ['ux-review', 'ux', 'docs'] }),
+    ['docs', 'ux', 'ux-review'],
   );
   // Trùng lặp / thứ tự đảo không đổi kết quả.
   assert.deepEqual(
@@ -901,9 +900,11 @@ test('stageIds: chạy đúng các bước được tick, theo THỨ TỰ WORKFL
 
 test('stageIds THẮNG lean: bước lean-skipped vẫn chạy khi được tick', () => {
   // `cj` và `ux-research` đều là skippedInLeanRun — lean một mình sẽ bỏ chúng.
+  // Ba terminal UI-Spec (`ui-html`/`ui-react`/`ui-react-ds`) bị `selectRunStages`
+  // tự lọc bỏ vì đang held (2026-08 hold, HELD_STAGE_IDS) — không liên quan lean.
   assert.deepEqual(
     selectRunStages(UI_IDS, { lean: true }),
-    ['docs', 'docs-map', 'ux', 'ui-html', 'ui-react', 'ui-react-ds'],
+    ['docs', 'docs-map', 'ux'],
   );
   // Tick tay đúng hai bước đó + lean bật → vẫn chạy cả hai.
   assert.deepEqual(
@@ -953,19 +954,25 @@ test('docsFromUpload VẪN lọc bước ingest kể cả khi người dùng tic
   );
 });
 
-test('stageIds vắng mặt → hành vi cũ KHÔNG đổi (lưới an toàn cho tương thích ngược)', () => {
-  // Không cờ nào: cả workflow, nguyên thứ tự.
-  assert.deepEqual(selectRunStages(UI_IDS, {}), [...UI_IDS]);
+test('stageIds vắng mặt → hành vi cũ KHÔNG đổi (lưới an toàn cho tương thích ngược), TRỪ held (2026-08 hold — xem test riêng bên dưới)', () => {
+  // Không cờ nào: cả workflow, nguyên thứ tự — trừ 3 terminal UI-Spec held.
+  assert.deepEqual(
+    selectRunStages(UI_IDS, {}),
+    UI_IDS.filter((id) => !HELD_STAGE_IDS.includes(id as (typeof HELD_STAGE_IDS)[number])),
+  );
   // stageIds rỗng cũng là "vắng mặt" — không được hiểu thành "không chạy gì".
-  assert.deepEqual(selectRunStages(UI_IDS, { stageIds: [] }), [...UI_IDS]);
+  assert.deepEqual(
+    selectRunStages(UI_IDS, { stageIds: [] }),
+    UI_IDS.filter((id) => !HELD_STAGE_IDS.includes(id as (typeof HELD_STAGE_IDS)[number])),
+  );
   assert.deepEqual(
     selectRunStages(UI_IDS, { stageIds: [], lean: true }),
-    ['docs', 'docs-map', 'ux', 'ui-html', 'ui-react', 'ui-react-ds'],
+    ['docs', 'docs-map', 'ux'],
   );
   // lean + skipSucceeded vẫn cộng dồn như trước.
   assert.deepEqual(
     selectRunStages(UI_IDS, { lean: true, skipSucceeded: true, state: succeededState('docs', 'docs-map') }),
-    ['ux', 'ui-html', 'ui-react', 'ui-react-ds'],
+    ['ux'],
   );
 });
 
@@ -1151,5 +1158,72 @@ test('validateRunStageSelection: mode lean qua đường explicitSelection (đư
   assert.deepEqual(
     validateRunStageSelection(leanStageIds, UI_IDS, {}, { mode: 'lean' }),
     { ok: true },
+  );
+});
+
+// ── WP1 (2026-08 web-first hold): 3 stage sinh code UI-Spec KHÔNG chạy được
+// nữa từ bất kỳ ngả nào (UI, API, CLI, run-all) — output cũ giữ nguyên mọi
+// hành vi khác (registry, attribution, syncExclude, clear-on-rerun). Xem
+// `HELD_STAGE_IDS` / `PipelineDef.heldFromRun` trong pipelines.ts.
+test('HELD_STAGE_IDS: đúng 3 terminal UI-Spec, và PIPELINE_DEFS đánh dấu heldFromRun đúng những id đó — không id nào khác', () => {
+  assert.deepEqual([...HELD_STAGE_IDS].sort(), ['ui-html', 'ui-react', 'ui-react-ds'].sort());
+  for (const d of PIPELINE_DEFS) {
+    const shouldBeHeld = (HELD_STAGE_IDS as readonly string[]).includes(d.id);
+    assert.equal(
+      d.heldFromRun === true,
+      shouldBeHeld,
+      `${d.id}: heldFromRun phải khớp HELD_STAGE_IDS (mong đợi ${shouldBeHeld})`,
+    );
+  }
+});
+
+test('selectRunStages: held stages KHÔNG BAO GIỜ lọt vào kế hoạch, kể cả khi được tick tường minh (defense-in-depth — route đã 400 trước khi tới đây)', () => {
+  // Nhánh automatic (không stageIds) — đã canh ở test "vắng mặt" phía trên;
+  // ở đây canh THÊM nhánh manual (stageIds tick tay chứa held id).
+  assert.deepEqual(
+    selectRunStages(UI_IDS, { stageIds: ['ux-review', 'ui-html', 'ui-react', 'ui-react-ds'] }),
+    ['ux-review'],
+  );
+  // Tick CHỈ một held id → kế hoạch rỗng, không phải [id đó].
+  assert.deepEqual(selectRunStages(UI_IDS, { stageIds: ['ui-html'] }), []);
+});
+
+test('listPipelineStatus: phát held:true đúng 3 view UI-Spec, không phát cho stage khác — orthogonal với active/skipped', () => {
+  const state: ProjectPipelineState = { docs: { status: 'succeeded' } };
+  const views = listPipelineStatus(state, UI_IDS, 'full');
+  for (const id of ['ui-html', 'ui-react', 'ui-react-ds']) {
+    const v = viewOf(views, id);
+    assert.equal(v.held, true, `${id} phải mang held:true`);
+    // held không thay thế active: docs đã succeeded nên UI-Spec vẫn active
+    // (docs-only gate) — chỉ route mới chặn spawn, không phải view này.
+    assert.equal(v.active, true, `${id} vẫn active dù held`);
+  }
+  for (const id of ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review']) {
+    assert.equal(viewOf(views, id).held, undefined, `${id} không được mang held`);
+  }
+});
+
+test('progress denominator: docs-to-ui có 9 stage đăng ký nhưng chỉ 6 KHÔNG held — mẫu số run-all/CLI cũng phải đọc 6 (xem pipeline-routes.test tương ứng)', () => {
+  const nonHeld = UI_IDS.filter((id) => !getPipelineDef(id)?.heldFromRun);
+  assert.equal(UI_IDS.length, 9);
+  assert.equal(nonHeld.length, 6);
+  assert.deepEqual(nonHeld, ['docs', 'docs-map', 'cj', 'ux-research', 'ux', 'ux-review']);
+});
+
+test('output react/ CŨ vẫn attribution đúng stage + vẫn syncExcluded dù ui-react đang held (hold chỉ chặn RUN, không đụng gì khác)', () => {
+  // stagesForOutput vẫn chấm đúng ui-react cho file trong react/ — không mồ côi.
+  assert.deepEqual(stagesForOutput('docs-to-ui/react/src/App.tsx').map((d) => d.id), ['ui-react']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/prototype/index.html').map((d) => d.id), ['ui-html']);
+  assert.deepEqual(stagesForOutput('docs-to-ui/react-ds/dist/index.html').map((d) => d.id), ['ui-react-ds']);
+  // syncExclude vẫn áp dụng y hệt trước — react/dist/ KHÔNG bị exclude (nó
+  // round-trip), nhưng react/package.json (template scaffold) vẫn bị exclude.
+  assert.equal(isSyncExcluded('docs-to-ui/react/dist/index.html'), false);
+  assert.equal(isSyncExcluded('docs-to-ui/react/package.json'), true);
+  assert.equal(isSyncExcluded('docs-to-ui/react-ds/src/ds/button.tsx'), true);
+  // relClearedByRegen vẫn xoá react/ khi CHÍNH ui-react được re-run (giả định
+  // sản phẩm mở lại rồi khoá lại sau) — clear-on-rerun không đổi hành vi.
+  assert.equal(
+    relClearedByRegen('docs-to-ui/react/src/App.tsx', new Set(['ui-react']), 'docs-to-ui'),
+    true,
   );
 });

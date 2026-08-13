@@ -105,8 +105,17 @@ describe('POST /api/pipelines/run-all — gate theo mode của CHÍNH request (l
   }
 
   // Tập bước lean của docs-to-ui = WORKFLOWS[0].pipelineIds bỏ cj/ux-research/
-  // ux-review (khớp `selectRunStages(UI_IDS, { lean: true })` trong pipelines.test.ts).
-  const leanStageIds = ['docs', 'docs-map', 'ux', 'ui-html', 'ui-react', 'ui-react-ds'];
+  // ux-review (khớp `selectRunStages(UI_IDS, { lean: true })` trong
+  // pipelines.test.ts). KHÔNG còn 3 terminal ui-html/ui-react/ui-react-ds:
+  // đang HOLD (2026-08 web-first, HELD_STAGE_IDS trong pipelines.ts) — tick
+  // tường minh hoặc gửi `terminal` tường minh cho một trong ba id đó nay 400
+  // (`STAGE_HELD`), điều test NÀY không canh (đã có test riêng ở
+  // pipeline-status-selection... không, xem test held riêng trong
+  // pipelines.test.ts + pipeline-routes qua route trực tiếp bên dưới file
+  // này). Bỏ hẳn `terminal` khỏi payload: daemon tự loại stage held khỏi kế
+  // hoạch mà không lỗi (`selectRunStages`), nên gate-theo-mode vẫn được canh
+  // đúng ý bài test mà không chạm STAGE_HELD.
+  const leanStageIds = ['docs', 'docs-map', 'ux'];
 
   it('lean: true trên project CHƯA TỪNG CHẠY + tập bước lean → không 400', async () => {
     insertKgsProject('PRJ_LEAN');
@@ -115,7 +124,6 @@ describe('POST /api/pipelines/run-all — gate theo mode của CHÍNH request (l
       projectId: 'PRJ_LEAN',
       lean: true,
       stageIds: leanStageIds,
-      terminal: 'ui-html',
       platform: 'mobile',
       confluencePages: [{ id: '1', url: 'https://wiki/x' }],
     });
@@ -140,7 +148,6 @@ describe('POST /api/pipelines/run-all — gate theo mode của CHÍNH request (l
     const out = await postRunAll({
       projectId: 'PRJ_FULL',
       stageIds: leanStageIds,
-      terminal: 'ui-html',
       platform: 'mobile',
       confluencePages: [{ id: '1', url: 'https://wiki/x' }],
     });

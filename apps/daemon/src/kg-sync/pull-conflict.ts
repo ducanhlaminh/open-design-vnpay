@@ -1,7 +1,7 @@
 // Pure helpers + in-memory snapshot store for conflict-aware pull
 // (PLAN → RESOLVE → APPLY). No I/O here so this file is cheap to unit-test; the
 // daemon wiring (planPull/applyPull) lives in server.ts and the HTTP surface in
-// kg-sync-routes.ts. See docs/guides/pull-conflict-resolution-spec.md.
+// remote-projects-routes.ts. See docs/guides/pull-conflict-resolution-spec.md.
 
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';

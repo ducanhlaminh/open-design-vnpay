@@ -54,6 +54,7 @@ This file is the single source of truth for agents entering this repository. Rea
 - Do not add or restore root lifecycle aliases: `pnpm dev`, `pnpm dev:all`, `pnpm daemon`, `pnpm preview`, or `pnpm start`.
 - Ports are governed by `tools-dev` flags: `--daemon-port` and `--web-port`.
 - `tools-dev` exports `OD_PORT` for the web proxy target and `OD_WEB_PORT` for the web listener; do not use `NEXT_PORT`.
+- Agent runs default to the **host** Claude/Codex CLI (web-first migration, 2026-08); the Docker agent sandbox is opt-in. Set `OD_SANDBOX=1` (or persist `sandbox.enabled: true` in app config / toggle "Docker sandbox" in Settings → Execution) to opt back into the old container-isolated behavior for local testing.
 
 ## Root command boundary
 

@@ -9,6 +9,7 @@ import {
   trackSettingsConnectorAuthResult,
 } from '../analytics/events';
 import { ConnectorSection } from './SettingsDialog';
+import { ConfluenceCredentialSection } from './ConfluenceCredentialSection';
 import { Icon } from './Icon';
 import { McpClientSection } from './McpClientSection';
 import { UseEverywhereGuidePanel } from './UseEverywhereModal';
@@ -120,7 +121,14 @@ export function IntegrationsView({
       </nav>
 
       <div className="integrations-view__panel">
-        {activeTab === 'mcp' ? <McpClientSection /> : null}
+        {activeTab === 'mcp' ? (
+          <>
+            {/* Confluence credential — its own store, independent of the
+                external-MCP config below (WP8: JIRA ingest removed). */}
+            <ConfluenceCredentialSection />
+            <McpClientSection />
+          </>
+        ) : null}
 
         {activeTab === 'connectors' ? (
           <ConnectorSection

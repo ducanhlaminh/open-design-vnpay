@@ -1,18 +1,28 @@
-// First-run infra setup gate: a full-screen wizard shown the first time the
-// app opens on a machine whose sandbox infra is incomplete (Docker engine →
-// sandbox image → Claude login). Read-side of `GET /api/sandbox/status` +
-// `GET /api/sandbox/accounts`; actions reuse the existing build/login
-// endpoints, so `od sandbox status|build|login` stays the CLI mirror.
+// First-run infra setup gate. Two independent flows, branching on the daemon's
+// effective sandbox mode (`GET /api/sandbox/status`.mode):
+//
+//   - HOST mode (default since the web-first migration, WP4): every run
+//     spawns as a host CLI process, so the ONLY things worth gating on are
+//     "is the Claude CLI on this machine" and "is it logged in" — read from
+//     `GET /api/agents` (the same source the agent picker uses), not the
+//     Docker/image/auth-volume wizard below.
+//   - SANDBOX mode (opted in via prefs or OD_SANDBOX=1): unchanged legacy
+//     wizard — Docker engine → sandbox image → Claude/Codex login. Read-side
+//     of `GET /api/sandbox/status` + `GET /api/sandbox/accounts`; actions
+//     reuse the existing build/login endpoints, so `od sandbox
+//     status|build|login` stays the CLI mirror.
 //
 // The gate self-dismisses silently when every check already passes, and
 // "Để sau" skips it for the current app session — Settings → Execution keeps
 // the same controls for later. Completion is deliberately not persisted:
-// Docker, images and auth volumes can be removed independently from the app.
+// a host CLI can be uninstalled, or Docker/images/auth volumes removed,
+// independently from the app.
 // Vietnamese-only copy on purpose — this fork's UI is
 // Vietnamese and we avoid new i18n keys here (see ClaudeAccountSwitcher).
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../i18n';
 import type {
+  AgentInfo,
   SandboxAccountsResponse,
   SandboxBuildResponse,
   DockerSetupResponse,
@@ -27,6 +37,9 @@ import {
   type SandboxStatusResponse as SandboxUiStatusResponse,
 } from './sandbox-runtime';
 import styles from './InfraSetupGate.module.css';
+
+const CLAUDE_INSTALL_URL = 'https://claude.ai/install.sh';
+const CLAUDE_INSTALL_COMMAND = `curl -fsSL ${CLAUDE_INSTALL_URL} | bash`;
 
 function clearPersistedDismissal(): void {
   try {
@@ -49,6 +62,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   const [dismissed, setDismissed] = useState(false);
   const [skippedThisSession, setSkippedThisSession] = useState(false);
   const [status, setStatus] = useState<SandboxUiStatusResponse | null>(null);
+  const [hostAgents, setHostAgents] = useState<AgentInfo[] | null>(null);
   const [accounts, setAccounts] = useState<SandboxAccountsResponse | null>(null);
   const [build, setBuild] = useState<SandboxBuildResponse | null>(null);
   const [dockerSetup, setDockerSetup] = useState<DockerSetupResponse | null>(null);
@@ -72,6 +86,10 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   const selectedRuntimeStatus = runtimeById.get(selectedRuntime);
   const usingRuntimeStatuses = runtimeStatuses.length > 0;
   const isWindows = /Windows/i.test(navigator.userAgent);
+  // `status.mode` is undefined only for a not-yet-refreshed daemon; treat that
+  // as "unknown, not host" so the legacy sandbox render path (guarded by
+  // `!status` at the bottom) stays the fallback until the first answer lands.
+  const hostMode = status?.mode === 'host';
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -81,6 +99,31 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
       // Daemon unreachable — keep the last snapshot.
     }
   }, []);
+
+  // ── Host mode: the ONLY infra that matters is the host Claude CLI, read
+  // from /api/agents (same source as the agent picker) — never Docker.
+  const refreshHostAgents = useCallback(async () => {
+    try {
+      const r = await fetch('/api/agents');
+      if (r.ok) {
+        const body = (await r.json()) as { agents: AgentInfo[] };
+        setHostAgents(body.agents);
+      }
+    } catch {
+      // Daemon unreachable — keep the last snapshot.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!active || !hostMode) return;
+    void refreshHostAgents();
+    const id = window.setInterval(() => void refreshHostAgents(), 4000);
+    return () => window.clearInterval(id);
+  }, [active, hostMode, refreshHostAgents]);
+
+  const hostClaude = hostAgents?.find((a) => a.id === 'claude') ?? null;
+  const hostClaudeLoggedIn = hostClaude?.authStatus === 'ok';
+  const hostClaudeReady = Boolean(hostClaude?.available && hostClaudeLoggedIn);
 
   // ── Cheap infra poll (docker version / image inspect / volume inspect).
   // 4s while the gate is relevant, so finishing a step flips it green live.
@@ -241,11 +284,14 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   const recheck = useCallback(async () => {
     setRechecking(true);
     try {
-      await Promise.all([refreshStatus(), ready ? refreshAccounts() : Promise.resolve()]);
+      await Promise.all([
+        refreshStatus(),
+        hostMode ? refreshHostAgents() : ready ? refreshAccounts() : Promise.resolve(),
+      ]);
     } finally {
       setRechecking(false);
     }
-  }, [refreshStatus, refreshAccounts, ready]);
+  }, [refreshStatus, refreshHostAgents, refreshAccounts, ready, hostMode]);
 
   // Auth step is N/A when the sandbox doesn't own Claude (host CLI handles
   // login there); until /accounts answers, assume it applies.
@@ -273,6 +319,23 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
 
   useEffect(() => {
     if (!active || evaluated || !status) return;
+    // Host mode (the WP4 default): gate on the host Claude CLI snapshot from
+    // /api/agents instead of the Docker/image/auth-volume checks below —
+    // those never apply when the sandbox is off. Wait for the first agents
+    // answer so a fully-set-up machine never flashes the wizard open.
+    if (hostMode) {
+      if (hostAgents == null) return;
+      if (hostClaudeReady) {
+        dismiss();
+        return;
+      }
+      if (dismissed) {
+        clearPersistedDismissal();
+        setDismissed(false);
+      }
+      setEvaluated(true);
+      return;
+    }
     if (!status.enabled) {
       dismiss();
       return;
@@ -308,10 +371,124 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
       setDismissed(false);
     }
     setEvaluated(true);
-  }, [active, evaluated, status, accounts, dismissed, dismiss, usingRuntimeStatuses, selectedRuntimeStatus, selectedRuntimeReady]);
+  }, [
+    active,
+    evaluated,
+    status,
+    hostMode,
+    hostAgents,
+    hostClaudeReady,
+    accounts,
+    dismissed,
+    dismiss,
+    usingRuntimeStatuses,
+    selectedRuntimeStatus,
+    selectedRuntimeReady,
+  ]);
 
   if (!active || dismissed || !evaluated || !status) return null;
   const allOk = selectedRuntimeReady;
+
+  // ── Host mode (WP4 default): a 2-step gate — Claude CLI installed, Claude
+  // CLI logged in — instead of the Docker/image/auth-volume wizard below.
+  // Never touches /api/sandbox/* beyond the initial status probe that
+  // decided the mode.
+  if (hostMode) {
+    const claudeAvailable = Boolean(hostClaude?.available);
+    const hostSteps: Array<{ key: string; title: string; ok: boolean; body: JSX.Element | null }> = [
+      {
+        key: 'host-claude-cli',
+        title: 'Claude CLI',
+        ok: claudeAvailable,
+        body: claudeAvailable ? null : (
+          <>
+            <p className={styles.stepHint}>
+              Chưa tìm thấy Claude CLI trên máy. Cài đặt bằng lệnh bên dưới rồi bấm "Kiểm tra lại".
+            </p>
+            <div className={styles.actionRow}>
+              <a className={styles.linkBtn} href={CLAUDE_INSTALL_URL} target="_blank" rel="noreferrer">
+                Xem hướng dẫn cài đặt Claude CLI
+              </a>
+            </div>
+            <code className={styles.buildLog}>{CLAUDE_INSTALL_COMMAND}</code>
+          </>
+        ),
+      },
+      {
+        key: 'host-claude-login',
+        title: 'Đăng nhập Claude',
+        ok: hostClaudeLoggedIn,
+        body: hostClaudeLoggedIn ? null : !claudeAvailable ? (
+          <p className={styles.stepHint}>Chờ cài Claude CLI ở bước trên.</p>
+        ) : (
+          <>
+            <p className={styles.stepHint}>
+              {hostClaude?.authMessage ?? 'Chưa đăng nhập Claude CLI trên máy.'} Mở terminal và chạy lệnh:
+            </p>
+            <code className={styles.buildLog}>claude /login</code>
+          </>
+        ),
+      },
+    ];
+    const hostAllOk = hostSteps.every((s) => s.ok);
+    return (
+      <div
+        className={styles.overlay}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="infra-setup-gate-title"
+        data-testid="infra-setup-gate"
+      >
+        <div className={styles.card}>
+          <span className={styles.kicker}>VNPAY Design Platform</span>
+          <h2 id="infra-setup-gate-title" className={styles.title}>
+            Thiết lập môi trường lần đầu
+          </h2>
+          <p className={styles.desc}>
+            Open Design chạy trực tiếp qua Claude CLI đã cài trên máy — không cần Docker. Hoàn tất
+            hai bước dưới đây.
+          </p>
+          <ol className={styles.steps}>
+            {hostSteps.map((s, i) => (
+              <li key={s.key} className={`${styles.step}${s.ok ? ' ' + styles.stepOk : ''}`}>
+                <span className={styles.stepBadge} aria-hidden="true">{s.ok ? '✓' : i + 1}</span>
+                <div className={styles.stepBody}>
+                  <div className={styles.stepTitle}>
+                    {s.title}
+                    {s.ok ? <span className={styles.stepDone}>xong</span> : null}
+                  </div>
+                  {s.body}
+                </div>
+              </li>
+            ))}
+          </ol>
+          <div className={styles.footer}>
+            <div className={styles.footerLeft}>
+              <button
+                type="button"
+                className={styles.linkBtn}
+                disabled={rechecking}
+                onClick={() => void recheck()}
+              >
+                {rechecking ? 'Đang kiểm tra…' : 'Kiểm tra lại'}
+              </button>
+              <button type="button" className={styles.skipBtn} onClick={skip}>
+                Để sau (mở lại trong Cài đặt)
+              </button>
+            </div>
+            <button
+              type="button"
+              className={styles.doneBtn}
+              disabled={!hostAllOk}
+              onClick={dismiss}
+            >
+              Bắt đầu sử dụng
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // One installer only (Docker Desktop, the cross-platform choice) so a
   // no-code user never has to pick; Windows additionally gets the WSL2 note.
@@ -558,7 +735,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
     {
       key: 'docker',
       title: 'Docker engine',
-      ok: status.dockerOk,
+      ok: Boolean(status.dockerOk),
       blocked: false,
       body: status.dockerOk ? null : (
         <>
@@ -589,7 +766,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
     {
       key: 'image',
       title: 'Môi trường agent (image sandbox)',
-      ok: status.imageOk,
+      ok: Boolean(status.imageOk),
       blocked: !status.dockerOk,
       body: status.imageOk ? null : !status.dockerOk ? (
         <p className={styles.stepHint}>Chờ Docker chạy xong ở bước trên.</p>

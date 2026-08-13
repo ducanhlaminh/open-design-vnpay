@@ -1,7 +1,7 @@
 // Web → daemon calls for conflict-aware pull (PLAN → APPLY). Backs the
-// PullConflictModal + the per-project "Pull" button in PipelinesView; mirrors
-// `od kg pull <id> --on-conflict` against the same endpoints. See
-// apps/daemon/src/kg-sync-routes.ts and docs/guides/pull-conflict-resolution-spec.md.
+// PullConflictModal + the per-project "Pull" button in PipelinesView. See
+// apps/daemon/src/remote-projects-routes.ts and
+// docs/guides/pull-conflict-resolution-spec.md.
 
 import {
   ERR_PLAN_EXPIRED,

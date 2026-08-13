@@ -1,4 +1,4 @@
-// BAS MCP gateway client — pipeline 1 (jira-ingest) reads source documents from
+// BAS MCP gateway client — pipeline 1 (confluence-ingest) reads source documents from
 // BAS via this client INSTEAD of the agent calling an MCP server. The daemon
 // owns all BAS HTTP traffic (token never reaches the browser, no CORS), mirroring
 // the theme-lab proxy. Transport is the BAS "Streamable HTTP MCP Gateway"
@@ -34,6 +34,7 @@ import type {
 } from '@open-design/contracts';
 
 import { readMcpConfig } from '../mcp-config.js';
+import { readConfluenceConfig } from '../confluence-config.js';
 import { renderDrawioPages, splitMxfilePages } from './drawio-render.js';
 import { htmlToMarkdown } from './html-to-markdown.js';
 
@@ -255,24 +256,18 @@ export interface ConfluenceCreds {
 }
 
 /**
- * Confluence PAT cho picker tìm trang — MỘT chỗ config duy nhất với agent:
- *   ① per-user: Settings → MCP servers → server `mcp-atlassian` (env
- *      CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN — chính là creds agent dùng
- *      khi chạy pipeline, user sửa được trong UI);
+ * Confluence PAT cho picker tìm trang — hai nguồn, ưu tiên theo thứ tự:
+ *   ① per-user: kho credential riêng <dataDir>/confluence-config.json (WP8 —
+ *      Settings → Integrations → Confluence; ĐỘC LẬP với external-MCP config,
+ *      migrate một lần từ row `mcp-atlassian` cũ nếu có, xem confluence-config.ts);
  *   ② fallback: env của daemon (CONFLUENCE_URL/_PERSONAL_TOKEN — deploy-wide).
  */
 export async function resolveConfluenceCreds(dataDir: string): Promise<ConfluenceCreds | null> {
   try {
-    const cfg = await readMcpConfig(dataDir);
-    const server =
-      cfg.servers.find((s) => s.id === 'mcp-atlassian') ??
-      cfg.servers.find((s) => /atlassian/i.test(s.id) || /atlassian/i.test(s.label ?? ''));
-    const env = (server?.env ?? {}) as Record<string, string>;
-    const base = (env.CONFLUENCE_URL ?? '').trim().replace(/\/+$/, '');
-    const token = (env.CONFLUENCE_PERSONAL_TOKEN ?? '').trim();
-    if (base && token) return { base, token };
+    const cfg = await readConfluenceConfig(dataDir);
+    if (cfg) return cfg;
   } catch {
-    /* mcp-config unreadable — fall through to env */
+    /* confluence-config unreadable — fall through to env */
   }
   const base = (process.env.CONFLUENCE_URL ?? '').trim().replace(/\/+$/, '');
   const token = (process.env.CONFLUENCE_PERSONAL_TOKEN ?? '').trim();
@@ -344,7 +339,7 @@ export async function searchConfluencePages(
   }
   if (!ep) {
     throw new Error(
-      'Tìm trang Confluence chưa cấu hình — thêm CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN vào server mcp-atlassian trong Settings → MCP (hoặc env daemon / BAS gateway).',
+      'Tìm trang Confluence chưa cấu hình — thêm Base URL + Personal Access Token ở Settings → Integrations → Confluence (hoặc env daemon / BAS gateway).',
     );
   }
   const client = new BasClient(ep);
@@ -487,7 +482,7 @@ export async function basConfluenceMeta(ep: BasEndpoint, ref: string): Promise<C
 }
 
 // ── run-time prefetch: resolve a PipelineRunSource → markdown files for cwd ───
-// The daemon writes these under the project cwd BEFORE the agent run; jira-ingest
+// The daemon writes these under the project cwd BEFORE the agent run; confluence-ingest
 // then normalizes them. Returns cwd-relative paths so the caller just writes.
 export interface SourceFile {
   relPath: string;
@@ -644,15 +639,16 @@ const JIRA_BARE_PROJECT_KEY_RE = /^[A-Z][A-Z0-9]{1,9}$/;
 // (possibly multi-line) input, not per line.
 const JQL_HINT_RE = /\bproject\s*=|\bORDER\s+BY\b|\s=\s/i;
 
-/** Whether `input` is JIRA-shaped: the ONLY route the jira-ingest stage's
- * legacy agent path (Atlassian MCP) is for. Deliberately conservative — the
- * jira-ingest dispatch (server.ts's runPipeline) must NEVER hand the agent
- * input it can't act on: a corpus file path, random text, or anything else
- * that isn't a real JIRA key/JQL makes the agent "look around, find
- * nothing, and succeed empty" (the ghost-run class of bug this heuristic
- * closes). A JQL hint anywhere in the input wins outright (JQL is normally
- * one query, not line-oriented); otherwise EVERY non-empty line must be a
- * JIRA issue key or a bare project key. */
+/** Whether `input` is JIRA-shaped (an issue key, a bare project key, or a
+ * JQL query). WP8 (2026-08) removed the legacy JIRA agent path (Atlassian
+ * MCP) entirely — the confluence-ingest dispatch (server.ts's runPipeline)
+ * now fails EVERY non-Confluence input immediately, agent-shaped or not.
+ * This heuristic is kept only so that fail-fast rejection can pick a more
+ * specific message for genuinely JIRA-shaped input ("JIRA is no longer
+ * supported") instead of the generic "input not recognized" one — it no
+ * longer gates access to an agent. A JQL hint anywhere in the input wins
+ * outright (JQL is normally one query, not line-oriented); otherwise EVERY
+ * non-empty line must be a JIRA issue key or a bare project key. */
 export function looksLikeJiraInput(input: string): boolean {
   const trimmed = input.trim();
   if (!trimmed) return false;
@@ -683,12 +679,13 @@ export interface ConfluenceDocPage {
 
 // VNPAY fork: this is the DETERMINISTIC docs path (a Confluence page URL
 // pasted directly into the docs stage — runDocsDeterministic in server.ts).
-// The agent-run JIRA-key path keeps its own image-download logic
-// (skills/jira-ingest/scripts/confluence_export.py's localize_images) because
-// it runs in the agent's shell, not in this process — it carries a copy of the
-// regex below, and the two must be fixed together. That path is now the
-// fallback for mixed free-text input only; anything that looks like a
-// Confluence ref is fetched here (see runDocsDeterministic in server.ts).
+// The bundled manual/ad-hoc export script keeps its own image-download logic
+// (skills/confluence-ingest/scripts/confluence_export.py's localize_images)
+// because it runs in the agent's shell, not in this process — it carries a
+// copy of the regex below, and the two must be fixed together. WP8 (2026-08)
+// removed the legacy agent-run JIRA-key path entirely; the script now only
+// matters for a manual/ad-hoc page-tree export, never the pipeline dispatch
+// (every Confluence ref reaching the daemon is fetched HERE instead).
 // Match the REAL `src=` attribute, NOT `data-image-src=`. Confluence renders an
 // embedded screenshot as `<img … src="/download/attachments/…" data-image-src=
 // "/download/attachments/…">` — a GREEDY `[^>]*` would let `\bsrc=` bind to the
@@ -1489,10 +1486,10 @@ export async function fetchConfluencePages(
     );
     let body: string;
     if (p.html !== undefined) {
-      // Same-host <img src> download (mirrors the agent-run JIRA-key path's
-      // confluence_export.py localize_images) — only possible on the direct
-      // PAT path, which is the only one that has raw HTML + creds to
-      // authenticate the image download with.
+      // Same-host <img src> download (mirrors the bundled
+      // confluence_export.py script's localize_images) — only possible on
+      // the direct PAT path, which is the only one that has raw HTML + creds
+      // to authenticate the image download with.
       let html = p.html;
       let localizedImagePrefix: string | undefined;
       // draw.io: the body is `export_view`, which already flattened each macro

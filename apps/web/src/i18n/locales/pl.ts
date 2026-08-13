@@ -1767,4 +1767,6 @@ export const pl: Dict = {
   'pipelines.rail.usuallyAfter': 'Usually runs after {stages}',
   'pipelines.rail.needsDocs': 'Needs {stage} first — no documents ingested yet',
   'pipelines.rail.staleNeedsDocs': 'This result is from old data — rerun {stage} to sync',
+  'pipelines.held.badge': 'On hold',
+  'pipelines.held.tooltip': 'UI code-generation is temporarily on hold to focus on the web build. Earlier results stay available.',
 };

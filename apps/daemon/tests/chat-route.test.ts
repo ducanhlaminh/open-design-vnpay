@@ -104,9 +104,12 @@ describe('/api/chat', () => {
   }
 
   beforeAll(async () => {
-    // These tests exercise the HOST claude path (a fake `claude` on PATH). The
-    // sandbox now defaults ON, so opt out explicitly or every run would try
-    // Docker and fail with AGENT_SANDBOX_UNAVAILABLE.
+    // These tests exercise the HOST claude path (a fake `claude` on PATH).
+    // Sandbox now defaults OFF (web-first migration, WP4), so this is
+    // belt-and-suspenders rather than load-bearing — it pins host mode
+    // explicitly so the suite stays correct even if the ambient env sets
+    // OD_SANDBOX=1 (e.g. a machine/CI profile that opts back into Docker),
+    // instead of silently depending on whatever the default happens to be.
     process.env.OD_SANDBOX = '0';
     if (process.env.OD_DATA_DIR) {
       originalMemoryConfig = await readMemoryConfig(process.env.OD_DATA_DIR);
@@ -1390,6 +1393,12 @@ setInterval(() => {}, 1000);
     const capturePath = join(captureDir, 'prompt.txt');
     const previousCapturePath = process.env.OD_CAPTURE_PROMPT_PATH;
     process.env.OD_CAPTURE_PROMPT_PATH = capturePath;
+    // WP2 host-env whitelist (buildHostAgentEnv) default-denies unknown env
+    // vars for host agent spawns; the fake "opencode" binary above needs to
+    // see this test-only capture path, so opt it in via the documented
+    // escape hatch instead of widening the production allowlist.
+    const previousPassthrough = process.env.OD_AGENT_ENV_PASSTHROUGH;
+    process.env.OD_AGENT_ENV_PASSTHROUGH = 'OD_CAPTURE_PROMPT_PATH';
     try {
       await withFakeAgent(
         'opencode',
@@ -1450,6 +1459,72 @@ process.stdin.on('end', () => {
         delete process.env.OD_CAPTURE_PROMPT_PATH;
       } else {
         process.env.OD_CAPTURE_PROMPT_PATH = previousCapturePath;
+      }
+      if (previousPassthrough == null) {
+        delete process.env.OD_AGENT_ENV_PASSTHROUGH;
+      } else {
+        process.env.OD_AGENT_ENV_PASSTHROUGH = previousPassthrough;
+      }
+    }
+  });
+
+  // WP2 (specs/change/20260813-web-first/wp2-env-whitelist.md), Acceptance
+  // #2: prove with an integration test (not just the buildHostAgentEnv unit
+  // tests in tests/host-env.test.ts) that a real HOST spawn (OD_SANDBOX=0,
+  // set for this whole describe block above) never lets a daemon-process
+  // secret like KGS_API_KEY reach the agent child's actual env. The capture
+  // file path is baked directly into the fake binary's own source (not read
+  // from an env var) so this test does not depend on
+  // OD_AGENT_ENV_PASSTHROUGH — the whole point is that the default-deny
+  // allowlist alone keeps the secret out.
+  it('WP2: a host spawn never exposes KGS_API_KEY to the agent child env', async () => {
+    const captureDir = mkdtempSync(join(tmpdir(), 'od-host-env-leak-check-'));
+    tempDirs.push(captureDir);
+    const capturePath = join(captureDir, 'env.json');
+    const previousKgsKey = process.env.KGS_API_KEY;
+    process.env.KGS_API_KEY = 'super-secret-should-never-reach-agent';
+    try {
+      await withFakeAgent(
+        'opencode',
+        `
+const fs = require('node:fs');
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify(process.env));
+  console.log(JSON.stringify({ type: 'text', part: { text: 'no-secret-here' } }));
+});
+`,
+        async () => {
+          const createResponse = await fetch(`${baseUrl}/api/runs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              agentId: 'opencode',
+              message: 'hello',
+              currentPrompt: 'hello',
+            }),
+          });
+          expect(createResponse.status).toBe(202);
+          const { runId } = await createResponse.json() as { runId: string };
+          const statusBody = await waitForRunStatus(baseUrl, runId);
+          expect(statusBody.status).toBe('succeeded');
+        },
+      );
+
+      expect(existsSync(capturePath)).toBe(true);
+      const childEnv = JSON.parse(readFileSync(capturePath, 'utf8')) as Record<string, string | undefined>;
+      expect('KGS_API_KEY' in childEnv).toBe(false);
+      // Sanity check the child process is otherwise a real, usable env — an
+      // empty env would trivially "pass" the assertion above for the wrong
+      // reason.
+      expect(childEnv.PATH).toBeTruthy();
+    } finally {
+      if (previousKgsKey == null) {
+        delete process.env.KGS_API_KEY;
+      } else {
+        process.env.KGS_API_KEY = previousKgsKey;
       }
     }
   });

@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 // @ts-nocheck
-import './load-local-env.js'; // fill missing env (KGS creds) from .env.local before anything reads it
+import './load-local-env.js'; // fill missing env from .env.local before anything reads it
 import { runDaemonCliStartup } from './daemon-startup.js';
-import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
-import { runOverviewMcpServer } from './mcp-overview-server.js';
 import { runArtifactsCli } from './artifacts-cli.js';
 import { runProjectHandoff } from './handoff-cli.js';
 import { runConnectorsToolCli } from './tools-connectors-cli.js';
@@ -14,6 +12,16 @@ import { runLiveArtifactsToolCli } from './tools-live-artifacts-cli.js';
 import { splitResearchSubcommand } from './research/cli-args.js';
 import { resolveDaemonUrl } from './daemon-url.js';
 import { parseProjectSyncResolutionArgs } from './project-sync.js';
+// WP4 (web-first migration): `od sandbox status` reports write-isolation
+// alongside the sandbox/host CLI checklist. Pure env+platform read, no
+// daemon round trip needed.
+import { writeIsolationMode } from './write-isolation.js';
+// Single source of truth for which pipeline ids are held from running
+// (2026-08 web-first hold) — see the constant's own docblock in pipelines.ts.
+// `od pipeline run` / `run-all` pre-check against it so a CLI user gets a
+// clear message instead of a bare HTTP 503/400 body; the daemon route is the
+// real fail-closed guard (this is a client-side courtesy, not the gate).
+import { HELD_STAGE_IDS } from './pipelines.js';
 
 const argv = process.argv.slice(2);
 
@@ -43,6 +51,11 @@ const argv = process.argv.slice(2);
 // media flags above (SUBCOMMAND_MAP dispatch runs during module evaluation).
 const SANDBOX_STRING_FLAGS = new Set(['daemon-url', 'runtime']);
 const SANDBOX_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'probe-auth', 'force', 'all', 'yes']);
+// WP4 (web-first migration): message the Docker-only sandbox subcommands
+// (build/login/logout/ps/kill) print when the daemon reports host mode.
+// Hoisted here for the same TDZ reason as the flag Sets above.
+const SANDBOX_HOST_MODE_CLI_MESSAGE =
+  'đang ở chế độ host — lệnh này chỉ dùng cho Docker sandbox (od sandbox enable trước)';
 
 const MEDIA_GENERATE_STRING_FLAGS = new Set([
   'project',
@@ -65,14 +78,6 @@ const MEDIA_GENERATE_BOOLEAN_FLAGS = new Set([
   'help',
   'h',
   'loop',
-]);
-
-const MCP_STRING_FLAGS = new Set([
-  'daemon-url',
-]);
-const MCP_BOOLEAN_FLAGS = new Set([
-  'help',
-  'h',
 ]);
 
 const RESEARCH_SEARCH_STRING_FLAGS = new Set([
@@ -323,318 +328,59 @@ async function runFigma(args) {
   process.exit(run.status ?? 1);
 }
 
-// `od kg …` — design-v3 KG sync (pull/push/status). Mirrors the daemon
-// /api/projects/:id/kg-* endpoints; see kg-sync-routes.ts.
-async function runKg(args) {
+// `od app-context …` — App Context (shared cross-feature context on the media
+// store) status/push/pull. Was formerly nested under the (now-removed) `od
+// kg` KGS namespace; the underlying feature is media-service + preview-
+// identity only and stays. Mirrors the daemon /api/pipelines/apps/:id/context
+// endpoints; see app-context-routes.ts.
+async function runAppContext(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
-  od kg pull [project-id]     Pull from KGS. No id = pull ALL apps; with id = one project (graph + files).
-  od kg push [project-id]     Push to KGS. No id = push ALL mirrored apps; with id = one.
-  od kg pull-all             Pull every KGS app into the local mirror.
-                             --projects <id,id,…> pulls only those projects.
-                             --stages <id,id,…> pulls only those pipelines' output files.
-                             --workflow <id> shorthand for --stages = that workflow's pipelines.
-  od kg push-all             Push every locally-mirrored KGS app back.
-                             --projects <id,id,…> pushes only those projects.
-                             --stages <id,id,…> pushes only those pipelines' output files.
-                             --workflow <id> shorthand for --stages = that workflow's pipelines.
-  od kg status <project-id>   Show local mirror counts.
-  od kg app-context status <app-id>              List local App Context versions.
-  od kg app-context push <app-id> [--version vN] Publish an App, even with zero Features.
-  od kg app-context pull <app-id> [--version vN] Download an App Context without changing Feature bindings.
-  od kg diff                 Per-pipeline local↔store file diff (what a push/pull would move).
-                             --projects <id,id,…> narrows to those projects.
-  od kg remote list           List projects on the remote stores (KGS graph + media files).
-  od kg remote delete <id>    Delete a project's remote data. Requires --yes.
-
-Pull options (od kg pull <project-id>):
-  --on-conflict <mode>   How to resolve files that differ between local and remote:
-                         local (default, keep local), remote (overwrite local),
-                         or ask (list conflicts and stop without writing).
-
-Remote delete options (od kg remote delete <id>):
-  --scope <scope>      What to remove: files (default; media folder). graph/all reserved.
-  --yes                Required confirmation — remote deletion is irreversible.
+  od app-context status <app-id>              List local App Context versions.
+  od app-context push <app-id> [--version vN] Publish an App, even with zero Features.
+  od app-context pull <app-id> [--version vN] Download an App Context without changing Feature bindings.
 
 Common options:
   --daemon-url <url>   Open Design daemon HTTP base.
   --json               Emit raw JSON.`);
     process.exit(args.length === 0 ? 2 : 0);
   }
-  const sub = args[0];
-  const rest = args.slice(1);
-  const flags = parseFlags(rest, {
-    string: ['daemon-url', 'on-conflict', 'scope', 'projects', 'stages', 'workflow', 'version', 'remote-app-id'],
-    boolean: ['json', 'yes'],
+  const action = args[0];
+  const appId = args[1];
+  const flags = parseFlags(args.slice(2), {
+    string: ['daemon-url', 'version', 'remote-app-id'],
+    boolean: ['json'],
   });
-  const id = rest.find((a) => !a.startsWith('-'));
   const base = await cliDaemonBaseUrl(flags);
-  // Shared --projects/--stages parsing for pull-all/push-all (comma lists →
-  // body filters; omitted → everything, mirroring the UI modals).
-  const csvFlag = (v) =>
-    typeof v === 'string' ? v.split(',').map((s) => s.trim()).filter(Boolean) : [];
-
-  if (sub === 'app-context') {
-    const action = rest[0];
-    const appId = rest[1];
-    if (!['status', 'push', 'pull'].includes(action) || !appId || appId.startsWith('-')) {
-      console.error('Usage: od kg app-context status|push|pull <app-id> [--version vN]');
-      process.exit(2);
-    }
-    const endpoint = action === 'status'
-      ? `/api/pipelines/apps/${encodeURIComponent(appId)}/context`
-      : `/api/pipelines/apps/${encodeURIComponent(appId)}/context/${action}`;
-    const resp = await fetch(`${base}${endpoint}`, action === 'status' ? undefined : {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        ...(typeof flags.version === 'string' && flags.version ? { contextVersion: flags.version } : {}),
-        ...(typeof flags['remote-app-id'] === 'string' && flags['remote-app-id'] ? { remoteAppId: flags['remote-app-id'] } : {}),
-      }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      console.error(data?.error?.message ?? data?.data?.message ?? `HTTP ${resp.status}`);
-      process.exit(1);
-    }
-    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    const result = data?.data ?? data;
-    if (action === 'status') {
-      console.log(`${result.appName ?? appId}: ${result.current?.contextVersion ?? 'chưa có version'} (${result.versions?.length ?? 0} version)`);
-    } else if (action === 'push') {
-      console.log(`${appId}: ${result.status}${result.requestId ? ` → ${result.requestId}` : ''} ${result.manifest?.contextVersion ?? ''}`.trim());
-    } else {
-      console.log(`${appId}: ${result.status} ${result.manifest?.contextVersion ?? ''}`.trim());
-    }
-    return;
-  }
-
-  // Pull/push ALL: bare `od kg pull`/`push` (no id) or explicit *-all.
-  if (sub === 'pull-all' || (sub === 'pull' && !id)) {
-    const projectIds = csvFlag(flags.projects);
-    const stages = csvFlag(flags.stages);
-    const resp = await fetch(`${base}/api/kg/pull-all`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        ...(projectIds.length > 0 ? { projectIds } : {}),
-        ...(stages.length > 0 ? { stages } : {}),
-        ...(typeof flags.workflow === 'string' && flags.workflow ? { workflow: flags.workflow } : {}),
-      }),
-    });
-    if (!resp.ok) return structuredHttpFailure(resp);
-    const data = await resp.json();
-    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    const d = data?.data ?? {};
-    console.log(`pulled ${d.pulled ?? 0} project(s) from KGS`);
-    for (const r of d.results ?? []) {
-      console.log(`  • ${r.projectId}: ${r.status} (${r.nodes ?? 0} nodes, ${r.edges ?? 0} edges, ${r.files ?? 0} files)${r.error ? ` — ${r.error}` : ''}`);
-    }
-    return;
-  }
-  if (sub === 'push-all' || (sub === 'push' && !id)) {
-    const projectIds = csvFlag(flags.projects);
-    const stages = csvFlag(flags.stages);
-    const resp = await fetch(`${base}/api/kg/push-all`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        ...(projectIds.length > 0 ? { projectIds } : {}),
-        ...(stages.length > 0 ? { stages } : {}),
-        ...(typeof flags.workflow === 'string' && flags.workflow ? { workflow: flags.workflow } : {}),
-      }),
-    });
-    if (!resp.ok) return structuredHttpFailure(resp);
-    const data = await resp.json();
-    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    const d = data?.data ?? {};
-    console.log(`processed ${d.pushed ?? 0} project(s)`);
-    for (const r of d.results ?? []) {
-      if (r.status === 'published') {
-        console.log(`  • ${r.projectId}: published → ${r.approvedProjectId} (${r.nodesPushed ?? 0} nodes, ${r.edgesPushed ?? 0} edges, ${r.filesUploaded ?? 0} files)`);
-      } else if (r.status === 'pending_approval') {
-        console.log(`  • ${r.projectId}: pending approval → ${r.requestId}`);
-      } else if (r.status === 'rejected') {
-        console.log(`  • ${r.projectId}: rejected — ${r.reason}`);
-      } else if (r.status === 'auth_required') {
-        console.log(`  • ${r.projectId}: auth required — ${r.message}`);
-      } else {
-        console.log(`  • ${r.projectId}: error — ${r.message ?? 'unknown error'}`);
-      }
-      for (const caveat of r.caveats ?? []) console.log(`      ⚠ ${caveat}`);
-    }
-    return;
-  }
-
-  // `od kg diff` — per-pipeline local↔store file diff (mirrors the badges in
-  // the UI's Pull all / Push all modals).
-  if (sub === 'diff') {
-    const projectIds = csvFlag(flags.projects);
-    const resp = await fetch(`${base}/api/kg/sync-status`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(projectIds.length > 0 ? { projectIds } : {}),
-    });
-    if (!resp.ok) return structuredHttpFailure(resp);
-    const data = await resp.json();
-    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    const results = data?.data?.results ?? [];
-    if (!results.length) return console.log('no local KGS project.');
-    for (const r of results) {
-      console.log(`${r.projectId}${r.error ? ` — error: ${r.error}` : ''}`);
-      for (const s of r.stages ?? []) {
-        const delta = s.differs
-          ? `KHÁC (${[s.changed && `${s.changed} changed`, s.localOnly && `${s.localOnly} local-only`, s.remoteOnly && `${s.remoteOnly} remote-only`].filter(Boolean).join(', ')})`
-          : 'đồng bộ';
-        console.log(`  • ${s.stage}: local ${s.local} / remote ${s.remote} — ${delta}`);
-      }
-      if (!(r.stages ?? []).length && !r.error) console.log('  (không có file sync-eligible)');
-    }
-    return;
-  }
-
-  // `od kg remote list|delete` — the remote registry (KGS + media). Handled
-  // before the per-project id guard since `remote list` takes no id.
-  if (sub === 'remote') {
-    const nonFlags = rest.filter((a) => !a.startsWith('-'));
-    const action = nonFlags[0];
-    const targetId = nonFlags[1];
-    if (action === 'list') {
-      const resp = await fetch(`${base}/api/kg/remote-projects`);
-      if (!resp.ok) return structuredHttpFailure(resp);
-      const data = await resp.json();
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      const rows = data?.data ?? [];
-      if (!rows.length) {
-        console.log('no remote projects');
-        return;
-      }
-      console.log(`${rows.length} remote project(s):`);
-      for (const r of rows) {
-        const where = [r.inKgs ? 'KGS' : null, r.inMedia ? `media:${r.files}f` : null]
-          .filter(Boolean)
-          .join(' + ');
-        const label = r.name && r.name !== r.projectId ? `${r.projectId} (${r.name})` : r.projectId;
-        console.log(`  • ${label} — ${where || 'none'}`);
-      }
-      return;
-    }
-    if (action === 'delete') {
-      if (!targetId) {
-        console.error('Usage: od kg remote delete <project-id> [--scope=files] --yes');
-        process.exit(2);
-      }
-      const scope = typeof flags.scope === 'string' ? flags.scope : 'files';
-      if (!flags.yes) {
-        console.error(`refusing to delete remote "${targetId}" (scope=${scope}) without --yes`);
-        process.exit(2);
-      }
-      const url = `${base}/api/kg/remote-projects/${encodeURIComponent(targetId)}?scope=${encodeURIComponent(scope)}`;
-      const resp = await fetch(url, { method: 'DELETE' });
-      if (!resp.ok) return structuredHttpFailure(resp);
-      const data = await resp.json();
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      const d = data?.data ?? {};
-      console.log(
-        `deleted ${d.filesDeleted ?? 0} file(s) from "${targetId}"` +
-          (d.folderRemoved ? ' (folder removed)' : ' (no media folder)'),
-      );
-      return;
-    }
-    console.error(`unknown subcommand: od kg remote ${action ?? ''} (expected: list, delete)`);
+  if (!['status', 'push', 'pull'].includes(action) || !appId || appId.startsWith('-')) {
+    console.error('Usage: od app-context status|push|pull <app-id> [--version vN]');
     process.exit(2);
   }
-
-  if (!id) {
-    console.error(`Usage: od kg ${sub} <project-id>`);
-    process.exit(2);
+  const endpoint = action === 'status'
+    ? `/api/pipelines/apps/${encodeURIComponent(appId)}/context`
+    : `/api/pipelines/apps/${encodeURIComponent(appId)}/context/${action}`;
+  const resp = await fetch(`${base}${endpoint}`, action === 'status' ? undefined : {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      ...(typeof flags.version === 'string' && flags.version ? { contextVersion: flags.version } : {}),
+      ...(typeof flags['remote-app-id'] === 'string' && flags['remote-app-id'] ? { remoteAppId: flags['remote-app-id'] } : {}),
+    }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    console.error(data?.error?.message ?? data?.data?.message ?? `HTTP ${resp.status}`);
+    process.exit(1);
   }
-  switch (sub) {
-    case 'pull': {
-      const onConflict = typeof flags['on-conflict'] === 'string' ? flags['on-conflict'] : 'local';
-      if (!['local', 'remote', 'ask'].includes(onConflict)) {
-        console.error(`invalid --on-conflict "${onConflict}" (expected: local, remote, ask)`);
-        process.exit(2);
-      }
-      // 1) Graph pull (nodes/edges into the local SQLite mirror) — unchanged.
-      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/kg-pull`, { method: 'POST' });
-      if (!resp.ok) return structuredHttpFailure(resp);
-      const data = await resp.json();
-      const d = data?.data ?? {};
-      if (!flags.json) {
-        console.log(
-          `pulled ${d.nodes} nodes, ${d.edges} edges (${d.status})` +
-            (d.errors?.length ? ` — ${d.errors.length} errors` : ''),
-        );
-      }
-      // 2) Conflict-aware file pull (PLAN → APPLY). `ask` lists conflicts and
-      // stops; `local`/`remote` apply immediately with that default.
-      const planResp = await fetch(`${base}/api/kg/pull-plan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: id }),
-      });
-      if (!planResp.ok) return structuredHttpFailure(planResp);
-      const plan = (await planResp.json())?.data ?? {};
-      const conflicts = plan.conflicts ?? [];
-      if (onConflict === 'ask' && conflicts.length > 0) {
-        if (flags.json) return process.stdout.write(JSON.stringify({ ok: true, data: plan }, null, 2) + '\n');
-        console.log(
-          `${conflicts.length} file conflict(s) — nothing written. Re-run with --on-conflict=local or --on-conflict=remote:`,
-        );
-        for (const c of conflicts) console.log(`  ⚠ ${c.path} [${c.stage}] (${c.kind})`);
-        return;
-      }
-      const onConflictDefault = onConflict === 'remote' ? 'remote' : 'local';
-      const applyResp = await fetch(`${base}/api/kg/pull-apply`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: id, planId: plan.planId, resolutions: {}, onConflictDefault }),
-      });
-      if (!applyResp.ok) return structuredHttpFailure(applyResp);
-      const applied = (await applyResp.json())?.data ?? {};
-      if (flags.json) return process.stdout.write(JSON.stringify({ ok: true, data: applied }, null, 2) + '\n');
-      console.log(
-        `files: ${applied.downloaded ?? 0} downloaded, ${applied.keptLocal ?? 0} kept-local, ` +
-          `${applied.unchangedSkipped ?? 0} unchanged` +
-          (applied.stale?.length ? `, ${applied.stale.length} stale (remote changed — skipped)` : ''),
-      );
-      for (const s of applied.stale ?? []) console.log(`  ⚠ ${s.path}: ${s.reason}`);
-      return;
-    }
-    case 'push': {
-      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/kg-push`, { method: 'POST' });
-      if (!resp.ok) return structuredHttpFailure(resp);
-      const data = await resp.json();
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      const d = data?.data ?? {};
-      if (d.status === 'published') {
-        console.log(`published ${d.projectId} → ${d.approvedProjectId} (${d.nodesPushed} nodes, ${d.edgesPushed} edges, ${d.filesUploaded} files)`);
-      } else if (d.status === 'pending_approval') {
-        console.log(`pending approval: ${d.requestId}`);
-      } else if (d.status === 'rejected') {
-        console.log(`rejected: ${d.reason}`);
-      } else if (d.status === 'auth_required') {
-        console.log(`auth required: ${d.message}`);
-      } else {
-        console.log(`error: ${d.message ?? 'unknown error'}`);
-      }
-      if (!flags.json && d.caveats?.length) for (const c of d.caveats) console.log(`  ⚠ ${c}`);
-      return;
-    }
-    case 'status': {
-      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/kg-status`);
-      if (!resp.ok) return structuredHttpFailure(resp);
-      const data = await resp.json();
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      const d = data?.data ?? {};
-      console.log(`${d.nodes} nodes (${d.localNodes} local), ${d.edges} edges (${d.localEdges} local)`);
-      return;
-    }
-    default:
-      console.error(`unknown subcommand: od kg ${sub} (expected: pull, push, status)`);
-      process.exit(2);
+  if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  const result = data?.data ?? data;
+  if (action === 'status') {
+    console.log(`${result.appName ?? appId}: ${result.current?.contextVersion ?? 'chưa có version'} (${result.versions?.length ?? 0} version)`);
+  } else if (action === 'push') {
+    console.log(`${appId}: ${result.status}${result.requestId ? ` → ${result.requestId}` : ''} ${result.manifest?.contextVersion ?? ''}`.trim());
+  } else {
+    console.log(`${appId}: ${result.status} ${result.manifest?.contextVersion ?? ''}`.trim());
   }
 }
 
@@ -705,12 +451,11 @@ async function runProjectSync(args) {
 
 const SUBCOMMAND_MAP = {
   kb: runKb,
-  kg: runKg,
+  'app-context': runAppContext,
   'project-sync': runProjectSync,
   artifacts: runArtifacts,
   figma: runFigma,
   media: runMedia,
-  mcp: runMcp,
   research: runResearch,
   plugin: runPlugin,
   ui: runUi,
@@ -738,28 +483,6 @@ const SUBCOMMAND_MAP = {
   doctor: runDoctor,
   config: runConfig,
 };
-
-if (argv[0] === 'mcp' && argv[1] === 'overview') {
-  try {
-    const { exitCode } = await runOverviewMcpServer();
-    process.exit(exitCode);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`${JSON.stringify({ ok: false, error: { message } })}\n`);
-    process.exit(1);
-  }
-}
-
-if (argv[0] === 'mcp' && argv[1] === 'live-artifacts') {
-  try {
-    const { exitCode } = await runLiveArtifactsMcpServer();
-    process.exit(exitCode);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`${JSON.stringify({ ok: false, error: { message } })}\n`);
-    process.exit(1);
-  }
-}
 
 const first = argv.find((a) => !a.startsWith('-'));
 if (first && SUBCOMMAND_MAP[first]) {
@@ -820,12 +543,6 @@ function printRootHelp() {
   od tools design-systems read --path <manifest-declared-path>
       Read active design-system pull-layer files through daemon wrapper commands.
 
-  od mcp live-artifacts
-      Start the MCP server exposing live-artifact and connector tools.
-
-  od mcp overview
-      Start the read-only MCP server exposing App/Feature progress and outputs.
-
   od research search --query <text> [--max-sources 5] [--daemon-url <url>]
       Run agent-callable Tavily research through the local daemon.
 
@@ -842,9 +559,9 @@ function printRootHelp() {
       schedule, trigger, or harvest results from a routine without
       opening the web UI.
 
-  od pipeline <projects|list|run> --project <kgsProjectId> [--json]
-      Drive the docs->UI pipelines for a KGS app (pulled via od kg pull).
-      "projects" lists eligible KGS apps; "run <pipelineId>" seeds a
+  od pipeline <projects|list|run> --project <projectId> [--json]
+      Drive the docs->UI pipelines for a pipeline-eligible project.
+      "projects" lists eligible apps; "run <pipelineId>" seeds a
       conversation with that pipeline's skill active; pipelines are gated so
       one only runs once its prerequisites have succeeded.
 
@@ -877,13 +594,6 @@ function printRootHelp() {
       Generate a media artifact and write it into the active project.
       Designed to be invoked by a code agent - picks up OD_DAEMON_URL
       and OD_PROJECT_ID from the env that the daemon injected on spawn.
-
-  od mcp [--daemon-url <url>]
-      Run a stdio MCP server that proxies project tool calls to a
-      running Open Design daemon. Wire it into a coding agent
-      (Claude Code, Cursor, VS Code, Zed, Windsurf) in another repo
-      to pull files from a local Open Design project and create
-      project-scoped artifacts without exporting a zip.
 
 Options:
   --port <n>       Port to listen on (default: 7456, env: OD_PORT).
@@ -1332,75 +1042,6 @@ Output: a single line of JSON: {"file": { name, size, kind, mime, ... }}.
 Skills should call this and then reference the returned filename in their
 artifact / message body. The daemon writes the bytes into the project's
 files folder so the FileViewer can preview them immediately.`);
-}
-
-// ---------------------------------------------------------------------------
-// Subcommand: od mcp
-// ---------------------------------------------------------------------------
-
-async function runMcp(args) {
-  let flags;
-  try {
-    flags = parseFlags(args, {
-      string: MCP_STRING_FLAGS,
-      boolean: MCP_BOOLEAN_FLAGS,
-    });
-  } catch (err) {
-    console.error(err.message);
-    printMcpHelp();
-    process.exit(2);
-  }
-  if (flags.help || flags.h) {
-    printMcpHelp();
-    return;
-  }
-
-  const daemonUrl = await cliDaemonUrl(flags);
-
-  const { runMcpStdio } = await import('./mcp.js');
-  await runMcpStdio({ daemonUrl });
-}
-
-function printMcpHelp() {
-  console.log(`Usage: od mcp [--daemon-url <url>]
-
-Run a stdio MCP (Model Context Protocol) server that proxies project
-tool calls to a running Open Design daemon. Wire it into a coding agent
-in another repo so the agent can pull files from a local Open Design
-project and create project-scoped artifacts without exporting a zip
-every iteration.
-
-Options:
-  --daemon-url <url>   Open Design daemon HTTP base URL. Resolution
-                       order: this flag, OD_DAEMON_URL, OD_SIDECAR_IPC_PATH,
-                       then http://127.0.0.1:7456. Each new MCP spawn
-                       discovers the live daemon URL at startup, so
-                       MCP client configs stay valid across daemon
-                       restarts even when the port is ephemeral. A
-                       running MCP server caches the URL; restart the
-                       MCP client after a daemon restart to pick up a
-                       new port.
-
-Tools exposed:
-  list_projects                  list every Open Design project
-  get_active_context             what project/file the user has open right now
-  get_artifact([project, entry]) bundle: entry file + every referenced sibling
-  get_project([project])         single project metadata
-  get_file([project, path])      file contents (textual mimes only for now)
-  search_files(query[, project]) literal substring search across textual files
-  list_files([project])          project files + artifactManifest sidecars
-  create_artifact(name, content) create one normal artifact entry file
-
-When project is omitted, get_artifact / get_project / get_file /
-search_files / list_files / create_artifact default to the project the
-user has open in Open Design; get_artifact and get_file additionally
-default to the active file. The response stamps usedActiveContext so
-callers can see which project/file got resolved.
-
-For the copy-paste, per-client snippet (with absolute paths resolved
-for your machine, plus a one-click deeplink for Cursor), open Settings
-→ MCP server in the Open Design app. The daemon must be running locally
-for tool calls to succeed.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -6054,7 +5695,41 @@ async function runStatus(args) {
 // `build` / `ps` / `kill` stay local docker operations. `login` / `logout`
 // now route through the daemon for Codex device auth so the CLI can poll the
 // shared login state, while Claude still uses the direct TTY flow.
+//
+// WP4 (web-first migration): host mode is now the default (sandbox.enabled
+// defaults to false), so the Docker-only action subcommands below
+// (build/login/logout/ps/kill) refuse to touch `docker` at all in host mode
+// — same intent as the daemon's 409 SANDBOX_MODE_HOST guard on the HTTP
+// routes (sandbox-routes.ts), just surfaced as a clear CLI message instead
+// of a docker error, since these five run `docker` directly.
 // ---------------------------------------------------------------------------
+
+// Only block when a status payload POSITIVELY says host mode (`enabled ===
+// false`, from either the daemon's `/api/sandbox/status` or a real
+// `sandboxBuilderContext` answer). A payload with no `enabled` field — the
+// `sandboxBuilderContext` local-repo fallback used when no daemon is running
+// — means "can't tell", not "host", so `od sandbox build` before the daemon
+// has ever started keeps working exactly as before.
+function sandboxCliBlockedInHostMode(status) {
+  return typeof status?.enabled === 'boolean' && status.enabled === false;
+}
+
+// Best-effort mode probe for `ps`/`kill`, which otherwise talk to `docker`
+// directly with NO daemon dependency at all. Any failure (daemon down,
+// network error) resolves `false` so those two subcommands keep working
+// exactly as before when there's no daemon to ask — this is a courtesy
+// steer-back, not a hard requirement that the daemon be running.
+async function sandboxModeIsHostBestEffort(flags) {
+  try {
+    const base = await cliDaemonBaseUrl(flags);
+    const resp = await fetch(`${base}/api/sandbox/status`);
+    if (!resp.ok) return false;
+    const status = await resp.json();
+    return status?.enabled === false;
+  } catch {
+    return false;
+  }
+}
 
 const SANDBOX_USAGE = `Usage:
   od sandbox status [--json] [--probe-auth]   Daemon/docker/image/auth health.
@@ -6171,7 +5846,15 @@ async function runSandbox(args) {
       return;
     }
     const yn = (v) => (v === true ? 'yes' : v === false ? 'NO' : 'not probed');
-    console.log(`agent sandbox: ${status.enabled ? 'ENABLED' : 'disabled'}`);
+    const mode = status.mode ?? (status.enabled ? 'sandbox' : 'host');
+    console.log(`agent sandbox: ${status.enabled ? 'ENABLED' : 'disabled'} (mode: ${mode})`);
+    if (status.hostClaude) {
+      const hc = status.hostClaude;
+      console.log(
+        `  host claude: ${hc.available ? 'installed' : 'NOT installed'}${hc.version ? ` (${hc.version})` : ''}` +
+          ` — auth ${hc.authStatus}${hc.authMessage ? ` (${hc.authMessage})` : ''}`,
+      );
+    }
     console.log(`  gate:        runtimes=[${status.runtimes.join(', ')}] skills=[${status.skills.join(', ')}] timeout=${status.timeoutMinutes}m`);
     console.log(`  docker:      ${yn(status.dockerOk)}`);
     console.log(`  image:       ${status.image} ${status.imageOk ? '(present)' : '(MISSING — run: od sandbox build)'}`);
@@ -6185,6 +5868,16 @@ async function runSandbox(args) {
     }
     console.log(`  active runs: ${status.activeContainers.length ? status.activeContainers.join(', ') : 'none'}`);
     if (!status.enabled) console.log('\nEnable with: od sandbox enable');
+
+    // Post-install diagnostic checklist (WP4): claude CLI + login + write
+    // isolation, in one place. `od doctor` (WP6) is expected to call this
+    // same `od sandbox status` output rather than duplicate the checks.
+    const wim = writeIsolationMode();
+    const check = (ok) => (ok ? '[x]' : '[ ]');
+    console.log('\nChecklist:');
+    console.log(`  ${check(status.hostClaude?.available)} Claude CLI trên máy`);
+    console.log(`  ${check(status.hostClaude?.authStatus === 'ok')} Đã đăng nhập Claude CLI`);
+    console.log(`  ${check(wim !== 'off')} Write isolation (macOS seatbelt): ${wim}`);
     return;
   }
 
@@ -6282,6 +5975,10 @@ async function runSandbox(args) {
 
   if (sub === 'build') {
     const status = await sandboxBuilderContext(flags);
+    if (sandboxCliBlockedInHostMode(status)) {
+      console.error(SANDBOX_HOST_MODE_CLI_MESSAGE);
+      process.exit(1);
+    }
     const script = nodePath.join(status.builderDir, 'sandbox', 'build-sandbox.sh');
     const result = spawnSync('bash', [script, ...(flags.force ? ['--force'] : [])], { stdio: 'inherit' });
     process.exit(result.status ?? 1);
@@ -6289,6 +5986,10 @@ async function runSandbox(args) {
 
   if (sub === 'login') {
     const status = await sandboxBuilderContext(flags);
+    if (sandboxCliBlockedInHostMode(status)) {
+      console.error(SANDBOX_HOST_MODE_CLI_MESSAGE);
+      process.exit(1);
+    }
     if (!status.dockerOk) {
       console.error('docker is not running — start Docker/OrbStack first.');
       process.exit(1);
@@ -6351,6 +6052,10 @@ async function runSandbox(args) {
     }
     if (runtime === 'claude') {
       const status = await sandboxBuilderContext(flags);
+      if (sandboxCliBlockedInHostMode(status)) {
+        console.error(SANDBOX_HOST_MODE_CLI_MESSAGE);
+        process.exit(1);
+      }
       const result = runDocker([
         'run', '--rm', '-v', 'od-claude-auth:/home/node/.claude',
         '--entrypoint', 'sh', status.image, '-c',
@@ -6375,12 +6080,20 @@ async function runSandbox(args) {
   }
 
   if (sub === 'ps') {
+    if (await sandboxModeIsHostBestEffort(flags)) {
+      console.error(SANDBOX_HOST_MODE_CLI_MESSAGE);
+      process.exit(1);
+    }
     const format = flags.json ? '{{json .}}' : 'table {{.Names}}\t{{.Status}}\t{{.RunningFor}}';
     const result = runDocker(['ps', '--filter', 'label=od.sandbox=1', '--format', format]);
     process.exit(result.status ?? 1);
   }
 
   if (sub === 'kill') {
+    if (await sandboxModeIsHostBestEffort(flags)) {
+      console.error(SANDBOX_HOST_MODE_CLI_MESSAGE);
+      process.exit(1);
+    }
     if (flags.all) {
       const list = spawnSync('docker', ['ps', '-q', '--filter', 'label=od.sandbox=1'], { encoding: 'utf8' });
       const ids = (list.stdout ?? '').split('\n').filter(Boolean);
@@ -7279,16 +6992,17 @@ function printPipelineHelp() {
   console.log(`Usage: od pipeline <new|apps|projects|list|run|run-all|confirm-docs-review|feedback|feedback-forms|feedback-summary|target-ds|upload|pull|build|demo|figma-capture|figma-audit|history|restore> [options]
 
 Dự án tạo cục bộ ngay tại đây (kind: pipeline) HOẶC pull về từ Pipeline Studio
-(\`od kg pull-all\`) — cả hai chạy pipeline giống nhau tại đây; Push mới chọn
-đích Shared Project (ghi đè project đã có hoặc tạo project shared mới ngay).
+(nút "Lấy dự án về máy" trên web) — cả hai chạy pipeline giống nhau tại đây;
+Push mới chọn đích Shared Project (ghi đè project đã có hoặc tạo project
+shared mới ngay).
 
 Commands:
-  new <projectId>      Create a NEW pipeline project locally (projectId IS the KGS
+  new <projectId>      Create a NEW pipeline project locally (projectId IS the shared
                        project_id). [--name "<name>"] [--app <appId>] [--app-name "<name>"]
   apps                 List the App containers (local + remote) a new feature can be
                        grouped under.
-  projects             List the KGS apps available for pipelines (created here or pulled via od kg pull).
-  list                 List the docs→UI pipelines for a KGS project (status + gating).
+  projects             List the apps available for pipelines (created here or pulled via the web UI).
+  list                 List the docs→UI pipelines for a project (status + gating).
   run <pipelineId>     Run one pipeline — seeds a conversation with its skill active.
                        Source for pipeline 1 (docs), one of:
                          --source confluence --ref <page url/id>   → DETERMINISTIC: the daemon
@@ -7296,7 +7010,7 @@ Commands:
                               Pages the seeds LINK to are fetched too (depth 1, capped);
                               --no-follow-links fetches only the picked pages.
                          --input "<page url/id per line>"           → same deterministic path
-                         --input "<JIRA key / JQL>"                 → agent run (via mcp-atlassian)
+                         (JIRA key / JQL input is no longer supported — Confluence URL only)
                          --source bas …                             → ĐANG BẢO TRÌ (bị chặn)
                        For UI-Spec stages (ui-html, ui-react): --design-system <id> applies a brand;
                        --design-system none forces no design system; omit to use the default.
@@ -7326,8 +7040,8 @@ Commands:
   target-ds            Gán design system cho MỘT target (multi-target): --target <id>
                        --design-system <dsId|none>. Ghi targets.json.designSystemByTarget;
                        panel "Gán component" của preview ux-spec dùng DS này.
-  upload               Manually upload this project's output files to KGS (UX/CJ also convert to graph).
-  pull                 Regenerate this project's pipeline files from KGS into the local workspace (continue on another device).
+  upload               Manually upload this project's output files to the media store.
+  pull                 Regenerate this project's pipeline files from the media store into the local workspace (continue on another device).
   build                Build/rebuild the ui-react app from synced sources (react/dist/ never
                        syncs — after a pull, run this to make the app previewable). Needs Docker.
                        Multi-target: --target <id> builds THAT target's tree (mặc định: target
@@ -7358,8 +7072,9 @@ Commands:
                        [--confirmation <id>] [--run <sourceRunId>] [--json]
 
 Options:
-  --project <id>       KGS project id (required for list/run/pull). This is a KGS app
-                       pulled with 'od kg pull <id>', NOT a chat workspace.
+  --project <id>       Pipeline project id (required for list/run/pull). This is a
+                       pipeline-eligible project (created here or pulled via the web
+                       UI), NOT a chat workspace.
                        Auto-resolved from OD_PROJECT_ID when invoked by the daemon.
   --json               Machine-readable output.
 
@@ -7509,7 +7224,7 @@ async function runPipeline(args) {
     if (flags.json) return writeJson(data);
     const list = data.projects ?? [];
     if (list.length === 0) {
-      console.log('No KGS project pulled yet. Pull one with: od kg pull <project-id>');
+      console.log('No pipeline project yet. Create one with: od pipeline new <project-id>, or pull one via the web UI.');
       return;
     }
     console.log('# id\tname');
@@ -7585,7 +7300,7 @@ async function runPipeline(args) {
   if (sub === 'new' || sub === 'create') {
     const id = positional[0];
     if (!id) {
-      console.error('Usage: od pipeline new <projectId> [--name "<name>"] [--app <appId>] [--app-name "<name>"]   (projectId IS the KGS project_id)');
+      console.error('Usage: od pipeline new <projectId> [--name "<name>"] [--app <appId>] [--app-name "<name>"]   (projectId IS the shared project_id)');
       process.exit(2);
     }
     let resp;
@@ -7634,7 +7349,7 @@ async function runPipeline(args) {
 
   const projectId = flags.project || process.env.OD_PROJECT_ID;
   if (!projectId) {
-    console.error('Missing --project <id> (or set OD_PROJECT_ID). It must be a KGS project pulled with `od kg pull <id>` — see `od pipeline projects`.');
+    console.error('Missing --project <id> (or set OD_PROJECT_ID). It must be a pipeline-eligible project (created here or pulled via the web UI) — see `od pipeline projects`.');
     process.exit(2);
   }
 
@@ -7679,7 +7394,10 @@ async function runPipeline(args) {
     for (const p of pipelines) {
       console.log([
         p.id,
-        p.name,
+        // `held` (2026-08 web-first hold — HELD_STAGE_IDS in pipelines.ts):
+        // suffix the name instead of a new column so `--json` consumers and
+        // this table's existing column count stay unaffected.
+        p.held ? `${p.name} (held)` : p.name,
         p.status,
         p.active ? 'yes' : 'no',
         p.skipped ? 'yes' : '-',
@@ -7695,6 +7413,15 @@ async function runPipeline(args) {
       console.error('Usage: od pipeline run <pipelineId> --project <id>');
       process.exit(2);
     }
+    // Stage đang HOLD (2026-08 web-first) — daemon cũng chặn 503 (STAGE_HELD).
+    // Mirror của HELD_STAGE_IDS trong pipelines.ts, cùng khuôn với check BAS ở
+    // dưới: báo lỗi rõ ràng tại CLI thay vì để lỗi HTTP thô rơi xuống người dùng.
+    if (HELD_STAGE_IDS.includes(pipelineId)) {
+      console.error(
+        `Bước "${pipelineId}" đang tạm khóa để tập trung bản web (sinh code UI) — output cũ vẫn dùng được, chỉ không chạy lại được lúc này.`,
+      );
+      process.exit(2);
+    }
     // Build the optional structured source (mirrors the UI's source picker). The
     // daemon pre-fetches Confluence/BAS docs from the BAS gateway before the run.
     let source;
@@ -7708,7 +7435,7 @@ async function runPipeline(args) {
     } else if (flags.source === 'bas') {
       // Nguồn BAS đang KHÓA BẢO TRÌ (daemon cũng chặn 503) — mirror của cờ
       // BAS_SOURCE_LOCKED trong pipeline-routes.ts.
-      console.error('Nguồn BAS đang bảo trì — dùng --source confluence --ref <url/id> (hoặc --input JIRA key/JQL).');
+      console.error('Nguồn BAS đang bảo trì — dùng --source confluence --ref <url/id>.');
       process.exit(2);
     } else if (flags.source) {
       console.error('Unknown --source; expected "confluence" or "bas".');
@@ -7786,7 +7513,7 @@ async function runPipeline(args) {
       source = { kind: 'confluence', ref };
     } else if (flags.source === 'bas') {
       // Nguồn BAS đang KHÓA BẢO TRÌ — như nhánh run ở trên.
-      console.error('Nguồn BAS đang bảo trì — dùng --source confluence --ref <url/id> (hoặc --input JIRA key/JQL).');
+      console.error('Nguồn BAS đang bảo trì — dùng --source confluence --ref <url/id>.');
       process.exit(2);
     } else if (flags.source) {
       console.error('Unknown --source; expected "confluence" or "bas".');
@@ -7797,6 +7524,18 @@ async function runPipeline(args) {
       const t = String(flags.terminal).trim().toLowerCase();
       if (t !== 'ui-html' && t !== 'ui-react' && t !== 'ui-react-ds' && t !== 'both') {
         console.error('Invalid --terminal; expected "ui-html", "ui-react", "ui-react-ds" or "both".');
+        process.exit(2);
+      }
+      // Mọi giá trị hợp lệ của --terminal đụng ít nhất một stage đang HOLD
+      // (2026-08 web-first — cả 3 terminal UI-Spec đều trong HELD_STAGE_IDS,
+      // "both" = ui-html + ui-react). Daemon cũng 400 (STAGE_HELD) — chặn sớm
+      // ở đây để báo lỗi rõ ràng thay vì một lỗi HTTP thô. Bỏ hẳn --terminal
+      // vẫn chạy được: daemon tự loại stage held khỏi kế hoạch, không lỗi.
+      const wantedTerminalIds = t === 'both' ? ['ui-html', 'ui-react'] : [t];
+      if (wantedTerminalIds.some((id) => HELD_STAGE_IDS.includes(id))) {
+        console.error(
+          `Đầu ra "${t}" đang tạm khóa để tập trung bản web (sinh code UI) — bỏ hẳn --terminal để chạy phần còn lại của workflow (docs → ... → ux-review).`,
+        );
         process.exit(2);
       }
       terminal = t;
@@ -7893,7 +7632,7 @@ async function runPipeline(args) {
     if (!resp.ok) return structuredHttpFailure(resp);
     const data = await resp.json();
     if (flags.json) return writeJson(data);
-    console.log(`Pulled ${data.pulled ?? 0} pipeline file(s) from KGS into the project workspace.`);
+    console.log(`Pulled ${data.pulled ?? 0} pipeline file(s) from the media store into the project workspace.`);
     return;
   }
 
@@ -7912,10 +7651,7 @@ async function runPipeline(args) {
     if (!resp.ok) return structuredHttpFailure(resp);
     const data = await resp.json();
     if (flags.json) return writeJson(data);
-    console.log(
-      `Uploaded ${data.uploaded ?? 0} file(s) to KGS` +
-        (data.converted ? `, converted ${data.converted} to graph` : '') + '.',
-    );
+    console.log(`Uploaded ${data.uploaded ?? 0} file(s) to the media store.`);
     return;
   }
 

@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="vi" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      :root {
+        --bg: #f6f8fb;
+        --surface: #ffffff;
+        --soft: #eaf2f8;
+        --ink: #171c24;
+        --muted: #5e6875;
+        --accent: #0066b3;
+        --accent-strong: #00568f;
+        --accent-soft: #d6e7f4;
+        --success: #18784a;
+        --success-soft: #ddf3e7;
+        --warning: #a65a00;
+        --warning-soft: #fff0d6;
+        --danger: #b13a32;
+        --danger-soft: #fde7e5;
+        --border: #c9d4e0;
+        --shadow: 0 18px 55px rgba(31, 55, 79, 0.1);
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); }
+      body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); }
+      code, .mono { font-family: monospace; }
+      .scene { position: absolute; inset: 0; width: 1920px; height: 1080px; overflow: hidden; opacity: 0; visibility: hidden; pointer-events: none; }
+      .scene-bg { position: absolute; inset: 0; background: var(--bg); }
+      .scene-bg::before { content: ""; position: absolute; width: 720px; height: 720px; right: -260px; top: -280px; border-radius: 50%; background: var(--accent-soft); opacity: .56; }
+      .scene-bg::after { content: ""; position: absolute; width: 460px; height: 460px; left: -210px; bottom: -220px; border-radius: 50%; border: 90px solid #e8eef5; opacity: .78; }
+      .slide-shell { position: relative; z-index: 1; width: 100%; height: 100%; padding: 70px 82px 74px; display: flex; flex-direction: column; }
+      .topline { display: flex; align-items: center; justify-content: space-between; min-height: 54px; margin-bottom: 36px; }
+      .brand { display: flex; align-items: center; gap: 16px; font-size: 22px; font-weight: 800; letter-spacing: .02em; color: var(--accent-strong); }
+      .brand-mark { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--accent); color: #fff; }
+      .brand-mark svg { width: 23px; height: 23px; }
+      .slide-no { color: var(--muted); font-size: 22px; font-weight: 700; }
+      .kicker { color: var(--accent); font-size: 22px; font-weight: 850; letter-spacing: .11em; text-transform: uppercase; margin-bottom: 16px; }
+      h1, h2 { font-family: Georgia, "Times New Roman", serif; letter-spacing: -.035em; line-height: .99; margin: 0; }
+      h1 { font-size: 92px; max-width: 1500px; }
+      h2 { font-size: 68px; max-width: 1500px; }
+      .lede { font-size: 31px; line-height: 1.35; color: var(--muted); max-width: 1280px; margin-top: 24px; }
+      .content { flex: 1; min-height: 0; margin-top: 42px; }
+      .two-col { display: grid; grid-template-columns: 1.05fr .95fr; gap: 42px; align-items: stretch; }
+      .three-col { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; align-items: stretch; }
+      .four-col { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px; }
+      .card { background: rgba(255,255,255,.94); border: 2px solid var(--border); border-radius: 28px; padding: 30px; box-shadow: var(--shadow); }
+      .card.flat { box-shadow: none; }
+      .card-title { font-size: 30px; line-height: 1.16; font-weight: 850; }
+      .card-copy { margin-top: 13px; font-size: 23px; line-height: 1.38; color: var(--muted); }
+      .icon-box { width: 62px; height: 62px; border-radius: 18px; display: grid; place-items: center; color: var(--accent); background: var(--soft); border: 2px solid #b9d2e7; margin-bottom: 22px; }
+      .icon-box svg { width: 31px; height: 31px; stroke-width: 1.9; }
+      .pill { display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 8px 15px; border-radius: 999px; font-size: 20px; font-weight: 800; background: var(--soft); color: var(--accent-strong); border: 1px solid #b9d2e7; }
+      .pill.success { background: var(--success-soft); border-color: #abdabe; color: var(--success); }
+      .pill.warning { background: var(--warning-soft); border-color: #f0cc8c; color: var(--warning); }
+      .pill.danger { background: var(--danger-soft); border-color: #edb6b2; color: var(--danger); }
+      .number { font-family: Georgia, serif; font-size: 62px; color: var(--accent); font-weight: 700; line-height: 1; }
+      .footnote { position: absolute; left: 82px; bottom: 54px; font-size: 19px; color: var(--muted); }
+      .hotspot-link { position: absolute; right: 82px; bottom: 54px; min-width: 330px; height: 78px; border-radius: 22px; border: 2px solid #aac7df; background: rgba(255,255,255,.9); color: var(--accent-strong); display: flex; align-items: center; justify-content: center; gap: 12px; font-size: 22px; font-weight: 850; }
+      .hotspot-link svg { width: 24px; height: 24px; }
+      .flowline { height: 5px; background: var(--border); flex: 1; min-width: 45px; border-radius: 99px; position: relative; overflow: hidden; }
+      .flowline::after { content: ""; position: absolute; inset: 0; background: var(--accent); transform-origin: left center; }
+      .path { display: flex; align-items: center; gap: 18px; }
+      .path-node { min-width: 220px; min-height: 116px; padding: 20px 22px; display: flex; align-items: center; gap: 16px; background: #fff; border: 2px solid var(--border); border-radius: 24px; box-shadow: var(--shadow); font-size: 23px; font-weight: 850; }
+      .path-node small { display: block; font-size: 17px; color: var(--muted); margin-top: 5px; font-weight: 650; }
+      .mini-icon { width: 42px; height: 42px; border-radius: 13px; flex: 0 0 auto; display: grid; place-items: center; background: var(--soft); color: var(--accent); }
+      .mini-icon svg { width: 23px; height: 23px; }
+      .tree { padding: 20px 8px; }
+      .tree-row { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 18px; min-height: 82px; padding: 14px 18px; border-bottom: 2px solid #e6ebf1; font-size: 25px; }
+      .tree-row:last-child { border-bottom: 0; }
+      .tree-row.child { margin-left: 58px; position: relative; }
+      .tree-row.child::before { content: ""; position: absolute; left: -27px; top: -18px; bottom: 40px; width: 26px; border-left: 3px solid #abc6de; border-bottom: 3px solid #abc6de; border-radius: 0 0 0 12px; }
+      .tree-row strong { font-weight: 830; }
+      .tree-meta { font-size: 19px; color: var(--muted); margin-top: 5px; }
+      .workflow-card { min-height: 330px; display: flex; flex-direction: column; }
+      .workflow-card .route { margin-top: auto; display: flex; align-items: center; gap: 8px; color: var(--accent); font-weight: 850; font-size: 21px; }
+      .input-panel { display: flex; flex-direction: column; gap: 18px; }
+      .searchbar { height: 72px; border: 2px solid #aab8c7; border-radius: 18px; background: #fff; display: flex; align-items: center; gap: 16px; padding: 0 23px; color: var(--muted); font-size: 23px; }
+      .result-row { display: grid; grid-template-columns: 34px 1fr 46px; gap: 16px; align-items: center; padding: 20px 6px; border-bottom: 2px solid #e2e7ed; }
+      .result-row:last-child { border-bottom: 0; }
+      .check { width: 29px; height: 29px; border: 3px solid #bdc8d4; border-radius: 8px; background: #fff; }
+      .check.on { background: var(--accent); border-color: var(--accent); position: relative; }
+      .check.on::after { content: ""; position: absolute; width: 11px; height: 6px; border-left: 3px solid #fff; border-bottom: 3px solid #fff; transform: rotate(-45deg); left: 6px; top: 6px; }
+      .circle-button { width: 44px; height: 44px; border-radius: 50%; background: var(--soft); color: var(--accent); display: grid; place-items: center; border: 2px solid #b3cee4; }
+      .step-list { display: flex; flex-direction: column; gap: 18px; }
+      .step { min-height: 98px; display: grid; grid-template-columns: 52px 1fr auto; gap: 20px; align-items: center; padding: 17px 22px; background: #fff; border: 2px solid var(--border); border-radius: 22px; }
+      .step-state { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; font-size: 23px; font-weight: 850; background: var(--soft); color: var(--accent); }
+      .step.running { border-color: #77add4; }
+      .step.done { border-color: #9fd1b4; }
+      .step.done .step-state { background: var(--success-soft); color: var(--success); }
+      .step.error { border-color: #e3a6a1; }
+      .step.error .step-state { background: var(--danger-soft); color: var(--danger); }
+      .review-pane { min-height: 420px; }
+      .review-pane.agent { background: #eef5fb; border-color: #afcce2; }
+      .review-pane.human { background: #fff; }
+      .highlight { display: block; padding: 14px 17px; margin: 14px 0; background: #fff1b8; border-left: 5px solid #d49b00; border-radius: 9px; font-size: 22px; line-height: 1.35; }
+      .review-actions { display: flex; gap: 12px; margin-top: 24px; }
+      .button { min-height: 54px; padding: 13px 22px; border-radius: 15px; border: 2px solid var(--border); background: #fff; font-size: 20px; font-weight: 850; }
+      .button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .version-rail { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin: 44px 8px 0; }
+      .version { position: relative; padding-top: 48px; text-align: center; }
+      .version::before { content: ""; position: absolute; height: 5px; top: 15px; left: 0; right: 0; background: #bbcbd9; }
+      .version:first-child::before { left: 50%; }
+      .version:last-child::before { right: 50%; }
+      .version-dot { position: absolute; top: 0; left: calc(50% - 18px); width: 36px; height: 36px; border-radius: 50%; background: #fff; border: 6px solid #9cb7ce; z-index: 1; }
+      .version.active .version-dot { border-color: var(--accent); background: var(--accent-soft); }
+      .version.stale .version-dot { border-color: var(--warning); background: var(--warning-soft); }
+      .compare { display: grid; grid-template-columns: 1fr 88px 1fr; gap: 18px; align-items: center; }
+      .compare-arrow { width: 68px; height: 68px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; margin: auto; }
+      .file-change { display: grid; grid-template-columns: 105px 1fr; gap: 14px; padding: 14px 0; border-bottom: 2px solid #edf0f4; font-size: 20px; }
+      .file-change:last-child { border-bottom: 0; }
+      .file-path { color: #4b5663; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .state-card { min-height: 270px; }
+      .state-card .big-state { font-family: Georgia, serif; font-size: 37px; line-height: 1.05; margin-top: 24px; }
+      .state-new { border-top: 9px solid #2a8a53; }
+      .state-same { border-top: 9px solid #83909d; }
+      .state-change { border-top: 9px solid #d78b16; }
+      .state-delete { border-top: 9px solid #bd4c44; }
+      .loop { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; position: relative; margin-top: 52px; }
+      .loop::before { content: ""; position: absolute; height: 5px; left: 7%; right: 7%; top: 59px; background: #b8ccdd; }
+      .loop-item { position: relative; z-index: 1; text-align: center; }
+      .loop-circle { width: 118px; height: 118px; margin: 0 auto 18px; border-radius: 50%; background: #fff; border: 4px solid #a9c4dc; display: grid; place-items: center; font-family: Georgia, serif; font-size: 43px; color: var(--accent); box-shadow: 0 8px 25px rgba(31, 55, 79, .08); }
+      .loop-label { font-size: 21px; line-height: 1.25; font-weight: 820; }
+      .checklist { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 28px; }
+      .checkline { display: grid; grid-template-columns: 45px 1fr; gap: 17px; min-height: 93px; align-items: center; padding: 16px 20px; background: #fff; border: 2px solid var(--border); border-radius: 20px; font-size: 23px; font-weight: 760; }
+      .checkmark { width: 40px; height: 40px; border-radius: 12px; background: var(--success-soft); color: var(--success); display: grid; place-items: center; font-weight: 900; }
+      .branch-label { display: inline-flex; align-items: center; gap: 10px; color: var(--warning); font-size: 21px; font-weight: 850; margin-bottom: 14px; }
+      .decision { display: grid; grid-template-columns: 170px 60px 1fr; gap: 18px; align-items: center; min-height: 118px; padding: 18px 22px; background: #fff; border: 2px solid var(--border); border-radius: 23px; }
+      .decision + .decision { margin-top: 16px; }
+      .decision strong { font-size: 25px; }
+      .decision p { font-size: 21px; color: var(--muted); line-height: 1.35; }
+      .arrow-down { font-size: 34px; color: var(--accent); text-align: center; }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+    </style>
+  </head>
+  <body>
+    <script type="application/hyperframes-slideshow+json">
+      {
+        "title": "Open Design — Hướng dẫn sử dụng",
+        "slides": [
+          {"sceneId":"cover","startTime":0,"endTime":7,"label":"Mở đầu","notes":"Open Design không chỉ tạo file. Công cụ giúp đưa tài liệu đầu vào qua một quy trình có kiểm soát, để con người duyệt rồi mới chia sẻ."},
+          {"sceneId":"mental-model","startTime":7,"endTime":14,"label":"Mô hình làm việc","notes":"Hãy nhớ ba tầng: Dự án là không gian chung, Tính năng là đơn vị công việc, Quy trình là chuỗi bước tạo kết quả."},
+          {"sceneId":"setup","startTime":14,"endTime":21,"label":"Thiết lập","notes":"Trước lần chạy đầu tiên, kiểm tra Docker, tài khoản Google và ít nhất một CLI AI đã đăng nhập. Nếu gặp lỗi, mở nhánh xử lý sự cố trên slide.","hotspots":[{"id":"setup-help-hotspot","label":"Mở hướng dẫn xử lý lỗi thiết lập","target":"setup-help-sequence","region":{"x":71,"y":82,"w":23,"h":9}}]},
+          {"sceneId":"project-feature","startTime":21,"endTime":28,"label":"Dự án và Tính năng","notes":"Một Dự án có thể chứa nhiều Tính năng, nhưng mỗi Tính năng có đầu vào, trạng thái và lịch sử chạy riêng."},
+          {"sceneId":"workflows","startTime":28,"endTime":35,"label":"Ba quy trình","notes":"Chọn quy trình theo đầu ra mong muốn: tạo UI-Spec, rà soát yêu cầu, hoặc rà soát tài liệu."},
+          {"sceneId":"inputs","startTime":35,"endTime":42,"label":"Chọn đầu vào","notes":"Đầu vào quyết định phần lớn chất lượng đầu ra. Có thể chọn nhiều trang Confluence hoặc dùng file trên máy."},
+          {"sceneId":"run","startTime":42,"endTime":49,"label":"Chạy quy trình","notes":"Một bước chỉ được tính hoàn tất khi agent chạy xong, đầu ra hợp lệ và preview mở được. Mất mạng hay hết quota không phải là hoàn tất.","hotspots":[{"id":"run-help-hotspot","label":"Mở hướng dẫn xử lý lỗi bước chạy","target":"run-help-sequence","region":{"x":71,"y":82,"w":23,"h":9}}]},
+          {"sceneId":"review","startTime":49,"endTime":56,"label":"Review kết quả","notes":"Agent đưa ra gợi ý, người dùng chịu trách nhiệm quyết định. Có thể sửa, bỏ hoặc thêm đánh dấu của chính mình trước khi xác nhận."},
+          {"sceneId":"design-system","startTime":56,"endTime":63,"label":"Quản lý Design System","notes":"Design System Figma và hai tài liệu components/rules được quản lý theo phiên bản. Sinh bản nháp không có nghĩa là đã duyệt."},
+          {"sceneId":"share","startTime":63,"endTime":70,"label":"Chia sẻ kết quả","notes":"Trước khi chia sẻ, luôn đọc cây preview để biết tệp nào tạo mới, thay đổi hoặc bị xóa. Chỉ xác nhận khi đúng phạm vi."},
+          {"sceneId":"pull","startTime":70,"endTime":77,"label":"Lấy dự án về máy","notes":"Khi local và kho chung cùng thay đổi, Open Design không tự ghi đè. Người dùng chọn giữ bản trên máy hoặc dùng bản kho chung."},
+          {"sceneId":"sync-states","startTime":77,"endTime":84,"label":"Trạng thái đồng bộ","notes":"Bốn trạng thái mô tả quan hệ giữa máy và kho chung, không phải trạng thái tốt/xấu của nội dung."},
+          {"sceneId":"working-loop","startTime":84,"endTime":91,"label":"Vòng làm việc","notes":"Vòng khuyến nghị gồm sáu bước. Điểm quan trọng nhất là review trước chia sẻ và xem diff trước khi lấy về."},
+          {"sceneId":"handoff","startTime":91,"endTime":98,"label":"Bàn giao","notes":"Bàn giao chỉ hoàn tất khi người tiếp theo có đủ tài liệu, đúng Context, đúng quyền và hiểu phần nào đã được duyệt."}
+        ],
+        "slideSequences": [
+          {"id":"setup-help-sequence","label":"Khắc phục thiết lập","slides":[{"sceneId":"setup-help","startTime":98,"endTime":105,"label":"Khắc phục thiết lập","notes":"Xử lý theo thứ tự: Docker, đăng nhập CLI, rồi quota. Không bỏ qua lớp trước để xử lý lớp sau."}]},
+          {"id":"run-help-sequence","label":"Khắc phục bước chạy","slides":[{"sceneId":"run-help","startTime":105,"endTime":112,"label":"Khắc phục bước chạy","notes":"Khi bước chạy lỗi, giữ nguyên dữ liệu, khôi phục kết nối/quota, thử lại đúng bước và chỉ xác nhận khi preview hợp lệ."}]}
+        ]
+      }
+    </script>
+
+    <div id="cover" class="scene" data-composition-id="cover" data-start="0" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div>
+      <div id="cover-layer" class="clip" data-start="0" data-duration="7" data-track-index="1">
+        <div class="slide-shell">
+          <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> OPEN DESIGN</div><div class="slide-no">Hướng dẫn sử dụng</div></div>
+          <div style="margin-top:70px" class="reveal">
+            <div class="kicker">Từ tài liệu đến kết quả đã duyệt</div>
+            <h1>Biến yêu cầu thành kết quả có thể duyệt và chia sẻ.</h1>
+            <p class="lede">Một cách làm việc thống nhất cho Designer, BA, PO và người review — từ tài liệu đầu vào đến kho chung.</p>
+          </div>
+          <div class="content" style="display:flex; align-items:center">
+            <div class="path reveal" style="width:100%">
+              <div class="path-node"><span class="mini-icon">01</span><span>Tài liệu<small>Confluence hoặc file</small></span></div><div class="flowline draw"></div>
+              <div class="path-node"><span class="mini-icon">02</span><span>Quy trình<small>Agent thực hiện</small></span></div><div class="flowline draw"></div>
+              <div class="path-node"><span class="mini-icon">03</span><span>Preview<small>Kiểm tra đầu ra</small></span></div><div class="flowline draw"></div>
+              <div class="path-node"><span class="mini-icon">04</span><span>Duyệt<small>Con người quyết định</small></span></div><div class="flowline draw"></div>
+              <div class="path-node"><span class="mini-icon">05</span><span>Chia sẻ<small>Đưa lên kho chung</small></span></div>
+            </div>
+          </div>
+          <div class="footnote">Open Design · Tài liệu hướng dẫn nhanh</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="mental-model" class="scene" data-composition-id="mental-model" data-start="7" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="mental-model-layer" class="clip" data-start="7" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> MÔ HÌNH LÀM VIỆC</div><div class="slide-no">02 / 14</div></div>
+        <div class="reveal"><div class="kicker">Nhớ ba tầng</div><h2>Dự án → Tính năng → Quy trình giúp công việc không bị trộn lẫn.</h2></div>
+        <div class="content two-col">
+          <div class="card tree reveal">
+            <div class="tree-row"><span class="mini-icon">A</span><div><strong>Dự án Kế toán</strong><div class="tree-meta">Tài liệu và Design System dùng chung</div></div><span class="pill">Dự án</span></div>
+            <div class="tree-row child"><span class="mini-icon">F</span><div><strong>Thanh toán hóa đơn</strong><div class="tree-meta">Đầu vào và lịch sử chạy riêng</div></div><span class="pill success">Tính năng</span></div>
+            <div class="tree-row child"><span class="mini-icon">F</span><div><strong>Báo cáo dòng tiền</strong><div class="tree-meta">Đầu vào và lịch sử chạy riêng</div></div><span class="pill success">Tính năng</span></div>
+            <div class="tree-row child" style="margin-left:116px"><span class="mini-icon">P</span><div><strong>URD/PRD → UI-Spec</strong><div class="tree-meta">Chuỗi bước tạo kết quả</div></div><span class="pill warning">Quy trình</span></div>
+          </div>
+          <div class="reveal" style="display:flex; flex-direction:column; gap:18px">
+            <div class="card flat"><span class="number">01</span><div class="card-title">Dự án giữ phần dùng chung</div><div class="card-copy">Context, Design System và các Tính năng thuộc cùng một sản phẩm.</div></div>
+            <div class="card flat"><span class="number">02</span><div class="card-title">Tính năng là đơn vị làm việc</div><div class="card-copy">Mỗi Tính năng chạy độc lập và có kết quả riêng.</div></div>
+            <div class="card flat"><span class="number">03</span><div class="card-title">Quy trình tạo một loại đầu ra</div><div class="card-copy">Chọn đúng quy trình theo mục tiêu cần đạt.</div></div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <div id="setup" class="scene" data-composition-id="setup" data-start="14" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="setup-layer" class="clip" data-start="14" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> TRƯỚC LẦN CHẠY ĐẦU</div><div class="slide-no">03 / 14</div></div>
+        <div class="reveal"><div class="kicker">Thiết lập một lần</div><h2>Chỉ cần hoàn tất ba bước để sẵn sàng chạy trợ lý AI.</h2></div>
+        <div class="content three-col">
+          <div class="card reveal"><div class="icon-box">01</div><div class="card-title">Docker đang chạy</div><div class="card-copy">Open Design dùng Docker để chạy trợ lý trong môi trường an toàn.</div><div style="margin-top:24px"><span class="pill success">Đã sẵn sàng</span></div></div>
+          <div class="card reveal"><div class="icon-box">02</div><div class="card-title">Đăng nhập Google</div><div class="card-copy">Dùng để nhận diện tài khoản và kết nối kho dự án chung.</div><div style="margin-top:24px"><span class="pill success">Đã kết nối</span></div></div>
+          <div class="card reveal"><div class="icon-box">03</div><div class="card-title">Claude hoặc Codex</div><div class="card-copy">Đăng nhập ít nhất một CLI trong Cài đặt → Tài khoản CLI.</div><div style="margin-top:24px"><span class="pill">Chọn một</span></div></div>
+        </div>
+        <div class="hotspot-link"><span>?</span> Nếu thiết lập chưa sẵn sàng</div>
+      </div></div>
+    </div>
+
+    <div id="project-feature" class="scene" data-composition-id="project-feature" data-start="21" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="project-feature-layer" class="clip" data-start="21" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> DỰ ÁN & TÍNH NĂNG</div><div class="slide-no">04 / 14</div></div>
+        <div class="reveal"><div class="kicker">Phạm vi rõ ràng</div><h2>Một Dự án gom nhiều Tính năng, nhưng mỗi Tính năng chạy độc lập.</h2></div>
+        <div class="content two-col">
+          <div class="card reveal" style="display:flex; flex-direction:column">
+            <div style="display:flex; justify-content:space-between; align-items:center"><div><div class="card-title">Dự án Kế toán</div><div class="card-copy">2 Tính năng · Context v10</div></div><span class="pill">Không thay đổi</span></div>
+            <div style="margin-top:28px; display:grid; grid-template-columns:1fr 1fr; gap:18px">
+              <div class="card flat" style="background:var(--soft)"><div class="card-title">Thanh toán</div><div class="card-copy">URD/PRD → UI-Spec</div><div style="margin-top:18px"><span class="pill warning">Có thay đổi</span></div></div>
+              <div class="card flat" style="background:var(--soft)"><div class="card-title">Báo cáo</div><div class="card-copy">URD/PRD → Rà soát</div><div style="margin-top:18px"><span class="pill success">Không thay đổi</span></div></div>
+            </div>
+          </div>
+          <div class="reveal" style="display:grid; gap:18px">
+            <div class="card flat"><div class="card-title">Chạy riêng</div><div class="card-copy">Chạy lại một Tính năng không làm thay đổi lịch sử của Tính năng khác.</div></div>
+            <div class="card flat"><div class="card-title">Chia sẻ riêng</div><div class="card-copy">Có thể chia sẻ một Tính năng hoặc toàn bộ Dự án sau khi xem preview.</div></div>
+            <div class="card flat"><div class="card-title">Context được khóa</div><div class="card-copy">Tính năng dùng đúng phiên bản tài liệu và Design System đã chọn.</div></div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <div id="workflows" class="scene" data-composition-id="workflows" data-start="28" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="workflows-layer" class="clip" data-start="28" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> DANH SÁCH QUY TRÌNH</div><div class="slide-no">05 / 14</div></div>
+        <div class="reveal"><div class="kicker">Chọn theo đầu ra</div><h2>Ba quy trình giải quyết ba loại kết quả khác nhau.</h2></div>
+        <div class="content three-col">
+          <div class="card workflow-card reveal"><div class="icon-box">UI</div><div class="card-title">URD/PRD → UI-Spec</div><div class="card-copy">Tạo hành trình, UX Spec, đánh giá UX và bản giao diện HTML/React.</div><div class="route">Tài liệu → Cấu trúc → Giao diện</div></div>
+          <div class="card workflow-card reveal"><div class="icon-box">PRD</div><div class="card-title">URD/PRD → Rà soát yêu cầu</div><div class="card-copy">Phát hiện điểm thiếu, mâu thuẫn và rủi ro trong yêu cầu sản phẩm.</div><div class="route">Tài liệu → Phân tích → Nhận xét</div></div>
+          <div class="card workflow-card reveal"><div class="icon-box">DOC</div><div class="card-title">URD/PRD → Rà soát tài liệu</div><div class="card-copy">Đối chiếu màn hình, luồng và Design System rồi ghi nhận thay đổi.</div><div class="route">Tài liệu → Đối chiếu → Xác nhận</div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div id="inputs" class="scene" data-composition-id="inputs" data-start="35" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="inputs-layer" class="clip" data-start="35" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> TÀI LIỆU ĐẦU VÀO</div><div class="slide-no">06 / 14</div></div>
+        <div class="reveal"><div class="kicker">Chọn đúng trước khi chạy</div><h2>Đầu vào đúng quyết định chất lượng của toàn bộ kết quả phía sau.</h2></div>
+        <div class="content two-col">
+          <div class="card input-panel reveal"><div class="card-title">Tài liệu Confluence</div><div class="searchbar">⌕ <span>Tìm theo tên, đường dẫn hoặc nội dung…</span></div>
+            <div class="result-row"><span class="check on"></span><div><div class="card-title" style="font-size:24px">URD Website Kế toán</div><div class="tree-meta">VNPPMKT · Tài liệu yêu cầu · 997761985</div></div><span class="circle-button">›</span></div>
+            <div class="result-row"><span class="check"></span><div><div class="card-title" style="font-size:24px">Báo cáo tổng hợp NCC</div><div class="tree-meta">SDKVT · Báo cáo · 992676250</div></div><span class="circle-button">›</span></div>
+            <div class="result-row"><span class="check on"></span><div><div class="card-title" style="font-size:24px">Biên bản làm rõ nghiệp vụ</div><div class="tree-meta">VNPPMKT · Meeting Notes · 979044757</div></div><span class="circle-button">›</span></div>
+          </div>
+          <div class="reveal" style="display:flex; flex-direction:column; gap:18px">
+            <div class="card flat"><div class="icon-box">01</div><div class="card-title">Có thể chọn nhiều trang</div><div class="card-copy">Gom đủ yêu cầu chính, phụ lục và biên bản liên quan.</div></div>
+            <div class="card flat"><div class="icon-box">02</div><div class="card-title">Hoặc dùng file trên máy</div><div class="card-copy">PDF, DOCX, Markdown và tài liệu đính kèm được đưa vào cùng phạm vi.</div></div>
+            <div class="card flat" style="background:var(--warning-soft); border-color:#e8c57f"><div class="card-title">Nguyên tắc</div><div class="card-copy">Thiếu đầu vào không thể được bù hoàn toàn bằng prompt hay model mạnh hơn.</div></div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <div id="run" class="scene" data-composition-id="run" data-start="42" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="run-layer" class="clip" data-start="42" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> CHẠY QUY TRÌNH</div><div class="slide-no">07 / 14</div></div>
+        <div class="reveal"><div class="kicker">Done có điều kiện</div><h2>Một bước chỉ hoàn tất khi đã có bản xem trước hợp lệ.</h2></div>
+        <div class="content two-col">
+          <div class="step-list reveal">
+            <div class="step done"><span class="step-state">✓</span><div><div class="card-title">Agent đã chạy xong</div><div class="tree-meta">Không còn tiến trình đang chờ</div></div><span class="pill success">Hoàn tất</span></div>
+            <div class="step done"><span class="step-state">✓</span><div><div class="card-title">Đầu ra đã qua kiểm tra</div><div class="tree-meta">Đúng cấu trúc và không thiếu tệp bắt buộc</div></div><span class="pill success">Hợp lệ</span></div>
+            <div class="step running"><span class="step-state">3</span><div><div class="card-title">Preview mở được</div><div class="tree-meta">Người dùng có thể xem và kiểm tra kết quả</div></div><span class="pill">Đang kiểm tra</span></div>
+          </div>
+          <div class="card reveal" style="display:flex; flex-direction:column; justify-content:center; background:var(--danger-soft); border-color:#e2aaa5">
+            <span class="pill danger" style="align-self:flex-start">Không được tính là hoàn tất</span>
+            <div class="card-title" style="font-size:38px; margin-top:24px">Mất mạng, hết quota hoặc preview lỗi.</div>
+            <div class="card-copy" style="font-size:26px">Khôi phục điều kiện chạy, thử lại đúng bước và kiểm tra preview trước khi tiếp tục.</div>
+          </div>
+        </div>
+        <div class="hotspot-link"><span>?</span> Cách xử lý khi bước chạy lỗi</div>
+      </div></div>
+    </div>
+
+    <div id="review" class="scene" data-composition-id="review" data-start="49" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="review-layer" class="clip" data-start="49" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> REVIEW KẾT QUẢ</div><div class="slide-no">08 / 14</div></div>
+        <div class="reveal"><div class="kicker">Human in the loop</div><h2>Kết quả của trợ lý AI luôn cần con người xem và xác nhận.</h2></div>
+        <div class="content two-col">
+          <div class="card review-pane agent reveal"><span class="pill">Gợi ý của Agent</span><div class="card-title" style="margin-top:22px">Điều kiện phê duyệt chưa rõ</div><span class="highlight">Cần bổ sung vai trò có quyền duyệt và thời gian phản hồi tối đa.</span><span class="highlight">Luồng lỗi chưa mô tả hành vi khi phiên đăng nhập hết hạn.</span><div class="card-copy">Agent đánh dấu điểm cần chú ý, không quyết định thay người review.</div></div>
+          <div class="card review-pane human reveal"><span class="pill success">Quyết định của bạn</span><div class="card-title" style="margin-top:22px">Sửa, bỏ hoặc thêm nhận xét</div><div class="card-copy">Bạn có thể chỉnh nội dung gợi ý của Agent hoặc tự đánh dấu phần cần sửa.</div><div class="review-actions"><button class="button primary">Chấp nhận</button><button class="button">Chỉnh sửa</button><button class="button">Bỏ gợi ý</button></div><div class="card flat" style="margin-top:30px; background:var(--success-soft); border-color:#add5bd"><div class="card-title">Xác nhận hoàn tất</div><div class="card-copy">Chỉ bật sau khi mọi bước bắt buộc đã có kết quả hợp lệ.</div></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div id="design-system" class="scene" data-composition-id="design-system" data-start="56" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="design-system-layer" class="clip" data-start="56" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> DESIGN SYSTEM FIGMA</div><div class="slide-no">09 / 14</div></div>
+        <div class="reveal"><div class="kicker">Phiên bản có kiểm soát</div><h2>Cập nhật Design System không âm thầm đổi Tính năng đang dùng.</h2></div>
+        <div class="content">
+          <div class="version-rail reveal">
+            <div class="version"><span class="version-dot"></span><div class="card-title">Figma v9</div><div class="card-copy">Bản lịch sử</div></div>
+            <div class="version active"><span class="version-dot"></span><div class="card-title">Figma v10</div><div class="card-copy">Bản đang dùng</div></div>
+            <div class="version stale"><span class="version-dot"></span><div class="card-title">components.md</div><div class="card-copy">Cần cập nhật</div></div>
+            <div class="version stale"><span class="version-dot"></span><div class="card-title">rules.md</div><div class="card-copy">Bản nháp chờ duyệt</div></div>
+          </div>
+          <div class="three-col reveal" style="margin-top:62px">
+            <div class="card flat"><div class="card-title">1. Cập nhật ZIP</div><div class="card-copy">Tạo candidate mới, chưa thay bản đang hoạt động.</div></div>
+            <div class="card flat"><div class="card-title">2. Sinh và duyệt tài liệu</div><div class="card-copy">Xem bản nháp từng file trước khi chọn dùng.</div></div>
+            <div class="card flat"><div class="card-title">3. Duyệt DS cuối cùng</div><div class="card-copy">Lúc này App mới có Context version mới; Feature cũ vẫn giữ binding.</div></div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <div id="share" class="scene" data-composition-id="share" data-start="63" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="share-layer" class="clip" data-start="63" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> CHIA SẺ KẾT QUẢ</div><div class="slide-no">10 / 14</div></div>
+        <div class="reveal"><div class="kicker">Xem trước rồi mới đẩy</div><h2>Chia sẻ luôn bắt đầu bằng việc đọc cây thay đổi.</h2></div>
+        <div class="content two-col">
+          <div class="card tree reveal">
+            <div class="tree-row"><span class="mini-icon">⌄</span><div><strong>Dự án Kế toán</strong><div class="tree-meta">Toàn bộ dự án</div></div><span class="pill warning">Có thay đổi</span></div>
+            <div class="tree-row child"><span class="mini-icon">C</span><div><strong>Tài liệu dùng chung · v10</strong><div class="tree-meta">Context và Design System</div></div><span class="pill success">+2 mới</span></div>
+            <div class="tree-row child"><span class="mini-icon">F</span><div><strong>Thanh toán</strong><div class="tree-meta">7 bước quy trình</div></div><span class="pill warning">3 sửa</span></div>
+            <div class="tree-row child"><span class="mini-icon">F</span><div><strong>Báo cáo cũ</strong><div class="tree-meta">Không còn trên máy</div></div><span class="pill danger">Đã xóa</span></div>
+          </div>
+          <div class="card reveal"><div style="display:flex; align-items:center; justify-content:space-between"><div class="card-title">Tóm tắt thay đổi</div><span class="pill">Kho chung</span></div>
+            <div style="margin-top:26px"><div class="file-change"><span class="pill success">Tạo mới</span><span class="file-path mono">context/versions/v10/manifest.json</span></div><div class="file-change"><span class="pill warning">Thay đổi</span><span class="file-path mono">docs-to-ui/ux-spec.md</span></div><div class="file-change"><span class="pill danger">Đã xóa</span><span class="file-path mono">docs-review/legacy-summary.md</span></div></div>
+            <div class="card flat" style="margin-top:25px; background:var(--soft)"><div class="card-title">Quy tắc an toàn</div><div class="card-copy">Không xác nhận nếu phạm vi, đích chia sẻ hoặc file bị xóa chưa đúng.</div></div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <div id="pull" class="scene" data-composition-id="pull" data-start="70" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="pull-layer" class="clip" data-start="70" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> LẤY DỰ ÁN VỀ MÁY</div><div class="slide-no">11 / 14</div></div>
+        <div class="reveal"><div class="kicker">Không tự ghi đè</div><h2>Khi hai phía xung đột, bạn là người chọn bản cần giữ.</h2></div>
+        <div class="content compare">
+          <div class="card reveal"><span class="pill">Bản trên máy</span><div class="card-title" style="font-size:40px; margin-top:22px">ux-spec.md</div><div class="card-copy">Bạn đã chỉnh sau lần lấy gần nhất.</div><div class="card flat" style="margin-top:25px; background:var(--soft)"><div class="card-title">Giữ trên máy</div><div class="card-copy">Không thay file local trong lần cập nhật này.</div></div></div>
+          <div class="compare-arrow reveal">↔</div>
+          <div class="card reveal"><span class="pill warning">Bản kho chung</span><div class="card-title" style="font-size:40px; margin-top:22px">ux-spec.md</div><div class="card-copy">Đồng nghiệp đã chia sẻ phiên bản mới.</div><div class="card flat" style="margin-top:25px; background:var(--accent-soft)"><div class="card-title">Dùng bản kho chung</div><div class="card-copy">Open Design lưu snapshot local trước khi cập nhật.</div></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div id="sync-states" class="scene" data-composition-id="sync-states" data-start="77" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="sync-states-layer" class="clip" data-start="77" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> TRẠNG THÁI ĐỒNG BỘ</div><div class="slide-no">12 / 14</div></div>
+        <div class="reveal"><div class="kicker">Máy ↔ Kho chung</div><h2>Bốn trạng thái cho biết chính xác hai phía đang khác nhau thế nào.</h2></div>
+        <div class="content four-col">
+          <div class="card state-card state-new reveal"><span class="pill success">01</span><div class="big-state">Tạo mới</div><div class="card-copy">Chỉ có trên máy hoặc đích cũ không còn tồn tại.</div></div>
+          <div class="card state-card state-same reveal"><span class="pill">02</span><div class="big-state">Không thay đổi</div><div class="card-copy">Nội dung local và kho chung đang giống nhau.</div></div>
+          <div class="card state-card state-change reveal"><span class="pill warning">03</span><div class="big-state">Có thay đổi</div><div class="card-copy">Có file được thêm, sửa hoặc khác nội dung.</div></div>
+          <div class="card state-card state-delete reveal"><span class="pill danger">04</span><div class="big-state">Đã xóa</div><div class="card-copy">Có ở nguồn so sánh nhưng không còn ở phía hiện tại.</div></div>
+        </div>
+        <div class="card flat reveal" style="margin-top:28px; background:var(--soft); text-align:center"><div class="card-copy" style="margin:0; font-size:25px"><strong style="color:var(--ink)">Lưu ý:</strong> trạng thái đồng bộ không thay cho bước review chất lượng nội dung.</div></div>
+      </div></div>
+    </div>
+
+    <div id="working-loop" class="scene" data-composition-id="working-loop" data-start="84" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="working-loop-layer" class="clip" data-start="84" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> CÁCH LÀM VIỆC KHUYẾN NGHỊ</div><div class="slide-no">13 / 14</div></div>
+        <div class="reveal"><div class="kicker">Vòng khép kín</div><h2>Một vòng làm việc tốt luôn kết thúc bằng review trước khi chia sẻ.</h2></div>
+        <div class="content reveal">
+          <div class="loop">
+            <div class="loop-item"><div class="loop-circle">1</div><div class="loop-label">Chọn đúng<br />Tính năng</div></div>
+            <div class="loop-item"><div class="loop-circle">2</div><div class="loop-label">Kiểm tra<br />đầu vào</div></div>
+            <div class="loop-item"><div class="loop-circle">3</div><div class="loop-label">Chạy từng bước<br />hoặc Chạy full</div></div>
+            <div class="loop-item"><div class="loop-circle">4</div><div class="loop-label">Mở preview<br />và review</div></div>
+            <div class="loop-item"><div class="loop-circle">5</div><div class="loop-label">Xác nhận<br />hoàn tất</div></div>
+            <div class="loop-item"><div class="loop-circle">6</div><div class="loop-label">Xem diff<br />và chia sẻ</div></div>
+          </div>
+          <div class="card reveal" style="margin-top:65px; display:flex; align-items:center; justify-content:space-between; background:var(--accent); color:#fff; border-color:var(--accent)"><div><div class="card-title" style="font-size:34px">Review là cổng chất lượng, không phải việc làm sau cùng cho có.</div><div class="card-copy" style="color:#dcecf8">Nếu preview chưa rõ hoặc kết quả chưa đúng, quay lại đúng bước thay vì tiếp tục chia sẻ.</div></div><span style="font-family:Georgia;font-size:72px">↺</span></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div id="handoff" class="scene" data-composition-id="handoff" data-start="91" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="handoff-layer" class="clip" data-start="91" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> CHECKLIST BÀN GIAO</div><div class="slide-no">14 / 14</div></div>
+        <div class="reveal"><div class="kicker">Kết thúc đúng cách</div><h2>Bàn giao tốt nghĩa là người tiếp theo có đủ dữ liệu để làm tiếp.</h2></div>
+        <div class="content checklist reveal">
+          <div class="checkline"><span class="checkmark">✓</span><span>Tài liệu đầu vào đúng và đủ phạm vi</span></div>
+          <div class="checkline"><span class="checkmark">✓</span><span>Mọi bước bắt buộc có preview hợp lệ</span></div>
+          <div class="checkline"><span class="checkmark">✓</span><span>Kết quả đã được con người review</span></div>
+          <div class="checkline"><span class="checkmark">✓</span><span>Context và Design System đúng phiên bản</span></div>
+          <div class="checkline"><span class="checkmark">✓</span><span>Cây thay đổi đã được đọc trước khi chia sẻ</span></div>
+          <div class="checkline"><span class="checkmark">✓</span><span>Người nhận có quyền truy cập kho chung</span></div>
+        </div>
+        <div class="footnote">Chi tiết đầy đủ: docs/guides/open-design-user-guide-vi.md</div>
+      </div></div>
+    </div>
+
+    <div id="setup-help" class="scene" data-composition-id="setup-help" data-start="98" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="setup-help-layer" class="clip" data-start="98" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> KHẮC PHỤC THIẾT LẬP</div><div class="slide-no">Nhánh hỗ trợ</div></div>
+        <div class="reveal"><div class="branch-label">◆ Xử lý theo thứ tự</div><h2>Docker → Đăng nhập CLI → Quota.</h2><p class="lede">Không bỏ qua lớp trước để xử lý lớp sau.</p></div>
+        <div class="content two-col">
+          <div class="reveal">
+            <div class="decision"><strong>1. Docker</strong><div class="arrow-down">→</div><p>Mở Docker Desktop, chờ trạng thái running; nếu thiếu image, chạy lại Thiết lập thực thi.</p></div>
+            <div class="decision"><strong>2. CLI AI</strong><div class="arrow-down">→</div><p>Vào Cài đặt → Tài khoản CLI và đăng nhập Claude hoặc Codex.</p></div>
+            <div class="decision"><strong>3. Quota</strong><div class="arrow-down">→</div><p>Kiểm tra mức dùng, đổi runtime hoặc chờ thời điểm reset.</p></div>
+          </div>
+          <div class="card reveal" style="background:var(--warning-soft); border-color:#ebc778; display:flex; flex-direction:column; justify-content:center"><div class="card-title" style="font-size:40px">Dấu hiệu đã sẵn sàng</div><div class="card-copy" style="font-size:26px">Docker OK · Image có sẵn · CLI báo signed in · Prompt thử nghiệm trả kết quả.</div><div style="margin-top:28px"><span class="pill success">Có thể quay lại chạy quy trình</span></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div id="run-help" class="scene" data-composition-id="run-help" data-start="105" data-duration="7" data-width="1920" data-height="1080">
+      <div class="scene-bg"></div><div id="run-help-layer" class="clip" data-start="105" data-duration="7" data-track-index="1"><div class="slide-shell">
+        <div class="topline reveal"><div class="brand"><span class="brand-mark">OD</span> KHẮC PHỤC BƯỚC CHẠY</div><div class="slide-no">Nhánh hỗ trợ</div></div>
+        <div class="reveal"><div class="branch-label">◆ Không đánh dấu hoàn tất sớm</div><h2>Mất mạng hoặc hết quota không bao giờ được tính là hoàn tất.</h2></div>
+        <div class="content two-col">
+          <div class="card reveal"><div class="card-title">Dừng và xác định nguyên nhân</div><div class="step-list" style="margin-top:25px"><div class="step error"><span class="step-state">!</span><div><strong>Mất kết nối</strong><div class="tree-meta">Kiểm tra mạng và daemon</div></div></div><div class="step error"><span class="step-state">!</span><div><strong>Hết quota</strong><div class="tree-meta">Đổi runtime hoặc chờ reset</div></div></div><div class="step error"><span class="step-state">!</span><div><strong>Preview lỗi</strong><div class="tree-meta">Đọc lỗi validate trước khi chạy lại</div></div></div></div></div>
+          <div class="card reveal"><div class="card-title">Khôi phục theo đúng thứ tự</div><div style="margin-top:26px; display:grid; gap:18px"><div class="checkline"><span class="checkmark">1</span><span>Giữ nguyên đầu vào và thay đổi local</span></div><div class="checkline"><span class="checkmark">2</span><span>Khôi phục mạng, quota hoặc runtime</span></div><div class="checkline"><span class="checkmark">3</span><span>Thử lại đúng bước bị lỗi</span></div><div class="checkline"><span class="checkmark">4</span><span>Mở preview và kiểm tra trước khi tiếp tục</span></div></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const scenes = [
+        ["cover",0],["mental-model",7],["setup",14],["project-feature",21],
+        ["workflows",28],["inputs",35],["run",42],["review",49],
+        ["design-system",56],["share",63],["pull",70],["sync-states",77],
+        ["working-loop",84],["handoff",91],["setup-help",98],["run-help",105]
+      ];
+      scenes.forEach(([id, start]) => {
+        const root = document.getElementById(id);
+        const tl = gsap.timeline({ paused: true });
+        const reveals = root.querySelectorAll(".reveal");
+        const draws = root.querySelectorAll(".draw");
+        if (reveals.length) tl.from(reveals, { opacity: 0, y: 28, duration: .68, stagger: .11, ease: "power2.out" }, start + .18);
+        if (draws.length) tl.from(draws, { scaleX: 0, duration: .55, stagger: .08, ease: "power1.out" }, start + .7);
+        window.__timelines[id] = tl;
+      });
+
+      // Bridge dùng chung cho cả file HTML mở trực tiếp và HyperFrames
+      // Presenter. Presenter seek theo thời gian toàn deck; bridge chọn đúng
+      // scene, khóa interaction của scene ẩn và seek timeline tương ứng.
+      let deckTime = 0;
+      function seekDeck(timeSeconds) {
+        const time = Math.max(0, Math.min(111.999, Number(timeSeconds) || 0));
+        deckTime = time;
+        scenes.forEach(([id, start]) => {
+          const root = document.getElementById(id);
+          const active = time >= start && time < start + 7;
+          root.style.opacity = active ? "1" : "0";
+          root.style.visibility = active ? "visible" : "hidden";
+          root.style.pointerEvents = active ? "auto" : "none";
+          if (active) window.__timelines[id].seek(time, false).pause();
+        });
+      }
+
+      window.__player = {
+        getDuration: () => 112,
+        getTime: () => deckTime,
+        isPlaying: () => false,
+        seek: seekDeck,
+        play: () => {},
+        pause: () => {}
+      };
+
+      // Báo danh sách scene cho HyperFrames Player ngay khi iframe sẵn sàng,
+      // tránh Presenter phải chờ timeout dò scene trước khi hiện nút Next.
+      if (window.parent !== window) {
+        window.parent.postMessage({
+          source: "hf-preview",
+          type: "timeline",
+          protocolVersion: 1,
+          capabilities: ["seconds-time", "rational-fps", "seek-keep-playing", "composition-manifest-v1"],
+          fps: { numerator: 30, denominator: 1 },
+          durationInFrames: 3360,
+          durationSeconds: 112,
+          compositionWidth: 1920,
+          compositionHeight: 1080,
+          scenes: scenes.map(([id, start]) => ({ id, start, duration: 7 }))
+        }, "*");
+      }
+
+      // Khi mở index.html trực tiếp, hiển thị ngay hold-frame của slide đầu.
+      // Khi chạy Presenter, controller sẽ gọi seekDeck với slide đang chọn.
+      seekDeck(3.5);
+    </script>
+  </body>
+</html>

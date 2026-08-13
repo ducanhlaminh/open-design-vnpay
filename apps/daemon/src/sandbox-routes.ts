@@ -20,6 +20,8 @@ import type {
   SandboxRuntimeLoginMethod,
   SandboxRuntimeStatus,
   SandboxStatusResponse,
+  SandboxHostClaudeStatus,
+  SandboxMode,
   SandboxAccountsResponse,
   SandboxAccountsCheckResponse,
   SandboxBuildResponse,
@@ -28,6 +30,8 @@ import type {
 import type { RouteDeps } from './server-context.js';
 import { readAppConfig, type AppConfigPrefs } from './app-config.js';
 import { invalidateClaudeUsageCache, probeClaudeCredentials } from './claude-usage.js';
+import { getAgentDef, resolveAgentLaunch } from './agents.js';
+import { probeClaudeAuthStatus } from './runtimes/auth.js';
 import {
   dockerAvailable,
   dockerImagePresent,
@@ -84,6 +88,35 @@ export function resolveSandboxFallbackRuntimeId(
   if (sandboxRuntimeIsGated(cfg, 'claude')) return 'claude';
   if (sandboxRuntimeIsGated(cfg, 'codex')) return 'codex';
   return null;
+}
+
+/** `resolveSandboxConfig().enabled` spelled as the mode web/CLI branch on
+ *  (web-first migration, WP4: host is the default; the sandbox is opt-in). */
+export function sandboxModeFromCfg(cfg: { enabled: boolean }): SandboxMode {
+  return cfg.enabled ? 'sandbox' : 'host';
+}
+
+export const SANDBOX_MODE_HOST_MESSAGE =
+  'Daemon đang ở chế độ Host CLI — thao tác này chỉ áp dụng khi Docker sandbox được bật. ' +
+  'Bật lại trong Cài đặt → Chế độ thực thi, hoặc chạy `od sandbox enable` (hay đặt OD_SANDBOX=1) rồi thử lại.';
+
+/**
+ * Host Claude CLI snapshot for `GET /api/sandbox/status` / `od sandbox
+ * status` / `od doctor`. Deliberately cheap: PATH resolution (no spawn) for
+ * `available`, and the same file/Keychain probe `/api/agents` uses for auth —
+ * no Docker touched, so this is safe to compute in EVERY mode (unlike the
+ * docker* fields below, which stay whatever the sandbox preflight last saw).
+ */
+export async function resolveHostClaudeStatus(): Promise<SandboxHostClaudeStatus> {
+  const def = getAgentDef('claude');
+  const launch = def ? resolveAgentLaunch(def, {}) : null;
+  const available = Boolean(launch?.selectedPath && launch?.launchPath);
+  const auth = await probeClaudeAuthStatus(process.env);
+  return {
+    available,
+    authStatus: auth.status,
+    ...(auth.message ? { authMessage: auth.message } : {}),
+  };
 }
 
 async function dockerText(args: string[], timeoutMs = 10_000): Promise<string> {
@@ -369,9 +402,11 @@ async function resolveSandboxStatusBody(
   const authLoggedIn = probeAuth && imageOk && authVolumeOk ? await sandboxAuthLoggedIn(image) : null;
   const runtimeStatuses = await buildSandboxRuntimeStatuses(image, probeAuth, dockerOk);
   const activeContainers = dockerOk ? await listSandboxContainers() : [];
+  const hostClaude = await resolveHostClaudeStatus();
 
   return {
     enabled: cfg.enabled,
+    mode: sandboxModeFromCfg(cfg),
     runtimes: cfg.runtimes,
     skills: cfg.skills,
     timeoutMinutes: cfg.timeoutMinutes,
@@ -384,6 +419,7 @@ async function resolveSandboxStatusBody(
     runtimeStatuses,
     activeContainers,
     builderDir,
+    hostClaude,
   };
 }
 
@@ -393,6 +429,22 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   const { sendApiError } = ctx.http;
   const { RUNTIME_DATA_DIR, SKILLS_DIR } = ctx.paths;
   const builderDir = path.join(SKILLS_DIR, 'ui-react', 'builder');
+
+  // Docker-only ACTION routes (build / accounts / embedded-login / Codex
+  // device login) must not even attempt a docker call while the daemon is in
+  // host mode — a clean 409 beats either a confusing "Docker chưa chạy" 503
+  // (from a build that only ran that check because nobody gated it) or,
+  // worse, a 500. Setup routes that HELP a host-mode user switch INTO sandbox
+  // mode (`/api/sandbox/docker/setup`, `/api/sandbox/windows/firmware*`) are
+  // deliberately NOT gated here — blocking those would make opting into the
+  // sandbox from host mode impossible.
+  const requireSandboxEnabled = async (res: Response): Promise<boolean> => {
+    const prefs = await readAppConfig(RUNTIME_DATA_DIR).catch((): AppConfigPrefs => ({}));
+    const cfg = resolveSandboxConfig(prefs.sandbox, process.env);
+    if (cfg.enabled) return true;
+    sendApiError(res, 409, 'SANDBOX_MODE_HOST', SANDBOX_MODE_HOST_MESSAGE);
+    return false;
+  };
 
   app.get('/api/sandbox/status', async (req, res) => {
     try {
@@ -467,6 +519,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
     res: Response,
     fn: (image: string) => Promise<SandboxAccountsResponse>,
   ): Promise<void> => {
+    if (!(await requireSandboxEnabled(res))) return;
     const { supported, image, ready } = await accountsContext();
     if (!supported) {
       sendApiError(res, 400, 'BAD_REQUEST', 'Chuyển account chỉ áp dụng khi sandbox sở hữu Claude (Docker-only).');
@@ -565,6 +618,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   // expired token (e.g. password changed) comes back ok:false with an error —
   // the UI flags it red and shows the error, but never deletes the account.
   app.post('/api/sandbox/accounts/check', async (req, res) => {
+    if (!(await requireSandboxEnabled(res))) return;
     const { supported, image, ready } = await accountsContext();
     if (!supported) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi Docker-only (sandbox sở hữu Claude).');
@@ -614,6 +668,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   });
 
   app.post('/api/sandbox/build', async (_req, res) => {
+    if (!(await requireSandboxEnabled(res))) return;
     if (buildState.building) {
       // Already running — just report progress (idempotent, no second build).
       res.json(buildState);
@@ -650,6 +705,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   // Add account = open a host terminal running the interactive Claude OAuth
   // login (can't embed the TUI in the web). The user finishes there, then Saves.
   app.post('/api/sandbox/accounts/login', async (_req, res) => {
+    if (!(await requireSandboxEnabled(res))) return;
     const { supported, image, ready } = await accountsContext();
     if (!supported) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi Docker-only (sandbox sở hữu Claude).');
@@ -669,6 +725,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   });
 
   app.post('/api/sandbox/embedded-login', async (_req, res) => {
+    if (!(await requireSandboxEnabled(res))) return;
     const { supported, image, ready } = await accountsContext();
     if (!supported) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi Docker-only (sandbox sở hữu Claude).');
@@ -723,8 +780,10 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
 
   const postCodexLogin = async (_req: unknown, res: Response) => {
     const { supported, image, ready } = await codexContext();
+    // `supported` here IS `cfg.enabled` (see codexContext above) — host mode
+    // gets the same 409 as the other Docker-only action routes.
     if (!supported) {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi sandbox sở hữu Codex (Docker-only).');
+      return sendApiError(res, 409, 'SANDBOX_MODE_HOST', SANDBOX_MODE_HOST_MESSAGE);
     }
     if (!ready || !image) {
       return sendApiError(res, 503, 'SANDBOX_UNAVAILABLE', 'Docker/sandbox image chưa sẵn sàng.');
@@ -743,7 +802,7 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   const logoutCodex = async (_req: unknown, res: Response) => {
     const { supported, image, ready } = await codexContext();
     if (!supported) {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'Chỉ áp dụng khi sandbox sở hữu Codex (Docker-only).');
+      return sendApiError(res, 409, 'SANDBOX_MODE_HOST', SANDBOX_MODE_HOST_MESSAGE);
     }
     if (!ready || !image) {
       return sendApiError(res, 503, 'SANDBOX_UNAVAILABLE', 'Docker/sandbox image chưa sẵn sàng.');

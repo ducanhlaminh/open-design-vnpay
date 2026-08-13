@@ -136,7 +136,7 @@ describe('pipeline apps routes', () => {
 
   it('409s on an app that only exists on the central registry', async () => {
     remoteImpl = async () => [
-      { projectId: 'REMOTEAPP', name: 'Remote App', inKgs: true, inMedia: true, files: 0, isApp: true },
+      { projectId: 'REMOTEAPP', name: 'Remote App', inMedia: true, files: 0, isApp: true },
     ];
     expect((await postApp({ appId: 'REMOTEAPP', name: 'Remote App' })).status).toBe(409);
   });
@@ -145,10 +145,10 @@ describe('pipeline apps routes', () => {
     expect((await postApp({ appId: 'XPOS', name: 'X POS' })).status).toBe(201);
     insertFeature('VNPAY-checkout', 'VNPAY', 'VNPAY App');
     remoteImpl = async () => [
-      { projectId: 'XPOS', name: 'Studio name', inKgs: true, inMedia: true, files: 0, isApp: true },
-      { projectId: 'ONLYREMOTE', name: 'Only Remote', inKgs: true, inMedia: false, files: 0, isApp: true },
+      { projectId: 'XPOS', name: 'Studio name', inMedia: true, files: 0, isApp: true },
+      { projectId: 'ONLYREMOTE', name: 'Only Remote', inMedia: false, files: 0, isApp: true },
       // Feature trên registry không phải App → không vào picker.
-      { projectId: 'REMOTEFEAT', name: 'Remote Feature', inKgs: true, inMedia: true, files: 3, isApp: false },
+      { projectId: 'REMOTEFEAT', name: 'Remote Feature', inMedia: true, files: 3, isApp: false },
     ];
 
     expect((await listApps()).body).toEqual({

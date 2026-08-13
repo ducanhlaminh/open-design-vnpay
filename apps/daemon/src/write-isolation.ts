@@ -32,13 +32,22 @@ export const WRITE_ISOLATION_BIN = '/usr/bin/sandbox-exec';
  * Gate. `on` = isolate when possible, warn-and-run unisolated otherwise;
  * `required` = refuse to run unisolated (caller's responsibility — this
  * module only reports the mode, it does not itself fail loudly).
- * Default is `off` (Phase 1); anything unrecognized also falls back to `off`
- * rather than silently behaving like `on`.
+ *
+ * Phase 2 default: `on` on darwin (Seatbelt/`sandbox-exec` is macOS-only, and
+ * this is the platform every run actually gets isolated on today), `off`
+ * everywhere else — Linux/Windows have no enforcement mechanism yet (Phase 3
+ * per docs/run-write-isolation-spec.md), so defaulting them to `on` would
+ * just be a no-op mode name with no isolation behind it. `OD_WRITE_ISOLATION`
+ * always wins over the platform default in either direction (explicit `off`
+ * on darwin, or explicit `on`/`required` off-darwin for testing the fail path).
  */
-export function writeIsolationMode(env: NodeJS.ProcessEnv = process.env): 'on' | 'off' | 'required' {
+export function writeIsolationMode(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): 'on' | 'off' | 'required' {
   const raw = (env.OD_WRITE_ISOLATION ?? '').trim().toLowerCase();
-  if (raw === 'on' || raw === 'required') return raw;
-  return 'off';
+  if (raw === 'on' || raw === 'off' || raw === 'required') return raw;
+  return platform === 'darwin' ? 'on' : 'off';
 }
 
 export interface BuildWriteIsolationProfileInput {

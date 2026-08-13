@@ -1,22 +1,22 @@
-# UX Spec — JSON schema & KGS mapping
+# UX Spec — JSON schema
 
-The agent writes a JSON document of this shape; `scripts/push_to_kgs.py` (or the
-open-design-vnpay "Push to KG" button) turns it into KGS nodes in the
-**open-design** app. Every node is tagged with `project_id`. Renders on
-SimStudio's `/ux-spec` after Pull All.
+The agent writes a JSON document of this shape as a normal pipeline stage
+output; the daemon syncs it to the shared media-service store like every
+other docs-to-ui deliverable. Field names (`S_SCREEN_SPEC`-shaped screens,
+`DP_UI_COMPONENT`-shaped components, `UX_PERSONA_PROFILE`-shaped personas) are
+kept stable for compatibility with existing consumers of this schema.
 
 ## Top-level
 ```jsonc
 {
-  // NO project_id — content only. The target project is filled at PUSH time
-  // (conversation binding / Push to KG dropdown / --project-id) and applied to
-  // every node. Do not invent a project_id here.
+  // NO project_id — content only. The file already lives inside this
+  // project's own working directory; do not invent a project_id here.
   "screens":   [ Screen,  ... ],   // UX Spec screens (required to be useful)
   "personas":  [ Persona, ... ]    // optional — shared UX context / actor filter
 }
 ```
 
-## Screen  → KGS `S_SCREEN_SPEC`  → SimStudio `screens` table
+## Screen  → `S_SCREEN_SPEC` shape
 ```jsonc
 {
   "id":            "SCR-REFUND-LIST",
@@ -38,15 +38,15 @@ SimStudio's `/ux-spec` after Pull All.
   "components": [ Component, ... ]             // drive the box-text mockup
 }
 ```
-Mapped props read by node_mapper: `id, title(=name), screen_type, layout,
+Fields read downstream: `id, title(=name), screen_type, layout,
 primary_actor(=actor_id), permissions[], navigation_group, overlay_kind,
-overlay_of, project_id`.
+overlay_of`.
 
 The wireframe of an overlay screen must MIRROR these: set `overlay` +
 `data-overlay-of` in its `.html` (see `references/wireframe.md`) so the preview
 frames it as that layer over the dimmed base screen.
 
-## Component  → KGS `DP_UI_COMPONENT`  → SimStudio `ui_components` table
+## Component  → `DP_UI_COMPONENT` shape
 ```jsonc
 {
   "id":             "SCR-REFUND-LIST-search",  // optional — auto-generated as <screen>-c<N>
@@ -66,20 +66,19 @@ frames it as that layer over the dimmed base screen.
                                                //   edge — back/cancel/close actions)
 }
 ```
-- `component_type` is the **KGS / SimStudio** vocabulary (it lands in
-  `DP_UI_COMPONENT.component_type` and drives the `/ux-spec` box-text mockup) —
-  it is NOT the wireframe leaf slug. The same control appears twice, once per
+- `component_type` is a fixed vocabulary (it drives the box-text mockup) — it
+  is NOT the wireframe leaf slug. The same control appears twice, once per
   vocabulary: `component_type: "input"` here, `c: "shadcn:Input"` in the
   `.html`. Keep the two consistent in MEANING (same control, same label,
   same order); do not put a `shadcn:*` slug in `component_type`.
-- The component links to its screen by the **`screen_id` PROP** (the script sets
-  it from the parent screen id) — NOT a graph edge.
-- Components render the per-screen box-text mockup on `/ux-spec`. A screen with
-  no components still lists, just with an empty mockup body.
+- The component links to its screen by the **`screen_id` PROP**, set from the
+  parent screen id — NOT a graph edge.
+- Components render the per-screen box-text mockup. A screen with no
+  components still lists, just with an empty mockup body.
 - Any extra fields (field_binding, validation_rules, enum_values, tooltip, …)
-  are passed through as props; node_mapper reads the ones it knows.
+  are passed through as props for any downstream reader that wants them.
 
-## Persona  → KGS `UX_PERSONA_PROFILE`  → SimStudio `ux_personas` table
+## Persona  → `UX_PERSONA_PROFILE` shape
 ```jsonc
 {
   "id":   "PRSN-OWNER",        // optional — auto-generated if omitted
@@ -91,25 +90,20 @@ frames it as that layer over the dimmed base screen.
 ```
 Required: `name`. Everything else is optional metadata.
 
-## Why these exact labels/props
-`preview-content/internal/sync/node_mapper.go` maps KGS labels → SimStudio
-tables. It reads the props below; mismatched keys are dropped. The contract:
+## Why these exact field names
+These field names (and the `S_SCREEN_SPEC` / `DP_UI_COMPONENT` /
+`UX_PERSONA_PROFILE` shapes) are kept stable for compatibility with existing
+consumers of this schema; mismatched keys are simply dropped by any reader
+that doesn't recognize them. The contract:
 
-| label | table | key props read |
-|---|---|---|
-| `S_SCREEN_SPEC` | `screens` | id, title(=name), screen_type, layout, primary_actor(=actor_id), permissions[], navigation_group, project_id |
-| `DP_UI_COMPONENT` | `ui_components` | id, screen_id, component_type, label, order, required, data_type, semantic_type, project_id |
-| `UX_PERSONA_PROFILE` | `ux_personas` | id, name, project_id |
-
-`project_id` is what `/sync/pull` filters on (`pid == projectID`), so a screen
-pushed with `project_id=xpos` only ever shows up in project xpos.
+| shape | key fields read |
+|---|---|
+| `S_SCREEN_SPEC` | id, title(=name), screen_type, layout, primary_actor(=actor_id), permissions[], navigation_group |
+| `DP_UI_COMPONENT` | id, screen_id, component_type, label, order, required, data_type, semantic_type |
+| `UX_PERSONA_PROFILE` | id, name |
 
 ## Pipeline recap
 ```
-this JSON  → push_to_kgs.py / od kg push / "Push to KG" button (POST /v1/graph/nodes, project_id)
-           → KGS open-design app (Postgres write model)
-           → KGS outbox → Neo4j projection
-SimStudio "Pull All" → /sync/pull → GetFullGraph(open-design) reads Neo4j
-           → node_mapper → demo_db.screens / ui_components / ux_personas
-           → /ux-spec  (filtered by project_id, box-text from components)
+this JSON → synced (media-service, alongside wireframes/ and flows/) →
+            available on any device via the normal pull flow
 ```

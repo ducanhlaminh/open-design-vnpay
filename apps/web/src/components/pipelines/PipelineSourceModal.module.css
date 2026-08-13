@@ -1,4 +1,4 @@
-/* Source-selection UI for pipeline 1 (jira-ingest): two cards (Confluence / BAS)
+/* Source-selection UI for pipeline 1 (confluence-ingest): two cards (Confluence / BAS)
    plus the per-source panels (Confluence link + metadata preview, BAS project →
    feature picker). Scoped to the run-source modal; reuses the global pl-* input
    and button primitives for everything else. */

@@ -31,6 +31,7 @@ describe('sandbox contracts', () => {
     };
     const response: SandboxStatusResponse = {
       enabled: true,
+      mode: 'sandbox',
       runtimes: ['claude', 'codex'],
       skills: ['*'],
       timeoutMinutes: 30,
@@ -43,10 +44,16 @@ describe('sandbox contracts', () => {
       runtimeStatuses: [runtimeStatus],
       activeContainers: [],
       builderDir: '/tmp/builder',
+      hostClaude: {
+        available: false,
+        authStatus: 'missing',
+      },
     };
 
     expect(runtimeStatus.loginMethod).toBe('device');
     expect(loginStatus.phase).toBe('awaiting-user');
     expect(response.runtimeStatuses[0]?.id).toBe('codex');
+    expect(response.mode).toBe('sandbox');
+    expect(response.hostClaude.available).toBe(false);
   });
 });

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
-import './runtime/register-kg-renderers';
 import { useAnalytics } from './analytics/provider';
 import {
   trackFileUploadResult,

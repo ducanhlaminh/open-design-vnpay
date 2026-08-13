@@ -9,8 +9,7 @@
 // feature READS before it designs, so the whole app develops coherently — even
 // across sessions, because the context lives on the media store, not in a prompt.
 //
-// Storage (reuses "media store = where config lives", since KGS has no node
-// update API):
+// Storage (reuses "media store = where config lives"):
 //   • The app is a media project keyed by its appId; its context lives under
 //     `app-context/**` there.
 //   • A feature's `project.json` (already on the media store) carries an optional

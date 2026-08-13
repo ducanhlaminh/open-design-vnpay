@@ -181,7 +181,7 @@ describe('pipeline app/feature edit routes', () => {
 
   it('deletes a pulled app locally without consulting the central registry', async () => {
     const remote = vi.fn(async () => [
-      { projectId: 'REMOTEAPP', name: 'Remote App', inKgs: true, inMedia: true, files: 0, isApp: true },
+      { projectId: 'REMOTEAPP', name: 'Remote App', inMedia: true, files: 0, isApp: true },
     ]);
     remoteImpl = remote;
     insertFeature('remote-feature', 'REMOTEAPP', 'Remote App');

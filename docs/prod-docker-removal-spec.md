@@ -1,7 +1,13 @@
 # Gỡ Docker khỏi bản prod (giữ nguyên cho dev)
 
-Trạng thái: DRAFT — chờ chốt Phase 2 và Phase 3 trước khi code.
-Ngày: 2026-08-08.
+Trạng thái: PHẦN LỚN ĐÃ LÀM — xem `specs/change/20260813-web-first/plan.md` (WP1–WP10)
+cho kế hoạch thực thi chốt cuối và trạng thái theo work-package. Phase 1/2 (mục §3,
+§4.1, §4.3, §4.4 dưới đây) và Phase 6 (§8) đã thành hiện thực qua WP2 (env whitelist),
+WP3 (process lifecycle), và WP4 (đảo default host + surface UI/CLI) — status note tại
+từng mục. Còn mở: Phase 3 §5 (bỏ Jira — riêng, không thuộc WP1–10), Phase 4 §6 (host
+toolkit ui-react — chưa làm), Phase 5 §7 (auth host — một phần qua WP4's
+`probeClaudeAuthStatus`, chưa đầy đủ scope gốc). Ngày viết bản gốc: 2026-08-08; cập
+nhật trạng thái: 2026-08-13.
 
 ## Mục tiêu
 
@@ -100,6 +106,12 @@ Giữ nguyên tên biến cũ để không phá thứ đang chạy; `mode` là l
 
 ## 3. Phase 1 — Bật được bản prod không-Docker (nhỏ, làm trước)
 
+> **✅ ĐÃ LÀM (WP4, 2026-08-13), theo hướng mạnh hơn bản draft này đề xuất.** Thay vì chỉ
+> thêm một nhánh bake `OD_SANDBOX_DEFAULT=0` cho riêng bản prod (giữ dev mặc định
+> sandbox), WP4 đảo thẳng default của `resolveSandboxConfig` (mọi build, kể cả dev) —
+> xem `apps/daemon/src/agent-sandbox.ts`. `OD_SANDBOX=1` là escape hatch bật lại sandbox
+> y hệt hành vi cũ. Bước 3 (dọn comment chết `OD_SANDBOX_DEFAULT`) cũng đã làm.
+
 Mục tiêu: có một bản build chạy `host` mode, để lộ ra cái gì thật sự gãy.
 
 1. **`apps/packaged/src/sidecars.ts:353-357`** — thêm nhánh: `sandboxDefault === '0'`
@@ -116,6 +128,13 @@ không Docker, với điều kiện có claude CLI trên host (§5).
 Đây là phần rủi ro thật, không phải phần build.
 
 ### 4.1 Cách ly ghi — mac xong, Windows CHƯA có lời giải
+
+> **✅ MỘT PHẦN ĐÃ LÀM (WP4).** `writeIsolationMode()` mặc định `on` trên darwin (thay
+> vì `off`) — xem `docs/run-write-isolation-spec.md` Phase 2. Đây là `on`
+> (isolate-when-possible), CHƯA phải `required` (refuse-to-run-unisolated) như phương
+> án A dưới đây đề xuất cho bản đầu — nâng lên `required` vẫn còn mở. Windows vẫn CHƯA
+> có cơ chế cách ly (giữ nguyên `off`, đúng như phương án A đề xuất "chấp nhận, ghi rõ
+> trong release note").
 
 macOS (cả Intel lẫn Apple Silicon): bật `OD_WRITE_ISOLATION=required`. Đã có sẵn,
 kernel-enforced, `apps/daemon/src/write-isolation.ts`.
@@ -141,12 +160,25 @@ chặn ghi. Không làm gì thêm. Ghi lại ở đây để người sau không
 
 ### 4.3 Env curation — bắt buộc làm
 
+> **✅ ĐÃ LÀM (WP2).** `buildHostAgentEnv` (xem
+> `specs/change/20260813-web-first/wp2-env-whitelist.md`) default-denies unknown env
+> vars for host agent spawns; `apps/daemon/tests/chat-route.test.ts` has an
+> integration test proving a real host spawn never leaks `KGS_API_KEY` into the agent
+> child env. `OD_AGENT_ENV_PASSTHROUGH` is the documented escape hatch for a var that
+> genuinely needs to reach the child.
+
 Container chỉ forward 3 biến (`agent-sandbox.ts:162-171`). Host spawn hiện kế thừa
 env của daemon ⇒ `KGS_API_KEY`, media creds, token Atlassian lọt vào process agent.
 Phải dựng whitelist tương đương tại seam spawn host trong `server.ts`. **Không được
 bỏ qua bước này** — nó rẻ và là lỗ hổng rõ ràng nhất.
 
 ### 4.4 Vòng đời process
+
+> **✅ ĐÃ LÀM (WP3).** Xem `specs/change/20260813-web-first/wp3-process-lifecycle.md`:
+> host runs now kill the whole process tree (not just the direct child), keep the
+> existing timeout, and `design.runs.sweepOrphanHostRuns()` replaces the container-label
+> sweep with a process-stamp-based one for host-spawned runs (the docker-label sweep
+> stays for sandbox mode, gated on `sandbox.enabled`).
 
 Mất `--cpus/--memory/--pids-limit` và `docker kill` một phát là sạch. Host mode phải:
 kill **cả cây process** (agent spawn vite, node, MCP con), giữ timeout hiện có
@@ -292,6 +324,12 @@ Việc còn lại, nhỏ:
 > credential để đoán trạng thái đăng nhập. Hãy hỏi chính CLI.
 
 ## 8. Phase 6 — Surface UI/CLI
+
+> **✅ ĐÃ LÀM (WP4).** Xem `specs/change/20260813-web-first/wp4-host-default-ui.md`.
+> Tất cả 4 gạch đầu dòng dưới đây đã thực thi, với tên field hơi khác bản draft:
+> contracts dùng `mode: 'host'|'sandbox'` + `hostClaude: {available, version?,
+> authStatus, authMessage?}` thay vì `hostClaudeAvailable/authStorePresent/loggedIn/
+> version` rời rạc như draft đề xuất.
 
 - `InfraSetupGate.tsx` — đổi từ "check Docker + image + login volume" sang "check claude
   CLI + đã login". Với `host` mode, bỏ hẳn bước Docker.
