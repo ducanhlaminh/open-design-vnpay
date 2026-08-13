@@ -1,5 +1,7 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { resolveDaemonCliPath, resolveDaemonResourceRoot, resolveProjectRoot } from '../src/server.js';
 
 describe('resolveProjectRoot', () => {
@@ -69,5 +71,46 @@ describe('resolveDaemonResourceRoot', () => {
     expect(() => resolveDaemonResourceRoot({ configured, safeBases: [safeBase] })).toThrow(
       /OD_RESOURCE_ROOT must be under/,
     );
+  });
+
+  // Regression for a real host-runtime install bug: `deploy/host/install.sh`
+  // deliberately writes OD_RESOURCE_ROOT through the STABLE `<OD_HOME>/
+  // current/resources/open-design` symlink (so it survives `--update`
+  // without a rewrite), but Node's ESM loader resolves symlinks when
+  // computing `__dirname` — so PROJECT_ROOT (this function's own safe base
+  // in production) is already the REAL `releases/<version>` path, not
+  // `current`. A purely lexical containment check rejects a legitimately
+  // configured value that only differs by symlink indirection. None of the
+  // tests above exercise a real symlink (their fixture paths don't even
+  // exist on disk), so this gap shipped unnoticed until a live install.
+  describe('symlink indirection (regression: host-runtime `current` symlink)', () => {
+    const tmpRoot = mkdtempSync(path.join(realpathSync(tmpdir()), 'od-resource-root-'));
+    afterEach(() => {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    });
+
+    it('allows a configured root reached through a symlink into the real safe base', () => {
+      const release = path.join(tmpRoot, 'releases', '0.8.0');
+      const resources = path.join(release, 'resources', 'open-design');
+      mkdirSync(resources, { recursive: true });
+      const current = path.join(tmpRoot, 'current');
+      symlinkSync(release, current);
+
+      const configured = path.join(current, 'resources', 'open-design');
+      expect(resolveDaemonResourceRoot({ configured, safeBases: [release] })).toBe(configured);
+    });
+
+    it('still rejects a symlink pointing genuinely outside every safe base', () => {
+      const release = path.join(tmpRoot, 'releases', '0.8.0');
+      const outside = path.join(tmpRoot, 'outside', 'resources');
+      mkdirSync(release, { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      const escape = path.join(tmpRoot, 'escape');
+      symlinkSync(outside, escape);
+
+      expect(() => resolveDaemonResourceRoot({ configured: escape, safeBases: [release] })).toThrow(
+        /OD_RESOURCE_ROOT must be under/,
+      );
+    });
   });
 });

@@ -201,7 +201,13 @@ export function NewAppModal({
           <QuietButton onClick={onClose} disabled={busy}>
             Hủy
           </QuietButton>
-          <PrimaryButton icon="check" busy={busy} onClick={() => void submit()} disabled={busy || !canSubmit}>
+          <PrimaryButton
+            icon="check"
+            busy={busy}
+            data-testid="new-app-submit"
+            onClick={() => void submit()}
+            disabled={busy || !canSubmit}
+          >
             {phase === 'importing' ? 'Đang nhập tài liệu…' : busy ? 'Đang tạo…' : 'Tạo'}
           </PrimaryButton>
         </>
@@ -221,6 +227,7 @@ export function NewAppModal({
           <TextInput
             {...fieldProps}
             autoFocus
+            data-testid="new-app-name"
             placeholder="Retail"
             value={name}
             onChange={(e) => setName(e.target.value)}

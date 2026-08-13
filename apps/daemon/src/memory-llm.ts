@@ -807,6 +807,7 @@ async function callLocalCli(provider, system, user, options) {
       system,
       user,
       projectRoot: options?.projectRoot ?? null,
+      chatCwd: options?.chatCwd ?? null,
       dataDir: options?.dataDir ?? null,
     });
   }
@@ -829,10 +830,20 @@ async function callLocalCli(provider, system, user, options) {
     throw new Error(`${def.name} CLI is not installed or not on PATH`);
   }
 
+  // `projectRoot` also anchors the BYOK media-config credential store
+  // (`.od/` — see resolveProviderConfig) and must NOT be repurposed as the
+  // spawn cwd's only source: for "same as chat" local-CLI extraction we
+  // want the CLI to run in the same directory the real chat/pipeline turn
+  // just ran in (`chatCwd`, threaded from the caller's own effective cwd),
+  // never the daemon's own install root. `projectRoot` remains the
+  // fallback for callers with no per-conversation cwd (e.g. the
+  // `/api/memory/extract` HTTP entrypoint).
   const cwd =
-    typeof options?.projectRoot === 'string' && options.projectRoot.trim()
-      ? options.projectRoot
-      : process.cwd();
+    typeof options?.chatCwd === 'string' && options.chatCwd.trim()
+      ? options.chatCwd
+      : typeof options?.projectRoot === 'string' && options.projectRoot.trim()
+        ? options.projectRoot
+        : process.cwd();
   const prompt = [
     system,
     '',
@@ -1013,6 +1024,7 @@ function toMemoryDraft(candidate) {
 
 async function collectProposedEntries(dataDir, input, options) {
   const projectRoot = options?.projectRoot ?? null;
+  const chatCwd = options?.chatCwd ?? null;
   const chatAgentId = options?.chatAgentId ?? null;
   const chatModel = options?.chatModel ?? null;
   const extractionKind = options?.kind ?? 'llm';
@@ -1086,6 +1098,7 @@ async function collectProposedEntries(dataDir, input, options) {
       raw = await callLocalCli(provider, systemPrompt, userPayload, {
         dataDir,
         projectRoot,
+        chatCwd,
         localCliRunner: options?.localCliRunner,
       });
     } else if (provider.kind === 'anthropic') {

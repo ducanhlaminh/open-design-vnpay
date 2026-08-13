@@ -114,7 +114,13 @@ export function NewFeatureModal({
           <QuietButton onClick={onClose} disabled={busy}>
             Hủy
           </QuietButton>
-          <PrimaryButton icon="check" busy={busy} onClick={() => void submit()} disabled={busy || !canSubmit}>
+          <PrimaryButton
+            icon="check"
+            busy={busy}
+            data-testid="new-feature-submit"
+            onClick={() => void submit()}
+            disabled={busy || !canSubmit}
+          >
             {busy ? 'Đang tạo…' : 'Tạo'}
           </PrimaryButton>
         </>
@@ -132,6 +138,7 @@ export function NewFeatureModal({
           <TextInput
             {...fieldProps}
             autoFocus
+            data-testid="new-feature-name"
             placeholder="Thanh toán"
             value={featureName}
             onChange={(e) => setFeatureName(e.target.value)}
@@ -156,6 +163,7 @@ export function NewFeatureModal({
           {(fieldProps) => (
             <ComboInput
               {...fieldProps}
+              data-testid="new-feature-app-picker"
               placeholder="Retail"
               value={appName}
               onChange={(e) => setAppName(e.target.value)}

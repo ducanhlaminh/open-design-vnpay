@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -24,12 +23,10 @@ export type ToolPackCliOptions = {
   cacheDir?: string;
   containerized?: boolean;
   dir?: string;
-  expr?: string;
   headless?: boolean;
   json?: boolean;
   macCompression?: string;
   namespace?: string;
-  path?: string;
   portable?: boolean;
   removeData?: boolean;
   removeLogs?: boolean;
@@ -38,7 +35,6 @@ export type ToolPackCliOptions = {
   signed?: boolean;
   silent?: boolean;
   to?: string;
-  updateAction?: string;
 };
 
 export type ToolPackRoots = {
@@ -59,9 +55,6 @@ export type ToolPackRoots = {
 export type ToolPackConfig = {
   appVersion?: string;
   containerized: boolean;
-  electronBuilderCliPath: string;
-  electronDistPath: string;
-  electronVersion: string;
   macCompression: ToolPackMacCompression;
   namespace: string;
   platform: ToolPackPlatform;
@@ -365,29 +358,6 @@ function resolveToolPackTelemetryRelayUrl(value: string | undefined): string | u
   return normalized.replace(/\/+$/, "");
 }
 
-function resolveElectronVersion(workspaceRoot: string): string {
-  const require = createRequire(join(workspaceRoot, "apps/desktop/package.json"));
-  const desktopPackage = require(join(workspaceRoot, "apps/desktop/package.json")) as {
-    devDependencies?: Record<string, string>;
-  };
-  const version = desktopPackage.devDependencies?.electron;
-  if (version == null || version.length === 0) {
-    throw new Error("apps/desktop/package.json must declare electron");
-  }
-  return version;
-}
-
-function resolveElectronDistPath(workspaceRoot: string): string {
-  const require = createRequire(join(workspaceRoot, "apps/desktop/package.json"));
-  const electronEntry = require.resolve("electron");
-  return join(path.dirname(electronEntry), "dist");
-}
-
-function resolveElectronBuilderCliPath(): string {
-  const require = createRequire(import.meta.url);
-  return require.resolve("electron-builder/out/cli/cli.js");
-}
-
 export function resolveToolPackConfig(
   platform: ToolPackPlatform,
   options: ToolPackCliOptions = {},
@@ -408,9 +378,6 @@ export function resolveToolPackConfig(
   return {
     appVersion,
     containerized: options.containerized === true,
-    electronBuilderCliPath: resolveElectronBuilderCliPath(),
-    electronDistPath: resolveElectronDistPath(WORKSPACE_ROOT),
-    electronVersion: resolveElectronVersion(WORKSPACE_ROOT),
     macCompression: resolveToolPackMacCompression(options.macCompression),
     namespace,
     platform,

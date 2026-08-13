@@ -714,29 +714,6 @@ export interface Dict {
   'notify.failureBody': string;
 
   // Desktop updater
-  'updater.available': string;
-  'updater.availableBody': string;
-  'updater.checkForUpdates': string;
-  'updater.checking': string;
-  'updater.download': string;
-  'updater.downloading': string;
-  'updater.downloadingPercent': string;
-  'updater.done': string;
-  'updater.failed': string;
-  'updater.installerOpenBody': string;
-  'updater.installerOpened': string;
-  'updater.later': string;
-  'updater.openFailedFallback': string;
-  'updater.openInstaller': string;
-  'updater.opening': string;
-  'updater.quitButton': string;
-  'updater.quitFailedBody': string;
-  'updater.quitFailedTitle': string;
-  'updater.quitting': string;
-  'updater.ready': string;
-  'updater.readyGeneric': string;
-  'updater.readyVersion': string;
-  'updater.upToDate': string;
 
   // Entry view / tabs
   'entry.tabDesigns': string;

@@ -66,7 +66,6 @@ import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
 import { FigmaDesignSystemDetailModal } from './FigmaDesignSystemDetailModal';
 import { DesignSystemsTab } from './DesignSystemsTab';
 import { EntryNavRail, type EntryView as EntryViewKind } from './EntryNavRail';
-import { UpdaterPopup } from './UpdaterPopup';
 import { HomeView } from './HomeView';
 import {
   createPluginAuthoringHandoff,
@@ -577,7 +576,6 @@ export function EntryShell({
                 onOpenSettings={onOpenSettings}
               />
             </div>
-            <UpdaterPopup />
             {avatarMenu}
           </div>
           <div

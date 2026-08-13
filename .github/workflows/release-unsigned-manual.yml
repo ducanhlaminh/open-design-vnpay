@@ -1,43 +1,25 @@
 name: release-unsigned-manual
 
-# Manual, unsigned release build for the ducanhlaminh fork — all 3 platforms
-# build natively on GitHub-hosted runners (macos-14 = real Apple Silicon,
-# macos-15-intel = real Intel Mac, windows-latest = real Windows Server VM;
-# none of this is emulated/cross-compiled), then a publish job uploads
-# everything to a single GitHub Release.
-#
-# release-stable.yml is upstream nexu-io/open-design's pipeline — gated by
-# `if: github.repository == 'nexu-io/open-design'` and needs Apple/R2 secrets
-# this fork doesn't have (`gh secret list` confirms zero secrets configured
-# here) — it can't run on this fork at all. This is a standalone equivalent:
-# no code-signing/notarization (mac builds omit --signed; win never signs by
-# design — forceCodeSigning=false in tools/pack/src/win/builder.ts), no R2
-# publish, no e2e smoke tests. Just build + upload to GitHub Releases, which
-# is what this fork's own runtime updater actually reads
-# (apps/desktop/src/main/updater.ts, STABLE_GITHUB_METADATA_URL).
+# WP5 (web-first migration): this workflow used to also build+sign(unsigned)
+# +publish mac (arm64 + intel) DMGs and a windows portable zip on real
+# GitHub-hosted runners (macos-14, macos-15-intel, windows-latest), via
+# `@open-design/desktop` (Electron) + `tools-pack mac/win build`. Both are
+# gone (apps/desktop, tools/pack/src/{mac,win}/**, mac/win resources — see
+# the web-first migration change spec), so the `build_mac`, `build_mac_intel`,
+# `build_win`, and `publish` jobs — and everything in `verify` that only
+# existed to typecheck `@open-design/desktop` — were removed. What's left is
+# the daemon+web typecheck/build verification gate, unchanged.
 #
 # Triggers automatically on push to `preview` (dedicated branch, separate
-# from `main`, so routine commits don't burn ~15-20 min x 3 platforms on
-# every push) — version is read from apps/packaged/package.json in that
-# case, since `push` events have no `inputs` context. workflow_dispatch
-# still accepts an explicit --app_version override for manual runs.
+# from `main`, so routine commits don't burn CI time on every push).
+# workflow_dispatch is kept for manual re-runs of the same verification gate.
 
 on:
   push:
     branches: [preview]
-  workflow_dispatch:
-    inputs:
-      app_version:
-        description: "App version to build (blank = read apps/packaged/package.json)"
-        required: false
+  workflow_dispatch: {}
 
-permissions:
-  contents: write
-
-# Serialize builds: a newer push cancels an in-flight one. Two builds racing (a
-# quick double-push) both resolve the SAME next version and the second collides
-# on `gh release create` (tag already exists) — cancel-in-progress keeps only the
-# latest, so the tag is computed once against the real latest release.
+# Serialize runs: a newer push cancels an in-flight one.
 concurrency:
   group: release-unsigned-manual
   cancel-in-progress: true
@@ -57,10 +39,6 @@ jobs:
   verify:
     name: Verify (typecheck + guard)
     runs-on: ubuntu-latest
-    outputs:
-      app_version: ${{ steps.version.outputs.app_version }}
-      release_tag: ${{ steps.version.outputs.release_tag }}
-      is_manual_stable: ${{ steps.version.outputs.is_manual_stable }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -82,432 +60,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Every automatic (push-to-preview) build gets its OWN version — never
-      # reuses/overwrites a prior build. Manual workflow_dispatch runs can
-      # still pin an exact x.y.z to cut a real stable release (updates the
-      # metadata.json feed + flips GitHub's "Latest" tag); auto preview runs
-      # bump the patch number by 1 from the highest existing open-design-v
-      # release under the same major.minor (so the app displays as a clean
-      # "Open Design 0.8.2", not "0.8.1-preview.6" — see
-      # tools/pack/src/{mac,win}/identity.ts) and publish as a separate,
-      # non-latest release so they never affect what stable-channel users
-      # auto-update to. Patch numbers are a SHARED sequence between auto and
-      # manual releases — a manual stable cut just continues from whatever
-      # patch auto builds already used, same as any CI-driven build-number
-      # scheme; it does not reserve or predict future manual version choices.
-      - name: Resolve app version
-        id: version
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          override="${{ inputs.app_version }}"
-          base_version="$(node -p "require('./apps/packaged/package.json').version")"
-          if [ -n "$override" ]; then
-            version="$override"
-            is_manual_stable="true"
-          else
-            major_minor="$(echo "$base_version" | cut -d. -f1-2)"
-            major_minor_re="$(echo "$major_minor" | sed -E 's/\./\\./g')"
-            base_patch="$(echo "$base_version" | cut -d. -f3)"
-            highest_patch="$(
-              gh release list --repo "${{ github.repository }}" --limit 200 --json tagName --jq '.[].tagName' \
-                | grep -oE "^open-design-v${major_minor_re}\.[0-9]+$" \
-                | sed -E "s/^open-design-v${major_minor_re}\.//" \
-                | sort -n | tail -1
-            )"
-            next_patch="$(( ${highest_patch:-$base_patch} + 1 ))"
-            version="${major_minor}.${next_patch}"
-            is_manual_stable="false"
-          fi
-          tag="open-design-v${version}"
-          {
-            echo "app_version=$version"
-            echo "release_tag=$tag"
-            echo "is_manual_stable=$is_manual_stable"
-          } >> "$GITHUB_OUTPUT"
-          echo "resolved app_version=$version tag=$tag is_manual_stable=$is_manual_stable"
-
-      # apps/daemon, apps/desktop, and packages/figma-h2d aren't in
-      # postinstall.mjs's buildTargets; typecheck fails without their
-      # dist/*.d.ts (apps/packaged dynamic-imports @open-design/desktop/main;
-      # apps/web imports @open-design/figma-h2d directly — same gap the
-      # platform build jobs below hit first).
-      - name: Build daemon, desktop, figma-h2d (typecheck dependencies)
+      # apps/daemon and packages/figma-h2d aren't in postinstall.mjs's
+      # buildTargets; typecheck fails without their dist/*.d.ts (apps/web
+      # imports @open-design/figma-h2d directly).
+      - name: Build daemon, figma-h2d (typecheck dependencies)
         run: |
           pnpm --filter @open-design/daemon build
-          pnpm --filter @open-design/desktop build
           pnpm --filter @open-design/figma-h2d build
+
+      - name: Build web
+        run: |
+          pnpm --filter @open-design/web build
+          pnpm --filter @open-design/web build:sidecar
 
       - name: Typecheck workspaces
         run: pnpm -r --workspace-concurrency=4 --if-present run typecheck
 
       - name: Check repository layout policies
         run: pnpm guard
-
-  build_mac:
-    name: Build mac arm64
-    needs: verify
-    runs-on: macos-14
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          fetch-depth: 0
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-        with:
-          version: 10.33.2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # postinstall.mjs builds packages/* and tools/* but not apps/*, and
-      # misses packages/figma-h2d specifically (not in its buildTargets list)
-      # — apps/web imports it and Next build fails with "Module not found"
-      # without this. Mirrors the explicit build steps release-stable.yml's
-      # `verify` job documents, plus the figma-h2d gap found the hard way.
-      - name: Build figma-h2d
-        run: pnpm --filter @open-design/figma-h2d build
-
-      - name: Build daemon
-        run: pnpm --filter @open-design/daemon build
-
-      - name: Build desktop
-        run: pnpm --filter @open-design/desktop build
-
-      - name: Build web
-        run: |
-          pnpm --filter @open-design/web build
-          pnpm --filter @open-design/web build:sidecar
-
-      - name: Build mac arm64 DMG (unsigned)
-        env:
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
-          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-          OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
-          OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
-          KGS_URL: ${{ secrets.KGS_URL }}
-          KGS_APP_ID: ${{ secrets.KGS_APP_ID }}
-          KGS_TENANT: ${{ secrets.KGS_TENANT }}
-          KGS_API_KEY: ${{ secrets.KGS_API_KEY }}
-          MEDIA_URL: ${{ secrets.MEDIA_URL }}
-          MEDIA_APP_ID: ${{ secrets.MEDIA_APP_ID }}
-          MEDIA_USER_ID: ${{ secrets.MEDIA_USER_ID }}
-          MEDIA_USER_ROLE: ${{ secrets.MEDIA_USER_ROLE }}
-        run: |
-          set -euo pipefail
-          # tools-pack derives release-channel identity (appId/productName)
-          # from --namespace when --app-version has no beta/preview/nightly
-          # marker in it (see tools/pack/src/mac/identity.ts). Manual runs
-          # cut a real stable release (namespace default == stable channel);
-          # auto preview runs must use the preview namespace explicitly so
-          # they never resolve to the stable app's bundle identity.
-          namespace="default"
-          if [ "${{ needs.verify.outputs.is_manual_stable }}" != "true" ]; then
-            namespace="release-preview"
-          fi
-          pnpm exec tools-pack mac build \
-            --dir "$RUNNER_TEMP/tools-pack" \
-            --namespace "$namespace" \
-            --portable \
-            --app-version "${{ needs.verify.outputs.app_version }}" \
-            --to all \
-            --json
-
-      - name: Rename artifact
-        run: |
-          set -euo pipefail
-          dmg="$(find "$RUNNER_TEMP/tools-pack/out/mac" -iname '*.dmg' | head -1)"
-          cp "$dmg" "$RUNNER_TEMP/open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg"
-
-      - name: Upload mac arm64 DMG
-        uses: actions/upload-artifact@v7
-        with:
-          name: mac-arm64-dmg
-          path: ${{ runner.temp }}/open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg
-          retention-days: 3
-
-  build_mac_intel:
-    name: Build mac intel x64
-    needs: verify
-    runs-on: macos-15-intel
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          fetch-depth: 0
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-        with:
-          version: 10.33.2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build figma-h2d
-        run: pnpm --filter @open-design/figma-h2d build
-
-      - name: Build daemon
-        run: pnpm --filter @open-design/daemon build
-
-      - name: Build desktop
-        run: pnpm --filter @open-design/desktop build
-
-      - name: Build web
-        run: |
-          pnpm --filter @open-design/web build
-          pnpm --filter @open-design/web build:sidecar
-
-      - name: Build mac intel DMG (unsigned)
-        env:
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
-          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-          OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
-          OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
-          KGS_URL: ${{ secrets.KGS_URL }}
-          KGS_APP_ID: ${{ secrets.KGS_APP_ID }}
-          KGS_TENANT: ${{ secrets.KGS_TENANT }}
-          KGS_API_KEY: ${{ secrets.KGS_API_KEY }}
-          MEDIA_URL: ${{ secrets.MEDIA_URL }}
-          MEDIA_APP_ID: ${{ secrets.MEDIA_APP_ID }}
-          MEDIA_USER_ID: ${{ secrets.MEDIA_USER_ID }}
-          MEDIA_USER_ROLE: ${{ secrets.MEDIA_USER_ROLE }}
-        run: |
-          set -euo pipefail
-          # tools-pack derives release-channel identity (appId/productName)
-          # from --namespace when --app-version has no beta/preview/nightly
-          # marker in it (see tools/pack/src/mac/identity.ts). Manual runs
-          # cut a real stable release (namespace default == stable channel);
-          # auto preview runs must use the preview namespace explicitly so
-          # they never resolve to the stable app's bundle identity.
-          namespace="default"
-          if [ "${{ needs.verify.outputs.is_manual_stable }}" != "true" ]; then
-            namespace="release-preview"
-          fi
-          pnpm exec tools-pack mac build \
-            --dir "$RUNNER_TEMP/tools-pack" \
-            --namespace "$namespace" \
-            --portable \
-            --app-version "${{ needs.verify.outputs.app_version }}" \
-            --to all \
-            --json
-
-      - name: Rename artifact
-        run: |
-          set -euo pipefail
-          dmg="$(find "$RUNNER_TEMP/tools-pack/out/mac" -iname '*.dmg' | head -1)"
-          cp "$dmg" "$RUNNER_TEMP/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg"
-
-      - name: Upload mac intel DMG
-        uses: actions/upload-artifact@v7
-        with:
-          name: mac-intel-dmg
-          path: ${{ runner.temp }}/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg
-          retention-days: 3
-
-  build_win:
-    name: Build windows portable zip
-    needs: verify
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          fetch-depth: 0
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-        with:
-          version: 10.33.2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build figma-h2d
-        run: pnpm --filter @open-design/figma-h2d build
-
-      - name: Build daemon
-        run: pnpm --filter @open-design/daemon build
-
-      - name: Build desktop
-        run: pnpm --filter @open-design/desktop build
-
-      - name: Build web
-        run: |
-          pnpm --filter @open-design/web build
-          pnpm --filter @open-design/web build:sidecar
-
-      # Windows releases are portable-only. The marker file written by
-      # tools/pack lets the running app select the ZIP update flow.
-      - name: Build windows portable zip
-        shell: pwsh
-        env:
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          IDENTITY_URL: ${{ secrets.IDENTITY_URL }}
-          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-          OD_ATLASSIAN_JIRA_TOKEN: ${{ secrets.OD_ATLASSIAN_JIRA_TOKEN }}
-          OD_ATLASSIAN_CONFLUENCE_TOKEN: ${{ secrets.OD_ATLASSIAN_CONFLUENCE_TOKEN }}
-          KGS_URL: ${{ secrets.KGS_URL }}
-          KGS_APP_ID: ${{ secrets.KGS_APP_ID }}
-          KGS_TENANT: ${{ secrets.KGS_TENANT }}
-          KGS_API_KEY: ${{ secrets.KGS_API_KEY }}
-          MEDIA_URL: ${{ secrets.MEDIA_URL }}
-          MEDIA_APP_ID: ${{ secrets.MEDIA_APP_ID }}
-          MEDIA_USER_ID: ${{ secrets.MEDIA_USER_ID }}
-          MEDIA_USER_ROLE: ${{ secrets.MEDIA_USER_ROLE }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          # See the matching comment in the mac build step: --namespace picks
-          # the release-channel identity when --app-version has no
-          # beta/preview/nightly marker (tools/pack/src/win/identity.ts).
-          $namespace = "default"
-          if ("${{ needs.verify.outputs.is_manual_stable }}" -ne "true") {
-            $namespace = "release-preview-win"
-          }
-          pnpm exec tools-pack win build `
-            --dir "${{ runner.temp }}/tools-pack" `
-            --namespace $namespace `
-            --portable `
-            --app-version "${{ needs.verify.outputs.app_version }}" `
-            --to zip `
-            --json
-
-      - name: Rename artifacts
-        shell: pwsh
-        run: |
-          $zip = Get-ChildItem -Path "${{ runner.temp }}/tools-pack" -Recurse -Filter "*.zip" | Select-Object -First 1
-          if ($null -eq $zip) { throw "no .zip artifact found under ${{ runner.temp }}/tools-pack" }
-          Copy-Item -Path $zip.FullName -Destination "${{ runner.temp }}/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip"
-
-      - name: Upload windows portable zip
-        uses: actions/upload-artifact@v7
-        with:
-          name: win-portable-zip
-          path: ${{ runner.temp }}/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip
-          retention-days: 3
-
-  publish:
-    name: Publish GitHub Release
-    needs: [verify, build_mac, build_mac_intel, build_win]
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
-      - name: Download mac arm64 DMG
-        uses: actions/download-artifact@v8
-        with:
-          name: mac-arm64-dmg
-          path: ${{ runner.temp }}/assets
-
-      - name: Download mac intel DMG
-        uses: actions/download-artifact@v8
-        with:
-          name: mac-intel-dmg
-          path: ${{ runner.temp }}/assets
-
-      - name: Download windows portable zip
-        uses: actions/download-artifact@v8
-        with:
-          name: win-portable-zip
-          path: ${{ runner.temp }}/assets
-
-      # apps/desktop/src/main/updater.ts's checksum verification requires a
-      # sha256 for every auto-update-relevant asset: the two mac DMGs and the
-      # Windows portable zip. Without its .sha256 the updater fails that
-      # download with "checksum-missing".
-      # Uploading "<asset>.sha256" alongside each one lets the
-      # preview channel's GitHub-releases-list metadata fetch
-      # (fetchPreviewMetadataFromGithubReleases) point sha256Url at it and
-      # reuse the exact same verify path the stable channel already uses.
-      - name: Compute asset checksums
-        run: |
-          set -euo pipefail
-          cd "${{ runner.temp }}/assets"
-          for f in \
-            "open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg" \
-            "open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg" \
-            "open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip"; do
-            sha256sum "$f" > "$f.sha256"
-          done
-
-      # Manual runs with an explicit --app_version cut a REAL stable release:
-      # release-github.ts writes/updates the metadata.json feed the app's own
-      # runtime updater reads (STABLE_GITHUB_METADATA_URL in
-      # apps/desktop/src/main/updater.ts) and flips GitHub's "Latest" tag —
-      # this is what stable-channel users actually auto-update to, so it only
-      # happens when a human explicitly asked for it.
-      - name: "[stable] Publish mac DMGs (updates metadata.json feed, flips Latest)"
-        if: needs.verify.outputs.is_manual_stable == 'true'
-        run: |
-          node --experimental-strip-types scripts/release-github.ts \
-            --arm64-dmg "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg" \
-            --x64-dmg "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg" \
-            --win-portable-zip "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip" \
-            --version "${{ needs.verify.outputs.app_version }}"
-
-      - name: "[stable] Upload windows portable zip to release"
-        if: needs.verify.outputs.is_manual_stable == 'true'
-        run: |
-          set -euo pipefail
-          gh release upload "${{ needs.verify.outputs.release_tag }}" \
-            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip" \
-            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip.sha256" \
-            --clobber
-
-      # Auto (push-to-preview) runs: plain, separate, non-latest release per
-      # run — never touches metadata.json or the "Latest" tag, so stable
-      # users are unaffected. Every push gets a fresh, uniquely-tagged
-      # release (see the version-resolve step) instead of overwriting one.
-      - name: "[preview] Create dedicated release for this build"
-        if: needs.verify.outputs.is_manual_stable != 'true'
-        run: |
-          set -euo pipefail
-          gh release create "${{ needs.verify.outputs.release_tag }}" \
-            --title "Open Design ${{ needs.verify.outputs.app_version }} (preview build)" \
-            --notes "Automatic unsigned preview build from ${{ github.sha }} — not a stable release, does not affect stable-channel auto-update." \
-            --prerelease \
-            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg" \
-            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-arm64.dmg.sha256" \
-            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg" \
-            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-mac-x64.dmg.sha256" \
-            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip" \
-            "${{ runner.temp }}/assets/open-design-${{ needs.verify.outputs.app_version }}-win-x64-portable.zip.sha256"

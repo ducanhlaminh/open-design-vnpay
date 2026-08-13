@@ -151,12 +151,6 @@ function fakeChild(): EventEmitter & {
 }
 
 describe('buildPackagedDaemonSpawnEnv', () => {
-  // PR #974 round-5 (lefarcen P2): the daemon's import-folder gate must
-  // be ON when an Electron desktop is being started alongside the daemon
-  // and OFF in headless packaged mode (daemon+web only, no shell.openPath
-  // surface, no client to register a secret). Pin both branches against
-  // a real pure-helper invocation so a future refactor can't silently
-  // regress either side.
   function fakePaths(): PackagedNamespacePaths {
     return {
       cacheRoot: '/tmp/od-pkg/cache',
@@ -178,35 +172,23 @@ describe('buildPackagedDaemonSpawnEnv', () => {
     };
   }
 
-  it('sets OD_REQUIRE_DESKTOP_AUTH=1 when requireDesktopAuth=true (Electron entry)', () => {
+  // WP5 (web-first migration): this suite used to also pin
+  // `requireDesktopAuth`'s two branches (Electron entry passed `true`,
+  // `headless.ts` passed `false`, controlling whether OD_REQUIRE_DESKTOP_AUTH
+  // was forwarded to the daemon). `apps/desktop` and the daemon-side gate
+  // it armed are both gone, so `requireDesktopAuth` was removed from
+  // `buildPackagedDaemonSpawnEnv`'s options entirely — those two
+  // OD_REQUIRE_DESKTOP_AUTH-specific tests went with it.
+  it('sets OD_DATA_DIR/OD_RESOURCE_ROOT/OD_APP_VERSION from the spawn env options', () => {
     const env = buildPackagedDaemonSpawnEnv(fakePaths(), {
       appVersion: '1.2.3',
       daemonCliEntry: null,
       legacyDataDir: null,
-      requireDesktopAuth: true,
     });
-    expect(env.OD_REQUIRE_DESKTOP_AUTH).toBe('1');
     expect(env.OD_DATA_DIR).toBe('/tmp/od-pkg/data');
     expect(env.OD_RESOURCE_ROOT).toBe('/tmp/od-pkg/resources');
     expect(env.OD_APP_VERSION).toBe('1.2.3');
     expect(env.OD_LEGACY_DATA_DIR).toBeUndefined();
-  });
-
-  it('omits OD_REQUIRE_DESKTOP_AUTH entirely when requireDesktopAuth=false (headless)', () => {
-    const env = buildPackagedDaemonSpawnEnv(fakePaths(), {
-      appVersion: null,
-      daemonCliEntry: null,
-      legacyDataDir: null,
-      requireDesktopAuth: false,
-    });
-    // Round-5 (lefarcen P2): MUST NOT set the env var, even to "0" —
-    // the daemon's gate trigger is `process.env.OD_REQUIRE_DESKTOP_AUTH === '1'`,
-    // so a literal "0" would behave the same as omitted today, but a
-    // future code change to truthy-check the variable would silently
-    // re-arm the gate. Omitted is the intent.
-    expect('OD_REQUIRE_DESKTOP_AUTH' in env).toBe(false);
-    expect(env.OD_DATA_DIR).toBe('/tmp/od-pkg/data');
-    expect(env.OD_APP_VERSION).toBeUndefined();
   });
 
   it('forwards the identity service credential required to reconcile a Google login', () => {
@@ -214,17 +196,15 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       appVersion: null,
       daemonCliEntry: null,
       legacyDataDir: null,
-      requireDesktopAuth: false,
     });
 
   });
 
-  it('forwards OD_LEGACY_DATA_DIR only when set, irrespective of requireDesktopAuth', () => {
+  it('forwards OD_LEGACY_DATA_DIR only when set', () => {
     const withLegacy = buildPackagedDaemonSpawnEnv(fakePaths(), {
       appVersion: null,
       daemonCliEntry: null,
       legacyDataDir: '/old/.od',
-      requireDesktopAuth: false,
     });
     expect(withLegacy.OD_LEGACY_DATA_DIR).toBe('/old/.od');
 
@@ -232,7 +212,6 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       appVersion: null,
       daemonCliEntry: null,
       legacyDataDir: '',
-      requireDesktopAuth: true,
     });
     // Empty string must NOT propagate — daemon treats "env set but
     // path invalid" as an error and refuses to start.
@@ -244,7 +223,6 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       appVersion: null,
       daemonCliEntry: '/path/to/cli/dist/index.js',
       legacyDataDir: null,
-      requireDesktopAuth: true,
     });
     expect(env.OD_DAEMON_CLI_PATH).toBe('/path/to/cli/dist/index.js');
   });
@@ -254,7 +232,6 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       appVersion: null,
       daemonCliEntry: null,
       legacyDataDir: null,
-      requireDesktopAuth: true,
       telemetryRelayUrl: 'https://telemetry.open-design.ai/api/langfuse',
     });
     expect(env.OPEN_DESIGN_TELEMETRY_RELAY_URL).toBe(
@@ -267,7 +244,6 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       appVersion: null,
       daemonCliEntry: null,
       legacyDataDir: null,
-      requireDesktopAuth: true,
       posthogKey: 'phc_packaged_test',
       posthogHost: 'https://us.i.posthog.com',
     });
@@ -280,7 +256,6 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       appVersion: null,
       daemonCliEntry: null,
       legacyDataDir: null,
-      requireDesktopAuth: true,
       posthogKey: null,
       posthogHost: null,
     });
@@ -293,7 +268,6 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       appVersion: null,
       daemonCliEntry: null,
       legacyDataDir: null,
-      requireDesktopAuth: true,
       mediaUrl: 'https://media.example.com',
       mediaAppId: 'app-123',
       mediaUserId: 'od-service',
@@ -310,7 +284,6 @@ describe('buildPackagedDaemonSpawnEnv', () => {
       appVersion: null,
       daemonCliEntry: null,
       legacyDataDir: null,
-      requireDesktopAuth: true,
       mediaUrl: null,
       mediaAppId: null,
       mediaUserId: null,

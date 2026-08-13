@@ -59,10 +59,16 @@ export function ConfirmDeleteModal({
       onClose={onClose}
       footer={
         <>
-          <QuietButton onClick={onClose} disabled={busy}>
+          <QuietButton data-testid="confirm-delete-cancel" onClick={onClose} disabled={busy}>
             Hủy
           </QuietButton>
-          <DangerButton icon="trash" busy={busy} onClick={() => void confirm()} disabled={busy}>
+          <DangerButton
+            icon="trash"
+            busy={busy}
+            data-testid="confirm-delete-confirm"
+            onClick={() => void confirm()}
+            disabled={busy}
+          >
             {busy ? 'Đang xóa…' : confirmLabel}
           </DangerButton>
         </>

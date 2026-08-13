@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { installMockOpenDesignHost } from '@open-design/host/testing';
 import {
   archiveFilenameFrom,
   archiveRootFromFilePath,
@@ -190,15 +189,13 @@ describe('buildDesignHandoffContent', () => {
   });
 });
 
+// WP5 (web-first migration): `exportProjectAsPdf` used to hit a daemon route
+// that forwarded to the desktop app's native Save-as-PDF IPC bridge before
+// falling back to `fallbackPdf()`. That bridge is gone — the browser
+// fallback is now the only path, called unconditionally.
 describe('exportProjectAsPdf', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-  });
-
-  it('uses the daemon desktop PDF export API before falling back to browser print', async () => {
+  it('always invokes the browser fallback and reports "fallback"', async () => {
     const fallback = vi.fn();
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })));
 
     const result = await exportProjectAsPdf({
       deck: true,
@@ -206,28 +203,6 @@ describe('exportProjectAsPdf', () => {
       filePath: 'deck/index.html',
       projectId: 'proj-1',
       title: 'Seed Deck',
-    });
-
-    expect(result).toBe('desktop');
-    expect(fallback).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledWith('/api/projects/proj-1/export/pdf', {
-      body: JSON.stringify({ deck: true, fileName: 'deck/index.html', title: 'Seed Deck' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
-  });
-
-  it('falls back to browser print when the desktop PDF export API is unavailable', async () => {
-    const fallback = vi.fn();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { message: 'unavailable' } }), { status: 501 })));
-
-    const result = await exportProjectAsPdf({
-      deck: false,
-      fallbackPdf: fallback,
-      filePath: 'index.html',
-      projectId: 'proj-1',
-      title: 'Landing',
     });
 
     expect(result).toBe('fallback');
@@ -431,120 +406,6 @@ describe('sandboxed preview Blob exports', () => {
     expect(revokeSpy).toHaveBeenCalledWith('blob:test');
   });
 
-  it('uses the desktop native print bridge when the host PDF bridge is available', async () => {
-    const printPdfMock = vi.fn().mockResolvedValue({ ok: true });
-    const restoreHost = installMockOpenDesignHost({
-      host: { pdf: { print: printPdfMock } },
-    });
-
-    try {
-      await exportAsPdf('<script>window.parent.document.body.innerHTML="owned"</script>', 'Desktop PDF');
-    } finally {
-      restoreHost();
-    }
-
-    expect(printPdfMock).toHaveBeenCalledTimes(1);
-    expect(openCalls).toEqual([]);
-
-    const htmlArg = printPdfMock.mock.calls[0]![0];
-    expect(htmlArg).toContain('sandbox="allow-scripts"');
-    expect(htmlArg).not.toContain('allow-modals');
-    expect(htmlArg).toContain('&lt;script&gt;window.parent.document.body.innerHTML=&quot;owned&quot;&lt;/script&gt;');
-    expect(htmlArg).not.toContain('<script>window.parent.document.body.innerHTML="owned"</script>');
-    // Verify the readiness handshake is present — the sandboxed iframe posts
-    // 'OD_PRINT_READY' to the parent once fonts and images are loaded.
-    expect(htmlArg).toContain('OD_PRINT_READY');
-    // Verify the parent-wrapper cache script is present so the handshake is
-    // never missed even if 'OD_PRINT_READY' fires before the listener attaches.
-    expect(htmlArg).toContain('__odPrintReady');
-    // Verify the print script is NOT injected — Electron renders via the
-    // native printToPDF path, so a self-printing document would trigger a
-    // second print dialog.
-    expect(htmlArg).not.toContain('window.print()');
-  });
-
-  it('passes deck intent through the desktop native print bridge', async () => {
-    const printPdfMock = vi.fn().mockResolvedValue({ ok: true });
-    const restoreHost = installMockOpenDesignHost({
-      host: { pdf: { print: printPdfMock } },
-    });
-
-    try {
-      await exportAsPdf('<section class="slide">One</section>', 'Desktop Deck', { deck: true });
-    } finally {
-      restoreHost();
-    }
-
-    expect(printPdfMock).toHaveBeenCalledTimes(1);
-    expect(printPdfMock.mock.calls[0]![2]).toEqual({ deck: true });
-    expect(printPdfMock.mock.calls[0]![0]).toContain('data-deck-print=&quot;injected&quot;');
-  });
-
-  it('injects image-waiting logic into the print-ready handshake for the desktop bridge', async () => {
-    const printPdfMock = vi.fn().mockResolvedValue({ ok: true });
-    const restoreHost = installMockOpenDesignHost({
-      host: { pdf: { print: printPdfMock } },
-    });
-
-    // HTML with an intentionally non-loadable image to exercise the
-    // incomplete-image detection in the injected handshake.
-    const html = '<div><img src="https://example.com/will-not-load.png" alt="test"/></div>';
-    try {
-      await exportAsPdf(html, 'Image Test');
-    } finally {
-      restoreHost();
-    }
-
-    const htmlArg = printPdfMock.mock.calls[0]![0];
-    // In the sandboxed wrapper the srcdoc attribute is HTML-escaped, so the
-    // handshake script content is present as unescaped JS fragments.
-    expect(htmlArg).toContain('document.images');
-    expect(htmlArg).toContain("img.addEventListener('load'");
-    expect(htmlArg).toContain("img.addEventListener('error'");
-    expect(htmlArg).toContain('img.complete');
-    // The original font- and load-waiting logic must still be present.
-    expect(htmlArg).toContain('document.fonts');
-    expect(htmlArg).toContain('OD_PRINT_READY');
-    // The handshake posts an object with a per-export nonce to prevent
-    // spoofing by untrusted artifact code.
-    expect(htmlArg).toContain("type:'OD_PRINT_READY'");
-    expect(htmlArg).toContain("nonce:'");
-    // The cache script also validates the nonce and event source.
-    expect(htmlArg).toContain("e.data.type==='OD_PRINT_READY'");
-    expect(htmlArg).toContain("e.data.nonce===");
-    expect(htmlArg).toContain('e.source===');
-    // The parent cache should still be injected.
-    expect(htmlArg).toContain('__odPrintReady');
-    // No window.print() since the desktop bridge handles printing natively.
-    expect(htmlArg).not.toContain('window.print()');
-  });
-
-  it('injects the readiness cache for non-sandboxed desktop exports too', async () => {
-    const printPdfMock = vi.fn().mockResolvedValue({ ok: true });
-    const restoreHost = installMockOpenDesignHost({
-      host: { pdf: { print: printPdfMock } },
-    });
-
-    try {
-      await exportAsPdf('<main>Trusted local document</main>', 'Trusted', {
-        sandboxedPreview: false,
-      });
-    } finally {
-      restoreHost();
-    }
-
-    expect(printPdfMock).toHaveBeenCalledTimes(1);
-    const htmlArg = printPdfMock.mock.calls[0]![0];
-    // No sandbox wrapper — the document is passed through directly.
-    expect(htmlArg).not.toContain('sandbox="allow-scripts"');
-    expect(htmlArg).toContain('<main>Trusted local document</main>');
-    // The readiness handshake must still be injected.
-    expect(htmlArg).toContain('OD_PRINT_READY');
-    // The cache must be present so waitForPrintReadyHandshake never hangs.
-    expect(htmlArg).toContain('__odPrintReady');
-    // No window.print() since the desktop bridge handles printing natively.
-    expect(htmlArg).not.toContain('window.print()');
-  });
 });
 
 // ---------------------------------------------------------------------------

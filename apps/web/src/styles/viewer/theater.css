@@ -1451,25 +1451,6 @@
   border-color: var(--border-strong);
 }
 
-body.desktop-pet-shell {
-  width: 100vw;
-  height: 100vh;
-  margin: 0;
-  overflow: hidden;
-  background: transparent;
-}
-body.desktop-pet-shell .pet-overlay {
-  right: 18px !important;
-  bottom: 18px !important;
-}
-body.desktop-pet-shell .pet-bubble,
-body.desktop-pet-shell .pet-sprite {
-  -webkit-app-region: drag;
-}
-body.desktop-pet-shell .pet-task-item {
-  -webkit-app-region: no-drag;
-}
-
 @keyframes pet-bubble-in {
   from { opacity: 0; transform: translateY(4px) scale(0.96); }
   to { opacity: 1; transform: translateY(0) scale(1); }

@@ -16,10 +16,6 @@ import { buildSrcdoc, type SrcdocOptions } from './srcdoc';
 import { buildReactComponentSrcdoc } from './react-component';
 import { buildZip } from './zip';
 import { randomUUID } from '../utils/uuid';
-import {
-  isOpenDesignHostAvailable,
-  printHostPdf,
-} from '@open-design/host';
 
 const DESIGN_HANDOFF_FILENAME = 'DESIGN-HANDOFF.md';
 const DESIGN_MANIFEST_FILENAME = 'DESIGN-MANIFEST.json';
@@ -398,8 +394,15 @@ export function exportAsImage(dataUrl: string, title: string): void {
   }
 }
 
-export type ProjectPdfExportResult = 'desktop' | 'fallback';
+export type ProjectPdfExportResult = 'fallback';
 
+// PR WP5 (web-first migration): this used to POST to a daemon route that
+// forwarded the request to the desktop app's native Save-as-PDF flow over
+// IPC (`apps/desktop`, removed), falling back to `fallbackPdf()` only on
+// failure. The browser fallback (`exportAsPdf` below) is now the only PDF
+// export path, so this just calls it directly. The `deck`/`filePath`/
+// `projectId`/`title` options are kept on the signature (unused here) so
+// call sites don't need to change.
 export async function exportProjectAsPdf(opts: {
   deck: boolean;
   fallbackPdf: () => void;
@@ -407,25 +410,8 @@ export async function exportProjectAsPdf(opts: {
   projectId: string;
   title: string;
 }): Promise<ProjectPdfExportResult> {
-  try {
-    const resp = await fetch(`/api/projects/${encodeURIComponent(opts.projectId)}/export/pdf`, {
-      body: JSON.stringify({
-        deck: opts.deck,
-        fileName: opts.filePath,
-        title: opts.title,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
-    if (!resp.ok) throw new Error(`desktop PDF export unavailable (${resp.status})`);
-    const body = await resp.json().catch(() => ({}));
-    if (body && body.ok === false) throw new Error(body.error || 'desktop PDF export failed');
-    return 'desktop';
-  } catch (err) {
-    console.warn('[exportProjectAsPdf] falling back to browser print:', err);
-    opts.fallbackPdf();
-    return 'fallback';
-  }
+  opts.fallbackPdf();
+  return 'fallback';
 }
 
 type ReactSourceExtension = '.jsx' | '.tsx';
@@ -610,33 +596,10 @@ export async function exportAsPdf(
   if (opts?.deck) doc = injectDeckPrintStylesheet(doc);
   doc = injectPrintReadyHandshake(doc, nonce);
 
-  // Desktop native PDF bridge — the main process runs a direct
-  // Save-as-PDF flow: a native Save dialog, then Electron's
-  // webContents.printToPDF() straight to the chosen file (issue #1774;
-  // see apps/desktop/src/main/pdf-export.ts). The sandboxed wrapper
-  // omits allow-modals here because the native flow never calls
-  // window.print(); granting it would let untrusted artifact code call
-  // alert()/confirm() and stall the hidden Electron window indefinitely.
-  if (isOpenDesignHostAvailable()) {
-    if (sandboxedPreview) {
-      doc = buildSandboxedPreviewDocument(doc, title);
-    }
-    doc = injectParentPrintReadyCache(doc, nonce);
-    try {
-      const result = await printHostPdf(doc, nonce, opts?.deck ? { deck: true } : undefined);
-      if (result.ok) return;
-      if (typeof alert !== 'undefined') {
-        alert('Print failed. Please try Export PDF again or use the browser version.');
-      }
-    } catch {
-      if (typeof alert !== 'undefined') {
-        alert('Print failed. Please try Export PDF again or use the browser version.');
-      }
-    }
-    return;
-  }
-
-  // Browser fallback: wrap with allow-modals so the injected script can
+  // Browser fallback (WP5 web-first migration: this is now the only path —
+  // the desktop native Save-as-PDF bridge, which used Electron's
+  // webContents.printToPDF() via `apps/desktop`, was removed): wrap with
+  // allow-modals so the injected script can
   // call window.print(), then inject the self-printing script and open a
   // popup.
   if (sandboxedPreview) {

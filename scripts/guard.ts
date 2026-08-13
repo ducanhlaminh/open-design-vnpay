@@ -60,7 +60,6 @@ const residualAllowedExactPaths = new Set([
   "packages/agui-adapter/esbuild.config.mjs",
   "packages/contracts/esbuild.config.mjs",
   "packages/diagnostics/esbuild.config.mjs",
-  "packages/download/esbuild.config.mjs",
   "packages/host/esbuild.config.mjs",
   "packages/platform/esbuild.config.mjs",
   "packages/plugin-runtime/esbuild.config.mjs",
@@ -87,11 +86,6 @@ const residualAllowedExactPaths = new Set([
   "tools/kg/esbuild.config.mjs",
   "tools/pack/bin/tools-pack.mjs",
   "tools/pack/esbuild.config.mjs",
-  "tools/serve/bin/tools-serve.mjs",
-  "tools/serve/esbuild.config.mjs",
-  "tools/pack/resources/mac/notarize.cjs",
-  // electron-builder hook path; CJS compatibility entry used by tools-pack desktop builds.
-  "tools/pack/resources/web-standalone-after-pack.cjs",
   // Generated runtime bundle for the react-shadcn skill (emitted by builder/build.mjs,
   // loaded verbatim inside the preview iframe; never hand-edited TypeScript source).
   "skills/react-shadcn/assets/runtime/components.bundle.js",
@@ -601,13 +595,15 @@ async function checkWebTestLayout(): Promise<boolean> {
 const toolsRootAllowlist = new Map<string, "directory" | "file">([
   // Keep top-level tools intentionally small. `tools/launcher` was an incoming
   // Windows shim experiment from PR #683 and is not an active repo boundary.
+  // `tools/serve` (WP5, web-first migration: served the desktop-app updater
+  // fixture over HTTP for local dev; no desktop app left to update) was
+  // removed and dropped from this allowlist.
   ["AGENTS.md", "file"],
   ["dev", "directory"],
   // Local UI knowledge-graph control plane: project-local Neo4j lifecycle,
   // upstream UI-subgraph clone, screen lint/export, and the od-kg MCP server.
   ["kg", "directory"],
   ["pack", "directory"],
-  ["serve", "directory"],
 ]);
 
 async function checkToolsLayout(): Promise<boolean> {
@@ -621,7 +617,7 @@ async function checkToolsLayout(): Promise<boolean> {
     const repositoryPath = `tools/${entry.name}${entry.isDirectory() ? "/" : ""}`;
 
     if (expected == null) {
-      violations.push(`${repositoryPath} -> tools/ top-level entries are allowlisted; expected only AGENTS.md, dev/, pack/, and serve/`);
+      violations.push(`${repositoryPath} -> tools/ top-level entries are allowlisted; expected only AGENTS.md, dev/, kg/, and pack/`);
       continue;
     }
 

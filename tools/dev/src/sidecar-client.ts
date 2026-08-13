@@ -3,7 +3,6 @@ import {
   OPEN_DESIGN_SIDECAR_CONTRACT,
   SIDECAR_MESSAGES,
   type DaemonStatusSnapshot,
-  type DesktopStatusSnapshot,
   type WebStatusSnapshot,
 } from "@open-design/sidecar-proto";
 import { requestJsonIpc, resolveAppIpcPath } from "@open-design/sidecar";
@@ -19,10 +18,6 @@ export function resolveDaemonIpcPath(runtime: AppRuntimeLookup): string {
 
 export function resolveWebIpcPath(runtime: AppRuntimeLookup): string {
   return resolveAppIpcPath({ app: APP_KEYS.WEB, contract: OPEN_DESIGN_SIDECAR_CONTRACT, namespace: runtime.namespace });
-}
-
-export function resolveDesktopIpcPath(runtime: AppRuntimeLookup): string {
-  return resolveAppIpcPath({ app: APP_KEYS.DESKTOP, contract: OPEN_DESIGN_SIDECAR_CONTRACT, namespace: runtime.namespace });
 }
 
 export async function inspectDaemonRuntime(runtime: AppRuntimeLookup, timeoutMs = 800): Promise<DaemonStatusSnapshot | null> {
@@ -59,22 +54,4 @@ export async function waitForWebRuntime(runtime: AppRuntimeLookup, timeoutMs = 3
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
   throw new Error("web did not expose status in time");
-}
-
-export async function inspectDesktopRuntime(runtime: AppRuntimeLookup, timeoutMs = 800): Promise<DesktopStatusSnapshot | null> {
-  try {
-    return await requestJsonIpc<DesktopStatusSnapshot>(resolveDesktopIpcPath(runtime), { type: SIDECAR_MESSAGES.STATUS }, { timeoutMs });
-  } catch {
-    return null;
-  }
-}
-
-export async function waitForDesktopRuntime(runtime: AppRuntimeLookup, timeoutMs = 15000): Promise<DesktopStatusSnapshot> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const snapshot = await inspectDesktopRuntime(runtime, 800);
-    if (snapshot != null) return snapshot;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
-  }
-  throw new Error("desktop did not expose status in time");
 }

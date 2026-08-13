@@ -34,6 +34,21 @@ corepack enable
 corepack pnpm --version   # should print 10.33.2
 ```
 
+## Host install (one command, no Docker)
+
+Prefer running directly on macOS or Linux without Docker? Use the
+one-command host installer — it downloads the daemon + built web UI, runs
+them as a single process managed by a LaunchAgent (macOS) or systemd
+`--user` unit (Linux), and health-checks itself with automatic rollback:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.sh -o install.sh
+bash install.sh
+```
+
+See [`deploy/host/README.md`](deploy/host/README.md) for flags, updating,
+manual rollback, uninstalling, and offline/mirror installs.
+
 ## Docker Setup
 
 Run Open Design in a fully containerised environment without installing Node.js or pnpm locally.

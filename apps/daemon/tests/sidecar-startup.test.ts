@@ -1,5 +1,4 @@
 import { mkdtemp, rm } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,19 +20,21 @@ vi.mock('../src/daemon-startup.js', () => ({
 }));
 
 describe('daemon sidecar startup', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.clearAllMocks();
-    const { resetDesktopAuthForTests } = await import('../src/desktop-auth.js');
-    resetDesktopAuthForTests();
   });
 
-  afterEach(async () => {
-    const { resetDesktopAuthForTests } = await import('../src/desktop-auth.js');
-    resetDesktopAuthForTests();
+  afterEach(() => {
+    vi.clearAllMocks();
   });
 
-  it('starts through the shared daemon startup path and reports live auth state', async () => {
-    const { setDesktopAuthSecret } = await import('../src/desktop-auth.js');
+  // WP5 (web-first migration): this test used to also assert
+  // `desktopAuthGateActive` flipped true/false around `setDesktopAuthSecret`
+  // (`../src/desktop-auth.js`) — that gate existed only to authorize the
+  // desktop main process's IPC calls into the daemon. With `apps/desktop`
+  // and the gate removed, the STATUS snapshot no longer carries the field
+  // at all; this test now just pins the shared daemon-startup wiring.
+  it('starts through the shared daemon startup path', async () => {
     const { startDaemonSidecar } = await import('../src/sidecar/server.js');
     const root = await mkdtemp(join(tmpdir(), 'od-daemon-sidecar-'));
     const handle = await startDaemonSidecar({
@@ -52,11 +53,6 @@ describe('daemon sidecar startup', () => {
       const initial = await handle.status();
       expect(initial.state).toBe('running');
       expect(initial.url).toBe('http://127.0.0.1:48123');
-      expect(initial.desktopAuthGateActive).toBe(false);
-
-      setDesktopAuthSecret(randomBytes(32));
-      const afterAuth = await handle.status();
-      expect(afterAuth.desktopAuthGateActive).toBe(true);
     } finally {
       await handle.stop();
       await handle.waitUntilStopped();

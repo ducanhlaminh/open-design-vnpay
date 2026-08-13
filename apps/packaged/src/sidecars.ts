@@ -234,16 +234,6 @@ function createPackagedDaemonManagedPathEnv(
 export type PackagedDaemonSpawnEnvOptions = {
   appVersion: string | null;
   daemonCliEntry: string | null;
-  /**
-   * PR #974 round-5 (lefarcen P2): only pin the daemon's import-folder
-   * gate ON when the desktop runtime is actually being started in the
-   * same packaged process group. Headless packaged deployments
-   * (`tools-pack linux start --headless`) have no `shell.openPath`
-   * surface, so leaving the gate dormant avoids the impossible-auth
-   * state where the daemon waits forever for a registration that the
-   * headless runtime can never deliver.
-   */
-  requireDesktopAuth: boolean;
   legacyDataDir?: string | null;
   telemetryRelayUrl?: string | null;
   posthogKey?: string | null;
@@ -269,9 +259,8 @@ export type PackagedDaemonSpawnEnvOptions = {
 
 /**
  * Pure helper: assemble the daemon spawn env for a packaged sidecar.
- * Extracted from `startPackagedSidecars` so vitest can pin both
- * branches of `requireDesktopAuth` without spinning up a real child
- * process.
+ * Extracted from `startPackagedSidecars` so vitest can pin its behavior
+ * without spinning up a real child process.
  */
 export function buildPackagedDaemonSpawnEnv(
   paths: PackagedNamespacePaths,
@@ -280,14 +269,6 @@ export function buildPackagedDaemonSpawnEnv(
   return {
     [SIDECAR_ENV.DAEMON_PORT]: "0",
     ...(options.daemonCliEntry == null ? {} : { [SIDECAR_ENV.DAEMON_CLI_PATH]: options.daemonCliEntry }),
-    // PR #974 round-4 P1 + round-5 P2: pinned ON when a desktop is
-    // being started, OFF for headless. The daemon-side flag refuses
-    // tokenless imports even before the desktop main process has
-    // finished registering, closing the daemon-restart-mid-session
-    // bypass that a runtime-only handshake left open. Headless skips
-    // it because there is no privileged shell.openPath surface and
-    // no client to register a secret.
-    ...(options.requireDesktopAuth ? { OD_REQUIRE_DESKTOP_AUTH: "1" } : {}),
     // Packaged daemon managed paths are deliberately delivered through
     // the sidecar launch environment. The daemon may keep its own default
     // fallback, but packaged runtime must not rely on path inference from
@@ -474,16 +455,6 @@ export async function startPackagedSidecars(
     googleClientSecret: string | null;
     identityUrl: string | null;
     authDomainLock: string | null;
-    /**
-     * PR #974 round-5 (lefarcen P2): caller asserts whether a desktop
-     * runtime is being started in this packaged process group. The
-     * Electron entry passes `true`; `headless.ts` passes `false` so the
-     * daemon's import-folder gate stays dormant in headless mode where
-     * there is no `shell.openPath` surface and no client to register a
-     * secret. Required (no default) so a future packaged caller cannot
-     * silently regress the gate by omitting it.
-     */
-    requireDesktopAuth: boolean;
     webSidecarEntry: string | null;
     webStandaloneRoot: string | null;
     webOutputMode: PackagedWebOutputMode;
@@ -509,7 +480,6 @@ export async function startPackagedSidecars(
         appVersion: options.appVersion,
         daemonCliEntry: options.daemonCliEntry,
         legacyDataDir: process.env.OD_LEGACY_DATA_DIR ?? null,
-        requireDesktopAuth: options.requireDesktopAuth,
         telemetryRelayUrl: options.telemetryRelayUrl,
         posthogKey: options.posthogKey,
         posthogHost: options.posthogHost,

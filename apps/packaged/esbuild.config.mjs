@@ -10,12 +10,6 @@ const sharedOptions = {
 
 await build({
   ...sharedOptions,
-  entryPoints: ["./src/index.ts"],
-  outfile: "./dist/index.mjs",
-});
-
-await build({
-  ...sharedOptions,
   entryPoints: ["./src/headless.ts"],
   outfile: "./dist/headless.mjs",
 });

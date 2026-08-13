@@ -89,7 +89,13 @@ export function EditAppModal({
           <QuietButton onClick={onClose} disabled={busy}>
             Hủy
           </QuietButton>
-          <PrimaryButton icon="check" busy={busy} onClick={() => void submit()} disabled={busy || !canSubmit}>
+          <PrimaryButton
+            icon="check"
+            busy={busy}
+            data-testid="edit-app-submit"
+            onClick={() => void submit()}
+            disabled={busy || !canSubmit}
+          >
             {busy ? 'Đang lưu…' : 'Lưu thay đổi'}
           </PrimaryButton>
         </>
@@ -107,6 +113,7 @@ export function EditAppModal({
           <TextInput
             {...fieldProps}
             autoFocus
+            data-testid="edit-app-name"
             placeholder="Retail"
             value={name}
             onChange={(e) => setName(e.target.value)}

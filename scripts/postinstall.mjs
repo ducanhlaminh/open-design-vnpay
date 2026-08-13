@@ -9,7 +9,6 @@ const repoRoot = resolve(scriptDir, "..");
 const buildTargets = [
   "packages/contracts",
   "packages/platform",
-  "packages/download",
   "packages/host",
   "packages/registry-protocol",
   "packages/agui-adapter",
@@ -20,7 +19,6 @@ const buildTargets = [
   "packages/figma-h2d",
   "tools/dev",
   "tools/pack",
-  "tools/serve",
 ];
 
 const jsExtensions = new Set([".js", ".cjs", ".mjs"]);

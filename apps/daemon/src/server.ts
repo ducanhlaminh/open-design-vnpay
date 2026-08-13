@@ -1,5 +1,4 @@
 // @ts-nocheck
-import type { DesktopExportPdfInput, DesktopExportPdfResult } from '@open-design/sidecar-proto';
 import express from 'express';
 import multer from 'multer';
 import JSZip from 'jszip';
@@ -30,7 +29,6 @@ import {
 import { expandHomePrefix, resolveProjectRelativePath } from './home-expansion.js';
 import { userFacingAgentLabel } from './user-facing-agent-label.js';
 import { createCommandInvocation } from '@open-design/platform';
-import { SIDECAR_DEFAULTS, SIDECAR_ENV } from '@open-design/sidecar-proto';
 import {
   checkPromptArgvBudget,
   checkWindowsCmdShimCommandLineBudget,
@@ -45,25 +43,6 @@ import {
   spawnEnvForAgent,
 } from './agents.js';
 import { migrateLegacyDataDirSync } from './legacy-data-migrator.js';
-import {
-  consumedImportNonces,
-  getDesktopAuthSecret,
-  isDesktopAuthGateActive,
-  isDesktopAuthRegistered,
-  pruneExpiredImportNonces,
-  resetDesktopAuthForTests,
-  setDesktopAuthSecret,
-  signDesktopImportToken,
-  verifyDesktopImportToken,
-} from './desktop-auth.js';
-export {
-  isDesktopAuthGateActive,
-  isDesktopAuthRegistered,
-  resetDesktopAuthForTests,
-  setDesktopAuthSecret,
-  signDesktopImportToken,
-  verifyDesktopImportToken,
-} from './desktop-auth.js';
 import {
   getMachineIdentityUser,
   getMachineUser,
@@ -227,7 +206,6 @@ import {
   readAnalyticsContext,
   readPublicConfigResponse,
 } from './analytics.js';
-import { observePendingInstallerApplyAttempts } from './update-apply-observations.js';
 import {
   agentIdToTracking,
   deriveConfigureGlobals,
@@ -254,7 +232,6 @@ import { buildDocumentPreview } from './document-preview.js';
 import { lintArtifact, renderFindingsForAgent } from './lint-artifact.js';
 import { loadCraftSections } from './craft.js';
 import { skillCwdAliasSegment, stageActiveSkill } from './cwd-aliases.js';
-import { buildDesktopPdfExportInput } from './pdf-export.js';
 import { generateMedia } from './media.js';
 import { listElevenLabsVoiceOptions } from './elevenlabs-voices.js';
 import { searchResearch, ResearchError } from './research/index.js';
@@ -554,6 +531,7 @@ import type { CriteriaGenerationJob, CriteriaGenerationKind } from '@open-design
 import { MediaClient, mediaConfigFromEnv, sha256hex, type LocalSyncFile } from './kg-sync/media-client.js';
 import { PullPlanStore, applyPullFiles, planPullFiles } from './kg-sync/pull-conflict.js';
 import { type PushPlan, planPush, rememberPendingId } from './kg-sync/push-plan.js';
+import { studioConfigOf } from './kg-sync/push-dest.js';
 import { writeStagingRequest } from './kg-sync/staging-store.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
 import { configureConnectorCredentialStore, connectorService, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
@@ -1194,6 +1172,24 @@ function resolveProcessResourcesPath() {
   return null;
 }
 
+// Node's ESM loader resolves symlinks when computing `__dirname` (see
+// `PROJECT_ROOT = resolveProjectRoot(__dirname)`), so in a host-runtime
+// install PROJECT_ROOT is already the REAL `releases/<version>` path, not
+// the stable `current` symlink. A configured OD_RESOURCE_ROOT that
+// legitimately (and deliberately, per deploy/host/install.sh) points
+// through `<OD_HOME>/current/...` would lexically compare as outside that
+// base and be wrongly rejected. Realpath both sides before the containment
+// check so the symlink indirection on either side doesn't produce a false
+// negative; fall back to the lexical path if realpath fails (e.g. the
+// target doesn't exist yet) rather than erroring out here.
+function realpathOrSelf(candidate) {
+  try {
+    return fs.realpathSync(candidate);
+  } catch {
+    return candidate;
+  }
+}
+
 export function resolveDaemonResourceRoot({
   configured = process.env[RESOURCE_ROOT_ENV],
   safeBases = [PROJECT_ROOT, resolveProcessResourcesPath()],
@@ -1201,11 +1197,15 @@ export function resolveDaemonResourceRoot({
   if (!configured || configured.length === 0) return null;
 
   const resolved = path.resolve(configured);
+  const realResolved = realpathOrSelf(resolved);
   const normalizedSafeBases = safeBases
     .filter((base) => typeof base === 'string' && base.length > 0)
     .map((base) => path.resolve(base));
 
-  if (!normalizedSafeBases.some((base) => isPathWithin(base, resolved))) {
+  const isWithinAnyBase = normalizedSafeBases.some(
+    (base) => isPathWithin(base, resolved) || isPathWithin(realpathOrSelf(base), realResolved),
+  );
+  if (!isWithinAnyBase) {
     throw new Error(
       `${RESOURCE_ROOT_ENV} must be under the workspace root or app resources path`,
     );
@@ -3554,8 +3554,6 @@ export function createSseResponse(
   };
 }
 
-export type DesktopPdfExporter = (input: DesktopExportPdfInput) => Promise<DesktopExportPdfResult>;
-
 // Loosely typed shape — we only access `namespace`, `base`, `mode`, and
 // `source` from the runtime context when building the diagnostics export.
 // Anything richer would force a dependency from server.ts into the sidecar
@@ -3568,7 +3566,6 @@ export interface DaemonRuntimeContext {
 }
 
 export interface StartServerOptions {
-  desktopPdfExporter?: DesktopPdfExporter | null;
   host?: string;
   port?: number;
   returnServer?: boolean;
@@ -3740,7 +3737,6 @@ export async function startServer({
   port = 7456,
   host = process.env.OD_BIND_HOST || '127.0.0.1',
   returnServer = false,
-  desktopPdfExporter = null,
   runtime = null,
 }: StartServerOptions = {}) {
   let resolvedPort = port;
@@ -5370,19 +5366,20 @@ export async function startServer({
   const reportedRuns = new Set();
 
   // App-version snapshot read once at server start for Langfuse trace metadata.
+  //
+  // WP5 (web-first migration): this used to also call
+  // `observePendingInstallerApplyAttempts` (from the now-removed
+  // `./update-apply-observations.js`) right after the version read, to scan
+  // for pending `installer_apply_observation` summary.json files and report
+  // whether a desktop installer/updater apply attempt succeeded. The only
+  // producer of those files was `apps/desktop/src/main/installer-observations.ts`
+  // (removed with the rest of the desktop app), so the scan would only ever
+  // find zero pending observations now — it was removed along with its
+  // module and test.
   let cachedAppVersion = null;
   void (async () => {
     try {
       cachedAppVersion = await readCurrentAppVersionInfo();
-      await observePendingInstallerApplyAttempts({
-        analytics: analyticsService,
-        appVersion: cachedAppVersion.version,
-        currentChannel: cachedAppVersion.channel,
-        currentVersion: cachedAppVersion.version,
-        dataRoot: RUNTIME_DATA_DIR,
-        logger: console,
-        namespace: process.env[SIDECAR_ENV.NAMESPACE] ?? SIDECAR_DEFAULTS.namespace,
-      });
     } catch {
       // Telemetry is best-effort; appVersion is omitted when unavailable.
     }
@@ -5503,9 +5500,6 @@ export async function startServer({
   const projectExportDeps = {
     buildProjectArchive,
     buildBatchArchive,
-    buildDesktopPdfExportInput,
-    desktopPdfExporter,
-    daemonUrlRef,
     sanitizeArchiveFilename,
   };
   const artifactDeps = {
@@ -5581,13 +5575,8 @@ export async function startServer({
   };
   const authDeps = {
     authorizeToolRequest,
-    consumedImportNonces,
-    desktopAuthSecret: getDesktopAuthSecret,
-    isDesktopAuthGateActive,
-    pruneExpiredImportNonces,
     requestProjectOverride,
     requestRunOverride,
-    verifyDesktopImportToken,
   };
   const finalizeDeps = {
     defaultBaseUrlForFinalizeProtocol,
@@ -5674,7 +5663,6 @@ export async function startServer({
     ids: idDeps,
     paths: pathDeps,
     imports: importDeps,
-    auth: authDeps,
     projectStore: projectStoreDeps,
     conversations: conversationDeps,
     projectFiles: projectFileDeps,
@@ -10191,41 +10179,6 @@ export async function startServer({
     }
   });
 
-  app.post('/api/projects/:id/export/pdf', async (req, res) => {
-    if (typeof desktopPdfExporter !== 'function') {
-      return sendApiError(
-        res,
-        501,
-        'UPSTREAM_UNAVAILABLE',
-        'desktop PDF export is only available in the desktop runtime',
-      );
-    }
-    try {
-      const { fileName, title, deck } = req.body || {};
-      if (typeof fileName !== 'string' || fileName.length === 0) {
-        return sendApiError(res, 400, 'BAD_REQUEST', 'fileName required');
-      }
-      const input = await buildDesktopPdfExportInput({
-        daemonUrl,
-        deck: deck === true,
-        fileName,
-        projectId: req.params.id,
-        projectsRoot: PROJECTS_DIR,
-        title: typeof title === 'string' ? title : undefined,
-      });
-      const result = await desktopPdfExporter(input);
-      res.json(result);
-    } catch (err) {
-      const status = err && err.code === 'ENOENT' ? 404 : 400;
-      sendApiError(
-        res,
-        status,
-        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
-        String(err?.message || err),
-      );
-    }
-  });
-
   app.delete(/^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, async (req, res) => {
     try {
       const projectId = String(req.params[0] ?? '');
@@ -12600,6 +12553,15 @@ export async function startServer({
             },
               {
                 projectRoot: PROJECT_ROOT,
+                // The "same as chat" local-CLI extraction path re-invokes
+                // this SAME turn's configured CLI — it must run in the
+                // turn's own directory (`effectiveCwd`, already resolved
+                // above for the real turn's own spawn), never
+                // `PROJECT_ROOT` (the daemon's own install root). Passed
+                // alongside `projectRoot`, not instead of it: that field
+                // still separately anchors the BYOK media-config
+                // credential store for non-local-CLI providers.
+                chatCwd: effectiveCwd,
                 chatAgentId: typeof agentId === 'string' ? agentId : null,
                 chatModel: typeof safeModel === 'string' ? safeModel : null,
               },
@@ -13763,43 +13725,18 @@ export async function startServer({
 
   // Render a self-contained HTML document (inline CSS + data-URI images) to a
   // PDF via headless Chromium. Runtime-agnostic (spawns its own chromium), so
-  // the review exporter gets a real downloadable .pdf in web AND desktop.
-  // Two backends, in preference order:
-  //   1. DESKTOP — Electron's own `webContents.printToPDF` via the sidecar
-  //      bridge. The app IS a browser, so there is nothing to provision: no
-  //      npm, no ~150MB Chromium download, works offline. It saves through a
-  //      native dialog and answers `RenderPdfSavedResponse` (JSON).
-  //   2. Browser / CLI — headless Chromium provisioned on first use, answering
-  //      the PDF bytes. Only reachable when there is no desktop runtime, or
-  //      when the desktop bridge itself failed.
+  // the review exporter gets a real downloadable .pdf.
+  // WP5 (web-first migration): this used to try Electron's own
+  // `webContents.printToPDF` via the sidecar bridge first (no npm, no
+  // ~150MB Chromium download, works offline) and only fell back to headless
+  // Chromium when there was no desktop runtime. That bridge — and
+  // `apps/desktop` itself — is gone, so headless Chromium (provisioned on
+  // first use) is now the only backend.
   app.post('/api/render/pdf', async (req, res) => {
     const html = typeof req.body?.html === 'string' ? req.body.html : '';
     const filename =
       typeof req.body?.filename === 'string' && req.body.filename ? req.body.filename : 'document.pdf';
     if (!html.trim()) return sendApiError(res, 400, 'BAD_REQUEST', 'html is required');
-
-    if (typeof desktopPdfExporter === 'function') {
-      try {
-        const saved = await desktopPdfExporter({
-          deck: false,
-          defaultFilename: filename,
-          html,
-          title: filename.replace(/\.pdf$/i, '') || 'document',
-        });
-        // A user who dismisses the Save dialog is NOT an error — answer 200 so
-        // the caller stays quiet instead of showing a failure toast.
-        const body: import('@open-design/contracts').RenderPdfSavedResponse = {
-          saved: true,
-          ok: saved.ok === true,
-          ...(saved.canceled ? { canceled: true } : {}),
-          ...(saved.path ? { path: saved.path } : {}),
-        };
-        if (saved.ok === true || saved.canceled) return res.json(body);
-        console.warn('[render/pdf] desktop exporter failed, falling back to headless Chromium:', saved.error);
-      } catch (err) {
-        console.warn('[render/pdf] desktop exporter unavailable, falling back to headless Chromium:', err);
-      }
-    }
 
     try {
       const pdf = await renderHtmlToPdf(html, RUNTIME_DATA_DIR);

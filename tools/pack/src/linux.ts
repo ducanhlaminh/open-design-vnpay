@@ -10,8 +10,6 @@ import {
   SIDECAR_MESSAGES,
   SIDECAR_MODES,
   SIDECAR_SOURCES,
-  type DesktopEvalResult,
-  type DesktopScreenshotResult,
   type DesktopStatusSnapshot,
   type SidecarStamp,
 } from "@open-design/sidecar-proto";
@@ -33,7 +31,6 @@ import { processWebSourcemaps } from "./web-sourcemaps.js";
 
 const execFileAsync = promisify(execFile);
 
-const PRODUCT_NAME = "Open Design";
 const APP_IMAGE_PRODUCT_NAME = "Open-Design";
 const DESKTOP_LOG_ECHO_ENV = "OD_DESKTOP_LOG_ECHO";
 // The containerized build sets this to the standalone pnpm binary fetched by
@@ -56,7 +53,6 @@ const INTERNAL_PACKAGES = [
   { directory: "packages/diagnostics", name: "@open-design/diagnostics" },
   { directory: "apps/daemon", name: "@open-design/daemon" },
   { directory: "apps/web", name: "@open-design/web" },
-  { directory: "apps/desktop", name: "@open-design/desktop" },
   { directory: "apps/packaged", name: "@open-design/packaged" },
 ] as const;
 
@@ -389,7 +385,6 @@ async function buildWorkspaceArtifacts(config: ToolPackConfig): Promise<void> {
       await writeFile(webNextEnvPath, previousWebNextEnv, "utf8");
     }
   }
-  await runPnpm(config, ["--filter", "@open-design/desktop", "build"]);
   await runPnpm(config, ["--filter", "@open-design/packaged", "build"]);
 }
 
@@ -442,10 +437,6 @@ async function writeAssembledApp(
 ): Promise<void> {
   await rm(paths.assembledAppRoot, { force: true, recursive: true });
   await mkdir(paths.assembledAppRoot, { recursive: true });
-  await cp(
-    join(config.workspaceRoot, "apps", "desktop", "dist", "main", "preload.cjs"),
-    join(paths.assembledAppRoot, "preload.cjs"),
-  );
 
   const dependencies: Record<string, string> = {};
   for (const tarball of packed) {
@@ -493,76 +484,18 @@ async function writeAssembledApp(
   await runProductionInstall(paths.assembledAppRoot);
 }
 
-// --- Step 5: writeLinuxBuilderConfig helper ---
-
-async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths): Promise<void> {
-  const target = config.to === "dir" ? ["dir"] : ["AppImage"];
-  const namespaceToken = sanitizeNamespace(config.namespace);
-  const packagedVersion = await readPackagedVersion(config);
-  const packageVersion = electronBuilderVersionForAppVersion(packagedVersion);
-
-  const builderConfig: Record<string, unknown> = {
-    appId: "io.open-design.desktop",
-    artifactName: `${PRODUCT_NAME}-${namespaceToken}.\${ext}`,
-    asar: false,
-    buildDependenciesFromSource: false,
-    compression: "maximum",
-    directories: {
-      app: paths.assembledAppRoot,
-      output: paths.appBuilderOutputRoot,
-      buildResources: dirname(linuxResources.icon),
-    },
-    electronVersion: config.electronVersion.replace(/^[^\d]*/, ""),
-    electronDist: config.electronDistPath,
-    executableName: PRODUCT_NAME,
-    extraMetadata: {
-      main: "./main.cjs",
-      name: "open-design-packaged-app",
-      productName: PRODUCT_NAME,
-      version: packageVersion,
-      ...(config.portable ? {} : { odToolsPackRuntimeRoot: config.roots.runtime.namespaceBaseRoot }),
-    },
-    extraResources: [
-      { from: paths.resourceRoot, to: "open-design" },
-      { from: paths.packagedConfigPath, to: "open-design-config.json" },
-    ],
-    files: ["**/*", "!**/node_modules/.bin", "!**/node_modules/electron{,/**/*}"],
-    icon: linuxResources.icon,
-    linux: {
-      target,
-      icon: linuxResources.icon,
-      category: "Development",
-      synopsis: "Open Design",
-      maintainer: "Open Design Contributors",
-    },
-    nodeGypRebuild: false,
-    npmRebuild: false,
-    productName: PRODUCT_NAME,
-  };
-
-  await mkdir(dirname(paths.appBuilderConfigPath), { recursive: true });
-  await writeFile(paths.appBuilderConfigPath, `${JSON.stringify(builderConfig, null, 2)}\n`, "utf8");
-}
-
-// --- Step 6: runElectronBuilderLinux + findBuiltAppImage helpers ---
-
-async function runElectronBuilderLinux(config: ToolPackConfig, paths: LinuxPaths): Promise<void> {
-  await rm(paths.appBuilderOutputRoot, { force: true, recursive: true });
-  const args = [
-    config.electronBuilderCliPath,
-    "--linux",
-    "--config",
-    paths.appBuilderConfigPath,
-    "--projectDir",
-    paths.assembledAppRoot,
-    "--publish",
-    "never",
-  ];
-  await execFileAsync(process.execPath, args, {
-    cwd: config.workspaceRoot,
-    env: process.env,
-  });
-}
+// --- Step 5/6: findBuiltAppImage helper ---
+//
+// WP5 (web-first migration) removed the electron-builder invocation that
+// used to populate `paths.appBuilderOutputRoot` with a packaged `.AppImage`
+// (apps/desktop, the Electron shell it built, and the electron-builder
+// dependency are all gone). `findBuiltAppImage` stays because
+// `validateDesktopAppImageMarker` below (used by the shared, headless-aware
+// `cleanupPackedLinuxNamespace`) still calls it as a defensive check, and the
+// AppImage lifecycle commands (`installPackedLinuxApp` et al.) still call it
+// to produce their "no AppImage found" error. `packLinux` clears
+// `appBuilderOutputRoot` before returning so a stale artifact from a
+// pre-WP5 build cannot be mistaken for a fresh one.
 
 async function findBuiltAppImage(paths: LinuxPaths): Promise<string | null> {
   if (!(await pathExists(paths.appBuilderOutputRoot))) return null;
@@ -603,8 +536,11 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
   await copyResourceTree(config, paths);
   const tarballs = await collectWorkspaceTarballs(config, paths);
   await writeAssembledApp(config, paths, tarballs);
-  await writeLinuxBuilderConfig(config, paths);
-  await runElectronBuilderLinux(config, paths);
+  // No electron-builder step runs anymore (see the findBuiltAppImage
+  // docstring above), so nothing repopulates appBuilderOutputRoot on this
+  // build. Clear it so a stale `.AppImage` from a pre-WP5 build cannot be
+  // mistaken for a fresh one below.
+  await rm(paths.appBuilderOutputRoot, { force: true, recursive: true });
 
   const appImagePath = config.to === "dir" ? null : await findBuiltAppImage(paths);
   return {
@@ -738,18 +674,16 @@ export type LinuxStartResult = {
   status: DesktopStatusSnapshot | null;
 };
 
+// WP5 (web-first migration): `LinuxInspectResult` used to also carry
+// optional `eval`/`screenshot` results (backed by the desktop-app-only
+// EVAL/SCREENSHOT sidecar IPC verbs, now removed). `inspectPackedLinuxApp`
+// can only ever be reached with a live desktop process once
+// `startPackedLinuxApp`'s electron-builder AppImage path actually runs one
+// again — until then `status` (via STATUS IPC) is the only meaningful
+// result, so that's all this returns now.
 export type LinuxInspectResult = {
-  eval?: DesktopEvalResult;
-  screenshot?: DesktopScreenshotResult;
   status: DesktopStatusSnapshot | null;
 };
-
-export function shouldRejectLinuxHeadlessInspectOptions(options: {
-  expr?: string;
-  path?: string;
-}): boolean {
-  return options.expr != null || options.path != null;
-}
 
 type DesktopRootIdentityMarker = {
   appPath: string;
@@ -1135,14 +1069,13 @@ export async function readPackedLinuxLogs(config: ToolPackConfig): Promise<{
   return { logs, namespace: config.namespace };
 }
 
-export async function inspectPackedLinuxApp(
-  config: ToolPackConfig,
-  options: { expr?: string; headless?: boolean; path?: string },
-): Promise<LinuxInspectResult> {
-  if (options.headless === true && shouldRejectLinuxHeadlessInspectOptions(options)) {
-    throw new Error("linux inspect --headless supports status only; omit --expr and --path");
-  }
-
+// WP5 (web-first migration): the `headless` option used to only gate
+// whether `--expr`/`--path` (EVAL/SCREENSHOT) were rejected — both are gone,
+// so `inspectPackedLinuxApp` no longer takes any options. It always reports
+// STATUS from the desktop IPC socket (`null` if nothing answers, which is
+// always true in headless mode today since headless never starts a desktop
+// process on this socket).
+export async function inspectPackedLinuxApp(config: ToolPackConfig): Promise<LinuxInspectResult> {
   const stamp = linuxDesktopStamp(config);
   const status = await requestJsonIpc<DesktopStatusSnapshot>(
     stamp.ipc,
@@ -1150,31 +1083,7 @@ export async function inspectPackedLinuxApp(
     { timeoutMs: 2000 },
   ).catch(() => null);
 
-  if (options.headless === true) {
-    return { status };
-  }
-
-  return {
-    ...(options.expr == null
-      ? {}
-      : {
-          eval: await requestJsonIpc<DesktopEvalResult>(
-            stamp.ipc,
-            { input: { expression: options.expr }, type: SIDECAR_MESSAGES.EVAL },
-            { timeoutMs: 5000 },
-          ),
-        }),
-    ...(options.path == null
-      ? {}
-      : {
-          screenshot: await requestJsonIpc<DesktopScreenshotResult>(
-            stamp.ipc,
-            { input: { path: options.path }, type: SIDECAR_MESSAGES.SCREENSHOT },
-            { timeoutMs: 10000 },
-          ),
-        }),
-    status,
-  };
+  return { status };
 }
 
 export type LinuxUninstallResult = {

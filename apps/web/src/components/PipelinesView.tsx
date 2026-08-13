@@ -1816,6 +1816,7 @@ export function PipelinesView() {
           <button
             type="button"
             className="pl-btn pl-btn--xs"
+            data-testid="pipeline-pull-all-btn"
             onClick={() => setPullAllOpen(true)}
             disabled={syncBusy !== null || syncAccess?.syncReady !== true}
             title={syncAccess?.syncReady === false ? SYNC_COPY.reconnectHint : 'Chọn dự án và kết quả cần lấy về máy'}
@@ -1826,6 +1827,7 @@ export function PipelinesView() {
           <button
             type="button"
             className="pl-btn pl-btn--xs"
+            data-testid="pipeline-push-all-btn"
             onClick={() => setPushAllOpen(true)}
             disabled={syncBusy !== null || syncAccess?.syncReady !== true}
             title={syncAccess?.syncReady === false ? SYNC_COPY.reconnectHint : 'Chọn dự án và kết quả cần chia sẻ'}
@@ -2442,6 +2444,7 @@ export function PipelinesView() {
                 <button
                   type="button"
                   className="pl-btn pl-btn--run"
+                  data-testid={`pipeline-result-stage-${p.id}`}
                   onClick={() => navigate({ kind: 'pipeline-result', projectId, pipelineId: p.id })}
                 >
                   <Icon name="file-code" size={14} />
@@ -2492,6 +2495,7 @@ export function PipelinesView() {
                 <button
                   type="button"
                   className={isSkipped ? 'pl-btn' : 'pl-btn pl-btn--run'}
+                  data-testid={`pipeline-run-stage-${p.id}`}
                   onClick={() => onRunClick(p)}
                   disabled={isBusy}
                   title={
@@ -2722,6 +2726,7 @@ export function PipelinesView() {
             <button
               type="button"
               className="pl-btn pl-btn--danger"
+              data-testid="pipeline-run-all-stop"
               onClick={() => void stopPipeline()}
               disabled={stopping}
               title="Hủy mọi bước đang chạy của pipeline này. Kết quả của bước đang dở sẽ bị bỏ; các bước đã xong giữ nguyên."
@@ -2733,6 +2738,7 @@ export function PipelinesView() {
             <button
               type="button"
               className="pl-btn pl-btn--run"
+              data-testid="pipeline-run-all-btn"
               onClick={() => void runAllWithSavedConfig()}
               disabled={!projectId || pipelines.length === 0 || runAllBusy}
               title="Chạy full luồng từ các bước đã chọn ở rail bên cạnh và XOÁ kết quả cũ của những bước đó (đã lưu vào lịch sử trước khi xoá) — đổi cấu hình trước bằng nút Đổi nếu cần khác đi"
@@ -2745,6 +2751,7 @@ export function PipelinesView() {
             <button
               type="button"
               className="pl-btn pl-btn--confirm-workflow"
+              data-testid="pipeline-docs-review-confirm"
               onClick={() => void confirmDocsReview()}
               disabled={!docsReviewReadyToConfirm || docsReviewConfirmBusy || anyRunning}
               title={

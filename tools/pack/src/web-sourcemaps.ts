@@ -36,6 +36,7 @@
 // directly and is not currently used by any release artifact; it can be
 // added later if the OSS audience reports symbolication needs.
 
+import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -43,10 +44,66 @@ import { join } from "node:path";
 import { createPackageManagerInvocation } from "@open-design/platform";
 
 import type { ToolPackConfig } from "./config.js";
-import { execFileAsync } from "./mac/commands.js";
 
 const POSTHOG_CLI_VERSION = "0.7.11";
 const RELEASE_NAME = "open-design-web";
+
+type LoggedCommandOptions = Pick<SpawnOptionsWithoutStdio, "cwd" | "env" | "windowsVerbatimArguments">;
+
+function quoteCommandPart(value: string): string {
+  if (!/[\s"'$`\\]/.test(value)) return value;
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function commandLine(command: string, args: string[]): string {
+  return [command, ...args].map(quoteCommandPart).join(" ");
+}
+
+// WP5 (web-first migration): this used to import the shared `execFileAsync`
+// from `./mac/commands.js`, which streamed stdout/stderr live and logged
+// command boundaries. That module was removed with the rest of
+// `tools/pack/src/mac/**`. `processWebSourcemaps` runs for every packaged
+// platform (linux calls it from `buildWorkspaceArtifacts`, not just the
+// removed mac/win builders), so the helper is inlined here instead of
+// re-exported from a platform-specific module.
+async function execFileAsync(
+  command: string,
+  args: string[],
+  options: LoggedCommandOptions = {},
+): Promise<void> {
+  const startedAt = Date.now();
+  process.stderr.write(`[tools-pack web-sourcemaps] run ${commandLine(command, args)}\n`);
+
+  await new Promise<void>((resolveCommand, rejectCommand) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      windowsVerbatimArguments: options.windowsVerbatimArguments,
+    });
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+    });
+    child.once("error", rejectCommand);
+    child.once("close", (code, signal) => {
+      if (code === 0 && signal == null) {
+        resolveCommand();
+        return;
+      }
+      const suffix = signal == null ? `exit code ${code ?? "unknown"}` : `signal ${signal}`;
+      rejectCommand(new Error(`command failed with ${suffix}: ${commandLine(command, args)}`));
+    });
+  });
+
+  process.stderr.write(
+    `[tools-pack web-sourcemaps] done ${commandLine(command, args)} durationMs=${Date.now() - startedAt}\n`,
+  );
+}
 
 export interface WebSourcemapOptions {
   /**

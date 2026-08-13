@@ -2,10 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   APP_KEYS,
-  DESKTOP_UPDATE_ACTIONS,
-  DESKTOP_UPDATE_CHANNELS,
-  DESKTOP_UPDATE_MODES,
-  DESKTOP_UPDATE_STATES,
   normalizeDaemonSidecarMessage,
   normalizeDesktopSidecarMessage,
   normalizeNamespace,
@@ -40,11 +36,15 @@ describe("open-design sidecar contract", () => {
       namespace: STAMP_NAMESPACE_FLAG,
       source: STAMP_SOURCE_FLAG,
     });
-    expect(OPEN_DESIGN_SIDECAR_CONTRACT.updateActions).toBe(DESKTOP_UPDATE_ACTIONS);
-    expect(OPEN_DESIGN_SIDECAR_CONTRACT.updateChannels).toBe(DESKTOP_UPDATE_CHANNELS);
-    expect(Object.values(DESKTOP_UPDATE_CHANNELS)).toEqual(["beta", "nightly", "preview", "stable"]);
-    expect(OPEN_DESIGN_SIDECAR_CONTRACT.updateModes).toBe(DESKTOP_UPDATE_MODES);
-    expect(OPEN_DESIGN_SIDECAR_CONTRACT.updateStates).toBe(DESKTOP_UPDATE_STATES);
+  });
+
+  // WP5 (web-first migration): `SIDECAR_MESSAGES` used to also carry
+  // CLICK/CONSOLE/EVAL/EXPORT_PDF/REGISTER_DESKTOP_AUTH/SCREENSHOT/UPDATE —
+  // all desktop-app-only IPC verbs (`apps/desktop`, removed). STATUS and
+  // SHUTDOWN are the only verbs left; daemon, web, and the still-supported
+  // AppImage lifecycle in `tools/pack/src/linux.ts` all use them.
+  it("exposes only the STATUS and SHUTDOWN sidecar messages", () => {
+    expect(SIDECAR_MESSAGES).toEqual({ SHUTDOWN: "shutdown", STATUS: "status" });
   });
 
   it("accepts the explicit namespace contract", () => {
@@ -73,134 +73,31 @@ describe("open-design sidecar contract", () => {
   it("validates daemon IPC messages", () => {
     expect(normalizeDaemonSidecarMessage({ type: SIDECAR_MESSAGES.STATUS })).toEqual({ type: "status" });
     expect(normalizeDaemonSidecarMessage({ type: SIDECAR_MESSAGES.SHUTDOWN })).toEqual({ type: "shutdown" });
-    expect(() => normalizeDaemonSidecarMessage({ input: {}, type: SIDECAR_MESSAGES.EVAL })).toThrow();
+    expect(() => normalizeDaemonSidecarMessage({ input: {}, type: "eval" })).toThrow();
   });
 
-  it("accepts a base64 register-desktop-auth payload", () => {
-    const message = {
-      input: { secret: "AAECAwQFBgcICQoLDA0ODw==" },
-      type: SIDECAR_MESSAGES.REGISTER_DESKTOP_AUTH,
-    };
-    expect(normalizeDaemonSidecarMessage(message)).toEqual(message);
+  it("rejects unknown daemon/web/desktop message types", () => {
+    expect(() => normalizeDaemonSidecarMessage({ type: "register-desktop-auth" })).toThrow();
+    expect(() => normalizeDesktopSidecarMessage({ type: "eval" })).toThrow();
+    expect(() => normalizeDesktopSidecarMessage({ input: {}, type: "export-pdf" })).toThrow();
   });
 
-  it("rejects register-desktop-auth payloads that are not base64-shaped", () => {
-    expect(() =>
-      normalizeDaemonSidecarMessage({
-        input: { secret: "not base64!" },
-        type: SIDECAR_MESSAGES.REGISTER_DESKTOP_AUTH,
-      }),
-    ).toThrow(/base64/i);
-    expect(() =>
-      normalizeDaemonSidecarMessage({
-        input: { secret: "" },
-        type: SIDECAR_MESSAGES.REGISTER_DESKTOP_AUTH,
-      }),
-    ).toThrow();
-    expect(() =>
-      normalizeDaemonSidecarMessage({
-        input: {},
-        type: SIDECAR_MESSAGES.REGISTER_DESKTOP_AUTH,
-      }),
-    ).toThrow();
+  it("validates desktop IPC status/shutdown messages", () => {
+    expect(normalizeDesktopSidecarMessage({ type: SIDECAR_MESSAGES.STATUS })).toEqual({ type: "status" });
+    expect(normalizeDesktopSidecarMessage({ type: SIDECAR_MESSAGES.SHUTDOWN })).toEqual({ type: "shutdown" });
+    expect(() => normalizeDesktopSidecarMessage({ extra: true, type: SIDECAR_MESSAGES.STATUS })).toThrow();
   });
 
-  it("validates desktop IPC message inputs", () => {
-    expect(normalizeDesktopSidecarMessage({ input: { expression: "location.href" }, type: SIDECAR_MESSAGES.EVAL })).toEqual({
-      input: { expression: "location.href" },
-      type: "eval",
-    });
-    expect(() => normalizeDesktopSidecarMessage({ input: { expression: 42 }, type: SIDECAR_MESSAGES.EVAL })).toThrow();
-    expect(() => normalizeDesktopSidecarMessage({ input: { selector: "" }, type: SIDECAR_MESSAGES.CLICK })).toThrow();
-  });
-
-  it("requires DaemonStatusSnapshot to carry desktopAuthGateActive (PR #974 round 6)", () => {
-    // The TS compiler enforces that `desktopAuthGateActive: boolean` is
-    // present on every constructed snapshot — tools-dev's split-start
-    // hardening relies on the daemon STATUS IPC carrying this field so
-    // `start desktop` can detect an ungated already-running daemon and
-    // restart it before launching desktop main. Removing the field, or
-    // softening it to optional, must fail this build.
-    const armed: DaemonStatusSnapshot = {
+  it("no longer carries desktopAuthGateActive on DaemonStatusSnapshot", () => {
+    // WP5 (web-first migration): `desktopAuthGateActive` gated
+    // `/api/import/folder` on a secret registered by the (now removed)
+    // desktop main process over REGISTER_DESKTOP_AUTH. With no desktop app
+    // left to register it, the field was removed from the type entirely —
+    // this test pins that DaemonStatusSnapshot compiles without it.
+    const snapshot: DaemonStatusSnapshot = {
       state: "running",
       url: "http://127.0.0.1:7456",
-      desktopAuthGateActive: true,
     };
-    const dormant: DaemonStatusSnapshot = {
-      state: "running",
-      url: "http://127.0.0.1:7456",
-      desktopAuthGateActive: false,
-    };
-    expect(armed.desktopAuthGateActive).toBe(true);
-    expect(dormant.desktopAuthGateActive).toBe(false);
-  });
-
-  it("validates desktop PDF export IPC message inputs", () => {
-    expect(
-      normalizeDesktopSidecarMessage({
-        input: {
-          baseHref: "http://127.0.0.1:7456/api/projects/proj/raw/deck/",
-          deck: true,
-          defaultFilename: "Seed Deck.pdf",
-          html: "<!doctype html><section class=\"slide\">One</section>",
-          title: "Seed Deck",
-        },
-        type: SIDECAR_MESSAGES.EXPORT_PDF,
-      }),
-    ).toEqual({
-      input: {
-        baseHref: "http://127.0.0.1:7456/api/projects/proj/raw/deck/",
-        deck: true,
-        defaultFilename: "Seed Deck.pdf",
-        html: "<!doctype html><section class=\"slide\">One</section>",
-        title: "Seed Deck",
-      },
-      type: "export-pdf",
-    });
-    expect(() =>
-      normalizeDesktopSidecarMessage({
-        input: { deck: true, defaultFilename: "x.pdf", html: "", title: "x" },
-        type: SIDECAR_MESSAGES.EXPORT_PDF,
-      }),
-    ).toThrow();
-    expect(() =>
-      normalizeDesktopSidecarMessage({
-        input: { deck: "yes", defaultFilename: "x.pdf", html: "<p>x</p>", title: "x" },
-        type: SIDECAR_MESSAGES.EXPORT_PDF,
-      }),
-    ).toThrow();
-  });
-
-  it("validates desktop update IPC message inputs", () => {
-    expect(
-      normalizeDesktopSidecarMessage({
-        input: { action: DESKTOP_UPDATE_ACTIONS.CHECK },
-        type: SIDECAR_MESSAGES.UPDATE,
-      }),
-    ).toEqual({
-      input: { action: "check" },
-      type: "update",
-    });
-    expect(
-      normalizeDesktopSidecarMessage({
-        input: { action: DESKTOP_UPDATE_ACTIONS.INSTALL },
-        type: SIDECAR_MESSAGES.UPDATE,
-      }),
-    ).toEqual({
-      input: { action: "install" },
-      type: "update",
-    });
-    expect(() =>
-      normalizeDesktopSidecarMessage({
-        input: { action: "apply" },
-        type: SIDECAR_MESSAGES.UPDATE,
-      }),
-    ).toThrow(/unsupported desktop update action/);
-    expect(() =>
-      normalizeDesktopSidecarMessage({
-        input: { action: "status", path: "/tmp/update.dmg" },
-        type: SIDECAR_MESSAGES.UPDATE,
-      }),
-    ).toThrow(/unsupported fields/);
+    expect(snapshot.url).toBe("http://127.0.0.1:7456");
   });
 });

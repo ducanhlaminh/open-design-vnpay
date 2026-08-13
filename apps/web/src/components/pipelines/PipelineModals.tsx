@@ -2852,6 +2852,7 @@ export function PipelineStatusModal({
             <button
               type="button"
               className="pl-btn pl-btn--danger"
+              data-testid="pipeline-status-cancel"
               onClick={() => void cancel()}
               disabled={canceling}
             >
@@ -4077,6 +4078,7 @@ export function PullAllModal({
             // Pull ghi đè file local bằng bản trên store — không phải một hành
             // động "an toàn", nên không dùng style primary/run.
             className="pl-btn pl-btn--danger"
+            data-testid="pipeline-pull-confirm"
             onClick={() => void submit()}
             disabled={!syncReady || busy
               || selection.featureIds.size === 0
@@ -4488,6 +4490,7 @@ export function PushAllModal({
             // Push ghi đè bản trên store (mirror-prune còn xóa file trên store
             // không còn ở local) — cùng lý do PullAllModal đổi sang danger.
             className="pl-btn pl-btn--danger"
+            data-testid="pipeline-push-confirm"
             onClick={() => void submit()}
             disabled={!syncReady || busy || syncStatus === null
               || selection.featureIds.size === 0

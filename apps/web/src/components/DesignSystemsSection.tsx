@@ -434,6 +434,7 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                     <input
                       type="file"
                       className="library-import-input"
+                      data-testid="settings-design-systems-import-figma-file"
                       accept=".json,.zip,.md,application/json,application/zip,text/markdown"
                       multiple
                       onChange={(e) => {
@@ -456,6 +457,7 @@ export function DesignSystemsSection({ cfg, setCfg }: Props) {
                   <button
                     type="submit"
                     className="library-install-submit"
+                    data-testid="settings-design-systems-import-submit"
                     disabled={
                       importing ||
                       (importSource === 'figma'

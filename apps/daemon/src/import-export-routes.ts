@@ -7,7 +7,7 @@ import {
   type InlineAssetReader,
 } from './inline-assets.js';
 
-export interface RegisterImportRoutesDeps extends RouteDeps<'db' | 'http' | 'uploads' | 'node' | 'ids' | 'paths' | 'imports' | 'auth' | 'projectStore' | 'conversations' | 'projectFiles' | 'validation'> {}
+export interface RegisterImportRoutesDeps extends RouteDeps<'db' | 'http' | 'uploads' | 'node' | 'ids' | 'paths' | 'imports' | 'projectStore' | 'conversations' | 'projectFiles' | 'validation'> {}
 
 export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps) {
   const { db } = ctx;
@@ -17,13 +17,6 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
   const { randomId } = ctx.ids;
   const { PROJECTS_DIR, RUNTIME_DATA_DIR_CANONICAL } = ctx.paths;
   const { importClaudeDesignZip, projectDir, detectEntryFile } = ctx.imports;
-  const {
-    consumedImportNonces,
-    desktopAuthSecret,
-    isDesktopAuthGateActive,
-    pruneExpiredImportNonces,
-    verifyDesktopImportToken,
-  } = ctx.auth;
   const { getProject, insertProject, updateProject } = ctx.projectStore;
   const { insertConversation } = ctx.conversations;
   const { setTabs } = ctx.projectFiles;
@@ -107,44 +100,12 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
       if (typeof baseDir !== 'string' || !baseDir.trim()) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'baseDir required');
       }
-      let trustedPickerImport = false;
-      if (isDesktopAuthGateActive()) {
-        const secret = desktopAuthSecret();
-        if (secret == null) {
-          return sendApiError(
-            res,
-            503,
-            'DESKTOP_AUTH_PENDING',
-            'desktop auth required but secret not yet registered',
-            {
-              details: { hint: 'restart desktop or wait for sidecar registration' },
-              retryable: true,
-            },
-          );
-        }
-        const headerValue = req.get('x-od-desktop-import-token');
-        const token = typeof headerValue === 'string' ? headerValue : '';
-        const now = Date.now();
-        pruneExpiredImportNonces(now);
-        const verification = verifyDesktopImportToken(
-          secret,
-          baseDir,
-          token,
-          now,
-          consumedImportNonces,
-        );
-        if (!verification.ok) {
-          return sendApiError(
-            res,
-            403,
-            'FORBIDDEN',
-            'desktop import token rejected',
-            { details: { reason: verification.reason } },
-          );
-        }
-        consumedImportNonces.set(verification.nonce, verification.exp);
-        trustedPickerImport = true;
-      }
+      // WP5 (web-first migration): this route used to gate on a
+      // desktop-app-registered HMAC secret (`apps/daemon/src/desktop-auth.ts`,
+      // removed) so a trusted native folder picker (Electron only) could mark
+      // its import `fromTrustedPicker: true`. There's no desktop app left to
+      // register that secret, so the gate is permanently dormant now — every
+      // import goes through the plain baseDir validation below.
 
       const trimmedInput = baseDir.trim();
       if (!path.isAbsolute(path.normalize(trimmedInput))) {
@@ -183,7 +144,6 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
         baseDir: normalizedPath,
         importedFrom: 'folder' as const,
         entryFile,
-        ...(trustedPickerImport ? { fromTrustedPicker: true as const } : {}),
       };
       const updated = updateProject(db, projectId, { metadata: nextMeta });
       if (!updated) {
@@ -204,44 +164,12 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
       if (typeof baseDir !== 'string' || !baseDir.trim()) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'baseDir required');
       }
-      let trustedPickerImport = false;
-      if (isDesktopAuthGateActive()) {
-        const secret = desktopAuthSecret();
-        if (secret == null) {
-          return sendApiError(
-            res,
-            503,
-            'DESKTOP_AUTH_PENDING',
-            'desktop auth required but secret not yet registered',
-            {
-              details: { hint: 'restart desktop or wait for sidecar registration' },
-              retryable: true,
-            },
-          );
-        }
-        const headerValue = req.get('x-od-desktop-import-token');
-        const token = typeof headerValue === 'string' ? headerValue : '';
-        const now = Date.now();
-        pruneExpiredImportNonces(now);
-        const verification = verifyDesktopImportToken(
-          secret,
-          baseDir,
-          token,
-          now,
-          consumedImportNonces,
-        );
-        if (!verification.ok) {
-          return sendApiError(
-            res,
-            403,
-            'FORBIDDEN',
-            'desktop import token rejected',
-            { details: { reason: verification.reason } },
-          );
-        }
-        consumedImportNonces.set(verification.nonce, verification.exp);
-        trustedPickerImport = true;
-      }
+      // WP5 (web-first migration): this route used to gate on a
+      // desktop-app-registered HMAC secret (`apps/daemon/src/desktop-auth.ts`,
+      // removed) so a trusted native folder picker (Electron only) could mark
+      // its import `fromTrustedPicker: true`. There's no desktop app left to
+      // register that secret, so the gate is permanently dormant now — every
+      // import goes through the plain baseDir validation below.
       const trimmedInput = baseDir.trim();
       if (!path.isAbsolute(path.normalize(trimmedInput))) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'baseDir must be absolute');
@@ -312,7 +240,6 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
           baseDir: normalizedPath,
           importedFrom: 'folder',
           entryFile,
-          ...(trustedPickerImport ? { fromTrustedPicker: true as const } : {}),
         },
         createdAt: now,
         updatedAt: now,
@@ -349,9 +276,6 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
   const {
     buildProjectArchive,
     buildBatchArchive,
-    buildDesktopPdfExportInput,
-    desktopPdfExporter,
-    daemonUrlRef,
     sanitizeArchiveFilename,
   } = ctx.exports;
   // Streams a ZIP of the project's on-disk tree so the "Download as .zip"
@@ -433,40 +357,13 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
     }
   });
 
-  app.post('/api/projects/:id/export/pdf', async (req, res) => {
-    if (typeof desktopPdfExporter !== 'function') {
-      return sendApiError(
-        res,
-        501,
-        'UPSTREAM_UNAVAILABLE',
-        'desktop PDF export is only available in the desktop runtime',
-      );
-    }
-    try {
-      const { fileName, title, deck } = req.body || {};
-      if (typeof fileName !== 'string' || fileName.length === 0) {
-        return sendApiError(res, 400, 'BAD_REQUEST', 'fileName required');
-      }
-      const input = await buildDesktopPdfExportInput({
-        daemonUrl: daemonUrlRef.current,
-        deck: deck === true,
-        fileName,
-        projectId: req.params.id,
-        projectsRoot: PROJECTS_DIR,
-        title: typeof title === 'string' ? title : undefined,
-      });
-      const result = await desktopPdfExporter(input);
-      res.json(result);
-    } catch (err: any) {
-      const status = err && err.code === 'ENOENT' ? 404 : 400;
-      sendApiError(
-        res,
-        status,
-        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
-        String(err?.message || err),
-      );
-    }
-  });
+  // WP5 (web-first migration): `POST /api/projects/:id/export/pdf` (the
+  // desktop-app IPC PDF export bridge, backed by `buildDesktopPdfExportInput`
+  // and a `desktopPdfExporter` forwarded to `apps/desktop`) was removed here.
+  // The browser fallback in `apps/web/src/runtime/exports.ts` is now the
+  // only PDF export path — see `POST /api/render/pdf` in server.ts for the
+  // still-supported headless-Chromium render route used by the review
+  // exporter.
 
   // Export endpoint: serves an HTML body with every same-project
   // top-level `<link rel=stylesheet>` / `<script src>` inlined.

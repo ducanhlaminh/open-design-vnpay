@@ -46,6 +46,11 @@ export default defineConfig({
     command:
       `OD_DATA_DIR=${shellQuote(dataDir)} ` +
       `pnpm --dir .. tools-dev run web --namespace ${shellQuote(namespace)} --daemon-port ${daemonPort} --web-port ${webPort}`,
+    // The whole e2e/ui suite assumes Google SSO is OFF (load-local-env.ts
+    // only fills vars that are still undefined, so setting these to '' here
+    // always wins over whatever a dev-local `.env.local` happens to carry —
+    // e.g. after `make dev` renders real GOOGLE_CLIENT_ID/SECRET into it).
+    env: { GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '' },
     url: baseURL,
     reuseExistingServer: false,
     timeout: 120_000,

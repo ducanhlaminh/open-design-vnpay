@@ -19,7 +19,7 @@ vi.mock("@open-design/sidecar", async (importOriginal) => {
   return {
     ...actual,
     requestJsonIpc: vi.fn(async () => {
-      throw new Error("requestJsonIpc should not be called for invalid headless inspect options");
+      throw new Error("requestJsonIpc must be mocked per-test before use");
     }),
   };
 });
@@ -33,7 +33,6 @@ import {
   renderDesktopTemplate,
   resolveLinuxLifecycleMode,
   resolveProductionInstallCommand,
-  shouldRejectLinuxHeadlessInspectOptions,
   sanitizeNamespace,
   stopPackedLinuxHeadless,
 } from "../src/linux.js";
@@ -50,9 +49,6 @@ async function pathExists(path: string): Promise<boolean> {
 function makeConfig(): ToolPackConfig {
   return {
     containerized: true,
-    electronBuilderCliPath: "/x/electron-builder/cli.js",
-    electronDistPath: "/x/electron/dist",
-    electronVersion: "41.3.0",
     macCompression: "normal",
     namespace: "default",
     platform: "linux",
@@ -584,56 +580,32 @@ describe("resolveLinuxLifecycleMode", () => {
   });
 });
 
-describe("shouldRejectLinuxHeadlessInspectOptions", () => {
-  it("allows status-only headless inspect", () => {
-    expect(shouldRejectLinuxHeadlessInspectOptions({})).toBe(false);
-  });
-
-  it("rejects headless eval and screenshot requests", () => {
-    expect(shouldRejectLinuxHeadlessInspectOptions({ expr: "document.title" })).toBe(true);
-    expect(shouldRejectLinuxHeadlessInspectOptions({ path: "/tmp/open-design-linux.png" })).toBe(true);
-    expect(
-      shouldRejectLinuxHeadlessInspectOptions({
-        expr: "document.title",
-        path: "/tmp/open-design-linux.png",
-      }),
-    ).toBe(true);
-  });
-});
-
+// WP5 (web-first migration): `shouldRejectLinuxHeadlessInspectOptions`
+// existed purely to reject `--expr`/`--path` (EVAL/SCREENSHOT) in headless
+// inspect mode — both the option and the verbs it guarded are gone, so this
+// describe block went with it.
 describe("inspectPackedLinuxApp", () => {
-  it("rejects unsupported headless inspect options before opening IPC", async () => {
-    const requestJsonIpcMock = vi.mocked(requestJsonIpc);
-    requestJsonIpcMock.mockClear();
-
-    await expect(
-      inspectPackedLinuxApp(makeConfig(), {
-        expr: "document.title",
-        headless: true,
-      }),
-    ).rejects.toThrow("linux inspect --headless supports status only; omit --expr and --path");
-    expect(requestJsonIpcMock).not.toHaveBeenCalled();
-  });
-
-  it("allows desktop inspect eval and screenshot options when headless is omitted", async () => {
+  it("reports desktop STATUS over IPC", async () => {
     const requestJsonIpcMock = vi.mocked(requestJsonIpc);
     requestJsonIpcMock.mockReset();
-    requestJsonIpcMock
-      .mockResolvedValueOnce({ state: "running", url: "od://app/" })
-      .mockResolvedValueOnce({ ok: true, value: "Open Design" })
-      .mockResolvedValueOnce({ path: "/tmp/open-design-linux.png" });
+    requestJsonIpcMock.mockResolvedValueOnce({ state: "running", url: "od://app/" });
 
-    const result = await inspectPackedLinuxApp(makeConfig(), {
-      expr: "document.title",
-      path: "/tmp/open-design-linux.png",
-    });
+    const result = await inspectPackedLinuxApp(makeConfig());
 
     expect(result).toEqual({
-      eval: { ok: true, value: "Open Design" },
-      screenshot: { path: "/tmp/open-design-linux.png" },
       status: { state: "running", url: "od://app/" },
     });
-    expect(requestJsonIpcMock).toHaveBeenCalledTimes(3);
+    expect(requestJsonIpcMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports status: null when the desktop IPC socket does not answer", async () => {
+    const requestJsonIpcMock = vi.mocked(requestJsonIpc);
+    requestJsonIpcMock.mockReset();
+    requestJsonIpcMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+    const result = await inspectPackedLinuxApp(makeConfig());
+
+    expect(result).toEqual({ status: null });
   });
 });
 

@@ -24,6 +24,7 @@ export interface FolderSource {
 interface MediaRow {
   projectId: string;
   files: number;
+  isApp: boolean;
   visibility?: ProjectLifecycle['visibility'];
   hiddenAt?: string;
 }
@@ -54,10 +55,12 @@ function filePathOf(value: unknown): string | null {
   return typeof row.path === 'string' ? row.path : null;
 }
 
-/** Media-folder id prefix marking a folder as an App container (matches
- *  pipeline-studio's server/apps.ts APP_PREFIX) — a grouping + shared
- *  UX-charter layer above features, never a pipeline target itself. */
-export const APP_PREFIX = 'app--';
+/** Root-level control file `uploadProjectFiles` (server.ts) unconditionally
+ *  writes into an App's own media folder whenever a Feature carrying
+ *  `studioConfig.appId` is pushed — the one reliable, already-live signal
+ *  that a folder is an App container rather than a Feature. No pipeline
+ *  stage output pattern ever produces a root-level file with this name. */
+export const APP_MARKER_PATH = 'app.json';
 
 /** Build the project list from the media rows, sorted by id. */
 export function mergeRemoteProjects(media: MediaRow[]): RemoteProject[] {
@@ -68,7 +71,7 @@ export function mergeRemoteProjects(media: MediaRow[]): RemoteProject[] {
       name: m.projectId,
       inMedia: true,
       files: m.files,
-      isApp: m.projectId.startsWith(APP_PREFIX),
+      isApp: m.isApp,
       visibility: m.visibility ?? 'visible',
       ...(m.hiddenAt ? { hiddenAt: m.hiddenAt } : {}),
     });
@@ -101,6 +104,7 @@ export async function loadRemoteProjects(media: FolderSource): Promise<RemotePro
         // Studio metadata is a registry control artifact, not a project file
         // that users can Pull or count as an available output.
         files: files.filter((file) => filePathOf(file) !== PROJECT_LIFECYCLE_PATH).length,
+        isApp: files.some((file) => filePathOf(file) === APP_MARKER_PATH),
         visibility: lifecycle?.visibility ?? 'visible',
         ...(lifecycle?.hiddenAt ? { hiddenAt: lifecycle.hiddenAt } : {}),
       };

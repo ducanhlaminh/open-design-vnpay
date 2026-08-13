@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  APP_MARKER_PATH,
   filterLifecycleVisibleProjects,
   filterVisibleProjects,
   isLifecycleHidden,
@@ -19,8 +20,8 @@ import type { RemoteProject } from '@open-design/contracts';
 describe('mergeRemoteProjects', () => {
   it('builds project rows from media, sorted by id', () => {
     const merged = mergeRemoteProjects([
-      { projectId: 'b-both', files: 5 },
-      { projectId: 'c-media', files: 2 },
+      { projectId: 'b-both', files: 5, isApp: false },
+      { projectId: 'c-media', files: 2, isApp: false },
     ]);
     expect(merged).toEqual([
       { projectId: 'b-both', name: 'b-both', inMedia: true, files: 5, isApp: false, visibility: 'visible' },
@@ -29,16 +30,20 @@ describe('mergeRemoteProjects', () => {
   });
 
   it('uses projectId as name', () => {
-    const merged = mergeRemoteProjects([{ projectId: 'orphan', files: 1 }]);
+    const merged = mergeRemoteProjects([{ projectId: 'orphan', files: 1, isApp: false }]);
     expect(merged[0]).toMatchObject({ projectId: 'orphan', name: 'orphan', inMedia: true });
   });
 
-  it('flags an App container (media folder app--<slug>) via isApp', () => {
-    const fromMedia = mergeRemoteProjects([{ projectId: 'app--bidv', files: 2 }]);
-    expect(fromMedia[0]).toMatchObject({ projectId: 'app--bidv', isApp: true });
+  it('passes the caller-resolved isApp flag through verbatim — NOT derived from projectId shape', () => {
+    // Deliberately named with no 'app--'-style prefix: isApp is resolved by
+    // loadRemoteProjects from the media folder's own file listing (an
+    // `app.json` marker — see APP_MARKER_PATH), never from the id string.
+    // mergeRemoteProjects itself is a pure passthrough for that flag.
+    const app = mergeRemoteProjects([{ projectId: 'bidv', files: 2, isApp: true }]);
+    expect(app[0]).toMatchObject({ projectId: 'bidv', isApp: true });
 
-    const feature = mergeRemoteProjects([{ projectId: 'BIDV-onboarding', files: 0 }]);
-    expect(feature[0]).toMatchObject({ projectId: 'BIDV-onboarding', isApp: false });
+    const feature = mergeRemoteProjects([{ projectId: 'app--onboarding', files: 0, isApp: false }]);
+    expect(feature[0]).toMatchObject({ projectId: 'app--onboarding', isApp: false });
   });
 });
 
@@ -71,6 +76,25 @@ describe('loadRemoteProjects', () => {
       isApp: false,
       visibility: 'visible',
     });
+  });
+
+  it('flags a folder as an App container only when it carries the app.json marker', async () => {
+    // `uploadProjectFiles` (server.ts) unconditionally writes app.json into an
+    // App's own media folder whenever a linked Feature is pushed — the real,
+    // already-live signal isApp now reads (never the projectId shape/prefix).
+    const media: FolderSource = {
+      listFolders: async () => [
+        { id: 'f1', name: 'bidv' },
+        { id: 'f2', name: 'bidv-onboarding' },
+      ],
+      listAllFiles: async (id) =>
+        id === 'f1' ? [{ path: APP_MARKER_PATH }, { path: 'context/current.json' }] : [{ path: 'dr-docs/spec.md' }],
+    };
+
+    const rows = await loadRemoteProjects(media);
+    const byId = Object.fromEntries(rows.map((r) => [r.projectId, r]));
+    expect(byId.bidv).toMatchObject({ isApp: true });
+    expect(byId['bidv-onboarding']).toMatchObject({ isApp: false });
   });
 
   it('hides `pending--…` folders — an approval request is not a pullable project', async () => {

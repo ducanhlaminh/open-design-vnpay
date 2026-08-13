@@ -40,11 +40,11 @@ describe('Pipelines App · DS tab', () => {
     expect(screen.queryByRole('tab', { name: /DS/ })).toBeNull();
   });
 
-  it('App chưa chọn DS hiện meta và empty state hướng sang Sửa App', async () => {
+  it('App chưa chọn DS hiện meta và empty state hướng sang Sửa dự án', async () => {
     renderView([{ id: 'app-1', name: 'App' }]);
     expect(screen.getByText(/chưa chọn/)).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /DS/ })); });
-    expect(screen.getAllByText((_, node) => node?.textContent?.includes('Chọn DS ở Sửa App') ?? false).length).toBeGreaterThan(0);
+    expect(screen.getAllByText((_, node) => node?.textContent?.includes('Chọn DS ở Sửa dự án') ?? false).length).toBeGreaterThan(0);
   });
 
   it('criteria 404 hiện empty state Sinh lại, không crash', async () => {
