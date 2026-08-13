@@ -130,13 +130,6 @@ export type ToolPackConfig = {
   sandboxDefault?: string;
   sandboxSkills?: string;
   /**
-   * Base64-encoded sandbox CLI credential files baked into internal builds.
-   * These are OAuth session credentials, not API keys. They are extractable
-   * from an installer, so releases using them must be access-controlled.
-   */
-  sandboxClaudeAuthSeedB64?: string;
-  sandboxCodexAuthSeedB64?: string;
-  /**
    * Release channel ("stable" | "beta" | "nightly" | "preview") resolved
    * from --namespace/--app-version at packaging time and baked into
    * open-design-config.json, so the packaged app's updater
@@ -458,8 +451,6 @@ export function resolveToolPackConfig(
     atlassianConfluenceToken: process.env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim() || undefined,
     sandboxDefault: process.env.OD_SANDBOX_DEFAULT?.trim() || undefined,
     sandboxSkills: process.env.OD_SANDBOX_SKILLS?.trim() || undefined,
-    sandboxClaudeAuthSeedB64: process.env.OD_SANDBOX_CLAUDE_AUTH_SEED_B64?.trim() || undefined,
-    sandboxCodexAuthSeedB64: process.env.OD_SANDBOX_CODEX_AUTH_SEED_B64?.trim() || undefined,
     authSessionSecret: process.env.SESSION_SECRET?.trim() || undefined,
     googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() || undefined,
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET?.trim() || undefined,

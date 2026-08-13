@@ -653,74 +653,31 @@ export async function readSandboxCodexUsage(image: string): Promise<CodexUsageRe
   });
 }
 
-function authSeedCarriesToken(runtimeId: SandboxRuntimeId, raw: string): boolean {
-  return sandboxRuntimeAuthStateFromRaw(runtimeId, raw) === 'logged-in';
-}
-
-export function shouldSeedSandboxRuntimeAuth(
-  runtimeId: SandboxRuntimeId,
-  existingCredential: string | null,
-  seedMarker: string | null,
-): boolean {
-  if (sandboxRuntimeAuthStateFromRaw(runtimeId, existingCredential) === 'logged-in') return false;
-  // An explicit logout must survive app restarts and upgrades. A prior
-  // successful seed is repairable, though: old builds could leave a hollow
-  // credential while marking the volume initialized.
-  return seedMarker?.trim() !== 'logged-out';
-}
-
 /**
- * Seed a packaged OAuth credential exactly once into a runtime's named volume.
- * The seed contains only the credential-file contents (base64 encoded), never
- * a host path or a directory archive. A marker survives logout so users can
- * replace the bundled account without the default account coming back.
+ * Remove credentials that older installers copied into the shared Docker
+ * volumes. This migration runs once: the legacy marker is deleted after the
+ * check, so credentials created later through Settings are always preserved.
  */
-export async function seedSandboxRuntimeAuth(
-  image: string,
-  runtimeId: SandboxRuntimeId,
-  seedB64: string | undefined,
-): Promise<boolean> {
-  if (!seedB64) return false;
-  let raw: string;
-  try {
-    raw = Buffer.from(seedB64, 'base64').toString('utf8');
-  } catch {
-    return false;
-  }
-  if (!authSeedCarriesToken(runtimeId, raw)) return false;
-
-  const spec = sandboxRuntimeSpec(runtimeId);
-  const credentialPath = sandboxAuthCredentialPath(runtimeId);
-  const seedMarkerPath = sandboxAuthSeedMarkerPath(runtimeId);
-  try {
-    await docker(['volume', 'create', spec.authVolume]);
-    const existingCredential = await readSandboxRuntimeCredentials(image, runtimeId);
-    const seedMarker = await docker([
-      'run', '--rm', '-v', `${spec.authVolume}:${spec.authDir}:ro`,
-      '--entrypoint', 'cat', image, seedMarkerPath,
-    ], 30_000).catch(() => null);
-    if (!shouldSeedSandboxRuntimeAuth(runtimeId, existingCredential, seedMarker)) return false;
-    await dockerWriteStdin([
-      'run', '--rm', '-i', '-v', `${spec.authVolume}:${spec.authDir}`,
-      '--entrypoint', 'sh', image, '-c',
-      `umask 077; cat > ${JSON.stringify(credentialPath)} && printf seeded > ${JSON.stringify(seedMarkerPath)}`,
-    ], Buffer.from(raw, 'utf8'));
-    return true;
-  } catch {
-    // A missing/old Docker image must not make startup or status fail.
-    return false;
-  }
+export async function retireLegacyPackagedSandboxAuth(image: string): Promise<void> {
+  await Promise.all((['claude', 'codex'] as const).map(async (runtimeId) => {
+    const spec = sandboxRuntimeSpec(runtimeId);
+    const credentialPath = sandboxAuthCredentialPath(runtimeId);
+    const seedMarkerPath = sandboxAuthSeedMarkerPath(runtimeId);
+    try {
+      if (!(await dockerVolumePresent(spec.authVolume))) return;
+      await docker([
+        'run', '--rm', '-v', `${spec.authVolume}:${spec.authDir}`,
+        '--entrypoint', 'sh', image, '-c',
+        `if [ "$(cat ${JSON.stringify(seedMarkerPath)} 2>/dev/null)" = seeded ]; then rm -f ${JSON.stringify(credentialPath)}; fi; rm -f ${JSON.stringify(seedMarkerPath)}`,
+      ], 30_000);
+    } catch {
+      // Missing volumes/images are normal on machines that have not set up a
+      // runtime yet. Settings will create and authenticate the volume later.
+    }
+  }));
 }
 
-/** Seed credentials for an internal packaged build without ever logging them. */
-export async function seedPackagedSandboxAuth(image: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  await Promise.all([
-    seedSandboxRuntimeAuth(image, 'claude', env.OD_SANDBOX_CLAUDE_AUTH_SEED_B64),
-    seedSandboxRuntimeAuth(image, 'codex', env.OD_SANDBOX_CODEX_AUTH_SEED_B64),
-  ]);
-}
-
-/** Clear a runtime credential while retaining the seed-consumed marker. */
+/** Clear a runtime credential. Login remains an explicit Settings action. */
 export async function clearSandboxRuntimeAuth(image: string, runtimeId: SandboxRuntimeId): Promise<void> {
   const spec = sandboxRuntimeSpec(runtimeId);
   const credentialPath = sandboxAuthCredentialPath(runtimeId);
@@ -728,7 +685,7 @@ export async function clearSandboxRuntimeAuth(image: string, runtimeId: SandboxR
   await docker([
     'run', '--rm', '-v', `${spec.authVolume}:${spec.authDir}`,
     '--entrypoint', 'sh', image, '-c',
-    `rm -f ${JSON.stringify(credentialPath)}; printf logged-out > ${JSON.stringify(seedMarkerPath)}`,
+    `rm -f ${JSON.stringify(credentialPath)} ${JSON.stringify(seedMarkerPath)}`,
   ], 30_000);
 }
 

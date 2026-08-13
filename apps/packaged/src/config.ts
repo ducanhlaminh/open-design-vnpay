@@ -67,10 +67,6 @@ export type RawPackagedConfig = {
   // Apply only while the user has no persisted sandbox prefs.
   sandboxDefault?: string;
   sandboxSkills?: string;
-  // OAuth session seed for the isolated Docker CLI volume. Extractable from
-  // an internal installer; intentionally never surfaced to the renderer.
-  sandboxClaudeAuthSeedB64?: string;
-  sandboxCodexAuthSeedB64?: string;
   // Release channel ("stable"/"beta"/"nightly"/"preview") baked by tools/pack
   // from --namespace/--app-version at packaging time. Forwarded into
   // OD_UPDATE_CHANNEL before the desktop main entry starts so the updater
@@ -116,8 +112,6 @@ export type PackagedConfig = {
   atlassianConfluenceToken: string | null;
   sandboxDefault: string | null;
   sandboxSkills: string | null;
-  sandboxClaudeAuthSeedB64: string | null;
-  sandboxCodexAuthSeedB64: string | null;
   updateChannel: string | null;
   authSessionSecret: string | null;
   googleClientId: string | null;
@@ -259,8 +253,6 @@ export async function readPackagedConfig(): Promise<PackagedConfig> {
     atlassianConfluenceToken: cleanOptionalString(raw.atlassianConfluenceToken),
     sandboxDefault: cleanOptionalString(raw.sandboxDefault),
     sandboxSkills: cleanOptionalString(raw.sandboxSkills),
-    sandboxClaudeAuthSeedB64: cleanOptionalString(raw.sandboxClaudeAuthSeedB64),
-    sandboxCodexAuthSeedB64: cleanOptionalString(raw.sandboxCodexAuthSeedB64),
     updateChannel: cleanOptionalString(raw.updateChannel),
     authSessionSecret: cleanOptionalString(raw.authSessionSecret),
     googleClientId: cleanOptionalString(raw.googleClientId),

@@ -39,30 +39,12 @@ CLI `tools-pack` chạy từ `dist`, nên sau khi sửa `tools/pack/src/**` ph�
 pnpm --filter @open-design/tools-pack build
 ```
 
-## 2.1. (Tuỳ chọn, internal build) đăng nhập sẵn Claude + Codex CLI
+## 2.1. Đăng nhập Claude + Codex CLI
 
-App chỉ có thể dùng ngay sau khi cài nếu Docker/OrbStack đã chạy và sandbox image
-đã được build hoặc pull. Có thể bake **OAuth session credential của CLI** vào app
-nội bộ; đây không phải API key cho model. Credential được chép vào hai Docker volume
-riêng ở lần chạy đầu (`od-claude-auth`, `od-codex-auth`), không ghi đè login người
-dùng. Khi bấm Logout, app giữ marker để tài khoản mặc định không tự quay lại.
-
-> ⚠️ Credential này có thể bị trích từ installer. Chỉ dùng cho bản phân phối nội bộ,
-> tài khoản dùng chung có giới hạn phù hợp, và xoay credential khi cần. Không dùng cho
-> bản public.
-
-Trên máy đã đăng nhập vào sandbox, tạo hai secret base64 **một dòng** (không commit):
-
-```bash
-docker run --rm -v od-claude-auth:/auth alpine sh -c 'cat /auth/.credentials.json' | base64 | tr -d '\n'
-docker run --rm -v od-codex-auth:/auth alpine sh -c 'cat /auth/auth.json' | base64 | tr -d '\n'
-```
-
-- Build local: export lần lượt vào `OD_SANDBOX_CLAUDE_AUTH_SEED_B64` và
-  `OD_SANDBOX_CODEX_AUTH_SEED_B64` trước lệnh build.
-- CI branch `preview`: tạo GitHub Actions secrets có đúng hai tên trên. Workflow
-  `release-unsigned-manual` đã forward chúng cho cả macOS arm64/x64 và Windows.
-- Nếu để trống, build vẫn chạy bình thường; người dùng sẽ login qua UI như hiện tại.
+Bản cài không chứa tài khoản hoặc OAuth credential dùng chung. Sau khi Docker và
+sandbox image sẵn sàng, mỗi người đăng nhập Claude/Codex trong **Settings →
+Execution setup**. Credential chỉ được lưu trong Docker volume riêng trên máy đó
+(`od-claude-auth`, `od-codex-auth`).
 
 ## 3. Build Mac DMG — Apple Silicon (arm64) + Intel (x64)
 

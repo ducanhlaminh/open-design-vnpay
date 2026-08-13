@@ -120,8 +120,6 @@ async function main(): Promise<void> {
     atlassianConfluenceToken: config.atlassianConfluenceToken,
     sandboxDefault: config.sandboxDefault,
     sandboxSkills: config.sandboxSkills,
-    sandboxClaudeAuthSeedB64: config.sandboxClaudeAuthSeedB64,
-    sandboxCodexAuthSeedB64: config.sandboxCodexAuthSeedB64,
     authSessionSecret: config.authSessionSecret,
     googleClientId: config.googleClientId,
     googleClientSecret: config.googleClientSecret,

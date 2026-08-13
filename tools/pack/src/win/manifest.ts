@@ -50,8 +50,6 @@ export function createPackagedConfig(
     ...(config.authDomainLock == null ? {} : { authDomainLock: config.authDomainLock }),
     ...(config.sandboxDefault == null ? {} : { sandboxDefault: config.sandboxDefault }),
     ...(config.sandboxSkills == null ? {} : { sandboxSkills: config.sandboxSkills }),
-    ...(config.sandboxClaudeAuthSeedB64 == null ? {} : { sandboxClaudeAuthSeedB64: config.sandboxClaudeAuthSeedB64 }),
-    ...(config.sandboxCodexAuthSeedB64 == null ? {} : { sandboxCodexAuthSeedB64: config.sandboxCodexAuthSeedB64 }),
     ...(config.updateChannel == null ? {} : { updateChannel: config.updateChannel }),
     webOutputMode: config.webOutputMode,
     // Never bake namespaceBaseRoot: baking the BUILD machine's absolute path

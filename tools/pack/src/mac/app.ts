@@ -181,8 +181,6 @@ export function renderMacPackagedConfig(options: {
       ...(options.config.authDomainLock == null ? {} : { authDomainLock: options.config.authDomainLock }),
       ...(options.config.sandboxDefault == null ? {} : { sandboxDefault: options.config.sandboxDefault }),
       ...(options.config.sandboxSkills == null ? {} : { sandboxSkills: options.config.sandboxSkills }),
-      ...(options.config.sandboxClaudeAuthSeedB64 == null ? {} : { sandboxClaudeAuthSeedB64: options.config.sandboxClaudeAuthSeedB64 }),
-      ...(options.config.sandboxCodexAuthSeedB64 == null ? {} : { sandboxCodexAuthSeedB64: options.config.sandboxCodexAuthSeedB64 }),
       ...(options.config.updateChannel == null ? {} : { updateChannel: options.config.updateChannel }),
       ...(options.usePrebundledStandaloneWeb ? { webSidecarEntryRelative: MAC_PREBUNDLED_WEB_SIDECAR_RELATIVE_PATH } : {}),
       webOutputMode: options.config.webOutputMode,

@@ -52,11 +52,6 @@ env:
   # Required for Google session → shared-project identity reconciliation.
   OD_SANDBOX_DEFAULT: "1"
   OD_SANDBOX_SKILLS: "*"
-  # OAuth credential-file seeds for the Docker-only Claude/Codex runtimes.
-  # They are intentionally repository secrets: tools-pack embeds them in the
-  # installer, and daemon copies each seed only to a brand-new auth volume.
-  OD_SANDBOX_CLAUDE_AUTH_SEED_B64: ${{ secrets.OD_SANDBOX_CLAUDE_AUTH_SEED_B64 }}
-  OD_SANDBOX_CODEX_AUTH_SEED_B64: ${{ secrets.OD_SANDBOX_CODEX_AUTH_SEED_B64 }}
 
 jobs:
   verify:
@@ -86,42 +81,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      # The packaged app can only offer a ready-to-use sandbox when these
-      # secrets contain real OAuth tokens. A Claude credential skeleton with
-      # empty strings used to pass through packaging unnoticed: Settings could
-      # see the account metadata, while the first workspace prompt failed with
-      # "Not logged in". Fail the release before spending time on three native
-      # builds when either embedded credential is hollow or malformed.
-      - name: Validate embedded sandbox credentials
-        shell: bash
-        run: |
-          node <<'NODE'
-          const required = (name) => {
-            const value = process.env[name]?.trim();
-            if (!value) throw new Error(`${name} is missing`);
-            let parsed;
-            try {
-              parsed = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
-            } catch {
-              throw new Error(`${name} is not a base64-encoded JSON credential`);
-            }
-            return parsed;
-          };
-
-          const claude = required('OD_SANDBOX_CLAUDE_AUTH_SEED_B64').claudeAiOauth;
-          if (!claude || typeof claude.accessToken !== 'string' || !claude.accessToken ||
-              typeof claude.refreshToken !== 'string' || !claude.refreshToken) {
-            throw new Error('OD_SANDBOX_CLAUDE_AUTH_SEED_B64 has no usable Claude OAuth tokens');
-          }
-
-          const codex = required('OD_SANDBOX_CODEX_AUTH_SEED_B64');
-          if (typeof codex.tokens?.access_token !== 'string' || !codex.tokens.access_token) {
-            throw new Error('OD_SANDBOX_CODEX_AUTH_SEED_B64 has no usable Codex OAuth token');
-          }
-
-          console.log('Embedded Claude and Codex credentials contain usable OAuth tokens.');
-          NODE
 
       # Every automatic (push-to-preview) build gets its OWN version — never
       # reuses/overwrites a prior build. Manual workflow_dispatch runs can

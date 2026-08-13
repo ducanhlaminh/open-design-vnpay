@@ -325,7 +325,7 @@ import {
   removeSandboxCodexProfile,
   sandboxAuthVolume,
   sandboxCodexProfileName,
-  seedPackagedSandboxAuth,
+  retireLegacyPackagedSandboxAuth,
   wrapInvocationInSandbox,
 } from './agent-sandbox.js';
 import {
@@ -12229,10 +12229,9 @@ export async function startServer({
         if (!built.ok) failure = built.reason ?? 'sandbox image auto-build failed';
       }
       if (image && !failure) {
-        // Packaged internal builds may carry OAuth file seeds. Apply them
-        // before preflight so a first ever chat can use the selected CLI;
-        // the helper is idempotent and never replaces a user credential.
-        await seedPackagedSandboxAuth(image);
+        // Older installers embedded a shared OAuth credential. Retire it once
+        // before preflight; users now authenticate each CLI from Settings.
+        await retireLegacyPackagedSandboxAuth(image);
         const preflight = await sandboxPreflight(image, agentId === 'codex' ? 'codex' : 'claude');
         if (!preflight.ok) failure = preflight.reason ?? 'sandbox preflight failed';
         if (!failure && sandboxCodexProfile) {

@@ -50,7 +50,7 @@ import {
   sandboxAuthDir,
   sandboxAuthFile,
   sandboxAuthVolume,
-  seedPackagedSandboxAuth,
+  retireLegacyPackagedSandboxAuth,
   clearSandboxRuntimeAuth,
   resolveDockerCommand,
   sandboxImageTag,
@@ -363,7 +363,7 @@ async function resolveSandboxStatusBody(
 
   const dockerOk = await dockerAvailable();
   const imageOk = dockerOk && (await dockerImagePresent(image));
-  if (imageOk) await seedPackagedSandboxAuth(image);
+  if (imageOk) await retireLegacyPackagedSandboxAuth(image);
   const authVolumeOk = dockerOk && (await dockerVolumePresent(SANDBOX_AUTH_VOLUME));
   const probeAuth = req.query.probeAuth === '1';
   const authLoggedIn = probeAuth && imageOk && authVolumeOk ? await sandboxAuthLoggedIn(image) : null;

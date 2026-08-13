@@ -73,8 +73,6 @@ function resolveHeadlessConfig(): PackagedConfig {
     atlassianConfluenceToken: process.env.OD_ATLASSIAN_CONFLUENCE_TOKEN?.trim() || null,
     sandboxDefault: process.env.OD_SANDBOX_DEFAULT?.trim() || null,
     sandboxSkills: process.env.OD_SANDBOX_SKILLS?.trim() || null,
-    sandboxClaudeAuthSeedB64: process.env.OD_SANDBOX_CLAUDE_AUTH_SEED_B64?.trim() || null,
-    sandboxCodexAuthSeedB64: process.env.OD_SANDBOX_CODEX_AUTH_SEED_B64?.trim() || null,
     // Headless has no desktop main / updater, but reads this straight from
     // the launcher env like everything else here for type-shape consistency.
     updateChannel: process.env.OD_UPDATE_CHANNEL?.trim() || null,
@@ -151,8 +149,6 @@ async function main(): Promise<void> {
     atlassianConfluenceToken: config.atlassianConfluenceToken,
     sandboxDefault: config.sandboxDefault,
     sandboxSkills: config.sandboxSkills,
-    sandboxClaudeAuthSeedB64: config.sandboxClaudeAuthSeedB64,
-    sandboxCodexAuthSeedB64: config.sandboxCodexAuthSeedB64,
     authSessionSecret: config.authSessionSecret,
     googleClientId: config.googleClientId,
     googleClientSecret: config.googleClientSecret,

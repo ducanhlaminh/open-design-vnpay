@@ -6354,7 +6354,7 @@ async function runSandbox(args) {
       const result = runDocker([
         'run', '--rm', '-v', 'od-claude-auth:/home/node/.claude',
         '--entrypoint', 'sh', status.image, '-c',
-        'rm -f /home/node/.claude/.credentials.json; printf logged-out > /home/node/.claude/.od-auth-seed-consumed',
+        'rm -f /home/node/.claude/.credentials.json /home/node/.claude/.od-auth-seed-consumed',
       ]);
       process.exit(result.status ?? 1);
     }
