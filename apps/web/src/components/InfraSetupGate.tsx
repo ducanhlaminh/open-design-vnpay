@@ -96,21 +96,33 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   useEffect(() => {
     if (!active || !isWindows || status?.dockerOk !== false) return;
     let cancelled = false;
-    void fetch('/api/sandbox/windows/firmware')
-      .then(async (r) => {
+    let requestRunning = false;
+    const refreshWindowsSetup = async () => {
+      if (requestRunning) return;
+      requestRunning = true;
+      try {
+        const r = await fetch('/api/sandbox/windows/firmware', { cache: 'no-store' });
         if (!r.ok) throw new Error('Không thể kiểm tra cấu hình virtualization của Windows.');
-        return r.json() as Promise<WindowsFirmwareStatusResponse>;
-      })
-      .then((result) => {
+        const result = await r.json() as WindowsFirmwareStatusResponse;
         if (!cancelled) {
           setWindowsSetup(result);
           setWindowsSetupError(null);
         }
-      })
-      .catch((error: unknown) => {
+      } catch (error: unknown) {
         if (!cancelled) setWindowsSetupError(error instanceof Error ? error.message : 'Không thể kiểm tra cấu hình Windows.');
-      });
-    return () => { cancelled = true; };
+      } finally {
+        requestRunning = false;
+      }
+    };
+    // Keep probing while Docker is unavailable. Firmware/CIM state can settle
+    // a few seconds after Windows resumes from the BIOS restart; a one-shot
+    // read left the old "VT disabled" alert mounted for the whole app session.
+    void refreshWindowsSetup();
+    const id = window.setInterval(() => void refreshWindowsSetup(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
   }, [active, isWindows, status?.dockerOk]);
 
   const restartToFirmware = useCallback(async () => {

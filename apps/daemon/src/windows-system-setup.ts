@@ -17,16 +17,29 @@ $ErrorActionPreference = 'Stop'
 $computer = Get-CimInstance Win32_ComputerSystem
 $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
 $firmware = 'unknown'
+$computerInfoVirtualization = $null
 try {
-  $firmwareValue = (Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType
+  $computerInfo = Get-ComputerInfo -Property BiosFirmwareType,HyperVRequirementVirtualizationFirmwareEnabled
+  $firmwareValue = $computerInfo.BiosFirmwareType
   if ($null -ne $firmwareValue) { $firmware = $firmwareValue.ToString().ToLowerInvariant() }
+  $computerInfoVirtualization = $computerInfo.HyperVRequirementVirtualizationFirmwareEnabled
 } catch {}
+$virtualizationEnabled = $cpu.VirtualizationFirmwareEnabled
+# Win32_Processor can incorrectly stay False on some Windows 11 machines even
+# while VT is working. HypervisorPresent is definitive positive evidence; the
+# ComputerInfo requirement is a second firmware source when no hypervisor is
+# active. Never let either source's stale False override a positive source.
+if ($computer.HypervisorPresent -eq $true -or $computerInfoVirtualization -eq $true) {
+  $virtualizationEnabled = $true
+}
 [PSCustomObject]@{
   manufacturer = [string]$computer.Manufacturer
   model = [string]$computer.Model
   cpuManufacturer = [string]$cpu.Manufacturer
-  virtualizationEnabled = $cpu.VirtualizationFirmwareEnabled
+  virtualizationEnabled = $virtualizationEnabled
   virtualizationSupported = $cpu.SecondLevelAddressTranslationExtensions
+  hypervisorPresent = $computer.HypervisorPresent
+  computerInfoVirtualization = $computerInfoVirtualization
   firmwareType = $firmware
 } | ConvertTo-Json -Compress
 `;
@@ -38,11 +51,15 @@ function nullableBoolean(value: unknown): boolean | null {
 export function parseWindowsFirmwareDetection(output: string): WindowsFirmwareDetection {
   const parsed = JSON.parse(output.trim()) as Record<string, unknown>;
   const firmware = String(parsed.firmwareType ?? '').toLowerCase();
+  const virtualizationEnabled =
+    parsed.hypervisorPresent === true || parsed.computerInfoVirtualization === true
+      ? true
+      : nullableBoolean(parsed.virtualizationEnabled);
   return {
     manufacturer: String(parsed.manufacturer ?? '').trim() || 'Unknown',
     model: String(parsed.model ?? '').trim() || 'Unknown',
     cpuManufacturer: String(parsed.cpuManufacturer ?? '').trim() || 'Unknown',
-    virtualizationEnabled: nullableBoolean(parsed.virtualizationEnabled),
+    virtualizationEnabled,
     virtualizationSupported: nullableBoolean(parsed.virtualizationSupported),
     firmwareType: firmware.includes('uefi') ? 'uefi' : firmware.includes('bios') ? 'bios' : 'unknown',
   };

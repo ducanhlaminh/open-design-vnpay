@@ -144,4 +144,36 @@ describe('SandboxSection runtime split', () => {
       expect(fetchMock).toHaveBeenCalledWith('/api/sandbox/docker/setup', { method: 'POST' });
     });
   });
+
+  it('disables Docker installation on Windows until firmware virtualization is enabled', async () => {
+    vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) {
+        return jsonResponse({
+          enabled: true, dockerOk: false, image: 'od-agent-sandbox:0.2.1', imageOk: false,
+          authVolumeOk: false, authLoggedIn: null, activeContainers: [], runtimes: ['claude'],
+          skills: ['*'], timeoutMinutes: 30, builderDir: '/tmp/builder', runtimeStatuses: [],
+        });
+      }
+      if (url.endsWith('/sandbox/build')) return jsonResponse({ building: false, ok: null, error: null, log: [] });
+      if (url.endsWith('/sandbox/windows/firmware')) {
+        return jsonResponse({
+          supportedPlatform: true,
+          detection: {
+            manufacturer: 'Dell', model: 'Latitude', cpuManufacturer: 'Intel',
+            virtualizationEnabled: false, virtualizationSupported: true, firmwareType: 'uefi',
+          },
+          guidance: null, pending: null, canRestartToFirmware: true,
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(<SandboxSection daemonLive={true} />);
+    const install = await screen.findByRole('button', { name: 'Bật VT trước khi cài' }) as HTMLButtonElement;
+    expect(install.disabled).toBe(true);
+    fireEvent.click(install);
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/sandbox/docker/setup', { method: 'POST' });
+  });
 });

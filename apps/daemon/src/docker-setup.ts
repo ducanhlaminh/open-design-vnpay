@@ -91,6 +91,17 @@ export function dockerDesktopWindowsInstallArgs(): string[] {
   return ['install', '--user', '--accept-license', '--backend=wsl-2'];
 }
 
+function powerShellSingleQuoted(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function dockerDesktopWindowsDownloadCommand(url: string, outputPath: string): string {
+  return [
+    "$ProgressPreference = 'SilentlyContinue'",
+    `Invoke-WebRequest -UseBasicParsing -Uri ${powerShellSingleQuoted(url)} -OutFile ${powerShellSingleQuoted(outputPath)}`,
+  ].join('; ');
+}
+
 export function dockerDesktopWindowsPaths(env: NodeJS.ProcessEnv = process.env): string[] {
   return [
     `${env.LOCALAPPDATA ?? ''}\\Programs\\DockerDesktop\\Docker Desktop.exe`,
@@ -191,9 +202,7 @@ async function installDockerDesktop(): Promise<void> {
       await spawnAndWait('powershell.exe', [
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-Command',
-        '$ProgressPreference = "SilentlyContinue"; Invoke-WebRequest -UseBasicParsing -Uri $args[0] -OutFile $args[1]',
-        download.url,
-        installer,
+        dockerDesktopWindowsDownloadCommand(download.url, installer),
       ]);
       appendLog('Đang cài Docker Desktop cho tài khoản Windows hiện tại…');
       await spawnAndWait(installer, dockerDesktopWindowsInstallArgs());

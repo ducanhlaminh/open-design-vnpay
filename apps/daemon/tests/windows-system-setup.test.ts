@@ -24,6 +24,22 @@ describe('Windows firmware detection', () => {
     });
   });
 
+  it('treats a running hypervisor as definitive evidence that virtualization is enabled', () => {
+    expect(parseWindowsFirmwareDetection(JSON.stringify({
+      manufacturer: 'Dell Inc.', model: 'Latitude 5440', cpuManufacturer: 'GenuineIntel',
+      virtualizationEnabled: false, virtualizationSupported: true, hypervisorPresent: true,
+      computerInfoVirtualization: null, firmwareType: 'UEFI',
+    })).virtualizationEnabled).toBe(true);
+  });
+
+  it('prefers the ComputerInfo firmware requirement when the processor CIM value is stale', () => {
+    expect(parseWindowsFirmwareDetection(JSON.stringify({
+      manufacturer: 'Dell Inc.', model: 'Latitude 5440', cpuManufacturer: 'GenuineIntel',
+      virtualizationEnabled: false, virtualizationSupported: true, hypervisorPresent: false,
+      computerInfoVirtualization: true, firmwareType: 'UEFI',
+    })).virtualizationEnabled).toBe(true);
+  });
+
   it('returns a non-destructive unsupported response outside Windows', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'od-win-fw-')); dirs.push(dir);
     const runner = vi.fn();

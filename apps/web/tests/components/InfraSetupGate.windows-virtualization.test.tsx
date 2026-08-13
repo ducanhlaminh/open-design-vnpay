@@ -102,6 +102,32 @@ describe('InfraSetupGate Windows virtualization guidance', () => {
     });
   });
 
+  it('rechecks firmware state and removes stale VT guidance after Windows reports enabled', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let firmwareReads = 0;
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) return jsonResponse(sandboxStatus);
+      if (url.endsWith('/sandbox/build')) return jsonResponse({ building: false, ok: null, error: null, log: [] });
+      if (url.endsWith('/sandbox/windows/firmware')) {
+        firmwareReads += 1;
+        return jsonResponse(firmwareReads === 1 ? windowsSetup : {
+          ...windowsSetup,
+          detection: { ...windowsSetup.detection, virtualizationEnabled: true },
+          canRestartToFirmware: false,
+          pending: null,
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(<InfraSetupGate daemonLive={true} onOpenSettings={vi.fn()} />);
+    expect(await screen.findByTestId('windows-virtualization-guide')).toBeTruthy();
+    await vi.advanceTimersByTimeAsync(5000);
+    await waitFor(() => expect(screen.queryByTestId('windows-virtualization-guide')).toBeNull());
+    vi.useRealTimers();
+  });
+
   it('shows the vendor BIOS key when direct firmware restart is unavailable', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);

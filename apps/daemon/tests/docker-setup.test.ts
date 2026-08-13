@@ -3,6 +3,7 @@ import {
   MAC_DOCKER_INSTALLER_APPLESCRIPT,
   dockerDesktopMacDownload,
   dockerDesktopWindowsDownload,
+  dockerDesktopWindowsDownloadCommand,
   dockerDesktopWindowsInstallArgs,
   dockerDesktopWindowsPaths,
 } from '../src/docker-setup.js';
@@ -46,6 +47,16 @@ describe('Docker Desktop setup on Windows', () => {
       '--accept-license',
       '--backend=wsl-2',
     ]);
+  });
+
+  it('embeds escaped download values in the PowerShell command instead of relying on empty positional args', () => {
+    const command = dockerDesktopWindowsDownloadCommand(
+      'https://desktop.docker.com/Docker Installer.exe',
+      "C:\\Users\\O'Brien\\Docker Desktop Installer.exe",
+    );
+    expect(command).toContain("-Uri 'https://desktop.docker.com/Docker Installer.exe'");
+    expect(command).toContain("-OutFile 'C:\\Users\\O''Brien\\Docker Desktop Installer.exe'");
+    expect(command).not.toContain('$args');
   });
 
   it('finds both per-user and all-users Docker Desktop installations', () => {

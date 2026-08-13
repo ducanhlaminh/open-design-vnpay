@@ -4,7 +4,7 @@
 // other worktree, so this file keeps a local shadow of the new shape and falls
 // back to the legacy summary view when the runtime list is still absent.
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { DockerSetupResponse, SandboxBuildResponse } from '@open-design/contracts';
+import type { DockerSetupResponse, SandboxBuildResponse, WindowsFirmwareStatusResponse } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { ClaudeAccountSwitcher } from './ClaudeAccountSwitcher';
 import { CodexDeviceLogin } from './CodexDeviceLogin';
@@ -20,6 +20,8 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
   const [status, setStatus] = useState<SandboxStatusResponse | null>(null);
   const [build, setBuild] = useState<SandboxBuildResponse | null>(null);
   const [dockerSetup, setDockerSetup] = useState<DockerSetupResponse | null>(null);
+  const [windowsSetup, setWindowsSetup] = useState<WindowsFirmwareStatusResponse | null>(null);
+  const isWindows = /Windows/i.test(navigator.userAgent);
 
   const refresh = useCallback(async () => {
     if (!daemonLive) return;
@@ -34,6 +36,37 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!daemonLive || !isWindows || status?.dockerOk !== false) {
+      setWindowsSetup(null);
+      return;
+    }
+    let cancelled = false;
+    let requestRunning = false;
+    const refreshFirmware = async () => {
+      if (requestRunning) return;
+      requestRunning = true;
+      try {
+        const response = await fetch('/api/sandbox/windows/firmware', { cache: 'no-store' });
+        if (response.ok) {
+          const next = await response.json() as WindowsFirmwareStatusResponse;
+          if (!cancelled) setWindowsSetup(next);
+        }
+      } catch {
+        // The setup modal owns detailed firmware errors. Settings simply keeps
+        // installation unavailable until a reliable answer arrives.
+      } finally {
+        requestRunning = false;
+      }
+    };
+    void refreshFirmware();
+    const id = window.setInterval(() => void refreshFirmware(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [daemonLive, isWindows, status?.dockerOk]);
 
   // Resume a build that might already be running (e.g. Settings reopened while
   // the image is still building) so the panel shows live progress on open.
@@ -119,6 +152,9 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
   const claudeRuntime = runtimeById.get('claude');
   const codexRuntime = runtimeById.get('codex');
   const hasRuntimeStatuses = runtimeStatuses.length > 0;
+  const virtualizationBlocked = Boolean(
+    isWindows && windowsSetup?.supportedPlatform && windowsSetup.detection?.virtualizationEnabled === false,
+  );
 
   const renderRuntimeRow = (runtime: SandboxRuntimeStatus | undefined) => {
     if (!runtime) {
@@ -181,16 +217,18 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
           {!status.dockerOk ? (
             <div className={styles.setupPanel} data-testid="sandbox-docker-setup">
               <div>
-                <strong>Docker chưa sẵn sàng</strong>
-                <p>Cài Docker Desktop để Open Design chạy Claude và Codex trong môi trường cách ly.</p>
+                <strong>{virtualizationBlocked ? 'Cần bật virtualization trước' : 'Docker chưa sẵn sàng'}</strong>
+                <p>{virtualizationBlocked
+                  ? 'Mở lại màn hình hướng dẫn thiết lập, bật VT trong BIOS/UEFI rồi quay lại đây. Open Design sẽ tự kiểm tra lại.'
+                  : 'Cài Docker Desktop để Open Design chạy Claude và Codex trong môi trường cách ly.'}</p>
               </div>
               <button
                 type="button"
                 className={styles.buildBtn}
-                disabled={dockerSetup?.running}
+                disabled={dockerSetup?.running || virtualizationBlocked || (isWindows && windowsSetup == null)}
                 onClick={() => void startDockerSetup()}
               >
-                {dockerSetup?.running ? 'Đang cài Docker…' : 'Cài Docker tự động'}
+                {dockerSetup?.running ? 'Đang cài Docker…' : virtualizationBlocked ? 'Bật VT trước khi cài' : 'Cài Docker tự động'}
               </button>
               {dockerSetup?.log.length ? (
                 <code className={styles.buildLog}>{dockerSetup.log[dockerSetup.log.length - 1]}</code>
