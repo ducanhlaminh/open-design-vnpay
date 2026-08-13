@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Open Design host runtime — macOS LaunchAgent template.
+
+  Placeholders substituted by deploy/host/install.sh at install time:
+    @OD_BIN@   absolute path to the `node` executable to run (system Node if
+               it satisfies apps/daemon/package.json#engines, otherwise the
+               private Node install.sh downloaded under @OD_HOME@/tools/node).
+    @OD_HOME@  absolute path to the install home (~/.open-design by default).
+
+  launchd has no native "EnvironmentFile=" directive (unlike systemd), so this
+  wraps the daemon in a login-shell-free `/bin/sh -c` that sources
+  @OD_HOME@/config.env before exec'ing node — the daemon reads config.env's
+  OD_* / MEDIA_* / IDENTITY_URL entries from its own process.env.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vnpay.open-design</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -a; [ -f "@OD_HOME@/config.env" ] &amp;&amp; . "@OD_HOME@/config.env"; set +a; exec "@OD_BIN@" "@OD_HOME@/current/apps/daemon/dist/cli.js" --no-open</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>@OD_HOME@/current</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>@OD_HOME@/logs/open-design.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>@OD_HOME@/logs/open-design.err.log</string>
+</dict>
+</plist>

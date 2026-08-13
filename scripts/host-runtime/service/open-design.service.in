@@ -1,0 +1,27 @@
+# Open Design host runtime — Linux systemd USER unit template.
+#
+# Placeholders substituted by deploy/host/install.sh at install time:
+#   @OD_BIN@   absolute path to the `node` executable to run (system Node if
+#              it satisfies apps/daemon/package.json#engines, otherwise the
+#              private Node install.sh downloaded under @OD_HOME@/tools/node).
+#   @OD_HOME@  absolute path to the install home (~/.open-design by default).
+#
+# Installed at ~/.config/systemd/user/open-design.service and managed with
+# `systemctl --user start|stop|status|enable open-design`.
+
+[Unit]
+Description=Open Design daemon (host runtime)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@OD_HOME@/current
+EnvironmentFile=-@OD_HOME@/config.env
+ExecStart=@OD_BIN@ @OD_HOME@/current/apps/daemon/dist/cli.js --no-open
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:@OD_HOME@/logs/open-design.out.log
+StandardError=append:@OD_HOME@/logs/open-design.err.log
+
+[Install]
+WantedBy=default.target
