@@ -333,9 +333,20 @@ function Step1-VerifyPackage {
   # Checksum BEFORE any extraction -- mandatory, same order as install.sh.
   Test-Checksum
   Test-TarSafety
-  $versionRaw = & tar.exe -xzf $ArchivePath -O "$StageName/VERSION" 2>$null
-  $script:Version = (($versionRaw -join "") -replace '\s', '')
-  if (-not $Version) { Fail "could not read VERSION from the archive" }
+  # Extract just VERSION to a scratch dir instead of piping it out via `-O`
+  # (extract-to-stdout) -- that mode proved unreliable on the windows-latest
+  # CI runner's tar.exe (silent empty output, no diagnosable cause). `-C`
+  # extraction is the same primitive Step 3 already uses for the real
+  # install (below), so this reuses the well-trodden path instead of a
+  # second, less-tested extraction mode.
+  $versionDir = New-TempDir
+  $tarErr = & tar.exe -xzf $ArchivePath -C $versionDir "$StageName/VERSION" 2>&1
+  $versionFile = Join-Path $versionDir "$StageName/VERSION"
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path $versionFile)) {
+    Fail "could not read VERSION from the archive (tar exit ${LASTEXITCODE}): $tarErr"
+  }
+  $script:Version = ((Get-Content -Path $versionFile -Raw) -replace '\s', '')
+  if (-not $Version) { Fail "VERSION file in the archive is empty" }
   Write-Ok "Package verified: $StageName (version $Version)"
 }
 

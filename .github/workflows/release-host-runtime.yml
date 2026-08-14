@@ -168,7 +168,12 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          schtasks /Delete /TN "OpenDesignDaemon" /F 2>$null
+          # try/catch, not `2>$null` alone -- pwsh 7's
+          # $PSNativeCommandUseErrorActionPreference turns a native command's
+          # non-zero exit (schtasks /Delete on a task that was never created,
+          # e.g. an earlier step failed first) into a terminating error even
+          # with stderr redirected.
+          try { schtasks /Delete /TN "OpenDesignDaemon" /F 2>$null } catch {}
           Remove-Item -Recurse -Force "$env:USERPROFILE\.open-design" -ErrorAction SilentlyContinue
 
   publish:
