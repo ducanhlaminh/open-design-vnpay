@@ -302,7 +302,15 @@ JSON
 #     check (exactly one top-level entry, no `..` path) always holds.
 # ---------------------------------------------------------------------------
 log "creating tarball"
-(cd "$OUT_DIR" && tar -czf "${STAGE_NAME}.tar.gz" "$STAGE_NAME")
+# -h/--dereference: pnpm's .pnpm virtual-store node_modules layout links
+# packages via symlinks that pnpm records with an ABSOLUTE path anchored to
+# wherever they were built (this CI runner's own temp workspace) -- those
+# targets don't exist on any machine the tarball gets extracted onto.
+# Symlink creation on Windows also requires an elevated privilege install.ps1
+# deliberately doesn't have. Dereferencing at archive-creation time replaces
+# every symlink with a real copy of its target, so the tarball is a flat,
+# fully portable, symlink-free tree on every platform.
+(cd "$OUT_DIR" && tar -czhf "${STAGE_NAME}.tar.gz" "$STAGE_NAME")
 (cd "$OUT_DIR" && sha256_tool "${STAGE_NAME}.tar.gz") > "${TARBALL}.sha256"
 
 log "done: ${TARBALL}"
