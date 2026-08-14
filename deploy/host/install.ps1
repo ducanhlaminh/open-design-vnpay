@@ -311,7 +311,12 @@ function Test-TarSafety {
   if (@($topLevels).Count -ne 1) {
     Fail "archive must contain exactly one top-level directory (found $(@($topLevels).Count))"
   }
-  $script:StageName = $topLevels[0]
+  # $topLevels collapses to a bare [string] scalar (not a 1-element array)
+  # when there's exactly one unique value -- the normal case for every valid
+  # archive, since that's what the check above enforces. Indexing a bare
+  # string with [0] returns its first CHARACTER, not itself -- @() forces
+  # array context so [0] always means "first element" here.
+  $script:StageName = @($topLevels)[0]
 }
 
 function Test-Checksum {
