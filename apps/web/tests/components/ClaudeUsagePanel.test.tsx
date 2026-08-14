@@ -65,6 +65,7 @@ function renderSwitcher() {
       onAgentModelChange={() => undefined}
       onApiProtocolChange={() => undefined}
       onApiModelChange={() => undefined}
+      onRefreshAgents={() => []}
       onOpenSettings={() => undefined}
     />,
   );
@@ -107,7 +108,7 @@ describe('Claude quota in the Local CLI dropdown', () => {
   it('requests nothing until the dropdown is opened', () => {
     renderSwitcher();
     expect(usageCalls).toBe(0);
-    expect(screen.queryByText(/Mức dùng tài khoản Claude/)).toBeNull();
+    expect(screen.queryByText('33%')).toBeNull();
   });
 
   it('reads the quota once on open and shows both windows', async () => {
@@ -116,7 +117,6 @@ describe('Claude quota in the Local CLI dropdown', () => {
 
     await waitFor(() => expect(screen.getByText('33%')).toBeTruthy());
     expect(screen.getByText('81%')).toBeTruthy();
-    expect(screen.getByText('max')).toBeTruthy();
     expect(usageCalls).toBe(1);
   });
 
@@ -155,13 +155,13 @@ describe('Claude quota in the Local CLI dropdown', () => {
         onAgentModelChange={() => undefined}
         onApiProtocolChange={() => undefined}
         onApiModelChange={() => undefined}
+        onRefreshAgents={() => []}
         onOpenSettings={() => undefined}
       />,
     );
     openDropdown();
 
     await waitFor(() => expect(screen.getByText('43%')).toBeTruthy());
-    expect(screen.getByText('plus')).toBeTruthy();
     expect(usageCalls).toBe(0);
     expect(codexUsageCalls).toBe(1);
   });

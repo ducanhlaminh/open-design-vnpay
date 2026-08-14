@@ -345,6 +345,92 @@
 .claude-usage-bar__fill--crit { background: var(--red, #dc2626); }
 .claude-usage-bar__fill--na { background: var(--border); }
 .claude-usage-win__reset { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* --- Login status + email line (AgentAuthLine) — sits at the top of each
+       usage panel above, ahead of the quota rows. --- */
+.agent-auth-line {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.agent-auth-line__row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.agent-auth-line__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent, #0066b3);
+}
+.agent-auth-line--ok .agent-auth-line__email {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-auth-line__dot--missing {
+  background: var(--red, #dc2626);
+}
+.agent-auth-line__login-btn {
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--accent, #0066b3);
+  color: #fff;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.agent-auth-line__login-btn:hover:not(:disabled) {
+  background: var(--accent-strong, #005493);
+}
+.agent-auth-line__login-btn:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+.agent-auth-line__note {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+.agent-auth-line__fallback {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-auth-line__fallback code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+}
+.agent-auth-line__copy-btn {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.agent-auth-line__copy-btn:hover {
+  background: var(--bg-subtle);
+}
 .workspace-tabs-popover {
   /* Anchored to the viewport, not to .workspace-tabs-actions, because the
      actions group sits next to the tab strip on the left side of the chrome

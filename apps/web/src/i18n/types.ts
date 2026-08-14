@@ -686,6 +686,7 @@ export interface Dict {
   'settings.sandboxRuntimeNotReady': string;
   'settings.sandboxCodexLoginStart': string;
   'settings.sandboxCodexLoginDisconnect': string;
+  'settings.sandboxCodexAlreadyLoggedIn': string;
 
   // Notifications (settings + system notifications)
   'settings.notifications': string;
@@ -1675,6 +1676,14 @@ export interface Dict {
   'inlineSwitcher.missingApiKey': string;
   'inlineSwitcher.openFullSettings': string;
   'inlineSwitcher.customSuffix': string;
+  'inlineSwitcher.authOk': string;
+  'inlineSwitcher.authMissing': string;
+  'inlineSwitcher.loginButton': string;
+  'inlineSwitcher.loginStarting': string;
+  'inlineSwitcher.loginWaiting': string;
+  'inlineSwitcher.loginErrorFallback': string;
+  'inlineSwitcher.loginCopyCommand': string;
+  'inlineSwitcher.loginCopied': string;
 
   // Project view / chat pane / composer
   'project.backToProjects': string;

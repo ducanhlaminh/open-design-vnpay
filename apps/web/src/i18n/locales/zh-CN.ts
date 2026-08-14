@@ -1344,6 +1344,14 @@ export const zhCN: Dict = {
   'inlineSwitcher.missingApiKey': '尚未填写 API Key — 在“设置”中添加。',
   'inlineSwitcher.openFullSettings': '打开执行设置',
   'inlineSwitcher.customSuffix': '（自定义）',
+  'inlineSwitcher.authOk': '已登录',
+  'inlineSwitcher.authMissing': '尚未登录',
+  'inlineSwitcher.loginButton': '登录',
+  'inlineSwitcher.loginStarting': '正在打开…',
+  'inlineSwitcher.loginWaiting': '等待登录完成…',
+  'inlineSwitcher.loginErrorFallback': '无法开始登录，请重试。',
+  'inlineSwitcher.loginCopyCommand': '复制命令',
+  'inlineSwitcher.loginCopied': '已复制',
 
   'project.backToProjects': '返回项目列表',
   'project.metaFreeform': '自由设计',
@@ -2478,6 +2486,7 @@ export const zhCN: Dict = {
   'settings.sandboxRuntimeNotReady': 'Not ready',
   'settings.sandboxCodexLoginStart': 'Start login',
   'settings.sandboxCodexLoginDisconnect': 'Disconnect',
+  'settings.sandboxCodexAlreadyLoggedIn': 'Already signed in.',
 
   // Pipelines — run-all pre-flight "this will clear old results" confirm (English source; not yet localized)
   'pipelines.runAllClear.title': 'Old results will be cleared',

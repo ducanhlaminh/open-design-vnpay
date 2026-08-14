@@ -1684,6 +1684,95 @@ export function openSandboxRuntimeLoginTerminal(
   }
 }
 
+/**
+ * Best-effort: open a HOST terminal window running a bare HOST-mode login
+ * command (`claude /login`, or the Codex device-auth invocation) — no
+ * `docker run` wrapping, since this targets a directly-installed host CLI
+ * rather than the Docker sandbox. Deliberately duplicates (rather than
+ * shares) the OS-branch terminal-opening logic from
+ * `openSandboxRuntimeLoginTerminal` above so a change to one login path can
+ * never accidentally break the other. Returns whether a window was opened;
+ * the caller shows the raw command as a copy-paste fallback either way.
+ */
+export function openHostLoginTerminal(
+  runtimeId: 'claude' | 'codex',
+): { launched: boolean; command: string; message?: string } {
+  const words: readonly string[] =
+    runtimeId === 'codex'
+      ? ['codex', 'login', '--device-auth', '-c', 'cli_auth_credentials_store="file"']
+      : ['claude', '/login'];
+  // Resolve the actual CLI binary path the same way host launches do
+  // (detection.ts / connectionTest.ts), so the terminal command uses an
+  // absolute path when PATH resolution would otherwise be ambiguous (GUI
+  // apps often launch with a stripped-down PATH). Falls back to the bare
+  // command name when the agent isn't registered/resolvable — same as
+  // typing `claude`/`codex` by hand and relying on the shell's own PATH.
+  let bin: string = words[0] as string;
+  try {
+    const def = getAgentDef(runtimeId);
+    const launch = def ? resolveAgentLaunch(def, {}) : null;
+    if (launch?.launchPath) bin = launch.launchPath;
+  } catch {
+    /* resolution is best-effort — fall back to the bare command name */
+  }
+  const command = [bin, ...words.slice(1)].join(' ');
+  const label = runtimeId === 'codex' ? 'Codex' : 'Claude';
+  try {
+    if (process.platform === 'darwin') {
+      const id = Date.now();
+      // Launch via a .command file + open(1), NOT osascript: AppleEvents
+      // automation ("control Terminal") needs a privacy permission, and when
+      // it's denied the Terminal window opens EMPTY with no command run —
+      // silently. Terminal executes an opened .command file without any
+      // automation permission (same reasoning as the sandbox login above).
+      const cmdPath = path.join(tmpdir(), `od-host-login-${id}.command`);
+      writeFileSync(
+        cmdPath,
+        `#!/bin/zsh\nclear\necho "Đăng nhập ${label} — làm theo hướng dẫn bên dưới; trình duyệt sẽ tự mở."\n${command}\n`,
+        { mode: 0o755 },
+      );
+      spawn('open', [cmdPath], { detached: true, stdio: 'ignore' }).unref();
+      return {
+        launched: true,
+        command,
+        message: `Đã mở Terminal — hoàn tất đăng nhập ${label} ở đó rồi quay lại đây.`,
+      };
+    }
+    if (process.platform === 'win32') {
+      spawn('cmd', ['/c', 'start', 'cmd', '/k', command], { detached: true, stdio: 'ignore' }).unref();
+      return {
+        launched: true,
+        command,
+        message: `Đã mở cửa sổ lệnh — hoàn tất đăng nhập ${label} rồi quay lại đây.`,
+      };
+    }
+    // Linux: try the common terminal emulators, first hit wins.
+    for (const term of ['x-terminal-emulator', 'gnome-terminal', 'konsole', 'xterm']) {
+      try {
+        spawn(term, ['-e', 'sh', '-c', `${command}; exec sh`], { detached: true, stdio: 'ignore' }).unref();
+        return {
+          launched: true,
+          command,
+          message: `Đã mở terminal — hoàn tất đăng nhập ${label} rồi quay lại đây.`,
+        };
+      } catch {
+        /* try the next emulator */
+      }
+    }
+    return {
+      launched: false,
+      command,
+      message: `Không mở được terminal — chạy lệnh này thủ công: ${command}`,
+    };
+  } catch {
+    return {
+      launched: false,
+      command,
+      message: `Không mở được terminal — chạy lệnh này thủ công: ${command}`,
+    };
+  }
+}
+
 /** Delete a saved account (does NOT touch the active login). */
 export async function removeSandboxAccount(image: string, label: string): Promise<SandboxAccountsResponse> {
   assertAccountLabel(label);

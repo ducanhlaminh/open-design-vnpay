@@ -22,6 +22,10 @@ export type AgentAuthProbeResult = {
   stderrTail?: string;
   exitCode?: number | null;
   signal?: string | null;
+  /** Best-effort account identity read from the same on-disk state the
+   *  login check already consulted. Undefined whenever the extra read/parse
+   *  fails or the field is absent — never fatal to the probe itself. */
+  account?: { email?: string };
 };
 
 const CURSOR_AUTH_GUIDANCE =
@@ -135,6 +139,23 @@ export function claudeCredentialsCarryLogin(text: string): boolean {
   return /"accessToken"\s*:\s*"[^"]/.test(text);
 }
 
+/**
+ * Best-effort account email from `~/.claude.json` — a home-dir TOP-LEVEL
+ * file (NOT `<configDir>/.claude/`, which is what the login check above
+ * reads). `claude /login` writes `oauthAccount.emailAddress` there once the
+ * OAuth exchange completes. Never throws: any parse/shape surprise just
+ * means "no email available", not a probe failure.
+ */
+export function extractClaudeAccountEmail(raw: string): string | undefined {
+  try {
+    const parsed = JSON.parse(raw) as { oauthAccount?: { emailAddress?: unknown } };
+    const email = parsed.oauthAccount?.emailAddress;
+    return typeof email === 'string' && email ? email : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Windows env-var names are case-insensitive at the kernel level; compare
 // case-insensitively so `Anthropic_Api_Key` still counts (mirrors
 // claude-diagnostics.ts / env.ts).
@@ -201,7 +222,18 @@ export async function probeClaudeAuthStatus(
 
   try {
     if (claudeCredentialsCarryLogin(await read(path.join(configDir, '.credentials.json')))) {
-      return { status: 'ok' };
+      // Best-effort account email from the home-dir `~/.claude.json` (a
+      // DIFFERENT file than the `.credentials.json` just read above — see
+      // extractClaudeAccountEmail's comment). Failure here must never flip
+      // `status` away from 'ok': the login itself was already confirmed.
+      let account: { email?: string } | undefined;
+      try {
+        const email = extractClaudeAccountEmail(await read(path.join(home(), '.claude.json')));
+        if (email) account = { email };
+      } catch {
+        /* no ~/.claude.json, or unreadable — account stays undefined */
+      }
+      return { status: 'ok', ...(account ? { account } : {}) };
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') degraded = true;
@@ -271,6 +303,31 @@ export function codexAuthJsonCarriesToken(text: string): boolean {
   }
 }
 
+/**
+ * Best-effort account email from `auth.json`'s `tokens.id_token` — an OIDC
+ * JWT whose middle (payload) segment is base64url JSON carrying an `email`
+ * claim (ChatGPT OAuth always includes it). Never throws: any shape
+ * surprise (missing token, malformed JWT, non-JSON payload) just means "no
+ * email available", not a probe failure.
+ */
+export function extractCodexAccountEmail(raw: string): string | undefined {
+  try {
+    const parsed = JSON.parse(raw) as { tokens?: { id_token?: unknown } };
+    const idToken = parsed.tokens?.id_token;
+    if (typeof idToken !== 'string' || !idToken) return undefined;
+    const segment = idToken.split('.')[1];
+    if (!segment) return undefined;
+    const b64 = segment.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const claims = JSON.parse(Buffer.from(padded, 'base64').toString('utf8')) as {
+      email?: unknown;
+    };
+    return typeof claims.email === 'string' && claims.email ? claims.email : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Injectable IO so tests never touch the real home dir. */
 export type CodexAuthProbeIO = {
   readFile?: (filePath: string) => Promise<string>;
@@ -292,7 +349,10 @@ export async function probeCodexAuthStatus(
 
   try {
     const raw = await read(path.join(codexHome, 'auth.json'));
-    if (codexAuthJsonCarriesToken(raw)) return { status: 'ok' };
+    if (codexAuthJsonCarriesToken(raw)) {
+      const email = extractCodexAccountEmail(raw);
+      return { status: 'ok', ...(email ? { account: { email } } : {}) };
+    }
     return { status: 'missing', message: CODEX_AUTH_GUIDANCE };
   } catch (error) {
     // Anything other than "file absent" means we could not actually answer

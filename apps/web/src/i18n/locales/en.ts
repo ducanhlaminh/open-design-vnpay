@@ -1352,6 +1352,14 @@ export const en: Dict = {
   'inlineSwitcher.missingApiKey': 'API key not set — open Settings to add it.',
   'inlineSwitcher.openFullSettings': 'Open execution settings',
   'inlineSwitcher.customSuffix': '(custom)',
+  'inlineSwitcher.authOk': 'Logged in',
+  'inlineSwitcher.authMissing': 'Not logged in',
+  'inlineSwitcher.loginButton': 'Log in',
+  'inlineSwitcher.loginStarting': 'Opening…',
+  'inlineSwitcher.loginWaiting': 'Waiting for login…',
+  'inlineSwitcher.loginErrorFallback': 'Could not start login. Try again.',
+  'inlineSwitcher.loginCopyCommand': 'Copy command',
+  'inlineSwitcher.loginCopied': 'Copied',
 
   'project.backToProjects': 'Back to projects',
   'project.metaFreeform': 'freeform',
@@ -2499,6 +2507,7 @@ export const en: Dict = {
   'settings.sandboxRuntimeNotReady': 'Not ready',
   'settings.sandboxCodexLoginStart': 'Start login',
   'settings.sandboxCodexLoginDisconnect': 'Disconnect',
+  'settings.sandboxCodexAlreadyLoggedIn': 'Already signed in.',
 
   // Pipelines — run-all pre-flight "this will clear old results" confirm
   'pipelines.runAllClear.title': 'Old results will be cleared',

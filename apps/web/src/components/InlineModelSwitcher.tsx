@@ -8,7 +8,7 @@
 // upward through the same callbacks `AvatarMenu` already uses, so the
 // switcher inherits autosave + daemon sync without re-implementing it.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useT } from '../i18n';
 import { KNOWN_PROVIDERS } from '../state/config';
 import type { AgentInfo, ApiProtocol, AppConfig, ExecMode } from '../types';
@@ -31,6 +31,11 @@ interface Props {
   ) => void;
   onApiProtocolChange: (protocol: ApiProtocol) => void;
   onApiModelChange: (model: string) => void;
+  /** Re-fetches /api/agents and updates the parent's central `agents` state.
+   *  Used to refresh authStatus/authAccount right after a host-mode CLI
+   *  login completes, so the whole switcher (badge, usage panel) updates in
+   *  one place instead of each surface polling independently. */
+  onRefreshAgents: () => Promise<AgentInfo[]> | AgentInfo[];
   onOpenSettings: (
     section?:
       | 'execution'
@@ -60,11 +65,16 @@ export function InlineModelSwitcher({
   onAgentModelChange,
   onApiProtocolChange,
   onApiModelChange,
+  onRefreshAgents,
   onOpenSettings,
 }: Props) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  const handleAgentAuthChanged = useCallback(() => {
+    void onRefreshAgents?.();
+  }, [onRefreshAgents]);
 
   useEffect(() => {
     if (!open) return;
@@ -318,10 +328,16 @@ export function InlineModelSwitcher({
                 </div>
               ) : null}
 
-              {/* Claude exposes account windows; Codex currently exposes no
-                  quota endpoint, so its panel states that limitation honestly. */}
-              {currentAgent?.id === 'claude' ? <ClaudeUsagePanel /> : null}
-              {currentAgent?.id === 'codex' ? <CodexUsagePanel /> : null}
+              {/* Login status + quota for the selected CLI — the panel also
+                  owns the "Đăng nhập" affordance (AgentAuthLine) when
+                  authStatus is 'missing', wired back to onRefreshAgents so a
+                  completed login updates the agent grid's "!" badge too. */}
+              {currentAgent?.id === 'claude' ? (
+                <ClaudeUsagePanel agent={currentAgent} onAuthChanged={handleAgentAuthChanged} />
+              ) : null}
+              {currentAgent?.id === 'codex' ? (
+                <CodexUsagePanel agent={currentAgent} onAuthChanged={handleAgentAuthChanged} />
+              ) : null}
             </>
           ) : (
             <>

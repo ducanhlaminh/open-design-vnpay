@@ -573,6 +573,7 @@ export function EntryShell({
                 onAgentModelChange={onAgentModelChange}
                 onApiProtocolChange={onApiProtocolChange}
                 onApiModelChange={onApiModelChange}
+                onRefreshAgents={onRefreshAgents}
                 onOpenSettings={onOpenSettings}
               />
             </div>

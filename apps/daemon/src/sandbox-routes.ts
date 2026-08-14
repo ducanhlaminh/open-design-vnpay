@@ -44,6 +44,7 @@ import {
   removeSandboxAccount,
   readSandboxAccountCredentials,
   openSandboxLoginTerminal,
+  openHostLoginTerminal,
   startEmbeddedLogin,
   getEmbeddedLoginStatus,
   submitEmbeddedLoginCode,
@@ -445,6 +446,24 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
     sendApiError(res, 409, 'SANDBOX_MODE_HOST', SANDBOX_MODE_HOST_MESSAGE);
     return false;
   };
+
+  // Host-mode CLI login trigger for the "Local CLI" panel — deliberately
+  // NOT behind requireSandboxEnabled: this opens a terminal for the
+  // HOST-installed `claude`/`codex` binary directly (openHostLoginTerminal,
+  // agent-sandbox.ts), independent of whether the Docker sandbox is
+  // enabled. Lives here (next to the sandbox login routes) rather than in
+  // auth-routes.ts because that file is entirely about the daemon's own
+  // Google-SSO gateway, a different concern. Response shape matches the
+  // Docker sandbox login routes above (`{ launched, command, message }`) so
+  // the frontend reuses the same "open terminal → copy-paste fallback →
+  // poll for state to flip" UX.
+  app.post('/api/agents/:agentId/login', (req, res) => {
+    const agentId = req.params.agentId;
+    if (agentId !== 'claude' && agentId !== 'codex') {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'agentId must be "claude" or "codex".');
+    }
+    res.json(openHostLoginTerminal(agentId));
+  });
 
   app.get('/api/sandbox/status', async (req, res) => {
     try {

@@ -10,6 +10,10 @@ export interface AgentInfo {
   available: boolean;
   authStatus?: 'ok' | 'missing' | 'unknown';
   authMessage?: string;
+  /** Best-effort logged-in account identity (e.g. email) for the "Local
+   *  CLI" panel. Undefined whenever unavailable — never a broken/empty
+   *  state, just omit the email line. */
+  authAccount?: { email?: string };
   path?: string;
   version?: string | null;
   models?: AgentModelOption[];

@@ -149,6 +149,10 @@ export type DetectedAgent = Omit<
   available: boolean;
   authStatus?: 'ok' | 'missing' | 'unknown';
   authMessage?: string;
+  /** Best-effort logged-in account identity (e.g. email), read from the same
+   *  on-disk state `authStatus` came from. Undefined whenever unavailable —
+   *  never treated as a probe failure. See runtimes/auth.ts. */
+  authAccount?: { email?: string };
   path?: string;
   version?: string | null;
   /** Present when the agent sandbox OWNS this runtime's runs (enabled +

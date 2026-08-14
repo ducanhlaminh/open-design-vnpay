@@ -190,6 +190,7 @@ async function probe(
       ? {
           authStatus: auth.status,
           ...(auth.message ? { authMessage: auth.message } : {}),
+          ...(auth.account ? { authAccount: auth.account } : {}),
         }
       : {}),
     ...installMetaForAgent(def.id),

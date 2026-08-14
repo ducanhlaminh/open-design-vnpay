@@ -1,6 +1,11 @@
+// Codex account status, rendered inside the Local CLI dropdown. Mirrors
+// ClaudeUsagePanel's trim: login state (+ email when known) and the quota
+// bars only — header text, plan badge, and footer sentence dropped.
+
 import { useCallback, useEffect, useState } from 'react';
 import type { CodexUsageResponse, CodexUsageWindow } from '@open-design/contracts';
-import { Icon } from './Icon';
+import type { AgentInfo } from '../types';
+import { AgentAuthLine } from './AgentAuthLine';
 
 type State =
   | { phase: 'loading' }
@@ -24,7 +29,13 @@ function resetIn(epochSeconds: number | null, now: number): string {
   return days ? `reset sau ${days}n ${hours}h` : `reset sau ${hours}h ${mins % 60}m`;
 }
 
-export function CodexUsagePanel(): JSX.Element {
+interface Props {
+  agent?: AgentInfo | null;
+  /** Bubbled straight to AgentAuthLine — see its onAuthChanged doc. */
+  onAuthChanged?: () => void;
+}
+
+export function CodexUsagePanel({ agent, onAuthChanged }: Props): JSX.Element {
   const [state, setState] = useState<State>({ phase: 'loading' });
   const load = useCallback(async (signal?: AbortSignal) => {
     setState({ phase: 'loading' });
@@ -40,14 +51,11 @@ export function CodexUsagePanel(): JSX.Element {
   useEffect(() => { const ctrl = new AbortController(); void load(ctrl.signal); return () => ctrl.abort(); }, [load]);
 
   return <div className="claude-usage-section" data-testid="codex-usage-panel">
-    <div className="claude-usage-section__head"><Icon name="sliders" size={14} /><span>Mức dùng tài khoản Codex</span>
-      {state.phase === 'ready' && state.usage.planType ? <span className="claude-usage-plan">{state.usage.planType}</span> : null}
-    </div>
+    <AgentAuthLine agentId="codex" agent={agent} onAuthChanged={onAuthChanged} />
     {state.phase === 'loading' ? <p className="claude-usage-section__note">Đang đọc mức dùng…</p> : null}
     {state.phase === 'ready' && state.usage.available ? <>
       <CodexWindow window={state.usage.primary} now={state.at} />
       {state.usage.secondary ? <CodexWindow window={state.usage.secondary} now={state.at} /> : null}
-      <p className="claude-usage-section__foot">% hạn mức Codex đã dùng — đọc một lần khi mở Local CLI.</p>
     </> : null}
     {state.phase === 'error' || (state.phase === 'ready' && !state.usage.available) ? <>
       <p className="claude-usage-section__note">Chưa đọc được mức dùng Codex. Kiểm tra lại Docker và trạng thái đăng nhập.</p>

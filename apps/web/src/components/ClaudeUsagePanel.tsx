@@ -1,16 +1,21 @@
-// Claude account quota (rolling 5-hour / 7-day subscription limits — the same
-// data as Claude Code's `/usage`), rendered inside the Local CLI dropdown.
+// Claude account status, rendered inside the Local CLI dropdown. Trimmed to
+// exactly what the user asked for: login state (+ email when known) and the
+// rolling 5h/7d quota bars. The header text restating the agent name, the
+// plan-tier badge, and the footer sentence that used to sit around this were
+// judged redundant and dropped — the % + bar + reset per window is the only
+// "quota" content that survives.
 //
-// Fetches ONCE per mount, and the dropdown only mounts it while open, so the
-// quota is read when the user actually asks to see it. It deliberately does NOT
-// poll: the previous always-visible header chip polled every 60s from every
-// open tab, and that traffic is what pushed the upstream usage endpoint into
-// HTTP 429 — which surfaced as a permanently blank meter, since a rate-limited
-// first read leaves nothing to display.
+// Quota fetches ONCE per mount, and the dropdown only mounts it while open,
+// so the quota is read when the user actually asks to see it. It
+// deliberately does NOT poll: the previous always-visible header chip polled
+// every 60s from every open tab, and that traffic is what pushed the
+// upstream usage endpoint into HTTP 429 — which surfaced as a permanently
+// blank meter, since a rate-limited first read leaves nothing to display.
 
 import { useCallback, useEffect, useState } from 'react';
 import type { ClaudeUsageResponse, ClaudeUsageWindow } from '@open-design/contracts';
-import { Icon } from './Icon';
+import type { AgentInfo } from '../types';
+import { AgentAuthLine } from './AgentAuthLine';
 
 /** Bucket a utilization % into a severity class for colouring. */
 function level(pct: number | null): 'ok' | 'warn' | 'crit' | 'na' {
@@ -43,7 +48,13 @@ type State =
   | { phase: 'ready'; usage: ClaudeUsageResponse; at: number }
   | { phase: 'error' };
 
-export function ClaudeUsagePanel(): JSX.Element {
+interface Props {
+  agent?: AgentInfo | null;
+  /** Bubbled straight to AgentAuthLine — see its onAuthChanged doc. */
+  onAuthChanged?: () => void;
+}
+
+export function ClaudeUsagePanel({ agent, onAuthChanged }: Props): JSX.Element {
   const [state, setState] = useState<State>({ phase: 'loading' });
 
   const load = useCallback(async (signal?: AbortSignal) => {
@@ -68,13 +79,7 @@ export function ClaudeUsagePanel(): JSX.Element {
 
   return (
     <div className="claude-usage-section">
-      <div className="claude-usage-section__head">
-        <Icon name="sliders" size={14} />
-        <span>Mức dùng tài khoản Claude</span>
-        {state.phase === 'ready' && state.usage.subscriptionType ? (
-          <span className="claude-usage-plan">{state.usage.subscriptionType}</span>
-        ) : null}
-      </div>
+      <AgentAuthLine agentId="claude" agent={agent} onAuthChanged={onAuthChanged} />
 
       {state.phase === 'loading' ? (
         <p className="claude-usage-section__note">Đang đọc mức dùng…</p>
@@ -84,9 +89,6 @@ export function ClaudeUsagePanel(): JSX.Element {
         <>
           <UsageWindowRow label="5 giờ" window={state.usage.fiveHour} now={state.at} />
           <UsageWindowRow label="7 ngày" window={state.usage.sevenDay} now={state.at} />
-          <p className="claude-usage-section__foot">
-            % hạn mức gói đã dùng — nguồn giống lệnh <code>/usage</code>.
-          </p>
         </>
       ) : null}
 

@@ -53,11 +53,20 @@ function extractResponseError(body: unknown, status: number): string {
 
 interface Props {
   disabled?: boolean;
+  /** The runtime is already authenticated per the persisted auth-volume
+   *  check (`SandboxSection`'s `codexRuntime.authStatus === 'logged-in'`) —
+   *  independent of this component's own `session.phase`, which only
+   *  tracks an in-memory device-code flow the daemon forgets on restart
+   *  and which never reflects a login that happened outside this exact
+   *  component instance. Without this, a real login shows as "Not ready"
+   *  + a "Start login" button forever, contradicting the runtime card
+   *  right above it. */
+  alreadyLoggedIn?: boolean;
   onComplete?: () => void;
   onAuthChanged?: () => void;
 }
 
-export function CodexDeviceLogin({ disabled = false, onComplete, onAuthChanged }: Props): JSX.Element {
+export function CodexDeviceLogin({ disabled = false, alreadyLoggedIn = false, onComplete, onAuthChanged }: Props): JSX.Element {
   const t = useT();
   const [session, setSession] = useState<SandboxDeviceLoginResponse>({
     phase: 'idle',
@@ -73,6 +82,11 @@ export function CodexDeviceLogin({ disabled = false, onComplete, onAuthChanged }
   const completeFiredRef = useRef(false);
 
   const live = session.phase === 'starting' || session.phase === 'awaiting-user' || session.phase === 'verifying';
+  // Persisted login (alreadyLoggedIn) wins whenever this component's own
+  // session tracker has nothing more recent to say — i.e. it's still at its
+  // just-mounted 'idle' default, or a past attempt in THIS instance errored
+  // out but the runtime is (still) actually authenticated some other way.
+  const ready = session.phase === 'done' || (alreadyLoggedIn && (session.phase === 'idle' || session.phase === 'error'));
 
   const applySession = useCallback(
     (next: SandboxDeviceLoginResponse) => {
@@ -176,12 +190,16 @@ export function CodexDeviceLogin({ disabled = false, onComplete, onAuthChanged }
           <div className={styles.kicker}>{t('settings.sandboxCodexTitle')}</div>
           <p className={styles.hint}>{t('settings.sandboxCodexHint')}</p>
         </div>
-        <span className={`${styles.statusPill} ${session.phase === 'done' ? styles.statusReady : styles.statusIdle}`}>
-          {session.phase === 'done' ? t('settings.sandboxRuntimeReady') : t('settings.sandboxRuntimeNotReady')}
+        <span className={`${styles.statusPill} ${ready ? styles.statusReady : styles.statusIdle}`}>
+          {ready ? t('settings.sandboxRuntimeReady') : t('settings.sandboxRuntimeNotReady')}
         </span>
       </div>
 
-      {session.phase === 'idle' || session.phase === 'error' ? (
+      {ready && session.phase !== 'done' ? (
+        <p className={styles.success}>{t('settings.sandboxCodexAlreadyLoggedIn')}</p>
+      ) : null}
+
+      {(session.phase === 'idle' || session.phase === 'error') && !ready ? (
         <div className={styles.actions}>
           <button type="button" className={styles.primaryBtn} disabled={busy || disabled} onClick={() => void start()}>
             {session.phase === 'error' ? t('settings.testRetry') : t('settings.sandboxCodexLoginStart')}
@@ -237,7 +255,7 @@ export function CodexDeviceLogin({ disabled = false, onComplete, onAuthChanged }
             {t('common.cancel')}
           </button>
         ) : null}
-        {session.phase === 'done' ? (
+        {ready ? (
           <button type="button" className={styles.ghostBtn} onClick={() => void disconnect()} disabled={authBusy}>
             {t('settings.sandboxCodexLoginDisconnect')}
           </button>

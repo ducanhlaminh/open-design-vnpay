@@ -350,6 +350,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
               <div className={styles.runtimeBody}>
                 <CodexDeviceLogin
                   disabled={codexRuntime ? !codexRuntime.imageAvailable : false}
+                  alreadyLoggedIn={codexRuntime?.authStatus === 'logged-in'}
                   onAuthChanged={() => void refresh()}
                   onComplete={() => void refresh()}
                 />

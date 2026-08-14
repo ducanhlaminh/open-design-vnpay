@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { probeClaudeAuthStatus } from '../../src/runtimes/auth.js';
+import { extractClaudeAccountEmail, probeClaudeAuthStatus } from '../../src/runtimes/auth.js';
 
 const HOME = '/home/tester';
 const enoent = (): never => {
@@ -106,6 +106,43 @@ describe('probeClaudeAuthStatus', () => {
     expect((await probeClaudeAuthStatus({}, io)).status).toBe('missing');
   });
 
+  it('attaches the oauth account email when ~/.claude.json carries one', async () => {
+    const io = linuxIO({
+      [`${HOME}/.claude/.credentials.json`]:
+        '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-abc","refreshToken":"r"}}',
+      [`${HOME}/.claude.json`]: '{"oauthAccount":{"emailAddress":"test@example.com"}}',
+    });
+    expect(await probeClaudeAuthStatus({}, io)).toEqual({
+      status: 'ok',
+      account: { email: 'test@example.com' },
+    });
+  });
+
+  it('stays status ok with account undefined when ~/.claude.json is missing or malformed', async () => {
+    // No ~/.claude.json on disk at all.
+    const missingFile = linuxIO({
+      [`${HOME}/.claude/.credentials.json`]:
+        '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-abc"}}',
+    });
+    expect(await probeClaudeAuthStatus({}, missingFile)).toEqual({ status: 'ok' });
+
+    // ~/.claude.json present but not valid JSON.
+    const malformedJson = linuxIO({
+      [`${HOME}/.claude/.credentials.json`]:
+        '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-abc"}}',
+      [`${HOME}/.claude.json`]: '{not valid json',
+    });
+    expect(await probeClaudeAuthStatus({}, malformedJson)).toEqual({ status: 'ok' });
+
+    // ~/.claude.json present and valid JSON, but no oauthAccount.emailAddress.
+    const noEmail = linuxIO({
+      [`${HOME}/.claude/.credentials.json`]:
+        '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-abc"}}',
+      [`${HOME}/.claude.json`]: '{"oauthAccount":{}}',
+    });
+    expect(await probeClaudeAuthStatus({}, noEmail)).toEqual({ status: 'ok' });
+  });
+
   it('degrades to unknown — not missing — when the probe cannot answer', async () => {
     // Unreadable config dir (EACCES) and a broken `security` binary are
     // both "we could not tell", and must not render as "chưa đăng nhập".
@@ -130,5 +167,26 @@ describe('probeClaudeAuthStatus', () => {
       },
     });
     expect(keychainBroken.status).toBe('unknown');
+  });
+});
+
+describe('extractClaudeAccountEmail', () => {
+  it('returns oauthAccount.emailAddress from a realistic ~/.claude.json', () => {
+    const raw = JSON.stringify({
+      oauthAccount: { emailAddress: 'test@example.com', accountUuid: 'abc-123' },
+      other: 'ignored',
+    });
+    expect(extractClaudeAccountEmail(raw)).toBe('test@example.com');
+  });
+
+  it('returns undefined — never throws — for malformed JSON', () => {
+    expect(extractClaudeAccountEmail('{not valid json')).toBeUndefined();
+  });
+
+  it('returns undefined when oauthAccount or emailAddress is absent', () => {
+    expect(extractClaudeAccountEmail('{}')).toBeUndefined();
+    expect(extractClaudeAccountEmail('{"oauthAccount":{}}')).toBeUndefined();
+    expect(extractClaudeAccountEmail('{"oauthAccount":{"emailAddress":""}}')).toBeUndefined();
+    expect(extractClaudeAccountEmail('{"oauthAccount":{"emailAddress":123}}')).toBeUndefined();
   });
 });
