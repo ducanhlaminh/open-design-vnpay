@@ -6,19 +6,26 @@ name: release-host-runtime
 # manifest that deploy/host/install.sh reads by default when no --archive /
 # --release-url is given.
 #
-# Companion to release-unsigned-manual.yml (packaged Electron mac/win
-# builds) — this workflow never touches apps/desktop, apps/packaged, or
-# tools/pack's Electron packaging surface; it only calls
+# This workflow never touches apps/desktop, apps/packaged, or tools/pack's
+# (removed) Electron packaging surface; it only calls
 # scripts/host-runtime/build-runtime.sh.
 #
 # darwin-arm64 and darwin-x64 each build NATIVELY on a real Apple Silicon /
-# real Intel runner (same split release-unsigned-manual.yml uses) rather
-# than cross-compiling, since better-sqlite3 (native) and fsevents (darwin)
-# are architecture-specific.
+# real Intel runner rather than cross-compiling, since better-sqlite3
+# (native) and fsevents (darwin) are architecture-specific.
 
 on:
   push:
     tags: ["v*"]
+    # `preview` gets a continuous host-runtime build+publish on every push —
+    # a rolling dev/beta channel distinct from the versioned `v*` tag
+    # releases below. Both triggers resolve the release tag the same way
+    # (see the "Resolve release tag" step): a tag push publishes under that
+    # tag name; a branch push publishes/updates the
+    # `host-runtime-v<package.json version>` release, so repeated preview
+    # pushes without a version bump overwrite the same release rather than
+    # accumulating one per push.
+    branches: [preview]
   workflow_dispatch:
     inputs:
       ref:
