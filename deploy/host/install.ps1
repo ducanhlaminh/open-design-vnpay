@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Open Design -- host runtime one-command installer for Windows.
 
