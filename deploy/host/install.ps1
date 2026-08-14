@@ -261,15 +261,17 @@ function Resolve-Archive {
     $releaseJsonUrl = "$($ReleaseUrl.TrimEnd('/'))/release.json"
   } else {
     Write-Step "Looking up the latest release of $DefaultGhRepo"
-    try {
-      $apiJson = Invoke-RestMethod -Uri "https://api.github.com/repos/$DefaultGhRepo/releases/latest" `
-        -Headers @{ Accept = "application/vnd.github+json" }
-    } catch {
-      Fail "could not reach the GitHub API -- pass -Archive or -ReleaseUrl for an offline/mirror install"
-    }
-    $releaseJsonAsset = $apiJson.assets | Where-Object { $_.browser_download_url -match 'release\.json$' } | Select-Object -First 1
-    if (-not $releaseJsonAsset) { Fail "the latest GitHub release has no release.json asset" }
-    $releaseJsonUrl = $releaseJsonAsset.browser_download_url
+    # github.com/<repo>/releases/latest/download/<asset> is a redirect
+    # GitHub serves for exactly this "give me the latest release's asset,
+    # no API call" case -- it resolves through github.com and the
+    # release-assets.githubusercontent.com CDN it redirects to, never
+    # touching api.github.com. Some corporate proxies allowlist
+    # github.com/*.githubusercontent.com for normal git/browsing traffic
+    # but block the api. subdomain specifically (observed in the wild --
+    # this install failed with "could not reach the GitHub API" on such a
+    # network until this was added), so this sidesteps that without
+    # needing -ReleaseUrl.
+    $releaseJsonUrl = "https://github.com/$DefaultGhRepo/releases/latest/download/release.json"
   }
 
   # release.json shape (see .github/workflows/release-host-runtime.yml):

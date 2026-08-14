@@ -147,14 +147,6 @@ sha256_of() {
   fi
 }
 
-# Extracts every `"browser_download_url": "…"` value from a GitHub releases
-# API JSON payload whose value matches the given extended-regex, one per
-# line. No JSON parser needed — GitHub's API response is one key per line.
-json_download_urls() {
-  printf '%s\n' "$1" | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    | sed -E 's/.*"([^"]*)"$/\1/' | grep -E "$2" || true
-}
-
 # Flat-key lookup for the release.json manifest this repo's release workflow
 # publishes (see .github/workflows/release-host-runtime.yml): top-level keys
 # named "<platform>.url" / "<platform>.sha256" rather than nested objects, so
@@ -244,11 +236,15 @@ resolve_archive() {
     release_json_url="${OPT_RELEASE_URL%/}/release.json"
   else
     step "Looking up the latest release of ${DEFAULT_GH_REPO}"
-    api_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' \
-      "https://api.github.com/repos/${DEFAULT_GH_REPO}/releases/latest")" \
-      || fail "could not reach the GitHub API — pass --archive or --release-url for an offline/mirror install"
-    release_json_url="$(json_download_urls "$api_json" 'release\.json$' | head -1)"
-    [ -n "$release_json_url" ] || fail "the latest GitHub release has no release.json asset"
+    # github.com/<repo>/releases/latest/download/<asset> is a redirect
+    # GitHub serves for exactly this "give me the latest release's asset,
+    # no API call" case -- it resolves through github.com and the
+    # release-assets.githubusercontent.com CDN it redirects to, never
+    # touching api.github.com. Some corporate proxies allowlist
+    # github.com/*.githubusercontent.com for normal git/browsing traffic
+    # but block the api. subdomain specifically (observed in the wild),
+    # so this sidesteps that without needing --release-url.
+    release_json_url="https://github.com/${DEFAULT_GH_REPO}/releases/latest/download/release.json"
   fi
 
   # release.json shape (see .github/workflows/release-host-runtime.yml):
