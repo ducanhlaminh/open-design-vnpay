@@ -20,6 +20,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { SandboxConfigPrefs } from './app-config.js';
+import { getAgentDef } from './runtimes/registry.js';
+import { applyAgentLaunchEnv, resolveAgentLaunch } from './runtimes/launch.js';
+import { spawnEnvForAgent } from './runtimes/env.js';
 import type {
   CodexUsageResponse,
   SandboxAccount,
@@ -560,24 +563,19 @@ async function dockerWriteStdin(args: string[], input: Buffer, timeoutMs = 30_00
 }
 
 /**
- * Ask Codex's local app-server for the allowance belonging to the credentials
- * in its Docker volume. The JSON-RPC process is short-lived and its output is
- * parsed before it is killed, so OAuth tokens never leave the container.
+ * Speak Codex's app-server JSON-RPC protocol
+ * (`initialize` → `initialized` → `account/rateLimits/read`) against an
+ * already-spawned `codex app-server --stdio` process and resolve with the
+ * parsed rate-limit allowance. The process is short-lived and killed the
+ * instant a usable answer (or terminal failure) is seen, regardless of
+ * whether it was spawned directly on the host or inside a throwaway Docker
+ * container — this function does not know or care which.
  */
-export async function readSandboxCodexUsage(image: string): Promise<CodexUsageResponse> {
-  const spec = sandboxRuntimeSpec('codex');
+export async function exchangeCodexRateLimits(
+  spawnFn: () => ChildProcess,
+): Promise<CodexUsageResponse> {
   return new Promise<CodexUsageResponse>((resolve, reject) => {
-    // Codex >=0.146 creates a small SQLite runtime state beneath CODEX_HOME.
-    // Mounting the auth volume read-only directly at CODEX_HOME therefore made
-    // the app-server exit before it could read usage. Copy only auth.json into
-    // this throwaway container filesystem; the named credential volume remains
-    // read-only and tokens never leave Docker.
-    const runtimeHome = '/home/node/.codex-runtime';
-    const child = spawn(resolveDockerCommand(), [
-      'run', '--rm', '-i', '-v', `${spec.authVolume}:/auth:ro`,
-      '-e', `CODEX_HOME=${runtimeHome}`, '--entrypoint', 'sh', image,
-      '-lc', `mkdir -p ${runtimeHome} && cp /auth/${spec.authFile} ${runtimeHome}/${spec.authFile} && exec codex app-server --stdio`,
-    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawnFn();
     let buffer = '';
     let stderr = '';
     let settled = false;
@@ -602,7 +600,7 @@ export async function readSandboxCodexUsage(image: string): Promise<CodexUsageRe
           // acknowledged initialize. Keep the JSON-RPC ordering explicit.
           if (message.id === 1 && !initialized) {
             initialized = true;
-            child.stdin.write([
+            child.stdin?.write([
               JSON.stringify({ method: 'initialized', params: {} }),
               JSON.stringify({ id: 2, method: 'account/rateLimits/read', params: null }),
               '',
@@ -633,18 +631,63 @@ export async function readSandboxCodexUsage(image: string): Promise<CodexUsageRe
         }
       }
     };
-    child.stdout.on('data', parseLines);
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stdout?.on('data', parseLines);
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
     child.once('error', (error) => finish(error));
     child.once('exit', (code) => {
       if (!settled) finish(new Error(stderr.trim() || `Codex usage process exited with ${code}`));
     });
-    child.stdin.write(`${JSON.stringify({
+    child.stdin?.write(`${JSON.stringify({
       id: 1,
       method: 'initialize',
       params: { clientInfo: { name: 'open-design', version: '1.0' }, capabilities: { experimentalApi: true } },
     })}\n`);
   });
+}
+
+/**
+ * Ask Codex's local app-server for the allowance belonging to the credentials
+ * in its Docker volume. The JSON-RPC process is short-lived and its output is
+ * parsed before it is killed, so OAuth tokens never leave the container.
+ */
+export async function readSandboxCodexUsage(image: string): Promise<CodexUsageResponse> {
+  const spec = sandboxRuntimeSpec('codex');
+  // Codex >=0.146 creates a small SQLite runtime state beneath CODEX_HOME.
+  // Mounting the auth volume read-only directly at CODEX_HOME therefore made
+  // the app-server exit before it could read usage. Copy only auth.json into
+  // this throwaway container filesystem; the named credential volume remains
+  // read-only and tokens never leave Docker.
+  const runtimeHome = '/home/node/.codex-runtime';
+  return exchangeCodexRateLimits(() =>
+    spawn(resolveDockerCommand(), [
+      'run', '--rm', '-i', '-v', `${spec.authVolume}:/auth:ro`,
+      '-e', `CODEX_HOME=${runtimeHome}`, '--entrypoint', 'sh', image,
+      '-lc', `mkdir -p ${runtimeHome} && cp /auth/${spec.authFile} ${runtimeHome}/${spec.authFile} && exec codex app-server --stdio`,
+    ], { stdio: ['pipe', 'pipe', 'pipe'] }),
+  );
+}
+
+/**
+ * Ask the HOST Codex CLI for the allowance belonging to its own
+ * `~/.codex/auth.json` — no Docker involved. Resolves the launch path the
+ * same way `detectAgents` does (`resolveAgentLaunch`/`applyAgentLaunchEnv`),
+ * so this reaches the exact binary (native or wrapper) chat/run would spawn.
+ */
+export async function readHostCodexUsage(
+  configuredEnv: Record<string, string> = {},
+): Promise<CodexUsageResponse> {
+  const def = getAgentDef('codex');
+  if (!def) throw new Error('codex runtime is not registered');
+  const launch = resolveAgentLaunch(def, configuredEnv);
+  if (!launch.launchPath) throw new Error('Codex CLI is not installed on this machine');
+  const launchPath = launch.launchPath;
+  const env = applyAgentLaunchEnv(
+    spawnEnvForAgent(def.id, { ...process.env, ...(def.env || {}) }, configuredEnv),
+    launch,
+  );
+  return exchangeCodexRateLimits(() =>
+    spawn(launchPath, ['app-server', '--stdio'], { stdio: ['pipe', 'pipe', 'pipe'], env }),
+  );
 }
 
 /**

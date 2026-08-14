@@ -50,11 +50,27 @@ describe('sandbox mode: host is the default (no OD_SANDBOX override)', () => {
     expect(claude?.sandbox).toBeUndefined();
   });
 
-  it('GET /api/usage/codex reports {available:false} cleanly, without touching Docker', async () => {
+  it('GET /api/usage/codex answers from the HOST Codex CLI, never touching Docker', async () => {
+    // Host mode reads the machine's own Codex CLI directly (no Docker) —
+    // `available` therefore genuinely depends on whether this machine has
+    // Codex installed and logged in, unlike the pre-Piece-3 behavior where
+    // this route was an unconditional Docker-only no-op in host mode. What
+    // stays a structural invariant regardless of environment is that the
+    // Docker sandbox path (`resolveSandboxConfig(...).enabled === false`
+    // here) is never reached, so a response shape check is all that's
+    // portable across machines with/without Codex installed.
     const res = await fetch(`${baseUrl}/api/usage/codex`);
-    const body = (await res.json()) as { available: boolean };
+    const body = (await res.json()) as {
+      available: boolean;
+      primary: { utilization: number | null; resetsAt: number | null; durationMinutes: number | null };
+      secondary: unknown;
+    };
     expect(res.ok).toBe(true);
-    expect(body.available).toBe(false);
+    expect(typeof body.available).toBe('boolean');
+    if (!body.available) {
+      expect(body.primary).toEqual({ utilization: null, resetsAt: null, durationMinutes: null });
+      expect(body.secondary).toBeNull();
+    }
   });
 
   it('POST /api/sandbox/build returns 409 SANDBOX_MODE_HOST instead of a Docker error', async () => {

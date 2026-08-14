@@ -64,6 +64,19 @@
   gap: 10px;
 }
 
+.agentGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agentGroupTitle {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
 .step {
   display: flex;
   gap: 12px;

@@ -1535,6 +1535,16 @@ setImmediate(() => process.exit(0));
     const markerDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'od-conn-test-env-'));
     const envFile = path.join(markerDir, 'env.json');
     const codexHome = path.join(markerDir, 'codex-home');
+    // probeCodexAuthStatus reads <CODEX_HOME>/auth.json before the smoke
+    // spawn runs at all — without a token on disk here the request now
+    // correctly short-circuits to agent_auth_required (this IS what's
+    // supposed to happen with a login-less CODEX_HOME; it's just not what
+    // this test is probing).
+    await fsp.mkdir(codexHome, { recursive: true });
+    await fsp.writeFile(
+      path.join(codexHome, 'auth.json'),
+      JSON.stringify({ tokens: { access_token: 'test-access-token' } }),
+    );
     try {
       await withFakeCodex(
         `
@@ -1598,6 +1608,14 @@ setImmediate(() => process.exit(0));
     const markerDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'od-conn-test-codex-strip-'));
     const envFile = path.join(markerDir, 'env.json');
     const codexHome = path.join(markerDir, 'codex-home');
+    // The stripped OPENAI_API_KEY can no longer stand in for login state, so
+    // probeCodexAuthStatus needs its own token on disk here (see the sibling
+    // test above for why).
+    await fsp.mkdir(codexHome, { recursive: true });
+    await fsp.writeFile(
+      path.join(codexHome, 'auth.json'),
+      JSON.stringify({ tokens: { access_token: 'test-access-token' } }),
+    );
     try {
       await withFakeCodex(
         `

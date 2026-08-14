@@ -125,6 +125,13 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   const hostClaudeLoggedIn = hostClaude?.authStatus === 'ok';
   const hostClaudeReady = Boolean(hostClaude?.available && hostClaudeLoggedIn);
 
+  // Codex is an equally valid host CLI (Piece 1: `probeAgentAuthStatus` now
+  // knows how to read its login state too) — a machine with Codex but no
+  // Claude must not be stuck behind this gate forever.
+  const hostCodex = hostAgents?.find((a) => a.id === 'codex') ?? null;
+  const hostCodexLoggedIn = hostCodex?.authStatus === 'ok';
+  const hostCodexReady = Boolean(hostCodex?.available && hostCodexLoggedIn);
+
   // ── Cheap infra poll (docker version / image inspect / volume inspect).
   // 4s while the gate is relevant, so finishing a step flips it green live.
   useEffect(() => {
@@ -325,7 +332,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
     // answer so a fully-set-up machine never flashes the wizard open.
     if (hostMode) {
       if (hostAgents == null) return;
-      if (hostClaudeReady) {
+      if (hostClaudeReady || hostCodexReady) {
         dismiss();
         return;
       }
@@ -378,6 +385,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
     hostMode,
     hostAgents,
     hostClaudeReady,
+    hostCodexReady,
     accounts,
     dismissed,
     dismiss,
@@ -389,13 +397,14 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   if (!active || dismissed || !evaluated || !status) return null;
   const allOk = selectedRuntimeReady;
 
-  // ── Host mode (WP4 default): a 2-step gate — Claude CLI installed, Claude
-  // CLI logged in — instead of the Docker/image/auth-volume wizard below.
-  // Never touches /api/sandbox/* beyond the initial status probe that
-  // decided the mode.
+  // ── Host mode (WP4 default): a 2-step gate per agent — CLI installed, CLI
+  // logged in — instead of the Docker/image/auth-volume wizard below. Never
+  // touches /api/sandbox/* beyond the initial status probe that decided the
+  // mode. Claude and Codex are rendered as two parallel cards; either one
+  // being fully ready is enough to proceed.
   if (hostMode) {
     const claudeAvailable = Boolean(hostClaude?.available);
-    const hostSteps: Array<{ key: string; title: string; ok: boolean; body: JSX.Element | null }> = [
+    const claudeSteps: Array<{ key: string; title: string; ok: boolean; body: JSX.Element | null }> = [
       {
         key: 'host-claude-cli',
         title: 'Claude CLI',
@@ -430,7 +439,68 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
         ),
       },
     ];
-    const hostAllOk = hostSteps.every((s) => s.ok);
+
+    const codexAvailable = Boolean(hostCodex?.available);
+    const codexInstallUrl = hostCodex?.installUrl ?? 'https://github.com/openai/codex';
+    const codexSteps: Array<{ key: string; title: string; ok: boolean; body: JSX.Element | null }> = [
+      {
+        key: 'host-codex-cli',
+        title: 'Codex CLI',
+        ok: codexAvailable,
+        body: codexAvailable ? null : (
+          <>
+            <p className={styles.stepHint}>
+              Chưa tìm thấy Codex CLI trên máy. Cài đặt bằng lệnh bên dưới rồi bấm "Kiểm tra lại".
+            </p>
+            <div className={styles.actionRow}>
+              <a className={styles.linkBtn} href={codexInstallUrl} target="_blank" rel="noreferrer">
+                Xem hướng dẫn cài đặt Codex CLI
+              </a>
+            </div>
+            <code className={styles.buildLog}>npm install -g @openai/codex</code>
+          </>
+        ),
+      },
+      {
+        key: 'host-codex-login',
+        title: 'Đăng nhập Codex',
+        ok: hostCodexLoggedIn,
+        body: hostCodexLoggedIn ? null : !codexAvailable ? (
+          <p className={styles.stepHint}>Chờ cài Codex CLI ở bước trên.</p>
+        ) : (
+          <>
+            <p className={styles.stepHint}>
+              {hostCodex?.authMessage ?? 'Chưa đăng nhập Codex CLI trên máy.'} Mở terminal và chạy lệnh:
+            </p>
+            <code className={styles.buildLog}>codex login</code>
+          </>
+        ),
+      },
+    ];
+
+    const hostAnyReady = hostClaudeReady || hostCodexReady;
+    const renderAgentSteps = (
+      groupLabel: string,
+      steps: Array<{ key: string; title: string; ok: boolean; body: JSX.Element | null }>,
+    ) => (
+      <div className={styles.agentGroup}>
+        <span className={styles.agentGroupTitle}>{groupLabel}</span>
+        <ol className={styles.steps}>
+          {steps.map((s, i) => (
+            <li key={s.key} className={`${styles.step}${s.ok ? ' ' + styles.stepOk : ''}`}>
+              <span className={styles.stepBadge} aria-hidden="true">{s.ok ? '✓' : i + 1}</span>
+              <div className={styles.stepBody}>
+                <div className={styles.stepTitle}>
+                  {s.title}
+                  {s.ok ? <span className={styles.stepDone}>xong</span> : null}
+                </div>
+                {s.body}
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+    );
     return (
       <div
         className={styles.overlay}
@@ -445,23 +515,11 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
             Thiết lập môi trường lần đầu
           </h2>
           <p className={styles.desc}>
-            Open Design chạy trực tiếp qua Claude CLI đã cài trên máy — không cần Docker. Hoàn tất
-            hai bước dưới đây.
+            Open Design chạy trực tiếp qua CLI đã cài trên máy — không cần Docker. Cần MỘT trong hai
+            CLI dưới đây sẵn sàng.
           </p>
-          <ol className={styles.steps}>
-            {hostSteps.map((s, i) => (
-              <li key={s.key} className={`${styles.step}${s.ok ? ' ' + styles.stepOk : ''}`}>
-                <span className={styles.stepBadge} aria-hidden="true">{s.ok ? '✓' : i + 1}</span>
-                <div className={styles.stepBody}>
-                  <div className={styles.stepTitle}>
-                    {s.title}
-                    {s.ok ? <span className={styles.stepDone}>xong</span> : null}
-                  </div>
-                  {s.body}
-                </div>
-              </li>
-            ))}
-          </ol>
+          {renderAgentSteps('Claude', claudeSteps)}
+          {renderAgentSteps('Codex', codexSteps)}
           <div className={styles.footer}>
             <div className={styles.footerLeft}>
               <button
@@ -479,7 +537,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
             <button
               type="button"
               className={styles.doneBtn}
-              disabled={!hostAllOk}
+              disabled={!hostAnyReady}
               onClick={dismiss}
             >
               Bắt đầu sử dụng

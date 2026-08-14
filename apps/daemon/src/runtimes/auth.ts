@@ -230,12 +230,88 @@ export async function probeClaudeAuthStatus(
   return { status: 'missing', message: CLAUDE_AUTH_GUIDANCE };
 }
 
+// ── Codex CLI login detection ─────────────────────────────────────────────
+// Codex has no non-interactive online status check exposed as a stable API
+// either — the CLI keeps its OAuth/API-key state in
+// `<CODEX_HOME>/auth.json` (default `~/.codex`). The Docker sandbox path
+// already parses this same file shape via `sandboxRuntimeAuthStateFromRaw`
+// in agent-sandbox.ts; reimplemented as a small local helper here instead
+// of importing from there, so this host-agnostic probe layer stays
+// decoupled from the Docker-sandbox module (same reasoning as
+// `claudeCredentialsCarryLogin` above duplicating rather than importing).
+
+const CODEX_AUTH_GUIDANCE =
+  'Codex CLI chưa đăng nhập trên máy này. Mở terminal, chạy `codex login`; đăng nhập xong bấm Quét lại.';
+
+const CODEX_AUTH_UNKNOWN =
+  'Không xác minh được trạng thái đăng nhập Codex CLI trên máy này.';
+
+export function codexAuthGuidance(): string {
+  return CODEX_AUTH_GUIDANCE;
+}
+
+/** Same shape agent-sandbox.ts's `sandboxRuntimeAuthStateFromRaw` checks for
+ *  the codex runtime: an OAuth `tokens.access_token`, or a bare
+ *  `OPENAI_API_KEY` fallback. */
+export function codexAuthJsonCarriesToken(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as {
+      tokens?: { access_token?: unknown };
+      OPENAI_API_KEY?: unknown;
+    };
+    const token =
+      typeof parsed.tokens?.access_token === 'string' && parsed.tokens.access_token
+        ? parsed.tokens.access_token
+        : typeof parsed.OPENAI_API_KEY === 'string' && parsed.OPENAI_API_KEY
+          ? parsed.OPENAI_API_KEY
+          : '';
+    return Boolean(token);
+  } catch {
+    return false;
+  }
+}
+
+/** Injectable IO so tests never touch the real home dir. */
+export type CodexAuthProbeIO = {
+  readFile?: (filePath: string) => Promise<string>;
+  homedir?: () => string;
+};
+
+export async function probeCodexAuthStatus(
+  env: RuntimeEnv,
+  io: CodexAuthProbeIO = {},
+): Promise<AgentAuthProbeResult> {
+  // An explicit OPENAI_API_KEY is a deliberate external-auth path — login
+  // state is irrelevant (mirrors Claude's ANTHROPIC_API_KEY shortcut above).
+  if (envLookup(env, 'OPENAI_API_KEY')) {
+    return { status: 'ok' };
+  }
+  const home = io.homedir ?? os.homedir;
+  const read = io.readFile ?? ((filePath: string) => readFile(filePath, 'utf8'));
+  const codexHome = envLookup(env, 'CODEX_HOME') ?? path.join(home(), '.codex');
+
+  try {
+    const raw = await read(path.join(codexHome, 'auth.json'));
+    if (codexAuthJsonCarriesToken(raw)) return { status: 'ok' };
+    return { status: 'missing', message: CODEX_AUTH_GUIDANCE };
+  } catch (error) {
+    // Anything other than "file absent" means we could not actually answer
+    // — degrade to 'unknown', never a false "chưa đăng nhập" (same
+    // invariant probeClaudeAuthStatus's `degraded` flag protects above).
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return { status: 'missing', message: CODEX_AUTH_GUIDANCE };
+    }
+    return { status: 'unknown', message: CODEX_AUTH_UNKNOWN };
+  }
+}
+
 export async function probeAgentAuthStatus(
   agentId: string,
   resolvedBin: string,
   env: RuntimeEnv,
 ): Promise<AgentAuthProbeResult | null> {
   if (agentId === 'claude') return probeClaudeAuthStatus(env);
+  if (agentId === 'codex') return probeCodexAuthStatus(env);
   if (agentId !== 'cursor-agent') return null;
   try {
     const { stdout, stderr } = await execAgentFile(resolvedBin, ['status'], {

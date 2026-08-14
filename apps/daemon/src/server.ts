@@ -291,6 +291,7 @@ import {
   ensureSandboxImage,
   readSandboxClaudeCredentials,
   readSandboxCodexUsage,
+  readHostCodexUsage,
   resolveSandboxConfig,
   sandboxImageTag,
   sandboxPreflight,
@@ -13795,12 +13796,12 @@ export async function startServer({
   });
 
   // Read once when the Local CLI menu is opened. This uses Codex's own
-  // app-server protocol against the sandbox volume; no credential is sent to
-  // the browser and no background polling is performed. Codex has no host
-  // usage source (unlike Claude's Keychain path), so this meter is
-  // sandbox-only by construction — when the sandbox is off, skip Docker
-  // entirely (no spawn, no ~15s app-server round trip) instead of letting the
-  // request run and fail into the same `available: false` shape.
+  // app-server protocol (`initialize` → `account/rateLimits/read`); no
+  // credential is sent to the browser and no background polling is
+  // performed. Host mode (WP4 default, no Docker) reads the HOST Codex CLI's
+  // own `~/.codex/auth.json` directly; only when that is unreachable AND the
+  // Docker sandbox is enabled does this fall back to the sandboxed volume —
+  // mirrors `/api/usage/claude` just above.
   app.get('/api/usage/codex', async (_req, res) => {
     const emptyUsage = {
       available: false,
@@ -13811,6 +13812,13 @@ export async function startServer({
     } satisfies import('@open-design/contracts').CodexUsageResponse;
     try {
       const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+      try {
+        res.json(await readHostCodexUsage(agentCliEnvForAgent(appConfig.agentCliEnv, 'codex')));
+        return;
+      } catch {
+        // Host Codex CLI not installed / not logged in / unreachable — fall
+        // through to the Docker sandbox below when it is enabled.
+      }
       if (!resolveSandboxConfig(appConfig.sandbox, process.env).enabled) {
         res.json(emptyUsage);
         return;
