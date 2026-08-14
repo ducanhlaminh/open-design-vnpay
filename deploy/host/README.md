@@ -113,15 +113,34 @@ data under `~/od-data/open-design`), or under `%USERPROFILE%` on Windows
 | `--update` | Update an existing `~/.open-design` install in place. |
 | `-h`, `--help` | Show usage. |
 
-If none of the Media/Identity flags or `--env-file` are given, those
-entries are left out of `config.env` and the installer prints a warning —
-**KG sync stays off** until you configure them (everything else works: local
-projects, skills, design systems, agent runs).
+Windows-only (`install.ps1`; no `install.sh` equivalent yet — everyday
+start/stop on macOS/Linux goes through `launchctl`/`systemctl` instead,
+see Update/Rollback/Uninstall below):
+
+| Flag | Purpose |
+| --- | --- |
+| `-Start` | Start the daemon from the already-installed release and exit. Does not extract/verify/reconfigure anything — for that, use `-Update`. |
+| `-Stop` | Stop the running daemon and exit. |
+| `-Uninstall` | Stop the daemon, remove the Scheduled Task, delete `%USERPROFILE%\.open-design`, and exit. Project data is kept unless `-DeleteData` is also given. Prompts for confirmation unless `-Force` is given. |
+
+If none of the Media/Identity flags or `--env-file`/`-EnvFile` are given,
+those entries are left out of `config.env` and the installer prints a
+warning — **KG sync stays off** until you configure them (everything else
+works: local projects, skills, design systems, agent runs).
 
 Likewise, without all three Google login flags, `config.env` has none of
 them and **Google login (`/login`) stays off** — KG sync push/pull still
 works, but falls back to anonymous/installation-id attribution instead of
 a real Google identity, and Shared Project registration is skipped.
+
+**Simpler repeat config (Windows):** rather than passing `-EnvFile`/the
+individual `-Media*`/`-Google*` flags on every `-Update`, save your
+filled-in template once at `%USERPROFILE%\.open-design\host-env.template`
+(same `KEY=VALUE` shape as `--env-file`) — `install.ps1` picks it up
+automatically whenever `-EnvFile` isn't given. This file is never
+downloaded/shipped/committed by this repo; it's a purely local convention,
+so it's the right place to keep real secrets (`GOOGLE_CLIENT_SECRET`,
+`SESSION_SECRET`) that must never end up in git.
 
 ## Update
 
@@ -165,9 +184,8 @@ Windows:
 cmd /c rmdir "$env:USERPROFILE\.open-design\current"
 New-Item -ItemType Junction -Path "$env:USERPROFILE\.open-design\current" `
   -Target "$env:USERPROFILE\.open-design\releases\<older-version>"
-# Restart: simplest is re-running install.ps1 -Update (skips re-download for
-# a local -Archive, still redoes the health check), or manually stop the PID
-# in %USERPROFILE%\.open-design\open-design.pid and start the daemon again.
+install.ps1 -Stop
+install.ps1 -Start
 ```
 
 ## Uninstall
@@ -188,13 +206,15 @@ rm -rf ~/.open-design
 Windows:
 
 ```powershell
-Get-Content "$env:USERPROFILE\.open-design\open-design.pid" -ErrorAction SilentlyContinue |
-  ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
-schtasks /Delete /TN OpenDesignDaemon /F
-Remove-Item -Recurse -Force "$env:USERPROFILE\.open-design"
+install.ps1 -Uninstall
+# or, to also wipe project data in one step:
+install.ps1 -Uninstall -DeleteData
 ```
 
-**Data is not deleted.** Project data lives at `OD_DATA_DIR`
+(equivalent by hand: stop the pid in `open-design.pid`, `schtasks /Delete
+/TN OpenDesignDaemon /F`, then remove `%USERPROFILE%\.open-design`.)
+
+**Data is not deleted** (unless `-DeleteData` was given above). Project data lives at `OD_DATA_DIR`
 (`~/od-data/open-design` by default, or whatever `--data-dir`/`config.env`
 pointed at) and is left alone — remove it explicitly if you want a full wipe:
 

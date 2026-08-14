@@ -77,6 +77,29 @@
 .PARAMETER Update
   Update an existing %USERPROFILE%\.open-design install in place.
 
+.PARAMETER Start
+  Start the daemon from the already-installed release and exit -- does
+  NOT extract/verify/reconfigure anything, just start + wait for health.
+  Every other install/update flag is ignored when this is given.
+
+.PARAMETER Stop
+  Stop the running daemon (by pid file) and exit. Every other
+  install/update flag is ignored when this is given.
+
+.PARAMETER Uninstall
+  Stop the daemon, remove the Scheduled Task, and delete
+  %USERPROFILE%\.open-design, then exit. Project data (OD_DATA_DIR) is
+  kept unless -DeleteData is also given. Prompts for confirmation unless
+  -Force is given. Every other install/update flag is ignored.
+
+.PARAMETER DeleteData
+  With -Uninstall, also delete OD_DATA_DIR (project data). Ignored
+  without -Uninstall.
+
+.PARAMETER Force
+  With -Uninstall, skip the confirmation prompt. Ignored without
+  -Uninstall.
+
 .PARAMETER Help
   Show this help and exit.
 
@@ -85,6 +108,15 @@
 
 .EXAMPLE
   .\install.ps1 -Archive .\open-design-runtime-1.2.3-win32-x64.tar.gz -NoStart
+
+.EXAMPLE
+  .\install.ps1 -Stop
+
+.EXAMPLE
+  .\install.ps1 -Start
+
+.EXAMPLE
+  .\install.ps1 -Uninstall
 #>
 
 [CmdletBinding()]
@@ -105,6 +137,11 @@ param(
   [string]$SessionSecret = "",
   [switch]$NoStart,
   [switch]$Update,
+  [switch]$Start,
+  [switch]$Stop,
+  [switch]$Uninstall,
+  [switch]$DeleteData,
+  [switch]$Force,
   [switch]$Help
 )
 
@@ -113,7 +150,7 @@ if ($Help) {
     Get-Help $PSCommandPath -Full
   } else {
     Write-Host "Open Design host runtime installer (Windows). See deploy/host/README.md for full docs."
-    Write-Host "Flags: -Archive -ReleaseUrl -Sha256 -Port -DataDir -EnvFile -MediaUrl -MediaAppId -MediaUserId -MediaUserRole -IdentityUrl -GoogleClientId -GoogleClientSecret -SessionSecret -NoStart -Update"
+    Write-Host "Flags: -Archive -ReleaseUrl -Sha256 -Port -DataDir -EnvFile -MediaUrl -MediaAppId -MediaUserId -MediaUserRole -IdentityUrl -GoogleClientId -GoogleClientSecret -SessionSecret -NoStart -Update -Start -Stop -Uninstall -DeleteData -Force"
   }
   exit 0
 }
@@ -444,9 +481,20 @@ $OdEnvFileAllowedKeys = @(
 )
 
 function Import-EnvFile {
-  if (-not $EnvFile) { return }
   $efPath = $EnvFile
-  if ($EnvFile -match '^https?://') {
+  if (-not $efPath) {
+    # No -EnvFile given -- fall back to a saved copy at a fixed path, so
+    # MEDIA_*/IDENTITY_URL/GOOGLE_CLIENT_*/SESSION_SECRET only have to be
+    # typed once (save your filled-in template here) instead of on every
+    # -Update. Never shipped/committed -- this is a local-only convention.
+    $defaultEnvFile = Join-Path $OdHome "host-env.template"
+    if (Test-Path $defaultEnvFile) {
+      $efPath = $defaultEnvFile
+      Write-Step "Using saved env defaults: $efPath"
+    } else {
+      return
+    }
+  } elseif ($EnvFile -match '^https?://') {
     $efPath = Join-Path (New-TempDir) "env-file"
     try {
       Invoke-WebRequest -Uri $EnvFile -OutFile $efPath -UseBasicParsing
@@ -676,6 +724,81 @@ function Wait-OdHealth {
   return $false
 }
 
+# ---------------------------------------------------------------------------
+# -Start / -Stop / -Uninstall -- lightweight commands against an already
+# installed release. These never extract/verify/reconfigure anything (use
+# -Update for that); they just need $OdHome and, for -Start, whichever
+# Node.exe the original install resolved (private copy under
+# $OdHome\tools, or system PATH -- re-detected here the same way
+# Step2-EnsureNode did, minus the "download a private copy" fallback,
+# since a bare -Start shouldn't trigger a multi-MB download).
+# ---------------------------------------------------------------------------
+function Resolve-ExistingNodeBin {
+  $toolsDir = Join-Path $OdHome "tools"
+  $private = Get-ChildItem -Path $toolsDir -Filter "node.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($private) { return $private.FullName }
+  $cmd = Get-Command node -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  return $null
+}
+
+function Resolve-ExistingPort {
+  $configEnv = Join-Path $OdHome "config.env"
+  if (Test-Path $configEnv) {
+    $line = Get-Content $configEnv | Where-Object { $_ -match '^OD_PORT=' } | Select-Object -First 1
+    if ($line) { return [int](($line -split '=', 2)[1]) }
+  }
+  return $DefaultPort
+}
+
+function Invoke-StopCommand {
+  New-Item -ItemType Directory -Force -Path $OdHome | Out-Null
+  Stop-OdService
+  Write-Ok "Stopped."
+}
+
+function Invoke-StartCommand {
+  $cliPath = Join-Path $OdHome "current\apps\daemon\dist\cli.js"
+  if (-not (Test-Path $cliPath)) { Fail "no install found at $OdHome -- run install.ps1 (without -Start) first" }
+  $script:NodeBin = Resolve-ExistingNodeBin
+  if (-not $NodeBin) { Fail "no Node.js found -- run install.ps1 (without -Start) first" }
+  $resolvedPort = Resolve-ExistingPort
+  Start-OdService
+  Write-Step "Waiting for health check (up to $HealthTimeout s)..."
+  if (Wait-OdHealth -PortNum $resolvedPort -Timeout $HealthTimeout) {
+    Write-Ok "Daemon is healthy on port $resolvedPort"
+    Write-Host "  URL: http://127.0.0.1:$resolvedPort"
+  } else {
+    Fail "daemon did not become healthy -- check $OdHome\logs\"
+  }
+}
+
+function Invoke-UninstallCommand {
+  if (-not (Test-Path $OdHome)) { Fail "nothing installed at $OdHome" }
+
+  # Must read OD_DATA_DIR before config.env gets deleted below.
+  $configuredDataDir = Get-ExistingConfigValue "OD_DATA_DIR"
+  $dataDir = if ($DataDir) { $DataDir } elseif ($configuredDataDir) { $configuredDataDir } else { $DefaultDataDir }
+
+  Stop-OdService
+  & schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null
+
+  if (-not $Force) {
+    $confirm = Read-Host "Remove $OdHome ? Project data is kept unless -DeleteData was given. Type 'yes' to confirm"
+    if ($confirm -ne "yes") { Write-Warn "Uninstall cancelled."; exit 1 }
+  }
+
+  Remove-Item -Recurse -Force $OdHome -ErrorAction SilentlyContinue
+  Write-Ok "Uninstalled."
+
+  if ($DeleteData) {
+    Remove-Item -Recurse -Force $dataDir -ErrorAction SilentlyContinue
+    Write-Ok "Data removed: $dataDir"
+  } else {
+    Write-Host "  Data kept at: $dataDir (rerun with -DeleteData to also remove it)"
+  }
+}
+
 function Invoke-Rollback {
   if ($PrevCurrent -and ($PrevCurrent -ne $ReleaseDir)) {
     Write-Warn "Health check failed — rolling back to $(Split-Path $PrevCurrent -Leaf)"
@@ -879,7 +1002,15 @@ function Invoke-Main {
 # powershell -File install.ps1 ...) leaves this unset and runs normally.
 try {
   if ($env:OD_INSTALL_PS1_TEST_SOURCE -ne "1") {
-    Invoke-Main
+    if ($Stop) {
+      Invoke-StopCommand
+    } elseif ($Uninstall) {
+      Invoke-UninstallCommand
+    } elseif ($Start) {
+      Invoke-StartCommand
+    } else {
+      Invoke-Main
+    }
   }
 } finally {
   foreach ($d in $script:TempDirs) {

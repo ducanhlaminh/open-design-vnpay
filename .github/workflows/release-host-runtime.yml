@@ -179,6 +179,33 @@ jobs:
           Write-Host "[ok] daemon process running (pid $daemonPid)"
           Write-Host "[ok] /api/health responded: $($health | ConvertTo-Json -Compress)"
 
+          # -Stop / -Start also have to run in this same step -- same
+          # process-teardown-between-steps reason as above.
+          & "${{ github.workspace }}\deploy\host\install.ps1" -Stop
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Stop exited $LASTEXITCODE" }
+          if (Get-Process -Id $daemonPid -ErrorAction SilentlyContinue) { throw "-Stop did not stop pid $daemonPid" }
+          Write-Host "[ok] -Stop stopped pid $daemonPid"
+
+          & "${{ github.workspace }}\deploy\host\install.ps1" -Start
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Start exited $LASTEXITCODE" }
+          if (-not (Test-Path $pidFile)) { throw "missing $pidFile after -Start" }
+          $newPid = (Get-Content $pidFile -Raw).Trim()
+          $newProc = Get-Process -Id $newPid -ErrorAction SilentlyContinue
+          if (-not $newProc) { throw "-Start left no running process (pid $newPid)" }
+          $health2 = Invoke-RestMethod -Uri "http://127.0.0.1:7456/api/health" -TimeoutSec 5
+          Write-Host "[ok] -Start restarted the daemon (pid $newPid), health: $($health2 | ConvertTo-Json -Compress)"
+
+      - name: Test install.ps1 -Uninstall
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\deploy\host\install.ps1" -Uninstall -Force -DeleteData
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Uninstall exited $LASTEXITCODE" }
+          $odHome = Join-Path $env:USERPROFILE ".open-design"
+          if (Test-Path $odHome) { throw "$odHome still exists after -Uninstall" }
+          $task = Get-ScheduledTask -TaskName "OpenDesignDaemon" -ErrorAction SilentlyContinue
+          if ($task) { throw "OpenDesignDaemon scheduled task still exists after -Uninstall" }
+          Write-Host "[ok] -Uninstall removed $odHome and the scheduled task"
+
       - name: Cleanup
         if: always()
         shell: pwsh
