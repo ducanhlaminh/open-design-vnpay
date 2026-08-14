@@ -151,6 +151,7 @@ $script:PrevCurrent = ""
 $script:ResolvedPort = ""
 $script:EnvFileVars = @()
 $script:TempDirs = @()
+$script:TaskRegistered = $false
 
 if ($Update) {
   $currentLink = Join-Path $OdHome "current"
@@ -569,8 +570,22 @@ function Register-OdTask {
   # Per-user, no admin required (/RL LIMITED), fires on next logon --
   # equivalent role to a LaunchAgent/systemd --user unit. Deliberately NOT
   # sc.exe create (needs admin) and NOT NSSM (extra dependency).
+  #
+  # Best-effort, NOT fatal: confirmed on a real machine that some
+  # corporate-managed Windows installs block Task Scheduler for standard
+  # users via local/domain policy even at /RL LIMITED ("ERROR: Access is
+  # denied."). The rest of the install never depends on this task --
+  # Start-OdService below launches the daemon directly via Start-Process,
+  # not through this task. Losing auto-start-on-next-logon is a real but
+  # non-blocking degradation, not a reason to throw away an otherwise-good
+  # install.
   & schtasks.exe /Create /SC ONLOGON /RL LIMITED /F /TN $TaskName /TR "`"$NodeBin`" `"$cliPath`" --no-open" | Out-Null
-  if ($LASTEXITCODE -ne 0) { Fail "schtasks /Create failed for task $TaskName" }
+  if ($LASTEXITCODE -ne 0) {
+    $script:TaskRegistered = $false
+    Write-Warn "could not register the auto-start task '$TaskName' (schtasks exit $LASTEXITCODE) -- likely blocked by local policy on this machine. Open Design will still start now; it just won't auto-start after your next login. To start it manually: `"$NodeBin`" `"$cliPath`" --no-open"
+    return
+  }
+  $script:TaskRegistered = $true
 }
 
 function Step3-ExtractAndConfigure {
@@ -598,7 +613,11 @@ function Step4-ConfigureService {
     Write-Step "-NoStart: service files written but not enabled"
     return
   }
-  Write-Ok "Scheduled Task registered: $TaskName (Task Scheduler, ONLOGON trigger, per-user)"
+  if ($TaskRegistered) {
+    Write-Ok "Scheduled Task registered: $TaskName (Task Scheduler, ONLOGON trigger, per-user)"
+  } else {
+    Write-Warn "auto-start not registered (see warning above) -- Open Design will run this session but not after your next login"
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -787,7 +806,12 @@ function Step6-ClaudeAndSummary {
   Write-Host "  Version:  $Version"
   Write-Host "  Home:     $OdHome"
   Write-Host "  Config:   $(Join-Path $OdHome 'config.env')"
-  Write-Host "  Service:  Task Scheduler (task: $TaskName) -- schtasks /Query /TN $TaskName"
+  if ($TaskRegistered) {
+    Write-Host "  Service:  Task Scheduler (task: $TaskName) -- schtasks /Query /TN $TaskName"
+  } else {
+    $cliPath = Join-Path $OdHome "current\apps\daemon\dist\cli.js"
+    Write-Host "  Service:  NOT auto-starting (schtasks blocked on this machine) -- start manually: `"$NodeBin`" `"$cliPath`" --no-open"
+  }
   Write-Host ""
   if (-not $loginOk) {
     Write-Host '  còn một bước: chạy `claude /login` để đăng nhập Claude Code.' -ForegroundColor Yellow
