@@ -34,6 +34,20 @@ set -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+# On Git Bash (Windows), $WORKSPACE_ROOT is a POSIX-style path (/d/a/...).
+# That's fine for bash/cp/mkdir, but native windows node.exe cannot resolve it
+# inside a require('...') string -- it fails with MODULE_NOT_FOUND on the
+# literal "/d/a/..." text. cygpath -m converts it to a drive-letter path with
+# forward slashes (D:/a/...), which node.exe accepts on every platform. No-op
+# on macOS/Linux, where cygpath doesn't exist.
+to_node_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 OPT_PLATFORM=""
 OPT_VERSION=""
 OPT_OUT_DIR=""
@@ -127,7 +141,7 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Resolve version + output paths
 # ---------------------------------------------------------------------------
-VERSION="${OPT_VERSION:-$(node -p "require('${WORKSPACE_ROOT}/package.json').version")}"
+VERSION="${OPT_VERSION:-$(node -p "require('$(to_node_path "${WORKSPACE_ROOT}/package.json")').version")}"
 [ -n "$VERSION" ] || fail "could not resolve version (pass --version explicitly)"
 
 OUT_DIR="${OPT_OUT_DIR:-${WORKSPACE_ROOT}/.tmp/host-runtime/out}"
@@ -271,7 +285,7 @@ log "writing manifest.sha256"
 # 9. release.json fragment (per-platform). The release workflow merges every
 #    platform's fragment into one release-level release.json asset.
 # ---------------------------------------------------------------------------
-NODE_ENGINE="$(node -p "require('${WORKSPACE_ROOT}/apps/daemon/package.json').engines.node")"
+NODE_ENGINE="$(node -p "require('$(to_node_path "${WORKSPACE_ROOT}/apps/daemon/package.json")').engines.node")"
 BUILT_AT="$(node -p "new Date().toISOString()")"
 cat > "${STAGE_DIR}/release.json" <<JSON
 {
