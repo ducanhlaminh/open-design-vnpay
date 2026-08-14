@@ -363,6 +363,43 @@ const STAGE_HELD_MSG =
 // a closure wired in server.ts that has access to design.runs + startChatRun.
 export interface RegisterPipelineRoutesDeps extends RouteDeps<'db' | 'pipelines' | 'paths'> {}
 
+// Đẩy tên App mới lên remote NGAY khi PATCH /api/pipelines/apps/:id đổi
+// `name` — không đợi một Feature con được push tiếp mới ghi lại
+// app.json/project.json (App không còn Feature local nào để push thì trước
+// đây rename không bao giờ chạm remote). Thử app.json trước project.json,
+// mirror đúng precedence remote-registry.ts's loadRemoteProjects dùng để
+// RESOLVE tên hiển thị (`isApp ? [APP_MARKER_PATH, PROJECT_CONFIG_PATH] :
+// [PROJECT_CONFIG_PATH]`) — patch đúng file registry thực sự đọc tên từ đó.
+// Chỉ override field `name`, giữ nguyên mọi field khác (contextVersion/
+// contextDigest/appId/designSystemId/appContextBinding…) đang sống trong file
+// đó. Trả `false` khi không patch được file nào (remote không với tới được,
+// hoặc cả 2 file đều không tồn tại/không đọc được) — best-effort, KHÔNG throw,
+// caller quyết định có chặn response hay không (ở đây thì không).
+async function syncAppNameToRemote(
+  media: Pick<MediaClient, 'downloadFile' | 'syncProjectFiles'>,
+  appId: string,
+  name: string,
+): Promise<boolean> {
+  for (const { path, stage } of [
+    { path: 'app.json', stage: 'app' },
+    { path: 'project.json', stage: 'config' },
+  ]) {
+    try {
+      const buf = await media.downloadFile(appId, path);
+      const config = JSON.parse(buf.toString('utf8')) as Record<string, unknown>;
+      const updated = `${JSON.stringify({ ...config, name }, null, 2)}\n`;
+      await media.syncProjectFiles(appId, [
+        { path, stage, mime: 'application/json', content: Buffer.from(updated) },
+      ]);
+      return true;
+    } catch {
+      // Not this file — try the next candidate, or give up (App not on
+      // remote yet / unreachable) after the last one.
+    }
+  }
+  return false;
+}
+
 export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutesDeps) {
   const { db } = ctx;
 
@@ -743,6 +780,11 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     if (!collectLocalApps().has(appId) && !(await remoteAppIds())?.has(appId)) {
       return res.status(404).json({ error: `app "${appId}" not found` });
     }
+    // `true` remote patched, `false` App có trên remote nhưng sync thất bại
+    // (remote không với tới được, hoặc cả 2 file app.json/project.json đều
+    // không đọc được), `null` App chưa từng có trên remote — không có gì để
+    // sync. Không đổi `name` thì cũng không có gì để sync (giữ `null`).
+    let remoteSynced: boolean | null = null;
     if (hasName && name) {
       upsertPipelineAppName(db, { id: appId, name, createdAt: Date.now() });
       for (const f of featuresOfApp(appId)) {
@@ -753,13 +795,19 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           },
         });
       }
+      // Best-effort: lỗi mạng/remote không với tới được KHÔNG được làm fail
+      // request PATCH — rename local (đã ghi DB + feature metadata ở trên)
+      // phải luôn thành công độc lập với remote.
+      remoteSynced = (await remoteAppIds())?.has(appId)
+        ? await syncAppNameToRemote(new MediaClient(mediaConfigFromEnv()), appId, name).catch(() => false)
+        : null;
     }
     if (hasDesignSystemId) {
       setPipelineAppDesignSystem(db, { id: appId, ...(hasName && name ? { name } : {}), designSystemId, createdAt: Date.now() });
     }
     const updated = getPipelineApp(db, appId);
     await snapshotKnownApp(appId);
-    res.json({ id: appId, name: updated?.name ?? name, designSystemId: updated?.designSystemId ?? null });
+    res.json({ id: appId, name: updated?.name ?? name, designSystemId: updated?.designSystemId ?? null, remoteSynced });
   });
 
   // DELETE /api/pipelines/apps/:id — remove the complete local App tree. This

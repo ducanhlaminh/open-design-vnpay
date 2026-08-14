@@ -5,6 +5,11 @@
 // registerPipelineRoutes đăng ký (fake express app ghi lại handler theo
 // "METHOD path") trên một DB SQLite tạm, `loadRemoteProjects` mock để registry
 // trung tâm không cần mạng — mặc định coi như store chết (nhánh best-effort).
+//
+// `media-client.js` cũng mock để test PATCH /apps/:id sync tên lên remote
+// (app.json/project.json) mà không cần MediaClient thật với tới network —
+// `mediaState` ghi lại mọi lần downloadFile/syncProjectFiles được gọi để
+// assert đúng file/stage/nội dung.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -21,6 +26,39 @@ let remoteImpl: () => Promise<unknown[]> = UNREACHABLE;
 
 vi.mock('../src/kg-sync/remote-registry.js', () => ({
   loadRemoteProjects: () => remoteImpl(),
+}));
+
+const mediaState = vi.hoisted(() => ({
+  // projectId -> path -> file content (JSON string); path đã absent khỏi map
+  // con nghĩa là downloadFile phải throw (file không tồn tại trên remote).
+  files: {} as Record<string, Record<string, string>>,
+  downloadCalls: [] as Array<{ projectId: string; path: string }>,
+  syncCalls: [] as Array<{
+    projectId: string;
+    files: Array<{ path: string; stage: string; mime: string; content: string }>;
+  }>,
+}));
+
+vi.mock('../src/kg-sync/media-client.js', () => ({
+  MediaClient: class {
+    async downloadFile(projectId: string, filePath: string): Promise<Buffer> {
+      mediaState.downloadCalls.push({ projectId, path: filePath });
+      const content = mediaState.files[projectId]?.[filePath];
+      if (content === undefined) throw new Error(`downloadFile: not found ${projectId}/${filePath}`);
+      return Buffer.from(content, 'utf8');
+    }
+    async syncProjectFiles(
+      projectId: string,
+      files: Array<{ path: string; stage: string; mime: string; content: Buffer }>,
+    ): Promise<{ uploaded: number; skipped: number; deleted: number }> {
+      mediaState.syncCalls.push({
+        projectId,
+        files: files.map((f) => ({ path: f.path, stage: f.stage, mime: f.mime, content: f.content.toString('utf8') })),
+      });
+      return { uploaded: files.length, skipped: 0, deleted: 0 };
+    }
+  },
+  mediaConfigFromEnv: () => ({}),
 }));
 
 type Handler = (req: any, res: any) => unknown;
@@ -63,6 +101,9 @@ describe('pipeline app/feature edit routes', () => {
 
   beforeEach(() => {
     remoteImpl = UNREACHABLE;
+    mediaState.files = {};
+    mediaState.downloadCalls = [];
+    mediaState.syncCalls = [];
     tempDir = mkdtempSync(path.join(os.tmpdir(), 'od-pipeline-edit-'));
     db = openDatabase(tempDir, { dataDir: tempDir });
     const app = makeApp();
@@ -124,7 +165,9 @@ describe('pipeline app/feature edit routes', () => {
 
     const res = await patchApp('XPOS', { name: 'X POS mới' });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'XPOS', name: 'X POS mới', designSystemId: null });
+    // remoteSynced: null vì XPOS chưa từng có trên remote (registry mặc định
+    // coi như store chết trong beforeEach ở trên).
+    expect(res.body).toEqual({ id: 'XPOS', name: 'X POS mới', designSystemId: null, remoteSynced: null });
 
     expect(listPipelineApps(db)).toEqual([
       expect.objectContaining({ id: 'XPOS', name: 'X POS mới' }),
@@ -144,6 +187,71 @@ describe('pipeline app/feature edit routes', () => {
       expect.objectContaining({ id: 'VNPAY', name: 'VNPAY Wallet' }),
     ]);
     expect(studioConfigOf('vnpay-checkout')).toEqual({ appId: 'VNPAY', appName: 'VNPAY Wallet' });
+  });
+
+  it('syncs the new name onto remote app.json when the App already has one', async () => {
+    remoteImpl = async () => [{ projectId: 'XPOS', name: 'X POS', isApp: true, inMedia: true, files: 1 }];
+    mediaState.files.XPOS = {
+      'app.json': JSON.stringify({ appId: 'XPOS', contextVersion: 3, name: 'X POS' }),
+    };
+
+    const res = await patchApp('XPOS', { name: 'X POS mới' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'XPOS', name: 'X POS mới', designSystemId: null, remoteSynced: true });
+
+    expect(mediaState.syncCalls).toHaveLength(1);
+    expect(mediaState.syncCalls[0]!.projectId).toBe('XPOS');
+    // Chỉ override `name` — appId/contextVersion (và mọi field khác) giữ nguyên.
+    expect(mediaState.syncCalls[0]!.files).toEqual([
+      {
+        path: 'app.json',
+        stage: 'app',
+        mime: 'application/json',
+        content: `${JSON.stringify({ appId: 'XPOS', contextVersion: 3, name: 'X POS mới' }, null, 2)}\n`,
+      },
+    ]);
+  });
+
+  it('falls back to project.json (legacy App, no app.json) and stages it as config', async () => {
+    remoteImpl = async () => [{ projectId: 'LEGACY', name: 'Legacy App', isApp: true, inMedia: true, files: 1 }];
+    mediaState.files.LEGACY = {
+      'project.json': JSON.stringify({ appId: 'LEGACY', designSystemId: 'ds-1', name: 'Legacy cũ' }),
+    };
+
+    const res = await patchApp('LEGACY', { name: 'Legacy mới' });
+    expect(res.status).toBe(200);
+    expect(res.body.remoteSynced).toBe(true);
+
+    expect(mediaState.syncCalls).toHaveLength(1);
+    const written = mediaState.syncCalls[0]!.files[0]!;
+    expect(written).toMatchObject({ path: 'project.json', stage: 'config' });
+    expect(JSON.parse(written.content)).toEqual({ appId: 'LEGACY', designSystemId: 'ds-1', name: 'Legacy mới' });
+  });
+
+  it('keeps the local rename even when neither remote file is readable', async () => {
+    remoteImpl = async () => [{ projectId: 'BROKEN', name: 'Broken', isApp: true, inMedia: true, files: 0 }];
+    // mediaState.files.BROKEN không được set — cả app.json lẫn project.json
+    // đều throw "not found" khi downloadFile gọi tới.
+
+    const res = await patchApp('BROKEN', { name: 'Broken mới' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'BROKEN', name: 'Broken mới', designSystemId: null, remoteSynced: false });
+    expect(mediaState.syncCalls).toHaveLength(0);
+    // Rename local không bị fail lây bởi remote lỗi.
+    expect(listPipelineApps(db)).toEqual([
+      expect.objectContaining({ id: 'BROKEN', name: 'Broken mới' }),
+    ]);
+  });
+
+  it('never touches remote when the App has no remote presence yet', async () => {
+    expect((await postApp({ appId: 'LOCALONLY', name: 'Local Only' })).status).toBe(201);
+    remoteImpl = async () => []; // store with tới được, nhưng không thấy app này.
+
+    const res = await patchApp('LOCALONLY', { name: 'Local Only mới' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'LOCALONLY', name: 'Local Only mới', designSystemId: null, remoteSynced: null });
+    expect(mediaState.downloadCalls).toHaveLength(0);
+    expect(mediaState.syncCalls).toHaveLength(0);
   });
 
   it('400s on an empty rename and 404s on an app no source knows', async () => {
