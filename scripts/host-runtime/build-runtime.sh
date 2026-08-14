@@ -186,15 +186,26 @@ fi
 # ---------------------------------------------------------------------------
 mkdir -p "${STAGE_DIR}/apps/daemon"
 log "pnpm deploy --legacy --prod (native deps resolved for ${PLATFORM})"
+# --config.node-linker=hoisted: without this, pnpm links workspace packages
+# (e.g. @open-design/contracts) through node_modules/.pnpm/<pkg>/node_modules
+# symlinks, and resolves THAT package's own deps (e.g. zod) as siblings only
+# reachable by following the symlink. Step 10's `tar -czhf -h` (dereference,
+# required so Windows extraction doesn't need symlink privilege) then copies
+# just the symlink target's own directory -- dropping those sibling deps
+# entirely, so e.g. zod silently goes missing from the shipped tarball
+# (reproduced locally: `import('.../@open-design/contracts/dist/index.mjs')`
+# throws ERR_MODULE_NOT_FOUND for 'zod' without this flag). Hoisted linker
+# writes every dep as a real top-level directory, no .pnpm virtual store, so
+# there's nothing for dereferencing to lose.
 if [ "$CROSS_ARCH" = "1" ]; then
   log "cross-arch install: npm_config_arch=${NPM_ARCH} (best-effort; relies on prebuilt binaries — a native runner is preferred, see .github/workflows/release-host-runtime.yml)"
   (
     cd "$WORKSPACE_ROOT"
     npm_config_arch="$NPM_ARCH" npm_config_platform="$PLATFORM_OS" \
-      pnpm --filter @open-design/daemon deploy --legacy --prod "${STAGE_DIR}/apps/daemon"
+      pnpm --filter @open-design/daemon deploy --legacy --prod --config.node-linker=hoisted "${STAGE_DIR}/apps/daemon"
   )
 else
-  (cd "$WORKSPACE_ROOT" && pnpm --filter @open-design/daemon deploy --legacy --prod "${STAGE_DIR}/apps/daemon")
+  (cd "$WORKSPACE_ROOT" && pnpm --filter @open-design/daemon deploy --legacy --prod --config.node-linker=hoisted "${STAGE_DIR}/apps/daemon")
 fi
 
 # Prune dev-only cruft from the deployed node_modules — mirrors deploy/Dockerfile
