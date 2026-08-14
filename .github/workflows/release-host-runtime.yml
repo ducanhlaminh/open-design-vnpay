@@ -91,6 +91,20 @@ jobs:
 
       - name: Build host runtime tarball
         shell: bash
+        # These secrets, when set, get bundled into the tarball as
+        # host-env.template (see build-runtime.sh) so a fresh install of
+        # THIS repo's releases needs zero config flags for KG sync/Google
+        # login. Deliberate for this repo despite being public -- see the
+        # comment in build-runtime.sh before copying this pattern elsewhere.
+        env:
+          MEDIA_URL: ${{ secrets.OD_MEDIA_URL }}
+          MEDIA_APP_ID: ${{ secrets.OD_MEDIA_APP_ID }}
+          MEDIA_USER_ID: ${{ secrets.OD_MEDIA_USER_ID }}
+          MEDIA_USER_ROLE: ${{ secrets.OD_MEDIA_USER_ROLE }}
+          IDENTITY_URL: ${{ secrets.OD_IDENTITY_URL }}
+          GOOGLE_CLIENT_ID: ${{ secrets.OD_GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.OD_GOOGLE_CLIENT_SECRET }}
+          SESSION_SECRET: ${{ secrets.OD_SESSION_SECRET }}
         run: |
           set -euo pipefail
           bash scripts/host-runtime/build-runtime.sh \

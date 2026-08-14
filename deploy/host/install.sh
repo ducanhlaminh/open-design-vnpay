@@ -370,14 +370,31 @@ extract_release() {
 # arbitrary shell.
 ENV_FILE_VARS=""
 load_env_file() {
-  [ -n "$OPT_ENV_FILE" ] || return 0
   ef_path="$OPT_ENV_FILE"
-  case "$OPT_ENV_FILE" in
-    http://*|https://*)
-      ef_path="$(mktemp_dir)/env-file"
-      curl -fsSL -o "$ef_path" "$OPT_ENV_FILE" || fail "could not fetch --env-file ${OPT_ENV_FILE} (curl exit $?)"
-      ;;
-  esac
+  if [ -z "$ef_path" ]; then
+    # No --env-file given. A copy bundled INTO this release's own tarball
+    # by the release-host-runtime.yml CI pipeline (from GitHub Actions
+    # secrets, see build-runtime.sh) means a fresh install needs zero
+    # config flags to get KG sync + Google login working -- a deliberate
+    # choice for this repo despite being PUBLIC (anyone can download the
+    # tarball and read these values), not a default other
+    # forks/deployments should copy without the same tradeoff being
+    # intentional there too.
+    bundled_env_file="${RELEASE_DIR}/host-env.template"
+    if [ -f "$bundled_env_file" ]; then
+      ef_path="$bundled_env_file"
+      step "Using env defaults bundled with this release"
+    else
+      return 0
+    fi
+  else
+    case "$OPT_ENV_FILE" in
+      http://*|https://*)
+        ef_path="$(mktemp_dir)/env-file"
+        curl -fsSL -o "$ef_path" "$OPT_ENV_FILE" || fail "could not fetch --env-file ${OPT_ENV_FILE} (curl exit $?)"
+        ;;
+    esac
+  fi
   [ -f "$ef_path" ] || fail "--env-file not found: ${ef_path}"
   ENV_FILE_VARS="$(grep -E '^(MEDIA_URL|MEDIA_APP_ID|MEDIA_USER_ID|MEDIA_USER_ROLE|IDENTITY_URL|GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|SESSION_SECRET|OD_PORT|OD_DATA_DIR)=' "$ef_path" || true)"
 }

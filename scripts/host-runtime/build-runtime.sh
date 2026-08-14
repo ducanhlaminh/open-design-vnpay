@@ -270,6 +270,30 @@ if [ "$PLATFORM" = "win32-x64" ]; then
   cp "${WORKSPACE_ROOT}/deploy/host/install.ps1" "${STAGE_DIR}/install.ps1"
 fi
 
+# Bundled env defaults (MEDIA_*/IDENTITY_URL/GOOGLE_CLIENT_*/SESSION_SECRET)
+# -- ONLY written when the calling environment actually provides them (CI,
+# from GitHub Actions secrets; unset for a plain local/dev build, which
+# gets no bundled file and behaves exactly as before). install.sh/
+# install.ps1 read this from inside the extracted release as their last
+# fallback before "unconfigured", so a fresh install needs zero flags.
+# This is a deliberate choice for this specific repo's release pipeline
+# despite the repo being public (see release-host-runtime.yml) -- it is
+# NOT a default other forks/deployments should copy without the same
+# tradeoff being intentional there too.
+if [ -n "${MEDIA_URL:-}" ]; then
+  log "bundling host-env.template (MEDIA_URL is set)"
+  {
+    [ -n "${MEDIA_URL:-}" ] && printf 'MEDIA_URL=%s\n' "$MEDIA_URL"
+    [ -n "${MEDIA_APP_ID:-}" ] && printf 'MEDIA_APP_ID=%s\n' "$MEDIA_APP_ID"
+    [ -n "${MEDIA_USER_ID:-}" ] && printf 'MEDIA_USER_ID=%s\n' "$MEDIA_USER_ID"
+    [ -n "${MEDIA_USER_ROLE:-}" ] && printf 'MEDIA_USER_ROLE=%s\n' "$MEDIA_USER_ROLE"
+    [ -n "${IDENTITY_URL:-}" ] && printf 'IDENTITY_URL=%s\n' "$IDENTITY_URL"
+    [ -n "${GOOGLE_CLIENT_ID:-}" ] && printf 'GOOGLE_CLIENT_ID=%s\n' "$GOOGLE_CLIENT_ID"
+    [ -n "${GOOGLE_CLIENT_SECRET:-}" ] && printf 'GOOGLE_CLIENT_SECRET=%s\n' "$GOOGLE_CLIENT_SECRET"
+    [ -n "${SESSION_SECRET:-}" ] && printf 'SESSION_SECRET=%s\n' "$SESSION_SECRET"
+  } > "${STAGE_DIR}/host-env.template"
+fi
+
 printf '%s\n' "$VERSION" > "${STAGE_DIR}/VERSION"
 
 # ---------------------------------------------------------------------------

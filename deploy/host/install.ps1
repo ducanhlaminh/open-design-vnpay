@@ -483,14 +483,23 @@ $OdEnvFileAllowedKeys = @(
 function Import-EnvFile {
   $efPath = $EnvFile
   if (-not $efPath) {
-    # No -EnvFile given -- fall back to a saved copy at a fixed path, so
-    # MEDIA_*/IDENTITY_URL/GOOGLE_CLIENT_*/SESSION_SECRET only have to be
-    # typed once (save your filled-in template here) instead of on every
-    # -Update. Never shipped/committed -- this is a local-only convention.
+    # No -EnvFile given. Priority: a locally saved copy (your own override,
+    # never shipped/committed) beats a copy bundled INTO this release's own
+    # tarball by the release-host-runtime.yml CI pipeline (from GitHub
+    # Actions secrets) -- see build-runtime.sh. Bundling means a fresh
+    # install needs zero config flags to get KG sync + Google login
+    # working. This is a deliberate choice for this repo despite being
+    # PUBLIC (anyone can download the tarball and read these values) --
+    # made explicitly, not a default other forks/deployments should copy
+    # without the same tradeoff being intentional there too.
     $defaultEnvFile = Join-Path $OdHome "host-env.template"
+    $bundledEnvFile = Join-Path $ReleaseDir "host-env.template"
     if (Test-Path $defaultEnvFile) {
       $efPath = $defaultEnvFile
       Write-Step "Using saved env defaults: $efPath"
+    } elseif (Test-Path $bundledEnvFile) {
+      $efPath = $bundledEnvFile
+      Write-Step "Using env defaults bundled with this release"
     } else {
       return
     }

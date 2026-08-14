@@ -133,6 +133,23 @@ them and **Google login (`/login`) stays off** — KG sync push/pull still
 works, but falls back to anonymous/installation-id attribution instead of
 a real Google identity, and Shared Project registration is skipped.
 
+**Zero-flag installs of this repo's own releases:** the `release-host-runtime.yml`
+CI pipeline bundles a filled-in `host-env.template` straight into the tarball
+it publishes (sourced from GitHub Actions repo secrets — `OD_MEDIA_URL`,
+`OD_MEDIA_APP_ID`, `OD_MEDIA_USER_ID`, `OD_MEDIA_USER_ROLE`, `OD_IDENTITY_URL`,
+`OD_GOOGLE_CLIENT_ID`, `OD_GOOGLE_CLIENT_SECRET`, `OD_SESSION_SECRET`). Both
+`install.sh` and `install.ps1` read this bundled file automatically as their
+last fallback (below any local `host-env.template`/`-EnvFile` override, above
+"unconfigured"), so a plain `install.sh` / `install.ps1 -Archive <tarball>`
+with **no config flags at all** already has KG sync and Google login enabled.
+This is a deliberate tradeoff for this specific repo despite being public —
+anyone can download a released tarball and read these values out of
+`host-env.template` inside it. Do not copy this pattern into another
+fork/deployment's release pipeline without making that same tradeoff on
+purpose there too; the safer default (no secrets in the tarball) is to just
+not set the `OD_*` secrets in that repo's Actions settings, which makes
+build-runtime.sh skip bundling entirely.
+
 **Simpler repeat config (Windows):** rather than passing `-EnvFile`/the
 individual `-Media*`/`-Google*` flags on every `-Update`, save your
 filled-in template once at `%USERPROFILE%\.open-design\host-env.template`
