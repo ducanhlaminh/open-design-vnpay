@@ -36,14 +36,21 @@ corepack pnpm --version   # should print 10.33.2
 
 ## Host install (one command, no Docker)
 
-Prefer running directly on macOS or Linux without Docker? Use the
+Prefer running directly on macOS, Linux, or Windows without Docker? Use the
 one-command host installer — it downloads the daemon + built web UI, runs
-them as a single process managed by a LaunchAgent (macOS) or systemd
-`--user` unit (Linux), and health-checks itself with automatic rollback:
+them as a single process managed by a LaunchAgent (macOS), a systemd
+`--user` unit (Linux), or a per-user Task Scheduler task (Windows), and
+health-checks itself with automatic rollback:
 
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.sh -o install.sh
 bash install.sh
+```
+
+```powershell
+# Windows (PowerShell, 64-bit Windows 10 1803+ / 11)
+irm https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1 | iex
 ```
 
 See [`deploy/host/README.md`](deploy/host/README.md) for flags, updating,

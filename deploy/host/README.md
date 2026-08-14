@@ -1,15 +1,18 @@
 # Host runtime (one-command install, no Docker)
 
-Runs Open Design directly on macOS or Linux as a single Node.js process (the
-daemon serves both `/api/*` and the built web UI — no Docker, no Electron).
-This is a different deployment path from [`../README.md`](../README.md)
-(Docker self-host): that one stays as-is, this one is for a bare host install
-managed by launchd (macOS) or a systemd `--user` unit (Linux).
+Runs Open Design directly on macOS, Linux, or Windows as a single Node.js
+process (the daemon serves both `/api/*` and the built web UI — no Docker,
+no Electron). Windows is a first-class target here, not a reduced one: same
+6 steps, same `config.env` shape, same automatic rollback. This is a
+different deployment path from [`../README.md`](../README.md) (Docker
+self-host): that one stays as-is, this one is for a bare host install
+managed by launchd (macOS), a systemd `--user` unit (Linux), or a per-user
+Task Scheduler task (Windows).
 
 Structure inspired by kit-gen style installers (folder layout and general
 flow, not copied verbatim from any project).
 
-## Install
+## Install (macOS / Linux)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.sh -o install.sh
@@ -22,7 +25,41 @@ tagged release of this repo (immutable — pinned to whatever release was
 matching your `uname -s`/`uname -m` (`darwin-arm64`, `darwin-x64`, or
 `linux-x64`; anything else is a clear error).
 
-Six steps, each printed as it starts:
+## Install (Windows)
+
+Requires Windows 10 1803+ or Windows 11 (64-bit), PowerShell 5.1+ (built
+into Windows — PowerShell 7/pwsh works too). `tar.exe`, which ships built-in
+since Windows 10 1803, is what does the archive extraction and safety
+checks — this is the reason for the minimum-version requirement.
+
+```powershell
+irm https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1 | iex
+```
+
+Or, to pass flags (`iex` piped scripts can't take arguments — download it
+first):
+
+```powershell
+irm https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1 -OutFile install.ps1
+.\install.ps1 -NoStart
+```
+
+`install.ps1` mirrors `install.sh` step-for-step, with native Windows
+primitives standing in for the POSIX ones: a per-user Task Scheduler task
+(`schtasks.exe`, `/RL LIMITED`, no admin required) instead of launchd/
+systemd, a directory Junction instead of a symlink (also no admin/Developer
+Mode required — unlike a real Windows symlink), and `tar.exe` for the same
+`..`-traversal + single-root-dir archive safety check. Every `--flag` below
+has a PowerShell equivalent named the same way in PascalCase, e.g.
+`--data-dir` → `-DataDir`, `--no-start` → `-NoStart`, `--update` →
+`-Update`.
+
+Everything installs under `%USERPROFILE%\.open-design` by default, data
+under `%USERPROFILE%\od-data\open-design` — no administrator elevation is
+used anywhere, mirroring install.sh's "no sudo" invariant.
+
+Six steps, each printed as it starts (identical phase names/order on every
+platform):
 
 1. **Kiểm tra gói cài đặt** — resolve/download the release tarball, verify
    its sha256 **before** anything is extracted.
@@ -30,25 +67,34 @@ Six steps, each printed as it starts:
    `apps/daemon/package.json#engines` (`~24`); otherwise download a private
    Node under `~/.open-design/tools/`, checksummed against nodejs.org's
    `SHASUMS256.txt`.
-3. **Giải nén & cài đặt** — extract into `~/.open-design/releases/<version>`,
-   write `~/.open-design/config.env` (`chmod 600`), point the `current`
-   symlink at the new release.
+3. **Giải nén & cài đặt** — extract into `~/.open-design/releases/<version>`
+   (Windows: `%USERPROFILE%\.open-design\releases\<version>`), write
+   `config.env` (`chmod 600` on macOS/Linux, ACL-locked to the current user
+   on Windows via `icacls`), point the `current` symlink (Windows: Junction)
+   at the new release.
 4. **Cấu hình dịch vụ** — install a macOS LaunchAgent
-   (`~/Library/LaunchAgents/com.vnpay.open-design.plist`) or a Linux systemd
-   `--user` unit (`~/.config/systemd/user/open-design.service`); falls back
-   to a `nohup`-managed process if neither is available.
+   (`~/Library/LaunchAgents/com.vnpay.open-design.plist`), a Linux systemd
+   `--user` unit (`~/.config/systemd/user/open-design.service`), or a
+   Windows per-user Task Scheduler task (`schtasks.exe`, task name
+   `OpenDesignDaemon`, `/RL LIMITED`, ONLOGON trigger); falls back to a
+   `nohup`-managed process on macOS/Linux if neither launchd nor systemd is
+   available.
 5. **Khởi động & kiểm tra sức khỏe** — start the service and poll
    `GET /api/health` for up to 60s. On failure, the installer **rolls back**
    to the previous release automatically (a fresh install with nothing to
    roll back to stops the service and exits non-zero instead).
 6. **Kiểm tra Claude CLI & hoàn tất** — installs the Claude Code CLI via its
-   native installer if missing, probes login state, and prints
+   native installer if missing (Windows: `https://claude.ai/install.ps1`,
+   confirmed to exist and to accept the same version-pin argument as the
+   macOS/Linux `install.sh`), probes login state, and prints
    `http://127.0.0.1:<port>` plus, if not logged in yet, "còn một bước:
    `claude /login`".
 
-No `sudo` is used anywhere. Everything lives under `$HOME`
-(`~/.open-design` by default, data under `~/od-data/open-design` by
-default).
+No `sudo`/administrator elevation is used anywhere on any platform.
+Everything lives under `$HOME` on macOS/Linux (`~/.open-design` by default,
+data under `~/od-data/open-design`), or under `%USERPROFILE%` on Windows
+(`%USERPROFILE%\.open-design` by default, data under
+`%USERPROFILE%\od-data\open-design`).
 
 ### Flags
 
@@ -91,6 +137,12 @@ a fresh install), and finally prints the new version straight from
 the config flags above — pass them again on `--update` if you want to change
 a value.
 
+Windows:
+
+```powershell
+powershell -File $env:USERPROFILE\.open-design\current\install.ps1 -Update
+```
+
 ## Rollback (manual)
 
 Every extracted release stays under `~/.open-design/releases/`. To go back
@@ -107,6 +159,17 @@ systemctl --user restart open-design
 (A failed install/update already does this automatically — see step 5
 above.)
 
+Windows:
+
+```powershell
+cmd /c rmdir "$env:USERPROFILE\.open-design\current"
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.open-design\current" `
+  -Target "$env:USERPROFILE\.open-design\releases\<older-version>"
+# Restart: simplest is re-running install.ps1 -Update (skips re-download for
+# a local -Archive, still redoes the health check), or manually stop the PID
+# in %USERPROFILE%\.open-design\open-design.pid and start the daemon again.
+```
+
 ## Uninstall
 
 ```bash
@@ -122,12 +185,26 @@ systemctl --user daemon-reload
 rm -rf ~/.open-design
 ```
 
+Windows:
+
+```powershell
+Get-Content "$env:USERPROFILE\.open-design\open-design.pid" -ErrorAction SilentlyContinue |
+  ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+schtasks /Delete /TN OpenDesignDaemon /F
+Remove-Item -Recurse -Force "$env:USERPROFILE\.open-design"
+```
+
 **Data is not deleted.** Project data lives at `OD_DATA_DIR`
 (`~/od-data/open-design` by default, or whatever `--data-dir`/`config.env`
 pointed at) and is left alone — remove it explicitly if you want a full wipe:
 
 ```bash
 rm -rf ~/od-data/open-design
+```
+
+```powershell
+# Windows
+Remove-Item -Recurse -Force "$env:USERPROFILE\od-data\open-design"
 ```
 
 ## Mirror / offline install
@@ -147,6 +224,9 @@ For fully offline installs, pre-download the platform tarball (and its
 bash install.sh --archive /path/to/open-design-runtime-<version>-<platform>.tar.gz --sha256 <hex>
 ```
 
+Windows equivalents use `-EnvFile` and `-Archive` on `install.ps1` the same
+way (see "Install (Windows)" above).
+
 ## Building the tarball yourself
 
 See [`../../scripts/host-runtime/build-runtime.sh`](../../scripts/host-runtime/build-runtime.sh)
@@ -156,9 +236,12 @@ for the release pipeline that publishes these tarballs to GitHub Releases.
 
 ## Scope
 
-- Signing/notarization is out of scope — there is no `.app` bundle here.
-- Windows is not supported by this installer; see the (separate) `apps/desktop`
-  Electron build for that.
+- Signing/notarization is out of scope — there is no `.app`/`.exe` bundle
+  here (`install.ps1` downloads a `claude.exe` binary for the Claude CLI,
+  but that is Anthropic's own signed installer, not something this repo
+  builds or signs).
+- Windows-on-ARM is out of scope for v1 — `win32-x64` only. `install.ps1`
+  fails with a clear error on 32-bit or ARM64 Windows.
 - This is a single-user, single-machine install. Multi-user/server fan-out is
   out of scope.
 - The Docker self-host path (`../Dockerfile`, `../docker-compose.yml`,
