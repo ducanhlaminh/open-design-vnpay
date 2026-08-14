@@ -6,6 +6,7 @@ import {
   WRITE_ISOLATION_BIN,
   buildWriteIsolationProfile,
   planWriteIsolation,
+  resolveWritableStatePaths,
   wrapInvocationInWriteIsolation,
   writeIsolationMode,
 } from '../src/write-isolation.js';
@@ -164,6 +165,62 @@ describe('buildWriteIsolationProfile', () => {
     expect(() =>
       buildWriteIsolationProfile({ ...base, extraWritableDirs: ['/data/evil\r\npath'] }),
     ).toThrow();
+  });
+});
+
+describe('resolveWritableStatePaths', () => {
+  it('resolves bare, home-relative segments to absolute paths', () => {
+    expect(resolveWritableStatePaths('/Users/dev', ['.codex'])).toEqual([
+      '/Users/dev/.codex',
+    ]);
+  });
+
+  it('resolves every entry in a multi-segment list (e.g. opencode)', () => {
+    expect(
+      resolveWritableStatePaths('/Users/dev', ['.config/opencode', '.local/share/opencode']),
+    ).toEqual(['/Users/dev/.config/opencode', '/Users/dev/.local/share/opencode']);
+  });
+
+  it('passes an already-absolute entry through unchanged', () => {
+    expect(resolveWritableStatePaths('/Users/dev', ['/opt/custom/.codex'])).toEqual([
+      '/opt/custom/.codex',
+    ]);
+  });
+
+  it('returns an empty array when writableStatePaths is undefined or empty', () => {
+    expect(resolveWritableStatePaths('/Users/dev', undefined)).toEqual([]);
+    expect(resolveWritableStatePaths('/Users/dev', [])).toEqual([]);
+  });
+});
+
+describe('buildWriteIsolationProfile with a runtime writableStatePaths entry', () => {
+  // Mirrors how server.ts actually wires this up: resolveWritableStatePaths(
+  // os.homedir(), def.writableStatePaths) folded into extraWritableDirs
+  // alongside linkedDirs — codex's `.codex` is the verified real-world case
+  // (host-mode Codex runs failed with "Operation not permitted" writing
+  // PATH-alias shims / app-server state to ~/.codex before this was added).
+  it('includes a (subpath ...) line for a resolved codex ~/.codex state path', () => {
+    const runtimeStateDirs = resolveWritableStatePaths('/Users/dev', ['.codex']);
+    const profile = buildWriteIsolationProfile({
+      cwd: '/data/projects/p1/docs-to-react',
+      home: '/Users/dev',
+      extraWritableDirs: runtimeStateDirs,
+    });
+    expect(profile).toContain('(subpath "/Users/dev/.codex")');
+  });
+
+  it('includes a (subpath ...) line for each of opencode’s two resolved state paths', () => {
+    const runtimeStateDirs = resolveWritableStatePaths('/Users/dev', [
+      '.config/opencode',
+      '.local/share/opencode',
+    ]);
+    const profile = buildWriteIsolationProfile({
+      cwd: '/data/projects/p1/docs-to-react',
+      home: '/Users/dev',
+      extraWritableDirs: runtimeStateDirs,
+    });
+    expect(profile).toContain('(subpath "/Users/dev/.config/opencode")');
+    expect(profile).toContain('(subpath "/Users/dev/.local/share/opencode")');
   });
 });
 

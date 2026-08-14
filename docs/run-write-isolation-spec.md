@@ -201,9 +201,18 @@ feature folder. The docker tier gets the equivalent via nested mounts:
 - **Phase 2 — default on (darwin). DONE (WP4, web-first migration, 2026-08).**
   `writeIsolationMode()` now defaults to `on` on darwin instead of `off`
   (still `off` off-darwin, and `OD_WRITE_ISOLATION` still overrides in either
-  direction). Still open from the original Phase 2 scope: `writableStatePaths`
-  filled in for the runtimes actually used (codex, gemini, opencode…), and
-  `required` mode for pipeline runs — neither is wired yet.
+  direction). `writableStatePaths` is now wired end-to-end (2026-08-14):
+  `RuntimeAgentDef.writableStatePaths` (`runtimes/types.ts`) carries bare,
+  HOME-relative segments; `resolveWritableStatePaths` (`write-isolation.ts`)
+  resolves them against `os.homedir()` at the `planWriteIsolation` call site
+  in `server.ts`, folded into that run's `extraWritableDirs` alongside
+  `linkedDirs` — so only the agent actually running gets its state dir
+  allowlisted, not every profile unconditionally. Filled in for codex
+  (`.codex` — the runtime that was actually failing: host-mode Codex runs
+  hit "Operation not permitted" writing PATH-alias shims / its in-process
+  app-server's runtime files to `~/.codex` before this landed), gemini
+  (`.gemini`), and opencode (`.config/opencode` + `.local/share/opencode`).
+  Still open: `required` mode for pipeline runs is not wired yet.
 - **Phase 3 — app-workspace scope.** When feature-as-folder lands: writable
   root = `features/<current>`, app root readable; docker tier gets the
   `:ro`/`:rw` nested mounts. Optional: linked dirs become read-only.

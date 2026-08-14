@@ -147,6 +147,24 @@ export function buildWriteIsolationProfile(input: BuildWriteIsolationProfileInpu
   return `${lines.join('\n')}\n`;
 }
 
+/**
+ * Resolve a `RuntimeAgentDef.writableStatePaths` list (bare, HOME-relative
+ * segments — e.g. `.codex` — see runtimes/types.ts) to absolute paths ready
+ * to fold into `extraWritableDirs`. An entry that is already absolute is
+ * passed through unchanged rather than (incorrectly) joined under `home`.
+ * Pure — no filesystem access — so callers (server.ts) supply `home` and
+ * this stays as unit-testable as `buildWriteIsolationProfile` itself.
+ */
+export function resolveWritableStatePaths(
+  home: string,
+  writableStatePaths: string[] | undefined,
+): string[] {
+  if (!writableStatePaths || writableStatePaths.length === 0) return [];
+  return writableStatePaths.map((entry) =>
+    path.isAbsolute(entry) ? entry : path.join(home, entry),
+  );
+}
+
 const sanitizeRunId = (raw: string): string => raw.replace(/[^A-Za-z0-9._-]/g, '-');
 
 export interface PlanWriteIsolationInput {

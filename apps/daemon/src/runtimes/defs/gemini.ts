@@ -25,6 +25,10 @@ export const geminiAgentDef = {
     // instead of `--skip-trust`; several Gemini CLI builds hide or reject the
     // flag even though they accept the documented environment variable.
     env: { GEMINI_CLI_TRUST_WORKSPACE: 'true' },
+    // Gemini CLI's own session/state dir — needed under the write-isolation
+    // Seatbelt tier (write-isolation.ts, docs/run-write-isolation-spec.md)
+    // the same way codex's `.codex` is.
+    writableStatePaths: ['.gemini'],
     buildArgs: (_prompt, _imagePaths, _extra, options = {}) => {
       const args = ['--output-format', 'stream-json', '--yolo'];
       if (options.model && options.model !== 'default') {

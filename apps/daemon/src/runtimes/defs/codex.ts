@@ -58,6 +58,16 @@ export const codexAgentDef = {
     // resolves that ambiguity by preferring `--profile-v2` only when the
     // bare `--profile` spelling is absent.
     helpArgs: ['exec', '--help'],
+    // Codex's own session/state dir (auth.json, PATH-alias shims, the
+    // in-process app-server's runtime files it writes on startup). Needed
+    // under the write-isolation Seatbelt tier (write-isolation.ts) — without
+    // it every host-mode Codex run fails with "could not create PATH
+    // aliases" / "failed to initialize in-process app-server client:
+    // Operation not permitted". `$CODEX_HOME` overrides this default on a
+    // real run (see auth.ts's `probeCodexAuthStatus`), but that is a static
+    // def and cannot read env per-run — `.codex` covers the plain-install
+    // case, which is the one that actually fails today.
+    writableStatePaths: ['.codex'],
     capabilityFlags: {
       '--profile-v2 ': 'profileFlagIsV2',
       '--profile <': 'profileFlag',

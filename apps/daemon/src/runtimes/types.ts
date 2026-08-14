@@ -113,6 +113,22 @@ export type RuntimeAgentDef = {
     | 'codex-profile-v2';
   installUrl?: string;
   docsUrl?: string;
+  // Extra directories (beyond the run cwd) this runtime needs write access
+  // to under the write-isolation Seatbelt tier (write-isolation.ts,
+  // docs/run-write-isolation-spec.md) — its own session/state dir, where it
+  // stores auth tokens, PATH-alias shims, or other runtime files it writes
+  // on startup regardless of cwd. Entries are bare, HOME-relative segments
+  // (e.g. `.codex`, not `~/.codex` or an absolute path) — server.ts resolves
+  // them against `os.homedir()` at the write-isolation call site via
+  // `resolveWritableStatePaths`. An already-absolute entry is also accepted
+  // (passed through unchanged) for a future def that needs a non-home path.
+  // Claude's own state dir stays hardcoded inline in
+  // `buildWriteIsolationProfile` per the spec — this field is for every
+  // OTHER runtime. Leave undefined for adapters with no on-disk state dir
+  // that needs writing (or none identified yet); an omitted def just means
+  // that runtime's write-isolated run fails loudly with a plain EPERM if it
+  // ever needs one, which tells us the path to add.
+  writableStatePaths?: string[];
 };
 
 export type DetectedAgent = Omit<

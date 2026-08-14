@@ -310,7 +310,12 @@ import {
   resolveSandboxFallbackRuntimeId,
   sandboxRuntimeIsGated,
 } from './sandbox-routes.js';
-import { planWriteIsolation, wrapInvocationInWriteIsolation, writeIsolationMode } from './write-isolation.js';
+import {
+  planWriteIsolation,
+  resolveWritableStatePaths,
+  wrapInvocationInWriteIsolation,
+  writeIsolationMode,
+} from './write-isolation.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
 import {
@@ -12212,8 +12217,20 @@ export async function startServer({
     let writeIsolationPlan = null;
     if (!sandboxPlan) {
       let writeIsolationError = null;
+      // `def.writableStatePaths` (e.g. codex → `.codex`) are bare,
+      // HOME-relative segments — resolve them against the real home dir and
+      // fold them into the same extraWritableDirs allowlist linkedDirs
+      // already flows through, so a codex run can write its own session
+      // state (auth, PATH-alias shims) under the Seatbelt tier the same way
+      // it already can unisolated. Only ever contains THIS run's agent's
+      // paths, so e.g. a claude run's profile does not gain `~/.codex`.
+      const runtimeStateDirs = resolveWritableStatePaths(os.homedir(), def.writableStatePaths);
       try {
-        writeIsolationPlan = await planWriteIsolation({ cwd: effectiveCwd, extraWritableDirs: linkedDirs, runId });
+        writeIsolationPlan = await planWriteIsolation({
+          cwd: effectiveCwd,
+          extraWritableDirs: [...linkedDirs, ...runtimeStateDirs],
+          runId,
+        });
       } catch (err) {
         // planWriteIsolation can reject (bad cwd path chars, tmpdir write
         // failure) — caught locally so it can't escape this `if` and land in

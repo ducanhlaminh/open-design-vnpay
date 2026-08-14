@@ -40,6 +40,12 @@ export const opencodeAgentDef = {
     promptViaStdin: true,
     streamFormat: 'json-event-stream',
     eventParser: 'opencode',
+    // OpenCode's own config + data dirs — needed under the write-isolation
+    // Seatbelt tier (write-isolation.ts, docs/run-write-isolation-spec.md)
+    // the same way codex's `.codex` is. Per <https://opencode.ai/docs/config>
+    // OpenCode splits state across XDG config (~/.config/opencode) and XDG
+    // data (~/.local/share/opencode), unlike codex/gemini's single dir.
+    writableStatePaths: ['.config/opencode', '.local/share/opencode'],
     // OpenCode reads MCP servers from its layered config (global ~/.config
     // /opencode/opencode.json + project opencode.json + OPENCODE_CONFIG
     // + OPENCODE_CONFIG_CONTENT). The env-var form lets the daemon hand
