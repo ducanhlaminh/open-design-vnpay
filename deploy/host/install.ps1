@@ -281,7 +281,7 @@ function Resolve-Archive {
   try {
     $relJson = Invoke-RestMethod -Uri $releaseJsonUrl
   } catch {
-    Fail "could not fetch release.json from $releaseJsonUrl"
+    Fail "could not fetch release.json from $releaseJsonUrl -- $($_.Exception.Message)"
   }
   $tarballUrl = Get-FlatJsonValue $relJson "$Platform.url"
   $tarballSha = Get-FlatJsonValue $relJson "$Platform.sha256"
@@ -378,7 +378,7 @@ function Install-PrivateNode {
   try {
     $shasums = (Invoke-WebRequest -Uri "https://nodejs.org/dist/latest-v$RequiredNodeMajor.x/SHASUMS256.txt" -UseBasicParsing).Content
   } catch {
-    Fail "could not fetch Node.js $RequiredNodeMajor.x SHASUMS256.txt"
+    Fail "could not fetch Node.js $RequiredNodeMajor.x SHASUMS256.txt -- $($_.Exception.Message)"
   }
   # Node's Windows distribution uses "-win-x64.zip" naming (NOT "-win32-x64",
   # unlike the darwin/linux tar.gz naming install.sh matches against).
@@ -451,7 +451,7 @@ function Import-EnvFile {
     try {
       Invoke-WebRequest -Uri $EnvFile -OutFile $efPath -UseBasicParsing
     } catch {
-      Fail "could not fetch -EnvFile $EnvFile"
+      Fail "could not fetch -EnvFile $EnvFile -- $($_.Exception.Message)"
     }
   }
   if (-not (Test-Path $efPath)) { Fail "-EnvFile not found: $efPath" }

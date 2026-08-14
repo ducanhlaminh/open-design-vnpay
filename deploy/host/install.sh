@@ -251,7 +251,7 @@ resolve_archive() {
   #   { "version": "...", "tag": "...",
   #     "<platform>.url": "https://…/open-design-runtime-<v>-<platform>.tar.gz",
   #     "<platform>.sha256": "<hex>", … one pair per supported platform … }
-  rel_json="$(curl -fsSL "$release_json_url")" || fail "could not fetch release.json from ${release_json_url}"
+  rel_json="$(curl -fsSL "$release_json_url")" || fail "could not fetch release.json from ${release_json_url} (curl exit $?)"
   tarball_url="$(json_flat_value "$rel_json" "${PLATFORM}.url")"
   tarball_sha="$(json_flat_value "$rel_json" "${PLATFORM}.sha256")"
   [ -n "$tarball_url" ] || fail "release.json has no entry for platform ${PLATFORM}"
@@ -317,7 +317,7 @@ install_private_node() {
   dist_arch="${PLATFORM##*-}"
   shasums_url="https://nodejs.org/dist/latest-v${REQUIRED_NODE_MAJOR}.x/SHASUMS256.txt"
   step "Fetching Node.js ${REQUIRED_NODE_MAJOR}.x checksums"
-  shasums="$(curl -fsSL "$shasums_url")" || fail "could not fetch ${shasums_url}"
+  shasums="$(curl -fsSL "$shasums_url")" || fail "could not fetch ${shasums_url} (curl exit $?)"
   filename="$(printf '%s\n' "$shasums" \
     | grep -oE "node-v${REQUIRED_NODE_MAJOR}\\.[0-9]+\\.[0-9]+-${dist_os}-${dist_arch}\\.tar\\.gz" \
     | head -1)"
@@ -375,7 +375,7 @@ load_env_file() {
   case "$OPT_ENV_FILE" in
     http://*|https://*)
       ef_path="$(mktemp_dir)/env-file"
-      curl -fsSL -o "$ef_path" "$OPT_ENV_FILE" || fail "could not fetch --env-file ${OPT_ENV_FILE}"
+      curl -fsSL -o "$ef_path" "$OPT_ENV_FILE" || fail "could not fetch --env-file ${OPT_ENV_FILE} (curl exit $?)"
       ;;
   esac
   [ -f "$ef_path" ] || fail "--env-file not found: ${ef_path}"
