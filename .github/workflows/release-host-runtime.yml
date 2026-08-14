@@ -227,6 +227,15 @@ jobs:
           try { schtasks /Delete /TN "OpenDesignDaemon" /F 2>$null } catch {}
           Remove-Item -Recurse -Force "$odHome" -ErrorAction SilentlyContinue
 
+          # schtasks above almost always "fails" here (the task is already
+          # gone -- -Uninstall itself deletes it, or it was never created).
+          # try/catch only stops a thrown exception; it does NOT clear
+          # $LASTEXITCODE, which a native .exe's non-zero exit still sets --
+          # and a pwsh Actions step fails on a trailing non-zero
+          # $LASTEXITCODE even with no exception raised. This step is
+          # unconditional best-effort teardown and must never fail the job.
+          $global:LASTEXITCODE = 0
+
   publish:
     name: Publish GitHub Release
     needs: build
