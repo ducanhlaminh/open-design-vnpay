@@ -18,6 +18,7 @@ import { MarketplaceView } from './components/MarketplaceView';
 import { PluginDetailView } from './components/PluginDetailView';
 import type { CreateInput, ImportClaudeDesignOutcome } from './components/NewProjectPanel';
 import { MemoryToast } from './components/MemoryToast';
+import { UpdateCheck } from './components/UpdateCheck';
 import { PetOverlay, type PetTaskCenter } from './components/pet/PetOverlay';
 import { buildPetTaskCenter } from './components/pet/taskCenter';
 import { migrateCustomPetAtlas } from './components/pet/pets';
@@ -1656,6 +1657,11 @@ export function App() {
         />
       ) : null}
       <MemoryToast onOpenMemory={() => openSettings('memory')} />
+      {/* Silent host-runtime auto-update — background poll + one-shot
+          "Đã cập nhật lên vX.Y.Z" toast after a restart it triggered
+          itself. No props: it owns its own polling, same pattern as
+          MemoryToast above. */}
+      <UpdateCheck />
       {/* First-run infra wizard (Docker → sandbox image → Claude login). It
           evaluates silently and only renders on machines with missing infra;
           rendered BEFORE the privacy/username gates so those (same z-index,

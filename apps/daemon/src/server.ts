@@ -28,6 +28,13 @@ import {
 } from './prompts/system.js';
 import { expandHomePrefix, resolveProjectRelativePath } from './home-expansion.js';
 import { userFacingAgentLabel } from './user-facing-agent-label.js';
+import {
+  compareVersions,
+  deriveOdHomeFromResourceRoot,
+  extractSemverFromTag,
+  resolveJustUpdated,
+  writeUpdateMarker,
+} from './update-check.js';
 import { createCommandInvocation } from '@open-design/platform';
 import {
   checkPromptArgvBudget,
@@ -3025,6 +3032,85 @@ async function readOpenDesignLatestReleaseInfo() {
   return openDesignGithubLatestReleaseInflight;
 }
 
+// Host-runtime self-update. Distinct upstream from OPEN_DESIGN_GITHUB_*
+// above — that block queries `nexu-io/open-design` (an unrelated repo, a
+// "GitHub stars" widget target). THIS is the actual repo
+// `deploy/host/install.sh --update` downloads releases from
+// (`DEFAULT_GH_REPO` in that script) and the one
+// `.github/workflows/release-host-runtime.yml` publishes to.
+const HOST_RUNTIME_GH_REPO = 'ducanhlaminh/open-design-vnpay';
+const HOST_RUNTIME_RELEASE_LATEST_API = `https://api.github.com/repos/${HOST_RUNTIME_GH_REPO}/releases/latest`;
+// Same 60-minute / rate-limit rationale as OPEN_DESIGN_GITHUB_CACHE_TTL_MS
+// above — a burst of browser tabs polling GET /api/update/status on load
+// must not each hit GitHub's unauthenticated rate limit.
+const HOST_RUNTIME_RELEASE_CACHE_TTL_MS = OPEN_DESIGN_GITHUB_CACHE_TTL_MS;
+
+let hostRuntimeLatestReleaseCache = null;
+let hostRuntimeLatestReleaseInflight = null;
+
+async function readHostRuntimeLatestReleaseInfo() {
+  const now = Date.now();
+  if (
+    hostRuntimeLatestReleaseCache &&
+    now - hostRuntimeLatestReleaseCache.fetchedAt < HOST_RUNTIME_RELEASE_CACHE_TTL_MS
+  ) {
+    return { ...hostRuntimeLatestReleaseCache, stale: false };
+  }
+
+  if (hostRuntimeLatestReleaseInflight) {
+    return hostRuntimeLatestReleaseInflight;
+  }
+
+  hostRuntimeLatestReleaseInflight = (async () => {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), OPEN_DESIGN_GITHUB_TIMEOUT_MS);
+    try {
+      const response = await fetch(HOST_RUNTIME_RELEASE_LATEST_API, {
+        headers: {
+          accept: 'application/vnd.github+json',
+          'user-agent': 'open-design-daemon',
+        },
+        signal: ctrl.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`GitHub latest release request failed with HTTP ${response.status}`);
+      }
+      const payload = await response.json();
+      const tagName = payload && typeof payload.tag_name === 'string' ? payload.tag_name : null;
+      const version = tagName ? extractSemverFromTag(tagName) : null;
+      if (!tagName || !version) {
+        throw new Error('GitHub latest release metadata did not include a parseable tag_name');
+      }
+      hostRuntimeLatestReleaseCache = {
+        tagName,
+        version,
+        fetchedAt: Date.now(),
+      };
+      return { ...hostRuntimeLatestReleaseCache, stale: false };
+    } catch (error) {
+      if (hostRuntimeLatestReleaseCache) {
+        return { ...hostRuntimeLatestReleaseCache, stale: true };
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      hostRuntimeLatestReleaseInflight = null;
+    }
+  })();
+
+  return hostRuntimeLatestReleaseInflight;
+}
+
+// Module-level lock for POST /api/update/apply below. Deliberately never
+// reset after a successful spawn: `install.sh --update` kills THIS daemon
+// process partway through its own service-restart step, so the flag simply
+// stops existing along with the process — the next daemon process (already
+// on the new version, or rolled back to the old one) starts fresh with
+// this at `false`. Only reset on a failure that happens BEFORE the spawn
+// (e.g. GitHub unreachable, OD_HOME unresolvable) so a transient failure
+// doesn't wedge the daemon into "already-in-progress" forever.
+let updateApplyInProgress = false;
+
 function bearerTokenFromRequest(req) {
   const header = req.get('authorization');
   if (typeof header !== 'string') return undefined;
@@ -5211,6 +5297,91 @@ export async function startServer({
     getAppVersion: () => cachedAppVersion?.version ?? '0.0.0',
     readAnalyticsContext,
   };
+
+  // ---------------------------------------------------------------------
+  // Host-runtime self-update (fully automatic, no confirmation dialog —
+  // see specs/change/… for the tradeoff discussion). The web UI's
+  // UpdateCheck component polls GET /api/update/status in the background;
+  // when it reports `updateAvailable` it calls POST /api/update/apply
+  // once, which shells out to the already-tested
+  // `deploy/host/install.sh --update` (download, verify sha256, extract,
+  // repoint `current`, restart the service, health-check with automatic
+  // rollback) and returns immediately — the daemon cannot await its own
+  // restart, since the update kills this very process partway through.
+  // ---------------------------------------------------------------------
+  app.get('/api/update/status', async (_req, res) => {
+    const versionInfo = await readCurrentAppVersionInfo();
+    const currentVersion = versionInfo.version;
+
+    let latestVersion = null;
+    try {
+      const release = await readHostRuntimeLatestReleaseInfo();
+      latestVersion = release.version;
+    } catch {
+      // GitHub unreachable / rate-limited — this is a quiet background
+      // check, not a user-facing error. Leave latestVersion null; the
+      // next poll (or the shared cache once GitHub recovers) picks it up.
+      latestVersion = null;
+    }
+
+    const updateAvailable =
+      typeof latestVersion === 'string' && compareVersions(latestVersion, currentVersion) > 0;
+
+    let justUpdated = null;
+    try {
+      const marker = await resolveJustUpdated(RUNTIME_DATA_DIR, currentVersion);
+      if (marker) {
+        justUpdated = { version: marker.version, at: new Date(marker.at).toISOString() };
+      }
+    } catch {
+      justUpdated = null;
+    }
+
+    res.json({ currentVersion, latestVersion, updateAvailable, justUpdated });
+  });
+
+  app.post('/api/update/apply', async (_req, res) => {
+    if (updateApplyInProgress) {
+      return res.json({ started: false, reason: 'already-in-progress' });
+    }
+    // Never interrupt an in-flight agent run — the one hard safety
+    // property that matters here. The frontend just retries on its next
+    // scheduled poll once the run finishes.
+    if (design.runs.list({ status: 'active' }).length > 0) {
+      return res.json({ started: false, reason: 'runs-active' });
+    }
+
+    // Set the lock synchronously, before the first `await` below, so two
+    // requests racing in the same event-loop turn can't both slip past
+    // the `updateApplyInProgress` check above — Node runs each handler's
+    // synchronous prefix to completion before yielding to the next.
+    updateApplyInProgress = true;
+    try {
+      const release = await readHostRuntimeLatestReleaseInfo();
+      const targetVersion = release?.version;
+      if (!targetVersion) throw new Error('latest release version unavailable');
+
+      const odHome = deriveOdHomeFromResourceRoot(DAEMON_RESOURCE_ROOT);
+      if (!odHome) throw new Error('could not resolve OD_HOME from OD_RESOURCE_ROOT');
+
+      // Must survive the restart — write to disk BEFORE spawning, not
+      // just in memory (this process is about to be killed).
+      await writeUpdateMarker(RUNTIME_DATA_DIR, targetVersion);
+
+      const installScript = path.join(odHome, 'current', 'install.sh');
+      const child = spawn('bash', [installScript, '--update'], { detached: true, stdio: 'ignore' });
+      child.unref();
+
+      res.json({ started: true });
+    } catch (error) {
+      updateApplyInProgress = false;
+      res.status(500).json({
+        started: false,
+        reason: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
 
   // PostHog runtime config.
   //
