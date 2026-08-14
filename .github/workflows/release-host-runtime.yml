@@ -187,11 +187,22 @@ jobs:
 
           $health = Invoke-RestMethod -Uri "http://127.0.0.1:7456/api/health" -TimeoutSec 5
 
+          # Regression check for the config.env-never-reaches-the-Windows-
+          # process bug (fixed by apps/daemon/src/load-host-config-env.ts):
+          # SKILLS_DIR only resolves correctly when OD_RESOURCE_ROOT from
+          # config.env actually made it into the daemon's process.env --
+          # otherwise it silently falls back to a path that doesn't exist in
+          # a released tarball and /api/skills comes back empty. A bare
+          # /api/health 200 can't catch that; this can.
+          $skills = Invoke-RestMethod -Uri "http://127.0.0.1:7456/api/skills" -TimeoutSec 5
+          if (-not $skills.skills -or $skills.skills.Count -eq 0) { throw "/api/skills returned 0 skills -- OD_RESOURCE_ROOT (from config.env) did not reach the daemon process" }
+
           Write-Host "[ok] current is a Junction -> $($item.Target)"
           Write-Host "[ok] config.env present"
           Write-Host "[ok] OpenDesignDaemon scheduled task registered (state: $($task.State))"
           Write-Host "[ok] daemon process running (pid $daemonPid)"
           Write-Host "[ok] /api/health responded: $($health | ConvertTo-Json -Compress)"
+          Write-Host "[ok] /api/skills returned $($skills.skills.Count) skills -- config.env reached the daemon process"
 
           # -Stop / -Start also have to run in this same step -- same
           # process-teardown-between-steps reason as above.
