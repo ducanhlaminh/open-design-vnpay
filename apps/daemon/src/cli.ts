@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import './load-local-env.js'; // fill missing env from .env.local before anything reads it
+import './load-host-config-env.js'; // fill missing env from <OD_HOME>/config.env (Windows has no OS-level loader for it — see file docblock)
 import { runDaemonCliStartup } from './daemon-startup.js';
 import { runArtifactsCli } from './artifacts-cli.js';
 import { runProjectHandoff } from './handoff-cli.js';

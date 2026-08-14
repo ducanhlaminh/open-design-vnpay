@@ -16,7 +16,9 @@ import { fileURLToPath } from 'node:url';
 
 let loaded = false;
 
-function parseEnv(text: string): Record<string, string> {
+// Exported for reuse by load-host-config-env.ts (same KEY=VALUE shape, a
+// different file/root).
+export function parseEnv(text: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const rawLine of text.split('\n')) {
     const line = rawLine.trim();
