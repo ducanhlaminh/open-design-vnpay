@@ -292,6 +292,72 @@ test('--env-file defaults are overridden by explicit flags', async () => {
   }
 });
 
+// Google login (--google-client-id/--google-client-secret/--session-secret)
+// mirrors MEDIA_*/IDENTITY_URL exactly: written to config.env (chmod 600)
+// only when given, omitted entirely otherwise — /api/auth/google's own
+// isAuthEnabled() gate is what turns login on, config.env just carries the
+// three values through.
+test('writes Google login vars to config.env when all three flags are given', async () => {
+  const tmp = await mktmp('google-login');
+  const fakeHome = join(tmp, 'home');
+  try {
+    await mkdir(fakeHome, { recursive: true });
+    const stageName = 'open-design-runtime-1.2.5-linux-x64';
+    const stageDir = join(tmp, stageName);
+    await writeMinimalRelease(stageDir, '1.2.5');
+    const { archive, sha256: digest } = await packRelease(tmp, stageName);
+
+    await execFileAsync(
+      'bash',
+      [
+        installScript,
+        '--archive', archive,
+        '--sha256', digest,
+        '--no-start',
+        '--google-client-id', 'test-client-id-not-a-real-secret',
+        '--google-client-secret', 'test-client-secret-not-a-real-secret',
+        '--session-secret', 'test-session-secret-not-a-real-secret',
+      ],
+      { env: { ...process.env, HOME: fakeHome } },
+    );
+
+    const configPath = join(fakeHome, '.open-design', 'config.env');
+    const config = await readFile(configPath, 'utf8');
+    assert.match(config, /^GOOGLE_CLIENT_ID=test-client-id-not-a-real-secret$/m);
+    assert.match(config, /^GOOGLE_CLIENT_SECRET=test-client-secret-not-a-real-secret$/m);
+    assert.match(config, /^SESSION_SECRET=test-session-secret-not-a-real-secret$/m);
+    const mode = (await stat(configPath)).mode & 0o777;
+    assert.equal(mode, 0o600, `config.env must be chmod 600, got ${mode.toString(8)}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('omits Google login vars from config.env when the flags are absent', async () => {
+  const tmp = await mktmp('google-login-absent');
+  const fakeHome = join(tmp, 'home');
+  try {
+    await mkdir(fakeHome, { recursive: true });
+    const stageName = 'open-design-runtime-1.2.6-linux-x64';
+    const stageDir = join(tmp, stageName);
+    await writeMinimalRelease(stageDir, '1.2.6');
+    const { archive, sha256: digest } = await packRelease(tmp, stageName);
+
+    await execFileAsync(
+      'bash',
+      [installScript, '--archive', archive, '--sha256', digest, '--no-start'],
+      { env: { ...process.env, HOME: fakeHome } },
+    );
+
+    const config = await readFile(join(fakeHome, '.open-design', 'config.env'), 'utf8');
+    assert.doesNotMatch(config, /^GOOGLE_CLIENT_ID=/m);
+    assert.doesNotMatch(config, /^GOOGLE_CLIENT_SECRET=/m);
+    assert.doesNotMatch(config, /^SESSION_SECRET=/m);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Rollback on a mocked health failure — sources install.sh
 // (OD_INSTALL_SH_TEST_SOURCE=1) and stubs start_service/write_service_files/

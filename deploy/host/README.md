@@ -59,9 +59,10 @@ default).
 | `--sha256 <hex>` | Expected sha256 of the tarball — overrides any discovered `.sha256`/`release.json` entry. |
 | `--port <n>` | Daemon port (default `7456`). |
 | `--data-dir <path>` | `OD_DATA_DIR` (default `$HOME/od-data/open-design`). |
-| `--env-file <url\|path>` | KEY=VALUE defaults for `MEDIA_*`/`IDENTITY_URL` (an internal mirror env template). Individual flags below always win over this file. |
+| `--env-file <url\|path>` | KEY=VALUE defaults for `MEDIA_*`/`IDENTITY_URL`/`GOOGLE_CLIENT_*`/`SESSION_SECRET` (an internal mirror env template). Individual flags below always win over this file. |
 | `--media-url` / `--media-app-id` / `--media-user-id` / `--media-user-role` | Media/file-store service for pipeline outputs. |
 | `--identity-url` | Google-session → shared-project identity service. |
+| `--google-client-id` / `--google-client-secret` / `--session-secret` | Google OAuth login (`/api/auth/google`) — used for KG sync push/pull attribution and Shared Project registration. All three are required together; the same values work across every machine (fixed `localhost:52564` OAuth callback, not machine-specific). |
 | `--no-start` | Install everything but do not start/enable the service. |
 | `--update` | Update an existing `~/.open-design` install in place. |
 | `-h`, `--help` | Show usage. |
@@ -70,6 +71,11 @@ If none of the Media/Identity flags or `--env-file` are given, those
 entries are left out of `config.env` and the installer prints a warning —
 **KG sync stays off** until you configure them (everything else works: local
 projects, skills, design systems, agent runs).
+
+Likewise, without all three Google login flags, `config.env` has none of
+them and **Google login (`/login`) stays off** — KG sync push/pull still
+works, but falls back to anonymous/installation-id attribution instead of
+a real Google identity, and Shared Project registration is skipped.
 
 ## Update
 
