@@ -132,24 +132,26 @@ jobs:
           if (-not $tarball) { Write-Error "no .tar.gz found in ${{ runner.temp }}\out"; exit 1 }
           "path=$($tarball.FullName)" >> $env:GITHUB_OUTPUT
 
-      # Mirrors the darwin/ubuntu install.sh --archive local --no-start smoke
-      # test aspiration from wp6-installer.md:60 (never actually implemented
-      # for those platforms either -- this is the first real smoke-test job
-      # in this workflow). -NoStart per the windows-native-install spec's own
-      # Tests section: writes config.env + registers the ONLOGON scheduled
-      # task, but skips the live start/health-check loop.
-      - name: Run install.ps1 -Archive <local> -NoStart
+      # Full install: no -NoStart, so this actually starts the daemon and
+      # runs install.ps1's own health-check/rollback loop -- catches
+      # startup-time breakage (e.g. a missing runtime dep in the packaged
+      # node_modules) that a -NoStart-only smoke test would silently miss.
+      # install.ps1 itself exits 1 if the health check fails (Invoke-Rollback
+      # -> "No previous release to roll back to" on a fresh install), so a
+      # broken daemon fails this step directly.
+      - name: Run install.ps1 -Archive <local>
         shell: pwsh
         run: |
-          & "${{ github.workspace }}\deploy\host\install.ps1" -Archive "${{ steps.archive.outputs.path }}" -NoStart
+          & "${{ github.workspace }}\deploy\host\install.ps1" -Archive "${{ steps.archive.outputs.path }}"
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
 
-      - name: Verify install artifacts
+      - name: Verify install artifacts + daemon health
         shell: pwsh
         run: |
           $odHome = Join-Path $env:USERPROFILE ".open-design"
           $current = Join-Path $odHome "current"
           $configEnv = Join-Path $odHome "config.env"
+          $pidFile = Join-Path $odHome "open-design.pid"
 
           if (-not (Test-Path $current)) { throw "missing $current" }
           $item = Get-Item $current
@@ -160,9 +162,18 @@ jobs:
           $task = Get-ScheduledTask -TaskName "OpenDesignDaemon" -ErrorAction SilentlyContinue
           if (-not $task) { throw "OpenDesignDaemon scheduled task was not registered" }
 
+          if (-not (Test-Path $pidFile)) { throw "missing $pidFile -- daemon never recorded a pid, so install.ps1's own health check could not have passed" }
+          $daemonPid = (Get-Content $pidFile -Raw).Trim()
+          $proc = Get-Process -Id $daemonPid -ErrorAction SilentlyContinue
+          if (-not $proc) { throw "daemon process (pid $daemonPid) is not running" }
+
+          $health = Invoke-RestMethod -Uri "http://127.0.0.1:7456/api/health" -TimeoutSec 5
+
           Write-Host "[ok] current is a Junction -> $($item.Target)"
           Write-Host "[ok] config.env present"
           Write-Host "[ok] OpenDesignDaemon scheduled task registered (state: $($task.State))"
+          Write-Host "[ok] daemon process running (pid $daemonPid)"
+          Write-Host "[ok] /api/health responded: $($health | ConvertTo-Json -Compress)"
 
       - name: Cleanup
         if: always()
@@ -173,8 +184,17 @@ jobs:
           # non-zero exit (schtasks /Delete on a task that was never created,
           # e.g. an earlier step failed first) into a terminating error even
           # with stderr redirected.
+          $odHome = Join-Path $env:USERPROFILE ".open-design"
+          $pidFile = Join-Path $odHome "open-design.pid"
+          if (Test-Path $pidFile) {
+            $daemonPid = (Get-Content $pidFile -Raw -ErrorAction SilentlyContinue)
+            if ($daemonPid) {
+              $daemonPid = $daemonPid.Trim()
+              try { Stop-Process -Id $daemonPid -Force -ErrorAction Stop } catch { try { taskkill.exe /PID $daemonPid /T /F 2>$null } catch {} }
+            }
+          }
           try { schtasks /Delete /TN "OpenDesignDaemon" /F 2>$null } catch {}
-          Remove-Item -Recurse -Force "$env:USERPROFILE\.open-design" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$odHome" -ErrorAction SilentlyContinue
 
   publish:
     name: Publish GitHub Release
