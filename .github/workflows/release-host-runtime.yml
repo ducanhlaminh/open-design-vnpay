@@ -139,15 +139,19 @@ jobs:
       # install.ps1 itself exits 1 if the health check fails (Invoke-Rollback
       # -> "No previous release to roll back to" on a fresh install), so a
       # broken daemon fails this step directly.
-      - name: Run install.ps1 -Archive <local>
+      # Verification runs in THIS SAME step, right after install.ps1 --
+      # not a separate step. The Windows runner tears down (kills) every
+      # process spawned during a step once that step ends, so a daemon
+      # started here would already be dead by the start of a later step --
+      # that's a runner artifact, not something that happens on a real
+      # machine, but it means the liveness/health assertions below have to
+      # run before this step's process job object gets torn down.
+      - name: Run install.ps1 -Archive <local> + verify daemon health
         shell: pwsh
         run: |
           & "${{ github.workspace }}\deploy\host\install.ps1" -Archive "${{ steps.archive.outputs.path }}"
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
 
-      - name: Verify install artifacts + daemon health
-        shell: pwsh
-        run: |
           $odHome = Join-Path $env:USERPROFILE ".open-design"
           $current = Join-Path $odHome "current"
           $configEnv = Join-Path $odHome "config.env"
