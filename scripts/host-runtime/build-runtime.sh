@@ -11,15 +11,18 @@
 # deploy/host/install.sh (for --update), VERSION, manifest.sha256, and a
 # release.json fragment.
 #
-# platform is one of: darwin-arm64 | darwin-x64 | linux-x64 (Node dist naming).
-# Per-platform artifacts are mandatory because better-sqlite3 (native) and
-# fsevents (darwin) are architecture-specific.
+# platform is one of: darwin-arm64 | darwin-x64 | linux-x64 | win32-x64 (Node
+# dist naming). Per-platform artifacts are mandatory because better-sqlite3
+# (native) and fsevents (darwin) are architecture-specific. The win32-x64 leg
+# runs this same bash script unmodified via the Git Bash bundled on
+# windows-latest GitHub Actions runners — see
+# .github/workflows/release-host-runtime.yml.
 #
 # Usage:
 #   scripts/host-runtime/build-runtime.sh [options]
 #
 # Options:
-#   --platform <darwin-arm64|darwin-x64|linux-x64>   Target platform (default: current host).
+#   --platform <darwin-arm64|darwin-x64|linux-x64|win32-x64>   Target platform (default: current host).
 #   --version <x.y.z>                                Runtime version (default: root package.json).
 #   --out-dir <dir>                                   Output directory (default: .tmp/host-runtime/out).
 #   --skip-install                                     Skip `pnpm install` (assume deps already installed).
@@ -30,6 +33,20 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# On Git Bash (Windows), $WORKSPACE_ROOT is a POSIX-style path (/d/a/...).
+# That's fine for bash/cp/mkdir, but native windows node.exe cannot resolve it
+# inside a require('...') string -- it fails with MODULE_NOT_FOUND on the
+# literal "/d/a/..." text. cygpath -m converts it to a drive-letter path with
+# forward slashes (D:/a/...), which node.exe accepts on every platform. No-op
+# on macOS/Linux, where cygpath doesn't exist.
+to_node_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
 
 OPT_PLATFORM=""
 OPT_VERSION=""
@@ -48,7 +65,7 @@ while [ $# -gt 0 ]; do
     --skip-install) OPT_SKIP_INSTALL=1 ;;
     --skip-build) OPT_SKIP_BUILD=1 ;;
     --help|-h)
-      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -89,8 +106,8 @@ host_platform() {
 
 PLATFORM="${OPT_PLATFORM:-$(host_platform)}"
 case "$PLATFORM" in
-  darwin-arm64|darwin-x64|linux-x64) ;;
-  *) fail "--platform must be one of darwin-arm64, darwin-x64, linux-x64 (got: ${PLATFORM})" ;;
+  darwin-arm64|darwin-x64|linux-x64|win32-x64) ;;
+  *) fail "--platform must be one of darwin-arm64, darwin-x64, linux-x64, win32-x64 (got: ${PLATFORM})" ;;
 esac
 
 PLATFORM_OS="${PLATFORM%%-*}"
@@ -100,6 +117,12 @@ NPM_ARCH="$([ "$PLATFORM_ARCH" = "x64" ] && echo "x64" || echo "arm64")"
 case "$HOST_OS" in
   Darwin) HOST_PLATFORM_OS="darwin" ;;
   Linux)  HOST_PLATFORM_OS="linux" ;;
+  # windows-latest GitHub Actions runners execute this script through the
+  # bundled Git Bash, which reports itself as MINGW64_NT-* (or MSYS_NT-*
+  # depending on the Git-for-Windows build) via `uname -s` — not "Windows".
+  # CI always passes --platform explicitly (see host_platform()'s doc note
+  # above), so this branch only matters for the cross-OS guard below.
+  MINGW*|MSYS*|CYGWIN*) HOST_PLATFORM_OS="win32" ;;
   *)      HOST_PLATFORM_OS="unknown" ;;
 esac
 
@@ -118,7 +141,7 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Resolve version + output paths
 # ---------------------------------------------------------------------------
-VERSION="${OPT_VERSION:-$(node -p "require('${WORKSPACE_ROOT}/package.json').version")}"
+VERSION="${OPT_VERSION:-$(node -p "require('$(to_node_path "${WORKSPACE_ROOT}/package.json")').version")}"
 [ -n "$VERSION" ] || fail "could not resolve version (pass --version explicitly)"
 
 OUT_DIR="${OPT_OUT_DIR:-${WORKSPACE_ROOT}/.tmp/host-runtime/out}"
@@ -226,6 +249,16 @@ cp "${SCRIPT_DIR}/service/open-design.service.in" "${STAGE_DIR}/runtime/service/
 cp "${WORKSPACE_ROOT}/deploy/host/install.sh" "${STAGE_DIR}/install.sh"
 chmod +x "${STAGE_DIR}/install.sh"
 
+# win32-x64 also gets a self-contained copy of install.ps1 (its --update
+# entrypoint is `powershell -File <current>/install.ps1 -Update`, mirroring
+# install.sh's own bundled copy above). The unconditional install.sh copy
+# above stays too — harmless unused weight on a Windows tarball, kept
+# unconditional deliberately so this step doesn't need a platform branch for
+# the darwin/linux case.
+if [ "$PLATFORM" = "win32-x64" ]; then
+  cp "${WORKSPACE_ROOT}/deploy/host/install.ps1" "${STAGE_DIR}/install.ps1"
+fi
+
 printf '%s\n' "$VERSION" > "${STAGE_DIR}/VERSION"
 
 # ---------------------------------------------------------------------------
@@ -252,7 +285,7 @@ log "writing manifest.sha256"
 # 9. release.json fragment (per-platform). The release workflow merges every
 #    platform's fragment into one release-level release.json asset.
 # ---------------------------------------------------------------------------
-NODE_ENGINE="$(node -p "require('${WORKSPACE_ROOT}/apps/daemon/package.json').engines.node")"
+NODE_ENGINE="$(node -p "require('$(to_node_path "${WORKSPACE_ROOT}/apps/daemon/package.json")').engines.node")"
 BUILT_AT="$(node -p "new Date().toISOString()")"
 cat > "${STAGE_DIR}/release.json" <<JSON
 {

@@ -30,7 +30,7 @@ if (!version || !tag || !repo) {
   process.exit(2);
 }
 
-const TARBALL_RE = /^open-design-runtime-.+-(darwin-arm64|darwin-x64|linux-x64)\.tar\.gz$/;
+const TARBALL_RE = /^open-design-runtime-.+-(darwin-arm64|darwin-x64|linux-x64|win32-x64)\.tar\.gz$/;
 
 const manifest: Record<string, string> = { version, tag };
 let found = 0;

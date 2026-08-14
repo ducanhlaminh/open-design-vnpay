@@ -52,6 +52,8 @@ jobs:
             os: macos-15-intel
           - platform: linux-x64
             os: ubuntu-latest
+          - platform: win32-x64
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -76,6 +78,11 @@ jobs:
 
       - name: Resolve version
         id: version
+        # Explicit `shell: bash` -- GitHub's default shell for `run:` steps
+        # on Windows runners is pwsh, which does not understand `set -euo
+        # pipefail`. windows-latest ships Git Bash, so this is a no-op on
+        # macos/ubuntu (already the default there) and the fix on Windows.
+        shell: bash
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
@@ -83,6 +90,7 @@ jobs:
           echo "resolved version=$version"
 
       - name: Build host runtime tarball
+        shell: bash
         run: |
           set -euo pipefail
           bash scripts/host-runtime/build-runtime.sh \
@@ -100,9 +108,82 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
+  smoke-test-windows:
+    name: Smoke test install.ps1
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Download win32-x64 tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: host-runtime-win32-x64
+          path: ${{ runner.temp }}\out
+
+      - name: Resolve archive path
+        id: archive
+        shell: pwsh
+        run: |
+          $tarball = Get-ChildItem -Path "${{ runner.temp }}\out" -Filter *.tar.gz | Select-Object -First 1
+          if (-not $tarball) { Write-Error "no .tar.gz found in ${{ runner.temp }}\out"; exit 1 }
+          "path=$($tarball.FullName)" >> $env:GITHUB_OUTPUT
+
+      # Mirrors the darwin/ubuntu install.sh --archive local --no-start smoke
+      # test aspiration from wp6-installer.md:60 (never actually implemented
+      # for those platforms either -- this is the first real smoke-test job
+      # in this workflow). -NoStart per the windows-native-install spec's own
+      # Tests section: writes config.env + registers the ONLOGON scheduled
+      # task, but skips the live start/health-check loop.
+      - name: Run install.ps1 -Archive <local> -NoStart
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\deploy\host\install.ps1" -Archive "${{ steps.archive.outputs.path }}" -NoStart
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
+
+      - name: Verify install artifacts
+        shell: pwsh
+        run: |
+          $odHome = Join-Path $env:USERPROFILE ".open-design"
+          $current = Join-Path $odHome "current"
+          $configEnv = Join-Path $odHome "config.env"
+
+          if (-not (Test-Path $current)) { throw "missing $current" }
+          $item = Get-Item $current
+          if ($item.LinkType -ne "Junction") { throw "$current is not a Junction (LinkType: $($item.LinkType))" }
+
+          if (-not (Test-Path $configEnv)) { throw "missing $configEnv" }
+
+          $task = Get-ScheduledTask -TaskName "OpenDesignDaemon" -ErrorAction SilentlyContinue
+          if (-not $task) { throw "OpenDesignDaemon scheduled task was not registered" }
+
+          Write-Host "[ok] current is a Junction -> $($item.Target)"
+          Write-Host "[ok] config.env present"
+          Write-Host "[ok] OpenDesignDaemon scheduled task registered (state: $($task.State))"
+
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          # try/catch, not `2>$null` alone -- pwsh 7's
+          # $PSNativeCommandUseErrorActionPreference turns a native command's
+          # non-zero exit (schtasks /Delete on a task that was never created,
+          # e.g. an earlier step failed first) into a terminating error even
+          # with stderr redirected.
+          try { schtasks /Delete /TN "OpenDesignDaemon" /F 2>$null } catch {}
+          Remove-Item -Recurse -Force "$env:USERPROFILE\.open-design" -ErrorAction SilentlyContinue
+
   publish:
     name: Publish GitHub Release
     needs: build
+    # Manual workflow_dispatch runs (used to smoke-test a branch before it's
+    # merged/tagged) build + smoke-test only -- they must never cut a real
+    # public GitHub Release out of unmerged/experimental code. Only the tag
+    # push and `preview` branch push triggers actually publish.
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
