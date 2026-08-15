@@ -522,6 +522,13 @@ write_config_env() {
     # skills. `current` is a symlink re-pointed on every --update, so this
     # string keeps resolving correctly across releases without rewriting.
     echo "OD_RESOURCE_ROOT=${OD_HOME}/current/resources/open-design"
+    # Without this, apps/daemon/src/app-version.ts falls back to the nearest
+    # package.json on disk (apps/daemon/package.json), which is a different,
+    # not-kept-in-sync file from the one this release's VERSION was cut from
+    # -- GET /api/update/status's `currentVersion` would then never match the
+    # version the update just installed, so it never sees the update as
+    # applied and the UI banner never clears.
+    echo "OD_APP_VERSION=${VERSION}"
     [ -n "$media_url" ] && echo "MEDIA_URL=${media_url}"
     [ -n "$media_app_id" ] && echo "MEDIA_APP_ID=${media_app_id}"
     [ -n "$media_user_id" ] && echo "MEDIA_USER_ID=${media_user_id}"

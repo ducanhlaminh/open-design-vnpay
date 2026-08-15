@@ -696,6 +696,13 @@ function Write-ConfigEnv {
   # explicitly (resolveDaemonResourceRoot() would otherwise fall back to a
   # path that does not exist in this layout).
   $lines.Add("OD_RESOURCE_ROOT=$OdHome\current\resources\open-design")
+  # Without this, apps/daemon/src/app-version.ts falls back to the nearest
+  # package.json on disk (apps/daemon/package.json), a different,
+  # not-kept-in-sync file from the one this release's VERSION was cut from
+  # -- GET /api/update/status's `currentVersion` would then never match the
+  # version an update just installed, so it never sees the update as
+  # applied and the UI banner never clears.
+  $lines.Add("OD_APP_VERSION=$Version")
   if ($mediaUrl) { $lines.Add("MEDIA_URL=$mediaUrl") }
   if ($mediaAppId) { $lines.Add("MEDIA_APP_ID=$mediaAppId") }
   if ($mediaUserId) { $lines.Add("MEDIA_USER_ID=$mediaUserId") }
