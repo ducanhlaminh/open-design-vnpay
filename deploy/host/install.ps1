@@ -739,39 +739,35 @@ function Set-CurrentPointer {
 
 function Register-OdTask {
   $cliPath = Join-Path $OdHome "current\apps\daemon\dist\cli.js"
-  # Per-user, no admin required (/RL LIMITED), fires on next logon --
+  # Per-user, no admin required (RunLevel Limited), fires on next logon --
   # equivalent role to a LaunchAgent/systemd --user unit. Deliberately NOT
   # sc.exe create (needs admin) and NOT NSSM (extra dependency).
   #
+  # Uses the ScheduledTasks module cmdlets rather than schtasks.exe: the
+  # daemon's command line embeds two quoted paths back to back
+  # ("<node.exe>" "<cli.js>" --no-open), and building that as one /TR
+  # string for schtasks.exe hit a real, reproducible native-argument-
+  # marshalling bug on Windows PowerShell 5.1 (confirmed on a real
+  # machine -- schtasks received a truncated/malformed command and
+  # rejected it). -Execute/-Argument here are separate cmdlet parameters,
+  # so neither needs manual quoting or is subject to that bug.
+  #
   # Best-effort, NOT fatal: confirmed on a real machine that some
   # corporate-managed Windows installs block Task Scheduler for standard
-  # users via local/domain policy even at /RL LIMITED ("ERROR: Access is
-  # denied."). The rest of the install never depends on this task --
-  # Start-OdService below launches the daemon directly via Start-Process,
-  # not through this task. Losing auto-start-on-next-logon is a real but
-  # non-blocking degradation, not a reason to throw away an otherwise-good
-  # install.
-  # Built via plain string concatenation with literal quote characters, not
-  # backtick-escaping inside one interpolated string -- the latter is a
-  # known-fragile pattern for native-command args on Windows PowerShell 5.1
-  # when the value itself embeds nested quoted paths (here: two paths, one
-  # of which typically contains a space, e.g. "C:\Program Files\...").
-  $trValue = '"' + $NodeBin + '" "' + $cliPath + '" --no-open'
+  # users via local/domain policy. The rest of the install never depends on
+  # this task -- Start-OdService below launches the daemon directly via
+  # Start-Process, not through this task. Losing auto-start-on-next-logon is
+  # a real but non-blocking degradation, not a reason to throw away an
+  # otherwise-good install.
   try {
-    # 2>$null -- matches the /Delete call below. Without it, schtasks'
-    # stderr surfaces as an uncaught PowerShell error (this call is the one
-    # exception in the file that was missing this), defeating the
-    # try/catch below meant to make this best-effort/non-fatal.
-    & schtasks.exe /Create /SC ONLOGON /RL LIMITED /F /TN $TaskName /TR $trValue 2>$null | Out-Null
+    $action = New-ScheduledTaskAction -Execute $NodeBin -Argument "`"$cliPath`" --no-open"
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -RunLevel Limited -Force -ErrorAction Stop | Out-Null
+    $script:TaskRegistered = $true
   } catch {
-    $global:LASTEXITCODE = 1
-  }
-  if ($LASTEXITCODE -ne 0) {
     $script:TaskRegistered = $false
-    Write-Warn "could not register the auto-start task '$TaskName' (schtasks exit $LASTEXITCODE) -- likely blocked by local policy on this machine. Open Design will still start now; it just won't auto-start after your next login. To start it manually: `"$NodeBin`" `"$cliPath`" --no-open"
-    return
+    Write-Warn "could not register the auto-start task '$TaskName' ($($_.Exception.Message)) -- likely blocked by local policy on this machine. Open Design will still start now; it just won't auto-start after your next login. To start it manually: `"$NodeBin`" `"$cliPath`" --no-open"
   }
-  $script:TaskRegistered = $true
 }
 
 function Step3-ExtractAndConfigure {
