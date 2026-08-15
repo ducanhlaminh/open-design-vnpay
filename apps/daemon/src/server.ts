@@ -5539,6 +5539,24 @@ export async function startServer({
         lastUpdateError = formatUpdateSpawnError(err);
         updateApplyInProgress = false;
       });
+      // A successful update kills THIS process via Stop-OdService before the
+      // child ever exits, so this handler only ever fires on a genuine
+      // failure: the install script ran but exited (crashed, threw, health
+      // check failed with no previous release to roll back to, etc.)
+      // without restarting the daemon. Without this, `updateApplyInProgress`
+      // stayed stuck at `true` forever after any such failure — every later
+      // GET /api/update/status kept reporting `progress: null` with no
+      // error, and every later POST /api/update/apply silently no-opped
+      // with `{started:false, reason:'already-in-progress'}`, until the
+      // daemon itself was manually restarted.
+      child.on('exit', (code, signal) => {
+        updateApplyInProgress = false;
+        if (code !== 0) {
+          lastUpdateError = formatUpdateSpawnError(
+            new Error(`install script exited with code ${code}${signal ? ` (signal ${signal})` : ''} before completing the update — see update.log`),
+          );
+        }
+      });
       child.unref();
 
       res.json({ started: true });
