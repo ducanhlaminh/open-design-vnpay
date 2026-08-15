@@ -215,7 +215,17 @@ if ($Update) {
 # Windows script (deploy/scripts/setup-agent-sandbox-windows.ps1) rather than
 # install.sh's Unicode glyphs, for console-compatibility.
 # ---------------------------------------------------------------------------
-function Write-Phase($msg) { Write-Host ""; Write-Host $msg -ForegroundColor White }
+function Write-Phase($msg) {
+  Write-Host ""
+  Write-Host $msg -ForegroundColor White
+  # Write-Host can be invisible when this script runs non-interactively with
+  # stdout redirected to a file handle rather than a real console -- exactly
+  # how the daemon spawns `-Update` during self-update (see server.ts's
+  # readUpdateProgress, which tails this "N/6 <label>" line from update.log
+  # to drive the UI's progress bar). Duplicate through Console.Out only when
+  # redirected, so an interactive `irm | iex` run doesn't see it twice.
+  if ([Console]::IsOutputRedirected) { [Console]::Out.WriteLine($msg) }
+}
 function Write-Step($msg)  { Write-Host "  > $msg" -ForegroundColor DarkGray }
 function Write-Ok($msg)    { Write-Host "  [ok] $msg" -ForegroundColor Green }
 function Write-Warn($msg)  { Write-Host "  [!] $msg" -ForegroundColor Yellow }
