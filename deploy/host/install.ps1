@@ -197,6 +197,7 @@ $script:ReleaseDir = ""
 $script:PrevCurrent = ""
 $script:ResolvedPort = ""
 $script:EnvFileVars = @()
+$script:ProgressLogPath = $null
 $script:TempDirs = @()
 $script:TaskRegistered = $false
 
@@ -218,13 +219,38 @@ if ($Update) {
 function Write-Phase($msg) {
   Write-Host ""
   Write-Host $msg -ForegroundColor White
-  # Write-Host can be invisible when this script runs non-interactively with
-  # stdout redirected to a file handle rather than a real console -- exactly
-  # how the daemon spawns `-Update` during self-update (see server.ts's
-  # readUpdateProgress, which tails this "N/6 <label>" line from update.log
-  # to drive the UI's progress bar). Duplicate through Console.Out only when
-  # redirected, so an interactive `irm | iex` run doesn't see it twice.
-  if ([Console]::IsOutputRedirected) { [Console]::Out.WriteLine($msg) }
+  # Write-Host is invisible to the daemon's self-update spawn (detached, no
+  # console at all -- confirmed on a real machine: update.log stayed
+  # completely empty even after a `[Console]::Out`-based attempt at this).
+  # Rather than fight PowerShell's console/stdout-redirection abstraction,
+  # append straight to update.log's real path -- ordinary file I/O, so it
+  # doesn't depend on how (or whether) this process's stdout is wired up.
+  # Entirely wrapped in try/catch: this script has global
+  # $ErrorActionPreference = "Stop", so an uncaught exception in a helper
+  # called from every single step would silently abort the WHOLE
+  # install/update before it does anything -- far worse than just not
+  # showing a progress bar. Progress reporting must never be able to do that.
+  try {
+    if (-not $script:ProgressLogPath) {
+      $existingDataDir = $null
+      $cfgPath = Join-Path $OdHome "config.env"
+      if (Test-Path $cfgPath) {
+        $line = Get-Content $cfgPath | Where-Object { $_ -match '^OD_DATA_DIR=' } | Select-Object -Last 1
+        if ($line) { $existingDataDir = ($line -split '=', 2)[1] }
+      }
+      # Mirrors Resolve-Cfg's priority, without depending on that function
+      # (or $ResolvedDataDir from Write-ConfigEnv, which hasn't run yet for
+      # phases 1/6-2/6) -- self-contained since this must work from the very
+      # first phase call.
+      $dataDir = if ($DataDir) { $DataDir } elseif ($existingDataDir) { $existingDataDir } else { $DefaultDataDir }
+      New-Item -ItemType Directory -Force -Path $dataDir -ErrorAction SilentlyContinue | Out-Null
+      $script:ProgressLogPath = Join-Path $dataDir "update.log"
+    }
+    Add-Content -Path $script:ProgressLogPath -Value $msg -ErrorAction SilentlyContinue
+  } catch {
+    # Best-effort only -- never let a progress-logging failure affect the
+    # actual install/update.
+  }
 }
 function Write-Step($msg)  { Write-Host "  > $msg" -ForegroundColor DarkGray }
 function Write-Ok($msg)    { Write-Host "  [ok] $msg" -ForegroundColor Green }
