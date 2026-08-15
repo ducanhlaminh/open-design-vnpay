@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { de } from './locales/de';
 import { en } from './locales/en';
+import { vi } from './locales/vi';
 import { id } from './locales/id';
 import { esES } from './locales/es-ES';
 import { fa } from './locales/fa';
@@ -38,6 +39,7 @@ type DictKey = keyof Dict;
 
 const DICTS: Record<Locale, Dict> = {
   'en': en,
+  'vi': vi,
   'id': id,
   'de': de,
   'zh-CN': zhCN,
@@ -112,7 +114,7 @@ function readDesktopHostOsLocale(): string | undefined {
 // Exported so tests can pin the priority chain without spinning up the
 // full I18nProvider.
 export function detectInitialLocale(): Locale {
-  if (typeof window === 'undefined') return 'en';
+  if (typeof window === 'undefined') return 'vi';
   let storedLocale: string | null = null;
   let storedSource: string | null = null;
   try {
@@ -136,7 +138,10 @@ export function detectInitialLocale(): Locale {
   const detected = resolveSystemLocale(
     navigator.languages?.length ? navigator.languages : [navigator.language],
   );
-  return detected ?? 'en';
+  // This fork's UI is Vietnamese-first (VNPAY, internal) — fall back to 'vi'
+  // rather than 'en' when the OS/browser locale isn't recognized, instead of
+  // defaulting a Vietnamese product to English for its actual audience.
+  return detected ?? 'vi';
 }
 
 interface I18nContextValue {

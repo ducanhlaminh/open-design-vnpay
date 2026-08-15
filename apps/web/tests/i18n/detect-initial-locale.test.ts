@@ -113,10 +113,14 @@ describe('detectInitialLocale priority chain', () => {
     expect(detectInitialLocale()).toBe('pt-BR');
   });
 
-  it('falls back to en when nothing else is available', () => {
+  it('falls back to vi (this fork is Vietnamese-first) when nothing else is available', () => {
     clearHost();
-    setNavigatorLanguages([]);
+    // An unsupported locale, not an empty array: setNavigatorLanguages([])
+    // makes the test helper's navigator.language default to 'en', which is
+    // itself a supported locale and would short-circuit resolveSystemLocale
+    // before ever reaching the final fallback this test means to exercise.
+    setNavigatorLanguages(['xx-YY']);
 
-    expect(detectInitialLocale()).toBe('en');
+    expect(detectInitialLocale()).toBe('vi');
   });
 });
