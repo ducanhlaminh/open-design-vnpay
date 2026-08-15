@@ -3170,6 +3170,34 @@ export function formatUpdateSpawnError(
   return { message: String((err as { message?: unknown })?.message ?? err), at };
 }
 
+// Windows PowerShell 5.1 has a reproducible failure mode when Node launches
+// it with `detached: true` and then unrefs it: the process starts and exits 0,
+// but never evaluates its -Command/-File body. `windowsHide` is independent
+// and safe (the non-detached hidden repro completed normally), so keep the
+// window hidden without detaching on Windows. POSIX keeps the established
+// detached updater behavior.
+export function resolveUpdateSpawnOptions(
+  platform: NodeJS.Platform = process.platform,
+): { detached: boolean; windowsHide?: boolean } {
+  return platform === 'win32'
+    ? { detached: false, windowsHide: true }
+    : { detached: true };
+}
+
+// A successful updater stops/restarts this daemon before its child can emit
+// `exit` here. Therefore any observed exit — including code 0 — is premature
+// and must be surfaced. This also covers the Windows failure where detached
+// PowerShell silently exited 0 without executing the script body.
+export function formatPrematureUpdateExitError(
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): Error {
+  const outcome = code === null ? 'without an exit code' : `with code ${code}`;
+  return new Error(
+    `install script exited ${outcome}${signal ? ` (signal ${signal})` : ''} before completing the update — see update.log`,
+  );
+}
+
 // POST /api/update/apply redirects the child's stdout/stderr into this file
 // (see the spawn call below) instead of `stdio: 'ignore'`, so GET
 // /api/update/status can report coarse progress while this daemon process
@@ -5511,13 +5539,10 @@ export async function startServer({
         // Progress just won't be reported this run — not fatal to the update itself.
         updateLogFd = 'ignore';
       }
+      const spawnOptions = resolveUpdateSpawnOptions(process.platform);
       const child = spawn(resolvedCmd, args, {
-        detached: true,
+        ...spawnOptions,
         stdio: ['ignore', updateLogFd, updateLogFd],
-        // Without this, Node can flash a console window on Windows when
-        // spawning a non-shell child outside a terminal (e.g. launched
-        // from the tray/service, not an interactive console).
-        ...(process.platform === 'win32' ? { windowsHide: true } : {}),
       });
       // The child has its own duplicated fd now — release the parent's copy
       // so a sequence of apply attempts over this process's lifetime can't
@@ -5540,24 +5565,18 @@ export async function startServer({
         updateApplyInProgress = false;
       });
       // A successful update kills THIS process via Stop-OdService before the
-      // child ever exits, so this handler only ever fires on a genuine
-      // failure: the install script ran but exited (crashed, threw, health
-      // check failed with no previous release to roll back to, etc.)
-      // without restarting the daemon. Without this, `updateApplyInProgress`
-      // stayed stuck at `true` forever after any such failure — every later
-      // GET /api/update/status kept reporting `progress: null` with no
-      // error, and every later POST /api/update/apply silently no-opped
-      // with `{started:false, reason:'already-in-progress'}`, until the
-      // daemon itself was manually restarted.
+      // child ever exits. If this handler runs, the original daemon is still
+      // alive, so even code 0 is a failed/incomplete update. This distinction
+      // is required on Windows, where detached PowerShell was observed to
+      // silently exit 0 without evaluating the script body.
       child.on('exit', (code, signal) => {
         updateApplyInProgress = false;
-        if (code !== 0) {
-          lastUpdateError = formatUpdateSpawnError(
-            new Error(`install script exited with code ${code}${signal ? ` (signal ${signal})` : ''} before completing the update — see update.log`),
-          );
-        }
+        lastUpdateError = formatUpdateSpawnError(formatPrematureUpdateExitError(code, signal));
       });
-      child.unref();
+      // Only the POSIX updater is detached. Calling unref on the Windows
+      // PowerShell child was part of the live failure shape and serves no
+      // purpose once that child intentionally remains attached.
+      if (spawnOptions.detached) child.unref();
 
       res.json({ started: true });
     } catch (error) {

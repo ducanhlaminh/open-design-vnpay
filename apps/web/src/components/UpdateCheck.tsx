@@ -27,6 +27,33 @@ interface UpdateStatusResponse {
   progress: { step: number; totalSteps: number; label: string } | null;
 }
 
+type UpdateApplyResponse = {
+  started?: unknown;
+  reason?: unknown;
+  error?: unknown;
+};
+
+// Turn the apply endpoint's response into an immediate user-facing failure.
+// Previously the UI ignored `{started:false}` and every HTTP error, leaving
+// the button disabled until the generic 90-second timeout even though the
+// daemon had already explained why it could not start.
+export function updateApplyFailureMessage(responseOk: boolean, body: unknown): string | null {
+  const result = body && typeof body === 'object' ? (body as UpdateApplyResponse) : null;
+  if (responseOk && result?.started === true) return null;
+
+  if (typeof result?.error === 'string' && result.error.trim()) return result.error;
+  if (result?.reason === 'runs-active') {
+    return 'Đang có tác vụ AI chạy. Hãy đợi tác vụ hoàn tất rồi cập nhật lại.';
+  }
+  if (result?.reason === 'already-in-progress') {
+    return 'Một lần cập nhật khác đang được thực hiện.';
+  }
+  if (typeof result?.reason === 'string' && result.reason.trim()) return result.reason;
+  return responseOk
+    ? 'Daemon không xác nhận đã bắt đầu cập nhật.'
+    : 'Không thể bắt đầu cập nhật.';
+}
+
 // Quiet background cadence when nothing is happening — 7 minutes is a
 // reasonable balance between "reasonably prompt" and not hammering the
 // daemon (GET /api/update/status itself is cheap; the daemon-side GitHub
@@ -115,7 +142,15 @@ export function UpdateCheck() {
     setApplyOutcomeError(null);
     applyStartedAtRef.current = Date.now();
     try {
-      await fetch('/api/update/apply', { method: 'POST' });
+      const res = await fetch('/api/update/apply', { method: 'POST' });
+      const body = await res.json().catch(() => null);
+      const failure = updateApplyFailureMessage(res.ok, body);
+      if (failure) {
+        setApplyOutcomeError(failure);
+        setApplying(false);
+        applyStartedAtRef.current = null;
+        return;
+      }
     } catch {
       // Fire-and-forget — the fast poll above notices the outcome (or
       // times out) regardless of whether this POST itself reached the

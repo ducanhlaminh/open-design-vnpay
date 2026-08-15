@@ -11,7 +11,12 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { formatUpdateSpawnError, resolveUpdateCommand } from '../src/server.js';
+import {
+  formatPrematureUpdateExitError,
+  formatUpdateSpawnError,
+  resolveUpdateCommand,
+  resolveUpdateSpawnOptions,
+} from '../src/server.js';
 
 describe('resolveUpdateCommand', () => {
   const odHome = '/Users/alice/.open-design';
@@ -75,5 +80,31 @@ describe('formatUpdateSpawnError', () => {
   it('defaults `at` to an ISO timestamp when not given', () => {
     const result = formatUpdateSpawnError(new Error('x'));
     expect(new Date(result.at).toISOString()).toBe(result.at);
+  });
+});
+
+describe('resolveUpdateSpawnOptions', () => {
+  it('keeps the Windows PowerShell child attached while hiding its window', () => {
+    // Live Windows repro: detached+unref PowerShell children exited 0 but
+    // never executed their -Command body. Both non-detached variants ran,
+    // regardless of windowsHide.
+    expect(resolveUpdateSpawnOptions('win32')).toEqual({
+      detached: false,
+      windowsHide: true,
+    });
+  });
+
+  it.each(['darwin', 'linux'] as const)('keeps the existing detached behavior on %s', (platform) => {
+    expect(resolveUpdateSpawnOptions(platform)).toEqual({ detached: true });
+  });
+});
+
+describe('formatPrematureUpdateExitError', () => {
+  it('treats exit code 0 as a failure when the original daemon is still alive', () => {
+    expect(formatPrematureUpdateExitError(0, null).message).toContain('code 0');
+  });
+
+  it('includes a termination signal when present', () => {
+    expect(formatPrematureUpdateExitError(null, 'SIGTERM').message).toContain('signal SIGTERM');
   });
 });
