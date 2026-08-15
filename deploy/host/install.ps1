@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Open Design -- host runtime one-command installer for Windows.
 
@@ -386,7 +386,7 @@ function Test-Checksum {
 }
 
 function Step1-VerifyPackage {
-  Write-Phase "1/6 Kiểm tra gói cài đặt"
+  Write-Phase "1/6 Kiem tra goi cai dat"
   Resolve-Archive
   Write-Step "Platform: $Platform"
   # Checksum BEFORE any extraction -- mandatory, same order as install.sh.
@@ -461,7 +461,7 @@ function Install-PrivateNode {
 }
 
 function Step2-EnsureNode {
-  Write-Phase "2/6 Kiểm tra Node.js"
+  Write-Phase "2/6 Kiem tra Node.js"
   if (Test-NodeSatisfiesEngine) {
     $script:NodeBin = (Get-Command node).Source
     Write-Ok "System Node.js satisfies engines (~$RequiredNodeMajor): $NodeBin"
@@ -614,12 +614,12 @@ function Write-ConfigEnv {
   icacls $configPath /inheritance:r /grant:r "$env:USERDOMAIN\$($env:USERNAME):F" | Out-Null
 
   if ((-not $mediaUrl) -and (-not $identityUrl)) {
-    Write-Warn "No Media/Identity endpoints configured — KG sync sẽ tắt (dùng -EnvFile hoặc -MediaUrl/.../-IdentityUrl để bật)."
+    Write-Warn "No Media/Identity endpoints configured -- KG sync se tat (dung -EnvFile hoac -MediaUrl/.../-IdentityUrl de bat)."
   }
   if ((-not $googleClientId) -and (-not $googleClientSecret) -and (-not $sessionSecret)) {
-    Write-Warn "No Google login configured — /login sẽ tắt (dùng -EnvFile hoặc -GoogleClientId/-GoogleClientSecret/-SessionSecret để bật). KG sync push/pull vẫn chạy được nhưng attribution rơi về anonymous/installation-id."
+    Write-Warn "No Google login configured -- /login se tat (dung -EnvFile hoac -GoogleClientId/-GoogleClientSecret/-SessionSecret de bat). KG sync push/pull van chay duoc nhung attribution roi ve anonymous/installation-id."
   } elseif ((-not $googleClientId) -or (-not $googleClientSecret) -or (-not $sessionSecret)) {
-    Write-Warn "Google login config không đủ 3 biến (GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/SESSION_SECRET) — /login sẽ tắt cho tới khi cả 3 đều có."
+    Write-Warn "Google login config khong du 3 bien (GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/SESSION_SECRET) -- /login se tat cho toi khi ca 3 deu co."
   }
   Write-Ok "Wrote $configPath (ACL-locked to $env:USERNAME)"
 }
@@ -666,7 +666,7 @@ function Register-OdTask {
 }
 
 function Step3-ExtractAndConfigure {
-  Write-Phase "3/6 Giải nén & cài đặt"
+  Write-Phase "3/6 Giai nen & cai dat"
   $currentLink = Join-Path $OdHome "current"
   $currentItem = Get-Item -LiteralPath $currentLink -Force -ErrorAction SilentlyContinue
   if ($currentItem -and $currentItem.LinkType) {
@@ -685,7 +685,7 @@ function Step3-ExtractAndConfigure {
 # Step 4/6 -- service registration status (mirrors install.sh:507-521)
 # ---------------------------------------------------------------------------
 function Step4-ConfigureService {
-  Write-Phase "4/6 Cấu hình dịch vụ"
+  Write-Phase "4/6 Cau hinh dich vu"
   if ($NoStart) {
     Write-Step "-NoStart: service files written but not enabled"
     return
@@ -828,7 +828,7 @@ function Invoke-UninstallCommand {
 
 function Invoke-Rollback {
   if ($PrevCurrent -and ($PrevCurrent -ne $ReleaseDir)) {
-    Write-Warn "Health check failed — rolling back to $(Split-Path $PrevCurrent -Leaf)"
+    Write-Warn "Health check failed -- rolling back to $(Split-Path $PrevCurrent -Leaf)"
     $currentLink = Join-Path $OdHome "current"
     if (Test-Path $currentLink) { try { cmd /c rmdir "$currentLink" 2>$null | Out-Null } catch {} }
     New-Item -ItemType Junction -Path $currentLink -Target $PrevCurrent -Force | Out-Null
@@ -837,7 +837,7 @@ function Invoke-Rollback {
     if (Wait-OdHealth -PortNum $ResolvedPort -Timeout 30) {
       Write-Warn "Rolled back successfully. Release $Version was NOT activated."
     } else {
-      Write-ErrorMsg "Rollback also failed the health check — manual intervention required."
+      Write-ErrorMsg "Rollback also failed the health check -- manual intervention required."
     }
   } else {
     Stop-OdService
@@ -848,7 +848,7 @@ function Invoke-Rollback {
 }
 
 function Step5-StartAndHealthCheck {
-  Write-Phase "5/6 Khởi động & kiểm tra sức khỏe"
+  Write-Phase "5/6 Khoi dong & kiem tra suc khoe"
   if ($NoStart) {
     Write-Step "-NoStart: skipping service start and health check"
     return
@@ -900,7 +900,7 @@ function Test-CodexLogin {
 }
 
 function Install-CodexCli {
-  Write-Warn "codex CLI not found on PATH — installing via the native Windows installer"
+  Write-Warn "codex CLI not found on PATH -- installing via the native Windows installer"
   # Verified at implementation time: chatgpt.com/codex/install.ps1 redirects
   # to releases.openai.com/codex/install.ps1 (fetched and inspected
   # directly). Version pin is $env:CODEX_RELEASE (not a positional arg, and
@@ -912,19 +912,19 @@ function Install-CodexCli {
   try {
     Invoke-WebRequest -Uri "https://chatgpt.com/codex/install.ps1" -OutFile $installerFile -UseBasicParsing
   } catch {
-    Write-Warn "Codex CLI install failed — install manually: irm https://chatgpt.com/codex/install.ps1 | iex"
+    Write-Warn "Codex CLI install failed -- install manually: irm https://chatgpt.com/codex/install.ps1 | iex"
     return
   }
   $shellExe = (Get-Process -Id $PID).Path
   $env:CODEX_NON_INTERACTIVE = "true"
   & $shellExe -NoProfile -ExecutionPolicy Bypass -File $installerFile
   if ($LASTEXITCODE -ne 0) {
-    Write-Warn "Codex CLI install failed — install manually: irm https://chatgpt.com/codex/install.ps1 | iex"
+    Write-Warn "Codex CLI install failed -- install manually: irm https://chatgpt.com/codex/install.ps1 | iex"
   }
 }
 
 function Install-ClaudeCli {
-  Write-Warn "claude CLI not found on PATH — installing via the native Windows installer"
+  Write-Warn "claude CLI not found on PATH -- installing via the native Windows installer"
   # Verified at implementation time: Anthropic DOES publish a native Windows
   # PowerShell installer at https://claude.ai/install.ps1 (fetched and
   # inspected directly -- not assumed). It takes one optional positional
@@ -938,7 +938,7 @@ function Install-ClaudeCli {
   try {
     Invoke-WebRequest -Uri "https://claude.ai/install.ps1" -OutFile $installerFile -UseBasicParsing
   } catch {
-    Write-Warn "Claude CLI install failed — install manually: irm https://claude.ai/install.ps1 | iex"
+    Write-Warn "Claude CLI install failed -- install manually: irm https://claude.ai/install.ps1 | iex"
     return
   }
 
@@ -957,17 +957,17 @@ function Install-ClaudeCli {
 
   if ((-not $pin) -or (-not $pinnedOk)) {
     if ($pin -and -not $pinnedOk) {
-      Write-Warn "Pinned Claude CLI install failed or is unsupported by the installer — falling back to latest"
+      Write-Warn "Pinned Claude CLI install failed or is unsupported by the installer -- falling back to latest"
     }
     & $shellExe -NoProfile -ExecutionPolicy Bypass -File $installerFile
     if ($LASTEXITCODE -ne 0) {
-      Write-Warn "Claude CLI install failed — install manually: irm https://claude.ai/install.ps1 | iex"
+      Write-Warn "Claude CLI install failed -- install manually: irm https://claude.ai/install.ps1 | iex"
     }
   }
 }
 
 function Step6-ClaudeAndSummary {
-  Write-Phase "6/6 Kiểm tra Claude & Codex CLI & hoàn tất"
+  Write-Phase "6/6 Kiem tra Claude & Codex CLI & hoan tat"
   $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
   if ($claudeCmd) {
     Write-Ok "claude CLI found on PATH: $($claudeCmd.Source)"
@@ -995,7 +995,7 @@ function Step6-ClaudeAndSummary {
   }
 
   Write-Host ""
-  Write-Host "  ── Cài đặt hoàn tất ──────────────────────────────" -ForegroundColor Green
+  Write-Host " -- Cai dat hoan tat ------------------------------" -ForegroundColor Green
   Write-Host ""
   if (-not $NoStart) {
     Write-Host "  URL:      http://127.0.0.1:$ResolvedPort"
@@ -1011,11 +1011,11 @@ function Step6-ClaudeAndSummary {
   }
   Write-Host ""
   if (-not $loginOk) {
-    Write-Host '  còn một bước: chạy `claude /login` để đăng nhập Claude Code.' -ForegroundColor Yellow
+    Write-Host '  con mot buoc: chay `claude /login` de dang nhap Claude Code.' -ForegroundColor Yellow
     Write-Host ""
   }
   if (-not $codexLoginOk) {
-    Write-Host '  còn một bước: chạy `codex login` để đăng nhập Codex CLI.' -ForegroundColor Yellow
+    Write-Host '  con mot buoc: chay `codex login` de dang nhap Codex CLI.' -ForegroundColor Yellow
     Write-Host ""
   }
   Write-Host "  Update:    powershell -File $(Join-Path $OdHome 'current\install.ps1') -Update"
