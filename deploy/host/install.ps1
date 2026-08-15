@@ -751,8 +751,18 @@ function Register-OdTask {
   # not through this task. Losing auto-start-on-next-logon is a real but
   # non-blocking degradation, not a reason to throw away an otherwise-good
   # install.
+  # Built via plain string concatenation with literal quote characters, not
+  # backtick-escaping inside one interpolated string -- the latter is a
+  # known-fragile pattern for native-command args on Windows PowerShell 5.1
+  # when the value itself embeds nested quoted paths (here: two paths, one
+  # of which typically contains a space, e.g. "C:\Program Files\...").
+  $trValue = '"' + $NodeBin + '" "' + $cliPath + '" --no-open'
   try {
-    & schtasks.exe /Create /SC ONLOGON /RL LIMITED /F /TN $TaskName /TR "`"$NodeBin`" `"$cliPath`" --no-open" | Out-Null
+    # 2>$null -- matches the /Delete call below. Without it, schtasks'
+    # stderr surfaces as an uncaught PowerShell error (this call is the one
+    # exception in the file that was missing this), defeating the
+    # try/catch below meant to make this best-effort/non-fatal.
+    & schtasks.exe /Create /SC ONLOGON /RL LIMITED /F /TN $TaskName /TR $trValue 2>$null | Out-Null
   } catch {
     $global:LASTEXITCODE = 1
   }
