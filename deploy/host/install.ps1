@@ -562,7 +562,23 @@ function Expand-Release {
   $releasesDir = Join-Path $OdHome "releases"
   New-Item -ItemType Directory -Force -Path $releasesDir | Out-Null
   $script:ReleaseDir = Join-Path $releasesDir $Version
-  if (Test-Path $ReleaseDir) { Remove-Item -Recurse -Force $ReleaseDir }
+  if (Test-Path $ReleaseDir) {
+    try {
+      Remove-Item -Recurse -Force $ReleaseDir -ErrorAction Stop
+    } catch {
+      # Re-installing the exact version this daemon is already running from
+      # (this repo's `preview` channel reuses one version tag across many
+      # pushes -- see release-host-runtime.yml) locks native binaries like
+      # better_sqlite3.node in the live process; unlike POSIX, Windows
+      # refuses to delete an open file. Stop the service and retry once --
+      # Start-OdService in step 5 restarts on the new release regardless,
+      # so this doesn't add real downtime beyond what the update already does.
+      Write-Step "release dir is locked by the running service -- stopping it first"
+      Stop-OdService
+      Start-Sleep -Seconds 1
+      Remove-Item -Recurse -Force $ReleaseDir
+    }
+  }
   New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
   & tar.exe -xzf $ArchivePath -C $ReleaseDir --strip-components=1
   if ($LASTEXITCODE -ne 0) { Fail "failed to extract $ArchivePath" }
