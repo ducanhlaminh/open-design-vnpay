@@ -6,8 +6,8 @@
 // the repo owner asked for an explicit action instead). `od self-update`
 // (apps/daemon/src/cli.ts) is the CLI mirror of the same two endpoints.
 // Once the daemon comes back up on the new version, the NEXT status poll
-// reports `justUpdated` and this shows a one-time toast so the user knows
-// it happened — that part is unchanged.
+// reports `justUpdated`; reload the page so it immediately picks up the
+// freshly installed web bundle served by that daemon.
 //
 // Vietnamese-only copy on purpose — this fork's UI is Vietnamese and we
 // avoid new i18n keys here (see InfraSetupGate.tsx / ClaudeAccountSwitcher).
@@ -54,6 +54,12 @@ export function updateApplyFailureMessage(responseOk: boolean, body: unknown): s
     : 'Không thể bắt đầu cập nhật.';
 }
 
+export function shouldReloadAfterUpdate(
+  justUpdated: UpdateStatusResponse['justUpdated'],
+): boolean {
+  return justUpdated !== null;
+}
+
 // Quiet background cadence when nothing is happening — 7 minutes is a
 // reasonable balance between "reasonably prompt" and not hammering the
 // daemon (GET /api/update/status itself is cheap; the daemon-side GitHub
@@ -74,7 +80,6 @@ const APPLY_TIMEOUT_MS = 90 * 1000;
 
 export function UpdateCheck() {
   const [status, setStatus] = useState<UpdateStatusResponse | null>(null);
-  const [justUpdatedVersion, setJustUpdatedVersion] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   const [applyOutcomeError, setApplyOutcomeError] = useState<string | null>(null);
   // Wall-clock start of the current apply attempt, for the timeout check
@@ -98,10 +103,10 @@ export function UpdateCheck() {
 
     setStatus(body);
 
-    if (body.justUpdated) {
-      setJustUpdatedVersion(body.justUpdated.version);
+    if (shouldReloadAfterUpdate(body.justUpdated)) {
       setApplying(false);
       applyStartedAtRef.current = null;
+      window.location.reload();
       return;
     }
 
@@ -163,12 +168,6 @@ export function UpdateCheck() {
 
   return (
     <>
-      {justUpdatedVersion ? (
-        <Toast
-          message={`Đã cập nhật lên v${justUpdatedVersion}`}
-          onDismiss={() => setJustUpdatedVersion(null)}
-        />
-      ) : null}
       {applyOutcomeError ? (
         <Toast
           role="alert"

@@ -12,11 +12,18 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  HOST_RUNTIME_RELEASE_CACHE_TTL_MS,
   formatPrematureUpdateExitError,
   formatUpdateSpawnError,
   resolveUpdateCommand,
   resolveUpdateSpawnOptions,
 } from '../src/server.js';
+
+describe('host runtime release cache', () => {
+  it('expires before the UI background poll can remain stale for another cycle', () => {
+    expect(HOST_RUNTIME_RELEASE_CACHE_TTL_MS).toBeLessThanOrEqual(5 * 60 * 1000);
+  });
+});
 
 describe('resolveUpdateCommand', () => {
   const odHome = '/Users/alice/.open-design';

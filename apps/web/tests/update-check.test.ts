@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { updateApplyFailureMessage } from '../src/components/UpdateCheck';
+import { shouldReloadAfterUpdate, updateApplyFailureMessage } from '../src/components/UpdateCheck';
 
 describe('updateApplyFailureMessage', () => {
   it('returns null for a started update', () => {
@@ -27,5 +27,15 @@ describe('updateApplyFailureMessage', () => {
         error: 'powershell not found',
       }),
     ).toBe('powershell not found');
+  });
+});
+
+describe('shouldReloadAfterUpdate', () => {
+  it('reloads when the restarted daemon confirms the installed version', () => {
+    expect(shouldReloadAfterUpdate({ version: '0.8.18', at: '2026-08-15T00:00:00.000Z' })).toBe(true);
+  });
+
+  it('does not reload before an update is confirmed', () => {
+    expect(shouldReloadAfterUpdate(null)).toBe(false);
   });
 });

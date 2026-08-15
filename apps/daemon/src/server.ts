@@ -3041,10 +3041,11 @@ async function readOpenDesignLatestReleaseInfo() {
 // `.github/workflows/release-host-runtime.yml` publishes to.
 const HOST_RUNTIME_GH_REPO = 'ducanhlaminh/open-design-vnpay';
 const HOST_RUNTIME_RELEASE_LATEST_API = `https://api.github.com/repos/${HOST_RUNTIME_GH_REPO}/releases/latest`;
-// Same 60-minute / rate-limit rationale as OPEN_DESIGN_GITHUB_CACHE_TTL_MS
-// above — a burst of browser tabs polling GET /api/update/status on load
-// must not each hit GitHub's unauthenticated rate limit.
-const HOST_RUNTIME_RELEASE_CACHE_TTL_MS = OPEN_DESIGN_GITHUB_CACHE_TTL_MS;
+// Keep this shorter than the UI's seven-minute background poll. A one-hour
+// cache forced users to restart the daemon before a freshly published host
+// runtime became visible. Five minutes still coalesces bursts of browser
+// tabs while allowing the next UI poll to discover the release naturally.
+export const HOST_RUNTIME_RELEASE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 let hostRuntimeLatestReleaseCache = null;
 let hostRuntimeLatestReleaseInflight = null;
