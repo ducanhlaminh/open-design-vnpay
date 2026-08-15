@@ -385,6 +385,79 @@ function Test-Checksum {
   Write-Ok "Checksum verified (sha256)"
 }
 
+# ---------------------------------------------------------------------------
+# Step 0 -- network preflight (mirrors install.sh's preflight_check). Not
+# part of the "N/6" phase numbering -- a connectivity probe, not an install
+# step. Corporate networks sometimes block one of these domains outright;
+# without this, the resulting failure is a bare exception buried mid-
+# download with nothing telling the user (or their IT) which domain is the
+# problem. Only probes domains this particular run will actually touch.
+# ---------------------------------------------------------------------------
+function Test-PreflightProbe {
+  param([string]$Url)
+  # Deliberately does not treat a non-2xx response as unreachable -- e.g.
+  # GitHub's asset CDN 404s on a bare root path with no signed asset path
+  # (verified live), which still proves DNS/TCP/TLS all worked. Only a
+  # connect-level failure (no $_.Exception.Response at all) means
+  # unreachable. Short timeout -- a probe, not a real download.
+  try {
+    Invoke-WebRequest -Uri $Url -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop | Out-Null
+    return $true
+  } catch {
+    if ($_.Exception.Response) { return $true }
+    return $false
+  }
+}
+
+function Invoke-PreflightCheck {
+  Write-Phase "Kiem tra ket noi mang"
+  $requiredOk = $true
+
+  if (-not $Archive -and -not $ReleaseUrl) {
+    if (Test-PreflightProbe "https://github.com") {
+      Write-Ok "github.com"
+    } else {
+      $requiredOk = $false
+      Write-Warn "github.com -- khong ket noi duoc"
+    }
+    if (Test-PreflightProbe "https://release-assets.githubusercontent.com") {
+      Write-Ok "release-assets.githubusercontent.com"
+    } else {
+      $requiredOk = $false
+      Write-Warn "release-assets.githubusercontent.com -- khong ket noi duoc"
+    }
+  }
+
+  if (-not (Test-NodeSatisfiesEngine)) {
+    if (Test-PreflightProbe "https://nodejs.org") {
+      Write-Ok "nodejs.org"
+    } else {
+      Write-Warn "nodejs.org -- khong ket noi duoc (can de tai Node.js rieng -- may chua co Node $RequiredNodeMajor.x)"
+    }
+  }
+
+  if (-not $Update) {
+    if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+      if (Test-PreflightProbe "https://claude.ai") {
+        Write-Ok "claude.ai"
+      } else {
+        Write-Warn "claude.ai -- khong ket noi duoc (se bo qua cai Claude CLI)"
+      }
+    }
+    if (-not (Get-Command codex -ErrorAction SilentlyContinue)) {
+      if (Test-PreflightProbe "https://chatgpt.com") {
+        Write-Ok "chatgpt.com"
+      } else {
+        Write-Warn "chatgpt.com -- khong ket noi duoc (se bo qua cai Codex CLI)"
+      }
+    }
+  }
+
+  if (-not $requiredOk) {
+    Fail "Khong ket noi duoc toi github.com / release-assets.githubusercontent.com -- can 2 domain nay de tai goi cai dat. Nho IT mo domain roi thu lai, hoac dung -Archive <file da tai san>."
+  }
+}
+
 function Step1-VerifyPackage {
   Write-Phase "1/6 Kiem tra goi cai dat"
   Resolve-Archive
@@ -1057,6 +1130,7 @@ function Invoke-Main {
 
   New-Item -ItemType Directory -Force -Path $OdHome | Out-Null
 
+  Invoke-PreflightCheck
   Step1-VerifyPackage
   Step2-EnsureNode
   Step3-ExtractAndConfigure

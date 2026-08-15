@@ -286,6 +286,75 @@ verify_checksum() {
   ok "Checksum verified (sha256)"
 }
 
+# ---------------------------------------------------------------------------
+# Step 0 — network preflight. Not part of the "N/6" phase numbering (a
+# connectivity probe, not an install step). Corporate networks sometimes
+# block one of these domains outright; without this, the resulting failure
+# is a bare curl/DNS error buried mid-download, with nothing telling the
+# user (or their IT) which domain is actually the problem. Only probes
+# domains this particular run will actually touch, mirroring each step's own
+# gate (archive already local? Node already satisfies engine? claude/codex
+# already on PATH?) so this never warns about a domain the run never needed.
+# ---------------------------------------------------------------------------
+preflight_probe() {
+  # $1 = url. Deliberately no -f: any HTTP response at all (even 404/403 --
+  # e.g. GitHub's asset CDN 404s on a bare root path with no signed asset
+  # path, verified live) proves DNS/TCP/TLS all worked, which is all this
+  # probes for. Only a curl-level failure (DNS, connect, TLS, timeout)
+  # should count as unreachable. Short timeout -- a probe, not a real
+  # download.
+  curl -sS --connect-timeout 5 --max-time 8 -o /dev/null "$1" >/dev/null 2>&1
+}
+
+preflight_check() {
+  phase "Kiểm tra kết nối mạng"
+  required_ok=1
+
+  if [ -z "$OPT_ARCHIVE" ] && [ -z "$OPT_RELEASE_URL" ]; then
+    if preflight_probe "https://github.com"; then
+      ok "github.com"
+    else
+      required_ok=0
+      warn "github.com — không kết nối được"
+    fi
+    if preflight_probe "https://release-assets.githubusercontent.com"; then
+      ok "release-assets.githubusercontent.com"
+    else
+      required_ok=0
+      warn "release-assets.githubusercontent.com — không kết nối được"
+    fi
+  fi
+
+  if ! node_satisfies_engine; then
+    if preflight_probe "https://nodejs.org"; then
+      ok "nodejs.org"
+    else
+      warn "nodejs.org — không kết nối được (cần để tải Node.js riêng — máy chưa có Node ${REQUIRED_NODE_MAJOR}.x)"
+    fi
+  fi
+
+  if [ "$OPT_UPDATE" != "1" ]; then
+    if ! command -v claude >/dev/null 2>&1; then
+      if preflight_probe "https://claude.ai"; then
+        ok "claude.ai"
+      else
+        warn "claude.ai — không kết nối được (sẽ bỏ qua cài Claude CLI)"
+      fi
+    fi
+    if ! command -v codex >/dev/null 2>&1; then
+      if preflight_probe "https://chatgpt.com"; then
+        ok "chatgpt.com"
+      else
+        warn "chatgpt.com — không kết nối được (sẽ bỏ qua cài Codex CLI)"
+      fi
+    fi
+  fi
+
+  if [ "$required_ok" = "0" ]; then
+    fail "Không kết nối được tới github.com / release-assets.githubusercontent.com — cần 2 domain này để tải gói cài đặt. Nhờ IT mở domain rồi thử lại, hoặc dùng --archive <file đã tải sẵn>."
+  fi
+}
+
 VERSION=""
 
 step1_verify_package() {
@@ -793,6 +862,7 @@ main() {
 
   mkdir -p "$OD_HOME"
 
+  preflight_check
   step1_verify_package
   step2_ensure_node
   step3_extract_and_configure

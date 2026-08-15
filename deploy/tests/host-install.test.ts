@@ -533,3 +533,112 @@ test('--update fails fast when there is no existing install', async () => {
     await rm(tmp, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Network preflight (preflight_check) -- sourced + stubbed, so these never
+// touch a real network. preflight_probe itself is stubbed per-test via a
+// marker-file trick: it's the only function that would otherwise make a real
+// curl call, so overriding it also proves (or disproves) whether a given
+// domain was probed at all, not just what preflight_check printed.
+// ---------------------------------------------------------------------------
+test('preflight_check skips every probe when archive is local, Node satisfies, and claude/codex are on PATH', async () => {
+  const tmp = await mktmp('preflight-skip');
+  const fakeHome = join(tmp, 'home');
+  const probedMarker = join(tmp, 'probed');
+  try {
+    const harness = join(tmp, 'harness.sh');
+    await writeFile(
+      harness,
+      [
+        '#!/usr/bin/env bash',
+        'set -eu',
+        `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+        // Any call proves a probe that should have been skipped ran.
+        `preflight_probe() { echo "probed:$1" >> "${probedMarker}"; return 0; }`,
+        'node_satisfies_engine() { return 0; }',
+        'command() { if [ "$1" = "-v" ] && { [ "$2" = "claude" ] || [ "$2" = "codex" ]; }; then echo "/fake/$2"; return 0; fi; builtin command "$@"; }',
+        'OPT_ARCHIVE="/tmp/fake.tar.gz"',
+        'OPT_RELEASE_URL=""',
+        'OPT_UPDATE="0"',
+        'preflight_check',
+      ].join('\n'),
+    );
+    await chmod(harness, 0o755);
+
+    const { stdout } = await execFileAsync('bash', [harness], { env: { ...process.env, HOME: fakeHome } });
+    assert.match(stdout, /Kiểm tra kết nối mạng/);
+    const probed = await readFile(probedMarker, 'utf8').catch(() => '');
+    assert.equal(probed, '', 'no domain should have been probed when nothing in this run needs one');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('preflight_check fails fast when github.com/the asset CDN are unreachable', async () => {
+  const tmp = await mktmp('preflight-required-down');
+  const fakeHome = join(tmp, 'home');
+  try {
+    const harness = join(tmp, 'harness.sh');
+    await writeFile(
+      harness,
+      [
+        '#!/usr/bin/env bash',
+        'set -eu',
+        `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+        'preflight_probe() { return 1; }', // every domain "unreachable"
+        'node_satisfies_engine() { return 0; }',
+        'OPT_ARCHIVE=""',
+        'OPT_RELEASE_URL=""',
+        'OPT_UPDATE="0"',
+        'preflight_check',
+      ].join('\n'),
+    );
+    await chmod(harness, 0o755);
+
+    await assert.rejects(
+      execFileAsync('bash', [harness], { env: { ...process.env, HOME: fakeHome } }),
+      (err: any) => {
+        assert.match(String(err.stderr ?? ''), /github\.com/);
+        assert.match(String(err.stderr ?? ''), /release-assets\.githubusercontent\.com/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('preflight_check warns but does not fail when only an optional domain (claude.ai) is unreachable', async () => {
+  const tmp = await mktmp('preflight-optional-down');
+  const fakeHome = join(tmp, 'home');
+  try {
+    const harness = join(tmp, 'harness.sh');
+    await writeFile(
+      harness,
+      [
+        '#!/usr/bin/env bash',
+        'set -eu',
+        `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+        'preflight_probe() { [ "$1" = "https://claude.ai" ] && return 1; return 0; }',
+        'node_satisfies_engine() { return 0; }',
+        // Force claude "not found" (even if the real binary happens to be on
+        // this machine's PATH) and codex "found", regardless of real PATH state.
+        'command() { if [ "$1" = "-v" ] && [ "$2" = "claude" ]; then return 1; fi; if [ "$1" = "-v" ] && [ "$2" = "codex" ]; then echo "/fake/codex"; return 0; fi; builtin command "$@"; }',
+        'OPT_ARCHIVE=""',
+        'OPT_RELEASE_URL=""',
+        'OPT_UPDATE="0"',
+        'preflight_check',
+        'echo DID_NOT_EXIT',
+      ].join('\n'),
+    );
+    await chmod(harness, 0o755);
+
+    // warn() prints to stderr (see install.sh's warn() definition) --
+    // ok()/the phase header go to stdout.
+    const { stdout, stderr } = await execFileAsync('bash', [harness], { env: { ...process.env, HOME: fakeHome } });
+    assert.match(stderr, /claude\.ai/);
+    assert.match(stdout, /DID_NOT_EXIT/, 'an optional domain being down must not abort the run');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});

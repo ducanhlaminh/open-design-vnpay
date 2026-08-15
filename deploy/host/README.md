@@ -69,6 +69,13 @@ Everything installs under `%USERPROFILE%\.open-design` by default, data
 under `%USERPROFILE%\od-data\open-design` — no administrator elevation is
 used anywhere, mirroring install.sh's "no sudo" invariant.
 
+Before step 1, a network preflight probes only the domains this particular
+run actually needs (GitHub, `nodejs.org` if no local Node satisfies the
+engine range, `claude.ai`/`chatgpt.com` if those CLIs aren't already on
+PATH) and fails fast with the specific blocked domain named — instead of a
+generic curl/exception failure buried mid-download — if a corporate
+firewall/proxy is blocking it. Not counted in the "N/6" numbering below.
+
 Six steps, each printed as it starts (identical phase names/order on every
 platform):
 
