@@ -332,15 +332,19 @@ jobs:
           od_home="$HOME/.open-design"
           current="$od_home/current"
           config_env="$od_home/config.env"
-          pid_file="$od_home/open-design.pid"
-          plist="$HOME/Library/LaunchAgents/com.vnpay.open-design.plist"
+          service_label="com.vnpay.open-design"
+          plist="$HOME/Library/LaunchAgents/${service_label}.plist"
 
           [ -L "$current" ] || { echo "missing symlink $current"; exit 1; }
           [ -f "$config_env" ] || { echo "missing $config_env"; exit 1; }
           [ -f "$plist" ] || { echo "missing LaunchAgent plist $plist"; exit 1; }
-          [ -f "$pid_file" ] || { echo "missing $pid_file -- daemon never recorded a pid, so install.sh's own health check could not have passed"; exit 1; }
 
-          daemon_pid="$(cat "$pid_file")"
+          # install.sh only writes ~/.open-design/open-design.pid in its
+          # nohup fallback path -- NOT under launchd (the path this job and
+          # every real macOS install actually takes; launchd owns the
+          # process instead). Read the pid launchd itself is tracking.
+          daemon_pid="$(launchctl list "$service_label" 2>/dev/null | awk -F'= ' '/"PID"/ { gsub(/[; \t]/, "", $2); print $2 }')"
+          [ -n "$daemon_pid" ] || { echo "launchctl list $service_label has no PID -- LaunchAgent did not start the daemon"; exit 1; }
           kill -0 "$daemon_pid" 2>/dev/null || { echo "daemon process (pid $daemon_pid) is not running"; exit 1; }
 
           health="$(curl -fsS http://127.0.0.1:7456/api/health)"
@@ -362,7 +366,7 @@ jobs:
           # install.sh has no --stop/--start flags (unlike install.ps1) --
           # restart via the same launchctl kickstart the README documents
           # for manual rollback/restart.
-          launchctl kickstart -k "gui/$(id -u)/com.vnpay.open-design"
+          launchctl kickstart -k "gui/$(id -u)/${service_label}"
           ok=""
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:7456/api/health >/dev/null 2>&1; then ok=1; break; fi
