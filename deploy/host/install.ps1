@@ -145,6 +145,37 @@ param(
   [switch]$Help
 )
 
+# Write-Host throws (HostException: "out of range" / no console) when
+# there is no interactive host to write to -- exactly this script's most
+# important caller: the daemon's self-update spawn (detached, windowsHide,
+# stdio redirected to a raw file descriptor, no console subsystem at all
+# -- see POST /api/update/apply in apps/daemon/src/server.ts). Combined
+# with `$ErrorActionPreference = "Stop"` below and no local try/catch
+# around any individual call site, the very FIRST Write-Host anywhere in
+# this script would silently kill the entire run before Write-Phase's own
+# Add-Content-based progress logging ever gets a chance to execute.
+# Reproduced live: update.log stayed byte-for-byte empty across every
+# daemon-triggered update attempt, even after Write-Phase's own logging
+# was made crash-proof -- because Write-Phase's two Write-Host calls (and
+# Invoke-Main's banner, called before Write-Phase ever runs once) were
+# still unprotected. Shadowing the cmdlet here covers every call site in
+# the file (there's no reliable way to audit/wrap them all individually,
+# and any future one would just reintroduce this bug) by degrading to a
+# no-op instead of aborting when there's no host to write to.
+function Write-Host {
+  param(
+    [Parameter(Position = 0)] $Object,
+    $ForegroundColor,
+    $BackgroundColor,
+    [switch]$NoNewline
+  )
+  try {
+    Microsoft.PowerShell.Utility\Write-Host @PSBoundParameters
+  } catch {
+    # No console/host available -- nothing to write to, not fatal.
+  }
+}
+
 if ($Help) {
   if ($PSCommandPath) {
     Get-Help $PSCommandPath -Full
