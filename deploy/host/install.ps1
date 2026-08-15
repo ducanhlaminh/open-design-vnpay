@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Open Design -- host runtime one-command installer for Windows.
 
@@ -348,7 +348,11 @@ function Test-TarSafety {
   if (-not $tarCmd) {
     Fail "tar.exe not found -- this installer requires Windows 10 1803+ or Windows 11 (tar.exe ships built-in since then)"
   }
-  $listing = & tar.exe -tzf $ArchivePath 2>$null
+  try {
+    $listing = & tar.exe -tzf $ArchivePath 2>$null
+  } catch {
+    $listing = $null
+  }
   if ($LASTEXITCODE -ne 0 -or -not $listing) { Fail "archive is not a valid tar.gz: $ArchivePath" }
 
   foreach ($line in $listing) {
@@ -628,7 +632,7 @@ function Set-CurrentPointer {
     # PowerShell footgun that can delete the TARGET directory's contents on
     # some versions instead of just unlinking. `cmd /c rmdir` only ever
     # removes the reparse point itself.
-    cmd /c rmdir "$currentLink" 2>$null | Out-Null
+    try { cmd /c rmdir "$currentLink" 2>$null | Out-Null } catch {}
   }
   New-Item -ItemType Junction -Path $currentLink -Target $ReleaseDir -Force | Out-Null
   Write-Ok "current -> releases\$Version"
@@ -648,7 +652,11 @@ function Register-OdTask {
   # not through this task. Losing auto-start-on-next-logon is a real but
   # non-blocking degradation, not a reason to throw away an otherwise-good
   # install.
-  & schtasks.exe /Create /SC ONLOGON /RL LIMITED /F /TN $TaskName /TR "`"$NodeBin`" `"$cliPath`" --no-open" | Out-Null
+  try {
+    & schtasks.exe /Create /SC ONLOGON /RL LIMITED /F /TN $TaskName /TR "`"$NodeBin`" `"$cliPath`" --no-open" | Out-Null
+  } catch {
+    $global:LASTEXITCODE = 1
+  }
   if ($LASTEXITCODE -ne 0) {
     $script:TaskRegistered = $false
     Write-Warn "could not register the auto-start task '$TaskName' (schtasks exit $LASTEXITCODE) -- likely blocked by local policy on this machine. Open Design will still start now; it just won't auto-start after your next login. To start it manually: `"$NodeBin`" `"$cliPath`" --no-open"
@@ -706,7 +714,7 @@ function Stop-OdService {
         # Same primitive apps/daemon/src/runs.ts (~line 71) uses to
         # tree-kill its own spawned children -- consistent shutdown path
         # between the daemon and its own installer.
-        & taskkill.exe /PID $savedPid /T /F 2>$null | Out-Null
+        try { & taskkill.exe /PID $savedPid /T /F 2>$null | Out-Null } catch {}
       }
     }
   }
@@ -800,7 +808,7 @@ function Invoke-UninstallCommand {
   $dataDir = if ($DataDir) { $DataDir } elseif ($configuredDataDir) { $configuredDataDir } else { $DefaultDataDir }
 
   Stop-OdService
-  & schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null
+  try { & schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null } catch {}
 
   if (-not $Force) {
     $confirm = Read-Host "Remove $OdHome ? Project data is kept unless -DeleteData was given. Type 'yes' to confirm"
@@ -822,7 +830,7 @@ function Invoke-Rollback {
   if ($PrevCurrent -and ($PrevCurrent -ne $ReleaseDir)) {
     Write-Warn "Health check failed — rolling back to $(Split-Path $PrevCurrent -Leaf)"
     $currentLink = Join-Path $OdHome "current"
-    if (Test-Path $currentLink) { cmd /c rmdir "$currentLink" 2>$null | Out-Null }
+    if (Test-Path $currentLink) { try { cmd /c rmdir "$currentLink" 2>$null | Out-Null } catch {} }
     New-Item -ItemType Junction -Path $currentLink -Target $PrevCurrent -Force | Out-Null
     Register-OdTask
     Start-OdService
@@ -983,7 +991,7 @@ function Step6-ClaudeAndSummary {
     $cliPath = Join-Path $OdHome "current\apps\daemon\dist\cli.js"
     # Mirrors install.sh: stderr suppressed, stdout shown (this prints the
     # actual checklist to the user), non-zero exit never fails the install.
-    & $NodeBin $cliPath sandbox status --daemon-url "http://127.0.0.1:$ResolvedPort" 2>$null
+    try { & $NodeBin $cliPath sandbox status --daemon-url "http://127.0.0.1:$ResolvedPort" 2>$null } catch {}
   }
 
   Write-Host ""
