@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -260,6 +260,71 @@ export async function probeClaudeAuthStatus(
 
   if (degraded) return { status: 'unknown', message: CLAUDE_AUTH_UNKNOWN };
   return { status: 'missing', message: CLAUDE_AUTH_GUIDANCE };
+}
+
+// ── Claude Code (Local CLI) logout ────────────────────────────────────────
+// There is no non-interactive `claude logout` either, so logging out means
+// clearing the SAME state probeClaudeAuthStatus consults: the
+// `<configDir>/.credentials.json` blob and, on macOS, the Keychain item.
+// (`settings.json` apiKeyHelper is a deliberate user script — never touched.)
+
+const CLAUDE_LOGOUT_ENV_MESSAGE =
+  'Claude đang xác thực qua biến môi trường (ANTHROPIC_API_KEY / Bedrock / Vertex) — ' +
+  'không có phiên đăng nhập trên máy để thoát.';
+
+export type ClaudeLogoutIO = ClaudeAuthProbeIO & {
+  unlink?: (filePath: string) => Promise<void>;
+  /** Delete the macOS Keychain credentials item (missing item = no-op). */
+  keychainDeleteCredentials?: () => Promise<void>;
+};
+
+export type HostClaudeLogoutResult =
+  | { ok: true }
+  | { ok: false; reason: 'env-auth'; message: string };
+
+async function defaultKeychainDeleteCredentials(): Promise<void> {
+  try {
+    await execFileAsync(
+      'security',
+      ['delete-generic-password', '-s', CLAUDE_KEYCHAIN_SERVICE],
+      { timeout: 3000, maxBuffer: 64 * 1024 },
+    );
+  } catch (error) {
+    // `security` itself missing/broken — rethrow so the caller reports a
+    // real failure instead of a false "đã đăng xuất".
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') throw error;
+    // Non-zero exit (44) = item not found — already logged out.
+  }
+}
+
+export async function logoutHostClaude(
+  env: RuntimeEnv,
+  io: ClaudeLogoutIO = {},
+): Promise<HostClaudeLogoutResult> {
+  // Env-routed auth has no login session to clear — deleting local files
+  // would change nothing and mislead the caller into reporting success.
+  if (
+    envLookup(env, 'ANTHROPIC_API_KEY') ||
+    envLookup(env, 'CLAUDE_CODE_USE_BEDROCK') ||
+    envLookup(env, 'CLAUDE_CODE_USE_VERTEX')
+  ) {
+    return { ok: false, reason: 'env-auth', message: CLAUDE_LOGOUT_ENV_MESSAGE };
+  }
+
+  const platform = io.platform ?? process.platform;
+  const home = io.homedir ?? os.homedir;
+  const removeFile = io.unlink ?? ((filePath: string) => unlink(filePath));
+  const configDir = envLookup(env, 'CLAUDE_CONFIG_DIR') ?? path.join(home(), '.claude');
+
+  try {
+    await removeFile(path.join(configDir, '.credentials.json'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
+  }
+  if (platform === 'darwin') {
+    await (io.keychainDeleteCredentials ?? defaultKeychainDeleteCredentials)();
+  }
+  return { ok: true };
 }
 
 // ── Codex CLI login detection ─────────────────────────────────────────────

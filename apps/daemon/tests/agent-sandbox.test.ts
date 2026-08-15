@@ -18,7 +18,9 @@ import {
   wrapInvocationInSandbox,
 } from '../src/agent-sandbox.js';
 
-const cfg = resolveSandboxConfig({ enabled: true }, {});
+// The temporary host lock ignores prefs.enabled, so enabled configs for the
+// gating tests below must come through the OD_SANDBOX=1 escape hatch.
+const cfg = resolveSandboxConfig(undefined, { OD_SANDBOX: '1' });
 
 describe('sandbox auth volume paths', () => {
   it('targets credential and seed marker files inside each mounted auth directory', () => {
@@ -32,9 +34,9 @@ describe('sandbox auth volume paths', () => {
 
 describe('resolveSandboxConfig', () => {
   it('defaults to DISABLED (host CLI) — Claude/Codex runtime and skill defaults stay ready for when it IS enabled', () => {
-    // Web-first migration (WP4): every run spawns as a host CLI process by
-    // default; only an explicit prefs.enabled=true or OD_SANDBOX=1 opts INTO
-    // the Docker sandbox.
+    // Web-first migration (WP4) + temporary host lock: every run spawns as a
+    // host CLI process by default; only OD_SANDBOX=1 opts INTO the Docker
+    // sandbox while the lock is in place.
     const resolved = resolveSandboxConfig(undefined, {});
     expect(resolved.enabled).toBe(false);
     // Runtime/skill defaults are unchanged so opting in still behaves exactly
@@ -44,14 +46,16 @@ describe('resolveSandboxConfig', () => {
     expect(resolved.timeoutMinutes).toBe(30);
   });
 
-  it('prefs.enabled=true opts into the Docker sandbox with the pre-WP4 defaults intact', () => {
+  it('TEMPORARY HOST LOCK: prefs.enabled=true no longer opts in — only OD_SANDBOX=1 can', () => {
     const resolved = resolveSandboxConfig({ enabled: true }, {});
-    expect(resolved.enabled).toBe(true);
+    expect(resolved.enabled).toBe(false);
+    // Runtime/skill defaults survive so lifting the lock restores the old
+    // opt-in behavior unchanged.
     expect(resolved.runtimes).toEqual(['claude', 'codex']);
     expect(resolved.skills).toEqual(['*']);
   });
 
-  it('OD_SANDBOX env overrides the persisted flag in both directions', () => {
+  it('OD_SANDBOX=1 is the only remaining way to enable the sandbox', () => {
     expect(resolveSandboxConfig({ enabled: false }, { OD_SANDBOX: '1' }).enabled).toBe(true);
     expect(resolveSandboxConfig({ enabled: true }, { OD_SANDBOX: '0' }).enabled).toBe(false);
     // Unset prefs (the new default) still opts in via the escape hatch.
@@ -122,17 +126,17 @@ describe('shouldSandboxRun', () => {
     // User-persisted narrow list restores skill-scoped sandboxing: chat and
     // unlisted skills go back to host spawn. (`['ui-react']` alone is an OLD
     // default, so it resolves back to '*' — use a list nobody ever shipped.)
-    const narrowed = resolveSandboxConfig({ enabled: true, skills: ['ui-react', 'ui-html'] }, {});
+    const narrowed = resolveSandboxConfig({ enabled: false, skills: ['ui-react', 'ui-html'] }, { OD_SANDBOX: '1' });
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['ui-react'], cfg: narrowed })).toBe(true);
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['summary-feedback'], cfg: narrowed })).toBe(false);
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: [], cfg: narrowed })).toBe(false);
   });
 
   it('supports wildcard matching in runtimes and skills', () => {
-    const wild = resolveSandboxConfig({ enabled: true, runtimes: ['*'], skills: ['*'] }, {});
+    const wild = resolveSandboxConfig({ enabled: false, runtimes: ['*'], skills: ['*'] }, { OD_SANDBOX: '1' });
     expect(shouldSandboxRun({ agentId: 'codex', skillIds: ['anything-at-all'], cfg: wild })).toBe(true);
     // Wildcard skills use the default Claude + Codex runtime gate.
-    const wildSkills = resolveSandboxConfig({ enabled: true, skills: ['*'] }, {});
+    const wildSkills = resolveSandboxConfig({ enabled: false, skills: ['*'] }, { OD_SANDBOX: '1' });
     expect(shouldSandboxRun({ agentId: 'claude', skillIds: ['summary-feedback'], cfg: wildSkills })).toBe(true);
     expect(shouldSandboxRun({ agentId: 'codex', skillIds: ['summary-feedback'], cfg: wildSkills })).toBe(true);
     // Wildcard never bypasses the enabled flag or a null agent.

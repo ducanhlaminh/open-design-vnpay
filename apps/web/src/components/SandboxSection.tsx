@@ -70,8 +70,54 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
     [daemonLive, modeSaving, refresh],
   );
 
+  // Host Claude CLI logout — clears the machine-level `claude /login` session
+  // through the daemon (credentials file + macOS Keychain), then re-reads the
+  // status snapshot so the card flips to "Cần đăng nhập".
+  const [hostClaudeBusy, setHostClaudeBusy] = useState(false);
+  const [hostClaudeError, setHostClaudeError] = useState<string | null>(null);
+  const logoutHostClaudeCli = useCallback(async () => {
+    if (hostClaudeBusy) return;
+    if (!window.confirm('Đăng xuất Claude khỏi máy này? Bạn sẽ cần đăng nhập lại để tiếp tục dùng.')) return;
+    setHostClaudeBusy(true);
+    setHostClaudeError(null);
+    try {
+      const r = await fetch('/api/sandbox/host/claude/logout', { method: 'POST' });
+      if (!r.ok) {
+        const j = (await r.json().catch(() => null)) as { error?: { message?: string } } | null;
+        setHostClaudeError(j?.error?.message ?? `Không đăng xuất được (lỗi ${r.status}).`);
+        return;
+      }
+      await refresh();
+    } catch {
+      setHostClaudeError('Không kết nối được — thử lại.');
+    } finally {
+      setHostClaudeBusy(false);
+    }
+  }, [hostClaudeBusy, refresh]);
+
+  // Host-mode Codex snapshot: /api/usage/codex probes the HOST Codex CLI
+  // (installed + logged in) without touching Docker — the Docker-volume
+  // runtimeStatuses are meaningless while the sandbox is locked off.
+  const [hostCodex, setHostCodex] = useState<{ available: boolean } | null>(null);
   useEffect(() => {
-    if (!daemonLive || !isWindows || status?.dockerOk !== false) {
+    if (!daemonLive || !status || !isHostMode) {
+      setHostCodex(null);
+      return;
+    }
+    let cancelled = false;
+    void fetch('/api/usage/codex')
+      .then((r) => (r.ok ? (r.json() as Promise<{ available?: unknown }>) : null))
+      .then((j) => {
+        if (!cancelled && j && typeof j.available === 'boolean') setHostCodex({ available: j.available });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [daemonLive, status, isHostMode]);
+
+  useEffect(() => {
+    if (!daemonLive || !isWindows || isHostMode || status?.dockerOk !== false) {
       setWindowsSetup(null);
       return;
     }
@@ -99,7 +145,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [daemonLive, isWindows, status?.dockerOk]);
+  }, [daemonLive, isWindows, isHostMode, status?.dockerOk]);
 
   // Resume a build that might already be running (e.g. Settings reopened while
   // the image is still building) so the panel shows live progress on open.
@@ -189,6 +235,17 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
     isWindows && windowsSetup?.supportedPlatform && windowsSetup.detection?.virtualizationEnabled === false,
   );
 
+  // Host-mode Claude state, from the cheap host probe (`status.hostClaude`) —
+  // NOT from the Docker-volume runtimeStatuses, which describe an environment
+  // designers never touch while the sandbox lock is on.
+  const hostClaudeState = !status?.hostClaude?.available
+    ? 'not-installed'
+    : status.hostClaude.authStatus === 'ok'
+      ? 'ready'
+      : status.hostClaude.authStatus === 'missing'
+        ? 'needs-login'
+        : 'unknown';
+
   const renderRuntimeRow = (runtime: SandboxRuntimeStatus | undefined) => {
     if (!runtime) {
       return (
@@ -251,6 +308,9 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
             <div>
               <h4>{t('settings.executionModeTitle')}</h4>
               <p className="hint">{t('settings.executionModeHint')}</p>
+              {/* TEMPORARY HOST LOCK — mirrors resolveSandboxConfig in
+                  apps/daemon/src/agent-sandbox.ts; remove together. */}
+              <p className="hint">Docker sandbox đang tạm khóa — mọi run chạy bằng Host CLI.</p>
             </div>
             <div className={styles.modeToggle} role="radiogroup" aria-label={t('settings.executionModeTitle')}>
               <button
@@ -268,14 +328,16 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
                 className={!isHostMode ? styles.modeBtnActive : styles.modeBtn}
                 role="radio"
                 aria-checked={!isHostMode}
-                disabled={modeSaving}
-                onClick={() => void setExecutionMode(true)}
+                disabled
+                title="Docker sandbox đang tạm khóa — mọi run chạy bằng Host CLI"
               >
                 {t('settings.executionModeSandbox')}
               </button>
             </div>
           </div>
-          {!status.dockerOk ? (
+          {/* Docker prep panels are sandbox-mode-only — while the host lock is
+              on, pushing designers to install Docker is pure noise. */}
+          {!isHostMode && !status.dockerOk ? (
             <div className={styles.setupPanel} data-testid="sandbox-docker-setup">
               <div>
                 <strong>{virtualizationBlocked ? 'Cần bật virtualization trước' : 'Docker chưa sẵn sàng'}</strong>
@@ -296,7 +358,7 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
               ) : null}
               {dockerSetup?.error ? <p className={styles.buildErr}>{dockerSetup.error}</p> : null}
             </div>
-          ) : !status.imageOk ? (
+          ) : !isHostMode && !status.imageOk ? (
             <div className={styles.setupPanel} data-testid="sandbox-image-setup">
               <div>
                 <strong>Môi trường agent chưa có trên máy</strong>
@@ -312,7 +374,99 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
               </button>
             </div>
           ) : null}
-          {hasRuntimeStatuses ? (
+          {isHostMode ? (
+            /* Host mode (the locked default): plain-language cards for
+               non-technical designers — no version/image/volume jargon. The
+               Docker cards below stay for the OD_SANDBOX=1 dev fallback. */
+            <div className={styles.runtimeGrid} data-testid="host-runtime-cards">
+              <div className={styles.hostCard} data-testid="host-runtime-claude">
+                <div className={styles.hostCardHead}>
+                  <div className={styles.hostCardCopy}>
+                    <h4>Claude</h4>
+                    <span>Trợ lý AI chính — dùng cho các bước thiết kế.</span>
+                  </div>
+                  {hostClaudeState === 'ready' ? (
+                    <span className={styles.chipReady}>Sẵn sàng</span>
+                  ) : hostClaudeState === 'needs-login' ? (
+                    <span className={styles.chipWarn}>Cần đăng nhập</span>
+                  ) : hostClaudeState === 'not-installed' ? (
+                    <span className={styles.chipWarn}>Chưa cài</span>
+                  ) : (
+                    <span className={styles.chipMuted}>Đang kiểm tra…</span>
+                  )}
+                </div>
+                <p className={styles.hostCardText}>
+                  {hostClaudeState === 'ready'
+                    ? status.hostClaude?.account?.email
+                      ? `Đã đăng nhập với tài khoản ${status.hostClaude.account.email} — bạn có thể dùng ngay.`
+                      : 'Đã đăng nhập trên máy này — bạn có thể dùng ngay, không cần cài thêm gì.'
+                    : hostClaudeState === 'needs-login'
+                      ? status.hostClaude?.authMessage ??
+                        'Chưa đăng nhập Claude trên máy này. Nhờ đội kỹ thuật đăng nhập giúp bạn.'
+                      : hostClaudeState === 'not-installed'
+                        ? 'Máy này chưa cài Claude. Nhờ đội kỹ thuật cài đặt giúp bạn.'
+                        : 'Chưa kiểm tra được trạng thái — thử tải lại trang.'}
+                </p>
+                <div className={styles.hostCardActions}>
+                  {hostClaudeState === 'ready' ? (
+                    <button
+                      type="button"
+                      className={styles.hostGhostBtn}
+                      disabled={hostClaudeBusy}
+                      onClick={() => void logoutHostClaudeCli()}
+                    >
+                      {hostClaudeBusy ? 'Đang đăng xuất…' : 'Đăng xuất'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className={styles.hostGhostBtn}
+                      disabled={hostClaudeBusy}
+                      onClick={() => void refresh()}
+                    >
+                      Kiểm tra lại
+                    </button>
+                  )}
+                </div>
+                {hostClaudeError ? <p className={styles.hostCardErr}>{hostClaudeError}</p> : null}
+                {status.hostClaude?.version ? (
+                  <details className={styles.techDetails}>
+                    <summary>Chi tiết kỹ thuật</summary>
+                    <p>Phiên bản Claude CLI: {status.hostClaude.version}</p>
+                  </details>
+                ) : null}
+              </div>
+              <div className={styles.hostCard} data-testid="host-runtime-codex">
+                <div className={styles.hostCardHead}>
+                  <div className={styles.hostCardCopy}>
+                    <h4>Codex</h4>
+                    <span>Trợ lý AI thay thế — không bắt buộc.</span>
+                  </div>
+                  {hostCodex === null ? (
+                    <span className={styles.chipMuted}>Đang kiểm tra…</span>
+                  ) : hostCodex.available ? (
+                    <span className={styles.chipReady}>Sẵn sàng</span>
+                  ) : (
+                    <span className={styles.chipMuted}>Chưa dùng được</span>
+                  )}
+                </div>
+                <p className={styles.hostCardText}>
+                  {hostCodex === null
+                    ? 'Đang kiểm tra Codex trên máy…'
+                    : hostCodex.available
+                      ? 'Đã đăng nhập trên máy này — bạn có thể chọn Codex khi chạy.'
+                      : 'Chỉ cần khi bạn muốn dùng Codex thay cho Claude. Nếu cần, nhờ đội kỹ thuật cài và đăng nhập giúp bạn.'}
+                </p>
+                {hostCodex !== null && !hostCodex.available ? (
+                  <div className={styles.hostCardActions}>
+                    <button type="button" className={styles.hostGhostBtn} onClick={() => void refresh()}>
+                      Kiểm tra lại
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : hasRuntimeStatuses ? (
         <div className={styles.runtimeGrid}>
           <details className={styles.runtimeCard} data-testid="sandbox-runtime-claude">
             <summary className={styles.runtimeToggle}>

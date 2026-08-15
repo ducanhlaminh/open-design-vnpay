@@ -15,7 +15,11 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { extractClaudeAccountEmail, probeClaudeAuthStatus } from '../../src/runtimes/auth.js';
+import {
+  extractClaudeAccountEmail,
+  logoutHostClaude,
+  probeClaudeAuthStatus,
+} from '../../src/runtimes/auth.js';
 
 const HOME = '/home/tester';
 const enoent = (): never => {
@@ -167,6 +171,81 @@ describe('probeClaudeAuthStatus', () => {
       },
     });
     expect(keychainBroken.status).toBe('unknown');
+  });
+});
+
+describe('logoutHostClaude', () => {
+  it('deletes the credentials file (Linux/Windows path)', async () => {
+    const deleted: string[] = [];
+    const result = await logoutHostClaude({}, {
+      platform: 'linux',
+      homedir: () => HOME,
+      unlink: async (filePath) => {
+        deleted.push(filePath);
+      },
+    });
+    expect(result).toEqual({ ok: true });
+    expect(deleted).toEqual([`${HOME}/.claude/.credentials.json`]);
+  });
+
+  it('honours CLAUDE_CONFIG_DIR and tolerates an already-absent file', async () => {
+    const deleted: string[] = [];
+    const result = await logoutHostClaude({ CLAUDE_CONFIG_DIR: '/profiles/work' }, {
+      platform: 'linux',
+      homedir: () => HOME,
+      unlink: async (filePath) => {
+        deleted.push(filePath);
+        enoent(); // already logged out — must still report ok
+      },
+    });
+    expect(result).toEqual({ ok: true });
+    expect(deleted).toEqual(['/profiles/work/.credentials.json']);
+  });
+
+  it('also clears the macOS Keychain item', async () => {
+    let keychainCleared = false;
+    const result = await logoutHostClaude({}, {
+      platform: 'darwin',
+      homedir: () => HOME,
+      unlink: async () => enoent(),
+      keychainDeleteCredentials: async () => {
+        keychainCleared = true;
+      },
+    });
+    expect(result).toEqual({ ok: true });
+    expect(keychainCleared).toBe(true);
+  });
+
+  it('refuses env-routed auth — nothing local to log out of', async () => {
+    for (const env of [
+      { ANTHROPIC_API_KEY: 'sk-ant-api-x' },
+      { CLAUDE_CODE_USE_BEDROCK: '1' },
+      { CLAUDE_CODE_USE_VERTEX: '1' },
+    ]) {
+      const result = await logoutHostClaude(env, {
+        platform: 'linux',
+        homedir: () => HOME,
+        unlink: async () => {
+          throw new Error('must not touch files for env auth');
+        },
+      });
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it('surfaces real deletion failures instead of a false "đã đăng xuất"', async () => {
+    const eacces = () => {
+      const err = new Error('EACCES') as NodeJS.ErrnoException;
+      err.code = 'EACCES';
+      throw err;
+    };
+    await expect(
+      logoutHostClaude({}, {
+        platform: 'linux',
+        homedir: () => HOME,
+        unlink: async () => eacces(),
+      }),
+    ).rejects.toThrow('EACCES');
   });
 });
 

@@ -46,6 +46,17 @@ export interface SandboxHostClaudeStatus {
   authStatus: 'ok' | 'missing' | 'unknown';
   /** Human (Vietnamese) guidance when not `'ok'` — from `probeClaudeAuthStatus`. */
   authMessage?: string;
+  /** Best-effort logged-in account identity (email from `~/.claude.json`). */
+  account?: { email?: string };
+}
+
+/** `POST /api/sandbox/host/claude/logout` — clears the HOST Claude CLI login
+ *  (credentials file + macOS Keychain item). Env-routed auth (API key /
+ *  Bedrock / Vertex) has nothing to clear and answers 409 instead. */
+export interface HostClaudeLogoutResponse {
+  ok: true;
+  /** Fresh snapshot after the logout, so the UI updates without a re-poll. */
+  hostClaude: SandboxHostClaudeStatus;
 }
 
 export interface SandboxStatusResponse {

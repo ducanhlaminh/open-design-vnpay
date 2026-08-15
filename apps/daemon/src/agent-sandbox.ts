@@ -291,13 +291,15 @@ export function resolveSandboxConfig(
   prefs: SandboxConfigPrefs | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedSandboxConfig {
-  // Default OFF (web-first migration, WP4): every run spawns as a host CLI
-  // process unless the user OPTS IN — prefs.enabled === true, or OD_SANDBOX=1
-  // (escape hatch for dev/debug without editing app-config.json). OD_SANDBOX=0
-  // still force-disables regardless of prefs, so it stays a two-way override.
-  let enabled = prefs?.enabled === true;
+  // TEMPORARY HOST LOCK (2026-08-15): the Docker sandbox is blocked — every
+  // run spawns as a host CLI process and `prefs.enabled` is IGNORED, so
+  // neither the web toggle nor `od sandbox enable` can opt in anymore.
+  // OD_SANDBOX=1 (env-only, requires a daemon restart) stays as the field
+  // fallback should host mode break. To lift the lock, restore
+  // `let enabled = prefs?.enabled === true;` and re-enable the Settings
+  // toggle in SandboxSection.tsx.
+  let enabled = false;
   if (env.OD_SANDBOX === '1') enabled = true;
-  else if (env.OD_SANDBOX === '0') enabled = false;
   const envSkills = (env.OD_SANDBOX_SKILLS ?? '')
     .split(',')
     .map((s) => s.trim())

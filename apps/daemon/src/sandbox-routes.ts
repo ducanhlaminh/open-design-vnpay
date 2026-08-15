@@ -31,7 +31,7 @@ import type { RouteDeps } from './server-context.js';
 import { readAppConfig, type AppConfigPrefs } from './app-config.js';
 import { invalidateClaudeUsageCache, probeClaudeCredentials } from './claude-usage.js';
 import { getAgentDef, resolveAgentLaunch } from './agents.js';
-import { probeClaudeAuthStatus } from './runtimes/auth.js';
+import { logoutHostClaude, probeClaudeAuthStatus } from './runtimes/auth.js';
 import {
   dockerAvailable,
   dockerImagePresent,
@@ -117,6 +117,7 @@ export async function resolveHostClaudeStatus(): Promise<SandboxHostClaudeStatus
     available,
     authStatus: auth.status,
     ...(auth.message ? { authMessage: auth.message } : {}),
+    ...(auth.account ? { account: auth.account } : {}),
   };
 }
 
@@ -836,4 +837,19 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
   };
   app.post('/api/sandbox/codex-logout', logoutCodex);
   app.delete('/api/sandbox/runtimes/codex/auth', logoutCodex);
+
+  // Host Claude CLI logout — a HOST-side operation (credentials file +
+  // macOS Keychain), so it is deliberately NOT behind requireSandboxEnabled:
+  // it exists precisely for host mode, and touching it never involves Docker.
+  app.post('/api/sandbox/host/claude/logout', async (_req, res) => {
+    try {
+      const result = await logoutHostClaude(process.env);
+      if (!result.ok) {
+        return sendApiError(res, 409, 'HOST_CLAUDE_ENV_AUTH', result.message);
+      }
+      res.json({ ok: true, hostClaude: await resolveHostClaudeStatus() });
+    } catch (err) {
+      sendApiError(res, 500, 'HOST_CLAUDE_LOGOUT_FAILED', (err as Error).message);
+    }
+  });
 }

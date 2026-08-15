@@ -358,3 +358,124 @@
     display: none;
   }
 }
+
+/* Host-mode runtime cards — designer-friendly: name + plain-language status
+   only; anything technical sits behind the collapsed "Chi tiết kỹ thuật". */
+.hostCard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.hostCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hostCardCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hostCardCopy h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
+.hostCardCopy span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.hostCardText {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-soft, var(--text-muted));
+}
+
+.chipReady,
+.chipWarn,
+.chipMuted {
+  flex: none;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.chipReady {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+
+.chipWarn {
+  color: var(--warning, #b45309);
+  background: color-mix(in srgb, var(--warning, #b45309) 12%, transparent);
+}
+
+.chipMuted {
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+}
+
+.techDetails {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.techDetails summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.techDetails p {
+  margin: 4px 0 0;
+}
+
+.hostCardActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.hostGhostBtn {
+  flex: none;
+  padding: 5px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s var(--pl-ease, ease);
+}
+
+.hostGhostBtn:hover:not(:disabled) {
+  background: var(--bg-subtle);
+}
+
+.hostGhostBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.hostCardErr {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger, #c0392b);
+}
