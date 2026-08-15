@@ -83,12 +83,15 @@ platform):
    `GET /api/health` for up to 60s. On failure, the installer **rolls back**
    to the previous release automatically (a fresh install with nothing to
    roll back to stops the service and exits non-zero instead).
-6. **Kiểm tra Claude CLI & hoàn tất** — installs the Claude Code CLI via its
-   native installer if missing (Windows: `https://claude.ai/install.ps1`,
-   confirmed to exist and to accept the same version-pin argument as the
-   macOS/Linux `install.sh`), probes login state, and prints
-   `http://127.0.0.1:<port>` plus, if not logged in yet, "còn một bước:
-   `claude /login`".
+6. **Kiểm tra Claude & Codex CLI & hoàn tất** — installs the Claude Code CLI
+   (`https://claude.ai/install.sh` / `.ps1`) and the Codex CLI
+   (`https://chatgpt.com/codex/install.sh` / `.ps1`, both official OpenAI
+   installers, confirmed live) via their native installers if missing,
+   probes login state for both, and prints `http://127.0.0.1:<port>` plus,
+   for whichever agent isn't logged in yet, "còn một bước: `claude /login`"
+   and/or "còn một bước: `codex login`". Codex has no version-pin support
+   yet (Claude does, via a bundled `claude.version` file) — always installs
+   latest.
 
 No `sudo`/administrator elevation is used anywhere on any platform.
 Everything lives under `$HOME` on macOS/Linux (`~/.open-design` by default,

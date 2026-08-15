@@ -660,6 +660,43 @@ probe_claude_login() {
   return 1
 }
 
+# Best-effort bash port of apps/daemon/src/runtimes/auth.ts:probeCodexAuthStatus
+# — same on-disk signal: <CODEX_HOME>/auth.json (default ~/.codex) carrying
+# either a nested tokens.access_token or a bare OPENAI_API_KEY field. A flat
+# regex (not a real JSON parser) is intentional, matching how
+# probe_claude_login above already treats its own credentials file.
+probe_codex_login() {
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    return 0
+  fi
+  codex_home="${CODEX_HOME:-$HOME/.codex}"
+  if [ -f "${codex_home}/auth.json" ] \
+    && grep -qE '"(access_token|OPENAI_API_KEY)"[[:space:]]*:[[:space:]]*"[^"]' "${codex_home}/auth.json" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+ensure_codex_cli() {
+  if command -v codex >/dev/null 2>&1; then
+    ok "codex CLI found on PATH: $(command -v codex)"
+    return
+  fi
+  warn "codex CLI not found on PATH — installing via the native installer"
+  # Official OpenAI installer (verified live at implementation time —
+  # chatgpt.com/codex/install.sh redirects to releases.openai.com/codex/
+  # install.sh). Unlike Claude's installer, the version pin is an env var
+  # (CODEX_RELEASE), not a positional arg; CODEX_NON_INTERACTIVE skips any
+  # prompts, matching this installer's own unattended/no-sudo invariant. No
+  # pin-file support yet (no codex.version bundled by build-runtime.sh) —
+  # always installs latest, same as Claude's own unpinned fallback path.
+  # NON_INTERACTIVE must be set on `sh` (the pipeline stage that actually
+  # interprets the downloaded script), not on `curl` -- a leading VAR=val
+  # prefix only scopes to the single command it directly precedes.
+  curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=true sh \
+    || warn "Codex CLI install failed — install manually: curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+}
+
 ensure_claude_cli() {
   if command -v claude >/dev/null 2>&1; then
     ok "claude CLI found on PATH: $(command -v claude)"
@@ -682,11 +719,14 @@ ensure_claude_cli() {
 }
 
 step6_claude_and_summary() {
-  phase "6/6 Kiểm tra Claude CLI & hoàn tất"
+  phase "6/6 Kiểm tra Claude & Codex CLI & hoàn tất"
   ensure_claude_cli
+  ensure_codex_cli
 
   LOGIN_OK=1
   probe_claude_login || LOGIN_OK=0
+  CODEX_LOGIN_OK=1
+  probe_codex_login || CODEX_LOGIN_OK=0
 
   # Final checklist — od sandbox status already reports Claude sandbox
   # image/auth-volume health (Docker sandbox specific); best-effort, never
@@ -713,6 +753,9 @@ step6_claude_and_summary() {
   printf "\n"
   if [ "$LOGIN_OK" = "0" ]; then
     printf "  ${YELLOW}còn một bước: chạy \`claude /login\` để đăng nhập Claude Code.${RESET}\n\n"
+  fi
+  if [ "$CODEX_LOGIN_OK" = "0" ]; then
+    printf "  ${YELLOW}còn một bước: chạy \`codex login\` để đăng nhập Codex CLI.${RESET}\n\n"
   fi
   printf "  Update:    bash %s/install.sh --update\n" "$OD_HOME"
   printf "  Uninstall/rollback: see deploy/host/README.md\n"

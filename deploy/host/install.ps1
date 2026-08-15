@@ -867,6 +867,44 @@ function Test-ClaudeLogin {
   return $false
 }
 
+# Mirrors probe_codex_login in install.sh -- same on-disk signal
+# (<CODEX_HOME>/auth.json, default %USERPROFILE%\.codex), same flat-regex
+# best-effort approach (not a real JSON parser).
+function Test-CodexLogin {
+  if ($env:OPENAI_API_KEY) { return $true }
+  $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE ".codex" }
+  $authFile = Join-Path $codexHome "auth.json"
+  if (Test-Path $authFile) {
+    $content = Get-Content $authFile -Raw -ErrorAction SilentlyContinue
+    if ($content -match '"(access_token|OPENAI_API_KEY)"\s*:\s*"[^"]') { return $true }
+  }
+  return $false
+}
+
+function Install-CodexCli {
+  Write-Warn "codex CLI not found on PATH — installing via the native Windows installer"
+  # Verified at implementation time: chatgpt.com/codex/install.ps1 redirects
+  # to releases.openai.com/codex/install.ps1 (fetched and inspected
+  # directly). Version pin is $env:CODEX_RELEASE (not a positional arg, and
+  # not implemented here yet -- no codex.version bundled by build-runtime.sh,
+  # matches install.sh's own no-pin-yet scope decision). CODEX_NON_INTERACTIVE
+  # skips prompts, same invariant as every other unattended step here.
+  $tmpDir = New-TempDir
+  $installerFile = Join-Path $tmpDir "codex-install.ps1"
+  try {
+    Invoke-WebRequest -Uri "https://chatgpt.com/codex/install.ps1" -OutFile $installerFile -UseBasicParsing
+  } catch {
+    Write-Warn "Codex CLI install failed — install manually: irm https://chatgpt.com/codex/install.ps1 | iex"
+    return
+  }
+  $shellExe = (Get-Process -Id $PID).Path
+  $env:CODEX_NON_INTERACTIVE = "true"
+  & $shellExe -NoProfile -ExecutionPolicy Bypass -File $installerFile
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warn "Codex CLI install failed — install manually: irm https://chatgpt.com/codex/install.ps1 | iex"
+  }
+}
+
 function Install-ClaudeCli {
   Write-Warn "claude CLI not found on PATH — installing via the native Windows installer"
   # Verified at implementation time: Anthropic DOES publish a native Windows
@@ -911,15 +949,22 @@ function Install-ClaudeCli {
 }
 
 function Step6-ClaudeAndSummary {
-  Write-Phase "6/6 Kiểm tra Claude CLI & hoàn tất"
+  Write-Phase "6/6 Kiểm tra Claude & Codex CLI & hoàn tất"
   $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
   if ($claudeCmd) {
     Write-Ok "claude CLI found on PATH: $($claudeCmd.Source)"
   } else {
     Install-ClaudeCli
   }
+  $codexCmd = Get-Command codex -ErrorAction SilentlyContinue
+  if ($codexCmd) {
+    Write-Ok "codex CLI found on PATH: $($codexCmd.Source)"
+  } else {
+    Install-CodexCli
+  }
 
   $loginOk = Test-ClaudeLogin
+  $codexLoginOk = Test-CodexLogin
 
   # Final checklist -- od sandbox status already reports Claude sandbox
   # image/auth-volume health (Docker sandbox specific); best-effort, never
@@ -949,6 +994,10 @@ function Step6-ClaudeAndSummary {
   Write-Host ""
   if (-not $loginOk) {
     Write-Host '  còn một bước: chạy `claude /login` để đăng nhập Claude Code.' -ForegroundColor Yellow
+    Write-Host ""
+  }
+  if (-not $codexLoginOk) {
+    Write-Host '  còn một bước: chạy `codex login` để đăng nhập Codex CLI.' -ForegroundColor Yellow
     Write-Host ""
   }
   Write-Host "  Update:    powershell -File $(Join-Path $OdHome 'current\install.ps1') -Update"
