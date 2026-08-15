@@ -132,6 +132,31 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
+      # The no-download CDN one-liner (`irm <url> | iex`, or
+      # `[scriptblock]::Create((irm <url>))` to pass flags) is the primary
+      # documented way to run this installer, and it decodes the HTTP body
+      # straight to a .NET string via Invoke-RestMethod -- a fundamentally
+      # different code path than reading the file from disk (which every
+      # other step below exercises via -Archive). A file-only smoke test
+      # already missed one real regression here (a UTF-8 BOM that fixed the
+      # file-read path but broke this one, since Invoke-RestMethod doesn't
+      # strip a leading BOM and it silences the parser's ability to
+      # recognize the opening `<#` block comment). This step fetches the
+      # script by raw commit SHA -- the exact bytes a real user's `irm`
+      # would get for this commit -- and proves it still parses AND
+      # executes via [scriptblock]::Create, independent of the tarball
+      # steps below.
+      - name: Smoke test install.ps1 via irm | iex (no local download)
+        shell: pwsh
+        run: |
+          $sha = git rev-parse HEAD
+          $rawUrl = "https://raw.githubusercontent.com/${{ github.repository }}/$sha/deploy/host/install.ps1"
+          $scriptText = Invoke-RestMethod -Uri $rawUrl -TimeoutSec 15
+          $sb = [scriptblock]::Create($scriptText)
+          & $sb -Help
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Help (via scriptblock, no local file) exited $LASTEXITCODE" }
+          Write-Host "[ok] install.ps1 fetched via irm and executed via [scriptblock]::Create without a parse error"
+
       - name: Download win32-x64 tarball
         uses: actions/download-artifact@v8
         with:
