@@ -20,3 +20,17 @@ export interface PutConfluenceConfigRequest {
    *  new token when the user actually types one. */
   token?: string;
 }
+
+export interface TestConfluenceConfigRequest {
+  base: string;
+  /** Empty/omitted tests the already-saved token instead of a fresh one. */
+  token?: string;
+}
+
+export interface TestConfluenceConfigResponse {
+  ok: boolean;
+  /** Human-readable failure reason, or a network/timeout message. */
+  detail?: string;
+  /** Confluence's own displayName/username for the authenticated user, when the daemon can read it back from a successful probe. */
+  displayName?: string;
+}

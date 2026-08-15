@@ -109,6 +109,67 @@ export async function writeConfluenceConfig(dataDir: string, body: unknown): Pro
   }
 }
 
+const TEST_TIMEOUT_MS = 12_000;
+
+function normalizeBase(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+export interface ConfluenceTestResult {
+  ok: boolean;
+  detail?: string;
+  displayName?: string;
+}
+
+/** Live probe used by the Settings "Test connection" button — hits
+ *  Confluence's own `/rest/api/user/current` (the standard lightweight
+ *  who-am-I endpoint on both Server/Data Center) with whatever base/token
+ *  the caller supplies, falling back to the already-saved token when the
+ *  request omits one (so a returning user can re-test without retyping it).
+ *  Never throws — every outcome (bad creds, unreachable host, timeout)
+ *  comes back as `{ ok: false, detail }` for the UI to render directly. */
+export async function testConfluenceConnection(dataDir: string, body: unknown): Promise<ConfluenceTestResult> {
+  const raw = isPlainObject(body) ? body : {};
+  const base = normalizeBase(typeof raw.base === 'string' ? raw.base : '');
+  const incomingToken = typeof raw.token === 'string' ? raw.token.trim() : '';
+  const token = incomingToken || (await readRaw(dataDir))?.token || '';
+  if (!base || !token) {
+    return { ok: false, detail: 'Cần nhập Base URL và Personal Access Token trước khi test.' };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${base}/rest/api/user/current`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, detail: `Token không hợp lệ hoặc đã hết hạn (HTTP ${res.status}).` };
+    }
+    if (!res.ok) {
+      return { ok: false, detail: `Confluence trả về lỗi HTTP ${res.status}.` };
+    }
+    let displayName: string | undefined;
+    try {
+      const data = JSON.parse(await res.text()) as { displayName?: string; username?: string };
+      displayName = data.displayName || data.username || undefined;
+    } catch {
+      /* connection + auth already succeeded even if the body isn't the expected shape */
+    }
+    return { ok: true, ...(displayName ? { displayName } : {}) };
+  } catch (err: unknown) {
+    if (controller.signal.aborted) {
+      return { ok: false, detail: 'Hết thời gian chờ phản hồi từ Confluence.' };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, detail: `Không thể kết nối tới ${base}: ${message}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function doWrite(dataDir: string, body: unknown): Promise<ConfluenceConfig> {
   const raw = isPlainObject(body) ? body : {};
   const base = typeof raw.base === 'string' ? raw.base.trim().replace(/\/+$/, '') : '';

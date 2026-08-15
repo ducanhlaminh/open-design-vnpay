@@ -79,4 +79,73 @@ describe('ConfluenceCredentialSection', () => {
     await waitFor(() => expect(screen.getByText('Saved')).toBeTruthy());
     await waitFor(() => expect((screen.getByTestId('confluence-config-token-input') as HTMLInputElement).value).toBe(''));
   });
+
+  it('defaults the base URL to wiki.servicehub.vn when nothing is saved yet, and links to the token-creation page', async () => {
+    fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
+      if (url === '/api/confluence-config' && (!init || !init.method)) {
+        return jsonResponse({ base: '', hasToken: false });
+      }
+      throw new Error(`unexpected fetch ${String(url)} ${init?.method ?? 'GET'}`);
+    });
+
+    render(<ConfluenceCredentialSection />);
+
+    const baseInput = (await screen.findByTestId('confluence-config-base-input')) as HTMLInputElement;
+    await waitFor(() => expect(baseInput.value).toBe('https://wiki.servicehub.vn'));
+
+    const link = screen.getByTestId('confluence-config-token-link') as HTMLAnchorElement;
+    expect(link.href).toBe('https://wiki.servicehub.vn/plugins/personalaccesstokens/usertokens.action');
+    expect(link.target).toBe('_blank');
+  });
+
+  it('Test connection posts the pasted token and shows the daemon result', async () => {
+    fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
+      if (url === '/api/confluence-config' && (!init || !init.method)) {
+        return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: false });
+      }
+      if (url === '/api/confluence-config/test' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        expect(body).toEqual({ base: 'https://wiki.servicehub.vn', token: 'pasted-token' });
+        return jsonResponse({ ok: true, displayName: 'Alice' });
+      }
+      throw new Error(`unexpected fetch ${String(url)} ${init?.method ?? 'GET'}`);
+    });
+
+    render(<ConfluenceCredentialSection />);
+
+    const tokenInput = (await screen.findByTestId('confluence-config-token-input')) as HTMLInputElement;
+    await waitFor(() => expect(tokenInput.disabled).toBe(false));
+    fireEvent.change(tokenInput, { target: { value: 'pasted-token' } });
+
+    const testButton = screen.getByTestId('confluence-config-test') as HTMLButtonElement;
+    expect(testButton.disabled).toBe(false);
+    fireEvent.click(testButton);
+
+    await waitFor(() => expect(screen.getByTestId('confluence-config-test-result').textContent).toBe('Connected as Alice.'));
+  });
+
+  it('Test connection surfaces a failure detail from the daemon', async () => {
+    fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
+      if (url === '/api/confluence-config' && (!init || !init.method)) {
+        return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: false });
+      }
+      if (url === '/api/confluence-config/test' && init?.method === 'POST') {
+        return jsonResponse({ ok: false, detail: 'Token khong hop le hoac da het han (HTTP 401).' });
+      }
+      throw new Error(`unexpected fetch ${String(url)} ${init?.method ?? 'GET'}`);
+    });
+
+    render(<ConfluenceCredentialSection />);
+
+    const tokenInput = (await screen.findByTestId('confluence-config-token-input')) as HTMLInputElement;
+    await waitFor(() => expect(tokenInput.disabled).toBe(false));
+    fireEvent.change(tokenInput, { target: { value: 'bad-token' } });
+    fireEvent.click(screen.getByTestId('confluence-config-test'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('confluence-config-test-result').textContent).toBe(
+        'Token khong hop le hoac da het han (HTTP 401).',
+      ),
+    );
+  });
 });

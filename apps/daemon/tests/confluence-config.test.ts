@@ -7,9 +7,9 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type http from 'node:http';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { readConfluenceConfig, writeConfluenceConfig } from '../src/confluence-config.js';
+import { readConfluenceConfig, testConfluenceConnection, writeConfluenceConfig } from '../src/confluence-config.js';
 import { writeMcpConfig } from '../src/mcp-config.js';
 import { startServer } from '../src/server.js';
 
@@ -124,6 +124,62 @@ describe('confluence-config storage', () => {
   });
 });
 
+describe('testConfluenceConnection', () => {
+  let dataDir: string;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(path.join(tmpdir(), 'od-confluencetest-'));
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('fails fast without calling Confluence when neither the request nor the saved config has a token', async () => {
+    const result = await testConfluenceConnection(dataDir, { base: 'https://wiki.example.test' });
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the already-saved token when the request omits one', async () => {
+    await writeConfluenceConfig(dataDir, { base: 'https://wiki.example.test', token: 'saved-token' });
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ displayName: 'Saved User' }), { status: 200 }),
+    );
+
+    const result = await testConfluenceConnection(dataDir, { base: 'https://wiki.example.test' });
+    expect(result).toEqual({ ok: true, displayName: 'Saved User' });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://wiki.example.test/rest/api/user/current');
+    expect((init.headers as Record<string, string>).authorization).toBe('Bearer saved-token');
+  });
+
+  it('normalizes a bare hostname (no scheme) to https before calling Confluence', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+    await testConfluenceConnection(dataDir, { base: 'wiki.servicehub.vn', token: 't' });
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe('https://wiki.servicehub.vn/rest/api/user/current');
+  });
+
+  it('reports an invalid-token detail on a 401 without throwing', async () => {
+    fetchMock.mockResolvedValue(new Response('unauthorized', { status: 401 }));
+    const result = await testConfluenceConnection(dataDir, { base: 'https://wiki.example.test', token: 'bad' });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/401/);
+  });
+
+  it('reports an unreachable-host detail when fetch itself throws', async () => {
+    fetchMock.mockRejectedValue(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }));
+    const result = await testConfluenceConnection(dataDir, { base: 'https://nope.example.test', token: 't' });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('https://nope.example.test');
+  });
+});
+
 describe('confluence-config routes', () => {
   let server: http.Server;
   let baseUrl: string;
@@ -169,5 +225,23 @@ describe('confluence-config routes', () => {
     const getBody = (await getRes.json()) as { base: string; hasToken: boolean };
     expect(getBody).toEqual({ base: 'https://route-test.example', hasToken: true });
     expect('token' in getBody).toBe(false);
+  });
+
+  it('POST /test reports ok:false without hitting the network when no credential is configured', async () => {
+    // Clears whatever the previous test in this file left behind.
+    await fetch(`${baseUrl}/api/confluence-config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ base: '', token: '' }),
+    });
+    const res = await fetch(`${baseUrl}/api/confluence-config/test`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ base: 'https://route-test.example' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; detail?: string };
+    expect(body.ok).toBe(false);
+    expect(body.detail).toBeTruthy();
   });
 });

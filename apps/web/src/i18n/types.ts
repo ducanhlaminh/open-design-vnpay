@@ -973,6 +973,13 @@ export interface Dict {
   'confluenceConfig.helpHint': string;
   'confluenceConfig.loadError': string;
   'confluenceConfig.saveError': string;
+  'confluenceConfig.tokenCreateLink': string;
+  'confluenceConfig.tokenInstructions': string;
+  'confluenceConfig.testButton': string;
+  'confluenceConfig.testing': string;
+  'confluenceConfig.testSuccess': string;
+  'confluenceConfig.testSuccessNamed': string;
+  'confluenceConfig.testFailed': string;
   'mcpClient.title': string;
   'mcpClient.subtitle': string;
   'mcpClient.addServer': string;
