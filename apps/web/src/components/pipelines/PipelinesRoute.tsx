@@ -33,6 +33,7 @@ import { EditFeatureModal } from './EditFeatureModal';
 import { NewAppModal } from './NewAppModal';
 import { NewFeatureModal } from './NewFeatureModal';
 import { PipelinesAppsView } from './PipelinesAppsView';
+import { PullSharedAppModal } from './PullSharedAppModal';
 import { PipelinesFeaturesView } from './PipelinesFeaturesView';
 import { PipelinePickerView } from './PipelinePickerView';
 import { applyProjectSync, getProjectSyncStatuses, listProjectSyncOrigins, planProjectSync } from '../../providers/project-sync';
@@ -108,6 +109,9 @@ export function PipelinesRoute() {
     scope: ProjectSyncScope;
     subjectName: string;
   } | null>(null);
+  // "Lấy dự án về máy" khi App chưa tồn tại cục bộ — không cần scope, chỉ có
+  // trạng thái mở/đóng: picker tự chọn App origin rồi tự tạo App cục bộ.
+  const [pullSharedOpen, setPullSharedOpen] = useState(false);
   const [shareDialog, setShareDialog] = useState<{
     initialFeatureIds: string[];
     initialAppIds: string[];
@@ -414,6 +418,7 @@ export function PipelinesRoute() {
           syncReady={syncAccess?.syncReady === true}
           syncIssue={syncAccess?.syncIssue}
           syncStatusByAppId={syncStatusByAppId}
+          onPullAll={() => setPullSharedOpen(true)}
           onPullApp={(app) => setSyncDialog({
             scope: { kind: 'app', projectId: app.id },
             subjectName: app.name,
@@ -442,6 +447,22 @@ export function PipelinesRoute() {
             void nav.reload();
             setSyncStatusReloadTick((tick) => tick + 1);
             setSyncToast({ message: 'Đã áp dụng đồng bộ với kho chung. Danh sách bản trên máy đang được làm mới.' });
+          }}
+        />
+      ) : null}
+      {pullSharedOpen ? (
+        <PullSharedAppModal
+          mappedOriginIds={new Set(
+            [...syncStatusByAppId.values()]
+              .filter((status) => status.mappingValid && status.origin)
+              .map((status) => status.origin!.originId),
+          )}
+          onClose={() => setPullSharedOpen(false)}
+          onApplied={() => {
+            setPullSharedOpen(false);
+            void nav.reload();
+            setSyncStatusReloadTick((tick) => tick + 1);
+            setSyncToast({ message: 'Đã lấy dự án về máy. Danh sách bản trên máy đang được làm mới.' });
           }}
         />
       ) : null}

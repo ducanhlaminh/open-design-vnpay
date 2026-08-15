@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ProjectSyncApplyResult,
+  ProjectSyncOriginSelection,
   ProjectSyncPlan,
   ProjectSyncResolution,
   ProjectSyncScope,
@@ -21,13 +22,18 @@ export interface ProjectSyncPreviewModalProps {
   scope: ProjectSyncScope;
   /** User-facing App/Feature name, used only in the dialog copy. */
   subjectName: string;
+  /** Explicit origin to plan against. Needed the first time a scope is
+   *  pulled — before it has a local `_studio/project-sync-mapping.json`,
+   *  the daemon has nothing to infer the origin from. Once that first
+   *  apply succeeds the mapping is written, so later opens can omit this. */
+  origin?: ProjectSyncOriginSelection;
   onClose: () => void;
   /** Caller refreshes cards/navigation after an accepted APPLY. */
   onApplied?: (result: ProjectSyncApplyResult) => void;
 }
 
 /** Pull-only preview: sharing now uses the common `PushAllModal` everywhere. */
-export function ProjectSyncPreviewModal({ scope, subjectName, onClose, onApplied }: ProjectSyncPreviewModalProps) {
+export function ProjectSyncPreviewModal({ scope, subjectName, origin, onClose, onApplied }: ProjectSyncPreviewModalProps) {
   const [plan, setPlan] = useState<ProjectSyncPlan | null>(null);
   const [resolutions, setResolutions] = useState<Record<string, ProjectSyncResolution>>({});
   const [loading, setLoading] = useState(true);
@@ -43,7 +49,7 @@ export function ProjectSyncPreviewModal({ scope, subjectName, onClose, onApplied
     setPlan(null);
     setResolutions({});
     try {
-      const nextPlan = await planProjectSync({ direction: 'pull', scope, includeDeleted: true });
+      const nextPlan = await planProjectSync({ direction: 'pull', scope, origin, includeDeleted: true });
       setPlan(nextPlan);
       setResolutions(Object.fromEntries(nextPlan.entries.map((entry) => [entry.path, entry.resolution])));
     } catch (cause) {
@@ -51,7 +57,7 @@ export function ProjectSyncPreviewModal({ scope, subjectName, onClose, onApplied
     } finally {
       setLoading(false);
     }
-  }, [scope]);
+  }, [scope, origin]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
