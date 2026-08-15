@@ -30,14 +30,23 @@ describe('resolveUpdateCommand', () => {
     });
   });
 
-  it('resolves to powershell -File install.ps1 -Update on win32, matching deploy/host/README.md', () => {
-    // README's documented Windows update command:
-    //   powershell -File $env:USERPROFILE\.open-design\current\install.ps1 -Update
-    // No -ExecutionPolicy Bypass — the README example doesn't use it, so
-    // this must not add it either.
+  it('resolves to a non-interactive powershell invocation of install.ps1 -Update on win32', () => {
+    // Must NOT match the README's bare interactive example — this spawn
+    // has no console/TTY (detached, windowsHide, stdio to a file), so it
+    // needs -NoProfile/-NonInteractive/-ExecutionPolicy Bypass to avoid
+    // exiting before running any script code. Verified live on Windows:
+    // without these flags, the daemon's spawn produced an empty
+    // update.log and never restarted the service, while the same command
+    // typed into an interactive shell completed normally.
     expect(resolveUpdateCommand(odHome, 'win32')).toEqual({
       cmd: 'powershell',
-      args: ['-File', join(odHome, 'current', 'install.ps1'), '-Update'],
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', join(odHome, 'current', 'install.ps1'),
+        '-Update',
+      ],
     });
   });
 

@@ -324,6 +324,12 @@ import {
   wrapInvocationInWriteIsolation,
   writeIsolationMode,
 } from './write-isolation.js';
+import {
+  planRestrictedTokenIsolation,
+  restrictedTokenIsolationMode,
+  wrapInvocationInRestrictedTokenIsolation,
+  type RestrictedTokenIsolationPlan,
+} from './write-isolation-windows.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
 import {
@@ -3136,7 +3142,23 @@ export function resolveUpdateCommand(
   if (platform === 'win32') {
     return {
       cmd: 'powershell',
-      args: ['-File', path.join(odHome, 'current', 'install.ps1'), '-Update'],
+      // -NoProfile/-NonInteractive/-ExecutionPolicy Bypass are required here
+      // (unlike the README's interactive example): this spawn has no
+      // console/TTY at all, so a profile script or an execution-policy
+      // prompt has nothing to read from and the process can exit before
+      // running any script code — silently, since stdio still resolves to
+      // an open fd either way. Confirmed via a live Windows repro: manual
+      // `-File ... -Update` in an interactive shell completed all 6 steps,
+      // but the identical command spawned by this daemon (detached,
+      // windowsHide, stdio redirected to a file) produced an empty
+      // update.log and never restarted the service.
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', path.join(odHome, 'current', 'install.ps1'),
+        '-Update',
+      ],
     };
   }
   return {
@@ -12534,54 +12556,83 @@ export async function startServer({
     }
 
     // ── Write isolation gate (docs/run-write-isolation-spec.md) ───────────
-    // Lightweight Seatbelt-based write-scope tier at the same seam as the
-    // docker sandbox decision above. Mutually exclusive with it: a docker
-    // sandboxed run is already stronger (siblings invisible, not just
-    // read-only), so it skips this tier entirely.
+    // Lightweight write-scope tier at the same seam as the docker sandbox
+    // decision above. Mutually exclusive with it: a docker sandboxed run is
+    // already stronger (siblings invisible, not just read-only), so it skips
+    // this tier entirely. Two backends, gated by host platform:
+    //   - darwin: Seatbelt (write-isolation.ts, unchanged by this branch).
+    //   - win32: restricted-token (write-isolation-windows.ts) — see
+    //     specs/change/20260814-windows-write-isolation/spec.md. Kept as a
+    //     SEPARATE plan variable (not a union with `writeIsolationPlan`) so
+    //     each backend's own plan shape stays exactly as write-isolation.ts
+    //     already had it — no cast, no shared discriminant to maintain.
+    //   - linux: neither backend applies (Phase 1, unisolated) — unchanged.
     let writeIsolationPlan = null;
+    let restrictedTokenPlan: RestrictedTokenIsolationPlan | null = null;
+    const isWindowsIsolationHost = process.platform === 'win32';
     if (!sandboxPlan) {
       let writeIsolationError = null;
       // `def.writableStatePaths` (e.g. codex → `.codex`) are bare,
       // HOME-relative segments — resolve them against the real home dir and
       // fold them into the same extraWritableDirs allowlist linkedDirs
       // already flows through, so a codex run can write its own session
-      // state (auth, PATH-alias shims) under the Seatbelt tier the same way
-      // it already can unisolated. Only ever contains THIS run's agent's
-      // paths, so e.g. a claude run's profile does not gain `~/.codex`.
+      // state (auth, PATH-alias shims) under the write-isolation tier the
+      // same way it already can unisolated. Only ever contains THIS run's
+      // agent's paths, so e.g. a claude run's profile does not gain
+      // `~/.codex`.
       const runtimeStateDirs = resolveWritableStatePaths(os.homedir(), def.writableStatePaths);
       try {
-        writeIsolationPlan = await planWriteIsolation({
-          cwd: effectiveCwd,
-          extraWritableDirs: [...linkedDirs, ...runtimeStateDirs],
-          runId,
-        });
+        if (isWindowsIsolationHost) {
+          restrictedTokenPlan = planRestrictedTokenIsolation({
+            cwd: effectiveCwd,
+            extraWritableRoots: [...linkedDirs, ...runtimeStateDirs],
+          });
+        } else {
+          writeIsolationPlan = await planWriteIsolation({
+            cwd: effectiveCwd,
+            extraWritableDirs: [...linkedDirs, ...runtimeStateDirs],
+            runId,
+          });
+        }
       } catch (err) {
         // planWriteIsolation can reject (bad cwd path chars, tmpdir write
         // failure) — caught locally so it can't escape this `if` and land in
         // runs.start's generic .catch (runs.ts), which fails the run without
         // running this branch's revokeToolToken/unregisterChatAgentEventSink
-        // cleanup below.
+        // cleanup below. planRestrictedTokenIsolation is pure and never
+        // throws, but stays inside the same try for one shared catch.
         writeIsolationPlan = null;
+        restrictedTokenPlan = null;
         writeIsolationError = err instanceof Error ? err.message : String(err);
       }
-      if (!writeIsolationPlan && writeIsolationMode() === 'required') {
+      const isolated = Boolean(writeIsolationPlan) || Boolean(restrictedTokenPlan);
+      const isolationMode = isWindowsIsolationHost ? restrictedTokenIsolationMode() : writeIsolationMode();
+      const unavailableReason = isWindowsIsolationHost
+        ? 'needs Windows + PowerShell 5.1+'
+        : 'needs macOS with /usr/bin/sandbox-exec';
+      if (!isolated && isolationMode === 'required') {
         revokeToolToken('child_exit');
         unregisterChatAgentEventSink();
-        send('error', createSseErrorPayload('WRITE_ISOLATION_UNAVAILABLE', 'Write isolation is required (OD_WRITE_ISOLATION=required) but unavailable on this host (needs macOS with /usr/bin/sandbox-exec).', { retryable: true }));
+        send('error', createSseErrorPayload('WRITE_ISOLATION_UNAVAILABLE', `Write isolation is required (OD_WRITE_ISOLATION=required) but unavailable on this host (${unavailableReason}).`, { retryable: true }));
         return design.runs.finish(run, 'failed', 1, null);
       }
-      if (!writeIsolationPlan && writeIsolationMode() === 'on') {
+      if (!isolated && isolationMode === 'on') {
         // Spec's "warn-and-run": mode 'on' isolates when possible but never
         // blocks the run when it can't — a loud stderr line instead of a
         // silently unisolated spawn.
         send('stderr', {
-          chunk: `\n[write-isolation] unavailable on this host (needs macOS + /usr/bin/sandbox-exec) — run is NOT write-isolated.${writeIsolationError ? ` (${writeIsolationError})` : ''}\n`,
+          chunk: `\n[write-isolation] unavailable on this host (${unavailableReason}) — run is NOT write-isolated.${writeIsolationError ? ` (${writeIsolationError})` : ''}\n`,
         });
       }
     }
     // Per-run profile file lives in its own mkdtemp'd dir (write-isolation.ts);
     // best-effort delete on every exit path below — it contains only paths,
-    // so a missed cleanup is not a leak of anything sensitive.
+    // so a missed cleanup is not a leak of anything sensitive. No equivalent
+    // is needed for `restrictedTokenPlan`: the Windows backend has no
+    // per-run FILE artifact on the daemon side (the generated PowerShell
+    // script embeds the writable-roots list as text, and its own planted ACE
+    // is cleaned up by the script itself before it exits — see
+    // write-isolation-windows.ts).
     const cleanupWriteIsolationProfile = () => {
       if (!writeIsolationPlan) return;
       void fs.promises.rm(path.dirname(writeIsolationPlan.profilePath), { recursive: true, force: true }).catch(() => {});
@@ -12627,7 +12678,7 @@ export async function startServer({
       runId,
       agentId,
       sandboxed: Boolean(sandboxPlan),
-      writeIsolated: Boolean(writeIsolationPlan),
+      writeIsolated: Boolean(writeIsolationPlan) || Boolean(restrictedTokenPlan),
       bin: userFacingAgentLabel(agentId, resolvedBin),
       streamFormat: def.streamFormat ?? 'plain',
       projectId: typeof projectId === 'string' ? projectId : null,
@@ -12732,6 +12783,13 @@ export async function startServer({
         });
       } else if (writeIsolationPlan) {
         const wrapped = wrapInvocationInWriteIsolation({ command: agentLaunch.launchPath ?? def.bin, args }, writeIsolationPlan);
+        invocation = createCommandInvocation({
+          command: wrapped.command,
+          args: wrapped.args,
+          env,
+        });
+      } else if (restrictedTokenPlan) {
+        const wrapped = wrapInvocationInRestrictedTokenIsolation({ command: agentLaunch.launchPath ?? def.bin, args }, restrictedTokenPlan);
         invocation = createCommandInvocation({
           command: wrapped.command,
           args: wrapped.args,
