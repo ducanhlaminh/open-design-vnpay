@@ -128,6 +128,7 @@ describe('host-runtime self-update routes', () => {
     // Keep the persistent-data-dir marker file from leaking between tests
     // that don't expect one.
     await rm(join(dataDir, 'update-marker.json'), { force: true }).catch(() => {});
+    await rm(join(dataDir, 'update.log'), { force: true }).catch(() => {});
   });
 
   describe('GET /api/update/status', () => {
@@ -241,6 +242,25 @@ setTimeout(() => {
       };
       expect(marker.version).toBe(FAKE_LATEST_VERSION);
       expect(typeof marker.at).toBe('number');
+    });
+
+    it('GET /status reports progress parsed from update.log while the apply is in progress', async () => {
+      // afterEach clears update.log between tests, so it's absent here —
+      // readUpdateProgress must treat that the same as "no phase line yet".
+      const noPhaseYet = await fetch(`${baseUrl}/api/update/status`);
+      const noPhaseBody = (await noPhaseYet.json()) as { progress: unknown };
+      expect(noPhaseBody.progress).toBeNull();
+
+      await writeFile(
+        join(dataDir, 'update.log'),
+        '\n\x1b[1m2/6 Kiem tra Node.js\x1b[0m\nsome other unrelated line\n',
+        'utf8',
+      );
+      const withPhase = await fetch(`${baseUrl}/api/update/status`);
+      const withPhaseBody = (await withPhase.json()) as {
+        progress: { step: number; totalSteps: number; label: string } | null;
+      };
+      expect(withPhaseBody.progress).toEqual({ step: 2, totalSteps: 6, label: 'Kiem tra Node.js' });
     });
 
     it('responds already-in-progress on a second call and still does not spawn again', async () => {

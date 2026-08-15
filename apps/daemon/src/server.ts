@@ -3154,6 +3154,45 @@ export function formatUpdateSpawnError(
   return { message: String((err as { message?: unknown })?.message ?? err), at };
 }
 
+// POST /api/update/apply redirects the child's stdout/stderr into this file
+// (see the spawn call below) instead of `stdio: 'ignore'`, so GET
+// /api/update/status can report coarse progress while this daemon process
+// is still alive to answer requests — install.sh/install.ps1 already print
+// one `phase "N/6 <label>"` / `Write-Phase "N/6 <label>"` line per step to
+// their own stdout for the human running them interactively; this just
+// captures the same lines instead of adding a second reporting mechanism.
+const UPDATE_LOG_FILENAME = 'update.log';
+const UPDATE_PHASE_LINE_RE = /^(\d+)\/(\d+)\s+(.+)$/;
+
+// install.sh colors its phase() output with ANSI SGR codes (install.ps1's
+// Write-Phase does not) — strip them so the regex above matches either.
+function stripAnsiCodes(line: string): string {
+  return line.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+// Best-effort parse of the CURRENT install phase from the tail of
+// update.log. Returns null before the first "N/6" line appears (still in
+// the unnumbered network-preflight phase) or once the log is missing/
+// unreadable (e.g. no update in progress) — this is advisory UI progress,
+// never load-bearing, so it never throws.
+export async function readUpdateProgress(
+  dataDir: string,
+): Promise<{ step: number; totalSteps: number; label: string } | null> {
+  try {
+    const raw = await fs.promises.readFile(path.join(dataDir, UPDATE_LOG_FILENAME), 'utf8');
+    const lines = raw.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const match = UPDATE_PHASE_LINE_RE.exec(stripAnsiCodes(lines[i]).trim());
+      if (match) {
+        return { step: Number(match[1]), totalSteps: Number(match[2]), label: match[3].trim() };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function bearerTokenFromRequest(req) {
   const header = req.get('authorization');
   if (typeof header !== 'string') return undefined;
@@ -5388,7 +5427,13 @@ export async function startServer({
       justUpdated = null;
     }
 
-    res.json({ currentVersion, latestVersion, updateAvailable, justUpdated, lastError: lastUpdateError });
+    // Only meaningful while THIS process is the one running the update —
+    // once it restarts onto the new version, the new process starts with
+    // `updateApplyInProgress` back at `false`, so this naturally goes quiet
+    // again without any extra reset logic.
+    const progress = updateApplyInProgress ? await readUpdateProgress(RUNTIME_DATA_DIR) : null;
+
+    res.json({ currentVersion, latestVersion, updateAvailable, justUpdated, lastError: lastUpdateError, progress });
   });
 
   app.post('/api/update/apply', async (_req, res) => {
@@ -5440,14 +5485,34 @@ export async function startServer({
         resolvedCmd = resolvedPowershell;
       }
 
+      // Truncate any previous run's log before this attempt — readUpdateProgress
+      // always reads the last matching line, so a stale leftover file could
+      // otherwise report a phase from an earlier, unrelated attempt.
+      let updateLogFd: number | 'ignore' = 'ignore';
+      try {
+        updateLogFd = fs.openSync(path.join(RUNTIME_DATA_DIR, UPDATE_LOG_FILENAME), 'w');
+      } catch {
+        // Progress just won't be reported this run — not fatal to the update itself.
+        updateLogFd = 'ignore';
+      }
       const child = spawn(resolvedCmd, args, {
         detached: true,
-        stdio: 'ignore',
+        stdio: ['ignore', updateLogFd, updateLogFd],
         // Without this, Node can flash a console window on Windows when
         // spawning a non-shell child outside a terminal (e.g. launched
         // from the tray/service, not an interactive console).
         ...(process.platform === 'win32' ? { windowsHide: true } : {}),
       });
+      // The child has its own duplicated fd now — release the parent's copy
+      // so a sequence of apply attempts over this process's lifetime can't
+      // leak file descriptors.
+      if (typeof updateLogFd === 'number') {
+        try {
+          fs.closeSync(updateLogFd);
+        } catch {
+          /* already closed / invalid — nothing to clean up */
+        }
+      }
       // A spawn-time failure (ENOENT from a missing bash/powershell, or an
       // install script that doesn't exist) previously vanished silently —
       // `detached: true, stdio: 'ignore'` with no `'error'` listener. This

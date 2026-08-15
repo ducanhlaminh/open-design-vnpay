@@ -21,6 +21,10 @@ interface UpdateStatusResponse {
   updateAvailable: boolean;
   justUpdated: { version: string; at: string } | null;
   lastError: { message: string; at: string } | null;
+  // Parsed from the running install.sh/install.ps1's own "N/6 <label>" phase
+  // output — only non-null while THIS daemon process is still the one
+  // applying the update (see server.ts's readUpdateProgress).
+  progress: { step: number; totalSteps: number; label: string } | null;
 }
 
 // Quiet background cadence when nothing is happening — 7 minutes is a
@@ -140,17 +144,32 @@ export function UpdateCheck() {
       ) : null}
       {status?.updateAvailable ? (
         <div className={styles.banner} role="status">
-          <span className={styles.bannerText}>
-            Có bản cập nhật mới: v{status.latestVersion} (đang chạy v{status.currentVersion})
-          </span>
-          <button
-            type="button"
-            className={styles.bannerBtn}
-            disabled={applying}
-            onClick={() => void startApply()}
-          >
-            {applying ? 'Đang cập nhật…' : 'Cập nhật ngay'}
-          </button>
+          <div className={styles.bannerRow}>
+            <span className={styles.bannerText}>
+              Có bản cập nhật mới: v{status.latestVersion} (đang chạy v{status.currentVersion})
+            </span>
+            <button
+              type="button"
+              className={styles.bannerBtn}
+              disabled={applying}
+              onClick={() => void startApply()}
+            >
+              {applying ? 'Đang cập nhật…' : 'Cập nhật ngay'}
+            </button>
+          </div>
+          {applying && status.progress ? (
+            <>
+              <span className={styles.progressLabel}>
+                Bước {status.progress.step}/{status.progress.totalSteps} — {status.progress.label}
+              </span>
+              <div className={styles.progressTrack}>
+                <div
+                  className={styles.progressFill}
+                  style={{ width: `${Math.round((status.progress.step / status.progress.totalSteps) * 100)}%` }}
+                />
+              </div>
+            </>
+          ) : null}
         </div>
       ) : null}
     </>
