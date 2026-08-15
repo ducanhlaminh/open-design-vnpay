@@ -157,6 +157,16 @@ if ($Help) {
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+# PS 7.3+ promotes any stderr line from a native command (schtasks, taskkill,
+# tar, rmdir, node -v, ...) into a terminating error whenever the process
+# exits non-zero -- even when the call already redirects stderr with
+# `2>$null`, since that redirect only moves where the text goes, not whether
+# PowerShell synthesizes an ErrorRecord from it. This script relies on
+# `2>$null` throughout for "best-effort, tolerate already-absent/expected
+# failures" native calls (e.g. `schtasks /Delete` on a task that doesn't
+# exist), so disable the promotion. Harmless no-op on PS 5.1/7.0-7.2, which
+# don't read this variable.
+$PSNativeCommandUseErrorActionPreference = $false
 
 # ---------------------------------------------------------------------------
 # Configuration -- mirrors install.sh's "Configuration" block.
