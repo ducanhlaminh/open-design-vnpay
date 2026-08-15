@@ -286,6 +286,108 @@ jobs:
           # unconditional best-effort teardown and must never fail the job.
           $global:LASTEXITCODE = 0
 
+  smoke-test-macos:
+    name: Smoke test install.sh (${{ matrix.platform }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            os: macos-14
+          - platform: darwin-x64
+            os: macos-15-intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Download ${{ matrix.platform }} tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: host-runtime-${{ matrix.platform }}
+          path: ${{ runner.temp }}/out
+
+      - name: Resolve archive path
+        id: archive
+        run: |
+          set -euo pipefail
+          tarball="$(ls "${{ runner.temp }}/out"/*.tar.gz | head -1)"
+          if [ -z "$tarball" ]; then echo "no .tar.gz found in ${{ runner.temp }}/out" >&2; exit 1; fi
+          echo "path=$tarball" >> "$GITHUB_OUTPUT"
+
+      # Full install: no --no-start, mirrors smoke-test-windows -- this
+      # actually starts the daemon and runs install.sh's own health-check/
+      # rollback loop, catching startup-time breakage a --no-start-only
+      # smoke test would miss. Was previously build-and-upload only, with
+      # zero runtime verification on macOS (either arch) -- unlike Windows,
+      # nothing here ever proved install.sh actually boots a working daemon.
+      - name: Run install.sh --archive <local> + verify daemon health
+        run: |
+          set -euo pipefail
+          bash "${{ github.workspace }}/deploy/host/install.sh" --archive "${{ steps.archive.outputs.path }}"
+
+          od_home="$HOME/.open-design"
+          current="$od_home/current"
+          config_env="$od_home/config.env"
+          pid_file="$od_home/open-design.pid"
+          plist="$HOME/Library/LaunchAgents/com.vnpay.open-design.plist"
+
+          [ -L "$current" ] || { echo "missing symlink $current"; exit 1; }
+          [ -f "$config_env" ] || { echo "missing $config_env"; exit 1; }
+          [ -f "$plist" ] || { echo "missing LaunchAgent plist $plist"; exit 1; }
+          [ -f "$pid_file" ] || { echo "missing $pid_file -- daemon never recorded a pid, so install.sh's own health check could not have passed"; exit 1; }
+
+          daemon_pid="$(cat "$pid_file")"
+          kill -0 "$daemon_pid" 2>/dev/null || { echo "daemon process (pid $daemon_pid) is not running"; exit 1; }
+
+          health="$(curl -fsS http://127.0.0.1:7456/api/health)"
+          echo "[ok] current -> $(readlink "$current")"
+          echo "[ok] config.env present"
+          echo "[ok] LaunchAgent installed: $plist"
+          echo "[ok] daemon process running (pid $daemon_pid)"
+          echo "[ok] /api/health responded: $health"
+
+          # Regression check for the config.env-never-reaches-the-process bug
+          # class (the Windows job checks the same thing for its platform):
+          # SKILLS_DIR only resolves correctly when OD_RESOURCE_ROOT from
+          # config.env actually reached the daemon's process env -- a bare
+          # /api/health 200 can't catch that; this can.
+          skills_count="$(curl -fsS http://127.0.0.1:7456/api/skills | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["skills"]))')"
+          if [ "$skills_count" -eq 0 ]; then echo "/api/skills returned 0 skills -- OD_RESOURCE_ROOT (from config.env) did not reach the daemon process"; exit 1; fi
+          echo "[ok] /api/skills returned $skills_count skills -- config.env reached the daemon process"
+
+          # install.sh has no --stop/--start flags (unlike install.ps1) --
+          # restart via the same launchctl kickstart the README documents
+          # for manual rollback/restart.
+          launchctl kickstart -k "gui/$(id -u)/com.vnpay.open-design"
+          ok=""
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:7456/api/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          [ -n "$ok" ] || { echo "daemon did not become healthy within 30s after launchctl kickstart"; exit 1; }
+          new_health="$(curl -fsS http://127.0.0.1:7456/api/health)"
+          echo "[ok] launchctl kickstart restarted the daemon, health: $new_health"
+
+      # install.sh has no --uninstall flag (install.ps1 has -Uninstall;
+      # this asymmetry is tracked, not accidental -- see deploy/host/README.md
+      # Uninstall section). This runs the exact manual steps README
+      # documents, doubling as this job's teardown regardless of whether the
+      # health-check step above passed.
+      - name: Test uninstall (README's documented manual steps)
+        if: always()
+        run: |
+          set -euo pipefail
+          launchctl bootout "gui/$(id -u)/com.vnpay.open-design" >/dev/null 2>&1 || true
+          rm -f "$HOME/Library/LaunchAgents/com.vnpay.open-design.plist"
+          rm -rf "$HOME/.open-design"
+          if [ -e "$HOME/.open-design" ]; then echo "$HOME/.open-design still exists after uninstall"; exit 1; fi
+          if [ -f "$HOME/Library/LaunchAgents/com.vnpay.open-design.plist" ]; then echo "LaunchAgent plist still exists after uninstall"; exit 1; fi
+          echo "[ok] uninstall removed $HOME/.open-design and the LaunchAgent"
+
   publish:
     name: Publish GitHub Release
     needs: build

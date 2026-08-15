@@ -36,12 +36,23 @@ checks — this is the reason for the minimum-version requirement.
 irm https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1 | iex
 ```
 
-Or, to pass flags (`iex` piped scripts can't take arguments — download it
-first):
+Or, to pass flags (`iex` piped scripts can't take arguments directly, but a
+scriptblock built from the same text can):
+
+```powershell
+iex "& { $(irm https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1) } -NoStart"
+```
+
+Both one-liners above run the script as a string, not a file, so they're
+unaffected by PowerShell's execution policy. If you'd rather keep a local
+copy (e.g. to inspect it first), most machines default to a policy that
+blocks running a downloaded `.ps1` directly — pass `-ExecutionPolicy Bypass`
+to the invocation (this only affects this one run, not your machine's
+persistent policy):
 
 ```powershell
 irm https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1 -OutFile install.ps1
-.\install.ps1 -NoStart
+powershell -ExecutionPolicy Bypass -File install.ps1 -NoStart
 ```
 
 `install.ps1` mirrors `install.sh` step-for-step, with native Windows
@@ -179,7 +190,7 @@ a value.
 Windows:
 
 ```powershell
-powershell -File $env:USERPROFILE\.open-design\current\install.ps1 -Update
+powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.open-design\current\install.ps1 -Update
 ```
 
 ## Rollback (manual)
@@ -204,8 +215,8 @@ Windows:
 cmd /c rmdir "$env:USERPROFILE\.open-design\current"
 New-Item -ItemType Junction -Path "$env:USERPROFILE\.open-design\current" `
   -Target "$env:USERPROFILE\.open-design\releases\<older-version>"
-install.ps1 -Stop
-install.ps1 -Start
+powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.open-design\current\install.ps1 -Stop
+powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.open-design\current\install.ps1 -Start
 ```
 
 ## Uninstall
@@ -226,9 +237,9 @@ rm -rf ~/.open-design
 Windows:
 
 ```powershell
-install.ps1 -Uninstall
+powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.open-design\current\install.ps1 -Uninstall
 # or, to also wipe project data in one step:
-install.ps1 -Uninstall -DeleteData
+powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.open-design\current\install.ps1 -Uninstall -DeleteData
 ```
 
 (equivalent by hand: stop the pid in `open-design.pid`, `schtasks /Delete
