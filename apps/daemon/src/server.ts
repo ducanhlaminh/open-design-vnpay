@@ -192,6 +192,7 @@ import { narrowProjectCritiqueOverride } from './critique/spawn-inputs.js';
 import { createCopilotStreamHandler } from './copilot-stream.js';
 import { createJsonEventStreamHandler } from './json-event-stream.js';
 import { classifyAgentAuthFailure, cursorAuthGuidance } from './runtimes/auth.js';
+import { resolveOnPath } from './runtimes/executables.js';
 import { createQoderStreamHandler } from './qoder-stream.js';
 import { subscribe as subscribeFileEvents } from './project-watchers.js';
 import { renderDesignSystemPreview } from './design-system-preview.js';
@@ -3111,6 +3112,48 @@ async function readHostRuntimeLatestReleaseInfo() {
 // doesn't wedge the daemon into "already-in-progress" forever.
 let updateApplyInProgress = false;
 
+// Last spawn-time failure from POST /api/update/apply, surfaced through
+// GET /api/update/status as `lastError`. Deliberately in-memory only (not
+// persisted to disk like the update marker above) — this only covers a
+// spawn ENOENT-class failure that happens BEFORE the child process gets a
+// chance to run, so THIS daemon process is still alive to report it; a
+// failure after that point (mid-install, or a health-check rollback) kills
+// this process and is out of scope here — see specs/change/
+// 20260815-host-update-ui-windows/spec.md "Ngoài phạm vi".
+let lastUpdateError: { message: string; at: string } | null = null;
+
+// Platform-aware seam for POST /api/update/apply: decides WHICH command to
+// run (`install.sh --update` on macOS/Linux, `install.ps1 -Update` via
+// powershell on Windows — the exact invocation documented in
+// deploy/host/README.md's "Update" section) without touching fs/spawn, so
+// it is unit-testable in isolation. The caller still owns resolving the
+// `powershell` binary itself (see `resolveOnPath` at the call site below)
+// since that involves a real PATH lookup this function must stay free of.
+export function resolveUpdateCommand(
+  odHome: string,
+  platform: NodeJS.Platform = process.platform,
+): { cmd: string; args: string[] } {
+  if (platform === 'win32') {
+    return {
+      cmd: 'powershell',
+      args: ['-File', path.join(odHome, 'current', 'install.ps1'), '-Update'],
+    };
+  }
+  return {
+    cmd: 'bash',
+    args: [path.join(odHome, 'current', 'install.sh'), '--update'],
+  };
+}
+
+// Normalizes a spawn-time (or pre-spawn resolution) failure into the shape
+// stored in `lastUpdateError` / returned by GET /api/update/status.
+export function formatUpdateSpawnError(
+  err: unknown,
+  at: string = new Date().toISOString(),
+): { message: string; at: string } {
+  return { message: String((err as { message?: unknown })?.message ?? err), at };
+}
+
 function bearerTokenFromRequest(req) {
   const header = req.get('authorization');
   if (typeof header !== 'string') return undefined;
@@ -5299,15 +5342,23 @@ export async function startServer({
   };
 
   // ---------------------------------------------------------------------
-  // Host-runtime self-update (fully automatic, no confirmation dialog —
-  // see specs/change/… for the tradeoff discussion). The web UI's
-  // UpdateCheck component polls GET /api/update/status in the background;
-  // when it reports `updateAvailable` it calls POST /api/update/apply
-  // once, which shells out to the already-tested
-  // `deploy/host/install.sh --update` (download, verify sha256, extract,
-  // repoint `current`, restart the service, health-check with automatic
-  // rollback) and returns immediately — the daemon cannot await its own
-  // restart, since the update kills this very process partway through.
+  // Host-runtime self-update, UI/CLI-triggered (see specs/change/
+  // 20260815-host-update-ui-windows/spec.md — was fully automatic/silent
+  // before this change; the repo owner asked for an explicit user action
+  // instead). The web UI's UpdateCheck component polls GET
+  // /api/update/status in the background and, when it reports
+  // `updateAvailable`, shows a banner with a button the user must click;
+  // `od self-update apply` is the CLI-side equivalent. Either caller hits
+  // POST /api/update/apply, which shells out to the already-tested
+  // `deploy/host/install.sh --update` on macOS/Linux or
+  // `powershell -File install.ps1 -Update` on Windows (download, verify
+  // sha256, extract, repoint `current`, restart the service, health-check
+  // with automatic rollback) and returns immediately — the daemon cannot
+  // await its own restart, since the update kills this very process
+  // partway through. A spawn-time failure (e.g. missing `bash`/
+  // `powershell`) is caught via the child's `'error'` event and surfaced
+  // through `lastUpdateError` / GET /api/update/status's `lastError`
+  // instead of failing silently.
   // ---------------------------------------------------------------------
   app.get('/api/update/status', async (_req, res) => {
     const versionInfo = await readCurrentAppVersionInfo();
@@ -5337,7 +5388,7 @@ export async function startServer({
       justUpdated = null;
     }
 
-    res.json({ currentVersion, latestVersion, updateAvailable, justUpdated });
+    res.json({ currentVersion, latestVersion, updateAvailable, justUpdated, lastError: lastUpdateError });
   });
 
   app.post('/api/update/apply', async (_req, res) => {
@@ -5356,6 +5407,9 @@ export async function startServer({
     // the `updateApplyInProgress` check above — Node runs each handler's
     // synchronous prefix to completion before yielding to the next.
     updateApplyInProgress = true;
+    // Fresh attempt — clear any error left over from a previous failed
+    // attempt so the UI/CLI don't keep reporting a stale failure.
+    lastUpdateError = null;
     try {
       const release = await readHostRuntimeLatestReleaseInfo();
       const targetVersion = release?.version;
@@ -5368,8 +5422,42 @@ export async function startServer({
       // just in memory (this process is about to be killed).
       await writeUpdateMarker(RUNTIME_DATA_DIR, targetVersion);
 
-      const installScript = path.join(odHome, 'current', 'install.sh');
-      const child = spawn('bash', [installScript, '--update'], { detached: true, stdio: 'ignore' });
+      const { cmd, args } = resolveUpdateCommand(odHome, process.platform);
+      let resolvedCmd = cmd;
+      if (process.platform === 'win32') {
+        // `cmd` is 'powershell' on this branch — resolve it through PATH/
+        // PATHEXT the same way every other Windows executable lookup in
+        // this daemon does (see `apps/daemon/src/runtimes/executables.ts`)
+        // instead of trusting the bare name to `spawn`. Almost never null
+        // in practice, but a null here means spawning would ENOENT anyway
+        // — report it as a real error instead of spawning blind.
+        const resolvedPowershell = resolveOnPath(cmd);
+        if (!resolvedPowershell) {
+          const notFoundError = new Error(`"${cmd}" not found on PATH`);
+          lastUpdateError = formatUpdateSpawnError(notFoundError);
+          throw notFoundError;
+        }
+        resolvedCmd = resolvedPowershell;
+      }
+
+      const child = spawn(resolvedCmd, args, {
+        detached: true,
+        stdio: 'ignore',
+        // Without this, Node can flash a console window on Windows when
+        // spawning a non-shell child outside a terminal (e.g. launched
+        // from the tray/service, not an interactive console).
+        ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+      });
+      // A spawn-time failure (ENOENT from a missing bash/powershell, or an
+      // install script that doesn't exist) previously vanished silently —
+      // `detached: true, stdio: 'ignore'` with no `'error'` listener. This
+      // only catches failures BEFORE the child starts running; a failure
+      // mid-install (or a health-check rollback) kills this daemon process
+      // first and is out of scope here (see spec's "Ngoài phạm vi").
+      child.on('error', (err) => {
+        lastUpdateError = formatUpdateSpawnError(err);
+        updateApplyInProgress = false;
+      });
       child.unref();
 
       res.json({ started: true });

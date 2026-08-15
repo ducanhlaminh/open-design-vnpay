@@ -37,9 +37,12 @@ vi.mock('node:child_process', async (importOriginal) => {
     const isUpdateSpawn = Array.isArray(argv) && argv.some((a) => typeof a === 'string' && a.includes('install.sh'));
     if (isUpdateSpawn) {
       spawnCalls.push({ command, args: argv });
-      // Never actually shell out — return a stand-in with the two
-      // methods/props the route touches (`child.unref()`, `child.pid`).
-      return { unref: () => {}, pid: 999_999 };
+      // Never actually shell out — return a stand-in with the
+      // methods/props the route touches: `child.unref()`, `child.pid`,
+      // and `child.on('error', ...)` (added alongside the Windows-support
+      // change — see specs/change/20260815-host-update-ui-windows) to
+      // catch a spawn-time failure that previously vanished silently.
+      return { unref: () => {}, on: () => {}, pid: 999_999 };
     }
     return rawSpawn(command, argv, options);
   }) as typeof actual.spawn;

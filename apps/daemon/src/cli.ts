@@ -450,6 +450,69 @@ async function runProjectSync(args) {
   process.exit(2);
 }
 
+// ---------------------------------------------------------------------------
+// Subcommand: od self-update [check|apply]
+//
+// Thin HTTP client mirroring the web UI's UpdateCheck.tsx banner — same
+// GET /api/update/status / POST /api/update/apply the daemon already
+// exposes, no update logic re-implemented here (dual-track requirement,
+// AGENTS.md "Capability exposure (UI/CLI dual-track)").
+// ---------------------------------------------------------------------------
+
+const SELF_UPDATE_STRING_FLAGS = new Set(['daemon-url']);
+const SELF_UPDATE_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
+
+function printSelfUpdateHelp() {
+  console.log(`Usage:
+  od self-update [check] [--json]   Check for a newer host-runtime release.
+  od self-update apply [--json]     Start applying the update (fire-and-forget —
+                                     the daemon restarts itself partway through).
+
+All subcommands accept --daemon-url <url>.`);
+}
+
+async function runSelfUpdate(args) {
+  if (args.includes('--help') || args.includes('-h') || args[0] === 'help') {
+    printSelfUpdateHelp();
+    process.exit(0);
+  }
+  const hasSubcommand = args[0] === 'check' || args[0] === 'apply';
+  const sub = hasSubcommand ? args[0] : 'check';
+  const rest = hasSubcommand ? args.slice(1) : args;
+  const flags = parseFlags(rest, {
+    string: SELF_UPDATE_STRING_FLAGS,
+    boolean: SELF_UPDATE_BOOLEAN_FLAGS,
+  });
+  const base = await cliDaemonBaseUrl(flags);
+
+  if (sub === 'apply') {
+    const resp = await fetch(`${base}/api/update/apply`, { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (flags.json) {
+      process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    } else if (data.started) {
+      console.log('update started');
+    } else {
+      console.log(`update not started (${data.reason ?? 'unknown'})${data.error ? `: ${data.error}` : ''}`);
+    }
+    if (!resp.ok || data.started === false) process.exitCode = 1;
+    return;
+  }
+
+  // sub === 'check' (also the no-args default).
+  const resp = await fetch(`${base}/api/update/status`);
+  const data = await resp.json().catch(() => ({}));
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    return;
+  }
+  console.log(`current version: ${data.currentVersion ?? '?'}`);
+  console.log(`latest version:  ${data.latestVersion ?? '?'}`);
+  console.log(`update available: ${data.updateAvailable ? 'yes' : 'no'}`);
+  if (data.justUpdated) console.log(`just updated to ${data.justUpdated.version} at ${data.justUpdated.at}`);
+  if (data.lastError) console.log(`last error: ${data.lastError.message} (${data.lastError.at})`);
+}
+
 const SUBCOMMAND_MAP = {
   kb: runKb,
   'app-context': runAppContext,
@@ -479,6 +542,7 @@ const SUBCOMMAND_MAP = {
   craft: runCraft,
   diagnostics: runDiagnostics,
   sandbox: runSandbox,
+  'self-update': runSelfUpdate,
   status: runStatus,
   version: runVersion,
   doctor: runDoctor,
@@ -587,6 +651,11 @@ function printRootHelp() {
       routines — default skills '*') inside an isolated Docker container.
       status/enable/disable talk to the daemon; build/login/ps/kill drive
       docker on this machine.
+
+  od self-update [check|apply] [--json]
+      Check for (or start applying) a newer host-runtime release. CLI mirror
+      of the web UI's update banner — same GET /api/update/status / POST
+      /api/update/apply the daemon exposes.
 
   "$OD_NODE_BIN" "$OD_BIN" tools ...
       Recommended agent-runtime form; avoids relying on user PATH for od or node.
