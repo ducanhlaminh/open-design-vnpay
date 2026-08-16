@@ -167,7 +167,10 @@ describe('pipeline app/feature edit routes', () => {
     expect(res.status).toBe(200);
     // remoteSynced: null vì XPOS chưa từng có trên remote (registry mặc định
     // coi như store chết trong beforeEach ở trên).
-    expect(res.body).toEqual({ id: 'XPOS', name: 'X POS mới', designSystemId: null, remoteSynced: null });
+    expect(res.body).toEqual({
+      id: 'XPOS', name: 'X POS mới', designSystemId: null,
+      docsReviewComponentSource: { mode: 'app-design-system' }, remoteSynced: null,
+    });
 
     expect(listPipelineApps(db)).toEqual([
       expect.objectContaining({ id: 'XPOS', name: 'X POS mới' }),
@@ -197,7 +200,10 @@ describe('pipeline app/feature edit routes', () => {
 
     const res = await patchApp('XPOS', { name: 'X POS mới' });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'XPOS', name: 'X POS mới', designSystemId: null, remoteSynced: true });
+    expect(res.body).toEqual({
+      id: 'XPOS', name: 'X POS mới', designSystemId: null,
+      docsReviewComponentSource: { mode: 'app-design-system' }, remoteSynced: true,
+    });
 
     expect(mediaState.syncCalls).toHaveLength(1);
     expect(mediaState.syncCalls[0]!.projectId).toBe('XPOS');
@@ -235,7 +241,10 @@ describe('pipeline app/feature edit routes', () => {
 
     const res = await patchApp('BROKEN', { name: 'Broken mới' });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'BROKEN', name: 'Broken mới', designSystemId: null, remoteSynced: false });
+    expect(res.body).toEqual({
+      id: 'BROKEN', name: 'Broken mới', designSystemId: null,
+      docsReviewComponentSource: { mode: 'app-design-system' }, remoteSynced: false,
+    });
     expect(mediaState.syncCalls).toHaveLength(0);
     // Rename local không bị fail lây bởi remote lỗi.
     expect(listPipelineApps(db)).toEqual([
@@ -249,7 +258,10 @@ describe('pipeline app/feature edit routes', () => {
 
     const res = await patchApp('LOCALONLY', { name: 'Local Only mới' });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'LOCALONLY', name: 'Local Only mới', designSystemId: null, remoteSynced: null });
+    expect(res.body).toEqual({
+      id: 'LOCALONLY', name: 'Local Only mới', designSystemId: null,
+      docsReviewComponentSource: { mode: 'app-design-system' }, remoteSynced: null,
+    });
     expect(mediaState.downloadCalls).toHaveLength(0);
     expect(mediaState.syncCalls).toHaveLength(0);
   });
@@ -258,7 +270,7 @@ describe('pipeline app/feature edit routes', () => {
     expect((await postApp({ appId: 'XPOS', name: 'X POS' })).status).toBe(201);
     const empty = await patchApp('XPOS', { name: '   ' });
     expect(empty.status).toBe(400);
-    expect(empty.body.error).toMatch(/name or designSystemId is required/);
+    expect(empty.body.error).toMatch(/name, designSystemId or docsReviewComponentSource is required/);
 
     const missing = await patchApp('NOPE', { name: 'Nope' });
     expect(missing.status).toBe(404);

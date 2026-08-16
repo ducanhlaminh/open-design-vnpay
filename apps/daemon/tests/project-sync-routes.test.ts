@@ -25,6 +25,17 @@ vi.mock('../src/db.js', () => ({
   upsertPipelineAppName: (_db: unknown, value: { id: string; name: string }) => {
     if (state.failAppUpsert) throw new Error('app upsert failed');
     state.appUpserts.push(value);
+    const existing = state.pipelineApps.find((row) => row.id === value.id);
+    if (existing) existing.name = value.name;
+    else state.pipelineApps.push({ id: value.id, name: value.name });
+  },
+  setPipelineAppDesignSystem: (_db: unknown, value: { id: string; designSystemId: string | null }) => {
+    const app = state.pipelineApps.find((row) => row.id === value.id);
+    if (app) Object.assign(app, { designSystemId: value.designSystemId });
+  },
+  setPipelineAppDocsReviewComponentSource: (_db: unknown, value: { id: string; source: unknown }) => {
+    const app = state.pipelineApps.find((row) => row.id === value.id);
+    if (app) Object.assign(app, { docsReviewComponentSource: value.source });
   },
 }));
 vi.mock('../src/kg-sync/remote-registry.js', () => ({
@@ -473,7 +484,10 @@ describe('project-sync route contract', () => {
       ];
       state.mediaFiles = {
         'shared-app': [
-          { path: 'app.json', checksum: 'remote-app', content: JSON.stringify({ kind: 'app', name: 'Shared App' }) },
+          { path: 'app.json', checksum: 'remote-app', content: JSON.stringify({
+            kind: 'app', name: 'Shared App', designSystemId: 'shared-ds',
+            docsReviewComponentSource: { mode: 'figma-links', links: [{ url: 'https://www.figma.com/design/ABC123', fileKey: 'ABC123' }] },
+          }) },
           { path: 'context/current.json', checksum: 'current-v2', content: JSON.stringify({ schemaVersion: 1, appId: 'shared-app', contextVersion: 'v2' }) },
           { path: 'context/versions/v1/manifest.json', checksum: 'manifest-v1', content: '{"contextVersion":"v1"}' },
           { path: 'context/versions/v1/files/app-context/old.md', checksum: 'old-v1', content: 'old' },
@@ -507,6 +521,11 @@ describe('project-sync route contract', () => {
       expect(applied.body.data.stale).toEqual([]);
       expect(state.appUpserts).toHaveLength(1);
       expect(state.appUpserts[0]).toMatchObject({ id: 'local-app', name: 'Shared App' });
+      expect(state.pipelineApps[0]).toMatchObject({
+        id: 'local-app',
+        designSystemId: 'shared-ds',
+        docsReviewComponentSource: { mode: 'figma-links', links: [{ fileKey: 'ABC123' }] },
+      });
       expect(JSON.parse(await fs.readFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), 'utf8'))).toMatchObject({
         schemaVersion: 1,
         localId: 'local-app',

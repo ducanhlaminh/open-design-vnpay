@@ -495,6 +495,25 @@ export interface CreatePipelineProjectResponse {
   name: string;
 }
 
+/** One validated Figma Design file used as a docs-review component source. */
+export interface DocsReviewFigmaLink {
+  /** Canonical Figma URL (host/path plus an optional normalized node-id). */
+  url: string;
+  /** Stable file identity parsed from `/design/:key` or legacy `/file/:key`. */
+  fileKey: string;
+  /** Optional Figma node identity, normalized to API form (`123:456`). */
+  nodeId?: string;
+}
+
+/**
+ * Component catalogue source for the docs-review Screen → Component stage.
+ * This is deliberately separate from `designSystemId`: the latter remains the
+ * App's imported DS and continues to serve every existing workflow.
+ */
+export type DocsReviewComponentSource =
+  | { mode: 'app-design-system' }
+  | { mode: 'figma-links'; links: DocsReviewFigmaLink[] };
+
 // One App container that exists on this device (`GET /api/pipelines/apps`).
 // Remote-only Apps are deliberately listed through the remote registry API
 // used by the Pull flow; mixing them into this response makes a locally
@@ -524,6 +543,11 @@ export interface PipelineApp {
    * định trong skill.
    */
   designSystemId?: string | null;
+  /**
+   * Source used only by docs-review's component audit. Legacy Apps default to
+   * `app-design-system`; Figma mode contains 1–5 unique, validated files.
+   */
+  docsReviewComponentSource: DocsReviewComponentSource;
   /** Version information for the tree Push/Pull UI. Absent on legacy/server-only Apps. */
   context?: {
     current: AppContextManifest | null;

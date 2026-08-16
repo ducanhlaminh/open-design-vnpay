@@ -7,10 +7,12 @@
 // `hasToken` — the token field below never round-trips a saved secret back
 // into the input; an unedited (empty) field on Save keeps the existing one.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchConfluenceConfig, saveConfluenceConfig, testConfluenceConnection } from '../state/confluence-config';
 import { useT } from '../i18n';
 import { Icon } from './Icon';
+import { ConfluenceTokenGuideModal } from './ConfluenceTokenGuideModal';
+import styles from './ConfluenceTokenGuideModal.module.css';
 
 // VNPAY's own Confluence — pre-filled so a first-time user never has to
 // know or type the base URL themselves; still fully editable for anyone
@@ -46,6 +48,8 @@ export function ConfluenceCredentialSection() {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testState, setTestState] = useState<TestState>({ status: 'idle' });
+  const [guideOpen, setGuideOpen] = useState(false);
+  const tokenInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,7 +134,7 @@ export function ConfluenceCredentialSection() {
         </div>
       </label>
 
-      <label className="field">
+      <div className="field">
         <span className="field-label-row">
           <span className="field-label-group">
             <span className="field-label">{t('confluenceConfig.tokenLabel')}</span>
@@ -140,22 +144,30 @@ export function ConfluenceCredentialSection() {
               </span>
             ) : null}
           </span>
-          {tokenUrl ? (
-            <a
-              className="field-label-link"
-              href={tokenUrl}
-              target="_blank"
-              rel="noreferrer"
-              data-testid="confluence-config-token-link"
-            >
-              <Icon name="external-link" size={11} />
-              {t('confluenceConfig.tokenCreateLink')}
-            </a>
-          ) : null}
+          <span className={styles.tokenActions}>
+            {tokenUrl ? (
+              <button type="button" className={styles.guideButton} onClick={() => setGuideOpen(true)}>
+                <Icon name="info" size={12} /> Hướng dẫn lấy token
+              </button>
+            ) : null}
+            {tokenUrl ? (
+              <a
+                className="field-label-link"
+                href={tokenUrl}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="confluence-config-token-link"
+              >
+                <Icon name="external-link" size={11} />
+                {t('confluenceConfig.tokenCreateLink')}
+              </a>
+            ) : null}
+          </span>
         </span>
         <p className="hint">{t('confluenceConfig.tokenInstructions')}</p>
         <div className="field-row">
           <input
+            ref={tokenInputRef}
             type="password"
             value={tokenDraft}
             disabled={!loaded || saving}
@@ -204,7 +216,7 @@ export function ConfluenceCredentialSection() {
               : testState.detail || t('confluenceConfig.testFailed')}
           </span>
         ) : null}
-      </label>
+      </div>
 
       <div className="section-head-actions">
         <button
@@ -222,6 +234,19 @@ export function ConfluenceCredentialSection() {
       <span className="hint" role={error ? 'alert' : undefined}>
         {error ?? (savedAt ? t('confluenceConfig.savedHint') : t('confluenceConfig.helpHint'))}
       </span>
+
+      {guideOpen && tokenUrl ? (
+        <ConfluenceTokenGuideModal
+          tokenUrl={tokenUrl}
+          onClose={() => setGuideOpen(false)}
+          onUseToken={(token) => {
+            setTokenDraft(token);
+            setTestState({ status: 'idle' });
+            setGuideOpen(false);
+            window.requestAnimationFrame(() => tokenInputRef.current?.focus());
+          }}
+        />
+      ) : null}
     </section>
   );
 }

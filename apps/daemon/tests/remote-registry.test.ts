@@ -20,8 +20,8 @@ import type { RemoteProject } from '@open-design/contracts';
 describe('mergeRemoteProjects', () => {
   it('builds project rows from media, sorted by id', () => {
     const merged = mergeRemoteProjects([
-      { projectId: 'b-both', files: 5, isApp: false },
-      { projectId: 'c-media', files: 2, isApp: false },
+      { projectId: 'b-both', name: 'b-both', files: 5, isApp: false },
+      { projectId: 'c-media', name: 'c-media', files: 2, isApp: false },
     ]);
     expect(merged).toEqual([
       { projectId: 'b-both', name: 'b-both', inMedia: true, files: 5, isApp: false, visibility: 'visible' },
@@ -29,9 +29,12 @@ describe('mergeRemoteProjects', () => {
     ]);
   });
 
-  it('uses projectId as name', () => {
-    const merged = mergeRemoteProjects([{ projectId: 'orphan', files: 1, isApp: false }]);
-    expect(merged[0]).toMatchObject({ projectId: 'orphan', name: 'orphan', inMedia: true });
+  it('passes the caller-resolved name through verbatim — NOT derived from projectId', () => {
+    // mergeRemoteProjects is a pure passthrough; resolving a real display
+    // name from project.json (falling back to the folder id) is
+    // loadRemoteProjects' job, covered separately below.
+    const merged = mergeRemoteProjects([{ projectId: 'orphan', name: 'Orphan Feature', files: 1, isApp: false }]);
+    expect(merged[0]).toMatchObject({ projectId: 'orphan', name: 'Orphan Feature', inMedia: true });
   });
 
   it('passes the caller-resolved isApp flag through verbatim — NOT derived from projectId shape', () => {
@@ -39,10 +42,10 @@ describe('mergeRemoteProjects', () => {
     // loadRemoteProjects from the media folder's own file listing (an
     // `app.json` marker — see APP_MARKER_PATH), never from the id string.
     // mergeRemoteProjects itself is a pure passthrough for that flag.
-    const app = mergeRemoteProjects([{ projectId: 'bidv', files: 2, isApp: true }]);
+    const app = mergeRemoteProjects([{ projectId: 'bidv', name: 'bidv', files: 2, isApp: true }]);
     expect(app[0]).toMatchObject({ projectId: 'bidv', isApp: true });
 
-    const feature = mergeRemoteProjects([{ projectId: 'app--onboarding', files: 0, isApp: false }]);
+    const feature = mergeRemoteProjects([{ projectId: 'app--onboarding', name: 'app--onboarding', files: 0, isApp: false }]);
     expect(feature[0]).toMatchObject({ projectId: 'app--onboarding', isApp: false });
   });
 });
@@ -148,7 +151,49 @@ describe('loadRemoteProjects', () => {
         hiddenAt: '2026-08-12T00:00:00.000Z',
       }),
     ]);
-    expect(downloads).toEqual([`old-project/${PROJECT_LIFECYCLE_PATH}`]);
+    expect(downloads.sort()).toEqual([
+      `old-project/${PROJECT_LIFECYCLE_PATH}`,
+      'old-project/project.json',
+    ]);
+  });
+
+  it("reads the display name from project.json, falling back to the folder id", async () => {
+    const media: FolderSource = {
+      listFolders: async () => [
+        { id: 'f1', name: 'app--bidv--fe206e0a' },
+        { id: 'f2', name: 'app--ke_toan--3e3b2ac4' },
+      ],
+      listAllFiles: async () => [{ path: 'project.json' }],
+      downloadFile: async (projectId) => Buffer.from(JSON.stringify(
+        projectId === 'app--bidv--fe206e0a' ? { name: 'BIDV' } : { appId: null },
+      )),
+    };
+
+    const rows = await loadRemoteProjects(media);
+    const byId = Object.fromEntries(rows.map((r) => [r.projectId, r.name]));
+    expect(byId).toEqual({
+      'app--bidv--fe206e0a': 'BIDV',
+      'app--ke_toan--3e3b2ac4': 'app--ke_toan--3e3b2ac4',
+    });
+  });
+
+  it("prefers an App row's app.json name over project.json — app.json is what Open Design actually publishes", async () => {
+    // Regression: the share/pull pickers were showing raw folder ids
+    // (app--bidv--fe206e0a) for Apps because loadRemoteProjects either read
+    // no name at all, or (once that was fixed) only checked project.json —
+    // an App's real name lives in app.json (server.ts's syncStudioConfig
+    // resolves an App's name the same way: app.json first, project.json as
+    // legacy fallback).
+    const media: FolderSource = {
+      listFolders: async () => [{ id: 'f1', name: 'app--bidv--fe206e0a' }],
+      listAllFiles: async () => [{ path: APP_MARKER_PATH }, { path: 'project.json' }],
+      downloadFile: async (_projectId, filePath) => Buffer.from(JSON.stringify(
+        filePath === APP_MARKER_PATH ? { kind: 'app', name: 'BIDV' } : { name: 'stale-legacy-name' },
+      )),
+    };
+
+    const rows = await loadRemoteProjects(media);
+    expect(rows[0]).toMatchObject({ projectId: 'app--bidv--fe206e0a', name: 'BIDV', isApp: true });
   });
 
   it('keeps legacy and malformed lifecycle projects visible and isolates the warning', async () => {
@@ -169,11 +214,11 @@ describe('loadRemoteProjects', () => {
     };
 
     const rows = await loadRemoteProjects(media);
-    expect(rows.map(({ projectId, visibility }) => ({ projectId, visibility }))).toEqual([
-      { projectId: 'bad', visibility: 'visible' },
-      { projectId: 'legacy', visibility: 'visible' },
+    expect(rows.map(({ projectId, visibility, name }) => ({ projectId, visibility, name }))).toEqual([
+      { projectId: 'bad', visibility: 'visible', name: 'bad' },
+      { projectId: 'legacy', visibility: 'visible', name: 'legacy' },
     ]);
-    expect(downloads).toEqual(['bad']);
+    expect(downloads.sort()).toEqual(['bad', 'legacy']);
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
   });

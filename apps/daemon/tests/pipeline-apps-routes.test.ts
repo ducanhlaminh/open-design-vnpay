@@ -110,10 +110,16 @@ describe('pipeline apps routes', () => {
   it('creates a 0-feature app and lists it locally', async () => {
     const created = await postApp({ appId: 'XPOS', name: 'X POS' });
     expect(created.status).toBe(201);
-    expect(created.body).toEqual({ id: 'XPOS', name: 'X POS', designSystemId: null });
+    expect(created.body).toEqual({
+      id: 'XPOS', name: 'X POS', designSystemId: null,
+      docsReviewComponentSource: { mode: 'app-design-system' },
+    });
 
     const listed = await listApps();
-    expect(listed.body).toEqual({ apps: [{ id: 'XPOS', name: 'X POS', designSystemId: null, origin: 'local' }] });
+    expect(listed.body).toEqual({ apps: [{
+      id: 'XPOS', name: 'X POS', designSystemId: null,
+      docsReviewComponentSource: { mode: 'app-design-system' }, origin: 'local',
+    }] });
   });
 
   it('rejects an id pipeline-studio would never accept', async () => {
@@ -153,9 +159,69 @@ describe('pipeline apps routes', () => {
 
     expect((await listApps()).body).toEqual({
       apps: [
-        { id: 'VNPAY', name: 'VNPAY App', designSystemId: null, origin: 'local' },
-        { id: 'XPOS', name: 'X POS', designSystemId: null, origin: 'local' },
+        {
+          id: 'VNPAY', name: 'VNPAY App', designSystemId: null,
+          docsReviewComponentSource: { mode: 'app-design-system' }, origin: 'local',
+        },
+        {
+          id: 'XPOS', name: 'X POS', designSystemId: null,
+          docsReviewComponentSource: { mode: 'app-design-system' }, origin: 'local',
+        },
       ],
     });
+  });
+
+  it('normalizes and persists 1-5 unique Figma design/file links', async () => {
+    const created = await postApp({
+      appId: 'FIGMADS',
+      name: 'Figma DS',
+      docsReviewComponentSource: {
+        mode: 'figma-links',
+        links: [
+          'https://figma.com/design/AbC123/My-Library?node-id=12-34&t=ignored',
+          { url: 'https://www.figma.com/file/XyZ789/Legacy-Library' },
+        ],
+      },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.docsReviewComponentSource).toEqual({
+      mode: 'figma-links',
+      links: [
+        { url: 'https://www.figma.com/design/AbC123?node-id=12-34', fileKey: 'AbC123', nodeId: '12:34' },
+        { url: 'https://www.figma.com/design/XyZ789', fileKey: 'XyZ789' },
+      ],
+    });
+    expect((await listApps()).body.apps[0].docsReviewComponentSource).toEqual(
+      created.body.docsReviewComponentSource,
+    );
+  });
+
+  it('rejects invalid, duplicate and more than five Figma files', async () => {
+    const invalid = await postApp({
+      appId: 'INVALID',
+      docsReviewComponentSource: { mode: 'figma-links', links: ['https://www.figma.com/board/ABC/Board'] },
+    });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toMatch(/design\/file link/);
+
+    const duplicate = await postApp({
+      appId: 'DUPLICATE',
+      docsReviewComponentSource: {
+        mode: 'figma-links',
+        links: ['https://www.figma.com/design/ABC/One', 'https://www.figma.com/file/ABC/Two'],
+      },
+    });
+    expect(duplicate.status).toBe(400);
+    expect(duplicate.body.error).toMatch(/duplicate file key/);
+
+    const tooMany = await postApp({
+      appId: 'TOOMANY',
+      docsReviewComponentSource: {
+        mode: 'figma-links',
+        links: Array.from({ length: 6 }, (_, index) => `https://www.figma.com/design/KEY${index}/DS`),
+      },
+    });
+    expect(tooMany.status).toBe(400);
+    expect(tooMany.body.error).toMatch(/at most 5/);
   });
 });

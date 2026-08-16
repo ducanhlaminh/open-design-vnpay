@@ -1,0 +1,38 @@
+.guide { display: flex; flex-direction: column; gap: 18px; color: var(--text); }
+.intro { display: flex; gap: 12px; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border)); border-radius: var(--radius-sm); background: var(--accent-tint); }
+.intro > svg { flex: 0 0 auto; color: var(--accent); margin-top: 1px; }
+.intro strong { font-size: 13px; }
+.intro p, .step p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.steps { display: flex; flex-direction: column; gap: 14px; margin: 0; padding: 0; list-style: none; }
+.step { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 11px; }
+.number { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: white; font-size: 12px; font-weight: 700; }
+.stepBody { display: flex; flex-direction: column; gap: 9px; min-width: 0; padding: 13px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); }
+.stepBody > strong, .stepTitle strong { font-size: 13px; color: var(--text-strong); }
+.stepTitle { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.openButton { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 7px 10px; border-radius: var(--radius-sm); background: var(--accent); color: white; font-size: 11.5px; font-weight: 650; text-decoration: none; }
+.mockScreen, .mockForm, .mockToken { border: 1px solid var(--border); border-radius: 7px; background: var(--bg-subtle); color: var(--text-muted); font-size: 11px; }
+.mockScreen { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; }
+.mockPrimary { display: inline-flex; width: fit-content; padding: 5px 8px; border-radius: 4px; background: #0c66e4; color: #fff; font-weight: 650; }
+.mockForm { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 10px 12px; }
+.mockForm label { display: flex; flex-direction: column; gap: 4px; grid-column: 1 / -1; }
+.mockInput { padding: 7px 9px; border: 1px solid #579dff; border-radius: 4px; background: var(--bg-panel); color: var(--text); }
+.mockCheck { align-self: center; }
+.mockToken { display: flex; align-items: center; justify-content: space-between; padding: 9px 11px; font-family: ui-monospace, monospace; }
+.mockToken svg { color: var(--accent); }
+.instruction { margin-top: -2px !important; }
+.pasteBox { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--accent-tint) 55%, var(--bg-panel)); }
+.pasteBox > span { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.pasteBox small { color: var(--text-muted); font-size: 11.5px; font-weight: 400; }
+.pasteBox input { width: 100%; box-sizing: border-box; padding: 10px 11px; border: 1px solid var(--border-strong, var(--border)); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); outline: none; }
+.pasteBox input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+.footerHint { margin-right: auto; color: var(--text-muted); font-size: 11.5px; }
+.tokenActions { display: inline-flex; align-items: center; gap: 10px; }
+.guideButton { appearance: none; display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border)); border-radius: var(--radius-sm); background: var(--accent-tint); color: var(--accent-strong, var(--accent)); font-size: 10.5px; font-weight: 650; cursor: pointer; }
+.guideButton:hover { border-color: var(--accent); }
+
+@media (max-width: 640px) {
+  .stepTitle { flex-direction: column; }
+  .openButton { width: 100%; justify-content: center; box-sizing: border-box; }
+  .footerHint { display: none; }
+  .tokenActions { align-items: flex-end; flex-direction: column; gap: 5px; }
+}

@@ -1,5 +1,7 @@
 /** Immutable, content-addressed App Context contracts shared by Open Design and Pipeline Studio. */
 
+import type { DocsReviewComponentSource } from './pipelines.js';
+
 export type AppContextFileSource = 'app-context' | 'docs' | 'design-system';
 
 export interface AppContextFileDigest {
@@ -23,6 +25,8 @@ export interface AppContextManifest {
     id: string | null;
     contentDigest: `sha256:${string}` | null;
   };
+  /** App-level source for docs-review/dr-comp. Missing on legacy manifests. */
+  docsReviewComponentSource?: DocsReviewComponentSource;
   files: AppContextFileDigest[];
 }
 

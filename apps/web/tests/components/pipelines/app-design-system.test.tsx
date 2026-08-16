@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesignSystemSummary } from '@open-design/contracts';
 
-import { EditAppModal } from '../../../src/components/pipelines/EditAppModal';
+import { EditAppModal, normalizeFigmaLinks } from '../../../src/components/pipelines/EditAppModal';
 import { NewAppModal } from '../../../src/components/pipelines/NewAppModal';
 
 const systems = [
@@ -27,6 +27,45 @@ beforeEach(() => {
 });
 
 describe('EditAppModal · Design System', () => {
+  it('chuẩn hóa, giữ node-id và bỏ link trùng trước khi lưu', () => {
+    const parsed = normalizeFigmaLinks([
+      'https://www.figma.com/design/ABC/Login?node-id=1-2&utm_source=x',
+      'https://figma.com/file/ABC/Copy?node-id=1-2',
+      'https://www.figma.com/design/XYZ/Home',
+    ].join('\n'));
+    expect(parsed.error).toBeNull();
+    expect(parsed.links).toEqual([
+      { url: 'https://www.figma.com/design/ABC?node-id=1-2', fileKey: 'ABC', nodeId: '1:2' },
+      { url: 'https://www.figma.com/design/XYZ', fileKey: 'XYZ' },
+    ]);
+  });
+
+  it('báo lỗi thân thiện khi nhập quá 5 link', () => {
+    expect(normalizeFigmaLinks(Array.from({ length: 6 }, (_, index) => `https://figma.com/design/F${index}`).join('\n')).error)
+      .toBe('Chỉ nhập tối đa 5 link Figma mỗi lần.');
+  });
+
+  it('không làm sập form khi file key có percent-encoding hỏng', () => {
+    expect(normalizeFigmaLinks('https://figma.com/design/%E0%A4%A/Broken').error)
+      .toContain('Mã file không hợp lệ');
+  });
+
+  it('lưu nguồn link Figma đã chuẩn hóa mà không bắt readiness phải thành công', async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<EditAppModal app={{ id: 'retail', name: 'Retail' }} onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
+    fireEvent.change(screen.getByLabelText('Link file Figma'), { target: { value: 'https://figma.com/design/ABC/Login?node-id=3-4' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
+    const call = fetchMock.mock.calls.find((item) => String(item[0]).includes('/api/pipelines/apps/') && item[1]?.method === 'PATCH');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      docsReviewComponentSource: {
+        mode: 'figma-links',
+        links: [{ url: 'https://www.figma.com/design/ABC?node-id=3-4', fileKey: 'ABC', nodeId: '3:4' }],
+      },
+    });
+  });
+
   async function chooseDs(app: { id: string; name: string; designSystemId?: string | null }) {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={app} onClose={() => {}} onSaved={() => {}} />);
@@ -78,5 +117,34 @@ describe('NewAppModal · Design System', () => {
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => call[0] === '/api/pipelines/apps' && call[1]?.method === 'POST')).toBe(true));
     const call = fetchMock.mock.calls.find((c) => c[0] === '/api/pipelines/apps' && c[1]?.method === 'POST');
     expect(JSON.parse(String(call?.[1]?.body))).not.toHaveProperty('designSystemId');
+  });
+
+  it('cho nhập link Figma ngay khi tạo và POST nguồn đã chuẩn hóa', async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<NewAppModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail' } });
+    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
+    fireEvent.change(screen.getByLabelText('Link file Figma'), {
+      target: { value: 'https://figma.com/file/ABC/Login?node-id=12-34' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some((call) => call[0] === '/api/pipelines/apps' && call[1]?.method === 'POST')).toBe(true));
+    const call = fetchMock.mock.calls.find((item) => item[0] === '/api/pipelines/apps' && item[1]?.method === 'POST');
+    expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
+      appId: 'retail',
+      name: 'Retail',
+      docsReviewComponentSource: {
+        mode: 'figma-links',
+        links: [{ url: 'https://www.figma.com/design/ABC?node-id=12-34', fileKey: 'ABC', nodeId: '12:34' }],
+      },
+    });
+  });
+
+  it('không cho tạo khi đã chọn nguồn Figma nhưng chưa dán link', () => {
+    render(<NewAppModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail' } });
+    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
+    expect(screen.getByText('Dán ít nhất 1 link Figma.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Tạo' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

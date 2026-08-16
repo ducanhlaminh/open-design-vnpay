@@ -33,8 +33,10 @@ import {
   listProjects,
   updateProject,
   upsertPipelineAppName,
+  setPipelineAppDesignSystem,
+  setPipelineAppDocsReviewComponentSource,
 } from './db.js';
-import { featureContextBindingFromMetadata } from './app-context-version.js';
+import { featureContextBindingFromMetadata, parseManifestComponentSource } from './app-context-version.js';
 import { MediaClient, mediaConfigFromEnv } from './kg-sync/media-client.js';
 import { loadRemoteProjects, PROJECT_LIFECYCLE_PATH } from './kg-sync/remote-registry.js';
 import { studioConfigOf } from './kg-sync/push-dest.js';
@@ -71,6 +73,8 @@ type Unit = {
    * selected by the remote `context/current.json` pointer. App Push retains
    * the full-tree behaviour and never sets this flag. */
   latestAppContextOnly?: boolean;
+  pulledDesignSystemId?: string | null;
+  pulledComponentSource?: import('@open-design/contracts').DocsReviewComponentSource;
 };
 
 const LOCAL_MAPPING_PATH = '_studio/project-sync-mapping.json';
@@ -370,11 +374,16 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
             try { existing = JSON.parse((await media.downloadFile(unit.originId, controlRel)).toString('utf8')) as Record<string, unknown>; } catch { /* use local fields only */ }
           }
           const project = unit.featureId ? projects().find((candidate) => candidate.id === unit.localId) : null;
+          const localApp = unit.isApp && !unit.featureId ? getPipelineApp(db, unit.localId) : null;
           const binding = project ? featureContextBindingFromMetadata(project.metadata) : null;
           const content = Buffer.from(`${JSON.stringify(unit.isApp ? {
             ...existing,
             kind: 'app',
             name: unit.name,
+            ...(localApp ? {
+              designSystemId: localApp.designSystemId,
+              docsReviewComponentSource: localApp.docsReviewComponentSource,
+            } : {}),
           } : {
             ...existing,
             name: unit.name,
@@ -1063,6 +1072,9 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
               } else if (unit.isApp && !unit.contextVersion && rel === 'app.json') {
                 const remote = JSON.parse(content.toString('utf8')) as Record<string, unknown>;
                 if (typeof remote.name === 'string' && remote.name) unit.name = remote.name;
+                unit.pulledDesignSystemId = typeof remote.designSystemId === 'string' && remote.designSystemId
+                  ? remote.designSystemId : null;
+                unit.pulledComponentSource = parseManifestComponentSource(remote.docsReviewComponentSource);
                 await fs.mkdir(path.dirname(dest), { recursive: true });
                 await fs.writeFile(dest, content);
               } else {
@@ -1101,6 +1113,18 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
           await writeAppMapping(ctx.paths.PROJECTS_DIR, unit.localId, unit.originId);
           if (stored.plan.direction === 'pull') {
             upsertPipelineAppName(db, { id: unit.localId, name: unit.name, createdAt: Date.now() });
+            setPipelineAppDesignSystem(db, {
+              id: unit.localId,
+              name: unit.name,
+              designSystemId: unit.pulledDesignSystemId ?? null,
+              createdAt: Date.now(),
+            });
+            setPipelineAppDocsReviewComponentSource(db, {
+              id: unit.localId,
+              name: unit.name,
+              source: unit.pulledComponentSource ?? { mode: 'app-design-system' },
+              createdAt: Date.now(),
+            });
           }
           continue;
         }

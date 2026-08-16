@@ -23,11 +23,17 @@ export interface FolderSource {
 
 interface MediaRow {
   projectId: string;
+  name: string;
   files: number;
   isApp: boolean;
   visibility?: ProjectLifecycle['visibility'];
   hiddenAt?: string;
 }
+
+/** Root-level project config file. Carries the human display name a user
+ *  typed when publishing — the folder id (`app--bidv--fe206e0a`) is only
+ *  ever a fallback, never what should show up in a picker. */
+const PROJECT_CONFIG_PATH = 'project.json';
 
 /** Pipeline Studio owns this sidecar. Keeping it outside project.json lets
  *  Studio hide/restore a project without mutating Open Design publish data. */
@@ -68,7 +74,7 @@ export function mergeRemoteProjects(media: MediaRow[]): RemoteProject[] {
   for (const m of media) {
     byId.set(m.projectId, {
       projectId: m.projectId,
-      name: m.projectId,
+      name: m.name,
       inMedia: true,
       files: m.files,
       isApp: m.isApp,
@@ -99,12 +105,32 @@ export async function loadRemoteProjects(media: FolderSource): Promise<RemotePro
           console.warn(`[remote-registry] cannot read lifecycle metadata for ${f.name}: ${(err as Error).message}`);
         }
       }
+      const isApp = files.some((file) => filePathOf(file) === APP_MARKER_PATH);
+      // Open Design publishes App metadata as app.json; project.json is the
+      // legacy/Pipeline Studio shape (same precedence server.ts uses to
+      // resolve an App's name when mirroring a pulled Feature's parent App).
+      let name = f.name;
+      if (media.downloadFile) {
+        for (const source of isApp ? [APP_MARKER_PATH, PROJECT_CONFIG_PATH] : [PROJECT_CONFIG_PATH]) {
+          if (!files.some((file) => filePathOf(file) === source)) continue;
+          try {
+            const content = await media.downloadFile(f.name, source);
+            const config = JSON.parse(Buffer.from(content).toString('utf8')) as Record<string, unknown>;
+            if (typeof config.name === 'string' && config.name.trim()) { name = config.name; break; }
+          } catch {
+            // Best-effort, matches the lifecycle read above: an unreadable or
+            // nameless config file just falls through to the next source (or
+            // the folder id if none carry a name).
+          }
+        }
+      }
       return {
         projectId: f.name,
+        name,
         // Studio metadata is a registry control artifact, not a project file
         // that users can Pull or count as an available output.
         files: files.filter((file) => filePathOf(file) !== PROJECT_LIFECYCLE_PATH).length,
-        isApp: files.some((file) => filePathOf(file) === APP_MARKER_PATH),
+        isApp,
         visibility: lifecycle?.visibility ?? 'visible',
         ...(lifecycle?.hiddenAt ? { hiddenAt: lifecycle.hiddenAt } : {}),
       };

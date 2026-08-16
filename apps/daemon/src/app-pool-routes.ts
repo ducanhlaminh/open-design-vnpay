@@ -72,6 +72,7 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
       appId,
       appName,
       designSystemId,
+      docsReviewComponentSource: app?.docsReviewComponentSource ?? { mode: 'app-design-system' },
       designSystemDir,
     });
   };

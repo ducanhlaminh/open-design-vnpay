@@ -20,12 +20,14 @@ import type { PipelineApp, PipelineProject } from '@open-design/contracts';
 
 import { UNASSIGNED_APP } from '../../router';
 import type { AppContextSyncInfo } from './context-sync-tree';
+import type { DocsReviewComponentSource } from '@open-design/contracts';
 
 export interface NavApp {
   id: string;
   name: string;
   /** Design System gắn ở cấp App. */
   designSystemId?: string | null;
+  docsReviewComponentSource?: DocsReviewComponentSource;
   context?: AppContextSyncInfo | null;
   /** Rổ "Chưa gán app" — hiển thị khác, không có trang cấu hình app. */
   unassigned: boolean;
@@ -98,15 +100,16 @@ export function localPipelineApps(apps: PipelineApp[]): PipelineApp[] {
 
 export function groupByApp(
   projects: PipelineProject[],
-  knownApps: Array<{ id: string; name?: string; designSystemId?: string | null; context?: AppContextSyncInfo | null }>,
+  knownApps: Array<{ id: string; name?: string; designSystemId?: string | null; docsReviewComponentSource?: DocsReviewComponentSource; context?: AppContextSyncInfo | null }>,
 ): NavApp[] {
   const byId = new Map<string, NavApp>();
-  const ensure = (id: string, name?: string, designSystemId?: string | null, context?: AppContextSyncInfo | null): NavApp => {
+  const ensure = (id: string, name?: string, designSystemId?: string | null, context?: AppContextSyncInfo | null, docsReviewComponentSource?: DocsReviewComponentSource): NavApp => {
     const hit = byId.get(id);
     if (hit) {
       // Tên đến sau từ danh sách app (feature chỉ mang bản sao có thể cũ).
       if (name && hit.name === hit.id) hit.name = name;
       if (designSystemId !== undefined) hit.designSystemId = designSystemId;
+      if (docsReviewComponentSource !== undefined) hit.docsReviewComponentSource = docsReviewComponentSource;
       if (context !== undefined) hit.context = context;
       return hit;
     }
@@ -114,6 +117,7 @@ export function groupByApp(
       id,
       name: name || id,
       designSystemId,
+      docsReviewComponentSource,
       context,
       unassigned: id === UNASSIGNED_APP,
       features: [],
@@ -125,7 +129,7 @@ export function groupByApp(
   };
 
   // App rỗng vẫn phải hiện: vừa tạo xong mà không thấy nó ở đâu là bế tắc.
-  for (const a of knownApps) ensure(a.id, a.name, a.designSystemId, a.context);
+  for (const a of knownApps) ensure(a.id, a.name, a.designSystemId, a.context, a.docsReviewComponentSource);
 
   for (const p of projects) {
     const row = ensure(appIdOf(p), p.app?.name);

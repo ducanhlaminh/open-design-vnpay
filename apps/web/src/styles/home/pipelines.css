@@ -3,7 +3,7 @@
 
    A dedicated top-level surface (moved out of the Automations tab).
    The five pipelines render as a numbered vertical stepper that
-   mirrors the DAG: jira-ingest → feature-analysis →
+   mirrors the DAG: confluence-ingest → feature-analysis →
    {ux-spec ∥ customer-journey} → ui. All colors come from the
    neutral product tokens in styles/tokens.css so light/dark just work.
    ============================================================ */

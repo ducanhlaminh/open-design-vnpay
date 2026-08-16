@@ -98,6 +98,35 @@ describe('ConfluenceCredentialSection', () => {
     expect(link.target).toBe('_blank');
   });
 
+  it('opens the low-tech token guide and pastes its token back into the settings form', async () => {
+    fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
+      if (url === '/api/confluence-config' && (!init || !init.method)) {
+        return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: false });
+      }
+      throw new Error(`unexpected fetch ${String(url)} ${init?.method ?? 'GET'}`);
+    });
+
+    render(<ConfluenceCredentialSection />);
+    await waitFor(() => expect((screen.getByTestId('confluence-config-base-input') as HTMLInputElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Hướng dẫn lấy token' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Hướng dẫn lấy Confluence Access Token' });
+    expect(dialog.textContent).toContain('Mở trang Personal Access Tokens');
+    expect(dialog.textContent).toContain('Đặt tên và tạo token');
+    expect(dialog.textContent).toContain('Sao chép token ngay khi Confluence hiển thị');
+    const createLink = screen.getByRole('link', { name: /Mở trang tạo token/ }) as HTMLAnchorElement;
+    expect(createLink.href).toBe('https://wiki.servicehub.vn/plugins/personalaccesstokens/usertokens.action');
+
+    const useButton = screen.getByRole('button', { name: 'Dùng token này' }) as HTMLButtonElement;
+    expect(useButton.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/Dán token vào đây/), { target: { value: ' token-from-guide ' } });
+    expect(useButton.disabled).toBe(false);
+    fireEvent.click(useButton);
+
+    expect(screen.queryByRole('dialog', { name: 'Hướng dẫn lấy Confluence Access Token' })).toBeNull();
+    expect((screen.getByTestId('confluence-config-token-input') as HTMLInputElement).value).toBe('token-from-guide');
+  });
+
   it('Test connection posts the pasted token and shows the daemon result', async () => {
     fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
       if (url === '/api/confluence-config' && (!init || !init.method)) {

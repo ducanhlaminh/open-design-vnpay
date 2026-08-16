@@ -16,6 +16,7 @@ import {
   getProject,
   listProjects,
   setPipelineAppDesignSystem,
+  setPipelineAppDocsReviewComponentSource,
   upsertPipelineAppName,
   updateProject,
 } from './db.js';
@@ -29,6 +30,7 @@ import {
   materializeAppContextVersion,
   metadataWithFeatureContextBinding,
   parseAppContextManifest,
+  parseManifestComponentSource,
   readCurrentAppContextManifest,
   readAppContextManifest,
 } from './app-context-version.js';
@@ -126,6 +128,7 @@ export function registerAppContextRoutes(app: Express, deps: RegisterAppContextR
       appId,
       appName: localApp.name,
       designSystemId: localApp.designSystemId,
+      docsReviewComponentSource: localApp.docsReviewComponentSource,
       designSystemDir: await designSystemDir(localApp.designSystemId, paths),
       ...(expectedCurrentDigest !== undefined ? { expectedCurrentDigest } : {}),
     });
@@ -226,6 +229,7 @@ export function registerAppContextRoutes(app: Express, deps: RegisterAppContextR
       const packageFiles = await filesForAppContextPublish({ projectsDir: paths.PROJECTS_DIR, appId, contextVersion: current.contextVersion });
       const appJson = Buffer.from(`${JSON.stringify({
         kind: 'app', name: localApp.name, designSystemId: localApp.designSystemId,
+        docsReviewComponentSource: localApp.docsReviewComponentSource,
         contextVersion: current.contextVersion, contextDigest: current.contentDigest,
       }, null, 2)}\n`);
       const approvedAppId = state.approvedAppId ?? appRemoteIdFromFeatures(db, appId);
@@ -307,6 +311,14 @@ export function registerAppContextRoutes(app: Express, deps: RegisterAppContextR
         id: appId,
         name: pulledName,
         designSystemId: pulledDesignSystemId,
+        createdAt: Date.now(),
+      });
+      setPipelineAppDocsReviewComponentSource(db, {
+        id: appId,
+        name: pulledName,
+        source: parseManifestComponentSource(
+          remoteAppJson.docsReviewComponentSource ?? manifest.docsReviewComponentSource,
+        ),
         createdAt: Date.now(),
       });
       if (remoteAppId !== appId) {

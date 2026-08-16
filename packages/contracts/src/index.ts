@@ -12,6 +12,7 @@ export * from './api/connectors.js';
 export * from './api/comments.js';
 export * from './api/connectionTest.js';
 export * from './api/confluence-config.js';
+export * from './api/figma-config.js';
 export * from './api/files.js';
 export * from './api/feedback.js';
 export * from './api/docs-review-feedback.js';

@@ -8,6 +8,7 @@ import type {
   AppContextFileSource,
   AppContextManifest,
   CreateAppContextVersionResult,
+  DocsReviewComponentSource,
   FeatureContextBinding,
   RunContextLock,
 } from '@open-design/contracts';
@@ -24,6 +25,7 @@ export interface SnapshotAppContextOptions {
   appId: string;
   appName: string;
   designSystemId: string | null;
+  docsReviewComponentSource?: DocsReviewComponentSource;
   designSystemDir?: string | null;
   expectedCurrentDigest?: `sha256:${string}` | null;
   now?: Date;
@@ -47,17 +49,53 @@ function stablePackageDigest(
   appId: string,
   appName: string,
   designSystemId: string | null,
+  docsReviewComponentSource: DocsReviewComponentSource,
   files: AppContextFileDigest[],
 ): `sha256:${string}` {
   const canonical = JSON.stringify({
     appId,
     appName,
     designSystemId,
+    // Omit the legacy/default mode so manifests produced before this field
+    // existed keep the exact same digest and remain verifiable.
+    ...(docsReviewComponentSource.mode === 'figma-links' ? { docsReviewComponentSource } : {}),
     files: [...files]
       .sort((a, b) => a.path.localeCompare(b.path))
       .map(({ path: filePath, source, digest, size }) => ({ path: filePath, source, digest, size })),
   });
   return digestBuffer(Buffer.from(canonical));
+}
+
+const DEFAULT_COMPONENT_SOURCE: DocsReviewComponentSource = { mode: 'app-design-system' };
+
+/** Strict enough for remote manifests/app.json; request URL canonicalization is
+ * still owned by pipeline-routes. Invalid remote values fail to the legacy DS
+ * mode rather than becoming an executable/local-network input. */
+export function parseManifestComponentSource(value: unknown): DocsReviewComponentSource {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return DEFAULT_COMPONENT_SOURCE;
+  const source = value as Record<string, unknown>;
+  if (source.mode === 'app-design-system') return DEFAULT_COMPONENT_SOURCE;
+  if (source.mode !== 'figma-links' || !Array.isArray(source.links) || source.links.length < 1 || source.links.length > 5) {
+    return DEFAULT_COMPONENT_SOURCE;
+  }
+  const seen = new Set<string>();
+  const links = source.links.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const link = item as Record<string, unknown>;
+    if (typeof link.url !== 'string' || typeof link.fileKey !== 'string' || !/^[A-Za-z0-9]+$/.test(link.fileKey) || seen.has(link.fileKey)) return [];
+    try {
+      const url = new URL(link.url);
+      if (url.protocol !== 'https:' || !['figma.com', 'www.figma.com'].includes(url.hostname.toLowerCase())) return [];
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (!['design', 'file'].includes(parts[0] ?? '') || parts[1] !== link.fileKey) return [];
+      const nodeId = typeof link.nodeId === 'string' && /^\d+:\d+$/.test(link.nodeId) ? link.nodeId : undefined;
+      seen.add(link.fileKey);
+      return [{ url: link.url, fileKey: link.fileKey, ...(nodeId ? { nodeId } : {}) }];
+    } catch {
+      return [];
+    }
+  });
+  return links.length === source.links.length ? { mode: 'figma-links', links } : DEFAULT_COMPONENT_SOURCE;
 }
 
 function sourceForPath(filePath: string): AppContextFileSource {
@@ -158,6 +196,7 @@ export function parseAppContextManifest(raw: unknown): AppContextManifest | null
       id: typeof ds.id === 'string' && ds.id ? ds.id : null,
       contentDigest: parseDigest(ds.contentDigest),
     },
+    docsReviewComponentSource: parseManifestComponentSource(r.docsReviewComponentSource),
     files,
   };
 }
@@ -167,6 +206,7 @@ export function appContextManifestDigestIsValid(manifest: AppContextManifest): b
     manifest.appId,
     manifest.appName,
     manifest.designSystem.id,
+    manifest.docsReviewComponentSource ?? DEFAULT_COMPONENT_SOURCE,
     manifest.files,
   ) === manifest.contentDigest;
 }
@@ -291,6 +331,7 @@ export async function createAppContextVersion(
     options.appId,
     options.appName,
     options.designSystemId,
+    options.docsReviewComponentSource ?? DEFAULT_COMPONENT_SOURCE,
     fileDigests,
   );
   if (current?.contentDigest === contentDigest) return { status: 'unchanged', manifest: current };
@@ -302,7 +343,7 @@ export async function createAppContextVersion(
   }
   const dsFiles = fileDigests.filter((file) => file.source === 'design-system');
   const designSystemDigest = options.designSystemId
-    ? stablePackageDigest(options.appId, options.appName, options.designSystemId, dsFiles)
+    ? stablePackageDigest(options.appId, options.appName, options.designSystemId, DEFAULT_COMPONENT_SOURCE, dsFiles)
     : null;
   const manifest: AppContextManifest = {
     schemaVersion: 1,
@@ -313,6 +354,7 @@ export async function createAppContextVersion(
     createdAt: (options.now ?? new Date()).toISOString(),
     ...(current ? { previousVersion: current.contextVersion } : {}),
     designSystem: { id: options.designSystemId, contentDigest: designSystemDigest },
+    docsReviewComponentSource: options.docsReviewComponentSource ?? DEFAULT_COMPONENT_SOURCE,
     files: fileDigests,
   };
   await fs.promises.mkdir(path.join(versionRoot, VERSION_FILES_DIR), { recursive: true });

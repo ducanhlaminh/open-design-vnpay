@@ -69,6 +69,22 @@ describe('App Context immutable versions', () => {
     expect((await createAppContextVersion(options)).manifest.contextVersion).toBe('v3');
   });
 
+  it('versions the App-level docs-review Figma source and validates it after restart', async () => {
+    const { projectsDir, dsDir } = await fixture();
+    const base = { projectsDir, appId: 'banking', appName: 'Banking', designSystemId: 'vnpay', designSystemDir: dsDir };
+    const v1 = (await createAppContextVersion(base)).manifest;
+    const source = {
+      mode: 'figma-links' as const,
+      links: [{ url: 'https://www.figma.com/design/ABC123', fileKey: 'ABC123' }],
+    };
+    const v2 = (await createAppContextVersion({ ...base, docsReviewComponentSource: source })).manifest;
+    expect(v2.contextVersion).toBe('v2');
+    expect(v2.docsReviewComponentSource).toEqual(source);
+    expect(appContextManifestDigestIsValid(v2)).toBe(true);
+    expect(appContextManifestDigestIsValid({ ...v2, docsReviewComponentSource: { mode: 'app-design-system' } })).toBe(false);
+    expect(v1.docsReviewComponentSource).toEqual({ mode: 'app-design-system' });
+  });
+
   it('reads a legacy draft manifest without rewriting it', () => {
     const digest = `sha256:${'a'.repeat(64)}`;
     expect(parseAppContextManifest({

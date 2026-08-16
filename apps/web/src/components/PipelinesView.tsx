@@ -22,6 +22,7 @@ import type {
   AuthMeResponse,
   PublishResult,
   PipelineProject,
+  PipelineAppsResponse,
   PipelineProjectsResponse,
   PipelineRunMode,
   PipelineView,
@@ -34,6 +35,8 @@ import type {
   UiTarget,
   Workflow,
   WorkflowsResponse,
+  FigmaConfigResponse,
+  DocsReviewComponentSource,
 } from '@open-design/contracts';
 import { UI_TARGETS } from '@open-design/contracts';
 
@@ -75,6 +78,18 @@ import { bindFeatureContext, fetchContextTransfer, transferSelectedAppContexts }
 // Max project cards shown before the picker collapses behind "Show all" —
 // keeps the pipeline stepper (the page's real content) above the fold.
 const PROJECT_CARD_LIMIT = 7;
+
+/** Chỉ chặn trước khi chạy khi thiếu token — link lỗi/không quyền để daemon
+ *  báo cụ thể ở bước "Đọc component từ Figma" (fail-safe, giữ kết quả cũ). */
+export function figmaSourceIssue(value: FigmaConfigResponse | null): string | null {
+  if (!value) return 'Không đọc được cấu hình Figma từ daemon.';
+  if (!value.hasToken) return 'Chưa có token Figma. Mở Thông tin dự án → Nguồn đối chiếu component → dán Personal Access Token.';
+  return null;
+}
+
+export function needsFigmaSource(stageIds: readonly string[], source: DocsReviewComponentSource | undefined): boolean {
+  return stageIds.includes('dr-comp') && source?.mode === 'figma-links';
+}
 
 const STATUS_LABEL: Record<string, string> = {
   idle: 'Chưa chạy',
@@ -593,6 +608,45 @@ export function PipelinesView() {
       cancelled = true;
     };
   }, []);
+
+  /** Hard gate riêng cho dr-comp + nguồn link Figma. Lưu cấu hình và mọi stage
+   * khác không gọi probe này, nên Figma tắt không làm nghẽn phần còn lại. */
+  const ensureComponentReviewFigmaReady = async (stageIds: readonly string[]): Promise<boolean> => {
+    if (!stageIds.includes('dr-comp')) return true;
+    const activeProject = projects.find((project) => project.id === projectId);
+    const appId = activeProject?.app?.id;
+    if (!appId) return true;
+    try {
+      const appsResponse = await fetch('/api/pipelines/apps');
+      if (!appsResponse.ok) throw new Error('Không đọc được cấu hình dự án.');
+      const appsBody = await appsResponse.json() as PipelineAppsResponse;
+      const source = appsBody.apps.find((app) => app.id === appId)?.docsReviewComponentSource;
+      if (!needsFigmaSource(stageIds, source)) return true;
+
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 5000);
+      let configResponse: Response;
+      try {
+        configResponse = await fetch('/api/figma-config', { signal: controller.signal });
+      } finally {
+        window.clearTimeout(timeout);
+      }
+      const config = configResponse.ok ? await configResponse.json() as FigmaConfigResponse : null;
+      const issue = figmaSourceIssue(config);
+      if (!issue) return true;
+      pushToast({ message: 'Chưa thể rà soát component từ Figma', details: issue, code: 'error' });
+      return false;
+    } catch (err) {
+      pushToast({
+        message: 'Chưa thể kiểm tra cấu hình Figma',
+        details: err instanceof DOMException && err.name === 'AbortError'
+          ? 'Daemon phản hồi quá lâu. Thử lại sau.'
+          : err instanceof Error ? err.message : String(err),
+        code: 'error',
+      });
+      return false;
+    }
+  };
   // Tóm tắt "≠ remote" cho dự án đang chọn — cùng endpoint POST /api/kg/sync-status
   // mà Pull all / Push all đã dùng (per-stage), thu gọn thành một dòng cho rail.
   const [syncStatus, setSyncStatus] = useState<ProjectSyncStatus | null>(null);
@@ -1472,6 +1526,7 @@ export function PipelinesView() {
   // trên để cả đường chạy thẳng (không có gì để mất) lẫn đường xác nhận qua
   // RunAllClearConfirmModal cùng gọi đúng một chỗ.
   const runAllNow = async (payload: RunAllPayload) => {
+    if (!await ensureComponentReviewFigmaReady(willRunStageIdsForRunAll(pipelines, payload))) return;
     setRunAllBusy(true);
     try {
       await startRunAll(payload);
@@ -1531,6 +1586,7 @@ export function PipelinesView() {
     designSystemId?: string | null,
     platform?: TargetPlatform,
   ) => {
+    if (!await ensureComponentReviewFigmaReady([p.id])) return;
     setBusyId(p.id);
     try {
       await startRun(p.id, payload, designSystemId, platform);

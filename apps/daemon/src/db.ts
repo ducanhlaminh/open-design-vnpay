@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import type { DocsReviewComponentSource } from '@open-design/contracts';
 import { migrateCritique } from './critique/persistence.js';
 import { migrateMediaTasks } from './media-tasks.js';
 import { migratePlugins } from './plugins/persistence.js';
@@ -273,6 +274,9 @@ function migrate(db: SqliteDb): void {
   const pipelineAppCols = db.prepare(`PRAGMA table_info(pipeline_apps)`).all() as DbRow[];
   if (!pipelineAppCols.some((c: DbRow) => c.name === 'design_system_id')) {
     db.exec(`ALTER TABLE pipeline_apps ADD COLUMN design_system_id TEXT`);
+  }
+  if (!pipelineAppCols.some((c: DbRow) => c.name === 'docs_review_component_source_json')) {
+    db.exec(`ALTER TABLE pipeline_apps ADD COLUMN docs_review_component_source_json TEXT`);
   }
   const messageCols = db.prepare(`PRAGMA table_info(messages)`).all() as DbRow[];
   if (!messageCols.some((c: DbRow) => c.name === 'agent_id')) {
@@ -780,21 +784,62 @@ function normalizeProjectRunStatus(status: unknown) {
 
 export function listPipelineApps(db: SqliteDb) {
   return (db
-    .prepare(`SELECT id, name, design_system_id AS designSystemId, created_at AS createdAt FROM pipeline_apps ORDER BY created_at ASC`)
+    .prepare(`SELECT id, name, design_system_id AS designSystemId,
+      docs_review_component_source_json AS docsReviewComponentSourceJson,
+      created_at AS createdAt FROM pipeline_apps ORDER BY created_at ASC`)
     .all() as DbRow[])
-    .map((r: DbRow) => ({ id: r.id as string, name: r.name as string, designSystemId: (r.designSystemId as string | null) ?? null, createdAt: Number(r.createdAt) }));
+    .map(normalizePipelineApp);
 }
 
 export function getPipelineApp(db: SqliteDb, id: string) {
   const r = db
-    .prepare(`SELECT id, name, design_system_id AS designSystemId, created_at AS createdAt FROM pipeline_apps WHERE id = ?`)
+    .prepare(`SELECT id, name, design_system_id AS designSystemId,
+      docs_review_component_source_json AS docsReviewComponentSourceJson,
+      created_at AS createdAt FROM pipeline_apps WHERE id = ?`)
     .get(id) as DbRow | undefined;
-  return r ? { id: r.id as string, name: r.name as string, designSystemId: (r.designSystemId as string | null) ?? null, createdAt: Number(r.createdAt) } : null;
+  return r ? normalizePipelineApp(r) : null;
 }
 
-export function insertPipelineApp(db: SqliteDb, a: { id: string; name: string; designSystemId?: string | null; createdAt: number }) {
-  db.prepare(`INSERT INTO pipeline_apps (id, name, design_system_id, created_at) VALUES (?, ?, ?, ?)`)
-    .run(a.id, a.name, a.designSystemId ?? null, a.createdAt);
+const DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE: DocsReviewComponentSource = { mode: 'app-design-system' };
+
+function normalizePipelineApp(r: DbRow) {
+  let docsReviewComponentSource: DocsReviewComponentSource = DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE;
+  if (typeof r.docsReviewComponentSourceJson === 'string' && r.docsReviewComponentSourceJson) {
+    try {
+      const parsed = JSON.parse(r.docsReviewComponentSourceJson) as DocsReviewComponentSource;
+      if (parsed?.mode === 'app-design-system' || (parsed?.mode === 'figma-links' && Array.isArray(parsed.links))) {
+        docsReviewComponentSource = parsed;
+      }
+    } catch {
+      // Corrupt/legacy values fail closed to the existing imported-DS path.
+    }
+  }
+  return {
+    id: r.id as string,
+    name: r.name as string,
+    designSystemId: (r.designSystemId as string | null) ?? null,
+    docsReviewComponentSource,
+    createdAt: Number(r.createdAt),
+  };
+}
+
+export function insertPipelineApp(db: SqliteDb, a: {
+  id: string;
+  name: string;
+  designSystemId?: string | null;
+  docsReviewComponentSource?: DocsReviewComponentSource;
+  createdAt: number;
+}) {
+  db.prepare(`INSERT INTO pipeline_apps
+    (id, name, design_system_id, docs_review_component_source_json, created_at)
+    VALUES (?, ?, ?, ?, ?)`)
+    .run(
+      a.id,
+      a.name,
+      a.designSystemId ?? null,
+      JSON.stringify(a.docsReviewComponentSource ?? DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE),
+      a.createdAt,
+    );
   return getPipelineApp(db, a.id);
 }
 
@@ -823,6 +868,19 @@ export function setPipelineAppDesignSystem(
     `INSERT INTO pipeline_apps (id, name, design_system_id, created_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET design_system_id = excluded.design_system_id`,
   ).run(args.id, args.name ?? args.id, args.designSystemId, args.createdAt);
+}
+
+/** Set the docs-review-only component source without changing designSystemId. */
+export function setPipelineAppDocsReviewComponentSource(
+  db: SqliteDb,
+  args: { id: string; name?: string; source: DocsReviewComponentSource; createdAt: number },
+): void {
+  db.prepare(
+    `INSERT INTO pipeline_apps
+       (id, name, docs_review_component_source_json, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         docs_review_component_source_json = excluded.docs_review_component_source_json`,
+  ).run(args.id, args.name ?? args.id, JSON.stringify(args.source), args.createdAt);
 }
 
 export function deletePipelineApp(db: SqliteDb, id: string) {

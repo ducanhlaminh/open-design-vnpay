@@ -245,8 +245,8 @@ describe('xóa dự án local', () => {
 
   it('ẩn Dự án chỉ có trên kho chung khỏi danh sách local', () => {
     expect(localPipelineApps([
-      { id: 'local-app', name: 'Trên máy', origin: 'local' },
-      { id: 'remote-app', name: 'Kho chung', origin: 'remote' },
-    ])).toEqual([{ id: 'local-app', name: 'Trên máy', origin: 'local' }]);
+      { id: 'local-app', name: 'Trên máy', origin: 'local', docsReviewComponentSource: { mode: 'app-design-system' } },
+      { id: 'remote-app', name: 'Kho chung', origin: 'remote', docsReviewComponentSource: { mode: 'app-design-system' } },
+    ])).toEqual([{ id: 'local-app', name: 'Trên máy', origin: 'local', docsReviewComponentSource: { mode: 'app-design-system' } }]);
   });
 });

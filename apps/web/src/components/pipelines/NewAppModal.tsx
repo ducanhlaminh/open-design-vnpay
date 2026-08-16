@@ -37,7 +37,7 @@
 // setImportResult với phần đã nhập và hiện lỗi kèm "đã nhập X/N".
 
 import { useEffect, useState } from 'react';
-import type { AppPoolImportResponse } from '@open-design/contracts';
+import type { AppPoolImportResponse, DocsReviewComponentSource } from '@open-design/contracts';
 
 import {
   FormError,
@@ -54,6 +54,9 @@ import { ProgressBar } from './ProgressBar';
 import { appLabelOf, toSlugId, useAppOptions } from './newProjectForm';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
+import { normalizeFigmaLinks } from './EditAppModal';
+import { FigmaLinksPanel } from './FigmaLinksPanel';
+import styles from './EditAppModal.module.css';
 
 export function NewAppModal({
   onClose,
@@ -66,6 +69,8 @@ export function NewAppModal({
   const [name, setName] = useState('');
   const [systems, setSystems] = useState<Awaited<ReturnType<typeof fetchDesignSystems>> | null>(null);
   const [designSystemId, setDesignSystemId] = useState<string | null>(null);
+  const [sourceMode, setSourceMode] = useState<DocsReviewComponentSource['mode']>('app-design-system');
+  const [figmaLinks, setFigmaLinks] = useState('');
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [relatedTicked, setRelatedTicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -88,7 +93,12 @@ export function NewAppModal({
   // Trùng tên KHÔNG được im lặng tái dùng App cũ: người dùng đang bấm "App
   // mới", nếu ta lặng lẽ trả về App có sẵn thì họ tin là vừa tạo một App khác.
   const duplicate = apps.some((a) => appLabelOf(a).trim().toLowerCase() === nameTrim.toLowerCase());
-  const canSubmit = Boolean(nameTrim) && !duplicate;
+  const normalizedLinks = normalizeFigmaLinks(figmaLinks);
+  const componentSource: DocsReviewComponentSource = sourceMode === 'app-design-system'
+    ? { mode: 'app-design-system' }
+    : { mode: 'figma-links', links: normalizedLinks.links };
+  const canSubmit = Boolean(nameTrim) && !duplicate
+    && (sourceMode !== 'figma-links' || !normalizedLinks.error);
 
   const submit = async () => {
     if (busy || !canSubmit) return;
@@ -105,6 +115,7 @@ export function NewAppModal({
           appId,
           name: nameTrim,
           ...(designSystemId ? { designSystemId } : {}),
+          docsReviewComponentSource: componentSource,
         }),
       });
       const j = await res.json().catch(() => ({}));
@@ -239,8 +250,46 @@ export function NewAppModal({
       </FormField>
 
       <FormField
+        label="Nguồn đối chiếu component"
+        hint="Chọn nơi ứng dụng lấy component chuẩn khi chạy bước rà soát component."
+      >
+        {(fieldProps) => (
+          <div {...fieldProps} className={styles.sourceChoices} role="radiogroup" aria-label="Nguồn đối chiếu component">
+            <label className={styles.sourceChoice}>
+              <input type="radio" name="new-app-component-source" checked={sourceMode === 'app-design-system'} onChange={() => setSourceMode('app-design-system')} />
+              <span><strong>Design System đã nạp</strong><small>Dùng bộ component đã lưu trong dự án.</small></span>
+            </label>
+            <label className={styles.sourceChoice}>
+              <input type="radio" name="new-app-component-source" checked={sourceMode === 'figma-links'} onChange={() => setSourceMode('figma-links')} />
+              <span><strong>Link Figma</strong><small>Đọc component từ 1–5 file Figma bằng token của bạn.</small></span>
+            </label>
+          </div>
+        )}
+      </FormField>
+
+      {sourceMode === 'figma-links' ? (
+        <>
+          <FormField label="Link file Figma" hint="Mỗi dòng một link (tối đa 5). Link trùng sẽ tự động được bỏ qua." error={normalizedLinks.error ?? undefined}>
+            {(fieldProps) => (
+              <textarea
+                {...fieldProps}
+                className={styles.linksInput}
+                rows={4}
+                value={figmaLinks}
+                onChange={(event) => setFigmaLinks(event.target.value)}
+                placeholder="https://www.figma.com/design/…?node-id=…"
+              />
+            )}
+          </FormField>
+          <FigmaLinksPanel links={normalizedLinks.links} linksError={normalizedLinks.error} />
+        </>
+      ) : null}
+
+      <FormField
         label="Design System (Figma)"
-        hint="Tuỳ chọn. Bộ này là nguồn tiêu chuẩn review cho mọi tính năng của dự án; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/."
+        hint={sourceMode === 'figma-links'
+          ? 'Tuỳ chọn. Design System này vẫn được giữ cho các bước khác; riêng rà soát component sẽ dùng các link Figma ở trên.'
+          : 'Tuỳ chọn. Bộ này là nguồn tiêu chuẩn review cho mọi tính năng của dự án; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/.'}
       >
         {(fieldProps) => (
           <div {...fieldProps}>

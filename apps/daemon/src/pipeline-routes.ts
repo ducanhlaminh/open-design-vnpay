@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import express from 'express';
 import type { Express, Response } from 'express';
-import type { PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
+import type { DocsReviewComponentSource, DocsReviewFigmaLink, PipelinePulseIssue, PipelinePulseRating, PipelineRunMode, PipelineRunSource, PipelineStatus, ProjectPipelineState, RunAllConfig, TargetPlatform, UiTarget, WorkflowTerminal } from '@open-design/contracts';
 import { TARGETS_CONFIG_BASENAME, UI_TARGETS, buildTargetsConfig, isUiTarget } from '@open-design/contracts';
 
 import {
@@ -19,6 +19,7 @@ import {
   updateProject,
   upsertPipelineAppName,
   setPipelineAppDesignSystem,
+  setPipelineAppDocsReviewComponentSource,
 } from './db.js';
 import { isSafeId, removeProjectDir } from './projects.js';
 import {
@@ -40,6 +41,79 @@ import {
 } from './pipelines.js';
 import type { RouteDeps } from './server-context.js';
 import { createAppContextVersion, featureContextBindingFromMetadata, readCurrentAppContextManifest } from './app-context-version.js';
+
+const DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE: DocsReviewComponentSource = { mode: 'app-design-system' };
+const MAX_DOCS_REVIEW_FIGMA_LINKS = 5;
+
+/** Parse request input into the canonical DB/API representation. */
+function parseDocsReviewComponentSource(raw: unknown):
+  | { ok: true; value: DocsReviewComponentSource }
+  | { ok: false; error: string } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'docsReviewComponentSource must be an object' };
+  }
+  const value = raw as Record<string, unknown>;
+  if (value.mode === 'app-design-system') {
+    return { ok: true, value: DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE };
+  }
+  if (value.mode !== 'figma-links') {
+    return { ok: false, error: 'docsReviewComponentSource.mode must be app-design-system or figma-links' };
+  }
+  if (!Array.isArray(value.links) || value.links.length === 0) {
+    return { ok: false, error: 'figma-links requires at least one Figma link' };
+  }
+  if (value.links.length > MAX_DOCS_REVIEW_FIGMA_LINKS) {
+    return { ok: false, error: `figma-links supports at most ${MAX_DOCS_REVIEW_FIGMA_LINKS} links` };
+  }
+
+  const links: DocsReviewFigmaLink[] = [];
+  const seenFileKeys = new Set<string>();
+  for (let index = 0; index < value.links.length; index += 1) {
+    const item = value.links[index];
+    const inputUrl = typeof item === 'string'
+      ? item.trim()
+      : item && typeof item === 'object' && !Array.isArray(item) && typeof (item as Record<string, unknown>).url === 'string'
+        ? ((item as Record<string, unknown>).url as string).trim()
+        : '';
+    let parsed: URL;
+    try {
+      parsed = new URL(inputUrl);
+    } catch {
+      return { ok: false, error: `figma-links[${index}] is not a valid URL` };
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== 'https:' || (host !== 'figma.com' && host !== 'www.figma.com')) {
+      return { ok: false, error: `figma-links[${index}] must be an https://www.figma.com link` };
+    }
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if ((segments[0] !== 'design' && segments[0] !== 'file') || !segments[1]) {
+      return { ok: false, error: `figma-links[${index}] must be a Figma design/file link` };
+    }
+    let fileKey = '';
+    try {
+      fileKey = decodeURIComponent(segments[1]).trim();
+    } catch {
+      return { ok: false, error: `figma-links[${index}] has an invalid file key` };
+    }
+    if (!/^[A-Za-z0-9]+$/.test(fileKey)) {
+      return { ok: false, error: `figma-links[${index}] has an invalid file key` };
+    }
+    if (seenFileKeys.has(fileKey)) {
+      return { ok: false, error: `figma-links contains duplicate file key "${fileKey}"` };
+    }
+    seenFileKeys.add(fileKey);
+
+    const rawNodeId = parsed.searchParams.get('node-id')?.trim() ?? '';
+    if (rawNodeId && !/^\d+(?::|-)\d+$/.test(rawNodeId)) {
+      return { ok: false, error: `figma-links[${index}] has an invalid node-id` };
+    }
+    const nodeId = rawNodeId ? rawNodeId.replace('-', ':') : undefined;
+    const canonical = new URL(`https://www.figma.com/design/${fileKey}`);
+    if (nodeId) canonical.searchParams.set('node-id', nodeId.replace(':', '-'));
+    links.push({ url: canonical.toString(), fileKey, ...(nodeId ? { nodeId } : {}) });
+  }
+  return { ok: true, value: { mode: 'figma-links', links } };
+}
 
 // `{ target: dsId }` request field → validated map. Unknown targets and
 // non-string/empty ids drop silently (same tolerance as the `targets` list);
@@ -421,6 +495,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       appId,
       appName: localApp.name,
       designSystemId: localApp.designSystemId,
+      docsReviewComponentSource: localApp.docsReviewComponentSource,
       designSystemDir: dsDir,
     });
   };
@@ -591,7 +666,13 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
   // Các App CỤC BỘ thấy được: {appId, appName} denormalize trên feature +
   // row bảng pipeline_apps (App 0 feature). Dùng cho cả picker (GET) và check
   // trùng khi tạo (POST).
-  type AppEntry = { id: string; name?: string; designSystemId: string | null; origin: 'local' | 'remote' };
+  type AppEntry = {
+    id: string;
+    name?: string;
+    designSystemId: string | null;
+    docsReviewComponentSource: DocsReviewComponentSource;
+    origin: 'local' | 'remote';
+  };
   const collectLocalApps = (): Map<string, AppEntry> => {
     const byId = new Map<string, AppEntry>();
     const mergeName = (entry: AppEntry, name: string | undefined) => {
@@ -608,7 +689,13 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       if (existing) {
         mergeName(existing, appName);
       } else {
-        byId.set(appId, { id: appId, ...(appName ? { name: appName } : {}), designSystemId: null, origin: 'local' });
+        byId.set(appId, {
+          id: appId,
+          ...(appName ? { name: appName } : {}),
+          designSystemId: null,
+          docsReviewComponentSource: DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE,
+          origin: 'local',
+        });
       }
     }
     // App 0 feature (POST /api/pipelines/apps): chưa có feature nào mirror
@@ -618,11 +705,13 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       if (existing) {
         mergeName(existing, a.name && a.name !== a.id ? a.name : undefined);
         existing.designSystemId = a.designSystemId;
+        existing.docsReviewComponentSource = a.docsReviewComponentSource;
       } else {
         byId.set(a.id, {
           id: a.id,
           ...(a.name && a.name !== a.id ? { name: a.name } : {}),
           designSystemId: a.designSystemId,
+          docsReviewComponentSource: a.docsReviewComponentSource,
           origin: 'local',
         });
       }
@@ -655,6 +744,10 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       : appId;
     const designSystemId = typeof req.body?.designSystemId === 'string' && req.body.designSystemId.trim()
       ? req.body.designSystemId.trim() : req.body?.designSystemId === null ? null : null;
+    const parsedComponentSource = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'docsReviewComponentSource')
+      ? parseDocsReviewComponentSource(req.body.docsReviewComponentSource)
+      : { ok: true as const, value: DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE };
+    if (!parsedComponentSource.ok) return res.status(400).json({ error: parsedComponentSource.error });
     // Cùng regex với POST /api/pipelines/projects: id App cũng là project_id
     // trên KGS, id studio không duyệt thì chặn ngay tại đây.
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(appId)) {
@@ -675,12 +768,18 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     } catch {
       /* stores unreachable → chỉ dựa vào check cục bộ ở trên */
     }
-    insertPipelineApp(db, { id: appId, name, designSystemId, createdAt: Date.now() });
+    insertPipelineApp(db, {
+      id: appId,
+      name,
+      designSystemId,
+      docsReviewComponentSource: parsedComponentSource.value,
+      createdAt: Date.now(),
+    });
     // A truly empty App has no Context bytes yet. Its first pool/context edit,
     // DS assignment, run, or Push creates v1; assigning a DS at creation is
     // already meaningful context and snapshots immediately.
-    if (designSystemId) await snapshotKnownApp(appId);
-    res.status(201).json({ id: appId, name, designSystemId });
+    if (designSystemId || parsedComponentSource.value.mode === 'figma-links') await snapshotKnownApp(appId);
+    res.status(201).json({ id: appId, name, designSystemId, docsReviewComponentSource: parsedComponentSource.value });
   });
 
   // GET /api/pipelines/apps — App containers that really exist on THIS device:
@@ -706,6 +805,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           id: e.id,
           ...(e.name ? { name: e.name } : {}),
           designSystemId: e.designSystemId,
+          docsReviewComponentSource: e.docsReviewComponentSource,
           origin: e.origin,
           ...(localCurrent ? { context: {
               current: localCurrent,
@@ -768,12 +868,21 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     const appId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
     const hasName = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'name');
     const hasDesignSystemId = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'designSystemId');
+    const hasDocsReviewComponentSource = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'docsReviewComponentSource');
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
     const designSystemId = req.body?.designSystemId === null
       ? null
       : typeof req.body?.designSystemId === 'string' ? req.body.designSystemId.trim() : '';
-    if ((!hasName || !name) && (!hasDesignSystemId || (!designSystemId && designSystemId !== null))) {
-      return res.status(400).json({ error: 'name or designSystemId is required' });
+    const parsedComponentSource = hasDocsReviewComponentSource
+      ? parseDocsReviewComponentSource(req.body.docsReviewComponentSource)
+      : null;
+    if (parsedComponentSource && !parsedComponentSource.ok) {
+      return res.status(400).json({ error: parsedComponentSource.error });
+    }
+    if ((!hasName || !name)
+      && (!hasDesignSystemId || (!designSystemId && designSystemId !== null))
+      && !hasDocsReviewComponentSource) {
+      return res.status(400).json({ error: 'name, designSystemId or docsReviewComponentSource is required' });
     }
     // Rename được cả App remote: row local chỉ là cái tên phủ lên (picker cho
     // tên local thắng), không đổi gì trên studio.
@@ -805,9 +914,23 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     if (hasDesignSystemId) {
       setPipelineAppDesignSystem(db, { id: appId, ...(hasName && name ? { name } : {}), designSystemId, createdAt: Date.now() });
     }
+    if (parsedComponentSource?.ok) {
+      setPipelineAppDocsReviewComponentSource(db, {
+        id: appId,
+        ...(hasName && name ? { name } : {}),
+        source: parsedComponentSource.value,
+        createdAt: Date.now(),
+      });
+    }
     const updated = getPipelineApp(db, appId);
     await snapshotKnownApp(appId);
-    res.json({ id: appId, name: updated?.name ?? name, designSystemId: updated?.designSystemId ?? null, remoteSynced });
+    res.json({
+      id: appId,
+      name: updated?.name ?? name,
+      designSystemId: updated?.designSystemId ?? null,
+      docsReviewComponentSource: updated?.docsReviewComponentSource ?? DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE,
+      remoteSynced,
+    });
   });
 
   // DELETE /api/pipelines/apps/:id — remove the complete local App tree. This

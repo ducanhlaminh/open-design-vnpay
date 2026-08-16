@@ -1,0 +1,79 @@
+.sourceChoices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sourceChoice {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.sourceChoice:hover {
+  border-color: var(--border-strong, var(--border));
+  background: var(--bg-subtle);
+}
+
+.sourceChoice:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+}
+
+.sourceChoice:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  outline-offset: 2px;
+}
+
+/* Global form styles turn bare inputs into full-width pills. Keep this a real,
+   compact radio so it cannot stretch the option card as in the old UI. */
+.sourceChoice input[type='radio'] {
+  appearance: auto;
+  -webkit-appearance: radio;
+  flex: 0 0 17px;
+  width: 17px;
+  height: 17px;
+  min-width: 0;
+  min-height: 0;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.sourceChoice span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.sourceChoice strong {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.sourceChoice small {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .sourceChoices {
+    grid-template-columns: 1fr;
+  }
+}
+.linksInput { box-sizing: border-box; width: 100%; min-height: 94px; resize: vertical; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); color: var(--text); font: inherit; line-height: 1.45; }
+.linksInput:focus { outline: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); border-color: var(--accent); }

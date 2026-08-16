@@ -429,6 +429,7 @@ import { registerActiveContextRoutes } from './active-context-routes.js';
 import { registerHostToolsRoutes } from './host-tools-routes.js';
 import { registerMcpRoutes } from './mcp-routes.js';
 import { registerConfluenceConfigRoutes } from './confluence-config-routes.js';
+import { registerFigmaConfigRoutes } from './figma-config-routes.js';
 import { registerXaiRoutes } from './xai-routes.js';
 import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
 import { registerDesignSystemToolRoutes } from './design-system-tool-routes.js';
@@ -519,6 +520,9 @@ import {
   DOCS_COMPONENT_FAILURE_NOTE,
   type PageComponentReport,
 } from './docs-components.js';
+import { renderFigmaComponentsMarkdown } from './figma-component-catalog.js';
+import { readFigmaConfig } from './figma-config.js';
+import { buildFigmaComponentCatalog } from './figma-rest.js';
 import { listSections, mergeCjSections, mergeUxrSections, mergeUxSpecSections, type DocSection } from './section-fanout.js';
 import { listScreens, mergeHeuristicScreens, renderPrototypeIndex, type UiScreen } from './ui-fanout.js';
 import { pushUxKb, resolveUxKbDir } from './ux-kb-sync.js';
@@ -528,6 +532,7 @@ import {
   featureContextBindingFromMetadata,
   filesForFeatureContextPublish,
   metadataWithFeatureContextBinding,
+  readAppContextManifest,
   stageBoundAppContextForRun,
 } from './app-context-version.js';
 import {
@@ -1521,7 +1526,7 @@ const versionAppsUsingDesignSystem = async (designSystemId: string, dsDir: strin
   return Promise.all(apps.map(async (item) => {
     try {
       const result = await createAppContextVersion({ projectsDir: PROJECTS_DIR, appId: item.id,
-        appName: item.name, designSystemId, designSystemDir: dsDir });
+        appName: item.name, designSystemId, docsReviewComponentSource: item.docsReviewComponentSource, designSystemDir: dsDir });
       return { appId: item.id, status: result.status, contextVersion: result.manifest.contextVersion };
     } catch (error) {
       return { appId: item.id, status: 'failed', contextVersion: null, error: String(error) };
@@ -6012,6 +6017,12 @@ export async function startServer({
   // the generic external-MCP config above (WP8: JIRA ingest removed, no more
   // mcp-atlassian row to piggyback creds on).
   registerConfluenceConfigRoutes(app, {
+    http: httpDeps,
+    paths: pathDeps,
+  });
+  // Figma Personal Access Token — read by the docs-review Screen → Component
+  // stage when an App points at Figma links instead of an imported DS.
+  registerFigmaConfigRoutes(app, {
     http: httpDeps,
     paths: pathDeps,
   });
@@ -14708,6 +14719,7 @@ export async function startServer({
         appId: appCfg.appId,
         appName,
         designSystemId,
+        docsReviewComponentSource: app?.docsReviewComponentSource ?? { mode: 'app-design-system' },
         designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
       });
       let featureBinding = featureContextBindingFromMetadata(localCfg?.metadata);
@@ -15624,6 +15636,27 @@ export async function startServer({
   //   - huỷ và OUTER catch → xoá file của mọi trang chưa đạt, và nếu không
   //     trang nào đạt thì xoá sạch `comp/`.
   const DOCS_COMPONENT_FANOUT_CONCURRENCY = 4;
+  const FIGMA_CATALOG_EXTRACTION_TIMEOUT_MS = 12 * 60 * 1000;
+  const replaceValidatedFile = async (candidate: string, target: string): Promise<void> => {
+    const backup = `${target}.${randomUUID()}.bak`;
+    let backedUp = false;
+    try {
+      await fs.promises.rename(target, backup);
+      backedUp = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    try {
+      await fs.promises.rename(candidate, target);
+      if (backedUp) await fs.promises.rm(backup, { force: true });
+    } catch (error) {
+      if (backedUp) {
+        await fs.promises.rm(target, { force: true }).catch(() => null);
+        await fs.promises.rename(backup, target).catch(() => null);
+      }
+      throw error;
+    }
+  };
   const runDocsComponentAuditFanout = (
     pipelineId: string,
     projectId: string,
@@ -15671,6 +15704,133 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
         const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
         const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+        const project = getProject(db, projectId);
+        const studioConfig = (project?.metadata as Record<string, unknown> | undefined)?.studioConfig as
+          | Record<string, unknown>
+          | undefined;
+        const appId = typeof studioConfig?.appId === 'string' ? studioConfig.appId.trim() : '';
+        const pipelineApp = appId ? getPipelineApp(db, appId) : null;
+        let componentSource = pipelineApp?.docsReviewComponentSource ?? { mode: 'app-design-system' as const };
+        const contextBinding = featureContextBindingFromMetadata(project?.metadata);
+        if (appId && contextBinding?.appId === appId) {
+          const boundManifest = await readAppContextManifest(
+            PROJECTS_DIR,
+            appId,
+            contextBinding.contextVersion,
+          ).catch(() => null);
+          if (boundManifest?.docsReviewComponentSource) {
+            componentSource = boundManifest.docsReviewComponentSource;
+          }
+        }
+        const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+        let extractionTask: { id: string; title: string; status: 'queued' | 'running' | 'succeeded' | 'failed' } | null = null;
+
+        // Figma-link mode has an explicit preparation phase. It runs before
+        // the re-run clear and before `outerCwd` is armed, so a missing token,
+        // an unreadable file, a timeout or an empty catalogue preserves the
+        // previous `comp/` outputs and `criteria/components.md` intact. The
+        // read is a deterministic REST call (figma-rest.ts) — no agent, no MCP,
+        // no Figma Desktop involved — surfaced as one extra task row in the
+        // Status modal ("Đọc component từ Figma · i/N") whose conversation
+        // holds a short human-readable log.
+        if (componentSource.mode === 'figma-links') {
+          const figmaCfg = await readFigmaConfig(RUNTIME_DATA_DIR);
+          if (!figmaCfg?.token) {
+            const message = 'Chưa có token Figma. Mở Thông tin dự án → Nguồn đối chiếu component → dán Personal Access Token rồi chạy lại.';
+            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message, subConversations: [] });
+            return 'failed' as const;
+          }
+          const links = componentSource.links;
+          const conversationId = `pipeline-conv-${randomUUID()}`;
+          const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
+          extractionTask = { id: conversationId, title: `Đọc component từ Figma · 0/${links.length}`, status: 'running' };
+          insertConversation(db, {
+            id: conversationId,
+            projectId,
+            title: `${def.name} · Đọc component từ Figma`,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+          const logLines: string[] = [];
+          const extractionStartedAt = Date.now();
+          const flushLog = (runStatus: 'running' | 'succeeded' | 'failed') => {
+            upsertMessage(db, conversationId, {
+              id: assistantMessageId,
+              role: 'assistant',
+              content: logLines.join('\n'),
+              runStatus,
+              startedAt: extractionStartedAt,
+              ...(runStatus !== 'running' ? { endedAt: Date.now() } : {}),
+            });
+          };
+          upsertMessage(db, conversationId, {
+            id: `pipeline-user-${conversationId}`,
+            role: 'user',
+            content: `Đọc danh mục component từ ${links.length} file Figma qua REST API (token đã lưu):\n${links.map((link, index) => `${index + 1}. ${link.url}`).join('\n')}`,
+          });
+          flushLog('running');
+          setProjectPipelineStatus(db, projectId, pipelineId, {
+            status: 'running',
+            lastConversationId: conversationId,
+            subConversations: [{ ...extractionTask }],
+          });
+          const abort = new AbortController();
+          const timeoutHandle = setTimeout(() => abort.abort(), FIGMA_CATALOG_EXTRACTION_TIMEOUT_MS);
+          timeoutHandle.unref?.();
+          let snapshot: Awaited<ReturnType<typeof buildFigmaComponentCatalog>> | null = null;
+          let failure: string | null = null;
+          try {
+            snapshot = await Promise.race([
+              buildFigmaComponentCatalog({
+                token: figmaCfg.token,
+                links,
+                onProgress: (progress) => {
+                  if (!extractionTask) return;
+                  const done = progress.phase === 'done' ? progress.index : progress.index - 1;
+                  extractionTask.title = `Đọc component từ Figma · ${done}/${progress.total}`;
+                  if (progress.phase === 'summary') logLines.push(`File ${progress.index}/${progress.total}: đang đọc ${progress.fileKey}…`);
+                  if (progress.phase === 'done') logLines.push(`File ${progress.index}/${progress.total}: “${progress.name ?? progress.fileKey}” — xong.`);
+                  flushLog('running');
+                  setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: [{ ...extractionTask }] });
+                },
+              }),
+              new Promise<never>((_, reject) => {
+                abort.signal.addEventListener('abort', () => reject(new Error(`Đọc component từ Figma quá ${Math.round(FIGMA_CATALOG_EXTRACTION_TIMEOUT_MS / 60_000)} phút.`)), { once: true });
+              }),
+            ]);
+          } catch (error) {
+            failure = error instanceof Error ? error.message : String(error);
+          } finally {
+            clearTimeout(timeoutHandle);
+          }
+          if (!snapshot) {
+            extractionTask.status = 'failed';
+            logLines.push(`Lỗi: ${failure ?? 'không rõ'}`, 'Kết quả cũ (nếu có) vẫn được giữ nguyên.');
+            flushLog('failed');
+            const message = `${failure ?? 'Không đọc được component từ Figma.'} Kết quả cũ vẫn được giữ nguyên.`;
+            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message, subConversations: [{ ...extractionTask }] });
+            return 'failed' as const;
+          }
+          const criteriaDir = path.join(cwd, 'criteria');
+          const catalogDir = path.join(cwd, '.figma-catalog');
+          const nextComponents = path.join(criteriaDir, 'components.md.next');
+          const nextCatalog = path.join(catalogDir, `components.${randomUUID()}.json.next`);
+          await fs.promises.mkdir(criteriaDir, { recursive: true });
+          await fs.promises.mkdir(catalogDir, { recursive: true });
+          await fs.promises.writeFile(nextComponents, renderFigmaComponentsMarkdown(snapshot), 'utf8');
+          await fs.promises.writeFile(nextCatalog, JSON.stringify(snapshot, null, 2), 'utf8');
+          await replaceValidatedFile(nextComponents, path.join(criteriaDir, 'components.md'));
+          await replaceValidatedFile(nextCatalog, path.join(catalogDir, 'components.json'));
+          const totalComponents = snapshot.files.reduce((sum, file) => sum + file.components.length, 0);
+          extractionTask.status = 'succeeded';
+          extractionTask.title = `Đọc component từ Figma · ${links.length}/${links.length}`;
+          logLines.push(`Đã đóng băng ${totalComponents} component từ ${links.length} file vào criteria/components.md.`);
+          flushLog('succeeded');
+          setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: [{ ...extractionTask }] });
+        }
+
+        // From this point a failure belongs to the audit itself, so arm the
+        // existing fail-shut cleanup and then clear the selected outputs.
         outerCwd = cwd;
 
         // Dọn thông báo "không chạy được" còn sót từ lần chạy TRƯỚC — nó nằm
@@ -15768,18 +15928,18 @@ export async function startServer({
 
         // Mỗi TRANG một conversation riêng (đặt tên theo trang) để Status modal
         // hiện tiến độ từng cái thay vì N agent trộn chung một log.
-        const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
         const graphNote =
           ' This is a FILE-ONLY stage: produce the per-page JSON only — do not push anything anywhere.';
 
-        const tasks = pages.map((pg) => {
+        const pageTasks = pages.map((pg) => {
           const id = `pipeline-conv-${randomUUID()}`;
           insertConversation(db, { id, projectId, title: `${def.name} · ${pg.page}`, createdAt: Date.now(), updatedAt: Date.now() });
           return { id, title: pg.page, status: 'queued' as 'queued' | 'running' | 'succeeded' | 'failed' };
         });
+        const tasks = extractionTask ? [extractionTask, ...pageTasks] : pageTasks;
         const persistTasks = () =>
           setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: tasks.map((t) => ({ ...t })) });
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: tasks[0]?.id });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: pageTasks[0]?.id ?? extractionTask?.id });
         persistTasks();
 
         const results: Array<CompPageResult | undefined> = new Array(pages.length);
@@ -15791,7 +15951,7 @@ export async function startServer({
           idx: number,
         ): Promise<'succeeded' | 'failed' | 'idle'> => {
           const { pg, original, images } = unit;
-          const task = tasks[idx]!;
+          const task = pageTasks[idx]!;
           const conversationId = task.id;
           task.status = 'running';
           persistTasks();
@@ -15926,7 +16086,7 @@ export async function startServer({
             const i = cursor++;
             if (i >= pageUnits.length) break;
             await runOnePage(pageUnits[i]!, i).catch(async () => {
-              tasks[i]!.status = 'failed';
+              pageTasks[i]!.status = 'failed';
               // runOnePage ném trước khi kịp tự fail-shut (vd đọc/parse nổ
               // ngoài try của nó) — dọn ở đây, cùng lý do: file sót lại sau một
               // ngoại lệ vẫn đọc ra "đã chạy xong" từ đĩa.
@@ -17633,6 +17793,7 @@ export async function startServer({
             appId: deterministicAppId,
             appName: localApp?.name ?? deterministicAppId,
             designSystemId,
+            docsReviewComponentSource: localApp?.docsReviewComponentSource ?? { mode: 'app-design-system' },
             designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
           });
           let binding = featureContextBindingFromMetadata(project.metadata);
@@ -17988,6 +18149,7 @@ export async function startServer({
           appId: localAppId,
           appName: (localApp?.name ?? featureAppName) || localAppId,
           designSystemId,
+          docsReviewComponentSource: localApp?.docsReviewComponentSource ?? { mode: 'app-design-system' },
           designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
         });
         let binding = featureContextBindingFromMetadata(project.metadata);

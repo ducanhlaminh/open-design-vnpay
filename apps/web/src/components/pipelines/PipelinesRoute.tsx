@@ -387,7 +387,12 @@ export function PipelinesRoute() {
   const actionModal =
     acting === null ? null : acting.kind === 'edit-app' ? (
       <EditAppModal
-        app={{ id: acting.app.id, name: acting.app.name }}
+        app={{
+          id: acting.app.id,
+          name: acting.app.name,
+          designSystemId: acting.app.designSystemId,
+          docsReviewComponentSource: acting.app.docsReviewComponentSource,
+        }}
         onClose={closeActing}
         onSaved={() => nav.reload()}
       />
