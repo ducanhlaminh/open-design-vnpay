@@ -150,7 +150,7 @@ export function groupByApp(
 
 export function usePipelineNav(): PipelineNav {
   const [projects, setProjects] = useState<PipelineProject[]>([]);
-  const [knownApps, setKnownApps] = useState<Array<{ id: string; name?: string; designSystemId?: string | null; context?: AppContextSyncInfo | null }>>([]);
+  const [knownApps, setKnownApps] = useState<Array<{ id: string; name?: string; designSystemId?: string | null; docsReviewComponentSource?: DocsReviewComponentSource; context?: AppContextSyncInfo | null }>>([]);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -174,6 +174,7 @@ export function usePipelineNav(): PipelineNav {
           id: app.id,
           name: app.name,
           designSystemId: app.designSystemId,
+          docsReviewComponentSource: app.docsReviewComponentSource,
           context: app.context ? {
             currentVersion: app.context.current?.contextVersion ?? app.context.latestVersion,
             latestVersion: app.context.latestVersion,
