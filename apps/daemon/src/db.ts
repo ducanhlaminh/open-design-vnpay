@@ -97,6 +97,21 @@ function migrate(db: SqliteDb): void {
       updated_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS project_sync_baselines (
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      scope_kind TEXT NOT NULL CHECK(scope_kind IN ('app', 'feature')),
+      project_id TEXT NOT NULL,
+      app_id TEXT NOT NULL DEFAULT '',
+      origin_id TEXT NOT NULL,
+      origin_app_id TEXT NOT NULL DEFAULT '',
+      local_digest TEXT NOT NULL,
+      origin_digest TEXT NOT NULL,
+      context_version TEXT,
+      last_synced_at TEXT NOT NULL,
+      incomplete INTEGER NOT NULL DEFAULT 0 CHECK(incomplete IN (0, 1)),
+      PRIMARY KEY(scope_kind, project_id, app_id)
+    );
+
     CREATE TABLE IF NOT EXISTS templates (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,

@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
   pipelineApps: [] as Array<{ id: string; name: string }>,
   failDownloads: new Set<string>(),
   downloads: [] as string[],
+  failAppUpsert: false,
 }));
 
 vi.mock('../src/db.js', () => ({
@@ -21,7 +22,10 @@ vi.mock('../src/db.js', () => ({
   getProject: (_db: unknown, id: string) => state.projects.find((project) => project.id === id) ?? null,
   insertProject: (_db: unknown, project: any) => { state.projects.push(project); },
   updateProject: (_db: unknown, id: string, patch: any) => { const project = state.projects.find((row) => row.id === id); if (project) Object.assign(project, patch); },
-  upsertPipelineAppName: (_db: unknown, value: { id: string; name: string }) => { state.appUpserts.push(value); },
+  upsertPipelineAppName: (_db: unknown, value: { id: string; name: string }) => {
+    if (state.failAppUpsert) throw new Error('app upsert failed');
+    state.appUpserts.push(value);
+  },
 }));
 vi.mock('../src/kg-sync/remote-registry.js', () => ({
   PROJECT_LIFECYCLE_PATH: '_studio/project-lifecycle.json',
@@ -79,7 +83,7 @@ async function pollFeaturePullOperation(table: Map<string, Handler>, operationId
 }
 
 describe('project-sync route contract', () => {
-  beforeEach(() => { state.projects = []; state.origins = []; state.mediaFiles = {}; state.uploads = []; state.appUpserts = []; state.pipelineApps = []; state.failDownloads = new Set(); state.downloads = []; });
+  beforeEach(() => { state.projects = []; state.origins = []; state.mediaFiles = {}; state.uploads = []; state.appUpserts = []; state.pipelineApps = []; state.failDownloads = new Set(); state.downloads = []; state.failAppUpsert = false; });
 
   it('filters origins to visible rows and supports the Feature App filter', async () => {
     state.origins = [
@@ -101,6 +105,48 @@ describe('project-sync route contract', () => {
     expect(plan.status).toBe(400); expect(plan.body.error.code).toBe('ORIGIN_REQUIRED');
     const apply = await call(table.get('POST /api/project-sync/apply')!, { planId: 'gone' });
     expect(apply.status).toBe(409); expect(apply.body.error.code).toBe('PLAN_EXPIRED');
+  });
+
+  it('keeps App status scoped to App metadata and latest Context, excluding Features', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-app-status-scope-'));
+    try {
+      state.pipelineApps = [{ id: 'local-app', name: 'Local App' }];
+      state.origins = [
+        { projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'remote-feature', name: 'Remote Feature', isApp: false, appId: 'shared-app', inMedia: true, visibility: 'visible' },
+      ];
+      state.mediaFiles = {
+        'shared-app': [{ path: 'app.json', content: '{}' }],
+        'remote-feature': [{ path: 'project.json', content: '{}' }, { path: 'remote-only.md', content: 'remote' }],
+      };
+      await fs.mkdir(path.join(root, 'local-app', '_studio'), { recursive: true });
+      await fs.writeFile(path.join(root, 'local-app', '_studio', 'project-sync-mapping.json'), JSON.stringify({ schemaVersion: 1, localId: 'local-app', originId: 'shared-app' }));
+      const status = await call(handlers(root).get('POST /api/project-sync/status')!, { scopes: [{ kind: 'app', projectId: 'local-app' }] });
+      expect(status.body.data.results[0].entries.every((entry: any) => !entry.path.startsWith('features/'))).toBe(true);
+      expect(status.body.data.results[0].features).toEqual([]);
+      expect(state.downloads.some((value) => value.startsWith('remote-feature:'))).toBe(true); // registry lookup only
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('marks a Pull incomplete when post-transfer App mapping finalization fails', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-app-pull-finalize-fail-'));
+    try {
+      state.origins = [{ projectId: 'shared-app', name: 'Shared App', isApp: true, inMedia: true, visibility: 'visible' }];
+      state.mediaFiles = { 'shared-app': [{ path: 'app.json', content: JSON.stringify({ kind: 'app', name: 'Shared App' }) }] };
+      const table = handlers(root);
+      const planned = await call(table.get('POST /api/project-sync/plan')!, {
+        direction: 'pull', scope: { kind: 'app', projectId: 'local-app' }, origin: { mode: 'existing', originId: 'shared-app' },
+      });
+      state.failAppUpsert = true;
+      await expect(call(table.get('POST /api/project-sync/apply')!, { planId: planned.body.data.planId })).rejects.toThrow('app upsert failed');
+      state.failAppUpsert = false;
+      const status = await call(table.get('POST /api/project-sync/status')!, { scopes: [{ kind: 'app', projectId: 'local-app' }] });
+      expect(status.body.data.results[0]).toMatchObject({ status: 'incomplete', reason: 'previous_sync_incomplete' });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it('uses an optional new display name while keeping the generated destination id', async () => {
@@ -247,6 +293,14 @@ describe('project-sync route contract', () => {
         appContextBinding: { appId: 'local-app', contextVersion: 'v1' },
         studioConfig: { appId: 'local-app', remoteId: 'feature-a', projectSyncMapping: { originAppId: 'shared-app' } },
       });
+      const firstPullStatus = await call(table.get('POST /api/project-sync/status')!, {
+        scopes: [{ kind: 'feature', projectId: 'feature-a', appId: 'local-app' }],
+      });
+      expect(firstPullStatus.body.data.results[0]).toMatchObject({
+        status: 'up_to_date',
+        reason: 'contents_match',
+        state: expect.not.stringMatching(/^deleted$/),
+      });
 
       // A later update removes a file that disappeared remotely while keeping
       // the existing mapped local id.
@@ -321,6 +375,47 @@ describe('project-sync route contract', () => {
     state.origins = [{ projectId: 'shared', name: 'Shared app', isApp: true, inMedia: true, visibility: 'visible' }];
     const wrongKind = await call(table.get('POST /api/project-sync/status')!, { scopes: [{ kind: 'feature', projectId: 'local' }] });
     expect(wrongKind.body.data.results[0]).toMatchObject({ state: 'new', mappingValid: false });
+  });
+
+  it('reports a mapped Feature parent lookup failure as unavailable, not missing', async () => {
+    state.projects = [{ id: 'local', name: 'Local', metadata: { studioConfig: { remoteId: 'shared' } } }];
+    state.origins = [{ projectId: 'shared', name: 'Shared', isApp: false, appId: 'origin-app', inMedia: true, visibility: 'visible' }];
+    state.failDownloads.add('shared:project.json');
+    const status = await call(handlers().get('POST /api/project-sync/status')!, { scopes: [{ kind: 'feature', projectId: 'local', appId: 'local-app' }] });
+    expect(status.body.data.results[0]).toMatchObject({ status: 'unavailable', reason: 'status_check_failed' });
+  });
+
+  it('plans Feature Pull against the remote bound Context version, not stale local metadata', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-feature-remote-binding-'));
+    try {
+      state.projects = [{
+        id: 'local-feature', name: 'Feature',
+        metadata: {
+          appContextBinding: { schemaVersion: 1, appId: 'local-app', contextVersion: 'v1', contentDigest: 'sha256:old', boundAt: '2026-01-01T00:00:00.000Z' },
+          studioConfig: { appId: 'local-app', remoteId: 'origin-feature', projectSyncMapping: { schemaVersion: 1, localId: 'local-feature', originId: 'origin-feature', originAppId: 'origin-app' } },
+        },
+      }];
+      state.origins = [
+        { projectId: 'origin-app', name: 'App', isApp: true, inMedia: true, visibility: 'visible' },
+        { projectId: 'origin-feature', name: 'Feature', isApp: false, appId: 'origin-app', inMedia: true, visibility: 'visible' },
+      ];
+      state.mediaFiles = {
+        'origin-feature': [{ path: 'project.json', content: JSON.stringify({ appId: 'origin-app', appContextBinding: { appId: 'origin-app', contextVersion: 'v2' } }) }],
+        'origin-app': [
+          { path: 'context/versions/v2/manifest.json', content: '{}' },
+          { path: 'context/versions/v2/files/context.md', content: 'v2' },
+        ],
+      };
+      const plan = await call(handlers(root).get('POST /api/project-sync/plan')!, {
+        direction: 'pull', scope: { kind: 'feature', projectId: 'local-feature', appId: 'local-app' },
+      });
+      expect(plan.status).toBe(200);
+      expect(plan.body.data.context).toMatchObject({ contextVersion: 'v2' });
+      expect(plan.body.data.entries.some((entry: any) => entry.path.includes('context/versions/v2/'))).toBe(true);
+      expect(plan.body.data.entries.some((entry: any) => entry.path.includes('context/versions/v1/'))).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it('limits a Feature plan to that Feature and its explicitly bound Context version', async () => {

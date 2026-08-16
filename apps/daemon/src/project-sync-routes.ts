@@ -47,10 +47,13 @@ import {
   planProjectSyncFeaturePullBatch,
 } from './project-sync-feature-pull.js';
 import { stageForOutput } from './pipelines.js';
+import { digestProjectSyncSides, evaluateProjectSyncStatus } from './project-sync-status.js';
+import { ProjectSyncStateStore } from './project-sync-state.js';
 
 export interface RegisterProjectSyncRoutesDeps extends RouteDeps<'db' | 'http' | 'paths'> {}
 
 type LocalProject = { id: string; name?: string; metadata?: unknown };
+type DiagnosticOrigin = ProjectSyncOrigin & { parentLookupFailed?: boolean };
 type Unit = {
   localId?: string;
   originId: string;
@@ -144,10 +147,12 @@ async function writeAppMapping(projectsDir: string, appId: string, originId: str
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, `${JSON.stringify({ schemaVersion: 1, localId: appId, originId, mappedAt: new Date().toISOString() }, null, 2)}\n`);
 }
-function stateOf(summary: ReturnType<typeof emptyTotals>): 'new' | 'unchanged' | 'changed' | 'deleted' {
+function stateOf(summary: ReturnType<typeof emptyTotals>): 'new' | 'unchanged' | 'changed' {
   if (summary.changed) return 'changed';
   if (summary.created) return 'new';
-  if (summary.deleted) return 'deleted';
+  // `deleted` describes a target-only file in a directional PLAN. It is not
+  // an entity lifecycle state and must never escape as an App/Feature badge.
+  if (summary.deleted) return 'changed';
   return 'unchanged';
 }
 function entity(id: string, name: string, kind: SyncEntitySummary['kind'], totals: ReturnType<typeof emptyTotals>, mappingValid: boolean, originId?: string | null): SyncEntitySummary {
@@ -179,6 +184,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
   const { sendApiError } = ctx.http;
   const plans = new ProjectSyncPlanStore();
   const operations = new ProjectSyncOperationStore();
+  const syncState = new ProjectSyncStateStore(db);
   type BatchExecutionFeature = {
     originId: string;
     localId: string;
@@ -204,19 +210,23 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
   const appliedResults = new Map<string, { expiresAt: number; result: { planId: string; applied: number; skipped: number; unchanged: number; softHiddenOriginFeatureIds: string[]; stale: Array<{ path: string; reason: string }> } }>();
   const projects = (): LocalProject[] => listProjects(db) as LocalProject[];
 
-  const remoteOrigins = async (): Promise<ProjectSyncOrigin[]> => {
+  const remoteOrigins = async (): Promise<DiagnosticOrigin[]> => {
     const media = new MediaClient(mediaConfigFromEnv());
     const rows = await loadRemoteProjects(media);
     await Promise.all(rows.filter((row) => !row.isApp).map(async (row) => {
       try {
         const config = JSON.parse((await media.downloadFile(row.projectId, 'project.json')).toString('utf8')) as { appId?: unknown };
         row.appId = typeof config.appId === 'string' ? config.appId : null;
-      } catch { row.appId = null; }
+      } catch {
+        row.appId = null;
+        (row as typeof row & { parentLookupFailed?: boolean }).parentLookupFailed = true;
+      }
     }));
     return rows.map((row) => ({
       originId: row.projectId, name: row.name || row.projectId, kind: row.isApp ? 'app' : 'feature',
       appId: row.appId ?? null, visibility: row.visibility ?? 'visible', inMedia: row.inMedia,
       mappingVersion: null,
+      ...((row as typeof row & { parentLookupFailed?: boolean }).parentLookupFailed ? { parentLookupFailed: true } : {}),
     }));
   };
 
@@ -240,18 +250,32 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         originAppId: diagnosticOrigin?.appId ?? expectedOriginAppId ?? originAppIdOf(selectedProject ?? { id: scope.projectId }),
       }];
       const binding = selectedProject ? featureContextBindingFromMetadata(selectedProject.metadata) : null;
-      const localAppId = binding?.appId ?? scope.appId ?? null;
+      let bindingAppId = binding?.appId ?? null;
+      let boundContextVersion = binding?.contextVersion ?? null;
+      if (materializeOriginOnly && selected.originId) {
+        const media = new MediaClient(mediaConfigFromEnv());
+        const remoteControl = JSON.parse((await media.downloadFile(selected.originId, 'project.json')).toString('utf8')) as Record<string, unknown>;
+        const remoteBinding = remoteControl.appContextBinding;
+        if (remoteBinding && typeof remoteBinding === 'object' && !Array.isArray(remoteBinding)) {
+          const value = remoteBinding as Record<string, unknown>;
+          if (typeof value.appId === 'string' && typeof value.contextVersion === 'string' && /^v[1-9]\d*$/.test(value.contextVersion)) {
+            bindingAppId = value.appId;
+            boundContextVersion = value.contextVersion as `v${number}`;
+          }
+        }
+      }
+      const localAppId = scope.appId ?? bindingAppId ?? null;
       const originAppId = diagnosticOrigin?.appId ?? expectedOriginAppId ?? (selectedProject ? originAppIdOf(selectedProject) : null);
       // A Feature carries exactly its immutable bound Context version. It does
       // not silently upgrade to the App's current Context or copy all history.
-      if (binding && safeSegment(localAppId) && originAppId) {
+      if (boundContextVersion && safeSegment(localAppId) && originAppId) {
         units.push({
           localId: localAppId,
           originId: originAppId,
           prefix: 'bound-context',
           isApp: true,
-          name: `Context ${binding.contextVersion}`,
-          contextVersion: binding.contextVersion,
+          name: `Context ${boundContextVersion}`,
+          contextVersion: boundContextVersion,
           persistMapping: false,
         });
       }
@@ -366,7 +390,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     return { localFiles, originFiles, localContentByPath };
   };
 
-  const planFor = async (request: ProjectSyncPlanRequest, options: { retain?: boolean; origins?: ProjectSyncOrigin[] } = {}) => {
+  const planFor = async (request: ProjectSyncPlanRequest, options: { retain?: boolean; origins?: ProjectSyncOrigin[]; statusScope?: boolean } = {}) => {
     const localProject = projects().find((project) => project.id === request.scope.projectId);
     const mappedOrigin = request.scope.kind === 'app'
       ? (await readAppMapping(ctx.paths.PROJECTS_DIR, request.scope.projectId))?.originId ?? null
@@ -411,6 +435,10 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       throw error;
     }
     const units = await unitsFor(request.scope, defaultOrigin, request.direction === 'pull', diagnosticOrigin, expectedOriginAppId);
+    if (options.statusScope && request.scope.kind === 'app') {
+      units.splice(1);
+      if (units[0]) units[0].latestAppContextOnly = true;
+    }
     if (request.direction === 'pull' && request.scope.kind === 'app') {
       // App Pull is deliberately a context-only operation. Keep one App unit,
       // materialize a first-time local container only during APPLY, and never
@@ -425,7 +453,7 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
     }
     // App Push sees origin-only Features as `deleted`, which APPLY converts
     // into a lifecycle soft-hide. App Pull intentionally never reaches here.
-    if (request.scope.kind === 'app' && request.direction === 'push') {
+    if (request.scope.kind === 'app' && request.direction === 'push' && !options.statusScope) {
       for (const origin of allOrigins.filter((row) => row.kind === 'feature' && row.appId === defaultOrigin.originId && row.visibility === 'visible')) {
         if (!units.some((unit) => unit.originId === origin.originId)) units.push({ originId: origin.originId, prefix: `features/${origin.originId}`, featureId: origin.originId, isApp: false, name: origin.name });
       }
@@ -647,31 +675,51 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       }),
     ];
     const results: ProjectSyncScopeStatus[] = [];
+    const checkedAt = new Date().toISOString();
     const statusOrigins = await remoteOrigins().catch(() => null);
     for (const scope of requested) {
       let mapped: string | null = null;
+      let diagnostic: DiagnosticOrigin | null = null;
       try {
         const localProject = projects().find((project) => project.id === scope.projectId);
         mapped = scope.kind === 'app'
           ? (await readAppMapping(ctx.paths.PROJECTS_DIR, scope.projectId))?.originId ?? null
           : localProject ? originIdOf(localProject) : null;
         if (!mapped) {
-          results.push({ scope, origin: null, state: 'new', mappingValid: false, features: [], summary: { created: 1, unchanged: 0, changed: 0, deleted: 0 }, entries: [] });
+          results.push({ scope, origin: null, status: 'not_shared', reason: 'mapping_missing', checkedAt, state: 'new', mappingValid: false, features: [], summary: { created: 1, unchanged: 0, changed: 0, deleted: 0 }, entries: [] });
           continue;
         }
-        if (!statusOrigins) throw new Error('origin registry unavailable');
+        if (!statusOrigins) {
+          const baseline = syncState.get(scope, { originId: mapped });
+          results.push({ scope, status: 'unavailable', reason: 'status_check_failed', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'changed', mappingValid: true, features: [], summary: emptyTotals(), entries: [], error: 'origin registry unavailable' });
+          continue;
+        }
+        diagnostic = statusOrigins.find((origin) => origin.originId === mapped) ?? null;
+        if (diagnostic?.parentLookupFailed) {
+          const baseline = syncState.get(scope, { originId: mapped });
+          results.push({ scope, origin: diagnostic, status: 'unavailable', reason: 'status_check_failed', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'changed', mappingValid: true, features: [], summary: emptyTotals(), entries: [], error: 'origin parent could not be verified' });
+          continue;
+        }
+        if (!diagnostic || diagnostic.visibility === 'hidden' || diagnostic.kind !== scope.kind) {
+          const baseline = syncState.get(scope, { originId: mapped, originAppId: diagnostic?.appId ?? null });
+          results.push({ scope, origin: diagnostic, status: 'origin_missing', reason: 'origin_missing_or_hidden', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'new', mappingValid: false, features: [], summary: emptyTotals(), entries: [] });
+          continue;
+        }
         const planned = await planFor(
           { direction: 'push', scope, origin: { mode: 'existing', originId: mapped } },
-          { retain: false, origins: statusOrigins },
+          { retain: false, origins: statusOrigins, statusScope: true },
         );
-        results.push({ scope, origin: planned.origin, state: stateOf(planned.plan.summary), mappingValid: planned.mappingValid, ...(planned.plan.app ? { app: planned.plan.app } : {}), ...(planned.plan.context ? { context: planned.plan.context } : {}), features: planned.plan.features, summary: planned.plan.summary, entries: planned.plan.entries });
+        const baselineIdentity = { originId: mapped, originAppId: diagnostic.appId ?? null };
+        const evaluated = evaluateProjectSyncStatus(digestProjectSyncSides(planned.files.localFiles, planned.files.originFiles), syncState.get(scope, baselineIdentity));
+        results.push({ scope, origin: planned.origin, ...evaluated, checkedAt, state: stateOf(planned.plan.summary), mappingValid: planned.mappingValid, ...(planned.plan.app ? { app: planned.plan.app } : {}), ...(planned.plan.context ? { context: planned.plan.context } : {}), features: planned.plan.features, summary: planned.plan.summary, entries: planned.plan.entries });
       } catch (error) {
         const code = (error as Error & { code?: string }).code;
         if (code === ERR_PROJECT_SYNC_ORIGIN_HIDDEN || code === 'ORIGIN_MAPPING_INVALID') {
-          const diagnostic = mapped ? statusOrigins?.find((origin) => origin.originId === mapped) ?? null : null;
-          results.push({ scope, origin: diagnostic, state: 'new', mappingValid: false, features: [], summary: { created: 1, unchanged: 0, changed: 0, deleted: 0 }, entries: [], error: (error as Error).message });
+          diagnostic = mapped ? statusOrigins?.find((origin) => origin.originId === mapped) ?? null : null;
+          results.push({ scope, origin: diagnostic, status: 'origin_missing', reason: 'origin_missing_or_hidden', checkedAt, state: 'new', mappingValid: false, features: [], summary: { created: 1, unchanged: 0, changed: 0, deleted: 0 }, entries: [], error: (error as Error).message });
         } else {
-          results.push({ scope, state: 'changed', mappingValid: false, features: [], summary: emptyTotals(), entries: [], error: (error as Error).message });
+          const baseline = mapped ? syncState.get(scope, { originId: mapped, originAppId: diagnostic?.appId ?? null }) : null;
+          results.push({ scope, status: 'unavailable', reason: 'status_check_failed', checkedAt, ...(baseline ? { lastSyncedAt: baseline.lastSyncedAt } : {}), state: 'changed', mappingValid: Boolean(mapped), features: [], summary: emptyTotals(), entries: [], error: (error as Error).message });
         }
       }
     }
@@ -814,9 +862,36 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
         if (existing) updateProject(db, feature.localId, { name: feature.name, metadata, updatedAt: Date.now() });
         else insertProject(db, { id: feature.localId, name: feature.name, skillId: null, designSystemId: null, pendingPrompt: null, metadata, createdAt: Date.now(), updatedAt: Date.now() });
         if (backedUp) await fs.rm(backup, { recursive: true, force: true });
+        const featureScope: ProjectSyncScope = { kind: 'feature', projectId: feature.localId, appId: stored.plan.localAppId };
+        const identity = { originId: feature.originId, originAppId: stored.plan.originAppId };
+        // Re-snapshot through the same code path used by STATUS. Local control
+        // files intentionally retain local App ids, so the two canonical side
+        // digests may differ even after a clean pull; the baseline records each
+        // side independently.
+        try {
+          const verified = await planFor(
+            { direction: 'push', scope: featureScope, origin: { mode: 'existing', originId: feature.originId } },
+            { retain: false, origins: [
+              { originId: stored.plan.originAppId, name: stored.plan.originAppId, kind: 'app', visibility: 'visible', inMedia: true },
+              { originId: feature.originId, name: feature.name, kind: 'feature', appId: stored.plan.originAppId, visibility: 'visible', inMedia: true },
+            ] },
+          );
+          syncState.recordClean(featureScope, identity, digestProjectSyncSides(verified.files.localFiles, verified.files.originFiles), feature.contextVersion);
+        } catch {
+          // The files were installed atomically, but a post-install remote
+          // verification can still fail (for example, temporary network loss).
+          // Keep the usable Feature and expose a retryable incomplete status.
+          syncState.markIncomplete(featureScope, identity, undefined, feature.contextVersion);
+        }
         const unchanged = planned.entries.filter((entry) => entry.change === 'unchanged').length;
         items.push({ originId: feature.originId, localId: feature.localId, state: 'succeeded', result: { planId: stored.plan.planId, applied: actionable.length, skipped: planned.entries.length - actionable.length - unchanged, unchanged, softHiddenOriginFeatureIds: [], stale: [] } });
       } catch (error) {
+        syncState.markIncomplete(
+          { kind: 'feature', projectId: feature.localId, appId: stored.plan.localAppId },
+          { originId: feature.originId, originAppId: stored.plan.originAppId },
+          undefined,
+          feature.contextVersion,
+        );
         if (installedDestination) await fs.rm(destination, { recursive: true, force: true }).catch(() => undefined);
         if (backedUp) {
           await fs.rename(backup, destination).catch(() => undefined);
@@ -1006,33 +1081,71 @@ export function registerProjectSyncRoutes(app: Express, ctx: RegisterProjectSync
       }
     }
     report?.('finalizing', completedItems);
+    const baselineIdentity = {
+      originId: stored.plan.origin.originId,
+      // App identity is the selected origin itself. Only a Feature baseline
+      // carries the parent origin App id; child units in an App Push must not
+      // accidentally change the App baseline identity.
+      originAppId: exec.scope.kind === 'feature'
+        ? exec.units.find((unit) => unit.featureId)?.originAppId ?? null
+        : null,
+    };
     // Persist a versioned local → origin mapping only after an entirely clean
     // APPLY. A partial/stale transfer is never allowed to claim a new origin.
     // Older `approvedMapping` remains readable; new writes use the explicit
     // remoteId bridge for App and every local Feature.
-    if (stale.length === 0) for (const unit of exec.units) {
-      if (!unit.localId || !unit.originId || unit.persistMapping === false) continue;
-      if (unit.isApp && !unit.featureId) {
-        await writeAppMapping(ctx.paths.PROJECTS_DIR, unit.localId, unit.originId);
-        if (stored.plan.direction === 'pull') {
-          upsertPipelineAppName(db, { id: unit.localId, name: unit.name, createdAt: Date.now() });
+    try {
+      if (stale.length === 0) for (const unit of exec.units) {
+        if (!unit.localId || !unit.originId || unit.persistMapping === false) continue;
+        if (unit.isApp && !unit.featureId) {
+          await writeAppMapping(ctx.paths.PROJECTS_DIR, unit.localId, unit.originId);
+          if (stored.plan.direction === 'pull') {
+            upsertPipelineAppName(db, { id: unit.localId, name: unit.name, createdAt: Date.now() });
+          }
+          continue;
         }
-        continue;
+        if (!getProject(db, unit.localId)) continue;
+        const project = getProject(db, unit.localId) as LocalProject;
+        const config = studioConfigOf(project.metadata);
+        const metadata = (project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)) ? project.metadata as Record<string, unknown> : {};
+        const studio = metadata.studioConfig && typeof metadata.studioConfig === 'object' && !Array.isArray(metadata.studioConfig) ? metadata.studioConfig as Record<string, unknown> : {};
+        updateProject(db, unit.localId, { metadata: {
+          ...metadata,
+          studioConfig: {
+            ...studio,
+            ...config,
+            remoteId: unit.originId, // compatibility reader for pre-schema clients
+            projectSyncMapping: { schemaVersion: 1, localId: unit.localId, originId: unit.originId, ...(unit.featureId ? { originAppId: unit.originAppId ?? (exec.scope.kind === 'app' ? stored.plan.origin.originId : null) } : {}), mappedAt: new Date().toISOString() },
+          },
+        } });
       }
-      if (!getProject(db, unit.localId)) continue;
-      const project = getProject(db, unit.localId) as LocalProject;
-      const config = studioConfigOf(project.metadata);
-      const metadata = (project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)) ? project.metadata as Record<string, unknown> : {};
-      const studio = metadata.studioConfig && typeof metadata.studioConfig === 'object' && !Array.isArray(metadata.studioConfig) ? metadata.studioConfig as Record<string, unknown> : {};
-      updateProject(db, unit.localId, { metadata: {
-        ...metadata,
-        studioConfig: {
-          ...studio,
-          ...config,
-          remoteId: unit.originId, // compatibility reader for pre-schema clients
-          projectSyncMapping: { schemaVersion: 1, localId: unit.localId, originId: unit.originId, ...(unit.featureId ? { originAppId: unit.originAppId ?? (exec.scope.kind === 'app' ? stored.plan.origin.originId : null) } : {}), mappedAt: new Date().toISOString() },
-        },
-      } });
+    } catch (error) {
+      // A Pull may already have replaced local files before its mapping/DB
+      // finalization fails. Preserve that truth for the next status check.
+      // Push failures do not make the intact local copy incomplete.
+      if (stored.plan.direction === 'pull') syncState.markIncomplete(exec.scope, baselineIdentity);
+      throw error;
+    }
+    if (stale.length === 0 && skipped === 0) {
+      try {
+        const verified = await planFor(
+          { direction: 'push', scope: exec.scope, origin: { mode: 'existing', originId: baselineIdentity.originId } },
+          { retain: false, statusScope: true, origins: [{
+            originId: baselineIdentity.originId,
+            name: baselineIdentity.originId,
+            kind: exec.scope.kind,
+            ...(exec.scope.kind === 'feature' ? { appId: baselineIdentity.originAppId } : {}),
+            visibility: 'visible',
+            inMedia: true,
+          }] },
+        );
+        const pair = digestProjectSyncSides(verified.files.localFiles, verified.files.originFiles);
+        syncState.recordClean(exec.scope, baselineIdentity, pair, verified.plan.context?.contextVersion ?? null);
+      } catch {
+        if (stored.plan.direction === 'pull') syncState.markIncomplete(exec.scope, baselineIdentity);
+      }
+    } else if (stored.plan.direction === 'pull') {
+      syncState.markIncomplete(exec.scope, baselineIdentity);
     }
     const result = { planId: stored.plan.planId, applied, skipped, unchanged, softHiddenOriginFeatureIds, stale };
     appliedResults.set(stored.plan.planId, { expiresAt: Date.now() + PROJECT_SYNC_PLAN_TTL_MS, result });

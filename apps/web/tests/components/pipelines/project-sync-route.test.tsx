@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   reload: vi.fn(async () => undefined),
   appMapped: true,
   featureMapped: true,
+  statusFailure: 'never' as 'never' | 'always' | 'after_first',
+  statusCalls: 0,
   route: { kind: 'home', view: 'pipelines' as const } as { kind: 'home'; view: 'pipelines' } | { kind: 'pipelines-app'; appId: string },
 }));
 
@@ -23,6 +25,9 @@ vi.mock('../../../src/router', async (importOriginal) => ({
 
 vi.mock('../../../src/components/project-sync', () => ({
   SyncStateBadge: ({ state }: { state: string }) => <span data-sync-state={state}>{state}</span>,
+  SyncStatusBadge: ({ status }: { status: string }) => <span data-sync-status={status}>{status}</span>,
+  projectSyncUserStatusOf: (value: { status?: string; state?: string; mappingValid: boolean }) =>
+    value.status ?? (!value.mappingValid || value.state === 'new' ? 'not_shared' : value.state === 'unchanged' ? 'up_to_date' : 'needs_review'),
   ProjectSyncPreviewModal: ({ scope, subjectName, onClose, onApplied }: {
     scope: ProjectSyncScope;
     subjectName: string;
@@ -80,7 +85,7 @@ vi.mock('../../../src/components/pipelines/usePipelineNav', async (importOrigina
   }),
 }));
 
-const { PipelinesRoute } = await import('../../../src/components/pipelines/PipelinesRoute');
+const { PipelinesRoute, mergeFailedSyncStatuses } = await import('../../../src/components/pipelines/PipelinesRoute');
 
 beforeEach(() => {
   mocks.route = { kind: 'home', view: 'pipelines' };
@@ -88,6 +93,8 @@ beforeEach(() => {
   mocks.reload.mockClear();
   mocks.appMapped = true;
   mocks.featureMapped = true;
+  mocks.statusFailure = 'never';
+  mocks.statusCalls = 0;
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url === '/api/auth/me') return new Response(JSON.stringify({ syncReady: true }), { status: 200 });
@@ -106,12 +113,18 @@ beforeEach(() => {
     if (url === '/api/project-sync/apply') return new Response(JSON.stringify({ data: {
       planId: 'plan-retail', applied: 1, skipped: 0, unchanged: 0, softHiddenOriginFeatureIds: [], stale: [],
     } }), { status: 200 });
-    if (url === '/api/project-sync/status') return new Response(JSON.stringify({
-      data: { results: [
-        { scope: { kind: 'app', projectId: 'retail' }, state: mocks.appMapped ? 'changed' : 'new', mappingValid: mocks.appMapped, ...(mocks.appMapped ? { origin: { originId: 'retail-cloud', name: 'Retail', kind: 'app', visibility: 'visible', inKgs: true, inMedia: true } } : {}), features: [], summary: { created: mocks.appMapped ? 0 : 1, unchanged: 0, changed: mocks.appMapped ? 1 : 0, deleted: 0 }, entries: [] },
-        { scope: { kind: 'feature', projectId: 'checkout', appId: 'retail' }, state: mocks.featureMapped ? 'changed' : 'new', mappingValid: mocks.featureMapped, ...(mocks.featureMapped ? { origin: { originId: 'checkout-cloud', name: 'Thanh toán', kind: 'feature', appId: 'retail-cloud', visibility: 'visible', inKgs: true, inMedia: true } } : {}), features: [], summary: { created: mocks.featureMapped ? 0 : 1, unchanged: 0, changed: mocks.featureMapped ? 1 : 0, deleted: 0 }, entries: [] },
-      ] },
-    }), { status: 200 });
+    if (url === '/api/project-sync/status') {
+      mocks.statusCalls += 1;
+      if (mocks.statusFailure === 'always' || (mocks.statusFailure === 'after_first' && mocks.statusCalls > 1)) {
+        throw new Error('shared storage unavailable');
+      }
+      return new Response(JSON.stringify({
+        data: { results: [
+          { scope: { kind: 'app', projectId: 'retail' }, status: mocks.appMapped ? 'needs_review' : 'not_shared', reason: mocks.appMapped ? 'no_sync_baseline' : 'mapping_missing', checkedAt: '2026-08-12T00:00:00.000Z', state: mocks.appMapped ? 'changed' : 'new', mappingValid: mocks.appMapped, ...(mocks.appMapped ? { origin: { originId: 'retail-cloud', name: 'Retail', kind: 'app', visibility: 'visible', inKgs: true, inMedia: true } } : {}), features: [], summary: { created: mocks.appMapped ? 0 : 1, unchanged: 0, changed: mocks.appMapped ? 1 : 0, deleted: 0 }, entries: [] },
+          { scope: { kind: 'feature', projectId: 'checkout', appId: 'retail' }, status: mocks.featureMapped ? 'needs_review' : 'not_shared', reason: mocks.featureMapped ? 'no_sync_baseline' : 'mapping_missing', checkedAt: '2026-08-12T00:00:00.000Z', state: mocks.featureMapped ? 'changed' : 'new', mappingValid: mocks.featureMapped, ...(mocks.featureMapped ? { origin: { originId: 'checkout-cloud', name: 'Thanh toán', kind: 'feature', appId: 'retail-cloud', visibility: 'visible', inKgs: true, inMedia: true } } : {}), features: [], summary: { created: mocks.featureMapped ? 0 : 1, unchanged: 0, changed: mocks.featureMapped ? 1 : 0, deleted: 0 }, entries: [] },
+        ] },
+      }), { status: 200 });
+    }
     return new Response(JSON.stringify({}), { status: 200 });
   }));
 });
@@ -124,7 +137,7 @@ afterEach(() => {
 describe('PipelinesRoute · App/Feature origin sync', () => {
   it('App chia sẻ mở đúng modal Chia sẻ kết quả và làm mới navigation', async () => {
     render(<PipelinesRoute />);
-    await screen.findByText('changed');
+    await screen.findByText('needs_review');
     const push = screen.getByLabelText('Chia sẻ kết quả của Dự án Retail');
     await waitFor(() => expect(push.hasAttribute('disabled')).toBe(false));
     fireEvent.click(push);
@@ -198,16 +211,60 @@ describe('PipelinesRoute · App/Feature origin sync', () => {
     const pull = await screen.findByLabelText('Lấy Tính năng Thanh toán từ kho chung');
     expect(pull.hasAttribute('disabled')).toBe(true);
     expect(pull.getAttribute('title')).toBe('Tính năng này chưa có bản trên kho chung');
-    expect(screen.getByText('Chỉ có trên máy · Đưa lên kho chung để tránh mất dữ liệu')).not.toBeNull();
+    expect(screen.getByText('not_shared')).not.toBeNull();
   });
 
   it('loads status from the new engine and never hides local rows through the legacy endpoint', async () => {
     const fetchMock = vi.mocked(globalThis.fetch);
     render(<PipelinesRoute />);
-    await screen.findByText('changed');
+    await screen.findByText('needs_review');
     expect(fetchMock).toHaveBeenCalledWith('/api/project-sync/status', expect.objectContaining({ method: 'POST' }));
     expect(fetchMock.mock.calls.map(([url]) => String(url))).not.toContain('/api/kg/hidden-projects');
     expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/project-sync/status')).toHaveLength(1);
     expect(screen.getByText('Retail')).not.toBeNull();
+  });
+
+  it('shows a friendly unavailable badge when the first status check fails', async () => {
+    mocks.statusFailure = 'always';
+    render(<PipelinesRoute />);
+
+    expect(await screen.findByText('unavailable')).not.toBeNull();
+    expect(screen.queryByText('deleted')).toBeNull();
+  });
+
+  it('keeps the last known badge when a refresh fails', async () => {
+    mocks.statusFailure = 'after_first';
+    mocks.route = { kind: 'pipelines-app', appId: 'retail' };
+    render(<PipelinesRoute />);
+    expect(await screen.findByText('needs_review')).not.toBeNull();
+
+    fireEvent.click(screen.getByLabelText('Lấy Tính năng Thanh toán từ kho chung'));
+    fireEvent.click(screen.getByRole('button', { name: 'Hoàn tất lấy tính năng' }));
+    await waitFor(() => expect(mocks.statusCalls).toBe(2));
+
+    expect(screen.getByText('needs_review')).not.toBeNull();
+    expect(screen.queryByText('unavailable')).toBeNull();
+  });
+
+  it('retains known badges and adds unavailable for a newly pulled Feature when refresh fails', () => {
+    const previous = new Map([['checkout', {
+      scope: { kind: 'feature' as const, projectId: 'checkout', appId: 'retail' },
+      status: 'up_to_date' as const,
+      reason: 'contents_match' as const,
+      checkedAt: '2026-08-12T00:00:00.000Z',
+      state: 'unchanged' as const,
+      mappingValid: true,
+      features: [],
+      summary: { created: 0, unchanged: 1, changed: 0, deleted: 0 },
+      entries: [],
+    }]]);
+
+    const merged = mergeFailedSyncStatuses([
+      { kind: 'feature', projectId: 'checkout', appId: 'retail' },
+      { kind: 'feature', projectId: 'login', appId: 'retail' },
+    ], 'feature', previous);
+
+    expect(merged.get('checkout')).toBe(previous.get('checkout'));
+    expect(merged.get('login')).toMatchObject({ status: 'unavailable', reason: 'status_check_failed' });
   });
 });

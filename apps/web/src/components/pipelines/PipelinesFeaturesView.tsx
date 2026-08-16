@@ -18,7 +18,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { AppPoolResponse, DesignSystemSummary, PipelineProject, PipelineWorkflowSummary, ProjectSyncScopeStatus } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
-import { SyncStateBadge } from '../project-sync';
+import { projectSyncUserStatusOf, SyncStatusBadge } from '../project-sync';
 import { navigate } from '../../router';
 import { AppPoolSection } from './AppPoolSection';
 import { AppDesignSystemPanel } from './AppDesignSystemPanel';
@@ -457,6 +457,7 @@ export function PipelinesFeaturesView({
             const status = featureStatus(f);
             const running = runningWorkflows(f);
             const syncStatus = syncStatusByFeatureId?.get(f.id);
+            const syncTooltipId = `feature-sync-status-${encodeURIComponent(f.id)}`;
             const canPullFromShared = Boolean(syncStatus?.mappingValid && syncStatus.origin?.visibility === 'visible');
             const pullTitle = !syncReady
               ? syncIssueHint(syncIssue)
@@ -498,6 +499,7 @@ export function PipelinesFeaturesView({
                   className={styles.row}
                   aria-expanded={f.workflows ? open : undefined}
                   aria-controls={f.workflows ? panelId : undefined}
+                  aria-describedby={syncStatus ? syncTooltipId : undefined}
                   onClick={onRowClick}
                 >
                   <span className={styles.rowKey}>{keyOf(f.name)}</span>
@@ -509,8 +511,11 @@ export function PipelinesFeaturesView({
                       </span>
                       {syncStatus ? (
                         <span className={styles.syncBadgeStack}>
-                          <SyncStateBadge state={syncStatus.state} />
-                          {!syncStatus.mappingValid ? <span className={styles.syncBackupHint}>Chỉ có trên máy · Đưa lên kho chung để tránh mất dữ liệu</span> : null}
+                          <SyncStatusBadge
+                            status={projectSyncUserStatusOf(syncStatus)}
+                            reason={syncStatus.reason}
+                            tooltipId={syncTooltipId}
+                          />
                         </span>
                       ) : null}
                     </span>

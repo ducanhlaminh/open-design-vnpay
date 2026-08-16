@@ -7,7 +7,7 @@
 import { useMemo, useState } from 'react';
 
 import { Icon } from '../Icon';
-import { SyncStateBadge } from '../project-sync';
+import { projectSyncUserStatusOf, SyncStatusBadge } from '../project-sync';
 import { navigate } from '../../router';
 import { RowActionsMenu } from './RowActionsMenu';
 import { isFeatureDone } from './usePipelineNav';
@@ -323,11 +323,12 @@ export function PipelinesAppsView({
               const m = app.doneFeatures;
               const running = app.runningFeatures;
               const syncStatus = syncStatusByAppId?.get(app.id);
+              const syncTooltipId = `app-sync-status-${encodeURIComponent(app.id)}`;
               const canPullFromShared = Boolean(syncStatus?.mappingValid && syncStatus.origin?.visibility === 'visible');
               const pullTitle = !syncReady
                 ? syncHint
                 : canPullFromShared
-                  ? 'Lấy toàn bộ Dự án và các Tính năng từ kho chung'
+                  ? 'Cập nhật thông tin dùng chung của dự án từ kho chung'
                   : 'Dự án này chưa có bản trên kho chung';
               // Card là <button> điều hướng, nên kebab phải nằm NGOÀI nó (HTML
               // cấm button lồng button) — shell giữ chỗ neo cho cả hai.
@@ -337,6 +338,7 @@ export function PipelinesAppsView({
                     type="button"
                     className={`${styles.card} ${app.unassigned ? styles.cardUnassigned : ''}`}
                     onClick={() => navigate({ kind: 'pipelines-app', appId: app.id })}
+                    aria-describedby={syncStatus ? syncTooltipId : undefined}
                   >
                     <span className={styles.cardHead}>
                       {/* Rổ "Chưa gán app" không phải một App nên không có
@@ -351,8 +353,11 @@ export function PipelinesAppsView({
                         </span>
                         {syncStatus ? (
                           <span className={styles.syncBadgeStack}>
-                            <SyncStateBadge state={syncStatus.state} />
-                            {!syncStatus.mappingValid ? <span className={styles.syncBackupHint}>Chỉ có trên máy · Đưa lên kho chung để tránh mất dữ liệu</span> : null}
+                            <SyncStatusBadge
+                              status={projectSyncUserStatusOf(syncStatus)}
+                              reason={syncStatus.reason}
+                              tooltipId={syncTooltipId}
+                            />
                           </span>
                         ) : null}
                       </span>

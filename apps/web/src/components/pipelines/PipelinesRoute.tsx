@@ -60,6 +60,31 @@ function stageIdFromEntryPath(path: string): string | null {
   return outputIndex >= 0 ? parts[outputIndex + 1] ?? null : null;
 }
 
+function unavailableSyncStatus(scope: ProjectSyncScope): ProjectSyncScopeStatus {
+  return {
+    scope,
+    status: 'unavailable',
+    reason: 'status_check_failed',
+    checkedAt: new Date().toISOString(),
+    state: 'changed',
+    mappingValid: false,
+    features: [],
+    summary: { created: 0, unchanged: 0, changed: 0, deleted: 0 },
+    entries: [],
+    error: 'Không thể kiểm tra kho chung.',
+  };
+}
+
+export function mergeFailedSyncStatuses(
+  scopes: readonly ProjectSyncScope[],
+  kind: ProjectSyncScope['kind'],
+  previous: ReadonlyMap<string, ProjectSyncScopeStatus>,
+): Map<string, ProjectSyncScopeStatus> {
+  return new Map(scopes
+    .filter((scope) => scope.kind === kind)
+    .map((scope) => [scope.projectId, previous.get(scope.projectId) ?? unavailableSyncStatus(scope)]));
+}
+
 // Một App/Feature bị xóa thì màn đang xem nó không còn nghĩa gì — lùi lên một
 // cấp thay vì để người dùng ngồi nhìn "Không tìm thấy app này".
 export async function deleteAppFromMachine(appId: string): Promise<void> {
@@ -220,18 +245,36 @@ export function PipelinesRoute() {
     void getProjectSyncStatuses(scopes)
       .then((statuses) => {
         if (cancelled) return;
-        const apps = new Map<string, ProjectSyncScopeStatus>();
-        const features = new Map<string, ProjectSyncScopeStatus>();
+        const returnedApps = new Map<string, ProjectSyncScopeStatus>();
+        const returnedFeatures = new Map<string, ProjectSyncScopeStatus>();
         for (const status of statuses) {
-          if (status.scope.kind === 'app') apps.set(status.scope.projectId, status);
-          else features.set(status.scope.projectId, status);
+          if (status.scope.kind === 'app') returnedApps.set(status.scope.projectId, status);
+          else returnedFeatures.set(status.scope.projectId, status);
         }
-        setSyncStatusByAppId(apps);
-        setSyncStatusByFeatureId(features);
+        // Keep the last known badge until its replacement arrives. A partial
+        // status response must not make a row flicker or lose its status.
+        setSyncStatusByAppId((previous) => new Map(scopes
+          .filter((scope) => scope.kind === 'app')
+          .map((scope) => [
+            scope.projectId,
+            returnedApps.get(scope.projectId) ?? previous.get(scope.projectId) ?? unavailableSyncStatus(scope),
+          ])));
+        setSyncStatusByFeatureId((previous) => new Map(scopes
+          .filter((scope) => scope.kind === 'feature')
+          .map((scope) => [
+            scope.projectId,
+            returnedFeatures.get(scope.projectId) ?? previous.get(scope.projectId) ?? unavailableSyncStatus(scope),
+          ])));
       })
       // Status badges are a progressive enhancement. Local navigation and the
       // action modal keep working when kho chung is temporarily unavailable.
-      .catch(() => { if (!cancelled) { setSyncStatusByAppId(new Map()); setSyncStatusByFeatureId(new Map()); } });
+      // Existing badges remain stable; only the first failed check gets a
+      // friendly "Chưa kiểm tra được" state.
+      .catch(() => {
+        if (cancelled) return;
+        setSyncStatusByAppId((previous) => mergeFailedSyncStatuses(scopes, 'app', previous));
+        setSyncStatusByFeatureId((previous) => mergeFailedSyncStatuses(scopes, 'feature', previous));
+      });
     return () => { cancelled = true; };
   // `localSyncScopeKey` is intentionally the identity boundary; see above.
   // eslint-disable-next-line react-hooks/exhaustive-deps

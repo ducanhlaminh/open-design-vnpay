@@ -4,6 +4,27 @@
 export type ProjectSyncDirection = 'pull' | 'push';
 export type ProjectSyncScopeKind = 'app' | 'feature';
 export type ProjectSyncChange = 'new' | 'unchanged' | 'changed' | 'deleted';
+/** Human-facing status for an App or Feature. File-level changes deliberately
+ * remain separate: a remote-only file must never label the whole entity as
+ * deleted. */
+export type ProjectSyncUserStatus =
+  | 'up_to_date'
+  | 'update_available'
+  | 'not_shared'
+  | 'needs_review'
+  | 'incomplete'
+  | 'unavailable'
+  | 'origin_missing';
+export type ProjectSyncStatusReason =
+  | 'contents_match'
+  | 'origin_changed'
+  | 'local_changed'
+  | 'both_changed'
+  | 'no_sync_baseline'
+  | 'mapping_missing'
+  | 'origin_missing_or_hidden'
+  | 'previous_sync_incomplete'
+  | 'status_check_failed';
 export type ProjectSyncResolution = 'pull' | 'push' | 'skip';
 export type ProjectSyncEntryKind = 'context' | 'feature' | 'binding' | 'output';
 
@@ -95,7 +116,8 @@ export interface SyncEntitySummary {
   id: string;
   name: string;
   kind: 'app' | 'context' | 'feature';
-  state: ProjectSyncChange;
+  /** @deprecated Use the scope-level `status`. Kept for one release. */
+  state: Exclude<ProjectSyncChange, 'deleted'>;
   /** False when an origin mapping is absent, malformed, stale, or soft-hidden. */
   mappingValid: boolean;
   totals: ProjectSyncSummary;
@@ -129,7 +151,12 @@ export interface ProjectSyncScopeStatus {
   scope: ProjectSyncScope;
   origin?: ProjectSyncOrigin | null;
   /** Aggregate state for this scope; UI must not derive it from file entries. */
-  state: ProjectSyncChange;
+  status: ProjectSyncUserStatus;
+  reason: ProjectSyncStatusReason;
+  checkedAt: string;
+  lastSyncedAt?: string | null;
+  /** @deprecated Use `status`. Kept for one release and never equals deleted. */
+  state: Exclude<ProjectSyncChange, 'deleted'>;
   /** Mapping can be invalid while a status is still useful for remediation. */
   mappingValid: boolean;
   app?: SyncEntitySummary;
