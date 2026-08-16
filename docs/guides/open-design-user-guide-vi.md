@@ -278,8 +278,9 @@ xem trước không ghi dữ liệu; chỉ thao tác xác nhận cuối mới th
 ## 10. Lấy Dự án về máy
 
 1. Tại trang **Quy trình tự động hóa**, chọn **Lấy dự án về máy**.
-2. Tìm theo tên Dự án/Tính năng.
-3. Chọn Dự án hoặc Tính năng có quyền truy cập.
+2. Chọn Dự án có quyền truy cập và xem trước Context dùng chung mới nhất.
+3. Sau khi Dự án đã có trên máy, mở trang Tính năng và chọn
+   **Lấy tính năng từ kho chung** để lấy một hoặc nhiều Tính năng.
 4. Xem trước nội dung trước khi ghi vào máy.
 5. Nếu có xung đột, chọn **Giữ bản trên máy** hoặc **Dùng bản trong kho chung**
    cho từng tệp.

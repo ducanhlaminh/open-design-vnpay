@@ -4,9 +4,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ProjectSyncPlanExpiredError,
   applyProjectSync,
+  createProjectSyncFeaturePullBatchOperation,
+  createProjectSyncOperation,
+  getProjectSyncOperation,
+  getProjectSyncFeaturePullBatchOperation,
   getProjectSyncStatus,
   listProjectSyncOrigins,
   planProjectSync,
+  planProjectSyncFeaturePullBatch,
+  retryProjectSyncFeaturePullBatchOperation,
 } from '../../src/providers/project-sync';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -37,5 +43,60 @@ describe('project-sync provider', () => {
     await expect(applyProjectSync({ planId: 'p1', resolutions: { 'x.md': 'skip' } })).rejects.toBeInstanceOf(ProjectSyncPlanExpiredError);
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ direction: 'pull', scope: { kind: 'feature', projectId: 'f1' }, includeDeleted: true });
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ planId: 'p1', resolutions: { 'x.md': 'skip' } });
+  });
+
+  it('creates and reads an asynchronous apply operation', async () => {
+    const operation = {
+      operationId: 'op-1',
+      planId: 'p1',
+      state: 'running',
+      phase: 'transferring',
+      progress: { completedItems: 2, totalItems: 4, percent: 50, currentPath: 'context/current.json' },
+      createdAt: '2026-08-16T00:00:00Z',
+      updatedAt: '2026-08-16T00:00:01Z',
+      expiresAt: '2026-08-16T00:10:00Z',
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ data: operation }, { status: 202 }))
+      .mockResolvedValueOnce(response({ data: operation }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createProjectSyncOperation({ planId: 'p1', resolutions: { 'context/current.json': 'pull' } })).resolves.toEqual(operation);
+    await expect(getProjectSyncOperation('op/1')).resolves.toEqual(operation);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/project-sync/operations');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ planId: 'p1', resolutions: { 'context/current.json': 'pull' } });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/project-sync/operations/op%2F1');
+  });
+
+  it('uses the Feature batch plan, operation, poll and retry endpoints', async () => {
+    const plan = { planId: 'batch-1', createdAt: '', localAppId: 'app-1', originAppId: 'remote-app', features: [], totalItems: 0 };
+    const operation = {
+      operationId: 'op-1', planId: 'batch-1', state: 'running', phase: 'transferring',
+      progress: { completedItems: 0, totalItems: 1, percent: 0 }, createdAt: '', updatedAt: '', expiresAt: '',
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ data: plan }))
+      .mockResolvedValueOnce(response({ data: operation }, { status: 202 }))
+      .mockResolvedValueOnce(response({ data: operation }))
+      .mockResolvedValueOnce(response({ data: operation }, { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(planProjectSyncFeaturePullBatch({
+      localAppId: 'app-1', originAppId: 'remote-app', originFeatureIds: ['f-1', 'f-2'],
+    })).resolves.toEqual(plan);
+    await createProjectSyncFeaturePullBatchOperation({ planId: 'batch-1' });
+    await getProjectSyncFeaturePullBatchOperation('op/1');
+    await retryProjectSyncFeaturePullBatchOperation('op/1');
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/project-sync/feature-pulls/plan',
+      '/api/project-sync/feature-pulls/operations',
+      '/api/project-sync/feature-pulls/operations/op%2F1',
+      '/api/project-sync/feature-pulls/operations/op%2F1/retry',
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      localAppId: 'app-1', originAppId: 'remote-app', originFeatureIds: ['f-1', 'f-2'],
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({ operationId: 'op/1' });
   });
 });

@@ -34,6 +34,7 @@ import { NewAppModal } from './NewAppModal';
 import { NewFeatureModal } from './NewFeatureModal';
 import { PipelinesAppsView } from './PipelinesAppsView';
 import { PullSharedAppModal } from './PullSharedAppModal';
+import { PullSharedFeaturesModal } from './PullSharedFeaturesModal';
 import { PipelinesFeaturesView } from './PipelinesFeaturesView';
 import { PipelinePickerView } from './PipelinePickerView';
 import { applyProjectSync, getProjectSyncStatuses, listProjectSyncOrigins, planProjectSync } from '../../providers/project-sync';
@@ -112,6 +113,12 @@ export function PipelinesRoute() {
   // "Lấy dự án về máy" khi App chưa tồn tại cục bộ — không cần scope, chỉ có
   // trạng thái mở/đóng: picker tự chọn App origin rồi tự tạo App cục bộ.
   const [pullSharedOpen, setPullSharedOpen] = useState(false);
+  const [pullSharedFeatures, setPullSharedFeatures] = useState<{
+    localAppId: string;
+    remoteAppOriginId: string;
+    existingFeatureMappings: ReadonlyMap<string, string>;
+    preselectedOriginIds: string[];
+  } | null>(null);
   const [shareDialog, setShareDialog] = useState<{
     initialFeatureIds: string[];
     initialAppIds: string[];
@@ -380,6 +387,35 @@ export function PipelinesRoute() {
 
   let page: JSX.Element;
   if (route.kind === 'pipelines-app') {
+    const appSyncStatus = syncStatusByAppId.get(route.appId);
+    // A local app id is not a valid remote filter. Only a verified, visible
+    // App origin may scope the remote Feature picker.
+    const remoteAppOriginId = appSyncStatus?.mappingValid
+      && appSyncStatus.origin?.kind === 'app'
+      && appSyncStatus.origin.visibility === 'visible'
+      ? appSyncStatus.origin.originId
+      : null;
+    const existingFeatureMappings = new Map<string, string>();
+    for (const [localFeatureId, status] of syncStatusByFeatureId) {
+      if (
+        status.scope.appId === route.appId
+        && status.mappingValid
+        && status.origin?.kind === 'feature'
+        && status.origin.visibility === 'visible'
+        && (!remoteAppOriginId || status.origin.appId === remoteAppOriginId)
+      ) {
+        existingFeatureMappings.set(status.origin.originId, localFeatureId);
+      }
+    }
+    const openFeaturePull = (preselectedOriginIds: string[] = []) => {
+      if (!remoteAppOriginId) return;
+      setPullSharedFeatures({
+        localAppId: route.appId,
+        remoteAppOriginId,
+        existingFeatureMappings,
+        preselectedOriginIds,
+      });
+    };
     page = <PipelinesFeaturesView
           nav={nav}
           appId={route.appId}
@@ -387,10 +423,18 @@ export function PipelinesRoute() {
           syncStatusByFeatureId={syncStatusByFeatureId}
           syncReady={syncAccess?.syncReady === true}
           syncIssue={syncAccess?.syncIssue}
-          onPullFeature={(feature) => setSyncDialog({
-            scope: { kind: 'feature', projectId: feature.id, appId: feature.app?.id?.trim() || null },
-            subjectName: feature.name,
-          })}
+          canPullFeatures={Boolean(remoteAppOriginId)}
+          onPullFeatures={() => openFeaturePull()}
+          onPullFeature={(feature) => {
+            const status = syncStatusByFeatureId.get(feature.id);
+            const remoteFeatureOriginId = status?.mappingValid
+              && status.origin?.kind === 'feature'
+              && status.origin.visibility === 'visible'
+              && status.origin.appId === remoteAppOriginId
+              ? status.origin.originId
+              : null;
+            if (remoteFeatureOriginId) openFeaturePull([remoteFeatureOriginId]);
+          }}
           onPushFeature={(feature) => setShareDialog({
             initialFeatureIds: [feature.id],
             initialAppIds: feature.app?.id?.trim() ? [feature.app.id.trim()] : [],
@@ -457,12 +501,27 @@ export function PipelinesRoute() {
               .filter((status) => status.mappingValid && status.origin)
               .map((status) => status.origin!.originId),
           )}
+          localAppIds={new Set(nav.apps.map((app) => app.id))}
           onClose={() => setPullSharedOpen(false)}
           onApplied={() => {
             setPullSharedOpen(false);
             void nav.reload();
             setSyncStatusReloadTick((tick) => tick + 1);
             setSyncToast({ message: 'Đã lấy dự án về máy. Danh sách bản trên máy đang được làm mới.' });
+          }}
+        />
+      ) : null}
+      {pullSharedFeatures ? (
+        <PullSharedFeaturesModal
+          localAppId={pullSharedFeatures.localAppId}
+          remoteAppOriginId={pullSharedFeatures.remoteAppOriginId}
+          existingFeatureMappings={pullSharedFeatures.existingFeatureMappings}
+          preselectedOriginIds={pullSharedFeatures.preselectedOriginIds}
+          onClose={() => setPullSharedFeatures(null)}
+          onCompleted={() => {
+            void nav.reload();
+            setSyncStatusReloadTick((tick) => tick + 1);
+            setSyncToast({ message: 'Đã lấy tính năng về máy. Danh sách bản trên máy đang được làm mới.' });
           }}
         />
       ) : null}

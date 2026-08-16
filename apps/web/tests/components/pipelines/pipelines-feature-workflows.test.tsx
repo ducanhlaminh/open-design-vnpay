@@ -58,6 +58,28 @@ afterEach(() => {
 });
 
 describe('nút xổ trên row feature', () => {
+  it('App rỗng vẫn có CTA lấy Feature từ kho chung', () => {
+    const onPullFeatures = vi.fn();
+    const apps = groupByApp([], [{ id: 'retail', name: 'Retail' }]);
+    const nav = {
+      ...navFor([]),
+      apps,
+      appById: (id: string) => apps.find((app) => app.id === id) ?? null,
+    };
+    render(
+      <PipelinesFeaturesView
+        nav={nav}
+        appId="retail"
+        syncReady
+        canPullFeatures
+        onPullFeatures={onPullFeatures}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Lấy tính năng từ kho chung' }));
+    expect(onPullFeatures).toHaveBeenCalledOnce();
+  });
+
   it('không lồng button trong button', () => {
     renderView([RUNNING_ELSEWHERE]);
     for (const b of Array.from(document.querySelectorAll('button'))) {

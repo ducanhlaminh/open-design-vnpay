@@ -4,7 +4,15 @@ import {
   ERR_PROJECT_SYNC_PLAN_EXPIRED,
   type ProjectSyncApplyRequest,
   type ProjectSyncApplyResult,
+  type ProjectSyncFeaturePullBatchOperation,
+  type ProjectSyncFeaturePullBatchOperationCreateRequest,
+  type ProjectSyncFeaturePullBatchPlan,
+  type ProjectSyncFeaturePullBatchPlanRequest,
+  type ProjectSyncFeaturePullBatchRetryRequest,
+  type ProjectSyncOperation,
+  type ProjectSyncOperationCreateRequest,
   type ProjectSyncOrigin,
+  type ProjectSyncOriginsQuery,
   type ProjectSyncPlan,
   type ProjectSyncPlanRequest,
   type ProjectSyncScope,
@@ -29,11 +37,14 @@ async function json(response: Response): Promise<unknown> {
   return response.json().catch(() => ({}));
 }
 
-export async function listProjectSyncOrigins(scope?: ProjectSyncScope): Promise<ProjectSyncOrigin[]> {
+export async function listProjectSyncOrigins(
+  scope?: Pick<ProjectSyncOriginsQuery, 'kind'> & { appId?: string | null; projectId?: string },
+): Promise<ProjectSyncOrigin[]> {
   const query = new URLSearchParams();
   if (scope) {
-    query.set('kind', scope.kind);
-    if (scope.appId) query.set('appId', scope.appId);
+    if (scope.kind) query.set('kind', scope.kind);
+    const appId = scope.appId;
+    if (appId) query.set('appId', appId);
   }
   const suffix = query.size ? `?${query.toString()}` : '';
   const response = await fetch(`/api/project-sync/origins${suffix}`, { cache: 'no-store' });
@@ -86,4 +97,93 @@ export async function applyProjectSync(request: ProjectSyncApplyRequest): Promis
   const result = (body as { data?: ProjectSyncApplyResult }).data;
   if (!result) throw new Error('Máy chủ không trả về kết quả đồng bộ.');
   return result;
+}
+
+export async function createProjectSyncOperation(request: ProjectSyncOperationCreateRequest): Promise<ProjectSyncOperation> {
+  const response = await fetch('/api/project-sync/operations', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const body = await json(response);
+  const code = (body as { error?: { code?: string } }).error?.code;
+  if (response.status === 409 && code === ERR_PROJECT_SYNC_PLAN_EXPIRED) throw new ProjectSyncPlanExpiredError();
+  if (!response.ok) throw new Error(messageFrom(body, 'Không thể bắt đầu đồng bộ.'));
+  const operation = (body as { data?: ProjectSyncOperation }).data;
+  if (!operation) throw new Error('Máy chủ không trả về tiến trình đồng bộ.');
+  return operation;
+}
+
+export async function getProjectSyncOperation(operationId: string): Promise<ProjectSyncOperation> {
+  const response = await fetch(`/api/project-sync/operations/${encodeURIComponent(operationId)}`, {
+    cache: 'no-store',
+  });
+  const body = await json(response);
+  if (!response.ok) throw new Error(messageFrom(body, 'Không thể đọc tiến độ đồng bộ.'));
+  const operation = (body as { data?: ProjectSyncOperation }).data;
+  if (!operation) throw new Error('Máy chủ không trả về tiến trình đồng bộ.');
+  return operation;
+}
+
+const FEATURE_PULL_BASE = '/api/project-sync/feature-pulls';
+
+export async function planProjectSyncFeaturePullBatch(
+  request: ProjectSyncFeaturePullBatchPlanRequest,
+): Promise<ProjectSyncFeaturePullBatchPlan> {
+  const response = await fetch(`${FEATURE_PULL_BASE}/plan`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const body = await json(response);
+  if (!response.ok) throw new Error(messageFrom(body, 'Không thể lập kế hoạch lấy tính năng.'));
+  const plan = (body as { data?: ProjectSyncFeaturePullBatchPlan }).data;
+  if (!plan) throw new Error('Máy chủ không trả về kế hoạch lấy tính năng.');
+  return plan;
+}
+
+export async function createProjectSyncFeaturePullBatchOperation(
+  request: ProjectSyncFeaturePullBatchOperationCreateRequest,
+): Promise<ProjectSyncFeaturePullBatchOperation> {
+  const response = await fetch(`${FEATURE_PULL_BASE}/operations`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const body = await json(response);
+  const code = (body as { error?: { code?: string } }).error?.code;
+  if (response.status === 409 && code === ERR_PROJECT_SYNC_PLAN_EXPIRED) throw new ProjectSyncPlanExpiredError();
+  if (!response.ok) throw new Error(messageFrom(body, 'Không thể bắt đầu lấy tính năng.'));
+  const operation = (body as { data?: ProjectSyncFeaturePullBatchOperation }).data;
+  if (!operation) throw new Error('Máy chủ không trả về tiến trình lấy tính năng.');
+  return operation;
+}
+
+export async function getProjectSyncFeaturePullBatchOperation(
+  operationId: string,
+): Promise<ProjectSyncFeaturePullBatchOperation> {
+  const response = await fetch(`${FEATURE_PULL_BASE}/operations/${encodeURIComponent(operationId)}`, {
+    cache: 'no-store',
+  });
+  const body = await json(response);
+  if (!response.ok) throw new Error(messageFrom(body, 'Không thể đọc tiến độ lấy tính năng.'));
+  const operation = (body as { data?: ProjectSyncFeaturePullBatchOperation }).data;
+  if (!operation) throw new Error('Máy chủ không trả về tiến trình lấy tính năng.');
+  return operation;
+}
+
+export async function retryProjectSyncFeaturePullBatchOperation(
+  operationId: string,
+): Promise<ProjectSyncFeaturePullBatchOperation> {
+  const request: ProjectSyncFeaturePullBatchRetryRequest = { operationId };
+  const response = await fetch(`${FEATURE_PULL_BASE}/operations/${encodeURIComponent(operationId)}/retry`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const body = await json(response);
+  if (!response.ok) throw new Error(messageFrom(body, 'Không thể thử lại các tính năng bị lỗi.'));
+  const operation = (body as { data?: ProjectSyncFeaturePullBatchOperation }).data;
+  if (!operation) throw new Error('Máy chủ không trả về tiến trình thử lại.');
+  return operation;
 }

@@ -36,6 +36,32 @@ vi.mock('../../../src/components/project-sync', () => ({
   ),
 }));
 
+vi.mock('../../../src/components/pipelines/PullSharedFeaturesModal', () => ({
+  PullSharedFeaturesModal: ({
+    localAppId,
+    remoteAppOriginId,
+    existingFeatureMappings,
+    preselectedOriginIds,
+    onCompleted,
+  }: {
+    localAppId: string;
+    remoteAppOriginId: string;
+    existingFeatureMappings?: ReadonlyMap<string, string>;
+    preselectedOriginIds?: readonly string[];
+    onCompleted: (result: unknown) => void;
+  }) => (
+    <div role="dialog" aria-label="Lấy tính năng từ kho chung">
+      <output
+        data-local-app-id={localAppId}
+        data-remote-app-origin-id={remoteAppOriginId}
+        data-existing-mapping={existingFeatureMappings?.get('checkout-cloud') ?? ''}
+        data-preselected={(preselectedOriginIds ?? []).join(',')}
+      />
+      <button type="button" onClick={() => onCompleted({ succeeded: [], failed: [] })}>Hoàn tất lấy tính năng</button>
+    </div>
+  ),
+}));
+
 const features: PipelineProject[] = [
   { id: 'checkout', name: 'Thanh toán', done: 0, total: 3, running: 0, app: { id: 'retail', name: 'Retail' } },
 ];
@@ -132,18 +158,37 @@ describe('PipelinesRoute · App/Feature origin sync', () => {
     expect(pull.getAttribute('title')).toBe('Dự án này chưa có bản trên kho chung');
   });
 
-  it('Feature Pull opens only that Feature and preserves its App binding', async () => {
+  it('Feature Pull opens the App-scoped batch picker with that remote Feature preselected', async () => {
     mocks.route = { kind: 'pipelines-app', appId: 'retail' };
     render(<PipelinesRoute />);
     const pull = await screen.findByLabelText('Lấy Tính năng Thanh toán từ kho chung');
     await waitFor(() => expect(pull.hasAttribute('disabled')).toBe(false));
     fireEvent.click(pull);
-    const dialog = screen.getByRole('dialog', { name: 'Đồng bộ Thanh toán' });
+    const dialog = screen.getByRole('dialog', { name: 'Lấy tính năng từ kho chung' });
     expect(dialog.querySelector('output')?.dataset).toMatchObject({
-      direction: 'pull', kind: 'feature', projectId: 'checkout', appId: 'retail',
+      localAppId: 'retail',
+      remoteAppOriginId: 'retail-cloud',
+      existingMapping: 'checkout',
+      preselected: 'checkout-cloud',
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Áp dụng' }));
-    expect(await screen.findByText('Đã áp dụng đồng bộ với kho chung. Danh sách bản trên máy đang được làm mới.')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Hoàn tất lấy tính năng' }));
+    expect(await screen.findByText('Đã lấy tính năng về máy. Danh sách bản trên máy đang được làm mới.')).not.toBeNull();
+    expect(mocks.reload).toHaveBeenCalledOnce();
+    await waitFor(() => {
+      expect(vi.mocked(globalThis.fetch).mock.calls.filter(([url]) => String(url) === '/api/project-sync/status')).toHaveLength(2);
+    });
+  });
+
+  it('header CTA opens the same batch picker without a preselection', async () => {
+    mocks.route = { kind: 'pipelines-app', appId: 'retail' };
+    render(<PipelinesRoute />);
+    const pull = await screen.findByRole('button', { name: 'Lấy tính năng từ kho chung' });
+    await waitFor(() => expect(pull.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(pull);
+    const output = screen.getByRole('dialog', { name: 'Lấy tính năng từ kho chung' }).querySelector('output');
+    expect(output?.dataset).toMatchObject({
+      localAppId: 'retail', remoteAppOriginId: 'retail-cloud', preselected: '',
+    });
   });
 
   it('disables Pull when the local Feature has no shared copy yet', async () => {

@@ -40,6 +40,10 @@ interface Props {
   syncStatusByFeatureId?: ReadonlyMap<string, ProjectSyncScopeStatus>;
   onPushFeature?: (feature: PipelineProject) => void;
   onPullFeature?: (feature: PipelineProject) => void;
+  /** Mở picker lấy một hoặc nhiều Feature thuộc App này từ kho chung. */
+  onPullFeatures?: () => void;
+  /** Chỉ true khi App có mapping tới một App origin còn hiển thị. */
+  canPullFeatures?: boolean;
   syncReady?: boolean;
   syncIssue?: string | null;
   /** Sửa / xóa một feature. Vắng mặt → không render mục tương ứng trong kebab. */
@@ -79,6 +83,8 @@ export function PipelinesFeaturesView({
   syncStatusByFeatureId,
   onPushFeature,
   onPullFeature,
+  onPullFeatures,
+  canPullFeatures = false,
   syncReady = false,
   syncIssue,
   onEditFeature,
@@ -239,12 +245,30 @@ export function PipelinesFeaturesView({
             {counts.all} tính năng · {counts.done} xong — chọn tính năng để chạy quy trình.
           </p>
         </div>
-        {onNewFeature && hasFeatures && tab === 'features' ? (
+        {(onNewFeature || onPullFeatures) && hasFeatures && tab === 'features' ? (
           <div className={styles.headerActions}>
-            <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={onNewFeature}>
-              <Icon name="plus" size={13} />
-              <span>Tính năng mới</span>
-            </button>
+            {onPullFeatures ? (
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={onPullFeatures}
+                disabled={!syncReady || !canPullFeatures}
+                title={!syncReady
+                  ? syncIssueHint(syncIssue)
+                  : canPullFeatures
+                    ? 'Chọn một hoặc nhiều tính năng của dự án này từ kho chung'
+                    : 'Dự án này chưa được liên kết với bản trong kho chung'}
+              >
+                <Icon name="download" size={13} />
+                <span>Lấy tính năng từ kho chung</span>
+              </button>
+            ) : null}
+            {onNewFeature ? (
+              <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={onNewFeature}>
+                <Icon name="plus" size={13} />
+                <span>Tính năng mới</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -368,7 +392,9 @@ export function PipelinesFeaturesView({
             <p className={styles.emptyTitle}>Dự án này chưa có tính năng nào</p>
             <p className={styles.emptyText}>
               {onNewFeature
-                ? 'Tạo tính năng đầu tiên để bắt đầu chạy quy trình.'
+                ? onPullFeatures
+                  ? 'Tạo tính năng mới hoặc lấy tính năng đã chia sẻ của dự án này từ kho chung.'
+                  : 'Tạo tính năng đầu tiên để bắt đầu chạy quy trình.'
                 : 'Nhờ quản lý cấp quyền tạo, hoặc lấy tính năng đã có trên Pipeline Studio về bằng “Lấy dự án về máy”.'}
             </p>
             {/* Chỉ render CTA khi thật sự bấm được. Câu hướng dẫn trỏ vào một
@@ -383,6 +409,34 @@ export function PipelinesFeaturesView({
                 >
                   <Icon name="plus" size={13} />
                   <span>Tính năng mới</span>
+                </button>
+                {onPullFeatures ? (
+                  <button
+                    type="button"
+                    className={styles.btn}
+                    onClick={onPullFeatures}
+                    disabled={!syncReady || !canPullFeatures}
+                    title={!syncReady
+                      ? syncIssueHint(syncIssue)
+                      : canPullFeatures
+                        ? 'Chọn một hoặc nhiều tính năng của dự án này từ kho chung'
+                        : 'Dự án này chưa được liên kết với bản trong kho chung'}
+                  >
+                    <Icon name="download" size={13} />
+                    <span>Lấy tính năng từ kho chung</span>
+                  </button>
+                ) : null}
+              </div>
+            ) : onPullFeatures ? (
+              <div className={styles.emptyActions}>
+                <button
+                  type="button"
+                  className={styles.btn}
+                  onClick={onPullFeatures}
+                  disabled={!syncReady || !canPullFeatures}
+                >
+                  <Icon name="download" size={13} />
+                  <span>Lấy tính năng từ kho chung</span>
                 </button>
               </div>
             ) : null}

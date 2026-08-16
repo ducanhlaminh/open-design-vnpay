@@ -11,11 +11,16 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const status = { scope: { kind: 'app', projectId: 'app-a' }, state: 'changed', mappingValid: true, origin: { originId: 'shared-a', name: 'Kho thanh toán', kind: 'app', visibility: 'visible', inKgs: true, inMedia: true }, app: { id: 'app-a', name: 'Thanh toán', kind: 'app', state: 'changed', mappingValid: true, totals: { created: 0, unchanged: 1, changed: 2, deleted: 0 } }, features: [{ id: 'feature-a', name: 'QR', kind: 'feature', state: 'changed', mappingValid: true, totals: { created: 0, unchanged: 1, changed: 2, deleted: 0 } }], summary: { created: 0, unchanged: 1, changed: 2, deleted: 0 }, entries: [] };
 const plan = { planId: 'plan-a', createdAt: '2026-08-12T00:00:00Z', direction: 'pull', scope: { kind: 'app', projectId: 'app-a' }, origin: { mode: 'existing', originId: 'shared-a' }, app: status.app, features: status.features, entries: [{ path: 'features/feature-a/output/ui.html', kind: 'output', change: 'changed', local: { checksum: 'l', size: 1 }, origin: { checksum: 'r', size: 1 }, resolution: 'pull' }], summary: status.summary };
 
+function completedOperation(result: unknown) {
+  return { operationId: 'op-a', planId: 'plan-a', state: 'succeeded', phase: 'finalizing', progress: { completedItems: 1, totalItems: 1, percent: 100 }, result, createdAt: '', updatedAt: '', expiresAt: '' };
+}
+
 function mockApi(apply = { data: { planId: 'plan-a', applied: 1, skipped: 0, unchanged: 1, softHiddenOriginFeatureIds: [], stale: [] } }) {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (url.startsWith('/api/project-sync/status')) return new Response(JSON.stringify({ data: { results: [status] } }));
     if (url.startsWith('/api/project-sync/origins')) return new Response(JSON.stringify({ data: { origins: [status.origin] } }));
     if (url === '/api/project-sync/plan') return new Response(JSON.stringify({ data: plan }));
+    if (url === '/api/project-sync/operations') return new Response(JSON.stringify({ data: completedOperation(apply.data) }));
     return new Response(JSON.stringify(apply), { status: 'error' in apply ? 409 : 200 });
   }));
 }
@@ -42,7 +47,7 @@ describe('ProjectSyncPreviewModal', () => {
       const url = String(input);
       if (url === '/api/project-sync/status') return new Response(JSON.stringify({ data: { results: [status] } }));
       if (url === '/api/project-sync/plan') return new Response(JSON.stringify({ data: plan }));
-      if (url === '/api/project-sync/apply') return new Response(JSON.stringify({ error: { code: 'PLAN_EXPIRED' } }), { status: 409 });
+      if (url === '/api/project-sync/operations') return new Response(JSON.stringify({ error: { code: 'PLAN_EXPIRED' } }), { status: 409 });
       return new Response(JSON.stringify({ data: {} }));
     }));
     render(<ProjectSyncPreviewModal scope={{ kind: 'app', projectId: 'app-a' }} subjectName="Thanh toán" onClose={() => {}} />);

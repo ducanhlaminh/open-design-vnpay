@@ -165,6 +165,123 @@ export interface ProjectSyncApplyResult {
   stale: Array<{ path: string; reason: string }>;
 }
 
+/** Long-running APPLY lifecycle. The legacy synchronous APPLY response remains
+ * supported; these types back the asynchronous operation endpoints. */
+export type ProjectSyncOperationState = 'queued' | 'running' | 'succeeded' | 'failed';
+export type ProjectSyncOperationPhase = 'validating' | 'transferring' | 'finalizing';
+
+export interface ProjectSyncOperationError {
+  /** Stable machine-readable identifier suitable for CLI/UI branching. */
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface ProjectSyncOperationProgress {
+  /** Completed and total count the immutable plan entries selected for APPLY. */
+  completedItems: number;
+  totalItems: number;
+  /** Integer in the inclusive 0..100 range. */
+  percent: number;
+  /** Optional detail for a progress label; neither field affects the total. */
+  currentPath?: string | null;
+  currentFeatureId?: string | null;
+}
+
+/** Pollable snapshot returned by POST/GET `/api/project-sync/operations`. */
+export interface ProjectSyncOperation<TResult = ProjectSyncApplyResult> {
+  operationId: string;
+  planId: string;
+  state: ProjectSyncOperationState;
+  phase: ProjectSyncOperationPhase;
+  progress: ProjectSyncOperationProgress;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  /** Immutable terminal payload retained until `expiresAt`. */
+  result?: TResult;
+  error?: ProjectSyncOperationError;
+}
+
+/** Backward-compatible async equivalent of `ProjectSyncApplyRequest`. */
+export interface ProjectSyncOperationCreateRequest extends ProjectSyncApplyRequest {}
+
+/** Pull several remote Features into one already-pulled local App. App Context
+ * is deliberately outside this request: each Feature keeps its own immutable
+ * binding and the App must already map to `originAppId`. */
+export interface ProjectSyncFeaturePullBatchPlanRequest {
+  localAppId: string;
+  originAppId: string;
+  originFeatureIds: string[];
+}
+
+export type ProjectSyncFeaturePullMode = 'create' | 'update';
+
+export interface ProjectSyncFeaturePullBatchPlanItem {
+  originId: string;
+  name: string;
+  localId: string;
+  mode: ProjectSyncFeaturePullMode;
+  summary: ProjectSyncSummary;
+  entries: ProjectSyncEntry[];
+}
+
+/** Immutable baseline for one batch. APPLY must use `planId` instead of
+ * rebuilding the selection from the latest origin listing. */
+export interface ProjectSyncFeaturePullBatchPlan {
+  planId: string;
+  createdAt: string;
+  localAppId: string;
+  originAppId: string;
+  features: ProjectSyncFeaturePullBatchPlanItem[];
+  totalItems: number;
+}
+
+export type ProjectSyncFeaturePullBatchItemState = 'succeeded' | 'failed';
+
+interface ProjectSyncFeaturePullBatchItemResultBase {
+  originId: string;
+  localId: string;
+}
+
+export type ProjectSyncFeaturePullBatchItemResult =
+  | (ProjectSyncFeaturePullBatchItemResultBase & {
+      state: 'succeeded';
+      result: ProjectSyncApplyResult;
+      error?: never;
+    })
+  | (ProjectSyncFeaturePullBatchItemResultBase & {
+      state: 'failed';
+      result?: never;
+      error: ProjectSyncOperationError;
+    });
+
+export type ProjectSyncFeaturePullBatchResultState = 'succeeded' | 'partial' | 'failed';
+
+/** A batch is intentionally allowed to complete partially. Callers should
+ * retain successful items and offer retry for only failed origin ids. */
+export interface ProjectSyncFeaturePullBatchResult {
+  planId: string;
+  localAppId: string;
+  originAppId: string;
+  state: ProjectSyncFeaturePullBatchResultState;
+  items: ProjectSyncFeaturePullBatchItemResult[];
+}
+
+export interface ProjectSyncFeaturePullBatchApplyRequest {
+  planId: string;
+}
+
+export interface ProjectSyncFeaturePullBatchOperationCreateRequest extends ProjectSyncFeaturePullBatchApplyRequest {}
+
+export type ProjectSyncFeaturePullBatchOperation = ProjectSyncOperation<ProjectSyncFeaturePullBatchResult>;
+
+/** Retry derives its selection exclusively from failed items in the retained
+ * terminal operation, preventing an accidental replay of successful pulls. */
+export interface ProjectSyncFeaturePullBatchRetryRequest {
+  operationId: string;
+}
+
 export interface ProjectSyncOriginsResponse {
   ok: true;
   data: { origins: ProjectSyncOrigin[] };
@@ -185,7 +302,31 @@ export interface ProjectSyncApplyResponse {
   data: ProjectSyncApplyResult;
 }
 
+export interface ProjectSyncOperationCreateResponse {
+  ok: true;
+  data: ProjectSyncOperation;
+}
+
+export interface ProjectSyncOperationResponse {
+  ok: true;
+  data: ProjectSyncOperation;
+}
+
+export interface ProjectSyncFeaturePullBatchPlanResponse {
+  ok: true;
+  data: ProjectSyncFeaturePullBatchPlan;
+}
+
+export interface ProjectSyncFeaturePullBatchOperationResponse {
+  ok: true;
+  data: ProjectSyncFeaturePullBatchOperation;
+}
+
+export interface ProjectSyncFeaturePullBatchRetryResponse extends ProjectSyncFeaturePullBatchOperationResponse {}
+
 /** HTTP 409: immutable PLAN snapshot is unknown, expired, or no longer valid. */
 export const ERR_PROJECT_SYNC_PLAN_EXPIRED = 'PLAN_EXPIRED';
+/** HTTP 404: asynchronous APPLY operation is unknown or its retention TTL elapsed. */
+export const ERR_PROJECT_SYNC_OPERATION_NOT_FOUND = 'PROJECT_SYNC_OPERATION_NOT_FOUND';
 /** HTTP 409: a soft-hidden remote cannot be revived by reusing its id. */
 export const ERR_PROJECT_SYNC_ORIGIN_HIDDEN = 'ORIGIN_HIDDEN_REQUIRES_NEW_ID';

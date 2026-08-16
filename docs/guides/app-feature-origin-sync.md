@@ -10,11 +10,14 @@ ID mới. Sau Apply thành công, liên kết đã chọn được lưu cho lầ
 
 ## Chọn đúng phạm vi
 
-- **Đẩy/Lấy Dự án** xử lý Dự án và toàn bộ Tính năng con. Đây là lựa chọn đúng khi
-  muốn đưa hoặc lấy lại cả sản phẩm, và không có ô chọn để bỏ riêng một
-  Tính năng.
-- **Đẩy/Lấy Tính năng** chỉ xử lý Tính năng đang chọn. Dùng lựa chọn này khi
-  thay đổi chỉ thuộc một tính năng.
+- **Lấy Dự án** chỉ tạo/cập nhật Dự án và lấy bộ Context dùng chung
+  ở phiên bản hiện hành. Thao tác này không tự lấy Tính năng con.
+- Sau khi Dự án đã có trên máy, mở danh sách Tính năng và chọn
+  **Lấy tính năng từ kho chung**. Có thể chọn một hoặc nhiều Tính năng
+  trong cùng một lần; mỗi Tính năng chỉ mang theo đúng phiên bản Context mà
+  nó đang liên kết.
+- **Đẩy Dự án** vẫn xử lý phạm vi Dự án và các Tính năng con;
+  ngữ nghĩa Lấy được tách riêng để người dùng chủ động chọn Tính năng.
 - Mỗi thao tác luôn mở phần xem trước trước khi ghi. Dự án/Tính năng trên máy vẫn
   xuất hiện trong danh sách, kể cả khi bản đích đã bị ẩn, bị xóa, hoặc
   liên kết không còn hợp lệ.
@@ -42,6 +45,10 @@ trong hai cách:
 
 Tệp mới từ kho chung được lấy theo kế hoạch. Không có tệp trên máy nào bị ghi đè âm
 thầm; phần xem trước là nơi xác nhận từng quyết định trước khi áp dụng.
+
+Trong lúc áp dụng, UI giữ nguyên danh sách xem trước và hiển thị phần trăm,
+số mục đã xử lý và tệp/Tính năng hiện tại. Với lần Lấy nhiều Tính năng,
+các mục thành công được giữ lại; UI cho phép thử lại riêng các mục lỗi.
 
 ## Kế hoạch hết hạn
 

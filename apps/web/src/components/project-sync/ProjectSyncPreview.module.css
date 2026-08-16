@@ -113,6 +113,14 @@
 .resolution label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; white-space: nowrap; }
 .resolution input { appearance: auto; width: 13px; height: 13px; margin: 0; padding: 0; accent-color: var(--selected); }
 .loading, .empty { margin: 0; padding: 16px 12px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 13px; text-align: center; }
+.previewContent { display: grid; gap: 14px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.previewContent:disabled { opacity: .68; }
+.progressPanel { display: grid; gap: 8px; padding: 11px 12px; border: 1px solid var(--blue-border); border-radius: var(--radius-sm); background: var(--blue-bg); }
+.progressMeta { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--blue); font-size: 12px; font-variant-numeric: tabular-nums; }
+.progressMeta strong { color: var(--text-strong); font-size: 12.5px; }
+.progressTrack { height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--blue) 15%, var(--bg-panel)); }
+.progressTrack > span { display: block; height: 100%; border-radius: inherit; background: var(--blue); transition: width .2s ease; }
+.progressItem { overflow: hidden; color: var(--text-muted); font-family: var(--mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .notice, .error { display: flex; align-items: flex-start; gap: 8px; padding: 10px 11px; border-radius: var(--radius-sm); font-size: 12.5px; line-height: 1.45; }
 .notice { color: var(--amber); background: var(--amber-bg); }
 .error { color: var(--red); background: var(--red-bg); border: 1px solid var(--red-border); }
