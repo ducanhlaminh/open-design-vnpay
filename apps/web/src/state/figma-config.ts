@@ -78,3 +78,25 @@ export async function verifyFigmaLinks(body: VerifyFigmaLinksRequest, signal?: A
     return null;
   }
 }
+
+// Local shape mirroring the daemon's `GET /api/figma-desktop/status` (see
+// specs/change/20260816-figma-desktop-tools/wp2-*.md, owned by a parallel
+// work package). Declared here instead of imported from `@open-design/contracts`
+// because that package may not be rebuilt yet when this module typechecks.
+export interface FigmaDesktopStatusResponse {
+  available: boolean;
+  detail?: string;
+  activeFileTitle?: string | null;
+  canSwitch: boolean;
+  platform: string;
+}
+
+export async function fetchFigmaDesktopStatus(signal?: AbortSignal): Promise<FigmaDesktopStatusResponse | null> {
+  try {
+    const res = await fetch('/api/figma-desktop/status', { signal });
+    if (!res.ok) return null;
+    return await readJson<FigmaDesktopStatusResponse>(res);
+  } catch {
+    return null;
+  }
+}

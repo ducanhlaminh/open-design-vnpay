@@ -14,7 +14,14 @@ import { useEffect, useRef, useState } from 'react';
 import type { FigmaLinkVerification } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
-import { fetchFigmaConfig, saveFigmaConfig, testFigmaConnection, verifyFigmaLinks } from '../../state/figma-config';
+import {
+  fetchFigmaConfig,
+  fetchFigmaDesktopStatus,
+  saveFigmaConfig,
+  testFigmaConnection,
+  verifyFigmaLinks,
+} from '../../state/figma-config';
+import type { FigmaDesktopStatusResponse } from '../../state/figma-config';
 import styles from './FigmaLinksPanel.module.css';
 
 export const FIGMA_TOKEN_GUIDE_STEPS: readonly string[] = [
@@ -47,8 +54,12 @@ export function FigmaLinksPanel({ links, linksError }: FigmaLinksPanelProps) {
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const [desktopStatus, setDesktopStatus] = useState<FigmaDesktopStatusResponse | null>(null);
+  const [desktopChecking, setDesktopChecking] = useState(false);
 
   const linksKey = links.map((link) => link.fileKey).join('|');
+  // Hàng "Figma Desktop" chỉ có ý nghĩa khi người dùng đang dùng nguồn Link Figma.
+  const showDesktopRow = links.length > 0 || Boolean(linksError);
 
   const runVerify = async (currentLinks: typeof links) => {
     abortRef.current?.abort();
@@ -95,6 +106,29 @@ export function FigmaLinksPanel({ links, linksError }: FigmaLinksPanelProps) {
   }, [token.kind, linksKey, linksError]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // Trạng thái Figma Desktop chỉ đáng hỏi khi người dùng đang dùng nguồn Link
+  // Figma (có link hoặc đang sửa link lỗi); hỏi một lần lúc mount.
+  useEffect(() => {
+    if (!showDesktopRow) return;
+    let cancelled = false;
+    setDesktopChecking(true);
+    void (async () => {
+      const status = await fetchFigmaDesktopStatus();
+      if (cancelled) return;
+      setDesktopChecking(false);
+      setDesktopStatus(status);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const recheckDesktopStatus = async () => {
+    setDesktopChecking(true);
+    const status = await fetchFigmaDesktopStatus();
+    setDesktopChecking(false);
+    setDesktopStatus(status);
+  };
 
   const saveToken = async () => {
     const value = draft.trim();
@@ -199,6 +233,38 @@ export function FigmaLinksPanel({ links, linksError }: FigmaLinksPanelProps) {
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {showDesktopRow && desktopStatus ? (
+        <div className={styles.row}>
+          <div className={styles.rowText}>
+            <strong>Figma Desktop</strong>
+            {desktopStatus.available ? (
+              <span data-ok="true">
+                Đang chạy · MCP bật{desktopStatus.activeFileTitle ? ` · đang mở “${desktopStatus.activeFileTitle}”` : ''}
+              </span>
+            ) : (
+              <span data-ok="false">{desktopStatus.detail ?? 'Chưa kết nối được.'}</span>
+            )}
+            {desktopStatus.available ? (
+              <small className={styles.hint}>Khi chạy bước Màn hình → Component, agent sẽ tự mở từng component trong file bạn khai để đối chiếu.</small>
+            ) : (
+              <small className={styles.hint}>Không bắt buộc: thiếu Figma Desktop thì bước này chỉ đối chiếu theo catalog.</small>
+            )}
+            {desktopStatus.available && !desktopStatus.canSwitch ? (
+              <small className={styles.hint}>Máy này không tự chuyển file được — hãy mở đúng file trong Figma trước khi chạy.</small>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className={styles.linkButton}
+            data-testid="figma-desktop-recheck"
+            onClick={() => void recheckDesktopStatus()}
+            disabled={desktopChecking}
+          >
+            Kiểm tra lại
+          </button>
+        </div>
       ) : null}
 
       {verifyError ? <p className={styles.error} role="alert">{verifyError}</p> : null}

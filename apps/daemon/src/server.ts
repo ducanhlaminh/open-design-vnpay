@@ -13,6 +13,7 @@ import net from 'node:net';
 import {
   defaultScenarioPluginIdForProjectMetadata,
   ERR_PLAN_EXPIRED,
+  type DocsReviewComponentSource,
   type OpenDesignGithubLatestReleaseResponse,
   type OpenDesignGithubRepoResponse,
   type PullApplyResult,
@@ -522,6 +523,9 @@ import {
 } from './docs-components.js';
 import { renderFigmaComponentsMarkdown } from './figma-component-catalog.js';
 import { readFigmaConfig } from './figma-config.js';
+import { FigmaDesktopClient } from './figma-desktop.js';
+import { registerFigmaDesktopToolRoutes } from './figma-desktop-tool-routes.js';
+import type { FigmaDesktopScope } from './figma-desktop-tool-routes.js';
 import { buildFigmaComponentCatalog } from './figma-rest.js';
 import { listSections, mergeCjSections, mergeUxrSections, mergeUxSpecSections, type DocSection } from './section-fanout.js';
 import { listScreens, mergeHeuristicScreens, renderPrototypeIndex, type UiScreen } from './ui-fanout.js';
@@ -556,7 +560,7 @@ import { assertServerContextSatisfiesRoutes } from './route-context-contract.js'
 import { configureConnectorCredentialStore, connectorService, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
 import { composioConnectorProvider } from './connectors/composio.js';
 import { configureComposioConfigStore } from './connectors/composio-config.js';
-import { CHAT_TOOL_ENDPOINTS, CHAT_TOOL_OPERATIONS, toolTokenRegistry } from './tool-tokens.js';
+import { CHAT_TOOL_ENDPOINTS, CHAT_TOOL_OPERATIONS, FIGMA_TOOL_ENDPOINTS, FIGMA_TOOL_OPERATIONS, toolTokenRegistry } from './tool-tokens.js';
 import {
   aggregateCloudflarePagesStatus,
   buildDeployFileSet,
@@ -1440,6 +1444,15 @@ export function resolveDataDir(raw, projectRoot) {
 }
 const RUNTIME_DATA_DIR = resolveDataDir(process.env.OD_DATA_DIR, PROJECT_ROOT);
 const PLUGIN_LOCKFILE_PATH = path.join(RUNTIME_DATA_DIR, 'od-plugin-lock.json');
+// Symbol key on the chat body used by INTERNAL callers of startChatRun to
+// widen the per-run tool token (extra `/api/tools/*` endpoints/operations).
+// A Symbol cannot arrive in a JSON request body, so `/api/chat` clients can't
+// grant themselves anything through it.
+const INTERNAL_TOOL_GRANT_EXTRAS = Symbol('od.internalToolGrantExtras');
+// One Figma Desktop MCP client for the whole daemon: it holds the Streamable
+// HTTP session with Figma's local server (127.0.0.1:3845) and serialises
+// file switching, so every route/fan-out must share it.
+const figmaDesktop = new FigmaDesktopClient();
 // Canonical (realpath-resolved) form of RUNTIME_DATA_DIR for the few callers
 // that compare it against a user-supplied realpath() result. On macOS, /var
 // is a symlink to /private/var, so an import realpath lands in /private/var
@@ -6025,6 +6038,71 @@ export async function startServer({
   registerFigmaConfigRoutes(app, {
     http: httpDeps,
     paths: pathDeps,
+  });
+  /** Which component catalogue the docs-review Screen → Component stage
+   *  (dr-comp) compares against for a project: the App's setting, overridden
+   *  by the App-context manifest the project is pinned to. Shared by the
+   *  dr-comp fan-out and the Figma Desktop tool routes so both agree on the
+   *  same list of Figma files. */
+  const resolveDocsReviewComponentSourceForProject = async (
+    projectId: string,
+  ): Promise<{ source: DocsReviewComponentSource; appId: string | null }> => {
+    const project = getProject(db, projectId);
+    const studioConfig = (project?.metadata as Record<string, unknown> | undefined)?.studioConfig as
+      | Record<string, unknown>
+      | undefined;
+    const appId = typeof studioConfig?.appId === 'string' ? studioConfig.appId.trim() : '';
+    const pipelineApp = appId ? getPipelineApp(db, appId) : null;
+    let source: DocsReviewComponentSource = pipelineApp?.docsReviewComponentSource ?? { mode: 'app-design-system' };
+    const contextBinding = featureContextBindingFromMetadata(project?.metadata);
+    if (appId && contextBinding?.appId === appId) {
+      const boundManifest = await readAppContextManifest(
+        PROJECTS_DIR,
+        appId,
+        contextBinding.contextVersion,
+      ).catch(() => null);
+      if (boundManifest?.docsReviewComponentSource) {
+        source = boundManifest.docsReviewComponentSource;
+      }
+    }
+    return { source, appId: appId || null };
+  };
+  /** Allow-list for `/api/tools/figma/*`: ONLY the Figma files the App
+   *  declared, plus (best-effort) the file name + one known component from
+   *  the catalogue the dr-comp preparation phase wrote, which the Desktop
+   *  client uses to confirm Figma is showing the right file. `null` when the
+   *  project doesn't use Figma links at all. */
+  const resolveFigmaDesktopScope = async (projectId: string): Promise<FigmaDesktopScope | null> => {
+    const { source } = await resolveDocsReviewComponentSourceForProject(projectId);
+    if (source.mode !== 'figma-links' || source.links.length === 0) return null;
+    const project = getProject(db, projectId);
+    if (!project) return null;
+    const projectRoot = resolveProjectDir(PROJECTS_DIR, projectId, project.metadata);
+    const wfDir = wfDirForStage('dr-comp', undefined).wfDir;
+    const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+    const catalog = await fs.promises
+      .readFile(path.join(cwd, '.figma-catalog', 'components.json'), 'utf8')
+      .then((raw) => JSON.parse(raw) as { files?: Array<{ fileKey?: string; name?: string; components?: Array<{ nodeId?: string; name?: string }> }> })
+      .catch(() => null);
+    const files = source.links.map((link) => {
+      const known = catalog?.files?.find((file) => file.fileKey === link.fileKey);
+      const probe = known?.components?.find((c) => typeof c.nodeId === 'string' && c.nodeId);
+      return {
+        fileKey: link.fileKey,
+        ...(typeof known?.name === 'string' && known.name ? { name: known.name } : {}),
+        ...(probe?.nodeId ? { probeNodeId: probe.nodeId } : {}),
+        ...(probe?.name ? { probeName: probe.name } : {}),
+      };
+    });
+    return { cwd, files };
+  };
+  // Figma Desktop drill-down for dr-comp: agents read ONE component's design
+  // context/screenshot/variables through the daemon (allow-listed to the
+  // App's files, audited), never talking to Figma themselves.
+  registerFigmaDesktopToolRoutes(app, {
+    auth: authDeps,
+    http: httpDeps,
+    figma: { desktop: figmaDesktop, resolveScope: resolveFigmaDesktopScope },
   });
   registerXaiRoutes(app, {
     http: httpDeps,
@@ -11718,6 +11796,12 @@ export async function startServer({
       context,
       cwdSubdir,
     } = chatBody;
+    // Extra tool-token scope for THIS run only (e.g. dr-comp in Figma-link
+    // mode grants `/api/tools/figma/*`). Keyed by a Symbol so a JSON body
+    // arriving over `/api/chat` can never widen its own grant — only internal
+    // callers (pipeline fan-outs) can set it, and every call still passes
+    // through authorizeToolRequest.
+    const toolGrantExtras = chatBody[INTERNAL_TOOL_GRANT_EXTRAS] ?? null;
     if (typeof projectId === 'string' && projectId) run.projectId = projectId;
     if (typeof conversationId === 'string' && conversationId)
       run.conversationId = conversationId;
@@ -11921,8 +12005,8 @@ export async function startServer({
       ? toolTokenRegistry.mint({
           runId,
           projectId,
-          allowedEndpoints: CHAT_TOOL_ENDPOINTS,
-          allowedOperations: CHAT_TOOL_OPERATIONS,
+          allowedEndpoints: [...CHAT_TOOL_ENDPOINTS, ...(toolGrantExtras?.endpoints ?? [])],
+          allowedOperations: [...CHAT_TOOL_OPERATIONS, ...(toolGrantExtras?.operations ?? [])],
           ...(pluginGrantContext ?? {}),
         })
       : null;
@@ -15704,25 +15788,16 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
         const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
         const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
-        const project = getProject(db, projectId);
-        const studioConfig = (project?.metadata as Record<string, unknown> | undefined)?.studioConfig as
-          | Record<string, unknown>
-          | undefined;
-        const appId = typeof studioConfig?.appId === 'string' ? studioConfig.appId.trim() : '';
-        const pipelineApp = appId ? getPipelineApp(db, appId) : null;
-        let componentSource = pipelineApp?.docsReviewComponentSource ?? { mode: 'app-design-system' as const };
-        const contextBinding = featureContextBindingFromMetadata(project?.metadata);
-        if (appId && contextBinding?.appId === appId) {
-          const boundManifest = await readAppContextManifest(
-            PROJECTS_DIR,
-            appId,
-            contextBinding.contextVersion,
-          ).catch(() => null);
-          if (boundManifest?.docsReviewComponentSource) {
-            componentSource = boundManifest.docsReviewComponentSource;
-          }
-        }
+        const { source: componentSource } = await resolveDocsReviewComponentSourceForProject(projectId);
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
+        // Figma Desktop drill-down (Figma-link mode only). Decided ONCE per
+        // stage run, right after the catalogue is (re)built: when Figma
+        // Desktop's local MCP server answers, every page run gets the
+        // `/api/tools/figma/*` grant + a kickoff paragraph telling the agent
+        // how to open a component; otherwise the kickoff says so and the
+        // stage runs exactly like before (catalogue only). Never fatal.
+        let figmaDesktopNote = '';
+        let figmaDesktopGrant: { endpoints: readonly string[]; operations: readonly string[] } | null = null;
         let extractionTask: { id: string; title: string; status: 'queued' | 'running' | 'succeeded' | 'failed' } | null = null;
 
         // Figma-link mode has an explicit preparation phase. It runs before
@@ -15825,6 +15900,43 @@ export async function startServer({
           extractionTask.status = 'succeeded';
           extractionTask.title = `Đọc component từ Figma · ${links.length}/${links.length}`;
           logLines.push(`Đã đóng băng ${totalComponents} component từ ${links.length} file vào criteria/components.md.`);
+
+          // Figma Desktop drill-down: probe once, pre-warm the first file so
+          // the first agent call doesn't pay the switch, and tell the user in
+          // the same preparation log whether page runs will be able to open
+          // components. Best-effort end to end — nothing here can fail the
+          // stage, the catalogue above is already on disk.
+          const desktopProbe = await figmaDesktop.probe().catch((err) => ({ ok: false as const, detail: String(err?.message ?? err) }));
+          if (desktopProbe.ok) {
+            const firstFile = snapshot.files[0];
+            const firstComponent = firstFile?.components[0];
+            let prewarm = '';
+            if (firstFile) {
+              try {
+                const switched = await figmaDesktop.ensureActiveFile({
+                  fileKey: firstFile.fileKey,
+                  name: firstFile.name,
+                  ...(firstComponent ? { probeNodeId: firstComponent.nodeId, probeName: firstComponent.name } : {}),
+                });
+                prewarm = switched === 'switched' ? ` Đã mở sẵn “${firstFile.name}”.` : ` Đang mở “${firstFile.name}”.`;
+              } catch (err) {
+                prewarm = ` Chưa mở được “${firstFile.name}” (${String(err?.message ?? err)}) — agent sẽ tự thử lại khi cần.`;
+              }
+            }
+            figmaDesktopGrant = { endpoints: FIGMA_TOOL_ENDPOINTS, operations: FIGMA_TOOL_OPERATIONS };
+            figmaDesktopNote =
+              ` Figma Desktop đang chạy trên máy này: bạn CÓ THỂ mở component thật để đối chiếu bằng lệnh ` +
+              `"$OD_NODE_BIN" "$OD_BIN" tools figma design-context --file <fileKey> --node <nodeId> ` +
+              `(thêm lệnh "screenshot" cùng tham số để lấy ảnh — nó in ra đường dẫn PNG tương đối cwd, hãy Read ảnh đó; "variable-defs" để xem token/biến; "metadata" để xem cây con). ` +
+              `fileKey và nodeId của từng component nằm trong ".figma-catalog/components.json" (mảng files[].components[].nodeId). ` +
+              `Chỉ dùng khi map còn phân vân giữa 2+ component, hoặc để XÁC NHẬN một "variant-mismatch" trước khi kết luận; tối đa 8 lượt gọi cho trang này; ghi bằng chứng vào "note". ` +
+              `Chỉ các file trong catalog được phép — lệnh trả FIGMA_FILE_DENIED / FIGMA_DESKTOP_UNAVAILABLE thì bỏ qua và phán theo catalog, đừng đoán.`;
+            logLines.push(`Figma Desktop: sẵn sàng (Dev Mode MCP server).${prewarm} Agent sẽ được phép mở component trong ${links.length} file này để đối chiếu.`);
+          } else {
+            figmaDesktopNote =
+              ` Figma Desktop KHÔNG sẵn sàng trên máy chạy daemon (${desktopProbe.detail ?? 'không kết nối được'}) — chỉ đối chiếu theo catalog, KHÔNG gọi lệnh "tools figma".`;
+            logLines.push(`Figma Desktop: không sẵn sàng (${desktopProbe.detail ?? 'không kết nối được'}) — bước này chỉ đối chiếu theo catalog.`);
+          }
           flushLog('succeeded');
           setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: [{ ...extractionTask }] });
         }
@@ -15988,7 +16100,7 @@ export async function startServer({
             `"anchor" (nguyên văn cả dòng heading của màn) và "label" (nguyên văn ô tên trường) phải COPY từ tài liệu, đừng gõ lại — daemon đối chiếu lại với trang gốc và một chỗ trích sai làm hỏng CẢ TRANG (dấu "—" em dash và "-" hyphen là hai ký tự khác nhau). ` +
             `"verdict" là tập đóng 5 giá trị (ok | not-in-catalog | variant-mismatch | ambiguous | internal); verdict khác "ok" thì BẮT BUỘC có "note" một câu nói sai ở đâu và nên dùng gì. ` +
             `Trang không khai màn hình nào thì vẫn ghi file với "screens": [] — đừng nặn một màn hình ra từ một đoạn văn. ` +
-            `Do NOT audit any other page, and do NOT write "comp/index.json" or "comp/summary.md" — daemon gộp chúng từ file của mọi trang sau khi tất cả chạy xong; bạn tự ghi thì lượt chạy song song của trang khác sẽ ghi đè.${graphNote}`;
+            `Do NOT audit any other page, and do NOT write "comp/index.json" or "comp/summary.md" — daemon gộp chúng từ file của mọi trang sau khi tất cả chạy xong; bạn tự ghi thì lượt chạy song song của trang khác sẽ ghi đè.${graphNote}${figmaDesktopNote}`;
 
           const run = design.runs.create({
             projectId,
@@ -16022,6 +16134,9 @@ export async function startServer({
                 model: modelPrefs.model ?? null,
                 reasoning: modelPrefs.reasoning ?? null,
                 message: kickoff,
+                // Figma Desktop drill-down grant — only when the preparation
+                // phase saw Figma Desktop's MCP server (see figmaDesktopGrant).
+                ...(figmaDesktopGrant ? { [INTERNAL_TOOL_GRANT_EXTRAS]: figmaDesktopGrant } : {}),
               },
               run,
             ),

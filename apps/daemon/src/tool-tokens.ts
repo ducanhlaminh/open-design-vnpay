@@ -22,6 +22,17 @@ export const CHAT_TOOL_OPERATIONS = [
   'design-systems:read',
 ] as const;
 
+export const FIGMA_TOOL_ENDPOINTS = [
+  '/api/tools/figma/design-context',
+  '/api/tools/figma/screenshot',
+  '/api/tools/figma/variable-defs',
+  '/api/tools/figma/metadata',
+] as const;
+
+export const FIGMA_TOOL_OPERATIONS = [
+  'figma:design-context', 'figma:screenshot', 'figma:variable-defs', 'figma:metadata',
+] as const;
+
 export type ToolEndpoint = (typeof CHAT_TOOL_ENDPOINTS)[number] | (string & {});
 export type ToolOperation = (typeof CHAT_TOOL_OPERATIONS)[number] | (string & {});
 export type ToolTokenRevocationReason = 'child_exit' | 'sse_end' | 'ttl_expired' | 'manual';

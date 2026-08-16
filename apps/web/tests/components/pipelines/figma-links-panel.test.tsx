@@ -14,7 +14,21 @@ afterEach(() => {
 
 const LINKS = [{ url: 'https://www.figma.com/design/ABC', fileKey: 'ABC' }];
 
-function stubDaemon(state: { hasToken: boolean; verify?: () => unknown; testOk?: boolean }) {
+type DesktopStatusOverride = {
+  available?: boolean;
+  detail?: string;
+  activeFileTitle?: string | null;
+  canSwitch?: boolean;
+  platform?: string;
+} | null;
+
+function stubDaemon(state: {
+  hasToken: boolean;
+  verify?: () => unknown;
+  testOk?: boolean;
+  /** undefined → mặc định available; null → daemon lỗi (status !ok). */
+  desktopStatus?: DesktopStatusOverride;
+}) {
   const calls: Array<{ url: string; method: string; body: unknown }> = [];
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const body = init?.body ? JSON.parse(String(init.body)) : null;
@@ -35,6 +49,18 @@ function stubDaemon(state: { hasToken: boolean; verify?: () => unknown; testOk?:
       return new Response(JSON.stringify(state.verify?.() ?? { hasToken: state.hasToken, links: [
         { fileKey: 'ABC', url: LINKS[0]!.url, ok: true, name: 'UI Kit', componentCount: 42 },
       ] }), { status: 200 });
+    }
+    if (url === '/api/figma-desktop/status') {
+      if (state.desktopStatus === null) {
+        return new Response(JSON.stringify({ error: 'unavailable' }), { status: 503 });
+      }
+      return new Response(JSON.stringify({
+        available: true,
+        canSwitch: true,
+        platform: 'darwin',
+        activeFileTitle: 'UI Kit',
+        ...state.desktopStatus,
+      }), { status: 200 });
     }
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   });
@@ -97,5 +123,35 @@ describe('FigmaLinksPanel', () => {
     await screen.findByText(/tài khoản anh/);
     await waitFor(() => expect(screen.getByText('Sửa link ở trên trước đã.')).toBeTruthy());
     expect(calls.some((call) => call.url === '/api/figma-config/verify-links')).toBe(false);
+  });
+
+  it('Figma Desktop đang chạy → hiện trạng thái + tên file đang mở', async () => {
+    stubDaemon({ hasToken: true });
+    render(<FigmaLinksPanel links={LINKS} linksError={null} />);
+    await screen.findByText('Đang chạy · MCP bật · đang mở “UI Kit”');
+  });
+
+  it('Figma Desktop chưa kết nối được → hiện lý do + gợi ý không bắt buộc', async () => {
+    stubDaemon({ hasToken: true, desktopStatus: { available: false, detail: 'Figma Desktop chưa chạy…' } });
+    render(<FigmaLinksPanel links={LINKS} linksError={null} />);
+    await screen.findByText('Figma Desktop chưa chạy…');
+    expect(screen.getByText(/Không bắt buộc/)).toBeTruthy();
+  });
+
+  it('bấm "Kiểm tra lại" của Figma Desktop → gọi lại /api/figma-desktop/status', async () => {
+    const { calls } = stubDaemon({ hasToken: true });
+    render(<FigmaLinksPanel links={LINKS} linksError={null} />);
+    await screen.findByTestId('figma-desktop-recheck');
+    fireEvent.click(screen.getByTestId('figma-desktop-recheck'));
+    await waitFor(() => {
+      expect(calls.filter((call) => call.url === '/api/figma-desktop/status')).toHaveLength(2);
+    });
+  });
+
+  it('không có link và không lỗi → không hỏi trạng thái Figma Desktop', async () => {
+    const { calls } = stubDaemon({ hasToken: true });
+    render(<FigmaLinksPanel links={[]} linksError={null} />);
+    await screen.findByText('Dán link để kiểm tra.');
+    expect(calls.some((call) => call.url === '/api/figma-desktop/status')).toBe(false);
   });
 });

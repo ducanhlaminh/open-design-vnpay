@@ -74,6 +74,10 @@ Nếu có `criteria/rules.md`, đọc trước khi map component và ghi nhận 
   `od files upload <proj> <file> --as docs-review/criteria/components.md`. File
   này có 48 component, mỗi cái một heading dạng ``### `#button` Button`` kèm một
   bảng biến thể (variant / state) ngay dưới.
+- **Catalog Figma (TUỲ CHỌN):** `.figma-catalog/components.json` — chỉ có khi
+  App chọn nguồn *Link Figma*; daemon tự sinh cùng lúc với
+  `criteria/components.md`, chứa `fileKey` + `nodeId` của từng component để
+  dùng ở Bước 3b. Không tự sửa file này.
 - **Thiếu `criteria/components.md` KHÔNG phải lỗi.** Vẫn chạy: vẫn liệt kê đủ
   màn hình, đủ element, vẫn ghi `doc_type` nguyên văn. Nhưng khi đó **mọi
   `verdict` phải là `ok` và `component` phải bỏ trống**. Không có danh mục thì
@@ -151,6 +155,52 @@ toàn báo động đỏ thì người đọc bỏ qua cả danh sách, kể c�
 sai nằm lẫn trong đó. Ngược lại, map *quá tay* (nhét `Icon menu` vào `Menu` cho
 xong) thì che mất đúng thứ cần thấy. Nguyên tắc: map được rõ ràng thì map, mơ
 hồ thì để verdict nói ra.
+
+## Bước 3b — (chỉ khi được phép) mở component thật trong Figma Desktop
+
+Khi danh mục đến từ **Link Figma** và kickoff nói *"Figma Desktop đang chạy
+trên máy này"*, bạn có thêm 4 lệnh đọc **một component** qua daemon (daemon
+tự chuyển Figma Desktop sang đúng file, chỉ cho phép các file trong catalog,
+và ghi audit):
+
+```
+"$OD_NODE_BIN" "$OD_BIN" tools figma design-context --file <fileKey> --node <nodeId>
+"$OD_NODE_BIN" "$OD_BIN" tools figma screenshot     --file <fileKey> --node <nodeId>   # in ra đường dẫn PNG tương đối cwd → Read để ĐỊNH HƯỚNG, không làm căn cứ verdict
+"$OD_NODE_BIN" "$OD_BIN" tools figma variable-defs  --file <fileKey> --node <nodeId>
+"$OD_NODE_BIN" "$OD_BIN" tools figma metadata       --file <fileKey> --node <nodeId>
+```
+
+`fileKey` và `nodeId` lấy trong `.figma-catalog/components.json`
+(`files[].fileKey`, `files[].components[].nodeId`) — **không** bịa nodeId, không
+dùng nodeId từ URL của tài liệu.
+
+**Khi nào dùng** — chỉ hai trường hợp, và mỗi trang **tối đa 8 lượt gọi**
+(mỗi lượt là một lần chuyển file/đọc Figma thật, chậm và làm Figma bật lên):
+1. `doc_type` map được sang **2+ component** gần nghĩa nhau (vd `Chip` vs
+   `Badge`, `Select` vs `Combobox`) — mở từng ứng viên, đọc `design-context`
+   (props/variants/auto-layout) để chọn đúng cái tài liệu mô tả.
+2. Định kết luận `variant-mismatch` — mở component để **xác nhận** bảng biến
+   thể thật (variant/property trong `design-context`) trước khi ghi verdict.
+
+Căn cứ để phán là **văn bản** `design-context` / `variable-defs` (props,
+variants, auto-layout, token). Ảnh `screenshot` chỉ giúp bạn nhận ra mình đang
+nhìn đúng component — Hard rules "không mở ảnh để ra verdict" vẫn áp dụng.
+
+**Ghi kết quả** — schema JSON ở Bước 5 **KHÔNG đổi** (daemon validate chặt,
+thêm trường là hỏng cả trang). Bằng chứng từ Figma đi vào `note`, một câu:
+`Figma "<tên component>" (nodeId <id>) có variant Size=S/M/L, không có XL →
+variant-mismatch.`
+
+**Khi lệnh lỗi** — stderr JSON có `error.code`:
+- `FIGMA_DESKTOP_UNAVAILABLE`, `FIGMA_SWITCH_TIMEOUT`, `FIGMA_SWITCH_UNSUPPORTED`
+  → Figma Desktop không mở được đúng file lúc này: **bỏ qua**, phán theo
+  catalog như không có Bước 3b, KHÔNG thử lại quá 1 lần.
+- `FIGMA_FILE_DENIED` → file đó không nằm trong catalog: **không được** tìm
+  đường khác, phán theo catalog.
+- `FIGMA_TOOL_ERROR` (nodeId không có trong file) → kiểm lại nodeId trong
+  catalog; sai thì thôi.
+Không có Bước 3b (kickoff nói Figma Desktop KHÔNG sẵn sàng, hoặc danh mục đến từ
+Design System nội bộ) thì **không gọi** các lệnh này.
 
 ## Bước 4 — verdict cho từng element
 
@@ -257,5 +307,9 @@ chùm note bịa ra ở bản review cuối.
   chạy song song của trang khác sẽ ghi đè, và bản gộp cuối sẽ chỉ còn dữ liệu
   của một trang.
 - **Không mở ảnh để đưa ra bất kỳ verdict nào.** Ảnh trong `images[]` chỉ là
-  metadata traceability (xem Bước 2).
+  metadata traceability (xem Bước 2); ảnh `tools figma screenshot` (Bước 3b)
+  cũng chỉ để định hướng.
+- **Bước 3b có hạn mức và phạm vi:** tối đa 8 lượt `tools figma` mỗi trang,
+  chỉ nodeId có trong `.figma-catalog/components.json`, lỗi thì bỏ qua — không
+  vòng qua bằng cách khác.
 - File-only: không đẩy bất cứ gì lên KGS.
