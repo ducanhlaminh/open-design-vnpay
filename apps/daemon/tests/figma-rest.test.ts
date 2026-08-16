@@ -57,13 +57,18 @@ describe('figma-rest', () => {
     expect(calls).toEqual(['/v1/me']);
   });
 
+  it('whoami without current_user:read scope (403, not "Invalid token") is still a valid token', async () => {
+    const { fetch } = fakeFetch(() => ({ status: 403, body: { status: 403, err: 'Not authorized for scope current_user:read' } }));
+    await expect(figmaWhoAmI('tok', { fetch })).resolves.toEqual({ scopeLimited: true });
+  });
+
   it('maps auth/forbidden/not-found/timeout to Vietnamese guidance', async () => {
     const auth = fakeFetch(() => ({ status: 403, body: { status: 403, err: 'Invalid token' } }));
     await expect(figmaWhoAmI('tok', { fetch: auth.fetch })).rejects.toMatchObject({ kind: 'auth' });
     const forbidden = fakeFetch(() => ({ status: 403, body: { status: 403, err: 'Not allowed' } }));
     const row = await verifyFigmaLink('tok', { url: 'https://www.figma.com/design/ABC', fileKey: 'ABC' }, { fetch: forbidden.fetch });
     expect(row).toMatchObject({ ok: false });
-    expect(row.detail).toMatch(/không có quyền/i);
+    expect(row.detail).toMatch(/File content: Read/);
     const missing = fakeFetch(() => ({ status: 404, body: { status: 404, err: 'Not found' } }));
     const gone = await verifyFigmaLink('tok', { url: 'https://www.figma.com/design/ABC', fileKey: 'ABC' }, { fetch: missing.fetch });
     expect(gone.detail).toMatch(/không tìm thấy/i);
@@ -139,6 +144,6 @@ describe('figma-rest', () => {
       token: 'tok',
       links: [{ url: 'https://www.figma.com/design/A', fileKey: 'A' }, { url: 'https://www.figma.com/design/B', fileKey: 'B' }],
       deps: { fetch },
-    })).rejects.toThrow(/File 2\/2 \(B\): .*không có quyền/i);
+    })).rejects.toThrow(/File 2\/2 \(B\): .*File content: Read/);
   });
 });

@@ -100,6 +100,17 @@ describe('figma-config store', () => {
     expect((verify.output.body as any).links[1].detail).toMatch(/không tìm thấy/i);
   });
 
+  it('POST /test accepts a token whose /v1/me is forbidden (no current_user:read scope)', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-figma-config-'));
+    roots.push(root);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 403, err: 'Not authorized' }), { status: 403 })));
+    const test = response();
+    await register(root).get('POST /api/figma-config/test')!({ body: { token: 'file-only-token' } }, test.res);
+    expect(test.output.body).toMatchObject({ ok: true });
+    expect((test.output.body as any).detail).toMatch(/Token hợp lệ/);
+    expect((test.output.body as any).handle).toBeUndefined();
+  });
+
   it('/verify-links without any token answers hasToken=false without calling Figma', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'od-figma-config-'));
     roots.push(root);

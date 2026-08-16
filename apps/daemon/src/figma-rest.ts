@@ -63,7 +63,7 @@ export function describeFigmaError(err: unknown): string {
     switch (err.kind) {
       case 'no_token': return 'Chưa có token Figma. Dán Personal Access Token trong Thông tin dự án.';
       case 'auth': return 'Token Figma không hợp lệ hoặc đã bị thu hồi. Tạo token mới trong Figma → Settings → Security.';
-      case 'forbidden': return 'Token này không có quyền xem file. Hãy chắc tài khoản tạo token được chia sẻ file (quyền xem là đủ).';
+      case 'forbidden': return 'Token này không đọc được file: kiểm tra token có scope “File content: Read” và tài khoản tạo token được chia sẻ file (quyền xem là đủ).';
       case 'not_found': return 'Không tìm thấy file Figma — link sai hoặc file đã bị xóa.';
       case 'rate_limited': return 'Figma đang giới hạn tần suất truy cập. Đợi một phút rồi thử lại.';
       case 'timeout': return 'Figma phản hồi quá lâu. Thử lại sau.';
@@ -133,8 +133,19 @@ async function figmaGet(pathname: string, token: string, deps: FigmaRestDeps): P
   }
 }
 
-export async function figmaWhoAmI(token: string, deps: FigmaRestDeps = {}): Promise<{ handle?: string; email?: string }> {
-  const me = record(await figmaGet('/v1/me', token, deps));
+/** `GET /v1/me` needs the `current_user:read` scope, which the token guide
+ *  deliberately does NOT ask for (only "File content: Read"). A 403 that is
+ *  not "Invalid token" therefore means Figma authenticated the token but the
+ *  scope is missing — the token is still fine for reading files, so report
+ *  it as valid without handle/email instead of failing the save. */
+export async function figmaWhoAmI(token: string, deps: FigmaRestDeps = {}): Promise<{ handle?: string; email?: string; scopeLimited?: boolean }> {
+  let me: Record<string, unknown> | null;
+  try {
+    me = record(await figmaGet('/v1/me', token, deps));
+  } catch (err) {
+    if (err instanceof FigmaRestError && err.kind === 'forbidden') return { scopeLimited: true };
+    throw err;
+  }
   const handle = cleanText(me?.handle, 200);
   const email = cleanText(me?.email, 200);
   return { ...(handle ? { handle } : {}), ...(email ? { email } : {}) };

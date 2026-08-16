@@ -77,8 +77,10 @@ export function registerFigmaConfigRoutes(app: Express, ctx: RegisterFigmaConfig
         return res.json(body);
       }
       try {
-        const me = await figmaWhoAmI(token);
-        const body: TestFigmaConfigResponse = { ok: true, ...me };
+        const { scopeLimited, ...me } = await figmaWhoAmI(token);
+        const body: TestFigmaConfigResponse = scopeLimited
+          ? { ok: true, detail: 'Token hợp lệ. (Không có scope “Current user: Read” nên không hiện tên tài khoản — không cần thiết cho việc đọc file.)' }
+          : { ok: true, ...me };
         res.json(body);
       } catch (err) {
         const body: TestFigmaConfigResponse = { ok: false, detail: describeFigmaError(err) };
