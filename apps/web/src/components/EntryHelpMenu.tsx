@@ -30,11 +30,38 @@ const DISCORD_URL = 'https://discord.gg/mHAjSMV6gz';
 
 const ext = { target: '_blank', rel: 'noreferrer noopener' } as const;
 
+export function readRuntimeVersion(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const value = (body as { version?: unknown }).version;
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (!value || typeof value !== 'object') return null;
+  const nested = (value as { version?: unknown }).version;
+  return typeof nested === 'string' && nested.trim() ? nested.trim() : null;
+}
+
 export function EntryHelpMenu() {
   const t = useT();
   const analytics = useAnalytics();
   const [open, setOpen] = useState(false);
+  const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch('/api/version');
+        if (!response.ok) return;
+        const version = readRuntimeVersion(await response.json());
+        if (!cancelled && version) setRuntimeVersion(version);
+      } catch {
+        // The help menu remains usable while the daemon is restarting.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -205,6 +232,17 @@ export function EntryHelpMenu() {
             </span>
             <span>Join Discord</span>
           </a>
+          <div className="entry-help-popover__divider" aria-hidden />
+          <div
+            className="entry-help-popover__version"
+            role="presentation"
+          >
+            <span className="entry-help-popover__icon" aria-hidden>
+              <Icon name="info" size={14} />
+            </span>
+            <span>Version</span>
+            <code aria-live="polite">{runtimeVersion ? `v${runtimeVersion}` : '—'}</code>
+          </div>
         </div>
       ) : null}
     </div>
