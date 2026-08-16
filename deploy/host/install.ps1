@@ -1002,7 +1002,13 @@ function Invoke-UninstallCommand {
 
   Stop-OdService
   try { & schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null } catch {}
-  try { & schtasks.exe /Delete /TN $UpdateRestartTaskName /F 2>$null | Out-Null } catch {}
+  # Unlike schtasks.exe, an absent optional helper task does not leave a
+  # non-zero native $LASTEXITCODE behind and make an otherwise-successful
+  # uninstall process exit 1 (caught by the Windows CI smoke test).
+  try {
+    Unregister-ScheduledTask -TaskName $UpdateRestartTaskName -Confirm:$false `
+      -ErrorAction SilentlyContinue
+  } catch {}
 
   if (-not $Force) {
     $confirm = Read-Host "Remove $OdHome ? Project data is kept unless -DeleteData was given. Type 'yes' to confirm"
