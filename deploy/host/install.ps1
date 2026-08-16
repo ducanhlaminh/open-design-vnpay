@@ -147,8 +147,8 @@ param(
 
 # Write-Host throws (HostException: "out of range" / no console) when
 # there is no interactive host to write to -- exactly this script's most
-# important caller: the daemon's self-update spawn (detached, windowsHide,
-# stdio redirected to a raw file descriptor, no console subsystem at all
+# important caller: the daemon's self-update spawn (windowsHide, stdio
+# redirected to a raw file descriptor, no console subsystem at all
 # -- see POST /api/update/apply in apps/daemon/src/server.ts). Combined
 # with `$ErrorActionPreference = "Stop"` below and no local try/catch
 # around any individual call site, the very FIRST Write-Host anywhere in
@@ -214,6 +214,11 @@ $HealthTimeout = 60
 # Per-user Task Scheduler task name -- the Windows equivalent of install.sh's
 # launchd SERVICE_LABEL / systemd unit name.
 $TaskName = "OpenDesignDaemon"
+# On a daemon-triggered update, stopping the daemon also terminates its
+# attached PowerShell updater on real Windows machines. This on-demand task
+# is owned by Task Scheduler rather than the daemon's process tree, so it can
+# finish the stop -> start handoff after both original processes disappear.
+$UpdateRestartTaskName = "OpenDesignDaemonUpdateRestart"
 
 # ---------------------------------------------------------------------------
 # Script-scope mutable state (set by the step functions below).
@@ -904,6 +909,25 @@ function Start-OdService {
   Set-Content -Path $pidFile -Value $proc.Id -NoNewline
 }
 
+function Delegate-SelfUpdateRestart {
+  $installerPath = Join-Path $OdHome "current\install.ps1"
+  $shellExe = (Get-Process -Id $PID).Path
+  # New-ScheduledTaskAction keeps executable and arguments separate, avoiding
+  # the schtasks.exe quoting failure already handled by Register-OdTask.
+  $actionArgs = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$installerPath`" -Start"
+  try {
+    $action = New-ScheduledTaskAction -Execute $shellExe -Argument $actionArgs
+    Register-ScheduledTask -TaskName $UpdateRestartTaskName -Action $action `
+      -RunLevel Limited -Force -ErrorAction Stop | Out-Null
+    Start-ScheduledTask -TaskName $UpdateRestartTaskName -ErrorAction Stop
+    Write-Step "Restart delegated to independent Task Scheduler task: $UpdateRestartTaskName"
+    return $true
+  } catch {
+    Write-Warn "could not delegate restart to Task Scheduler ($($_.Exception.Message)); falling back to direct restart"
+    return $false
+  }
+}
+
 function Wait-OdHealth {
   param([int]$PortNum, [int]$Timeout = $HealthTimeout)
   $elapsed = 0
@@ -978,6 +1002,7 @@ function Invoke-UninstallCommand {
 
   Stop-OdService
   try { & schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null } catch {}
+  try { & schtasks.exe /Delete /TN $UpdateRestartTaskName /F 2>$null | Out-Null } catch {}
 
   if (-not $Force) {
     $confirm = Read-Host "Remove $OdHome ? Project data is kept unless -DeleteData was given. Type 'yes' to confirm"
@@ -1021,6 +1046,17 @@ function Step5-StartAndHealthCheck {
   if ($NoStart) {
     Write-Step "-NoStart: skipping service start and health check"
     return
+  }
+  if ($Update -and $env:OD_SELF_UPDATE -eq "1") {
+    if (Delegate-SelfUpdateRestart) {
+      # The scheduled task invokes this script with -Start. Its
+      # Stop-OdService kills the old daemon and, on Windows, this attached
+      # updater as well; the scheduler-owned process survives and starts the
+      # new release. Keep this process alive until that handoff happens so an
+      # early child exit cannot be mistaken for an update result by the old
+      # daemon.
+      while ($true) { Start-Sleep -Seconds 5 }
+    }
   }
   Start-OdService
   Write-Step "Waiting for health check (up to $HealthTimeout s)..."

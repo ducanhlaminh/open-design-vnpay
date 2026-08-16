@@ -5543,6 +5543,14 @@ export async function startServer({
       const spawnOptions = resolveUpdateSpawnOptions(process.platform);
       const child = spawn(resolvedCmd, args, {
         ...spawnOptions,
+        // Windows cannot let install.ps1 kill this daemon and then continue
+        // in the same process tree: live testing showed PowerShell is also
+        // terminated at Step 5/6. Mark UI/API-triggered updates so the
+        // installer delegates the stop/start to an independent Task
+        // Scheduler process before the daemon is stopped.
+        env: process.platform === 'win32'
+          ? { ...process.env, OD_SELF_UPDATE: '1' }
+          : process.env,
         stdio: ['ignore', updateLogFd, updateLogFd],
       });
       // The child has its own duplicated fd now — release the parent's copy
