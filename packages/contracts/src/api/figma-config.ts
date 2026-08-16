@@ -66,3 +66,25 @@ export interface VerifyFigmaLinksResponse {
   hasToken: boolean;
   links: FigmaLinkVerification[];
 }
+
+/** App-level Figma component catalogue (`GET/POST
+ *  /api/pipelines/apps/:appId/figma-catalog[/refresh]`) — what the App's DS
+ *  tab shows when the component source is Figma links. Read by the daemon
+ *  from the same REST snapshot the dr-comp preparation phase produces. */
+export interface AppFigmaCatalogFile {
+  fileKey: string;
+  name: string;
+  url: string;
+  componentCount: number;
+}
+export interface AppFigmaCatalogResponse {
+  /** null when the App's component source is not `figma-links`. */
+  links: Array<{ url: string; fileKey: string; nodeId?: string }> | null;
+  hasToken: boolean;
+  /** null until the catalogue has been read at least once. */
+  generatedAt: string | null;
+  files: AppFigmaCatalogFile[];
+  componentCount: number;
+  /** Rendered `criteria/components.md` (closed catalogue format), or null. */
+  markdown: string | null;
+}

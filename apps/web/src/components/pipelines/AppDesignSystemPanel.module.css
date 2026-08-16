@@ -15,3 +15,11 @@
 .frame { display: block; width: 100%; height: 620px; border: 0; background: var(--bg-panel); }
 .criteriaWrap { padding: 18px; overflow: auto; }
 .criteriaHead { margin-bottom: 14px; }
+.refreshButton { flex: none; align-self: flex-start; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: var(--bg-elevated); color: var(--text-strong); font: inherit; font-size: 12px; cursor: pointer; }
+.refreshButton:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-strong); }
+.refreshButton:disabled { opacity: 0.55; cursor: default; }
+.fileList { margin: 8px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--text-strong); }
+.fileList li { margin: 2px 0; }
+.fileList a { color: var(--accent-strong); text-decoration: none; }
+.fileList a:hover { text-decoration: underline; }
+.errorText { margin: 0 0 10px; color: var(--danger, #c0392b); font-size: 12px; }

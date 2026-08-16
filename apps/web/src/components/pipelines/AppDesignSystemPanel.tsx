@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import type { DesignSystemFileDetail, DesignSystemReactInfo, DesignSystemSummary } from '@open-design/contracts';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { DesignSystemFileDetail, DesignSystemReactInfo, DesignSystemSummary, DocsReviewComponentSource } from '@open-design/contracts';
 import { DesignSpecView } from '../DesignSpecView';
 import { fetchDesignSystemCriteriaFile, fetchDesignSystemReactInfo, fetchDesignSystems } from '../../providers/registry';
+import { fetchAppFigmaCatalog, refreshAppFigmaCatalog, type AppFigmaCatalogResponse } from '../../state/figma-config';
 import styles from './AppDesignSystemPanel.module.css';
 
 type View = 'showcase' | 'criteria';
@@ -11,9 +12,109 @@ type View = 'showcase' | 'criteria';
 interface Props {
   appId: string;
   designSystemId?: string | null;
+  /** App-level component source; `figma-links` swaps the panel for the
+   *  catalogue read from the linked Figma files. Defaults to the DS view. */
+  componentSource?: DocsReviewComponentSource | null;
 }
 
-export function AppDesignSystemPanel({ appId, designSystemId }: Props) {
+export function AppDesignSystemPanel({ appId, designSystemId, componentSource }: Props) {
+  if (componentSource?.mode === 'figma-links') {
+    return <AppFigmaCatalogPanel appId={appId} linkCount={componentSource.links.length} />;
+  }
+  return <AppDesignSystemView appId={appId} designSystemId={designSystemId} />;
+}
+
+/** "DS" of an App whose component source is Figma links: the component
+ *  catalogue the daemon reads from those files (same snapshot dr-comp uses).
+ *  Reads once on open; if nothing is stored yet and a token exists, pulls
+ *  from Figma right away so the tab is never blank without saying why. */
+function AppFigmaCatalogPanel({ appId, linkCount }: { appId: string; linkCount: number }) {
+  const [catalog, setCatalog] = useState<AppFigmaCatalogResponse | null | undefined>(undefined);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    setError(null);
+    const result = await refreshAppFigmaCatalog(appId);
+    setRefreshing(false);
+    if (result.ok) setCatalog(result.catalog);
+    else setError(result.error);
+  }, [appId]);
+
+  useEffect(() => {
+    setCatalog(undefined);
+    setError(null);
+    let alive = true;
+    void fetchAppFigmaCatalog(appId).then((res) => {
+      if (!alive) return;
+      setCatalog(res);
+      // First open with nothing stored yet: read from Figma now.
+      if (res && res.hasToken && res.generatedAt == null && (res.links?.length ?? 0) > 0) void refresh();
+    });
+    return () => { alive = false; };
+  }, [appId, refresh]);
+
+  const generatedLabel = catalog?.generatedAt ? new Date(catalog.generatedAt).toLocaleString('vi-VN') : null;
+
+  return (
+    <section className={styles.section} aria-label="Design System">
+      <div className={styles.header}>
+        <div>
+          <h2 className={styles.heading}>Danh mục component từ Figma</h2>
+          <p className={styles.muted}>Đọc từ {linkCount} file Figma đã link cho dự án — đây là danh mục bước “Màn hình → Component” dùng để đối chiếu.</p>
+        </div>
+        <button
+          type="button"
+          className={styles.refreshButton}
+          data-testid="figma-catalog-refresh"
+          disabled={refreshing || catalog === undefined || (catalog !== null && !catalog.hasToken)}
+          onClick={() => { void refresh(); }}
+        >
+          {refreshing ? 'Đang đọc…' : 'Đọc lại từ Figma'}
+        </button>
+      </div>
+      <div className={styles.criteriaWrap}>
+        {catalog === undefined ? (
+          <p className={styles.muted}>Đang tải danh mục…</p>
+        ) : catalog === null ? (
+          <p className={styles.empty}>Không tải được danh mục (daemon không phản hồi).</p>
+        ) : (
+          <>
+            <div className={styles.criteriaHead}>
+              <h3 className={styles.subheading}>Danh mục component</h3>
+              <p className={styles.meta}>
+                {catalog.generatedAt ? `${catalog.componentCount} component · đọc lúc ${generatedLabel}` : 'chưa đọc lần nào'}
+              </p>
+              {catalog.files.length > 0 ? (
+                <ul className={styles.fileList}>
+                  {catalog.files.map((file) => (
+                    <li key={file.fileKey}>
+                      <a href={file.url} target="_blank" rel="noreferrer">{file.name || file.fileKey}</a>
+                      <span className={styles.muted}> · {file.componentCount} component</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+            {error ? <p className={styles.errorText} role="alert">{error}</p> : null}
+            {!catalog.hasToken ? (
+              <div className={styles.empty}><p>Chưa có token Figma nên chưa đọc được danh mục. Vào <strong>Sửa dự án</strong> → Nguồn đối chiếu component → dán Personal Access Token.</p></div>
+            ) : catalog.markdown ? (
+              <DesignSpecView source={catalog.markdown} loadingLabel="Đang tải danh mục…" />
+            ) : refreshing ? (
+              <p className={styles.muted}>Đang đọc component từ Figma…</p>
+            ) : (
+              <div className={styles.empty}><p>Chưa có danh mục. Bấm <strong>Đọc lại từ Figma</strong>.</p></div>
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function AppDesignSystemView({ appId, designSystemId }: { appId: string; designSystemId?: string | null }) {
   const [view, setView] = useState<View>('showcase');
   const [system, setSystem] = useState<DesignSystemSummary | null>(null);
   const [reactInfo, setReactInfo] = useState<DesignSystemReactInfo | null | undefined>(undefined);

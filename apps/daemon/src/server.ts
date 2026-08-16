@@ -430,6 +430,7 @@ import { registerActiveContextRoutes } from './active-context-routes.js';
 import { registerHostToolsRoutes } from './host-tools-routes.js';
 import { registerMcpRoutes } from './mcp-routes.js';
 import { registerConfluenceConfigRoutes } from './confluence-config-routes.js';
+import { registerFigmaCatalogRoutes, writeAppFigmaCatalog } from './figma-catalog-routes.js';
 import { registerFigmaConfigRoutes } from './figma-config-routes.js';
 import { registerXaiRoutes } from './xai-routes.js';
 import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
@@ -6036,6 +6037,13 @@ export async function startServer({
   // Figma Personal Access Token — read by the docs-review Screen → Component
   // stage when an App points at Figma links instead of an imported DS.
   registerFigmaConfigRoutes(app, {
+    http: httpDeps,
+    paths: pathDeps,
+  });
+  // App-level Figma catalogue (DS tab of an App whose component source is
+  // Figma links): read + refresh on demand.
+  registerFigmaCatalogRoutes(app, {
+    db,
     http: httpDeps,
     paths: pathDeps,
   });
@@ -15788,7 +15796,7 @@ export async function startServer({
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', subConversations: [] });
         const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
         const cwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
-        const { source: componentSource } = await resolveDocsReviewComponentSourceForProject(projectId);
+        const { source: componentSource, appId: componentSourceAppId } = await resolveDocsReviewComponentSourceForProject(projectId);
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
         // Figma Desktop drill-down (Figma-link mode only). Decided ONCE per
         // stage run, right after the catalogue is (re)built: when Figma
@@ -15896,6 +15904,13 @@ export async function startServer({
           await fs.promises.writeFile(nextCatalog, JSON.stringify(snapshot, null, 2), 'utf8');
           await replaceValidatedFile(nextComponents, path.join(criteriaDir, 'components.md'));
           await replaceValidatedFile(nextCatalog, path.join(catalogDir, 'components.json'));
+          // Mirror to the App-level catalogue so the App's DS tab shows the
+          // same snapshot this run used. Best-effort — the run has its copy.
+          if (componentSourceAppId) {
+            await writeAppFigmaCatalog(PROJECTS_DIR, componentSourceAppId, snapshot).catch((err) => {
+              console.warn('[docs-comp] app-level figma catalogue write failed (continuing):', err?.message ?? err);
+            });
+          }
           const totalComponents = snapshot.files.reduce((sum, file) => sum + file.components.length, 0);
           extractionTask.status = 'succeeded';
           extractionTask.title = `Đọc component từ Figma · ${links.length}/${links.length}`;

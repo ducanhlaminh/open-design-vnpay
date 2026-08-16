@@ -3,6 +3,7 @@
 // returns the real token, only whether one is saved (`hasToken`).
 
 import type {
+  AppFigmaCatalogResponse,
   FigmaConfigResponse,
   PutFigmaConfigRequest,
   TestFigmaConfigRequest,
@@ -12,6 +13,7 @@ import type {
 } from '@open-design/contracts';
 
 export type {
+  AppFigmaCatalogResponse,
   FigmaConfigResponse,
   PutFigmaConfigRequest,
   TestFigmaConfigRequest,
@@ -98,5 +100,29 @@ export async function fetchFigmaDesktopStatus(signal?: AbortSignal): Promise<Fig
     return await readJson<FigmaDesktopStatusResponse>(res);
   } catch {
     return null;
+  }
+}
+
+// App-level Figma component catalogue (DS tab of an App whose component
+// source is "Link Figma"). `null` = network/HTTP failure; the panel shows a
+// generic error. `refresh` surfaces the daemon's message on failure.
+export async function fetchAppFigmaCatalog(appId: string, signal?: AbortSignal): Promise<AppFigmaCatalogResponse | null> {
+  try {
+    const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/figma-catalog`, { signal });
+    if (!res.ok) return null;
+    return await readJson<AppFigmaCatalogResponse>(res);
+  } catch {
+    return null;
+  }
+}
+
+export async function refreshAppFigmaCatalog(appId: string, signal?: AbortSignal): Promise<{ ok: true; catalog: AppFigmaCatalogResponse } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/figma-catalog/refresh`, { method: 'POST', signal });
+    const body = await readJson<AppFigmaCatalogResponse & { error?: string }>(res);
+    if (!res.ok || !body) return { ok: false, error: body?.error ?? `HTTP ${res.status}` };
+    return { ok: true, catalog: body };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }

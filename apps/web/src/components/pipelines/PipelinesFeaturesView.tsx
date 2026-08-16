@@ -107,10 +107,10 @@ export function PipelinesFeaturesView({
 
   const app = nav.appById(appId);
   const hasDocsTab = Boolean(app && !app.unassigned);
-  // Tab DS chỉ có nghĩa khi App đối chiếu component bằng Design System đã
-  // nạp; App dùng nguồn Link Figma không gắn DS nên không có gì để hiện.
-  const hasDsTab = hasDocsTab && (app?.docsReviewComponentSource?.mode ?? 'app-design-system') === 'app-design-system';
-  useEffect(() => { if (tab === 'ds' && !hasDsTab) setTab('features'); }, [tab, hasDsTab]);
+  // Tab DS: DS đã nạp (app-design-system) hoặc danh mục component đọc từ
+  // các file Figma đã link (figma-links) — cả hai đều là "DS của dự án".
+  const hasDsTab = hasDocsTab;
+  const componentSource = app?.docsReviewComponentSource ?? { mode: 'app-design-system' as const };
   const [designSystems, setDesignSystems] = useState<DesignSystemSummary[]>([]);
   useEffect(() => {
     if (!hasDocsTab) return undefined;
@@ -119,7 +119,9 @@ export function PipelinesFeaturesView({
     return () => { alive = false; };
   }, [hasDocsTab]);
   const designSystemTitle = app?.designSystemId ? designSystems.find((item) => item.id === app.designSystemId)?.title : undefined;
-  const designSystemMeta = designSystemTitle ? `· ${designSystemTitle}` : '· chưa chọn';
+  const designSystemMeta = componentSource.mode === 'figma-links'
+    ? `· Link Figma (${componentSource.links.length} file)`
+    : designSystemTitle ? `· ${designSystemTitle}` : '· chưa chọn';
 
   // Lightweight — just enough for the tab's own "N trang" summary line.
   // `AppPoolSection` (mounted only once the Docs tab is actually open) does
@@ -319,7 +321,7 @@ export function PipelinesFeaturesView({
         ) : null}
 
         {tab === 'ds' && hasDsTab ? (
-          <div className={styles.panelBody}><AppDesignSystemPanel appId={appId} designSystemId={app?.designSystemId} /></div>
+          <div className={styles.panelBody}><AppDesignSystemPanel appId={appId} designSystemId={app?.designSystemId} componentSource={componentSource} /></div>
         ) : tab === 'docs' && hasDocsTab ? (
           <div className={styles.panelBody}>
             {/* AppPoolSection is a self-contained card elsewhere (Sửa App,
