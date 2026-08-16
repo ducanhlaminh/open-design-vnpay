@@ -25,6 +25,7 @@ import type {
   PipelineStatus,
   ProjectSyncOrigin,
   ProjectSyncOriginSelection,
+  ProjectSyncOperation,
   PipelineView,
   ProjectFile,
   ProjectSyncStatus,
@@ -47,6 +48,7 @@ import { AppPoolTree } from './AppPoolTree';
 import { PlModal } from './PlModal';
 import { UploadDropzone, toPendingFiles, type PendingFile } from './UploadDropzone';
 import { ConfluenceTreeImport } from './ConfluenceTreeImport';
+import { ProgressBar } from './ProgressBar';
 import styles from './PipelineSourceModal.module.css';
 import sp from './StagePicker.module.css';
 import { accessRoleLabel, projectTransferLabel, stepDifferenceLabel, SYNC_COPY } from './sync-copy';
@@ -4081,7 +4083,7 @@ export function PullAllModal({
             data-testid="pipeline-pull-confirm"
             onClick={() => void submit()}
             disabled={!syncReady || busy
-              || selection.featureIds.size === 0
+              || (selection.featureIds.size === 0 && selection.appIds.size === 0)
               || (selection.featureIds.size > 0 && stageSel.size === 0)}
           >
             <Icon name={busy ? 'spinner' : 'download'} size={14} />
@@ -4096,6 +4098,7 @@ export function PullAllModal({
         </>
       }
     >
+      {busy ? <ProgressBar label="Đang lấy dữ liệu từ kho chung…" /> : null}
       {!syncReady ? (
         <div className="pl-modal-error" role="alert">
           <span>{SYNC_COPY.reconnectHint}</span>{' '}
@@ -4275,6 +4278,7 @@ export function PushAllModal({
     selection: ContextTransferSelection,
     stages: string[],
     stagesByFeature?: FeatureStageSelections,
+    onProgress?: (operation: ProjectSyncOperation) => void,
   ) => Promise<void>;
   syncReady: boolean;
   onReconnect: () => void;
@@ -4373,6 +4377,7 @@ export function PushAllModal({
     destination?.mode === 'new' ? destination.name ?? '' : '',
   );
   const [busy, setBusy] = useState(false);
+  const [operation, setOperation] = useState<ProjectSyncOperation | null>(null);
   const [upgradeBusy, setUpgradeBusy] = useState<string | null>(null);
   const [upgradedFeatures, setUpgradedFeatures] = useState<ReadonlySet<string>>(() => new Set());
   const [pendingUpgrade, setPendingUpgrade] = useState<{
@@ -4448,6 +4453,7 @@ export function PushAllModal({
     if (!syncReady || (selection.appIds.size === 0 && selection.featureIds.size === 0) || busy) return;
     if (syncStatus === null || hasFeatureWithNoSelectedOutput) return;
     setBusy(true);
+    setOperation(null);
     setError(null);
     try {
       // Explicit stage list always — see PullAllModal.submit.
@@ -4459,7 +4465,7 @@ export function PushAllModal({
       await onConfirm({
         ...serializeContextSelection(selection),
         contextVersions: contextVersionsForSelection(appGroups, selection),
-      }, stageUnion, stagesByFeature);
+      }, stageUnion, stagesByFeature, setOperation);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -4493,15 +4499,15 @@ export function PushAllModal({
             data-testid="pipeline-push-confirm"
             onClick={() => void submit()}
             disabled={!syncReady || busy || syncStatus === null
-              || selection.featureIds.size === 0
+              || (selection.featureIds.size === 0 && selection.appIds.size === 0)
               || hasFeatureWithNoSelectedOutput}
           >
             <Icon name={busy ? 'spinner' : 'upload'} size={14} />
             <span>
               {busy
-                ? 'Đang chia sẻ…'
+                ? operation ? `Đang chia sẻ · ${operation.progress.percent}%` : 'Đang chuẩn bị…'
                 : selection.featureIds.size === 0
-                  ? 'Chia sẻ'
+                  ? 'Chia sẻ dự án'
                   : selection.featureIds.size > 1
                       ? `Chia sẻ ${selection.featureIds.size} tính năng đã chọn`
                       : 'Chia sẻ tính năng đã chọn'}
@@ -4510,6 +4516,14 @@ export function PushAllModal({
         </>
       }
     >
+      {busy ? (
+        <ProgressBar
+          label={operation
+            ? `Đang chia sẻ · ${operation.progress.completedItems}/${operation.progress.totalItems} mục (${operation.progress.percent}%)`
+            : 'Đang chuẩn bị dữ liệu chia sẻ…'}
+          percent={operation?.progress.percent}
+        />
+      ) : null}
       {!syncReady ? (
         <div className="pl-modal-error" role="alert">
           <span>{SYNC_COPY.reconnectHint}</span>{' '}

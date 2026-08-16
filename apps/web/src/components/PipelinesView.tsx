@@ -70,7 +70,7 @@ import { pullApply, pullPlan } from '../providers/pullConflict';
 import { useT } from '../i18n';
 import { relativeTimeLong } from '../utils/chatTime';
 import { publishedDestinationNote, SYNC_COPY } from './pipelines/sync-copy';
-import { bindFeatureContext, transferSelectedAppContexts } from './pipelines/context-sync-api';
+import { bindFeatureContext, fetchContextTransfer, transferSelectedAppContexts } from './pipelines/context-sync-api';
 
 // Max project cards shown before the picker collapses behind "Show all" —
 // keeps the pipeline stepper (the page's real content) above the fold.
@@ -964,7 +964,7 @@ export function PipelinesView() {
     setSyncBusy(kind);
     setError(null);
     try {
-      const res = await fetch(`/api/kg/${kind}-all`, {
+      const res = await fetchContextTransfer(`/api/kg/${kind}-all`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({

@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { bindFeatureContext, transferSelectedAppContexts } from '../../../src/components/pipelines/context-sync-api';
+import {
+  CONTEXT_TRANSFER_TIMEOUT_MS,
+  bindFeatureContext,
+  fetchContextTransfer,
+  transferSelectedAppContexts,
+} from '../../../src/components/pipelines/context-sync-api';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe('App Context API wiring', () => {
   it('nâng binding gửi đủ App, version và digest', async () => {
@@ -54,5 +62,17 @@ describe('App Context API wiring', () => {
       { contextVersion: 'v2' },
       { contextVersion: 'v3' },
     ]);
+  });
+
+  it('báo lỗi rõ ràng khi endpoint đồng bộ cũ bị timeout', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    })));
+
+    const request = fetchContextTransfer('/api/kg/pull-all', { method: 'POST' });
+    const rejection = expect(request).rejects.toThrow('mất quá nhiều thời gian');
+    await vi.advanceTimersByTimeAsync(CONTEXT_TRANSFER_TIMEOUT_MS);
+    await rejection;
   });
 });

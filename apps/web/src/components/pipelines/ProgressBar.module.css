@@ -31,3 +31,21 @@
   background: var(--accent);
   transition: width 0.2s cubic-bezier(0.23, 1, 0.32, 1);
 }
+
+.indeterminate {
+  width: 38%;
+  animation: progress-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes progress-indeterminate {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(290%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .indeterminate {
+    width: 100%;
+    animation: none;
+    opacity: 0.55;
+  }
+}

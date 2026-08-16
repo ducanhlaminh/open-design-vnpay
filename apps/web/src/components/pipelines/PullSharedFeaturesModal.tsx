@@ -13,13 +13,11 @@ import {
   listProjectSyncOrigins,
   planProjectSyncFeaturePullBatch,
   retryProjectSyncFeaturePullBatchOperation,
+  waitForProjectSyncOperation,
 } from '../../providers/project-sync';
 import { Icon } from '../Icon';
 import { PlModal } from './PlModal';
 import styles from './PullSharedFeaturesModal.module.css';
-
-const POLL_INTERVAL_MS = 700;
-const POLL_RETRY_MS = 1_200;
 
 const PHASE_LABEL: Record<ProjectSyncOperationPhase, string> = {
   validating: 'Đang kiểm tra',
@@ -89,6 +87,9 @@ export function PullSharedFeaturesModal({
   const busy = loadingPlan || operationActive(operation);
   const terminalResult = operation?.state === 'succeeded' ? operation.result : undefined;
   const failedItems = terminalResult?.items.filter((item) => item.state === 'failed') ?? [];
+  const displayedError = error ?? (operation?.state === 'failed'
+    ? operation.error?.message ?? 'Tiến trình lấy tính năng thất bại.'
+    : null);
 
   useEffect(() => {
     if (!operation || operation.state !== 'succeeded' || !operation.result) return;
@@ -100,29 +101,31 @@ export function PullSharedFeaturesModal({
 
   useEffect(() => {
     if (!operationActive(operation) || !operation) return;
-    let cancelled = false;
-    let timer: number | undefined;
-    const operationId = operation.operationId;
-    const schedule = (delay: number) => {
-      timer = window.setTimeout(() => { void poll(); }, delay);
-    };
-    const poll = async () => {
-      try {
-        const next = await getProjectSyncFeaturePullBatchOperation(operationId);
-        if (cancelled) return;
+    const controller = new AbortController();
+    void waitForProjectSyncOperation(operation, getProjectSyncFeaturePullBatchOperation, {
+      signal: controller.signal,
+      onUpdate: (next) => {
         setError(null);
         setOperation(next);
-        if (operationActive(next)) schedule(POLL_INTERVAL_MS);
-      } catch (cause) {
-        if (cancelled) return;
-        setError(errorMessage(cause, 'Không thể đọc tiến độ lấy tính năng. Đang thử lại…'));
-        schedule(POLL_RETRY_MS);
-      }
-    };
-    schedule(POLL_INTERVAL_MS);
+      },
+      onTransientError: (pollError) => {
+        if (pollError) setError(`${pollError.message} Đang thử lại…`);
+      },
+    }).catch((cause) => {
+      if (controller.signal.aborted) return;
+      const message = errorMessage(cause, 'Không thể đọc tiến độ lấy tính năng.');
+      setError(message);
+      // The server operation can still be running after a client/network
+      // timeout. Mark only the local snapshot as failed so the modal unlocks;
+      // pressing the primary action resumes the idempotent operation.
+      setOperation((current) => current ? {
+        ...current,
+        state: 'failed',
+        error: { code: 'CLIENT_PROGRESS_TIMEOUT', message, retryable: true },
+      } : current);
+    });
     return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
+      controller.abort();
     };
   }, [operation?.operationId]);
 
@@ -223,7 +226,7 @@ export function PullSharedFeaturesModal({
   return (
     <PlModal title="Lấy tính năng về máy" icon="download" size="lg" onClose={close} busy={busy} footer={footer}>
       <div className={styles.modal}>
-        {error ? <div className={styles.error} role="alert"><Icon name="info" size={15} /><span>{error}</span></div> : null}
+        {displayedError ? <div className={styles.error} role="alert"><Icon name="info" size={15} /><span>{displayedError}</span></div> : null}
 
         {progress ? (
           <section className={styles.progress} aria-label="Tiến độ lấy tính năng">
@@ -297,12 +300,6 @@ export function PullSharedFeaturesModal({
           </section>
         ) : null}
 
-        {operation?.state === 'failed' ? (
-          <div className={styles.error} role="alert">
-            <Icon name="info" size={15} />
-            <span>{operation.error?.message ?? 'Tiến trình lấy tính năng thất bại.'}</span>
-          </div>
-        ) : null}
       </div>
     </PlModal>
   );

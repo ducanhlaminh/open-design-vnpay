@@ -6,6 +6,23 @@ import type {
 
 import type { ContextTransferSelection } from './PipelineModals';
 
+export const CONTEXT_TRANSFER_TIMEOUT_MS = 5 * 60_000;
+
+export async function fetchContextTransfer(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), CONTEXT_TRANSFER_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (cause) {
+    if (controller.signal.aborted) {
+      throw new Error('Thao tác đồng bộ mất quá nhiều thời gian. Vui lòng kiểm tra kết nối và thử lại.');
+    }
+    throw cause;
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
 async function readPayload(response: Response): Promise<Record<string, unknown>> {
   return (await response.json().catch(() => ({}))) as Record<string, unknown>;
 }
@@ -16,7 +33,7 @@ export async function bindFeatureContext(input: {
   contextVersion: string;
   contentDigest: string;
 }): Promise<BindFeatureContextResult> {
-  const response = await fetch(`/api/projects/${encodeURIComponent(input.featureId)}/context-binding`, {
+  const response = await fetchContextTransfer(`/api/projects/${encodeURIComponent(input.featureId)}/context-binding`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -47,7 +64,7 @@ export async function transferSelectedAppContexts(
     // Sequential within an App: historical bindings first, current last. This
     // keeps context/current.json on the App's chosen version after Pull.
     for (const contextVersion of versions) {
-      const response = await fetch(
+      const response = await fetchContextTransfer(
         `/api/pipelines/apps/${encodeURIComponent(appId)}/context/${kind}`,
         {
           method: 'POST',

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ProjectSyncPlanExpiredError,
+  ProjectSyncTimeoutError,
   applyProjectSync,
   createProjectSyncFeaturePullBatchOperation,
   createProjectSyncOperation,
@@ -13,9 +14,13 @@ import {
   planProjectSync,
   planProjectSyncFeaturePullBatch,
   retryProjectSyncFeaturePullBatchOperation,
+  waitForProjectSyncOperation,
 } from '../../src/providers/project-sync';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 function response(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' }, ...init });
@@ -98,5 +103,51 @@ describe('project-sync provider', () => {
       localAppId: 'app-1', originAppId: 'remote-app', originFeatureIds: ['f-1', 'f-2'],
     });
     expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({ operationId: 'op/1' });
+  });
+
+  it('polls an operation to completion and reports every progress snapshot', async () => {
+    const running = {
+      operationId: 'op-1', planId: 'p1', state: 'running' as const, phase: 'transferring' as const,
+      progress: { completedItems: 1, totalItems: 2, percent: 50 }, createdAt: '', updatedAt: '', expiresAt: '',
+    };
+    const succeeded = {
+      ...running,
+      state: 'succeeded' as const,
+      phase: 'finalizing' as const,
+      progress: { completedItems: 2, totalItems: 2, percent: 100 },
+      result: { planId: 'p1', applied: 2, skipped: 0, unchanged: 0, softHiddenOriginFeatureIds: [], stale: [] },
+    };
+    const onUpdate = vi.fn();
+
+    await expect(waitForProjectSyncOperation(running, vi.fn().mockResolvedValue(succeeded), {
+      pollIntervalMs: 1,
+      timeoutMs: 100,
+      onUpdate,
+    })).resolves.toEqual(succeeded);
+    expect(onUpdate.mock.calls.map(([value]) => value.progress.percent)).toEqual([50, 100]);
+  });
+
+  it('stops polling and raises a friendly timeout error', async () => {
+    const running = {
+      operationId: 'op-timeout', planId: 'p1', state: 'running' as const, phase: 'transferring' as const,
+      progress: { completedItems: 0, totalItems: 2, percent: 0 }, createdAt: '', updatedAt: '', expiresAt: '',
+    };
+
+    await expect(waitForProjectSyncOperation(running, vi.fn().mockResolvedValue(running), {
+      pollIntervalMs: 5,
+      timeoutMs: 15,
+    })).rejects.toBeInstanceOf(ProjectSyncTimeoutError);
+  });
+
+  it('aborts a request that exceeds the network timeout', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    })));
+
+    const request = planProjectSync({ direction: 'pull', scope: { kind: 'app', projectId: 'app-1', appId: 'app-1' } });
+    const rejection = expect(request).rejects.toBeInstanceOf(ProjectSyncTimeoutError);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rejection;
   });
 });

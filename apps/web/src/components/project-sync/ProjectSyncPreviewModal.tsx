@@ -13,6 +13,7 @@ import {
   createProjectSyncOperation,
   getProjectSyncOperation,
   planProjectSync,
+  waitForProjectSyncOperation,
 } from '../../providers/project-sync';
 import { Icon } from '../Icon';
 import { PlModal } from '../pipelines/PlModal';
@@ -48,7 +49,7 @@ export function ProjectSyncPreviewModal({ scope, subjectName, origin, onClose, o
   const planRef = useRef<ProjectSyncPlan | null>(null);
   const loadGenerationRef = useRef(0);
   const applyGenerationRef = useRef(0);
-  const pollTimerRef = useRef<number | null>(null);
+  const applyAbortRef = useRef<AbortController | null>(null);
   const completedOperationIdsRef = useRef(new Set<string>());
   const completedSuccessfullyRef = useRef(false);
 
@@ -110,7 +111,7 @@ export function ProjectSyncPreviewModal({ scope, subjectName, origin, onClose, o
     return () => {
       loadGenerationRef.current += 1;
       applyGenerationRef.current += 1;
-      if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current);
+      applyAbortRef.current?.abort();
     };
   }, [load]);
   useEffect(() => {
@@ -145,29 +146,35 @@ export function ProjectSyncPreviewModal({ scope, subjectName, origin, onClose, o
   const apply = async () => {
     if (!plan || completedSuccessfullyRef.current) return;
     const generation = ++applyGenerationRef.current;
+    applyAbortRef.current?.abort();
+    const controller = new AbortController();
+    applyAbortRef.current = controller;
     setApplying(true);
     setOperation(null);
     setError(null);
     setExpired(false);
     try {
-      let next = await createProjectSyncOperation({ planId: plan.planId, resolutions });
-      if (finishOperation(next, generation)) return;
-      while (generation === applyGenerationRef.current) {
-        await new Promise<void>((resolve) => {
-          pollTimerRef.current = window.setTimeout(() => {
-            pollTimerRef.current = null;
-            resolve();
-          }, 500);
-        });
-        if (generation !== applyGenerationRef.current) return;
-        next = await getProjectSyncOperation(next.operationId);
-        if (finishOperation(next, generation)) return;
-      }
+      const initial = await createProjectSyncOperation({ planId: plan.planId, resolutions });
+      const next = await waitForProjectSyncOperation(initial, getProjectSyncOperation, {
+        signal: controller.signal,
+        onUpdate: (update) => {
+          if (generation !== applyGenerationRef.current) return;
+          setError(null);
+          setOperation(update);
+        },
+        onTransientError: (pollError) => {
+          if (generation === applyGenerationRef.current && pollError) setError(`${pollError.message} Đang thử lại…`);
+        },
+      });
+      finishOperation(next, generation);
     } catch (cause) {
       if (generation !== applyGenerationRef.current) return;
+      if (controller.signal.aborted) return;
       if (cause instanceof ProjectSyncPlanExpiredError) setExpired(true);
       else setError(cause instanceof Error ? cause.message : 'Không thể áp dụng đồng bộ.');
       setApplying(false);
+    } finally {
+      if (applyAbortRef.current === controller) applyAbortRef.current = null;
     }
   };
 

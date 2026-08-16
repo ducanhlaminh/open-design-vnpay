@@ -110,8 +110,16 @@ beforeEach(() => {
       entries: [],
       summary: { created: 0, unchanged: 0, changed: 1, deleted: 0 },
     } }), { status: 200 });
-    if (url === '/api/project-sync/apply') return new Response(JSON.stringify({ data: {
-      planId: 'plan-retail', applied: 1, skipped: 0, unchanged: 0, softHiddenOriginFeatureIds: [], stale: [],
+    if (url === '/api/project-sync/operations') return new Response(JSON.stringify({ data: {
+      operationId: 'op-retail',
+      planId: 'plan-retail',
+      state: 'succeeded',
+      phase: 'finalizing',
+      progress: { completedItems: 1, totalItems: 1, percent: 100 },
+      result: { planId: 'plan-retail', applied: 1, skipped: 0, unchanged: 0, softHiddenOriginFeatureIds: [], stale: [] },
+      createdAt: '2026-08-12T00:00:00.000Z',
+      updatedAt: '2026-08-12T00:00:01.000Z',
+      expiresAt: '2026-08-12T00:10:00.000Z',
     } }), { status: 200 });
     if (url === '/api/project-sync/status') {
       mocks.statusCalls += 1;

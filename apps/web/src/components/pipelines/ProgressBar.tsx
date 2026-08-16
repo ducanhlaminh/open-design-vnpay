@@ -11,17 +11,26 @@ import styles from './ProgressBar.module.css';
 export interface ProgressBarProps {
   /** Full status line, e.g. "Đang nhập tài liệu… 3/10 trang (30%)". */
   label: string;
-  /** 0-100; values outside that range are clamped. */
-  percent: number;
+  /** 0-100; omit while the server cannot report a determinate percentage. */
+  percent?: number;
 }
 
 export function ProgressBar({ label, percent }: ProgressBarProps) {
-  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  const clamped = percent === undefined ? undefined : Math.max(0, Math.min(100, Math.round(percent)));
   return (
     <div className={styles.wrap}>
       <p className={styles.label}>{label}</p>
-      <div className={styles.bar} role="progressbar" aria-valuenow={clamped} aria-valuemin={0} aria-valuemax={100}>
-        <div className={styles.fill} style={{ width: `${clamped}%` }} />
+      <div
+        className={styles.bar}
+        role="progressbar"
+        aria-valuenow={clamped}
+        aria-valuemin={clamped === undefined ? undefined : 0}
+        aria-valuemax={clamped === undefined ? undefined : 100}
+      >
+        <div
+          className={`${styles.fill}${clamped === undefined ? ` ${styles.indeterminate}` : ''}`}
+          style={clamped === undefined ? undefined : { width: `${clamped}%` }}
+        />
       </div>
     </div>
   );

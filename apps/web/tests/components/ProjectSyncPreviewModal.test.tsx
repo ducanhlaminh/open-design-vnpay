@@ -9,6 +9,14 @@ vi.mock('../../src/providers/project-sync', () => ({
   createProjectSyncOperation: vi.fn(),
   getProjectSyncOperation: vi.fn(),
   planProjectSync: vi.fn(),
+  waitForProjectSyncOperation: vi.fn(async (initial, getOperation, options) => {
+    options?.onUpdate?.(initial);
+    if (initial.state !== 'queued' && initial.state !== 'running') return initial;
+    await new Promise((resolve) => window.setTimeout(resolve, 10));
+    const next = await getOperation(initial.operationId);
+    options?.onUpdate?.(next);
+    return next;
+  }),
 }));
 
 vi.mock('../../src/components/project-sync/SyncSummary', () => ({

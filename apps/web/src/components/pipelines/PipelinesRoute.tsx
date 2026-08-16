@@ -16,6 +16,7 @@ import type {
   PipelineProject,
   ProjectSyncOrigin,
   ProjectSyncOriginSelection,
+  ProjectSyncOperation,
   ProjectSyncResolution,
   ProjectSyncScope,
   ProjectSyncScopeStatus,
@@ -37,7 +38,14 @@ import { PullSharedAppModal } from './PullSharedAppModal';
 import { PullSharedFeaturesModal } from './PullSharedFeaturesModal';
 import { PipelinesFeaturesView } from './PipelinesFeaturesView';
 import { PipelinePickerView } from './PipelinePickerView';
-import { applyProjectSync, getProjectSyncStatuses, listProjectSyncOrigins, planProjectSync } from '../../providers/project-sync';
+import {
+  createProjectSyncOperation,
+  getProjectSyncOperation,
+  getProjectSyncStatuses,
+  listProjectSyncOrigins,
+  planProjectSync,
+  waitForProjectSyncOperation,
+} from '../../providers/project-sync';
 import { usePipelineNav } from './usePipelineNav';
 import type { NavApp } from './usePipelineNav';
 
@@ -177,6 +185,7 @@ export function PipelinesRoute() {
     selection: ContextTransferSelection,
     stages: string[],
     stagesByFeature: FeatureStageSelections = {},
+    onProgress?: (operation: ProjectSyncOperation) => void,
   ) => {
     if (!shareDialog || !shareDestination) {
       throw new Error('Hãy chọn nơi chia sẻ trước khi tiếp tục.');
@@ -204,7 +213,15 @@ export function PipelinesRoute() {
         : selectedStages;
       resolutions[entry.path] = stageId && !featureStages.has(stageId) ? 'skip' : entry.resolution;
     }
-    const result = await applyProjectSync({ planId: plan.planId, resolutions });
+    const initial = await createProjectSyncOperation({ planId: plan.planId, resolutions });
+    const operation = await waitForProjectSyncOperation(initial, getProjectSyncOperation, {
+      onUpdate: onProgress,
+    });
+    if (operation.state === 'failed') {
+      throw new Error(operation.error?.message ?? 'Không thể chia sẻ lên kho chung.');
+    }
+    if (!operation.result) throw new Error('Kho chung không trả về kết quả chia sẻ.');
+    const result = operation.result;
     if (result.stale.length > 0) {
       throw new Error('Bản trong kho chung vừa thay đổi. Hãy mở lại để xem lại thay đổi trước khi chia sẻ.');
     }

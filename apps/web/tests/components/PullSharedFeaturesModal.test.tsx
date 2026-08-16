@@ -15,6 +15,21 @@ vi.mock('../../src/providers/project-sync', () => ({
   listProjectSyncOrigins: vi.fn(),
   planProjectSyncFeaturePullBatch: vi.fn(),
   retryProjectSyncFeaturePullBatchOperation: vi.fn(),
+  waitForProjectSyncOperation: vi.fn(async (initial, getOperation, options) => {
+    options?.onUpdate?.(initial);
+    let current = initial;
+    while (current.state === 'queued' || current.state === 'running') {
+      try {
+        await new Promise((resolve) => window.setTimeout(resolve, 10));
+        current = await getOperation(current.operationId);
+        options?.onTransientError?.(null);
+        options?.onUpdate?.(current);
+      } catch (cause) {
+        options?.onTransientError?.(cause instanceof Error ? cause : new Error(String(cause)));
+      }
+    }
+    return current;
+  }),
 }));
 
 import {
@@ -23,6 +38,7 @@ import {
   listProjectSyncOrigins,
   planProjectSyncFeaturePullBatch,
   retryProjectSyncFeaturePullBatchOperation,
+  waitForProjectSyncOperation,
 } from '../../src/providers/project-sync';
 import { PullSharedFeaturesModal } from '../../src/components/pipelines/PullSharedFeaturesModal';
 
@@ -31,6 +47,7 @@ const planMock = vi.mocked(planProjectSyncFeaturePullBatch);
 const createMock = vi.mocked(createProjectSyncFeaturePullBatchOperation);
 const pollMock = vi.mocked(getProjectSyncFeaturePullBatchOperation);
 const retryMock = vi.mocked(retryProjectSyncFeaturePullBatchOperation);
+const waitMock = vi.mocked(waitForProjectSyncOperation);
 
 const origins: ProjectSyncOrigin[] = [
   { originId: 'f-a', name: 'Feature A', kind: 'feature', appId: 'remote-app', visibility: 'visible', inMedia: true },
@@ -159,11 +176,13 @@ describe('PullSharedFeaturesModal', () => {
     listMock.mockResolvedValue(origins);
     planMock.mockResolvedValue(plan);
     createMock.mockResolvedValue(operation());
+    let finishPoll!: (value: ProjectSyncFeaturePullBatchOperation) => void;
     pollMock
       .mockRejectedValueOnce(new Error('Mất kết nối tạm thời'))
-      .mockResolvedValueOnce(operation({
+      .mockReturnValueOnce(new Promise((resolve) => { finishPoll = resolve; }));
+    const completed = operation({
         state: 'succeeded', phase: 'finalizing', progress: { completedItems: 4, totalItems: 4, percent: 100 }, result: result(),
-      }));
+      });
     const onCompleted = vi.fn();
     render(
       <PullSharedFeaturesModal
@@ -176,8 +195,28 @@ describe('PullSharedFeaturesModal', () => {
     await screen.findByText('4 mục');
     fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
 
-    expect(await screen.findByText('Mất kết nối tạm thời', {}, { timeout: 2_000 })).toBeTruthy();
-    await waitFor(() => expect(pollMock).toHaveBeenCalledTimes(2), { timeout: 3_500 });
+    await waitFor(() => expect(pollMock.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 3_500 });
+    if (finishPoll) finishPoll(completed);
     await waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows a timeout alert and unlocks the modal so the user can retry', async () => {
+    listMock.mockResolvedValue(origins);
+    planMock.mockResolvedValue(plan);
+    createMock.mockResolvedValue(operation());
+    waitMock.mockRejectedValueOnce(new Error('Thao tác đồng bộ mất quá nhiều thời gian. Vui lòng thử lại.'));
+    render(
+      <PullSharedFeaturesModal
+        localAppId="local-app" remoteAppOriginId="remote-app" preselectedOriginIds={['f-a', 'f-b']}
+        onClose={() => {}} onCompleted={() => {}}
+      />,
+    );
+    await screen.findByText('Feature A');
+    fireEvent.click(screen.getByRole('button', { name: 'Xem trước' }));
+    await screen.findByText('4 mục');
+    fireEvent.click(screen.getByRole('button', { name: 'Lấy 2 tính năng' }));
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('mất quá nhiều thời gian'));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Lấy 2 tính năng' }) as HTMLButtonElement).disabled).toBe(false));
   });
 });

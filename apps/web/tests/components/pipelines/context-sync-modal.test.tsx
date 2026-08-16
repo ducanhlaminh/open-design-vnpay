@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Workflow } from '@open-design/contracts';
+import type { ProjectSyncOperation, Workflow } from '@open-design/contracts';
 import type { ContextTransferSelection } from '../../../src/components/pipelines/PipelineModals';
 
 vi.mock('../../../src/components/Icon', () => ({ Icon: () => null }));
 
-const { PushAllModal } = await import('../../../src/components/pipelines/PipelineModals');
+const { PullAllModal, PushAllModal } = await import('../../../src/components/pipelines/PipelineModals');
 
 const workflows: Workflow[] = [{ id: 'docs-review', name: 'Review tài liệu', pipelineIds: ['docs'] }];
 
@@ -19,9 +19,55 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('PullAllModal · tiến độ và lỗi', () => {
+  it('giữ danh sách trên màn hình và hiện progress bar khi endpoint cũ đang chạy', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/kg/remote-projects') {
+        return new Response(JSON.stringify({ data: [{
+          projectId: 'feature-remote', name: 'Feature Remote', displayName: 'Feature Remote',
+          isApp: false, files: 2, availableOutputs: ['docs'], alreadyOnThisDevice: false,
+        }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ apps: [] }), { status: 200 });
+    }));
+    let finish!: () => void;
+    render(
+      <PullAllModal
+        localIds={new Set()}
+        workflows={workflows}
+        initialSelectedIds={['feature-remote']}
+        syncReady
+        onReconnect={() => {}}
+        onClose={() => {}}
+        onConfirm={() => new Promise<void>((resolve) => { finish = resolve; })}
+      />,
+    );
+
+    expect(await screen.findByText('Feature Remote')).not.toBeNull();
+    fireEvent.click(screen.getByTestId('pipeline-pull-confirm'));
+    const progress = await screen.findByRole('progressbar');
+    expect(progress.getAttribute('aria-valuenow')).toBeNull();
+    expect(screen.getByText('Đang lấy dữ liệu từ kho chung…')).not.toBeNull();
+    expect(screen.getByText('Feature Remote')).not.toBeNull();
+    finish();
+  });
+});
+
 describe('PushAllModal · App Context tree', () => {
-  it('App chưa có Feature chỉ là thư mục Context, không thể chia sẻ riêng', async () => {
-    const onConfirm = vi.fn(async (_selection: ContextTransferSelection, _stages: string[]) => undefined);
+  it('App chưa có Feature vẫn chia sẻ được Context và có progress bar', async () => {
+    let finish!: () => void;
+    const onConfirm = vi.fn((
+      _selection: ContextTransferSelection,
+      _stages: string[],
+      _stagesByFeature: Record<string, string[]> | undefined,
+      onProgress: ((operation: ProjectSyncOperation) => void) | undefined,
+    ) => {
+      onProgress?.({
+        operationId: 'push-app', planId: 'plan-app', state: 'running', phase: 'transferring',
+        progress: { completedItems: 1, totalItems: 2, percent: 50 }, createdAt: '', updatedAt: '', expiresAt: '',
+      });
+      return new Promise<void>((resolve) => { finish = resolve; });
+    });
     render(
       <PushAllModal
         projects={[]}
@@ -32,6 +78,7 @@ describe('PushAllModal · App Context tree', () => {
           features: [],
         }]}
         workflows={workflows}
+        initialAppIds={['app-empty']}
         syncReady
         onReconnect={() => {}}
         onClose={() => {}}
@@ -42,8 +89,42 @@ describe('PushAllModal · App Context tree', () => {
     expect(screen.queryByText('App chưa có Feature')).not.toBeNull();
     fireEvent.mouseEnter(screen.getByRole('button', { name: 'Thông tin tài liệu dùng chung của App chưa có Feature' }));
     expect(screen.queryByText('Tài liệu dùng chung của App chưa có Feature')).not.toBeNull();
-    expect((screen.getByRole('button', { name: 'Chia sẻ' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(onConfirm).not.toHaveBeenCalled();
+    const share = screen.getByRole('button', { name: 'Chia sẻ dự án' }) as HTMLButtonElement;
+    await waitFor(() => expect(share.disabled).toBe(false));
+    fireEvent.click(share);
+    const progress = await screen.findByRole('progressbar');
+    expect(progress.getAttribute('aria-valuenow')).toBe('50');
+    expect(screen.getByText('Đang chia sẻ · 1/2 mục (50%)')).not.toBeNull();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ appIds: ['app-empty'], projectIds: [] }),
+      [],
+      {},
+      expect.any(Function),
+    ));
+    finish();
+  });
+
+  it('hiện cảnh báo và mở lại thao tác khi Push bị timeout', async () => {
+    render(
+      <PushAllModal
+        projects={[]}
+        apps={[{ id: 'app-timeout', name: 'App Timeout', features: [] }]}
+        workflows={workflows}
+        initialAppIds={['app-timeout']}
+        syncReady
+        onReconnect={() => {}}
+        onClose={() => {}}
+        onConfirm={async () => {
+          throw new Error('Thao tác đồng bộ mất quá nhiều thời gian. Vui lòng thử lại.');
+        }}
+      />,
+    );
+
+    const share = screen.getByRole('button', { name: 'Chia sẻ dự án' });
+    await waitFor(() => expect((share as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(share);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('mất quá nhiều thời gian'));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Chia sẻ dự án' }) as HTMLButtonElement).disabled).toBe(false));
   });
 
   it('tree hiện binding cũ, cho xem diff và chỉ nâng Feature sau khi xác nhận', async () => {
