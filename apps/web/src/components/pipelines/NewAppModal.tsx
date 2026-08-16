@@ -36,7 +36,7 @@
 // Batch lỗi giữa chừng → KHÔNG rollback (phần trước đã ghi lên đĩa); vẫn
 // setImportResult với phần đã nhập và hiện lỗi kèm "đã nhập X/N".
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AppPoolImportResponse, DocsReviewComponentSource } from '@open-design/contracts';
 
 import {
@@ -84,6 +84,11 @@ export function NewAppModal({
   const [importResult, setImportResult] = useState<AppPoolImportResponse | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
+  // "Dừng nhập" while batches are flying: abort the in-flight batch, skip the
+  // rest. The App already exists at that point, so we keep whatever landed
+  // and close like a success — the pool section shows what got imported.
+  const importAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => importAbortRef.current?.abort(), []);
 
   useEffect(() => {
     void fetchDesignSystems().then(setSystems);
@@ -138,20 +143,28 @@ export function NewAppModal({
       setPhase('importing');
       const refs = [...ticked];
       setImportProgress({ done: 0, total: refs.length });
+      const controller = new AbortController();
+      importAbortRef.current = controller;
       try {
-        const result = await importConfluenceInBatches(newAppId, refs, (done, total) => setImportProgress({ done, total }), [...relatedTicked]);
+        const result = await importConfluenceInBatches(newAppId, refs, (done, total) => setImportProgress({ done, total }), [...relatedTicked], controller.signal);
         setImportResult(result);
       } catch (cause) {
-        importFailed = true;
-        if (cause instanceof ConfluenceImportBatchError) {
+        if (cause instanceof ConfluenceImportBatchError && cause.aborted) {
+          // Người dùng bấm Dừng: App + các trang đã nhập được giữ nguyên,
+          // đóng modal như thành công (phần còn lại nhập sau ở Sửa dự án).
+          if (cause.succeededRefs.length > 0) setImportResult(cause.partial);
+        } else if (cause instanceof ConfluenceImportBatchError) {
+          importFailed = true;
           setImportError(
             `${cause.message} (đã nhập ${cause.succeededRefs.length}/${refs.length} trang trước khi lỗi — không rollback)`,
           );
           if (cause.succeededRefs.length > 0) setImportResult(cause.partial);
         } else {
+          importFailed = true;
           setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
         }
       }
+      importAbortRef.current = null;
       setImportProgress(null);
     }
     // KHÔNG còn màn "App đã tạo" trung gian: thành công → đóng modal luôn,
@@ -209,9 +222,15 @@ export function NewAppModal({
       onClose={onClose}
       footer={
         <>
-          <QuietButton onClick={onClose} disabled={busy}>
-            Hủy
-          </QuietButton>
+          {phase === 'importing' ? (
+            <QuietButton onClick={() => importAbortRef.current?.abort()} data-testid="new-app-stop-import">
+              Dừng nhập
+            </QuietButton>
+          ) : (
+            <QuietButton onClick={onClose} disabled={busy}>
+              Hủy
+            </QuietButton>
+          )}
           <PrimaryButton
             icon="check"
             busy={busy}

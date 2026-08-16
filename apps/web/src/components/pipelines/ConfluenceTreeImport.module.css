@@ -538,6 +538,32 @@
   outline-offset: 2px;
 }
 
+/* "Dừng nhập" — quiet outline button shown under the progress bar. */
+.stopButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stopButton:hover:not(:disabled) {
+  background: var(--bg-subtle, rgba(0, 0, 0, 0.04));
+}
+
+.stopButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .error {
   margin: 0;
   color: var(--red);

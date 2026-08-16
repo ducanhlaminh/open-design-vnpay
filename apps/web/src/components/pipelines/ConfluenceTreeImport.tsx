@@ -143,6 +143,8 @@ export class ConfluenceImportBatchError extends Error {
      *  caller un-tick just those and leave the rest ticked for a one-click
      *  retry of exactly the part that didn't make it. */
     public readonly succeededRefs: string[],
+    /** true khi người dùng bấm Dừng (AbortSignal) — không phải lỗi mạng/daemon. */
+    public readonly aborted: boolean = false,
   ) {
     super(message);
     this.name = 'ConfluenceImportBatchError';
@@ -161,19 +163,27 @@ export async function importConfluenceInBatches(
   /** Tập con của refs đến từ "Quét tài liệu liên quan" — daemon gắn cờ
    *  related trên manifest để UI tách nhóm. */
   relatedRefs?: string[],
+  /** Dừng theo yêu cầu người dùng: lô đang bay bị huỷ phía client (daemon
+   *  vẫn hoàn tất tối đa lô đó — ≤ BATCH_SIZE trang — và giữ những gì đã
+   *  ghi), các lô sau KHÔNG gửi. Ném `ConfluenceImportBatchError` với
+   *  `aborted: true` + `succeededRefs` của các lô đã xong. */
+  signal?: AbortSignal,
 ): Promise<AppPoolImportResponse> {
   const total = refs.length;
   const relatedSet = new Set(relatedRefs ?? []);
   let aggregate: AppPoolImportResponse = { imported: 0, updated: 0, pages: [] };
   const succeededRefs: string[] = [];
+  const abortedError = () => new ConfluenceImportBatchError('Đã dừng nhập tài liệu theo yêu cầu.', aggregate, succeededRefs, true);
   onProgress?.(0, total);
   for (let i = 0; i < refs.length; i += CONFLUENCE_IMPORT_BATCH_SIZE) {
+    if (signal?.aborted) throw abortedError();
     const chunk = refs.slice(i, i + CONFLUENCE_IMPORT_BATCH_SIZE);
     try {
       const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/import-confluence`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ refs: chunk, relatedRefs: chunk.filter((r) => relatedSet.has(r)) }),
+        ...(signal ? { signal } : {}),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || `Nhập tài liệu thất bại (${res.status}).`);
@@ -188,6 +198,7 @@ export async function importConfluenceInBatches(
       succeededRefs.push(...chunk);
       onProgress?.(succeededRefs.length, total);
     } catch (cause) {
+      if (signal?.aborted) throw abortedError();
       throw new ConfluenceImportBatchError(
         cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.',
         aggregate,
@@ -853,6 +864,8 @@ export function ConfluenceTreeImport({ appId, onImported, onPartialImport, disab
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const importTicked = async () => {
     if (importing || ticked.size === 0) return;
@@ -860,14 +873,17 @@ export function ConfluenceTreeImport({ appId, onImported, onPartialImport, disab
     setImportError(null);
     const refs = [...ticked];
     setImportProgress({ done: 0, total: refs.length });
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const result = await importConfluenceInBatches(appId, refs, (done, total) => setImportProgress({ done, total }), [...relatedTicked]);
+      const result = await importConfluenceInBatches(appId, refs, (done, total) => setImportProgress({ done, total }), [...relatedTicked], controller.signal);
       onImported(result);
       setTicked(new Set());
     } catch (cause) {
       if (cause instanceof ConfluenceImportBatchError) {
-        setImportError(
-          `${cause.message} (đã nhập ${cause.succeededRefs.length}/${refs.length} trang trước khi lỗi — không rollback, thử lại bên dưới để tiếp tục phần còn lại)`,
+        setImportError(cause.aborted
+          ? `${cause.message} Đã nhập ${cause.succeededRefs.length}/${refs.length} trang — phần còn lại vẫn tick sẵn, bấm Nhập để tiếp tục.`
+          : `${cause.message} (đã nhập ${cause.succeededRefs.length}/${refs.length} trang trước khi lỗi — không rollback, thử lại bên dưới để tiếp tục phần còn lại)`,
         );
         // Bỏ tick đúng những trang ĐÃ nhập; batch lỗi + phần chưa-tới-lượt vẫn
         // tick sẵn, nên bấm "Nhập" lại là retry đúng phần thiếu.
@@ -880,6 +896,7 @@ export function ConfluenceTreeImport({ appId, onImported, onPartialImport, disab
         setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
       }
     } finally {
+      abortRef.current = null;
       setImporting(false);
       setImportProgress(null);
     }
@@ -901,10 +918,23 @@ export function ConfluenceTreeImport({ appId, onImported, onPartialImport, disab
         </div>
       ) : null}
       {importing && importProgress ? (
-        <ProgressBar
-          label={`Đang nhập tài liệu… ${importProgress.done}/${importProgress.total} trang (${percent}%)`}
-          percent={percent}
-        />
+        <>
+          <ProgressBar
+            label={`Đang nhập tài liệu… ${importProgress.done}/${importProgress.total} trang (${percent}%)`}
+            percent={percent}
+          />
+          <div className={styles.summaryRow}>
+            <button
+              type="button"
+              className={styles.stopButton}
+              onClick={() => abortRef.current?.abort()}
+              disabled={abortRef.current?.signal.aborted ?? false}
+              data-testid="confluence-import-stop"
+            >
+              Dừng nhập
+            </button>
+          </div>
+        </>
       ) : null}
       {importError ? <p className={styles.error}>{importError}</p> : null}
     </div>
