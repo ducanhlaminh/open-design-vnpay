@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PipelineProject } from '@open-design/contracts';
 
@@ -55,7 +55,7 @@ describe('Pipelines App · DS tab', () => {
     expect(await screen.findByRole('heading', { name: 'Danh mục component từ Figma' })).toBeTruthy();
     expect(await screen.findByText(/2 component · đọc lúc/)).toBeTruthy();
     expect(screen.getByText(/10:1/)).toBeTruthy();
-    expect(refreshAppFigmaCatalog).toHaveBeenCalledWith('app-1');
+    expect(refreshAppFigmaCatalog).toHaveBeenCalledWith('app-1', expect.any(AbortSignal));
     expect(screen.getByRole('link', { name: 'Kit' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'VNPAY DS' })).toBeNull();
   });
@@ -70,6 +70,19 @@ describe('Pipelines App · DS tab', () => {
     expect(await screen.findByText(/Chưa có token Figma/)).toBeTruthy();
     expect(refreshAppFigmaCatalog).not.toHaveBeenCalled();
     expect((screen.getByTestId('figma-catalog-refresh') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('huỷ request catalogue cũ khi panel unmount để response muộn không ghi đè state', async () => {
+    const { fetchAppFigmaCatalog } = await import('../../../src/state/figma-config');
+    const links = [{ url: 'https://www.figma.com/design/ABC', fileKey: 'ABC' }];
+    vi.mocked(fetchAppFigmaCatalog).mockImplementation(() => new Promise(() => {}));
+    const view = renderView([{ id: 'app-1', name: 'App', docsReviewComponentSource: { mode: 'figma-links', links } }]);
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /DS/ })); });
+    await waitFor(() => expect(fetchAppFigmaCatalog).toHaveBeenCalled());
+    const signal = vi.mocked(fetchAppFigmaCatalog).mock.calls.at(-1)?.[1];
+    expect(signal?.aborted).toBe(false);
+    view.unmount();
+    expect(signal?.aborted).toBe(true);
   });
 
   it('không hiện tab DS cho bucket Chưa gán app', () => {

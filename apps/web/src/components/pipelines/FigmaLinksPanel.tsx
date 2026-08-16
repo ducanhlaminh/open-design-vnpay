@@ -36,7 +36,34 @@ export type FigmaLinksPanelProps = {
   links: Array<{ url: string; fileKey: string; nodeId?: string }>;
   /** Có lỗi cú pháp link → không kiểm tra, chỉ nhắc sửa. */
   linksError: string | null;
+  /** Parent forms use this state as a hard gate: a syntactically-valid link
+   *  is not enough until the daemon has read every file successfully. */
+  onVerificationChange?: (state: FigmaLinksVerificationState) => void;
 };
+
+export type FigmaLinksVerificationState = {
+  status: 'idle' | 'pending' | 'verified' | 'failed';
+  /** Identifies the exact normalized links that were checked. */
+  linksKey: string;
+  message?: string;
+};
+
+export function figmaLinksVerificationKey(links: FigmaLinksPanelProps['links']): string {
+  return links.map((link) => `${link.fileKey}:${link.nodeId ?? ''}`).join('|');
+}
+
+function figmaVerificationFailure(
+  requested: FigmaLinksPanelProps['links'],
+  result: { hasToken: boolean; links: FigmaLinkVerification[] } | null,
+): string | null {
+  if (!result) return 'Không kiểm tra được token và link (daemon không phản hồi). Thử lại sau.';
+  if (!result.hasToken) return 'Token Figma không hợp lệ hoặc không được daemon chấp nhận.';
+  const byFileKey = new Map(result.links.map((row) => [row.fileKey, row] as const));
+  const missing = requested.find((link) => !byFileKey.has(link.fileKey));
+  if (missing) return `Daemon chưa trả kết quả kiểm tra cho file ${missing.fileKey}. Hãy kiểm tra lại.`;
+  const failed = requested.map((link) => byFileKey.get(link.fileKey)!).find((row) => !row.ok);
+  return failed ? failed.detail ?? `Không đọc được file ${failed.name || failed.fileKey}.` : null;
+}
 
 type TokenState =
   | { kind: 'loading' }
@@ -44,7 +71,7 @@ type TokenState =
   | { kind: 'saved'; handle?: string }
   | { kind: 'error'; message: string };
 
-export function FigmaLinksPanel({ links, linksError }: FigmaLinksPanelProps) {
+export function FigmaLinksPanel({ links, linksError, onVerificationChange }: FigmaLinksPanelProps) {
   const [token, setToken] = useState<TokenState>({ kind: 'loading' });
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -54,26 +81,51 @@ export function FigmaLinksPanel({ links, linksError }: FigmaLinksPanelProps) {
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const verificationGenerationRef = useRef(0);
+  const onVerificationChangeRef = useRef(onVerificationChange);
+  onVerificationChangeRef.current = onVerificationChange;
   const [desktopStatus, setDesktopStatus] = useState<FigmaDesktopStatusResponse | null>(null);
   const [desktopChecking, setDesktopChecking] = useState(false);
 
-  const linksKey = links.map((link) => link.fileKey).join('|');
+  const linksKey = figmaLinksVerificationKey(links);
   // Hàng "Figma Desktop" chỉ có ý nghĩa khi người dùng đang dùng nguồn Link Figma.
   const showDesktopRow = links.length > 0 || Boolean(linksError);
 
   const runVerify = async (currentLinks: typeof links) => {
     abortRef.current?.abort();
-    if (currentLinks.length === 0) { setRows(null); return; }
+    const currentKey = figmaLinksVerificationKey(currentLinks);
+    const generation = ++verificationGenerationRef.current;
+    if (currentLinks.length === 0) {
+      setRows(null);
+      onVerificationChangeRef.current?.({ status: 'idle', linksKey: currentKey });
+      return;
+    }
     const controller = new AbortController();
     abortRef.current = controller;
     setVerifying(true);
     setVerifyError(null);
+    onVerificationChangeRef.current?.({ status: 'pending', linksKey: currentKey });
     const result = await verifyFigmaLinks({ links: currentLinks }, controller.signal);
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted || generation !== verificationGenerationRef.current) return;
     setVerifying(false);
-    if (!result) { setVerifyError('Không kiểm tra được link (daemon không phản hồi). Thử lại sau.'); return; }
-    if (!result.hasToken) { setToken({ kind: 'missing' }); setRows(null); return; }
+    const failure = figmaVerificationFailure(currentLinks, result);
+    if (failure) {
+      const message = failure;
+      // A normal per-file denial already renders beside that row; reserve the
+      // panel-level alert for transport/token/partial-response failures.
+      const hasCompleteFailedRows = result?.hasToken
+        && currentLinks.every((link) => result.links.some((row) => row.fileKey === link.fileKey))
+        && result.links.some((row) => !row.ok);
+      setVerifyError(hasCompleteFailedRows ? null : message);
+      if (result && !result.hasToken) setToken({ kind: 'missing' });
+      setRows(result?.links ?? null);
+      onVerificationChangeRef.current?.({ status: 'failed', linksKey: currentKey, message });
+      return;
+    }
+    // `failure === null` guarantees a non-null response with every requested row.
+    if (!result) return;
     setRows(result.links);
+    onVerificationChangeRef.current?.({ status: 'verified', linksKey: currentKey });
   };
 
   useEffect(() => {
@@ -96,10 +148,22 @@ export function FigmaLinksPanel({ links, linksError }: FigmaLinksPanelProps) {
   useEffect(() => {
     if (token.kind !== 'saved' || linksError || links.length === 0) {
       abortRef.current?.abort();
+      verificationGenerationRef.current += 1;
       setRows(null);
       setVerifying(false);
+      const message = linksError ?? (links.length === 0
+        ? 'Dán ít nhất một link Figma.'
+        : token.kind === 'loading'
+          ? 'Đang kiểm tra token Figma…'
+          : 'Cần lưu token Figma hợp lệ trước khi tiếp tục.');
+      onVerificationChangeRef.current?.({
+        status: token.kind === 'loading' ? 'pending' : linksError || links.length > 0 ? 'failed' : 'idle',
+        linksKey,
+        message,
+      });
       return;
     }
+    onVerificationChangeRef.current?.({ status: 'pending', linksKey });
     const timer = window.setTimeout(() => { void runVerify(links); }, 700);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,22 +197,50 @@ export function FigmaLinksPanel({ links, linksError }: FigmaLinksPanelProps) {
   const saveToken = async () => {
     const value = draft.trim();
     if (!value || saving) return;
+    if (linksError || links.length === 0) {
+      const message = linksError
+        ? 'Hãy sửa link Figma ở trên trước khi lưu token.'
+        : 'Hãy dán ít nhất một link Figma trước khi lưu token.';
+      setVerifyError(message);
+      onVerificationChangeRef.current?.({ status: 'failed', linksKey, message });
+      return;
+    }
+    abortRef.current?.abort();
+    verificationGenerationRef.current += 1;
+    onVerificationChangeRef.current?.({ status: 'pending', linksKey });
     setSaving(true);
-    // Kiểm tra TRƯỚC khi lưu để token sai không đè lên token đang chạy tốt.
-    const probe = await testFigmaConnection({ token: value });
-    if (!probe.ok) {
+    // Validate the draft against the actual files before replacing a known-good
+    // saved token. /v1/me cannot prove file_content/library access.
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const verified = await verifyFigmaLinks({ links, token: value }, controller.signal);
+    if (controller.signal.aborted) {
       setSaving(false);
-      setToken({ kind: token.kind === 'saved' ? 'saved' : 'missing', ...(token.kind === 'saved' && token.handle ? { handle: token.handle } : {}) } as TokenState);
-      setVerifyError(probe.detail ?? 'Token không hợp lệ.');
+      return;
+    }
+    const failure = figmaVerificationFailure(links, verified);
+    if (failure) {
+      const message = failure;
+      setSaving(false);
+      setRows(verified?.links ?? null);
+      setVerifyError(message);
+      onVerificationChangeRef.current?.({ status: 'failed', linksKey, message });
       return;
     }
     const saved = await saveFigmaConfig({ token: value });
     setSaving(false);
-    if (!saved?.hasToken) { setVerifyError('Không lưu được token vào daemon.'); return; }
+    if (!saved?.hasToken) {
+      const message = 'Không lưu được token vào daemon.';
+      setVerifyError(message);
+      onVerificationChangeRef.current?.({ status: 'failed', linksKey, message });
+      return;
+    }
     setDraft('');
     setEditing(false);
     setVerifyError(null);
-    setToken({ kind: 'saved', ...(probe.handle ? { handle: probe.handle } : probe.email ? { handle: probe.email } : {}) });
+    setRows(verified!.links);
+    setToken({ kind: 'saved' });
+    onVerificationChangeRef.current?.({ status: 'verified', linksKey });
   };
 
   const showTokenForm = token.kind === 'missing' || token.kind === 'error' || editing;
@@ -184,7 +276,7 @@ export function FigmaLinksPanel({ links, linksError }: FigmaLinksPanelProps) {
             onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void saveToken(); } }}
             disabled={saving}
           />
-          <button type="button" className={styles.primaryButton} onClick={() => void saveToken()} disabled={saving || !draft.trim()} data-testid="figma-token-save">
+          <button type="button" className={styles.primaryButton} onClick={() => void saveToken()} disabled={saving || !draft.trim() || Boolean(linksError) || links.length === 0} data-testid="figma-token-save">
             <Icon name={saving ? 'spinner' : 'check'} size={14} />
             <span>{saving ? 'Đang kiểm tra…' : 'Lưu token'}</span>
           </button>
@@ -198,6 +290,11 @@ export function FigmaLinksPanel({ links, linksError }: FigmaLinksPanelProps) {
             <ol className={styles.guide}>
               {FIGMA_TOKEN_GUIDE_STEPS.map((step) => <li key={step}>{step}</li>)}
             </ol>
+          ) : null}
+          {linksError || links.length === 0 ? (
+            <p className={styles.error} role="status">
+              {linksError ? 'Sửa link Figma ở trên trước khi lưu token.' : 'Dán ít nhất một link Figma trước khi lưu token.'}
+            </p>
           ) : null}
         </div>
       ) : null}

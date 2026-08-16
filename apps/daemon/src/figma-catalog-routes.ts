@@ -5,6 +5,7 @@
 // phase also refreshes this copy so the tab never lags a run).
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { Express } from 'express';
 import type { AppFigmaCatalogResponse, DocsReviewComponentSource } from '@open-design/contracts';
 
@@ -20,17 +21,39 @@ export function appFigmaCatalogDir(projectsDir: string, appId: string): string {
   return path.join(projectsDir, appId, 'figma-catalog');
 }
 
+const appCatalogWrites = new Map<string, Promise<void>>();
+
+function serializeAppCatalogWrite(key: string, task: () => Promise<void>): Promise<void> {
+  const previous = appCatalogWrites.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(task);
+  appCatalogWrites.set(key, current);
+  return current.finally(() => {
+    if (appCatalogWrites.get(key) === current) appCatalogWrites.delete(key);
+  });
+}
+
 /** Persist a snapshot as the App's catalogue (json + rendered markdown).
  *  Atomic per file (tmp → rename). Shared with the dr-comp fan-out. */
 export async function writeAppFigmaCatalog(projectsDir: string, appId: string, snapshot: FigmaComponentCatalogSnapshot): Promise<void> {
   const dir = appFigmaCatalogDir(projectsDir, appId);
-  await fs.promises.mkdir(dir, { recursive: true });
-  const jsonTmp = path.join(dir, `components.${process.pid}.json.tmp`);
-  const mdTmp = path.join(dir, `components.${process.pid}.md.tmp`);
-  await fs.promises.writeFile(jsonTmp, JSON.stringify(snapshot, null, 2), 'utf8');
-  await fs.promises.writeFile(mdTmp, renderFigmaComponentsMarkdown(snapshot), 'utf8');
-  await fs.promises.rename(jsonTmp, path.join(dir, 'components.json'));
-  await fs.promises.rename(mdTmp, path.join(dir, 'components.md'));
+  return serializeAppCatalogWrite(dir, async () => {
+    await fs.promises.mkdir(dir, { recursive: true });
+    const generation = randomUUID();
+    const jsonTmp = path.join(dir, `components.${generation}.json.tmp`);
+    const mdTmp = path.join(dir, `components.${generation}.md.tmp`);
+    try {
+      await fs.promises.writeFile(jsonTmp, JSON.stringify(snapshot, null, 2), 'utf8');
+      await fs.promises.writeFile(mdTmp, renderFigmaComponentsMarkdown(snapshot), 'utf8');
+      // Markdown first, JSON last: components.json is the commit marker.
+      await fs.promises.rename(mdTmp, path.join(dir, 'components.md'));
+      await fs.promises.rename(jsonTmp, path.join(dir, 'components.json'));
+    } finally {
+      await Promise.all([
+        fs.promises.rm(jsonTmp, { force: true }),
+        fs.promises.rm(mdTmp, { force: true }),
+      ]);
+    }
+  });
 }
 
 export async function readAppFigmaCatalog(projectsDir: string, appId: string): Promise<{ snapshot: FigmaComponentCatalogSnapshot; markdown: string | null } | null> {
@@ -40,7 +63,11 @@ export async function readAppFigmaCatalog(projectsDir: string, appId: string): P
   try {
     const snapshot = JSON.parse(raw) as FigmaComponentCatalogSnapshot;
     if (!snapshot || !Array.isArray(snapshot.files)) return null;
-    const markdown = await fs.promises.readFile(path.join(dir, 'components.md'), 'utf8').catch(() => null);
+    const storedMarkdown = await fs.promises.readFile(path.join(dir, 'components.md'), 'utf8').catch(() => null);
+    const renderedMarkdown = renderFigmaComponentsMarkdown(snapshot);
+    // A reader can land between the two renames. JSON is the commit marker,
+    // so never return Markdown from another generation.
+    const markdown = storedMarkdown === renderedMarkdown ? storedMarkdown : renderedMarkdown;
     return { snapshot, markdown };
   } catch {
     return null;

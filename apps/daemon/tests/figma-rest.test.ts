@@ -129,6 +129,90 @@ describe('figma-rest', () => {
     expect(row.detail).toMatch(/thư viện gốc/);
   });
 
+  it('falls back to page-walk when published endpoints reject a file_content-only token', async () => {
+    const scoped = fakeFetch((url) => (url.pathname === '/v1/files/A' ? { body: fileA }
+      : url.pathname === '/v1/files/A/component_sets'
+        ? { status: 403, body: { status: 403, err: 'Not authorized for scope library_content:read' } }
+        : url.pathname === '/v1/files/A/nodes' ? { body: pageWalkA }
+          : { status: 404, body: {} }));
+    await expect(verifyFigmaLink('tok', { url: 'https://www.figma.com/design/A', fileKey: 'A' }, { fetch: scoped.fetch }))
+      .resolves.toMatchObject({ ok: true, name: 'Core UI Kit', componentCount: 2 });
+    expect(scoped.calls).toEqual([
+      '/v1/files/A?depth=1',
+      '/v1/files/A/component_sets',
+      '/v1/files/A/nodes?ids=0%3A1',
+    ]);
+  });
+
+  it('aborts an in-flight REST request and emits no later progress', async () => {
+    const controller = new AbortController();
+    const progress: string[] = [];
+    let requestAborted = false;
+    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        requestAborted = true;
+        reject(new DOMException('Aborted', 'AbortError'));
+      }, { once: true });
+    })) as unknown as typeof globalThis.fetch;
+    const reading = buildFigmaComponentCatalog({
+      token: 'tok',
+      links: [{ url: 'https://www.figma.com/design/A', fileKey: 'A' }],
+      signal: controller.signal,
+      deps: { fetch },
+      onProgress: (item) => progress.push(item.phase),
+    });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    controller.abort(new Error('catalogue timed out'));
+    await expect(reading).rejects.toThrow(/catalogue timed out/);
+    expect(requestAborted).toBe(true);
+    expect(progress).toEqual(['summary']);
+  });
+
+  it('keeps the caller abort linked while consuming a stalled response body', async () => {
+    const controller = new AbortController();
+    let bodyAborted = false;
+    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => ({
+      status: 200,
+      ok: true,
+      headers: new Headers(),
+      json: () => new Promise<never>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          bodyAborted = true;
+          reject(new DOMException('Aborted', 'AbortError'));
+        }, { once: true });
+      }),
+    } as unknown as Response)) as unknown as typeof globalThis.fetch;
+    const reading = buildFigmaComponentCatalog({
+      token: 'tok',
+      links: [{ url: 'https://www.figma.com/design/A', fileKey: 'A' }],
+      signal: controller.signal,
+      deps: { fetch },
+    });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    // Let fetch resolve and figmaGet enter response.json() before aborting.
+    await Promise.resolve();
+    controller.abort(new Error('body timed out'));
+    await expect(reading).rejects.toThrow(/body timed out/);
+    expect(bodyAborted).toBe(true);
+  });
+
+  it('removes external abort listeners after a completed retry sleep', async () => {
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, 'addEventListener');
+    const remove = vi.spyOn(controller.signal, 'removeEventListener');
+    let hits = 0;
+    const { fetch } = fakeFetch(() => (++hits === 1
+      ? { status: 429, body: {}, headers: { 'retry-after': '1' } }
+      : { body: { handle: 'ok' } }));
+    await expect(figmaWhoAmI('tok', {
+      fetch,
+      signal: controller.signal,
+      sleep: async () => undefined,
+    })).resolves.toEqual({ handle: 'ok' });
+    expect(add).toHaveBeenCalled();
+    expect(remove).toHaveBeenCalledTimes(add.mock.calls.length);
+  });
+
   it('builds a frozen snapshot: properties per entry, variants collapsed, page names best-effort, progress in order', async () => {
     const { fetch, calls } = fakeFetch((url) => {
       if (url.pathname === '/v1/files/A') return { body: fileA };

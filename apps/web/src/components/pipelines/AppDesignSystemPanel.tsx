@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DesignSystemFileDetail, DesignSystemReactInfo, DesignSystemSummary, DocsReviewComponentSource } from '@open-design/contracts';
 import { DesignSpecView } from '../DesignSpecView';
 import { fetchDesignSystemCriteriaFile, fetchDesignSystemReactInfo, fetchDesignSystems } from '../../providers/registry';
@@ -32,27 +32,41 @@ function AppFigmaCatalogPanel({ appId, linkCount }: { appId: string; linkCount: 
   const [catalog, setCatalog] = useState<AppFigmaCatalogResponse | null | undefined>(undefined);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestGeneration = useRef(0);
+  const activeController = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
+    activeController.current?.abort();
+    const controller = new AbortController();
+    activeController.current = controller;
+    const generation = ++requestGeneration.current;
     setRefreshing(true);
     setError(null);
-    const result = await refreshAppFigmaCatalog(appId);
+    const result = await refreshAppFigmaCatalog(appId, controller.signal);
+    if (controller.signal.aborted || generation !== requestGeneration.current) return;
     setRefreshing(false);
     if (result.ok) setCatalog(result.catalog);
     else setError(result.error);
   }, [appId]);
 
   useEffect(() => {
+    activeController.current?.abort();
+    const controller = new AbortController();
+    activeController.current = controller;
+    const generation = ++requestGeneration.current;
     setCatalog(undefined);
+    setRefreshing(false);
     setError(null);
-    let alive = true;
-    void fetchAppFigmaCatalog(appId).then((res) => {
-      if (!alive) return;
+    void fetchAppFigmaCatalog(appId, controller.signal).then((res) => {
+      if (controller.signal.aborted || generation !== requestGeneration.current) return;
       setCatalog(res);
       // First open with nothing stored yet: read from Figma now.
       if (res && res.hasToken && res.generatedAt == null && (res.links?.length ?? 0) > 0) void refresh();
     });
-    return () => { alive = false; };
+    return () => {
+      controller.abort();
+      if (activeController.current === controller) activeController.current = null;
+    };
   }, [appId, refresh]);
 
   const generatedLabel = catalog?.generatedAt ? new Date(catalog.generatedAt).toLocaleString('vi-VN') : null;

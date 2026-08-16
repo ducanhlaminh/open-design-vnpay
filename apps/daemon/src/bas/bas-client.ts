@@ -120,9 +120,12 @@ export class BasClient {
     private readonly timeoutMs = 30_000,
   ) {}
 
-  private async post(payload: unknown): Promise<{ status: number; sessionId: string | null; body: RpcOk | null }> {
+  private async post(payload: unknown, signal?: AbortSignal): Promise<{ status: number; sessionId: string | null; body: RpcOk | null }> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    const abortFromCaller = () => ctrl.abort(signal?.reason);
+    if (signal?.aborted) abortFromCaller();
+    else signal?.addEventListener('abort', abortFromCaller, { once: true });
     try {
       const res = await fetch(this.endpoint.url, {
         method: 'POST',
@@ -148,10 +151,11 @@ export class BasClient {
       return { status: res.status, sessionId: sid, body };
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', abortFromCaller);
     }
   }
 
-  private async ensureInitialized(): Promise<void> {
+  private async ensureInitialized(signal?: AbortSignal): Promise<void> {
     if (this.initialized) return;
     try {
       await this.post({
@@ -163,11 +167,14 @@ export class BasClient {
           capabilities: {},
           clientInfo: { name: 'open-design-daemon', version: '0' },
         },
-      });
+      }, signal);
       // Best-effort initialized notification; gateways that don't need a session
       // ignore it. Failure here must not block a stateless tools/call.
-      await this.post({ jsonrpc: '2.0', method: 'notifications/initialized' }).catch(() => {});
-    } catch {
+      await this.post({ jsonrpc: '2.0', method: 'notifications/initialized' }, signal).catch((err) => {
+        if (signal?.aborted) throw err;
+      });
+    } catch (err) {
+      if (signal?.aborted) throw err;
       // Stateless gateway that rejects initialize — proceed; tools/call may work.
     }
     this.initialized = true;
@@ -176,14 +183,14 @@ export class BasClient {
   // Call an MCP tool and return its decoded payload. The gateway wraps results
   // as `content[].text` where text is a JSON-serialized string (per the BAS
   // OpenAPI ToolContent); we concatenate text parts and JSON.parse them.
-  async callTool<T = unknown>(name: string, args: Record<string, unknown> = {}): Promise<T> {
-    await this.ensureInitialized();
+  async callTool<T = unknown>(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
+    await this.ensureInitialized(signal);
     const { body } = await this.post({
       jsonrpc: '2.0',
       id: ++this.rpcId,
       method: 'tools/call',
       params: { name, arguments: args },
-    });
+    }, signal);
     if (!body) throw new Error(`BAS: empty response for tool ${name}`);
     if (body.error) throw new Error(`BAS tool ${name} error: ${body.error.message}`);
     const result = body.result as
@@ -376,6 +383,7 @@ export async function listDescendantPages(
   creds: ConfluenceCreds,
   seedPageId: string,
   hardCap = 500,
+  signal?: AbortSignal,
 ): Promise<DescendantPage[]> {
   const out: DescendantPage[] = [];
   let start = 0;
@@ -383,7 +391,8 @@ export async function listDescendantPages(
   for (;;) {
     const cql = `ancestor=${seedPageId}`;
     const url = `${creds.base}/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=${pageSize}&start=${start}&expand=ancestors`;
-    const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` } });
+    signal?.throwIfAborted();
+    const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` }, ...(signal ? { signal } : {}) });
     const text = await res.text();
     if (!res.ok) throw new Error(`Confluence subtree search HTTP ${res.status} for ${seedPageId}: ${text.slice(0, 200)}`);
     const body = JSON.parse(text) as {
@@ -716,8 +725,8 @@ function sanitizeImageFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '-').slice(0, 120) || 'image';
 }
 
-async function downloadConfluenceBinary(creds: ConfluenceCreds, url: string): Promise<Buffer> {
-  const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` } });
+async function downloadConfluenceBinary(creds: ConfluenceCreds, url: string, signal?: AbortSignal): Promise<Buffer> {
+  const res = await fetch(url, { headers: { authorization: `Bearer ${creds.token}` }, ...(signal ? { signal } : {}) });
   if (!res.ok) throw new Error(`image download HTTP ${res.status} for ${url}`);
   return Buffer.from(await res.arrayBuffer());
 }
@@ -733,6 +742,7 @@ async function localizeConfluenceImages(
   html: string,
   attachmentsDir: string,
   relPrefix: string,
+  signal?: AbortSignal,
 ): Promise<{ html: string; count: number }> {
   const rawSrcs = new Set<string>();
   for (const m of html.matchAll(IMG_SRC_RE)) rawSrcs.add(m[2]!);
@@ -740,6 +750,7 @@ async function localizeConfluenceImages(
   const downloadedByUrl = new Map<string, string>();
   let count = 0;
   for (const src of rawSrcs) {
+    signal?.throwIfAborted();
     if (src.startsWith('data:')) continue;
     // Skip already-local refs (e.g. multi-page draw.io pages rendered straight
     // into attachments/): only absolute URLs and root-relative Confluence paths
@@ -750,7 +761,7 @@ async function localizeConfluenceImages(
     let localName = downloadedByUrl.get(url);
     if (!localName) {
       try {
-        const data = await downloadConfluenceBinary(creds, url);
+        const data = await downloadConfluenceBinary(creds, url, signal);
         const rawName = sanitizeImageFileName(
           decodeURIComponent(path.basename(new URL(url).pathname)) || 'image',
         );
@@ -774,6 +785,7 @@ async function localizeConfluenceImages(
         localName = candidate;
         downloadedByUrl.set(url, localName);
       } catch (err) {
+        signal?.throwIfAborted();
         console.warn(`[bas] image download failed (${url}):`, err);
         continue;
       }
@@ -1131,9 +1143,11 @@ export interface LinkedPageCandidate {
 async function fetchConfluencePageDirect(
   creds: ConfluenceCreds,
   pageId: string,
+  signal?: AbortSignal,
 ): Promise<{ title: string; url: string; html: string; macroHtml: string; ancestors: Array<{ id: string; title: string }> }> {
   const res = await fetch(`${creds.base}/rest/api/content/${pageId}?expand=body.export_view,body.view,space,ancestors`, {
     headers: { authorization: `Bearer ${creds.token}` },
+    ...(signal ? { signal } : {}),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`Confluence REST ${res.status} for page ${pageId}: ${text.slice(0, 160)}`);
@@ -1283,6 +1297,8 @@ export async function fetchConfluencePages(
      * constant instead of its subsystem.
      */
     pathLayout?: 'confluence' | 'flat';
+    /** Cancels network reads and prevents later conversion/materialization. */
+    signal?: AbortSignal;
   } = {},
 ): Promise<ConfluenceDocPage[]> {
   if (!src.creds && !src.ep) throw new Error('no Confluence credential (PAT) and no BAS gateway configured');
@@ -1290,8 +1306,9 @@ export async function fetchConfluencePages(
   const treePathById = new Map<string, string[]>((opts.treePages ?? []).map((t) => [t.pageId, t.treePath]));
   const client = src.ep ? new BasClient(src.ep) : null;
   const fetchViaGateway = async (pageId: string, ref: string) => {
+    opts.signal?.throwIfAborted();
     if (!client) throw new Error('BAS gateway not configured');
-    const payload = await client.callTool('confluence_fetch_page', { page_id: pageId, format: 'markdown' });
+    const payload = await client.callTool('confluence_fetch_page', { page_id: pageId, format: 'markdown' }, opts.signal);
     const p = ((Array.isArray(payload) ? payload[0] : payload) as Record<string, unknown> | undefined) ?? {};
     return {
       title: str(p, 'title', 'name') || `Confluence page ${pageId}`,
@@ -1320,15 +1337,17 @@ export async function fetchConfluencePages(
   const fetched = new Map<string, RawPage>();
   const seedIds: string[] = [];
   for (const ref of refs) {
+    opts.signal?.throwIfAborted();
     const pageId = extractPageId(ref);
     if (fetched.has(pageId)) continue;
     seedIds.push(pageId);
     if (src.creds) {
       try {
-        const p = await fetchConfluencePageDirect(src.creds, pageId);
+        const p = await fetchConfluencePageDirect(src.creds, pageId, opts.signal);
         fetched.set(pageId, { pageId, ...p, linked: false });
         continue;
       } catch (err) {
+        opts.signal?.throwIfAborted();
         if (!client) throw err;
         console.warn(`[bas] direct Confluence fetch failed for ${pageId}, falling back to gateway:`, err);
       }
@@ -1343,16 +1362,18 @@ export async function fetchConfluencePages(
     for (let depth = 1; depth <= FOLLOW_MAX_DEPTH; depth++) {
       const next: string[] = [];
       for (const id of frontier) {
+        opts.signal?.throwIfAborted();
         const page = fetched.get(id);
         if (!page?.html) continue;
         for (const linkedId of extractLinkedPageIds(page.html, src.creds.base)) {
           if (fetched.size >= FOLLOW_MAX_TOTAL) break;
           if (fetched.has(linkedId)) continue;
           try {
-            const p = await fetchConfluencePageDirect(src.creds, linkedId);
+            const p = await fetchConfluencePageDirect(src.creds, linkedId, opts.signal);
             fetched.set(linkedId, { pageId: linkedId, ...p, linked: true });
             next.push(linkedId);
           } catch (err) {
+            opts.signal?.throwIfAborted();
             // Linked pages are best-effort — permissions/deleted pages skip.
             console.warn(`[bas] linked Confluence page ${linkedId} skipped:`, err);
           }
@@ -1370,15 +1391,17 @@ export async function fetchConfluencePages(
   // seed status; a genuinely new sub-page fetches here (deleted/blocked → warn).
   if (opts.treePages?.length && src.creds) {
     for (const t of opts.treePages) {
+      opts.signal?.throwIfAborted();
       if (fetched.has(t.pageId)) {
         const existing = fetched.get(t.pageId)!;
         if (!existing.treePath) existing.treePath = t.treePath;
         continue;
       }
       try {
-        const p = await fetchConfluencePageDirect(src.creds, t.pageId);
+        const p = await fetchConfluencePageDirect(src.creds, t.pageId, opts.signal);
         fetched.set(t.pageId, { pageId: t.pageId, ...p, linked: true, treePath: t.treePath });
       } catch (err) {
+        opts.signal?.throwIfAborted();
         console.warn(`[bas] sub-tree Confluence page ${t.pageId} skipped:`, err);
       }
     }
@@ -1437,6 +1460,7 @@ export async function fetchConfluencePages(
     return naturalSegsCompare([...(a.treePath ?? []), a.title], [...(b.treePath ?? []), b.title]);
   });
   for (const p of ordered) {
+    opts.signal?.throwIfAborted();
     // Link-followed pages are CONTEXT ONLY: they nest under docs/context/ (not
     // docs/confluence/) so downstream skills read them for domain understanding
     // but do NOT build screens/mockups from them, and the rail renders them
@@ -1475,6 +1499,7 @@ export async function fetchConfluencePages(
   };
   let totalImages = 0;
   for (const p of ordered) {
+    opts.signal?.throwIfAborted();
     const relPath = relByPageId.get(p.pageId)!;
     // Relative path from THIS page's folder to the shared attachments dir (all
     // images localize into docs/confluence/attachments, regardless of whether
@@ -1507,6 +1532,7 @@ export async function fetchConfluencePages(
           attachmentsPrefix,
           opts.runtimeDataDir,
         ).catch((err) => {
+          opts.signal?.throwIfAborted();
           console.warn(`[bas] drawio multi-page pass failed for page ${p.pageId} (keeping page-1 previews):`, err);
           return html;
         });
@@ -1517,7 +1543,9 @@ export async function fetchConfluencePages(
           html,
           opts.attachmentsDir,
           attachmentsPrefix,
+          opts.signal,
         ).catch((err) => {
+          opts.signal?.throwIfAborted();
           console.warn(`[bas] image localization failed for page ${p.pageId}:`, err);
           return { html, count: 0 };
         });

@@ -19,8 +19,15 @@ vi.mock('../../../src/components/Icon', () => ({ Icon: () => null }));
 
 afterEach(() => cleanup());
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/pipelines/apps') return new Response(JSON.stringify({ apps: [] }), { status: 200 });
+    if (url === '/api/figma-config' && (!init?.method || init.method === 'GET')) return new Response(JSON.stringify({ hasToken: true }), { status: 200 });
+    if (url === '/api/figma-config/test') return new Response(JSON.stringify({ ok: true, handle: 'tester' }), { status: 200 });
+    if (url === '/api/figma-config/verify-links') {
+      const links = JSON.parse(String(init?.body)).links as Array<{ fileKey: string; url: string }>;
+      return new Response(JSON.stringify({ hasToken: true, links: links.map((link) => ({ ...link, ok: true, name: link.fileKey, componentCount: 1 })) }), { status: 200 });
+    }
+    if (url === '/api/figma-desktop/status') return new Response(JSON.stringify({ available: false, canSwitch: false, platform: 'test' }), { status: 200 });
     if (url.includes('/pool')) return new Response(JSON.stringify({ pages: [] }), { status: 200 });
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   }));
@@ -50,11 +57,12 @@ describe('EditAppModal · Design System', () => {
       .toContain('Mã file không hợp lệ');
   });
 
-  it('lưu nguồn link Figma đã chuẩn hóa mà không bắt readiness phải thành công', async () => {
+  it('chỉ lưu nguồn link Figma đã chuẩn hóa sau khi daemon verify thành công', async () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail' }} onClose={() => {}} onSaved={() => {}} />);
     fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
     fireEvent.change(screen.getByLabelText('Link file Figma'), { target: { value: 'https://figma.com/design/ABC/Login?node-id=3-4' } });
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Lưu thay đổi' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2_000 });
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
     const call = fetchMock.mock.calls.find((item) => String(item[0]).includes('/api/pipelines/apps/') && item[1]?.method === 'PATCH');
@@ -80,6 +88,7 @@ describe('EditAppModal · Design System', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
     fireEvent.change(screen.getByLabelText('Link file Figma'), { target: { value: 'https://figma.com/design/ABC/Login' } });
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Lưu thay đổi' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2_000 });
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
     const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/apps/') && c[1]?.method === 'PATCH');
@@ -150,6 +159,7 @@ describe('NewAppModal · Design System', () => {
     fireEvent.change(screen.getByLabelText('Link file Figma'), {
       target: { value: 'https://figma.com/file/ABC/Login?node-id=12-34' },
     });
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Tạo' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2_000 });
     fireEvent.click(screen.getByRole('button', { name: 'Tạo' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => call[0] === '/api/pipelines/apps' && call[1]?.method === 'POST')).toBe(true));
     const call = fetchMock.mock.calls.find((item) => item[0] === '/api/pipelines/apps' && item[1]?.method === 'POST');
@@ -169,5 +179,27 @@ describe('NewAppModal · Design System', () => {
     fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
     expect(screen.getByText('Dán ít nhất 1 link Figma.')).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Tạo' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('không cho tạo khi daemon chưa đọc được một link Figma', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url);
+      if (value === '/api/pipelines/apps') return new Response(JSON.stringify({ apps: [] }), { status: 200 });
+      if (value === '/api/figma-config') return new Response(JSON.stringify({ hasToken: true }), { status: 200 });
+      if (value === '/api/figma-config/test') return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      if (value === '/api/figma-config/verify-links') {
+        return new Response(JSON.stringify({ hasToken: true, links: [{ fileKey: 'ABC', url: 'https://www.figma.com/design/ABC', ok: false, componentCount: 0, detail: 'Bạn không có quyền đọc file này.' }] }), { status: 200 });
+      }
+      if (value === '/api/figma-desktop/status') return new Response(JSON.stringify({ available: false, canSwitch: false, platform: 'test' }), { status: 200 });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    render(<NewAppModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail' } });
+    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
+    fireEvent.change(screen.getByLabelText('Link file Figma'), { target: { value: 'https://figma.com/design/ABC/Login' } });
+    expect((await screen.findAllByText('Bạn không có quyền đọc file này.', {}, { timeout: 2_000 })).length).toBeGreaterThan(0);
+    expect((screen.getByRole('button', { name: 'Tạo' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(fetchMock.mock.calls.some((call) => call[0] === '/api/pipelines/apps' && call[1]?.method === 'POST')).toBe(false);
   });
 });

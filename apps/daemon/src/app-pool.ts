@@ -249,6 +249,11 @@ export async function importConfluenceIntoPool(opts: {
   relatedRefs?: string[];
   followLinks?: boolean;
   includeDescendants?: boolean;
+  /** Explicit operation cancellation from the UI/HTTP route. */
+  signal?: AbortSignal;
+  /** Marks the irreversible directory-swap boundary. Cancellation requested
+   *  after this callback is intentionally too late and the commit completes. */
+  onCommitStart?: () => void | Promise<void>;
 }): Promise<{ imported: number; updated: number; pages: ManifestPage[] }> {
   const { projectsDir, runtimeDataDir, appId, refs } = opts;
   const [creds, ep] = await Promise.all([
@@ -260,73 +265,112 @@ export async function importConfluenceIntoPool(opts: {
       'Chưa có credential Confluence: thêm CONFLUENCE_URL + CONFLUENCE_PERSONAL_TOKEN (Settings → MCP) hoặc cấu hình BAS gateway.',
     );
   }
+  opts.signal?.throwIfAborted();
   const docsDir = appDocsDir(projectsDir, appId);
-  const treePages: import('./bas/bas-client.js').DescendantPage[] = [];
-  if (opts.includeDescendants && creds) {
-    const seen = new Set<string>();
-    for (const ref of refs) {
-      const seedId = extractPageId(ref);
-      try {
-        const desc = await listDescendantPages(creds, seedId);
-        for (const d of desc) {
-          if (seen.has(d.pageId)) continue;
-          seen.add(d.pageId);
-          treePages.push(d);
+  const docsParent = path.dirname(docsDir);
+  const operationSuffix = `${process.pid}-${crypto.randomUUID()}`;
+  const stagedDocsDir = path.join(docsParent, `.docs.import-${operationSuffix}`);
+  const backupDocsDir = path.join(docsParent, `.docs.backup-${operationSuffix}`);
+  try {
+    await fs.promises.mkdir(docsParent, { recursive: true });
+    const liveExists = await fs.promises.stat(docsDir).then((stat) => stat.isDirectory(), () => false);
+    if (liveExists) await fs.promises.cp(docsDir, stagedDocsDir, { recursive: true });
+    else await fs.promises.mkdir(stagedDocsDir, { recursive: true });
+
+    const treePages: import('./bas/bas-client.js').DescendantPage[] = [];
+    if (opts.includeDescendants && creds) {
+      const seen = new Set<string>();
+      for (const ref of refs) {
+        opts.signal?.throwIfAborted();
+        const seedId = extractPageId(ref);
+        try {
+          const desc = await listDescendantPages(creds, seedId, 500, opts.signal);
+          for (const d of desc) {
+            if (seen.has(d.pageId)) continue;
+            seen.add(d.pageId);
+            treePages.push(d);
+          }
+        } catch (err) {
+          opts.signal?.throwIfAborted();
+          console.warn(`[app-pool] sub-tree scan for seed ${seedId} failed (continuing):`, err);
         }
-      } catch (err) {
-        console.warn(`[app-pool] sub-tree scan for seed ${seedId} failed (continuing):`, err);
       }
     }
-  }
-  const fetched: ConfluenceDocPage[] = await fetchConfluencePages({ creds, ep }, refs, {
-    // Mặc định KHÔNG follow link (pool user-curated; xem app-pool-routes).
-    followLinks: opts.followLinks === true,
-    attachmentsDir: path.join(docsDir, 'attachments'),
-    runtimeDataDir,
-    pathLayout: 'flat',
-    ...(treePages.length ? { treePages } : {}),
-  });
-  const now = Date.now();
-  // Cờ related theo pageId (refs của "Quét tài liệu liên quan" là page id/URL
-  // — resolve như refs thường). Trang KHÔNG nằm trong relatedRefs được đánh
-  // dấu tường minh false: tick trực tiếp một trang từng là "liên quan" sẽ
-  // nâng nó lên docs chính.
-  const relatedIds = new Set((opts.relatedRefs ?? []).map((r) => extractPageId(r)));
-  const writable: Array<{ pageId: string; title: string; path: string; contentHash: string; related?: boolean }> = [];
-  for (const p of fetched) {
-    // `p.relPath` is `docs/<branch>/.../<slug>.md` (flat layout) — strip the
-    // leading `docs/` so the manifest `path` is relative to the App's docs/
-    // root, matching §2.1's example.
-    const relInDocs = path.posix.relative('docs', p.relPath);
-    const abs = path.join(docsDir, relInDocs);
-    await fs.promises.mkdir(path.dirname(abs), { recursive: true });
-    await fs.promises.writeFile(abs, p.content, 'utf8');
-    writable.push({
-      pageId: p.pageId,
-      title: p.title,
-      path: relInDocs,
-      contentHash: sha256(p.content),
-      related: relatedIds.has(p.pageId),
+    const fetched: ConfluenceDocPage[] = await fetchConfluencePages({ creds, ep }, refs, {
+      // Mặc định KHÔNG follow link (pool user-curated; xem app-pool-routes).
+      followLinks: opts.followLinks === true,
+      attachmentsDir: path.join(stagedDocsDir, 'attachments'),
+      runtimeDataDir,
+      pathLayout: 'flat',
+      ...(treePages.length ? { treePages } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
     });
-  }
-  const current = await readManifest(projectsDir, appId);
-  // Trang cũ đổi chỗ (cấu trúc cây theo tổ tiên thật có thể khác lần import
-  // trước) → xóa file ở path CŨ, nếu không nó thành mồ côi trên đĩa và
-  // stageAppDocsPool (copy mọi *.md) sẽ nạp trùng một trang hai chỗ.
-  const oldPathById = new Map(current.pages.map((p) => [p.pageId, p.path] as const));
-  for (const w of writable) {
-    const oldPath = oldPathById.get(w.pageId);
-    if (oldPath && oldPath !== w.path) {
-      await fs.promises.rm(path.join(docsDir, oldPath), { force: true }).catch(() => null);
+    // Everything below is prepared only inside the sibling staging tree. The
+    // live pool stays byte-for-byte unchanged until the final directory swap.
+    opts.signal?.throwIfAborted();
+    const now = Date.now();
+    // Cờ related theo pageId (refs của "Quét tài liệu liên quan" là page id/URL
+    // — resolve như refs thường). Trang KHÔNG nằm trong relatedRefs được đánh
+    // dấu tường minh false: tick trực tiếp một trang từng là "liên quan" sẽ
+    // nâng nó lên docs chính.
+    const relatedIds = new Set((opts.relatedRefs ?? []).map((r) => extractPageId(r)));
+    const writable: Array<{ pageId: string; title: string; path: string; contentHash: string; related?: boolean }> = [];
+    for (const p of fetched) {
+      // `p.relPath` is `docs/<branch>/.../<slug>.md` (flat layout) — strip the
+      // leading `docs/` so the manifest `path` is relative to the App's docs/
+      // root, matching §2.1's example.
+      const relInDocs = path.posix.relative('docs', p.relPath);
+      const abs = path.join(stagedDocsDir, relInDocs);
+      await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+      await fs.promises.writeFile(abs, p.content, 'utf8');
+      writable.push({
+        pageId: p.pageId,
+        title: p.title,
+        path: relInDocs,
+        contentHash: sha256(p.content),
+        related: relatedIds.has(p.pageId),
+      });
     }
+    const current = await readManifest(projectsDir, appId);
+    // Trang cũ đổi chỗ (cấu trúc cây theo tổ tiên thật có thể khác lần import
+    // trước) → xóa file ở path CŨ, nếu không nó thành mồ côi trên đĩa và
+    // stageAppDocsPool (copy mọi *.md) sẽ nạp trùng một trang hai chỗ.
+    const oldPathById = new Map(current.pages.map((p) => [p.pageId, p.path] as const));
+    for (const w of writable) {
+      const oldPath = oldPathById.get(w.pageId);
+      if (oldPath && oldPath !== w.path) {
+        await fs.promises.rm(path.join(stagedDocsDir, oldPath), { force: true }).catch(() => null);
+      }
+    }
+    const { manifest: next, imported, updated } = upsertPagesFromFetch(current, writable, now);
+    // Path giờ TUYỆT ĐỐI theo tổ tiên thật → branch phải tính SAU prefix chung
+    // của cả pool (không thì mọi trang chung một branch "giàn giáo wiki").
+    rebalanceBranches(next);
+    await fs.promises.writeFile(path.join(stagedDocsDir, '_manifest.json'), `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    await fs.promises.writeFile(path.join(stagedDocsDir, '_index.md'), generateIndexMd(next), 'utf8');
+
+    // Last cancellable point. From onCommitStart onward the two renames form
+    // one non-cancellable commit; a failed second rename restores the backup.
+    opts.signal?.throwIfAborted();
+    await opts.onCommitStart?.();
+    if (liveExists) await fs.promises.rename(docsDir, backupDocsDir);
+    try {
+      await fs.promises.rename(stagedDocsDir, docsDir);
+    } catch (err) {
+      if (liveExists) await fs.promises.rename(backupDocsDir, docsDir).catch(() => undefined);
+      throw err;
+    }
+    if (liveExists) {
+      await fs.promises.rm(backupDocsDir, { recursive: true, force: true }).catch((err) => {
+        console.warn(`[app-pool] committed import but could not remove backup ${backupDocsDir}:`, err);
+      });
+    }
+    return { imported, updated, pages: next.pages };
+  } finally {
+    await fs.promises.rm(stagedDocsDir, { recursive: true, force: true }).catch(() => undefined);
+    // A backup should only remain after an unexpected rollback failure. Never
+    // delete it here: it is the sole recoverable copy of the previous pool.
   }
-  const { manifest: next, imported, updated } = upsertPagesFromFetch(current, writable, now);
-  // Path giờ TUYỆT ĐỐI theo tổ tiên thật → branch phải tính SAU prefix chung
-  // của cả pool (không thì mọi trang chung một branch "giàn giáo wiki").
-  rebalanceBranches(next);
-  await writeManifest(projectsDir, appId, next);
-  await writeIndexMd(projectsDir, appId, next);
-  return { imported, updated, pages: next.pages };
 }
 
 /** Dot-folder a pool's pool Markdown files + every page's markdown stage into

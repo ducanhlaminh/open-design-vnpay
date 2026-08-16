@@ -54,7 +54,8 @@ import styles from './ConfluenceTreeImport.module.css';
 // however many refs are sent — a 64-page tick would be one opaque round trip
 // with no way to show real x/y progress. Chunking client-side into small
 // sequential batches turns "silent for N seconds" into an actual progress
-// bar, with no daemon change needed.
+// bar. Mỗi batch có operationId để nút Dừng còn huỷ được công việc thật ở
+// daemon, thay vì chỉ đóng request phía trình duyệt.
 export const CONFLUENCE_IMPORT_BATCH_SIZE = 8;
 
 function normalizeConfluenceSearch(value: string): string {
@@ -163,9 +164,9 @@ export async function importConfluenceInBatches(
   /** Tập con của refs đến từ "Quét tài liệu liên quan" — daemon gắn cờ
    *  related trên manifest để UI tách nhóm. */
   relatedRefs?: string[],
-  /** Dừng theo yêu cầu người dùng: lô đang bay bị huỷ phía client (daemon
-   *  vẫn hoàn tất tối đa lô đó — ≤ BATCH_SIZE trang — và giữ những gì đã
-   *  ghi), các lô sau KHÔNG gửi. Ném `ConfluenceImportBatchError` với
+  /** Dừng theo yêu cầu người dùng: mỗi lô có operationId; khi AbortSignal bật,
+   *  client gọi endpoint cancel keepalive để daemon huỷ cả REST fetch đang
+   *  chạy (không chỉ đóng socket phía browser). Ném `ConfluenceImportBatchError` với
    *  `aborted: true` + `succeededRefs` của các lô đã xong. */
   signal?: AbortSignal,
 ): Promise<AppPoolImportResponse> {
@@ -178,13 +179,46 @@ export async function importConfluenceInBatches(
   for (let i = 0; i < refs.length; i += CONFLUENCE_IMPORT_BATCH_SIZE) {
     if (signal?.aborted) throw abortedError();
     const chunk = refs.slice(i, i + CONFLUENCE_IMPORT_BATCH_SIZE);
+    const operationId = globalThis.crypto?.randomUUID?.()
+      ?? `import-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const importUrl = `/api/pipelines/apps/${encodeURIComponent(appId)}/import-confluence`;
+    const cancelUrl = `${importUrl}/${encodeURIComponent(operationId)}/cancel`;
+    let resolveCancel!: (cancelled: boolean) => void;
+    const cancelOutcome = new Promise<boolean>((resolve) => { resolveCancel = resolve; });
+    const cancelDaemon = () => {
+      // Do not abort the import response blindly: the daemon may already have
+      // crossed its atomic commit boundary. In that case cancel returns false
+      // and we await/report the successful committed batch normally.
+      void fetch(cancelUrl, { method: 'POST', keepalive: true })
+        .then(async (response) => {
+          const body = await response.json().catch(() => ({}));
+          resolveCancel(response.ok && body?.cancelled === true);
+        })
+        .catch(() => resolveCancel(false));
+    };
+    signal?.addEventListener('abort', cancelDaemon, { once: true });
+    let cancelAccepted = false;
     try {
-      const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/import-confluence`, {
+      const responseOutcome = fetch(importUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ refs: chunk, relatedRefs: chunk.filter((r) => relatedSet.has(r)) }),
-        ...(signal ? { signal } : {}),
-      });
+        body: JSON.stringify({ refs: chunk, relatedRefs: chunk.filter((r) => relatedSet.has(r)), operationId }),
+      }).then(
+        (res) => ({ kind: 'response' as const, res }),
+        (cause: unknown) => ({ kind: 'network-error' as const, cause }),
+      );
+      const outcome = signal
+        ? await Promise.race([
+            responseOutcome,
+            cancelOutcome.then(async (cancelled) => {
+              cancelAccepted = cancelled;
+              return cancelled ? { kind: 'cancelled' as const } : responseOutcome;
+            }),
+          ])
+        : await responseOutcome;
+      if (outcome.kind === 'cancelled') throw abortedError();
+      if (outcome.kind === 'network-error') throw outcome.cause;
+      const { res } = outcome;
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || `Nhập tài liệu thất bại (${res.status}).`);
       const batch = j as AppPoolImportResponse;
@@ -198,12 +232,14 @@ export async function importConfluenceInBatches(
       succeededRefs.push(...chunk);
       onProgress?.(succeededRefs.length, total);
     } catch (cause) {
-      if (signal?.aborted) throw abortedError();
+      if (cancelAccepted) throw abortedError();
       throw new ConfluenceImportBatchError(
         cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.',
         aggregate,
         succeededRefs,
       );
+    } finally {
+      signal?.removeEventListener('abort', cancelDaemon);
     }
   }
   return aggregate;

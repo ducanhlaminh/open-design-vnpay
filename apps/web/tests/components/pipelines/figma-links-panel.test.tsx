@@ -24,7 +24,7 @@ type DesktopStatusOverride = {
 
 function stubDaemon(state: {
   hasToken: boolean;
-  verify?: () => unknown;
+  verify?: (body: any) => unknown;
   testOk?: boolean;
   /** undefined → mặc định available; null → daemon lỗi (status !ok). */
   desktopStatus?: DesktopStatusOverride;
@@ -46,7 +46,7 @@ function stubDaemon(state: {
         : { ok: true, handle: 'anh' }), { status: 200 });
     }
     if (url === '/api/figma-config/verify-links') {
-      return new Response(JSON.stringify(state.verify?.() ?? { hasToken: state.hasToken, links: [
+      return new Response(JSON.stringify(state.verify?.(body) ?? { hasToken: state.hasToken || Boolean(body?.token), links: [
         { fileKey: 'ABC', url: LINKS[0]!.url, ok: true, name: 'UI Kit', componentCount: 42 },
       ] }), { status: 200 });
     }
@@ -79,7 +79,18 @@ describe('FigmaLinksPanel', () => {
     expect(verify?.body).toEqual({ links: LINKS });
   });
 
-  it('chưa có token → hiện ô dán token + hướng dẫn; Lưu token thì test trước rồi PUT, sau đó tự kiểm tra link', async () => {
+  it('chỉ báo verified cho đúng generation link hiện tại và reset ngay khi link đổi', async () => {
+    stubDaemon({ hasToken: true });
+    const states: Array<{ status: string; linksKey: string }> = [];
+    const view = render(<FigmaLinksPanel links={LINKS} linksError={null} onVerificationChange={(state) => states.push(state)} />);
+    await screen.findByText('UI Kit');
+    expect(states.at(-1)).toMatchObject({ status: 'verified', linksKey: 'ABC:' });
+
+    view.rerender(<FigmaLinksPanel links={[{ url: 'https://www.figma.com/design/XYZ', fileKey: 'XYZ' }]} linksError={null} onVerificationChange={(state) => states.push(state)} />);
+    await waitFor(() => expect(states.at(-1)).toMatchObject({ status: 'pending', linksKey: 'XYZ:' }));
+  });
+
+  it('chưa có token → draft phải đọc được mọi link rồi mới PUT, sau đó tự kiểm tra link đã lưu', async () => {
     const { calls } = stubDaemon({ hasToken: false });
     render(<FigmaLinksPanel links={LINKS} linksError={null} />);
     await screen.findByText(/Chưa có token/);
@@ -89,22 +100,46 @@ describe('FigmaLinksPanel', () => {
     fireEvent.change(screen.getByLabelText('Personal Access Token của Figma'), { target: { value: 'figd_new' } });
     fireEvent.click(screen.getByTestId('figma-token-save'));
 
-    await screen.findByText(/tài khoản anh/);
+    await screen.findByText(/Đã lưu/);
     const order = calls.filter((call) => call.url.startsWith('/api/figma-config')).map((call) => `${call.method} ${call.url}`);
-    expect(order.slice(0, 3)).toEqual(['GET /api/figma-config', 'POST /api/figma-config/test', 'PUT /api/figma-config']);
+    expect(order.slice(0, 3)).toEqual(['GET /api/figma-config', 'POST /api/figma-config/verify-links', 'PUT /api/figma-config']);
+    expect(calls.find((call) => call.url === '/api/figma-config/verify-links')?.body).toEqual({ links: LINKS, token: 'figd_new' });
     expect(calls.find((call) => call.method === 'PUT')?.body).toEqual({ token: 'figd_new' });
     await screen.findByText('UI Kit');
     expect(screen.queryByLabelText('Personal Access Token của Figma')).toBeNull();
   });
 
-  it('token sai → báo lỗi tại chỗ, KHÔNG ghi đè token', async () => {
-    const { calls } = stubDaemon({ hasToken: false, testOk: false });
+  it('draft token thiếu quyền file → báo lỗi tại chỗ, KHÔNG ghi đè token', async () => {
+    const { calls } = stubDaemon({ hasToken: false, verify: (body) => ({ hasToken: Boolean(body?.token), links: [
+      { fileKey: 'ABC', url: LINKS[0]!.url, ok: false, detail: 'Token không có quyền đọc file này.' },
+    ] }) });
     render(<FigmaLinksPanel links={LINKS} linksError={null} />);
     await screen.findByText(/Chưa có token/);
     fireEvent.change(screen.getByLabelText('Personal Access Token của Figma'), { target: { value: 'bad' } });
     fireEvent.click(screen.getByTestId('figma-token-save'));
     await screen.findByRole('alert');
-    expect(screen.getByRole('alert').textContent).toMatch(/không hợp lệ/);
+    expect(screen.getByRole('alert').textContent).toMatch(/không có quyền/);
+    expect(calls.some((call) => call.method === 'PUT')).toBe(false);
+  });
+
+  it('response verify rỗng/thiếu file không được tính là hợp lệ và không PUT', async () => {
+    const { calls } = stubDaemon({ hasToken: true, verify: () => ({ hasToken: true, links: [] }) });
+    render(<FigmaLinksPanel links={LINKS} linksError={null} />);
+    await screen.findByText(/tài khoản anh/);
+    fireEvent.click(screen.getByRole('button', { name: 'Đổi token' }));
+    fireEvent.change(screen.getByLabelText('Personal Access Token của Figma'), { target: { value: 'figd_partial' } });
+    fireEvent.click(screen.getByTestId('figma-token-save'));
+    await screen.findByText(/chưa trả kết quả kiểm tra cho file ABC/i);
+    expect(calls.some((call) => call.method === 'PUT')).toBe(false);
+  });
+
+  it('không cho lưu token khi chưa có link hợp lệ và hiện hướng dẫn', async () => {
+    const { calls } = stubDaemon({ hasToken: false });
+    render(<FigmaLinksPanel links={[]} linksError="Dán ít nhất 1 link Figma." />);
+    await screen.findByText(/Chưa có token/);
+    fireEvent.change(screen.getByLabelText('Personal Access Token của Figma'), { target: { value: 'figd_new' } });
+    expect((screen.getByTestId('figma-token-save') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Sửa link Figma ở trên trước khi lưu token/)).toBeTruthy();
     expect(calls.some((call) => call.method === 'PUT')).toBe(false);
   });
 

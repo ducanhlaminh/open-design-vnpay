@@ -195,6 +195,110 @@ describe('FigmaDesktopClient.ensureActiveFile', () => {
     expect(sleeps).toEqual([1000, 1000]);
   });
 
+  it('does not trust a matching title when the probe node belongs to another same-named file', async () => {
+    const openCalls: string[][] = [];
+    const exec = vi.fn(async (file: string, args: string[]) => {
+      if (file === 'osascript') return { stdout: 'Design System – Figma', stderr: '' };
+      if (file === 'open') openCalls.push(args);
+      return { stdout: '', stderr: '' };
+    });
+    let metadataCalls = 0;
+    const { fetch } = fakeFetch((body) => {
+      if (body.method === 'initialize') {
+        return jsonResponse({ jsonrpc: '2.0', id: body.id, result: {} }, { headers: { 'mcp-session-id': 'same-name' } });
+      }
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+      if (body.method === 'tools/call') {
+        metadataCalls++;
+        if (metadataCalls === 1) {
+          return jsonResponse({
+            jsonrpc: '2.0',
+            id: body.id,
+            result: { isError: true, content: [{ type: 'text', text: 'Node not found in current file' }] },
+          });
+        }
+        return jsonResponse({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: { content: [{ type: 'text', text: '<component id="10:1" name="Button"/>' }] },
+        });
+      }
+      throw new Error(`unexpected call ${body.method}`);
+    });
+    const client = new FigmaDesktopClient({
+      platform: 'darwin',
+      exec: exec as unknown as (file: string, args: string[]) => Promise<{ stdout: string; stderr: string }>,
+      fetch,
+      sleep: async () => {},
+    });
+
+    await expect(client.ensureActiveFile({
+      fileKey: 'RIGHT-FILE',
+      name: 'Design System',
+      probeNodeId: '10:1',
+      probeName: 'Button',
+    })).resolves.toBe('switched');
+    expect(openCalls).toEqual([['figma://file/RIGHT-FILE']]);
+    expect(metadataCalls).toBe(2);
+  });
+
+  it('requires and accepts the correct probe even when the window title matches', async () => {
+    const { exec, calls } = fakeExec(() => ({ stdout: 'Design System – Figma', stderr: '' }));
+    let metadataCalls = 0;
+    const { fetch } = fakeFetch((body) => {
+      if (body.method === 'initialize') {
+        return jsonResponse({ jsonrpc: '2.0', id: body.id, result: {} }, { headers: { 'mcp-session-id': 'matching-probe' } });
+      }
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+      if (body.method === 'tools/call') {
+        metadataCalls++;
+        return jsonResponse({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: { content: [{ type: 'text', text: '<component id="10:1" name="Button"/>' }] },
+        });
+      }
+      throw new Error(`unexpected call ${body.method}`);
+    });
+    const client = new FigmaDesktopClient({ platform: 'darwin', exec, fetch });
+
+    await expect(client.ensureActiveFile({
+      fileKey: 'ABC123',
+      name: 'Design System',
+      probeNodeId: '10:1',
+      probeName: 'Button',
+    })).resolves.toBe('already');
+    expect(metadataCalls).toBe(1);
+    expect(calls.some((call) => call.file === 'open')).toBe(false);
+  });
+
+  it('accepts a valid probe as authoritative when the native title is stale or mismatched', async () => {
+    const { exec, calls } = fakeExec(() => ({ stdout: 'Another File – Figma', stderr: '' }));
+    const { fetch } = fakeFetch((body) => {
+      if (body.method === 'initialize') {
+        return jsonResponse({ jsonrpc: '2.0', id: body.id, result: {} }, { headers: { 'mcp-session-id': 'probe-wins' } });
+      }
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+      if (body.method === 'tools/call') {
+        return jsonResponse({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: { content: [{ type: 'text', text: '<component id="10:1" name="Button"/>' }] },
+        });
+      }
+      throw new Error(`unexpected call ${body.method}`);
+    });
+    const client = new FigmaDesktopClient({ platform: 'darwin', exec, fetch });
+
+    await expect(client.ensureActiveFile({
+      fileKey: 'ABC123',
+      name: 'Target File',
+      probeNodeId: '10:1',
+      probeName: 'Button',
+    })).resolves.toBe('already');
+    expect(calls.some((call) => call.file === 'open')).toBe(false);
+  });
+
   it('throws switch_timeout, driven by an injected now(), when the title never matches', async () => {
     const exec = vi.fn(async (file: string) => {
       if (file === 'osascript') return { stdout: 'Wrong File – Figma', stderr: '' };
@@ -294,6 +398,12 @@ describe('windowTitleMatchesFile', () => {
     ).toBe(true);
     expect(windowTitleMatchesFile('SOME FILE – Figma', 'some file')).toBe(true);
     expect(windowTitleMatchesFile('Completely Different', 'Some File')).toBe(false);
+  });
+
+  it('does not accept similar or substring file names as the same file', () => {
+    expect(windowTitleMatchesFile('Design System Mobile – Figma', 'Design System')).toBe(false);
+    expect(windowTitleMatchesFile('Design System – Figma', 'Design System Mobile')).toBe(false);
+    expect(windowTitleMatchesFile('My Design System – Figma', 'Design System')).toBe(false);
   });
 
   it('treats null/undefined/empty as never matching', () => {

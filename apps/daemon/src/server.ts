@@ -3266,9 +3266,11 @@ function bearerTokenFromRequest(req) {
 
 function authorizeToolRequest(req, res, operation) {
   const endpoint = req.path;
-  const validation = toolTokenRegistry.validate(bearerTokenFromRequest(req), { endpoint, operation });
+  const validation = toolTokenRegistry.consume(bearerTokenFromRequest(req), { endpoint, operation });
   if (!validation.ok) {
-    const status = validation.code === 'TOOL_ENDPOINT_DENIED' || validation.code === 'TOOL_OPERATION_DENIED' ? 403 : 401;
+    const status = validation.code === 'TOOL_ENDPOINT_DENIED' || validation.code === 'TOOL_OPERATION_DENIED'
+      ? 403
+      : validation.code === 'TOOL_CALL_LIMIT_EXCEEDED' ? 429 : 401;
     sendApiError(res, status, validation.code, validation.message, {
       details: { endpoint, operation },
     });
@@ -12015,6 +12017,15 @@ export async function startServer({
           projectId,
           allowedEndpoints: [...CHAT_TOOL_ENDPOINTS, ...(toolGrantExtras?.endpoints ?? [])],
           allowedOperations: [...CHAT_TOOL_OPERATIONS, ...(toolGrantExtras?.operations ?? [])],
+          ...(Number.isInteger(toolGrantExtras?.maxCalls) && toolGrantExtras.maxCalls > 0
+            ? {
+                operationBudgets: [{
+                  id: 'figma-desktop',
+                  operations: toolGrantExtras.operations ?? [],
+                  maxCalls: toolGrantExtras.maxCalls,
+                }],
+              }
+            : {}),
           ...(pluginGrantContext ?? {}),
         })
       : null;
@@ -15805,7 +15816,7 @@ export async function startServer({
         // how to open a component; otherwise the kickoff says so and the
         // stage runs exactly like before (catalogue only). Never fatal.
         let figmaDesktopNote = '';
-        let figmaDesktopGrant: { endpoints: readonly string[]; operations: readonly string[] } | null = null;
+        let figmaDesktopGrant: { endpoints: readonly string[]; operations: readonly string[]; maxCalls: number } | null = null;
         let extractionTask: { id: string; title: string; status: 'queued' | 'running' | 'succeeded' | 'failed' } | null = null;
 
         // Figma-link mode has an explicit preparation phase. It runs before
@@ -15867,7 +15878,9 @@ export async function startServer({
               buildFigmaComponentCatalog({
                 token: figmaCfg.token,
                 links,
+                signal: abort.signal,
                 onProgress: (progress) => {
+                  if (abort.signal.aborted) return;
                   if (!extractionTask) return;
                   const done = progress.phase === 'done' ? progress.index : progress.index - 1;
                   extractionTask.title = `Đọc component từ Figma · ${done}/${progress.total}`;
@@ -15938,7 +15951,7 @@ export async function startServer({
                 prewarm = ` Chưa mở được “${firstFile.name}” (${String(err?.message ?? err)}) — agent sẽ tự thử lại khi cần.`;
               }
             }
-            figmaDesktopGrant = { endpoints: FIGMA_TOOL_ENDPOINTS, operations: FIGMA_TOOL_OPERATIONS };
+            figmaDesktopGrant = { endpoints: FIGMA_TOOL_ENDPOINTS, operations: FIGMA_TOOL_OPERATIONS, maxCalls: 8 };
             figmaDesktopNote =
               ` Figma Desktop đang chạy trên máy này: bạn CÓ THỂ mở component thật để đối chiếu bằng lệnh ` +
               `"$OD_NODE_BIN" "$OD_BIN" tools figma design-context --file <fileKey> --node <nodeId> ` +

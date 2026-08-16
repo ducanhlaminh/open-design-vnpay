@@ -25,6 +25,8 @@ export interface RegisterAppPoolRoutesDeps {
     DESIGN_SYSTEMS_DIR: string;
     USER_DESIGN_SYSTEMS_DIR: string;
   };
+  /** Test/instrumentation hook at the non-cancellable pool commit boundary. */
+  onImportCommitStart?: (appId: string) => void | Promise<void>;
 }
 
 /** An App is "known" locally when it either has its own `pipeline_apps` row
@@ -44,6 +46,23 @@ function appExistsLocally(db: any, appId: string): boolean {
 
 export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDeps) {
   const { db, paths } = ctx;
+  // Explicit operation ids make cancellation reliable across proxies where
+  // aborting the browser's POST does not necessarily close the daemon request.
+  type ActiveImport = { controller: AbortController; phase: 'preparing' | 'committing' };
+  const activeImports = new Map<string, ActiveImport>();
+  const activeImportByApp = new Map<string, string>();
+  const cancelledBeforeStart = new Map<string, number>();
+  const completedImports = new Map<string, number>();
+  const CANCEL_TOMBSTONE_TTL_MS = 60_000;
+  const rememberOperationMarker = (store: Map<string, number>, key: string) => {
+    const expiresAt = Date.now() + CANCEL_TOMBSTONE_TTL_MS;
+    store.set(key, expiresAt);
+    const timer = setTimeout(() => {
+      if (store.get(key) === expiresAt) store.delete(key);
+    }, CANCEL_TOMBSTONE_TTL_MS);
+    timer.unref();
+  };
+  const importKey = (appId: string, operationId: string) => `${appId}\u0000${operationId}`;
 
   const versionAfterMutation = async (appId: string) => {
     const app = getPipelineApp(db, appId);
@@ -118,6 +137,34 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
     const relatedRefs = Array.isArray(req.body?.relatedRefs)
       ? (req.body.relatedRefs as unknown[]).filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
       : [];
+    const rawOperationId = typeof req.body?.operationId === 'string' ? req.body.operationId.trim() : '';
+    if (rawOperationId && !/^[A-Za-z0-9_-]{8,128}$/.test(rawOperationId)) {
+      return res.status(400).json({ error: 'operationId is invalid' });
+    }
+    const operationId = rawOperationId || `server-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const key = importKey(appId, operationId);
+    const now = Date.now();
+    for (const [pendingKey, expiresAt] of cancelledBeforeStart) {
+      if (expiresAt <= now) cancelledBeforeStart.delete(pendingKey);
+    }
+    for (const [completedKey, expiresAt] of completedImports) {
+      if (expiresAt <= now) completedImports.delete(completedKey);
+    }
+    if (cancelledBeforeStart.has(key)) {
+      return res.status(499).json({ error: 'Đã dừng nhập tài liệu theo yêu cầu.', aborted: true });
+    }
+    if (activeImportByApp.has(appId)) return res.status(409).json({ error: 'another import is already running for this app' });
+    const controller = new AbortController();
+    const operation: ActiveImport = { controller, phase: 'preparing' };
+    activeImports.set(key, operation);
+    activeImportByApp.set(appId, key);
+    const abortOnDisconnect = () => {
+      if (operation.phase === 'preparing') controller.abort(new Error('HTTP client disconnected'));
+    };
+    req.once?.('aborted', abortOnDisconnect);
+    res.once?.('close', () => {
+      if (!res.writableEnded) abortOnDisconnect();
+    });
     try {
       const result = await importConfluenceIntoPool({
         projectsDir: paths.PROJECTS_DIR,
@@ -127,12 +174,51 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
         relatedRefs,
         followLinks,
         includeDescendants,
+        signal: controller.signal,
+        onCommitStart: async () => {
+          operation.phase = 'committing';
+          await ctx.onImportCommitStart?.(appId);
+        },
       });
+      // The pool commit is complete; cancellation after this boundary must not
+      // turn a committed import into an apparent failure.
+      if (activeImports.get(key) === operation) activeImports.delete(key);
+      if (activeImportByApp.get(appId) === key) activeImportByApp.delete(appId);
+      rememberOperationMarker(completedImports, key);
       const contextVersion = await versionAfterMutation(appId);
       res.json({ ...result, contextVersion: contextVersion.manifest });
     } catch (err: any) {
-      res.status(502).json({ error: String(err?.message ?? err) });
+      if (!res.headersSent) {
+        const cancelled = operation.phase === 'preparing' && controller.signal.aborted;
+        res.status(cancelled ? 499 : 502).json({
+          error: cancelled ? 'Đã dừng nhập tài liệu theo yêu cầu.' : String(err?.message ?? err),
+          ...(cancelled ? { aborted: true } : {}),
+        });
+      }
+    } finally {
+      req.removeListener?.('aborted', abortOnDisconnect);
+      if (activeImports.get(key) === operation) activeImports.delete(key);
+      if (activeImportByApp.get(appId) === key) activeImportByApp.delete(appId);
     }
+  });
+
+  // Explicit cancellation companion for the operation POST above. This is
+  // intentionally idempotent so a late keepalive request is harmless.
+  app.post('/api/pipelines/apps/:appId/import-confluence/:operationId/cancel', (req, res) => {
+    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
+    const operationId = typeof req.params.operationId === 'string' ? req.params.operationId.trim() : '';
+    if (!appId || !operationId) return res.status(400).json({ error: 'appId and operationId are required' });
+    const operation = activeImports.get(importKey(appId, operationId));
+    const key = importKey(appId, operationId);
+    const completed = completedImports.has(key);
+    const cancellable = operation?.phase === 'preparing';
+    if (cancellable) operation.controller.abort(new Error('Cancelled by user'));
+    if (!operation && !completed) rememberOperationMarker(cancelledBeforeStart, key);
+    res.json({
+      ok: true,
+      cancelled: cancellable || (!operation && !completed),
+      phase: operation?.phase ?? (completed ? 'finished' : 'queued'),
+    });
   });
 
   // GET /api/pipelines/apps/:appId/pool — §2.2.

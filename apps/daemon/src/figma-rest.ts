@@ -81,6 +81,35 @@ export interface FigmaRestDeps {
   requestTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
+  /** Cancels the complete catalogue operation, including retries/page walks. */
+  signal?: AbortSignal;
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('Figma operation aborted');
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+async function abortableSleep(ms: number, deps: FigmaRestDeps): Promise<void> {
+  const sleep = deps.sleep ?? ((delay: number) => new Promise<void>((resolve) => setTimeout(resolve, delay)));
+  const signal = deps.signal;
+  throwIfAborted(signal);
+  if (!signal) return sleep(ms);
+  let onAbort: () => void = () => undefined;
+  try {
+    await Promise.race([
+      sleep(ms),
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(abortReason(signal));
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -96,39 +125,61 @@ function cleanText(value: unknown, max = 500): string {
 async function figmaGet(pathname: string, token: string, deps: FigmaRestDeps): Promise<unknown> {
   if (!token) throw new FigmaRestError('no_token', 'missing token');
   const doFetch = deps.fetch ?? fetch;
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const url = `${deps.baseUrl ?? FIGMA_API_BASE}${pathname}`;
   for (let attempt = 0; ; attempt++) {
+    throwIfAborted(deps.signal);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), deps.requestTimeoutMs ?? REQUEST_TIMEOUT_MS);
-    let res: Response;
+    const abortFromCaller = () => controller.abort(deps.signal?.reason);
+    deps.signal?.addEventListener('abort', abortFromCaller, { once: true });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, deps.requestTimeoutMs ?? REQUEST_TIMEOUT_MS);
+    let retryDelayMs: number | null = null;
     try {
-      res = await doFetch(url, { headers: { 'X-Figma-Token': token }, signal: controller.signal });
+      const res = await doFetch(url, { headers: { 'X-Figma-Token': token }, signal: controller.signal });
+      throwIfAborted(deps.signal);
+      if (res.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+        const retryAfter = Number(res.headers.get('retry-after'));
+        retryDelayMs = Math.min(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 2000 * (attempt + 1), 20_000);
+      } else if (res.status === 401 || res.status === 403) {
+        // Figma answers 403 both for a bad token and for a file the token's
+        // owner cannot see; the body distinguishes ("Invalid token").
+        const body = await res.text().catch(() => '');
+        throwIfAborted(deps.signal);
+        const invalidToken = res.status === 401 || (/invalid token/i.test(body));
+        throw new FigmaRestError(invalidToken ? 'auth' : 'forbidden', body.slice(0, 200), res.status);
+      } else if (res.status === 404) {
+        throw new FigmaRestError('not_found', 'not found', 404);
+      } else if (res.status === 429) {
+        throw new FigmaRestError('rate_limited', 'rate limited', 429);
+      } else if (!res.ok) {
+        throw new FigmaRestError('http', `HTTP ${res.status}`, res.status);
+      } else {
+        try {
+          const body = await res.json();
+          throwIfAborted(deps.signal);
+          return body;
+        } catch (err) {
+          if (deps.signal?.aborted) throw abortReason(deps.signal);
+          if (timedOut) throw new FigmaRestError('timeout', 'timeout');
+          if (err instanceof FigmaRestError) throw err;
+          throw new FigmaRestError('invalid', err instanceof Error ? err.message : 'invalid JSON');
+        }
+      }
     } catch (err) {
-      clearTimeout(timer);
-      if (controller.signal.aborted) throw new FigmaRestError('timeout', 'timeout');
+      if (err instanceof FigmaRestError) throw err;
+      if (deps.signal?.aborted) throw abortReason(deps.signal);
+      if (timedOut || controller.signal.aborted) throw new FigmaRestError('timeout', 'timeout');
       throw new FigmaRestError('network', err instanceof Error ? err.message : String(err));
+    } finally {
+      clearTimeout(timer);
+      deps.signal?.removeEventListener('abort', abortFromCaller);
     }
-    clearTimeout(timer);
-    if (res.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
-      const retryAfter = Number(res.headers.get('retry-after'));
-      await sleep(Math.min(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 2000 * (attempt + 1), 20_000));
+    if (retryDelayMs !== null) {
+      await abortableSleep(retryDelayMs, deps);
       continue;
-    }
-    if (res.status === 401 || res.status === 403) {
-      // Figma answers 403 both for a bad token and for a file the token's
-      // owner cannot see; the body distinguishes ("Invalid token").
-      const body = await res.text().catch(() => '');
-      const invalidToken = res.status === 401 || (/invalid token/i.test(body));
-      throw new FigmaRestError(invalidToken ? 'auth' : 'forbidden', body.slice(0, 200), res.status);
-    }
-    if (res.status === 404) throw new FigmaRestError('not_found', 'not found', 404);
-    if (res.status === 429) throw new FigmaRestError('rate_limited', 'rate limited', 429);
-    if (!res.ok) throw new FigmaRestError('http', `HTTP ${res.status}`, res.status);
-    try {
-      return await res.json();
-    } catch (err) {
-      throw new FigmaRestError('invalid', err instanceof Error ? err.message : 'invalid JSON');
     }
   }
 }
@@ -250,7 +301,15 @@ async function fetchFileSummary(token: string, fileKey: string, deps: FigmaRestD
   const file = record(await figmaGet(`/v1/files/${encodeURIComponent(fileKey)}?depth=1`, token, deps));
   if (!file) throw new FigmaRestError('invalid', 'file payload is not an object');
   const name = cleanText(file.name, 300) || fileKey;
-  const published = await fetchPublishedEntries(token, fileKey, deps);
+  let published: FileSummary['entries'] = [];
+  try {
+    published = await fetchPublishedEntries(token, fileKey, deps);
+  } catch (err) {
+    // Published-library endpoints need library_content:read. The token guide
+    // intentionally asks only for file_content:read, so fall back after the
+    // base file request has already proved that this file is readable.
+    if (!(err instanceof FigmaRestError) || err.kind !== 'forbidden') throw err;
+  }
   if (published.length > 0) return { name, entries: published, remoteCount: 0, source: 'published' };
   const children = record(file.document)?.children;
   const pages = (Array.isArray(children) ? children : [])
@@ -352,13 +411,19 @@ export async function buildFigmaComponentCatalog(options: {
   links: Array<{ url: string; fileKey: string }>;
   onProgress?: (progress: FigmaCatalogProgress) => void;
   deps?: FigmaRestDeps;
+  signal?: AbortSignal;
 }): Promise<FigmaComponentCatalogSnapshot> {
-  const deps = options.deps ?? {};
+  const deps: FigmaRestDeps = { ...(options.deps ?? {}), ...(options.signal ? { signal: options.signal } : {}) };
   const files: FigmaCatalogFile[] = [];
   const total = options.links.length;
+  const reportProgress = (progress: FigmaCatalogProgress) => {
+    throwIfAborted(deps.signal);
+    options.onProgress?.(progress);
+  };
   for (const [i, link] of options.links.entries()) {
+    throwIfAborted(deps.signal);
     const index = i + 1;
-    options.onProgress?.({ index, total, fileKey: link.fileKey, phase: 'summary' });
+    reportProgress({ index, total, fileKey: link.fileKey, phase: 'summary' });
     let summary: FileSummary;
     try {
       summary = await fetchFileSummary(options.token, link.fileKey, deps);
@@ -370,7 +435,7 @@ export async function buildFigmaComponentCatalog(options: {
         ? `File ${index}/${total} “${summary.name}” không định nghĩa component riêng (chỉ dùng component từ thư viện khác). Hãy dán link file thư viện gốc.`
         : `File ${index}/${total} “${summary.name}” không có component nào.`);
     }
-    options.onProgress?.({ index, total, fileKey: link.fileKey, name: summary.name, phase: 'properties' });
+    reportProgress({ index, total, fileKey: link.fileKey, name: summary.name, phase: 'properties' });
     let properties: Map<string, FigmaCatalogProperty[]>;
     try {
       properties = await fetchProperties(options.token, link.fileKey, summary.entries.map((entry) => entry.nodeId), deps);
@@ -385,8 +450,9 @@ export async function buildFigmaComponentCatalog(options: {
       properties: properties.get(entry.nodeId) ?? [],
     }));
     files.push({ fileKey: link.fileKey, name: summary.name, url: link.url, components });
-    options.onProgress?.({ index, total, fileKey: link.fileKey, name: summary.name, phase: 'done' });
+    reportProgress({ index, total, fileKey: link.fileKey, name: summary.name, phase: 'done' });
   }
+  throwIfAborted(deps.signal);
   return {
     schemaVersion: FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION,
     generatedAt: (deps.now?.() ?? new Date()).toISOString(),

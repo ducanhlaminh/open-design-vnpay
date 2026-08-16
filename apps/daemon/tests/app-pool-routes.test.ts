@@ -5,13 +5,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { closeDatabase, insertPipelineApp, openDatabase } from '../src/db.js';
 import { registerAppPoolRoutes } from '../src/app-pool-routes.js';
-import { appDocsDir, sha256, writeManifest, type AppPoolManifest } from '../src/app-pool.js';
+import { appDocsDir, readManifest, sha256, writeManifest, type AppPoolManifest } from '../src/app-pool.js';
 
 type Handler = (req: any, res: any) => unknown;
 
@@ -42,14 +42,17 @@ describe('app-pool routes', () => {
   let tempDir: string;
   let handlers: Map<string, Handler>;
   let db: any;
+  let onImportCommitStart: ((appId: string) => void | Promise<void>) | undefined;
 
   beforeEach(() => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), 'od-app-pool-routes-'));
+    onImportCommitStart = undefined;
     db = openDatabase(tempDir, { dataDir: tempDir });
     const app = makeApp();
     registerAppPoolRoutes(app as any, {
       db,
       paths: { PROJECTS_DIR: tempDir, RUNTIME_DATA_DIR: tempDir },
+      onImportCommitStart: (appId: string) => onImportCommitStart?.(appId),
     } as any);
     handlers = app.handlers;
   });
@@ -168,6 +171,112 @@ describe('app-pool routes', () => {
     });
     expect(noCreds.status).toBe(502);
     expect(noCreds.body.error).toMatch(/credential/i);
+  });
+
+  it('explicit cancel aborts the daemon fetch and does not materialize pool pages', async () => {
+    insertPipelineApp(db, { id: 'XPOS', name: 'X POS', createdAt: Date.now() });
+    const previousUrl = process.env.CONFLUENCE_URL;
+    const previousToken = process.env.CONFLUENCE_PERSONAL_TOKEN;
+    const previousFetch = globalThis.fetch;
+    process.env.CONFLUENCE_URL = 'https://wiki.test';
+    process.env.CONFLUENCE_PERSONAL_TOKEN = 'pat';
+    let fetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => { fetchStarted = resolve; });
+    globalThis.fetch = vi.fn((_url: any, init?: RequestInit) => new Promise((_resolve, reject) => {
+      fetchStarted();
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason ?? new DOMException('aborted', 'AbortError')), { once: true });
+    })) as any;
+    try {
+      const handler = handlers.get('POST /api/pipelines/apps/:appId/import-confluence')!;
+      const { res, out } = makeRes();
+      const running = handler({
+        params: { appId: 'XPOS' },
+        body: { refs: ['123'], operationId: 'op-12345678' },
+      }, res);
+      await started;
+      const cancelled = await call('POST /api/pipelines/apps/:appId/import-confluence/:operationId/cancel', {
+        params: { appId: 'XPOS', operationId: 'op-12345678' },
+      });
+      expect(cancelled.body).toEqual({ ok: true, cancelled: true, phase: 'preparing' });
+      await running;
+      expect(out.status).toBe(499);
+      expect(out.body).toMatchObject({ aborted: true });
+      await expect(readManifest(tempDir, 'XPOS')).resolves.toEqual({ version: 1, pages: [] });
+      await expect(stat(appDocsDir(tempDir, 'XPOS'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousUrl === undefined) delete process.env.CONFLUENCE_URL;
+      else process.env.CONFLUENCE_URL = previousUrl;
+      if (previousToken === undefined) delete process.env.CONFLUENCE_PERSONAL_TOKEN;
+      else process.env.CONFLUENCE_PERSONAL_TOKEN = previousToken;
+    }
+  });
+
+  it('cancel after the atomic commit boundary is too late and the route reports success', async () => {
+    insertPipelineApp(db, { id: 'XPOS', name: 'X POS', createdAt: Date.now() });
+    const previousUrl = process.env.CONFLUENCE_URL;
+    const previousToken = process.env.CONFLUENCE_PERSONAL_TOKEN;
+    const previousFetch = globalThis.fetch;
+    process.env.CONFLUENCE_URL = 'https://wiki.test';
+    process.env.CONFLUENCE_PERSONAL_TOKEN = 'pat';
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+      title: 'Page 123',
+      body: { export_view: { value: '<p>committed</p>' }, view: { value: '<p>committed</p>' } },
+      ancestors: [],
+    }), { status: 200 })) as any;
+    let commitStarted!: () => void;
+    const atCommit = new Promise<void>((resolve) => { commitStarted = resolve; });
+    let releaseCommit!: () => void;
+    const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+    onImportCommitStart = async () => {
+      commitStarted();
+      await commitGate;
+    };
+    try {
+      const handler = handlers.get('POST /api/pipelines/apps/:appId/import-confluence')!;
+      const { res, out } = makeRes();
+      const running = handler({
+        params: { appId: 'XPOS' },
+        body: { refs: ['123'], operationId: 'op-commit-123' },
+      }, res);
+      await atCommit;
+      const cancelled = await call('POST /api/pipelines/apps/:appId/import-confluence/:operationId/cancel', {
+        params: { appId: 'XPOS', operationId: 'op-commit-123' },
+      });
+      expect(cancelled.body).toEqual({ ok: true, cancelled: false, phase: 'committing' });
+      releaseCommit();
+      await running;
+      expect(out.status).toBe(200);
+      expect(out.body.imported).toBe(1);
+      const manifest = await readManifest(tempDir, 'XPOS');
+      expect(manifest.pages).toHaveLength(1);
+      await expect(readFile(path.join(appDocsDir(tempDir, 'XPOS'), manifest.pages[0]!.path), 'utf8'))
+        .resolves.toContain('committed');
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousUrl === undefined) delete process.env.CONFLUENCE_URL;
+      else process.env.CONFLUENCE_URL = previousUrl;
+      if (previousToken === undefined) delete process.env.CONFLUENCE_PERSONAL_TOKEN;
+      else process.env.CONFLUENCE_PERSONAL_TOKEN = previousToken;
+    }
+  });
+
+  it('cancel arriving before import registration leaves a tombstone and prevents any fetch or mutation', async () => {
+    insertPipelineApp(db, { id: 'XPOS', name: 'X POS', createdAt: Date.now() });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const cancelled = await call('POST /api/pipelines/apps/:appId/import-confluence/:operationId/cancel', {
+      params: { appId: 'XPOS', operationId: 'op-before-123' },
+    });
+    expect(cancelled.body).toEqual({ ok: true, cancelled: true, phase: 'queued' });
+    const result = await call('POST /api/pipelines/apps/:appId/import-confluence', {
+      params: { appId: 'XPOS' },
+      body: { refs: ['123'], operationId: 'op-before-123' },
+    });
+    expect(result.status).toBe(499);
+    expect(result.body).toMatchObject({ aborted: true });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await expect(readManifest(tempDir, 'XPOS')).resolves.toEqual({ version: 1, pages: [] });
+    fetchSpy.mockRestore();
   });
 
   it('an App denormalized only on a feature\'s studioConfig.appId (no pipeline_apps row) still resolves', async () => {

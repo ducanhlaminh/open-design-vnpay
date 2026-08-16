@@ -20,7 +20,7 @@ import { AppPoolSection } from './AppPoolSection';
 import { appLabelOf, useAppOptions } from './newProjectForm';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
-import { FigmaLinksPanel } from './FigmaLinksPanel';
+import { FigmaLinksPanel, figmaLinksVerificationKey, type FigmaLinksVerificationState } from './FigmaLinksPanel';
 import styles from './EditAppModal.module.css';
 
 export function normalizeFigmaLinks(raw: string): { links: Array<{ url: string; fileKey: string; nodeId?: string }>; error: string | null } {
@@ -66,6 +66,7 @@ export function EditAppModal({
   const initialSource = app.docsReviewComponentSource ?? { mode: 'app-design-system' as const };
   const [sourceMode, setSourceMode] = useState<DocsReviewComponentSource['mode']>(initialSource.mode);
   const [figmaLinks, setFigmaLinks] = useState(initialSource.mode === 'figma-links' ? initialSource.links.map((file) => file.url).join('\n') : '');
+  const [figmaVerification, setFigmaVerification] = useState<FigmaLinksVerificationState>({ status: 'idle', linksKey: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,12 +91,15 @@ export function EditAppModal({
   const effectiveDesignSystemId = sourceMode === 'app-design-system' ? designSystemId : null;
   const designSystemChanged = effectiveDesignSystemId !== (app.designSystemId ?? null);
   const normalizedLinks = normalizeFigmaLinks(figmaLinks);
+  const normalizedLinksKey = figmaLinksVerificationKey(normalizedLinks.links);
+  const figmaLinksVerified = figmaVerification.status === 'verified'
+    && figmaVerification.linksKey === normalizedLinksKey;
   const nextSource: DocsReviewComponentSource = sourceMode === 'app-design-system'
     ? { mode: 'app-design-system' }
     : { mode: 'figma-links', links: normalizedLinks.links };
   const sourceChanged = JSON.stringify(nextSource) !== JSON.stringify(initialSource);
   const canSubmit = Boolean(nameTrim) && !duplicate
-    && (sourceMode !== 'figma-links' || !normalizedLinks.error)
+    && (sourceMode !== 'figma-links' || (!normalizedLinks.error && figmaLinksVerified))
     && (nameChanged || designSystemChanged || sourceChanged);
 
   const submit = async () => {
@@ -192,7 +196,10 @@ export function EditAppModal({
           <FormField label="Link file Figma" hint="Mỗi dòng một link (tối đa 5). Link trùng sẽ tự động được bỏ qua." error={normalizedLinks.error ?? undefined}>
             {(fieldProps) => <textarea {...fieldProps} className={styles.linksInput} rows={4} value={figmaLinks} onChange={(event) => setFigmaLinks(event.target.value)} placeholder="https://www.figma.com/design/…?node-id=…" />}
           </FormField>
-          <FigmaLinksPanel links={normalizedLinks.links} linksError={normalizedLinks.error} />
+          <FigmaLinksPanel links={normalizedLinks.links} linksError={normalizedLinks.error} onVerificationChange={setFigmaVerification} />
+          {!normalizedLinks.error && !figmaLinksVerified ? (
+            <FormError>{figmaVerification.message ?? 'Hãy chờ ứng dụng kiểm tra xong tất cả link Figma trước khi lưu.'}</FormError>
+          ) : null}
         </>
       ) : null}
 

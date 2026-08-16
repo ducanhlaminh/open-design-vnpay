@@ -41,7 +41,8 @@ export type ToolTokenErrorCode =
   | 'TOOL_TOKEN_INVALID'
   | 'TOOL_TOKEN_EXPIRED'
   | 'TOOL_ENDPOINT_DENIED'
-  | 'TOOL_OPERATION_DENIED';
+  | 'TOOL_OPERATION_DENIED'
+  | 'TOOL_CALL_LIMIT_EXCEEDED';
 
 export interface ToolTokenGrant {
   token: string;
@@ -72,6 +73,11 @@ export interface MintToolTokenOptions {
   pluginSnapshotId?: string;
   pluginTrust?: 'trusted' | 'restricted' | 'bundled';
   pluginCapabilitiesGranted?: readonly string[];
+  operationBudgets?: readonly {
+    id: string;
+    operations: readonly ToolOperation[];
+    maxCalls: number;
+  }[];
 }
 
 export type ToolTokenValidationResult =
@@ -82,6 +88,12 @@ interface StoredToolTokenGrant extends ToolTokenGrant {
   tokenHash: string;
   expiresAtMs: number;
   timer: NodeJS.Timeout;
+  operationBudgets: Array<{
+    id: string;
+    operations: readonly ToolOperation[];
+    remainingCalls: number;
+    maxCalls: number;
+  }>;
 }
 
 function tokenHash(token: string): string {
@@ -93,7 +105,13 @@ function createOpaqueToolToken(): string {
 }
 
 function asPublicGrant(stored: StoredToolTokenGrant): ToolTokenGrant {
-  const { tokenHash: _tokenHash, expiresAtMs: _expiresAtMs, timer: _timer, ...grant } = stored;
+  const {
+    tokenHash: _tokenHash,
+    expiresAtMs: _expiresAtMs,
+    timer: _timer,
+    operationBudgets: _operationBudgets,
+    ...grant
+  } = stored;
   return grant;
 }
 
@@ -136,6 +154,17 @@ export class ToolTokenRegistry {
     if (!options.runId) throw new Error('runId is required');
     if (!options.projectId) throw new Error('projectId is required');
     if (!Number.isFinite(ttlMs) || ttlMs <= 0) throw new Error('ttlMs must be positive');
+    const operationBudgets = (options.operationBudgets ?? []).map((budget) => {
+      if (!budget.id || !Number.isInteger(budget.maxCalls) || budget.maxCalls <= 0) {
+        throw new Error('operation budget id and positive integer maxCalls are required');
+      }
+      return {
+        id: budget.id,
+        operations: [...budget.operations],
+        remainingCalls: budget.maxCalls,
+        maxCalls: budget.maxCalls,
+      };
+    });
 
     const token = createOpaqueToolToken();
     const hash = tokenHash(token);
@@ -156,6 +185,7 @@ export class ToolTokenRegistry {
       expiresAt: new Date(expiresAtMs).toISOString(),
       expiresAtMs,
       timer,
+      operationBudgets,
       ...(options.pluginSnapshotId ? { pluginSnapshotId: options.pluginSnapshotId } : {}),
       ...(options.pluginTrust ? { pluginTrust: options.pluginTrust } : {}),
       ...(options.pluginCapabilitiesGranted
@@ -198,6 +228,30 @@ export class ToolTokenRegistry {
     }
 
     return { ok: true, grant: asPublicGrant(stored) };
+  }
+
+  /** Validate and atomically spend one call from every matching budget. */
+  consume(
+    token: string | null | undefined,
+    options: { endpoint?: string; operation?: string; nowMs?: number } = {},
+  ): ToolTokenValidationResult {
+    const validation = this.validate(token, options);
+    if (!validation.ok || !token || !options.operation) return validation;
+    const stored = this.#byTokenHash.get(tokenHash(token));
+    if (!stored) {
+      return { ok: false, code: 'TOOL_TOKEN_INVALID', message: 'tool token is invalid or revoked' };
+    }
+    const matching = stored.operationBudgets.filter((budget) => budget.operations.includes(options.operation!));
+    const exhausted = matching.find((budget) => budget.remainingCalls <= 0);
+    if (exhausted) {
+      return {
+        ok: false,
+        code: 'TOOL_CALL_LIMIT_EXCEEDED',
+        message: `tool call limit exceeded for ${exhausted.id} (${exhausted.maxCalls} calls per run)`,
+      };
+    }
+    for (const budget of matching) budget.remainingCalls -= 1;
+    return validation;
   }
 
   revokeToken(token: string | null | undefined, _reason: ToolTokenRevocationReason = 'manual'): boolean {

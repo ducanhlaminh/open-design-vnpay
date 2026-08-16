@@ -4,7 +4,12 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { writeFigmaConfig } from '../src/figma-config.js';
-import { registerFigmaCatalogRoutes } from '../src/figma-catalog-routes.js';
+import { readAppFigmaCatalog, registerFigmaCatalogRoutes, writeAppFigmaCatalog } from '../src/figma-catalog-routes.js';
+import {
+  FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION,
+  renderFigmaComponentsMarkdown,
+  type FigmaComponentCatalogSnapshot,
+} from '../src/figma-component-catalog.js';
 
 vi.mock('../src/db.js', () => ({
   getPipelineApp: (_db: unknown, id: string) => (id === 'retail'
@@ -91,5 +96,30 @@ describe('app figma-catalog routes', () => {
     const plain = response();
     await handlers.get('POST /api/pipelines/apps/:appId/figma-catalog/refresh')!({ params: { appId: 'plain' } }, plain.res);
     expect(plain.output.status).toBe(400);
+  });
+
+  it('serializes concurrent writers and always reads matching JSON + Markdown generations', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-figma-catalog-'));
+    roots.push(root);
+    const projectsDir = path.join(root, 'projects');
+    const snapshots: FigmaComponentCatalogSnapshot[] = Array.from({ length: 20 }, (_, index) => ({
+      schemaVersion: FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION,
+      generatedAt: `2026-08-16T00:00:${String(index).padStart(2, '0')}.000Z`,
+      files: [{
+        fileKey: 'ABC',
+        name: `Kit ${index}`,
+        url: 'https://www.figma.com/design/ABC',
+        components: [{ nodeId: `${index}:1`, name: `Button ${index}`, properties: [] }],
+      }],
+    }));
+
+    await expect(Promise.all(snapshots.map((snapshot) => writeAppFigmaCatalog(projectsDir, 'retail', snapshot))))
+      .resolves.toHaveLength(snapshots.length);
+    const stored = await readAppFigmaCatalog(projectsDir, 'retail');
+    expect(stored).not.toBeNull();
+    expect(stored!.markdown).toBe(renderFigmaComponentsMarkdown(stored!.snapshot));
+    const names = await (await import('node:fs/promises')).readdir(path.join(projectsDir, 'retail', 'figma-catalog'));
+    expect(names).toEqual(expect.arrayContaining(['components.json', 'components.md']));
+    expect(names.some((name) => name.endsWith('.tmp'))).toBe(false);
   });
 });

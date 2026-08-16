@@ -55,7 +55,7 @@ import { appLabelOf, toSlugId, useAppOptions } from './newProjectForm';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
 import { normalizeFigmaLinks } from './EditAppModal';
-import { FigmaLinksPanel } from './FigmaLinksPanel';
+import { FigmaLinksPanel, figmaLinksVerificationKey, type FigmaLinksVerificationState } from './FigmaLinksPanel';
 import styles from './EditAppModal.module.css';
 
 export function NewAppModal({
@@ -71,6 +71,7 @@ export function NewAppModal({
   const [designSystemId, setDesignSystemId] = useState<string | null>(null);
   const [sourceMode, setSourceMode] = useState<DocsReviewComponentSource['mode']>('app-design-system');
   const [figmaLinks, setFigmaLinks] = useState('');
+  const [figmaVerification, setFigmaVerification] = useState<FigmaLinksVerificationState>({ status: 'idle', linksKey: '' });
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [relatedTicked, setRelatedTicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -99,11 +100,14 @@ export function NewAppModal({
   // mới", nếu ta lặng lẽ trả về App có sẵn thì họ tin là vừa tạo một App khác.
   const duplicate = apps.some((a) => appLabelOf(a).trim().toLowerCase() === nameTrim.toLowerCase());
   const normalizedLinks = normalizeFigmaLinks(figmaLinks);
+  const normalizedLinksKey = figmaLinksVerificationKey(normalizedLinks.links);
+  const figmaLinksVerified = figmaVerification.status === 'verified'
+    && figmaVerification.linksKey === normalizedLinksKey;
   const componentSource: DocsReviewComponentSource = sourceMode === 'app-design-system'
     ? { mode: 'app-design-system' }
     : { mode: 'figma-links', links: normalizedLinks.links };
   const canSubmit = Boolean(nameTrim) && !duplicate
-    && (sourceMode !== 'figma-links' || !normalizedLinks.error);
+    && (sourceMode !== 'figma-links' || (!normalizedLinks.error && figmaLinksVerified));
 
   const submit = async () => {
     if (busy || !canSubmit) return;
@@ -301,7 +305,10 @@ export function NewAppModal({
               />
             )}
           </FormField>
-          <FigmaLinksPanel links={normalizedLinks.links} linksError={normalizedLinks.error} />
+          <FigmaLinksPanel links={normalizedLinks.links} linksError={normalizedLinks.error} onVerificationChange={setFigmaVerification} />
+          {!normalizedLinks.error && !figmaLinksVerified ? (
+            <FormError>{figmaVerification.message ?? 'Hãy chờ ứng dụng kiểm tra xong tất cả link Figma trước khi tạo dự án.'}</FormError>
+          ) : null}
         </>
       ) : null}
 

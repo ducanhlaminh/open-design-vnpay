@@ -57,6 +57,37 @@ describe('run-scoped tool tokens', () => {
     registry.clear();
   });
 
+  it('atomically enforces a shared operation budget across Figma tools', () => {
+    const registry = new ToolTokenRegistry();
+    const grant = registry.mint({
+      runId: 'run-figma-budget',
+      projectId: 'project-a',
+      allowedEndpoints: ['/api/tools/figma/design-context', '/api/tools/figma/screenshot'],
+      allowedOperations: ['figma:design-context', 'figma:screenshot'],
+      operationBudgets: [{
+        id: 'figma-desktop',
+        operations: ['figma:design-context', 'figma:screenshot'],
+        maxCalls: 8,
+      }],
+    });
+
+    for (let index = 0; index < 8; index++) {
+      expect(registry.consume(grant.token, {
+        endpoint: index % 2 === 0 ? '/api/tools/figma/design-context' : '/api/tools/figma/screenshot',
+        operation: index % 2 === 0 ? 'figma:design-context' : 'figma:screenshot',
+      })).toMatchObject({ ok: true });
+    }
+    expect(registry.consume(grant.token, {
+      endpoint: '/api/tools/figma/design-context',
+      operation: 'figma:design-context',
+    })).toMatchObject({
+      ok: false,
+      code: 'TOOL_CALL_LIMIT_EXCEEDED',
+      message: 'tool call limit exceeded for figma-desktop (8 calls per run)',
+    });
+    registry.clear();
+  });
+
   it('expires and revokes tokens by TTL', () => {
     vi.useFakeTimers();
     const registry = new ToolTokenRegistry();

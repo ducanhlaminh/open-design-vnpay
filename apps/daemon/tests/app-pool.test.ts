@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -293,6 +293,41 @@ describe('app-pool — importConfluenceIntoPool (stubbed fetch core)', () => {
 
     const index = await readFile(path.join(appDocsDir(projectsDir, 'app-1'), '_index.md'), 'utf8');
     expect(index).toContain('branch-x/page-0.md');
+  });
+
+  it('cancel before commit removes staging and leaves the live pool byte-for-byte unchanged', async () => {
+    const docsDir = appDocsDir(projectsDir, 'app-1');
+    await mkdir(path.join(docsDir, 'old'), { recursive: true });
+    await writeFile(path.join(docsDir, 'old/original.md'), '# original', 'utf8');
+    const originalManifest: AppPoolManifest = {
+      version: 1,
+      pages: [{ pageId: 'old', title: 'Original', path: 'old/original.md', branch: 'old', contentHash: sha256('# original'), fetchedAt: 1 }],
+    };
+    await writeManifest(projectsDir, 'app-1', originalManifest);
+    await writeIndexMd(projectsDir, 'app-1', originalManifest);
+
+    const controller = new AbortController();
+    const { fetchConfluencePages } = await import('../src/bas/bas-client.js');
+    vi.mocked(fetchConfluencePages).mockImplementationOnce(async () => {
+      controller.abort(new Error('cancel before commit'));
+      return [{
+        pageId: 'new', title: 'New', url: 'https://wiki.example/new',
+        relPath: 'docs/new/new.md', content: '# new',
+      }];
+    });
+    const { importConfluenceIntoPool } = await import('../src/app-pool.js');
+    await expect(importConfluenceIntoPool({
+      projectsDir,
+      runtimeDataDir: '/tmp/does-not-matter',
+      appId: 'app-1',
+      refs: ['new'],
+      signal: controller.signal,
+    })).rejects.toThrow(/cancel before commit/);
+
+    await expect(readManifest(projectsDir, 'app-1')).resolves.toEqual(originalManifest);
+    await expect(readFile(path.join(docsDir, 'old/original.md'), 'utf8')).resolves.toBe('# original');
+    await expect(readFile(path.join(docsDir, 'new/new.md'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await readdir(path.dirname(docsDir))).filter((name) => name.startsWith('.docs.import-'))).toEqual([]);
   });
 });
 

@@ -80,7 +80,7 @@ export interface FigmaDesktopToolResult {
 
 export interface FigmaDesktopFileExpectation {
   fileKey: string;
-  name?: string; // tên file (từ catalog REST) — gate chính bằng tên cửa sổ
+  name?: string; // tên file (từ catalog REST) — tín hiệu phụ/fallback khi không có probe node
   probeNodeId?: string; // nodeId có thật trong file (vd component đầu tiên của catalog)
   probeName?: string; // tên node đó — gate phụ khi không đọc được tên cửa sổ
 }
@@ -104,8 +104,9 @@ async function defaultExec(file: string, args: string[]): Promise<{ stdout: stri
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** So khớp tên cửa sổ với tên file: trim, bỏ khoảng trắng thừa, so sánh không
- *  phân biệt hoa thường; cửa sổ có thể có hậu tố/tiền tố (vd " – Figma") nên
- *  dùng includes hai chiều. */
+ *  phân biệt hoa thường và bỏ hậu tố tên ứng dụng của Figma. Không dùng
+ *  substring: hai file "Design System" / "Design System Mobile" phải được
+ *  xem là khác nhau. Tên cửa sổ chỉ là fallback khi không có probe node. */
 export function windowTitleMatchesFile(
   title: string | null | undefined,
   name: string | null | undefined,
@@ -115,7 +116,8 @@ export function windowTitleMatchesFile(
   const normalizedTitle = normalize(title);
   const normalizedName = normalize(name);
   if (!normalizedTitle || !normalizedName) return false;
-  return normalizedTitle.includes(normalizedName) || normalizedName.includes(normalizedTitle);
+  const titleWithoutAppSuffix = normalizedTitle.replace(/\s+(?:–|—|-)\s+figma$/, '').trim();
+  return titleWithoutAppSuffix === normalizedName;
 }
 
 export class FigmaDesktopClient {
@@ -356,12 +358,16 @@ export class FigmaDesktopClient {
   private async checkActive(
     expect: FigmaDesktopFileExpectation,
   ): Promise<{ state: boolean | 'unknown'; title: string | null }> {
+    let title: string | null = null;
     if (expect.name) {
-      const title = await this.activeFileTitle();
-      if (title !== null) {
-        return { state: windowTitleMatchesFile(title, expect.name), title };
-      }
+      title = await this.activeFileTitle();
     }
+
+    // A window title is not a file identity: duplicate/similar file names are
+    // common and the Desktop MCP reads whichever file is active. Whenever the
+    // REST catalogue gave us a known node, that node must be verified even if
+    // the title appears to match. Conversely, a valid probe is authoritative
+    // when native title probing is stale/unavailable/mismatched.
     if (expect.probeNodeId) {
       try {
         const result = await this.callTool('get_metadata', {
@@ -369,15 +375,19 @@ export class FigmaDesktopClient {
           clientLanguages: 'unknown',
           clientFrameworks: 'unknown',
         });
-        if (!expect.probeName) return { state: true, title: null };
+        if (!expect.probeName) return { state: true, title };
         const unescaped = result.text.replace(/&quot;/g, '"');
-        return { state: unescaped.includes(`name="${expect.probeName}"`), title: null };
+        return { state: unescaped.includes(`name="${expect.probeName}"`), title };
       } catch (err) {
         if (err instanceof FigmaDesktopError && err.kind === 'tool_error') {
-          return { state: false, title: null };
+          return { state: false, title };
         }
         throw err;
       }
+    }
+
+    if (title !== null && expect.name) {
+      return { state: windowTitleMatchesFile(title, expect.name), title };
     }
     return { state: 'unknown', title: null };
   }
