@@ -15,13 +15,15 @@ vi.mock('../../../src/components/Icon', () => ({ Icon: () => null }));
 import { PipelinesFeaturesView } from '../../../src/components/pipelines/PipelinesFeaturesView';
 import { groupByApp } from '../../../src/components/pipelines/usePipelineNav';
 
-function navFor(knownApps: Array<{ id: string; name?: string; designSystemId?: string | null }>) {
+type KnownApp = { id: string; name?: string; designSystemId?: string | null; docsReviewComponentSource?: { mode: 'app-design-system' } | { mode: 'figma-links'; links: Array<{ url: string; fileKey: string }> } };
+
+function navFor(knownApps: KnownApp[]) {
   const projects: PipelineProject[] = [];
   const apps = groupByApp(projects, knownApps);
   return { apps, projects, loading: false, loaded: true, error: null, reload: async () => {}, appById: (id: string) => apps.find((app) => app.id === id) ?? null, featureOf: () => null };
 }
 
-function renderView(knownApps: Array<{ id: string; name?: string; designSystemId?: string | null }>) {
+function renderView(knownApps: KnownApp[]) {
   return render(<PipelinesFeaturesView nav={navFor(knownApps)} appId={knownApps[0]?.id ?? 'unassigned'} />);
 }
 
@@ -33,6 +35,12 @@ describe('Pipelines App · DS tab', () => {
     expect(screen.getByRole('tab', { name: /DS/ })).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /DS/ })); });
     expect(await screen.findByRole('heading', { name: 'VNPAY DS' })).toBeTruthy();
+  });
+
+  it('App dùng nguồn Link Figma thì KHÔNG có tab DS (chỉ Features + Tài liệu)', () => {
+    renderView([{ id: 'app-1', name: 'App', designSystemId: 'ds-1', docsReviewComponentSource: { mode: 'figma-links', links: [{ url: 'https://www.figma.com/design/ABC', fileKey: 'ABC' }] } }]);
+    expect(screen.queryByRole('tab', { name: /DS/ })).toBeNull();
+    expect(screen.getByRole('tab', { name: /Tài liệu/ })).toBeTruthy();
   });
 
   it('không hiện tab DS cho bucket Chưa gán app', () => {

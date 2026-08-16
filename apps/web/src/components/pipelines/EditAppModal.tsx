@@ -84,7 +84,11 @@ export function EditAppModal({
     (a) => a.id !== app.id && appLabelOf(a).trim().toLowerCase() === nameTrim.toLowerCase(),
   );
   const nameChanged = nameTrim !== app.name;
-  const designSystemChanged = designSystemId !== (app.designSystemId ?? null);
+  // Nguồn Link Figma thì App KHÔNG gắn Design System (picker bị ẩn) — thứ
+  // ẩn đi mà vẫn được lưu và vẫn chép rules.md vào criteria/ là trạng thái
+  // ngầm gây nhầm. Đổi lại chế độ DS thì lựa chọn cũ hiện lại (state giữ).
+  const effectiveDesignSystemId = sourceMode === 'app-design-system' ? designSystemId : null;
+  const designSystemChanged = effectiveDesignSystemId !== (app.designSystemId ?? null);
   const normalizedLinks = normalizeFigmaLinks(figmaLinks);
   const nextSource: DocsReviewComponentSource = sourceMode === 'app-design-system'
     ? { mode: 'app-design-system' }
@@ -104,7 +108,7 @@ export function EditAppModal({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           ...(nameChanged ? { name: nameTrim } : {}),
-          ...(designSystemChanged ? { designSystemId } : {}),
+          ...(designSystemChanged ? { designSystemId: effectiveDesignSystemId } : {}),
           ...(sourceChanged ? { docsReviewComponentSource: nextSource } : {}),
         }),
       });
@@ -192,25 +196,25 @@ export function EditAppModal({
         </>
       ) : null}
 
-      <FormField
-        label="Design System (Figma)"
-        hint={sourceMode === 'figma-links'
-          ? 'Design System này vẫn được giữ cho các bước khác; riêng rà soát component sẽ dùng các link Figma ở trên.'
-          : 'Nguồn tiêu chuẩn review cho mọi tính năng của dự án; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/.'}
-      >
-        {(fieldProps) => (
-          <div {...fieldProps}>
-            <ProjectDesignSystemPicker
-              designSystems={(systems ?? []).filter((s) => s.status !== 'draft')}
-              selectedId={designSystemId}
-              loading={systems === null}
-              onChange={setDesignSystemId}
-              popoverZIndex={1100}
-              variant="form"
-            />
-          </div>
-        )}
-      </FormField>
+      {sourceMode === 'app-design-system' ? (
+        <FormField
+          label="Design System (Figma)"
+          hint="Nguồn tiêu chuẩn review cho mọi tính năng của dự án; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/."
+        >
+          {(fieldProps) => (
+            <div {...fieldProps}>
+              <ProjectDesignSystemPicker
+                designSystems={(systems ?? []).filter((s) => s.status !== 'draft')}
+                selectedId={designSystemId}
+                loading={systems === null}
+                onChange={setDesignSystemId}
+                popoverZIndex={1100}
+                variant="form"
+              />
+            </div>
+          )}
+        </FormField>
+      ) : null}
 
       {error ? <FormError>{error}</FormError> : null}
 

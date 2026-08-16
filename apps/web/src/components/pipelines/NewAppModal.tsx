@@ -119,7 +119,8 @@ export function NewAppModal({
         body: JSON.stringify({
           appId,
           name: nameTrim,
-          ...(designSystemId ? { designSystemId } : {}),
+          // Picker DS bị ẩn ở chế độ Link Figma → không gửi lựa chọn ẩn.
+          ...(designSystemId && sourceMode === 'app-design-system' ? { designSystemId } : {}),
           docsReviewComponentSource: componentSource,
         }),
       });
@@ -304,25 +305,25 @@ export function NewAppModal({
         </>
       ) : null}
 
-      <FormField
-        label="Design System (Figma)"
-        hint={sourceMode === 'figma-links'
-          ? 'Tuỳ chọn. Design System này vẫn được giữ cho các bước khác; riêng rà soát component sẽ dùng các link Figma ở trên.'
-          : 'Tuỳ chọn. Bộ này là nguồn tiêu chuẩn review cho mọi tính năng của dự án; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/.'}
-      >
-        {(fieldProps) => (
-          <div {...fieldProps}>
-            <ProjectDesignSystemPicker
-              designSystems={(systems ?? []).filter((s) => s.status !== 'draft')}
-              selectedId={designSystemId}
-              loading={systems === null}
-              onChange={setDesignSystemId}
-              popoverZIndex={1100}
-              variant="form"
-            />
-          </div>
-        )}
-      </FormField>
+      {sourceMode === 'app-design-system' ? (
+        <FormField
+          label="Design System (Figma)"
+          hint="Tuỳ chọn. Bộ này là nguồn tiêu chuẩn review cho mọi tính năng của dự án; bước “Tài liệu (nạp)” sẽ chép components.md và rules.md (nếu có) vào criteria/."
+        >
+          {(fieldProps) => (
+            <div {...fieldProps}>
+              <ProjectDesignSystemPicker
+                designSystems={(systems ?? []).filter((s) => s.status !== 'draft')}
+                selectedId={designSystemId}
+                loading={systems === null}
+                onChange={setDesignSystemId}
+                popoverZIndex={1100}
+                variant="form"
+              />
+            </div>
+          )}
+        </FormField>
+      ) : null}
 
       <FormField
         label="Tài liệu Confluence (tùy chọn)"

@@ -66,6 +66,29 @@ describe('EditAppModal · Design System', () => {
     });
   });
 
+  it('chọn Link Figma thì ẨN picker Design System và PATCH designSystemId null cho App đang gắn DS; chọn lại DS thì picker hiện lại', async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<EditAppModal app={{ id: 'retail', name: 'Retail', designSystemId: 'old-ds' }} onClose={() => {}} onSaved={() => {}} />);
+    await act(async () => {});
+    expect(screen.getByText('Design System (Figma)')).toBeTruthy();
+    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
+    expect(screen.queryByText('Design System (Figma)')).toBeNull();
+    expect(screen.getByLabelText('Link file Figma')).toBeTruthy();
+    fireEvent.click(screen.getByRole('radio', { name: /^Design System đã nạp/i }));
+    expect(screen.getByText('Design System (Figma)')).toBeTruthy();
+    expect(screen.queryByLabelText('Link file Figma')).toBeNull();
+
+    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
+    fireEvent.change(screen.getByLabelText('Link file Figma'), { target: { value: 'https://figma.com/design/ABC/Login' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/apps/') && c[1]?.method === 'PATCH');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      designSystemId: null,
+      docsReviewComponentSource: { mode: 'figma-links', links: [{ url: 'https://www.figma.com/design/ABC', fileKey: 'ABC' }] },
+    });
+  });
+
   async function chooseDs(app: { id: string; name: string; designSystemId?: string | null }) {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={app} onClose={() => {}} onSaved={() => {}} />);

@@ -107,6 +107,10 @@ export function PipelinesFeaturesView({
 
   const app = nav.appById(appId);
   const hasDocsTab = Boolean(app && !app.unassigned);
+  // Tab DS chỉ có nghĩa khi App đối chiếu component bằng Design System đã
+  // nạp; App dùng nguồn Link Figma không gắn DS nên không có gì để hiện.
+  const hasDsTab = hasDocsTab && (app?.docsReviewComponentSource?.mode ?? 'app-design-system') === 'app-design-system';
+  useEffect(() => { if (tab === 'ds' && !hasDsTab) setTab('features'); }, [tab, hasDsTab]);
   const [designSystems, setDesignSystems] = useState<DesignSystemSummary[]>([]);
   useEffect(() => {
     if (!hasDocsTab) return undefined;
@@ -299,20 +303,22 @@ export function PipelinesFeaturesView({
               <span className={styles.detailTabName}>Tài liệu</span>
               <span className={styles.detailTabMeta}>· {poolSummary ? `${poolSummary.pages} trang` : '…'}</span>
             </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'ds'}
-              className={`${styles.detailTab}${tab === 'ds' ? ' ' + styles.detailTabActive : ''}`}
-              onClick={() => setTab('ds')}
-            >
-              <span className={styles.detailTabName}>DS</span>
-              <span className={styles.detailTabMeta} title={designSystemTitle}>{designSystemMeta}</span>
-            </button>
+            {hasDsTab ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === 'ds'}
+                className={`${styles.detailTab}${tab === 'ds' ? ' ' + styles.detailTabActive : ''}`}
+                onClick={() => setTab('ds')}
+              >
+                <span className={styles.detailTabName}>DS</span>
+                <span className={styles.detailTabMeta} title={designSystemTitle}>{designSystemMeta}</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
 
-        {tab === 'ds' && hasDocsTab ? (
+        {tab === 'ds' && hasDsTab ? (
           <div className={styles.panelBody}><AppDesignSystemPanel appId={appId} designSystemId={app?.designSystemId} /></div>
         ) : tab === 'docs' && hasDocsTab ? (
           <div className={styles.panelBody}>
