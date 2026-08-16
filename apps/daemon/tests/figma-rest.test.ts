@@ -39,6 +39,19 @@ const fileA = {
   },
 };
 
+// Published-library metadata for file A (what /component_sets + /components return).
+const publishedSetsA = { meta: { component_sets: [
+  { node_id: '10:1', name: 'Button', description: 'Primary action', containing_frame: { pageName: 'Actions' } },
+] } };
+const publishedComponentsA = { meta: { components: [
+  { node_id: '10:2', name: 'State=Default', containing_frame: { pageName: 'Actions', containingStateGroup: { nodeId: '10:1', name: 'Button' } } },
+  { node_id: '10:3', name: 'State=Disabled', containing_frame: { pageName: 'Actions', containingStateGroup: { nodeId: '10:1', name: 'Button' } } },
+  { node_id: '11:1', name: 'Avatar', description: '', containing_frame: { pageName: 'People' } },
+] } };
+const emptyPublished = { meta: { component_sets: [], components: [] } };
+/** Page-walk shape: /nodes?ids=<pageId> answers with the page node carrying its own maps. */
+const pageWalkA = { nodes: { '0:1': { document: { id: '0:1', type: 'CANVAS', name: 'Components' }, componentSets: fileA.componentSets, components: fileA.components } } };
+
 const nodesA = {
   nodes: {
     '10:1': { document: { id: '10:1', type: 'COMPONENT_SET', componentPropertyDefinitions: {
@@ -87,13 +100,30 @@ describe('figma-rest', () => {
     expect(sleeps).toEqual([1000, 1000]);
   });
 
-  it('verifyFigmaLink counts sets + standalone components owned by the file and flags remote-only files', async () => {
-    const own = fakeFetch(() => ({ body: fileA }));
+  it('verifyFigmaLink counts published sets + stand-alone components (variants collapse into their set)', async () => {
+    const own = fakeFetch((url) => (url.pathname === '/v1/files/A' ? { body: fileA }
+      : url.pathname === '/v1/files/A/component_sets' ? { body: publishedSetsA }
+        : url.pathname === '/v1/files/A/components' ? { body: publishedComponentsA }
+          : { status: 404, body: {} }));
     await expect(verifyFigmaLink('tok', { url: 'https://www.figma.com/design/A', fileKey: 'A' }, { fetch: own.fetch }))
       .resolves.toEqual({ fileKey: 'A', url: 'https://www.figma.com/design/A', ok: true, name: 'Core UI Kit', componentCount: 2 });
-    expect(own.calls).toEqual(['/v1/files/A?depth=1']);
+    expect(own.calls).toEqual(['/v1/files/A?depth=1', '/v1/files/A/component_sets', '/v1/files/A/components']);
+  });
 
-    const remoteOnly = fakeFetch(() => ({ body: { name: 'Checkout screens', components: { '1:1': { name: 'Lib/Button', remote: true } }, componentSets: {} } }));
+  it('unpublished file → walks every page via /nodes?ids=<pageId>; consumer-only file is flagged remote-only', async () => {
+    const walk = fakeFetch((url) => (url.pathname === '/v1/files/A' ? { body: fileA }
+      : url.pathname.endsWith('/component_sets') || url.pathname.endsWith('/components') ? { body: emptyPublished }
+        : url.pathname === '/v1/files/A/nodes' ? { body: pageWalkA }
+          : { status: 404, body: {} }));
+    await expect(verifyFigmaLink('tok', { url: 'https://www.figma.com/design/A', fileKey: 'A' }, { fetch: walk.fetch }))
+      .resolves.toMatchObject({ ok: true, name: 'Core UI Kit', componentCount: 2 });
+    expect(walk.calls).toEqual(['/v1/files/A?depth=1', '/v1/files/A/component_sets', '/v1/files/A/components', '/v1/files/A/nodes?ids=0%3A1']);
+
+    const remoteOnly = fakeFetch((url) => (url.pathname === '/v1/files/B'
+      ? { body: { name: 'Checkout screens', document: { children: [{ id: '0:1', name: 'Screens' }] } } }
+      : url.pathname.endsWith('/component_sets') || url.pathname.endsWith('/components') ? { body: emptyPublished }
+        : url.pathname === '/v1/files/B/nodes' ? { body: { nodes: { '0:1': { components: { '1:1': { name: 'Lib/Button', remote: true } }, componentSets: {} } } } }
+          : { status: 404, body: {} }));
     const row = await verifyFigmaLink('tok', { url: 'https://www.figma.com/design/B', fileKey: 'B' }, { fetch: remoteOnly.fetch });
     expect(row).toMatchObject({ ok: false, remoteOnly: true, componentCount: 0, name: 'Checkout screens' });
     expect(row.detail).toMatch(/thư viện gốc/);
@@ -102,12 +132,11 @@ describe('figma-rest', () => {
   it('builds a frozen snapshot: properties per entry, variants collapsed, page names best-effort, progress in order', async () => {
     const { fetch, calls } = fakeFetch((url) => {
       if (url.pathname === '/v1/files/A') return { body: fileA };
+      if (url.pathname === '/v1/files/A/component_sets') return { body: publishedSetsA };
+      if (url.pathname === '/v1/files/A/components') return { body: publishedComponentsA };
       if (url.pathname === '/v1/files/A/nodes') {
         expect(url.searchParams.get('ids')).toBe('10:1,11:1');
         return { body: nodesA };
-      }
-      if (url.pathname === '/v1/files/A/components') {
-        return { body: { meta: { components: [{ node_id: '10:2', containing_frame: { pageName: 'Actions' } }, { node_id: '11:1', containing_frame: { pageName: 'People' } }] } } };
       }
       return { status: 404, body: {} };
     });
@@ -119,13 +148,13 @@ describe('figma-rest', () => {
       deps: { fetch, now: () => new Date('2026-08-16T00:00:00.000Z') },
     });
     expect(progress).toEqual(['summary:1/1', 'properties:1/1', 'done:1/1']);
-    expect(calls).toEqual(['/v1/files/A?depth=1', '/v1/files/A/nodes?ids=10%3A1%2C11%3A1&depth=1', '/v1/files/A/components']);
+    expect(calls).toEqual(['/v1/files/A?depth=1', '/v1/files/A/component_sets', '/v1/files/A/components', '/v1/files/A/nodes?ids=10%3A1%2C11%3A1&depth=1']);
     expect(snapshot.generatedAt).toBe('2026-08-16T00:00:00.000Z');
     expect(snapshot.files).toHaveLength(1);
     const [file] = snapshot.files;
     expect(file).toMatchObject({ fileKey: 'A', name: 'Core UI Kit', url: 'https://www.figma.com/design/A/Core' });
     expect(file!.components).toEqual([
-      { nodeId: '10:1', name: 'Button', description: 'Primary action', properties: [
+      { nodeId: '10:1', name: 'Button', description: 'Primary action', page: 'Actions', properties: [
         { name: 'State', type: 'VARIANT', values: ['Default', 'Disabled'] },
         { name: 'Label', type: 'TEXT', values: ['Continue'] },
         { name: 'Show icon', type: 'BOOLEAN', values: [] },
@@ -137,9 +166,10 @@ describe('figma-rest', () => {
   it('fails the whole read on the first unreadable file, naming it', async () => {
     const { fetch } = fakeFetch((url) => (url.pathname === '/v1/files/A'
       ? { body: fileA }
-      : url.pathname === '/v1/files/A/nodes' ? { body: nodesA }
-        : url.pathname === '/v1/files/A/components' ? { status: 403, body: {} }
-          : { status: 403, body: { err: 'Not allowed' } }));
+      : url.pathname === '/v1/files/A/component_sets' ? { body: publishedSetsA }
+        : url.pathname === '/v1/files/A/components' ? { body: publishedComponentsA }
+          : url.pathname === '/v1/files/A/nodes' ? { body: nodesA }
+            : { status: 403, body: { err: 'Not allowed' } }));
     await expect(buildFigmaComponentCatalog({
       token: 'tok',
       links: [{ url: 'https://www.figma.com/design/A', fileKey: 'A' }, { url: 'https://www.figma.com/design/B', fileKey: 'B' }],

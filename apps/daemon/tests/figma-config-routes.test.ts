@@ -75,7 +75,9 @@ describe('figma-config store', () => {
       const url = new URL(String(input));
       seenTokens.push((init?.headers as Record<string, string>)['X-Figma-Token'] ?? '');
       if (url.pathname === '/v1/me') return new Response(JSON.stringify({ handle: 'anh' }), { status: 200 });
-      if (url.pathname === '/v1/files/ABC') return new Response(JSON.stringify({ name: 'Kit', componentSets: { '1:1': { name: 'Button', remote: false } }, components: {} }), { status: 200 });
+      if (url.pathname === '/v1/files/ABC') return new Response(JSON.stringify({ name: 'Kit', document: { children: [] } }), { status: 200 });
+      if (url.pathname === '/v1/files/ABC/component_sets') return new Response(JSON.stringify({ meta: { component_sets: [{ node_id: '1:1', name: 'Button' }] } }), { status: 200 });
+      if (url.pathname === '/v1/files/ABC/components') return new Response(JSON.stringify({ meta: { components: [] } }), { status: 200 });
       return new Response(JSON.stringify({ status: 404, err: 'Not found' }), { status: 404 });
     }));
     const handlers = register(root);
@@ -91,7 +93,7 @@ describe('figma-config store', () => {
       { url: 'https://www.figma.com/design/ZZZ', fileKey: 'ZZZ' },
       { url: 'https://www.figma.com/design/ABC', fileKey: 'ABC' }, // duplicate dropped
     ] } }, verify.res);
-    expect(seenTokens.slice(1)).toEqual(['saved-token', 'saved-token']);
+    expect(seenTokens.slice(1)).toEqual(['saved-token', 'saved-token', 'saved-token', 'saved-token']);
     expect(verify.output.body).toMatchObject({ hasToken: true, links: [
       { fileKey: 'ABC', ok: true, name: 'Kit', componentCount: 1 },
       { fileKey: 'ZZZ', ok: false },
