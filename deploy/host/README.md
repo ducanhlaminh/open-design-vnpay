@@ -13,12 +13,40 @@ launcher registered in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 Structure inspired by kit-gen style installers (folder layout and general
 flow, not copied verbatim from any project).
 
-## Install (macOS / Linux)
+## Install (macOS)
+
+### Recommended: download and double-click
+
+1. Download [`OpenDesign-macOS-Installer.zip`](https://github.com/ducanhlaminh/open-design-vnpay/releases/latest/download/OpenDesign-macOS-Installer.zip)
+   and unzip it (Safari does this automatically; in other browsers
+   double-click the zip). Inside: `OpenDesign-Install.command` and
+   `OpenDesign-Update.command`.
+2. **First time only:** macOS Gatekeeper blocks a downloaded `.command`
+   ("cannot be opened because it is from an unidentified developer").
+   Right-click (or Control-click) `OpenDesign-Install.command` → **Open** →
+   **Open** again. After that a plain double-click works. (No `sudo`, no
+   admin account — everything installs under `~/.open-design`.)
+3. A Terminal window opens and shows the same 6 steps as the terminal
+   install; it stays open when it finishes so the result or the actionable
+   error remains visible. Press Enter to close it.
+
+Keep the two files: double-clicking `OpenDesign-Install.command` again on a
+machine that already has Open Design performs a safe in-place update (it
+runs the bundled `~/.open-design/current/install.sh --update`) instead of a
+second fresh install; `OpenDesign-Update.command` only ever updates. For
+scripts/CI, run them with `--no-pause`.
+
+The zip is the delivery format on purpose: a bare `.command` fetched over
+HTTP loses its executable bit and cannot be double-clicked; a zip keeps it.
+
+### Terminal alternative (macOS / Linux)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.sh -o install.sh
 bash install.sh
 ```
+
+Linux has no double-click entry point — use the two lines above.
 
 Without `--archive` / `--release-url`, the script downloads the latest
 tagged release of this repo (immutable — pinned to whatever release was
@@ -209,7 +237,9 @@ so it's the right place to keep real secrets (`GOOGLE_CLIENT_SECRET`,
 bash ~/.open-design/current/install.sh --update
 ```
 
-(or re-run the freshly downloaded `install.sh` with `--update`). This
+(or re-run the freshly downloaded `install.sh` with `--update`; on macOS you
+can instead double-click `OpenDesign-Update.command` from the installer zip —
+same command underneath). This
 downloads/verifies the new release, extracts it alongside the existing ones,
 restarts the service, health-checks it (with the same automatic rollback as
 a fresh install), and finally prints the new version straight from

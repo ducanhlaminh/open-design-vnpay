@@ -278,6 +278,26 @@ if [ "$PLATFORM" = "win32-x64" ]; then
   cp "${WORKSPACE_ROOT}/deploy/host/stop.cmd" "${OUT_DIR}/OpenDesign-Stop.cmd"
 fi
 
+# macOS double-click entry points (the .command counterparts of the Windows
+# .cmd files above). Shipped as ONE zip, not as bare files: an HTTP download
+# does not carry the executable bit, so a bare `.command` fetched from the
+# release page could not be double-clicked ("you do not have appropriate
+# access privileges") — a zip preserves +x, and Safari/Finder unzip it in one
+# click. Only the darwin-arm64 build emits it (both darwin builds would
+# otherwise upload the same asset twice); the files themselves are
+# architecture-independent — they only pick which install.sh to run.
+if [ "$PLATFORM" = "darwin-arm64" ]; then
+  MAC_CMD_STAGE="${OUT_DIR}/.mac-commands"
+  rm -rf "$MAC_CMD_STAGE"
+  mkdir -p "$MAC_CMD_STAGE"
+  cp "${WORKSPACE_ROOT}/deploy/host/install.command" "${MAC_CMD_STAGE}/OpenDesign-Install.command"
+  cp "${WORKSPACE_ROOT}/deploy/host/update.command" "${MAC_CMD_STAGE}/OpenDesign-Update.command"
+  chmod +x "${MAC_CMD_STAGE}"/*.command
+  rm -f "${OUT_DIR}/OpenDesign-macOS-Installer.zip"
+  (cd "$MAC_CMD_STAGE" && zip -X -q "${OUT_DIR}/OpenDesign-macOS-Installer.zip" OpenDesign-Install.command OpenDesign-Update.command)
+  rm -rf "$MAC_CMD_STAGE"
+fi
+
 # Bundled env defaults (CONFLUENCE_URL/MEDIA_*/IDENTITY_URL/GOOGLE_CLIENT_*/SESSION_SECRET)
 # -- ONLY written when the calling environment actually provides them (CI,
 # from GitHub Actions secrets; unset for a plain local/dev build, which
