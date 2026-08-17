@@ -841,12 +841,16 @@ export function FileViewer({
   if (isPipelineUiScreenFile(file)) {
     return <PipelineScreenViewer projectId={projectId} file={file} />;
   }
-  // docs-review's redline page (`docs-review/review/docs/**/*.md`, the
-  // dr-review stage's edited clone) — highlights every change inline and
-  // lists its `.changes.json` reasons alongside, instead of the plain
-  // markdown viewer that has no idea a changes sidecar exists. Checked BEFORE
-  // the generic .md branch below, which would otherwise claim it first.
-  if (file.kind === 'text' && /\/review\/docs\/.+\.md$/i.test(file.name)) {
+  // docs-review's redline page (`docs-review/review/docs/**/*.md` for legacy
+  // ingest, `docs-review/review/docs-feature/**/*.md` for App-pool projects —
+  // the dr-review stage clones the page under review/ at its ORIGINAL relative
+  // path) — highlights every change inline and lists its `.changes.json`
+  // reasons alongside, instead of the plain markdown viewer that has no idea a
+  // changes sidecar exists. Checked BEFORE the generic .md branch below, which
+  // would otherwise claim it first. Bug 2026-08-17: the regex only knew
+  // `review/docs/`, so every App-pool review page fell through to the plain
+  // viewer and the redline "preview sửa tài liệu" silently disappeared.
+  if (file.kind === 'text' && isDocsReviewRedlinePage(file.name)) {
     return <DocRedlinePreview projectId={projectId} file={file} />;
   }
   // docs-review's per-page component audit (`docs-review/comp/*.components.json`,
@@ -8760,6 +8764,13 @@ function hasUnsafeJsonNumber(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(hasUnsafeJsonNumber);
   if (value && typeof value === 'object') return Object.values(value).some(hasUnsafeJsonNumber);
   return false;
+}
+
+/** dr-review's edited clone of a source page: `<wf>/review/(docs|docs-feature)/…/x.md`.
+ *  Exported for tests — the redline viewer must claim these before the plain
+ *  markdown viewer does. `review/summary.md` (no docs segment) is NOT one. */
+export function isDocsReviewRedlinePage(name: string): boolean {
+  return /\/review\/(docs|docs-feature)\/.+\.md$/i.test(name);
 }
 
 function isJsonFile(file: ProjectFile): boolean {
