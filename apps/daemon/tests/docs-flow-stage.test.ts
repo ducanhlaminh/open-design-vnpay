@@ -26,10 +26,10 @@ function def(id: string) {
   return d;
 }
 
-test('docs-review có đúng 4 stage, đúng thứ tự: dr-docs → dr-comp → dr-flow → dr-review', () => {
+test('docs-review có đúng 4 stage, đúng thứ tự: dr-docs → dr-flow → dr-comp → dr-review', () => {
   const wf = WORKFLOWS.find((w) => w.id === 'docs-review');
   assert.ok(wf, 'workflow docs-review phải tồn tại');
-  assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review']);
+  assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-flow', 'dr-comp', 'dr-review']);
   // Tên hiển thị của stage được suy từ PIPELINE_DEFS, không mirror bằng tay.
   assert.deepEqual(
     wf!.stages!.map((s) => s.id),
@@ -57,7 +57,7 @@ test('gating: dr-flow mở ngay khi dr-docs succeeded; dr-review (docs-only gate
   assert.equal(computeActive({ 'dr-docs': { status: 'succeeded' } }, def('dr-flow')), true);
   // dependsOn của registry KHÔNG đổi — dr-review vẫn CHỐT ở cuối cấu trúc
   // (dr-docs, dr-comp, dr-flow); dòng này tả registry, không phải cổng active.
-  assert.deepEqual(def('dr-review').dependsOn, ['dr-docs', 'dr-comp', 'dr-flow']);
+  assert.deepEqual(def('dr-review').dependsOn, ['dr-docs', 'dr-flow', 'dr-comp']);
   // 2026-08 docs-only gate: dr-review chỉ còn chờ bước ingest của workflow này
   // (dr-docs) — dr-comp/dr-flow có chạy hay chưa không còn gate gì cả.
   assert.equal(

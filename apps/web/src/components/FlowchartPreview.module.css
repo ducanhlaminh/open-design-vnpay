@@ -231,3 +231,15 @@
   border-top: 4px solid transparent;
   border-bottom: 4px solid transparent;
 }
+
+/* ── Tab "Flow màn hình" ─────────────────────────────────────────────── */
+/* Dòng chú thích khi sơ đồ chưa gán màn (file dr-flow bản cũ): nói rõ phải
+   chạy lại bước nào, thay vì để người xem thắc mắc vì sao không có thumbnail. */
+.hint {
+  flex: 0 0 auto;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--amber-bg, #fff3e0);
+  color: var(--amber, #b26200);
+  font-size: 11.5px;
+}

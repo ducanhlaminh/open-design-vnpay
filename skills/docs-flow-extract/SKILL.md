@@ -8,7 +8,8 @@ description: |
   documents describe, and emit ONE flowchart JSON per flow at
   `flows/<FLOW-ID>.flowchart.json` plus a `flows/index.json` listing them.
   Classic flowchart notation only: oval start/end, rectangle action, diamond
-  decision, labeled arrows. Activate when the user runs the "Sơ đồ luồng màn
+  decision, labeled arrows; action nodes carry `screen` (SCREEN-KEY) so the
+  viewer can show each screen's wireframe. Activate when the user runs the "Sơ đồ luồng màn
   hình" pipeline or asks to draw the screen flow / process flowchart of a
   document.
 triggers:
@@ -28,8 +29,10 @@ od:
 
 Bạn là bước **Sơ đồ luồng màn hình** của workflow `docs-review` — độc lập hoàn
 toàn với `docs-to-ui` và `docs-to-prd`. Upstream trong CHÍNH workflow này,
-`dr-docs` đã nạp tài liệu vào `docs/`. Bước Review tài liệu (`dr-review`) chạy
-SAU bạn — nó là bước chốt cuối, soát cả tài liệu lẫn sơ đồ bạn rút ra.
+`dr-docs` đã nạp tài liệu vào `docs/`. Bước Màn hình → Component (`dr-comp`)
+chạy SAU bạn và đọc `flows/` để biết màn nào nối sang màn nào khi vẽ wireframe;
+bước Review tài liệu (`dr-review`) chạy sau cùng — nó là bước chốt cuối, soát
+cả tài liệu lẫn sơ đồ bạn rút ra.
 
 Nhiệm vụ: đọc tài liệu, **nhận diện các LUỒNG MÀN HÌNH / QUY TRÌNH nghiệp vụ**
 mà tài liệu mô tả, và ghi MỖI luồng thành một file sơ đồ JSON. Bạn **không
@@ -80,9 +83,9 @@ Ghi ĐÚNG một file cho mỗi luồng, theo schema dưới đây. **Schema là
   "source": "docs/2.1.1-urd-quan-ly-nhan-vien.md",
   "nodes": [
     { "id": "n1", "type": "start",    "label": "Trang chủ <tên app>" },
-    { "id": "n2", "type": "action",   "label": "Nhập tên đăng nhập + mật khẩu" },
+    { "id": "n2", "type": "action",   "label": "Nhập tên đăng nhập + mật khẩu", "screen": "2.1.1-urd-quan-ly-nhan-vien__SCR-001" },
     { "id": "n3", "type": "decision", "label": "Thông tin hợp lệ?" },
-    { "id": "n4", "type": "action",   "label": "Hiện thông báo lỗi" },
+    { "id": "n4", "type": "action",   "label": "Hiện thông báo lỗi", "screen": "2.1.1-urd-quan-ly-nhan-vien__SCR-001" },
     { "id": "n5", "type": "end",      "label": "Vào màn hình chính" }
   ],
   "edges": [
@@ -101,7 +104,8 @@ Ghi ĐÚNG một file cho mỗi luồng, theo schema dưới đây. **Schema là
   (ví dụ `docs/…md`). Một luồng trải trên nhiều file thì ghi file mô tả
   nó chính.
 - `nodes[]`: `id` duy nhất trong file (dùng `n1`, `n2`, …), `type` thuộc tập
-  đóng bên dưới, `label` là chữ thuần.
+  đóng bên dưới, `label` là chữ thuần, `screen` (tuỳ chọn) = SCREEN-KEY của màn
+  mà bước đó diễn ra trên đó — xem "Gắn màn hình cho từng bước" bên dưới.
 - `edges[]`: `from`/`to` phải là `id` có thật trong `nodes[]`; `label` tuỳ chọn
   (bắt buộc với edge ra khỏi `decision`).
 
@@ -125,6 +129,28 @@ khó hiểu vừa nhập nhằng giữa các tài liệu.
   suy từ ngữ cảnh câu văn (`"Màn danh sách (SCR-004)"`), tuyệt đối không bịa một
   cái tên nghe hợp lý mà tài liệu không nói.
 - Luật này áp cho MỌI `label`: node `action`, `decision`, `end`, và cả nhãn cạnh.
+
+### Gắn màn hình cho từng bước (`screen`)
+
+Viewer vẽ thêm khung nhìn "Flow màn hình": node là MÀN HÌNH có thumbnail
+wireframe (bước `dr-comp` vẽ sau bạn), hình thoi là quyết định. Để làm được,
+mỗi node `action` (và `start`/`end` nếu chính nó là một màn) diễn ra TRÊN một
+màn tài liệu đã khai thì gắn `"screen": "<SCREEN-KEY>"`.
+
+- **SCREEN-KEY = `<file-stem>__<mã màn>`** — LUÔN prefix, kể cả feature chỉ có
+  một trang. `<file-stem>` = tên file `.md` chứa heading màn đó, bỏ đuôi `.md`,
+  không đổi gì khác (`docs-feature/…/4.1.2.1.1.-URD-Mua-sim-thuong.md` →
+  `4.1.2.1.1.-URD-Mua-sim-thuong`; `docs/confluence/2.1.1-URD-Quan-ly-nhan-vien.md`
+  → `2.1.1-URD-Quan-ly-nhan-vien`). `<mã màn>` = mã trong heading màn, nguyên
+  văn (`SCR-001`, `SCR-002.1`). Ví dụ: `2.1.1-URD-Quan-ly-nhan-vien__SCR-001`.
+  Mã màn đánh lại từ đầu trong từng URD nên không prefix là đụng nhau; `dr-comp`
+  đặt tên file wireframe đúng luật này, lệch một ký tự là màn mất thumbnail.
+- Bước hệ thống ("Server kiểm tra quyền"), bước điều hướng ngoài feature
+  ("Mở menu Danh mục"), node `decision`, node `end` thuần kết cục → **KHÔNG**
+  có `screen`. Đừng gán màn cho có.
+- Nhiều bước liên tiếp trên cùng một màn thì cùng một `screen` — viewer tự gộp.
+- Popup/dialog tài liệu khai là màn riêng (có mã) thì là một `screen` riêng.
+- Chỉ dùng mã màn tài liệu KHAI (bảng tra mã → tên bạn đã lập). Không bịa mã.
 
 ## Đường vào (bắt buộc)
 
@@ -176,11 +202,20 @@ Một file duy nhất liệt kê mọi luồng đã dựng:
 
 ```json
 [
-  { "id": "FLOW-login", "title": "Đăng nhập", "source": "docs/2.1.1-urd-quan-ly-nhan-vien.md" },
+  {
+    "id": "FLOW-login",
+    "title": "Đăng nhập",
+    "source": "docs/2.1.1-urd-quan-ly-nhan-vien.md",
+    "screens": [{ "key": "2.1.1-urd-quan-ly-nhan-vien__SCR-001", "name": "Đăng nhập" }]
+  },
   {
     "id": "FLOW-duyet-don",
     "title": "Duyệt đơn nghỉ phép",
     "source": "docs/2.1.4-urd-nghi-phep.md",
+    "screens": [
+      { "key": "2.1.4-urd-nghi-phep__SCR-003", "name": "Danh sách đơn nghỉ phép" },
+      { "key": "2.1.4-urd-nghi-phep__SCR-004", "name": "Chi tiết đơn nghỉ phép" }
+    ],
     "note": "Tài liệu không nêu điều gì xảy ra khi người duyệt từ chối — nhánh Không dừng ở đây."
   }
 ]
@@ -188,6 +223,9 @@ Một file duy nhất liệt kê mọi luồng đã dựng:
 
 - Mỗi phần tử: `id`, `title`, `source` — lấy đúng giá trị trong file flowchart
   tương ứng.
+- `screens[]`: mọi SCREEN-KEY xuất hiện trong `screen` của flow đó, theo thứ tự
+  gặp lần đầu, kèm `name` = TÊN màn như tài liệu đặt (viewer hiện tên này, không
+  hiện key). Flow không gắn màn nào → `screens: []`.
 - `note` (tuỳ chọn): **chỗ duy nhất để ghi phần tài liệu mô tả mơ hồ.** Tài
   liệu nói không rõ (thiếu nhánh, thiếu kết cục, mâu thuẫn giữa hai mục) thì
   ghi chú ở đây; **KHÔNG đoán và vẽ bừa vào sơ đồ**.
@@ -200,9 +238,10 @@ Một file duy nhất liệt kê mọi luồng đã dựng:
   `flows/index.json`. Không ghi vào `docs/`, không ghi vào `review/`.
   `flows/` nằm ở gốc thư mục workflow, KHÔNG lồng trong `review/`: lồng vào đó
   thì một lần chạy lại bước review sẽ xoá sạch sơ đồ.
-- **Schema đóng băng.** Không thêm field (`x`, `y`, `swimlane`, `screenId`…),
-  không đổi tên field, không đổi tập giá trị `type`. Viewer đọc đúng schema
-  trên; một field lạ hoặc một `type` lạ làm sơ đồ không render được.
+- **Schema đóng băng.** Ngoài `screen` (tuỳ chọn, đúng luật SCREEN-KEY) không
+  thêm field nào khác (`x`, `y`, `swimlane`, `screenId`…), không đổi tên field,
+  không đổi tập giá trị `type`. Viewer đọc đúng schema trên; một field lạ hoặc
+  một `type` lạ làm sơ đồ không render được.
 - **Không luồng nào thì không tạo file rỗng.** Tài liệu thuần định nghĩa dữ
   liệu, không mô tả thao tác nào → nói rõ là không tìm thấy luồng, đừng nặn ra
   một sơ đồ ba node cho có.

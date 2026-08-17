@@ -326,24 +326,12 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // dr-docs: runDocsDeterministic (server.ts) only takes the tool-only
   // Confluence path for that exact skillId.
   { id: 'dr-docs',          name: 'Tài liệu (nạp)',                   skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', acceptsUpload: true },
-  // Bước GIỮA: đối chiếu component. Đọc `docs/` (bản GỐC, chưa review) và với
-  // MỖI màn hình trong tài liệu, liệt kê phần tử nào dùng component nào rồi
-  // đối chiếu với danh mục hợp lệ `criteria/components.md`, ghi ra
-  // `comp/<page-slug>.components.json`.
-  //
-  // Vì sao tách thành một bước riêng thay vì để dr-review tự làm: component
-  // được map một lần từ khai báo chữ trong URD/PRD tới danh mục hợp lệ. Ảnh
-  // mockup chỉ là minh hoạ, không được dùng để suy component/variant/layout;
-  // nhờ vậy các section không thể tạo kết luận mâu thuẫn từ cùng một ảnh.
-  //
-  // `comp/` nằm ở GỐC workflow-dir, KHÔNG lồng trong `review/` — cùng lý do đã
-  // ghi cho `flows/` bên dưới: lồng vào đó thì mỗi lần re-run dr-review sẽ xoá
-  // sạch kết quả, và stagesForOutput sẽ chấm hai stage cho cùng một file.
-  { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-component-audit',  dependsOn: ['dr-docs'],          outputs: ['comp/'], usesDesignSystemCriteria: true },
   // Rút SƠ ĐỒ LUỒNG MÀN HÌNH từ tài liệu GỐC (`docs/`): mỗi luồng nghiệp vụ
   // thành một `flows/<FLOW-ID>.flowchart.json` (node start/end/action/decision
-  // + edge có nhãn) để viewer vẽ lại. Chạy TRƯỚC dr-review — review là bước
-  // chốt cuối của workflow, soát cả tài liệu lẫn sơ đồ đã rút.
+  // + edge có nhãn, node action có thể gắn `screen` = SCREEN-KEY của màn) để
+  // viewer vẽ lại. Chạy TRƯỚC dr-comp (2026-08-17): dr-comp đọc `flows/` để
+  // biết màn nào nối sang màn nào khi vẽ wireframe (`data-nav`), nên flow phải
+  // có trước; và trước dr-review — review là bước chốt cuối của workflow.
   // `flows/` nằm ở GỐC workflow-dir, KHÔNG lồng trong `review/`: `review/` là
   // output của dr-review, nên lồng vào đó thì (a) mỗi lần re-run dr-review sẽ
   // xoá sạch sơ đồ vừa dựng và (b) stagesForOutput chấm CẢ HAI stage cho cùng
@@ -351,7 +339,28 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // `flows/` của stage `ux` bên docs-to-ui là vô hại: attribution có namespace
   // theo workflow nên `docs-review/flows/…` chỉ khớp stage của workflow này.
   { id: 'dr-flow',          name: 'Sơ đồ luồng màn hình',      skillId: 'docs-flow-extract',     dependsOn: ['dr-docs'],          outputs: ['flows/'] },
-  { id: 'dr-review',        name: 'Review tài liệu',           skillId: 'docs-spec-review',      dependsOn: ['dr-docs', 'dr-comp', 'dr-flow'], outputs: ['review/'], usesDesignSystemCriteria: true },
+  // Bước GIỮA: đối chiếu component + wireframe. Đọc `docs/` (bản GỐC, chưa
+  // review) và với MỖI màn hình trong tài liệu, liệt kê phần tử nào dùng
+  // component nào rồi đối chiếu với danh mục hợp lệ `criteria/components.md`,
+  // ghi ra `comp/<page-slug>.components.json`; đồng thời vẽ mỗi màn một
+  // wireframe khối xám ghi tên component `wireframes/<SCREEN-KEY>.html`.
+  //
+  // Vì sao tách thành một bước riêng thay vì để dr-review tự làm: component
+  // được map một lần từ khai báo chữ trong URD/PRD tới danh mục hợp lệ. Ảnh
+  // mockup chỉ là minh hoạ, không được dùng để suy component/variant/layout;
+  // nhờ vậy các section không thể tạo kết luận mâu thuẫn từ cùng một ảnh.
+  //
+  // dependsOn dr-flow (2026-08-17): wireframe lấy `data-nav` từ cạnh của
+  // `flows/*.flowchart.json`, nên run-all chạy flow trước và re-run dr-flow có
+  // cascade sẽ xoá comp/ + wireframes/ để vẽ lại.
+  //
+  // `comp/` và `wireframes/` nằm ở GỐC workflow-dir, KHÔNG lồng trong
+  // `review/` — cùng lý do đã ghi cho `flows/` bên trên: lồng vào đó thì mỗi
+  // lần re-run dr-review sẽ xoá sạch kết quả, và stagesForOutput sẽ chấm hai
+  // stage cho cùng một file. Trùng tên `wireframes/` với stage `ux` là vô hại
+  // (namespace theo workflow).
+  { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-component-audit',  dependsOn: ['dr-docs', 'dr-flow'], outputs: ['comp/', 'wireframes/'], usesDesignSystemCriteria: true },
+  { id: 'dr-review',        name: 'Review tài liệu',           skillId: 'docs-spec-review',      dependsOn: ['dr-docs', 'dr-flow', 'dr-comp'], outputs: ['review/'], usesDesignSystemCriteria: true },
   { id: 'dr-confirm',       name: 'Xác nhận hoàn tất',         skillId: 'docs-review-confirm',   dependsOn: ['dr-review'], outputs: ['confirmation/'] },
 ];
 
@@ -402,7 +411,7 @@ const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
     // `dr-confirm` is an internal deterministic action, not a processing
     // stage. The UI exposes it as a dedicated completion CTA after every real
     // stage succeeds, so it must not appear in the stepper or Run All.
-    pipelineIds: ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review'],
+    pipelineIds: ['dr-docs', 'dr-flow', 'dr-comp', 'dr-review'],
   },
 ];
 

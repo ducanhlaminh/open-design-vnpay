@@ -79,29 +79,31 @@ test('docs-to-prd: fully independent of docs-to-ui — its own docs/cj/ux-resear
   assert.equal(workflowDirForPipeline('ux-research'), 'docs-to-ui');
 });
 
-test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -> dr-comp -> dr-flow -> dr-review, docs-to-ui stays WORKFLOWS[0]', () => {
+test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -> dr-flow -> dr-comp -> dr-review, docs-to-ui stays WORKFLOWS[0]', () => {
   // docs-to-ui must remain the default workflow — appending docs-review must
   // not disturb WORKFLOWS[0] or DEFAULT_WORKFLOW_ID.
   assert.equal(WORKFLOWS[0]!.id, 'docs-to-ui');
   const wf = WORKFLOWS.find((w) => w.id === 'docs-review');
   assert.ok(wf, 'docs-review workflow should exist');
-  assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-comp', 'dr-flow', 'dr-review']);
+  assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-flow', 'dr-comp', 'dr-review']);
   assert.equal(def('dr-docs').skillId, 'confluence-ingest');
   assert.equal(def('dr-comp').skillId, 'docs-component-audit');
   assert.equal(def('dr-review').skillId, 'docs-spec-review');
   assert.equal(def('dr-flow').skillId, 'docs-flow-extract');
   assert.deepEqual(def('dr-docs').dependsOn, []);
-  // dr-comp đọc bản GỐC nên chỉ cần dr-docs; dr-review phải chờ CẢ HAI vì nhóm
-  // `component` của nó giờ là đọc lại kết quả dr-comp chứ không tự suy.
-  assert.deepEqual(def('dr-comp').dependsOn, ['dr-docs']);
+  // 2026-08-17: dr-flow chạy TRƯỚC dr-comp — wireframe của dr-comp lấy
+  // `data-nav` từ flows/, nên run-all sắp flow trước và re-run dr-flow có
+  // cascade sẽ xoá comp/ + wireframes/. dr-review phải chờ CẢ HAI vì nhóm
+  // `component` của nó là đọc lại kết quả dr-comp chứ không tự suy.
   assert.deepEqual(def('dr-flow').dependsOn, ['dr-docs']);
-  // Review là bước CHỐT cuối — chờ đủ cả comp lẫn flow.
-  assert.deepEqual(def('dr-review').dependsOn, ['dr-docs', 'dr-comp', 'dr-flow']);
+  assert.deepEqual(def('dr-comp').dependsOn, ['dr-docs', 'dr-flow']);
+  // Review là bước CHỐT cuối — chờ đủ cả flow lẫn comp.
+  assert.deepEqual(def('dr-review').dependsOn, ['dr-docs', 'dr-flow', 'dr-comp']);
   assert.deepEqual(def('dr-docs').outputs, ['docs/', 'docs-feature/']);
   // comp/ nằm ở gốc workflow-dir, KHÔNG lồng trong review/ — cùng lý do như
   // flows/: lồng vào đó thì re-run dr-review xoá mất, và stagesForOutput chấm
   // hai stage cho cùng một file.
-  assert.deepEqual(def('dr-comp').outputs, ['comp/']);
+  assert.deepEqual(def('dr-comp').outputs, ['comp/', 'wireframes/']);
   assert.deepEqual(def('dr-review').outputs, ['review/']);
   // flows/ sits at the workflow-dir root, NOT under review/ — see
   // tests/docs-flow-stage.test.ts for why that placement is load-bearing.
@@ -938,14 +940,14 @@ test('docsFromUpload VẪN lọc bước ingest kể cả khi người dùng tic
   // Nhánh cũ (không stageIds).
   assert.deepEqual(
     selectRunStages(dr, { docsFromUpload: true }),
-    ['dr-comp', 'dr-flow', 'dr-review'],
+    ['dr-flow', 'dr-comp', 'dr-review'],
   );
   // Nhánh tick tay: chạy lại ingest sẽ XOÁ SẠCH tài liệu vừa tải lên (output
   // khai báo của nó chính là docs/), nên việc người dùng lỡ tick không làm điều
   // đó bớt phá hoại — bước ingest vẫn bị loại.
   assert.deepEqual(
     selectRunStages(dr, { stageIds: ['dr-docs', 'dr-comp', 'dr-flow'], docsFromUpload: true }),
-    ['dr-comp', 'dr-flow'],
+    ['dr-flow', 'dr-comp'],
   );
   // Không có cờ upload thì bước ingest được tick vẫn chạy bình thường.
   assert.deepEqual(

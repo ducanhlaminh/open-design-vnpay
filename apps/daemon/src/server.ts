@@ -16135,6 +16135,30 @@ export async function startServer({
         // stage hiện xanh sớm.
         await fs.promises.mkdir(path.join(cwd, 'comp'), { recursive: true });
 
+        // Wireframe (2026-08-17): mỗi màn một `wireframes/<SCREEN-KEY>.html`
+        // do agent vẽ từ CHỮ tài liệu. CSS dùng chung chép MỘT LẦN cho cả stage
+        // từ skill ux-spec vào `wireframes/_wireframe.css` (sau re-run clear ở
+        // trên, trước fan-out) để N lượt trang song song chỉ Read + dán, không
+        // lượt nào tự tìm skill dir. File này không phải màn — viewer chỉ mở
+        // `<SCREEN-KEY>.html`. Thiếu CSS nguồn thì cảnh báo và chạy tiếp:
+        // kickoff bảo agent tự viết vài rule tối thiểu.
+        const wireframesDir = path.join(cwd, 'wireframes');
+        await fs.promises.mkdir(wireframesDir, { recursive: true });
+        const wireframeCssRel = 'wireframes/_wireframe.css';
+        const wireframeCssOk = await fs.promises
+          .copyFile(path.join(SKILLS_DIR, 'ux-spec', 'assets', 'wireframe.css'), path.join(cwd, wireframeCssRel))
+          .then(() => true)
+          .catch((err) => {
+            console.warn('[docs-comp] wireframe.css copy failed (continuing):', err?.message ?? err);
+            return false;
+          });
+        // `data-nav` lấy từ flow của dr-flow (chạy trước): liệt kê file một lần
+        // để kickoff nói thẳng có gì mà đọc, không có thì bảo bỏ data-nav.
+        const flowchartFiles = (await fs.promises.readdir(path.join(cwd, 'flows')).catch(() => [] as string[]))
+          .filter((name) => name.endsWith('.flowchart.json'))
+          .sort()
+          .map((name) => path.posix.join('flows', name));
+
         // Mỗi TRANG một conversation riêng (đặt tên theo trang) để Status modal
         // hiện tiến độ từng cái thay vì N agent trộn chung một log.
         const graphNote =
@@ -16189,6 +16213,28 @@ export async function startServer({
             catalogText != null
               ? ` Danh mục component hợp lệ CÓ SẴN tại "criteria/components.md" (${catalog.size} component) — đọc nó và map mỗi "Kiểu hiển thị" sang component trong đó theo NGHĨA (tên tài liệu và tên danh mục không trùng nhau là chuyện bình thường). "component" phải là tên CÓ THẬT trong danh mục và "rule_id" phải đúng anchor của chính component đó; daemon đối chiếu lại và đánh hỏng CẢ TRANG nếu sai.`
               : ` KHÔNG có "criteria/components.md" trong cwd này. Vẫn liệt kê đủ màn hình và đủ element với "doc_type" nguyên văn, NHƯNG mọi "verdict" phải là "ok" và "component"/"rule_id" phải BỎ TRỐNG — không có danh mục thì không có gì để phán đúng/sai, và một "not-in-catalog" dựng từ trí nhớ là lời buộc tội không có căn cứ.`;
+          // Wireframe mỗi màn — SCREEN-KEY prefix do daemon tính (tên file .md
+          // bỏ đuôi, KHÔNG phải slug) và ghi nguyên văn vào kickoff để agent
+          // của trang này và agent dr-flow (đọc cùng luật trong skill của nó)
+          // ghép ra cùng một khoá mà không cần nhìn nhau.
+          const screenKeyPrefix = path.posix.basename(pg.mdPath, '.md');
+          const flowsLine =
+            flowchartFiles.length > 0
+              ? ` "data-nav": thư mục "flows/" đang có ${flowchartFiles.length} file flowchart (${flowchartFiles.map((r) => `"${r}"`).join(', ')}) do bước Sơ đồ luồng màn hình vẽ trước — đọc chúng; node có trường "screen" (= SCREEN-KEY) là bước diễn ra trên màn đó; khi có cạnh (edges[]) từ một node thuộc màn này sang một node thuộc màn KHÁC thì block nút/link tương ứng trên màn này mang data-nav="<SCREEN-KEY đích>"; không tìm được cạnh nào như vậy thì bỏ data-nav. `
+              : ` Thư mục "flows/" chưa có file *.flowchart.json nào nên KHÔNG dùng data-nav. `;
+          const cssLine = wireframeCssOk
+            ? `một thẻ <style> chép NGUYÊN VĂN nội dung file "${wireframeCssRel}" (daemon đã copy sẵn từ skill ux-spec — Read nó rồi dán vào; chỉ được thêm tối đa vài rule layout của riêng màn), `
+            : `một thẻ <style> tự viết vài rule tối thiểu cho .wf-web/.wf-mobile/.wf-card/.wf-component (khung xám, viền 1px, padding 16px — file "${wireframeCssRel}" không copy được lần này), `;
+          const wireframeLine =
+            ` NGOÀI RA, với MỖI màn trong "screens[]" hãy vẽ thêm MỘT wireframe HTML: "wireframes/<SCREEN-KEY>.html" (thư mục "wireframes/" nằm ở GỐC cwd, ngang "comp/" — một màn một file, tên file = SCREEN-KEY). ` +
+            `SCREEN-KEY = "<prefix>__<mã màn>": <prefix> của trang này CHÍNH XÁC là "${screenKeyPrefix}" (daemon tính sẵn từ tên file .md — ghi NGUYÊN VĂN, đừng tự suy hay rút gọn, kể cả khi trang chỉ có một màn) và <mã màn> là "id" nguyên văn của màn (vd "${screenKeyPrefix}__SCR-001"). ` +
+            `File tự chứa: "<!doctype html>", ${cssLine}không <script>, không <link>, không ảnh. File "${wireframeCssRel}" KHÔNG phải màn — đừng sửa hay xoá nó. ` +
+            `<body data-screen="<SCREEN-KEY>" data-layout="web|mobile"> ("web" mặc định — URD backoffice; "mobile" chỉ khi tài liệu nói rõ app di động), bên trong một <div class="wf-web"> (hoặc "wf-mobile"). ` +
+            `Mỗi element của màn = MỘT block <div class="wf-component"> theo đúng thứ tự tài liệu; verdict "ok" thì chữ trong block là TÊN component và block mang data-comp="<anchor>" (phần sau "#" của rule_id); verdict KHÁC "ok" thì chữ = doc_type nguyên văn + " ?" và KHÔNG có data-comp. ` +
+            `Dòng phân nhóm ("Khối …") → một <div class="wf-card"> bọc các block con; chỉ nhóm theo cụm tài liệu, không suy bố cục từ ảnh mockup; không màu, không icon, không nội dung mẫu. ` +
+            `Màn overlay (popup/dialog) → thêm data-overlay="dialog" và data-overlay-of="<SCREEN-KEY màn cơ sở>" trên <body> khi tài liệu nói popup thuộc màn nào; thân file chỉ chứa nội dung popup.` +
+            flowsLine +
+            `Wireframe vẽ từ CHỮ tài liệu (bảng element + verdict bạn vừa chốt) — KHÔNG mở ảnh mockup để vẽ. Ngoài "${outRel}" và "wireframes/<SCREEN-KEY>.html" của trang này, KHÔNG ghi file nào khác.`;
           const kickoff =
             `Run the "docs-component-audit" audit for ONE page of project "${projectId}". ` +
             `Read "${pg.mdPath}" (title: ${pg.page}) — CHỈ ĐỌC. TUYỆT ĐỐI KHÔNG sửa bất cứ file nào dưới "docs/": đó là bản gốc mà bước review phía sau dùng để đối chiếu, và bước này không có bản clone nào để sửa an toàn.${imageLine}${catalogLine} ` +
@@ -16197,7 +16243,7 @@ export async function startServer({
             `"anchor" (nguyên văn cả dòng heading của màn) và "label" (nguyên văn ô tên trường) phải COPY từ tài liệu, đừng gõ lại — daemon đối chiếu lại với trang gốc và một chỗ trích sai làm hỏng CẢ TRANG (dấu "—" em dash và "-" hyphen là hai ký tự khác nhau). ` +
             `"verdict" là tập đóng 5 giá trị (ok | not-in-catalog | variant-mismatch | ambiguous | internal); verdict khác "ok" thì BẮT BUỘC có "note" một câu nói sai ở đâu và nên dùng gì. ` +
             `Trang không khai màn hình nào thì vẫn ghi file với "screens": [] — đừng nặn một màn hình ra từ một đoạn văn. ` +
-            `Do NOT audit any other page, and do NOT write "comp/index.json" or "comp/summary.md" — daemon gộp chúng từ file của mọi trang sau khi tất cả chạy xong; bạn tự ghi thì lượt chạy song song của trang khác sẽ ghi đè.${graphNote}${figmaDesktopNote}`;
+            `Do NOT audit any other page, and do NOT write "comp/index.json" or "comp/summary.md" — daemon gộp chúng từ file của mọi trang sau khi tất cả chạy xong; bạn tự ghi thì lượt chạy song song của trang khác sẽ ghi đè.${graphNote}${figmaDesktopNote}${wireframeLine}`;
 
           const run = design.runs.create({
             projectId,
@@ -16334,6 +16380,7 @@ export async function startServer({
           );
           if (!results.some((r) => r?.status === 'succeeded')) {
             await fs.promises.rm(path.join(cwd, 'comp'), { recursive: true, force: true }).catch(() => null);
+            await fs.promises.rm(wireframesDir, { recursive: true, force: true }).catch(() => null);
           }
           setProjectPipelineStatus(db, projectId, pipelineId, { status: 'idle', subConversations: tasks.map((t) => ({ ...t })) });
           console.log('[docs-comp] fan-out canceled by user');
@@ -16376,6 +16423,9 @@ export async function startServer({
           // 'succeeded' khi suy từ đĩa. Nội dung chẩn đoán không bị mất: chính
           // summary đó được chuyển ra file ngang hàng.
           await writeDocsComponentFailureNote(cwd, summaryWithFailures);
+          // wireframes/ cũng là output của stage này (stagesForOutput) — để
+          // sót _wireframe.css hay HTML của trang hỏng là stage hiện xanh sai.
+          await fs.promises.rm(wireframesDir, { recursive: true, force: true }).catch(() => null);
         }
         setProjectPipelineStatus(db, projectId, pipelineId, {
           status: next,
@@ -16409,6 +16459,11 @@ export async function startServer({
               .rm(path.join(cwd, 'comp'), { recursive: true, force: true })
               .catch((cleanupError) =>
                 console.error(`[docs-comp] FAIL-SHUT hỏng: không xoá được ${path.join(cwd, 'comp')} — stage sẽ hiện xanh dù lần chạy này hỏng:`, cleanupError),
+              );
+            await fs.promises
+              .rm(path.join(cwd, 'wireframes'), { recursive: true, force: true })
+              .catch((cleanupError) =>
+                console.error(`[docs-comp] FAIL-SHUT hỏng: không xoá được ${path.join(cwd, 'wireframes')} — stage sẽ hiện xanh dù lần chạy này hỏng:`, cleanupError),
               );
           }
         }

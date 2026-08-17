@@ -10,9 +10,13 @@ description: |
   project's valid component catalogue (`criteria/components.md`) BY MEANING,
   and emit one verdict per element (`ok` | `not-in-catalog` |
   `variant-mismatch` | `ambiguous` | `internal`) into
-  `comp/<page-slug>.components.json`. The terminal `dr-review` stage READS that
-  file instead of re-deriving the component lens from scratch — that reuse is
-  the entire reason this stage exists. This stage never edits the document.
+  `comp/<page-slug>.components.json`, then draw ONE low-fi wireframe per screen
+  (`wireframes/<SCREEN-KEY>.html` — gray blocks labelled with the component
+  name, built from the document TEXT, never from mockup images). The terminal
+  `dr-review` stage READS the JSON instead of re-deriving the component lens
+  from scratch — that reuse is the entire reason this stage exists; the flow
+  viewer shows the wireframes as screen thumbnails. This stage never edits the
+  document.
   Activate when the user runs the "Màn hình → Component" pipeline or asks which
   components a spec's screens use / to check a spec's screens against the
   component catalogue.
@@ -35,14 +39,16 @@ Bạn là bước **Màn hình → Component** của workflow `docs-review`. Th�
 bước:
 
 ```
-dr-docs (nạp tài liệu)  →  dr-comp (BẠN Ở ĐÂY)  →  dr-review (review + sửa tài liệu)
+dr-docs (nạp tài liệu)  →  dr-flow (sơ đồ luồng)  →  dr-comp (BẠN Ở ĐÂY)  →  dr-review (review + sửa tài liệu)
 ```
 
 Upstream, `dr-docs` đã nạp tài liệu (Confluence hoặc `.md` người dùng tải lên)
-vào `docs/`. Ảnh mockup có thể nằm trong `attachments/`, nhưng chỉ là minh hoạ,
-không phải đầu vào để xác định component hay hướng thiết kế. Downstream,
-`dr-review` sẽ **đọc file kết quả của bạn** thay vì tự phán lại xem màn hình
-dùng component gì.
+vào `docs/`, và `dr-flow` đã rút sơ đồ luồng màn hình vào
+`flows/*.flowchart.json` (node có thể gắn `screen` = SCREEN-KEY của màn). Ảnh
+mockup có thể nằm trong `attachments/`, nhưng chỉ là minh hoạ, không phải đầu
+vào để xác định component hay hướng thiết kế. Downstream, `dr-review` sẽ **đọc
+file kết quả của bạn** thay vì tự phán lại xem màn hình dùng component gì, và
+viewer sơ đồ luồng hiện **wireframe của bạn** làm thumbnail từng màn.
 
 Vì sao tách thành một bước riêng: map component từ **khai báo chữ trong URD/PRD**
 với danh mục hợp lệ là một quyết định cần nhất quán cho cả trang. `dr-review`
@@ -54,7 +60,8 @@ phải ghi ra. Đừng đi lang thang sang trang khác: trang đó đã có (ho�
 lượt chạy của riêng nó, và hai lượt cùng ghi một file là mất dữ liệu.
 
 Bạn **không review câu chữ, không sửa tài liệu, không thiết kế màn hình mới**.
-Bạn đọc, và bạn ghi ra đúng một file JSON.
+Bạn đọc, bạn ghi ra đúng một file JSON, rồi vẽ mỗi màn trong đó một wireframe
+HTML khối xám (Bước 6).
 
 ## Bộ quy tắc Design System
 
@@ -280,16 +287,104 @@ nghiệp vụ) → vẫn ghi file với `screens: []`. Đừng nặn ra một "m
 đoạn văn: file này là input của bước sau, và một màn bịa ra sẽ kéo theo cả một
 chùm note bịa ra ở bản review cuối.
 
+## Bước 6 — wireframe màn hình: `wireframes/<SCREEN-KEY>.html`
+
+Sau khi JSON đã chốt, với **mỗi màn** trong `screens[]` vẽ **một** file HTML
+wireframe. Mục đích: người review nhìn một lượt là biết màn có **những gì** —
+mỗi phần tử là một khối xám ghi **tên component** đã map — theo đúng **CHỮ**
+của tài liệu, không phải theo mockup. Nó không cần giống mockup, không cần
+đẹp; nó là bảng element của Bước 5 được xếp thành hình. Viewer sơ đồ luồng
+(dr-flow) dùng chính file này làm thumbnail cho node màn hình.
+
+**Tên file = SCREEN-KEY**, một màn một file, nằm ở **gốc thư mục workflow**
+ngang `comp/` và `flows/` (không lồng trong `comp/`):
+
+- `SCREEN-KEY = <prefix>__<mã màn>` — **LUÔN LUÔN có prefix**, kể cả khi trang
+  chỉ có một màn. `<mã màn>` là `id` nguyên văn của màn (`SCR-001`,
+  `SCR-002.1`…). `<prefix>` là tên file `.md` bạn đang đọc bỏ đuôi `.md`, không
+  đổi gì khác — **kickoff đã ghi sẵn nguyên văn**, chép lại, đừng tự suy hay
+  rút gọn. Ví dụ `2.1.1-URD-Quan-ly-nhan-vien__SCR-001`.
+- Vì sao prefix: mã màn được đánh lại từ đầu trong từng URD, và `dr-flow`
+  (chạy một lượt cho cả feature) gắn `screen` = SCREEN-KEY theo cùng luật này
+  mà không nhìn thấy bạn — hai bên chỉ khớp nhau khi cùng nhìn tên file.
+
+**Hợp đồng file** (viewer đọc đúng các thứ này, đừng sáng tạo thêm):
+
+- Tự chứa: `<!doctype html>`, **một** `<style>` chép **NGUYÊN VĂN** nội dung
+  `wireframes/_wireframe.css` (daemon đã copy sẵn từ skill ux-spec — `Read`
+  nó rồi dán vào; chỉ thêm tối đa vài rule layout của riêng màn). Không
+  `<script>`, không `<link>`, không ảnh. `_wireframe.css` **không phải màn** —
+  đừng sửa, đừng xoá.
+- `<body data-screen="<SCREEN-KEY>" data-layout="web|mobile">` — `web` mặc
+  định (URD backoffice); `mobile` chỉ khi tài liệu nói rõ app di động. Bên
+  trong là một `<div class="wf-web">` (hoặc `wf-mobile`).
+- Mỗi phần tử trong `elements[]` của màn = **MỘT** `<div class="wf-component">`
+  theo đúng thứ tự tài liệu:
+  - `verdict = ok` → chữ trong block là **tên component**, block mang
+    `data-comp="<anchor>"` (anchor = phần sau `#` của `rule_id`).
+  - `verdict ≠ ok` (kể cả không có danh mục nên `component` trống) → chữ =
+    `doc_type` nguyên văn + hậu tố ` ?`, **không** `data-comp`.
+- Khung: chỉ nhóm theo cụm tài liệu — dòng phân nhóm ("Khối …") → một
+  `<div class="wf-card">` bọc các block con. Không suy bố cục từ ảnh mockup.
+  Không màu, không icon, không nội dung mẫu.
+- `data-nav="<SCREEN-KEY đích>"` trên block là nút/link **khi** `flows/*.flowchart.json`
+  có cạnh từ một node thuộc màn này (node có `screen` = SCREEN-KEY của màn)
+  sang một node thuộc màn khác. Không có flow, hoặc không có cạnh nào như vậy →
+  bỏ, đừng bịa đích.
+- Màn overlay (popup/dialog): `data-overlay="dialog"` +
+  `data-overlay-of="<SCREEN-KEY màn cơ sở>"` trên `<body>` khi tài liệu nói
+  popup thuộc màn nào; thân file chỉ chứa nội dung popup.
+
+Ví dụ một màn có 3 phần tử (một `ok`, một `not-in-catalog`, một nút có đích
+trong flow) — `wireframes/2.1.1-URD-Quan-ly-nhan-vien__SCR-001.html`:
+
+```html
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>SCR-001 — Danh sách Nhân viên</title>
+<style>
+/* … NGUYÊN VĂN wireframes/_wireframe.css … */
+.wf-actions { display: flex; gap: 12px; }
+</style>
+</head>
+<body data-screen="2.1.1-URD-Quan-ly-nhan-vien__SCR-001" data-layout="web">
+<div class="wf-web">
+  <div class="wf-card">
+    <div class="wf-section">Nút thao tác</div>
+    <div class="wf-actions">
+      <div class="wf-component" data-comp="button" data-nav="2.1.1-URD-Quan-ly-nhan-vien__SCR-002">Button</div>
+      <div class="wf-component">Icon menu ?</div>
+    </div>
+  </div>
+  <div class="wf-component" data-comp="table">Table</div>
+</div>
+</body>
+</html>
+```
+
+Wireframe vẽ từ **CHỮ** — bảng element và verdict bạn vừa chốt ở Bước 5.
+**Không mở ảnh mockup để vẽ**, không mở `tools figma screenshot` để vẽ. Trang có
+`screens: []` thì không có wireframe nào.
+
 ## Hard rules
 
 - **CẤM sửa bất cứ file nào dưới `docs/`.** Bước này chỉ đọc. `docs/` là bản
   gốc mà `dr-review` phía sau dùng để đối chiếu `before` của từng thay đổi —
   một chữ bị đổi ở đây làm sai lệch bản gốc của một bước chưa chạy, và không ai
   đi truy ngược được vì bước này lẽ ra không ghi vào đó.
-- **Chỉ ghi vào `comp/`.** `comp/` nằm ở **gốc thư mục workflow**, KHÔNG lồng
-  trong `review/`: `review/` là output của `dr-review` và bị dựng lại mỗi lần
-  chạy lại bước đó — lồng vào đấy thì `dr-review` sẽ xoá sạch chính input của
-  nó.
+- **Chỉ ghi vào `comp/` và `wireframes/`.** Cả hai nằm ở **gốc thư mục
+  workflow**, KHÔNG lồng trong `review/`: `review/` là output của `dr-review`
+  và bị dựng lại mỗi lần chạy lại bước đó — lồng vào đấy thì `dr-review` sẽ
+  xoá sạch chính input của nó. Không ghi vào `flows/` (output của `dr-flow`,
+  bạn chỉ đọc).
+- **Một màn một file wireframe, tên = SCREEN-KEY** (`<prefix>__<mã màn>`,
+  prefix nguyên văn từ kickoff). Không gộp nhiều màn vào một file, không đặt
+  tên khác, không đụng `wireframes/_wireframe.css`.
+- **Không mở ảnh để vẽ wireframe.** Wireframe là bảng element + verdict xếp
+  thành khối xám; bố cục chỉ nhóm theo dòng phân nhóm của tài liệu, không suy
+  từ mockup.
 - **`anchor` và `label` phải là NGUYÊN VĂN có thật trong tài liệu.** Daemon đối
   chiếu lại với trang, và một chỗ trích sai làm **hỏng cả trang**, không phải
   hỏng mỗi dòng đó. **COPY, đừng gõ lại** — dấu `—` (em dash) và dấu `-`

@@ -238,7 +238,12 @@ type FlowNodeData = {
   title: string;
   wire?: string | null;
   platform?: string;
+  /** Text shown in a screen node that has no wireframe yet — the docs-review
+   * canvas overrides it to say WHICH stage produces the file. */
+  missingText?: string;
 };
+
+const DEFAULT_MISSING_WIRE_TEXT = '(chưa có wireframe cho màn này)';
 
 function ScreenFlowNode({ data }: NodeProps) {
   const d = data as FlowNodeData;
@@ -279,7 +284,7 @@ function ScreenFlowNode({ data }: NodeProps) {
           </div>
         ) : (
           <div style={{ display: 'grid', placeItems: 'center', height: '100%', fontSize: 11, color: T.muted, padding: 10, textAlign: 'center' }}>
-            (chưa có wireframe cho màn này)
+            {d.missingText ?? DEFAULT_MISSING_WIRE_TEXT}
           </div>
         )}
       </div>
@@ -371,10 +376,14 @@ function NavFlowNode({ data }: NodeProps) {
 const NODE_TYPES = { screen: ScreenFlowNode, decision: DecisionFlowNode, end: EndFlowNode, nav: NavFlowNode };
 
 /** Layered left→right layout: BFS depth from the entry (fallback: in-degree-0
- * nodes) picks the column; siblings stack vertically inside their column. */
-function layoutFlow(
+ * nodes) picks the column; siblings stack vertically inside their column.
+ * `root` overrides which node the BFS starts from (defaults to `flow.entry`) —
+ * a flowchart-derived flow enters through a grey nav node BEFORE its first
+ * screen, and rooting at the screen would leave that node unreached. */
+export function layoutFlow(
   flow: FlowDoc,
   screenIds: Set<string>,
+  root: string | undefined = flow.entry,
 ): { kinds: Map<string, 'screen' | 'decision' | 'end' | 'nav'>; pos: Map<string, { x: number; y: number }> } {
   const declared = new Map((flow.nodes ?? []).map((n) => [n.id, n]));
   const kinds = new Map<string, 'screen' | 'decision' | 'end' | 'nav'>();
@@ -399,8 +408,8 @@ function layoutFlow(
     out.set(e.from!, [...(out.get(e.from!) ?? []), e.to!]);
     indeg.set(e.to!, (indeg.get(e.to!) ?? 0) + 1);
   }
-  const roots = flow.entry && kinds.has(flow.entry)
-    ? [flow.entry]
+  const roots = root && kinds.has(root)
+    ? [root]
     : [...kinds.keys()].filter((id) => (indeg.get(id) ?? 0) === 0);
   const depth = new Map<string, number>();
   const queue = (roots.length ? roots : [...kinds.keys()].slice(0, 1)).map((id) => ({ id, d: 0 }));
@@ -453,226 +462,137 @@ function layoutFlow(
   return { kinds, pos };
 }
 
-export function SpecFlowCanvas({
-  flows,
-  spec,
+export interface BuiltFlowGraph {
+  nodes: Node[];
+  edges: Edge[];
+}
+
+/** Turn a FlowDoc into positioned React Flow nodes/edges. Pure (no hooks) so
+ * both the ux Flow tab and the docs-review "Flow màn hình" tab build their
+ * graph the same way and only differ in what they feed in:
+ * - `screenIds`: ids that render as screens even without a declared node
+ *   (ux spec screens are implicit nodes); pass an empty set when every screen
+ *   is declared with `kind: 'screen'`.
+ * - `screenNames`: id → display title for screen nodes.
+ * - `layoutRoot`: node the layered layout starts from (defaults to `flow.entry`).
+ * - `missingWireText`: placeholder inside a screen node without a wireframe. */
+export function buildFlowGraph({
+  flow,
+  screenIds,
+  screenNames,
   wireframes,
   platforms,
+  layoutRoot,
+  missingWireText,
 }: {
-  flows: FlowDoc[];
-  spec: SpecDoc;
+  flow: FlowDoc;
+  screenIds: Set<string>;
+  screenNames: ReadonlyMap<string, string>;
   wireframes: Record<string, string> | null;
   platforms: Record<string, string> | null;
-}) {
-  // MUST be memoized: `?? []` mints a new array on every render when the spec
-  // has no `screens`, which changes `screenIds`/`nameOf` → `built` → the
-  // seeding effect below → setState → render again. That self-sustaining loop
-  // is what throws "Maximum update depth exceeded" on this canvas.
-  const screens = useMemo(
-    () => ((spec as { screens?: Array<Record<string, any>> }).screens ?? []) as Array<Record<string, any>>,
-    [spec],
-  );
-  const screenIds = useMemo(() => new Set(screens.map((s) => String(s.id ?? ''))), [screens]);
-  const nameOf = useMemo(
-    () => new Map(screens.map((s) => [String(s.id ?? ''), String(s.name ?? s.title ?? s.id ?? '')])),
-    [screens],
-  );
-  const effective = useMemo(() => {
-    if (flows.length) return flows;
-    // A Customer Journey has journeys, not screens — derive one flow per
-    // journey. Without this the tab was empty for every CJ document, because
-    // both other sources (flow files, `navigates_to`) are ux-stage artifacts.
-    const fromJourneys = deriveFlowsFromJourneys(spec);
-    if (fromJourneys.length) return fromJourneys;
-    const derived = deriveFlowFromSpec(spec);
-    return derived ? [derived] : [];
-  }, [flows, spec]);
-  const [idx, setIdx] = useState(0);
-  const [mode, setMode] = useState<'scenarios' | 'graph'>('scenarios');
-  const flow = effective[Math.min(idx, effective.length - 1)];
-  const screenTitles = useMemo(() => Object.fromEntries(screens.map((s) => [String(s.id), String(s.name ?? s.title ?? s.id)])), [screens]);
-  const chart = useMemo(() => (flow ? flowDocToChart(flow, screenTitles) : null), [flow, screenTitles]);
-  const useCaseCount = useMemo(() => (chart ? deriveUseCases(chart).useCases.length : 0), [chart]);
+  layoutRoot?: string;
+  missingWireText?: string;
+}): BuiltFlowGraph {
+  const { kinds, pos } = layoutFlow(flow, screenIds, layoutRoot ?? flow.entry);
+  const nodes: Node[] = [...kinds.entries()].map(([id, kind]) => {
+    const declared = (flow.nodes ?? []).find((n) => n.id === id);
+    const screenId = declared?.screen ?? id;
+    return {
+      id,
+      type: kind,
+      position: pos.get(id) ?? { x: 0, y: 0 },
+      draggable: true,
+      data: {
+        title:
+          kind === 'screen'
+            ? screenNames.get(screenId) ?? screenId
+            : declared?.label ?? id,
+        wire: kind === 'screen' ? (wireframes?.[screenId] ?? null) : null,
+        platform: kind === 'screen' ? (platforms?.[screenId] ?? 'mobile') : undefined,
+        ...(missingWireText ? { missingText: missingWireText } : {}),
+      } satisfies FlowNodeData,
+    };
+  });
+  // Edges that share a source fan out to the same gutter, so their label
+  // chips land on nearly the same midpoint and pile up. Distribute each
+  // source's labels into vertical slots (~a chip-height apart) so parallel
+  // edges never stack their labels.
+  const filtered = (flow.edges ?? []).filter((e) => e.from && e.to);
+  // Label chips land near the midpoint of their edge, so every edge crossing
+  // the SAME gutter (the empty column between two node columns) competes for
+  // the same strip of space. Staggering per SOURCE only — what this did
+  // before — still let two different sources drop their chips on top of each
+  // other. Slot them per gutter instead: one shared ladder of vertical slots,
+  // so no two chips in a gutter share a row.
+  const gutterOf = (id: string) => Math.round((pos.get(id)?.x ?? 0) / COL_W);
+  const byGutter = new Map<number, number>();
+  const LABEL_SLOT = 40; // ~2-line chip height + gap
+  const edges: Edge[] = filtered.map((e, i) => {
+    const from = e.from!;
+    const gutter = gutterOf(from);
+    const seen = byGutter.get(gutter) ?? 0;
+    byGutter.set(gutter, seen + 1);
+    const negative = isNegativeBranch(e.label);
+    const stroke = negative ? T.danger : T.ink;
+    return {
+      id: `e${i}`,
+      source: from,
+      target: e.to!,
+      // Orthogonal routing + HTML label chips (LabeledEdge) read as a real
+      // flowchart; bezier diagonals with floating one-line SVG labels turned
+      // dense graphs into soup.
+      type: 'labeled',
+      data: { label: e.label, slot: seen, negative },
+      style: {
+        stroke,
+        strokeWidth: negative ? 1.4 : 1.6,
+        ...(negative ? { strokeDasharray: '6 4' } : {}),
+      },
+      markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+    };
+  });
+  // Centre each gutter's ladder on the edges' own midpoints.
+  const gutterTotal = new Map(byGutter);
+  for (const edge of edges) {
+    const d = edge.data as { slot: number };
+    const total = gutterTotal.get(gutterOf(edge.source)) ?? 1;
+    (edge.data as { shift?: number }).shift = total > 1 ? (d.slot - (total - 1) / 2) * LABEL_SLOT : 0;
+  }
+  return { nodes, edges };
+}
 
-  const built = useMemo(() => {
-    if (!flow) return { nodes: [] as Node[], edges: [] as Edge[] };
-    const { kinds, pos } = layoutFlow(flow, screenIds);
-    const nodes: Node[] = [...kinds.entries()].map(([id, kind]) => {
-      const declared = (flow.nodes ?? []).find((n) => n.id === id);
-      const screenId = declared?.screen ?? id;
-      return {
-        id,
-        type: kind,
-        position: pos.get(id) ?? { x: 0, y: 0 },
-        draggable: true,
-        data: {
-          title:
-            kind === 'screen'
-              ? nameOf.get(screenId) ?? screenId
-              : declared?.label ?? id,
-          wire: kind === 'screen' ? (wireframes?.[screenId] ?? null) : null,
-          platform: kind === 'screen' ? (platforms?.[screenId] ?? 'mobile') : undefined,
-        } satisfies FlowNodeData,
-      };
-    });
-    // Edges that share a source fan out to the same gutter, so their label
-    // chips land on nearly the same midpoint and pile up. Distribute each
-    // source's labels into vertical slots (~a chip-height apart) so parallel
-    // edges never stack their labels.
-    const filtered = (flow.edges ?? []).filter((e) => e.from && e.to);
-    // Label chips land near the midpoint of their edge, so every edge crossing
-    // the SAME gutter (the empty column between two node columns) competes for
-    // the same strip of space. Staggering per SOURCE only — what this did
-    // before — still let two different sources drop their chips on top of each
-    // other. Slot them per gutter instead: one shared ladder of vertical slots,
-    // so no two chips in a gutter share a row.
-    const gutterOf = (id: string) => Math.round((pos.get(id)?.x ?? 0) / COL_W);
-    const byGutter = new Map<number, number>();
-    const LABEL_SLOT = 40; // ~2-line chip height + gap
-    const edges: Edge[] = filtered.map((e, i) => {
-      const from = e.from!;
-      const gutter = gutterOf(from);
-      const seen = byGutter.get(gutter) ?? 0;
-      byGutter.set(gutter, seen + 1);
-      const negative = isNegativeBranch(e.label);
-      const stroke = negative ? T.danger : T.ink;
-      return {
-        id: `e${i}`,
-        source: from,
-        target: e.to!,
-        // Orthogonal routing + HTML label chips (LabeledEdge) read as a real
-        // flowchart; bezier diagonals with floating one-line SVG labels turned
-        // dense graphs into soup.
-        type: 'labeled',
-        data: { label: e.label, slot: seen, negative },
-        style: {
-          stroke,
-          strokeWidth: negative ? 1.4 : 1.6,
-          ...(negative ? { strokeDasharray: '6 4' } : {}),
-        },
-        markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
-      };
-    });
-    // Centre each gutter's ladder on the edges' own midpoints.
-    const gutterTotal = new Map(byGutter);
-    for (const edge of edges) {
-      const d = edge.data as { slot: number };
-      const total = gutterTotal.get(gutterOf(edge.source)) ?? 1;
-      (edge.data as { shift?: number }).shift = total > 1 ? (d.slot - (total - 1) / 2) * LABEL_SLOT : 0;
-    }
-    return { nodes, edges };
-  }, [flow, screenIds, nameOf, wireframes, platforms]);
-
-  // React Flow needs STATEFUL nodes/edges + change handlers to apply drag
-  // (position) updates — a controlled `nodes` prop with no `onNodesChange` makes
-  // a dragged node snap straight back. Seed from the computed layout and re-seed
-  // whenever it changes (switching flows / new data), which also resets any
-  // manual drag for the new layout.
+/** React Flow needs STATEFUL nodes/edges + change handlers to apply drag
+ * (position) updates — a controlled `nodes` prop with no `onNodesChange` makes
+ * a dragged node snap straight back. Seed from the computed layout and re-seed
+ * whenever it changes (switching flows / new data), which also resets any
+ * manual drag for the new layout. Kept as a hook (not inside FlowGraphView) so
+ * the owner decides how long drag state lives — SpecFlowCanvas keeps it across
+ * its Kịch bản/Sơ đồ toggle. */
+export function useFlowGraphState(built: BuiltFlowGraph): FlowGraphState {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   useEffect(() => {
     setNodes(built.nodes);
     setEdges(built.edges);
   }, [built, setNodes, setEdges]);
+  return { nodes, edges, onNodesChange, onEdgesChange };
+}
 
-  if (!flow) {
-    return (
-      <div style={{ padding: 24, fontSize: 13, color: T.muted }}>
-        Chưa có flow — bước UX Spec chưa emit <code>flows/*.flow.json</code> và spec cũng chưa có{' '}
-        <code>navigates_to</code>. Chạy lại bước UX Spec để có flowchart.
-      </div>
-    );
-  }
+export interface FlowGraphState {
+  nodes: Node[];
+  edges: Edge[];
+  onNodesChange: ReturnType<typeof useNodesState<Node>>[2];
+  onEdgesChange: ReturnType<typeof useEdgesState<Edge>>[2];
+}
 
-  const renderStepExtra = (node: import('./FlowchartPreview').FlowchartNode, surface: 'card' | 'carousel' = 'card') => {
-    // A declared flow node may point at a screen through `screen`, so its node
-    // id is not necessarily the wireframe filename. Resolve that indirection
-    // before reading the HTML; otherwise the UX Spec has a screen preview but
-    // the scenario detail incorrectly looks text-only.
-    const screenId = (flow.nodes ?? []).find((item) => item.id === node.id)?.screen ?? node.id;
-    const wire = wireframes?.[screenId];
-    if (!wire) return null;
-    const rawPlatform = platforms?.[screenId] ?? 'mobile';
-    const platform = rawPlatform === 'web' || rawPlatform === 'website' || rawPlatform === 'desktop' ? 'web' : 'mobile';
-    const natural = platform === 'web' ? DEVICE_WIDTHS.desktop : DEVICE_WIDTHS.mobile;
-    if (surface === 'carousel') {
-      return (
-        <div className={`${readerStyles.screenPreview} ${platform === 'web' ? readerStyles.screenPreviewWeb : readerStyles.screenPreviewMobile}`}>
-          <div className={readerStyles.screenPreviewHeader}>
-            <span className={readerStyles.screenPreviewPlatform}>{platform === 'web' ? 'Website' : 'Mobile App'}</span>
-            <span className={readerStyles.screenPreviewName}>{node.label}</span>
-          </div>
-          {platform === 'web' ? (
-            <div className={readerStyles.browserFrame}>
-              <div className={readerStyles.browserChrome} aria-hidden="true">
-                <span /><span /><span />
-                <i>{screenId}</i>
-              </div>
-              <div className={readerStyles.browserViewport}>
-                <WireBlocks html={wire} platform="web" device="desktop" />
-              </div>
-            </div>
-          ) : (
-            <div className={readerStyles.mobileFrame}>
-              <span className={readerStyles.mobileNotch} aria-hidden="true" />
-              <div className={readerStyles.mobileViewport}>
-                <WireBlocks html={wire} platform="mobile" />
-              </div>
-              <span className={readerStyles.mobileHome} aria-hidden="true" />
-            </div>
-          )}
-        </div>
-      );
-    }
-    const scale = 174 / natural;
-    return (
-      <div style={{ height: 142, marginTop: 10, overflow: 'hidden', position: 'relative', borderRadius: 5, background: 'var(--bg-subtle, #f5f6f8)' }}>
-        <div style={{ width: natural, transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none' }}>
-          <WireBlocks html={wire} platform={platform} />
-        </div>
-      </div>
-    );
-  };
-
+/** The chart itself: negative-branch key (only when there is one) + the
+ * React Flow canvas with the shared screen/decision/end/nav node renderers. */
+export function FlowGraphView({ nodes, edges, onNodesChange, onEdgesChange }: FlowGraphState) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 480 }}>
-      <div className={readerStyles.modeBar} role="tablist" aria-label="Chế độ xem flow">
-        <button type="button" role="tab" aria-selected={mode === 'scenarios'} className={`${readerStyles.modeButton} ${mode === 'scenarios' ? readerStyles.modeButtonActive : ''}`} onClick={() => setMode('scenarios')}>
-          <span className={readerStyles.modeButtonName}>Kịch bản</span><span className={readerStyles.modeButtonMeta}>· {useCaseCount}</span>
-        </button>
-        <button type="button" role="tab" aria-selected={mode === 'graph'} className={`${readerStyles.modeButton} ${mode === 'graph' ? readerStyles.modeButtonActive : ''}`} onClick={() => setMode('graph')}>
-          <span className={readerStyles.modeButtonName}>Sơ đồ</span><span className={readerStyles.modeButtonMeta}>· {built.nodes.length}</span>
-        </button>
-      </div>
-      {effective.length > 1 ? (
-        <nav className={readerStyles.flowGroupBar} aria-label="Nhóm kịch bản">
-          <div className={readerStyles.flowGroupHeading}>
-            <span>Nhóm kịch bản</span>
-            <strong>{idx + 1}/{effective.length}</strong>
-          </div>
-          <div className={readerStyles.flowGroupTabs} role="tablist" aria-label="Chọn nhóm kịch bản">
-            {effective.map((f, i) => (
-              <button
-                key={f.id}
-                type="button"
-                role="tab"
-                aria-selected={i === idx}
-                className={`${readerStyles.flowGroupButton} ${i === idx ? readerStyles.flowGroupButtonActive : ''}`}
-                onClick={() => setIdx(i)}
-                title={f.name ?? f.id}
-              >
-                <span className={readerStyles.flowGroupIndex}>{i + 1}</span>
-                <span className={readerStyles.flowGroupName}>{f.name ?? f.id}</span>
-              </button>
-            ))}
-          </div>
-        </nav>
-      ) : null}
-      {mode === 'scenarios' && chart ? <UseCaseReader doc={chart} renderStepExtra={renderStepExtra} /> : null}
-      {mode === 'graph' ? <>
+    <>
       {/* Without a key, the red dashed edges read as "something is broken"
           rather than "this is the branch that does not go well". */}
-      {built.edges.some((e) => (e.data as { negative?: boolean } | undefined)?.negative) ? (
+      {edges.some((e) => (e.data as { negative?: boolean } | undefined)?.negative) ? (
         <div
           style={{
             display: 'flex',
@@ -719,7 +639,180 @@ export function SpecFlowCanvas({
           </ReactFlow>
         </ReactFlowProvider>
       </div>
-      </> : null}
+    </>
+  );
+}
+
+type FlowchartStepNode = import('./FlowchartPreview').FlowchartNode;
+export type StepExtraRenderer = (node: FlowchartStepNode, surface?: 'card' | 'carousel') => JSX.Element | null;
+
+/** Build the `renderStepExtra` callback UseCaseReader uses to show a screen's
+ * wireframe next to a scenario step: a small thumbnail on the step card, a
+ * device frame (browser chrome for web, phone bezel for mobile) in the
+ * carousel. `screenOf` maps a step to its wireframe key (ux: node id or the
+ * declared `screen`; docs-review: the node's SCREEN-KEY); steps without a
+ * wireframe render nothing. `screenNames` only changes the caption in the
+ * browser chrome, which otherwise shows the raw key. */
+export function makeWireframeStepExtra({
+  screenOf,
+  wireframes,
+  platforms,
+  screenNames,
+}: {
+  screenOf: (node: FlowchartStepNode) => string | undefined;
+  wireframes: Record<string, string> | null;
+  platforms: Record<string, string> | null;
+  screenNames?: ReadonlyMap<string, string>;
+}): StepExtraRenderer {
+  return (node, surface = 'card') => {
+    const screenId = screenOf(node);
+    const wire = screenId ? wireframes?.[screenId] : undefined;
+    if (!screenId || !wire) return null;
+    const rawPlatform = platforms?.[screenId] ?? 'mobile';
+    const platform = rawPlatform === 'web' || rawPlatform === 'website' || rawPlatform === 'desktop' ? 'web' : 'mobile';
+    const natural = platform === 'web' ? DEVICE_WIDTHS.desktop : DEVICE_WIDTHS.mobile;
+    if (surface === 'carousel') {
+      return (
+        <div className={`${readerStyles.screenPreview} ${platform === 'web' ? readerStyles.screenPreviewWeb : readerStyles.screenPreviewMobile}`}>
+          <div className={readerStyles.screenPreviewHeader}>
+            <span className={readerStyles.screenPreviewPlatform}>{platform === 'web' ? 'Website' : 'Mobile App'}</span>
+            <span className={readerStyles.screenPreviewName}>{node.label}</span>
+          </div>
+          {platform === 'web' ? (
+            <div className={readerStyles.browserFrame}>
+              <div className={readerStyles.browserChrome} aria-hidden="true">
+                <span /><span /><span />
+                <i>{screenNames?.get(screenId) ?? screenId}</i>
+              </div>
+              <div className={readerStyles.browserViewport}>
+                <WireBlocks html={wire} platform="web" device="desktop" />
+              </div>
+            </div>
+          ) : (
+            <div className={readerStyles.mobileFrame}>
+              <span className={readerStyles.mobileNotch} aria-hidden="true" />
+              <div className={readerStyles.mobileViewport}>
+                <WireBlocks html={wire} platform="mobile" />
+              </div>
+              <span className={readerStyles.mobileHome} aria-hidden="true" />
+            </div>
+          )}
+        </div>
+      );
+    }
+    const scale = 174 / natural;
+    return (
+      <div style={{ height: 142, marginTop: 10, overflow: 'hidden', position: 'relative', borderRadius: 5, background: 'var(--bg-subtle, #f5f6f8)' }}>
+        <div style={{ width: natural, transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none' }}>
+          <WireBlocks html={wire} platform={platform} />
+        </div>
+      </div>
+    );
+  };
+}
+
+export function SpecFlowCanvas({
+  flows,
+  spec,
+  wireframes,
+  platforms,
+}: {
+  flows: FlowDoc[];
+  spec: SpecDoc;
+  wireframes: Record<string, string> | null;
+  platforms: Record<string, string> | null;
+}) {
+  // MUST be memoized: `?? []` mints a new array on every render when the spec
+  // has no `screens`, which changes `screenIds`/`nameOf` → `built` → the
+  // seeding effect below → setState → render again. That self-sustaining loop
+  // is what throws "Maximum update depth exceeded" on this canvas.
+  const screens = useMemo(
+    () => ((spec as { screens?: Array<Record<string, any>> }).screens ?? []) as Array<Record<string, any>>,
+    [spec],
+  );
+  const screenIds = useMemo(() => new Set(screens.map((s) => String(s.id ?? ''))), [screens]);
+  const nameOf = useMemo(
+    () => new Map(screens.map((s) => [String(s.id ?? ''), String(s.name ?? s.title ?? s.id ?? '')])),
+    [screens],
+  );
+  const effective = useMemo(() => {
+    if (flows.length) return flows;
+    // A Customer Journey has journeys, not screens — derive one flow per
+    // journey. Without this the tab was empty for every CJ document, because
+    // both other sources (flow files, `navigates_to`) are ux-stage artifacts.
+    const fromJourneys = deriveFlowsFromJourneys(spec);
+    if (fromJourneys.length) return fromJourneys;
+    const derived = deriveFlowFromSpec(spec);
+    return derived ? [derived] : [];
+  }, [flows, spec]);
+  const [idx, setIdx] = useState(0);
+  const [mode, setMode] = useState<'scenarios' | 'graph'>('scenarios');
+  const flow = effective[Math.min(idx, effective.length - 1)];
+  const screenTitles = useMemo(() => Object.fromEntries(screens.map((s) => [String(s.id), String(s.name ?? s.title ?? s.id)])), [screens]);
+  const chart = useMemo(() => (flow ? flowDocToChart(flow, screenTitles) : null), [flow, screenTitles]);
+  const useCaseCount = useMemo(() => (chart ? deriveUseCases(chart).useCases.length : 0), [chart]);
+
+  const built = useMemo<BuiltFlowGraph>(
+    () => (flow ? buildFlowGraph({ flow, screenIds, screenNames: nameOf, wireframes, platforms }) : { nodes: [], edges: [] }),
+    [flow, screenIds, nameOf, wireframes, platforms],
+  );
+  const graph = useFlowGraphState(built);
+
+  if (!flow) {
+    return (
+      <div style={{ padding: 24, fontSize: 13, color: T.muted }}>
+        Chưa có flow — bước UX Spec chưa emit <code>flows/*.flow.json</code> và spec cũng chưa có{' '}
+        <code>navigates_to</code>. Chạy lại bước UX Spec để có flowchart.
+      </div>
+    );
+  }
+
+  const renderStepExtra = makeWireframeStepExtra({
+    // A declared flow node may point at a screen through `screen`, so its node
+    // id is not necessarily the wireframe filename. Resolve that indirection
+    // before reading the HTML; otherwise the UX Spec has a screen preview but
+    // the scenario detail incorrectly looks text-only.
+    screenOf: (node) => (flow.nodes ?? []).find((item) => item.id === node.id)?.screen ?? node.id,
+    wireframes,
+    platforms,
+  });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 480 }}>
+      <div className={readerStyles.modeBar} role="tablist" aria-label="Chế độ xem flow">
+        <button type="button" role="tab" aria-selected={mode === 'scenarios'} className={`${readerStyles.modeButton} ${mode === 'scenarios' ? readerStyles.modeButtonActive : ''}`} onClick={() => setMode('scenarios')}>
+          <span className={readerStyles.modeButtonName}>Kịch bản</span><span className={readerStyles.modeButtonMeta}>· {useCaseCount}</span>
+        </button>
+        <button type="button" role="tab" aria-selected={mode === 'graph'} className={`${readerStyles.modeButton} ${mode === 'graph' ? readerStyles.modeButtonActive : ''}`} onClick={() => setMode('graph')}>
+          <span className={readerStyles.modeButtonName}>Sơ đồ</span><span className={readerStyles.modeButtonMeta}>· {built.nodes.length}</span>
+        </button>
+      </div>
+      {effective.length > 1 ? (
+        <nav className={readerStyles.flowGroupBar} aria-label="Nhóm kịch bản">
+          <div className={readerStyles.flowGroupHeading}>
+            <span>Nhóm kịch bản</span>
+            <strong>{idx + 1}/{effective.length}</strong>
+          </div>
+          <div className={readerStyles.flowGroupTabs} role="tablist" aria-label="Chọn nhóm kịch bản">
+            {effective.map((f, i) => (
+              <button
+                key={f.id}
+                type="button"
+                role="tab"
+                aria-selected={i === idx}
+                className={`${readerStyles.flowGroupButton} ${i === idx ? readerStyles.flowGroupButtonActive : ''}`}
+                onClick={() => setIdx(i)}
+                title={f.name ?? f.id}
+              >
+                <span className={readerStyles.flowGroupIndex}>{i + 1}</span>
+                <span className={readerStyles.flowGroupName}>{f.name ?? f.id}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+      ) : null}
+      {mode === 'scenarios' && chart ? <UseCaseReader doc={chart} renderStepExtra={renderStepExtra} /> : null}
+      {mode === 'graph' ? <FlowGraphView {...graph} /> : null}
     </div>
   );
 }

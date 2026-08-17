@@ -9,7 +9,11 @@
 //
 // Hai khung nhìn cố ý KHÔNG dùng chung mã: chúng đọc hai schema khác nhau
 // (`.flow.json` với `kind` + màn hình ngầm, `.flowchart.json` với `type` +
-// node tường minh) và trả lời hai câu hỏi khác nhau.
+// node tường minh) và trả lời hai câu hỏi khác nhau. Riêng tab "Flow màn hình"
+// (node = màn hình có thumbnail wireframe) thì TÁI DÙNG bộ node của
+// SpecFlowCanvas: flowchart được chuyển sang FlowDoc (flowchart-to-flow.ts)
+// rồi vẽ bằng buildFlowGraph/FlowGraphView, để hai nơi nhìn màn hình giống
+// hệt nhau.
 import { useEffect, useMemo, useState } from 'react';
 import {
   Background,
@@ -32,6 +36,15 @@ import styles from './FlowchartPreview.module.css';
 import readerStyles from './UseCaseReader.module.css';
 import { deriveUseCases } from './flow-usecases';
 import { UseCaseReader } from './UseCaseReader';
+import { flowchartToFlowDoc } from './flowchart-to-flow';
+import {
+  FlowGraphView,
+  buildFlowGraph,
+  makeWireframeStepExtra,
+  useFlowGraphState,
+  type BuiltFlowGraph,
+  type FlowDoc,
+} from './SpecFlowCanvas';
 
 export type FlowchartNodeType = 'start' | 'end' | 'action' | 'decision';
 
@@ -39,6 +52,11 @@ export interface FlowchartNode {
   id: string;
   type: FlowchartNodeType;
   label: string;
+  /** SCREEN-KEY (`<file-stem>__<mã màn>`) của màn mà bước này diễn ra trên đó
+   *  — chỉ có ở file dr-flow bản mới; thiếu = bước hệ thống/điều hướng ngoài
+   *  feature. Tab "Flow màn hình" gộp các bước cùng màn thành một node và tìm
+   *  wireframe `wireframes/<SCREEN-KEY>.html` theo key này. */
+  screen?: string;
 }
 export interface FlowchartEdge {
   from: string;
@@ -84,6 +102,7 @@ export function parseFlowchartDoc(raw: string): FlowchartDoc | null {
     const id = typeof n.id === 'string' ? n.id.trim() : '';
     if (!id || seen.has(id)) continue; // id trùng làm key React đụng nhau
     seen.add(id);
+    const screen = typeof n.screen === 'string' ? n.screen.trim() : '';
     nodes.push({
       id,
       // Loại lạ (hoặc thiếu) quy về `action`: một ô chữ nhật không nhãn loại
@@ -92,6 +111,7 @@ export function parseFlowchartDoc(raw: string): FlowchartDoc | null {
         ? n.type
         : 'action') as FlowchartNodeType,
       label: typeof n.label === 'string' && n.label.trim() ? n.label : id,
+      ...(screen ? { screen } : {}),
     });
   }
   if (nodes.length === 0) return null;
@@ -346,36 +366,137 @@ export function FlowchartCanvas({ doc }: { doc: FlowchartDoc }) {
   );
 }
 
-type PreviewView = { mode: 'list' } | { mode: 'graph' };
-
+type PreviewMode = 'list' | 'screens' | 'graph';
 
 function ModeBar({
   mode,
   onChange,
   useCaseCount,
+  screenCount,
   stepCount,
 }: {
-  mode: PreviewView['mode'];
-  onChange: (mode: PreviewView['mode']) => void;
+  mode: PreviewMode;
+  onChange: (mode: PreviewMode) => void;
   useCaseCount: number;
+  screenCount: number;
   stepCount: number;
 }) {
+  const tab = (id: PreviewMode, name: string, meta: string) => (
+    <button type="button" role="tab" aria-selected={mode === id} className={`${readerStyles.modeButton} ${mode === id ? readerStyles.modeButtonActive : ''}`} onClick={() => onChange(id)}>
+      <span className={readerStyles.modeButtonName}>{name}</span><span className={readerStyles.modeButtonMeta}>· {meta}</span>
+    </button>
+  );
   return (
     <div className={readerStyles.modeBar} role="tablist" aria-label="Chế độ xem sơ đồ">
-      <button type="button" role="tab" aria-selected={mode === 'list'} className={`${readerStyles.modeButton} ${mode === 'list' ? readerStyles.modeButtonActive : ''}`} onClick={() => onChange('list')}>
-        <span className={readerStyles.modeButtonName}>Kịch bản</span><span className={readerStyles.modeButtonMeta}>· {useCaseCount}</span>
-      </button>
-      <button type="button" role="tab" aria-selected={mode === 'graph'} className={`${readerStyles.modeButton} ${mode === 'graph' ? readerStyles.modeButtonActive : ''}`} onClick={() => onChange('graph')}>
-        <span className={readerStyles.modeButtonName}>Sơ đồ đầy đủ</span><span className={readerStyles.modeButtonMeta}>· {stepCount} bước</span>
-      </button>
+      {tab('list', 'Kịch bản', String(useCaseCount))}
+      {tab('screens', 'Flow màn hình', `${screenCount} màn`)}
+      {tab('graph', 'Sơ đồ đầy đủ', `${stepCount} bước`)}
     </div>
+  );
+}
+
+/** Thư mục workflow chứa `flows/` — phần trước `flows/` của tên file. Wireframe
+ *  nằm ở `<dir>wireframes/`, index tên màn ở `<dir>flows/index.json`. File
+ *  không nằm dưới `flows/` (mở tay) → lấy thư mục cha. */
+export function workflowDirOf(fileName: string): string {
+  const m = /^(.*?)flows\/[^/]+$/.exec(fileName);
+  if (m && (m[1] === '' || m[1]!.endsWith('/'))) return m[1]!;
+  const slash = fileName.lastIndexOf('/');
+  return slash >= 0 ? fileName.slice(0, slash + 1) : '';
+}
+
+/** Tên màn từ `flows/index.json` (`[].screens[].{key,name}`); file hỏng/thiếu
+ *  → rỗng, viewer fallback về SCREEN-KEY. */
+export function parseScreenNames(raw: string | null): Record<string, string> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  const list = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object' && Array.isArray((parsed as { flows?: unknown }).flows)
+      ? ((parsed as { flows: unknown[] }).flows)
+      : [];
+  const names: Record<string, string> = {};
+  for (const item of list) {
+    const screens = (item as { screens?: unknown } | null)?.screens;
+    if (!Array.isArray(screens)) continue;
+    for (const s of screens) {
+      const key = typeof (s as { key?: unknown })?.key === 'string' ? (s as { key: string }).key.trim() : '';
+      const name = typeof (s as { name?: unknown })?.name === 'string' ? (s as { name: string }).name.trim() : '';
+      if (key && name && !names[key]) names[key] = name;
+    }
+  }
+  return names;
+}
+
+/** `web` | `mobile` từ `<body data-layout="…">` của wireframe; mặc định web
+ *  (tài liệu URD backoffice). */
+export function wireframeLayoutOf(html: string): 'web' | 'mobile' {
+  return /data-layout\s*=\s*["']?mobile\b/i.test(html) ? 'mobile' : 'web';
+}
+
+interface ScreenAssets {
+  names: Record<string, string>;
+  wireframes: Record<string, string>;
+  platforms: Record<string, string>;
+}
+const EMPTY_ASSETS: ScreenAssets = { names: {}, wireframes: {}, platforms: {} };
+
+const MISSING_WIRE_TEXT = '(chưa có wireframe — chạy bước Màn hình → Component)';
+
+/** Tab "Flow màn hình": vẽ FlowDoc đã chuyển đổi bằng bộ node dùng chung với
+ *  ux (màn có thumbnail, hình thoi, oval, nav xám). Component riêng để state
+ *  kéo-thả của React Flow sống cùng tab. */
+function ScreenFlowTab({
+  flow,
+  screenNames,
+  wireframes,
+  platforms,
+  layoutRoot,
+  hasScreens,
+}: {
+  flow: FlowDoc;
+  screenNames: ReadonlyMap<string, string>;
+  wireframes: Record<string, string>;
+  platforms: Record<string, string>;
+  layoutRoot?: string;
+  hasScreens: boolean;
+}) {
+  const built = useMemo<BuiltFlowGraph>(
+    () =>
+      buildFlowGraph({
+        flow,
+        screenIds: new Set(),
+        screenNames,
+        wireframes,
+        platforms,
+        layoutRoot,
+        missingWireText: MISSING_WIRE_TEXT,
+      }),
+    [flow, screenNames, wireframes, platforms, layoutRoot],
+  );
+  const graph = useFlowGraphState(built);
+  return (
+    <>
+      {hasScreens ? null : (
+        <div className={styles.hint}>
+          Sơ đồ chưa gán màn hình — chạy lại bước Sơ đồ luồng màn hình bản mới để có thumbnail
+        </div>
+      )}
+      <FlowGraphView {...graph} />
+    </>
   );
 }
 
 export function FlowchartPreview({ projectId, file }: { projectId: string; file: ProjectFile }) {
   const [raw, setRaw] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
-  const [view, setView] = useState<PreviewView>({ mode: 'list' });
+  const [mode, setMode] = useState<PreviewMode>('list');
+  const [assets, setAssets] = useState<ScreenAssets | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -393,6 +514,59 @@ export function FlowchartPreview({ projectId, file }: { projectId: string; file:
 
   const doc = useMemo(() => (raw == null ? null : parseFlowchartDoc(raw)), [raw]);
   const useCaseCount = useMemo(() => (doc ? deriveUseCases(doc).useCases.length : 0), [doc]);
+  const screenKeys = useMemo(
+    () => (doc ? [...new Set(doc.nodes.map((n) => n.screen).filter((s): s is string => !!s))] : []),
+    [doc],
+  );
+
+  // Wireframe + tên màn: đọc thẳng theo SCREEN-KEY, không cần liệt kê thư mục.
+  // Wireframe do bước dr-comp (chạy SAU dr-flow) sinh nên có thể chưa có — null
+  // là bình thường, node hiện chỗ trống có chỉ dẫn.
+  const dir = workflowDirOf(file.name);
+  useEffect(() => {
+    setAssets(null);
+    if (!doc) return;
+    if (screenKeys.length === 0) {
+      setAssets(EMPTY_ASSETS);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const [indexRaw, ...htmls] = await Promise.all([
+        fetchProjectFileText(projectId, `${dir}flows/index.json`).catch(() => null),
+        ...screenKeys.map((key) => fetchProjectFileText(projectId, `${dir}wireframes/${key}.html`).catch(() => null)),
+      ]);
+      if (cancelled) return;
+      const wireframes: Record<string, string> = {};
+      const platforms: Record<string, string> = {};
+      screenKeys.forEach((key, i) => {
+        const html = htmls[i];
+        if (!html) return;
+        wireframes[key] = html;
+        platforms[key] = wireframeLayoutOf(html);
+      });
+      setAssets({ names: parseScreenNames(indexRaw), wireframes, platforms });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [doc, screenKeys, projectId, dir]);
+
+  const converted = useMemo(() => (doc ? flowchartToFlowDoc(doc, assets?.names ?? {}) : null), [doc, assets]);
+  const screenNames = useMemo(
+    () => new Map((converted?.screens ?? []).map((s) => [s.id, s.name])),
+    [converted],
+  );
+  const renderStepExtra = useMemo(
+    () =>
+      makeWireframeStepExtra({
+        screenOf: (node) => node.screen,
+        wireframes: assets?.wireframes ?? null,
+        platforms: assets?.platforms ?? null,
+        screenNames,
+      }),
+    [assets, screenNames],
+  );
 
   if (missing) {
     return (
@@ -408,7 +582,7 @@ export function FlowchartPreview({ projectId, file }: { projectId: string; file:
       </div>
     );
   }
-  if (!doc) {
+  if (!doc || !converted) {
     // Không crash: file hỏng vẫn là kết quả của một lượt chạy, nên nói rõ hỏng
     // ở đâu để người dùng biết phải chạy lại bước nào.
     return (
@@ -421,12 +595,37 @@ export function FlowchartPreview({ projectId, file }: { projectId: string; file:
     );
   }
 
+  // Bố cục Flow màn hình bắt đầu từ node start ĐÃ GỘP (màn nếu start là màn,
+  // không thì node nav "Bắt đầu"); `flow.entry` là màn đầu tiên nên nếu lấy nó
+  // làm gốc thì node nav đứng trước bị rơi ra ngoài cây.
+  const start = doc.nodes.find((n) => n.type === 'start');
+  const layoutRoot = start ? start.screen ?? start.id : undefined;
+  const head = (
+    <div className={styles.head}>
+      <h2 className={styles.title}>{doc.title ?? doc.id}</h2>
+      {doc.source ? <span className={styles.source} title={doc.source}>Nguồn: <code>{doc.source}</code></span> : null}
+    </div>
+  );
+
   return (
     <div className="viewer" style={{ height: '100%' }}>
       <div className={`viewer-body ${styles.viewerBody}`}>
-        <ModeBar mode={view.mode} useCaseCount={useCaseCount} stepCount={doc.nodes.length} onChange={(mode) => setView(mode === 'list' ? { mode: 'list' } : mode === 'graph' ? { mode: 'graph' } : view)} />
-        {view.mode === 'list' ? <UseCaseReader doc={doc} /> : null}
-        {view.mode === 'graph' ? <><div className={styles.head}><h2 className={styles.title}>{doc.title ?? doc.id}</h2>{doc.source ? <span className={styles.source} title={doc.source}>Nguồn: <code>{doc.source}</code></span> : null}</div><FlowchartCanvas doc={doc} /></> : null}
+        <ModeBar mode={mode} useCaseCount={useCaseCount} screenCount={converted.screens.length} stepCount={doc.nodes.length} onChange={setMode} />
+        {mode === 'list' ? <UseCaseReader doc={doc} renderStepExtra={renderStepExtra} /> : null}
+        {mode === 'screens' ? (
+          <>
+            {head}
+            <ScreenFlowTab
+              flow={converted.flow}
+              screenNames={screenNames}
+              wireframes={assets?.wireframes ?? EMPTY_ASSETS.wireframes}
+              platforms={assets?.platforms ?? EMPTY_ASSETS.platforms}
+              layoutRoot={layoutRoot}
+              hasScreens={converted.screens.length > 0}
+            />
+          </>
+        ) : null}
+        {mode === 'graph' ? <>{head}<FlowchartCanvas doc={doc} /></> : null}
       </div>
     </div>
   );

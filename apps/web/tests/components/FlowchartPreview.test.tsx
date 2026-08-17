@@ -12,6 +12,9 @@ import {
   isFlowchartFile,
   layoutFlowchart,
   parseFlowchartDoc,
+  parseScreenNames,
+  wireframeLayoutOf,
+  workflowDirOf,
 } from '../../src/components/FlowchartPreview';
 
 const FILES: Record<string, string | null> = {};
@@ -105,6 +108,50 @@ describe('parseFlowchartDoc', () => {
     expect(parseFlowchartDoc('{ không phải json')).toBeNull();
     expect(parseFlowchartDoc('[]')).toBeNull();
     expect(parseFlowchartDoc(JSON.stringify({ id: 'FLOW-x', nodes: [] }))).toBeNull();
+  });
+
+  it('giữ `screen` (SCREEN-KEY) trên node, cắt khoảng trắng, bỏ khi rỗng', () => {
+    const doc = parseFlowchartDoc(
+      JSON.stringify({
+        id: 'FLOW-x',
+        nodes: [
+          { id: 'a', type: 'start', label: 'Bắt đầu' },
+          { id: 'b', type: 'action', label: 'Nhập', screen: ' urd-nv__SCR-001 ' },
+          { id: 'c', type: 'action', label: 'Rỗng', screen: '   ' },
+          { id: 'd', type: 'action', label: 'Sai kiểu', screen: 12 },
+        ],
+        edges: [],
+      }),
+    );
+    expect(doc?.nodes.map((n) => n.screen)).toEqual([undefined, 'urd-nv__SCR-001', undefined, undefined]);
+    // File cũ không có field → không có key `screen` (tương thích ngược).
+    expect('screen' in (parseFlowchartDoc(JSON.stringify(LOGIN))!.nodes[0] as object)).toBe(false);
+  });
+});
+
+describe('đường dẫn wireframe / tên màn / layout', () => {
+  it('workflowDirOf = phần trước `flows/`; file lẻ → thư mục cha', () => {
+    expect(workflowDirOf('docs-review-1/flows/FLOW-a.flowchart.json')).toBe('docs-review-1/');
+    expect(workflowDirOf('flows/FLOW-a.flowchart.json')).toBe('');
+    expect(workflowDirOf('x/myflows/FLOW-a.flowchart.json')).toBe('x/myflows/');
+    expect(workflowDirOf('FLOW-a.flowchart.json')).toBe('');
+  });
+
+  it('parseScreenNames đọc `[].screens[].{key,name}` của flows/index.json, khoan dung với file hỏng', () => {
+    const idx = JSON.stringify([
+      { id: 'FLOW-a', screens: [{ key: 'urd__SCR-001', name: 'Danh sách' }, { key: 'urd__SCR-002' }] },
+      { id: 'FLOW-b', screens: [{ key: 'urd__SCR-003', name: 'Chi tiết' }] },
+      { id: 'FLOW-c' },
+    ]);
+    expect(parseScreenNames(idx)).toEqual({ 'urd__SCR-001': 'Danh sách', 'urd__SCR-003': 'Chi tiết' });
+    expect(parseScreenNames(null)).toEqual({});
+    expect(parseScreenNames('{ hỏng')).toEqual({});
+  });
+
+  it('wireframeLayoutOf đọc data-layout, mặc định web', () => {
+    expect(wireframeLayoutOf('<body data-screen="k" data-layout="mobile">')).toBe('mobile');
+    expect(wireframeLayoutOf('<body data-layout="web">')).toBe('web');
+    expect(wireframeLayoutOf('<body>')).toBe('web');
   });
 });
 
@@ -241,5 +288,129 @@ describe('FlowchartPreview', () => {
 
     await waitFor(() => expect(container.textContent).toContain('Không đọc được sơ đồ'));
     expect(container.querySelector('.react-flow')).toBeNull();
+  });
+
+  // ── Tab "Flow màn hình" (node = màn hình có thumbnail wireframe) ─────────
+  const KEY = '2.1.1-URD-Quan-ly-nhan-vien__SCR-001';
+  const KEY2 = '2.1.1-URD-Quan-ly-nhan-vien__SCR-002';
+  const WITH_SCREENS = {
+    ...LOGIN,
+    nodes: [
+      { id: 'n1', type: 'start', label: 'Trang chủ' },
+      { id: 'n2', type: 'action', label: 'Nhập tên đăng nhập + mật khẩu', screen: KEY },
+      { id: 'n3', type: 'decision', label: 'Thông tin hợp lệ?' },
+      { id: 'n4', type: 'action', label: 'Báo lỗi sai thông tin', screen: KEY },
+      { id: 'n6', type: 'action', label: 'Xem trang chính', screen: KEY2 },
+      { id: 'n5', type: 'end', label: 'Vào màn hình chính' },
+    ],
+    edges: [
+      { from: 'n1', to: 'n2' },
+      { from: 'n2', to: 'n3' },
+      { from: 'n3', to: 'n6', label: 'Có' },
+      { from: 'n6', to: 'n5' },
+      { from: 'n3', to: 'n4', label: 'Không' },
+      { from: 'n4', to: 'n2' },
+    ],
+  };
+  const WIRE = `<!doctype html><html><body data-screen="${KEY}" data-layout="web"><div class="wf-component">Table</div></body></html>`;
+
+  it('ba tab theo thứ tự Kịch bản · Flow màn hình · Sơ đồ đầy đủ; tab giữa đếm số màn', async () => {
+    FILES['wf/flows/FLOW-login.flowchart.json'] = JSON.stringify(WITH_SCREENS);
+    render(<FlowchartPreview projectId="p1" file={file('wf/flows/FLOW-login.flowchart.json')} />);
+
+    await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(3));
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      expect.stringMatching(/^Kịch bản/),
+      expect.stringMatching(/^Flow màn hình· 2 màn$/),
+      expect.stringMatching(/^Sơ đồ đầy đủ/),
+    ]);
+  });
+
+  it('Flow màn hình: node màn mang TÊN từ flows/index.json + thumbnail wireframe đọc theo SCREEN-KEY; màn thiếu wireframe hiện chỉ dẫn', async () => {
+    FILES['wf/flows/FLOW-login.flowchart.json'] = JSON.stringify(WITH_SCREENS);
+    FILES['wf/flows/index.json'] = JSON.stringify([
+      { id: 'FLOW-login', screens: [{ key: KEY, name: 'Màn đăng nhập' }, { key: KEY2, name: 'Trang chính' }] },
+    ]);
+    FILES[`wf/wireframes/${KEY}.html`] = WIRE;
+    delete FILES[`wf/wireframes/${KEY2}.html`];
+    const { container } = render(
+      <FlowchartPreview projectId="p1" file={file('wf/flows/FLOW-login.flowchart.json')} />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: /^Flow màn hình/ })).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /^Flow màn hình/ })); });
+
+    // Hai node màn (n2+n4 gộp thành một vì cùng KEY), một hình thoi, một oval
+    // kết thúc, một nav xám cho "Trang chủ" (không có screen).
+    await waitFor(() => expect(container.querySelectorAll('.react-flow__node-screen')).toHaveLength(2));
+    expect(container.querySelectorAll('.react-flow__node-decision')).toHaveLength(1);
+    expect(container.querySelectorAll('.react-flow__node-end')).toHaveLength(1);
+    expect(container.querySelectorAll('.react-flow__node-nav')).toHaveLength(1);
+    // Tên màn, không phải key.
+    expect(screen.getByText('Màn đăng nhập')).toBeTruthy();
+    expect(screen.getByText('Trang chính')).toBeTruthy();
+    expect(screen.queryByText(KEY)).toBeNull();
+    // Thumbnail = iframe WireBlocks với đúng HTML wireframe của màn.
+    await waitFor(() => expect(container.querySelector('iframe[title="Wireframe"]')).not.toBeNull());
+    expect(container.querySelector('iframe[title="Wireframe"]')?.getAttribute('srcdoc')).toContain('wf-component');
+    // Màn chưa có wireframe (dr-comp chạy sau) → chỉ dẫn, không lỗi.
+    expect(screen.getByText('(chưa có wireframe — chạy bước Màn hình → Component)')).toBeTruthy();
+    // Không có dòng chú thích "chưa gán màn" vì file này CÓ screen.
+    expect(screen.queryByText(/Sơ đồ chưa gán màn hình/)).toBeNull();
+    // Nhánh "Không" của điểm rẽ quay về màn — cạnh gốc được giữ sau khi gộp.
+    const labels = Array.from(container.querySelectorAll('.react-flow__edgelabel-renderer div[title]')).map((el) => el.getAttribute('title'));
+    expect(labels).toContain('Có');
+    expect(labels).toContain('Không');
+    expect(labels).toContain('Nhập tên đăng nhập + mật khẩu');
+  });
+
+  it('không có index.json → tên màn fallback = SCREEN-KEY', async () => {
+    FILES['wf2/flows/FLOW-login.flowchart.json'] = JSON.stringify(WITH_SCREENS);
+    delete FILES['wf2/flows/index.json'];
+    render(<FlowchartPreview projectId="p1" file={file('wf2/flows/FLOW-login.flowchart.json')} />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: /^Flow màn hình/ })).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /^Flow màn hình/ })); });
+    await waitFor(() => expect(screen.getByText(KEY)).toBeTruthy());
+  });
+
+  it('file cũ không có `screen`: tab vẫn hiện, node toàn nav/decision/end + dòng chú thích chạy lại bước', async () => {
+    FILES['wf/flows/FLOW-old.flowchart.json'] = JSON.stringify(LOGIN);
+    const { container } = render(
+      <FlowchartPreview projectId="p1" file={file('wf/flows/FLOW-old.flowchart.json')} />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: /^Flow màn hình/ })).toBeTruthy());
+    expect(screen.getByRole('tab', { name: /^Flow màn hình/ }).textContent).toContain('0 màn');
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /^Flow màn hình/ })); });
+
+    await waitFor(() => expect(container.querySelector('.react-flow')).toBeTruthy());
+    expect(screen.getByText(/Sơ đồ chưa gán màn hình — chạy lại bước Sơ đồ luồng màn hình bản mới/)).toBeTruthy();
+    expect(container.querySelectorAll('.react-flow__node-screen')).toHaveLength(0);
+    expect(container.querySelectorAll('.react-flow__node-nav')).toHaveLength(3);
+    expect(container.querySelectorAll('.react-flow__node-decision')).toHaveLength(1);
+    expect(container.querySelectorAll('.react-flow__node-end')).toHaveLength(1);
+    // Đủ 4 cạnh gốc — không mất nhánh khi không có gì để gộp.
+    await waitFor(() => expect(container.querySelectorAll('.react-flow__edge')).toHaveLength(4));
+  });
+
+  it('Kịch bản: bước có màn + có wireframe thì thẻ bước mang thumbnail; bước không màn thì không', async () => {
+    FILES['wf/flows/FLOW-login.flowchart.json'] = JSON.stringify(WITH_SCREENS);
+    FILES[`wf/wireframes/${KEY}.html`] = WIRE;
+    delete FILES[`wf/wireframes/${KEY2}.html`];
+    const { container } = render(
+      <FlowchartPreview projectId="p1" file={file('wf/flows/FLOW-login.flowchart.json')} />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Vào màn hình chính')).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByText('Vào màn hình chính')); });
+    await waitFor(() => expect(screen.getByRole('tablist', { name: 'Chọn bước' })).toBeTruthy());
+    // Bước 2 (Nhập tên…, màn KEY có wireframe) → khung trình duyệt + iframe.
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /2\s*Nhập tên đăng nhập/ })); });
+    await waitFor(() => expect(container.querySelector('iframe[title="Wireframe"]')).not.toBeNull());
+    expect(screen.getByText('Website')).toBeTruthy();
+    // Bước 1 (Trang chủ — không có screen) → không thumbnail.
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /1\s*Trang chủ/ })); });
+    expect(container.querySelector('iframe[title="Wireframe"]')).toBeNull();
   });
 });
