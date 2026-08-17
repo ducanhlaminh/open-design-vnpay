@@ -256,7 +256,12 @@ jobs:
       - name: Test install.ps1 -Uninstall
         shell: pwsh
         run: |
-          & "${{ github.workspace }}\deploy\host\install.ps1" -Uninstall -Force -DeleteData
+          # Child process, not in-process `&`: -Uninstall now only calls cmdlets
+          # (Remove-ItemProperty / Stop-Process — no native .exe), so an
+          # in-process run leaves $LASTEXITCODE $null and `$null -ne 0` is
+          # $true → false failure (0.8.32 run). A -File child always yields a
+          # real exit code.
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}\deploy\host\install.ps1" -Uninstall -Force -DeleteData
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Uninstall exited $LASTEXITCODE" }
           $odHome = Join-Path $env:USERPROFILE ".open-design"
           if (Test-Path $odHome) { throw "$odHome still exists after -Uninstall" }
