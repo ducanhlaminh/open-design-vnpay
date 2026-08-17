@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 720" role="img" aria-labelledby="title desc">
+  <title id="title">Bước 1: mở trang Personal Access Tokens</title>
+  <desc id="desc">Ảnh hướng dẫn trang cài đặt Confluence, nút Create token ở góc phải được khoanh đỏ.</desc>
+  <rect width="1600" height="720" fill="#fff"/>
+  <rect width="1600" height="54" fill="#f7f8f9" stroke="#dfe1e6"/>
+  <g font-family="Arial, sans-serif" fill="#172b4d">
+    <text x="22" y="34" font-size="20" font-weight="700">▦</text>
+    <text x="66" y="34" font-size="15" font-weight="700">VNPAY</text>
+    <text x="142" y="34" font-size="15">Spaces⌄</text>
+    <text x="235" y="34" font-size="15">Approvals</text>
+    <text x="326" y="34" font-size="15">Calendars</text>
+    <text x="417" y="34" font-size="15">Analytics</text>
+  </g>
+  <rect x="510" y="12" width="74" height="32" rx="3" fill="#0c66e4"/>
+  <text x="547" y="33" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#fff">Create</text>
+  <circle cx="40" cy="91" r="23" fill="#0c66e4"/>
+  <text x="74" y="88" font-family="Arial, sans-serif" font-size="13" fill="#0c66e4">People</text>
+  <text x="74" y="119" font-family="Arial, sans-serif" font-size="28" fill="#172b4d">Anh, Nguyễn Đức</text>
+  <g font-family="Arial, sans-serif" font-size="13" fill="#344563">
+    <text x="18" y="171">Profile</text><text x="76" y="171">Approvals</text><text x="147" y="171">Tasks</text><text x="205" y="171">Saved for later</text><text x="310" y="171">Watches</text><text x="378" y="171">Drafts</text><text x="435" y="171">Network</text><text x="503" y="171" fill="#0c66e4">Settings</text>
+  </g>
+  <line x1="0" y1="186" x2="1600" y2="186" stroke="#dfe1e6"/>
+  <rect x="0" y="187" width="220" height="475" fill="#fafbfc" stroke="#dfe1e6"/>
+  <g font-family="Arial, sans-serif" font-size="13" fill="#344563">
+    <text x="18" y="222" font-size="11" font-weight="700">YOUR SETTINGS</text>
+    <text x="18" y="254">Approvals</text><text x="18" y="284">Editor</text><text x="18" y="314">Email</text><text x="18" y="344">Password</text>
+    <text x="18" y="380">Table Filter, Charts &amp;</text><text x="18" y="398">Spreadsheets</text>
+    <text x="18" y="433" font-size="11" font-weight="700">TOKENS</text>
+    <text x="18" y="466">Authorized applications</text><text x="18" y="500" fill="#0c66e4">Personal Access Tokens</text><text x="18" y="534">Two-step verification</text>
+  </g>
+  <g font-family="Arial, sans-serif" fill="#172b4d">
+    <text x="246" y="232" font-size="17" font-weight="700">Personal Access Tokens</text>
+    <text x="246" y="266" font-size="14">Use personal access tokens as a safe alternative to authenticating with username and password.</text>
+  </g>
+  <rect x="1390" y="216" width="166" height="44" rx="4" fill="#0c66e4"/>
+  <text x="1473" y="244" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#fff">Create token</text>
+  <g font-family="Arial, sans-serif" font-size="14" fill="#344563">
+    <text x="246" y="322">Name</text><text x="590" y="322">Date created</text><text x="930" y="322">Expiry date</text><text x="1225" y="322">Last authenticated</text>
+  </g>
+  <line x1="246" y1="336" x2="1560" y2="336" stroke="#c1c7d0"/>
+  <g font-family="Arial, sans-serif" font-size="14" fill="#172b4d">
+    <text x="246" y="372">test-mcp</text><text x="590" y="372">Jun 19, 2026, 08:03 AM UTC</text><text x="930" y="372">Never</text><text x="1225" y="372">Jun 24, 2026, 07:05 AM UTC</text>
+  </g>
+  <line x1="246" y1="392" x2="1560" y2="392" stroke="#dfe1e6"/>
+  <path d="M1374 202 C1432 192 1518 196 1572 207 L1578 269 C1515 279 1423 278 1374 266 Z" fill="none" stroke="#e32227" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

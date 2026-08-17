@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
+  <title id="title">Bước 3: sao chép token vừa tạo</title>
+  <desc id="desc">Ảnh hướng dẫn màn hình token mới tạo, trường token và nút sao chép được đánh dấu đỏ.</desc>
+  <rect width="1600" height="520" fill="#fff"/>
+  <text x="30" y="50" font-family="Arial, sans-serif" font-size="34" fill="#344563">×</text>
+  <g transform="translate(530 30)" font-family="Arial, sans-serif" fill="#172b4d">
+    <text x="0" y="25" font-size="23" font-weight="700">New personal access token created</text>
+    <text x="0" y="61" font-size="14">Copy the token and store it in a safe space. You won’t be able to see your token once you</text>
+    <text x="0" y="83" font-size="14">click Close.</text>
+    <rect x="0" y="100" width="550" height="43" rx="2" fill="#fff" stroke="#7a869a" stroke-width="2"/>
+    <text x="13" y="128" font-size="15" fill="#344563">••••••••••••••••••••••••••••••••••••••</text>
+    <g transform="translate(564 107)" fill="none" stroke="#172b4d" stroke-width="2">
+      <rect x="3" y="0" width="12" height="15" rx="1"/><path d="M0 4 H-2 V19 H10 V17"/>
+    </g>
+    <rect x="0" y="170" width="62" height="37" rx="3" fill="#0c66e4"/>
+    <text x="31" y="194" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">Close</text>
+    <path d="M-4 93 C78 82 265 89 370 100" fill="none" stroke="#e32227" stroke-width="13" stroke-linecap="round"/>
+    <path d="M594 93 C606 100 605 139 596 146" fill="none" stroke="#e32227" stroke-width="13" stroke-linecap="round"/>
+  </g>
+</svg>

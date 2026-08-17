@@ -1,3 +1,4 @@
+.modalBody { overscroll-behavior: contain; scrollbar-gutter: stable; }
 .guide { display: flex; flex-direction: column; gap: 18px; color: var(--text); }
 .intro { display: flex; gap: 12px; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border)); border-radius: var(--radius-sm); background: var(--accent-tint); }
 .intro > svg { flex: 0 0 auto; color: var(--accent); margin-top: 1px; }
@@ -10,16 +11,9 @@
 .stepBody > strong, .stepTitle strong { font-size: 13px; color: var(--text-strong); }
 .stepTitle { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .openButton { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 7px 10px; border-radius: var(--radius-sm); background: var(--accent); color: white; font-size: 11.5px; font-weight: 650; text-decoration: none; }
-.mockScreen, .mockForm, .mockToken { border: 1px solid var(--border); border-radius: 7px; background: var(--bg-subtle); color: var(--text-muted); font-size: 11px; }
-.mockScreen { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; }
-.mockPrimary { display: inline-flex; width: fit-content; padding: 5px 8px; border-radius: 4px; background: #0c66e4; color: #fff; font-weight: 650; }
-.mockForm { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 10px 12px; }
-.mockForm label { display: flex; flex-direction: column; gap: 4px; grid-column: 1 / -1; }
-.mockInput { padding: 7px 9px; border: 1px solid #579dff; border-radius: 4px; background: var(--bg-panel); color: var(--text); }
-.mockCheck { align-self: center; }
-.mockToken { display: flex; align-items: center; justify-content: space-between; padding: 9px 11px; font-family: ui-monospace, monospace; }
-.mockToken svg { color: var(--accent); }
-.instruction { margin-top: -2px !important; }
+.guideImage { margin: 2px 0 0; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.guideImage img { display: block; width: 100%; height: auto; max-height: 430px; object-fit: contain; object-position: top center; background: #fff; }
+.guideImage figcaption { padding: 8px 11px; border-top: 1px solid var(--border-soft); background: var(--bg-subtle); color: var(--text-muted); font-size: 11.5px; line-height: 1.45; }
 .pasteBox { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--accent-tint) 55%, var(--bg-panel)); }
 .pasteBox > span { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
 .pasteBox small { color: var(--text-muted); font-size: 11.5px; font-weight: 400; }
@@ -31,6 +25,11 @@
 .guideButton:hover { border-color: var(--accent); }
 
 @media (max-width: 640px) {
+  .modalBody { padding: 13px; }
+  .guide { gap: 14px; }
+  .step { grid-template-columns: 24px minmax(0, 1fr); gap: 8px; }
+  .number { width: 24px; height: 24px; }
+  .stepBody { padding: 11px; }
   .stepTitle { flex-direction: column; }
   .openButton { width: 100%; justify-content: center; box-sizing: border-box; }
   .footerHint { display: none; }

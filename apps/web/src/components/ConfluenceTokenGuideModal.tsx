@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { Icon } from './Icon';
 import { PlModal } from './pipelines/PlModal';
@@ -14,11 +15,20 @@ export function ConfluenceTokenGuideModal({ tokenUrl, onClose, onUseToken }: Pro
   const [token, setToken] = useState('');
   const trimmedToken = token.trim();
 
-  return (
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  const modal = (
     <PlModal
       title="Hướng dẫn lấy Confluence Access Token"
       icon="info"
-      size="lg"
+      size="xl"
+      bodyClassName={styles.modalBody}
       onClose={onClose}
       footer={(
         <>
@@ -54,11 +64,13 @@ export function ConfluenceTokenGuideModal({ tokenUrl, onClose, onUseToken }: Pro
                   Mở trang tạo token <Icon name="external-link" size={13} />
                 </a>
               </div>
-              <div className={styles.mockScreen} aria-label="Minh họa nút Create token">
-                <span>Personal Access Tokens</span>
-                <span className={styles.mockPrimary}>Create token</span>
-              </div>
-              <p className={styles.instruction}>Bấm <b>Create token</b> ở góc phải.</p>
+              <figure className={styles.guideImage}>
+                <img
+                  src="/guides/confluence-token/step-1-create-token.svg"
+                  alt="Trang Personal Access Tokens với nút Create token ở góc phải được khoanh đỏ"
+                />
+                <figcaption>Bấm <b>Create token</b> ở góc phải.</figcaption>
+              </figure>
             </div>
           </li>
 
@@ -67,11 +79,13 @@ export function ConfluenceTokenGuideModal({ tokenUrl, onClose, onUseToken }: Pro
             <div className={styles.stepBody}>
               <strong>Đặt tên và tạo token</strong>
               <p>Nhập tên dễ nhớ, ví dụ <b>Open Design</b>. Có thể để token không hết hạn hoặc chọn ngày hết hạn theo quy định của đơn vị.</p>
-              <div className={styles.mockForm} aria-label="Minh họa form tạo token">
-                <label><span>Token Name</span><span className={styles.mockInput}>Open Design</span></label>
-                <span className={styles.mockCheck}>□ Automatic expiry</span>
-                <span className={styles.mockPrimary}>Create</span>
-              </div>
+              <figure className={styles.guideImage}>
+                <img
+                  src="/guides/confluence-token/step-2-configure-token.svg"
+                  alt="Form tạo Personal Access Token với ô Token Name và tùy chọn Automatic expiry được đánh dấu đỏ"
+                />
+                <figcaption>Điền tên token, chọn thời hạn nếu cần rồi bấm <b>Create</b>.</figcaption>
+              </figure>
             </div>
           </li>
 
@@ -80,9 +94,13 @@ export function ConfluenceTokenGuideModal({ tokenUrl, onClose, onUseToken }: Pro
             <div className={styles.stepBody}>
               <strong>Sao chép token ngay khi Confluence hiển thị</strong>
               <p>Bấm biểu tượng sao chép trước khi bấm <b>Close</b>. Sau khi đóng, Confluence sẽ không hiển thị lại token này.</p>
-              <div className={styles.mockToken} aria-label="Minh họa sao chép token">
-                <span>••••••••••••••••••••••••</span><Icon name="copy" size={15} />
-              </div>
+              <figure className={styles.guideImage}>
+                <img
+                  src="/guides/confluence-token/step-3-copy-token.svg"
+                  alt="Token mới tạo và nút sao chép được đánh dấu đỏ"
+                />
+                <figcaption>Sao chép token trước khi bấm <b>Close</b>.</figcaption>
+              </figure>
             </div>
           </li>
         </ol>
@@ -102,4 +120,6 @@ export function ConfluenceTokenGuideModal({ tokenUrl, onClose, onUseToken }: Pro
       </div>
     </PlModal>
   );
+
+  return typeof document === 'undefined' ? modal : createPortal(modal, document.body);
 }

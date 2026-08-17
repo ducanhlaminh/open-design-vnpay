@@ -114,6 +114,18 @@ describe('ConfluenceCredentialSection', () => {
     expect(dialog.textContent).toContain('Mở trang Personal Access Tokens');
     expect(dialog.textContent).toContain('Đặt tên và tạo token');
     expect(dialog.textContent).toContain('Sao chép token ngay khi Confluence hiển thị');
+    expect(dialog.parentElement?.parentElement).toBe(document.body);
+    expect(
+      screen.getByAltText('Trang Personal Access Tokens với nút Create token ở góc phải được khoanh đỏ')
+        .getAttribute('src'),
+    ).toBe('/guides/confluence-token/step-1-create-token.svg');
+    expect(
+      screen.getByAltText('Form tạo Personal Access Token với ô Token Name và tùy chọn Automatic expiry được đánh dấu đỏ')
+        .getAttribute('src'),
+    ).toBe('/guides/confluence-token/step-2-configure-token.svg');
+    expect(screen.getByAltText('Token mới tạo và nút sao chép được đánh dấu đỏ').getAttribute('src')).toBe(
+      '/guides/confluence-token/step-3-copy-token.svg',
+    );
     const createLink = screen.getByRole('link', { name: /Mở trang tạo token/ }) as HTMLAnchorElement;
     expect(createLink.href).toBe('https://wiki.servicehub.vn/plugins/personalaccesstokens/usertokens.action');
 
