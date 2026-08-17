@@ -450,7 +450,18 @@ function Invoke-WebText {
   param([Parameter(Mandatory = $true)][string]$Url, [int]$TimeoutSec = 30)
   for ($attempt = 1; $attempt -le $DownloadMaxAttempts; $attempt++) {
     try {
-      return (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop).Content
+      $content = (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop).Content
+      # GitHub release assets (release.json, *.sha256) are served as
+      # application/octet-stream. Windows PowerShell 5.1 then hands back
+      # .Content as byte[] instead of a string; piping that into
+      # ConvertFrom-Json "succeeds" (each byte parses as a JSON number) and
+      # the flat-key lookup finds nothing -> "release.json has no entry for
+      # platform win32-x64" (0.8.34 .cmd bootstrap). Decode explicitly.
+      if ($content -is [byte[]]) {
+        $content = [System.Text.Encoding]::UTF8.GetString($content)
+      }
+      if ($null -ne $content) { $content = ([string]$content).TrimStart([char]0xFEFF) }
+      return $content
     } catch {
       if ($attempt -ge $DownloadMaxAttempts) { throw }
       Start-Sleep -Seconds $attempt
@@ -554,9 +565,12 @@ function Resolve-Archive {
   } catch {
     Fail "could not fetch release.json from $releaseJsonUrl -- $($_.Exception.Message)"
   }
+  if (-not ($relJson -is [System.Management.Automation.PSCustomObject])) {
+    Fail "release.json from $releaseJsonUrl did not parse as a JSON object (got $(if ($null -eq $relJson) { "null" } else { $relJson.GetType().Name }))"
+  }
   $tarballUrl = Get-FlatJsonValue $relJson "$Platform.url"
   $tarballSha = Get-FlatJsonValue $relJson "$Platform.sha256"
-  if (-not $tarballUrl) { Fail "release.json has no entry for platform $Platform" }
+  if (-not $tarballUrl) { Fail "release.json ($($relJson.tag)) has no entry for platform $Platform" }
 
   Get-Archive -Url $tarballUrl
   if (-not $ArchiveShaHint) { $script:ArchiveShaHint = $tarballSha }

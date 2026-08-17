@@ -105,6 +105,17 @@ test('Windows ships double-click command files for install, update, start, and s
   assert.match(build, /OpenDesign-Install\.cmd/);
 });
 
+test('Windows release.json lookup decodes octet-stream bodies (PowerShell 5.1 returns byte[])', async () => {
+  const ps = await source();
+  const web = ps.slice(ps.indexOf('function Invoke-WebText'), ps.indexOf('function Get-FlatJsonValue'));
+  // 0.8.34: OpenDesign-Install.cmd (powershell.exe 5.1) -> "release.json has
+  // no entry for platform win32-x64" because GitHub serves release assets as
+  // application/octet-stream and 5.1 hands .Content back as byte[].
+  assert.match(web, /if \(\$content -is \[byte\[\]\]\)/);
+  assert.match(web, /\[System\.Text\.Encoding\]::UTF8\.GetString\(\$content\)/);
+  assert.match(ps, /did not parse as a JSON object/);
+});
+
 test('Windows config replacement and rollback are atomic and transaction guarded', async () => {
   const ps = await source();
   assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configTemp, \$configPath, \$ConfigBackupPath, \$true\)/);
