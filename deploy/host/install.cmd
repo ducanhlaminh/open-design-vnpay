@@ -9,16 +9,21 @@ set "OD_HOME=%USERPROFILE%\.open-design"
 set "OD_INSTALLER=%~dp0install.ps1"
 set "OD_BOOTSTRAP_INSTALLER="
 set "OD_ACTION="
+rem Computed BEFORE the if-block below on purpose: cmd expands %VAR% for a
+rem whole parenthesised block when it parses the block, so a variable set
+rem inside the block reads as EMPTY on the very next line of that block
+rem (bug 0.8.32: `powershell -File ''` on a fresh install from Downloads).
+set "OD_BOOTSTRAP_CANDIDATE=%TEMP%\open-design-install-%RANDOM%-%RANDOM%.ps1"
 
 if exist "%OD_HOME%\current\install.ps1" (
   set "OD_INSTALLER=%OD_HOME%\current\install.ps1"
   set "OD_ACTION=-Update"
 ) else if not exist "%OD_INSTALLER%" (
-  set "OD_BOOTSTRAP_INSTALLER=%TEMP%\open-design-install-%RANDOM%-%RANDOM%.ps1"
-  set "OD_INSTALLER=%OD_BOOTSTRAP_INSTALLER%"
+  set "OD_BOOTSTRAP_INSTALLER=%OD_BOOTSTRAP_CANDIDATE%"
+  set "OD_INSTALLER=%OD_BOOTSTRAP_CANDIDATE%"
   echo Downloading the latest Open Design installer...
   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
-    "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1' -OutFile $env:OD_BOOTSTRAP_INSTALLER"
+    "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1' -OutFile $env:OD_BOOTSTRAP_CANDIDATE"
   if errorlevel 1 goto :download_failed
 )
 

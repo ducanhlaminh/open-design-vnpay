@@ -85,7 +85,19 @@ test('Windows ships double-click command files for install, update, start, and s
     assert.match(build, new RegExp(`deploy/host/\\$\\{command_file\\}`));
     assert.match(ps, new RegExp(name.replace('.', '\\.')));
   }
-  assert.match(commandFiles.find(({ name }) => name === 'install.cmd')!.body, /Invoke-WebRequest/);
+  const installCmd = commandFiles.find(({ name }) => name === 'install.cmd')!.body;
+  assert.match(installCmd, /Invoke-WebRequest/);
+  // cmd expands %VAR% for a whole parenthesised block at parse time, so a
+  // variable assigned inside a block must NOT be read via %VAR% inside the
+  // same block (0.8.32: `powershell -File ''` on a fresh install because
+  // OD_INSTALLER was copied from a just-set OD_BOOTSTRAP_INSTALLER). The temp
+  // path is therefore computed BEFORE the block and only copied inside it.
+  const candidateLine = installCmd.indexOf('set "OD_BOOTSTRAP_CANDIDATE=');
+  const blockStart = installCmd.indexOf('if exist "%OD_HOME%\\current\\install.ps1" (');
+  assert.ok(candidateLine > -1 && blockStart > -1 && candidateLine < blockStart, 'OD_BOOTSTRAP_CANDIDATE must be set before the if-block');
+  assert.doesNotMatch(installCmd, /set "OD_INSTALLER=%OD_BOOTSTRAP_INSTALLER%"/);
+  assert.match(installCmd, /set "OD_INSTALLER=%OD_BOOTSTRAP_CANDIDATE%"/);
+  assert.match(installCmd, /-OutFile \$env:OD_BOOTSTRAP_CANDIDATE/);
   assert.match(commandFiles.find(({ name }) => name === 'update.cmd')!.body, /-Update/);
   assert.match(commandFiles.find(({ name }) => name === 'start.cmd')!.body, /-Start/);
   assert.match(commandFiles.find(({ name }) => name === 'stop.cmd')!.body, /-Stop/);

@@ -269,6 +269,28 @@ jobs:
           if ($runValue) { throw "OpenDesignDaemon HKCU Run entry still exists after -Uninstall" }
           Write-Host "[ok] -Uninstall removed $odHome and the HKCU Run entry"
 
+      # The path a real user takes: OpenDesign-Install.cmd alone in Downloads
+      # (no install.ps1 next to it, nothing under ~/.open-design). The .cmd
+      # must bootstrap by downloading deploy/host/install.ps1 from `main` and
+      # run a full install of the CURRENT latest release. 0.8.32 shipped a
+      # .cmd that reached `powershell -File ''` here — the archive-based
+      # install above never exercises this branch, so it needs its own step.
+      - name: Test OpenDesign-Install.cmd bootstrap (fresh machine path)
+        shell: pwsh
+        run: |
+          $dl = Join-Path $env:RUNNER_TEMP "downloads-sim"
+          New-Item -ItemType Directory -Force -Path $dl | Out-Null
+          Copy-Item "${{ github.workspace }}\deploy\host\install.cmd" (Join-Path $dl "OpenDesign-Install.cmd")
+          cmd.exe /c "`"$(Join-Path $dl 'OpenDesign-Install.cmd')`" --no-pause"
+          if ($LASTEXITCODE -ne 0) { throw "OpenDesign-Install.cmd bootstrap exited $LASTEXITCODE" }
+          $odHome = Join-Path $env:USERPROFILE ".open-design"
+          if (-not (Test-Path (Join-Path $odHome "current\install.ps1"))) { throw "bootstrap install left no $odHome\current\install.ps1" }
+          $health = Invoke-RestMethod -Uri "http://127.0.0.1:7456/api/health" -TimeoutSec 15
+          if (-not $health.ok) { throw "health after bootstrap install: $($health | ConvertTo-Json -Compress)" }
+          Write-Host "[ok] OpenDesign-Install.cmd bootstrapped a fresh install, health: $($health | ConvertTo-Json -Compress)"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $odHome "current\install.ps1") -Uninstall -Force -DeleteData
+          if ($LASTEXITCODE -ne 0) { throw "post-bootstrap -Uninstall exited $LASTEXITCODE" }
+
       - name: Cleanup
         if: always()
         shell: pwsh
