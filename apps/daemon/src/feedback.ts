@@ -38,7 +38,7 @@ export const MERGED_FEEDBACK_FILENAME = '.feedback-merged.jsonl';
 export interface FeedbackRecord {
   /** Display name from Settings (feedbackUsername); falls back to install id. */
   user: string;
-  /** KGS/media project id (the folder the prompt belongs to). */
+  /** Media-service project id (the folder the prompt belongs to). */
   project: string;
   /** Verbatim user prompt text. */
   prompt: string;

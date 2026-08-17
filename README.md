@@ -26,18 +26,56 @@ Nền tảng thiết kế sản phẩm nội bộ của VNPAY: biến tài liệ
 - Mạng cần truy cập được: `github.com`, `nodejs.org` (khi thiếu Node), `claude.ai` / `chatgpt.com` (khi thiếu CLI). Installer kiểm tra trước khi cài và báo đúng domain bị chặn nếu công ty có firewall/proxy.
 - Tài khoản Claude (bắt buộc) và tài khoản ChatGPT/Codex (tùy chọn) để đăng nhập CLI.
 
-## Hướng dẫn cài đặt
+## Cài đặt và quản lý ứng dụng
 
-### macOS / Linux
+### macOS — Apple Silicon và Intel
 
-Mở Terminal, chạy 2 lệnh:
+Installer tự nhận diện Apple Silicon (`arm64`) hoặc Intel (`x64`). Mở
+Terminal và chạy:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.sh -o install.sh
 bash install.sh
 ```
 
-### Windows
+Sau khi cài, dùng các lệnh sau để quản lý ứng dụng:
+
+```bash
+# Dừng Open Design
+launchctl bootout gui/$(id -u)/com.vnpay.open-design
+
+# Khởi động Open Design
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vnpay.open-design.plist 2>/dev/null || true
+launchctl kickstart -k gui/$(id -u)/com.vnpay.open-design
+
+# Kiểm tra trạng thái service
+launchctl print gui/$(id -u)/com.vnpay.open-design
+
+# Kiểm tra app đã phản hồi chưa
+curl -fsS http://127.0.0.1:7456/api/health
+```
+
+Gỡ ứng dụng nhưng **giữ lại dữ liệu dự án**:
+
+```bash
+launchctl bootout gui/$(id -u)/com.vnpay.open-design 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/com.vnpay.open-design.plist
+rm -rf ~/.open-design
+```
+
+Gỡ sạch cả ứng dụng và dữ liệu dự án:
+
+```bash
+launchctl bootout gui/$(id -u)/com.vnpay.open-design 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/com.vnpay.open-design.plist
+rm -rf ~/.open-design
+rm -rf ~/od-data/open-design
+```
+
+> Lệnh cuối sẽ xóa toàn bộ App, Feature và dữ liệu dự án trên máy, không thể
+> hoàn tác nếu chưa có bản sao lưu.
+
+### Windows 10/11
 
 Mở PowerShell, chạy:
 
@@ -51,6 +89,37 @@ Nếu muốn tải script về xem trước rồi mới chạy:
 irm https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
+
+Sau khi cài, dùng các lệnh sau trong PowerShell:
+
+```powershell
+# Dừng Open Design
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.open-design\current\install.ps1" -Stop
+
+# Khởi động Open Design
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.open-design\current\install.ps1" -Start
+
+# Kiểm tra Scheduled Task
+Get-ScheduledTask -TaskName OpenDesignDaemon
+
+# Kiểm tra app đã phản hồi chưa
+Invoke-RestMethod http://127.0.0.1:7456/api/health
+```
+
+Gỡ ứng dụng nhưng **giữ lại dữ liệu dự án**:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.open-design\current\install.ps1" -Uninstall
+```
+
+Gỡ sạch cả ứng dụng và dữ liệu dự án, không hỏi lại:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.open-design\current\install.ps1" -Uninstall -DeleteData -Force
+```
+
+> `-DeleteData` sẽ xóa toàn bộ App, Feature và dữ liệu dự án trên máy. Bỏ
+> flag này nếu muốn giữ dữ liệu để cài lại sau.
 
 ### Installer sẽ tự làm 6 bước
 

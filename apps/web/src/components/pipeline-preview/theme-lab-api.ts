@@ -1,7 +1,7 @@
 // Thin client over the daemon's theme-lab proxy (/api/pipelines/theme/*), which
-// forwards to design-v3's theme-lab (resolves the KGS theme data into
-// compositions + cssVars). Used by ThemeInspectorPanel to list brandings and
-// resolve one into the cssVars the preview iframe applies.
+// forwards to design-v3's theme-lab (resolves theme data into compositions +
+// cssVars). Used by ThemeInspectorPanel to list brandings and resolve one into
+// the cssVars the preview iframe applies.
 
 // One axis of a composition (brand / visual / color / typography / icon /
 // rounded / …). Mirrors design-v3's layer stack so the inspector can show what

@@ -1,9 +1,10 @@
 // Right-panel DS inspector for the pipeline UI preview — mirrors design-v3's
 // Styles-tab inspector: header (Design System + composition name), composition
 // picker + light/dark mode toggle, a Typography specimen, and a Color swatch
-// list. Compositions/modes/cssVars/tokens all come from KGS via the daemon
-// theme-lab proxy; selecting a branding (or mode) re-resolves and hands the full
-// resolved theme + mode up so the host posts it into the preview iframe.
+// list. Compositions/modes/cssVars/tokens all come from design-v3's theme-lab
+// service via the daemon theme-lab proxy; selecting a branding (or mode)
+// re-resolves and hands the full resolved theme + mode up so the host posts
+// it into the preview iframe.
 
 import { useEffect, useMemo, useState } from 'react';
 
@@ -167,7 +168,7 @@ export function ThemeInspectorPanel({ workspaceId, onResolved, onMode }: Props) 
 
       <div className={styles.body}>
         {loading ? (
-          <p className={styles.hint}>Loading brandings from KGS…</p>
+          <p className={styles.hint}>Loading brandings from theme-lab…</p>
         ) : comps.length === 0 ? (
           <p className={styles.hint}>No compositions found. Is theme-lab running and seeded?</p>
         ) : (
