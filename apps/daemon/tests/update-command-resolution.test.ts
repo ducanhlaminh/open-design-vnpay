@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HOST_RUNTIME_RELEASE_CACHE_TTL_MS,
   formatPrematureUpdateExitError,
+  isWindowsUpdateRestartRequiredExit,
   formatUpdateSpawnError,
   resolveUpdateCommand,
   resolveUpdateSpawnOptions,
@@ -113,5 +114,14 @@ describe('formatPrematureUpdateExitError', () => {
 
   it('includes a termination signal when present', () => {
     expect(formatPrematureUpdateExitError(null, 'SIGTERM').message).toContain('signal SIGTERM');
+  });
+});
+
+describe('isWindowsUpdateRestartRequiredExit', () => {
+  it('accepts only the dedicated unsignalled Windows exit code', () => {
+    expect(isWindowsUpdateRestartRequiredExit('win32', 75, null)).toBe(true);
+    expect(isWindowsUpdateRestartRequiredExit('linux', 75, null)).toBe(false);
+    expect(isWindowsUpdateRestartRequiredExit('win32', 1, null)).toBe(false);
+    expect(isWindowsUpdateRestartRequiredExit('win32', 75, 'SIGTERM')).toBe(false);
   });
 });

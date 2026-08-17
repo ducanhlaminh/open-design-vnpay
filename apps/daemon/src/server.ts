@@ -33,7 +33,11 @@ import {
   compareVersions,
   deriveOdHomeFromResourceRoot,
   extractSemverFromTag,
+  isTerminalUpdateState,
+  patchUpdateState,
+  readUpdateState,
   resolveJustUpdated,
+  writeUpdateState,
   writeUpdateMarker,
 } from './update-check.js';
 import { createCommandInvocation } from '@open-design/platform';
@@ -3230,6 +3234,21 @@ export function formatPrematureUpdateExitError(
   );
 }
 
+// install.ps1 uses this non-error terminal exit when it has safely installed
+// the new release but cannot restart the daemon outside the daemon-owned
+// process tree. The old daemon remains available until the user restarts it.
+export const WINDOWS_UPDATE_RESTART_REQUIRED_EXIT_CODE = 75;
+
+export function isWindowsUpdateRestartRequiredExit(
+  platform: NodeJS.Platform,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): boolean {
+  return platform === 'win32'
+    && code === WINDOWS_UPDATE_RESTART_REQUIRED_EXIT_CODE
+    && signal === null;
+}
+
 // POST /api/update/apply redirects the child's stdout/stderr into this file
 // (see the spawn call below) instead of `stdio: 'ignore'`, so GET
 // /api/update/status can report coarse progress while this daemon process
@@ -3267,6 +3286,14 @@ export async function readUpdateProgress(
   } catch {
     return null;
   }
+}
+
+function updateStateForProgress(progress) {
+  if (!progress) return 'preparing';
+  if (progress.step <= 1) return 'downloading';
+  if (progress.step === 2) return 'verifying';
+  if (progress.step <= 4) return 'installing';
+  return 'restarting';
 }
 
 function bearerTokenFromRequest(req) {
@@ -5505,13 +5532,83 @@ export async function startServer({
       justUpdated = null;
     }
 
-    // Only meaningful while THIS process is the one running the update —
-    // once it restarts onto the new version, the new process starts with
-    // `updateApplyInProgress` back at `false`, so this naturally goes quiet
-    // again without any extra reset logic.
-    const progress = updateApplyInProgress ? await readUpdateProgress(RUNTIME_DATA_DIR) : null;
+    // The operation record lives under OD_DATA_DIR, so the replacement
+    // daemon can finish the state transition after the installer restarts
+    // this process. update.log remains the installer's source of coarse
+    // phase information; fold it into the durable record on every poll.
+    let updateState = await readUpdateState(RUNTIME_DATA_DIR);
+    if (updateState && !isTerminalUpdateState(updateState.state)) {
+      const parsedProgress = await readUpdateProgress(RUNTIME_DATA_DIR);
+      if (parsedProgress) {
+        const nextState = updateStateForProgress(parsedProgress);
+        if (
+          updateState.state !== nextState
+          || JSON.stringify(updateState.phase) !== JSON.stringify(parsedProgress)
+        ) {
+          updateState = await patchUpdateState(RUNTIME_DATA_DIR, updateState.operationId, {
+            state: nextState,
+            phase: parsedProgress,
+          }) ?? updateState;
+        }
+      }
 
-    res.json({ currentVersion, latestVersion, updateAvailable, justUpdated, lastError: lastUpdateError, progress });
+      // Never infer success from semver while the accepting daemon is
+      // still alive: a same-version/replayed release already matches its
+      // target before it downloads a byte. Only the replacement daemon,
+      // after the installer reached restart, may reconcile the outcome.
+      if (!updateApplyInProgress && updateState.state === 'restarting') {
+        if (
+          updateState.sourceVersion
+          && updateState.sourceVersion !== updateState.targetVersion
+          && currentVersion === updateState.targetVersion
+        ) {
+          updateState = await patchUpdateState(RUNTIME_DATA_DIR, updateState.operationId, {
+            state: 'healthy',
+            error: null,
+          }) ?? updateState;
+        } else if (currentVersion !== updateState.targetVersion) {
+          const error = formatUpdateSpawnError(
+            new Error(`update rolled back; daemon is still running ${currentVersion} instead of ${updateState.targetVersion}`),
+          );
+          updateState = await patchUpdateState(RUNTIME_DATA_DIR, updateState.operationId, {
+            state: 'rolled-back',
+            error,
+          }) ?? updateState;
+        } else {
+          // Legacy state without sourceVersion (or a hand-written replay)
+          // is intrinsically ambiguous: the old and new daemon report the
+          // same semver. Fail closed instead of claiming a false success.
+          const error = formatUpdateSpawnError(
+            new Error(`cannot verify same-version update ${updateState.targetVersion}`),
+          );
+          updateState = await patchUpdateState(RUNTIME_DATA_DIR, updateState.operationId, {
+            state: 'failed',
+            error,
+          }) ?? updateState;
+        }
+      }
+    }
+
+    // Preserve the legacy contract: `progress` is live/advisory and goes
+    // quiet after completion. `phase` inside the durable record remains
+    // available for post-mortem inspection.
+    const progress = updateState && !isTerminalUpdateState(updateState.state)
+      ? updateState.phase
+      : null;
+    const durableError = updateState?.error ?? lastUpdateError;
+    res.json({
+      currentVersion,
+      latestVersion,
+      updateAvailable,
+      justUpdated,
+      lastError: durableError,
+      progress,
+      operationId: updateState?.operationId ?? null,
+      targetVersion: updateState?.targetVersion ?? null,
+      state: updateState?.state ?? null,
+      phase: updateState?.phase ?? null,
+      updateState,
+    });
   });
 
   app.post('/api/update/apply', async (_req, res) => {
@@ -5533,13 +5630,38 @@ export async function startServer({
     // Fresh attempt — clear any error left over from a previous failed
     // attempt so the UI/CLI don't keep reporting a stale failure.
     lastUpdateError = null;
+    let operationId = null;
     try {
       const release = await readHostRuntimeLatestReleaseInfo();
       const targetVersion = release?.version;
       if (!targetVersion) throw new Error('latest release version unavailable');
 
+      const sourceVersion = (await readCurrentAppVersionInfo()).version;
+      if (compareVersions(targetVersion, sourceVersion) <= 0) {
+        updateApplyInProgress = false;
+        return res.json({
+          started: false,
+          reason: 'up-to-date',
+          currentVersion: sourceVersion,
+          targetVersion,
+        });
+      }
+
       const odHome = deriveOdHomeFromResourceRoot(DAEMON_RESOURCE_ROOT);
       if (!odHome) throw new Error('could not resolve OD_HOME from OD_RESOURCE_ROOT');
+
+      operationId = randomUUID();
+      const startedAt = new Date().toISOString();
+      await writeUpdateState(RUNTIME_DATA_DIR, {
+        operationId,
+        targetVersion,
+        sourceVersion,
+        state: 'preparing',
+        phase: null,
+        error: null,
+        startedAt,
+        updatedAt: startedAt,
+      });
 
       // Must survive the restart — write to disk BEFORE spawning, not
       // just in memory (this process is about to be killed).
@@ -5579,10 +5701,10 @@ export async function startServer({
         // Windows cannot let install.ps1 kill this daemon and then continue
         // in the same process tree: live testing showed PowerShell is also
         // terminated at Step 5/6. Mark UI/API-triggered updates so the
-        // installer delegates the stop/start to an independent Task
-        // Scheduler process before the daemon is stopped.
+        // installer delegates the stop/start to the independent per-user
+        // launcher before the daemon is stopped.
         env: process.platform === 'win32'
-          ? { ...process.env, OD_SELF_UPDATE: '1' }
+          ? { ...process.env, OD_SELF_UPDATE: '1', OD_UPDATE_OPERATION_ID: operationId }
           : process.env,
         stdio: ['ignore', updateLogFd, updateLogFd],
       });
@@ -5605,6 +5727,10 @@ export async function startServer({
       child.on('error', (err) => {
         lastUpdateError = formatUpdateSpawnError(err);
         updateApplyInProgress = false;
+        void patchUpdateState(RUNTIME_DATA_DIR, operationId, {
+          state: 'failed',
+          error: lastUpdateError,
+        }).catch(() => {});
       });
       // A successful update kills THIS process via Stop-OdService before the
       // child ever exits. If this handler runs, the original daemon is still
@@ -5613,16 +5739,36 @@ export async function startServer({
       // silently exit 0 without evaluating the script body.
       child.on('exit', (code, signal) => {
         updateApplyInProgress = false;
+        if (isWindowsUpdateRestartRequiredExit(process.platform, code, signal)) {
+          lastUpdateError = null;
+          void patchUpdateState(RUNTIME_DATA_DIR, operationId, {
+            state: 'restart-required',
+            error: null,
+          }).catch(() => {});
+          return;
+        }
         lastUpdateError = formatUpdateSpawnError(formatPrematureUpdateExitError(code, signal));
+        void patchUpdateState(RUNTIME_DATA_DIR, operationId, {
+          state: 'failed',
+          error: lastUpdateError,
+        }).catch(() => {});
       });
       // Only the POSIX updater is detached. Calling unref on the Windows
       // PowerShell child was part of the live failure shape and serves no
       // purpose once that child intentionally remains attached.
       if (spawnOptions.detached) child.unref();
 
-      res.json({ started: true });
+      res.json({ started: true, operationId, targetVersion });
     } catch (error) {
       updateApplyInProgress = false;
+      const persistedError = formatUpdateSpawnError(error);
+      lastUpdateError = persistedError;
+      if (operationId) {
+        await patchUpdateState(RUNTIME_DATA_DIR, operationId, {
+          state: 'failed',
+          error: persistedError,
+        }).catch(() => {});
+      }
       res.status(500).json({
         started: false,
         reason: 'error',

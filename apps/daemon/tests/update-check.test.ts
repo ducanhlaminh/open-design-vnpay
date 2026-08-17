@@ -4,7 +4,7 @@
 // derivation, and the on-disk "just updated" marker's read/expire
 // lifecycle directly, which is both faster and more precise than driving
 // them through real HTTP.
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -13,11 +13,16 @@ import {
   compareVersions,
   deriveOdHomeFromResourceRoot,
   extractSemverFromTag,
+  isTerminalUpdateState,
+  patchUpdateState,
+  readUpdateState,
   readUpdateMarkerRaw,
   resolveJustUpdated,
   UPDATE_MARKER_EXPIRY_MS,
   UPDATE_MARKER_FILENAME,
   updateMarkerPath,
+  UPDATE_STATE_FILENAME,
+  writeUpdateState,
   writeUpdateMarker,
 } from '../src/update-check.js';
 
@@ -49,6 +54,61 @@ describe('compareVersions', () => {
     expect(compareVersions('not-a-version', '0.0.1')).toBe(-1);
     expect(compareVersions('0.0.1', 'not-a-version')).toBe(1);
     expect(compareVersions('garbage', 'also-garbage')).toBe(0);
+  });
+});
+
+describe('durable update state', () => {
+  let dataDir: string;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'od-update-state-'));
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('atomically persists and restores an operation', async () => {
+    const state = {
+      operationId: 'op-1',
+      targetVersion: '1.2.3',
+      state: 'preparing' as const,
+      phase: null,
+      error: null,
+      startedAt: '2026-08-17T00:00:00.000Z',
+      updatedAt: '2026-08-17T00:00:00.000Z',
+    };
+    await writeUpdateState(dataDir, state);
+    expect(await readUpdateState(dataDir)).toEqual(state);
+    expect(await readdir(dataDir)).toEqual([UPDATE_STATE_FILENAME]);
+  });
+
+  it('patches only the matching operation and preserves immutable identity fields', async () => {
+    await writeUpdateState(dataDir, {
+      operationId: 'op-1', targetVersion: '1.2.3', state: 'preparing', phase: null, error: null,
+      startedAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:00.000Z',
+    });
+    expect(await patchUpdateState(dataDir, 'stale-op', { state: 'failed' })).toBeNull();
+    const next = await patchUpdateState(dataDir, 'op-1', {
+      state: 'installing',
+      phase: { step: 3, totalSteps: 6, label: 'Install' },
+      updatedAt: '2026-08-17T00:00:01.000Z',
+    });
+    expect(next).toMatchObject({
+      operationId: 'op-1', targetVersion: '1.2.3', state: 'installing',
+      phase: { step: 3, totalSteps: 6, label: 'Install' },
+      startedAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:01.000Z',
+    });
+  });
+
+  it('fails closed on malformed state and identifies terminal states', async () => {
+    await writeFile(join(dataDir, UPDATE_STATE_FILENAME), '{broken', 'utf8');
+    expect(await readUpdateState(dataDir)).toBeNull();
+    expect(isTerminalUpdateState('healthy')).toBe(true);
+    expect(isTerminalUpdateState('restart-required')).toBe(true);
+    expect(isTerminalUpdateState('rolled-back')).toBe(true);
+    expect(isTerminalUpdateState('failed')).toBe(true);
+    expect(isTerminalUpdateState('restarting')).toBe(false);
   });
 });
 

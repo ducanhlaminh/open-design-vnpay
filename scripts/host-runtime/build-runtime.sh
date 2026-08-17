@@ -268,6 +268,14 @@ chmod +x "${STAGE_DIR}/install.sh"
 # the darwin/linux case.
 if [ "$PLATFORM" = "win32-x64" ]; then
   cp "${WORKSPACE_ROOT}/deploy/host/install.ps1" "${STAGE_DIR}/install.ps1"
+  cp "${WORKSPACE_ROOT}/deploy/host/launcher.ps1" "${STAGE_DIR}/launcher.ps1"
+  for command_file in install.cmd update.cmd start.cmd stop.cmd; do
+    cp "${WORKSPACE_ROOT}/deploy/host/${command_file}" "${STAGE_DIR}/${command_file}"
+  done
+  cp "${WORKSPACE_ROOT}/deploy/host/install.cmd" "${OUT_DIR}/OpenDesign-Install.cmd"
+  cp "${WORKSPACE_ROOT}/deploy/host/update.cmd" "${OUT_DIR}/OpenDesign-Update.cmd"
+  cp "${WORKSPACE_ROOT}/deploy/host/start.cmd" "${OUT_DIR}/OpenDesign-Start.cmd"
+  cp "${WORKSPACE_ROOT}/deploy/host/stop.cmd" "${OUT_DIR}/OpenDesign-Stop.cmd"
 fi
 
 # Bundled env defaults (CONFLUENCE_URL/MEDIA_*/IDENTITY_URL/GOOGLE_CLIENT_*/SESSION_SECRET)

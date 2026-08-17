@@ -120,6 +120,7 @@ jobs:
           path: |
             ${{ runner.temp }}/out/*.tar.gz
             ${{ runner.temp }}/out/*.tar.gz.sha256
+            ${{ runner.temp }}/out/*.cmd
           retention-days: 3
           if-no-files-found: error
 
@@ -202,9 +203,14 @@ jobs:
           if ($item.LinkType -ne "Junction") { throw "$current is not a Junction (LinkType: $($item.LinkType))" }
 
           if (-not (Test-Path $configEnv)) { throw "missing $configEnv" }
+          foreach ($commandFile in @("OpenDesign-Install.cmd", "OpenDesign-Update.cmd", "OpenDesign-Start.cmd", "OpenDesign-Stop.cmd")) {
+            if (-not (Test-Path (Join-Path $odHome $commandFile))) { throw "missing installed command file: $commandFile" }
+          }
 
-          $task = Get-ScheduledTask -TaskName "OpenDesignDaemon" -ErrorAction SilentlyContinue
-          if (-not $task) { throw "OpenDesignDaemon scheduled task was not registered" }
+          $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+          $startup = (Get-ItemProperty -Path $runKey -Name "OpenDesignDaemon" -ErrorAction SilentlyContinue).OpenDesignDaemon
+          if (-not $startup) { throw "OpenDesignDaemon HKCU Run entry was not registered" }
+          if ($startup -notmatch 'launcher\.ps1') { throw "HKCU Run entry does not target launcher.ps1: $startup" }
 
           if (-not (Test-Path $pidFile)) { throw "missing $pidFile -- daemon never recorded a pid, so install.ps1's own health check could not have passed" }
           $daemonPid = (Get-Content $pidFile -Raw).Trim()
@@ -225,20 +231,20 @@ jobs:
 
           Write-Host "[ok] current is a Junction -> $($item.Target)"
           Write-Host "[ok] config.env present"
-          Write-Host "[ok] OpenDesignDaemon scheduled task registered (state: $($task.State))"
+          Write-Host "[ok] OpenDesignDaemon HKCU Run entry registered"
           Write-Host "[ok] daemon process running (pid $daemonPid)"
           Write-Host "[ok] /api/health responded: $($health | ConvertTo-Json -Compress)"
           Write-Host "[ok] /api/skills returned $($skills.skills.Count) skills -- config.env reached the daemon process"
 
           # -Stop / -Start also have to run in this same step -- same
           # process-teardown-between-steps reason as above.
-          & "${{ github.workspace }}\deploy\host\install.ps1" -Stop
-          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Stop exited $LASTEXITCODE" }
+          & (Join-Path $odHome "OpenDesign-Stop.cmd") --no-pause
+          if ($LASTEXITCODE -ne 0) { throw "stop.cmd exited $LASTEXITCODE" }
           if (Get-Process -Id $daemonPid -ErrorAction SilentlyContinue) { throw "-Stop did not stop pid $daemonPid" }
           Write-Host "[ok] -Stop stopped pid $daemonPid"
 
-          & "${{ github.workspace }}\deploy\host\install.ps1" -Start
-          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Start exited $LASTEXITCODE" }
+          & (Join-Path $odHome "OpenDesign-Start.cmd") --no-pause
+          if ($LASTEXITCODE -ne 0) { throw "start.cmd exited $LASTEXITCODE" }
           if (-not (Test-Path $pidFile)) { throw "missing $pidFile after -Start" }
           $newPid = (Get-Content $pidFile -Raw).Trim()
           $newProc = Get-Process -Id $newPid -ErrorAction SilentlyContinue
@@ -253,9 +259,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Uninstall exited $LASTEXITCODE" }
           $odHome = Join-Path $env:USERPROFILE ".open-design"
           if (Test-Path $odHome) { throw "$odHome still exists after -Uninstall" }
-          $task = Get-ScheduledTask -TaskName "OpenDesignDaemon" -ErrorAction SilentlyContinue
-          if ($task) { throw "OpenDesignDaemon scheduled task still exists after -Uninstall" }
-          Write-Host "[ok] -Uninstall removed $odHome and the scheduled task"
+          $runValue = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "OpenDesignDaemon" -ErrorAction SilentlyContinue).OpenDesignDaemon
+          if ($runValue) { throw "OpenDesignDaemon HKCU Run entry still exists after -Uninstall" }
+          Write-Host "[ok] -Uninstall removed $odHome and the HKCU Run entry"
 
       - name: Cleanup
         if: always()
@@ -276,6 +282,7 @@ jobs:
             }
           }
           try { schtasks /Delete /TN "OpenDesignDaemon" /F 2>$null } catch {}
+          Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "OpenDesignDaemon" -Force -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "$odHome" -ErrorAction SilentlyContinue
 
           # schtasks above almost always "fails" here (the task is already
@@ -456,10 +463,10 @@ jobs:
           set -euo pipefail
           if gh release view "${{ steps.tag.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release upload "${{ steps.tag.outputs.tag }}" --repo "${{ github.repository }}" --clobber \
-              *.tar.gz *.tar.gz.sha256 release.json
+              *.tar.gz *.tar.gz.sha256 *.cmd release.json
           else
             gh release create "${{ steps.tag.outputs.tag }}" --repo "${{ github.repository }}" \
               --title "Open Design host runtime ${{ needs.build.outputs.version }}" \
               --notes "Host runtime (daemon + static web export, no Docker/Electron) for darwin-arm64, darwin-x64, linux-x64. Install with: curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ steps.tag.outputs.tag }}/deploy/host/install.sh -o install.sh && bash install.sh" \
-              *.tar.gz *.tar.gz.sha256 release.json
+              *.tar.gz *.tar.gz.sha256 *.cmd release.json
           fi

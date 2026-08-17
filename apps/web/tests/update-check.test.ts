@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { shouldReloadAfterUpdate, updateApplyFailureMessage } from '../src/components/UpdateCheck';
+import {
+  shouldReloadAfterUpdate,
+  updateApplyFailureMessage,
+  updateRestartRequiredMessage,
+} from '../src/components/UpdateCheck';
 
 describe('updateApplyFailureMessage', () => {
   it('returns null for a started update', () => {
@@ -37,5 +41,13 @@ describe('shouldReloadAfterUpdate', () => {
 
   it('does not reload before an update is confirmed', () => {
     expect(shouldReloadAfterUpdate(null)).toBe(false);
+  });
+});
+
+describe('updateRestartRequiredMessage', () => {
+  it('returns restart guidance only for the safe Windows fallback state', () => {
+    expect(updateRestartRequiredMessage('restart-required')).toContain('đăng xuất/đăng nhập');
+    expect(updateRestartRequiredMessage('failed')).toBeNull();
+    expect(updateRestartRequiredMessage(null)).toBeNull();
   });
 });

@@ -28,6 +28,7 @@ type StartedServer = { url: string; server: http.Server };
 type SpawnCall = { command: string; args: string[] | undefined };
 
 const spawnCalls: SpawnCall[] = [];
+const updateChildListeners = new Map<string, (...args: unknown[]) => void>();
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -42,7 +43,13 @@ vi.mock('node:child_process', async (importOriginal) => {
       // and `child.on('error', ...)` (added alongside the Windows-support
       // change — see specs/change/20260815-host-update-ui-windows) to
       // catch a spawn-time failure that previously vanished silently.
-      return { unref: () => {}, on: () => {}, pid: 999_999 };
+      return {
+        unref: () => {},
+        on: (event: string, listener: (...args: unknown[]) => void) => {
+          updateChildListeners.set(event, listener);
+        },
+        pid: 999_999,
+      };
     }
     return rawSpawn(command, argv, options);
   }) as typeof actual.spawn;
@@ -128,6 +135,8 @@ describe('host-runtime self-update routes', () => {
     // Keep the persistent-data-dir marker file from leaking between tests
     // that don't expect one.
     await rm(join(dataDir, 'update-marker.json'), { force: true }).catch(() => {});
+    // Keep update-state.json after a started apply so the following
+    // progress test exercises the same persisted operation across polls.
     await rm(join(dataDir, 'update.log'), { force: true }).catch(() => {});
   });
 
@@ -183,6 +192,72 @@ describe('host-runtime self-update routes', () => {
       const body = (await res.json()) as { justUpdated: unknown };
       expect(body.justUpdated).toBeNull();
     });
+
+    it('reconciles a persisted in-flight operation to healthy after a daemon restart lands on its target', async () => {
+      const versionRes = await fetch(`${baseUrl}/api/update/status`);
+      const { currentVersion } = (await versionRes.json()) as { currentVersion: string };
+      const startedAt = new Date(Date.now() - 1_000).toISOString();
+      await writeFile(join(dataDir, 'update-state.json'), JSON.stringify({
+        operationId: 'persisted-op',
+        targetVersion: currentVersion,
+        sourceVersion: '0.0.0-before-update',
+        state: 'restarting',
+        phase: { step: 5, totalSteps: 6, label: 'Restarting' },
+        error: null,
+        startedAt,
+        updatedAt: startedAt,
+      }), 'utf8');
+
+      const res = await fetch(`${baseUrl}/api/update/status`);
+      const body = (await res.json()) as { operationId: string; targetVersion: string; state: string };
+      expect(body).toMatchObject({ operationId: 'persisted-op', targetVersion: currentVersion, state: 'healthy' });
+
+      const persisted = JSON.parse(await readFile(join(dataDir, 'update-state.json'), 'utf8')) as { state: string };
+      expect(persisted.state).toBe('healthy');
+      await rm(join(dataDir, 'update-state.json'), { force: true });
+    });
+
+    it('does not report a same-version preparing operation as healthy before restart', async () => {
+      const versionRes = await fetch(`${baseUrl}/api/update/status`);
+      const { currentVersion } = (await versionRes.json()) as { currentVersion: string };
+      const startedAt = new Date().toISOString();
+      await writeFile(join(dataDir, 'update-state.json'), JSON.stringify({
+        operationId: 'same-version-op',
+        targetVersion: currentVersion,
+        sourceVersion: currentVersion,
+        state: 'preparing',
+        phase: null,
+        error: null,
+        startedAt,
+        updatedAt: startedAt,
+      }), 'utf8');
+
+      const res = await fetch(`${baseUrl}/api/update/status`);
+      const body = (await res.json()) as { operationId: string; state: string };
+      expect(body).toMatchObject({ operationId: 'same-version-op', state: 'preparing' });
+      await rm(join(dataDir, 'update-state.json'), { force: true });
+    });
+
+    it('fails closed for an ambiguous legacy same-version restart record', async () => {
+      const versionRes = await fetch(`${baseUrl}/api/update/status`);
+      const { currentVersion } = (await versionRes.json()) as { currentVersion: string };
+      const startedAt = new Date().toISOString();
+      await writeFile(join(dataDir, 'update-state.json'), JSON.stringify({
+        operationId: 'legacy-replay-op',
+        targetVersion: currentVersion,
+        state: 'restarting',
+        phase: { step: 5, totalSteps: 6, label: 'Restarting' },
+        error: null,
+        startedAt,
+        updatedAt: startedAt,
+      }), 'utf8');
+
+      const res = await fetch(`${baseUrl}/api/update/status`);
+      const body = (await res.json()) as { state: string; lastError: { message: string } };
+      expect(body.state).toBe('failed');
+      expect(body.lastError.message).toContain('cannot verify same-version update');
+      await rm(join(dataDir, 'update-state.json'), { force: true });
+    });
   });
 
   describe('POST /api/update/apply', () => {
@@ -228,8 +303,13 @@ setTimeout(() => {
 
     it('writes the marker, spawns install.sh --update under the derived OD_HOME, and responds started:true', async () => {
       const applyRes = await fetch(`${baseUrl}/api/update/apply`, { method: 'POST' });
-      const applyBody = (await applyRes.json()) as { started: boolean };
-      expect(applyBody).toEqual({ started: true });
+      const applyBody = (await applyRes.json()) as {
+        started: boolean;
+        operationId: string;
+        targetVersion: string;
+      };
+      expect(applyBody).toMatchObject({ started: true, targetVersion: FAKE_LATEST_VERSION });
+      expect(applyBody.operationId).toMatch(/^[0-9a-f-]{36}$/);
 
       expect(spawnCalls).toHaveLength(1);
       const call = spawnCalls[0]!;
@@ -242,6 +322,19 @@ setTimeout(() => {
       };
       expect(marker.version).toBe(FAKE_LATEST_VERSION);
       expect(typeof marker.at).toBe('number');
+
+      const durableState = JSON.parse(await readFile(join(dataDir, 'update-state.json'), 'utf8')) as {
+        operationId: string;
+        targetVersion: string;
+        sourceVersion: string;
+        state: string;
+      };
+      expect(durableState).toMatchObject({
+        operationId: applyBody.operationId,
+        targetVersion: FAKE_LATEST_VERSION,
+        sourceVersion: expect.any(String),
+        state: 'preparing',
+      });
     });
 
     it('GET /status reports progress parsed from update.log while the apply is in progress', async () => {
@@ -261,6 +354,18 @@ setTimeout(() => {
         progress: { step: number; totalSteps: number; label: string } | null;
       };
       expect(withPhaseBody.progress).toEqual({ step: 2, totalSteps: 6, label: 'Kiem tra Node.js' });
+      const stateRes = await fetch(`${baseUrl}/api/update/status`);
+      const stateBody = (await stateRes.json()) as {
+        operationId: string;
+        targetVersion: string;
+        state: string;
+        phase: { step: number; totalSteps: number; label: string };
+      };
+      expect(stateBody).toMatchObject({
+        targetVersion: FAKE_LATEST_VERSION,
+        state: 'verifying',
+        phase: { step: 2, totalSteps: 6, label: 'Kiem tra Node.js' },
+      });
     });
 
     it('responds already-in-progress on a second call and still does not spawn again', async () => {
@@ -269,6 +374,27 @@ setTimeout(() => {
       const body = (await res.json()) as { started: boolean; reason?: string };
       expect(body).toEqual({ started: false, reason: 'already-in-progress' });
       expect(spawnCalls.length).toBe(spawnCallsBefore);
+    });
+
+    it('persists a spawn error and exposes it through the compatible lastError field', async () => {
+      updateChildListeners.get('error')?.(new Error('spawn bash ENOENT'));
+
+      let body: { state?: string; lastError?: { message: string } | null } = {};
+      for (let i = 0; i < 20; i++) {
+        const res = await fetch(`${baseUrl}/api/update/status`);
+        body = await res.json() as typeof body;
+        if (body.state === 'failed') break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(body.state).toBe('failed');
+      expect(body.lastError?.message).toContain('spawn bash ENOENT');
+      const persisted = JSON.parse(await readFile(join(dataDir, 'update-state.json'), 'utf8')) as {
+        state: string;
+        error: { message: string } | null;
+      };
+      expect(persisted.state).toBe('failed');
+      expect(persisted.error?.message).toContain('spawn bash ENOENT');
     });
   });
 });

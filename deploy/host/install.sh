@@ -71,13 +71,13 @@ if [ -t 1 ]; then
   BOLD="\033[1m" DIM="\033[2m" RED="\033[31m" GREEN="\033[32m"
   YELLOW="\033[33m" CYAN="\033[36m" RESET="\033[0m"
 fi
-step()  { printf "  ${DIM}▸${RESET} %s\n" "$1"; }
-ok()    { printf "  ${GREEN}✓${RESET} %s\n" "$1"; }
-warn()  { printf "  ${YELLOW}!${RESET} %s\n" "$1" >&2; }
-error() { printf "  ${RED}✗${RESET} %s\n" "$1" >&2; }
-info()  { printf "  ${CYAN}›${RESET} %s\n" "$1"; }
+step()  { printf "  ${DIM}▸${RESET} %s\n" "$1" || true; }
+ok()    { printf "  ${GREEN}✓${RESET} %s\n" "$1" || true; }
+warn()  { printf "  ${YELLOW}!${RESET} %s\n" "$1" >&2 || true; }
+error() { printf "  ${RED}✗${RESET} %s\n" "$1" >&2 || true; }
+info()  { printf "  ${CYAN}›${RESET} %s\n" "$1" || true; }
 fail()  { error "$1"; exit 1; }
-phase() { printf "\n${BOLD}%s${RESET}\n" "$1"; }
+phase() { printf "\n${BOLD}%s${RESET}\n" "$1" || true; }
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -94,40 +94,47 @@ print_help() {
   sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'
 }
 
+require_flag_value() {
+  flag="$1"
+  [ "$#" -ge 2 ] || fail "${flag} requires a value"
+  [ -n "$2" ] || fail "${flag} requires a non-empty value"
+  case "$2" in --*) fail "${flag} requires a value (got another flag: $2)" ;; esac
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --archive) shift; OPT_ARCHIVE="${1:-}" ;;
-    --archive=*) OPT_ARCHIVE="${1#--archive=}" ;;
-    --release-url) shift; OPT_RELEASE_URL="${1:-}" ;;
-    --release-url=*) OPT_RELEASE_URL="${1#--release-url=}" ;;
-    --sha256) shift; OPT_SHA256="${1:-}" ;;
-    --sha256=*) OPT_SHA256="${1#--sha256=}" ;;
-    --port) shift; OPT_PORT="${1:-}" ;;
-    --port=*) OPT_PORT="${1#--port=}" ;;
-    --data-dir) shift; OPT_DATA_DIR="${1:-}" ;;
-    --data-dir=*) OPT_DATA_DIR="${1#--data-dir=}" ;;
-    --env-file) shift; OPT_ENV_FILE="${1:-}" ;;
-    --env-file=*) OPT_ENV_FILE="${1#--env-file=}" ;;
-    --media-url) shift; OPT_MEDIA_URL="${1:-}" ;;
-    --media-url=*) OPT_MEDIA_URL="${1#--media-url=}" ;;
-    --media-app-id) shift; OPT_MEDIA_APP_ID="${1:-}" ;;
-    --media-app-id=*) OPT_MEDIA_APP_ID="${1#--media-app-id=}" ;;
-    --media-user-id) shift; OPT_MEDIA_USER_ID="${1:-}" ;;
-    --media-user-id=*) OPT_MEDIA_USER_ID="${1#--media-user-id=}" ;;
-    --media-user-role) shift; OPT_MEDIA_USER_ROLE="${1:-}" ;;
-    --media-user-role=*) OPT_MEDIA_USER_ROLE="${1#--media-user-role=}" ;;
-    --identity-url) shift; OPT_IDENTITY_URL="${1:-}" ;;
-    --identity-url=*) OPT_IDENTITY_URL="${1#--identity-url=}" ;;
-    --google-client-id) shift; OPT_GOOGLE_CLIENT_ID="${1:-}" ;;
-    --google-client-id=*) OPT_GOOGLE_CLIENT_ID="${1#--google-client-id=}" ;;
-    --google-client-secret) shift; OPT_GOOGLE_CLIENT_SECRET="${1:-}" ;;
-    --google-client-secret=*) OPT_GOOGLE_CLIENT_SECRET="${1#--google-client-secret=}" ;;
-    --session-secret) shift; OPT_SESSION_SECRET="${1:-}" ;;
-    --session-secret=*) OPT_SESSION_SECRET="${1#--session-secret=}" ;;
+    --archive) require_flag_value "$@"; shift; OPT_ARCHIVE="$1" ;;
+    --archive=*) OPT_ARCHIVE="${1#--archive=}"; [ -n "$OPT_ARCHIVE" ] || fail "--archive requires a non-empty value" ;;
+    --release-url) require_flag_value "$@"; shift; OPT_RELEASE_URL="$1" ;;
+    --release-url=*) OPT_RELEASE_URL="${1#--release-url=}"; [ -n "$OPT_RELEASE_URL" ] || fail "--release-url requires a non-empty value" ;;
+    --sha256) require_flag_value "$@"; shift; OPT_SHA256="$1" ;;
+    --sha256=*) OPT_SHA256="${1#--sha256=}"; [ -n "$OPT_SHA256" ] || fail "--sha256 requires a non-empty value" ;;
+    --port) require_flag_value "$@"; shift; OPT_PORT="$1" ;;
+    --port=*) OPT_PORT="${1#--port=}"; [ -n "$OPT_PORT" ] || fail "--port requires a non-empty value" ;;
+    --data-dir) require_flag_value "$@"; shift; OPT_DATA_DIR="$1" ;;
+    --data-dir=*) OPT_DATA_DIR="${1#--data-dir=}"; [ -n "$OPT_DATA_DIR" ] || fail "--data-dir requires a non-empty value" ;;
+    --env-file) require_flag_value "$@"; shift; OPT_ENV_FILE="$1" ;;
+    --env-file=*) OPT_ENV_FILE="${1#--env-file=}"; [ -n "$OPT_ENV_FILE" ] || fail "--env-file requires a non-empty value" ;;
+    --media-url) require_flag_value "$@"; shift; OPT_MEDIA_URL="$1" ;;
+    --media-url=*) OPT_MEDIA_URL="${1#--media-url=}"; [ -n "$OPT_MEDIA_URL" ] || fail "--media-url requires a non-empty value" ;;
+    --media-app-id) require_flag_value "$@"; shift; OPT_MEDIA_APP_ID="$1" ;;
+    --media-app-id=*) OPT_MEDIA_APP_ID="${1#--media-app-id=}"; [ -n "$OPT_MEDIA_APP_ID" ] || fail "--media-app-id requires a non-empty value" ;;
+    --media-user-id) require_flag_value "$@"; shift; OPT_MEDIA_USER_ID="$1" ;;
+    --media-user-id=*) OPT_MEDIA_USER_ID="${1#--media-user-id=}"; [ -n "$OPT_MEDIA_USER_ID" ] || fail "--media-user-id requires a non-empty value" ;;
+    --media-user-role) require_flag_value "$@"; shift; OPT_MEDIA_USER_ROLE="$1" ;;
+    --media-user-role=*) OPT_MEDIA_USER_ROLE="${1#--media-user-role=}"; [ -n "$OPT_MEDIA_USER_ROLE" ] || fail "--media-user-role requires a non-empty value" ;;
+    --identity-url) require_flag_value "$@"; shift; OPT_IDENTITY_URL="$1" ;;
+    --identity-url=*) OPT_IDENTITY_URL="${1#--identity-url=}"; [ -n "$OPT_IDENTITY_URL" ] || fail "--identity-url requires a non-empty value" ;;
+    --google-client-id) require_flag_value "$@"; shift; OPT_GOOGLE_CLIENT_ID="$1" ;;
+    --google-client-id=*) OPT_GOOGLE_CLIENT_ID="${1#--google-client-id=}"; [ -n "$OPT_GOOGLE_CLIENT_ID" ] || fail "--google-client-id requires a non-empty value" ;;
+    --google-client-secret) require_flag_value "$@"; shift; OPT_GOOGLE_CLIENT_SECRET="$1" ;;
+    --google-client-secret=*) OPT_GOOGLE_CLIENT_SECRET="${1#--google-client-secret=}"; [ -n "$OPT_GOOGLE_CLIENT_SECRET" ] || fail "--google-client-secret requires a non-empty value" ;;
+    --session-secret) require_flag_value "$@"; shift; OPT_SESSION_SECRET="$1" ;;
+    --session-secret=*) OPT_SESSION_SECRET="${1#--session-secret=}"; [ -n "$OPT_SESSION_SECRET" ] || fail "--session-secret requires a non-empty value" ;;
     --no-start) OPT_NO_START=1 ;;
     --update) OPT_UPDATE=1 ;;
     --help|-h) print_help; exit 0 ;;
-    *) warn "Unknown argument: $1 (ignored)" ;;
+    *) fail "Unknown argument: $1" ;;
   esac
   shift
 done
@@ -157,15 +164,75 @@ json_flat_value() {
 }
 
 TMP_DIRS=""
+LAST_TMP_DIR=""
 cleanup_tmp() {
-  for d in $TMP_DIRS; do rm -rf "$d"; done
+  for d in $TMP_DIRS; do
+    case "$d" in /tmp/*|/private/tmp/*|"${TMPDIR:-/tmp}"/*) rm -rf "$d" ;; esac
+  done
+  if [ -n "${RELEASE_STAGE:-}" ]; then
+    case "$RELEASE_STAGE" in "${OD_HOME}/releases/".*.staging.*) rm -rf "$RELEASE_STAGE" ;; esac
+  fi
+  if [ -n "${REPLACED_RELEASE_BACKUP:-}" ]; then
+    case "$REPLACED_RELEASE_BACKUP" in
+      "${OD_HOME}/releases/".*.replaced.*)
+        if [ ! -e "${RELEASE_DIR:-}" ]; then
+          mv "$REPLACED_RELEASE_BACKUP" "$RELEASE_DIR" || true
+        else
+          rm -rf "$REPLACED_RELEASE_BACKUP"
+        fi
+        ;;
+    esac
+  fi
+  [ -z "${CONFIG_TEMP:-}" ] || rm -f "$CONFIG_TEMP"
+  if [ -n "${CONFIG_BACKUP:-}" ]; then
+    if [ "${CONFIG_WRITTEN:-0}" = "1" ]; then
+      warn "Preserving config backup for manual recovery: ${CONFIG_BACKUP}"
+    else
+      rm -f "$CONFIG_BACKUP"
+    fi
+  fi
 }
-trap cleanup_tmp EXIT
 
 mktemp_dir() {
-  d="$(mktemp -d)"
-  TMP_DIRS="$TMP_DIRS $d"
-  printf '%s' "$d"
+  LAST_TMP_DIR="$(mktemp -d)"
+  TMP_DIRS="$TMP_DIRS $LAST_TMP_DIR"
+}
+
+# Shared network policy: retry transient failures a bounded number of times,
+# fail quickly on connect errors, and abort a transfer that has effectively
+# stalled. curl's progress bar is only enabled for an interactive stderr;
+# redirected logs/CI remain stable one-line output with no ANSI or CR updates.
+curl_download() {
+  output="$1" url="$2"
+  if [ -t 2 ]; then
+    curl --fail --location --show-error --progress-bar \
+      --retry 3 --retry-delay 1 --retry-max-time 45 \
+      --connect-timeout 10 --speed-limit 1024 --speed-time 30 \
+      -o "$output" "$url"
+  else
+    curl --fail --location --silent --show-error \
+      --retry 3 --retry-delay 1 --retry-max-time 45 \
+      --connect-timeout 10 --speed-limit 1024 --speed-time 30 \
+      -o "$output" "$url"
+  fi
+}
+
+curl_text() {
+  curl --fail --location --silent --show-error \
+    --retry 3 --retry-delay 1 --retry-max-time 45 \
+    --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$1"
+}
+
+curl_stream() {
+  if [ -t 2 ]; then
+    curl --fail --location --show-error --progress-bar \
+      --retry 3 --retry-delay 1 --retry-max-time 45 \
+      --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$1"
+  else
+    curl --fail --location --silent --show-error \
+      --retry 3 --retry-delay 1 --retry-max-time 45 \
+      --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$1"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -199,15 +266,17 @@ detect_platform() {
 # ---------------------------------------------------------------------------
 ARCHIVE_PATH=""
 ARCHIVE_SHA_HINT=""
+ARCHIVE_SHA256=""
 
 download_archive() {
   # $1 = tarball url, $2 = optional sha256 sidecar url
-  dl_dir="$(mktemp_dir)"
+  mktemp_dir
+  dl_dir="$LAST_TMP_DIR"
   ARCHIVE_PATH="${dl_dir}/$(basename "$1")"
   step "Downloading $(basename "$1")"
-  curl -fsSL -o "$ARCHIVE_PATH" "$1" || fail "download failed: $1"
+  curl_download "$ARCHIVE_PATH" "$1" || fail "download failed after bounded retries: $1"
   if [ -n "${2:-}" ]; then
-    curl -fsSL -o "${ARCHIVE_PATH}.sha256" "$2" 2>/dev/null \
+    curl_download "${ARCHIVE_PATH}.sha256" "$2" 2>/dev/null \
       && ARCHIVE_SHA_HINT="$(awk '{print $1}' "${ARCHIVE_PATH}.sha256")" \
       || true
   fi
@@ -251,7 +320,7 @@ resolve_archive() {
   #   { "version": "...", "tag": "...",
   #     "<platform>.url": "https://…/open-design-runtime-<v>-<platform>.tar.gz",
   #     "<platform>.sha256": "<hex>", … one pair per supported platform … }
-  rel_json="$(curl -fsSL "$release_json_url")" || fail "could not fetch release.json from ${release_json_url} (curl exit $?)"
+  rel_json="$(curl_text "$release_json_url")" || fail "could not fetch release.json from ${release_json_url}"
   tarball_url="$(json_flat_value "$rel_json" "${PLATFORM}.url")"
   tarball_sha="$(json_flat_value "$rel_json" "${PLATFORM}.sha256")"
   [ -n "$tarball_url" ] || fail "release.json has no entry for platform ${PLATFORM}"
@@ -283,6 +352,7 @@ verify_checksum() {
   [ -n "$expected" ] || fail "no checksum to verify against — pass --sha256 or ensure a .sha256/release.json entry is available"
   actual="$(sha256_of "$ARCHIVE_PATH")"
   [ "$actual" = "$expected" ] || fail "checksum mismatch for ${ARCHIVE_PATH}: expected ${expected}, got ${actual}"
+  ARCHIVE_SHA256="$actual"
   ok "Checksum verified (sha256)"
 }
 
@@ -366,6 +436,9 @@ step1_verify_package() {
   verify_tar_safety
   VERSION="$(tar -xzf "$ARCHIVE_PATH" -O "${STAGE_NAME}/VERSION" 2>/dev/null | tr -d '[:space:]')"
   [ -n "$VERSION" ] || fail "could not read VERSION from the archive"
+  case "$VERSION" in
+    .|..|*[!A-Za-z0-9._-]*) fail "archive VERSION contains unsafe characters: ${VERSION}" ;;
+  esac
   ok "Package verified: ${STAGE_NAME} (version ${VERSION})"
 }
 
@@ -386,18 +459,19 @@ install_private_node() {
   dist_arch="${PLATFORM##*-}"
   shasums_url="https://nodejs.org/dist/latest-v${REQUIRED_NODE_MAJOR}.x/SHASUMS256.txt"
   step "Fetching Node.js ${REQUIRED_NODE_MAJOR}.x checksums"
-  shasums="$(curl -fsSL "$shasums_url")" || fail "could not fetch ${shasums_url} (curl exit $?)"
+  shasums="$(curl_text "$shasums_url")" || fail "could not fetch ${shasums_url}"
   filename="$(printf '%s\n' "$shasums" \
     | grep -oE "node-v${REQUIRED_NODE_MAJOR}\\.[0-9]+\\.[0-9]+-${dist_os}-${dist_arch}\\.tar\\.gz" \
     | head -1)"
   [ -n "$filename" ] || fail "no Node ${REQUIRED_NODE_MAJOR}.x build found for ${dist_os}-${dist_arch}"
   expected_sha="$(printf '%s\n' "$shasums" | grep " ${filename}\$" | awk '{print $1}')"
 
-  dl_dir="$(mktemp_dir)"
+  mktemp_dir
+  dl_dir="$LAST_TMP_DIR"
   node_tar="${dl_dir}/${filename}"
   step "Downloading ${filename}"
-  curl -fsSL -o "$node_tar" "https://nodejs.org/dist/latest-v${REQUIRED_NODE_MAJOR}.x/${filename}" \
-    || fail "download failed: ${filename}"
+  curl_download "$node_tar" "https://nodejs.org/dist/latest-v${REQUIRED_NODE_MAJOR}.x/${filename}" \
+    || fail "download failed after bounded retries: ${filename}"
   actual_sha="$(sha256_of "$node_tar")"
   [ "$actual_sha" = "$expected_sha" ] || fail "Node.js checksum mismatch (SHASUMS256.txt) for ${filename}"
 
@@ -425,14 +499,77 @@ step2_ensure_node() {
 # ---------------------------------------------------------------------------
 PREV_CURRENT=""
 RELEASE_DIR=""
+RELEASE_STAGE=""
+REPLACED_RELEASE_BACKUP=""
+CONFIG_BACKUP=""
+CONFIG_TEMP=""
+CONFIG_HAD_PREVIOUS=0
+CONFIG_WRITTEN=0
+ACTIVATED=0
+HEALTH_CONFIRMED=0
+ROLLBACK_IN_PROGRESS=0
 
 extract_release() {
   mkdir -p "${OD_HOME}/releases"
   RELEASE_DIR="${OD_HOME}/releases/${VERSION}"
-  rm -rf "$RELEASE_DIR"
-  mkdir -p "$RELEASE_DIR"
-  tar -xzf "$ARCHIVE_PATH" -C "$RELEASE_DIR" --strip-components=1
-  ok "Extracted to ${RELEASE_DIR}"
+  RELEASE_STAGE="$(mktemp -d "${OD_HOME}/releases/.${VERSION}.staging.XXXXXX")"
+  tar -xzf "$ARCHIVE_PATH" -C "$RELEASE_STAGE" --strip-components=1
+
+  [ -f "${RELEASE_STAGE}/VERSION" ] || fail "staged release is missing VERSION"
+  staged_version="$(tr -d '[:space:]' < "${RELEASE_STAGE}/VERSION")"
+  [ "$staged_version" = "$VERSION" ] || fail "staged VERSION mismatch: expected ${VERSION}, got ${staged_version}"
+  [ -f "${RELEASE_STAGE}/apps/daemon/dist/cli.js" ] \
+    || fail "staged release is missing apps/daemon/dist/cli.js"
+  [ -f "${RELEASE_STAGE}/install.sh" ] \
+    || fail "staged release is missing install.sh required for the next self-update"
+  case "$(uname -s)" in
+    Darwin) required_service="${RELEASE_STAGE}/runtime/service/com.vnpay.open-design.plist.in" ;;
+    Linux) required_service="${RELEASE_STAGE}/runtime/service/open-design.service.in" ;;
+    *) required_service="" ;;
+  esac
+  [ -z "$required_service" ] || [ -f "$required_service" ] \
+    || fail "staged release is missing required service template: ${required_service#${RELEASE_STAGE}/}"
+
+  # A release channel may publish different preview bytes under the same
+  # VERSION. Never overwrite the directory currently serving those bytes:
+  # choose a distinct immutable target derived from the verified archive and
+  # this installer process, then activate it through `current` below.
+  active_version=""
+  if [ -n "$PREV_CURRENT" ] && [ -f "${PREV_CURRENT}/VERSION" ]; then
+    active_version="$(tr -d '[:space:]' < "${PREV_CURRENT}/VERSION")"
+  fi
+  if [ "$active_version" = "$VERSION" ]; then
+    digest_prefix="$(printf '%s' "$ARCHIVE_SHA256" | cut -c1-12)"
+    candidate="${OD_HOME}/releases/${VERSION}-${digest_prefix}-$$"
+    candidate_index=0
+    while [ -e "$candidate" ]; do
+      candidate_index=$((candidate_index + 1))
+      candidate="${OD_HOME}/releases/${VERSION}-${digest_prefix}-$$-${candidate_index}"
+    done
+    RELEASE_DIR="$candidate"
+    step "Version ${VERSION} is active; promoting new bytes to $(basename "$RELEASE_DIR")"
+  fi
+
+  # An inactive same-version directory can be the residue of a previously
+  # interrupted install. Move it aside first, atomically promote the fully
+  # validated staging tree, then remove only that explicitly-scoped backup.
+  if [ -e "$RELEASE_DIR" ]; then
+    REPLACED_RELEASE_BACKUP="${OD_HOME}/releases/.${VERSION}.replaced.$$"
+    [ ! -e "$REPLACED_RELEASE_BACKUP" ] || fail "temporary release backup already exists: ${REPLACED_RELEASE_BACKUP}"
+    mv "$RELEASE_DIR" "$REPLACED_RELEASE_BACKUP"
+    if ! mv "$RELEASE_STAGE" "$RELEASE_DIR"; then
+      mv "$REPLACED_RELEASE_BACKUP" "$RELEASE_DIR" || true
+      REPLACED_RELEASE_BACKUP=""
+      fail "could not promote staged release to ${RELEASE_DIR}"
+    fi
+    RELEASE_STAGE=""
+    rm -rf "$REPLACED_RELEASE_BACKUP"
+    REPLACED_RELEASE_BACKUP=""
+  else
+    mv "$RELEASE_STAGE" "$RELEASE_DIR" || fail "could not promote staged release to ${RELEASE_DIR}"
+    RELEASE_STAGE=""
+  fi
+  ok "Validated and promoted release to ${RELEASE_DIR}"
 }
 
 # --env-file (url|path) → whitelisted KEY=VALUE lines only, never sourced as
@@ -459,8 +596,9 @@ load_env_file() {
   else
     case "$OPT_ENV_FILE" in
       http://*|https://*)
-        ef_path="$(mktemp_dir)/env-file"
-        curl -fsSL -o "$ef_path" "$OPT_ENV_FILE" || fail "could not fetch --env-file ${OPT_ENV_FILE} (curl exit $?)"
+        mktemp_dir
+        ef_path="${LAST_TMP_DIR}/env-file"
+        curl_download "$ef_path" "$OPT_ENV_FILE" || fail "could not fetch --env-file ${OPT_ENV_FILE}"
         ;;
     esac
   fi
@@ -496,6 +634,12 @@ DATA_DIR=""
 write_config_env() {
   load_env_file
 
+  if [ "$OPT_UPDATE" = "1" ] && [ -f "${OD_HOME}/config.env" ]; then
+    CONFIG_BACKUP="$(mktemp "${OD_HOME}/.config.env.backup.XXXXXX")"
+    cp -p "${OD_HOME}/config.env" "$CONFIG_BACKUP"
+    CONFIG_HAD_PREVIOUS=1
+  fi
+
   PORT="$(resolve_cfg "$OPT_PORT" OD_PORT)"; PORT="${PORT:-$DEFAULT_PORT}"
   DATA_DIR="$(resolve_cfg "$OPT_DATA_DIR" OD_DATA_DIR)"; DATA_DIR="${DATA_DIR:-$DEFAULT_DATA_DIR}"
   confluence_url="$(resolve_cfg "" CONFLUENCE_URL)"
@@ -508,6 +652,7 @@ write_config_env() {
   google_client_secret="$(resolve_cfg "$OPT_GOOGLE_CLIENT_SECRET" GOOGLE_CLIENT_SECRET)"
   session_secret="$(resolve_cfg "$OPT_SESSION_SECRET" SESSION_SECRET)"
 
+  CONFIG_TEMP="$(mktemp "${OD_HOME}/.config.env.tmp.XXXXXX")"
   {
     echo "# Generated by deploy/host/install.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "OD_SANDBOX=0"
@@ -539,8 +684,11 @@ write_config_env() {
     [ -n "$google_client_id" ] && echo "GOOGLE_CLIENT_ID=${google_client_id}"
     [ -n "$google_client_secret" ] && echo "GOOGLE_CLIENT_SECRET=${google_client_secret}"
     [ -n "$session_secret" ] && echo "SESSION_SECRET=${session_secret}"
-  } > "${OD_HOME}/config.env"
-  chmod 600 "${OD_HOME}/config.env"
+  } > "$CONFIG_TEMP"
+  chmod 600 "$CONFIG_TEMP"
+  CONFIG_WRITTEN=1
+  mv "$CONFIG_TEMP" "${OD_HOME}/config.env"
+  CONFIG_TEMP=""
 
   if [ -z "$media_url$identity_url" ]; then
     warn "No Media/Identity endpoints configured — KG sync sẽ tắt (dùng --env-file hoặc --media-*/--identity-url để bật)."
@@ -590,6 +738,7 @@ step3_extract_and_configure() {
   extract_release
   write_config_env
   mkdir -p "${OD_HOME}/logs"
+  ACTIVATED=1
   ln -sfn "$RELEASE_DIR" "${OD_HOME}/current"
   ok "current -> releases/${VERSION}"
   write_service_files
@@ -677,35 +826,89 @@ wait_for_health() {
 # ---------------------------------------------------------------------------
 # Step 5/6 — start + health check + rollback
 # ---------------------------------------------------------------------------
-rollback() {
-  if [ -n "$PREV_CURRENT" ] && [ "$PREV_CURRENT" != "$RELEASE_DIR" ]; then
-    warn "Health check failed — rolling back to $(basename "$PREV_CURRENT")"
+restore_previous_config() {
+  [ "$CONFIG_WRITTEN" = "1" ] || return 0
+  restore_tmp="$(mktemp "${OD_HOME}/.config.env.restore.XXXXXX")"
+  if [ "$CONFIG_HAD_PREVIOUS" = "1" ] && [ -f "$CONFIG_BACKUP" ]; then
+    if ! cp -p "$CONFIG_BACKUP" "$restore_tmp" \
+      || ! mv "$restore_tmp" "${OD_HOME}/config.env"; then
+      rm -f "$restore_tmp"
+      return 1
+    fi
+    warn "Restored previous config.env"
+  else
+    rm -f "$restore_tmp" "${OD_HOME}/config.env"
+  fi
+  CONFIG_WRITTEN=0
+}
+
+perform_rollback() {
+  [ "$ROLLBACK_IN_PROGRESS" = "0" ] || return 0
+  ROLLBACK_IN_PROGRESS=1
+  restore_previous_config || error "Could not restore previous config.env — manual intervention required."
+
+  if [ "$ACTIVATED" = "1" ] && [ -n "$PREV_CURRENT" ] && [ "$PREV_CURRENT" != "$RELEASE_DIR" ]; then
+    warn "Install was interrupted or unhealthy — rolling back to $(basename "$PREV_CURRENT")"
+    failed_release="$RELEASE_DIR"
     ln -sfn "$PREV_CURRENT" "${OD_HOME}/current"
-    write_service_files
-    start_service
+    RELEASE_DIR="$PREV_CURRENT"
+    write_service_files || true
+    start_service || true
     if wait_for_health "$PORT" 30; then
       warn "Rolled back successfully. Release ${VERSION} was NOT activated."
     else
       error "Rollback also failed the health check — manual intervention required."
     fi
-  else
-    stop_service
+    RELEASE_DIR="$failed_release"
+  elif [ "$ACTIVATED" = "1" ]; then
+    stop_service || true
     error "No previous release to roll back to. Service stopped."
   fi
+  ACTIVATED=0
+}
+
+rollback() {
+  # Explicit rollback() is only called after the new `current` target has
+  # been activated (the EXIT handler calls perform_rollback() directly).
+  ACTIVATED=1
+  perform_rollback
   error "Install/update FAILED for version ${VERSION}. Logs: ${OD_HOME}/logs/"
   exit 1
+}
+
+handle_exit() {
+  status=$?
+  trap - EXIT INT TERM
+  if [ "$status" -ne 0 ] && { [ "$ACTIVATED" = "1" ] || [ "$CONFIG_WRITTEN" = "1" ]; } \
+    && [ "$HEALTH_CONFIRMED" = "0" ]; then
+    perform_rollback || true
+  fi
+  cleanup_tmp || true
+  exit "$status"
+}
+
+handle_int() { exit 130; }
+handle_term() { exit 143; }
+
+finalize_transaction() {
+  HEALTH_CONFIRMED=1
+  CONFIG_WRITTEN=0
+  [ -z "$CONFIG_BACKUP" ] || rm -f "$CONFIG_BACKUP"
+  CONFIG_BACKUP=""
 }
 
 step5_start_and_health_check() {
   phase "5/6 Khởi động & kiểm tra sức khỏe"
   if [ "$OPT_NO_START" = "1" ]; then
     step "--no-start: skipping service start and health check"
+    finalize_transaction
     return
   fi
   start_service
   step "Waiting for health check (up to ${HEALTH_TIMEOUT}s)…"
   if wait_for_health "$PORT" "$HEALTH_TIMEOUT"; then
     ok "Daemon is healthy on port ${PORT}"
+    finalize_transaction
   else
     rollback
   fi
@@ -771,7 +974,7 @@ ensure_codex_cli() {
   # NON_INTERACTIVE must be set on `sh` (the pipeline stage that actually
   # interprets the downloaded script), not on `curl` -- a leading VAR=val
   # prefix only scopes to the single command it directly precedes.
-  curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=true sh \
+  curl_stream https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=true sh \
     || warn "Codex CLI install failed — install manually: curl -fsSL https://chatgpt.com/codex/install.sh | sh"
 }
 
@@ -785,13 +988,13 @@ ensure_claude_cli() {
   [ -f "${RELEASE_DIR}/claude.version" ] && pin="$(tr -d '[:space:]' < "${RELEASE_DIR}/claude.version")"
   if [ -n "$pin" ]; then
     step "Attempting pinned install (claude.version=${pin})"
-    if ! (curl -fsSL https://claude.ai/install.sh | bash -s -- "$pin"); then
+    if ! (curl_stream https://claude.ai/install.sh | bash -s -- "$pin"); then
       warn "Pinned Claude CLI install failed or is unsupported by the installer — falling back to latest"
-      curl -fsSL https://claude.ai/install.sh | bash \
+      curl_stream https://claude.ai/install.sh | bash \
         || warn "Claude CLI install failed — install manually: curl -fsSL https://claude.ai/install.sh | bash"
     fi
   else
-    curl -fsSL https://claude.ai/install.sh | bash \
+    curl_stream https://claude.ai/install.sh | bash \
       || warn "Claude CLI install failed — install manually: curl -fsSL https://claude.ai/install.sh | bash"
   fi
 }
@@ -863,6 +1066,13 @@ print_update_summary() {
 # Main
 # ---------------------------------------------------------------------------
 main() {
+  # Install traps only for real executions (not test-time sourcing). EXIT is
+  # the single cleanup/transaction boundary; INT/TERM preserve conventional
+  # exit codes and flow through it, triggering rollback when needed.
+  trap handle_exit EXIT
+  trap handle_int INT
+  trap handle_term TERM
+
   printf "\n"
   printf "${BOLD}  ┌──────────────────────────────────────┐${RESET}\n"
   printf "${BOLD}  │${RESET}   ${CYAN}◈${RESET}  ${BOLD}Open Design — Host Runtime${RESET}       ${BOLD}│${RESET}\n"

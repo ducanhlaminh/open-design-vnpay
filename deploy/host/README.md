@@ -7,7 +7,8 @@ no Electron). Windows is a first-class target here, not a reduced one: same
 different deployment path from [`../README.md`](../README.md) (Docker
 self-host): that one stays as-is, this one is for a bare host install
 managed by launchd (macOS), a systemd `--user` unit (Linux), or a per-user
-Task Scheduler task (Windows).
+launcher registered in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+(Windows).
 
 Structure inspired by kit-gen style installers (folder layout and general
 flow, not copied verbatim from any project).
@@ -31,6 +32,29 @@ Requires Windows 10 1803+ or Windows 11 (64-bit), PowerShell 5.1+ (built
 into Windows — PowerShell 7/pwsh works too). `tar.exe`, which ships built-in
 since Windows 10 1803, is what does the archive extraction and safety
 checks — this is the reason for the minimum-version requirement.
+
+### Recommended: download and double-click
+
+Download [`OpenDesign-Install.cmd`](https://github.com/ducanhlaminh/open-design-vnpay/releases/latest/download/OpenDesign-Install.cmd),
+then double-click it. The command window stays open when it finishes so the
+result or any actionable error remains visible. It runs entirely as the
+current user; do not choose **Run as administrator**.
+
+After installation, Windows command files are available here:
+
+```text
+%USERPROFILE%\.open-design\OpenDesign-Install.cmd
+%USERPROFILE%\.open-design\OpenDesign-Update.cmd
+%USERPROFILE%\.open-design\OpenDesign-Start.cmd
+%USERPROFILE%\.open-design\OpenDesign-Stop.cmd
+```
+
+Double-click the action you want. `OpenDesign-Install.cmd` also detects an existing
+installation and performs a safe update instead of attempting a second fresh
+install. For scripts/CI, pass `--no-pause` so the command window does not wait
+for a key press.
+
+### PowerShell alternative
 
 ```powershell
 irm https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1 | iex
@@ -56,10 +80,10 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -NoStart
 ```
 
 `install.ps1` mirrors `install.sh` step-for-step, with native Windows
-primitives standing in for the POSIX ones: a per-user Task Scheduler task
-(`schtasks.exe`, `/RL LIMITED`, no admin required) instead of launchd/
-systemd, a directory Junction instead of a symlink (also no admin/Developer
-Mode required — unlike a real Windows symlink), and `tar.exe` for the same
+primitives standing in for the POSIX ones: a small per-user launcher started
+through the current user's `HKCU ...\Run` key instead of launchd/systemd, a
+directory Junction instead of a symlink (also no admin/Developer Mode
+required — unlike a real Windows symlink), and `tar.exe` for the same
 `..`-traversal + single-root-dir archive safety check. Every `--flag` below
 has a PowerShell equivalent named the same way in PascalCase, e.g.
 `--data-dir` → `-DataDir`, `--no-start` → `-NoStart`, `--update` →
@@ -93,8 +117,7 @@ platform):
 4. **Cấu hình dịch vụ** — install a macOS LaunchAgent
    (`~/Library/LaunchAgents/com.vnpay.open-design.plist`), a Linux systemd
    `--user` unit (`~/.config/systemd/user/open-design.service`), or a
-   Windows per-user Task Scheduler task (`schtasks.exe`, task name
-   `OpenDesignDaemon`, `/RL LIMITED`, ONLOGON trigger); falls back to a
+   Windows per-user launcher registered under `HKCU ...\Run`; falls back to a
    `nohup`-managed process on macOS/Linux if neither launchd nor systemd is
    available.
 5. **Khởi động & kiểm tra sức khỏe** — start the service and poll
@@ -142,7 +165,7 @@ see Update/Rollback/Uninstall below):
 | --- | --- |
 | `-Start` | Start the daemon from the already-installed release and exit. Does not extract/verify/reconfigure anything — for that, use `-Update`. |
 | `-Stop` | Stop the running daemon and exit. |
-| `-Uninstall` | Stop the daemon, remove the Scheduled Task, delete `%USERPROFILE%\.open-design`, and exit. Project data is kept unless `-DeleteData` is also given. Prompts for confirmation unless `-Force` is given. |
+| `-Uninstall` | Stop the daemon/launcher, remove the HKCU Run entry, delete `%USERPROFILE%\.open-design`, and exit. Project data is kept unless `-DeleteData` is also given. Prompts for confirmation unless `-Force` is given. |
 
 If none of the Media/Identity flags or `--env-file`/`-EnvFile` are given,
 those entries are left out of `config.env` and the installer prints a
@@ -200,6 +223,23 @@ Windows:
 powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.open-design\current\install.ps1 -Update
 ```
 
+Or double-click `%USERPROFILE%\.open-design\OpenDesign-Update.cmd`.
+
+The Windows launcher performs the stop/start handoff outside the daemon's
+process tree, so this works from a normal, non-elevated terminal. An older
+installation whose bundled updater still uses Task Scheduler must bootstrap
+this architecture once by downloading the latest `install.ps1` and running
+it with `-Update` from a normal PowerShell window; no Administrator profile is
+needed. Later UI/CLI updates use the launcher automatically. If one reports
+`restart-required`, log out/in, reboot, or run `install.ps1 -Start` once. The
+previous daemon keeps serving until then, and the durable update transaction
+is committed or rolled back on that start.
+
+```powershell
+irm https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1 -OutFile "$env:TEMP\open-design-install.ps1"
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\open-design-install.ps1" -Update
+```
+
 ## Rollback (manual)
 
 Every extracted release stays under `~/.open-design/releases/`. To go back
@@ -249,8 +289,10 @@ powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.open-design\current\i
 powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.open-design\current\install.ps1 -Uninstall -DeleteData
 ```
 
-(equivalent by hand: stop the pid in `open-design.pid`, `schtasks /Delete
-/TN OpenDesignDaemon /F`, then remove `%USERPROFILE%\.open-design`.)
+(equivalent by hand: stop the pids in `launcher.pid` and `open-design.pid`,
+remove the `OpenDesignDaemon` value from
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, then remove
+`%USERPROFILE%\.open-design`.)
 
 **Data is not deleted** (unless `-DeleteData` was given above). Project data lives at `OD_DATA_DIR`
 (`~/od-data/open-design` by default, or whatever `--data-dir`/`config.env`

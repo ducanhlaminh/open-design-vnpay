@@ -21,6 +21,7 @@ interface UpdateStatusResponse {
   updateAvailable: boolean;
   justUpdated: { version: string; at: string } | null;
   lastError: { message: string; at: string } | null;
+  state?: string | null;
   // Parsed from the running install.sh/install.ps1's own "N/6 <label>" phase
   // output — only non-null while THIS daemon process is still the one
   // applying the update (see server.ts's readUpdateProgress).
@@ -60,6 +61,12 @@ export function shouldReloadAfterUpdate(
   return justUpdated !== null;
 }
 
+export function updateRestartRequiredMessage(state: string | null | undefined): string | null {
+  return state === 'restart-required'
+    ? 'Bản cập nhật đã được cài an toàn. Hãy đăng xuất/đăng nhập lại Windows, hoặc chạy install.ps1 -Start để kích hoạt.'
+    : null;
+}
+
 // Quiet background cadence when nothing is happening — 7 minutes is a
 // reasonable balance between "reasonably prompt" and not hammering the
 // daemon (GET /api/update/status itself is cheap; the daemon-side GitHub
@@ -82,6 +89,7 @@ export function UpdateCheck() {
   const [status, setStatus] = useState<UpdateStatusResponse | null>(null);
   const [applying, setApplying] = useState(false);
   const [applyOutcomeError, setApplyOutcomeError] = useState<string | null>(null);
+  const [restartRequired, setRestartRequired] = useState<string | null>(null);
   // Wall-clock start of the current apply attempt, for the timeout check
   // in checkStatus below. A ref (not state) since it must not itself
   // trigger a re-render.
@@ -111,6 +119,14 @@ export function UpdateCheck() {
     }
 
     if (applyStartedAtRef.current == null) return;
+
+    const restartMessage = updateRestartRequiredMessage(body.state);
+    if (restartMessage) {
+      setRestartRequired(restartMessage);
+      setApplying(false);
+      applyStartedAtRef.current = null;
+      return;
+    }
 
     if (body.lastError) {
       setApplyOutcomeError(body.lastError.message);
@@ -145,6 +161,7 @@ export function UpdateCheck() {
   const startApply = useCallback(async () => {
     setApplying(true);
     setApplyOutcomeError(null);
+    setRestartRequired(null);
     applyStartedAtRef.current = Date.now();
     try {
       const res = await fetch('/api/update/apply', { method: 'POST' });
@@ -176,6 +193,14 @@ export function UpdateCheck() {
           onDismiss={() => setApplyOutcomeError(null)}
         />
       ) : null}
+      {restartRequired ? (
+        <Toast
+          message="Cần khởi động lại"
+          details={restartRequired}
+          ttlMs={0}
+          onDismiss={() => setRestartRequired(null)}
+        />
+      ) : null}
       {status?.updateAvailable ? (
         <div className={styles.banner} role="status">
           <div className={styles.bannerRow}>
@@ -185,10 +210,12 @@ export function UpdateCheck() {
             <button
               type="button"
               className={styles.bannerBtn}
-              disabled={applying}
+              disabled={applying || status.state === 'restart-required'}
               onClick={() => void startApply()}
             >
-              {applying ? 'Đang cập nhật…' : 'Cập nhật ngay'}
+              {applying ? 'Đang cập nhật…'
+                : status.state === 'restart-required' ? 'Cần khởi động lại'
+                  : 'Cập nhật ngay'}
             </button>
           </div>
           {applying && status.progress ? (

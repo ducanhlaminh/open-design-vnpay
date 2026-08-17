@@ -8,12 +8,113 @@
 // routes and owns the GitHub-fetch caching (mirrors the existing
 // `readOpenDesignLatestReleaseInfo` pattern there) and the spawn of
 // `deploy/host/install.sh --update`.
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 export interface UpdateMarker {
   version: string;
   at: number;
+}
+
+export type HostUpdateStateName =
+  | 'preparing'
+  | 'downloading'
+  | 'verifying'
+  | 'installing'
+  | 'restarting'
+  | 'restart-required'
+  | 'healthy'
+  | 'rolled-back'
+  | 'failed';
+
+export interface HostUpdateProgress {
+  step: number;
+  totalSteps: number;
+  label: string;
+}
+
+/** Durable, renderer-neutral state for one host-runtime update attempt. */
+export interface HostUpdateState {
+  operationId: string;
+  targetVersion: string;
+  /** Version running when apply was accepted; disambiguates success from rollback. */
+  sourceVersion?: string;
+  state: HostUpdateStateName;
+  phase: HostUpdateProgress | null;
+  error: { message: string; at: string } | null;
+  startedAt: string;
+  updatedAt: string;
+  bytesDownloaded?: number;
+  totalBytes?: number;
+}
+
+export const UPDATE_STATE_FILENAME = 'update-state.json';
+
+export function updateStatePath(dataDir: string): string {
+  return join(dataDir, UPDATE_STATE_FILENAME);
+}
+
+function isUpdateStateName(value: unknown): value is HostUpdateStateName {
+  return typeof value === 'string' && [
+    'preparing', 'downloading', 'verifying', 'installing', 'restarting', 'restart-required',
+    'healthy', 'rolled-back', 'failed',
+  ].includes(value);
+}
+
+export function isTerminalUpdateState(state: HostUpdateStateName): boolean {
+  return state === 'healthy' || state === 'restart-required'
+    || state === 'rolled-back' || state === 'failed';
+}
+
+/** Write via same-directory temp + rename so readers never observe partial JSON. */
+export async function writeUpdateState(dataDir: string, state: HostUpdateState): Promise<void> {
+  await mkdir(dataDir, { recursive: true });
+  const destination = updateStatePath(dataDir);
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, `${JSON.stringify(state)}\n`, { encoding: 'utf8', flag: 'wx' });
+    await rename(temporary, destination);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
+}
+
+export async function readUpdateState(dataDir: string): Promise<HostUpdateState | null> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(updateStatePath(dataDir), 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return null;
+    const value = parsed as Record<string, unknown>;
+    if (
+      typeof value.operationId !== 'string'
+      || typeof value.targetVersion !== 'string'
+      || !isUpdateStateName(value.state)
+      || typeof value.startedAt !== 'string'
+      || typeof value.updatedAt !== 'string'
+    ) return null;
+    return parsed as HostUpdateState;
+  } catch {
+    return null;
+  }
+}
+
+export async function patchUpdateState(
+  dataDir: string,
+  operationId: string,
+  patch: Partial<Omit<HostUpdateState, 'operationId' | 'targetVersion' | 'sourceVersion' | 'startedAt'>>,
+): Promise<HostUpdateState | null> {
+  const current = await readUpdateState(dataDir);
+  if (!current || current.operationId !== operationId) return null;
+  const next: HostUpdateState = {
+    ...current,
+    ...patch,
+    operationId: current.operationId,
+    targetVersion: current.targetVersion,
+    startedAt: current.startedAt,
+    updatedAt: patch.updatedAt ?? new Date().toISOString(),
+  };
+  await writeUpdateState(dataDir, next);
+  return next;
 }
 
 interface ParsedVersion {

@@ -9,8 +9,8 @@
   same config.env shape, same rollback behavior) -- NOT a syntax port, a
   logic port. Native Windows primitives replace the POSIX ones:
 
-    - Task Scheduler ONLOGON task (schtasks.exe, /RL LIMITED, no admin)
-      instead of a launchd LaunchAgent / systemd --user unit.
+    - HKCU Run registration (current-user registry, no admin) instead of a
+      launchd LaunchAgent / systemd --user unit.
     - A directory Junction (New-Item -ItemType Junction, no admin/Developer
       Mode required -- unlike a real symlink) instead of `ln -sfn`.
     - tar.exe (bundled since Windows 10 1803 / Windows 11 -- this is the
@@ -87,7 +87,7 @@
   install/update flag is ignored when this is given.
 
 .PARAMETER Uninstall
-  Stop the daemon, remove the Scheduled Task, and delete
+  Stop the daemon, remove its per-user auto-start entry, and delete
   %USERPROFILE%\.open-design, then exit. Project data (OD_DATA_DIR) is
   kept unless -DeleteData is also given. Prompts for confirmation unless
   -Force is given. Every other install/update flag is ignored.
@@ -188,14 +188,14 @@ if ($Help) {
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-# PS 7.3+ promotes any stderr line from a native command (schtasks, taskkill,
+# PS 7.3+ promotes any stderr line from a native command (taskkill,
 # tar, rmdir, node -v, ...) into a terminating error whenever the process
 # exits non-zero -- even when the call already redirects stderr with
 # `2>$null`, since that redirect only moves where the text goes, not whether
 # PowerShell synthesizes an ErrorRecord from it. This script relies on
 # `2>$null` throughout for "best-effort, tolerate already-absent/expected
-# failures" native calls (e.g. `schtasks /Delete` on a task that doesn't
-# exist), so disable the promotion. Harmless no-op on PS 5.1/7.0-7.2, which
+# failures" native calls, so disable the promotion. Harmless no-op on
+# PS 5.1/7.0-7.2, which
 # don't read this variable.
 $PSNativeCommandUseErrorActionPreference = $false
 
@@ -211,14 +211,27 @@ $DefaultDataDir = Join-Path $env:USERPROFILE "od-data\open-design"
 # install time, so step 1 never depends on a JSON parser being available.
 $RequiredNodeMajor = 24
 $HealthTimeout = 60
-# Per-user Task Scheduler task name -- the Windows equivalent of install.sh's
-# launchd SERVICE_LABEL / systemd unit name.
-$TaskName = "OpenDesignDaemon"
-# On a daemon-triggered update, stopping the daemon also terminates its
-# attached PowerShell updater on real Windows machines. This on-demand task
-# is owned by Task Scheduler rather than the daemon's process tree, so it can
-# finish the stop -> start handoff after both original processes disappear.
-$UpdateRestartTaskName = "OpenDesignDaemonUpdateRestart"
+$DownloadTimeoutSec = 180
+$DownloadMaxAttempts = 3
+$RestartRequiredExitCode = 75
+# HKCU Run is writable by the current user and is not gated by the Task
+# Scheduler rights/policies that commonly produce Access Denied on managed
+# Windows machines. Keep the old task name only for migration cleanup.
+$StartupRegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$StartupValueName = "OpenDesignDaemon"
+$LegacyTaskName = "OpenDesignDaemon"
+$UpdateTransactionPath = Join-Path $OdHome "update-transaction.json"
+$RestartRequestPath = Join-Path $OdHome "restart-request.json"
+$LauncherPath = Join-Path $OdHome "launcher.ps1"
+$LauncherPidPath = Join-Path $OdHome "launcher.pid"
+$LauncherStopRequestPath = Join-Path $OdHome "launcher-stop.request"
+$MaintenancePath = Join-Path $OdHome "maintenance.lock"
+$CommandFileMap = [ordered]@{
+  "install.cmd" = "OpenDesign-Install.cmd"
+  "update.cmd" = "OpenDesign-Update.cmd"
+  "start.cmd" = "OpenDesign-Start.cmd"
+  "stop.cmd" = "OpenDesign-Stop.cmd"
+}
 
 # ---------------------------------------------------------------------------
 # Script-scope mutable state (set by the step functions below).
@@ -235,7 +248,17 @@ $script:ResolvedPort = ""
 $script:EnvFileVars = @()
 $script:ProgressLogPath = $null
 $script:TempDirs = @()
-$script:TaskRegistered = $false
+$script:StartupRegistered = $false
+$script:Activated = $false
+$script:HealthSucceeded = $false
+$script:RestartHandedOff = $false
+$script:RestartRequired = $false
+$script:RollbackStarted = $false
+$script:ConfigBackupPath = ""
+$script:ConfigExisted = $false
+$script:ConfigChanged = $false
+$script:PreviousReleaseBackup = ""
+$script:HandoffTransactionLoaded = $false
 
 if ($Update) {
   $currentLink = Join-Path $OdHome "current"
@@ -296,7 +319,20 @@ function Write-Info($msg)  { Write-Host "  > $msg" -ForegroundColor Cyan }
 
 function Fail($msg) {
   Write-ErrorMsg $msg
-  exit 1
+  throw [System.InvalidOperationException]::new($msg)
+}
+
+function Assert-Parameters {
+  $commandCount = ([int][bool]$Start) + ([int][bool]$Stop) + ([int][bool]$Uninstall)
+  if ($commandCount -gt 1) { Fail "-Start, -Stop, and -Uninstall are mutually exclusive" }
+  if ($DeleteData -and -not $Uninstall) { Fail "-DeleteData is only valid with -Uninstall" }
+  if ($Force -and -not $Uninstall) { Fail "-Force is only valid with -Uninstall" }
+  if ($Port) {
+    $parsedPort = 0
+    if (-not [int]::TryParse($Port, [ref]$parsedPort) -or $parsedPort -lt 1 -or $parsedPort -gt 65535) {
+      Fail "-Port must be an integer from 1 to 65535"
+    }
+  }
 }
 
 function New-TempDir {
@@ -304,6 +340,122 @@ function New-TempDir {
   New-Item -ItemType Directory -Path $dir -Force | Out-Null
   $script:TempDirs += $dir
   return $dir
+}
+
+function Test-InteractiveOutput {
+  if ($env:OD_SELF_UPDATE -eq "1") { return $false }
+  try { return -not [Console]::IsOutputRedirected } catch { return $false }
+}
+
+function Write-DownloadLog([string]$Message) {
+  try {
+    if ($script:ProgressLogPath) {
+      Add-Content -Path $script:ProgressLogPath -Value $Message -ErrorAction SilentlyContinue
+    }
+  } catch {
+    # Download telemetry is best-effort and must never affect installation.
+  }
+}
+
+# Streams downloads to a .partial file so a timeout/cancellation never leaves
+# a destination that could be mistaken for a complete archive. Interactive
+# consoles get an in-place byte/percent counter; daemon/log callers only get
+# append-only milestones. All rendering is deliberately isolated from the
+# network operation: a broken console or unwritable log cannot fail a download.
+function Invoke-DownloadFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Url,
+    [Parameter(Mandatory = $true)][string]$Destination,
+    [int]$TimeoutSec = $DownloadTimeoutSec,
+    [int]$MaxAttempts = $DownloadMaxAttempts
+  )
+
+  $partial = "$Destination.partial"
+  for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+    Remove-Item -Force $partial -ErrorAction SilentlyContinue
+    $client = $null
+    $response = $null
+    $input = $null
+    $output = $null
+    $cts = $null
+    try {
+      Write-DownloadLog "download attempt $attempt/$MaxAttempts`: $Url"
+      Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
+      $handler = [System.Net.Http.HttpClientHandler]::new()
+      $client = [System.Net.Http.HttpClient]::new($handler)
+      $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+      $cts = [System.Threading.CancellationTokenSource]::new()
+      $cts.CancelAfter([TimeSpan]::FromSeconds($TimeoutSec))
+      $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cts.Token).GetAwaiter().GetResult()
+      $response.EnsureSuccessStatusCode() | Out-Null
+      $total = $response.Content.Headers.ContentLength
+      $input = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+      $output = [System.IO.File]::Open($partial, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+      $buffer = [byte[]]::new(65536)
+      [long]$received = 0
+      $lastPercent = -1
+      $lastMilestone = -1
+      [long]$lastByteReport = 0
+      while (($count = $input.ReadAsync($buffer, 0, $buffer.Length, $cts.Token).GetAwaiter().GetResult()) -gt 0) {
+        $output.Write($buffer, 0, $count)
+        $received += $count
+        if ($total -and $total -gt 0) {
+          $percent = [Math]::Min(100, [int](($received * 100) / $total))
+          if ((Test-InteractiveOutput) -and $percent -ne $lastPercent) {
+            try { [Console]::Write("`r      {0,3}%  {1:N1}/{2:N1} MB" -f $percent, ($received / 1MB), ($total / 1MB)) } catch {}
+            $lastPercent = $percent
+          } else {
+            $milestone = [int]([Math]::Floor($percent / 25) * 25)
+            if ($milestone -gt $lastMilestone) {
+              Write-DownloadLog "download $milestone% ($received/$total bytes)"
+              $lastMilestone = $milestone
+            }
+          }
+        } elseif ((Test-InteractiveOutput) -and ($received - $lastByteReport) -ge 1MB) {
+          try { [Console]::Write("`r      {0:N1} MB downloaded" -f ($received / 1MB)) } catch {}
+          $lastByteReport = $received
+        }
+      }
+      if ($total -and $received -ne $total) {
+        throw "download ended early: received $received of $total bytes"
+      }
+      $output.Flush()
+      $output.Dispose(); $output = $null
+      if (Test-InteractiveOutput) { try { [Console]::WriteLine() } catch {} }
+      Move-Item -LiteralPath $partial -Destination $Destination -Force
+      Write-DownloadLog "download complete ($received bytes): $Destination"
+      return
+    } catch {
+      $failure = $_.Exception.Message
+      Write-DownloadLog "download attempt $attempt failed: $failure"
+      $statusCode = if ($response) { [int]$response.StatusCode } else { 0 }
+      $transient = ($statusCode -eq 0 -or $statusCode -eq 408 -or $statusCode -eq 429 -or $statusCode -ge 500)
+      if (-not $transient -or $attempt -ge $MaxAttempts) {
+        Remove-Item -Force $partial -ErrorAction SilentlyContinue
+        throw
+      }
+      Write-Warn "download attempt $attempt/$MaxAttempts failed; retrying in $attempt second(s)"
+      Start-Sleep -Seconds $attempt
+    } finally {
+      if ($output) { $output.Dispose() }
+      if ($input) { $input.Dispose() }
+      if ($response) { $response.Dispose() }
+      if ($client) { $client.Dispose() }
+      if ($cts) { $cts.Dispose() }
+    }
+  }
+}
+
+function Invoke-WebText {
+  param([Parameter(Mandatory = $true)][string]$Url, [int]$TimeoutSec = 30)
+  for ($attempt = 1; $attempt -le $DownloadMaxAttempts; $attempt++) {
+    try {
+      return (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop).Content
+    } catch {
+      if ($attempt -ge $DownloadMaxAttempts) { throw }
+      Start-Sleep -Seconds $attempt
+    }
+  }
 }
 
 # Flat-key lookup for the release.json manifest published by
@@ -342,14 +494,14 @@ function Get-Archive {
   $script:ArchivePath = Join-Path $dlDir (Split-Path $Url -Leaf)
   Write-Step "Downloading $(Split-Path $Url -Leaf)"
   try {
-    Invoke-WebRequest -Uri $Url -OutFile $ArchivePath -UseBasicParsing
+    Invoke-DownloadFile -Url $Url -Destination $ArchivePath
   } catch {
-    Fail "download failed: $Url"
+    Fail "download failed after $DownloadMaxAttempts attempts: $Url -- $($_.Exception.Message)"
   }
   if ($Sha256Url) {
     try {
       $shaTmp = "$ArchivePath.sha256"
-      Invoke-WebRequest -Uri $Sha256Url -OutFile $shaTmp -UseBasicParsing -ErrorAction Stop
+      Invoke-DownloadFile -Url $Sha256Url -Destination $shaTmp -TimeoutSec 30
       $script:ArchiveShaHint = ((Get-Content $shaTmp -Raw).Trim() -split '\s+')[0]
     } catch {
       # No sidecar published -- not fatal, mirrors install.sh's `|| true`.
@@ -398,7 +550,7 @@ function Resolve-Archive {
   #     "<platform>.url": "https://.../open-design-runtime-<v>-<platform>.tar.gz",
   #     "<platform>.sha256": "<hex>", ... one pair per supported platform ... }
   try {
-    $relJson = Invoke-RestMethod -Uri $releaseJsonUrl
+    $relJson = (Invoke-WebText -Url $releaseJsonUrl -TimeoutSec 30) | ConvertFrom-Json
   } catch {
     Fail "could not fetch release.json from $releaseJsonUrl -- $($_.Exception.Message)"
   }
@@ -572,7 +724,7 @@ function Test-NodeSatisfiesEngine {
 function Install-PrivateNode {
   Write-Step "Fetching Node.js $RequiredNodeMajor.x checksums"
   try {
-    $shasums = (Invoke-WebRequest -Uri "https://nodejs.org/dist/latest-v$RequiredNodeMajor.x/SHASUMS256.txt" -UseBasicParsing).Content
+    $shasums = Invoke-WebText -Url "https://nodejs.org/dist/latest-v$RequiredNodeMajor.x/SHASUMS256.txt" -TimeoutSec 30
   } catch {
     Fail "could not fetch Node.js $RequiredNodeMajor.x SHASUMS256.txt -- $($_.Exception.Message)"
   }
@@ -589,7 +741,7 @@ function Install-PrivateNode {
   $nodeZip = Join-Path $dlDir $filename
   Write-Step "Downloading $filename"
   try {
-    Invoke-WebRequest -Uri "https://nodejs.org/dist/latest-v$RequiredNodeMajor.x/$filename" -OutFile $nodeZip -UseBasicParsing
+    Invoke-DownloadFile -Url "https://nodejs.org/dist/latest-v$RequiredNodeMajor.x/$filename" -Destination $nodeZip
   } catch {
     Fail "download failed: $filename"
   }
@@ -617,33 +769,61 @@ function Step2-EnsureNode {
 }
 
 # ---------------------------------------------------------------------------
-# Step 3/6 -- extract + config.env + `current` junction + scheduled task
+# Step 3/6 -- extract + config.env + `current` junction + per-user launcher
 # (mirrors install.sh:358-505)
 # ---------------------------------------------------------------------------
 function Expand-Release {
   $releasesDir = Join-Path $OdHome "releases"
   New-Item -ItemType Directory -Force -Path $releasesDir | Out-Null
   $script:ReleaseDir = Join-Path $releasesDir $Version
-  if (Test-Path $ReleaseDir) {
-    try {
-      Remove-Item -Recurse -Force $ReleaseDir -ErrorAction Stop
-    } catch {
-      # Re-installing the exact version this daemon is already running from
-      # (this repo's `preview` channel reuses one version tag across many
-      # pushes -- see release-host-runtime.yml) locks native binaries like
-      # better_sqlite3.node in the live process; unlike POSIX, Windows
-      # refuses to delete an open file. Stop the service and retry once --
-      # Start-OdService in step 5 restarts on the new release regardless,
-      # so this doesn't add real downtime beyond what the update already does.
-      Write-Step "release dir is locked by the running service -- stopping it first"
-      Stop-OdService
-      Start-Sleep -Seconds 1
-      Remove-Item -Recurse -Force $ReleaseDir
+  if ($PrevCurrent -and ([System.IO.Path]::GetFullPath($PrevCurrent).TrimEnd('\') -ieq [System.IO.Path]::GetFullPath($ReleaseDir).TrimEnd('\'))) {
+    # Never replace the directory backing the live junction. Besides being
+    # safer, this avoids Windows file-lock failures and lets a detached
+    # self-update reach its launcher restart handoff without killing
+    # the daemon (and therefore its own updater) during extraction.
+    $archiveId = (Get-FileHash -Path $ArchivePath -Algorithm SHA256).Hash.Substring(0, 8).ToLower()
+    $script:ReleaseDir = Join-Path $releasesDir "$Version-$archiveId"
+  }
+  $stagingDir = Join-Path $releasesDir (".staging-$Version-" + [System.Guid]::NewGuid().ToString("N"))
+  $script:TempDirs += $stagingDir
+  New-Item -ItemType Directory -Path $stagingDir | Out-Null
+  & tar.exe -xzf $ArchivePath -C $stagingDir --strip-components=1
+  if ($LASTEXITCODE -ne 0) { Fail "failed to extract $ArchivePath into staging" }
+
+  # Promotion happens only after validating the extracted tree. In
+  # particular this keeps a running same-version release untouched while a
+  # replacement (preview builds can reuse a version) is incomplete.
+  $stagedVersionFile = Join-Path $stagingDir "VERSION"
+  $stagedCli = Join-Path $stagingDir "apps\daemon\dist\cli.js"
+  $stagedInstaller = Join-Path $stagingDir "install.ps1"
+  $stagedLauncher = Join-Path $stagingDir "launcher.ps1"
+  if (-not (Test-Path $stagedVersionFile) -or -not (Test-Path $stagedCli) -or
+      -not (Test-Path $stagedInstaller) -or -not (Test-Path $stagedLauncher)) {
+    Fail "staged release is incomplete (required VERSION, daemon cli.js, install.ps1, and launcher.ps1)"
+  }
+  foreach ($commandFileName in $CommandFileMap.Keys) {
+    if (-not (Test-Path (Join-Path $stagingDir $commandFileName))) {
+      Fail "staged release is incomplete (missing Windows command file: $commandFileName)"
     }
   }
-  New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
-  & tar.exe -xzf $ArchivePath -C $ReleaseDir --strip-components=1
-  if ($LASTEXITCODE -ne 0) { Fail "failed to extract $ArchivePath" }
+  $stagedVersion = ((Get-Content -Path $stagedVersionFile -Raw) -replace '\s', '')
+  if ($stagedVersion -ne $Version) {
+    Fail "staged VERSION mismatch: expected $Version, got $stagedVersion"
+  }
+
+  if (Test-Path $ReleaseDir) {
+    $script:PreviousReleaseBackup = Join-Path $releasesDir (".backup-$Version-" + [System.Guid]::NewGuid().ToString("N"))
+    Move-Item -LiteralPath $ReleaseDir -Destination $PreviousReleaseBackup -ErrorAction Stop
+  }
+  try {
+    Move-Item -LiteralPath $stagingDir -Destination $ReleaseDir -ErrorAction Stop
+  } catch {
+    if ($PreviousReleaseBackup -and (Test-Path $PreviousReleaseBackup) -and -not (Test-Path $ReleaseDir)) {
+      Move-Item -LiteralPath $PreviousReleaseBackup -Destination $ReleaseDir -ErrorAction SilentlyContinue
+      $script:PreviousReleaseBackup = ""
+    }
+    throw
+  }
   Write-Ok "Extracted to $ReleaseDir"
 }
 
@@ -682,7 +862,7 @@ function Import-EnvFile {
   } elseif ($EnvFile -match '^https?://') {
     $efPath = Join-Path (New-TempDir) "env-file"
     try {
-      Invoke-WebRequest -Uri $EnvFile -OutFile $efPath -UseBasicParsing
+      Invoke-DownloadFile -Url $EnvFile -Destination $efPath -TimeoutSec 30
     } catch {
       Fail "could not fetch -EnvFile $EnvFile -- $($_.Exception.Message)"
     }
@@ -780,9 +960,20 @@ function Write-ConfigEnv {
   $configPath = Join-Path $OdHome "config.env"
   # Explicit no-BOM UTF8 -- matches install.sh's plain byte output (Set-
   # Content -Encoding UTF8 on Windows PowerShell 5.1 would prepend a BOM).
-  [System.IO.File]::WriteAllLines($configPath, [string[]]$lines, [System.Text.UTF8Encoding]::new($false))
+  $configTemp = Join-Path $OdHome (".config.env-" + [System.Guid]::NewGuid().ToString("N") + ".tmp")
+  [System.IO.File]::WriteAllLines($configTemp, [string[]]$lines, [System.Text.UTF8Encoding]::new($false))
   # ACL-lock to the current user only -- the Windows equivalent of chmod 600.
-  icacls $configPath /inheritance:r /grant:r "$env:USERDOMAIN\$($env:USERNAME):F" | Out-Null
+  icacls $configTemp /inheritance:r /grant:r "$env:USERDOMAIN\$($env:USERNAME):F" | Out-Null
+  $script:ConfigExisted = Test-Path $configPath
+  if ($ConfigExisted) {
+    $script:ConfigBackupPath = Join-Path $OdHome (".config.env-backup-" + [System.Guid]::NewGuid().ToString("N"))
+    # File.Replace is one filesystem transaction: readers observe either the
+    # complete old config or the complete new one, never a half-written file.
+    [System.IO.File]::Replace($configTemp, $configPath, $ConfigBackupPath, $true)
+  } else {
+    Move-Item -LiteralPath $configTemp -Destination $configPath
+  }
+  $script:ConfigChanged = $true
 
   if ((-not $mediaUrl) -and (-not $identityUrl)) {
     Write-Warn "No Media/Identity endpoints configured -- KG sync se tat (dung -EnvFile hoac -MediaUrl/.../-IdentityUrl de bat)."
@@ -806,39 +997,56 @@ function Set-CurrentPointer {
     try { cmd /c rmdir "$currentLink" 2>$null | Out-Null } catch {}
   }
   New-Item -ItemType Junction -Path $currentLink -Target $ReleaseDir -Force | Out-Null
+  $script:Activated = $true
   Write-Ok "current -> releases\$Version"
 }
 
-function Register-OdTask {
-  $cliPath = Join-Path $OdHome "current\apps\daemon\dist\cli.js"
-  # Per-user, no admin required (RunLevel Limited), fires on next logon --
-  # equivalent role to a LaunchAgent/systemd --user unit. Deliberately NOT
-  # sc.exe create (needs admin) and NOT NSSM (extra dependency).
-  #
-  # Uses the ScheduledTasks module cmdlets rather than schtasks.exe: the
-  # daemon's command line embeds two quoted paths back to back
-  # ("<node.exe>" "<cli.js>" --no-open), and building that as one /TR
-  # string for schtasks.exe hit a real, reproducible native-argument-
-  # marshalling bug on Windows PowerShell 5.1 (confirmed on a real
-  # machine -- schtasks received a truncated/malformed command and
-  # rejected it). -Execute/-Argument here are separate cmdlet parameters,
-  # so neither needs manual quoting or is subject to that bug.
-  #
-  # Best-effort, NOT fatal: confirmed on a real machine that some
-  # corporate-managed Windows installs block Task Scheduler for standard
-  # users via local/domain policy. The rest of the install never depends on
-  # this task -- Start-OdService below launches the daemon directly via
-  # Start-Process, not through this task. Losing auto-start-on-next-logon is
-  # a real but non-blocking degradation, not a reason to throw away an
-  # otherwise-good install.
+function Register-OdStartup {
+  $shellExe = (Get-Process -Id $PID).Path
+  # The command is stored as one REG_SZ exactly as Windows Explorer expects
+  # for per-user logon startup. Both paths are quoted independently.
+  $startupCommand = "`"$shellExe`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$LauncherPath`""
   try {
-    $action = New-ScheduledTaskAction -Execute $NodeBin -Argument "`"$cliPath`" --no-open"
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -RunLevel Limited -Force -ErrorAction Stop | Out-Null
-    $script:TaskRegistered = $true
+    New-Item -Path $StartupRegistryPath -Force -ErrorAction Stop | Out-Null
+    New-ItemProperty -Path $StartupRegistryPath -Name $StartupValueName `
+      -Value $startupCommand -PropertyType String -Force -ErrorAction Stop | Out-Null
+    $script:StartupRegistered = $true
+    # Remove the pre-HKCU implementation when upgrading. This is optional
+    # cleanup only; the install no longer depends on Task Scheduler.
+    try { Unregister-ScheduledTask -TaskName $LegacyTaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
   } catch {
-    $script:TaskRegistered = $false
-    Write-Warn "could not register the auto-start task '$TaskName' ($($_.Exception.Message)) -- likely blocked by local policy on this machine. Open Design will still start now; it just won't auto-start after your next login. To start it manually: `"$NodeBin`" `"$cliPath`" --no-open"
+    $script:StartupRegistered = $false
+    Write-Warn "could not register per-user auto-start ($($_.Exception.Message)). Open Design will still start now; start it manually after login with: powershell -File `"$LauncherPath`""
+  }
+}
+
+function Install-OdLauncher {
+  $source = Join-Path $ReleaseDir "launcher.ps1"
+  if (-not (Test-Path $source)) { Fail "release launcher is missing: $source" }
+  $temporary = "$LauncherPath.tmp-$([System.Guid]::NewGuid().ToString('N'))"
+  try {
+    Copy-Item -LiteralPath $source -Destination $temporary -Force -ErrorAction Stop
+    if (Test-Path $LauncherPath) {
+      [System.IO.File]::Replace($temporary, $LauncherPath, $null, $true)
+    } else {
+      Move-Item -LiteralPath $temporary -Destination $LauncherPath
+    }
+  } finally {
+    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Install-OdCommandFiles {
+  foreach ($commandFileName in $CommandFileMap.Keys) {
+    $source = Join-Path $ReleaseDir $commandFileName
+    $destination = Join-Path $OdHome $CommandFileMap[$commandFileName]
+    if (-not (Test-Path $source)) { Fail "release command file is missing: $source" }
+    # Keep these tiny wrappers stable while one of them is waiting for the
+    # PowerShell installer. A deleted wrapper is restored by the next update;
+    # existing wrappers are not replaced underneath a running cmd.exe.
+    if (-not (Test-Path $destination)) {
+      Copy-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
+    }
   }
 }
 
@@ -852,10 +1060,19 @@ function Step3-ExtractAndConfigure {
     $script:PrevCurrent = $targetVal
   }
   Expand-Release
-  Write-ConfigEnv
   New-Item -ItemType Directory -Force -Path (Join-Path $OdHome "logs") | Out-Null
+  # Prevent the supervisor from racing a pointer/config transaction if the
+  # old daemon happens to exit before Step 5 owns the restart.
+  Set-Content -LiteralPath $MaintenancePath -Value $PID -NoNewline
+  Write-ConfigEnv
+  # Once promotion/config are complete, persist recovery data before the
+  # visible current pointer changes. This closes the power-loss/SIGKILL gap
+  # between activation and the later restart handoff.
+  if ($Update) { Save-UpdateTransaction }
   Set-CurrentPointer
-  Register-OdTask
+  Install-OdLauncher
+  Install-OdCommandFiles
+  Register-OdStartup
 }
 
 # ---------------------------------------------------------------------------
@@ -867,8 +1084,8 @@ function Step4-ConfigureService {
     Write-Step "-NoStart: service files written but not enabled"
     return
   }
-  if ($TaskRegistered) {
-    Write-Ok "Scheduled Task registered: $TaskName (Task Scheduler, ONLOGON trigger, per-user)"
+  if ($StartupRegistered) {
+    Write-Ok "Per-user auto-start registered: HKCU Run\$StartupValueName"
   } else {
     Write-Warn "auto-start not registered (see warning above) -- Open Design will run this session but not after your next login"
   }
@@ -907,27 +1124,140 @@ function Start-OdService {
   $errLog = Join-Path $logsDir "open-design.err.log"
   $cliPath = Join-Path $OdHome "current\apps\daemon\dist\cli.js"
   $pidFile = Join-Path $OdHome "open-design.pid"
-  $proc = Start-Process -FilePath $NodeBin -ArgumentList @($cliPath, "--no-open") `
+  $proc = Start-Process -FilePath $NodeBin -ArgumentList @("`"$cliPath`"", "--no-open") `
     -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
   Set-Content -Path $pidFile -Value $proc.Id -NoNewline
 }
 
-function Delegate-SelfUpdateRestart {
-  $installerPath = Join-Path $OdHome "current\install.ps1"
-  $shellExe = (Get-Process -Id $PID).Path
-  # New-ScheduledTaskAction keeps executable and arguments separate, avoiding
-  # the schtasks.exe quoting failure already handled by Register-OdTask.
-  $actionArgs = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$installerPath`" -Start"
+function Save-UpdateTransaction {
+  $state = [ordered]@{
+    schemaVersion = 1
+    targetVersion = $Version
+    previousCurrent = $PrevCurrent
+    releaseDir = $ReleaseDir
+    configBackupPath = $ConfigBackupPath
+    configExisted = [bool]$ConfigExisted
+    configChanged = [bool]$ConfigChanged
+    previousReleaseBackup = $PreviousReleaseBackup
+    createdAt = (Get-Date).ToUniversalTime().ToString('o')
+  }
+  $stateTemp = "$UpdateTransactionPath.tmp-$([System.Guid]::NewGuid().ToString('N'))"
   try {
-    $action = New-ScheduledTaskAction -Execute $shellExe -Argument $actionArgs
-    Register-ScheduledTask -TaskName $UpdateRestartTaskName -Action $action `
-      -RunLevel Limited -Force -ErrorAction Stop | Out-Null
-    Start-ScheduledTask -TaskName $UpdateRestartTaskName -ErrorAction Stop
-    Write-Step "Restart delegated to independent Task Scheduler task: $UpdateRestartTaskName"
+    [System.IO.File]::WriteAllText(
+      $stateTemp,
+      ($state | ConvertTo-Json -Compress),
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    icacls $stateTemp /inheritance:r /grant:r "$env:USERDOMAIN\$($env:USERNAME):F" | Out-Null
+    if (Test-Path $UpdateTransactionPath) {
+      [System.IO.File]::Replace($stateTemp, $UpdateTransactionPath, $null, $true)
+    } else {
+      Move-Item -LiteralPath $stateTemp -Destination $UpdateTransactionPath
+    }
+  } finally {
+    Remove-Item -Force $stateTemp -ErrorAction SilentlyContinue
+  }
+}
+
+function Test-TransactionPathUnder {
+  param([string]$Candidate, [string]$Parent)
+  if (-not $Candidate) { return $false }
+  try {
+    $parentFull = [System.IO.Path]::GetFullPath($Parent).TrimEnd('\') + '\'
+    $candidateFull = [System.IO.Path]::GetFullPath($Candidate)
+    return $candidateFull.StartsWith($parentFull, [System.StringComparison]::OrdinalIgnoreCase)
+  } catch {
+    return $false
+  }
+}
+
+function Import-UpdateTransaction {
+  if (-not (Test-Path $UpdateTransactionPath)) { return $false }
+  try {
+    $state = (Get-Content -LiteralPath $UpdateTransactionPath -Raw -ErrorAction Stop) | ConvertFrom-Json -ErrorAction Stop
+    if ($state.schemaVersion -ne 1 -or -not $state.previousCurrent -or -not $state.releaseDir) {
+      throw "unsupported or incomplete update transaction"
+    }
+    $releasesRoot = Join-Path $OdHome "releases"
+    if (-not (Test-TransactionPathUnder ([string]$state.previousCurrent) $releasesRoot) -or
+        -not (Test-TransactionPathUnder ([string]$state.releaseDir) $releasesRoot)) {
+      throw "update transaction contains a release path outside $releasesRoot"
+    }
+    if ($state.previousReleaseBackup -and
+        -not (Test-TransactionPathUnder ([string]$state.previousReleaseBackup) $releasesRoot)) {
+      throw "update transaction contains an invalid release backup path"
+    }
+    if ($state.configBackupPath) {
+      $configBackupParent = Split-Path ([string]$state.configBackupPath) -Parent
+      $configBackupLeaf = Split-Path ([string]$state.configBackupPath) -Leaf
+      if ([System.IO.Path]::GetFullPath($configBackupParent).TrimEnd('\') -ine [System.IO.Path]::GetFullPath($OdHome).TrimEnd('\') -or
+          $configBackupLeaf -notlike '.config.env-backup-*') {
+        throw "update transaction contains an invalid config backup path"
+      }
+    }
+    $script:Version = [string]$state.targetVersion
+    $script:PrevCurrent = [string]$state.previousCurrent
+    $script:ReleaseDir = [string]$state.releaseDir
+    $script:ConfigBackupPath = [string]$state.configBackupPath
+    $script:ConfigExisted = [bool]$state.configExisted
+    $script:ConfigChanged = [bool]$state.configChanged
+    $script:PreviousReleaseBackup = [string]$state.previousReleaseBackup
+    $script:Activated = $true
+    $script:HandoffTransactionLoaded = $true
     return $true
   } catch {
-    Write-Warn "could not delegate restart to Task Scheduler ($($_.Exception.Message)); falling back to direct restart"
+    Write-Warn "could not read durable update transaction: $($_.Exception.Message)"
     return $false
+  }
+}
+
+function Remove-UpdateTransaction {
+  try {
+    if (Test-Path $UpdateTransactionPath) {
+      Remove-Item -Force $UpdateTransactionPath -ErrorAction Stop
+    }
+    $script:HandoffTransactionLoaded = $false
+    return $true
+  } catch {
+    Write-Warn "could not remove durable update transaction: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Request-LauncherUpdateRestart {
+  $requestTemp = ""
+  try {
+    # A launcher bootstrapped from this daemon-owned updater would share the
+    # process tree being stopped. Legacy installs therefore use the safe
+    # restart-required fallback once; fresh installs already have a launcher
+    # owned by the interactive user session.
+    if (-not (Test-OdLauncherAlive)) { throw "the per-user launcher is not running" }
+    $operationId = if ($env:OD_UPDATE_OPERATION_ID) { $env:OD_UPDATE_OPERATION_ID } else { [System.Guid]::NewGuid().ToString('N') }
+    $request = [ordered]@{
+      schemaVersion = 1
+      operationId = $operationId
+      targetVersion = $Version
+      createdAt = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    $requestTemp = "$RestartRequestPath.tmp-$([System.Guid]::NewGuid().ToString('N'))"
+    [System.IO.File]::WriteAllText($requestTemp, ($request | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
+    icacls $requestTemp /inheritance:r /grant:r "$env:USERDOMAIN\$($env:USERNAME):F" | Out-Null
+    # The launcher can react as soon as the atomic rename publishes this
+    # file, so mark the handoff before making it visible.
+    $script:RestartHandedOff = $true
+    if (Test-Path $RestartRequestPath) {
+      [System.IO.File]::Replace($requestTemp, $RestartRequestPath, $null, $true)
+    } else {
+      Move-Item -LiteralPath $requestTemp -Destination $RestartRequestPath
+    }
+    Write-Step "Restart delegated to the per-user launcher (operation $operationId)"
+    return $true
+  } catch {
+    $script:RestartHandedOff = $false
+    Write-Warn "could not delegate restart to the per-user launcher ($($_.Exception.Message)); a user restart is required"
+    return $false
+  } finally {
+    if ($requestTemp) { Remove-Item -LiteralPath $requestTemp -Force -ErrorAction SilentlyContinue }
   }
 }
 
@@ -974,13 +1304,79 @@ function Resolve-ExistingPort {
   return $DefaultPort
 }
 
+function Test-OdLauncherAlive {
+  if (-not (Test-Path $LauncherPidPath)) { return $false }
+  $savedPid = (Get-Content -LiteralPath $LauncherPidPath -Raw -ErrorAction SilentlyContinue)
+  if (-not $savedPid) { return $false }
+  $savedPid = $savedPid.Trim()
+  if ($savedPid -notmatch '^\d+$') { return $false }
+  if ($null -eq (Get-Process -Id ([int]$savedPid) -ErrorAction SilentlyContinue)) { return $false }
+  try {
+    $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $savedPid" -ErrorAction Stop
+    return [bool]($processInfo.CommandLine -and
+      ($processInfo.CommandLine.IndexOf($LauncherPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0))
+  } catch {
+    # Fail closed: a stale/recycled PID must never receive an update request.
+    return $false
+  }
+}
+
+function Start-OdLauncher {
+  if (-not (Test-Path $LauncherPath)) { return $false }
+  if (Test-OdLauncherAlive) { return $true }
+  Remove-Item -LiteralPath $LauncherPidPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $LauncherStopRequestPath -Force -ErrorAction SilentlyContinue
+  $shellExe = (Get-Process -Id $PID).Path
+  $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$LauncherPath`""
+  Start-Process -FilePath $shellExe -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+  return $true
+}
+
+function Stop-OdLauncher {
+  if (-not (Test-OdLauncherAlive)) {
+    Remove-Item -LiteralPath $LauncherPidPath -Force -ErrorAction SilentlyContinue
+    return
+  }
+  $savedPid = [int]((Get-Content -LiteralPath $LauncherPidPath -Raw).Trim())
+  Set-Content -LiteralPath $LauncherStopRequestPath -Value "stop" -NoNewline
+  for ($i = 0; $i -lt 20; $i++) {
+    if (-not (Get-Process -Id $savedPid -ErrorAction SilentlyContinue)) { return }
+    Start-Sleep -Milliseconds 250
+  }
+  # Only force-stop when WMI confirms the PID still belongs to our exact
+  # launcher command. Never kill a recycled/unrelated PID from a stale file.
+  try {
+    $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $savedPid" -ErrorAction Stop
+    if ($processInfo.CommandLine -and $processInfo.CommandLine.IndexOf($LauncherPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      Stop-Process -Id $savedPid -Force -ErrorAction Stop
+    }
+  } catch {
+    Write-Warn "launcher did not stop cleanly; refusing to kill an unverified PID $savedPid"
+  }
+  Remove-Item -LiteralPath $LauncherPidPath -Force -ErrorAction SilentlyContinue
+}
+
 function Invoke-StopCommand {
   New-Item -ItemType Directory -Force -Path $OdHome | Out-Null
+  Stop-OdLauncher
   Stop-OdService
   Write-Ok "Stopped."
 }
 
 function Invoke-StartCommand {
+  $transactionPending = Import-UpdateTransaction
+  if ($transactionPending) {
+    # Recovery may begin after promotion/config but before the original
+    # installer atomically switched `current`. Finish that activation before
+    # starting and only commit after target health succeeds.
+    $currentItem = Get-Item -LiteralPath (Join-Path $OdHome "current") -Force -ErrorAction SilentlyContinue
+    $currentTarget = if ($currentItem) { $currentItem.Target } else { "" }
+    if ($currentTarget -is [array]) { $currentTarget = $currentTarget[0] }
+    if (-not $currentTarget -or
+        [System.IO.Path]::GetFullPath([string]$currentTarget).TrimEnd('\') -ine [System.IO.Path]::GetFullPath($ReleaseDir).TrimEnd('\')) {
+      Set-CurrentPointer
+    }
+  }
   $cliPath = Join-Path $OdHome "current\apps\daemon\dist\cli.js"
   if (-not (Test-Path $cliPath)) { Fail "no install found at $OdHome -- run install.ps1 (without -Start) first" }
   $script:NodeBin = Resolve-ExistingNodeBin
@@ -990,8 +1386,16 @@ function Invoke-StartCommand {
   Write-Step "Waiting for health check (up to $HealthTimeout s)..."
   if (Wait-OdHealth -PortNum $resolvedPort -Timeout $HealthTimeout) {
     Write-Ok "Daemon is healthy on port $resolvedPort"
+    if ($transactionPending) {
+      Complete-InstallationTransaction
+      Write-Ok "Pending update transaction committed."
+    }
+    [void](Start-OdLauncher)
     Write-Host "  URL: http://127.0.0.1:$resolvedPort"
   } else {
+    if ($transactionPending) {
+      Invoke-Rollback -Reason "Update restart failed its health check"
+    }
     Fail "daemon did not become healthy -- check $OdHome\logs\"
   }
 }
@@ -1003,16 +1407,18 @@ function Invoke-UninstallCommand {
   $configuredDataDir = Get-ExistingConfigValue "OD_DATA_DIR"
   $dataDir = if ($DataDir) { $DataDir } elseif ($configuredDataDir) { $configuredDataDir } else { $DefaultDataDir }
 
+  Stop-OdLauncher
   Stop-OdService
-  try { & schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null } catch {}
-  # Unlike schtasks.exe, an absent optional helper task does not leave a
-  # non-zero native $LASTEXITCODE behind and make an otherwise-successful
-  # uninstall process exit 1 (caught by the Windows CI smoke test).
   try {
-    Unregister-ScheduledTask -TaskName $UpdateRestartTaskName -Confirm:$false `
+    Remove-ItemProperty -Path $StartupRegistryPath -Name $StartupValueName `
+      -Force -ErrorAction SilentlyContinue
+  } catch {}
+  # Remove tasks created by older releases. They are migration debris only;
+  # current installs use HKCU Run and never require Task Scheduler access.
+  try {
+    Unregister-ScheduledTask -TaskName $LegacyTaskName -Confirm:$false `
       -ErrorAction SilentlyContinue
   } catch {}
-
   if (-not $Force) {
     $confirm = Read-Host "Remove $OdHome ? Project data is kept unless -DeleteData was given. Type 'yes' to confirm"
     if ($confirm -ne "yes") { Write-Warn "Uninstall cancelled."; exit 1 }
@@ -1030,49 +1436,200 @@ function Invoke-UninstallCommand {
 }
 
 function Invoke-Rollback {
-  if ($PrevCurrent -and ($PrevCurrent -ne $ReleaseDir)) {
-    Write-Warn "Health check failed -- rolling back to $(Split-Path $PrevCurrent -Leaf)"
-    $currentLink = Join-Path $OdHome "current"
-    if (Test-Path $currentLink) { try { cmd /c rmdir "$currentLink" 2>$null | Out-Null } catch {} }
-    New-Item -ItemType Junction -Path $currentLink -Target $PrevCurrent -Force | Out-Null
-    Register-OdTask
-    Start-OdService
-    if (Wait-OdHealth -PortNum $ResolvedPort -Timeout 30) {
-      Write-Warn "Rolled back successfully. Release $Version was NOT activated."
-    } else {
-      Write-ErrorMsg "Rollback also failed the health check -- manual intervention required."
+  param([string]$Reason = "Install/update interrupted")
+  if ($script:RollbackStarted) { return }
+  $script:RollbackStarted = $true
+  Write-Warn "$Reason -- rolling back"
+
+  Stop-OdService
+  $currentLink = Join-Path $OdHome "current"
+  if ($Activated -and (Test-Path $currentLink)) {
+    try { cmd /c rmdir "$currentLink" 2>$null | Out-Null } catch {}
+  }
+
+  $configPath = Join-Path $OdHome "config.env"
+  $pointerRestored = $false
+  $configRestored = $true
+  $releaseRestored = $true
+  if ($PrevCurrent) {
+    try {
+      $currentLink = Join-Path $OdHome "current"
+      if (Test-Path $currentLink) { try { cmd /c rmdir "$currentLink" 2>$null | Out-Null } catch {} }
+      New-Item -ItemType Junction -Path $currentLink -Target $PrevCurrent -Force | Out-Null
+      $pointerRestored = $true
+    } catch {
+      Write-ErrorMsg "Could not restore current junction: $($_.Exception.Message)"
     }
-  } else {
-    Stop-OdService
+  }
+
+  try {
+    if ($ConfigChanged -and $ConfigExisted) {
+      if (-not $ConfigBackupPath -or -not (Test-Path $ConfigBackupPath)) {
+        throw "config backup is missing: $ConfigBackupPath"
+      }
+      # Restore from a copy so the durable backup remains available until
+      # pointer + config + release + old-daemon health have all succeeded.
+      $configRestoreTemp = Join-Path $OdHome (".config.env-restore-" + [System.Guid]::NewGuid().ToString("N") + ".tmp")
+      try {
+        Copy-Item -LiteralPath $ConfigBackupPath -Destination $configRestoreTemp -ErrorAction Stop
+        if (Test-Path $configPath) {
+          [System.IO.File]::Replace($configRestoreTemp, $configPath, $null, $true)
+        } else {
+          Move-Item -LiteralPath $configRestoreTemp -Destination $configPath
+        }
+      } finally {
+        Remove-Item -Force $configRestoreTemp -ErrorAction SilentlyContinue
+      }
+    } elseif ($ConfigChanged -and -not $ConfigExisted -and (Test-Path $configPath)) {
+      Remove-Item -Force $configPath -ErrorAction Stop
+    }
+  } catch {
+    $configRestored = $false
+    Write-ErrorMsg "Could not restore config.env: $($_.Exception.Message)"
+  }
+
+  # Restore any inactive release displaced during promotion. This is kept
+  # separate from pointer/config restoration so one cleanup failure cannot
+  # prevent the previous service from being restarted.
+  if ($PreviousReleaseBackup) {
+    $releaseBackupForRestore = $PreviousReleaseBackup
+    try {
+      if (-not (Test-Path $PreviousReleaseBackup)) {
+        throw "release backup is missing: $PreviousReleaseBackup"
+      }
+      if (Test-Path $ReleaseDir) { Remove-Item -Recurse -Force $ReleaseDir -ErrorAction Stop }
+      Move-Item -LiteralPath $PreviousReleaseBackup -Destination $ReleaseDir -ErrorAction Stop
+      $script:PreviousReleaseBackup = ""
+      if (Test-Path $UpdateTransactionPath) {
+        # Checkpoint the now-idempotent state. If the old daemon later fails
+        # health, the next recovery attempt must not look for a backup that
+        # was already promoted back into place.
+        try {
+          Save-UpdateTransaction
+        } catch {
+          # Keep disk state consistent with the still-old transaction so a
+          # later recovery can retry instead of referencing a consumed path.
+          $script:PreviousReleaseBackup = $releaseBackupForRestore
+          if ((Test-Path $ReleaseDir) -and -not (Test-Path $releaseBackupForRestore)) {
+            Move-Item -LiteralPath $ReleaseDir -Destination $releaseBackupForRestore -ErrorAction Stop
+          }
+          throw
+        }
+      }
+    } catch {
+      $releaseRestored = $false
+      Write-ErrorMsg "Could not fully restore/checkpoint displaced release: $($_.Exception.Message)"
+    }
+  }
+
+  $oldDaemonHealthy = $false
+  if ($PrevCurrent -and $pointerRestored) {
+    try {
+      Register-OdStartup
+      Start-OdService
+      $rollbackPort = Resolve-ExistingPort
+      if (Wait-OdHealth -PortNum $rollbackPort -Timeout 30) {
+        Write-Warn "Previous daemon is healthy after the rollback attempt."
+        $oldDaemonHealthy = $true
+      } else {
+        Write-ErrorMsg "Rollback also failed the health check -- manual intervention required."
+      }
+    } catch {
+      Write-ErrorMsg "Could not restart the previous release: $($_.Exception.Message)"
+    }
+  } elseif (-not $PrevCurrent) {
+    try {
+      Remove-ItemProperty -Path $StartupRegistryPath -Name $StartupValueName -Force -ErrorAction SilentlyContinue
+    } catch {}
+    Remove-Item -LiteralPath $MaintenancePath -Force -ErrorAction SilentlyContinue
     Write-ErrorMsg "No previous release to roll back to. Service stopped."
   }
+  $rollbackSucceeded = $pointerRestored -and $configRestored -and $releaseRestored -and $oldDaemonHealthy
+  if ($rollbackSucceeded) {
+    # Remove the transaction first. If this fails, retain the config backup
+    # so the still-present transaction remains retryable and self-consistent.
+    if (Remove-UpdateTransaction) {
+      if ($ConfigBackupPath -and (Test-Path $ConfigBackupPath)) {
+        try { Remove-Item -Force $ConfigBackupPath -ErrorAction Stop } catch {
+          Write-Warn "Rollback succeeded, but obsolete config backup cleanup failed: $($_.Exception.Message)"
+        }
+      }
+      Write-Warn "Rolled back successfully. Release $Version was NOT activated."
+      Remove-Item -LiteralPath $MaintenancePath -Force -ErrorAction SilentlyContinue
+    } else {
+      Write-ErrorMsg "Rollback data was restored, but durable transaction cleanup failed; recovery files were kept."
+    }
+  } else {
+    Write-ErrorMsg "Rollback is incomplete; durable transaction kept at $UpdateTransactionPath for recovery."
+  }
   Write-ErrorMsg "Install/update FAILED for version $Version. Logs: $OdHome\logs\"
-  exit 1
+}
+
+function Complete-InstallationTransaction {
+  $script:HealthSucceeded = $true
+  $cleanupComplete = $true
+  if ($ConfigBackupPath -and (Test-Path $ConfigBackupPath)) {
+    try {
+      Remove-Item -Force $ConfigBackupPath -ErrorAction Stop
+      $script:ConfigBackupPath = ""
+    } catch {
+      $cleanupComplete = $false
+      Write-Warn "healthy update committed, but config backup cleanup will be retried on next -Start: $($_.Exception.Message)"
+    }
+  }
+  if ($PreviousReleaseBackup -and (Test-Path $PreviousReleaseBackup)) {
+    try {
+      Remove-Item -Recurse -Force $PreviousReleaseBackup -ErrorAction Stop
+      $script:PreviousReleaseBackup = ""
+    } catch {
+      $cleanupComplete = $false
+      Write-Warn "healthy update committed, but release backup cleanup will be retried on next -Start: $($_.Exception.Message)"
+    }
+  }
+  if ($cleanupComplete) { [void](Remove-UpdateTransaction) }
+  Remove-Item -LiteralPath $MaintenancePath -Force -ErrorAction SilentlyContinue
 }
 
 function Step5-StartAndHealthCheck {
   Write-Phase "5/6 Khoi dong & kiem tra suc khoe"
   if ($NoStart) {
     Write-Step "-NoStart: skipping service start and health check"
+    Complete-InstallationTransaction
     return
   }
   if ($Update -and $env:OD_SELF_UPDATE -eq "1") {
-    if (Delegate-SelfUpdateRestart) {
-      # The scheduled task invokes this script with -Start. Its
-      # Stop-OdService kills the old daemon and, on Windows, this attached
-      # updater as well; the scheduler-owned process survives and starts the
-      # new release. Keep this process alive until that handoff happens so an
-      # early child exit cannot be mistaken for an update result by the old
-      # daemon.
+    # Persistence is mandatory even when launcher handoff is unavailable:
+    # the next manual/logon start must be able to commit or roll back.
+    # A persistence failure throws into the outer installer catch and rolls
+    # the activation back instead of falsely reporting restart-required.
+    Save-UpdateTransaction
+    if (Request-LauncherUpdateRestart) {
+      # The independent launcher invokes this script with -Start. Keep this
+      # process alive until it stops the old daemon/process tree; otherwise
+      # the old daemon would mistake a normal child exit for update failure.
+      $script:RestartHandedOff = $true
       while ($true) { Start-Sleep -Seconds 5 }
     }
+    # The archive and durable rollback state are already safely on disk, but
+    # stopping the daemon here would also terminate this attached updater.
+    # Keep the old daemon serving requests and report a non-error terminal
+    # state to its parent. A later manual/launcher restart activates the new
+    # release and completes or rolls back the transaction.
+    $script:RestartHandedOff = $true
+    $script:RestartRequired = $true
+    throw [System.InvalidOperationException]::new(
+      "update installed, but Open Design must be restarted to activate version $Version"
+    )
   }
   Start-OdService
   Write-Step "Waiting for health check (up to $HealthTimeout s)..."
   if (Wait-OdHealth -PortNum $ResolvedPort -Timeout $HealthTimeout) {
     Write-Ok "Daemon is healthy on port $ResolvedPort"
+    Complete-InstallationTransaction
+    [void](Start-OdLauncher)
   } else {
-    Invoke-Rollback
+    Invoke-Rollback -Reason "Health check failed"
+    throw [System.InvalidOperationException]::new("daemon did not become healthy after activating version $Version")
   }
 }
 
@@ -1124,7 +1681,7 @@ function Install-CodexCli {
   $tmpDir = New-TempDir
   $installerFile = Join-Path $tmpDir "codex-install.ps1"
   try {
-    Invoke-WebRequest -Uri "https://chatgpt.com/codex/install.ps1" -OutFile $installerFile -UseBasicParsing
+    Invoke-DownloadFile -Url "https://chatgpt.com/codex/install.ps1" -Destination $installerFile -TimeoutSec 60
   } catch {
     Write-Warn "Codex CLI install failed -- install manually: irm https://chatgpt.com/codex/install.ps1 | iex"
     return
@@ -1150,7 +1707,7 @@ function Install-ClaudeCli {
   $tmpDir = New-TempDir
   $installerFile = Join-Path $tmpDir "claude-install.ps1"
   try {
-    Invoke-WebRequest -Uri "https://claude.ai/install.ps1" -OutFile $installerFile -UseBasicParsing
+    Invoke-DownloadFile -Url "https://claude.ai/install.ps1" -Destination $installerFile -TimeoutSec 60
   } catch {
     Write-Warn "Claude CLI install failed -- install manually: irm https://claude.ai/install.ps1 | iex"
     return
@@ -1217,11 +1774,12 @@ function Step6-ClaudeAndSummary {
   Write-Host "  Version:  $Version"
   Write-Host "  Home:     $OdHome"
   Write-Host "  Config:   $(Join-Path $OdHome 'config.env')"
-  if ($TaskRegistered) {
-    Write-Host "  Service:  Task Scheduler (task: $TaskName) -- schtasks /Query /TN $TaskName"
+  Write-Host "  Controls: $(Join-Path $OdHome 'OpenDesign-Start.cmd') / OpenDesign-Stop.cmd / OpenDesign-Update.cmd"
+  if ($StartupRegistered) {
+    Write-Host "  Service:  per-user startup (HKCU Run\$StartupValueName)"
   } else {
     $cliPath = Join-Path $OdHome "current\apps\daemon\dist\cli.js"
-    Write-Host "  Service:  NOT auto-starting (schtasks blocked on this machine) -- start manually: `"$NodeBin`" `"$cliPath`" --no-open"
+    Write-Host "  Service:  NOT auto-starting -- start manually: `"$NodeBin`" `"$cliPath`" --no-open"
   }
   Write-Host ""
   if (-not $loginOk) {
@@ -1288,11 +1846,12 @@ function Invoke-Main {
 # deploy/tests/host-install.test.ts equivalents on Windows would source this
 # script with OD_INSTALL_PS1_TEST_SOURCE=1 to unit-test individual functions
 # (tar safety, checksum, config.env generation, rollback) without ever
-# registering a real Scheduled Task -- same seam as install.sh's
+# registering real auto-start state -- same seam as install.sh's
 # OD_INSTALL_SH_TEST_SOURCE guard. Every real invocation (irm | iex,
 # powershell -File install.ps1 ...) leaves this unset and runs normally.
 try {
   if ($env:OD_INSTALL_PS1_TEST_SOURCE -ne "1") {
+    Assert-Parameters
     if ($Stop) {
       Invoke-StopCommand
     } elseif ($Uninstall) {
@@ -1303,7 +1862,27 @@ try {
       Invoke-Main
     }
   }
+} catch {
+  $failure = $_
+  if ($RestartRequired) {
+    Write-Warn $failure.Exception.Message
+    exit $RestartRequiredExitCode
+  }
+  if (-not $HealthSucceeded -and -not $RestartHandedOff -and
+      ($Activated -or $ConfigChanged -or $PreviousReleaseBackup)) {
+    try { Invoke-Rollback -Reason "Installer failed or was cancelled" } catch {
+      Write-ErrorMsg "Rollback raised an additional error: $($_.Exception.Message)"
+    }
+  }
+  Write-ErrorMsg $failure.Exception.Message
+  exit 1
 } finally {
+  # PipelineStoppedException (Ctrl+C) is not consistently delivered through
+  # catch on Windows PowerShell hosts. The finally guard covers that path.
+  if (-not $HealthSucceeded -and -not $RestartHandedOff -and -not $RollbackStarted -and
+      ($Activated -or $ConfigChanged -or $PreviousReleaseBackup)) {
+    try { Invoke-Rollback -Reason "Installer interrupted before health confirmation" } catch {}
+  }
   foreach ($d in $script:TempDirs) {
     Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
   }

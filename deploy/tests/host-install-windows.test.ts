@@ -1,0 +1,161 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+const repoRoot = join(import.meta.dirname, '../..');
+const installScript = join(repoRoot, 'deploy/host/install.ps1');
+const launcherScript = join(repoRoot, 'deploy/host/launcher.ps1');
+
+async function source(): Promise<string> {
+  return readFile(installScript, 'utf8');
+}
+
+test('Windows downloads use bounded retries, timeout, and partial-file promotion', async () => {
+  const ps = await source();
+  assert.match(ps, /\$DownloadMaxAttempts\s*=\s*3/);
+  assert.match(ps, /\$DownloadTimeoutSec\s*=\s*180/);
+  assert.match(ps, /HttpCompletionOption\]::ResponseHeadersRead/);
+  assert.match(ps, /ReadAsync\(\$buffer, 0, \$buffer\.Length, \$cts\.Token\)/);
+  assert.match(ps, /\$partial\s*=\s*"\$Destination\.partial"/);
+  assert.match(ps, /Move-Item -LiteralPath \$partial -Destination \$Destination -Force/);
+});
+
+test('Windows download progress is interactive-only and logging is append-only/best-effort', async () => {
+  const ps = await source();
+  assert.match(ps, /return -not \[Console\]::IsOutputRedirected/);
+  assert.match(ps, /\[Console\]::Write\("`r\s+\{0,3\}%/);
+  assert.match(ps, /Add-Content -Path \$script:ProgressLogPath/);
+  assert.match(ps, /Download telemetry is best-effort and must never affect installation/);
+});
+
+test('Windows persistent auto-start uses current-user HKCU Run without requiring Task Scheduler rights', async () => {
+  const ps = await source();
+  const register = ps.slice(ps.indexOf('function Register-OdStartup'), ps.indexOf('function Step3-ExtractAndConfigure'));
+  assert.match(ps, /HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run/);
+  assert.match(register, /New-ItemProperty -Path \$StartupRegistryPath -Name \$StartupValueName/);
+  assert.doesNotMatch(register, /Register-ScheduledTask/);
+  assert.match(register, /Unregister-ScheduledTask -TaskName \$LegacyTaskName/);
+  assert.doesNotMatch(ps, /Register-ScheduledTask|Start-ScheduledTask/);
+});
+
+test('Windows release extraction validates staging before promotion and preserves a live same-version path', async () => {
+  const ps = await source();
+  const staging = ps.indexOf('$stagingDir = Join-Path $releasesDir');
+  const validation = ps.indexOf('staged release is incomplete');
+  const promotion = ps.indexOf('Move-Item -LiteralPath $stagingDir -Destination $ReleaseDir');
+  assert.ok(staging >= 0 && validation > staging && promotion > validation);
+  assert.match(ps, /\$stagedInstaller = Join-Path \$stagingDir "install\.ps1"/);
+  assert.match(ps, /required VERSION, daemon cli\.js, install\.ps1, and launcher\.ps1/);
+  assert.match(ps, /Never replace the directory backing the live junction/);
+  assert.match(ps, /\.backup-\$Version-/);
+});
+
+test('Windows bundles a stable single-instance launcher that supervises the daemon', async () => {
+  const ps = await source();
+  const launcher = await readFile(launcherScript, 'utf8');
+  const build = await readFile(join(repoRoot, 'scripts/host-runtime/build-runtime.sh'), 'utf8');
+  assert.match(ps, /function Install-OdLauncher/);
+  assert.match(ps, /\[System\.IO\.File\]::Replace\(\$temporary, \$LauncherPath, \$null, \$true\)/);
+  assert.match(ps, /function Start-OdLauncher/);
+  assert.match(ps, /function Stop-OdLauncher/);
+  assert.match(ps, /-ArgumentList @\("`"\$cliPath`"", "--no-open"\)/);
+  assert.match(launcher, /Local\\OpenDesignLauncher-\$homeHash/);
+  assert.match(launcher, /elseif \(-not \(Test-DaemonAlive\)\)/);
+  assert.match(launcher, /function Test-MaintenanceActive/);
+  assert.match(launcher, /\$maintenanceBlocksStart = \(Test-MaintenanceActive\) -and -not \(Test-Path \$transactionPath\)/);
+  assert.match(launcher, /Invoke-InstalledStart/);
+  assert.match(build, /deploy\/host\/launcher\.ps1.*STAGE_DIR.*launcher\.ps1/);
+});
+
+test('Windows ships double-click command files for install, update, start, and stop', async () => {
+  const ps = await source();
+  const build = await readFile(join(repoRoot, 'scripts/host-runtime/build-runtime.sh'), 'utf8');
+  const commandFiles = await Promise.all(
+    ['install.cmd', 'update.cmd', 'start.cmd', 'stop.cmd'].map(async (name) => ({
+      name,
+      body: await readFile(join(repoRoot, 'deploy/host', name), 'utf8'),
+    })),
+  );
+  for (const { name, body } of commandFiles) {
+    assert.match(body, /powershell\.exe -NoProfile/);
+    assert.match(body, /--no-pause/);
+    assert.match(body, /pause/);
+    assert.doesNotMatch(body, /runas|Start-Process[^\r\n]+-Verb\s+RunAs/i);
+    assert.match(build, new RegExp(`deploy/host/\\$\\{command_file\\}`));
+    assert.match(ps, new RegExp(name.replace('.', '\\.')));
+  }
+  assert.match(commandFiles.find(({ name }) => name === 'install.cmd')!.body, /Invoke-WebRequest/);
+  assert.match(commandFiles.find(({ name }) => name === 'update.cmd')!.body, /-Update/);
+  assert.match(commandFiles.find(({ name }) => name === 'start.cmd')!.body, /-Start/);
+  assert.match(commandFiles.find(({ name }) => name === 'stop.cmd')!.body, /-Stop/);
+  assert.match(ps, /function Install-OdCommandFiles/);
+  assert.match(build, /OpenDesign-Install\.cmd/);
+});
+
+test('Windows config replacement and rollback are atomic and transaction guarded', async () => {
+  const ps = await source();
+  assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configTemp, \$configPath, \$ConfigBackupPath, \$true\)/);
+  assert.match(ps, /Copy-Item -LiteralPath \$ConfigBackupPath -Destination \$configRestoreTemp/);
+  assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configRestoreTemp, \$configPath, \$null, \$true\)/);
+  assert.match(ps, /-not \$HealthSucceeded -and -not \$RestartHandedOff/);
+  assert.match(ps, /PipelineStoppedException \(Ctrl\+C\)/);
+  assert.match(ps, /\$rollbackSucceeded = \$pointerRestored -and \$configRestored -and \$releaseRestored -and \$oldDaemonHealthy/);
+  assert.match(ps, /Rollback is incomplete; durable transaction kept/);
+  assert.match(ps, /No previous release to roll back[\s\S]*Remove-ItemProperty|Remove-ItemProperty[\s\S]*No previous release to roll back/);
+  assert.match(ps, /Set-Content -LiteralPath \$MaintenancePath/);
+  assert.match(ps, /if \(\$Update\) \{ Save-UpdateTransaction \}\s+Set-CurrentPointer/);
+  assert.match(ps, /Remove-Item -LiteralPath \$MaintenancePath -Force/);
+});
+
+test('Windows launcher handoff is durable and marked before publishing the restart request', async () => {
+  const ps = await source();
+  const delegate = ps.indexOf('function Request-LauncherUpdateRestart');
+  const handoff = ps.indexOf('$script:RestartHandedOff = $true', delegate);
+  const publish = ps.indexOf('Move-Item -LiteralPath $requestTemp -Destination $RestartRequestPath', handoff);
+  assert.ok(handoff >= 0 && publish > handoff);
+  assert.match(ps.slice(delegate, ps.indexOf('function Wait-OdHealth')), /Test-OdLauncherAlive/);
+  const step5 = ps.slice(ps.indexOf('function Step5-StartAndHealthCheck'), ps.indexOf('# ---------------------------------------------------------------------------\n# Step 6/6'));
+  assert.ok(step5.indexOf('Save-UpdateTransaction') < step5.indexOf('Request-LauncherUpdateRestart'));
+});
+
+test('Windows self-update degrades to restart-required without rolling back the installed release', async () => {
+  const ps = await source();
+  assert.match(ps, /\$RestartRequiredExitCode\s*=\s*75/);
+  assert.match(ps, /\$script:RestartHandedOff = \$true\s+\$script:RestartRequired = \$true/);
+  assert.match(ps, /if \(\$RestartRequired\) \{\s+Write-Warn \$failure\.Exception\.Message\s+exit \$RestartRequiredExitCode/);
+});
+
+test('launcher-owned Start imports durable state and commits or rolls back it based on health', async () => {
+  const ps = await source();
+  const saver = ps.slice(ps.indexOf('function Save-UpdateTransaction'), ps.indexOf('function Test-TransactionPathUnder'));
+  assert.match(saver, /previousCurrent = \$PrevCurrent/);
+  assert.match(saver, /configBackupPath = \$ConfigBackupPath/);
+  assert.match(saver, /previousReleaseBackup = \$PreviousReleaseBackup/);
+  assert.match(saver, /\[System\.IO\.File\]::Replace\(\$stateTemp, \$UpdateTransactionPath, \$null, \$true\)/);
+
+  const start = ps.slice(ps.indexOf('function Invoke-StartCommand'), ps.indexOf('function Invoke-UninstallCommand'));
+  assert.match(start, /\$transactionPending = Import-UpdateTransaction/);
+  assert.match(start, /if \(\$transactionPending\)[\s\S]*Set-CurrentPointer/);
+  assert.match(start, /if \(\$transactionPending\) \{\s+Complete-InstallationTransaction/);
+  assert.match(start, /if \(\$transactionPending\) \{\s+Invoke-Rollback -Reason "Update restart failed its health check"/);
+
+  const importer = ps.slice(ps.indexOf('function Import-UpdateTransaction'), ps.indexOf('function Remove-UpdateTransaction'));
+  assert.match(importer, /\$script:PrevCurrent = \[string\]\$state\.previousCurrent/);
+  assert.match(importer, /\$script:ConfigBackupPath = \[string\]\$state\.configBackupPath/);
+  assert.match(importer, /Test-TransactionPathUnder/);
+
+  const complete = ps.slice(ps.indexOf('function Complete-InstallationTransaction'), ps.indexOf('function Step5-StartAndHealthCheck'));
+  assert.match(complete, /Remove-Item -Force \$ConfigBackupPath -ErrorAction Stop/);
+  assert.match(complete, /Remove-Item -Recurse -Force \$PreviousReleaseBackup -ErrorAction Stop/);
+  assert.match(complete, /if \(\$cleanupComplete\) \{ \[void\]\(Remove-UpdateTransaction\) \}/);
+  assert.match(complete, /Remove-UpdateTransaction/);
+});
+
+test('Windows installer rejects invalid command combinations and ports', async () => {
+  const ps = await source();
+  assert.match(ps, /-Start, -Stop, and -Uninstall are mutually exclusive/);
+  assert.match(ps, /-DeleteData is only valid with -Uninstall/);
+  assert.match(ps, /-Port must be an integer from 1 to 65535/);
+  assert.match(ps, /throw \[System\.InvalidOperationException\]::new\(\$msg\)/);
+});

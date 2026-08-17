@@ -40,6 +40,7 @@ async function writeMinimalRelease(dir: string, version: string): Promise<void> 
   await mkdir(join(dir, 'apps', 'web', 'out'), { recursive: true });
   await mkdir(join(dir, 'runtime', 'service'), { recursive: true });
   await writeFile(join(dir, 'VERSION'), `${version}\n`);
+  await writeFile(join(dir, 'install.sh'), '#!/usr/bin/env bash\n# updater fixture\n');
   await writeFile(
     join(dir, 'apps', 'daemon', 'dist', 'cli.js'),
     '// stub — not executed by --no-start tests\n',
@@ -78,6 +79,43 @@ test('install.sh --help exits 0 and documents the minimum flag set', async () =>
   assert.match(stdout, /--env-file/);
   assert.match(stdout, /--no-start/);
   assert.match(stdout, /--update/);
+});
+
+test('fails fast for unknown flags and flags with missing values', async () => {
+  for (const args of [['--udpate'], ['--archive'], ['--archive='], ['--port', '--no-start']]) {
+    await assert.rejects(
+      execFileAsync('bash', [installScript, ...args]),
+      (err: any) => {
+        assert.match(String(err.stderr ?? ''), /Unknown argument|requires a/i);
+        return true;
+      },
+    );
+  }
+});
+
+test('non-interactive downloads use bounded retries and stable silent output', async () => {
+  const tmp = await mktmp('curl-policy');
+  try {
+    const marker = join(tmp, 'curl-args');
+    const harness = join(tmp, 'harness.sh');
+    await writeFile(harness, [
+      '#!/usr/bin/env bash',
+      'set -eu',
+      `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+      `curl() { printf '%s\n' "$@" > "${marker}"; }`,
+      `curl_download "${join(tmp, 'out')}" "https://example.test/archive.tar.gz"`,
+    ].join('\n'));
+    await execFileAsync('bash', [harness]);
+    const args = await readFile(marker, 'utf8');
+    assert.match(args, /^--silent$/m);
+    assert.match(args, /^--show-error$/m);
+    assert.match(args, /^--retry$/m);
+    assert.match(args, /^--connect-timeout$/m);
+    assert.match(args, /^--speed-time$/m);
+    assert.doesNotMatch(args, /progress-bar/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -155,6 +193,61 @@ test('rejects an archive whose sha256 does not match --sha256', async () => {
     const releasesDir = join(process.env.HOME ?? '', '.open-design', 'releases', '9.9.9');
     const exists = await stat(releasesDir).then(() => true, () => false);
     assert.equal(exists, false, 'a bad-checksum archive must never be extracted');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('rejects a staged release missing the daemon entry before promotion', async () => {
+  const tmp = await mktmp('missing-daemon');
+  const fakeHome = join(tmp, 'home');
+  try {
+    await mkdir(fakeHome, { recursive: true });
+    const stageName = 'open-design-runtime-7.7.7-linux-x64';
+    const stageDir = join(tmp, stageName);
+    await mkdir(join(stageDir, 'runtime', 'service'), { recursive: true });
+    await writeFile(join(stageDir, 'VERSION'), '7.7.7\n');
+    await writeFile(join(stageDir, 'runtime', 'service', 'open-design.service.in'), 'stub\n');
+    const packed = await packRelease(tmp, stageName);
+
+    await assert.rejects(
+      execFileAsync('bash', [installScript, '--archive', packed.archive, '--sha256', packed.sha256, '--no-start'], {
+        env: { ...process.env, HOME: fakeHome },
+      }),
+      (err: any) => {
+        assert.match(String(err.stderr ?? ''), /missing apps\/daemon\/dist\/cli\.js/i);
+        return true;
+      },
+    );
+    const promoted = await stat(join(fakeHome, '.open-design', 'releases', '7.7.7')).then(() => true, () => false);
+    assert.equal(promoted, false, 'an invalid staged release must not be promoted');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('rejects a staged release missing install.sh needed for the next self-update', async () => {
+  const tmp = await mktmp('missing-updater');
+  const fakeHome = join(tmp, 'home');
+  try {
+    await mkdir(fakeHome, { recursive: true });
+    const stageName = 'open-design-runtime-7.7.8-linux-x64';
+    const stageDir = join(tmp, stageName);
+    await writeMinimalRelease(stageDir, '7.7.8');
+    await rm(join(stageDir, 'install.sh'));
+    const packed = await packRelease(tmp, stageName);
+
+    await assert.rejects(
+      execFileAsync('bash', [installScript, '--archive', packed.archive, '--sha256', packed.sha256, '--no-start'], {
+        env: { ...process.env, HOME: fakeHome },
+      }),
+      (err: any) => {
+        assert.match(String(err.stderr ?? ''), /missing install\.sh required for the next self-update/i);
+        return true;
+      },
+    );
+    const promoted = await stat(join(fakeHome, '.open-design', 'releases', '7.7.8')).then(() => true, () => false);
+    assert.equal(promoted, false, 'a release without its updater must not be promoted');
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
@@ -418,6 +511,98 @@ test('rollback() restores the previous `current` symlink when health checks fail
   }
 });
 
+test('rollback() atomically restores the previous config.env backup', async () => {
+  const tmp = await mktmp('rollback-config');
+  const fakeHome = join(tmp, 'home');
+  try {
+    const odHome = join(fakeHome, '.open-design');
+    const oldRelease = join(odHome, 'releases', '1.0.0');
+    const newRelease = join(odHome, 'releases', '2.0.0');
+    await mkdir(oldRelease, { recursive: true });
+    await mkdir(newRelease, { recursive: true });
+    await mkdir(join(odHome, 'logs'), { recursive: true });
+    await execFileAsync('ln', ['-sfn', newRelease, join(odHome, 'current')]);
+    await writeFile(join(odHome, 'config.env'), 'OD_APP_VERSION=2.0.0\nOD_PORT=19995\n');
+    const backup = join(odHome, '.config.env.backup.test');
+    await writeFile(backup, 'OD_APP_VERSION=1.0.0\nOD_PORT=19995\n');
+
+    const harness = join(tmp, 'rollback-config-harness.sh');
+    await writeFile(harness, [
+      '#!/usr/bin/env bash',
+      'set -eu',
+      `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+      'write_service_files() { :; }',
+      'start_service() { :; }',
+      'stop_service() { :; }',
+      'wait_for_health() { return 0; }',
+      `PREV_CURRENT="${oldRelease}"`,
+      `RELEASE_DIR="${newRelease}"`,
+      `CONFIG_BACKUP="${backup}"`,
+      'CONFIG_HAD_PREVIOUS=1',
+      'CONFIG_WRITTEN=1',
+      'ACTIVATED=1',
+      'VERSION=2.0.0',
+      'PORT=19995',
+      'rollback',
+    ].join('\n'));
+    await execFileAsync('bash', [harness], { env: { ...process.env, HOME: fakeHome } }).catch(() => {});
+
+    assert.equal(await readFile(join(odHome, 'config.env'), 'utf8'), 'OD_APP_VERSION=1.0.0\nOD_PORT=19995\n');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('TERM after activation exits 143 and rolls back release plus config', async () => {
+  const tmp = await mktmp('term-rollback');
+  const fakeHome = join(tmp, 'home');
+  try {
+    const odHome = join(fakeHome, '.open-design');
+    const oldRelease = join(odHome, 'releases', '1.0.0');
+    const newRelease = join(odHome, 'releases', '2.0.0');
+    await mkdir(oldRelease, { recursive: true });
+    await mkdir(newRelease, { recursive: true });
+    await mkdir(join(odHome, 'logs'), { recursive: true });
+    await execFileAsync('ln', ['-sfn', newRelease, join(odHome, 'current')]);
+    await writeFile(join(odHome, 'config.env'), 'OD_APP_VERSION=2.0.0\n');
+    const backup = join(odHome, '.config.env.backup.term-test');
+    await writeFile(backup, 'OD_APP_VERSION=1.0.0\n');
+
+    const harness = join(tmp, 'term-harness.sh');
+    await writeFile(harness, [
+      '#!/usr/bin/env bash',
+      'set -eu',
+      `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+      'write_service_files() { :; }',
+      'start_service() { :; }',
+      'stop_service() { :; }',
+      'wait_for_health() { return 0; }',
+      `PREV_CURRENT="${oldRelease}"`,
+      `RELEASE_DIR="${newRelease}"`,
+      `CONFIG_BACKUP="${backup}"`,
+      'CONFIG_HAD_PREVIOUS=1',
+      'CONFIG_WRITTEN=1',
+      'ACTIVATED=1',
+      'VERSION=2.0.0',
+      'PORT=19994',
+      'trap handle_exit EXIT',
+      'trap handle_int INT',
+      'trap handle_term TERM',
+      'kill -TERM $$',
+    ].join('\n'));
+    const result = await execFileAsync('bash', [harness], { env: { ...process.env, HOME: fakeHome } }).then(
+      () => ({ code: 0 }),
+      (err: any) => ({ code: err.code as number }),
+    );
+    assert.equal(result.code, 143);
+    const { stdout: target } = await execFileAsync('readlink', [join(odHome, 'current')]);
+    assert.equal(target.trim(), oldRelease);
+    assert.equal(await readFile(join(odHome, 'config.env'), 'utf8'), 'OD_APP_VERSION=1.0.0\n');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('rollback() with no previous release stops the service and still fails loudly', async () => {
   const tmp = await mktmp('rollback-fresh');
   const fakeHome = join(tmp, 'home');
@@ -510,6 +695,46 @@ test('--update succeeds when the existing config.env has no MEDIA_*/IDENTITY_URL
     );
     const configAfter = await readFile(join(odHome, 'config.env'), 'utf8');
     assert.match(configAfter, /^OD_PORT=19996$/m, '--update must preserve the previously-configured port');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('--update of the active same version activates new bytes through a distinct immutable directory', async () => {
+  const tmp = await mktmp('same-version-active');
+  const fakeHome = join(tmp, 'home');
+  try {
+    await mkdir(fakeHome, { recursive: true });
+    const stageName = 'open-design-runtime-3.0.0-linux-x64';
+    const firstTree = join(tmp, stageName);
+    await writeMinimalRelease(firstTree, '3.0.0');
+    const first = await packRelease(tmp, stageName);
+    await execFileAsync('bash', [installScript, '--archive', first.archive, '--sha256', first.sha256, '--no-start'], {
+      env: { ...process.env, HOME: fakeHome },
+    });
+
+    const activeRelease = join(fakeHome, '.open-design', 'releases', '3.0.0');
+    await writeFile(join(activeRelease, 'active-marker'), 'must-survive\n');
+
+    const secondRoot = join(tmp, 'second');
+    const secondTree = join(secondRoot, stageName);
+    await writeMinimalRelease(secondTree, '3.0.0');
+    await writeFile(join(secondTree, 'archive-marker'), 'new-archive\n');
+    const second = await packRelease(secondRoot, stageName);
+    await execFileAsync(
+      'bash',
+      [installScript, '--archive', second.archive, '--sha256', second.sha256, '--no-start', '--update'],
+      { env: { ...process.env, HOME: fakeHome } },
+    );
+
+    const { stdout: newTargetOutput } = await execFileAsync('readlink', [join(fakeHome, '.open-design', 'current')]);
+    const newTarget = newTargetOutput.trim();
+    assert.notEqual(newTarget, activeRelease, 'same-version update must switch current to a distinct release target');
+    assert.match(newTarget, /releases\/3\.0\.0-[a-f0-9]{12}-[0-9]+(?:-[0-9]+)?$/);
+    assert.equal(await readFile(join(newTarget, 'archive-marker'), 'utf8'), 'new-archive\n');
+    assert.equal(await readFile(join(activeRelease, 'active-marker'), 'utf8'), 'must-survive\n');
+    const newMarkerInOldTarget = await stat(join(activeRelease, 'archive-marker')).then(() => true, () => false);
+    assert.equal(newMarkerInOldTarget, false, 'the previously-active directory must remain untouched');
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

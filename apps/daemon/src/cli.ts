@@ -14,6 +14,7 @@ import { runLiveArtifactsToolCli } from './tools-live-artifacts-cli.js';
 import { splitResearchSubcommand } from './research/cli-args.js';
 import { resolveDaemonUrl } from './daemon-url.js';
 import { parseProjectSyncResolutionArgs } from './project-sync.js';
+import { followHostUpdate, isSuccessfulUpdateNoop } from './self-update-follow.js';
 // WP4 (web-first migration): `od sandbox status` reports write-isolation
 // alongside the sandbox/host CLI checklist. Pure env+platform read, no
 // daemon round trip needed.
@@ -461,13 +462,25 @@ async function runProjectSync(args) {
 // ---------------------------------------------------------------------------
 
 const SELF_UPDATE_STRING_FLAGS = new Set(['daemon-url']);
-const SELF_UPDATE_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
+const SELF_UPDATE_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'detach']);
+
+function printSelfUpdateProgress(status) {
+  const phase = status?.phase ?? status?.progress;
+  if (status?.state === 'healthy' || status?.state === 'restart-required'
+      || status?.state === 'failed' || status?.state === 'rolled-back') {
+    process.stderr.write(`${status.state}\n`);
+  } else if (phase?.step && phase?.totalSteps) {
+    process.stderr.write(`[${phase.step}/${phase.totalSteps}] ${phase.label ?? status?.state ?? 'updating'}\n`);
+  } else if (status?.state) {
+    process.stderr.write(`${status.state}\n`);
+  }
+}
 
 function printSelfUpdateHelp() {
   console.log(`Usage:
   od self-update [check] [--json]   Check for a newer host-runtime release.
-  od self-update apply [--json]     Start applying the update (fire-and-forget —
-                                     the daemon restarts itself partway through).
+  od self-update apply [--json]     Apply the update and follow it through the daemon restart.
+  od self-update apply --detach     Start the update without waiting for completion.
 
 All subcommands accept --daemon-url <url>.`);
 }
@@ -487,16 +500,69 @@ async function runSelfUpdate(args) {
   const base = await cliDaemonBaseUrl(flags);
 
   if (sub === 'apply') {
-    const resp = await fetch(`${base}/api/update/apply`, { method: 'POST' });
-    const data = await resp.json().catch(() => ({}));
-    if (flags.json) {
-      process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    } else if (data.started) {
-      console.log('update started');
-    } else {
-      console.log(`update not started (${data.reason ?? 'unknown'})${data.error ? `: ${data.error}` : ''}`);
+    let resp;
+    try {
+      resp = await fetch(`${base}/api/update/apply`, { method: 'POST' });
+    } catch (error) {
+      const result = {
+        started: false,
+        reason: 'daemon-unreachable',
+        error: error?.message ?? String(error),
+      };
+      if (flags.json) process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      else console.error(`update not started (daemon-unreachable): ${result.error}`);
+      process.exitCode = 1;
+      return;
     }
-    if (!resp.ok || data.started === false) process.exitCode = 1;
+    const data = await resp.json().catch(() => ({}));
+    const upToDate = resp.ok && isSuccessfulUpdateNoop(data);
+    if (flags.json) {
+      if (!data.started || flags.detach) {
+        process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      }
+    } else if (upToDate) {
+      console.log(`already up to date (${data.currentVersion ?? data.targetVersion ?? 'current version'})`);
+    } else if (!data.started) {
+      console.log(`update not started (${data.reason ?? 'unknown'})${data.error ? `: ${data.error}` : ''}`);
+    } else if (flags.detach) {
+      console.log(`update started (${data.operationId ?? 'operation unknown'})`);
+    }
+    if (upToDate) return;
+    if (!resp.ok || data.started === false) {
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.detach) return;
+
+    if (!data.operationId || !data.targetVersion) {
+      const result = {
+        ok: false,
+        error: 'daemon did not return operationId/targetVersion; use --detach with an older daemon',
+        response: data,
+      };
+      if (flags.json) process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      else console.error(result.error);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (!flags.json) console.log(`updating to ${data.targetVersion} (${data.operationId})`);
+    const result = await followHostUpdate({
+      base,
+      operationId: data.operationId,
+      targetVersion: data.targetVersion,
+      onProgress: flags.json ? undefined : printSelfUpdateProgress,
+    });
+    if (flags.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    } else if (result.restartRequired) {
+      console.log(`update installed to ${data.targetVersion}; sign out/in to Windows or run powershell -File "$env:USERPROFILE\\.open-design\\current\\install.ps1" -Start`);
+    } else if (result.ok) {
+      console.log(`updated successfully to ${data.targetVersion}`);
+    } else {
+      console.error(`update failed: ${result.error}`);
+    }
+    if (!result.ok) process.exitCode = 1;
     return;
   }
 
