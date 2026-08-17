@@ -29,7 +29,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe('ConfluenceCredentialSection', () => {
-  it('hydrates from GET and shows a "saved" badge without ever rendering the real token', async () => {
+  it('shows a compact connected state and never renders a PAT input after setup', async () => {
     fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
       if (url === '/api/confluence-config' && (!init || init.method === undefined)) {
         return jsonResponse({ base: 'https://wiki.example.test', hasToken: true });
@@ -39,20 +39,20 @@ describe('ConfluenceCredentialSection', () => {
 
     render(<ConfluenceCredentialSection />);
 
-    const tokenInput = (await screen.findByTestId('confluence-config-token-input')) as HTMLInputElement;
-    await waitFor(() => expect(tokenInput.disabled).toBe(false));
+    await screen.findByText('PAT đã được lưu an toàn');
     expect(screen.queryByTestId('confluence-config-base-input')).toBeNull();
-
-    // Saved badge shows, but the password field itself stays empty — the
-    // real token is never sent back by the daemon and never appears here.
-    expect(screen.getByText('Saved')).toBeTruthy();
-    expect(tokenInput.type).toBe('password');
-    expect(tokenInput.value).toBe('');
+    expect(screen.queryByTestId('confluence-config-token-input')).toBeNull();
+    expect(screen.queryByTestId('confluence-token-modal-input')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Thay đổi PAT' })).toBeTruthy();
     // No literal secret value leaked into the DOM anywhere.
     expect(document.body.textContent).not.toMatch(/hasToken|real-token|actual-secret/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Thay đổi PAT' }));
+    expect(screen.getByRole('dialog', { name: 'Thay đổi Confluence PAT' })).toBeTruthy();
+    expect(screen.getByTestId('confluence-token-modal-input')).toBeTruthy();
   });
 
-  it('Save PUTs only the token, then clears the token field', async () => {
+  it('opens a dedicated edit modal and saves only the replacement PAT', async () => {
     fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
       if (url === '/api/confluence-config' && (!init || !init.method)) {
         return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: false });
@@ -67,14 +67,15 @@ describe('ConfluenceCredentialSection', () => {
 
     render(<ConfluenceCredentialSection />);
 
-    const tokenInput = (await screen.findByTestId('confluence-config-token-input')) as HTMLInputElement;
-    await waitFor(() => expect(tokenInput.disabled).toBe(false));
+    await screen.findByText('Chưa có Personal Access Token');
+    fireEvent.click(screen.getByRole('button', { name: 'Thiết lập PAT' }));
+    const tokenInput = screen.getByTestId('confluence-token-modal-input') as HTMLInputElement;
     fireEvent.change(tokenInput, { target: { value: 'brand-new-token' } });
+    fireEvent.click(screen.getByTestId('confluence-token-modal-save'));
 
-    fireEvent.click(screen.getByTestId('confluence-config-save'));
-
-    await waitFor(() => expect(screen.getByText('Saved')).toBeTruthy());
-    await waitFor(() => expect((screen.getByTestId('confluence-config-token-input') as HTMLInputElement).value).toBe(''));
+    await waitFor(() => expect(screen.getByText('PAT đã được lưu an toàn')).toBeTruthy());
+    expect(screen.queryByTestId('confluence-token-modal-input')).toBeNull();
+    expect(screen.queryByTestId('confluence-config-token-input')).toBeNull();
   });
 
   it('uses the daemon-configured URL for the token link without exposing a URL field', async () => {
@@ -102,8 +103,8 @@ describe('ConfluenceCredentialSection', () => {
     });
 
     render(<ConfluenceCredentialSection />);
-    await waitFor(() => expect((screen.getByTestId('confluence-config-token-input') as HTMLInputElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole('button', { name: 'Hướng dẫn lấy token' }));
+    await screen.findByText('Chưa có Personal Access Token');
+    fireEvent.click(screen.getByRole('button', { name: 'Hướng dẫn lấy PAT' }));
 
     const dialog = screen.getByRole('dialog', { name: 'Hướng dẫn lấy Confluence Access Token' });
     expect(dialog.textContent).toContain('Mở trang Personal Access Tokens');
@@ -131,17 +132,19 @@ describe('ConfluenceCredentialSection', () => {
     fireEvent.click(useButton);
 
     expect(screen.queryByRole('dialog', { name: 'Hướng dẫn lấy Confluence Access Token' })).toBeNull();
-    expect((screen.getByTestId('confluence-config-token-input') as HTMLInputElement).value).toBe('token-from-guide');
+    const modalInput = screen.getByTestId('confluence-token-modal-input') as HTMLInputElement;
+    expect(modalInput.value).toBe('token-from-guide');
+    expect(screen.getByRole('dialog', { name: 'Thiết lập Confluence PAT' })).toBeTruthy();
   });
 
-  it('Test connection posts the pasted token and shows the daemon result', async () => {
+  it('tests the saved PAT without exposing or resubmitting it from the browser', async () => {
     fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
       if (url === '/api/confluence-config' && (!init || !init.method)) {
-        return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: false });
+        return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: true });
       }
       if (url === '/api/confluence-config/test' && init?.method === 'POST') {
         const body = JSON.parse(String(init.body));
-        expect(body).toEqual({ token: 'pasted-token' });
+        expect(body).toEqual({});
         return jsonResponse({ ok: true, displayName: 'Alice' });
       }
       throw new Error(`unexpected fetch ${String(url)} ${init?.method ?? 'GET'}`);
@@ -149,21 +152,17 @@ describe('ConfluenceCredentialSection', () => {
 
     render(<ConfluenceCredentialSection />);
 
-    const tokenInput = (await screen.findByTestId('confluence-config-token-input')) as HTMLInputElement;
-    await waitFor(() => expect(tokenInput.disabled).toBe(false));
-    fireEvent.change(tokenInput, { target: { value: 'pasted-token' } });
-
-    const testButton = screen.getByTestId('confluence-config-test') as HTMLButtonElement;
+    const testButton = (await screen.findByTestId('confluence-config-test')) as HTMLButtonElement;
     expect(testButton.disabled).toBe(false);
     fireEvent.click(testButton);
 
-    await waitFor(() => expect(screen.getByTestId('confluence-config-test-result').textContent).toBe('Connected as Alice.'));
+    await waitFor(() => expect(screen.getByTestId('confluence-config-test-result').textContent).toContain('Alice'));
   });
 
   it('Test connection surfaces a failure detail from the daemon', async () => {
     fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
       if (url === '/api/confluence-config' && (!init || !init.method)) {
-        return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: false });
+        return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: true });
       }
       if (url === '/api/confluence-config/test' && init?.method === 'POST') {
         return jsonResponse({ ok: false, detail: 'Token khong hop le hoac da het han (HTTP 401).' });
@@ -173,10 +172,7 @@ describe('ConfluenceCredentialSection', () => {
 
     render(<ConfluenceCredentialSection />);
 
-    const tokenInput = (await screen.findByTestId('confluence-config-token-input')) as HTMLInputElement;
-    await waitFor(() => expect(tokenInput.disabled).toBe(false));
-    fireEvent.change(tokenInput, { target: { value: 'bad-token' } });
-    fireEvent.click(screen.getByTestId('confluence-config-test'));
+    fireEvent.click(await screen.findByTestId('confluence-config-test'));
 
     await waitFor(() =>
       expect(screen.getByTestId('confluence-config-test-result').textContent).toBe(

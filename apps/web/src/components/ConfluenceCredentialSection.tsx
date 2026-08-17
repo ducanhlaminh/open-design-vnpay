@@ -1,4 +1,4 @@
-// Confluence credential (base URL + Personal Access Token) — its own small
+// Confluence credential (deployment URL + per-user PAT) — its own small
 // settings section, INDEPENDENT of the generic external-MCP config panel
 // (McpClientSection). WP8 (2026-08): JIRA ingest was removed and the
 // Confluence creds moved out of the generic `mcp-atlassian` MCP server row
@@ -7,12 +7,13 @@
 // `hasToken` — the token field below never round-trips a saved secret back
 // into the input; an unedited (empty) field on Save keeps the existing one.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { fetchConfluenceConfig, saveConfluenceConfig, testConfluenceConnection } from '../state/confluence-config';
-import { useT } from '../i18n';
+import { useEffect, useMemo, useState } from 'react';
+import type { ConfluenceConfigResponse } from '../state/confluence-config';
+import { fetchConfluenceConfig, testConfluenceConnection } from '../state/confluence-config';
 import { Icon } from './Icon';
+import { ConfluenceTokenEditModal } from './ConfluenceTokenEditModal';
 import { ConfluenceTokenGuideModal } from './ConfluenceTokenGuideModal';
-import styles from './ConfluenceTokenGuideModal.module.css';
+import styles from './ConfluenceCredentialSection.module.css';
 
 function normalizeBase(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, '');
@@ -34,17 +35,15 @@ type TestState =
   | { status: 'done'; ok: boolean; detail?: string; displayName?: string };
 
 export function ConfluenceCredentialSection() {
-  const t = useT();
   const [loaded, setLoaded] = useState(false);
   const [base, setBase] = useState('');
   const [hasToken, setHasToken] = useState(false);
-  const [tokenDraft, setTokenDraft] = useState('');
-  const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testState, setTestState] = useState<TestState>({ status: 'idle' });
   const [guideOpen, setGuideOpen] = useState(false);
-  const tokenInputRef = useRef<HTMLInputElement>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editInitialToken, setEditInitialToken] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -55,172 +54,130 @@ export function ConfluenceCredentialSection() {
         setBase(cfg.base);
         setHasToken(cfg.hasToken);
       } else {
-        setError(t('confluenceConfig.loadError'));
+        setError('Không thể tải cấu hình Confluence.');
       }
       setLoaded(true);
     })();
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const tokenUrl = useMemo(() => tokenPageUrl(base), [base]);
-  const canTest = loaded && !saving && base.trim().length > 0 && (tokenDraft.trim().length > 0 || hasToken);
+  const canTest = loaded && base.trim().length > 0 && hasToken;
 
   const runTest = async () => {
     if (testState.status === 'running' || !canTest) return;
     setTestState({ status: 'running' });
-    const tokenTrimmed = tokenDraft.trim();
-    const result = await testConfluenceConnection({
-      ...(tokenTrimmed ? { token: tokenTrimmed } : {}),
-    });
+    const result = await testConfluenceConnection({});
     setTestState({ status: 'done', ok: result.ok, detail: result.detail, displayName: result.displayName });
   };
 
-  const save = async () => {
-    if (saving || !loaded) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const tokenTrimmed = tokenDraft.trim();
-      const result = await saveConfluenceConfig({
-        ...(tokenTrimmed ? { token: tokenTrimmed } : {}),
-      });
-      if (!result) {
-        setError(t('confluenceConfig.saveError'));
-        return;
-      }
-      setBase(result.base);
-      setHasToken(result.hasToken);
-      setTokenDraft('');
-      setTestState({ status: 'idle' });
-      setSavedAt(Date.now());
-    } finally {
-      setSaving(false);
-    }
+  const openEditor = (initialToken = '') => {
+    setEditInitialToken(initialToken);
+    setEditOpen(true);
+  };
+
+  const onSaved = (config: ConfluenceConfigResponse) => {
+    setBase(config.base);
+    setHasToken(config.hasToken);
+    setSavedAt(Date.now());
+    setTestState({ status: 'idle' });
   };
 
   return (
-    <section className="settings-section" data-testid="confluence-config-section">
-      <div className="section-head">
-        <div>
-          <h3>{t('confluenceConfig.title')}</h3>
-          <p className="hint">{t('confluenceConfig.subtitle')}</p>
+    <section className={`settings-section ${styles.card}`} data-testid="confluence-config-section">
+      <header className={styles.header}>
+        <span className={styles.brandIcon}><Icon name="link" size={20} /></span>
+        <div className={styles.heading}>
+          <h3>Confluence</h3>
+          <p>Cho phép Docs pipeline lấy tài liệu trực tiếp bằng Personal Access Token lưu trên máy này.</p>
         </div>
-      </div>
-
-      <div className="field">
-        <span className="field-label-row">
-          <span className="field-label-group">
-            <span className="field-label">{t('confluenceConfig.tokenLabel')}</span>
-            {hasToken ? (
-              <span className="field-status-badge" title={t('confluenceConfig.tokenSavedTitle')}>
-                {t('confluenceConfig.tokenSaved')}
-              </span>
-            ) : null}
-          </span>
-          <span className={styles.tokenActions}>
-            {tokenUrl ? (
-              <button type="button" className={styles.guideButton} onClick={() => setGuideOpen(true)}>
-                <Icon name="info" size={12} /> Hướng dẫn lấy token
-              </button>
-            ) : null}
-            {tokenUrl ? (
-              <a
-                className="field-label-link"
-                href={tokenUrl}
-                target="_blank"
-                rel="noreferrer"
-                data-testid="confluence-config-token-link"
-              >
-                <Icon name="external-link" size={11} />
-                {t('confluenceConfig.tokenCreateLink')}
-              </a>
-            ) : null}
-          </span>
-        </span>
-        <p className="hint">{t('confluenceConfig.tokenInstructions')}</p>
-        <div className="field-row">
-          <input
-            ref={tokenInputRef}
-            type="password"
-            value={tokenDraft}
-            disabled={!loaded || saving}
-            placeholder={
-              hasToken
-                ? t('confluenceConfig.tokenPlaceholderSaved')
-                : t('confluenceConfig.tokenPlaceholderEmpty')
-            }
-            onChange={(e) => {
-              setTokenDraft(e.target.value);
-              setTestState({ status: 'idle' });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && loaded && !saving) {
-                e.preventDefault();
-                void save();
-              }
-            }}
-            data-testid="confluence-config-token-input"
-          />
-          <button
-            type="button"
-            className={'ghost icon-btn settings-test-btn' + (testState.status === 'running' ? ' loading' : '')}
-            disabled={!canTest || testState.status === 'running'}
-            onClick={() => void runTest()}
-            data-testid="confluence-config-test"
-          >
-            <Icon
-              name={testState.status === 'running' ? 'spinner' : 'reload'}
-              size={12}
-              className={testState.status === 'running' ? 'icon-spin' : ''}
-            />
-            <span>{testState.status === 'running' ? t('confluenceConfig.testing') : t('confluenceConfig.testButton')}</span>
-          </button>
-        </div>
-        {testState.status === 'done' ? (
-          <span
-            className={testState.ok ? 'field-inline-status success' : 'field-error'}
-            role={testState.ok ? 'status' : 'alert'}
-            data-testid="confluence-config-test-result"
-          >
-            {testState.ok
-              ? testState.displayName
-                ? t('confluenceConfig.testSuccessNamed', { name: testState.displayName })
-                : t('confluenceConfig.testSuccess')
-              : testState.detail || t('confluenceConfig.testFailed')}
+        {loaded ? (
+          <span className={`${styles.statusBadge}${hasToken ? '' : ` ${styles.statusBadgePending}`}`}>
+            <Icon name={hasToken ? 'check' : 'info'} size={12} />
+            {hasToken ? 'Đã cấu hình' : 'Chưa cấu hình'}
           </span>
         ) : null}
-      </div>
+      </header>
 
-      <div className="section-head-actions">
-        <button
+      {!loaded ? <div className={styles.loadingLine} aria-label="Đang tải cấu hình Confluence" /> : (
+        <div className={`${styles.connectionPanel}${hasToken ? '' : ` ${styles.connectionPanelPending}`}`}>
+          <div className={styles.connectionInfo}>
+            <span className={styles.connectionIcon}>
+              <Icon name={hasToken ? 'check' : 'info'} size={17} />
+            </span>
+            <div>
+              <strong>{hasToken ? 'PAT đã được lưu an toàn' : 'Chưa có Personal Access Token'}</strong>
+              <p>{hasToken ? 'Docs pipeline đã sẵn sàng đọc tài liệu Confluence.' : 'Thiết lập PAT để bắt đầu lấy tài liệu vào dự án.'}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            className={hasToken ? styles.secondaryAction : styles.primaryAction}
+            onClick={() => openEditor()}
+            data-testid={hasToken ? 'confluence-config-edit' : 'confluence-config-setup'}
+          >
+            <Icon name={hasToken ? 'edit' : 'plus'} size={13} />
+            {hasToken ? 'Thay đổi PAT' : 'Thiết lập PAT'}
+          </button>
+        </div>
+      )}
+
+      <div className={styles.utilityRow}>
+        {hasToken ? <button
           type="button"
-          className={'primary' + (saving ? ' is-busy' : '')}
-          disabled={!loaded || saving}
-          onClick={() => void save()}
-          data-testid="confluence-config-save"
+          className={styles.secondaryAction}
+          disabled={!canTest || testState.status === 'running'}
+          onClick={() => void runTest()}
+          data-testid="confluence-config-test"
         >
-          <Icon name={saving ? 'spinner' : 'check'} size={12} className={saving ? 'icon-spin' : ''} />
-          <span>{saving ? t('confluenceConfig.saving') : t('confluenceConfig.saveButton')}</span>
-        </button>
+          <Icon name={testState.status === 'running' ? 'spinner' : 'reload'} size={13} className={testState.status === 'running' ? 'icon-spin' : ''} />
+          {testState.status === 'running' ? 'Đang kiểm tra…' : 'Kiểm tra kết nối'}
+        </button> : null}
+        {tokenUrl ? <button type="button" className={styles.guideButton} onClick={() => setGuideOpen(true)}>
+          <Icon name="info" size={13} /> Hướng dẫn lấy PAT
+        </button> : null}
+        {tokenUrl ? <a href={tokenUrl} target="_blank" rel="noreferrer" data-testid="confluence-config-token-link">
+          Tạo PAT trên Confluence <Icon name="external-link" size={12} />
+        </a> : null}
       </div>
 
-      <span className="hint" role={error ? 'alert' : undefined}>
-        {error ?? (savedAt ? t('confluenceConfig.savedHint') : t('confluenceConfig.helpHint'))}
-      </span>
+      {testState.status === 'done' ? <div
+        className={`${styles.result} ${testState.ok ? styles.testSuccess : styles.testError}`}
+        role={testState.ok ? 'status' : 'alert'}
+        data-testid="confluence-config-test-result"
+      >
+        <Icon name={testState.ok ? 'check' : 'info'} size={15} />
+        {testState.ok
+          ? testState.displayName ? `Kết nối thành công với tài khoản ${testState.displayName}.` : 'Kết nối Confluence thành công.'
+          : testState.detail || 'Không thể kết nối Confluence.'}
+      </div> : null}
+
+      <p className={styles.footnote} role={error ? 'alert' : undefined}>
+        {error ?? (savedAt ? 'PAT mới đã được lưu trên máy này.' : 'Dùng cho các bước Docs, PRD và review tài liệu; không cần MCP server bên ngoài.')}
+      </p>
 
       {guideOpen && tokenUrl ? (
         <ConfluenceTokenGuideModal
           tokenUrl={tokenUrl}
           onClose={() => setGuideOpen(false)}
           onUseToken={(token) => {
-            setTokenDraft(token);
-            setTestState({ status: 'idle' });
             setGuideOpen(false);
-            window.requestAnimationFrame(() => tokenInputRef.current?.focus());
+            openEditor(token);
           }}
+        />
+      ) : null}
+      {editOpen ? (
+        <ConfluenceTokenEditModal
+          replacing={hasToken}
+          initialToken={editInitialToken}
+          tokenUrl={tokenUrl}
+          onClose={() => {
+            setEditOpen(false);
+            setEditInitialToken('');
+          }}
+          onSaved={onSaved}
         />
       ) : null}
     </section>
