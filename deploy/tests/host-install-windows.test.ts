@@ -131,6 +131,16 @@ test('Windows installer does not depend on PS 5.1 script-module cmdlets (Get-Fil
   assert.match(ps, /zip entry escapes destination/);
 });
 
+test('Windows network preflight probes with HEAD, a 10s budget, and a retry', async () => {
+  const ps = await source();
+  const probe = ps.slice(ps.indexOf('function Test-PreflightProbe'), ps.indexOf('function Invoke-PreflightCheck'));
+  // 0.8.35: GET of the github.com homepage timed out at 5s on a slow link
+  // and blocked the install although GitHub was reachable.
+  assert.match(probe, /Invoke-WebRequest -Uri \$Url -Method Head -TimeoutSec 10 -UseBasicParsing/);
+  assert.match(probe, /\$attempt -le 2/);
+  assert.match(probe, /if \(\$_\.Exception\.Response\) \{ return \$true \}/);
+});
+
 test('Windows config replacement and rollback are atomic and transaction guarded', async () => {
   const ps = await source();
   assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configTemp, \$configPath, \$ConfigBackupPath, \$true\)/);

@@ -680,14 +680,22 @@ function Test-PreflightProbe {
   # GitHub's asset CDN 404s on a bare root path with no signed asset path
   # (verified live), which still proves DNS/TCP/TLS all worked. Only a
   # connect-level failure (no $_.Exception.Response at all) means
-  # unreachable. Short timeout -- a probe, not a real download.
-  try {
-    Invoke-WebRequest -Uri $Url -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop | Out-Null
-    return $true
-  } catch {
-    if ($_.Exception.Response) { return $true }
-    return $false
+  # unreachable. HEAD, not GET: -TimeoutSec covers the WHOLE response, and
+  # a GET of the github.com homepage (hundreds of KB) through a slow or
+  # proxied link blew the old 5s budget and reported "github.com -- khong
+  # ket noi duoc" right after the .cmd had just downloaded install.ps1 from
+  # GitHub fine (0.8.35, VN corporate network). Two attempts, 10s each --
+  # a probe, not a real download.
+  for ($attempt = 1; $attempt -le 2; $attempt++) {
+    try {
+      Invoke-WebRequest -Uri $Url -Method Head -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop | Out-Null
+      return $true
+    } catch {
+      if ($_.Exception.Response) { return $true }
+      if ($attempt -lt 2) { Start-Sleep -Seconds 1 }
+    }
   }
+  return $false
 }
 
 function Invoke-PreflightCheck {
