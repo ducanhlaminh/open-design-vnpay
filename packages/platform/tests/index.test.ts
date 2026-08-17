@@ -412,6 +412,38 @@ describe("wellKnownUserToolchainBins", () => {
     }
   });
 
+  // Windows: the native Codex installer's bin dir is not on the daemon's
+  // inherited PATH right after install (only the user PATH in the registry
+  // is updated) -- it must be searched explicitly, like ~/.local/bin is.
+  it("includes the Windows native Codex install dir (LOCALAPPDATA / CODEX_INSTALL_DIR) on win32 only", () => {
+    const home = mkdtempSync(join(tmpdir(), "wkutb-home-"));
+    const originalPlatform = process.platform;
+    try {
+      Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+      const withLocalAppData = wellKnownUserToolchainBins({
+        home,
+        env: { LOCALAPPDATA: join(home, "AppData", "Local") },
+        includeSystemBins: false,
+      });
+      expect(withLocalAppData).toContain(join(home, "AppData", "Local", "Programs", "OpenAI", "Codex", "bin"));
+      const fallback = wellKnownUserToolchainBins({ home, env: {}, includeSystemBins: false });
+      expect(fallback).toContain(join(home, "AppData", "Local", "Programs", "OpenAI", "Codex", "bin"));
+      const custom = wellKnownUserToolchainBins({
+        home,
+        env: { CODEX_INSTALL_DIR: join(home, "codex-bin") },
+        includeSystemBins: false,
+      });
+      expect(custom).toContain(join(home, "codex-bin"));
+
+      Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+      const darwin = wellKnownUserToolchainBins({ home, env: {}, includeSystemBins: false });
+      expect(darwin.some((dir) => dir.includes(join("Programs", "OpenAI", "Codex")))).toBe(false);
+    } finally {
+      Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   // Regression for #442. The two dominant non-canonical npm prefixes used
   // by sudo-free tutorials (~/.npm-global, ~/.npm-packages) must always
   // appear, otherwise GUI-launched daemons miss `npm i -g`'d CLIs.

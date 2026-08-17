@@ -596,6 +596,24 @@ export function wellKnownUserToolchainBins(
     join(home, ".npm-global", "bin"),
     join(home, ".npm-packages", "bin"),
   );
+  // Native Codex CLI installer (chatgpt.com/codex/install.ps1) on Windows
+  // puts codex.exe under %LOCALAPPDATA%\Programs\OpenAI\Codex\bin (or
+  // CODEX_INSTALL_DIR) and only registers it in the *user* PATH -- a daemon
+  // already running (deploy/host/install.ps1 starts the daemon in step 5
+  // and installs the CLIs in step 6) never sees it until re-login. Claude's
+  // installer uses ~/.local/bin, covered above; so does Codex on
+  // macOS/Linux (install.sh: BIN_DIR=${CODEX_INSTALL_DIR:-$HOME/.local/bin}).
+  const codexInstallDir = resolveUserScopedHome(env.CODEX_INSTALL_DIR, home);
+  if (codexInstallDir) {
+    dirs.push(codexInstallDir);
+  }
+  if (process.platform === "win32") {
+    const localAppData =
+      typeof env.LOCALAPPDATA === "string" && env.LOCALAPPDATA.trim().length > 0
+        ? env.LOCALAPPDATA.trim()
+        : join(home, "AppData", "Local");
+    dirs.push(join(localAppData, "Programs", "OpenAI", "Codex", "bin"));
+  }
   if (includeSystemBins) {
     dirs.push("/opt/homebrew/bin", "/usr/local/bin");
   }
