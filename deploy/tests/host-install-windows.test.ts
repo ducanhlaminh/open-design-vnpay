@@ -116,6 +116,21 @@ test('Windows release.json lookup decodes octet-stream bodies (PowerShell 5.1 re
   assert.match(ps, /did not parse as a JSON object/);
 });
 
+test('Windows installer does not depend on PS 5.1 script-module cmdlets (Get-FileHash, Expand-Archive)', async () => {
+  const ps = await source();
+  // 0.8.35: powershell.exe spawned from a pwsh host could not auto-load
+  // Get-FileHash ("not recognized"); both live in script modules on 5.1.
+  const body = ps
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n');
+  assert.doesNotMatch(body, /\bGet-FileHash\b/);
+  assert.doesNotMatch(body, /\bExpand-Archive\b/);
+  assert.match(ps, /\[System\.Security\.Cryptography\.SHA256\]::Create\(\)/);
+  assert.match(ps, /\[System\.IO\.Compression\.ZipFile\]::OpenRead/);
+  assert.match(ps, /zip entry escapes destination/);
+});
+
 test('Windows config replacement and rollback are atomic and transaction guarded', async () => {
   const ps = await source();
   assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configTemp, \$configPath, \$ConfigBackupPath, \$true\)/);

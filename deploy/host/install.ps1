@@ -16,7 +16,9 @@
     - tar.exe (bundled since Windows 10 1803 / Windows 11 -- this is the
       minimum supported Windows version) instead of GNU tar, for the same
       "list before extract" `..`-traversal + single-root-dir safety check.
-    - Get-FileHash -Algorithm SHA256 (built into PowerShell 5.1+) instead
+    - .NET SHA256 via Get-OdFileSha256 (the built-in hashing cmdlet lives
+      in a script module that fails to auto-load when powershell.exe
+      inherits a pwsh 7 PSModulePath) instead
       of sha256sum/shasum.
 
   No sudo/admin is used anywhere -- everything lives under
@@ -611,12 +613,53 @@ function Test-TarSafety {
   $script:StageName = @($topLevels)[0]
 }
 
+# Get-FileHash and Expand-Archive are SCRIPT modules on Windows PowerShell
+# 5.1 (Microsoft.PowerShell.Utility.psm1 / Microsoft.PowerShell.Archive).
+# When powershell.exe is spawned from a pwsh 7 host (CI, VS Code terminal,
+# any tool that already set PSModulePath for pwsh) module auto-loading finds
+# pwsh 7's Core-only manifests first and the commands come back as "not
+# recognized" (0.8.35 .cmd bootstrap smoke). Use plain .NET for both so the
+# installer does not depend on PSModulePath at all.
+function Get-OdFileSha256 {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+      return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLower()
+    } finally { $stream.Dispose() }
+  } finally { $sha.Dispose() }
+}
+
+function Expand-OdZip {
+  param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$DestinationPath)
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+  try {
+    foreach ($entry in $zip.Entries) {
+      $target = Join-Path $DestinationPath $entry.FullName
+      $fullTarget = [System.IO.Path]::GetFullPath($target)
+      $fullDest = [System.IO.Path]::GetFullPath($DestinationPath).TrimEnd('\') + '\'
+      if (-not $fullTarget.StartsWith($fullDest, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "zip entry escapes destination: $($entry.FullName)"
+      }
+      if ($entry.FullName.EndsWith('/')) {
+        New-Item -ItemType Directory -Force -Path $fullTarget | Out-Null
+        continue
+      }
+      $parent = Split-Path -Parent $fullTarget
+      if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+      [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $fullTarget, $true)
+    }
+  } finally { $zip.Dispose() }
+}
+
 function Test-Checksum {
   $expected = if ($Sha256) { $Sha256 } else { $ArchiveShaHint }
   if (-not $expected) {
     Fail "no checksum to verify against -- pass -Sha256 or ensure a .sha256/release.json entry is available"
   }
-  $actual = (Get-FileHash -Path $ArchivePath -Algorithm SHA256).Hash.ToLower()
+  $actual = Get-OdFileSha256 -Path $ArchivePath
   if ($actual -ne $expected.ToLower()) {
     Fail "checksum mismatch for ${ArchivePath}: expected $expected, got $actual"
   }
@@ -759,12 +802,12 @@ function Install-PrivateNode {
   } catch {
     Fail "download failed: $filename"
   }
-  $actualSha = (Get-FileHash -Path $nodeZip -Algorithm SHA256).Hash.ToLower()
+  $actualSha = Get-OdFileSha256 -Path $nodeZip
   if ($actualSha -ne $expectedSha) { Fail "Node.js checksum mismatch (SHASUMS256.txt) for $filename" }
 
   $toolsDir = Join-Path $OdHome "tools"
   New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
-  Expand-Archive -Path $nodeZip -DestinationPath $toolsDir -Force
+  Expand-OdZip -Path $nodeZip -DestinationPath $toolsDir
   $nodeDirName = [System.IO.Path]::GetFileNameWithoutExtension($filename)
   $script:NodeBin = Join-Path $toolsDir "$nodeDirName\node.exe"
   if (-not (Test-Path $NodeBin)) { Fail "Node install did not produce an executable at $NodeBin" }
@@ -795,7 +838,7 @@ function Expand-Release {
     # safer, this avoids Windows file-lock failures and lets a detached
     # self-update reach its launcher restart handoff without killing
     # the daemon (and therefore its own updater) during extraction.
-    $archiveId = (Get-FileHash -Path $ArchivePath -Algorithm SHA256).Hash.Substring(0, 8).ToLower()
+    $archiveId = (Get-OdFileSha256 -Path $ArchivePath).Substring(0, 8)
     $script:ReleaseDir = Join-Path $releasesDir "$Version-$archiveId"
   }
   $stagingDir = Join-Path $releasesDir (".staging-$Version-" + [System.Guid]::NewGuid().ToString("N"))
