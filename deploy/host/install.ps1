@@ -28,6 +28,14 @@
 .PARAMETER Archive
   Use a local tarball instead of downloading.
 
+.PARAMETER InsecureTls
+  Turn off TLS certificate validation for this installer process only.
+  For corporate networks whose proxy/firewall re-signs github.com (the
+  browser trusts the enterprise root, .NET here does not -> TrustFailure).
+  Also offered as a y/N prompt when preflight detects exactly that. Saved
+  as OD_INSECURE_TLS=1 in config.env so -Update keeps working. Prefer
+  installing the proxy root CA into Windows Trusted Root instead.
+
 .PARAMETER ReleaseUrl
   A direct .tar.gz URL, or a release "asset base" URL (e.g. a GitHub
   releases/download/<tag> folder) containing a release.json manifest.
@@ -144,6 +152,7 @@ param(
   [switch]$Uninstall,
   [switch]$DeleteData,
   [switch]$Force,
+  [switch]$InsecureTls,
   [switch]$Help
 )
 
@@ -183,7 +192,7 @@ if ($Help) {
     Get-Help $PSCommandPath -Full
   } else {
     Write-Host "Open Design host runtime installer (Windows). See deploy/host/README.md for full docs."
-    Write-Host "Flags: -Archive -ReleaseUrl -Sha256 -Port -DataDir -EnvFile -MediaUrl -MediaAppId -MediaUserId -MediaUserRole -IdentityUrl -GoogleClientId -GoogleClientSecret -SessionSecret -NoStart -Update -Start -Stop -Uninstall -DeleteData -Force"
+    Write-Host "Flags: -Archive -ReleaseUrl -Sha256 -Port -DataDir -EnvFile -MediaUrl -MediaAppId -MediaUserId -MediaUserRole -IdentityUrl -GoogleClientId -GoogleClientSecret -SessionSecret -NoStart -Update -Start -Stop -Uninstall -DeleteData -Force -InsecureTls"
   }
   exit 0
 }
@@ -364,6 +373,77 @@ function Write-DownloadLog([string]$Message) {
 # consoles get an in-place byte/percent counter; daemon/log callers only get
 # append-only milestones. All rendering is deliberately isolated from the
 # network operation: a broken console or unwritable log cannot fail a download.
+# ---------------------------------------------------------------------------
+# TLS trust bypass (opt-in). Corporate networks that TLS-inspect github.com
+# present a proxy-signed certificate; the browser trusts it (enterprise
+# root pushed to the browser / user), but .NET in this installer does not
+# -> every github.com fetch dies with TrustFailure while
+# *.githubusercontent.com (not inspected) still works. -InsecureTls (or a
+# "y" at the preflight prompt) turns certificate validation off FOR THIS
+# INSTALLER PROCESS ONLY. Persisted as OD_INSECURE_TLS=1 in config.env so
+# the launcher-driven `-Update` (non-interactive) keeps working.
+# ---------------------------------------------------------------------------
+$script:InsecureTlsActive = $false
+$script:IwrExtra = @{}
+
+function Enable-InsecureTls {
+  if ($script:InsecureTlsActive) { return }
+  $script:InsecureTlsActive = $true
+  if ($PSVersionTable.PSEdition -eq 'Core') {
+    # pwsh 7: Invoke-WebRequest has -SkipCertificateCheck; HttpClientHandler
+    # gets its callback in Invoke-DownloadFile (see New-OdHttpHandler).
+    $script:IwrExtra = @{ SkipCertificateCheck = $true }
+    return
+  }
+  # Windows PowerShell 5.1: one global callback covers Invoke-WebRequest AND
+  # System.Net.Http (both sit on HttpWebRequest/ServicePointManager here).
+  # Compiled C#, not a scriptblock: the callback fires on thread-pool
+  # threads during async downloads where a PowerShell scriptblock cannot
+  # run and would be reported as a validation failure.
+  if (-not ('OdTrustAllCerts' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public static class OdTrustAllCerts {
+  public static bool Validate(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) { return true; }
+  public static void Enable() { ServicePointManager.ServerCertificateValidationCallback = Validate; }
+}
+"@
+  }
+  [OdTrustAllCerts]::Enable()
+}
+
+function New-OdHttpHandler {
+  $handler = [System.Net.Http.HttpClientHandler]::new()
+  if ($script:InsecureTlsActive -and $PSVersionTable.PSEdition -eq 'Core') {
+    $handler.ServerCertificateCustomValidationCallback = [System.Net.Http.HttpClientHandler]::DangerousAcceptAnyServerCertificateValidator
+  }
+  return $handler
+}
+
+# $true when the URL fails specifically because the server certificate is
+# not trusted (WebExceptionStatus.TrustFailure on 5.1; the
+# AuthenticationException chain on pwsh 7) -- as opposed to DNS/connect/
+# timeout, which -InsecureTls cannot help with.
+function Test-TlsTrustFailure {
+  param([string]$Url)
+  try {
+    # Deliberately no @IwrExtra: this is the detector, it must validate.
+    Invoke-WebRequest -Uri $Url -Method Head -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop | Out-Null
+    return $false
+  } catch {
+    $ex = $_.Exception
+    if ($ex -is [System.Net.WebException] -and $ex.Status -eq [System.Net.WebExceptionStatus]::TrustFailure) { return $true }
+    while ($ex) {
+      if ($ex -is [System.Security.Authentication.AuthenticationException]) { return $true }
+      if ($ex.Message -match 'certificate|trust relationship|SSL/TLS secure channel') { return $true }
+      $ex = $ex.InnerException
+    }
+    return $false
+  }
+}
+
 function Invoke-DownloadFile {
   param(
     [Parameter(Mandatory = $true)][string]$Url,
@@ -383,7 +463,7 @@ function Invoke-DownloadFile {
     try {
       Write-DownloadLog "download attempt $attempt/$MaxAttempts`: $Url"
       Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
-      $handler = [System.Net.Http.HttpClientHandler]::new()
+      $handler = New-OdHttpHandler
       $client = [System.Net.Http.HttpClient]::new($handler)
       $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
       $cts = [System.Threading.CancellationTokenSource]::new()
@@ -452,7 +532,7 @@ function Invoke-WebText {
   param([Parameter(Mandatory = $true)][string]$Url, [int]$TimeoutSec = 30)
   for ($attempt = 1; $attempt -le $DownloadMaxAttempts; $attempt++) {
     try {
-      $content = (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop).Content
+      $content = (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop @IwrExtra).Content
       # GitHub release assets (release.json, *.sha256) are served as
       # application/octet-stream. Windows PowerShell 5.1 then hands back
       # .Content as byte[] instead of a string; piping that into
@@ -688,7 +768,7 @@ function Test-PreflightProbe {
   # a probe, not a real download.
   for ($attempt = 1; $attempt -le 2; $attempt++) {
     try {
-      Invoke-WebRequest -Uri $Url -Method Head -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop | Out-Null
+      Invoke-WebRequest -Uri $Url -Method Head -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop @IwrExtra | Out-Null
       return $true
     } catch {
       if ($_.Exception.Response) { return $true }
@@ -703,8 +783,24 @@ function Invoke-PreflightCheck {
   $requiredOk = $true
 
   if (-not $Archive -and -not $ReleaseUrl) {
-    if (Test-PreflightProbe "https://github.com") {
-      Write-Ok "github.com"
+    $githubOk = Test-PreflightProbe "https://github.com"
+    if (-not $githubOk -and -not $InsecureTlsActive -and (Test-TlsTrustFailure "https://github.com")) {
+      Write-Warn "github.com -- chung chi TLS KHONG duoc tin cay (proxy/firewall cong ty dang thay chung chi github.com)."
+      Write-Host "      Cach dung: nho IT cai root CA cua proxy vao Windows (Trusted Root), roi chay lai." -ForegroundColor DarkGray
+      Write-Host "      Cach tam: bo qua kiem tra chung chi TLS cho lan cai nay (chi trong installer)." -ForegroundColor DarkGray
+      $answer = ""
+      if ([Environment]::UserInteractive -and (Test-InteractiveOutput) -and -not [Console]::IsInputRedirected) {
+        $answer = Read-Host "      Bo qua kiem tra chung chi TLS? [y/N]"
+      }
+      if ($answer -match '^(y|yes)$') {
+        Enable-InsecureTls
+        $githubOk = Test-PreflightProbe "https://github.com"
+      } else {
+        Fail "github.com bi thay chung chi TLS. Chay lai voi -InsecureTls de bo qua kiem tra, hoac nho IT cai root CA cua proxy."
+      }
+    }
+    if ($githubOk) {
+      Write-Ok $(if ($InsecureTlsActive) { "github.com (bo qua kiem tra chung chi TLS)" } else { "github.com" })
     } else {
       $requiredOk = $false
       Write-Warn "github.com -- khong ket noi duoc"
@@ -1012,6 +1108,7 @@ function Write-ConfigEnv {
   # version an update just installed, so it never sees the update as
   # applied and the UI banner never clears.
   $lines.Add("OD_APP_VERSION=$Version")
+  if ($InsecureTlsActive) { $lines.Add("OD_INSECURE_TLS=1") }
   if ($confluenceUrl) { $lines.Add("CONFLUENCE_URL=$confluenceUrl") }
   if ($mediaUrl) { $lines.Add("MEDIA_URL=$mediaUrl") }
   if ($mediaAppId) { $lines.Add("MEDIA_APP_ID=$mediaAppId") }
@@ -1894,6 +1991,10 @@ function Invoke-Main {
 
   New-Item -ItemType Directory -Force -Path $OdHome | Out-Null
 
+  if ($InsecureTls -or (Get-ExistingConfigValue "OD_INSECURE_TLS") -eq "1") {
+    Enable-InsecureTls
+    Write-Warn "TLS certificate validation is OFF for this installer run (-InsecureTls / OD_INSECURE_TLS=1)."
+  }
   Invoke-PreflightCheck
   Step1-VerifyPackage
   Step2-EnsureNode

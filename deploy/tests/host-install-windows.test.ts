@@ -141,6 +141,33 @@ test('Windows network preflight probes with HEAD, a 10s budget, and a retry', as
   assert.match(probe, /if \(\$_\.Exception\.Response\) \{ return \$true \}/);
 });
 
+test('Windows installer offers an opt-in TLS trust bypass for proxy-re-signed github.com', async () => {
+  const ps = await source();
+  assert.match(ps, /\[switch\]\$InsecureTls/);
+  // 5.1: compiled C# callback (scriptblocks cannot run on the thread-pool
+  // threads that async HttpClient validation fires on); pwsh 7: -SkipCertificateCheck.
+  assert.match(ps, /public static class OdTrustAllCerts/);
+  assert.match(ps, /ServicePointManager\.ServerCertificateValidationCallback = Validate/);
+  assert.match(ps, /\$script:IwrExtra = @\{ SkipCertificateCheck = \$true \}/);
+  assert.match(ps, /DangerousAcceptAnyServerCertificateValidator/);
+  // Only offered on TrustFailure (not DNS/connect/timeout), interactive prompt, persisted for -Update.
+  const preflight = ps.slice(ps.indexOf('function Invoke-PreflightCheck'), ps.indexOf('function Step1-VerifyPackage'));
+  assert.match(preflight, /Test-TlsTrustFailure "https:\/\/github\.com"/);
+  assert.match(preflight, /Read-Host "\s+Bo qua kiem tra chung chi TLS\? \[y\/N\]"/);
+  assert.match(preflight, /-not \[Console\]::IsInputRedirected/);
+  assert.match(preflight, /Chay lai voi -InsecureTls/);
+  assert.match(ps, /if \(\$InsecureTlsActive\) \{ \$lines\.Add\("OD_INSECURE_TLS=1"\) \}/);
+  assert.match(ps, /\(Get-ExistingConfigValue "OD_INSECURE_TLS"\) -eq "1"/);
+  // Every outbound Invoke-WebRequest honours the pwsh-7 splat.
+  const detector = ps.slice(ps.indexOf('function Test-TlsTrustFailure'), ps.indexOf('function Invoke-DownloadFile'));
+  const outbound = ps
+    .replace(detector, '')
+    .split('\n')
+    .filter((l) => /Invoke-WebRequest -Uri/.test(l) && !/127\.0\.0\.1/.test(l) && !l.trimStart().startsWith('#'));
+  assert.ok(outbound.length >= 2);
+  for (const line of outbound) assert.match(line, /@IwrExtra/, line);
+});
+
 test('Windows config replacement and rollback are atomic and transaction guarded', async () => {
   const ps = await source();
   assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configTemp, \$configPath, \$ConfigBackupPath, \$true\)/);

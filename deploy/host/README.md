@@ -194,6 +194,7 @@ see Update/Rollback/Uninstall below):
 | `-Start` | Start the daemon from the already-installed release and exit. Does not extract/verify/reconfigure anything — for that, use `-Update`. |
 | `-Stop` | Stop the running daemon and exit. |
 | `-Uninstall` | Stop the daemon/launcher, remove the HKCU Run entry, delete `%USERPROFILE%\.open-design`, and exit. Project data is kept unless `-DeleteData` is also given. Prompts for confirmation unless `-Force` is given. |
+| `-InsecureTls` | Turn off TLS certificate validation **for the installer process only**. For corporate networks whose proxy/firewall re-signs `github.com` (browser works, PowerShell fails with `TrustFailure`). The preflight also offers this as a `[y/N]` prompt when it detects exactly that case. Saved as `OD_INSECURE_TLS=1` in `config.env` so `-Update` keeps working. Prefer asking IT to install the proxy root CA into Windows *Trusted Root Certification Authorities* — that fixes PowerShell, Node and the CLIs at once. |
 
 If none of the Media/Identity flags or `--env-file`/`-EnvFile` are given,
 those entries are left out of `config.env` and the installer prints a
