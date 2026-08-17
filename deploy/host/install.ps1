@@ -32,8 +32,9 @@
   Turn off TLS certificate validation for this installer process only.
   For corporate networks whose proxy/firewall re-signs github.com (the
   browser trusts the enterprise root, .NET here does not -> TrustFailure).
-  Also offered as a y/N prompt when preflight detects exactly that. Saved
-  as OD_INSECURE_TLS=1 in config.env so -Update keeps working. Prefer
+  Preflight switches this on by itself when it detects exactly that
+  (TrustFailure on github.com) -- the flag forces it up front. Saved as
+  OD_INSECURE_TLS=1 in config.env so -Update keeps working. Prefer
   installing the proxy root CA into Windows Trusted Root instead.
 
 .PARAMETER ReleaseUrl
@@ -224,6 +225,7 @@ $RequiredNodeMajor = 24
 $HealthTimeout = 60
 $DownloadTimeoutSec = 180
 $DownloadMaxAttempts = 3
+$ProgressBarWidth = 30
 $RestartRequiredExitCode = 75
 # HKCU Run is writable by the current user and is not gated by the Task
 # Scheduler rights/policies that commonly produce Access Denied on managed
@@ -378,9 +380,9 @@ function Write-DownloadLog([string]$Message) {
 # present a proxy-signed certificate; the browser trusts it (enterprise
 # root pushed to the browser / user), but .NET in this installer does not
 # -> every github.com fetch dies with TrustFailure while
-# *.githubusercontent.com (not inspected) still works. -InsecureTls (or a
-# "y" at the preflight prompt) turns certificate validation off FOR THIS
-# INSTALLER PROCESS ONLY. Persisted as OD_INSECURE_TLS=1 in config.env so
+# *.githubusercontent.com (not inspected) still works. -InsecureTls (or the
+# preflight itself, on detecting TrustFailure) turns certificate validation
+# off FOR THIS INSTALLER PROCESS ONLY. Persisted as OD_INSECURE_TLS=1 in config.env so
 # the launcher-driven `-Update` (non-interactive) keeps working.
 # ---------------------------------------------------------------------------
 $script:InsecureTlsActive = $false
@@ -484,7 +486,11 @@ function Invoke-DownloadFile {
         if ($total -and $total -gt 0) {
           $percent = [Math]::Min(100, [int](($received * 100) / $total))
           if ((Test-InteractiveOutput) -and $percent -ne $lastPercent) {
-            try { [Console]::Write("`r      {0,3}%  {1:N1}/{2:N1} MB" -f $percent, ($received / 1MB), ($total / 1MB)) } catch {}
+            # ASCII bar on purpose: Windows PowerShell 5.1 consoles default to
+            # a legacy code page where block-drawing characters render as '?'.
+            $filled = [int][Math]::Floor($percent * $ProgressBarWidth / 100)
+            $bar = ('=' * $filled).PadRight($ProgressBarWidth, '.')
+            try { [Console]::Write("`r      [{0}] {1,3}%  {2:N1}/{3:N1} MB" -f $bar, $percent, ($received / 1MB), ($total / 1MB)) } catch {}
             $lastPercent = $percent
           } else {
             $milestone = [int]([Math]::Floor($percent / 25) * 25)
@@ -785,19 +791,16 @@ function Invoke-PreflightCheck {
   if (-not $Archive -and -not $ReleaseUrl) {
     $githubOk = Test-PreflightProbe "https://github.com"
     if (-not $githubOk -and -not $InsecureTlsActive -and (Test-TlsTrustFailure "https://github.com")) {
-      Write-Warn "github.com -- chung chi TLS KHONG duoc tin cay (proxy/firewall cong ty dang thay chung chi github.com)."
-      Write-Host "      Cach dung: nho IT cai root CA cua proxy vao Windows (Trusted Root), roi chay lai." -ForegroundColor DarkGray
-      Write-Host "      Cach tam: bo qua kiem tra chung chi TLS cho lan cai nay (chi trong installer)." -ForegroundColor DarkGray
-      $answer = ""
-      if ([Environment]::UserInteractive -and (Test-InteractiveOutput) -and -not [Console]::IsInputRedirected) {
-        $answer = Read-Host "      Bo qua kiem tra chung chi TLS? [y/N]"
-      }
-      if ($answer -match '^(y|yes)$') {
-        Enable-InsecureTls
-        $githubOk = Test-PreflightProbe "https://github.com"
-      } else {
-        Fail "github.com bi thay chung chi TLS. Chay lai voi -InsecureTls de bo qua kiem tra, hoac nho IT cai root CA cua proxy."
-      }
+      # Default behaviour (decided 2026-08-17 after the VNPAY office network
+      # hit exactly this): do NOT stop and ask -- the person double-clicking
+      # OpenDesign-Install.cmd cannot fix a corporate proxy anyway. Say what
+      # happened, switch validation off for this installer process, carry on.
+      # Certificate validation stays ON on every network where github.com's
+      # real certificate is served (this branch is only reached on TrustFailure).
+      Write-Warn "github.com -- chung chi TLS bi proxy/firewall cong ty thay the; bo qua kiem tra chung chi cho lan cai nay (chi trong installer)."
+      Write-Host "      Sua tan goc: nho IT cai root CA cua proxy vao Windows (Trusted Root Certification Authorities)." -ForegroundColor DarkGray
+      Enable-InsecureTls
+      $githubOk = Test-PreflightProbe "https://github.com"
     }
     if ($githubOk) {
       Write-Ok $(if ($InsecureTlsActive) { "github.com (bo qua kiem tra chung chi TLS)" } else { "github.com" })

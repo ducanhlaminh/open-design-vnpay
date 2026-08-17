@@ -120,7 +120,6 @@ jobs:
           path: |
             ${{ runner.temp }}/out/*.tar.gz
             ${{ runner.temp }}/out/*.tar.gz.sha256
-            ${{ runner.temp }}/out/*.cmd
             ${{ runner.temp }}/out/*.zip
           retention-days: 3
           if-no-files-found: error
@@ -491,10 +490,10 @@ jobs:
           set -euo pipefail
           if gh release view "${{ steps.tag.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release upload "${{ steps.tag.outputs.tag }}" --repo "${{ github.repository }}" --clobber \
-              *.tar.gz *.tar.gz.sha256 *.cmd *.zip release.json
+              *.tar.gz *.tar.gz.sha256 *.zip release.json
           else
             gh release create "${{ steps.tag.outputs.tag }}" --repo "${{ github.repository }}" \
               --title "Open Design host runtime ${{ needs.build.outputs.version }}" \
-              --notes "Host runtime (daemon + static web export, no Docker/Electron) for darwin-arm64, darwin-x64, linux-x64, win32-x64. macOS: download OpenDesign-macOS-Installer.zip and double-click OpenDesign-Install.command (first time: right-click → Open). Windows: download and double-click OpenDesign-Install.cmd. Linux/terminal: curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ steps.tag.outputs.tag }}/deploy/host/install.sh -o install.sh && bash install.sh" \
-              *.tar.gz *.tar.gz.sha256 *.cmd *.zip release.json
+              --notes "Host runtime (daemon + static web export, no Docker/Electron) for darwin-arm64, darwin-x64, linux-x64, win32-x64. macOS: download OpenDesign-macOS-Installer.zip and double-click OpenDesign-Install.command (first time: right-click → Open). Windows: download OpenDesign-Windows-Installer.zip, unzip, double-click OpenDesign-Install.cmd. Linux/terminal: curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ steps.tag.outputs.tag }}/deploy/host/install.sh -o install.sh && bash install.sh" \
+              *.tar.gz *.tar.gz.sha256 *.zip release.json
           fi

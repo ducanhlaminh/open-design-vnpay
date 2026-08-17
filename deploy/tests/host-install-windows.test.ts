@@ -24,7 +24,9 @@ test('Windows downloads use bounded retries, timeout, and partial-file promotion
 test('Windows download progress is interactive-only and logging is append-only/best-effort', async () => {
   const ps = await source();
   assert.match(ps, /return -not \[Console\]::IsOutputRedirected/);
-  assert.match(ps, /\[Console\]::Write\("`r\s+\{0,3\}%/);
+  assert.match(ps, /\$ProgressBarWidth = 30/);
+  assert.match(ps, /\$bar = \('=' \* \$filled\)\.PadRight\(\$ProgressBarWidth, '\.'\)/);
+  assert.match(ps, /\[Console\]::Write\("`r\s+\[\{0\}\] \{1,3\}%/);
   assert.match(ps, /Add-Content -Path \$script:ProgressLogPath/);
   assert.match(ps, /Download telemetry is best-effort and must never affect installation/);
 });
@@ -103,6 +105,13 @@ test('Windows ships double-click command files for install, update, start, and s
   assert.match(commandFiles.find(({ name }) => name === 'stop.cmd')!.body, /-Stop/);
   assert.match(ps, /function Install-OdCommandFiles/);
   assert.match(build, /OpenDesign-Install\.cmd/);
+  // Release page ships ONE Windows zip (counterpart of OpenDesign-macOS-Installer.zip),
+  // no loose OpenDesign-*.cmd assets.
+  assert.match(build, /OpenDesign-Windows-Installer\.zip/);
+  assert.doesNotMatch(build, /"\$\{OUT_DIR\}\/OpenDesign-Install\.cmd"/);
+  const workflow = await readFile(join(repoRoot, '.github/workflows/release-host-runtime.yml'), 'utf8');
+  assert.doesNotMatch(workflow, /out\/\*\.cmd/);
+  assert.match(workflow, /OpenDesign-Windows-Installer\.zip, unzip/);
 });
 
 test('Windows release.json lookup decodes octet-stream bodies (PowerShell 5.1 returns byte[])', async () => {
@@ -141,7 +150,7 @@ test('Windows network preflight probes with HEAD, a 10s budget, and a retry', as
   assert.match(probe, /if \(\$_\.Exception\.Response\) \{ return \$true \}/);
 });
 
-test('Windows installer offers an opt-in TLS trust bypass for proxy-re-signed github.com', async () => {
+test('Windows installer auto-bypasses TLS trust only when github.com is proxy-re-signed', async () => {
   const ps = await source();
   assert.match(ps, /\[switch\]\$InsecureTls/);
   // 5.1: compiled C# callback (scriptblocks cannot run on the thread-pool
@@ -153,9 +162,10 @@ test('Windows installer offers an opt-in TLS trust bypass for proxy-re-signed gi
   // Only offered on TrustFailure (not DNS/connect/timeout), interactive prompt, persisted for -Update.
   const preflight = ps.slice(ps.indexOf('function Invoke-PreflightCheck'), ps.indexOf('function Step1-VerifyPackage'));
   assert.match(preflight, /Test-TlsTrustFailure "https:\/\/github\.com"/);
-  assert.match(preflight, /Read-Host "\s+Bo qua kiem tra chung chi TLS\? \[y\/N\]"/);
-  assert.match(preflight, /-not \[Console\]::IsInputRedirected/);
-  assert.match(preflight, /Chay lai voi -InsecureTls/);
+  // Default: auto-bypass on TrustFailure (no prompt), validation stays on elsewhere.
+  const trustBranch = preflight.slice(preflight.indexOf('Test-TlsTrustFailure "https://github.com"'), preflight.indexOf('if ($githubOk)'));
+  assert.match(trustBranch, /Enable-InsecureTls/);
+  assert.doesNotMatch(trustBranch, /Read-Host|Fail "/);
   assert.match(ps, /if \(\$InsecureTlsActive\) \{ \$lines\.Add\("OD_INSECURE_TLS=1"\) \}/);
   assert.match(ps, /\(Get-ExistingConfigValue "OD_INSECURE_TLS"\) -eq "1"/);
   // Every outbound Invoke-WebRequest honours the pwsh-7 splat.

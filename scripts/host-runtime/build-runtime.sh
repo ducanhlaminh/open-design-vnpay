@@ -272,10 +272,27 @@ if [ "$PLATFORM" = "win32-x64" ]; then
   for command_file in install.cmd update.cmd start.cmd stop.cmd; do
     cp "${WORKSPACE_ROOT}/deploy/host/${command_file}" "${STAGE_DIR}/${command_file}"
   done
-  cp "${WORKSPACE_ROOT}/deploy/host/install.cmd" "${OUT_DIR}/OpenDesign-Install.cmd"
-  cp "${WORKSPACE_ROOT}/deploy/host/update.cmd" "${OUT_DIR}/OpenDesign-Update.cmd"
-  cp "${WORKSPACE_ROOT}/deploy/host/start.cmd" "${OUT_DIR}/OpenDesign-Start.cmd"
-  cp "${WORKSPACE_ROOT}/deploy/host/stop.cmd" "${OUT_DIR}/OpenDesign-Stop.cmd"
+  # Windows double-click entry points, shipped as ONE zip (the counterpart of
+  # OpenDesign-macOS-Installer.zip below) so the release page has exactly two
+  # installer downloads: one per OS. Built on windows-latest under Git Bash,
+  # where `zip` is usually absent -- fall back to 7z, then Compress-Archive.
+  WIN_CMD_STAGE="${OUT_DIR}/.win-commands"
+  rm -rf "$WIN_CMD_STAGE"
+  mkdir -p "$WIN_CMD_STAGE"
+  cp "${WORKSPACE_ROOT}/deploy/host/install.cmd" "${WIN_CMD_STAGE}/OpenDesign-Install.cmd"
+  cp "${WORKSPACE_ROOT}/deploy/host/update.cmd" "${WIN_CMD_STAGE}/OpenDesign-Update.cmd"
+  cp "${WORKSPACE_ROOT}/deploy/host/start.cmd" "${WIN_CMD_STAGE}/OpenDesign-Start.cmd"
+  cp "${WORKSPACE_ROOT}/deploy/host/stop.cmd" "${WIN_CMD_STAGE}/OpenDesign-Stop.cmd"
+  WIN_ZIP="${OUT_DIR}/OpenDesign-Windows-Installer.zip"
+  rm -f "$WIN_ZIP"
+  if command -v zip >/dev/null 2>&1; then
+    (cd "$WIN_CMD_STAGE" && zip -X -q "$WIN_ZIP" OpenDesign-Install.cmd OpenDesign-Update.cmd OpenDesign-Start.cmd OpenDesign-Stop.cmd)
+  elif command -v 7z >/dev/null 2>&1; then
+    (cd "$WIN_CMD_STAGE" && 7z a -tzip -bso0 -bsp0 "$WIN_ZIP" OpenDesign-Install.cmd OpenDesign-Update.cmd OpenDesign-Start.cmd OpenDesign-Stop.cmd)
+  else
+    powershell.exe -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$WIN_CMD_STAGE")\*.cmd' -DestinationPath '$(cygpath -w "$WIN_ZIP")' -Force"
+  fi
+  rm -rf "$WIN_CMD_STAGE"
 fi
 
 # macOS double-click entry points (the .command counterparts of the Windows
