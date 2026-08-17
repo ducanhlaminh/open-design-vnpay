@@ -254,6 +254,7 @@ $script:ArchiveShaHint = ""
 $script:Platform = ""
 $script:StageName = ""
 $script:Version = ""
+$script:LastHealthVersion = ""
 $script:NodeBin = ""
 $script:ReleaseDir = ""
 $script:PrevCurrent = ""
@@ -1280,9 +1281,55 @@ function Stop-OdService {
   Remove-Item -Force $pidFile -ErrorAction SilentlyContinue
 }
 
+# A daemon we did not start (an older install whose pid file is gone, a
+# dev daemon, a survivor of a manual folder delete) can still be LISTENING
+# on the port. Seen 2026-08-17 on a re-used PC: install.ps1 0.8.39 started
+# its daemon, the health check hit the OLD 0.8.25 daemon (which answered
+# /api/health fine but 404'd "/" because its release folder was gone),
+# and the install reported success against a stale process. Only a
+# reboot cleared it. So: before starting, find whoever listens on the
+# port; if it is another Open Design daemon (node.exe answering our
+# /api/health shape) stop it, if it is something else fail loudly.
+# netstat, not Get-NetTCPConnection: the latter is a script/cdxml module
+# that fails to auto-load when powershell.exe inherits a pwsh PSModulePath.
+function Get-PortListenerPids {
+  param([int]$PortNum)
+  $pids = @()
+  try {
+    $lines = & netstat.exe -ano -p tcp 2>$null | Where-Object { $_ -match "^\s*TCP\s+\S+:$PortNum\s+\S+\s+LISTENING\s+(\d+)\s*$" }
+    foreach ($line in $lines) {
+      if ($line -match "LISTENING\s+(\d+)\s*$") { $pids += [int]$Matches[1] }
+    }
+  } catch {}
+  return ($pids | Sort-Object -Unique)
+}
+
+function Stop-StalePortOwner {
+  param([int]$PortNum)
+  foreach ($ownerPid in (Get-PortListenerPids -PortNum $PortNum)) {
+    if ($ownerPid -le 0 -or $ownerPid -eq $PID) { continue }
+    $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+    if (-not $proc) { continue }
+    $health = $null
+    try { $health = Invoke-RestMethod -Uri "http://127.0.0.1:$PortNum/api/health" -TimeoutSec 3 -ErrorAction Stop } catch {}
+    $isOpenDesign = ($null -ne $health) -and ($health.ok -eq $true) -and ($null -ne $health.PSObject.Properties['version'])
+    if ($isOpenDesign -and $proc.ProcessName -match '^node') {
+      Write-Warn "Port $PortNum is held by another Open Design daemon (pid $ownerPid, version $($health.version)) -- stopping it"
+      try { Stop-Process -Id $ownerPid -Force -ErrorAction Stop } catch {
+        try { & taskkill.exe /PID $ownerPid /T /F 2>$null | Out-Null } catch {}
+      }
+      $waited = 0
+      while ($waited -lt 10 -and (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 500; $waited++ }
+    } else {
+      Fail "Port $PortNum is already in use by $($proc.ProcessName) (pid $ownerPid) -- stop it, or install with -Port <other>"
+    }
+  }
+}
+
 function Start-OdService {
   Stop-OdService
   Start-Sleep -Seconds 1
+  Stop-StalePortOwner -PortNum $ResolvedPort
   $logsDir = Join-Path $OdHome "logs"
   New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
   $outLog = Join-Path $logsDir "open-design.out.log"
@@ -1427,12 +1474,22 @@ function Request-LauncherUpdateRestart {
 }
 
 function Wait-OdHealth {
-  param([int]$PortNum, [int]$Timeout = $HealthTimeout)
+  param([int]$PortNum, [int]$Timeout = $HealthTimeout, [string]$ExpectedVersion = "")
   $elapsed = 0
+  $script:LastHealthVersion = ""
   while ($elapsed -lt $Timeout) {
     try {
       $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$PortNum/api/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-      if ($resp.StatusCode -eq 200) { return $true }
+      if ($resp.StatusCode -eq 200) {
+        if (-not $ExpectedVersion) { return $true }
+        # "Healthy" must mean OUR daemon: a stale one on the same port
+        # answers 200 too (see Stop-StalePortOwner). Compare the version.
+        $body = $null
+        try { $body = ([string]$resp.Content) | ConvertFrom-Json } catch {}
+        $seen = if ($body -and $body.PSObject.Properties['version']) { [string]$body.version } else { "" }
+        $script:LastHealthVersion = $seen
+        if ($seen -eq $ExpectedVersion) { return $true }
+      }
     } catch {
       # Not up yet -- mirrors install.sh's `|| echo 000`.
     }
@@ -1788,11 +1845,14 @@ function Step5-StartAndHealthCheck {
   }
   Start-OdService
   Write-Step "Waiting for health check (up to $HealthTimeout s)..."
-  if (Wait-OdHealth -PortNum $ResolvedPort -Timeout $HealthTimeout) {
-    Write-Ok "Daemon is healthy on port $ResolvedPort"
+  if (Wait-OdHealth -PortNum $ResolvedPort -Timeout $HealthTimeout -ExpectedVersion $Version) {
+    Write-Ok "Daemon $Version is healthy on port $ResolvedPort"
     Complete-InstallationTransaction
     [void](Start-OdLauncher)
   } else {
+    if ($LastHealthVersion -and $LastHealthVersion -ne $Version) {
+      Write-ErrorMsg "Port $ResolvedPort answers as Open Design $LastHealthVersion, not the just-installed $Version -- another daemon is holding the port."
+    }
     Invoke-Rollback -Reason "Health check failed"
     throw [System.InvalidOperationException]::new("daemon did not become healthy after activating version $Version")
   }

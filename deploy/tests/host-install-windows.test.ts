@@ -178,6 +178,25 @@ test('Windows installer auto-bypasses TLS trust only when github.com is proxy-re
   for (const line of outbound) assert.match(line, /@IwrExtra/, line);
 });
 
+test('Windows start evicts a stale Open Design daemon on the port and health-checks the installed version', async () => {
+  const ps = await source();
+  // 2026-08-17: install "succeeded" against an old 0.8.25 daemon still
+  // listening on 7456 (health 200, "/" 404); only a reboot fixed it.
+  const start = ps.slice(ps.indexOf('function Start-OdService'), ps.indexOf('function Save-UpdateTransaction'));
+  assert.match(start, /Stop-StalePortOwner -PortNum \$ResolvedPort/);
+  assert.match(ps, /netstat\.exe -ano -p tcp/);
+  const evict = ps.slice(ps.indexOf('function Stop-StalePortOwner'), ps.indexOf('function Start-OdService'));
+  assert.match(evict, /\/api\/health/);
+  assert.match(evict, /\$proc\.ProcessName -match '\^node'/);
+  assert.match(evict, /Fail "Port \$PortNum is already in use by/);
+  const healthStart = ps.indexOf('function Wait-OdHealth');
+  const health = ps.slice(healthStart, ps.indexOf('\nfunction ', healthStart + 1));
+  assert.match(health, /\[string\]\$ExpectedVersion = ""/);
+  assert.match(health, /if \(\$seen -eq \$ExpectedVersion\) \{ return \$true \}/);
+  const step5 = ps.slice(ps.indexOf('function Step5-StartAndHealthCheck'), ps.indexOf('# Step 6/6'));
+  assert.match(step5, /Wait-OdHealth -PortNum \$ResolvedPort -Timeout \$HealthTimeout -ExpectedVersion \$Version/);
+});
+
 test('Windows config replacement and rollback are atomic and transaction guarded', async () => {
   const ps = await source();
   assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configTemp, \$configPath, \$ConfigBackupPath, \$true\)/);
