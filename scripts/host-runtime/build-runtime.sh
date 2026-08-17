@@ -270,7 +270,7 @@ if [ "$PLATFORM" = "win32-x64" ]; then
   cp "${WORKSPACE_ROOT}/deploy/host/install.ps1" "${STAGE_DIR}/install.ps1"
 fi
 
-# Bundled env defaults (MEDIA_*/IDENTITY_URL/GOOGLE_CLIENT_*/SESSION_SECRET)
+# Bundled env defaults (CONFLUENCE_URL/MEDIA_*/IDENTITY_URL/GOOGLE_CLIENT_*/SESSION_SECRET)
 # -- ONLY written when the calling environment actually provides them (CI,
 # from GitHub Actions secrets; unset for a plain local/dev build, which
 # gets no bundled file and behaves exactly as before). install.sh/
@@ -280,9 +280,10 @@ fi
 # despite the repo being public (see release-host-runtime.yml) -- it is
 # NOT a default other forks/deployments should copy without the same
 # tradeoff being intentional there too.
-if [ -n "${MEDIA_URL:-}" ]; then
-  log "bundling host-env.template (MEDIA_URL is set)"
+if [ -n "${CONFLUENCE_URL:-}" ] || [ -n "${MEDIA_URL:-}" ]; then
+  log "bundling host-env.template"
   {
+    [ -n "${CONFLUENCE_URL:-}" ] && printf 'CONFLUENCE_URL=%s\n' "$CONFLUENCE_URL"
     [ -n "${MEDIA_URL:-}" ] && printf 'MEDIA_URL=%s\n' "$MEDIA_URL"
     [ -n "${MEDIA_APP_ID:-}" ] && printf 'MEDIA_APP_ID=%s\n' "$MEDIA_APP_ID"
     [ -n "${MEDIA_USER_ID:-}" ] && printf 'MEDIA_USER_ID=%s\n' "$MEDIA_USER_ID"

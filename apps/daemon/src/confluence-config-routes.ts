@@ -3,7 +3,12 @@
 // generic `/api/mcp/*` routes in mcp-routes.ts.
 import type { Express } from 'express';
 
-import { readConfluenceConfig, testConfluenceConnection, writeConfluenceConfig } from './confluence-config.js';
+import {
+  configuredConfluenceBase,
+  readConfluenceConfig,
+  testConfluenceConnection,
+  writeConfluenceConfig,
+} from './confluence-config.js';
 import type { RouteDeps } from './server-context.js';
 
 export interface RegisterConfluenceConfigRoutesDeps extends RouteDeps<'http' | 'paths'> {}
@@ -18,7 +23,7 @@ export function registerConfluenceConfigRoutes(app: Express, ctx: RegisterConflu
     }
     try {
       const cfg = await readConfluenceConfig(RUNTIME_DATA_DIR);
-      res.json({ base: cfg?.base ?? '', hasToken: Boolean(cfg?.token) });
+      res.json({ base: configuredConfluenceBase(), hasToken: Boolean(cfg?.token) });
     } catch (err: any) {
       res.status(500).json({ error: String(err && err.message ? err.message : err) });
     }
@@ -29,8 +34,13 @@ export function registerConfluenceConfigRoutes(app: Express, ctx: RegisterConflu
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
     try {
-      const cfg = await writeConfluenceConfig(RUNTIME_DATA_DIR, req.body);
-      res.json({ base: cfg?.base ?? '', hasToken: Boolean(cfg?.token) });
+      const base = configuredConfluenceBase();
+      if (!base) return res.status(503).json({ error: 'CONFLUENCE_URL is not configured' });
+      const cfg = await writeConfluenceConfig(
+        RUNTIME_DATA_DIR,
+        req.body?.clear === true ? { base: '', token: '' } : { ...req.body, base },
+      );
+      res.json({ base, hasToken: Boolean(cfg?.token) });
     } catch (err: any) {
       res.status(400).json({ error: String(err && err.message ? err.message : err) });
     }
@@ -41,7 +51,9 @@ export function registerConfluenceConfigRoutes(app: Express, ctx: RegisterConflu
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
     try {
-      const result = await testConfluenceConnection(RUNTIME_DATA_DIR, req.body);
+      const base = configuredConfluenceBase();
+      if (!base) return res.status(503).json({ error: 'CONFLUENCE_URL is not configured' });
+      const result = await testConfluenceConnection(RUNTIME_DATA_DIR, { ...req.body, base });
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: String(err && err.message ? err.message : err) });

@@ -465,7 +465,7 @@ load_env_file() {
     esac
   fi
   [ -f "$ef_path" ] || fail "--env-file not found: ${ef_path}"
-  ENV_FILE_VARS="$(grep -E '^(MEDIA_URL|MEDIA_APP_ID|MEDIA_USER_ID|MEDIA_USER_ROLE|IDENTITY_URL|GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|SESSION_SECRET|OD_PORT|OD_DATA_DIR)=' "$ef_path" || true)"
+  ENV_FILE_VARS="$(grep -E '^(CONFLUENCE_URL|MEDIA_URL|MEDIA_APP_ID|MEDIA_USER_ID|MEDIA_USER_ROLE|IDENTITY_URL|GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|SESSION_SECRET|OD_PORT|OD_DATA_DIR)=' "$ef_path" || true)"
 }
 
 env_file_value() {
@@ -498,6 +498,7 @@ write_config_env() {
 
   PORT="$(resolve_cfg "$OPT_PORT" OD_PORT)"; PORT="${PORT:-$DEFAULT_PORT}"
   DATA_DIR="$(resolve_cfg "$OPT_DATA_DIR" OD_DATA_DIR)"; DATA_DIR="${DATA_DIR:-$DEFAULT_DATA_DIR}"
+  confluence_url="$(resolve_cfg "" CONFLUENCE_URL)"
   media_url="$(resolve_cfg "$OPT_MEDIA_URL" MEDIA_URL)"
   media_app_id="$(resolve_cfg "$OPT_MEDIA_APP_ID" MEDIA_APP_ID)"
   media_user_id="$(resolve_cfg "$OPT_MEDIA_USER_ID" MEDIA_USER_ID)"
@@ -529,6 +530,7 @@ write_config_env() {
     # version the update just installed, so it never sees the update as
     # applied and the UI banner never clears.
     echo "OD_APP_VERSION=${VERSION}"
+    [ -n "$confluence_url" ] && echo "CONFLUENCE_URL=${confluence_url}"
     [ -n "$media_url" ] && echo "MEDIA_URL=${media_url}"
     [ -n "$media_app_id" ] && echo "MEDIA_APP_ID=${media_app_id}"
     [ -n "$media_user_id" ] && echo "MEDIA_USER_ID=${media_user_id}"

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-// WP8 — Confluence credential (base URL + PAT) gets its own small Settings
+// WP8 — Confluence PAT gets its own small Settings
 // section, independent of the generic external-MCP config panel. Covers:
 // hydration from GET, the "saved" state never showing a real token value,
 // and Save issuing a PUT with the typed fields.
@@ -39,39 +39,36 @@ describe('ConfluenceCredentialSection', () => {
 
     render(<ConfluenceCredentialSection />);
 
-    const baseInput = (await screen.findByTestId('confluence-config-base-input')) as HTMLInputElement;
-    await waitFor(() => expect(baseInput.value).toBe('https://wiki.example.test'));
+    const tokenInput = (await screen.findByTestId('confluence-config-token-input')) as HTMLInputElement;
+    await waitFor(() => expect(tokenInput.disabled).toBe(false));
+    expect(screen.queryByTestId('confluence-config-base-input')).toBeNull();
 
     // Saved badge shows, but the password field itself stays empty — the
     // real token is never sent back by the daemon and never appears here.
     expect(screen.getByText('Saved')).toBeTruthy();
-    const tokenInput = screen.getByTestId('confluence-config-token-input') as HTMLInputElement;
     expect(tokenInput.type).toBe('password');
     expect(tokenInput.value).toBe('');
     // No literal secret value leaked into the DOM anywhere.
     expect(document.body.textContent).not.toMatch(/hasToken|real-token|actual-secret/);
   });
 
-  it('Save PUTs the typed base + token, then clears the token field', async () => {
+  it('Save PUTs only the token, then clears the token field', async () => {
     fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
       if (url === '/api/confluence-config' && (!init || !init.method)) {
-        return jsonResponse({ base: '', hasToken: false });
+        return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: false });
       }
       if (url === '/api/confluence-config' && init?.method === 'PUT') {
         const body = JSON.parse(String(init.body));
-        expect(body).toEqual({ base: 'https://new.example.test', token: 'brand-new-token' });
-        return jsonResponse({ base: 'https://new.example.test', hasToken: true });
+        expect(body).toEqual({ token: 'brand-new-token' });
+        return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: true });
       }
       throw new Error(`unexpected fetch ${String(url)} ${init?.method ?? 'GET'}`);
     });
 
     render(<ConfluenceCredentialSection />);
 
-    const baseInput = (await screen.findByTestId('confluence-config-base-input')) as HTMLInputElement;
-    await waitFor(() => expect(baseInput.disabled).toBe(false));
-
-    fireEvent.change(baseInput, { target: { value: 'https://new.example.test' } });
-    const tokenInput = screen.getByTestId('confluence-config-token-input') as HTMLInputElement;
+    const tokenInput = (await screen.findByTestId('confluence-config-token-input')) as HTMLInputElement;
+    await waitFor(() => expect(tokenInput.disabled).toBe(false));
     fireEvent.change(tokenInput, { target: { value: 'brand-new-token' } });
 
     fireEvent.click(screen.getByTestId('confluence-config-save'));
@@ -80,20 +77,18 @@ describe('ConfluenceCredentialSection', () => {
     await waitFor(() => expect((screen.getByTestId('confluence-config-token-input') as HTMLInputElement).value).toBe(''));
   });
 
-  it('defaults the base URL to wiki.servicehub.vn when nothing is saved yet, and links to the token-creation page', async () => {
+  it('uses the daemon-configured URL for the token link without exposing a URL field', async () => {
     fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
       if (url === '/api/confluence-config' && (!init || !init.method)) {
-        return jsonResponse({ base: '', hasToken: false });
+        return jsonResponse({ base: 'https://wiki.servicehub.vn', hasToken: false });
       }
       throw new Error(`unexpected fetch ${String(url)} ${init?.method ?? 'GET'}`);
     });
 
     render(<ConfluenceCredentialSection />);
 
-    const baseInput = (await screen.findByTestId('confluence-config-base-input')) as HTMLInputElement;
-    await waitFor(() => expect(baseInput.value).toBe('https://wiki.servicehub.vn'));
-
-    const link = screen.getByTestId('confluence-config-token-link') as HTMLAnchorElement;
+    const link = (await screen.findByTestId('confluence-config-token-link')) as HTMLAnchorElement;
+    expect(screen.queryByTestId('confluence-config-base-input')).toBeNull();
     expect(link.href).toBe('https://wiki.servicehub.vn/plugins/personalaccesstokens/usertokens.action');
     expect(link.target).toBe('_blank');
   });
@@ -107,7 +102,7 @@ describe('ConfluenceCredentialSection', () => {
     });
 
     render(<ConfluenceCredentialSection />);
-    await waitFor(() => expect((screen.getByTestId('confluence-config-base-input') as HTMLInputElement).disabled).toBe(false));
+    await waitFor(() => expect((screen.getByTestId('confluence-config-token-input') as HTMLInputElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: 'Hướng dẫn lấy token' }));
 
     const dialog = screen.getByRole('dialog', { name: 'Hướng dẫn lấy Confluence Access Token' });
@@ -146,7 +141,7 @@ describe('ConfluenceCredentialSection', () => {
       }
       if (url === '/api/confluence-config/test' && init?.method === 'POST') {
         const body = JSON.parse(String(init.body));
-        expect(body).toEqual({ base: 'https://wiki.servicehub.vn', token: 'pasted-token' });
+        expect(body).toEqual({ token: 'pasted-token' });
         return jsonResponse({ ok: true, displayName: 'Alice' });
       }
       throw new Error(`unexpected fetch ${String(url)} ${init?.method ?? 'GET'}`);

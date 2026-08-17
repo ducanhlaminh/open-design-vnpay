@@ -650,6 +650,7 @@ function Expand-Release {
 # -EnvFile (url|path) -> whitelisted KEY=VALUE lines only, never invoked as
 # arbitrary script -- same whitelist as install.sh's load_env_file().
 $OdEnvFileAllowedKeys = @(
+  'CONFLUENCE_URL',
   'MEDIA_URL', 'MEDIA_APP_ID', 'MEDIA_USER_ID', 'MEDIA_USER_ROLE',
   'IDENTITY_URL', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'SESSION_SECRET',
   'OD_PORT', 'OD_DATA_DIR'
@@ -728,6 +729,7 @@ function Write-ConfigEnv {
   $resolvedDataDir = Resolve-Cfg $DataDir "OD_DATA_DIR"
   if (-not $resolvedDataDir) { $resolvedDataDir = $DefaultDataDir }
 
+  $confluenceUrl = Resolve-Cfg "" "CONFLUENCE_URL"
   $mediaUrl = Resolve-Cfg $MediaUrl "MEDIA_URL"
   $mediaAppId = Resolve-Cfg $MediaAppId "MEDIA_APP_ID"
   $mediaUserId = Resolve-Cfg $MediaUserId "MEDIA_USER_ID"
@@ -765,6 +767,7 @@ function Write-ConfigEnv {
   # version an update just installed, so it never sees the update as
   # applied and the UI banner never clears.
   $lines.Add("OD_APP_VERSION=$Version")
+  if ($confluenceUrl) { $lines.Add("CONFLUENCE_URL=$confluenceUrl") }
   if ($mediaUrl) { $lines.Add("MEDIA_URL=$mediaUrl") }
   if ($mediaAppId) { $lines.Add("MEDIA_APP_ID=$mediaAppId") }
   if ($mediaUserId) { $lines.Add("MEDIA_USER_ID=$mediaUserId") }

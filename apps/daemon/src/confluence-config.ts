@@ -5,8 +5,10 @@
 // prd-docs/dr-docs stages now only fetch Confluence, deterministically
 // (no agent), via the creds this module resolves.
 //
-// Storage: <dataDir>/confluence-config.json holding either `{ base, token }`
-// or `null`. Mirrors mcp-config.ts's atomic write-then-rename pattern
+// Storage: <dataDir>/confluence-config.json still holds `{ base, token }` for
+// backward compatibility, but every live route resolves the authoritative
+// host from CONFLUENCE_URL and only treats the file as the per-user PAT store.
+// Mirrors mcp-config.ts's atomic write-then-rename pattern
 // (mkdir -> write tmp -> rename) so a crash mid-write never corrupts the
 // file.
 
@@ -115,6 +117,13 @@ function normalizeBase(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, '');
   if (!trimmed) return '';
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+/** Confluence host is deployment configuration, never user input. Keeping
+ * it behind one resolver prevents a browser request or a stale per-user
+ * config file from redirecting PAT-authenticated calls to another host. */
+export function configuredConfluenceBase(env: NodeJS.ProcessEnv = process.env): string {
+  return normalizeBase(env.CONFLUENCE_URL ?? '');
 }
 
 export interface ConfluenceTestResult {

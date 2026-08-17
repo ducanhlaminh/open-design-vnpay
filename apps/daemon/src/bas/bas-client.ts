@@ -34,7 +34,7 @@ import type {
 } from '@open-design/contracts';
 
 import { readMcpConfig } from '../mcp-config.js';
-import { readConfluenceConfig } from '../confluence-config.js';
+import { configuredConfluenceBase, readConfluenceConfig } from '../confluence-config.js';
 import { renderDrawioPages, splitMxfilePages } from './drawio-render.js';
 import { htmlToMarkdown } from './html-to-markdown.js';
 
@@ -263,20 +263,19 @@ export interface ConfluenceCreds {
 }
 
 /**
- * Confluence PAT cho picker tìm trang — hai nguồn, ưu tiên theo thứ tự:
- *   ① per-user: kho credential riêng <dataDir>/confluence-config.json (WP8 —
- *      Settings → Integrations → Confluence; ĐỘC LẬP với external-MCP config,
- *      migrate một lần từ row `mcp-atlassian` cũ nếu có, xem confluence-config.ts);
- *   ② fallback: env của daemon (CONFLUENCE_URL/_PERSONAL_TOKEN — deploy-wide).
+ * Confluence host luôn đến từ CONFLUENCE_URL. PAT ưu tiên kho per-user
+ * <dataDir>/confluence-config.json, rồi mới fallback sang
+ * CONFLUENCE_PERSONAL_TOKEN của daemon.
  */
 export async function resolveConfluenceCreds(dataDir: string): Promise<ConfluenceCreds | null> {
+  const base = configuredConfluenceBase();
+  if (!base) return null;
   try {
     const cfg = await readConfluenceConfig(dataDir);
-    if (cfg) return cfg;
+    if (cfg?.token) return { base, token: cfg.token };
   } catch {
     /* confluence-config unreadable — fall through to env */
   }
-  const base = (process.env.CONFLUENCE_URL ?? '').trim().replace(/\/+$/, '');
   const token = (process.env.CONFLUENCE_PERSONAL_TOKEN ?? '').trim();
   return base && token ? { base, token } : null;
 }

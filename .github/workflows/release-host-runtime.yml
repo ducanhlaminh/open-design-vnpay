@@ -97,6 +97,7 @@ jobs:
         # login. Deliberate for this repo despite being public -- see the
         # comment in build-runtime.sh before copying this pattern elsewhere.
         env:
+          CONFLUENCE_URL: https://wiki.servicehub.vn
           MEDIA_URL: ${{ secrets.OD_MEDIA_URL }}
           MEDIA_APP_ID: ${{ secrets.OD_MEDIA_APP_ID }}
           MEDIA_USER_ID: ${{ secrets.OD_MEDIA_USER_ID }}

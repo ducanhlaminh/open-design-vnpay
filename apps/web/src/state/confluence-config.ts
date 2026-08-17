@@ -1,8 +1,8 @@
 // Web client for the daemon's Confluence credential endpoints.
 //
 // Independent of the generic external-MCP config (`state/mcp.ts`) — WP8
-// removed the `mcp-atlassian` MCP server; the Confluence base URL + Personal
-// Access Token now live in their own store (`<dataDir>/confluence-config.json`).
+// removed the `mcp-atlassian` MCP server; the Personal Access Token lives in
+// its own store while the Confluence base URL is fixed by CONFLUENCE_URL.
 // `GET /api/confluence-config` never returns the real token, only whether one
 // is saved (`hasToken`).
 

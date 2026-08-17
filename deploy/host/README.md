@@ -126,7 +126,7 @@ data under `~/od-data/open-design`), or under `%USERPROFILE%` on Windows
 | `--sha256 <hex>` | Expected sha256 of the tarball — overrides any discovered `.sha256`/`release.json` entry. |
 | `--port <n>` | Daemon port (default `7456`). |
 | `--data-dir <path>` | `OD_DATA_DIR` (default `$HOME/od-data/open-design`). |
-| `--env-file <url\|path>` | KEY=VALUE defaults for `MEDIA_*`/`IDENTITY_URL`/`GOOGLE_CLIENT_*`/`SESSION_SECRET` (an internal mirror env template). Individual flags below always win over this file. |
+| `--env-file <url\|path>` | KEY=VALUE defaults for `CONFLUENCE_URL`/`MEDIA_*`/`IDENTITY_URL`/`GOOGLE_CLIENT_*`/`SESSION_SECRET` (an internal mirror env template). Individual flags below always win over this file. |
 | `--media-url` / `--media-app-id` / `--media-user-id` / `--media-user-role` | Media/file-store service for pipeline outputs. |
 | `--identity-url` | Google-session → shared-project identity service. |
 | `--google-client-id` / `--google-client-secret` / `--session-secret` | Google OAuth login (`/api/auth/google`) — used for KG sync push/pull attribution and Shared Project registration. All three are required together; the same values work across every machine (fixed `localhost:52564` OAuth callback, not machine-specific). |

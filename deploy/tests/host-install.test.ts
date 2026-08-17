@@ -269,7 +269,7 @@ test('--env-file defaults are overridden by explicit flags', async () => {
     const { archive, sha256: digest } = await packRelease(tmp, stageName);
 
     const envFile = join(tmp, 'mirror.env');
-    await writeFile(envFile, 'MEDIA_URL=https://media-from-env-file.example/\nIDENTITY_URL=https://identity-from-env-file.example/\n');
+    await writeFile(envFile, 'CONFLUENCE_URL=https://wiki.example.test\nMEDIA_URL=https://media-from-env-file.example/\nIDENTITY_URL=https://identity-from-env-file.example/\n');
 
     await execFileAsync(
       'bash',
@@ -285,6 +285,7 @@ test('--env-file defaults are overridden by explicit flags', async () => {
     );
 
     const config = await readFile(join(fakeHome, '.open-design', 'config.env'), 'utf8');
+    assert.match(config, /^CONFLUENCE_URL=https:\/\/wiki\.example\.test$/m);
     assert.match(config, /^MEDIA_URL=https:\/\/from-flag\.example\/$/m);
     assert.match(config, /^IDENTITY_URL=https:\/\/identity-from-env-file\.example\/$/m);
   } finally {

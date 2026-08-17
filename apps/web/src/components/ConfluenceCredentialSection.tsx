@@ -14,11 +14,6 @@ import { Icon } from './Icon';
 import { ConfluenceTokenGuideModal } from './ConfluenceTokenGuideModal';
 import styles from './ConfluenceTokenGuideModal.module.css';
 
-// VNPAY's own Confluence — pre-filled so a first-time user never has to
-// know or type the base URL themselves; still fully editable for anyone
-// pointing at a different instance.
-const DEFAULT_BASE = 'https://wiki.servicehub.vn';
-
 function normalizeBase(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, '');
   if (!trimmed) return '';
@@ -57,7 +52,7 @@ export function ConfluenceCredentialSection() {
       const cfg = await fetchConfluenceConfig();
       if (cancelled) return;
       if (cfg) {
-        setBase(cfg.base || DEFAULT_BASE);
+        setBase(cfg.base);
         setHasToken(cfg.hasToken);
       } else {
         setError(t('confluenceConfig.loadError'));
@@ -78,7 +73,6 @@ export function ConfluenceCredentialSection() {
     setTestState({ status: 'running' });
     const tokenTrimmed = tokenDraft.trim();
     const result = await testConfluenceConnection({
-      base: base.trim(),
       ...(tokenTrimmed ? { token: tokenTrimmed } : {}),
     });
     setTestState({ status: 'done', ok: result.ok, detail: result.detail, displayName: result.displayName });
@@ -91,14 +85,13 @@ export function ConfluenceCredentialSection() {
     try {
       const tokenTrimmed = tokenDraft.trim();
       const result = await saveConfluenceConfig({
-        base: base.trim(),
         ...(tokenTrimmed ? { token: tokenTrimmed } : {}),
       });
       if (!result) {
         setError(t('confluenceConfig.saveError'));
         return;
       }
-      setBase(result.base || DEFAULT_BASE);
+      setBase(result.base);
       setHasToken(result.hasToken);
       setTokenDraft('');
       setTestState({ status: 'idle' });
@@ -116,23 +109,6 @@ export function ConfluenceCredentialSection() {
           <p className="hint">{t('confluenceConfig.subtitle')}</p>
         </div>
       </div>
-
-      <label className="field">
-        <span className="field-label">{t('confluenceConfig.baseLabel')}</span>
-        <div className="field-row">
-          <input
-            type="text"
-            value={base}
-            disabled={!loaded || saving}
-            placeholder={t('confluenceConfig.basePlaceholder')}
-            onChange={(e) => {
-              setBase(e.target.value);
-              setTestState({ status: 'idle' });
-            }}
-            data-testid="confluence-config-base-input"
-          />
-        </div>
-      </label>
 
       <div className="field">
         <span className="field-label-row">

@@ -9,7 +9,12 @@ import path from 'node:path';
 import type http from 'node:http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { readConfluenceConfig, testConfluenceConnection, writeConfluenceConfig } from '../src/confluence-config.js';
+import {
+  configuredConfluenceBase,
+  readConfluenceConfig,
+  testConfluenceConnection,
+  writeConfluenceConfig,
+} from '../src/confluence-config.js';
 import { writeMcpConfig } from '../src/mcp-config.js';
 import { startServer } from '../src/server.js';
 
@@ -124,6 +129,15 @@ describe('confluence-config storage', () => {
   });
 });
 
+describe('configuredConfluenceBase', () => {
+  it('normalizes only the deployment CONFLUENCE_URL', () => {
+    expect(configuredConfluenceBase({ CONFLUENCE_URL: 'wiki.servicehub.vn/' })).toBe(
+      'https://wiki.servicehub.vn',
+    );
+    expect(configuredConfluenceBase({})).toBe('');
+  });
+});
+
 describe('testConfluenceConnection', () => {
   let dataDir: string;
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -183,8 +197,11 @@ describe('testConfluenceConnection', () => {
 describe('confluence-config routes', () => {
   let server: http.Server;
   let baseUrl: string;
+  let previousConfluenceUrl: string | undefined;
 
   beforeAll(async () => {
+    previousConfluenceUrl = process.env.CONFLUENCE_URL;
+    process.env.CONFLUENCE_URL = 'https://route-test.example';
     const started = (await startServer({ port: 0, returnServer: true })) as {
       url: string;
       server: http.Server;
@@ -199,9 +216,11 @@ describe('confluence-config routes', () => {
     await fetch(`${baseUrl}/api/confluence-config`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ base: '', token: '' }),
+      body: JSON.stringify({ clear: true }),
     }).catch(() => {});
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (previousConfluenceUrl === undefined) delete process.env.CONFLUENCE_URL;
+    else process.env.CONFLUENCE_URL = previousConfluenceUrl;
   });
 
   it('GET reports hasToken but never the real token; PUT writes the file', async () => {
@@ -213,7 +232,7 @@ describe('confluence-config routes', () => {
     const putRes = await fetch(`${baseUrl}/api/confluence-config`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ base: 'https://route-test.example/', token: 'route-token' }),
+      body: JSON.stringify({ base: 'https://attacker.example', token: 'route-token' }),
     });
     expect(putRes.status).toBe(200);
     const putBody = (await putRes.json()) as { base: string; hasToken: boolean };
@@ -232,12 +251,12 @@ describe('confluence-config routes', () => {
     await fetch(`${baseUrl}/api/confluence-config`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ base: '', token: '' }),
+      body: JSON.stringify({ clear: true }),
     });
     const res = await fetch(`${baseUrl}/api/confluence-config/test`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ base: 'https://route-test.example' }),
+      body: JSON.stringify({}),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; detail?: string };
