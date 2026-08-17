@@ -42,7 +42,7 @@ Sau khi cài, dùng các lệnh sau để quản lý ứng dụng:
 
 ```bash
 # Dừng Open Design
-launchctl bootout gui/$(id -u)/com.vnpay.open-design
+launchctl bootout gui/$(id -u)/com.vnpay.open-design 2>/dev/null || true
 
 # Khởi động Open Design
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vnpay.open-design.plist 2>/dev/null || true
