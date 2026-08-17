@@ -491,7 +491,14 @@ function Invoke-DownloadFile {
             # a legacy code page where block-drawing characters render as '?'.
             $filled = [int][Math]::Floor($percent * $ProgressBarWidth / 100)
             $bar = ('=' * $filled).PadRight($ProgressBarWidth, '.')
-            try { [Console]::Write("`r      [{0}] {1,3}%  {2:N1}/{3:N1} MB" -f $bar, $percent, ($received / 1MB), ($total / 1MB)) } catch {}
+            # Format into a variable FIRST. Inside a method-call argument list
+            # PowerShell treats commas as argument separators, so
+            # `[Console]::Write("..." -f $a, $b, $c)` becomes Write(("..." -f $a),
+            # $b, $c): -f gets one value for a 4-slot format string, throws,
+            # and the try/catch swallowed it -- the bar was never drawn
+            # (0.8.39 report: "download step shows nothing").
+            $line = "`r      [{0}] {1,3}%  {2:N1}/{3:N1} MB" -f $bar, $percent, ($received / 1MB), ($total / 1MB)
+            try { [Console]::Write($line) } catch {}
             $lastPercent = $percent
           } else {
             $milestone = [int]([Math]::Floor($percent / 25) * 25)
@@ -501,7 +508,8 @@ function Invoke-DownloadFile {
             }
           }
         } elseif ((Test-InteractiveOutput) -and ($received - $lastByteReport) -ge 1MB) {
-          try { [Console]::Write("`r      {0:N1} MB downloaded" -f ($received / 1MB)) } catch {}
+          $line = "`r      {0:N1} MB downloaded" -f ($received / 1MB)
+          try { [Console]::Write($line) } catch {}
           $lastByteReport = $received
         }
       }

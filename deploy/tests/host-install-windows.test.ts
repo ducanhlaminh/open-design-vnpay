@@ -26,7 +26,13 @@ test('Windows download progress is interactive-only and logging is append-only/b
   assert.match(ps, /return -not \[Console\]::IsOutputRedirected/);
   assert.match(ps, /\$ProgressBarWidth = 30/);
   assert.match(ps, /\$bar = \('=' \* \$filled\)\.PadRight\(\$ProgressBarWidth, '\.'\)/);
-  assert.match(ps, /\[Console\]::Write\("`r\s+\[\{0\}\] \{1,3\}%/);
+  assert.match(ps, /\$line = "`r\s+\[\{0\}\] \{1,3\}%[^\n]*" -f \$bar, \$percent/);
+  assert.match(ps, /\[Console\]::Write\(\$line\)/);
+  // A `-f` with commas INSIDE a method-call argument list splits into separate
+  // arguments (PowerShell disables the comma operator there) -- the format
+  // then throws and the swallowed error hid the whole progress display.
+  const code = ps.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n');
+  assert.doesNotMatch(code, /\[Console\]::Write(Line)?\("[^"\n]*"\s+-f\s+[^)\n]*,/);
   assert.match(ps, /Add-Content -Path \$script:ProgressLogPath/);
   assert.match(ps, /Download telemetry is best-effort and must never affect installation/);
 });
