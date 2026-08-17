@@ -229,7 +229,7 @@ describe('DesignsTab select mode', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /DS Figma/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Design system Figma/ }));
     expect(screen.getByText('Design System')).toBeTruthy();
   });
 

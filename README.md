@@ -11,7 +11,7 @@ Nền tảng thiết kế sản phẩm nội bộ của VNPAY: biến tài liệ
 - **Prototype thật** — prototype là code React chạy được, kèm simulator bấm thử luồng ngay trong app.
 - **Copy sang Figma** — copy thiết kế rồi paste thẳng vào Figma, giữ layout và style.
 - **Đồng bộ dự án (KG sync)** — dự án chia sẻ giữa các máy qua Knowledge Graph service; đăng nhập Google để ghi nhận người thực hiện và nhận dự án được chia sẻ.
-- **Tự cập nhật** — app tự kiểm tra và cập nhật phiên bản mới từ GitHub Releases (hoặc chạy lại installer với `--update`).
+- **Cập nhật có kiểm soát** — app tự kiểm tra phiên bản mới, hiển thị thông báo để người dùng bấm cập nhật; cũng có thể chạy lại installer với `--update`.
 
 ## Yêu cầu máy
 

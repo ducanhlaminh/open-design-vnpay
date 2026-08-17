@@ -30,25 +30,31 @@ Open Design giúp bạn:
 
 ## 2. Chuẩn bị lần đầu
 
-### Bước 1 — Mở Open Design
+### Bước 1 — Cài và mở Open Design
 
-Cài và mở bản Open Design dành cho hệ điều hành của bạn. Ở lần chạy đầu, ứng
-dụng kiểm tra Docker và môi trường chạy trợ lý AI.
+Cài bản Open Design dành cho hệ điều hành của bạn. Installer chạy trong vùng
+dữ liệu của người dùng, tự tải Node.js nếu máy chưa có và đăng ký Open Design
+chạy nền (launchd trên macOS, systemd trên Linux hoặc Task Scheduler trên
+Windows). **Không cần Docker và không cần quyền quản trị viên.**
 
-Nếu máy chưa có Docker:
+- **macOS/Linux:** mở Terminal và chạy lệnh installer được cung cấp cho bản
+  phát hành.
+- **Windows 10/11:** mở PowerShell và chạy installer `.ps1` được cung cấp cho
+  bản phát hành.
 
-1. Chọn **Cài Docker tự động**.
-2. Nhập mật khẩu máy nếu hệ điều hành yêu cầu.
-3. Mở Docker Desktop sau khi cài.
-4. Chờ đến khi Docker báo đang chạy rồi quay lại Open Design.
-
-Trên Windows, máy phải bật Virtualization/VT trong BIOS. Nếu vừa bật VT, hãy
-khởi động lại Windows trước khi kiểm tra lại.
+Sau khi installer báo hoàn tất, mở
+`http://127.0.0.1:7456`. Nếu trang chưa phản hồi, chờ vài giây để dịch vụ khởi
+động rồi tải lại trang. Xem [tài liệu cài đặt và vận hành host runtime](../../deploy/host/README.md) nếu cần các lệnh dừng,
+khởi động và gỡ cài đặt.
 
 ### Bước 2 — Đăng nhập Open Design
 
 Đăng nhập bằng tài khoản Google công ty. Tài khoản này dùng để xác định quyền
 truy cập kho chung.
+
+![Màn hình đăng nhập VNPAY Design Platform](../screenshots/install/open-design-login-highlighted.png)
+
+*Hình 1. Màn hình đăng nhập lần đầu — chọn **Đăng nhập với Google** để tiếp tục.*
 
 Nếu ứng dụng báo chưa kết nối với kho Dự án, chọn **Kết nối lại**. Bạn vẫn có
 thể làm việc với dữ liệu trên máy khi kho chung tạm thời không khả dụng, nhưng chưa
@@ -59,14 +65,18 @@ thể Chia sẻ hoặc Lấy Dự án.
 Tài khoản Google của Open Design và tài khoản trợ lý AI là hai tài khoản khác nhau.
 Open Design không chứa sẵn tài khoản Claude/Codex.
 
-1. Mở **Settings**.
-2. Vào **Execution setup**.
+1. Mở **Cài đặt**.
+2. Vào **Execution**.
 3. Tại Claude hoặc Codex, chọn **Đăng nhập**.
 4. Hoàn tất đăng nhập trong cửa sổ được mở.
-5. Quay lại Settings và kiểm tra trạng thái **Đã đăng nhập**.
+5. Quay lại **Cài đặt** và kiểm tra trạng thái **Đã đăng nhập**.
 
-Thông tin đăng nhập chỉ được lưu trong vùng dữ liệu Docker riêng trên máy hiện
-tại. Cài lại ứng dụng không có nghĩa là đã đăng nhập trợ lý AI trên một máy khác.
+![Mở Cài đặt Execution](../screenshots/guide/04-mo-cai-dat-execution.png)
+
+*Hình 5. Mở menu tài khoản rồi chọn **Settings** để vào phần Execution và kiểm tra CLI.*
+
+Thông tin đăng nhập được lưu trong vùng dữ liệu người dùng trên máy hiện tại.
+Cài lại ứng dụng không có nghĩa là đã đăng nhập trợ lý AI trên một máy khác.
 
 ## 3. Tạo Dự án và Tính năng
 
@@ -78,6 +88,10 @@ tại. Cài lại ứng dụng không có nghĩa là đã đăng nhập trợ l�
 4. Chọn hoặc cấu hình Design System nếu Dự án cần sinh giao diện.
 5. Xác nhận tạo Dự án.
 
+![Mở biểu mẫu tạo Dự án](../screenshots/guide/01-tao-du-an.png)
+
+*Hình 2. Chọn nút **+** ở thanh bên để bắt đầu tạo Dự án.*
+
 ### Tạo Tính năng
 
 1. Mở thẻ Dự án.
@@ -85,6 +99,10 @@ tại. Cài lại ứng dụng không có nghĩa là đã đăng nhập trợ l�
 3. Nhập tên theo nghiệp vụ, ví dụ “Thanh toán hóa đơn”.
 4. Chọn nguồn tài liệu, nền tảng và Design System phù hợp.
 5. Lưu Tính năng.
+
+![Nhập tên và cấu hình Dự án mới](../screenshots/guide/02-dat-ten-du-an.png)
+
+*Hình 3. Nhập tên Dự án, chọn Design System và nền tảng trước khi bấm **Create**.*
 
 Nên tạo một Tính năng cho một luồng nghiệp vụ có thể chạy và review độc lập.
 Không nên gom toàn bộ sản phẩm vào một Tính năng duy nhất.
@@ -147,7 +165,7 @@ buộc đã sẵn sàng.
 4. Mở **Quick result** để xem nhanh kết quả sau khi bước hoàn tất.
 
 Nếu chạy lại, kết quả cũ có thể được lưu vào lịch sử trước khi bản mới thay thế.
-Không đóng Docker hoặc tắt máy trong khi trợ lý AI đang chạy.
+Không dừng Open Design hoặc tắt máy trong khi trợ lý AI đang chạy.
 
 ### Trạng thái thường gặp
 
@@ -160,7 +178,7 @@ Không đóng Docker hoặc tắt máy trong khi trợ lý AI đang chạy.
 
 Nếu giao diện đứng lâu ở trạng thái đang chạy, kiểm tra:
 
-- Docker Desktop còn hoạt động không.
+- Open Design service còn đang chạy không.
 - Claude/Codex còn đăng nhập không.
 - Tài khoản trợ lý AI còn hạn mức sử dụng không.
 - Kết nối mạng có ổn định không.
@@ -195,6 +213,10 @@ liệu; nếu tiếp tục chỉnh sửa, bạn cần xác nhận lại để t�
 2. Chọn chức năng import Figma ZIP.
 3. Chọn tệp ZIP và chờ hệ thống kiểm tra.
 4. Mở **Danh mục review** để xem Showcase, Thành phần và Nguyên tắc.
+
+![Mở khu vực Design System](../screenshots/guide/03-mo-design-system.png)
+
+*Hình 4. Mở **Design systems** từ thanh điều hướng để quản lý bộ thiết kế.*
 
 ### Danh mục review
 
@@ -307,13 +329,21 @@ về. Bản đã có trên máy vẫn được giữ.
 
 ### “Claude/Codex chưa đăng nhập”
 
-Mở **Settings → Execution setup**, đăng nhập đúng Claude/Codex rồi thử lại. Open
+Mở **Cài đặt → Execution**, đăng nhập đúng Claude/Codex rồi thử lại. Open
 Design không cung cấp tài khoản trợ lý AI dùng chung.
 
-### “Docker chưa sẵn sàng”
+### Trang không mở được hoặc dịch vụ chưa sẵn sàng
 
-Mở Docker Desktop và chờ trạng thái running. Nếu vừa cài hoặc bật VT trên
-Windows, khởi động lại máy.
+Kiểm tra Open Design đã được cài và service đang chạy chưa, sau đó mở lại
+`http://127.0.0.1:7456`:
+
+- **macOS:** kiểm tra service bằng `launchctl print gui/$(id -u)/com.vnpay.open-design`.
+- **Linux:** kiểm tra bằng `systemctl --user status open-design.service`.
+- **Windows:** kiểm tra Scheduled Task `OpenDesignDaemon` bằng
+  `Get-ScheduledTask -TaskName OpenDesignDaemon` trong PowerShell.
+
+Nếu vừa cài hoặc vừa cập nhật, chờ một lúc để service khởi động. Không cần cài
+Docker hoặc bật Virtualization cho host runtime.
 
 ### “Tài khoản chưa kết nối với kho Dự án”
 
@@ -325,6 +355,18 @@ nhận tài khoản đã có trong hệ thống quyền.
 Kiểm tra mạng, hạn mức sử dụng và trạng thái đăng nhập. Chỉ chạy lại sau khi
 nguyên nhân đã được xử lý; kết quả chưa có bản xem trước hợp lệ không được tính
 là hoàn tất.
+
+### Có bản cập nhật mới
+
+Khi có phiên bản mới, banner **Có bản cập nhật mới** xuất hiện trong ứng dụng.
+Chọn **Cập nhật ngay** để bắt đầu; ứng dụng không tự cập nhật khi bạn chưa bấm
+nút. Trong lúc cập nhật, không tắt máy hoặc dừng service. Nếu cập nhật không
+hoàn tất sau một khoảng thời gian hợp lý, tải lại trang và kiểm tra thông báo
+lỗi; bản cũ có thể vẫn đang chạy do installer tự rollback khi health-check thất
+bại.
+
+Bạn cũng có thể cập nhật thủ công bằng lệnh đã ghi trong
+[README](../../README.md), tùy hệ điều hành.
 
 ### Không thấy Dự án trong “Lấy dự án về máy”
 

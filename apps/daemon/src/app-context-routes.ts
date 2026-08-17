@@ -13,6 +13,7 @@ import type {
 import { getMachineIdentityUser, identityAccessTokenOf, identityUserIdOf } from './auth-routes.js';
 import {
   getPipelineApp,
+  getFigmaDesignSystemSource,
   getProject,
   listProjects,
   setPipelineAppDesignSystem,
@@ -20,6 +21,7 @@ import {
   upsertPipelineAppName,
   updateProject,
 } from './db.js';
+import type { FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 import {
   createAppContextVersion,
   appContextManifestDigestIsValid,
@@ -129,6 +131,12 @@ export function registerAppContextRoutes(app: Express, deps: RegisterAppContextR
       appName: localApp.name,
       designSystemId: localApp.designSystemId,
       docsReviewComponentSource: localApp.docsReviewComponentSource,
+      figmaDesignSystemSource: localApp.figmaDesignSystemSourceId
+        ? (() => {
+            const source = getFigmaDesignSystemSource(db, localApp.figmaDesignSystemSourceId);
+            return source?.catalog ? { id: source.id, catalog: source.catalog as FigmaComponentCatalogSnapshot } : null;
+          })()
+        : null,
       designSystemDir: await designSystemDir(localApp.designSystemId, paths),
       ...(expectedCurrentDigest !== undefined ? { expectedCurrentDigest } : {}),
     });
@@ -229,6 +237,7 @@ export function registerAppContextRoutes(app: Express, deps: RegisterAppContextR
       const packageFiles = await filesForAppContextPublish({ projectsDir: paths.PROJECTS_DIR, appId, contextVersion: current.contextVersion });
       const appJson = Buffer.from(`${JSON.stringify({
         kind: 'app', name: localApp.name, designSystemId: localApp.designSystemId,
+        ...(localApp.figmaDesignSystemSourceId ? { figmaDesignSystemSourceId: localApp.figmaDesignSystemSourceId } : {}),
         docsReviewComponentSource: localApp.docsReviewComponentSource,
         contextVersion: current.contextVersion, contextDigest: current.contentDigest,
       }, null, 2)}\n`);

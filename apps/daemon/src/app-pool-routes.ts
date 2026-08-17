@@ -7,7 +7,8 @@ import type { Express } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getPipelineApp, listPipelineApps, listProjects } from './db.js';
+import { getFigmaDesignSystemSource, getPipelineApp, listPipelineApps, listProjects } from './db.js';
+import type { FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 import { createAppContextVersion } from './app-context-version.js';
 import {
   deletePoolPages,
@@ -92,6 +93,12 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
       appName,
       designSystemId,
       docsReviewComponentSource: app?.docsReviewComponentSource ?? { mode: 'app-design-system' },
+      figmaDesignSystemSource: app?.figmaDesignSystemSourceId
+        ? (() => {
+            const source = getFigmaDesignSystemSource(db, app.figmaDesignSystemSourceId);
+            return source?.catalog ? { id: source.id, catalog: source.catalog as FigmaComponentCatalogSnapshot } : null;
+          })()
+        : null,
       designSystemDir,
     });
   };

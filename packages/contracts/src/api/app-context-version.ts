@@ -27,6 +27,9 @@ export interface AppContextManifest {
   };
   /** App-level source for docs-review/dr-comp. Missing on legacy manifests. */
   docsReviewComponentSource?: DocsReviewComponentSource;
+  /** Reusable Figma catalogue selected by the App. The immutable catalogue
+   * itself is frozen under design-system/criteria/components.md. */
+  figmaDesignSystemSourceId?: string;
   files: AppContextFileDigest[];
 }
 

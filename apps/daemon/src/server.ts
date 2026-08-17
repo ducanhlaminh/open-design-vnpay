@@ -372,6 +372,7 @@ import {
   getDeploymentById,
   getProject,
   getPipelineApp,
+  getFigmaDesignSystemSource,
   getTemplate,
   insertConversation,
   insertProject,
@@ -431,6 +432,7 @@ import { registerHostToolsRoutes } from './host-tools-routes.js';
 import { registerMcpRoutes } from './mcp-routes.js';
 import { registerConfluenceConfigRoutes } from './confluence-config-routes.js';
 import { registerFigmaCatalogRoutes, writeAppFigmaCatalog } from './figma-catalog-routes.js';
+import { registerFigmaDesignSystemRoutes } from './figma-design-system-routes.js';
 import { registerFigmaConfigRoutes } from './figma-config-routes.js';
 import { registerXaiRoutes } from './xai-routes.js';
 import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
@@ -522,7 +524,7 @@ import {
   DOCS_COMPONENT_FAILURE_NOTE,
   type PageComponentReport,
 } from './docs-components.js';
-import { renderFigmaComponentsMarkdown } from './figma-component-catalog.js';
+import { renderFigmaComponentsMarkdown, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 import { readFigmaConfig } from './figma-config.js';
 import { FigmaDesktopClient } from './figma-desktop.js';
 import { registerFigmaDesktopToolRoutes } from './figma-desktop-tool-routes.js';
@@ -1535,12 +1537,19 @@ const dsDirForId = async (designSystemId: string): Promise<string | null> => {
   }
   return null;
 };
+const figmaDesignSystemSourceForApp = (app: { figmaDesignSystemSourceId?: string | null } | null | undefined) => {
+  if (!app?.figmaDesignSystemSourceId) return null;
+  const source = getFigmaDesignSystemSource(db, app.figmaDesignSystemSourceId);
+  if (!source?.catalog) return null;
+  return { id: source.id, catalog: source.catalog as FigmaComponentCatalogSnapshot };
+};
 const versionAppsUsingDesignSystem = async (designSystemId: string, dsDir: string) => {
   const apps = listPipelineApps(db).filter((item) => item.designSystemId === designSystemId);
   return Promise.all(apps.map(async (item) => {
     try {
       const result = await createAppContextVersion({ projectsDir: PROJECTS_DIR, appId: item.id,
-        appName: item.name, designSystemId, docsReviewComponentSource: item.docsReviewComponentSource, designSystemDir: dsDir });
+        appName: item.name, designSystemId, docsReviewComponentSource: item.docsReviewComponentSource,
+        figmaDesignSystemSource: figmaDesignSystemSourceForApp(item), designSystemDir: dsDir });
       return { appId: item.id, status: result.status, contextVersion: result.manifest.contextVersion };
     } catch (error) {
       return { appId: item.id, status: 'failed', contextVersion: null, error: String(error) };
@@ -6045,6 +6054,11 @@ export async function startServer({
   // App-level Figma catalogue (DS tab of an App whose component source is
   // Figma links): read + refresh on demand.
   registerFigmaCatalogRoutes(app, {
+    db,
+    http: httpDeps,
+    paths: pathDeps,
+  });
+  registerFigmaDesignSystemRoutes(app, {
     db,
     http: httpDeps,
     paths: pathDeps,
@@ -14823,6 +14837,7 @@ export async function startServer({
         appName,
         designSystemId,
         docsReviewComponentSource: app?.docsReviewComponentSource ?? { mode: 'app-design-system' },
+        figmaDesignSystemSource: figmaDesignSystemSourceForApp(app),
         designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
       });
       let featureBinding = featureContextBindingFromMetadata(localCfg?.metadata);
@@ -14844,6 +14859,7 @@ export async function startServer({
         kind: 'app',
         name: appName,
         ...(designSystemId ? { designSystemId } : {}),
+        ...(app?.figmaDesignSystemSourceId ? { figmaDesignSystemSourceId: app.figmaDesignSystemSourceId } : {}),
         contextVersion: contextSnapshot.manifest.contextVersion,
         contextDigest: contextSnapshot.manifest.contentDigest,
       }, null, 2)}\n`);
@@ -17937,6 +17953,7 @@ export async function startServer({
             appName: localApp?.name ?? deterministicAppId,
             designSystemId,
             docsReviewComponentSource: localApp?.docsReviewComponentSource ?? { mode: 'app-design-system' },
+            figmaDesignSystemSource: figmaDesignSystemSourceForApp(localApp),
             designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
           });
           let binding = featureContextBindingFromMetadata(project.metadata);
@@ -18293,6 +18310,7 @@ export async function startServer({
           appName: (localApp?.name ?? featureAppName) || localAppId,
           designSystemId,
           docsReviewComponentSource: localApp?.docsReviewComponentSource ?? { mode: 'app-design-system' },
+          figmaDesignSystemSource: figmaDesignSystemSourceForApp(localApp),
           designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
         });
         let binding = featureContextBindingFromMetadata(project.metadata);

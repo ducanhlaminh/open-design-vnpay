@@ -122,6 +122,22 @@ function migrate(db: SqliteDb): void {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS figma_design_system_sources (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      links_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'empty'
+        CHECK(status IN ('empty', 'ready', 'refreshing', 'error')),
+      catalog_json TEXT,
+      catalog_digest TEXT,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_figma_ds_sources_updated
+      ON figma_design_system_sources(updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS conversations (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
@@ -277,6 +293,9 @@ function migrate(db: SqliteDb): void {
   }
   if (!pipelineAppCols.some((c: DbRow) => c.name === 'docs_review_component_source_json')) {
     db.exec(`ALTER TABLE pipeline_apps ADD COLUMN docs_review_component_source_json TEXT`);
+  }
+  if (!pipelineAppCols.some((c: DbRow) => c.name === 'figma_design_system_source_id')) {
+    db.exec(`ALTER TABLE pipeline_apps ADD COLUMN figma_design_system_source_id TEXT`);
   }
   const messageCols = db.prepare(`PRAGMA table_info(messages)`).all() as DbRow[];
   if (!messageCols.some((c: DbRow) => c.name === 'agent_id')) {
@@ -785,6 +804,7 @@ function normalizeProjectRunStatus(status: unknown) {
 export function listPipelineApps(db: SqliteDb) {
   return (db
     .prepare(`SELECT id, name, design_system_id AS designSystemId,
+      figma_design_system_source_id AS figmaDesignSystemSourceId,
       docs_review_component_source_json AS docsReviewComponentSourceJson,
       created_at AS createdAt FROM pipeline_apps ORDER BY created_at ASC`)
     .all() as DbRow[])
@@ -794,6 +814,7 @@ export function listPipelineApps(db: SqliteDb) {
 export function getPipelineApp(db: SqliteDb, id: string) {
   const r = db
     .prepare(`SELECT id, name, design_system_id AS designSystemId,
+      figma_design_system_source_id AS figmaDesignSystemSourceId,
       docs_review_component_source_json AS docsReviewComponentSourceJson,
       created_at AS createdAt FROM pipeline_apps WHERE id = ?`)
     .get(id) as DbRow | undefined;
@@ -818,6 +839,7 @@ function normalizePipelineApp(r: DbRow) {
     id: r.id as string,
     name: r.name as string,
     designSystemId: (r.designSystemId as string | null) ?? null,
+    figmaDesignSystemSourceId: (r.figmaDesignSystemSourceId as string | null) ?? null,
     docsReviewComponentSource,
     createdAt: Number(r.createdAt),
   };
@@ -827,16 +849,18 @@ export function insertPipelineApp(db: SqliteDb, a: {
   id: string;
   name: string;
   designSystemId?: string | null;
+  figmaDesignSystemSourceId?: string | null;
   docsReviewComponentSource?: DocsReviewComponentSource;
   createdAt: number;
 }) {
   db.prepare(`INSERT INTO pipeline_apps
-    (id, name, design_system_id, docs_review_component_source_json, created_at)
-    VALUES (?, ?, ?, ?, ?)`)
+    (id, name, design_system_id, figma_design_system_source_id, docs_review_component_source_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)`)
     .run(
       a.id,
       a.name,
       a.designSystemId ?? null,
+      a.figmaDesignSystemSourceId ?? null,
       JSON.stringify(a.docsReviewComponentSource ?? DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE),
       a.createdAt,
     );
@@ -868,6 +892,114 @@ export function setPipelineAppDesignSystem(
     `INSERT INTO pipeline_apps (id, name, design_system_id, created_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET design_system_id = excluded.design_system_id`,
   ).run(args.id, args.name ?? args.id, args.designSystemId, args.createdAt);
+}
+
+/** Attach a reusable Figma-link catalogue to an App without changing the
+ * compiled/Markdown design system or its legacy component-source setting. */
+export function setPipelineAppFigmaDesignSystemSource(
+  db: SqliteDb,
+  args: { id: string; name?: string; figmaDesignSystemSourceId: string | null; createdAt: number },
+): void {
+  db.prepare(
+    `INSERT INTO pipeline_apps (id, name, figma_design_system_source_id, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET figma_design_system_source_id = excluded.figma_design_system_source_id`,
+  ).run(args.id, args.name ?? args.id, args.figmaDesignSystemSourceId, args.createdAt);
+}
+
+// ---------- reusable Figma-link design systems ----------
+
+function normalizeFigmaDesignSystemSourceRow(r: DbRow) {
+  let links: string[] = [];
+  let catalog: unknown = null;
+  try { links = JSON.parse(r.linksJson) as string[]; } catch { links = []; }
+  try { catalog = r.catalogJson ? JSON.parse(r.catalogJson) : null; } catch { catalog = null; }
+  return {
+    id: String(r.id),
+    name: String(r.name),
+    links,
+    status: r.status as 'empty' | 'ready' | 'refreshing' | 'error',
+    catalog,
+    catalogDigest: (r.catalogDigest as string | null) ?? null,
+    lastError: (r.lastError as string | null) ?? null,
+    createdAt: Number(r.createdAt),
+    updatedAt: Number(r.updatedAt),
+  };
+}
+
+const FIGMA_DS_SOURCE_SELECT = `SELECT id, name, links_json AS linksJson,
+  status, catalog_json AS catalogJson, catalog_digest AS catalogDigest,
+  last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt
+  FROM figma_design_system_sources`;
+
+export function listFigmaDesignSystemSources(db: SqliteDb) {
+  return (db.prepare(`${FIGMA_DS_SOURCE_SELECT} ORDER BY updated_at DESC`).all() as DbRow[])
+    .map(normalizeFigmaDesignSystemSourceRow);
+}
+
+export function getFigmaDesignSystemSource(db: SqliteDb, id: string) {
+  const r = db.prepare(`${FIGMA_DS_SOURCE_SELECT} WHERE id = ?`).get(id) as DbRow | undefined;
+  return r ? normalizeFigmaDesignSystemSourceRow(r) : null;
+}
+
+export function insertFigmaDesignSystemSource(db: SqliteDb, input: {
+  id: string; name: string; links: string[]; createdAt: number; updatedAt: number;
+}) {
+  db.prepare(`INSERT INTO figma_design_system_sources
+    (id, name, links_json, status, created_at, updated_at) VALUES (?, ?, ?, 'empty', ?, ?)`)
+    .run(input.id, input.name, JSON.stringify(input.links), input.createdAt, input.updatedAt);
+  return getFigmaDesignSystemSource(db, input.id);
+}
+
+export function updateFigmaDesignSystemSource(db: SqliteDb, id: string, input: {
+  name: string; links: string[]; linksChanged: boolean; updatedAt: number;
+}) {
+  db.prepare(`UPDATE figma_design_system_sources SET name = ?, links_json = ?,
+    status = CASE WHEN ? THEN 'empty' ELSE status END,
+    catalog_json = CASE WHEN ? THEN NULL ELSE catalog_json END,
+    catalog_digest = CASE WHEN ? THEN NULL ELSE catalog_digest END,
+    last_error = CASE WHEN ? THEN NULL ELSE last_error END,
+    updated_at = ? WHERE id = ?`)
+    .run(input.name, JSON.stringify(input.links), input.linksChanged ? 1 : 0,
+      input.linksChanged ? 1 : 0, input.linksChanged ? 1 : 0,
+      input.linksChanged ? 1 : 0, input.updatedAt, id);
+  return getFigmaDesignSystemSource(db, id);
+}
+
+export function setFigmaDesignSystemSourceRefreshState(db: SqliteDb, id: string, input: {
+  status: 'refreshing' | 'error'; lastError?: string | null; updatedAt: number;
+}) {
+  db.prepare(`UPDATE figma_design_system_sources SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`)
+    .run(input.status, input.lastError ?? null, input.updatedAt, id);
+  return getFigmaDesignSystemSource(db, id);
+}
+
+/** A daemon restart cannot resume an in-memory Figma request. Convert any
+ * persisted `refreshing` row into a retryable error instead of leaving the UI
+ * permanently disabled. A previously committed catalogue remains available. */
+export function recoverInterruptedFigmaDesignSystemRefreshes(db: SqliteDb, updatedAt: number): void {
+  db.prepare(`UPDATE figma_design_system_sources
+    SET status = 'error', last_error = ?, updated_at = ?
+    WHERE status = 'refreshing'`)
+    .run('Lần cập nhật trước bị gián đoạn. Hãy bấm Làm mới để thử lại.', updatedAt);
+}
+
+/** Commit a complete new snapshot in one SQLite statement. The previous
+ * catalogue remains untouched if fetching/building failed before this call. */
+export function commitFigmaDesignSystemSourceCatalog(db: SqliteDb, id: string, input: {
+  catalog: unknown; digest: string; updatedAt: number;
+}) {
+  db.prepare(`UPDATE figma_design_system_sources SET catalog_json = ?, catalog_digest = ?,
+    status = 'ready', last_error = NULL, updated_at = ? WHERE id = ?`)
+    .run(JSON.stringify(input.catalog), input.digest, input.updatedAt, id);
+  return getFigmaDesignSystemSource(db, id);
+}
+
+export function deleteFigmaDesignSystemSource(db: SqliteDb, id: string): boolean {
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE pipeline_apps SET figma_design_system_source_id = NULL WHERE figma_design_system_source_id = ?`).run(id);
+    return db.prepare(`DELETE FROM figma_design_system_sources WHERE id = ?`).run(id).changes > 0;
+  });
+  return tx();
 }
 
 /** Set the docs-review-only component source without changing designSystemId. */

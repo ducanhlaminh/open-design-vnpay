@@ -391,6 +391,7 @@ export function PipelinesRoute() {
           id: acting.app.id,
           name: acting.app.name,
           designSystemId: acting.app.designSystemId,
+          figmaDesignSystemSourceId: acting.app.figmaDesignSystemSourceId,
           docsReviewComponentSource: acting.app.docsReviewComponentSource,
         }}
         onClose={closeActing}

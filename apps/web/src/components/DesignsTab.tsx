@@ -314,7 +314,7 @@ export function DesignsTab({
 	const overviewProject = useMemo(
 		() => ({
 			id: "overview",
-			name: "Tổng",
+			name: t("designs.scopeOverview"),
 			skillId: null,
 			designSystemId: null,
 			createdAt: 0,
@@ -322,7 +322,7 @@ export function DesignsTab({
 			status: { value: "not_started" as const },
 			metadata: { kind: "overview" },
 		} as unknown as Project),
-		[],
+		[t],
 	);
 	const scopedProjects = useMemo(() => {
 		if (scope === "overview") return [overviewProject];
@@ -496,15 +496,15 @@ export function DesignsTab({
 		>
 			<div className="tab-panel-toolbar designs-toolbar">
 				<div className="toolbar-left">
-					<div className="subtab-pill" role="group" aria-label="Project scope">
+					<div className="subtab-pill" role="group" aria-label={t("designs.scopeAria")}>
 						<button aria-pressed={scope === "overview"} className={scope === "overview" ? "active" : ""} onClick={() => changeScope("overview")}>
-							Tổng
+							{t("designs.scopeOverview")}
 						</button>
-						<button aria-pressed={scope === "pipeline"} className={scope === "pipeline" ? "active" : ""} onClick={() => changeScope("pipeline")} title="Pipeline projects (docs → prototype workflows)">
-							Pipeline ({pipelineCount})
+						<button aria-pressed={scope === "pipeline"} className={scope === "pipeline" ? "active" : ""} onClick={() => changeScope("pipeline")} title={t("designs.scopePipelinesTitle")}>
+							{t("designs.scopePipelines", { count: pipelineCount })}
 						</button>
 						<button aria-pressed={scope === "ds-figma"} className={scope === "ds-figma" ? "active" : ""} onClick={() => changeScope("ds-figma")}>
-							DS Figma ({dsFigmaCount})
+							{t("designs.scopeFigmaDs", { count: dsFigmaCount })}
 						</button>
 					</div>
 					<div

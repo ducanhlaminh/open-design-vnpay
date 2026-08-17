@@ -107,7 +107,7 @@
   display: none;
 }
 .ds-setup-shell--embedded .ds-setup-form > h1 {
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Be Vietnam Pro", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 27px;
   font-weight: 750;
   letter-spacing: 0;
@@ -173,7 +173,7 @@
 }
 .ds-resource-section h2 {
   margin: 0 0 8px;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Be Vietnam Pro", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 19px;
   font-weight: 750;
   line-height: 1.2;
@@ -181,7 +181,7 @@
 .ds-resource-section h2 span,
 .ds-resource-section p {
   color: var(--text-muted);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Be Vietnam Pro", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
   font-weight: 400;
 }
@@ -2004,6 +2004,250 @@
 .ds-type-switch button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* Design-system catalogue mirrors the compact Workspace layout: one clear
+   navigation row, a restrained utility strip, and cards instead of a wide
+   settings table. */
+.entry-section--design-systems {
+  gap: 12px;
+}
+.entry-section--design-systems .entry-section__title {
+  font-family: var(--sans);
+  font-size: clamp(24px, 2.2vw, 30px);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+}
+.design-systems-manager {
+  gap: 12px;
+}
+.ds-manager-subtabs {
+  margin: 0;
+}
+.ds-manager-collection-tabs {
+  width: fit-content;
+}
+.ds-manager-collection-tabs button {
+  min-height: 38px;
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 650;
+}
+.ds-settings-card {
+  border-radius: 16px;
+  box-shadow: 0 12px 32px -26px rgba(26, 47, 73, 0.42);
+  overflow: visible;
+}
+.ds-settings-card__head {
+  padding: 20px 22px 16px;
+  border-bottom: 0;
+}
+.ds-settings-card__head h2 {
+  margin-top: 5px;
+  font-size: 21px;
+  letter-spacing: -0.025em;
+}
+.ds-settings-card__head > .ds-tag-tabs {
+  margin-left: auto;
+}
+.ds-settings-card__head select {
+  min-height: 40px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.ds-settings-card .ds-tag-tabs button {
+  min-height: 38px;
+  padding: 6px 15px;
+  font-size: 13px;
+}
+.ds-settings-card .ds-tag-tabs button.active {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.ds-enterprise-source-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  width: min(720px, calc(100% - 32px));
+  margin: 0 16px 18px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-subtle) 84%, var(--bg-panel));
+}
+.ds-enterprise-source-tabs > button {
+  min-width: 0;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 13px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+.ds-enterprise-source-tabs > button:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-elevated) 68%, transparent);
+}
+.ds-enterprise-source-tabs > button:active {
+  transform: translateY(1px);
+}
+.ds-enterprise-source-tabs > button.active {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: var(--bg-elevated);
+  color: var(--accent);
+  box-shadow: 0 5px 16px -13px rgba(26, 47, 73, 0.75), var(--shadow-xs);
+}
+.ds-enterprise-source-tabs > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.ds-enterprise-source-tabs svg {
+  flex: 0 0 auto;
+}
+.ds-enterprise-source-tabs span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.ds-enterprise-source-tabs strong {
+  color: inherit;
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.ds-enterprise-source-tabs small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-enterprise-react-panel {
+  display: grid;
+}
+.ds-manager-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+}
+.ds-manager-quick-actions--react {
+  grid-template-columns: 1fr;
+  padding-top: 0;
+}
+.ds-manager-quick-actions--react .ds-create-row {
+  min-height: 88px;
+}
+.ds-create-row {
+  min-height: 116px;
+  align-items: flex-end;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-panel) 92%, var(--accent-tint));
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+.ds-create-row:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: var(--bg-elevated);
+  box-shadow: 0 12px 24px -22px rgba(0, 75, 134, 0.5);
+  transform: translateY(-2px);
+}
+.ds-create-row:active:not(:disabled) {
+  transform: translateY(0);
+}
+.ds-create-row--figma {
+  background: color-mix(in srgb, var(--accent-tint) 62%, var(--bg-panel));
+}
+.ds-create-row strong {
+  font-size: 15px;
+}
+.ds-create-row small {
+  max-width: 58ch;
+  font-size: 12.5px;
+}
+.ds-create-row__action {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-weight: 650;
+}
+.ds-user-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+.ds-user-row {
+  position: relative;
+  min-height: 152px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 17px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  box-shadow: none;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+.ds-user-row:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 14px 26px -24px rgba(26, 47, 73, 0.6);
+  transform: translateY(-2px);
+}
+.ds-create-row + .ds-user-list .ds-user-row:first-child {
+  border-top: 1px solid var(--border);
+}
+.ds-user-row__open {
+  gap: 8px;
+}
+.ds-user-row__title {
+  font-size: 15px;
+  line-height: 1.35;
+}
+.ds-user-row__meta {
+  font-size: 12px;
+}
+.ds-user-row__actions {
+  justify-content: flex-start;
+  min-height: 32px;
+}
+.ds-user-row__status {
+  padding: 6px 10px;
+}
+.ds-user-row__actions .icon-btn {
+  margin-left: auto;
+}
+
+@media (max-width: 760px) {
+  .ds-enterprise-source-tabs {
+    grid-template-columns: 1fr;
+    width: calc(100% - 32px);
+  }
+  .ds-enterprise-source-tabs small {
+    white-space: normal;
+  }
+  .ds-manager-quick-actions,
+  .ds-user-list {
+    grid-template-columns: 1fr;
+  }
+  .ds-settings-card__head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .ds-settings-card__head > .ds-tag-tabs {
+    margin-left: 0;
+  }
 }
 .ds-status-toggle {
   display: inline-flex;

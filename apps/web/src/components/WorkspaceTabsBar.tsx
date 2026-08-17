@@ -548,7 +548,7 @@ export function WorkspaceTabsBar({ route, projects }: Props) {
   }
 
   return (
-    <header className="app-chrome-header workspace-tabs-chrome" aria-label="Workspace tabs">
+    <header className="app-chrome-header workspace-tabs-chrome" aria-label={t('entry.navWorkspaces')}>
       <div className="app-chrome-traffic-space workspace-tabs-traffic" aria-hidden />
       <div
         className="workspace-tabs-strip"
@@ -786,7 +786,7 @@ function displayTabFor(
     pipelines: t('entry.navPipelines'),
     feedback: t('entry.navFeedback'),
     plugins: t('entry.navPlugins'),
-    'design-systems': t('entry.navDesignSystems'),
+    'design-systems': t('workspaceTabs.designSystem'),
     integrations: t('entry.navIntegrations'),
   };
   const entryIcon: Record<EntryHomeView, IconName> = {
@@ -804,7 +804,7 @@ function displayTabFor(
   return {
     id: tab.id,
     title: entryTitle[tab.view],
-    meta: tab.view === 'home' ? 'Start a new project' : 'Workspace',
+    meta: tab.view === 'home' ? t('entry.navNewProject') : t('entry.navWorkspaces'),
     icon: entryIcon[tab.view],
     tab,
   };

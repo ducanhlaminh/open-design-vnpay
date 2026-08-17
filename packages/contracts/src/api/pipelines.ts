@@ -543,6 +543,10 @@ export interface PipelineApp {
    * định trong skill.
    */
   designSystemId?: string | null;
+  /** Reusable Figma-link component catalogue selected for this App. The
+   * credential used to refresh the catalogue is machine-local and is never
+   * part of this reference. */
+  figmaDesignSystemSourceId?: string | null;
   /**
    * Source used only by docs-review's component audit. Legacy Apps default to
    * `app-design-system`; Figma mode contains 1–5 unique, validated files.

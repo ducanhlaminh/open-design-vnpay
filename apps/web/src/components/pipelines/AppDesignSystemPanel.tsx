@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DesignSystemFileDetail, DesignSystemReactInfo, DesignSystemSummary, DocsReviewComponentSource } from '@open-design/contracts';
+import type { DesignSystemFileDetail, DesignSystemReactInfo, DesignSystemSummary, DocsReviewComponentSource, FigmaDesignSystemSource } from '@open-design/contracts';
 import { DesignSpecView } from '../DesignSpecView';
 import { fetchDesignSystemCriteriaFile, fetchDesignSystemReactInfo, fetchDesignSystems } from '../../providers/registry';
 import { fetchAppFigmaCatalog, refreshAppFigmaCatalog, type AppFigmaCatalogResponse } from '../../state/figma-config';
@@ -15,13 +15,52 @@ interface Props {
   /** App-level component source; `figma-links` swaps the panel for the
    *  catalogue read from the linked Figma files. Defaults to the DS view. */
   componentSource?: DocsReviewComponentSource | null;
+  figmaDesignSystemSourceId?: string | null;
 }
 
-export function AppDesignSystemPanel({ appId, designSystemId, componentSource }: Props) {
+export function AppDesignSystemPanel({ appId, designSystemId, componentSource, figmaDesignSystemSourceId }: Props) {
+  if (figmaDesignSystemSourceId) {
+    return <SharedFigmaCatalogPanel sourceId={figmaDesignSystemSourceId} />;
+  }
   if (componentSource?.mode === 'figma-links') {
     return <AppFigmaCatalogPanel appId={appId} linkCount={componentSource.links.length} />;
   }
   return <AppDesignSystemView appId={appId} designSystemId={designSystemId} />;
+}
+
+function SharedFigmaCatalogPanel({ sourceId }: { sourceId: string }) {
+  const [source, setSource] = useState<FigmaDesignSystemSource | null | undefined>(undefined);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(`/api/figma-design-systems/${encodeURIComponent(sourceId)}`, { signal: controller.signal })
+      .then(async (response) => response.ok
+        ? (response.json() as Promise<{ source: FigmaDesignSystemSource }>).then((body) => body.source)
+        : null)
+      .then(setSource)
+      .catch(() => { if (!controller.signal.aborted) setSource(null); });
+    return () => controller.abort();
+  }, [sourceId]);
+  return (
+    <section className={styles.section} aria-label="Design system Figma">
+      <div className={styles.header}>
+        <div>
+          <h2 className={styles.heading}>{source?.name ?? 'Design system Figma'}</h2>
+          <p className={styles.muted}>Danh mục component dùng chung đã nạp từ link Figma. Nguồn này không có Showcase hoặc React bundle.</p>
+        </div>
+      </div>
+      <div className={styles.criteriaWrap}>
+        {source === undefined ? <p className={styles.muted}>Đang tải danh mục…</p>
+          : source === null ? <p className={styles.empty}>Không tìm thấy Design system Figma đã chọn.</p>
+          : <>
+              <div className={styles.criteriaHead}>
+                <h3 className={styles.subheading}>Danh mục component</h3>
+                <p className={styles.meta}>{source.catalog?.componentCount ?? 0} component · {source.catalog?.fileCount ?? source.links.length} file</p>
+              </div>
+              <p className={styles.muted}>Cập nhật {new Date(source.updatedAt).toLocaleString('vi-VN')} · Quản lý link và làm mới catalog tại trang Design system.</p>
+            </>}
+      </div>
+    </section>
+  );
 }
 
 /** "DS" of an App whose component source is Figma links: the component

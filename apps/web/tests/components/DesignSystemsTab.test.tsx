@@ -19,6 +19,14 @@ vi.mock('../../src/providers/registry', async () => {
   };
 });
 
+vi.mock('../../src/providers/figma-design-systems', () => ({
+  fetchFigmaDesignSystems: vi.fn(async () => []),
+  createFigmaDesignSystem: vi.fn(),
+  updateFigmaDesignSystem: vi.fn(),
+  refreshFigmaDesignSystem: vi.fn(),
+  deleteFigmaDesignSystem: vi.fn(),
+}));
+
 // DesignSystemCard lazy-loads its showcase iframe through an
 // IntersectionObserver; an idle observer keeps thumbnails (and the registry
 // fetch) out of the way so the tests only exercise filtering.
@@ -66,19 +74,21 @@ const systems: DesignSystemSummary[] = [
 ];
 
 describe('DesignSystemsTab', () => {
-  it('surfaces user-created design systems in the gallery', () => {
+  it('separates Figma-link sources from React zip design systems', () => {
     render(
       <DesignSystemsTab
         systems={systems}
         selectedId="user:acme"
         onSelect={() => {}}
         onPreview={() => {}}
-        onCreate={() => {}}
         onOpenSystem={() => {}}
       />,
     );
 
-    expect(screen.getByText('Create')).toBeTruthy();
+    expect(screen.getByText('Add Figma links')).toBeTruthy();
+    expect(screen.queryByText('Acme Design System')).toBeNull();
+
+    openReactZipSystems();
     expect(screen.getByText('Acme Design System')).toBeTruthy();
     expect(screen.queryByText('Linear')).toBeNull();
 
@@ -86,8 +96,7 @@ describe('DesignSystemsTab', () => {
     expect(screen.getByText('Linear')).toBeTruthy();
   });
 
-  it('routes create and open actions to the dedicated design-system flow', () => {
-    const onCreate = vi.fn();
+  it('routes existing React design systems to the dedicated detail flow', () => {
     const onOpenSystem = vi.fn();
     render(
       <DesignSystemsTab
@@ -95,14 +104,11 @@ describe('DesignSystemsTab', () => {
         selectedId={null}
         onSelect={() => {}}
         onPreview={() => {}}
-        onCreate={onCreate}
         onOpenSystem={onOpenSystem}
       />,
     );
 
-    fireEvent.click(screen.getByText('Create'));
-    expect(onCreate).toHaveBeenCalledOnce();
-
+    openReactZipSystems();
     fireEvent.click(screen.getByRole('button', { name: 'Mở Acme Design System' }));
     expect(onOpenSystem).toHaveBeenCalledWith('user:acme');
   });
@@ -116,7 +122,6 @@ describe('DesignSystemsTab', () => {
         selectedId={null}
         onSelect={() => {}}
         onPreview={onPreview}
-        onCreate={() => {}}
         onOpenSystem={onOpenSystem}
       />,
     );
@@ -153,6 +158,7 @@ describe('DesignSystemsTab', () => {
       />,
     );
 
+    openReactZipSystems();
     fireEvent.click(screen.getByLabelText('Thao tác với Acme Design System'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Đổi tên' }));
     fireEvent.change(screen.getByLabelText('Tên bộ Design System'), {
@@ -206,7 +212,11 @@ function renderTab(items: DesignSystemSummary[] = librarySystems) {
 }
 
 function openOfficialPresets() {
-  fireEvent.click(screen.getByRole('tab', { name: 'Official presets' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Design system markdown' }));
+}
+
+function openReactZipSystems() {
+  fireEvent.click(screen.getByRole('tab', { name: /React from a \.zip file/ }));
 }
 
 // The surface pill renders its label and a `.filter-pill-count` span; read

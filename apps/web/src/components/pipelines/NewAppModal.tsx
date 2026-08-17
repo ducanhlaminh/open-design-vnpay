@@ -37,7 +37,7 @@
 // setImportResult với phần đã nhập và hiện lỗi kèm "đã nhập X/N".
 
 import { useEffect, useRef, useState } from 'react';
-import type { AppPoolImportResponse, DocsReviewComponentSource } from '@open-design/contracts';
+import type { AppPoolImportResponse, DocsReviewComponentSource, FigmaDesignSystemSource, ListFigmaDesignSystemSourcesResponse } from '@open-design/contracts';
 
 import {
   FormError,
@@ -54,8 +54,6 @@ import { ProgressBar } from './ProgressBar';
 import { appLabelOf, toSlugId, useAppOptions } from './newProjectForm';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
-import { normalizeFigmaLinks } from './EditAppModal';
-import { FigmaLinksPanel, figmaLinksVerificationKey, type FigmaLinksVerificationState } from './FigmaLinksPanel';
 import styles from './EditAppModal.module.css';
 
 export function NewAppModal({
@@ -69,9 +67,9 @@ export function NewAppModal({
   const [name, setName] = useState('');
   const [systems, setSystems] = useState<Awaited<ReturnType<typeof fetchDesignSystems>> | null>(null);
   const [designSystemId, setDesignSystemId] = useState<string | null>(null);
-  const [sourceMode, setSourceMode] = useState<DocsReviewComponentSource['mode']>('app-design-system');
-  const [figmaLinks, setFigmaLinks] = useState('');
-  const [figmaVerification, setFigmaVerification] = useState<FigmaLinksVerificationState>({ status: 'idle', linksKey: '' });
+  const [sourceMode, setSourceMode] = useState<'app-design-system' | 'figma-design-system'>('app-design-system');
+  const [figmaSources, setFigmaSources] = useState<FigmaDesignSystemSource[] | null>(null);
+  const [figmaDesignSystemSourceId, setFigmaDesignSystemSourceId] = useState<string | null>(null);
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [relatedTicked, setRelatedTicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -93,21 +91,22 @@ export function NewAppModal({
 
   useEffect(() => {
     void fetchDesignSystems().then(setSystems);
+    void fetch('/api/figma-design-systems')
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Không tải được Design system Figma: ${response.status}`);
+        return response.json() as Promise<ListFigmaDesignSystemSourcesResponse>;
+      })
+      .then((body) => setFigmaSources(body.sources))
+      .catch(() => setFigmaSources([]));
   }, []);
 
   const nameTrim = name.trim();
   // Trùng tên KHÔNG được im lặng tái dùng App cũ: người dùng đang bấm "App
   // mới", nếu ta lặng lẽ trả về App có sẵn thì họ tin là vừa tạo một App khác.
   const duplicate = apps.some((a) => appLabelOf(a).trim().toLowerCase() === nameTrim.toLowerCase());
-  const normalizedLinks = normalizeFigmaLinks(figmaLinks);
-  const normalizedLinksKey = figmaLinksVerificationKey(normalizedLinks.links);
-  const figmaLinksVerified = figmaVerification.status === 'verified'
-    && figmaVerification.linksKey === normalizedLinksKey;
-  const componentSource: DocsReviewComponentSource = sourceMode === 'app-design-system'
-    ? { mode: 'app-design-system' }
-    : { mode: 'figma-links', links: normalizedLinks.links };
+  const componentSource: DocsReviewComponentSource = { mode: 'app-design-system' };
   const canSubmit = Boolean(nameTrim) && !duplicate
-    && (sourceMode !== 'figma-links' || (!normalizedLinks.error && figmaLinksVerified));
+    && (sourceMode !== 'figma-design-system' || Boolean(figmaDesignSystemSourceId));
 
   const submit = async () => {
     if (busy || !canSubmit) return;
@@ -125,6 +124,7 @@ export function NewAppModal({
           name: nameTrim,
           // Picker DS bị ẩn ở chế độ Link Figma → không gửi lựa chọn ẩn.
           ...(designSystemId && sourceMode === 'app-design-system' ? { designSystemId } : {}),
+          ...(sourceMode === 'figma-design-system' && figmaDesignSystemSourceId ? { figmaDesignSystemSourceId } : {}),
           docsReviewComponentSource: componentSource,
         }),
       });
@@ -284,32 +284,26 @@ export function NewAppModal({
               <span><strong>Design System đã nạp</strong><small>Dùng bộ component đã lưu trong dự án.</small></span>
             </label>
             <label className={styles.sourceChoice}>
-              <input type="radio" name="new-app-component-source" checked={sourceMode === 'figma-links'} onChange={() => setSourceMode('figma-links')} />
-              <span><strong>Link Figma</strong><small>Đọc component từ 1–5 file Figma bằng token của bạn.</small></span>
+              <input type="radio" name="new-app-component-source" checked={sourceMode === 'figma-design-system'} onChange={() => setSourceMode('figma-design-system')} />
+              <span><strong>Design system từ link Figma</strong><small>Chọn một danh mục component đã nạp ở trang Design system.</small></span>
             </label>
           </div>
         )}
       </FormField>
 
-      {sourceMode === 'figma-links' ? (
-        <>
-          <FormField label="Link file Figma" hint="Mỗi dòng một link (tối đa 5). Link trùng sẽ tự động được bỏ qua." error={normalizedLinks.error ?? undefined}>
-            {(fieldProps) => (
-              <textarea
-                {...fieldProps}
-                className={styles.linksInput}
-                rows={4}
-                value={figmaLinks}
-                onChange={(event) => setFigmaLinks(event.target.value)}
-                placeholder="https://www.figma.com/design/…?node-id=…"
-              />
-            )}
-          </FormField>
-          <FigmaLinksPanel links={normalizedLinks.links} linksError={normalizedLinks.error} onVerificationChange={setFigmaVerification} />
-          {!normalizedLinks.error && !figmaLinksVerified ? (
-            <FormError>{figmaVerification.message ?? 'Hãy chờ ứng dụng kiểm tra xong tất cả link Figma trước khi tạo dự án.'}</FormError>
-          ) : null}
-        </>
+      {sourceMode === 'figma-design-system' ? (
+        <FormField label="Design system Figma" hint="Chỉ hiển thị nguồn đã nạp catalog thành công. Link và token được quản lý ở trang Design system.">
+          {(fieldProps) => (
+            <select {...fieldProps} className={styles.sourceSelect} value={figmaDesignSystemSourceId ?? ''} onChange={(event) => setFigmaDesignSystemSourceId(event.target.value || null)}>
+              <option value="">{figmaSources === null ? 'Đang tải…' : 'Chọn Design system Figma'}</option>
+              {(figmaSources ?? []).filter((source) => source.catalog !== null && (source.status === 'ready' || source.status === 'error')).map((source) => (
+                <option key={source.id} value={source.id}>
+                  {source.name} · {source.catalog?.componentCount ?? 0} component{source.status === 'error' ? ' · dùng bản cập nhật gần nhất' : ''}
+                </option>
+              ))}
+            </select>
+          )}
+        </FormField>
       ) : null}
 
       {sourceMode === 'app-design-system' ? (

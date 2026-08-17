@@ -1,10 +1,38 @@
 /* ============================================================
-   Inter — self-hosted variable font (fontsource woff2 subsets).
-   Bundled locally (no external request; CSP-safe) with Vietnamese
-   coverage so VNPAY's Vietnamese UI renders in Inter, not the OS
-   fallback. One @font-face per subset with unicode-range so the
-   browser only downloads the ranges a page actually uses.
+   Be Vietnam Pro — self-hosted UI font for the Vietnamese-first app.
+   The files are bundled with the web app so rendering does not depend on
+   a Google Fonts request or a font installed on the user's machine.
    ============================================================ */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('/fonts/be-vietnam-pro-400.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url('/fonts/be-vietnam-pro-500.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url('/fonts/be-vietnam-pro-600.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url('/fonts/be-vietnam-pro-700.ttf') format('truetype');
+}
+
+/* Inter stays available for components that explicitly request it. */
 @font-face {
   font-family: 'Inter';
   font-style: normal;

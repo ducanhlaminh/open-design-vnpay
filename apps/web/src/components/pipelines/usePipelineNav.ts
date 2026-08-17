@@ -27,6 +27,7 @@ export interface NavApp {
   name: string;
   /** Design System gắn ở cấp App. */
   designSystemId?: string | null;
+  figmaDesignSystemSourceId?: string | null;
   docsReviewComponentSource?: DocsReviewComponentSource;
   context?: AppContextSyncInfo | null;
   /** Rổ "Chưa gán app" — hiển thị khác, không có trang cấu hình app. */
@@ -100,16 +101,17 @@ export function localPipelineApps(apps: PipelineApp[]): PipelineApp[] {
 
 export function groupByApp(
   projects: PipelineProject[],
-  knownApps: Array<{ id: string; name?: string; designSystemId?: string | null; docsReviewComponentSource?: DocsReviewComponentSource; context?: AppContextSyncInfo | null }>,
+  knownApps: Array<{ id: string; name?: string; designSystemId?: string | null; figmaDesignSystemSourceId?: string | null; docsReviewComponentSource?: DocsReviewComponentSource; context?: AppContextSyncInfo | null }>,
 ): NavApp[] {
   const byId = new Map<string, NavApp>();
-  const ensure = (id: string, name?: string, designSystemId?: string | null, context?: AppContextSyncInfo | null, docsReviewComponentSource?: DocsReviewComponentSource): NavApp => {
+  const ensure = (id: string, name?: string, designSystemId?: string | null, context?: AppContextSyncInfo | null, docsReviewComponentSource?: DocsReviewComponentSource, figmaDesignSystemSourceId?: string | null): NavApp => {
     const hit = byId.get(id);
     if (hit) {
       // Tên đến sau từ danh sách app (feature chỉ mang bản sao có thể cũ).
       if (name && hit.name === hit.id) hit.name = name;
       if (designSystemId !== undefined) hit.designSystemId = designSystemId;
       if (docsReviewComponentSource !== undefined) hit.docsReviewComponentSource = docsReviewComponentSource;
+      if (figmaDesignSystemSourceId !== undefined) hit.figmaDesignSystemSourceId = figmaDesignSystemSourceId;
       if (context !== undefined) hit.context = context;
       return hit;
     }
@@ -117,6 +119,7 @@ export function groupByApp(
       id,
       name: name || id,
       designSystemId,
+      figmaDesignSystemSourceId,
       docsReviewComponentSource,
       context,
       unassigned: id === UNASSIGNED_APP,
@@ -129,7 +132,7 @@ export function groupByApp(
   };
 
   // App rỗng vẫn phải hiện: vừa tạo xong mà không thấy nó ở đâu là bế tắc.
-  for (const a of knownApps) ensure(a.id, a.name, a.designSystemId, a.context, a.docsReviewComponentSource);
+  for (const a of knownApps) ensure(a.id, a.name, a.designSystemId, a.context, a.docsReviewComponentSource, a.figmaDesignSystemSourceId);
 
   for (const p of projects) {
     const row = ensure(appIdOf(p), p.app?.name);
@@ -150,7 +153,7 @@ export function groupByApp(
 
 export function usePipelineNav(): PipelineNav {
   const [projects, setProjects] = useState<PipelineProject[]>([]);
-  const [knownApps, setKnownApps] = useState<Array<{ id: string; name?: string; designSystemId?: string | null; docsReviewComponentSource?: DocsReviewComponentSource; context?: AppContextSyncInfo | null }>>([]);
+  const [knownApps, setKnownApps] = useState<Array<{ id: string; name?: string; designSystemId?: string | null; figmaDesignSystemSourceId?: string | null; docsReviewComponentSource?: DocsReviewComponentSource; context?: AppContextSyncInfo | null }>>([]);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -174,6 +177,7 @@ export function usePipelineNav(): PipelineNav {
           id: app.id,
           name: app.name,
           designSystemId: app.designSystemId,
+          figmaDesignSystemSourceId: app.figmaDesignSystemSourceId,
           docsReviewComponentSource: app.docsReviewComponentSource,
           context: app.context ? {
             currentVersion: app.context.current?.contextVersion ?? app.context.latestVersion,

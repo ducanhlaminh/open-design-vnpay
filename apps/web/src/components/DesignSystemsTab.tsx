@@ -24,7 +24,8 @@ import {
 import { buildSrcdoc } from '../runtime/srcdoc';
 import { Icon } from './Icon';
 import { DesignSystemSyncActions } from './DesignSystemSync';
-import type { DesignSystemSummary, ProjectTemplate, Surface } from '../types';
+import { FigmaDesignSystemsSection } from './FigmaDesignSystemsSection';
+import type { DesignSystemSummary, Surface } from '../types';
 
 interface Props {
   systems: DesignSystemSummary[];
@@ -34,11 +35,9 @@ interface Props {
   // Open a react-bundle system's detail modal already expanded to the
   // viewport (card corner "Fullscreen" action; react-bundle cards only).
   onPreviewFullscreen?: (id: string) => void;
-  onCreate?: () => void;
   onOpenSystem?: (id: string) => void;
   onOpenCriteria?: (id: string) => void;
   onSystemsRefresh?: () => Promise<void> | void;
-  templates?: ProjectTemplate[];
 }
 
 const CATEGORY_ORDER = [
@@ -56,9 +55,8 @@ const CATEGORY_ORDER = [
 
 type SurfaceFilter = 'all' | Surface;
 type UserListFilter = 'all' | 'published' | 'draft';
-type PrimaryCollection = 'design-system' | 'template';
-type DesignSystemCollection = 'mine' | 'official' | 'enterprise';
-type TemplateCollection = 'mine' | 'enterprise';
+type DesignSystemCollection = 'official' | 'enterprise';
+type EnterpriseSourceKind = 'figma-links' | 'react-zip';
 
 const SURFACE_PILLS: { value: SurfaceFilter; labelKey: 'examples.modeAll' | 'ds.surfaceWeb' | 'ds.surfaceImage' | 'ds.surfaceVideo' | 'ds.surfaceAudio' }[] = [
   { value: 'all', labelKey: 'examples.modeAll' },
@@ -112,11 +110,9 @@ export function DesignSystemsTab({
   onSelect,
   onPreview,
   onPreviewFullscreen,
-  onCreate,
   onOpenSystem,
   onOpenCriteria,
   onSystemsRefresh,
-  templates = [],
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
@@ -181,9 +177,8 @@ export function DesignSystemsTab({
     }
     setFigmaImporting(false);
   };
-  const [primaryCollection, setPrimaryCollection] = useState<PrimaryCollection>('design-system');
-  const [designSystemCollection, setDesignSystemCollection] = useState<DesignSystemCollection>('mine');
-  const [templateCollection, setTemplateCollection] = useState<TemplateCollection>('mine');
+  const [designSystemCollection, setDesignSystemCollection] = useState<DesignSystemCollection>('enterprise');
+  const [enterpriseSourceKind, setEnterpriseSourceKind] = useState<EnterpriseSourceKind>('figma-links');
   const [surfaceFilter, setSurfaceFilter] = useState<SurfaceFilter>('all');
   const [category, setCategory] = useState<string>('All');
   // Cache fetched showcase HTML across re-renders so cards never re-flicker
@@ -469,40 +464,16 @@ export function DesignSystemsTab({
 
   return (
     <div className="tab-panel design-systems-manager" data-testid="design-systems-tab">
-      <div className="ds-manager-tabs">
-        <div className="subtab-pill" role="tablist" aria-label="Design systems area">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={primaryCollection === 'design-system'}
-            className={primaryCollection === 'design-system' ? 'active' : ''}
-            onClick={() => setPrimaryCollection('design-system')}
-          >
-            Design system
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={primaryCollection === 'template'}
-            className={primaryCollection === 'template' ? 'active' : ''}
-            onClick={() => setPrimaryCollection('template')}
-          >
-            Template
-          </button>
-        </div>
-      </div>
-
-      {primaryCollection === 'design-system' ? (
-        <div className="ds-manager-subtabs">
-          <div className="ds-tag-tabs" role="tablist" aria-label="Design system source">
+      <div className="ds-manager-subtabs">
+        <div className="subtab-pill ds-manager-collection-tabs" role="tablist" aria-label={t('ds.managerSourceLabel')}>
             <button
               type="button"
               role="tab"
-              aria-selected={designSystemCollection === 'mine'}
-              className={designSystemCollection === 'mine' ? 'active' : ''}
-              onClick={() => setDesignSystemCollection('mine')}
+              aria-selected={designSystemCollection === 'enterprise'}
+              className={designSystemCollection === 'enterprise' ? 'active' : ''}
+              onClick={() => setDesignSystemCollection('enterprise')}
             >
-              Your systems
+              {t('ds.managerEnterprise')}
             </button>
             <button
               type="button"
@@ -511,52 +482,19 @@ export function DesignSystemsTab({
               className={designSystemCollection === 'official' ? 'active' : ''}
               onClick={() => setDesignSystemCollection('official')}
             >
-              Official presets
+              {t('ds.managerOfficialPresets')}
             </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={designSystemCollection === 'enterprise'}
-              className={designSystemCollection === 'enterprise' ? 'active' : ''}
-              onClick={() => setDesignSystemCollection('enterprise')}
-            >
-              Enterprise
-            </button>
-          </div>
         </div>
-      ) : (
-        <div className="ds-manager-subtabs">
-          <div className="ds-tag-tabs" role="tablist" aria-label="Template source">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={templateCollection === 'mine'}
-              className={templateCollection === 'mine' ? 'active' : ''}
-              onClick={() => setTemplateCollection('mine')}
-            >
-              Your templates
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={templateCollection === 'enterprise'}
-              className={templateCollection === 'enterprise' ? 'active' : ''}
-              onClick={() => setTemplateCollection('enterprise')}
-            >
-              Enterprise
-            </button>
-          </div>
-        </div>
-      )}
+      </div>
 
-      {primaryCollection === 'design-system' && designSystemCollection === 'mine' ? (
-        <section className="ds-settings-card" aria-label="Your design systems">
+      {designSystemCollection === 'enterprise' ? (
+        <section className="ds-settings-card" aria-label={t('ds.managerEnterpriseSystems')}>
         <div className="ds-settings-card__head">
           <div>
-            <span className="ds-manager-eyebrow">Design Systems</span>
-            <h2>Your systems</h2>
+            <span className="ds-manager-eyebrow">{t('ds.managerTabSystem')}</span>
+            <h2>{t('ds.managerEnterpriseSystems')}</h2>
           </div>
-          <div className="ds-tag-tabs" role="tablist" aria-label="Platform filter">
+          {enterpriseSourceKind === 'react-zip' ? <div className="ds-tag-tabs" role="tablist" aria-label={t('ds.managerPlatformFilter')}>
             <button
               type="button"
               role="tab"
@@ -564,7 +502,7 @@ export function DesignSystemsTab({
               className={platformFilter === 'all' ? 'active' : ''}
               onClick={() => setPlatformFilter('all')}
             >
-              All
+              {t('ds.categoryAll')}
             </button>
             <button
               type="button"
@@ -584,84 +522,104 @@ export function DesignSystemsTab({
             >
               Web
             </button>
-          </div>
-          <select
-            aria-label="Filter design systems"
+          </div> : null}
+          {enterpriseSourceKind === 'react-zip' ? <select
+            aria-label={t('ds.managerFilterAria')}
             value={userFilter}
             onChange={(event) => setUserFilter(event.target.value as UserListFilter)}
           >
-            <option value="all">All</option>
-            <option value="published">Published</option>
-            <option value="draft">Draft</option>
-          </select>
+            <option value="all">{t('ds.categoryAll')}</option>
+            <option value="published">{t('ds.managerPublished')}</option>
+            <option value="draft">{t('ds.managerDraft')}</option>
+          </select> : null}
         </div>
 
-        <DesignSystemSyncActions
-          systems={systems}
-          onSystemsRefresh={onSystemsRefresh}
-        />
-
-        {onCreate ? (
-          <button type="button" className="ds-create-row" onClick={onCreate}>
+        <div className="ds-enterprise-source-tabs" role="tablist" aria-label={t('ds.managerEnterpriseSourceLabel')}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={enterpriseSourceKind === 'figma-links'}
+            className={enterpriseSourceKind === 'figma-links' ? 'active' : ''}
+            onClick={() => setEnterpriseSourceKind('figma-links')}
+          >
+            <Icon name="link" size={15} />
             <span>
-              <strong>Create new design system</strong>
-              <small>Teach Open Design your brand, product, code, assets, and design references.</small>
+              <strong>{t('ds.managerFigmaLinksTab')}</strong>
+              <small>{t('ds.managerFigmaLinksTabDescription')}</small>
             </span>
-            <span className="ds-create-row__action">Create</span>
           </button>
-        ) : null}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={enterpriseSourceKind === 'react-zip'}
+            className={enterpriseSourceKind === 'react-zip' ? 'active' : ''}
+            onClick={() => setEnterpriseSourceKind('react-zip')}
+          >
+            <Icon name="file-code" size={15} />
+            <span>
+              <strong>{t('ds.managerReactZipTab')}</strong>
+              <small>{t('ds.managerReactZipTabDescription')}</small>
+            </span>
+          </button>
+        </div>
 
-        {/* Đường tắt tạo DS từ Figma: chọn (các) zip plugin Fig Pipeline là
-            import ngay — foundation trước, UI lib sau (đặt tên 01-/02- để cố
-            định thứ tự merge). Bộ React + token compile ngay khi upload. */}
-        <input
-          ref={figmaFileRef}
-          type="file"
-          accept=".zip,.json,application/zip,application/json"
-          multiple
-          hidden
-          onChange={(event) => {
-            const files = Array.from(event.target.files ?? []);
-            event.target.value = '';
-            void handleFigmaImportFiles(files);
-          }}
-        />
-        <button
-          type="button"
-          className="ds-create-row"
-          onClick={() => figmaFileRef.current?.click()}
-          disabled={figmaImporting}
-        >
-          <span>
-            <strong>{figmaImporting ? 'Importing from Figma…' : 'Import from Figma (.zip)'}</strong>
-            <small>
-              Pick the zip(s) exported by the Fig Pipeline plugin — foundation first, UI lib second
-              (name them 01-/02-). Compiles the React bundle + tokens on upload.
-            </small>
-          </span>
-          <span className="ds-create-row__action">{figmaImporting ? '…' : 'Import'}</span>
-        </button>
-        {figmaImportError ? (
+        {enterpriseSourceKind === 'figma-links' ? <FigmaDesignSystemsSection /> : (
+          <div className="ds-enterprise-react-panel">
+            <DesignSystemSyncActions
+              systems={systems}
+              onSystemsRefresh={onSystemsRefresh}
+            />
+
+            <div className="ds-manager-quick-actions ds-manager-quick-actions--react">
+          {/* Đường tắt tạo DS từ Figma: chọn (các) zip plugin Fig Pipeline là
+              import ngay — foundation trước, UI lib sau (đặt tên 01-/02- để cố
+              định thứ tự merge). Bộ React + token compile ngay khi upload. */}
+          <input
+            ref={figmaFileRef}
+            type="file"
+            accept=".zip,.json,application/zip,application/json"
+            multiple
+            hidden
+            onChange={(event) => {
+              const files = Array.from(event.target.files ?? []);
+              event.target.value = '';
+              void handleFigmaImportFiles(files);
+            }}
+          />
+          <button
+            type="button"
+            className="ds-create-row ds-create-row--figma"
+            onClick={() => figmaFileRef.current?.click()}
+            disabled={figmaImporting}
+          >
+            <span>
+              <strong>{figmaImporting ? t('ds.managerImportingFigma') : t('ds.managerImportFigma')}</strong>
+              <small>{t('ds.managerImportDescription')}</small>
+            </span>
+            <span className="ds-create-row__action">{figmaImporting ? '…' : t('ds.managerImportAction')}</span>
+          </button>
+            </div>
+            {figmaImportError ? (
           <div className="ds-user-empty" role="alert">
             {figmaImportError}
           </div>
-        ) : null}
-        {figmaImportWarnings.length > 0 ? (
+            ) : null}
+            {figmaImportWarnings.length > 0 ? (
           <details className="ds-user-empty">
-            <summary>{figmaImportWarnings.length} cảnh báo khi import</summary>
+            <summary>{t('ds.managerImportWarnings', { count: figmaImportWarnings.length })}</summary>
             <ul>
               {figmaImportWarnings.slice(0, 20).map((warning) => (
                 <li key={warning}>{warning}</li>
               ))}
             </ul>
           </details>
-        ) : null}
+            ) : null}
 
-        {userSystems.length === 0 ? (
+            {userSystems.length === 0 ? (
           <div className="ds-user-empty">
-            No design systems yet. Create one from real product context, review the draft, then publish it for future projects.
+            {t('ds.managerEmptySystems')}
           </div>
-        ) : (
+            ) : (
           <div className="ds-user-list">
             {userSystems.map((system) => {
               const status = system.status ?? 'draft';
@@ -678,7 +636,7 @@ export function DesignSystemsTab({
                   >
                     <span className="ds-user-row__title">
                       <span>{system.title}</span>
-                      {selected ? <span className="ds-card-badge">Default</span> : null}
+                      {selected ? <span className="ds-card-badge">{t('ds.badgeDefault')}</span> : null}
                       {system.platform ? (
                         <span className="ds-card-badge">
                           {system.platform === 'mobile' ? 'Mobile' : 'Web'}
@@ -686,7 +644,7 @@ export function DesignSystemsTab({
                       ) : null}
                     </span>
                     <span className="ds-user-row__meta">
-                      You · updated {formatShortDate(system.updatedAt)}
+                      {t('ds.managerUpdatedByYou', { date: formatShortDate(system.updatedAt) })}
                       {system.platform ? ` · ${system.platform === 'mobile' ? 'Mobile' : 'Web'}` : ''}
                     </span>
                   </button>
@@ -725,6 +683,8 @@ export function DesignSystemsTab({
                 </div>
               );
             })}
+          </div>
+            )}
           </div>
         )}
         </section>
@@ -766,12 +726,12 @@ export function DesignSystemsTab({
         </div>
       ) : null}
 
-      {primaryCollection === 'design-system' && designSystemCollection === 'official' ? (
-        <section className="ds-settings-card" aria-label="Official design system presets">
+      {designSystemCollection === 'official' ? (
+        <section className="ds-settings-card" aria-label={t('ds.managerOfficialPresets')}>
         <div className="ds-settings-card__head">
           <div>
-            <span className="ds-manager-eyebrow">Library</span>
-            <h2>Official presets</h2>
+            <span className="ds-manager-eyebrow">{t('ds.managerLibrary')}</span>
+            <h2>{t('ds.managerOfficialPresets')}</h2>
           </div>
         </div>
         <div className="tab-panel-toolbar ds-manager-toolbar">
@@ -898,73 +858,7 @@ export function DesignSystemsTab({
         </section>
       ) : null}
 
-      {primaryCollection === 'design-system' && designSystemCollection === 'enterprise' ? (
-        <ComingSoonPanel
-          eyebrow="Design Systems"
-          title="Enterprise design systems"
-          body="Shared team design systems and governed brand libraries are coming soon."
-        />
-      ) : null}
-
-      {primaryCollection === 'template' && templateCollection === 'mine' ? (
-        <section className="ds-settings-card ds-templates-card" aria-label="Your templates">
-          <div className="ds-settings-card__head">
-            <div>
-              <span className="ds-manager-eyebrow">Templates</span>
-              <h2>Your templates</h2>
-            </div>
-          </div>
-          {templates.length === 0 ? (
-            <div className="ds-user-empty">
-              No templates yet. Create one from any generated project via Share once template publishing is enabled.
-            </div>
-          ) : (
-            <div className="ds-template-list">
-              {templates.map((template) => (
-                <div className="ds-template-row" key={template.id}>
-                  <div>
-                    <strong>{template.name}</strong>
-                    <span>{template.description?.trim() || 'Created from a project'}</span>
-                  </div>
-                  <small>{formatShortDate(template.createdAt)}</small>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      ) : null}
-
-      {primaryCollection === 'template' && templateCollection === 'enterprise' ? (
-        <ComingSoonPanel
-          eyebrow="Templates"
-          title="Enterprise templates"
-          body="Team-approved templates and organization-wide publishing are coming soon."
-        />
-      ) : null}
     </div>
-  );
-}
-
-function ComingSoonPanel({
-  eyebrow,
-  title,
-  body,
-}: {
-  eyebrow: string;
-  title: string;
-  body: string;
-}) {
-  return (
-    <section className="ds-settings-card ds-coming-soon-card" aria-label={title}>
-      <div className="ds-settings-card__head">
-        <div>
-          <span className="ds-manager-eyebrow">{eyebrow}</span>
-          <h2>{title}</h2>
-        </div>
-        <span className="ds-coming-soon-badge">Coming soon</span>
-      </div>
-      <div className="ds-user-empty">{body}</div>
-    </section>
   );
 }
 

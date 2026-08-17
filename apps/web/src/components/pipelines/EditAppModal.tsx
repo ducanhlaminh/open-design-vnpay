@@ -6,7 +6,7 @@
 // registry), giống hai form khai sinh cạnh đây.
 
 import { useEffect, useState } from 'react';
-import type { DesignSystemSummary, DocsReviewComponentSource } from '@open-design/contracts';
+import type { DesignSystemSummary, DocsReviewComponentSource, FigmaDesignSystemSource, ListFigmaDesignSystemSourcesResponse } from '@open-design/contracts';
 
 import {
   FormError,
@@ -20,7 +20,6 @@ import { AppPoolSection } from './AppPoolSection';
 import { appLabelOf, useAppOptions } from './newProjectForm';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
-import { FigmaLinksPanel, figmaLinksVerificationKey, type FigmaLinksVerificationState } from './FigmaLinksPanel';
 import styles from './EditAppModal.module.css';
 
 export function normalizeFigmaLinks(raw: string): { links: Array<{ url: string; fileKey: string; nodeId?: string }>; error: string | null } {
@@ -55,7 +54,7 @@ export function EditAppModal({
   onClose,
   onSaved,
 }: {
-  app: { id: string; name: string; designSystemId?: string | null; docsReviewComponentSource?: DocsReviewComponentSource };
+  app: { id: string; name: string; designSystemId?: string | null; figmaDesignSystemSourceId?: string | null; docsReviewComponentSource?: DocsReviewComponentSource };
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
@@ -64,9 +63,10 @@ export function EditAppModal({
   const [systems, setSystems] = useState<DesignSystemSummary[] | null>(null);
   const [designSystemId, setDesignSystemId] = useState<string | null>(app.designSystemId ?? null);
   const initialSource = app.docsReviewComponentSource ?? { mode: 'app-design-system' as const };
-  const [sourceMode, setSourceMode] = useState<DocsReviewComponentSource['mode']>(initialSource.mode);
-  const [figmaLinks, setFigmaLinks] = useState(initialSource.mode === 'figma-links' ? initialSource.links.map((file) => file.url).join('\n') : '');
-  const [figmaVerification, setFigmaVerification] = useState<FigmaLinksVerificationState>({ status: 'idle', linksKey: '' });
+  const initialSourceMode = app.figmaDesignSystemSourceId || initialSource.mode === 'figma-links' ? 'figma-design-system' : 'app-design-system';
+  const [sourceMode, setSourceMode] = useState<'app-design-system' | 'figma-design-system'>(initialSourceMode);
+  const [figmaSources, setFigmaSources] = useState<FigmaDesignSystemSource[] | null>(null);
+  const [figmaDesignSystemSourceId, setFigmaDesignSystemSourceId] = useState<string | null>(app.figmaDesignSystemSourceId ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,6 +75,13 @@ export function EditAppModal({
     void fetchDesignSystems().then((all) => {
       if (!cancelled) setSystems(all);
     });
+    void fetch('/api/figma-design-systems')
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Không tải được Design system Figma: ${response.status}`);
+        return response.json() as Promise<ListFigmaDesignSystemSourcesResponse>;
+      })
+      .then((body) => { if (!cancelled) setFigmaSources(body.sources); })
+      .catch(() => { if (!cancelled) setFigmaSources([]); });
     return () => { cancelled = true; };
   }, []);
 
@@ -90,17 +97,13 @@ export function EditAppModal({
   // ngầm gây nhầm. Đổi lại chế độ DS thì lựa chọn cũ hiện lại (state giữ).
   const effectiveDesignSystemId = sourceMode === 'app-design-system' ? designSystemId : null;
   const designSystemChanged = effectiveDesignSystemId !== (app.designSystemId ?? null);
-  const normalizedLinks = normalizeFigmaLinks(figmaLinks);
-  const normalizedLinksKey = figmaLinksVerificationKey(normalizedLinks.links);
-  const figmaLinksVerified = figmaVerification.status === 'verified'
-    && figmaVerification.linksKey === normalizedLinksKey;
-  const nextSource: DocsReviewComponentSource = sourceMode === 'app-design-system'
-    ? { mode: 'app-design-system' }
-    : { mode: 'figma-links', links: normalizedLinks.links };
+  const nextSource: DocsReviewComponentSource = { mode: 'app-design-system' };
   const sourceChanged = JSON.stringify(nextSource) !== JSON.stringify(initialSource);
+  const effectiveFigmaSourceId = sourceMode === 'figma-design-system' ? figmaDesignSystemSourceId : null;
+  const figmaSourceChanged = effectiveFigmaSourceId !== (app.figmaDesignSystemSourceId ?? null);
   const canSubmit = Boolean(nameTrim) && !duplicate
-    && (sourceMode !== 'figma-links' || (!normalizedLinks.error && figmaLinksVerified))
-    && (nameChanged || designSystemChanged || sourceChanged);
+    && (sourceMode !== 'figma-design-system' || Boolean(figmaDesignSystemSourceId) || initialSource.mode === 'figma-links')
+    && (nameChanged || designSystemChanged || sourceChanged || figmaSourceChanged);
 
   const submit = async () => {
     if (busy || !canSubmit) return;
@@ -113,7 +116,8 @@ export function EditAppModal({
         body: JSON.stringify({
           ...(nameChanged ? { name: nameTrim } : {}),
           ...(designSystemChanged ? { designSystemId: effectiveDesignSystemId } : {}),
-          ...(sourceChanged ? { docsReviewComponentSource: nextSource } : {}),
+          ...(figmaSourceChanged ? { figmaDesignSystemSourceId: effectiveFigmaSourceId } : {}),
+          ...(sourceChanged && (sourceMode === 'app-design-system' || Boolean(figmaDesignSystemSourceId)) ? { docsReviewComponentSource: nextSource } : {}),
         }),
       });
       const j = await res.json().catch(() => ({}));
@@ -184,23 +188,31 @@ export function EditAppModal({
               <span><strong>Design System đã nạp</strong><small>Dùng bộ component đã lưu trong dự án.</small></span>
             </label>
             <label className={styles.sourceChoice}>
-              <input type="radio" name="component-source" checked={sourceMode === 'figma-links'} onChange={() => setSourceMode('figma-links')} />
-              <span><strong>Link Figma</strong><small>Đọc component từ 1–5 file Figma bằng token của bạn.</small></span>
+              <input type="radio" name="component-source" checked={sourceMode === 'figma-design-system'} onChange={() => setSourceMode('figma-design-system')} />
+              <span><strong>Design system từ link Figma</strong><small>Chọn một danh mục component đã nạp ở trang Design system.</small></span>
             </label>
           </div>
         )}
       </FormField>
 
-      {sourceMode === 'figma-links' ? (
-        <>
-          <FormField label="Link file Figma" hint="Mỗi dòng một link (tối đa 5). Link trùng sẽ tự động được bỏ qua." error={normalizedLinks.error ?? undefined}>
-            {(fieldProps) => <textarea {...fieldProps} className={styles.linksInput} rows={4} value={figmaLinks} onChange={(event) => setFigmaLinks(event.target.value)} placeholder="https://www.figma.com/design/…?node-id=…" />}
-          </FormField>
-          <FigmaLinksPanel links={normalizedLinks.links} linksError={normalizedLinks.error} onVerificationChange={setFigmaVerification} />
-          {!normalizedLinks.error && !figmaLinksVerified ? (
-            <FormError>{figmaVerification.message ?? 'Hãy chờ ứng dụng kiểm tra xong tất cả link Figma trước khi lưu.'}</FormError>
-          ) : null}
-        </>
+      {sourceMode === 'figma-design-system' ? (
+        <FormField label="Design system Figma" hint="Chọn nguồn đã nạp catalog. Link và token không còn lưu trực tiếp trong App.">
+          {(fieldProps) => (
+            <>
+              <select {...fieldProps} className={styles.sourceSelect} value={figmaDesignSystemSourceId ?? ''} onChange={(event) => setFigmaDesignSystemSourceId(event.target.value || null)}>
+                <option value="">{figmaSources === null ? 'Đang tải…' : 'Chọn Design system Figma'}</option>
+                {(figmaSources ?? []).filter((source) => (source.catalog !== null && (source.status === 'ready' || source.status === 'error')) || source.id === app.figmaDesignSystemSourceId).map((source) => (
+                  <option key={source.id} value={source.id}>
+                    {source.name} · {source.catalog?.componentCount ?? 0} component{source.status === 'error' ? ' · dùng bản cập nhật gần nhất' : ''}
+                  </option>
+                ))}
+              </select>
+              {initialSource.mode === 'figma-links' && !figmaDesignSystemSourceId ? (
+                <FormError>App đang dùng cấu hình link Figma cũ. Hãy chọn nguồn đã nạp để chuyển đổi; nếu chỉ sửa tên, cấu hình cũ vẫn được giữ nguyên.</FormError>
+              ) : null}
+            </>
+          )}
+        </FormField>
       ) : null}
 
       {sourceMode === 'app-design-system' ? (

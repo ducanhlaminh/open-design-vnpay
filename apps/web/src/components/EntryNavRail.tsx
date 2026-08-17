@@ -2,8 +2,9 @@
 //
 // Renders a narrow icon-only column. The first slot is the brand logo,
 // followed by the primary destinations users expect to keep in reach:
-// New project, home, projects, automations, design systems, plugins,
-// and integrations. Footer controls are reserved for lower-frequency
+// Home, projects, design systems, and integrations. Automations and plugins
+// remain available by direct URL, but are intentionally not promoted in this
+// primary rail. Footer controls are reserved for lower-frequency
 // support affordances such as the help launcher.
 // Language switching and other account-scoped controls live behind the
 // floating settings cog in the top-right corner of the main content.
@@ -28,7 +29,6 @@ export type EntryView =
 interface Props {
   view: EntryView;
   onViewChange: (view: EntryView) => void;
-  onNewProject: () => void;
 }
 
 interface NavButtonProps {
@@ -56,7 +56,7 @@ function NavButton({ active, ariaLabel, tooltip, onClick, testId, children }: Na
   );
 }
 
-export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
+export function EntryNavRail({ view, onViewChange }: Props) {
   const t = useT();
   const brandLabel = t('app.brand');
   const homeLabel = t('entry.navHome');
@@ -82,14 +82,6 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
         </button>
         <div className="entry-nav-rail__logo-divider" role="separator" aria-hidden="true" />
         <NavButton
-          ariaLabel={t('entry.navNewProject')}
-          tooltip={t('entry.navNewProject')}
-          onClick={onNewProject}
-          testId="entry-nav-new-project"
-        >
-          <Icon name="plus" size={18} />
-        </NavButton>
-        <NavButton
           active={isHome}
           ariaLabel={homeLabel}
           tooltip={homeLabel}
@@ -106,15 +98,6 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
           testId="entry-nav-projects"
         >
           <Icon name="folder" size={18} />
-        </NavButton>
-        <NavButton
-          active={view === 'tasks'}
-          ariaLabel={t('entry.navTasks')}
-          tooltip={t('entry.navTasks')}
-          onClick={() => onViewChange('tasks')}
-          testId="entry-nav-tasks"
-        >
-          <Icon name="kanban" size={18} />
         </NavButton>
         <NavButton
           active={view === 'pipelines'}
@@ -142,15 +125,6 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
           testId="entry-nav-design-systems"
         >
           <Icon name="blocks" size={18} />
-        </NavButton>
-        <NavButton
-          active={view === 'plugins'}
-          ariaLabel={t('entry.navPlugins')}
-          tooltip={t('entry.navPlugins')}
-          onClick={() => onViewChange('plugins')}
-          testId="entry-nav-plugins"
-        >
-          <Icon name="grid" size={18} />
         </NavButton>
         <NavButton
           active={view === 'integrations'}

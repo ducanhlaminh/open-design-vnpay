@@ -24,7 +24,7 @@ export function buildReactComponentSrcdoc(
       * { box-sizing: border-box; }
       html, body, #root { min-height: 100%; margin: 0; }
       body {
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family: "Be Vietnam Pro", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         background: #fff;
         color: #111827;
       }

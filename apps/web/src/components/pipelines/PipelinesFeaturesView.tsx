@@ -119,7 +119,9 @@ export function PipelinesFeaturesView({
     return () => { alive = false; };
   }, [hasDocsTab]);
   const designSystemTitle = app?.designSystemId ? designSystems.find((item) => item.id === app.designSystemId)?.title : undefined;
-  const designSystemMeta = componentSource.mode === 'figma-links'
+  const designSystemMeta = app?.figmaDesignSystemSourceId
+    ? '· Link Figma đã nạp'
+    : componentSource.mode === 'figma-links'
     ? `· Link Figma (${componentSource.links.length} file)`
     : designSystemTitle ? `· ${designSystemTitle}` : '· chưa chọn';
 
@@ -313,7 +315,7 @@ export function PipelinesFeaturesView({
                 className={`${styles.detailTab}${tab === 'ds' ? ' ' + styles.detailTabActive : ''}`}
                 onClick={() => setTab('ds')}
               >
-                <span className={styles.detailTabName}>DS</span>
+                <span className={styles.detailTabName}>Design system</span>
                 <span className={styles.detailTabMeta} title={designSystemTitle}>{designSystemMeta}</span>
               </button>
             ) : null}
@@ -321,7 +323,7 @@ export function PipelinesFeaturesView({
         ) : null}
 
         {tab === 'ds' && hasDsTab ? (
-          <div className={styles.panelBody}><AppDesignSystemPanel appId={appId} designSystemId={app?.designSystemId} componentSource={componentSource} /></div>
+          <div className={styles.panelBody}><AppDesignSystemPanel appId={appId} designSystemId={app?.designSystemId} figmaDesignSystemSourceId={app?.figmaDesignSystemSourceId} componentSource={componentSource} /></div>
         ) : tab === 'docs' && hasDocsTab ? (
           <div className={styles.panelBody}>
             {/* AppPoolSection is a self-contained card elsewhere (Sửa App,

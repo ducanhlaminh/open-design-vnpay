@@ -21,6 +21,11 @@ afterEach(() => cleanup());
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/pipelines/apps') return new Response(JSON.stringify({ apps: [] }), { status: 200 });
+    if (url === '/api/figma-design-systems') return new Response(JSON.stringify({ sources: [{
+      id: 'shared-figma', name: 'VNPAY Components', kind: 'figma-links', links: ['https://www.figma.com/design/ABC'], status: 'ready',
+      catalog: { generatedAt: '2026-08-17T00:00:00Z', digest: 'sha256:x', fileCount: 1, componentCount: 12, files: [] },
+      lastError: null, hasShowcase: false, hasReactBundle: false, createdAt: '2026-08-17T00:00:00Z', updatedAt: '2026-08-17T00:00:00Z',
+    }] }), { status: 200 });
     if (url === '/api/figma-config' && (!init?.method || init.method === 'GET')) return new Response(JSON.stringify({ hasToken: true }), { status: 200 });
     if (url === '/api/figma-config/test') return new Response(JSON.stringify({ ok: true, handle: 'tester' }), { status: 200 });
     if (url === '/api/figma-config/verify-links') {
@@ -57,44 +62,34 @@ describe('EditAppModal · Design System', () => {
       .toContain('Mã file không hợp lệ');
   });
 
-  it('chỉ lưu nguồn link Figma đã chuẩn hóa sau khi daemon verify thành công', async () => {
+  it('chọn nguồn Figma đã nạp và chỉ lưu source id', async () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail' }} onClose={() => {}} onSaved={() => {}} />);
-    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
-    fireEvent.change(screen.getByLabelText('Link file Figma'), { target: { value: 'https://figma.com/design/ABC/Login?node-id=3-4' } });
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Lưu thay đổi' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2_000 });
+    fireEvent.click(screen.getByRole('radio', { name: /^Design system từ link Figma/i }));
+    fireEvent.change(await screen.findByLabelText('Design system Figma'), { target: { value: 'shared-figma' } });
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
     const call = fetchMock.mock.calls.find((item) => String(item[0]).includes('/api/pipelines/apps/') && item[1]?.method === 'PATCH');
-    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
-      docsReviewComponentSource: {
-        mode: 'figma-links',
-        links: [{ url: 'https://www.figma.com/design/ABC?node-id=3-4', fileKey: 'ABC', nodeId: '3:4' }],
-      },
-    });
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ figmaDesignSystemSourceId: 'shared-figma' });
   });
 
-  it('chọn Link Figma thì ẨN picker Design System và PATCH designSystemId null cho App đang gắn DS; chọn lại DS thì picker hiện lại', async () => {
+  it('chọn nguồn Figma thì ẩn picker Design System và PATCH designSystemId null', async () => {
     const fetchMock = vi.mocked(fetch);
     render(<EditAppModal app={{ id: 'retail', name: 'Retail', designSystemId: 'old-ds' }} onClose={() => {}} onSaved={() => {}} />);
     await act(async () => {});
     expect(screen.getByText('Design System (Figma)')).toBeTruthy();
-    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /^Design system từ link Figma/i }));
     expect(screen.queryByText('Design System (Figma)')).toBeNull();
-    expect(screen.getByLabelText('Link file Figma')).toBeTruthy();
+    fireEvent.change(await screen.findByLabelText('Design system Figma'), { target: { value: 'shared-figma' } });
     fireEvent.click(screen.getByRole('radio', { name: /^Design System đã nạp/i }));
     expect(screen.getByText('Design System (Figma)')).toBeTruthy();
-    expect(screen.queryByLabelText('Link file Figma')).toBeNull();
-
-    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
-    fireEvent.change(screen.getByLabelText('Link file Figma'), { target: { value: 'https://figma.com/design/ABC/Login' } });
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Lưu thay đổi' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2_000 });
+    fireEvent.click(screen.getByRole('radio', { name: /^Design system từ link Figma/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/pipelines/apps/') && call[1]?.method === 'PATCH')).toBe(true));
     const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/pipelines/apps/') && c[1]?.method === 'PATCH');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({
       designSystemId: null,
-      docsReviewComponentSource: { mode: 'figma-links', links: [{ url: 'https://www.figma.com/design/ABC', fileKey: 'ABC' }] },
+      figmaDesignSystemSourceId: 'shared-figma',
     });
   });
 
@@ -151,55 +146,26 @@ describe('NewAppModal · Design System', () => {
     expect(JSON.parse(String(call?.[1]?.body))).not.toHaveProperty('designSystemId');
   });
 
-  it('cho nhập link Figma ngay khi tạo và POST nguồn đã chuẩn hóa', async () => {
+  it('chọn Design system Figma đã nạp khi tạo và POST source id', async () => {
     const fetchMock = vi.mocked(fetch);
     render(<NewAppModal onClose={() => {}} onCreated={() => {}} />);
     fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail' } });
-    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
-    fireEvent.change(screen.getByLabelText('Link file Figma'), {
-      target: { value: 'https://figma.com/file/ABC/Login?node-id=12-34' },
-    });
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Tạo' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2_000 });
+    fireEvent.click(screen.getByRole('radio', { name: /^Design system từ link Figma/i }));
+    fireEvent.change(await screen.findByLabelText('Design system Figma'), { target: { value: 'shared-figma' } });
     fireEvent.click(screen.getByRole('button', { name: 'Tạo' }));
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => call[0] === '/api/pipelines/apps' && call[1]?.method === 'POST')).toBe(true));
     const call = fetchMock.mock.calls.find((item) => item[0] === '/api/pipelines/apps' && item[1]?.method === 'POST');
     expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
       appId: 'retail',
       name: 'Retail',
-      docsReviewComponentSource: {
-        mode: 'figma-links',
-        links: [{ url: 'https://www.figma.com/design/ABC?node-id=12-34', fileKey: 'ABC', nodeId: '12:34' }],
-      },
+      figmaDesignSystemSourceId: 'shared-figma',
     });
   });
 
-  it('không cho tạo khi đã chọn nguồn Figma nhưng chưa dán link', () => {
+  it('không cho tạo khi đã chọn loại Figma nhưng chưa chọn nguồn đã nạp', () => {
     render(<NewAppModal onClose={() => {}} onCreated={() => {}} />);
     fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail' } });
-    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
-    expect(screen.getByText('Dán ít nhất 1 link Figma.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('radio', { name: /^Design system từ link Figma/i }));
     expect((screen.getByRole('button', { name: 'Tạo' }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it('không cho tạo khi daemon chưa đọc được một link Figma', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
-      const value = String(url);
-      if (value === '/api/pipelines/apps') return new Response(JSON.stringify({ apps: [] }), { status: 200 });
-      if (value === '/api/figma-config') return new Response(JSON.stringify({ hasToken: true }), { status: 200 });
-      if (value === '/api/figma-config/test') return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      if (value === '/api/figma-config/verify-links') {
-        return new Response(JSON.stringify({ hasToken: true, links: [{ fileKey: 'ABC', url: 'https://www.figma.com/design/ABC', ok: false, componentCount: 0, detail: 'Bạn không có quyền đọc file này.' }] }), { status: 200 });
-      }
-      if (value === '/api/figma-desktop/status') return new Response(JSON.stringify({ available: false, canSwitch: false, platform: 'test' }), { status: 200 });
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    });
-    render(<NewAppModal onClose={() => {}} onCreated={() => {}} />);
-    fireEvent.change(screen.getByLabelText('Tên dự án'), { target: { value: 'Retail' } });
-    fireEvent.click(screen.getByRole('radio', { name: /^Link Figma/i }));
-    fireEvent.change(screen.getByLabelText('Link file Figma'), { target: { value: 'https://figma.com/design/ABC/Login' } });
-    expect((await screen.findAllByText('Bạn không có quyền đọc file này.', {}, { timeout: 2_000 })).length).toBeGreaterThan(0);
-    expect((screen.getByRole('button', { name: 'Tạo' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(fetchMock.mock.calls.some((call) => call[0] === '/api/pipelines/apps' && call[1]?.method === 'POST')).toBe(false);
   });
 });

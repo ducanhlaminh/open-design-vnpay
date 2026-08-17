@@ -19,7 +19,9 @@ import {
   updateProject,
   upsertPipelineAppName,
   setPipelineAppDesignSystem,
+  setPipelineAppFigmaDesignSystemSource,
   setPipelineAppDocsReviewComponentSource,
+  getFigmaDesignSystemSource,
 } from './db.js';
 import { isSafeId, removeProjectDir } from './projects.js';
 import {
@@ -41,6 +43,7 @@ import {
 } from './pipelines.js';
 import type { RouteDeps } from './server-context.js';
 import { createAppContextVersion, featureContextBindingFromMetadata, readCurrentAppContextManifest } from './app-context-version.js';
+import type { FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 
 const DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE: DocsReviewComponentSource = { mode: 'app-design-system' };
 const MAX_DOCS_REVIEW_FIGMA_LINKS = 5;
@@ -496,6 +499,14 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       appName: localApp.name,
       designSystemId: localApp.designSystemId,
       docsReviewComponentSource: localApp.docsReviewComponentSource,
+      figmaDesignSystemSource: localApp.figmaDesignSystemSourceId
+        ? (() => {
+            const source = getFigmaDesignSystemSource(db, localApp.figmaDesignSystemSourceId);
+            return source?.catalog
+              ? { id: source.id, catalog: source.catalog as FigmaComponentCatalogSnapshot }
+              : null;
+          })()
+        : null,
       designSystemDir: dsDir,
     });
   };
@@ -670,6 +681,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     id: string;
     name?: string;
     designSystemId: string | null;
+    figmaDesignSystemSourceId: string | null;
     docsReviewComponentSource: DocsReviewComponentSource;
     origin: 'local' | 'remote';
   };
@@ -693,6 +705,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           id: appId,
           ...(appName ? { name: appName } : {}),
           designSystemId: null,
+          figmaDesignSystemSourceId: null,
           docsReviewComponentSource: DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE,
           origin: 'local',
         });
@@ -705,12 +718,14 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       if (existing) {
         mergeName(existing, a.name && a.name !== a.id ? a.name : undefined);
         existing.designSystemId = a.designSystemId;
+        existing.figmaDesignSystemSourceId = a.figmaDesignSystemSourceId;
         existing.docsReviewComponentSource = a.docsReviewComponentSource;
       } else {
         byId.set(a.id, {
           id: a.id,
           ...(a.name && a.name !== a.id ? { name: a.name } : {}),
           designSystemId: a.designSystemId,
+          figmaDesignSystemSourceId: a.figmaDesignSystemSourceId,
           docsReviewComponentSource: a.docsReviewComponentSource,
           origin: 'local',
         });
@@ -744,10 +759,18 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       : appId;
     const designSystemId = typeof req.body?.designSystemId === 'string' && req.body.designSystemId.trim()
       ? req.body.designSystemId.trim() : req.body?.designSystemId === null ? null : null;
+    const figmaDesignSystemSourceId = typeof req.body?.figmaDesignSystemSourceId === 'string'
+      ? req.body.figmaDesignSystemSourceId.trim() : null;
     const parsedComponentSource = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'docsReviewComponentSource')
       ? parseDocsReviewComponentSource(req.body.docsReviewComponentSource)
       : { ok: true as const, value: DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE };
     if (!parsedComponentSource.ok) return res.status(400).json({ error: parsedComponentSource.error });
+    if (figmaDesignSystemSourceId) {
+      const source = getFigmaDesignSystemSource(db, figmaDesignSystemSourceId);
+      if (!source || !source.catalog || !['ready', 'error'].includes(source.status)) {
+        return res.status(400).json({ error: 'Design system Figma chưa có catalog hợp lệ.' });
+      }
+    }
     // Cùng regex với POST /api/pipelines/projects: id App cũng là project_id
     // trên KGS, id studio không duyệt thì chặn ngay tại đây.
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(appId)) {
@@ -772,14 +795,17 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       id: appId,
       name,
       designSystemId,
+      figmaDesignSystemSourceId,
       docsReviewComponentSource: parsedComponentSource.value,
       createdAt: Date.now(),
     });
     // A truly empty App has no Context bytes yet. Its first pool/context edit,
     // DS assignment, run, or Push creates v1; assigning a DS at creation is
     // already meaningful context and snapshots immediately.
-    if (designSystemId || parsedComponentSource.value.mode === 'figma-links') await snapshotKnownApp(appId);
-    res.status(201).json({ id: appId, name, designSystemId, docsReviewComponentSource: parsedComponentSource.value });
+    if (designSystemId || figmaDesignSystemSourceId || parsedComponentSource.value.mode === 'figma-links') await snapshotKnownApp(appId);
+    res.status(201).json({ id: appId, name, designSystemId,
+      ...(figmaDesignSystemSourceId ? { figmaDesignSystemSourceId } : {}),
+      docsReviewComponentSource: parsedComponentSource.value });
   });
 
   // GET /api/pipelines/apps — App containers that really exist on THIS device:
@@ -805,6 +831,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
           id: e.id,
           ...(e.name ? { name: e.name } : {}),
           designSystemId: e.designSystemId,
+          ...(e.figmaDesignSystemSourceId ? { figmaDesignSystemSourceId: e.figmaDesignSystemSourceId } : {}),
           docsReviewComponentSource: e.docsReviewComponentSource,
           origin: e.origin,
           ...(localCurrent ? { context: {
@@ -868,11 +895,15 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     const appId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
     const hasName = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'name');
     const hasDesignSystemId = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'designSystemId');
+    const hasFigmaDesignSystemSourceId = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'figmaDesignSystemSourceId');
     const hasDocsReviewComponentSource = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'docsReviewComponentSource');
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
     const designSystemId = req.body?.designSystemId === null
       ? null
       : typeof req.body?.designSystemId === 'string' ? req.body.designSystemId.trim() : '';
+    const figmaDesignSystemSourceId = req.body?.figmaDesignSystemSourceId === null
+      ? null
+      : typeof req.body?.figmaDesignSystemSourceId === 'string' ? req.body.figmaDesignSystemSourceId.trim() : '';
     const parsedComponentSource = hasDocsReviewComponentSource
       ? parseDocsReviewComponentSource(req.body.docsReviewComponentSource)
       : null;
@@ -881,8 +912,15 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     }
     if ((!hasName || !name)
       && (!hasDesignSystemId || (!designSystemId && designSystemId !== null))
+      && (!hasFigmaDesignSystemSourceId || (!figmaDesignSystemSourceId && figmaDesignSystemSourceId !== null))
       && !hasDocsReviewComponentSource) {
       return res.status(400).json({ error: 'name, designSystemId or docsReviewComponentSource is required' });
+    }
+    if (hasFigmaDesignSystemSourceId && figmaDesignSystemSourceId) {
+      const source = getFigmaDesignSystemSource(db, figmaDesignSystemSourceId);
+      if (!source || !source.catalog || !['ready', 'error'].includes(source.status)) {
+        return res.status(400).json({ error: 'Design system Figma chưa có catalog hợp lệ.' });
+      }
     }
     // Rename được cả App remote: row local chỉ là cái tên phủ lên (picker cho
     // tên local thắng), không đổi gì trên studio.
@@ -914,6 +952,9 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
     if (hasDesignSystemId) {
       setPipelineAppDesignSystem(db, { id: appId, ...(hasName && name ? { name } : {}), designSystemId, createdAt: Date.now() });
     }
+    if (hasFigmaDesignSystemSourceId) {
+      setPipelineAppFigmaDesignSystemSource(db, { id: appId, ...(hasName && name ? { name } : {}), figmaDesignSystemSourceId, createdAt: Date.now() });
+    }
     if (parsedComponentSource?.ok) {
       setPipelineAppDocsReviewComponentSource(db, {
         id: appId,
@@ -928,6 +969,7 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       id: appId,
       name: updated?.name ?? name,
       designSystemId: updated?.designSystemId ?? null,
+      ...(updated?.figmaDesignSystemSourceId ? { figmaDesignSystemSourceId: updated.figmaDesignSystemSourceId } : {}),
       docsReviewComponentSource: updated?.docsReviewComponentSource ?? DEFAULT_DOCS_REVIEW_COMPONENT_SOURCE,
       remoteSynced,
     });

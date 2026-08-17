@@ -85,6 +85,36 @@ describe('App Context immutable versions', () => {
     expect(v1.docsReviewComponentSource).toEqual({ mode: 'app-design-system' });
   });
 
+  it('freezes a reusable Figma catalogue into components.md without a token or Showcase', async () => {
+    const { projectsDir } = await fixture();
+    const manifest = (await createAppContextVersion({
+      projectsDir,
+      appId: 'banking',
+      appName: 'Banking',
+      designSystemId: null,
+      figmaDesignSystemSource: {
+        id: 'vnpay-figma',
+        catalog: {
+          schemaVersion: '1.0',
+          generatedAt: '2026-08-17T00:00:00.000Z',
+          files: [{
+            fileKey: 'ABC', name: 'VNPAY UI', url: 'https://www.figma.com/design/ABC',
+            components: [{ nodeId: '1:2', name: 'Button', properties: [] }],
+          }],
+        },
+      },
+    })).manifest;
+    expect(manifest.figmaDesignSystemSourceId).toBe('vnpay-figma');
+    expect(manifest.files.map((file) => file.path)).toContain('design-system/criteria/components.md');
+    expect(appContextManifestDigestIsValid(manifest)).toBe(true);
+    const content = await fs.promises.readFile(path.join(
+      projectsDir, 'banking', 'context', 'versions', manifest.contextVersion, 'files',
+      'design-system', 'criteria', 'components.md',
+    ), 'utf8');
+    expect(content).toContain('Button');
+    expect(content).not.toContain('token');
+  });
+
   it('reads a legacy draft manifest without rewriting it', () => {
     const digest = `sha256:${'a'.repeat(64)}`;
     expect(parseAppContextManifest({

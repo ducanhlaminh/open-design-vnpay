@@ -556,7 +556,6 @@ export function EntryShell({
         <EntryNavRail
           view={view}
           onViewChange={changeView}
-          onNewProject={() => openNewProject()}
         />
         <main className="entry-main entry-main--scroll">
           <div className="entry-main__topbar">
@@ -666,16 +665,14 @@ export function EntryShell({
               designSystemsLoading ? (
                 <CenteredLoader label={t('common.loading')} />
               ) : (
-                <div className="entry-section">
+                <div className="entry-section entry-section--design-systems">
                   <header className="entry-section__head">
                     <h1 className="entry-section__title">{t('entry.navDesignSystems')}</h1>
                   </header>
                   <DesignSystemsTab
                     systems={designSystems}
-                    templates={templates}
                     selectedId={defaultDesignSystemId}
                     onSelect={onChangeDefaultDesignSystem}
-                    onCreate={onCreateDesignSystem}
                     onOpenSystem={onOpenDesignSystem}
                     onOpenCriteria={onOpenDesignSystemCriteria}
                     onSystemsRefresh={onDesignSystemsRefresh}

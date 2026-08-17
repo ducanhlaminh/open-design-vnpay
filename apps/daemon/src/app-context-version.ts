@@ -12,6 +12,7 @@ import type {
   FeatureContextBinding,
   RunContextLock,
 } from '@open-design/contracts';
+import { renderFigmaComponentsMarkdown, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 
 const CONTEXT_DIR = 'context';
 const VERSIONS_DIR = 'versions';
@@ -26,6 +27,7 @@ export interface SnapshotAppContextOptions {
   appName: string;
   designSystemId: string | null;
   docsReviewComponentSource?: DocsReviewComponentSource;
+  figmaDesignSystemSource?: { id: string; catalog: FigmaComponentCatalogSnapshot } | null;
   designSystemDir?: string | null;
   expectedCurrentDigest?: `sha256:${string}` | null;
   now?: Date;
@@ -50,6 +52,7 @@ function stablePackageDigest(
   appName: string,
   designSystemId: string | null,
   docsReviewComponentSource: DocsReviewComponentSource,
+  figmaDesignSystemSourceId: string | null,
   files: AppContextFileDigest[],
 ): `sha256:${string}` {
   const canonical = JSON.stringify({
@@ -59,6 +62,7 @@ function stablePackageDigest(
     // Omit the legacy/default mode so manifests produced before this field
     // existed keep the exact same digest and remain verifiable.
     ...(docsReviewComponentSource.mode === 'figma-links' ? { docsReviewComponentSource } : {}),
+    ...(figmaDesignSystemSourceId ? { figmaDesignSystemSourceId } : {}),
     files: [...files]
       .sort((a, b) => a.path.localeCompare(b.path))
       .map(({ path: filePath, source, digest, size }) => ({ path: filePath, source, digest, size })),
@@ -197,6 +201,9 @@ export function parseAppContextManifest(raw: unknown): AppContextManifest | null
       contentDigest: parseDigest(ds.contentDigest),
     },
     docsReviewComponentSource: parseManifestComponentSource(r.docsReviewComponentSource),
+    ...(typeof r.figmaDesignSystemSourceId === 'string' && r.figmaDesignSystemSourceId
+      ? { figmaDesignSystemSourceId: r.figmaDesignSystemSourceId }
+      : {}),
     files,
   };
 }
@@ -207,6 +214,7 @@ export function appContextManifestDigestIsValid(manifest: AppContextManifest): b
     manifest.appName,
     manifest.designSystem.id,
     manifest.docsReviewComponentSource ?? DEFAULT_COMPONENT_SOURCE,
+    manifest.figmaDesignSystemSourceId ?? null,
     manifest.files,
   ) === manifest.contentDigest;
 }
@@ -321,17 +329,28 @@ export async function createAppContextVersion(
     throw error;
   }
   const mutableRoot = appRoot(options.projectsDir, options.appId);
-  const collected = [
+  const collectedCandidates = [
     ...(await collectTree(path.join(mutableRoot, 'app-context'), 'app-context', 'app-context')),
     ...(await collectTree(path.join(mutableRoot, 'docs'), 'docs', 'docs')),
     ...(await collectDesignSystem(options.designSystemDir)),
-  ].sort((a, b) => a.path.localeCompare(b.path));
+    ...(options.figmaDesignSystemSource ? [{
+      path: 'design-system/criteria/components.md',
+      source: 'design-system' as const,
+      content: Buffer.from(renderFigmaComponentsMarkdown(options.figmaDesignSystemSource.catalog), 'utf8'),
+    }].map((file) => ({ ...file, digest: digestBuffer(file.content), size: file.content.byteLength })) : []),
+  ];
+  // A reusable Figma catalogue intentionally overrides components.md from a
+  // legacy compiled/Markdown DS when an old App happens to retain both refs.
+  // This also guarantees one immutable file per logical path.
+  const collected = [...new Map(collectedCandidates.map((file) => [file.path, file])).values()]
+    .sort((a, b) => a.path.localeCompare(b.path));
   const fileDigests = collected.map(({ content: _content, ...file }) => file);
   const contentDigest = stablePackageDigest(
     options.appId,
     options.appName,
     options.designSystemId,
     options.docsReviewComponentSource ?? DEFAULT_COMPONENT_SOURCE,
+    options.figmaDesignSystemSource?.id ?? null,
     fileDigests,
   );
   if (current?.contentDigest === contentDigest) return { status: 'unchanged', manifest: current };
@@ -343,7 +362,7 @@ export async function createAppContextVersion(
   }
   const dsFiles = fileDigests.filter((file) => file.source === 'design-system');
   const designSystemDigest = options.designSystemId
-    ? stablePackageDigest(options.appId, options.appName, options.designSystemId, DEFAULT_COMPONENT_SOURCE, dsFiles)
+    ? stablePackageDigest(options.appId, options.appName, options.designSystemId, DEFAULT_COMPONENT_SOURCE, null, dsFiles)
     : null;
   const manifest: AppContextManifest = {
     schemaVersion: 1,
@@ -355,6 +374,7 @@ export async function createAppContextVersion(
     ...(current ? { previousVersion: current.contextVersion } : {}),
     designSystem: { id: options.designSystemId, contentDigest: designSystemDigest },
     docsReviewComponentSource: options.docsReviewComponentSource ?? DEFAULT_COMPONENT_SOURCE,
+    ...(options.figmaDesignSystemSource ? { figmaDesignSystemSourceId: options.figmaDesignSystemSource.id } : {}),
     files: fileDigests,
   };
   await fs.promises.mkdir(path.join(versionRoot, VERSION_FILES_DIR), { recursive: true });
