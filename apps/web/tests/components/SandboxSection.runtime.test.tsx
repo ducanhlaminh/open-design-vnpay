@@ -290,6 +290,64 @@ describe('SandboxSection runtime split', () => {
     });
   });
 
+  it('logs out the host Codex CLI from the host card after a confirm', async () => {
+    let loggedOut = false;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) {
+        return jsonResponse({
+          enabled: false,
+          mode: 'host',
+          dockerOk: true,
+          image: 'od-agent-sandbox:latest',
+          imageOk: true,
+          authVolumeOk: true,
+          authLoggedIn: null,
+          activeContainers: [],
+          runtimes: ['claude', 'codex'],
+          skills: ['*'],
+          timeoutMinutes: 30,
+          builderDir: '/tmp/builder',
+          hostClaude: { available: true, version: '2.1.198 (Claude Code)', authStatus: 'ok' },
+          runtimeStatuses: [],
+        });
+      }
+      if (url.endsWith('/sandbox/build')) {
+        return jsonResponse({ building: false, ok: null, error: null, log: [] });
+      }
+      if (url.endsWith('/api/usage/codex')) {
+        return jsonResponse({
+          available: !loggedOut,
+          primary: { utilization: null, resetsAt: null, durationMinutes: null },
+          secondary: null,
+        });
+      }
+      if (url.endsWith('/api/sandbox/host/codex/logout') && init?.method === 'POST') {
+        loggedOut = true;
+        return jsonResponse({ ok: true });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<SandboxSection daemonLive={true} />);
+
+    const codexCard = await screen.findByTestId('host-runtime-codex');
+    await waitFor(() => {
+      expect(within(codexCard).getByText('Sẵn sàng')).toBeTruthy();
+      expect(within(codexCard).getByRole('button', { name: 'Đăng xuất' })).toBeTruthy();
+    });
+
+    fireEvent.click(within(codexCard).getByRole('button', { name: 'Đăng xuất' }));
+    expect(confirmSpy).toHaveBeenCalled();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sandbox/host/codex/logout', { method: 'POST' });
+      expect(within(codexCard).getByText('Chưa dùng được')).toBeTruthy();
+      expect(within(codexCard).getByRole('button', { name: 'Kiểm tra lại' })).toBeTruthy();
+    });
+  });
+
   // WP4 (web-first migration): execution-mode toggle writes sandbox.enabled
   // through the same PUT /api/app-config prefs path `od sandbox enable|disable` uses.
   it('switches to host mode through PUT /api/app-config when the toggle is clicked', async () => {

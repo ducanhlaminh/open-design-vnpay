@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { execAgentFile } from './invocation.js';
-import type { RuntimeEnv } from './types.js';
+import type { RuntimeEnv, RuntimeExecOptions } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -428,6 +428,39 @@ export async function probeCodexAuthStatus(
     }
     return { status: 'unknown', message: CODEX_AUTH_UNKNOWN };
   }
+}
+
+const CODEX_LOGOUT_ENV_MESSAGE =
+  'Codex đang xác thực qua OPENAI_API_KEY/CODEX_API_KEY và OPENAI_BASE_URL — ' +
+  'không có phiên đăng nhập Codex CLI trên máy để thoát.';
+
+export type CodexLogoutIO = {
+  run?: (command: string, args: string[], options?: RuntimeExecOptions) => Promise<unknown>;
+};
+
+export type HostCodexLogoutResult =
+  | { ok: true }
+  | { ok: false; reason: 'env-auth'; message: string };
+
+/** Use Codex's own logout command so the CLI clears whichever credential
+ * backend its current version selected (auth.json or an OS credential store).
+ * Open Design must not guess that backend by deleting ~/.codex itself. */
+export async function logoutHostCodex(
+  resolvedBin: string,
+  env: RuntimeEnv,
+  io: CodexLogoutIO = {},
+): Promise<HostCodexLogoutResult> {
+  const hasCustomBase = Boolean(envLookup(env, 'OPENAI_BASE_URL'));
+  const hasEnvCredential = Boolean(envLookup(env, 'OPENAI_API_KEY') || envLookup(env, 'CODEX_API_KEY'));
+  if (hasCustomBase && hasEnvCredential) {
+    return { ok: false, reason: 'env-auth', message: CODEX_LOGOUT_ENV_MESSAGE };
+  }
+  await (io.run ?? execAgentFile)(resolvedBin, ['logout'], {
+    env,
+    timeout: 15_000,
+    maxBuffer: 1024 * 1024,
+  });
+  return { ok: true };
 }
 
 export async function probeAgentAuthStatus(

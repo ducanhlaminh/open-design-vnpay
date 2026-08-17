@@ -99,6 +99,29 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
   // (installed + logged in) without touching Docker — the Docker-volume
   // runtimeStatuses are meaningless while the sandbox is locked off.
   const [hostCodex, setHostCodex] = useState<{ available: boolean } | null>(null);
+  const [hostCodexBusy, setHostCodexBusy] = useState(false);
+  const [hostCodexError, setHostCodexError] = useState<string | null>(null);
+  const logoutHostCodexCli = useCallback(async () => {
+    if (hostCodexBusy) return;
+    if (!window.confirm('Đăng xuất Codex khỏi máy này? Bạn sẽ cần đăng nhập lại để tiếp tục dùng Codex.')) return;
+    setHostCodexBusy(true);
+    setHostCodexError(null);
+    try {
+      const response = await fetch('/api/sandbox/host/codex/logout', { method: 'POST' });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
+        setHostCodexError(body?.error?.message ?? `Không đăng xuất được Codex (lỗi ${response.status}).`);
+        return;
+      }
+      setHostCodex({ available: false });
+      await refresh();
+    } catch {
+      setHostCodexError('Không kết nối được — thử lại.');
+    } finally {
+      setHostCodexBusy(false);
+    }
+  }, [hostCodexBusy, refresh]);
+
   useEffect(() => {
     if (!daemonLive || !status || !isHostMode) {
       setHostCodex(null);
@@ -457,13 +480,21 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
                       ? 'Đã đăng nhập trên máy này — bạn có thể chọn Codex khi chạy.'
                       : 'Chỉ cần khi bạn muốn dùng Codex thay cho Claude. Nếu cần, nhờ đội kỹ thuật cài và đăng nhập giúp bạn.'}
                 </p>
-                {hostCodex !== null && !hostCodex.available ? (
+                {hostCodex !== null ? (
                   <div className={styles.hostCardActions}>
-                    <button type="button" className={styles.hostGhostBtn} onClick={() => void refresh()}>
-                      Kiểm tra lại
+                    <button
+                      type="button"
+                      className={styles.hostGhostBtn}
+                      disabled={hostCodexBusy}
+                      onClick={() => hostCodex.available ? void logoutHostCodexCli() : void refresh()}
+                    >
+                      {hostCodex.available
+                        ? hostCodexBusy ? 'Đang đăng xuất…' : 'Đăng xuất'
+                        : 'Kiểm tra lại'}
                     </button>
                   </div>
                 ) : null}
+                {hostCodexError ? <p className={styles.hostCardErr}>{hostCodexError}</p> : null}
               </div>
             </div>
           ) : hasRuntimeStatuses ? (

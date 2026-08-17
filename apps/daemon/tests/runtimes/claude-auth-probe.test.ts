@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractClaudeAccountEmail,
   logoutHostClaude,
+  logoutHostCodex,
   probeClaudeAuthStatus,
 } from '../../src/runtimes/auth.js';
 
@@ -246,6 +247,40 @@ describe('logoutHostClaude', () => {
         unlink: async () => eacces(),
       }),
     ).rejects.toThrow('EACCES');
+  });
+});
+
+describe('logoutHostCodex', () => {
+  it('delegates credential removal to the official codex logout command', async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const result = await logoutHostCodex('/tools/codex', { PATH: '/usr/bin' }, {
+      run: async (command, args) => {
+        calls.push({ command, args });
+        return { stdout: '', stderr: '' };
+      },
+    });
+    expect(result).toEqual({ ok: true });
+    expect(calls).toEqual([{ command: '/tools/codex', args: ['logout'] }]);
+  });
+
+  it('refuses environment-routed auth because there is no CLI session to remove', async () => {
+    const result = await logoutHostCodex('/tools/codex', {
+      OPENAI_BASE_URL: 'https://gateway.example',
+      OPENAI_API_KEY: 'test-key',
+    }, {
+      run: async () => {
+        throw new Error('must not run codex logout for env auth');
+      },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('surfaces CLI logout failures instead of reporting a false success', async () => {
+    await expect(logoutHostCodex('/tools/codex', {}, {
+      run: async () => {
+        throw new Error('credential store unavailable');
+      },
+    })).rejects.toThrow('credential store unavailable');
   });
 });
 

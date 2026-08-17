@@ -28,10 +28,12 @@ import type {
   DockerSetupResponse,
 } from '@open-design/contracts';
 import type { RouteDeps } from './server-context.js';
-import { readAppConfig, type AppConfigPrefs } from './app-config.js';
+import { agentCliEnvForAgent, readAppConfig, type AppConfigPrefs } from './app-config.js';
 import { invalidateClaudeUsageCache, probeClaudeCredentials } from './claude-usage.js';
 import { getAgentDef, resolveAgentLaunch } from './agents.js';
-import { logoutHostClaude, probeClaudeAuthStatus } from './runtimes/auth.js';
+import { applyAgentLaunchEnv } from './runtimes/launch.js';
+import { spawnEnvForAgent } from './runtimes/env.js';
+import { logoutHostClaude, logoutHostCodex, probeClaudeAuthStatus } from './runtimes/auth.js';
 import {
   dockerAvailable,
   dockerImagePresent,
@@ -850,6 +852,33 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
       res.json({ ok: true, hostClaude: await resolveHostClaudeStatus() });
     } catch (err) {
       sendApiError(res, 500, 'HOST_CLAUDE_LOGOUT_FAILED', (err as Error).message);
+    }
+  });
+
+  // Host Codex logout delegates to `codex logout` so Codex itself clears the
+  // active credential backend. This remains independent of Docker just like
+  // the host Claude action above.
+  app.post('/api/sandbox/host/codex/logout', async (_req, res) => {
+    try {
+      const appConfig = await readAppConfig(RUNTIME_DATA_DIR).catch((): AppConfigPrefs => ({}));
+      const configuredEnv = agentCliEnvForAgent(appConfig.agentCliEnv, 'codex');
+      const def = getAgentDef('codex');
+      if (!def) return sendApiError(res, 503, 'HOST_CODEX_UNAVAILABLE', 'Codex CLI chưa được đăng ký.');
+      const launch = resolveAgentLaunch(def, configuredEnv);
+      if (!launch.launchPath) {
+        return sendApiError(res, 503, 'HOST_CODEX_UNAVAILABLE', 'Không tìm thấy Codex CLI trên máy này.');
+      }
+      const env = applyAgentLaunchEnv(
+        spawnEnvForAgent(def.id, { ...process.env, ...(def.env || {}) }, configuredEnv),
+        launch,
+      );
+      const result = await logoutHostCodex(launch.launchPath, env);
+      if (!result.ok) {
+        return sendApiError(res, 409, 'HOST_CODEX_ENV_AUTH', result.message);
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      sendApiError(res, 500, 'HOST_CODEX_LOGOUT_FAILED', (err as Error).message);
     }
   });
 }
