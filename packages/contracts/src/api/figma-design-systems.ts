@@ -61,6 +61,13 @@ export interface ListFigmaDesignSystemSourcesResponse {
   sources: FigmaDesignSystemSource[];
 }
 
+/** Detail payload keeps the large Markdown document out of the list route. */
+export interface GetFigmaDesignSystemSourceResponse {
+  source: FigmaDesignSystemSource;
+  /** Rendered `criteria/components.md`, or null before the first successful load. */
+  componentsMarkdown: string | null;
+}
+
 export interface FigmaDesignSystemRefreshChanges {
   previousComponentCount: number;
   currentComponentCount: number;

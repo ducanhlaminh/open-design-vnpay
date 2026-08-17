@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Express } from 'express';
 import type {
   FigmaDesignSystemSource,
   FigmaDesignSystemCatalogSummary,
   FigmaDesignSystemRefreshChanges,
   FigmaDesignSystemRefreshProgress,
+  GetFigmaDesignSystemSourceResponse,
 } from '@open-design/contracts';
 
 import {
@@ -18,7 +21,10 @@ import {
   updateFigmaDesignSystemSource,
 } from './db.js';
 import { readFigmaConfig } from './figma-config.js';
-import type { FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
+import {
+  renderFigmaComponentsMarkdown,
+  type FigmaComponentCatalogSnapshot,
+} from './figma-component-catalog.js';
 import { buildFigmaComponentCatalog, describeFigmaError } from './figma-rest.js';
 import type { RouteDeps } from './server-context.js';
 
@@ -31,6 +37,53 @@ export interface RegisterFigmaDesignSystemRoutesDeps extends RouteDeps<'db' | 'h
 type SourceRow = NonNullable<ReturnType<typeof getFigmaDesignSystemSource>>;
 const activeRefreshes = new Set<string>();
 const refreshProgress = new Map<string, FigmaDesignSystemRefreshProgress>();
+
+/** Durable Markdown materialization of a reusable Figma catalogue. SQLite
+ * remains the structured source of truth; this file is the human/agent-facing
+ * closed catalogue and is replaced atomically after every successful refresh. */
+export function figmaDesignSystemComponentsPath(runtimeDataDir: string, sourceId: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(sourceId)) {
+    throw new Error('invalid Figma design-system source id');
+  }
+  return path.join(runtimeDataDir, 'figma-design-systems', sourceId, 'criteria', 'components.md');
+}
+
+async function writeFigmaDesignSystemComponents(
+  runtimeDataDir: string,
+  sourceId: string,
+  snapshot: FigmaComponentCatalogSnapshot,
+): Promise<void> {
+  const target = figmaDesignSystemComponentsPath(runtimeDataDir, sourceId);
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    await fs.promises.writeFile(temporary, renderFigmaComponentsMarkdown(snapshot), 'utf8');
+    await fs.promises.rename(temporary, target);
+  } finally {
+    await fs.promises.rm(temporary, { force: true });
+  }
+}
+
+async function readFigmaDesignSystemComponents(
+  runtimeDataDir: string,
+  sourceId: string,
+  snapshot: FigmaComponentCatalogSnapshot | null,
+): Promise<string | null> {
+  const target = figmaDesignSystemComponentsPath(runtimeDataDir, sourceId);
+  const stored = await fs.promises.readFile(target, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  // Older catalogues may predate the durable Markdown materialization. They
+  // can still be previewed immediately; the next refresh writes this content
+  // to disk as well.
+  return stored ?? (snapshot ? renderFigmaComponentsMarkdown(snapshot) : null);
+}
+
+async function removeFigmaDesignSystemFiles(runtimeDataDir: string, sourceId: string): Promise<void> {
+  const componentsPath = figmaDesignSystemComponentsPath(runtimeDataDir, sourceId);
+  await fs.promises.rm(path.dirname(path.dirname(componentsPath)), { recursive: true, force: true });
+}
 
 function canonicalLinks(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > 5) return null;
@@ -159,14 +212,22 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
     res.status(201).json({ source: figmaDesignSystemSourceToContract(source!) });
   });
 
-  app.get('/api/figma-design-systems/:id', (req, res) => {
+  app.get('/api/figma-design-systems/:id', async (req, res) => {
     if (!guard(req, res)) return;
     const source = getFigmaDesignSystemSource(db, req.params.id);
     if (!source) return notFound(res);
-    res.json({ source: figmaDesignSystemSourceToContract(source) });
+    const body: GetFigmaDesignSystemSourceResponse = {
+      source: figmaDesignSystemSourceToContract(source),
+      componentsMarkdown: await readFigmaDesignSystemComponents(
+        deps.paths.RUNTIME_DATA_DIR,
+        source.id,
+        source.catalog as FigmaComponentCatalogSnapshot | null,
+      ),
+    };
+    res.json(body);
   });
 
-  app.patch('/api/figma-design-systems/:id', (req, res) => {
+  app.patch('/api/figma-design-systems/:id', async (req, res) => {
     if (!guard(req, res)) return;
     const current = getFigmaDesignSystemSource(db, req.params.id);
     if (!current) return notFound(res);
@@ -176,16 +237,20 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
       return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'Tên và 1–5 link file Figma hợp lệ là bắt buộc.' } });
     }
     const linksChanged = JSON.stringify(links) !== JSON.stringify(current.links);
+    if (linksChanged) await removeFigmaDesignSystemFiles(deps.paths.RUNTIME_DATA_DIR, current.id);
     const source = updateFigmaDesignSystemSource(db, current.id, { name, links, linksChanged, updatedAt: now() });
     res.json({ source: figmaDesignSystemSourceToContract(source!) });
   });
 
-  app.delete('/api/figma-design-systems/:id', (req, res) => {
+  app.delete('/api/figma-design-systems/:id', async (req, res) => {
     if (!guard(req, res)) return;
     if (activeRefreshes.has(req.params.id)) {
       return res.status(409).json({ error: { code: 'REFRESH_IN_PROGRESS', message: 'Design system đang được làm mới.' } });
     }
+    const current = getFigmaDesignSystemSource(db, req.params.id);
+    if (!current) return notFound(res);
     if (!deleteFigmaDesignSystemSource(db, req.params.id)) return notFound(res);
+    await removeFigmaDesignSystemFiles(deps.paths.RUNTIME_DATA_DIR, current.id);
     res.status(204).send();
   });
 
@@ -225,6 +290,7 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
       const serialized = JSON.stringify(snapshot);
       const digest = createHash('sha256').update(serialized).digest('hex');
       const changes = diffFigmaComponentCatalogs(current.catalog as FigmaComponentCatalogSnapshot | null, snapshot);
+      await writeFigmaDesignSystemComponents(deps.paths.RUNTIME_DATA_DIR, current.id, snapshot);
       const source = commitFigmaDesignSystemSourceCatalog(db, current.id, { catalog: snapshot, digest, updatedAt: now() });
       res.json({ source: figmaDesignSystemSourceToContract(source!), changes });
     } catch (error) {

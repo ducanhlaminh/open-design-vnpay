@@ -207,6 +207,22 @@ liệu; nếu tiếp tục chỉnh sửa, bạn cần xác nhận lại để t�
 
 ## 8. Design System Figma
 
+### Nạp Design System bằng link Figma
+
+1. Mở **Design systems** và chọn nguồn **Link Figma**.
+2. Nhập tên, dán từ 1 đến 5 link file Figma rồi chọn **Nạp danh mục**.
+3. Sau khi đọc thành công, Open Design lưu catalog có cấu trúc và đồng thời
+   sinh file `criteria/components.md` cho Design System đó.
+4. Khi file Figma có thêm, bớt hoặc đổi component, chọn **Chạy lại**. Catalog
+   và `components.md` chỉ được thay thế khi lần đọc mới hoàn tất; nếu Figma lỗi,
+   bản thành công gần nhất vẫn được giữ nguyên.
+5. Khi tạo hoặc sửa App và chọn Design System Figma này, Open Design tạo ngay
+   `criteria/components.md` trong workspace của App, đồng thời đóng băng cùng
+   nội dung vào App Context dưới đường dẫn `design-system/criteria/components.md`.
+
+Catalog từ link Figma không có Showcase hoặc React bundle; `components.md` là
+danh mục đóng dùng cho các bước review và Screen → Component.
+
 ### Nạp Design System mới
 
 1. Mở **Design systems**.

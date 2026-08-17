@@ -23,3 +23,4 @@
 .fileList a { color: var(--accent-strong); text-decoration: none; }
 .fileList a:hover { text-decoration: underline; }
 .errorText { margin: 0 0 10px; color: var(--danger, #c0392b); font-size: 12px; }
+.markdownPreview { max-width: 900px; margin: 22px auto 0; padding: 0 4px 40px; }

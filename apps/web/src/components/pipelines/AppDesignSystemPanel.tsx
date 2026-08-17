@@ -1,8 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DesignSystemFileDetail, DesignSystemReactInfo, DesignSystemSummary, DocsReviewComponentSource, FigmaDesignSystemSource } from '@open-design/contracts';
+import type { DesignSystemFileDetail, DesignSystemReactInfo, DesignSystemSummary, DocsReviewComponentSource, GetFigmaDesignSystemSourceResponse } from '@open-design/contracts';
 import { DesignSpecView } from '../DesignSpecView';
+import { renderMarkdownToSafeHtml } from '../../artifacts/markdown';
+import { fetchFigmaDesignSystemDetail } from '../../providers/figma-design-systems';
 import { fetchDesignSystemCriteriaFile, fetchDesignSystemReactInfo, fetchDesignSystems } from '../../providers/registry';
 import { fetchAppFigmaCatalog, refreshAppFigmaCatalog, type AppFigmaCatalogResponse } from '../../state/figma-config';
 import styles from './AppDesignSystemPanel.module.css';
@@ -29,34 +31,40 @@ export function AppDesignSystemPanel({ appId, designSystemId, componentSource, f
 }
 
 function SharedFigmaCatalogPanel({ sourceId }: { sourceId: string }) {
-  const [source, setSource] = useState<FigmaDesignSystemSource | null | undefined>(undefined);
+  const [detail, setDetail] = useState<GetFigmaDesignSystemSourceResponse | null | undefined>(undefined);
   useEffect(() => {
     const controller = new AbortController();
-    void fetch(`/api/figma-design-systems/${encodeURIComponent(sourceId)}`, { signal: controller.signal })
-      .then(async (response) => response.ok
-        ? (response.json() as Promise<{ source: FigmaDesignSystemSource }>).then((body) => body.source)
-        : null)
-      .then(setSource)
-      .catch(() => { if (!controller.signal.aborted) setSource(null); });
+    void fetchFigmaDesignSystemDetail(sourceId)
+      .then((result) => { if (!controller.signal.aborted) setDetail(result); })
+      .catch(() => { if (!controller.signal.aborted) setDetail(null); });
     return () => controller.abort();
   }, [sourceId]);
   return (
     <section className={styles.section} aria-label="Design system Figma">
       <div className={styles.header}>
         <div>
-          <h2 className={styles.heading}>{source?.name ?? 'Design system Figma'}</h2>
+          <h2 className={styles.heading}>{detail?.source.name ?? 'Design system Figma'}</h2>
           <p className={styles.muted}>Danh mục component dùng chung đã nạp từ link Figma. Nguồn này không có Showcase hoặc React bundle.</p>
         </div>
       </div>
       <div className={styles.criteriaWrap}>
-        {source === undefined ? <p className={styles.muted}>Đang tải danh mục…</p>
-          : source === null ? <p className={styles.empty}>Không tìm thấy Design system Figma đã chọn.</p>
+        {detail === undefined ? <p className={styles.muted}>Đang tải danh mục…</p>
+          : detail === null ? <p className={styles.empty}>Không tìm thấy Design system Figma đã chọn.</p>
           : <>
               <div className={styles.criteriaHead}>
                 <h3 className={styles.subheading}>Danh mục component</h3>
-                <p className={styles.meta}>{source.catalog?.componentCount ?? 0} component · {source.catalog?.fileCount ?? source.links.length} file</p>
+                <p className={styles.meta}>{detail.source.catalog?.componentCount ?? 0} component · {detail.source.catalog?.fileCount ?? detail.source.links.length} file</p>
               </div>
-              <p className={styles.muted}>Cập nhật {new Date(source.updatedAt).toLocaleString('vi-VN')} · Quản lý link và làm mới catalog tại trang Design system.</p>
+              <p className={styles.muted}>Cập nhật {new Date(detail.source.updatedAt).toLocaleString('vi-VN')} · Quản lý link và làm mới catalog tại trang Design system.</p>
+              {detail.componentsMarkdown ? (
+                <article
+                  className={`markdown-rendered ${styles.markdownPreview}`}
+                  aria-label="Nội dung criteria/components.md"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdownToSafeHtml(detail.componentsMarkdown) }}
+                />
+              ) : (
+                <div className={styles.empty}><p>Chưa có `criteria/components.md`. Vào trang Design system và chọn <strong>Chạy lại</strong>.</p></div>
+              )}
             </>}
       </div>
     </section>

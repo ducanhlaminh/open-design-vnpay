@@ -148,6 +148,26 @@ async function atomicJson(target: string, value: unknown): Promise<void> {
   await fs.promises.rename(temp, target);
 }
 
+async function syncWorkspaceFigmaComponents(
+  mutableRoot: string,
+  markdown: Buffer | null,
+  previouslyUsedFigmaSource: boolean,
+): Promise<void> {
+  const target = path.join(mutableRoot, 'criteria', 'components.md');
+  if (!markdown) {
+    if (previouslyUsedFigmaSource) await fs.promises.rm(target, { force: true });
+    return;
+  }
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    await fs.promises.writeFile(temp, markdown);
+    await fs.promises.rename(temp, target);
+  } finally {
+    await fs.promises.rm(temp, { force: true });
+  }
+}
+
 function parseDigest(value: unknown): `sha256:${string}` | null {
   return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/i.test(value)
     ? (value.toLowerCase() as `sha256:${string}`)
@@ -329,6 +349,9 @@ export async function createAppContextVersion(
     throw error;
   }
   const mutableRoot = appRoot(options.projectsDir, options.appId);
+  const figmaComponentsMarkdown = options.figmaDesignSystemSource
+    ? Buffer.from(renderFigmaComponentsMarkdown(options.figmaDesignSystemSource.catalog), 'utf8')
+    : null;
   const collectedCandidates = [
     ...(await collectTree(path.join(mutableRoot, 'app-context'), 'app-context', 'app-context')),
     ...(await collectTree(path.join(mutableRoot, 'docs'), 'docs', 'docs')),
@@ -336,7 +359,7 @@ export async function createAppContextVersion(
     ...(options.figmaDesignSystemSource ? [{
       path: 'design-system/criteria/components.md',
       source: 'design-system' as const,
-      content: Buffer.from(renderFigmaComponentsMarkdown(options.figmaDesignSystemSource.catalog), 'utf8'),
+      content: figmaComponentsMarkdown!,
     }].map((file) => ({ ...file, digest: digestBuffer(file.content), size: file.content.byteLength })) : []),
   ];
   // A reusable Figma catalogue intentionally overrides components.md from a
@@ -353,7 +376,10 @@ export async function createAppContextVersion(
     options.figmaDesignSystemSource?.id ?? null,
     fileDigests,
   );
-  if (current?.contentDigest === contentDigest) return { status: 'unchanged', manifest: current };
+  if (current?.contentDigest === contentDigest) {
+    await syncWorkspaceFigmaComponents(mutableRoot, figmaComponentsMarkdown, Boolean(current.figmaDesignSystemSourceId));
+    return { status: 'unchanged', manifest: current };
+  }
 
   const contextVersion = `v${current ? Number(current.contextVersion.slice(1)) + 1 : 1}` as `v${number}`;
   const versionRoot = appContextVersionDir(options.projectsDir, options.appId, contextVersion);
@@ -393,6 +419,7 @@ export async function createAppContextVersion(
       updatedAt: manifest.createdAt,
     };
     await atomicJson(appContextCurrentPath(options.projectsDir, options.appId), pointer);
+    await syncWorkspaceFigmaComponents(mutableRoot, figmaComponentsMarkdown, Boolean(current?.figmaDesignSystemSourceId));
   } catch (error) {
     // The directory is a just-created incomplete version, never a prior user
     // snapshot. Removing it preserves the immutable-version invariant.

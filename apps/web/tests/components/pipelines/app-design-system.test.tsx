@@ -6,6 +6,7 @@ import type { DesignSystemSummary } from '@open-design/contracts';
 
 import { EditAppModal, normalizeFigmaLinks } from '../../../src/components/pipelines/EditAppModal';
 import { NewAppModal } from '../../../src/components/pipelines/NewAppModal';
+import { AppDesignSystemPanel } from '../../../src/components/pipelines/AppDesignSystemPanel';
 
 const systems = [
   { id: 'figma-ds', title: 'Figma DS', category: 'Product', summary: 'Review source', status: 'published' },
@@ -26,6 +27,15 @@ beforeEach(() => {
       catalog: { generatedAt: '2026-08-17T00:00:00Z', digest: 'sha256:x', fileCount: 1, componentCount: 12, files: [] },
       lastError: null, hasShowcase: false, hasReactBundle: false, createdAt: '2026-08-17T00:00:00Z', updatedAt: '2026-08-17T00:00:00Z',
     }] }), { status: 200 });
+    if (url === '/api/figma-design-systems/shared-figma') return new Response(JSON.stringify({
+      source: {
+        id: 'shared-figma', name: 'VNPAY Components', kind: 'figma-links', links: ['https://www.figma.com/design/ABC'], status: 'ready',
+        refreshProgress: null,
+        catalog: { generatedAt: '2026-08-17T00:00:00Z', digest: 'sha256:x', fileCount: 1, componentCount: 12, files: [] },
+        lastError: null, hasShowcase: false, hasReactBundle: false, createdAt: '2026-08-17T00:00:00Z', updatedAt: '2026-08-17T00:00:00Z',
+      },
+      componentsMarkdown: '# Danh mục component từ Figma\n\n### `#button` Primary button from Figma\n',
+    }), { status: 200 });
     if (url === '/api/figma-config' && (!init?.method || init.method === 'GET')) return new Response(JSON.stringify({ hasToken: true }), { status: 200 });
     if (url === '/api/figma-config/test') return new Response(JSON.stringify({ ok: true, handle: 'tester' }), { status: 200 });
     if (url === '/api/figma-config/verify-links') {
@@ -36,6 +46,15 @@ beforeEach(() => {
     if (url.includes('/pool')) return new Response(JSON.stringify({ pages: [] }), { status: 200 });
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   }));
+});
+
+describe('AppDesignSystemPanel · shared Figma catalogue', () => {
+  it('preview nội dung criteria/components.md thay vì chỉ hiện summary', async () => {
+    render(<AppDesignSystemPanel appId="retail" figmaDesignSystemSourceId="shared-figma" />);
+    expect(await screen.findByRole('heading', { name: 'VNPAY Components' })).toBeTruthy();
+    expect(screen.getByRole('article', { name: 'Nội dung criteria/components.md' })).toBeTruthy();
+    expect(screen.getByText('Primary button from Figma')).toBeTruthy();
+  });
 });
 
 describe('EditAppModal · Design System', () => {

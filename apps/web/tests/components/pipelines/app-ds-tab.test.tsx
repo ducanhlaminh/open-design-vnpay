@@ -36,8 +36,8 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 describe('Pipelines App · DS tab', () => {
   it('hiện tab DS, bấm vào thì render panel', async () => {
     renderView([{ id: 'app-1', name: 'App', designSystemId: 'ds-1' }]);
-    expect(screen.getByRole('tab', { name: /DS/ })).toBeTruthy();
-    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /DS/ })); });
+    expect(screen.getByRole('tab', { name: /Design system/ })).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /Design system/ })); });
     expect(await screen.findByRole('heading', { name: 'VNPAY DS' })).toBeTruthy();
   });
 
@@ -51,7 +51,7 @@ describe('Pipelines App · DS tab', () => {
     } });
     renderView([{ id: 'app-1', name: 'App', docsReviewComponentSource: { mode: 'figma-links', links } }]);
     expect(screen.getByText(/Link Figma \(1 file\)/)).toBeTruthy();
-    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /DS/ })); });
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /Design system/ })); });
     expect(await screen.findByRole('heading', { name: 'Danh mục component từ Figma' })).toBeTruthy();
     expect(await screen.findByText(/2 component · đọc lúc/)).toBeTruthy();
     expect(screen.getByText(/10:1/)).toBeTruthy();
@@ -66,7 +66,7 @@ describe('Pipelines App · DS tab', () => {
     vi.mocked(refreshAppFigmaCatalog).mockClear();
     vi.mocked(fetchAppFigmaCatalog).mockResolvedValue({ links, hasToken: false, generatedAt: null, files: [], componentCount: 0, markdown: null });
     renderView([{ id: 'app-1', name: 'App', docsReviewComponentSource: { mode: 'figma-links', links } }]);
-    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /DS/ })); });
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /Design system/ })); });
     expect(await screen.findByText(/Chưa có token Figma/)).toBeTruthy();
     expect(refreshAppFigmaCatalog).not.toHaveBeenCalled();
     expect((screen.getByTestId('figma-catalog-refresh') as HTMLButtonElement).disabled).toBe(true);
@@ -77,7 +77,7 @@ describe('Pipelines App · DS tab', () => {
     const links = [{ url: 'https://www.figma.com/design/ABC', fileKey: 'ABC' }];
     vi.mocked(fetchAppFigmaCatalog).mockImplementation(() => new Promise(() => {}));
     const view = renderView([{ id: 'app-1', name: 'App', docsReviewComponentSource: { mode: 'figma-links', links } }]);
-    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /DS/ })); });
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /Design system/ })); });
     await waitFor(() => expect(fetchAppFigmaCatalog).toHaveBeenCalled());
     const signal = vi.mocked(fetchAppFigmaCatalog).mock.calls.at(-1)?.[1];
     expect(signal?.aborted).toBe(false);
@@ -87,19 +87,19 @@ describe('Pipelines App · DS tab', () => {
 
   it('không hiện tab DS cho bucket Chưa gán app', () => {
     renderView([{ id: '__unassigned', name: 'Chưa gán app' }]);
-    expect(screen.queryByRole('tab', { name: /DS/ })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /Design system/ })).toBeNull();
   });
 
   it('App chưa chọn DS hiện meta và empty state hướng sang Sửa dự án', async () => {
     renderView([{ id: 'app-1', name: 'App' }]);
     expect(screen.getByText(/chưa chọn/)).toBeTruthy();
-    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /DS/ })); });
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /Design system/ })); });
     expect(screen.getAllByText((_, node) => node?.textContent?.includes('Chọn DS ở Sửa dự án') ?? false).length).toBeGreaterThan(0);
   });
 
   it('criteria 404 hiện empty state Sinh lại, không crash', async () => {
     renderView([{ id: 'app-1', name: 'App', designSystemId: 'ds-1' }]);
-    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /DS/ })); });
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /Design system/ })); });
     await act(async () => { fireEvent.click(screen.getByRole('tab', { name: 'Danh mục component' })); });
     expect(screen.getAllByText((_, node) => node?.textContent?.includes('bấm Sinh lại') ?? false).length).toBeGreaterThan(0);
     expect(screen.queryByText(/HTTP/)).toBeNull();
@@ -112,7 +112,7 @@ describe('Pipelines App · DS tab', () => {
       content: '### `#a` A\n\n### `#b` B\n\n### `#c` C',
     });
     renderView([{ id: 'app-1', name: 'App', designSystemId: 'ds-1' }]);
-    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /DS/ })); });
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /Design system/ })); });
     await act(async () => { fireEvent.click(screen.getByRole('tab', { name: 'Danh mục component' })); });
     expect(await screen.findByText(/3 component/)).toBeTruthy();
     expect(screen.getByText(/#a/)).toBeTruthy();

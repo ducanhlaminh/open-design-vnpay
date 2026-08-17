@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closeDatabase, getFigmaDesignSystemSource, openDatabase, setFigmaDesignSystemSourceRefreshState } from '../src/db.js';
 import { writeFigmaConfig } from '../src/figma-config.js';
 import { FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION } from '../src/figma-component-catalog.js';
-import { registerFigmaDesignSystemRoutes } from '../src/figma-design-system-routes.js';
+import {
+  figmaDesignSystemComponentsPath,
+  registerFigmaDesignSystemRoutes,
+} from '../src/figma-design-system-routes.js';
 
 type Handler = (req: any, res: any) => unknown;
 function response() {
@@ -76,6 +79,14 @@ describe('reusable Figma design-system routes', () => {
     await handlers.get('POST /api/figma-design-systems/:id/refresh')!({ params: { id } }, ok.res);
     expect(ok.output.body.source).toMatchObject({ status: 'ready', catalog: { fileCount: 1, componentCount: 1 } });
     expect(ok.output.body.source).not.toHaveProperty('token');
+    const componentsPath = figmaDesignSystemComponentsPath(root, id);
+    const firstMarkdown = await readFile(componentsPath, 'utf8');
+    expect(firstMarkdown).toContain('# Danh mục component từ Figma');
+    expect(firstMarkdown).toContain('Button');
+    expect(firstMarkdown).not.toContain('machine-local-secret');
+    const detail = response();
+    await handlers.get('GET /api/figma-design-systems/:id')!({ params: { id } }, detail.res);
+    expect(detail.output.body.componentsMarkdown).toBe(firstMarkdown);
     const digest = ok.output.body.source.catalog.digest;
 
     const failed = response();
@@ -83,6 +94,7 @@ describe('reusable Figma design-system routes', () => {
     expect(failed.output.status).toBe(502);
     expect(failed.output.body.source).toMatchObject({ status: 'error', catalog: { digest, componentCount: 1 } });
     expect((getFigmaDesignSystemSource(db, id)!.catalog as any).files[0].components[0].name).toBe('Button');
+    expect(await readFile(componentsPath, 'utf8')).toBe(firstMarkdown);
   });
 
   it('reports component additions, removals, and metadata changes after rerunning an update', async () => {
@@ -146,6 +158,10 @@ describe('reusable Figma design-system routes', () => {
       status: 'ready',
       catalog: { componentCount: 3 },
     });
+    const markdown = await readFile(figmaDesignSystemComponentsPath(root, id), 'utf8');
+    expect(markdown).toContain('Primary button');
+    expect(markdown).toContain('Banner');
+    expect(markdown).not.toContain('Legacy card');
   });
 
   it('validates 1–5 unique Figma files and supports update/list/delete', async () => {
@@ -165,6 +181,31 @@ describe('reusable Figma design-system routes', () => {
     const deleted = response();
     await handlers.get('DELETE /api/figma-design-systems/:id')!({ params: { id } }, deleted.res);
     expect(deleted.output.status).toBe(204);
+  });
+
+  it('removes the materialized catalogue when links change or the source is deleted', async () => {
+    const { root, handlers } = await setup();
+    await writeFigmaConfig(root, { token: 'machine-local-secret' });
+    const created = response();
+    await handlers.get('POST /api/figma-design-systems')!({ body: { name: 'Kit', links: ['https://figma.com/design/ABC'] } }, created.res);
+    const id = created.output.body.source.id;
+    const componentsPath = figmaDesignSystemComponentsPath(root, id);
+
+    const refreshed = response();
+    await handlers.get('POST /api/figma-design-systems/:id/refresh')!({ params: { id } }, refreshed.res);
+    expect((await stat(componentsPath)).isFile()).toBe(true);
+
+    const changed = response();
+    await handlers.get('PATCH /api/figma-design-systems/:id')!({ params: { id }, body: { links: ['https://figma.com/design/XYZ'] } }, changed.res);
+    await expect(stat(componentsPath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const rerun = response();
+    await handlers.get('POST /api/figma-design-systems/:id/refresh')!({ params: { id } }, rerun.res);
+    expect((await stat(componentsPath)).isFile()).toBe(true);
+
+    const deleted = response();
+    await handlers.get('DELETE /api/figma-design-systems/:id')!({ params: { id } }, deleted.res);
+    await expect(stat(componentsPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('recovers an interrupted refresh after the daemon restarts', async () => {

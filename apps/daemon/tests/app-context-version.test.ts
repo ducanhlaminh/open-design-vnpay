@@ -113,6 +113,45 @@ describe('App Context immutable versions', () => {
     ), 'utf8');
     expect(content).toContain('Button');
     expect(content).not.toContain('token');
+    const workspaceContent = await fs.promises.readFile(path.join(
+      projectsDir, 'banking', 'criteria', 'components.md',
+    ), 'utf8');
+    expect(workspaceContent).toBe(content);
+  });
+
+  it('backfills the workspace catalogue for an unchanged context and removes it when Figma DS is deselected', async () => {
+    const { projectsDir } = await fixture();
+    const options = {
+      projectsDir,
+      appId: 'banking',
+      appName: 'Banking',
+      designSystemId: null,
+      figmaDesignSystemSource: {
+        id: 'vnpay-figma',
+        catalog: {
+          schemaVersion: '1.0' as const,
+          generatedAt: '2026-08-17T00:00:00.000Z',
+          files: [{
+            fileKey: 'ABC', name: 'VNPAY UI', url: 'https://www.figma.com/design/ABC',
+            components: [{ nodeId: '1:2', name: 'Button', properties: [] }],
+          }],
+        },
+      },
+    };
+    const first = await createAppContextVersion(options);
+    const workspacePath = path.join(projectsDir, 'banking', 'criteria', 'components.md');
+    await fs.promises.rm(workspacePath);
+
+    const unchanged = await createAppContextVersion(options);
+    expect(unchanged.status).toBe('unchanged');
+    expect(await fs.promises.readFile(workspacePath, 'utf8')).toContain('Button');
+
+    const deselected = await createAppContextVersion({
+      ...options,
+      figmaDesignSystemSource: null,
+    });
+    expect(deselected.manifest.previousVersion).toBe(first.manifest.contextVersion);
+    await expect(fs.promises.stat(workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('reads a legacy draft manifest without rewriting it', () => {

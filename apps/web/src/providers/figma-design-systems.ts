@@ -1,6 +1,7 @@
 import type {
   CreateFigmaDesignSystemSourceRequest,
   FigmaDesignSystemSource,
+  GetFigmaDesignSystemSourceResponse,
   ListFigmaDesignSystemSourcesResponse,
   RefreshFigmaDesignSystemSourceResponse,
 } from '@open-design/contracts';
@@ -23,11 +24,14 @@ export async function fetchFigmaDesignSystems(): Promise<FigmaDesignSystemSource
   return body.sources ?? [];
 }
 
-export async function fetchFigmaDesignSystem(id: string): Promise<FigmaDesignSystemSource> {
+export async function fetchFigmaDesignSystemDetail(id: string): Promise<GetFigmaDesignSystemSourceResponse> {
   const response = await fetch(`/api/figma-design-systems/${encodeURIComponent(id)}`);
   if (!response.ok) throw new Error(await errorMessage(response, 'Không tải được Design system Figma.'));
-  const body = await response.json() as { source: FigmaDesignSystemSource };
-  return body.source;
+  return await response.json() as GetFigmaDesignSystemSourceResponse;
+}
+
+export async function fetchFigmaDesignSystem(id: string): Promise<FigmaDesignSystemSource> {
+  return (await fetchFigmaDesignSystemDetail(id)).source;
 }
 
 export async function createFigmaDesignSystem(payload: SourcePayload): Promise<FigmaDesignSystemSource> {
