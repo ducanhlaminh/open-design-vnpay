@@ -155,6 +155,22 @@ describe('Stage held (2026-08 web-first hold) — không route nào spawn đư�
     },
   );
 
+  it.each(['docs-review', 'docs-to-prd'])(
+    'POST /api/pipelines/run-all — workflowId=%s + terminal=ui-html (cấu hình lưu/mặc định của web) → KHÔNG 400: workflow không có bước terminal nên field này vô nghĩa, runWorkflowAll vẫn được gọi',
+    async (workflowId) => {
+      insertKgsProject(`PRJ_RUN_ALL_${workflowId}`);
+      const out = await postRunAll({
+        projectId: `PRJ_RUN_ALL_${workflowId}`,
+        workflowId,
+        terminal: 'ui-html',
+        confluencePages: [{ id: '1', url: 'https://wiki/x' }],
+      });
+      expect(out.body?.code).not.toBe('STAGE_HELD');
+      expect(out.status).toBe(202);
+      expect(runWorkflowAll).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('POST /api/pipelines/run-all — stageIds tường minh chứa một held id → 400 STAGE_HELD, KHÔNG gọi runWorkflowAll', async () => {
     insertKgsProject('PRJ_RUN_ALL_STAGEIDS');
     const out = await postRunAll({

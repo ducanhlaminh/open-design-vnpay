@@ -1383,6 +1383,14 @@ export function PipelinesView() {
     const heldIds = new Set(pipelines.filter((p) => p.held === true).map((p) => p.id));
     const terminalIds = payload.terminal === 'both' ? ['ui-html', 'ui-react'] : [payload.terminal];
     const terminalHeld = terminalIds.some((id) => heldIds.has(id));
+    // Workflow không có bước đầu ra UI nào (docs-review, docs-to-prd) thì
+    // `terminal` vô nghĩa — cấu hình lưu ở cấp project (hoặc mặc định
+    // 'ui-html') vẫn mang một id đang held, và daemon 400 STAGE_HELD một
+    // request nêu đích danh id đó → cả lượt chạy full bị chặn dù workflow
+    // này chẳng liên quan. Chỉ gửi `terminal` khi workflow đang mở thật sự có
+    // bước terminal để chọn.
+    const knownIds = new Set(pipelines.map((p) => p.id));
+    const workflowHasTerminal = terminalIds.some((id) => knownIds.has(id));
     const stageIdsForRequest = (payload.stageIds ?? []).filter((id) => !heldIds.has(id));
     const res = await fetch('/api/pipelines/run-all', {
       method: 'POST',
@@ -1393,7 +1401,7 @@ export function PipelinesView() {
         ...(payload.input ? { input: payload.input } : {}),
         ...(payload.confluencePages?.length ? { confluencePages: payload.confluencePages } : {}),
         ...(payload.appPool?.paths?.length ? { appPool: payload.appPool } : {}),
-        ...(terminalHeld ? {} : { terminal: payload.terminal }),
+        ...(terminalHeld || !workflowHasTerminal ? {} : { terminal: payload.terminal }),
         platform: payload.platform,
         ...(payload.targets?.length ? { targets: payload.targets } : {}),
         designSystemId: payload.designSystemId,

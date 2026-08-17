@@ -1679,9 +1679,17 @@ export function registerPipelineRoutes(app: Express, ctx: RegisterPipelineRoutes
       // `terminal` is not "explicit": it falls through to `selectRunStages`
       // below (via `runWorkflowAll`), which drops any held id from the plan
       // without erroring — see that function's docblock.
+      //
+      // Chỉ xét khi workflow ĐANG chạy thật sự có bước terminal đó: docs-review /
+      // docs-to-prd không có đầu ra UI nào, nhưng cấu hình run-all lưu ở cấp
+      // project (và web mặc định `terminal: 'ui-html'`) vẫn gửi field này lên
+      // — với các workflow ấy `terminal` vô nghĩa, không phải một lựa chọn
+      // "tường minh" gọi tới bước held, nên bỏ qua thay vì 400 chặn cả lượt
+      // chạy (bug 2026-08-17: docs-review không chạy full được sau hold).
       if (rawTerminal !== undefined) {
         const wantedTerminalIds = rawTerminal === 'both' ? ['ui-html', 'ui-react'] : [rawTerminal as string];
-        if (wantedTerminalIds.some((id) => getPipelineDef(id)?.heldFromRun)) {
+        const wfStageIds = new Set(getWorkflow(workflowId ?? DEFAULT_WORKFLOW_ID)?.pipelineIds ?? []);
+        if (wantedTerminalIds.some((id) => wfStageIds.has(id) && getPipelineDef(id)?.heldFromRun)) {
           return res.status(400).json({ error: STAGE_HELD_MSG, code: 'STAGE_HELD' });
         }
       }
