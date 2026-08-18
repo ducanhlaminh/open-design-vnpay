@@ -286,51 +286,52 @@ async function doWrite(dataDir: string, body: unknown): Promise<McpConfig> {
 // — was removed; Confluence credentials now live in their own store, see
 // confluence-config.ts.)
 //
-// `ba-agent` authenticates with a static Bearer header. We deliberately do
-// NOT bake that token into source / the bundle (it would then be readable by
-// anyone with the app, and would live in git). Instead the server entry is
-// seeded WITHOUT a token, and the user pastes it into the server's Headers
-// field at /integrations (Authorization=Bearer …). A deployment that prefers
-// to bake the token at build/run time can still set OD_BA_AGENT_TOKEN; the
-// URL is likewise overridable via OD_BA_AGENT_URL.
+// 2026-08-18: the `ba-agent` seed is GONE. It used to be seeded on every fresh
+// data dir so the BAS gateway (a2.openledger.vn) showed up in Settings →
+// External MCP; but (a) no pipeline stage uses an MCP server any more (docs
+// ingest is a daemon-side prefetch, Confluence goes through its own
+// credential store, the BAS source is locked), and (b) the daemon-side BAS
+// endpoint resolves from env (BAS_MCP_URL/BAS_MCP_TOKEN or
+// OD_BA_AGENT_URL/OD_BA_AGENT_TOKEN — see bas/bas-client.ts) without an MCP
+// entry. Product decision: an install must not show a pre-filled external
+// MCP server. `removeLegacyBaAgentSeed` below cleans the entry off machines
+// that were seeded by older versions.
 // ───────────────────────────────────────────────────────────────────────
 
-const BA_AGENT_DEFAULT_URL = 'https://a2.openledger.vn/api/mcp/';
+/** Default external MCP servers for a fresh data dir: none. Kept as a
+ *  function (env-parameterised) so a deployment can grow a seed list again
+ *  without changing the call sites. */
+export function defaultMcpServers(
+  _env: NodeJS.ProcessEnv = process.env,
+): McpServerConfig[] {
+  return [];
+}
+
+/** Id of the server older daemons seeded automatically (see above). */
+export const LEGACY_BA_AGENT_SERVER_ID = 'ba-agent';
 
 /**
- * Build the default server list. The `ba-agent` entry is always seeded so it
- * shows up on every machine; its Bearer token is left empty by default (the
- * user fills it via the /integrations Headers field) and only baked in when
- * OD_BA_AGENT_TOKEN is set. OD_BA_AGENT_URL overrides the endpoint.
+ * One-shot startup migration: drop the auto-seeded `ba-agent` entry from an
+ * existing mcp-config.json. Returns true when an entry was removed. Only the
+ * id is matched — a user who deliberately keeps a server under that id after
+ * this version will see it removed once; re-adding it in Settings sticks
+ * (this runs against the id, but a fresh add is the user's explicit choice
+ * and the seed no longer exists to recreate it). No-op when the file is
+ * absent or has no such server. Best-effort for the caller (log + swallow).
  */
-export function defaultMcpServers(
-  env: NodeJS.ProcessEnv = process.env,
-): McpServerConfig[] {
-  const url = env.OD_BA_AGENT_URL?.trim() || BA_AGENT_DEFAULT_URL;
-  const server: McpServerConfig = {
-    id: 'ba-agent',
-    label: 'BA Agent',
-    transport: 'http',
-    enabled: true,
-    url,
-    authMode: 'none',
-  };
-  // Optional build/run-time token bake-in. Left out by default so no secret
-  // lands in source — the token is entered through the UI instead.
-  const rawToken = env.OD_BA_AGENT_TOKEN?.trim();
-  if (rawToken) {
-    server.headers = {
-      Authorization: /^Bearer\s/i.test(rawToken) ? rawToken : `Bearer ${rawToken}`,
-    };
+export async function removeLegacyBaAgentSeed(dataDir: string): Promise<boolean> {
+  const file = configFile(dataDir);
+  try {
+    await stat(file);
+  } catch (err) {
+    if ((err as { code?: string }).code === 'ENOENT') return false;
+    throw err;
   }
-  const servers: McpServerConfig[] = [server];
-
-  // WP8 (2026-08): the `mcp-atlassian` stdio-server seed (Jira + Confluence
-  // Data Center via uvx) was removed here — JIRA ingest is gone, and
-  // Confluence credentials now live in their own store (confluence-config.ts /
-  // confluence-config.json, Settings → Integrations → Confluence) independent
-  // of this external-MCP config entirely.
-  return servers;
+  const cfg = await readMcpConfig(dataDir);
+  const kept = cfg.servers.filter((s) => s.id !== LEGACY_BA_AGENT_SERVER_ID);
+  if (kept.length === cfg.servers.length) return false;
+  await writeMcpConfig(dataDir, { servers: kept });
+  return true;
 }
 
 /**

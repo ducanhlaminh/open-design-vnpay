@@ -55,8 +55,12 @@ function stripBearer(v: string | undefined): string {
 // Returns null when nothing is configured — callers turn that into a clear
 // "BAS is not configured" error so the UI can tell the user to set it up.
 export async function resolveBasEndpoint(dataDir: string): Promise<BasEndpoint | null> {
-  const envUrl = process.env.BAS_MCP_URL?.trim();
-  const envToken = stripBearer(process.env.BAS_MCP_TOKEN);
+  // Env first. BAS_MCP_URL/BAS_MCP_TOKEN, or the OD_BA_AGENT_URL/OD_BA_AGENT_TOKEN
+  // pair a deployment may bake in (2026-08-18: the `ba-agent` MCP seed is
+  // gone, so env is the primary way to configure the gateway; the mcp-config
+  // lookup below only serves a server the user added by hand).
+  const envUrl = (process.env.BAS_MCP_URL ?? process.env.OD_BA_AGENT_URL)?.trim();
+  const envToken = stripBearer(process.env.BAS_MCP_TOKEN ?? process.env.OD_BA_AGENT_TOKEN);
   if (envUrl && envToken) return { url: envUrl, token: envToken };
 
   try {

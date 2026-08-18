@@ -278,6 +278,7 @@ import {
   isManagedProjectCwd,
   readMcpConfig,
   seedDefaultMcpConfig,
+  removeLegacyBaAgentSeed,
   writeMcpConfig,
 } from './mcp-config.js';
 import { ensureUvForMcp } from './ensure-uv.js';
@@ -4646,9 +4647,10 @@ export async function startServer({
     console.warn(`[plugins] registry seed failed: ${(err)?.message ?? err}`);
   }
 
-  // Seed the default external MCP servers (ba-agent) on a fresh data dir so a
-  // packaged build ships a working server out of the box instead of an empty
-  // list on every new machine. No-op once mcp-config.json exists.
+  // Default external MCP servers for a fresh data dir (none since 2026-08-18
+  // — see defaultMcpServers), then drop the `ba-agent` entry older versions
+  // auto-seeded so upgraded machines stop showing a pre-filled external MCP
+  // server in Settings. Both best-effort: never block startup.
   try {
     const seededMcp = await seedDefaultMcpConfig(RUNTIME_DATA_DIR);
     if (seededMcp.length > 0) {
@@ -4656,6 +4658,13 @@ export async function startServer({
     }
   } catch (err) {
     console.warn(`[mcp] default seed failed: ${(err)?.message ?? err}`);
+  }
+  try {
+    if (await removeLegacyBaAgentSeed(RUNTIME_DATA_DIR)) {
+      console.log('[mcp] removed the legacy auto-seeded ba-agent server from mcp-config.json');
+    }
+  } catch (err) {
+    console.warn(`[mcp] legacy ba-agent cleanup failed: ${(err)?.message ?? err}`);
   }
   // Best-effort, non-blocking: when an enabled stdio MCP server is launched via
   // `uvx` (e.g. mcp-atlassian) and the machine lacks uv, install it so the
@@ -18770,7 +18779,7 @@ export async function startServer({
       const ep = await resolveBasEndpoint(RUNTIME_DATA_DIR);
       if (!ep) {
         throw new Error(
-          'BAS is not configured (set BAS_MCP_URL + BAS_MCP_TOKEN, or add a "ba-agent" MCP server in Settings).',
+          'BAS is not configured (set BAS_MCP_URL + BAS_MCP_TOKEN in the daemon environment).',
         );
       }
       const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
@@ -19514,7 +19523,7 @@ export async function startServer({
     const ep = await resolveBasEndpoint(RUNTIME_DATA_DIR);
     if (!ep) {
       throw new Error(
-        'BAS is not configured (set BAS_MCP_URL + BAS_MCP_TOKEN, or add a "ba-agent" MCP server in Settings).',
+        'BAS is not configured (set BAS_MCP_URL + BAS_MCP_TOKEN in the daemon environment).',
       );
     }
     return ep;
