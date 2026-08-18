@@ -276,10 +276,30 @@ ARCHIVE_SHA_HINT=""
 ARCHIVE_SHA256=""
 
 download_archive() {
-  # $1 = tarball url, $2 = optional sha256 sidecar url
+  # $1 = tarball url, $2 = optional sha256 sidecar url, $3 = optional part count.
+  # $3 > 0: the mirror serves <url>.part01 .. .partNN (hosts with a per-file
+  # size cap -- Cloudflare Pages: 25 MiB) instead of the whole file. Fetch each
+  # part with the same retry/stall policy, concatenate, and let verify_checksum
+  # check the whole-file sha256 from release.json exactly as usual.
   mktemp_dir
   dl_dir="$LAST_TMP_DIR"
   ARCHIVE_PATH="${dl_dir}/$(basename "$1")"
+  parts="${3:-0}"
+  case "$parts" in ''|*[!0-9]*) fail "release.json has a non-numeric part count: ${parts}" ;; esac
+  if [ "$parts" -gt 0 ]; then
+    step "Downloading $(basename "$1") (${parts} parts)"
+    : > "$ARCHIVE_PATH"
+    i=1
+    while [ "$i" -le "$parts" ]; do
+      suffix="$(printf '.part%02d' "$i")"
+      step "  part ${i}/${parts}"
+      curl_download "${ARCHIVE_PATH}${suffix}" "$1${suffix}" || fail "download failed after bounded retries: $1${suffix}"
+      cat "${ARCHIVE_PATH}${suffix}" >> "$ARCHIVE_PATH" || fail "could not assemble ${ARCHIVE_PATH} from its parts"
+      rm -f "${ARCHIVE_PATH}${suffix}"
+      i=$((i + 1))
+    done
+    return
+  fi
   step "Downloading $(basename "$1")"
   curl_download "$ARCHIVE_PATH" "$1" || fail "download failed after bounded retries: $1"
   if [ -n "${2:-}" ]; then
@@ -330,9 +350,12 @@ resolve_archive() {
   rel_json="$(curl_text "$release_json_url")" || fail "could not fetch release.json from ${release_json_url}"
   tarball_url="$(json_flat_value "$rel_json" "${PLATFORM}.url")"
   tarball_sha="$(json_flat_value "$rel_json" "${PLATFORM}.sha256")"
+  # "<platform>.parts" (string count) = the archive is served as .partNN files
+  # (see build-release-manifest.ts --split-mib). Absent on GitHub Releases.
+  tarball_parts="$(json_flat_value "$rel_json" "${PLATFORM}.parts")"
   [ -n "$tarball_url" ] || fail "release.json has no entry for platform ${PLATFORM}"
 
-  download_archive "$tarball_url"
+  download_archive "$tarball_url" "" "${tarball_parts:-0}"
   [ -z "$ARCHIVE_SHA_HINT" ] && ARCHIVE_SHA_HINT="$tarball_sha"
 }
 

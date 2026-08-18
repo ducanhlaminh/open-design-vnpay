@@ -391,10 +391,30 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\od-data\open-design"
 
 ### Download mirror (`OD_RELEASE_URL`)
 
-The release workflow can publish every release to an S3-compatible bucket in
-addition to GitHub Releases (Cloudflare R2, MinIO, AWS S3, an internal object
-store — anything with a public HTTPS URL). It is switched on purely by
-repository secrets; with none set the workflow behaves exactly as before:
+The release workflow can publish every release to a mirror in addition to
+GitHub Releases. It is switched on purely by repository secrets; with none set
+the workflow behaves exactly as before. Two targets are supported (either or
+both):
+
+**Cloudflare Pages** — free, no payment method, Cloudflare CDN (the same
+network `nodejs.org` is served from, measured 11 MB/s at the VNPAY office).
+Pages caps files at 25 MiB, so tarballs are published as `.part01`, `.part02`,
+… (24 MiB each) and `release.json` carries `"<platform>.parts": "<n>"`; both
+installers download the parts, concatenate, and verify the whole-file sha256
+as usual. Setup once: create a free Cloudflare account → *Workers & Pages* →
+create an API token (template *Edit Cloudflare Workers*, or custom with
+*Account · Cloudflare Pages · Edit*) → note the *Account ID* (dashboard
+sidebar / URL). Then add the secrets:
+
+| Secret | Value |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | API token with Pages:Edit. |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID. |
+| `OD_MIRROR_PAGES_PROJECT` | Pages project name, e.g. `od-runtime` (created on first publish). Public URL = `https://<project>.pages.dev`. |
+| `OD_MIRROR_PUBLIC_URL` (optional) | Only if a custom domain fronts the project. |
+
+**S3-compatible bucket** (Cloudflare R2, MinIO, AWS S3, an internal object
+store) — whole files:
 
 | Secret | Value |
 | --- | --- |
@@ -405,24 +425,30 @@ repository secrets; with none set the workflow behaves exactly as before:
 | `OD_MIRROR_S3_PREFIX` (optional) | Key prefix inside the bucket. |
 | `OD_MIRROR_S3_REGION` (optional) | Default `auto` (R2). |
 
-Layout under the public URL:
+Layout under the public URL (Pages: only the current tag is kept, each deploy
+replaces the site):
 
 ```text
-<public>/<tag>/    open-design-runtime-*.tar.gz (+ .sha256), OpenDesign-*-Installer.zip,
+<public>/<tag>/    open-design-runtime-*.tar.gz[.partNN] (+ .sha256), OpenDesign-*-Installer.zip,
                    release.json (points into this folder), install.ps1, install.sh
 <public>/latest/   release.json, install.ps1, install.sh, OpenDesign-*-Installer.zip
                    (rolling pointer, overwritten on every publish)
 ```
 
 To backfill a release that was published before the secrets existed (or to
-try a new bucket without waiting for CI), run the same publish step from any
-machine with `gh` + `aws`:
+try a new project/bucket without waiting for CI), run the same publish step
+from any machine with `gh` (+ `npx` for Pages, `aws` for S3):
 
 ```bash
+# Cloudflare Pages
+CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ACCOUNT_ID=… \
+scripts/host-runtime/mirror-publish.sh --tag host-runtime-v0.8.52 --pages-project od-runtime
+# S3-compatible
 AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… \
 scripts/host-runtime/mirror-publish.sh --tag host-runtime-v0.8.52 \
   --bucket <bucket> --endpoint https://<account>.r2.cloudflarestorage.com \
-  --public-url https://dl.example.com/open-design   # add --dry-run to stage only
+  --public-url https://dl.example.com/open-design
+# add --dry-run to stage only
 ```
 
 Install from the mirror — the base URL is remembered in `config.env` for

@@ -370,3 +370,31 @@ test('Windows download progress reports throughput (KB/s) on the bar and in the 
   assert.match(dl, /Write-DownloadLog "download \$milestone% \(\$received\/\$total bytes, \$kbps KB\/s\)"/);
   assert.match(dl, /download complete \(\$received bytes, avg \$kbps KB\/s over/);
 });
+
+test('Windows installer downloads multipart archives ("<platform>.parts") and reassembles before the checksum', async () => {
+  const ps = await source();
+  const getArchive = ps.slice(ps.indexOf('function Get-Archive'), ps.indexOf('function Resolve-Archive'));
+  assert.match(getArchive, /\[int\]\$Parts = 0/);
+  assert.match(getArchive, /\$suffix = "\.part\{0:00\}" -f \$i/);
+  assert.match(getArchive, /Invoke-DownloadFile -Url "\$Url\$suffix" -Destination "\$ArchivePath\$suffix"/);
+  assert.match(getArchive, /\[System\.IO\.File\]::Create\(\$ArchivePath\)/);
+  assert.match(getArchive, /\$in\.CopyTo\(\$out\)/);
+  const resolve = ps.slice(ps.indexOf('function Resolve-Archive'), ps.indexOf('function Test-TarSafety'));
+  assert.match(resolve, /Get-FlatJsonValue \$relJson "\$Platform\.parts"/);
+  assert.match(resolve, /Get-Archive -Url \$tarballUrl -Parts \$tarballParts/);
+  // Test-Checksum still runs on the assembled file (Step1 order unchanged).
+  assert.match(ps, /Resolve-Archive\s*\n[\s\S]*?Test-Checksum\s*\n\s*Test-TarSafety/);
+});
+
+test('release workflow mirrors through mirror-publish.sh (Cloudflare Pages and/or S3), gated on secrets', async () => {
+  const wf = await readFile(join(repoRoot, '.github/workflows/release-host-runtime.yml'), 'utf8');
+  const script = await readFile(join(repoRoot, 'scripts/host-runtime/mirror-publish.sh'), 'utf8');
+  assert.match(wf, /if: env\.CLOUDFLARE_API_TOKEN != '' && env\.OD_MIRROR_PAGES_PROJECT != ''/);
+  assert.match(wf, /if: env\.OD_MIRROR_S3_BUCKET != '' && env\.OD_MIRROR_PUBLIC_URL != ''/);
+  assert.match(wf, /mirror-publish\.sh"[\s\S]*?--pages-project "\$OD_MIRROR_PAGES_PROJECT"/);
+  assert.match(wf, /mirror-publish\.sh"[\s\S]*?--bucket "\$OD_MIRROR_S3_BUCKET"/);
+  assert.match(script, /SPLIT_MIB=24/);
+  assert.match(script, /--split-mib "\$SPLIT_MIB"/);
+  assert.match(script, /wrangler@4 pages deploy/);
+  assert.match(script, /Cache-Control: no-cache/);
+});

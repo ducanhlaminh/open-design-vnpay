@@ -1067,3 +1067,72 @@ test('build-runtime.sh trims documentation weight and hard-links duplicate resou
   assert.match(build, /-size \+256k/);
   assert.doesNotMatch(build, /rm -rf "\$\{RESOURCE_ROOT\}\/community-pets"/);
 });
+
+// Multipart archives ("<platform>.parts"): the Cloudflare Pages mirror caps
+// files at 25 MiB, so build-release-manifest.ts --split-mib writes
+// <tarball>.partNN and the installers reassemble before the sha256 check.
+test('build-release-manifest.ts --split-mib writes .partNN files whose concatenation is the original and records the count as a string', async () => {
+  const tmp = await mktmp('manifest-split');
+  try {
+    const name = 'open-design-runtime-9.9.9-linux-x64.tar.gz';
+    const bytes = Buffer.alloc(5 * 1024 * 1024 + 123);
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = (i * 31 + 7) & 0xff;
+    await writeFile(join(tmp, name), bytes);
+    await writeFile(join(tmp, `${name}.sha256`), `${sha256(bytes)}  ${name}\n`);
+    await execFileAsync('node', [
+      '--experimental-strip-types', join(repoRoot, 'scripts/host-runtime/build-release-manifest.ts'),
+      '--version', '9.9.9', '--tag', 't', '--repo', 'o/r', '--base-url', 'https://m.example/t/', '--split-mib', '2', '--out', 'r.json',
+    ], { cwd: tmp });
+    const manifest = JSON.parse(await readFile(join(tmp, 'r.json'), 'utf8'));
+    assert.equal(manifest['linux-x64.parts'], '3');
+    assert.equal(manifest['linux-x64.url'], `https://m.example/t/${name}`);
+    const parts = (await readdir(tmp)).filter((f) => f.startsWith(`${name}.part`)).sort();
+    assert.deepEqual(parts, [`${name}.part01`, `${name}.part02`, `${name}.part03`]);
+    const joined = Buffer.concat(await Promise.all(parts.map((p) => readFile(join(tmp, p)))));
+    assert.equal(sha256(joined), sha256(bytes));
+    assert.equal((await stat(join(tmp, parts[0]!))).size, 2 * 1024 * 1024);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('download_archive with a part count fetches .partNN in order, concatenates, and removes the parts', async () => {
+  const tmp = await mktmp('multipart-dl');
+  const fakeHome = join(tmp, 'home');
+  const served = join(tmp, 'served');
+  await mkdir(served, { recursive: true });
+  try {
+    const name = 'open-design-runtime-9.9.9-linux-x64.tar.gz';
+    const partsData = [Buffer.from('AAAA'), Buffer.from('BBBB'), Buffer.from('CC')];
+    await Promise.all(partsData.map((b, i) => writeFile(join(served, `${name}.part0${i + 1}`), b)));
+    const harness = join(tmp, 'harness.sh');
+    await writeFile(
+      harness,
+      [
+        '#!/usr/bin/env bash',
+        'set -eu',
+        `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+        // Stand-in for curl: copy the requested basename from the served dir; log the order.
+        `curl_download() { echo "$(basename "$2")" >> "${tmp}/order"; cp "${served}/$(basename "$2")" "$1"; }`,
+        `download_archive "https://m.example/t/${name}" "" 3`,
+        'cat "$ARCHIVE_PATH"; echo',
+        'ls "$(dirname "$ARCHIVE_PATH")"',
+      ].join('\n'),
+    );
+    await chmod(harness, 0o755);
+    const { stdout } = await execFileAsync('bash', [harness], { env: { ...process.env, HOME: fakeHome } });
+    assert.match(stdout, /Downloading open-design-runtime-9\.9\.9-linux-x64\.tar\.gz \(3 parts\)/);
+    assert.match(stdout, /\nAAAABBBBCC\n/);
+    assert.equal(stdout.trim().split('\n').pop(), name, 'part files must be removed after assembly');
+    assert.equal(await readFile(join(tmp, 'order'), 'utf8'), `${name}.part01\n${name}.part02\n${name}.part03\n`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('resolve_archive forwards "<platform>.parts" from release.json to download_archive', async () => {
+  const src = await readFile(installScript, 'utf8');
+  const block = src.slice(src.indexOf('resolve_archive() {'), src.indexOf('# Step 0 — network preflight'));
+  assert.match(block, /tarball_parts="\$\(json_flat_value "\$rel_json" "\$\{PLATFORM\}\.parts"\)"/);
+  assert.match(block, /download_archive "\$tarball_url" "" "\$\{tarball_parts:-0\}"/);
+});

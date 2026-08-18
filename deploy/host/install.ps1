@@ -654,9 +654,40 @@ function Set-Platform {
 }
 
 function Get-Archive {
-  param([string]$Url, [string]$Sha256Url = "")
+  # $Parts > 0: the mirror serves <Url>.part01 .. .partNN (hosts with a
+  # per-file size cap -- Cloudflare Pages: 25 MiB) instead of the whole file.
+  # Download each part with the same stall-timeout/resume logic, concatenate
+  # into the tarball, and let Test-Checksum verify the whole-file sha256
+  # from release.json exactly as for a single-file download.
+  param([string]$Url, [string]$Sha256Url = "", [int]$Parts = 0)
   $dlDir = New-TempDir
   $script:ArchivePath = Join-Path $dlDir (Split-Path $Url -Leaf)
+  if ($Parts -gt 0) {
+    Write-Step "Downloading $(Split-Path $Url -Leaf) ($Parts parts)"
+    $partPaths = New-Object System.Collections.Generic.List[string]
+    for ($i = 1; $i -le $Parts; $i++) {
+      $suffix = ".part{0:00}" -f $i
+      Write-Step "  part $i/$Parts"
+      try {
+        Invoke-DownloadFile -Url "$Url$suffix" -Destination "$ArchivePath$suffix"
+      } catch {
+        Fail "download failed after $DownloadMaxAttempts attempts: $Url$suffix -- $($_.Exception.Message)"
+      }
+      $partPaths.Add("$ArchivePath$suffix")
+    }
+    Write-Step "Assembling $(Split-Path $Url -Leaf) from $Parts parts"
+    $out = [System.IO.File]::Create($ArchivePath)
+    try {
+      foreach ($p in $partPaths) {
+        $in = [System.IO.File]::OpenRead($p)
+        try { $in.CopyTo($out) } finally { $in.Dispose() }
+        Remove-Item -Force $p -ErrorAction SilentlyContinue
+      }
+    } finally {
+      $out.Dispose()
+    }
+    return
+  }
   Write-Step "Downloading $(Split-Path $Url -Leaf)"
   try {
     Invoke-DownloadFile -Url $Url -Destination $ArchivePath
@@ -725,8 +756,15 @@ function Resolve-Archive {
   $tarballUrl = Get-FlatJsonValue $relJson "$Platform.url"
   $tarballSha = Get-FlatJsonValue $relJson "$Platform.sha256"
   if (-not $tarballUrl) { Fail "release.json ($($relJson.tag)) has no entry for platform $Platform" }
+  # "<platform>.parts" (string count) = the archive is served as .partNN files
+  # (see build-release-manifest.ts --split-mib). Absent on GitHub Releases.
+  [int]$tarballParts = 0
+  $partsRaw = Get-FlatJsonValue $relJson "$Platform.parts"
+  if ($partsRaw -and -not [int]::TryParse([string]$partsRaw, [ref]$tarballParts)) {
+    Fail "release.json ($($relJson.tag)) has a non-numeric $Platform.parts: $partsRaw"
+  }
 
-  Get-Archive -Url $tarballUrl
+  Get-Archive -Url $tarballUrl -Parts $tarballParts
   if (-not $ArchiveShaHint) { $script:ArchiveShaHint = $tarballSha }
 }
 
