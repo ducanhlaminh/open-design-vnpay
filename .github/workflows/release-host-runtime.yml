@@ -298,9 +298,15 @@ jobs:
           # Second run over the existing install = clean reinstall (2026-08-18):
           # the old runtime is removed first, then installed again; must end
           # healthy on the same version and say so.
-          $second = cmd.exe /c "`"$(Join-Path $dl 'OpenDesign-Install.cmd')`" --no-pause" 2>&1 | Out-String
+          # Redirect to a FILE inside cmd, never `| Out-String`: the daemon and
+          # launcher the installer starts inherit stdout, and a pipe would keep
+          # this step waiting on them forever (0.8.45 run hung 1h+ here).
+          $secondLog = Join-Path $env:RUNNER_TEMP "second-install.log"
+          cmd.exe /c "`"$(Join-Path $dl 'OpenDesign-Install.cmd')`" --no-pause > `"$secondLog`" 2>&1"
+          $secondExit = $LASTEXITCODE
+          $second = Get-Content -Raw $secondLog -ErrorAction SilentlyContinue
           Write-Host $second
-          if ($LASTEXITCODE -ne 0) { throw "second OpenDesign-Install.cmd (over existing install) exited $LASTEXITCODE" }
+          if ($secondExit -ne 0) { throw "second OpenDesign-Install.cmd (over existing install) exited $secondExit" }
           if ($second -notmatch 'Previous installation removed') { throw "second install did not remove the previous installation first" }
           $health2 = Invoke-RestMethod -Uri "http://127.0.0.1:7456/api/health" -TimeoutSec 15
           if (-not $health2.ok) { throw "health after clean reinstall: $($health2 | ConvertTo-Json -Compress)" }
