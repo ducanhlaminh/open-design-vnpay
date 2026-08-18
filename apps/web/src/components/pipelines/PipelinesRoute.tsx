@@ -526,6 +526,7 @@ export function PipelinesRoute() {
           onDeleteApp={(app) => setActing({ kind: 'delete-app', app })}
           onReconnectSync={() => void reconnectSync()}
           syncReady={syncAccess?.syncReady === true}
+          syncChecked={syncAccess !== null}
           syncIssue={syncAccess?.syncIssue}
           syncStatusByAppId={syncStatusByAppId}
           onPullAll={() => setPullSharedOpen(true)}

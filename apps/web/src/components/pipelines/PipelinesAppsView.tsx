@@ -31,6 +31,10 @@ interface Props {
   onPushAll?: () => void;
   onReconnectSync?: () => void;
   syncReady?: boolean;
+  /** False until /api/auth/me has answered once. While unknown, sync buttons
+   *  stay disabled but the "phiên đăng nhập đã hết hạn" alert must NOT show —
+   *  it used to flash on every /pipelines load before the check finished. */
+  syncChecked?: boolean;
   syncIssue?: string | null;
   pullBusy?: boolean;
   pushBusy?: boolean;
@@ -132,6 +136,7 @@ export function PipelinesAppsView({
   onPushAll,
   onReconnectSync,
   syncReady = false,
+  syncChecked = true,
   syncIssue,
   pullBusy = false,
   pushBusy = false,
@@ -140,7 +145,7 @@ export function PipelinesAppsView({
   onPullApp,
 }: Props): JSX.Element {
   const [recent] = useState<RecentEntry[]>(() => readRecent());
-  const syncHint = syncIssueHint(syncIssue);
+  const syncHint = syncChecked ? syncIssueHint(syncIssue) : 'Đang kiểm tra kết nối kho dự án…';
   const canReconnect = syncIssue !== 'identity_not_configured' && syncIssue !== 'identity_unavailable';
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -219,7 +224,7 @@ export function PipelinesAppsView({
         ) : null}
       </div>
 
-      {onPullAll && !syncReady ? (
+      {onPullAll && syncChecked && !syncReady ? (
         <div className={styles.error} role="alert">
           <Icon name="info" size={16} />
           <span>{syncHint}</span>

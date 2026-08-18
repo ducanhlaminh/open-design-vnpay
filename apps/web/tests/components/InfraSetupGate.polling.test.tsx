@@ -45,7 +45,7 @@ async function settle() {
 
 describe('InfraSetupGate background polling', () => {
   const fetchMock = vi.fn();
-  const calls = () => fetchMock.mock.calls.map((c) => String(c[0]).split('?')[0]);
+  const calls = () => fetchMock.mock.calls.map((c) => String(c[0]).split('?')[0] ?? '');
   const count = (path: string) => calls().filter((u) => u.endsWith(path)).length;
 
   beforeEach(() => {

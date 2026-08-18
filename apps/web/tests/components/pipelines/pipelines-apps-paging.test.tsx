@@ -251,3 +251,46 @@ describe('card App', () => {
     expect(screen.queryByLabelText('Thao tác với Chưa gán app')).toBeNull();
   });
 });
+
+// Cảnh báo "Phiên đăng nhập đã hết hạn" chỉ được hiện SAU KHI /api/auth/me đã
+// trả lời. Trước đó (syncChecked=false) trang đang tải — nút đồng bộ tắt, nhưng
+// không được nháy alert đòi đăng nhập lại (bug báo 2026-08-18 trên /pipelines).
+describe('PipelinesAppsView sync alert timing', () => {
+  it('does not show the re-login alert while the sync check is still pending', () => {
+    render(
+      <PipelinesAppsView
+        nav={navFor(appsOf(2))}
+        onNewApp={() => {}}
+        onPullAll={() => {}}
+        syncReady={false}
+        syncChecked={false}
+      />,
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
+    const pull = screen.getByRole('button', { name: /Lấy dự án|Lấy về/ }) as HTMLButtonElement;
+    expect(pull.disabled).toBe(true);
+    expect(pull.title).toContain('Đang kiểm tra');
+  });
+
+  it('shows the alert once the check answered "not ready"', () => {
+    render(
+      <PipelinesAppsView
+        nav={navFor(appsOf(2))}
+        onNewApp={() => {}}
+        onPullAll={() => {}}
+        onReconnectSync={() => {}}
+        syncReady={false}
+        syncChecked={true}
+        syncIssue={null}
+      />,
+    );
+    expect(screen.getByRole('alert').textContent).toContain('Phiên đăng nhập đã hết hạn');
+  });
+
+  it('shows nothing when ready', () => {
+    render(
+      <PipelinesAppsView nav={navFor(appsOf(2))} onNewApp={() => {}} onPullAll={() => {}} syncReady={true} syncChecked={true} />,
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
