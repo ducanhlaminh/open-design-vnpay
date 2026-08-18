@@ -223,7 +223,11 @@ $DefaultDataDir = Join-Path $env:USERPROFILE "od-data\open-design"
 # install time, so step 1 never depends on a JSON parser being available.
 $RequiredNodeMajor = 24
 $HealthTimeout = 60
-$DownloadTimeoutSec = 180
+# STALL timeout, not a total one: an attempt fails only when NO bytes arrive
+# for this long (headers or body). 0.8.46 report: a 180 s TOTAL cap killed a
+# 99 MB runtime tarball at 40% three times in a row on a ~220 KB/s corporate
+# link ("A task was canceled."), and every retry started from byte 0.
+$DownloadTimeoutSec = 60
 $DownloadMaxAttempts = 3
 $ProgressBarWidth = 30
 $RestartRequiredExitCode = 75
@@ -451,37 +455,64 @@ function Invoke-DownloadFile {
   param(
     [Parameter(Mandatory = $true)][string]$Url,
     [Parameter(Mandatory = $true)][string]$Destination,
+    # Seconds WITHOUT any received byte before the attempt is abandoned. There
+    # is deliberately no cap on the total transfer time -- big files on slow
+    # links just take long; only a stalled connection is an error.
     [int]$TimeoutSec = $DownloadTimeoutSec,
     [int]$MaxAttempts = $DownloadMaxAttempts
   )
 
   $partial = "$Destination.partial"
+  Remove-Item -Force $partial -ErrorAction SilentlyContinue
   for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-    Remove-Item -Force $partial -ErrorAction SilentlyContinue
     $client = $null
     $response = $null
     $input = $null
     $output = $null
     $cts = $null
     try {
-      Write-DownloadLog "download attempt $attempt/$MaxAttempts`: $Url"
+      # Resume: keep whatever the previous attempt fetched and ask for the
+      # rest with a Range request. GitHub release assets answer 206; a server
+      # that ignores Range answers 200 and we start over from byte 0.
+      [long]$resumeFrom = 0
+      if (Test-Path -LiteralPath $partial) { $resumeFrom = (Get-Item -LiteralPath $partial).Length }
+      Write-DownloadLog "download attempt $attempt/$MaxAttempts`: $Url$(if ($resumeFrom -gt 0) { " (resume from byte $resumeFrom)" })"
       Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
       $handler = New-OdHttpHandler
       $client = [System.Net.Http.HttpClient]::new($handler)
-      $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+      $client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
       $cts = [System.Threading.CancellationTokenSource]::new()
       $cts.CancelAfter([TimeSpan]::FromSeconds($TimeoutSec))
-      $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cts.Token).GetAwaiter().GetResult()
+      $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Url)
+      if ($resumeFrom -gt 0) {
+        $request.Headers.Range = [System.Net.Http.Headers.RangeHeaderValue]::new($resumeFrom, $null)
+      }
+      $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cts.Token).GetAwaiter().GetResult()
       $response.EnsureSuccessStatusCode() | Out-Null
-      $total = $response.Content.Headers.ContentLength
+      $resumed = ($resumeFrom -gt 0 -and [int]$response.StatusCode -eq 206)
+      if ($resumeFrom -gt 0 -and -not $resumed) {
+        Write-DownloadLog "server ignored Range; restarting from byte 0"
+        $resumeFrom = 0
+      }
+      $total = $null
+      if ($resumed -and $response.Content.Headers.ContentRange -and $response.Content.Headers.ContentRange.HasLength) {
+        $total = $response.Content.Headers.ContentRange.Length
+      } elseif ($response.Content.Headers.ContentLength) {
+        $total = $response.Content.Headers.ContentLength
+      }
       $input = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-      $output = [System.IO.File]::Open($partial, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+      $fileMode = if ($resumed) { [System.IO.FileMode]::Append } else { [System.IO.FileMode]::Create }
+      $output = [System.IO.File]::Open($partial, $fileMode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
       $buffer = [byte[]]::new(65536)
-      [long]$received = 0
+      [long]$received = $resumeFrom
       $lastPercent = -1
       $lastMilestone = -1
-      [long]$lastByteReport = 0
+      [long]$lastByteReport = $resumeFrom
+      # Re-arm the stall timer after every successful read: CancelAfter on a
+      # not-yet-cancelled source restarts the countdown.
+      $cts.CancelAfter([TimeSpan]::FromSeconds($TimeoutSec))
       while (($count = $input.ReadAsync($buffer, 0, $buffer.Length, $cts.Token).GetAwaiter().GetResult()) -gt 0) {
+        $cts.CancelAfter([TimeSpan]::FromSeconds($TimeoutSec))
         $output.Write($buffer, 0, $count)
         $received += $count
         if ($total -and $total -gt 0) {
@@ -526,14 +557,19 @@ function Invoke-DownloadFile {
       return
     } catch {
       $failure = $_.Exception.Message
+      if ($cts -and $cts.IsCancellationRequested) {
+        $failure = "no data received for $TimeoutSec s (stalled connection) -- $failure"
+      }
       Write-DownloadLog "download attempt $attempt failed: $failure"
       $statusCode = if ($response) { [int]$response.StatusCode } else { 0 }
-      $transient = ($statusCode -eq 0 -or $statusCode -eq 408 -or $statusCode -eq 429 -or $statusCode -ge 500)
+      $transient = ($statusCode -eq 0 -or $statusCode -eq 206 -or $statusCode -eq 200 -or $statusCode -eq 408 -or $statusCode -eq 429 -or $statusCode -ge 500)
       if (-not $transient -or $attempt -ge $MaxAttempts) {
         Remove-Item -Force $partial -ErrorAction SilentlyContinue
+        if ($cts -and $cts.IsCancellationRequested) { throw $failure }
         throw
       }
-      Write-Warn "download attempt $attempt/$MaxAttempts failed; retrying in $attempt second(s)"
+      if (Test-InteractiveOutput) { try { [Console]::WriteLine() } catch {} }
+      Write-Warn "download attempt $attempt/$MaxAttempts failed; retrying in $attempt second(s)$(if (Test-Path -LiteralPath $partial) { ' (resuming)' })"
       Start-Sleep -Seconds $attempt
     } finally {
       if ($output) { $output.Dispose() }

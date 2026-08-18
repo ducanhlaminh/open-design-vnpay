@@ -11,14 +11,27 @@ async function source(): Promise<string> {
   return readFile(installScript, 'utf8');
 }
 
-test('Windows downloads use bounded retries, timeout, and partial-file promotion', async () => {
+test('Windows downloads use bounded retries, a STALL timeout (no total cap), Range resume, and partial-file promotion', async () => {
   const ps = await source();
   assert.match(ps, /\$DownloadMaxAttempts\s*=\s*3/);
-  assert.match(ps, /\$DownloadTimeoutSec\s*=\s*180/);
+  // 0.8.46 regression: a 180 s TOTAL timeout cancelled a 99 MB download at
+  // 40% on a slow corporate link, three times, restarting from byte 0 each
+  // time. The timeout is now per-stall and the transfer itself is uncapped.
+  assert.match(ps, /\$DownloadTimeoutSec\s*=\s*60/);
+  assert.match(ps, /\$client\.Timeout = \[System\.Threading\.Timeout\]::InfiniteTimeSpan/);
   assert.match(ps, /HttpCompletionOption\]::ResponseHeadersRead/);
   assert.match(ps, /ReadAsync\(\$buffer, 0, \$buffer\.Length, \$cts\.Token\)/);
+  // The stall timer is re-armed after every successful read.
+  const loop = ps.slice(ps.indexOf('while (($count = $input.ReadAsync('), ps.indexOf('$output.Write($buffer, 0, $count)'));
+  assert.match(loop, /\$cts\.CancelAfter\(\[TimeSpan\]::FromSeconds\(\$TimeoutSec\)\)/);
+  // Retries resume with a Range request instead of re-downloading.
+  assert.match(ps, /\$request\.Headers\.Range = \[System\.Net\.Http\.Headers\.RangeHeaderValue\]::new\(\$resumeFrom, \$null\)/);
+  assert.match(ps, /\[int\]\$response\.StatusCode -eq 206/);
+  assert.match(ps, /\[System\.IO\.FileMode\]::Append/);
   assert.match(ps, /\$partial\s*=\s*"\$Destination\.partial"/);
   assert.match(ps, /Move-Item -LiteralPath \$partial -Destination \$Destination -Force/);
+  // A stall mid-body (status 200/206 already received) must still be retried.
+  assert.match(ps, /\$statusCode -eq 206 -or \$statusCode -eq 200/);
 });
 
 test('Windows download progress is interactive-only and logging is append-only/best-effort', async () => {
