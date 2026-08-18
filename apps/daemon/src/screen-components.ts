@@ -104,6 +104,8 @@ export interface RoleMapDoc {
   platform: 'mobile' | 'web';
   roles: RoleMapEntry[];
   notes?: string[];
+  /** Daemon-side normalisations (see ScreenComponentsDoc.warnings). */
+  warnings?: string[];
 }
 
 export type Provenance = 'text' | 'flow' | 'table' | 'ds';
@@ -132,6 +134,11 @@ export interface ScreenComponentsDoc {
   elements: ScreenElement[];
   nav: { el: string; to: string }[];
   notes?: string[];
+  /** Daemon-side normalisations applied to the agent's output (component
+   *  name resolved to the catalogue's canonical name, unknown component
+   *  dropped to `ds: null`, stray wireframe attributes stripped…). Shown in
+   *  the viewer so a reader knows what was corrected. */
+  warnings?: string[];
 }
 
 // ── Prepare ────────────────────────────────────────────────────────────────
@@ -445,6 +452,81 @@ export function validateRoleMap(doc: RoleMapDoc, catalog: Map<string, string>): 
   return errors;
 }
 
+// ── Catalogue resolution (tolerant) ────────────────────────────────────────
+// The closed catalogue disambiguates duplicate Figma names by suffixing them
+// ("Heading — [SDK] Web Lib (Slot) (2548:10828)"). Agents naturally write the
+// bare name, or get the anchor right but retype the name. Resolve by exact
+// name → anchor → unique base name; only an unknown or ambiguous name (two
+// catalogue entries share the base name and no valid anchor was given) fails.
+
+export type CatalogHit = { component: string; anchor: string; note?: string };
+export type CatalogMiss = { reason: 'unknown' | 'ambiguous'; candidates: string[] };
+
+function baseComponentName(name: string): string {
+  return name
+    .replace(/\s+—\s+.*$/, '')
+    .replace(/\s*\(\d+:\d+\)\s*$/, '')
+    .toLowerCase()
+    .replace(/[\s_-]+/g, ' ')
+    .trim();
+}
+
+export function resolveCatalogEntry(catalog: Map<string, string>, component: string, anchor?: string): CatalogHit | CatalogMiss {
+  const anchorOf = (ruleId: string) => ruleId.slice(ruleId.indexOf('#') + 1);
+  const exact = catalog.get(component);
+  if (exact) {
+    const canon = anchorOf(exact);
+    return { component, anchor: canon, ...(anchor && anchor !== canon ? { note: `anchor "${anchor}" sửa thành "${canon}" (anchor của "${component}")` } : {}) };
+  }
+  if (anchor) {
+    for (const [name, ruleId] of catalog) {
+      if (anchorOf(ruleId) === anchor) {
+        return { component: name, anchor, note: `"${component}" đọc theo anchor "${anchor}" → "${name}"` };
+      }
+    }
+  }
+  const base = baseComponentName(component);
+  const candidates = base ? [...catalog.keys()].filter((name) => baseComponentName(name) === base) : [];
+  if (candidates.length === 1) {
+    const name = candidates[0]!;
+    return { component: name, anchor: anchorOf(catalog.get(name)!), note: `"${component}" khớp tên "${name}"` };
+  }
+  return { reason: candidates.length > 1 ? 'ambiguous' : 'unknown', candidates };
+}
+
+function missText(component: string, miss: CatalogMiss): string {
+  return miss.reason === 'ambiguous'
+    ? `component "${component}" trùng ${miss.candidates.length} mục trong criteria/components.md (${miss.candidates.slice(0, 4).join(' | ')}) mà không có anchor để phân biệt`
+    : `component "${component}" không có trong criteria/components.md`;
+}
+
+/** Tolerant twin of {@link validateRoleMap}: resolves every role's component
+ *  against the catalogue, downgrades unknown/ambiguous ones to `null` (+
+ *  fallback text) instead of failing the whole stage, and records what it
+ *  changed in `warnings`. Only an empty role list is an error. */
+export function normalizeRoleMap(doc: RoleMapDoc, catalog: Map<string, string>): { doc: RoleMapDoc; warnings: string[]; errors: string[] } {
+  const warnings: string[] = [];
+  const roles: RoleMapEntry[] = doc.roles.map((r) => {
+    if (r.component == null) return r;
+    if (catalog.size === 0) {
+      warnings.push(`role "${r.role}": không có danh mục DS nên bỏ component "${r.component}".`);
+      return { ...r, component: null, fallback: r.fallback ?? `Agent đề xuất "${r.component}" — không có danh mục DS để đối chiếu` };
+    }
+    const hit = resolveCatalogEntry(catalog, r.component, r.anchor);
+    if ('reason' in hit) {
+      warnings.push(`role "${r.role}": ${missText(r.component, hit)} — hạ về null.`);
+      const { anchor: _drop, ...rest } = r;
+      return { ...rest, component: null, fallback: r.fallback ?? `Agent đề xuất "${r.component}" — không có trong danh mục DS` };
+    }
+    if (hit.note) warnings.push(`role "${r.role}": ${hit.note}.`);
+    return { ...r, component: hit.component, anchor: hit.anchor };
+  });
+  const errors: string[] = roles.length === 0 ? ['"roles" rỗng.'] : [];
+  const out: RoleMapDoc = { ...doc, roles };
+  if (warnings.length) out.warnings = warnings;
+  return { doc: out, warnings, errors };
+}
+
 export function parseScreenComponentsDoc(raw: string): { doc: ScreenComponentsDoc } | { errors: string[] } {
   let json: unknown;
   try {
@@ -589,6 +671,109 @@ export function validateScreenComponentsDoc(doc: ScreenComponentsDoc, ctx: Valid
   if (missing.length) errors.push(`Wireframe thiếu block data-el cho ${missing.length} element: ${missing.slice(0, 6).map((e) => e.id).join(', ')}${missing.length > 6 ? '…' : ''}.`);
   for (const t of new Set(w.navs)) if (!ctx.screenKeys.has(t)) errors.push(`Wireframe: data-nav="${t}" không phải SCREEN-KEY nào của luồng.`);
   return errors;
+}
+
+/** Tolerant twin of {@link validateScreenComponentsDoc}, used by the daemon:
+ *  HARD errors only for what the viewer cannot work around (wrong key,
+ *  missing wireframe, `<script>` in the wireframe). Everything else is
+ *  normalised — unknown component → `ds: null` + why, wrong anchor → the
+ *  catalogue's, unknown `nav.to`/`data-nav` dropped, unknown `data-comp`
+ *  stripped, missing doctype prepended, `data-screen`/`data-layout` fixed —
+ *  and recorded in `warnings`. Returns the doc + wireframe to write back. */
+export function normalizeScreenComponentsDoc(
+  doc: ScreenComponentsDoc,
+  ctx: ValidateScreenContext,
+): { doc: ScreenComponentsDoc; wireframeHtml: string | null; errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  if (doc.key !== ctx.expectedKey) errors.push(`"key" phải là "${ctx.expectedKey}" (nhận "${doc.key}").`);
+  const anchors = new Set([...ctx.catalog.values()].map((r) => r.slice(r.indexOf('#') + 1)));
+  const hasCatalog = ctx.catalog.size > 0;
+  const anchorRewrite = new Map<string, string | null>(); // data-comp value → canonical anchor | null (strip)
+
+  const elements: ScreenElement[] = doc.elements.map((el) => {
+    if (!el.ds) return el;
+    if (!hasCatalog) {
+      warnings.push(`element "${el.id}": không có danh mục DS — bỏ "ds" (${el.ds.component}).`);
+      anchorRewrite.set(el.ds.anchor, null);
+      return { ...el, ds: null, why: el.why ?? `Agent đề xuất "${el.ds.component}" — không có danh mục DS để đối chiếu` };
+    }
+    const hit = resolveCatalogEntry(ctx.catalog, el.ds.component, el.ds.anchor);
+    if ('reason' in hit) {
+      warnings.push(`element "${el.id}": ${missText(el.ds.component, hit)} — hạ "ds" về null.`);
+      if (el.ds.anchor && !anchors.has(el.ds.anchor)) anchorRewrite.set(el.ds.anchor, null);
+      const why = `Đề xuất "${el.ds.component}" không có trong danh mục DS.${el.why ? ` ${el.why}` : ''}`;
+      return { ...el, ds: null, confidence: 'low', why };
+    }
+    if (hit.note) warnings.push(`element "${el.id}": ${hit.note}.`);
+    if (el.ds.anchor && el.ds.anchor !== hit.anchor) anchorRewrite.set(el.ds.anchor, hit.anchor);
+    return { ...el, ds: { component: hit.component, anchor: hit.anchor, ...(el.ds.variant ? { variant: el.ds.variant } : {}) } };
+  });
+
+  const nav = doc.nav.filter((n) => {
+    if (ctx.screenKeys.has(n.to)) return true;
+    warnings.push(`nav "${n.el}" → "${n.to}": không phải SCREEN-KEY nào của luồng — bỏ.`);
+    return false;
+  });
+
+  let html = ctx.wireframeHtml;
+  if (html == null) {
+    errors.push(`Thiếu wireframe "${wireframeRel(doc.key)}".`);
+  } else {
+    if (/<script\b/i.test(html)) errors.push('Wireframe không được chứa <script>.');
+    if (!/^\s*<!doctype html>/i.test(html)) {
+      warnings.push('Wireframe thiếu "<!doctype html>" — daemon thêm vào.');
+      html = `<!doctype html>\n${html.replace(/^\s*<!doctype[^>]*>\s*/i, '')}`;
+    }
+    if (!/<style\b/i.test(html)) warnings.push('Wireframe không có <style> (không chép wireframes/_wireframe.css) — hiển thị sẽ thô.');
+    const w = scanWireframe(html);
+    const setBodyAttr = (name: string, value: string) => {
+      html = html!.replace(/<body\b([^>]*)>/i, (_m, attrs: string) => {
+        const re = new RegExp(`\\s${name}="[^"]*"`, 'i');
+        const next = re.test(attrs) ? attrs.replace(re, ` ${name}="${value}"`) : `${attrs} ${name}="${value}"`;
+        return `<body${next}>`;
+      });
+    };
+    if (w.screen !== doc.key) {
+      warnings.push(`Wireframe: <body data-screen> là "${w.screen ?? ''}" — daemon sửa thành "${doc.key}".`);
+      setBodyAttr('data-screen', doc.key);
+    }
+    if (w.layout !== doc.platform) {
+      warnings.push(`Wireframe: data-layout "${w.layout ?? ''}" — daemon sửa thành "${doc.platform}".`);
+      setBodyAttr('data-layout', doc.platform);
+    }
+    if (hasCatalog) {
+      for (const c of new Set(w.comps)) {
+        if (anchors.has(c)) continue;
+        const to = anchorRewrite.get(c);
+        if (to) {
+          warnings.push(`Wireframe: data-comp="${c}" đổi thành "${to}".`);
+          html = html.replace(new RegExp(`(\\sdata-comp=")${c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(")`, 'g'), `$1${to}$2`);
+        } else {
+          warnings.push(`Wireframe: data-comp="${c}" không phải anchor nào trong criteria/components.md — daemon bỏ thuộc tính.`);
+          html = html.replace(new RegExp(`\\sdata-comp="${c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g'), '');
+        }
+      }
+    } else if (w.comps.length) {
+      warnings.push('Wireframe: không có danh mục DS — daemon bỏ mọi data-comp.');
+      html = html.replace(/\sdata-comp="[^"]*"/g, '');
+    }
+    const elIds = new Set(elements.map((e) => e.id));
+    const ghosts = [...new Set(w.els)].filter((id) => !elIds.has(id));
+    if (ghosts.length) warnings.push(`Wireframe: data-el không có trong elements[]: ${ghosts.slice(0, 6).join(', ')}${ghosts.length > 6 ? '…' : ''}.`);
+    const missing = elements.filter((e) => !w.els.includes(e.id));
+    if (missing.length) warnings.push(`Wireframe thiếu block data-el cho ${missing.length} element: ${missing.slice(0, 6).map((e) => e.id).join(', ')}${missing.length > 6 ? '…' : ''}.`);
+    for (const t of new Set(w.navs)) {
+      if (ctx.screenKeys.has(t)) continue;
+      warnings.push(`Wireframe: data-nav="${t}" không phải SCREEN-KEY nào của luồng — daemon bỏ thuộc tính.`);
+      html = html.replace(new RegExp(`\\sdata-nav="${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g'), '');
+    }
+  }
+
+  const out: ScreenComponentsDoc = { ...doc, elements, nav };
+  if (warnings.length) out.warnings = warnings;
+  else delete out.warnings;
+  return { doc: out, wireframeHtml: html, errors, warnings };
 }
 
 // ── Merge ──────────────────────────────────────────────────────────────────

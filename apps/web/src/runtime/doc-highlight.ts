@@ -128,10 +128,12 @@ export function injectHighlights(
     }>`;
   };
 
-  let current = html;
+  // NFC cả hai phía: tài liệu Confluence nạp về có thể trộn NFC/NFD (tiếng
+  // Việt), còn anchor/quote của agent là NFC → cùng chữ mà regex trượt.
+  let current = html.normalize('NFC');
   for (const req of requests) {
     if (matched.has(req.id)) continue;
-    const re = fuzzyRegex(escapeHtmlText(req.text));
+    const re = fuzzyRegex(escapeHtmlText(req.text.normalize('NFC')));
     if (!re) continue;
     const next = insertOneHighlight(current, re, openTag(req));
     if (next != null) {

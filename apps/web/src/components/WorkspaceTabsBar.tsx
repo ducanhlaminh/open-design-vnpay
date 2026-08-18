@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useT } from '../i18n';
-import { navigate, type EntryHomeView, type Route } from '../router';
+import { buildPath, navigate, parseRoute, type EntryHomeView, type Route } from '../router';
 import type { Project } from '../types';
 import { Icon, type IconName } from './Icon';
 import { SsoUserChip } from './SsoUserChip';
@@ -11,6 +11,9 @@ type WorkspaceChromeTab =
       id: string;
       kind: 'entry';
       view: EntryHomeView;
+      /** Deep path inside the section (e.g. `/pipelines/app/<id>`), so the
+       *  tab re-opens where the user left off instead of the section root. */
+      path?: string;
       createdAt: number;
       lastActiveAt: number;
     }
@@ -65,14 +68,37 @@ function nowId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function createEntryTab(view: EntryHomeView, timestamp = Date.now()): WorkspaceChromeTab {
+function createEntryTab(view: EntryHomeView, timestamp = Date.now(), path?: string): WorkspaceChromeTab {
   return {
     id: `entry:${view}:${nowId()}`,
     kind: 'entry',
     view,
+    ...(path ? { path } : {}),
     createdAt: timestamp,
     lastActiveAt: timestamp,
   };
+}
+
+// Which nav section a non-project route belongs to. Drill-down routes
+// (`/pipelines/app/…`, `/design-systems/<id>`) live in the section's tab —
+// previously every non-home route was labelled "Design system", so a tab on
+// `/pipelines/app/<id>` showed the wrong section.
+export function entryViewForRoute(route: Route): EntryHomeView | null {
+  switch (route.kind) {
+    case 'home':
+      return route.view;
+    case 'pipelines-app':
+    case 'pipelines-feature':
+    case 'pipelines-run':
+    case 'pipeline-result':
+      return 'pipelines';
+    case 'design-system-create':
+    case 'design-system-detail':
+    case 'design-system-criteria-workspace':
+      return 'design-systems';
+    default:
+      return null;
+  }
 }
 
 function tabFromRoute(route: Route, timestamp = Date.now()): WorkspaceChromeTab {
@@ -97,7 +123,10 @@ function tabFromRoute(route: Route, timestamp = Date.now()): WorkspaceChromeTab 
       lastActiveAt: timestamp,
     };
   }
-  return createEntryTab(route.kind === 'home' ? route.view : 'design-systems', timestamp);
+  const view = entryViewForRoute(route) ?? 'design-systems';
+  // Only remember a deep path (section root is implied by `view`).
+  const path = route.kind === 'home' ? undefined : buildPath(route);
+  return createEntryTab(view, timestamp, path);
 }
 
 function routeForTab(tab: WorkspaceChromeTab): Route {
@@ -113,6 +142,12 @@ function routeForTab(tab: WorkspaceChromeTab): Route {
     return tab.pluginId
       ? { kind: 'marketplace-detail', pluginId: tab.pluginId }
       : { kind: 'marketplace' };
+  }
+  if (tab.path) {
+    const deep = parseRoute(tab.path);
+    // Guard against a stale/unknown path — never send the tab somewhere that
+    // does not belong to its own section.
+    if (entryViewForRoute(deep) === tab.view) return deep;
   }
   return { kind: 'home', view: tab.view };
 }
@@ -131,11 +166,14 @@ function reviveTab(value: unknown): WorkspaceChromeTab | null {
       || view === 'projects'
       || view === 'workspaces'
       || view === 'tasks'
+      || view === 'pipelines'
+      || view === 'feedback'
       || view === 'plugins'
       || view === 'design-systems'
       || view === 'integrations'
     ) {
-      return { id, kind: 'entry', view, createdAt, lastActiveAt };
+      const path = typeof record.path === 'string' && record.path.startsWith('/') ? record.path : undefined;
+      return { id, kind: 'entry', view, ...(path ? { path } : {}), createdAt, lastActiveAt };
     }
   }
   if (record.kind === 'project' && typeof record.projectId === 'string') {
@@ -245,24 +283,28 @@ function syncStateToRoute(state: WorkspaceTabsState, route: Route): WorkspaceTab
   const current = normalizeTabsState(state);
   const currentActive = current.tabs.find((tab) => tab.id === current.activeTabId) ?? null;
 
-  // 1. If we are navigating to an entry view (Home, Workspaces, …): reuse the
-  // existing tab for that view instead of morphing the active tab into a
-  // duplicate. Entry tabs are singletons per view (see normalizeTabsState).
-  if (route.kind === 'home') {
+  // 1. If we are navigating to an entry view (Home, Workspaces, …) — or a
+  // drill-down inside one (`/pipelines/app/<id>`): reuse the existing tab for
+  // that section instead of morphing the active tab into a duplicate. Entry
+  // tabs are singletons per view (see normalizeTabsState). Deep routes update
+  // the tab's remembered `path` so re-activating it lands back there.
+  const entryView = entryViewForRoute(route);
+  if (entryView) {
     const existingEntryTab = current.tabs.find(
-      (tab) => tab.kind === 'entry' && tab.view === route.view,
+      (tab) => tab.kind === 'entry' && tab.view === entryView,
     );
     if (existingEntryTab) {
+      const path = route.kind === 'home' ? undefined : buildPath(route);
       return normalizeTabsState({
         ...current,
-        tabs: current.tabs.map((tab) =>
-          tab.id === existingEntryTab.id
-            ? { ...tab, lastActiveAt: timestamp }
-            : tab,
-        ),
+        tabs: current.tabs.map((tab) => {
+          if (tab.id !== existingEntryTab.id || tab.kind !== 'entry') return tab;
+          const { path: _drop, ...rest } = tab;
+          return { ...rest, ...(path ? { path } : {}), lastActiveAt: timestamp };
+        }),
         activeTabId: existingEntryTab.id,
       });
-    } else if (route.view === 'home') {
+    } else if (route.kind === 'home' && route.view === 'home') {
       const nextTab = tabFromRoute(route, timestamp);
       return normalizeTabsState({
         tabs: [...current.tabs, nextTab],

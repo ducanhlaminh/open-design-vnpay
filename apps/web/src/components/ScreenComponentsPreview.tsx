@@ -38,6 +38,8 @@ export interface ScreenDocView {
   elements: ScreenElementView[];
   nav: { el: string; to: string }[];
   notes: string[];
+  /** Daemon-side normalisations of the agent's output (see screen-components.ts). */
+  warnings: string[];
 }
 export interface ScreenRailEntry {
   key: string;
@@ -142,6 +144,7 @@ export function parseScreenDoc(raw: string, fallbackKey: string): ScreenDocView 
     elements,
     nav,
     notes: strList(o.notes),
+    warnings: strList(o.warnings),
   };
 }
 
@@ -648,6 +651,16 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
             <ul>
               {doc.notes.map((n, i) => (
                 <li key={i}>{n}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {doc?.warnings.length ? (
+          <div className={`${styles.notes} ${styles.warnings}`} data-testid="screen-warnings">
+            <div className={styles.notesTitle}>Daemon đã chuẩn hoá ({doc.warnings.length})</div>
+            <ul>
+              {doc.warnings.map((w, i) => (
+                <li key={i}>{w}</li>
               ))}
             </ul>
           </div>

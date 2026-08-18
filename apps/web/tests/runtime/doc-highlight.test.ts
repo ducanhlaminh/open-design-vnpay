@@ -233,3 +233,12 @@ describe('injectDeletedRuns', () => {
     );
   });
 });
+
+describe('injectHighlights — NFC', () => {
+  it('bôi được khi tài liệu ở dạng NFD (Confluence) còn anchor của agent là NFC', () => {
+    const html = `<p>Nhóm 1: ${'Điểm Đến & Phân Loại'.normalize('NFD').replace('&', '&amp;')}</p>`;
+    const { matched, html: out } = injectHighlights(html, [{ id: 'n1', text: 'Điểm Đến & Phân Loại' }], 'hl');
+    expect(matched.has('n1')).toBe(true);
+    expect(out).toContain('<mark class="hl" data-change-id="n1">');
+  });
+});

@@ -13,6 +13,9 @@ import {
   validateRoleMap,
   parseScreenComponentsDoc,
   validateScreenComponentsDoc,
+  normalizeRoleMap,
+  normalizeScreenComponentsDoc,
+  resolveCatalogEntry,
   scanWireframe,
   mergeScreenComponents,
   screenDocRel,
@@ -31,6 +34,12 @@ const CATALOG_MD = [
   '### `#top-app-bar` Top App Bar',
   '',
   '### `#list-item` List Item',
+  '',
+  '### `#figma-aaa` Heading — [SDK] Web Lib (Slot) (2548:10828)',
+  '',
+  '### `#figma-bbb` Heading — [SDK] Web Lib (Slot) (30:704)',
+  '',
+  '### `#figma-ccc` Text Field Simple',
   '',
 ].join('\n');
 
@@ -362,4 +371,102 @@ test('mergeScreenComponents: index theo thứ tự luồng, đếm mapped, summa
   assert.ok(summaryMd.includes('| Chọn quốc gia (`' + KEY1 + '`) | mobile | 4 | 3 |'));
   assert.ok(summaryMd.includes('| Danh sách quốc gia | list-item | List Item | — | vừa | table (tài liệu khai: List) |'));
   assert.ok(summaryMd.includes('## Màn chạy hỏng'));
+});
+
+test('resolveCatalogEntry: tên đúng / theo anchor / theo tên gốc duy nhất; trùng tên không anchor → ambiguous; lạ → unknown', () => {
+  const catalog = collectComponentCatalog(CATALOG_MD);
+  assert.deepEqual(resolveCatalogEntry(catalog, 'Button'), { component: 'Button', anchor: 'button' });
+  assert.deepEqual(resolveCatalogEntry(catalog, 'Button', 'btn'), { component: 'Button', anchor: 'button', note: 'anchor "btn" sửa thành "button" (anchor của "Button")' });
+  const byAnchor = resolveCatalogEntry(catalog, 'Heading', 'figma-bbb');
+  assert.ok('component' in byAnchor && byAnchor.component === 'Heading — [SDK] Web Lib (Slot) (30:704)' && byAnchor.anchor === 'figma-bbb');
+  const byBase = resolveCatalogEntry(catalog, 'text-field-simple');
+  assert.ok('component' in byBase && byBase.component === 'Text Field Simple' && byBase.anchor === 'figma-ccc');
+  const amb = resolveCatalogEntry(catalog, 'Heading');
+  assert.ok('reason' in amb && amb.reason === 'ambiguous' && amb.candidates.length === 2);
+  const unk = resolveCatalogEntry(catalog, 'Combobox');
+  assert.ok('reason' in unk && unk.reason === 'unknown');
+});
+
+test('normalizeRoleMap: component lạ/ambiguous hạ về null + fallback + warning, không lỗi; chỉ roles rỗng mới lỗi', () => {
+  const catalog = collectComponentCatalog(CATALOG_MD);
+  const parsed = parseRoleMap(
+    JSON.stringify({
+      platform: 'mobile',
+      roles: [
+        { role: 'section-heading', component: 'Heading' },
+        { role: 'title', component: 'Heading', anchor: 'figma-aaa' },
+        { role: 'primary-cta', component: 'button', anchor: 'button' },
+        { role: 'x', component: 'Combobox', anchor: 'combobox' },
+      ],
+    }),
+  );
+  assert.ok('doc' in parsed);
+  const norm = normalizeRoleMap(parsed.doc, catalog);
+  assert.deepEqual(norm.errors, []);
+  assert.equal(norm.doc.roles[0]!.component, null);
+  assert.match(norm.doc.roles[0]!.fallback ?? '', /Heading/);
+  assert.equal(norm.doc.roles[0]!.anchor, undefined);
+  assert.equal(norm.doc.roles[1]!.component, 'Heading — [SDK] Web Lib (Slot) (2548:10828)');
+  assert.equal(norm.doc.roles[2]!.component, 'Button');
+  assert.equal(norm.doc.roles[3]!.component, null);
+  assert.equal(norm.warnings.length, 4);
+  assert.deepEqual(norm.doc.warnings, norm.warnings);
+  // Không có DS → mọi component về null.
+  const noDs = normalizeRoleMap(parsed.doc, new Map());
+  assert.ok(noDs.doc.roles.every((r) => r.component === null));
+});
+
+test('normalizeScreenComponentsDoc: lỗi cứng chỉ khi key sai / thiếu wireframe / có <script>; còn lại chuẩn hoá + warnings', () => {
+  const catalog = collectComponentCatalog(CATALOG_MD);
+  const ctx = { expectedKey: KEY1, screenKeys: new Set([KEY1, KEY2]), catalog };
+  const good = parseScreenComponentsDoc(JSON.stringify(GOOD_DOC));
+  assert.ok('doc' in good);
+  const clean = normalizeScreenComponentsDoc(good.doc, { ...ctx, wireframeHtml: wireframe() });
+  assert.deepEqual(clean.errors, []);
+  assert.deepEqual(clean.warnings, []);
+  assert.equal(clean.doc.warnings, undefined);
+  assert.equal(clean.wireframeHtml, wireframe());
+
+  const hard = normalizeScreenComponentsDoc({ ...good.doc, key: 'X__1' }, { ...ctx, wireframeHtml: wireframe({ script: true }) });
+  assert.equal(hard.errors.length, 2);
+  assert.ok(normalizeScreenComponentsDoc(good.doc, { ...ctx, wireframeHtml: null }).errors.length === 1);
+
+  const messy = parseScreenComponentsDoc(
+    JSON.stringify({
+      ...GOOD_DOC,
+      elements: [
+        { id: 'appbar', label: 'A', role: 'app-bar', ds: { component: 'Heading', anchor: 'figma-aaa' }, confidence: 'high', provenance: 'ds' },
+        { id: 'list', label: 'L', role: 'r', ds: { component: 'Combobox', anchor: 'combobox' }, confidence: 'high', provenance: 'text', why: 'tài liệu đòi' },
+        { id: 'cta', label: 'C', role: 'r', ds: { component: 'Button', anchor: 'btn' }, confidence: 'high', provenance: 'flow' },
+        { id: 'empty', label: 'E', role: 'r', ds: null, confidence: 'low', provenance: 'ds' },
+      ],
+      nav: [{ el: 'cta', to: KEY2 }, { el: 'list', to: 'NOPE__1' }],
+    }),
+  );
+  assert.ok('doc' in messy);
+  const html = wireframe({ screen: 'wrong', layout: 'web', extra: '<div class="wf-component" data-el="ghost" data-comp="combobox" data-nav="NOPE__1">g</div>' })
+    .replace('data-comp="top-app-bar"', 'data-comp="figma-aaa"')
+    .replace('data-comp="list-item"', 'data-comp="combobox"')
+    .replace('data-comp="button"', 'data-comp="btn"')
+    .replace('<!doctype html>\n', '');
+  const r = normalizeScreenComponentsDoc(messy.doc, { ...ctx, wireframeHtml: html });
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.doc.elements[0]!.ds?.component, 'Heading — [SDK] Web Lib (Slot) (2548:10828)');
+  assert.equal(r.doc.elements[1]!.ds, null);
+  assert.equal(r.doc.elements[1]!.confidence, 'low');
+  assert.match(r.doc.elements[1]!.why ?? '', /^Đề xuất "Combobox" không có trong danh mục DS\. tài liệu đòi$/);
+  assert.deepEqual(r.doc.elements[2]!.ds, { component: 'Button', anchor: 'button' });
+  assert.deepEqual(r.doc.nav, [{ el: 'cta', to: KEY2 }]);
+  const out = r.wireframeHtml!;
+  assert.ok(/^<!doctype html>/i.test(out));
+  assert.ok(out.includes(`data-screen="${KEY1}"`));
+  assert.ok(out.includes('data-layout="mobile"'));
+  assert.ok(!out.includes('data-comp="combobox"'));
+  assert.ok(!out.includes('data-comp="btn"'));
+  assert.ok(out.includes('data-comp="button"'));
+  assert.ok(!out.includes('data-nav="NOPE__1"'));
+  assert.ok(out.includes(`data-nav="${KEY2}"`));
+  assert.ok(r.warnings.some((w) => w.includes('data-el không có trong elements[]: ghost')));
+  assert.ok(r.warnings.some((w) => w.includes('doctype')));
+  assert.deepEqual(r.doc.warnings, r.warnings);
 });

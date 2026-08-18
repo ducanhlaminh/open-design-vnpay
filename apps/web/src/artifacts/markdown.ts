@@ -170,6 +170,9 @@ export function renderMarkdownToSafeHtml(markdown: string): string {
     }
 
     if (/^```/.test(line)) {
+      // Keep the fence info string (```mermaid, ```json…) as a class so viewers
+      // can pick a renderer; whitelist chars so it never breaks out of the attr.
+      const lang = (line.replace(/^```/, '').trim().split(/\s+/)[0] ?? '').toLowerCase().replace(/[^a-z0-9_+.-]/g, '');
       i += 1;
       const code: string[] = [];
       while (i < lines.length) {
@@ -179,7 +182,8 @@ export function renderMarkdownToSafeHtml(markdown: string): string {
         i += 1;
       }
       if (i < lines.length) i += 1;
-      out.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`);
+      const codeTag = lang ? `<code class="language-${lang}">` : '<code>';
+      out.push(`<pre>${codeTag}${escapeHtml(code.join('\n'))}</code></pre>`);
       continue;
     }
 

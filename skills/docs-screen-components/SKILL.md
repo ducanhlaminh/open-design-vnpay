@@ -108,9 +108,14 @@ System và ghi **đúng một file** `comp/_role-map.json`:
   picker, checkbox/radio/switch, primary/secondary CTA, link, badge/status,
   empty state, error/feedback, dialog/bottom sheet, stepper/progress, summary
   row, price row, QR/image holder…). Tên `role` là slug ngắn `[a-z0-9-]`.
-- `component` **phải là tên có thật** trong `criteria/components.md`, `anchor`
-  là anchor của chính nó. DS không có ⇒ `component: null` + `fallback` nói
-  dùng gì thay. Không có `components.md` ⇒ mọi `component` là `null`.
+- `component` **phải là tên có thật** trong `criteria/components.md` — chép
+  NGUYÊN VĂN phần tên sau `### \`#anchor\`` (danh mục Figma có thể có nhiều
+  mục cùng tên gốc, được phân biệt bằng hậu tố ` — [File] (id)`: phải chép cả
+  hậu tố, hoặc ít nhất ghi đúng `anchor` của mục đó để daemon phân biệt);
+  `anchor` là anchor của chính mục đó. DS không có ⇒ `component: null` +
+  `fallback` nói dùng gì thay. Không có `components.md` ⇒ mọi `component` là
+  `null`. Daemon đối chiếu: tên không có/không phân biệt được bị hạ về `null`
+  kèm cảnh báo hiển thị cho người xem — đừng đoán tên.
 - `variant`: biến thể mặc định theo bảng thuộc tính của component (chuỗi
   `Prop=Value · Prop=Value`); không chắc thì bỏ.
 - Không vẽ wireframe, không ghi file nào khác ở lượt này.
@@ -245,10 +250,14 @@ Ví dụ rút gọn (mobile):
   `flows/`, `criteria/`, `_inputs.json`, `_wireframe.css`; không tự ghi
   `comp/index.json` / `comp/summary.md` (daemon gộp sau).
 - **`component`/`anchor`/`data-comp` phải có thật** trong `criteria/components.md`
-  (daemon đối chiếu, sai là hỏng lượt chạy). Không có danh mục ⇒ `ds: null`,
-  không `data-comp`.
+  (tên nguyên văn kể cả hậu tố phân biệt, hoặc anchor đúng). Daemon đối
+  chiếu: component lạ bị hạ về `ds: null` + cảnh báo, `data-comp`/`data-nav`
+  lạ bị gỡ khỏi wireframe — kết quả vẫn ra nhưng kém giá trị. Không có danh
+  mục ⇒ `ds: null`, không `data-comp`.
 - **`data-el` ↔ `elements[].id` khớp 1-1**; `data-nav`/`nav.to` phải là
-  SCREEN-KEY của luồng (trong `_inputs.json`). Daemon kiểm.
+  SCREEN-KEY của luồng (trong `_inputs.json`). Daemon kiểm và ghi cảnh báo.
+- **Lỗi cứng (hỏng lượt màn):** thiếu một trong hai file, JSON không đọc
+  được, `key` sai, wireframe có `<script>`.
 - **Không mở ảnh mockup, không dựng màn ngoài danh sách của Flow, không chia
   kịch bản.** Một màn = một wireframe đầy đủ.
 - **Wireframe không `<script>`**, tự chứa, bắt đầu bằng `<!doctype html>`,

@@ -1367,3 +1367,51 @@ test('renderPageOutline lists every section with its line range and flags, names
   // The reading rule the kickoff relies on is spelled out in the file itself.
   assert.match(out, /KHÔNG đọc cả trang/);
 });
+
+// ── NFC/NBSP + note neo trượt (đo thật trên PRD "Mua SIM du lịch" 2026-08-18) ──
+// Tài liệu Confluence nạp về là bản TRỘN NFC/NFD, có  ; agent viết NFC và
+// khoảng trắng thường → 2 note trượt anchor → cả trang bị fail-shut, 13 section
+// đã chạy bị xoá. Từ nay: so khớp sau NFC; note neo trượt là CẢNH BÁO, giữ note.
+test('fuzzyIncludes: bản gốc NFD + NBSP, needle NFC + khoảng trắng thường => vẫn khớp', async () => {
+  const { fuzzyIncludes } = await import('../src/docs-review.js');
+  const nfd = 'Nhóm 1: Điểm Đến & Phân Loại'.normalize('NFD');
+  const original = `| BR-01 | ${nfd} | Digilife (2)  đợi API NCC |\n`;
+  assert.ok(fuzzyIncludes(original, 'Nhóm 1: Điểm Đến & Phân Loại'));
+  assert.ok(fuzzyIncludes(original, 'Digilife (2)  đợi API NCC'));
+  assert.ok(!fuzzyIncludes(original, 'Digilife (3) đợi API NCC'));
+});
+
+test('partitionNotesByAnchor: anchor trượt → giữ note + anchor_unresolved + cảnh báo; doc_ref trượt bị bỏ; thiếu anchor mới là lỗi', async () => {
+  const { partitionNotesByAnchor } = await import('../src/docs-review.js');
+  const original = 'Dòng một có Điểm Đến.\nDòng hai.\n';
+  const base = { kind: 'gap' as const, severity: 'minor' as const, finding: 'f', suggestion: 's' };
+  const r = partitionNotesByAnchor(original, [
+    { id: 'n1', anchor: 'Dòng một có Điểm Đến.'.normalize('NFD'), ...base },
+    { id: 'n2', anchor: 'Không có trong bản gốc', doc_refs: ['Dòng hai.', 'cũng không có'], ...base },
+    { id: 'n3', anchor: '   ', ...base },
+  ]);
+  assert.deepEqual(r.notes.map((n) => n.id), ['n1', 'n2']);
+  assert.equal(r.notes[0]!.anchor_unresolved, undefined);
+  assert.equal(r.notes[1]!.anchor_unresolved, true);
+  assert.deepEqual(r.notes[1]!.doc_refs, ['Dòng hai.']);
+  assert.equal(r.warnings.length, 2, r.warnings.join('\n'));
+  assert.ok(r.warnings[0]!.includes('n2') && r.warnings[0]!.includes('anchor'));
+  assert.ok(r.warnings[1]!.includes('doc_ref'));
+  assert.equal(r.errors.length, 1);
+  assert.ok(r.errors[0]!.includes('n3'));
+});
+
+test('mergeChangeReports: trang đạt có warnings → mục "Cảnh báo (trang vẫn đạt)" + note neo trượt được đánh dấu', async () => {
+  const { mergeChangeReports } = await import('../src/docs-review.js');
+  const { summaryMd, index } = mergeChangeReports([
+    {
+      slug: 'p', page: 'Trang A', docPath: 'docs/a.md', reviewPath: 'review/a.md', changes: [],
+      notes: [{ id: 'n2', kind: 'gap', severity: 'minor', anchor: 'X', finding: 'f', suggestion: 's', anchor_unresolved: true }],
+      status: 'succeeded', warnings: ['Note "n2" có anchor không tìm thấy trong bản gốc — giữ lại nhưng không bôi được vào tài liệu: "X"'],
+    },
+  ]);
+  assert.ok(summaryMd.includes('## Cảnh báo (trang vẫn đạt)'));
+  assert.ok(summaryMd.includes('| Trang A | Đã sửa |'));
+  assert.ok(summaryMd.includes('không tìm thấy trong bản gốc — không bôi được'));
+  assert.deepEqual((index as { pages: Array<{ warnings?: string[] }> }).pages[0]!.warnings?.length, 1);
+});

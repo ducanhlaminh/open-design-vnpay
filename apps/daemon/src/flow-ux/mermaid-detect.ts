@@ -15,6 +15,10 @@ export interface EmbeddedMermaid {
   code?: string;
   /** Rendered SVG markup, when the export carried it. */
   svg?: string;
+  /** Path (relative to the page) of an SVG image the document shows right
+   *  above the fenced block — our Confluence ingest writes the macro's
+   *  rendered SVG that way. The caller reads it. */
+  svgRef?: string;
   /** Where in the markdown it sits (line index of the first match), for the
    *  caller to link the flow to its source page. */
   line: number;
@@ -152,16 +156,23 @@ export function findEmbeddedMermaid(markdown: string, attachments?: Map<string, 
       inFence = false;
       const code = buf.join('\n').trim();
       if (code && looksLikeMermaid(code)) {
-        // A heading right above the fence names the diagram.
+        // A heading right above the fence names the diagram; an SVG image
+        // between the heading and the fence is its rendered picture.
         let title = '';
-        for (let k = fenceStart - 1; k >= 0 && k >= fenceStart - 4; k -= 1) {
-          const h = /^\s*#{1,6}\s+(.+?)\s*#*\s*$/.exec(lines[k] ?? '');
+        let svgRef = '';
+        for (let k = fenceStart - 1; k >= 0 && k >= fenceStart - 6; k -= 1) {
+          const line = lines[k] ?? '';
+          const img = /!\[[^\]]*\]\(([^)\s]+\.svg)\)/i.exec(line);
+          if (img && !svgRef) svgRef = img[1]!;
+          const h = /^\s*#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
           if (h) {
             title = h[1]!.trim();
             break;
           }
         }
-        out.push({ title: title || `Sơ đồ ${out.length + 1}`, code, line: fenceStart });
+        const item: EmbeddedMermaid = { title: title || `Sơ đồ ${out.length + 1}`, code, line: fenceStart };
+        if (svgRef) item.svgRef = svgRef;
+        out.push(item);
       }
       return;
     }

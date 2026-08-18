@@ -733,6 +733,15 @@
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   box-shadow: none;
+  /* glass.css puts `backdrop-filter` on this header, which makes it its own
+     stacking context: the popovers anchored inside it (HandoffButton
+     `.handoff-menu`, AvatarMenu `.avatar-popover`) can no longer out-stack the
+     later siblings (`.ws-tabs-shell`, `.ws-body`, chat pane — also glass
+     stacking contexts) and get painted underneath the workspace. Lift the
+     whole header above its siblings; dialogs portal to <body> so a modest
+     z-index is enough. */
+  position: relative;
+  z-index: 20;
 }
 .app .app-chrome-back,
 .app .settings-icon-btn,

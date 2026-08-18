@@ -238,16 +238,42 @@ export function buildPath(route: Route): string {
 // Centralized navigation. Components call this instead of mutating
 // `window.location` directly so we can fan the change out to any
 // `useRoute()` subscriber via a custom event.
+// History entries pushed by this router carry `{ odIdx }` — how many in-app
+// hops sit behind them — so `navigateBack` can tell "there is an in-app page
+// behind us" (history.back() lands somewhere in this app) from "this tab was
+// opened straight onto this URL" (back would leave the app → use a fallback).
+type RouterHistoryState = { odIdx?: number } | null;
+
+function currentHistoryIdx(): number {
+  const state = window.history.state as RouterHistoryState;
+  const idx = state && typeof state.odIdx === 'number' ? state.odIdx : 0;
+  return Number.isFinite(idx) && idx > 0 ? idx : 0;
+}
+
 export function navigate(route: Route, opts: { replace?: boolean } = {}): void {
   const target = buildPath(route);
   const current = window.location.pathname;
   if (target === current) return;
   if (opts.replace) {
-    window.history.replaceState(null, '', target);
+    window.history.replaceState({ odIdx: currentHistoryIdx() }, '', target);
   } else {
-    window.history.pushState(null, '', target);
+    window.history.pushState({ odIdx: currentHistoryIdx() + 1 }, '', target);
   }
   window.dispatchEvent(new PopStateEvent('popstate'));
+}
+
+/**
+ * "Back" that follows the browser history when the previous entry is one of
+ * ours (workspace opened from the pipelines list → back returns to that list,
+ * not to home); otherwise (deep link / fresh tab) go to `fallback` instead of
+ * leaving the app.
+ */
+export function navigateBack(fallback: Route): void {
+  if (currentHistoryIdx() > 0) {
+    window.history.back();
+    return;
+  }
+  navigate(fallback, { replace: true });
 }
 
 export function useRoute(): Route {

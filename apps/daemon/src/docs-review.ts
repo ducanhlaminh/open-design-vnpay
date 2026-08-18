@@ -443,6 +443,10 @@ export interface DocNote {
   doc_refs?: string[];
   finding: string;
   suggestion: string;
+  /** Daemon gắn khi `anchor` không tìm thấy trong bản gốc (xem
+   *  {@link partitionNotesByAnchor}): note vẫn giữ để đọc trong danh sách,
+   *  chỉ không bôi được vào tài liệu. */
+  anchor_unresolved?: true;
 }
 
 export interface DocChange {
@@ -604,10 +608,18 @@ function fuzzyPattern(text: string): string {
   return tokens.map((tok) => tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
 }
 
-function fuzzyIncludes(haystack: string, needle: string): boolean {
-  const pattern = fuzzyPattern(needle);
+/** Đưa về NFC trước khi so. Tài liệu Confluence nạp về hay là bản TRỘN NFC/NFD
+ *  (tiếng Việt gõ bằng bộ gõ khác nhau) còn agent luôn viết NFC → anchor/quote
+ *  đúng từng chữ mà `includes` vẫn trượt. Đo thật trên PRD "Mua SIM du lịch":
+ *  2/2 note trượt vì "Điểm Đến" trong bảng ở dạng NFD, làm hỏng cả trang. */
+function nfc(text: string): string {
+  return text.normalize('NFC');
+}
+
+export function fuzzyIncludes(haystack: string, needle: string): boolean {
+  const pattern = fuzzyPattern(nfc(needle));
   if (!pattern) return false;
-  return new RegExp(pattern).test(haystack);
+  return new RegExp(pattern).test(nfc(haystack));
 }
 
 /** Multiset of non-blank lines (trimmed) → count, in original order of first
@@ -824,6 +836,50 @@ export function validateNotes(original: string, notes: DocNote[]): string[] {
   return errors;
 }
 
+/** Bản KHOAN DUNG của {@link validateNotes} cho luồng chạy thật: note có
+ *  anchor/doc_ref không tìm thấy KHÔNG làm hỏng trang nữa — note theo định
+ *  nghĩa không sửa gì trong tài liệu, nên một neo lệch chỉ làm mất chỗ bôi
+ *  vàng chứ không làm sai tài liệu; còn fail-shut thì xoá sạch output của
+ *  MỌI section (đo thật: 13 section chạy xong bị vứt vì 2 note neo trượt).
+ *  Note trượt được giữ lại, gắn `anchor_unresolved: true`, doc_ref trượt bị
+ *  bỏ khỏi note; mỗi trường hợp thành một dòng cảnh báo (tiếng Việt) để ghi
+ *  vào summary. Note KHÔNG có anchor vẫn là lỗi cứng — không có gì để đọc. */
+export function partitionNotesByAnchor(
+  original: string,
+  notes: DocNote[],
+): { notes: DocNote[]; warnings: string[]; errors: string[] } {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const out: DocNote[] = [];
+  for (const note of notes) {
+    const anchor = (note.anchor ?? '').trim();
+    if (!anchor) {
+      errors.push(`Note "${note.id}" không có 'anchor' — không định vị được vào tài liệu.`);
+      continue;
+    }
+    let next: DocNote = note;
+    if (!fuzzyIncludes(original, anchor)) {
+      warnings.push(`Note "${note.id}" có anchor không tìm thấy trong bản gốc — giữ lại nhưng không bôi được vào tài liệu: "${anchor}"`);
+      next = { ...next, anchor_unresolved: true };
+    }
+    if (note.doc_refs && note.doc_refs.length > 0) {
+      const kept: string[] = [];
+      for (const raw of note.doc_refs) {
+        const ref = (raw ?? '').trim();
+        if (!ref) continue;
+        if (fuzzyIncludes(original, ref)) kept.push(raw);
+        else warnings.push(`Note "${note.id}" có doc_ref không tìm thấy trong bản gốc — đã bỏ tham chiếu: "${ref}"`);
+      }
+      if (kept.length !== note.doc_refs.length) {
+        const { doc_refs: _drop, ...rest } = next;
+        next = kept.length > 0 ? { ...rest, doc_refs: kept } : rest;
+      }
+    }
+    out.push(next);
+  }
+  return { notes: out, warnings, errors };
+}
+
 /** Chuỗi chú giải BỊ CẤM trong bản clone. Xem {@link findReviewMarkers}. */
 export const REVIEW_MARKER_RE = /\[\s*Rà soát/i;
 
@@ -936,6 +992,8 @@ export interface DocPageResult {
   notes: DocNote[];
   status: 'succeeded' | 'failed';
   errors?: string[];
+  /** Trang vẫn đạt nhưng có chỗ daemon phải châm chước (note neo trượt…). */
+  warnings?: string[];
 }
 
 /** Merge per-page results into the index.json manifest + a human summary.md,
@@ -950,6 +1008,7 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
     changes: r.changes.length,
     notes: r.notes.length,
     status: r.status,
+    ...(r.warnings && r.warnings.length > 0 ? { warnings: r.warnings } : {}),
   }));
   const changed_pages = results.filter((r) => r.status === 'succeeded' && r.changes.length > 0).length;
   const changes = results.reduce((n, r) => n + r.changes.length, 0);
@@ -991,6 +1050,15 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
     summaryMd += `\n`;
   }
 
+  const warned = results.filter((r) => r.status === 'succeeded' && r.warnings && r.warnings.length > 0);
+  if (warned.length > 0) {
+    summaryMd += `## Cảnh báo (trang vẫn đạt)\n\n`;
+    for (const r of warned) {
+      for (const w of r.warnings ?? []) summaryMd += `- **${r.page}**: ${w}\n`;
+    }
+    summaryMd += `\n`;
+  }
+
   summaryMd += `## Từng trang\n\n`;
   summaryMd += `| Trang | Trạng thái | Số chỗ sửa | Nhận xét | Theo nhóm | NT | Nặng | Nhẹ |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n`;
   for (const r of results) {
@@ -1017,7 +1085,7 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
       for (const n of r.notes) {
         const rule = n.rule_id ? ` · \`${n.rule_id}\`` : '';
         summaryMd += `- **${kindLabel[n.kind] ?? n.kind}** · ${sevLabel[n.severity] ?? n.severity}${rule}\n`;
-        summaryMd += `  - Neo: "${n.anchor}"\n`;
+        summaryMd += `  - Neo: "${n.anchor}"${n.anchor_unresolved ? ' _(không tìm thấy trong bản gốc — không bôi được)_' : ''}\n`;
         summaryMd += `  - Phát hiện: ${n.finding}\n`;
         summaryMd += `  - Đề xuất: ${n.suggestion}\n`;
       }

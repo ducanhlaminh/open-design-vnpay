@@ -21,6 +21,7 @@ import path from 'node:path';
 import { decodeMxfile, encodeMxfile, listCells, type MxPage } from './mxfile.js';
 import { applyPatch, parsePatchDoc, type PatchOp } from './patch.js';
 import { drawioPageToFlowchart, mermaidToFlowchart, type FlowchartDoc } from './to-flowchart.js';
+import { svgForImgEmbedding } from '../bas/svg-xml.js';
 import { findEmbeddedMermaid, isMermaidFlowchart, looksLikeMermaid, replaceCreateViewerCalls } from './mermaid-detect.js';
 
 export type FlowKind = 'drawio' | 'mermaid' | 'text';
@@ -258,7 +259,7 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
       const dir = path.join(flowsDir, id);
       await fs.promises.mkdir(dir, { recursive: true });
       await fs.promises.writeFile(path.join(dir, 'as-is.mmd'), `${code.trim()}\n`, 'utf8');
-      if (svg) await fs.promises.writeFile(path.join(dir, 'as-is.svg'), svg, 'utf8');
+      if (svg) await fs.promises.writeFile(path.join(dir, 'as-is.svg'), svgForImgEmbedding(svg), 'utf8');
     });
   };
 
@@ -274,12 +275,12 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
     if (t != null && looksLikeMermaid(t)) attachmentText.set(path.basename(rel), t);
   }
   const consumedAttachments = new Set<string>();
-  for (const [name, code] of attachmentText) {
-    if (!/\.(mmd|mermaid)$/i.test(name)) continue; // titled sources are picked up via createViewer below
-    consumedAttachments.add(name);
-    const rel = files.find((f) => path.basename(f) === name)!;
-    await addMermaid(name.replace(/\.(mmd|mermaid)$/i, ''), code, pageReferencing(mdByRel, name) ?? rel, rel);
-  }
+  // Pages FIRST: a diagram embedded in a page (fenced ```mermaid — what our
+  // Confluence ingest now writes for the Mermaid macro — or an exported
+  // createViewer call) carries the document's own title and SVG; the same
+  // source saved as an `attachments/*.mmd` file next to it is only a copy
+  // and would otherwise claim the flow under its file name (dedupe is by
+  // code, first one wins).
   for (const [rel, text] of mdByRel) {
     const found = findEmbeddedMermaid(text, attachmentText);
     if (!found.length) continue;
@@ -293,9 +294,16 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
     for (const item of found) {
       const base = slugify(item.title) || `so-do-${idx + 1}`;
       const entry: { svgRel?: string; codeRel?: string } = {};
+      if (!item.svg && item.svgRef) {
+        // Fenced block with the rendered SVG shown as an image right above it
+        // (our Confluence ingest) — read the file so the viewer gets the
+        // original picture next to the analysis.
+        const svgText = await readText(path.join(cwd, pageDir, item.svgRef));
+        if (svgText && /<svg\b/i.test(svgText)) item.svg = svgText;
+      }
       if (item.svg) {
         await fs.promises.mkdir(path.join(cwd, attDirRel), { recursive: true });
-        await fs.promises.writeFile(path.join(cwd, attDirRel, `${base}.svg`), item.svg, 'utf8');
+        await fs.promises.writeFile(path.join(cwd, attDirRel, `${base}.svg`), svgForImgEmbedding(item.svg), 'utf8');
         entry.svgRel = `attachments/${base}.svg`;
       }
       if (item.code) {
@@ -322,9 +330,23 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
     }
   }
 
-  // Extension-less Mermaid attachments no page call referenced (our own
-  // Confluence ingest drops the macro's <script>, leaving only the source
-  // attachment): still a flow — titled after the file.
+  // Standalone `.mmd` / `.mermaid` attachments (a copy of an embedded diagram
+  // is skipped by the code dedupe above): titled after the file minus the
+  // `<pageId>-` prefix our ingest adds; a sibling `.svg` of the same stem is
+  // the rendered picture.
+  for (const [name, code] of attachmentText) {
+    if (!/\.(mmd|mermaid)$/i.test(name)) continue;
+    consumedAttachments.add(name);
+    const rel = files.find((f) => path.basename(f) === name)!;
+    const stem = name.replace(/\.(mmd|mermaid)$/i, '');
+    const svgRel = files.find((f) => path.dirname(f) === path.dirname(rel) && path.basename(f) === `${stem}.svg`);
+    const svg = svgRel ? (await readText(path.join(cwd, svgRel))) ?? undefined : undefined;
+    await addMermaid(stem.replace(/^\d+-/, ''), code, pageReferencing(mdByRel, name) ?? rel, rel, svg && /<svg\b/i.test(svg) ? svg : undefined);
+  }
+
+  // Extension-less Mermaid attachments no page call referenced (older ingests
+  // that dropped the macro's <script>, leaving only the source attachment):
+  // still a flow — titled after the file.
   for (const [name, code] of attachmentText) {
     if (consumedAttachments.has(name)) continue;
     const rel = files.find((f) => path.basename(f) === name)!;

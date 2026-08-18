@@ -37,6 +37,7 @@ import { readMcpConfig } from '../mcp-config.js';
 import { configuredConfluenceBase, readConfluenceConfig } from '../confluence-config.js';
 import { renderDrawioPages, splitMxfilePages } from './drawio-render.js';
 import { htmlToMarkdown } from './html-to-markdown.js';
+import { svgForImgEmbedding } from './svg-xml.js';
 
 export interface BasEndpoint {
   /** Full MCP endpoint URL, e.g. https://host/api/mcp/ */
@@ -1054,6 +1055,231 @@ async function expandDrawioPagesInExportView(
   return out;
 }
 
+// ── Mermaid macro (Stratus "Mermaid Diagrams for Confluence") ─────────────
+// `mermaid-cloud` renders CLIENT-SIDE: both `view` and `export_view` carry
+// only a viewer <div id="stratus-addons-viewer-<macroId>"> (styles + a
+// `createViewer('<id>', '<title>', 'fit', 'bottom', `&lt;svg…`)` script) —
+// no <img>. htmlToMarkdown drops <style>/<script>, so the section came out
+// EMPTY and the flow stage saw a text-only document. The diagram lives in
+// two page attachments the macro names after its title: `<title>` (text/plain,
+// the Mermaid source) and `<title>.svg` (rendered). Fetch the source by name,
+// keep the SVG from the viewer call, and splice an <img> + a ```mermaid fence
+// + a source reference where the viewer stood — flow-ux then treats it like
+// any Mermaid diagram (kind 'mermaid').
+
+export interface MermaidMacroBlock {
+  start: number;
+  end: number;
+  title: string;
+  svg?: string;
+}
+
+const MERMAID_VIEWER_MARKER = 'stratus-addons-viewer-';
+
+/** Balanced <div> scan from `start` (index of a `<div`) to its matching close. */
+function balancedDivEnd(html: string, start: number): number {
+  const tagRe = /<\/?div\b[^>]*>/gi;
+  tagRe.lastIndex = start;
+  let depth = 0;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(html))) {
+    depth += m[0].startsWith('</') ? -1 : 1;
+    if (depth === 0) return m.index + m[0].length;
+  }
+  return -1;
+}
+
+/** Parse the JS-string args of a `createViewer(...)` call at `start` (index of
+ *  the `(`): '…', "…" and `…` literals with `\` escapes. Mirrors
+ *  flow-ux/mermaid-detect.ts (kept local so this ingest module does not depend
+ *  on the flow stage). */
+function parseViewerCallArgs(src: string, start: number): string[] | null {
+  let i = start + 1;
+  const args: string[] = [];
+  const n = src.length;
+  for (;;) {
+    while (i < n && /[\s,]/.test(src[i]!)) i += 1;
+    if (i >= n) return null;
+    const ch = src[i]!;
+    if (ch === ')') return args;
+    if (ch !== "'" && ch !== '"' && ch !== '`') return null;
+    let j = i + 1;
+    let out = '';
+    while (j < n && src[j] !== ch) {
+      if (src[j] === '\\' && j + 1 < n) {
+        out += src[j + 1];
+        j += 2;
+        continue;
+      }
+      out += src[j];
+      j += 1;
+    }
+    if (j >= n) return null;
+    args.push(out);
+    i = j + 1;
+  }
+}
+
+function unescapeHtmlText(s: string): string {
+  return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&');
+}
+
+/** Every Mermaid-macro viewer block in `html` (view or export_view), with the
+ *  diagram title and — when the viewer call carries it — the rendered SVG. */
+export function findMermaidMacroBlocks(html: string): MermaidMacroBlock[] {
+  const out: MermaidMacroBlock[] = [];
+  let cursor = 0;
+  for (;;) {
+    const marker = html.indexOf(MERMAID_VIEWER_MARKER, cursor);
+    if (marker === -1) break;
+    // Only the mount div (`id="stratus-addons-viewer-…"`) starts a block; the
+    // same prefix reappears inside it (lightbox ids) and must be skipped.
+    const isIdAttr = /\bid=["']$/.test(html.slice(Math.max(0, marker - 4), marker));
+    const start = isIdAttr ? html.lastIndexOf('<div', marker) : -1;
+    if (start === -1 || start < cursor) {
+      cursor = marker + MERMAID_VIEWER_MARKER.length;
+      continue;
+    }
+    const end = balancedDivEnd(html, start);
+    if (end === -1) break;
+    const block = html.slice(start, end);
+    const call = block.indexOf('createViewer(');
+    const args = call !== -1 ? parseViewerCallArgs(block, call + 'createViewer'.length) : null;
+    const title = (args?.[1] ?? '').trim();
+    const svgArg = args?.find((a) => /^\s*(&lt;|<)svg\b/i.test(a));
+    const svg = svgArg ? unescapeHtmlText(svgArg).trim() : undefined;
+    const item: MermaidMacroBlock = { start, end, title: title || `So-do-${out.length + 1}` };
+    if (svg && /^<svg\b/i.test(svg)) item.svg = svg;
+    out.push(item);
+    cursor = end;
+  }
+  return out;
+}
+
+/** Look a page attachment up BY NAME (Confluence REST `child/attachment?filename=`)
+ *  and download it. Returns null when absent or unreadable. */
+async function downloadConfluenceAttachmentByName(
+  creds: ConfluenceCreds,
+  pageId: string,
+  filename: string,
+  signal?: AbortSignal,
+): Promise<Buffer | null> {
+  try {
+    const res = await fetch(`${creds.base}/rest/api/content/${pageId}/child/attachment?filename=${encodeURIComponent(filename)}&limit=5`, {
+      headers: { authorization: `Bearer ${creds.token}` },
+      ...(signal ? { signal } : {}),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { results?: Array<{ title?: string; _links?: { download?: string } }> };
+    const hit = (data.results ?? []).find((r) => r.title === filename) ?? data.results?.[0];
+    const dl = hit?._links?.download;
+    if (!dl) return null;
+    const url = /^https?:\/\//i.test(dl) ? dl : `${creds.base}${dl.startsWith('/') ? '' : '/'}${dl}`;
+    return await downloadConfluenceBinary(creds, url, signal);
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeMermaidSource(text: string): boolean {
+  const first = text
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .map((l) => l.replace(/%%.*$/, '').trim())
+    .find(Boolean);
+  return !!first && /^(flowchart|graph|sequenceDiagram|stateDiagram(-v2)?|journey|classDiagram|erDiagram|gantt)\b/i.test(first);
+}
+
+function escapeHtmlText(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** The HTML that replaces one Mermaid viewer block: rendered SVG as an <img>
+ *  (a HUMAN reads that), the Mermaid source as a fenced code block (the flow
+ *  stage reads that), and a reference to the saved source file. */
+export function mermaidMacroReplacementHtml(
+  title: string,
+  relPrefix: string,
+  saved: { svgRel?: string; codeRel?: string; code?: string },
+): string {
+  const parts: string[] = [];
+  const safeTitle = title.replace(/"/g, '&quot;');
+  if (saved.svgRel) parts.push(`<img src="${relPrefix}/${encodeURI(saved.svgRel)}" alt="${DIAGRAM_ALT_MARKER} ${safeTitle}"/>`);
+  if (saved.code) parts.push(`<pre data-lang="mermaid">${escapeHtmlText(saved.code.trim())}</pre>`);
+  if (saved.codeRel) {
+    parts.push(
+      `<em>${DIAGRAM_ALT_MARKER} — sơ đồ Mermaid "${safeTitle}"; nguồn: <a href="${relPrefix}/${encodeURI(saved.codeRel)}">${saved.codeRel}</a></em>`,
+    );
+  }
+  return parts.length ? `<p>${parts.join('<br/>')}</p>` : '';
+}
+
+/** Rewrite every Mermaid-macro viewer block of an `export_view` body (see the
+ *  section comment). Best-effort per diagram: a block whose source cannot be
+ *  fetched still gets its SVG (from the viewer call) so the reader sees the
+ *  picture; a block with neither is stripped (its styles/scripts are junk in
+ *  Markdown either way). */
+export async function expandMermaidMacrosInExportView(
+  html: string,
+  macroHtml: string,
+  creds: ConfluenceCreds,
+  pageId: string,
+  attachmentsDir: string,
+  relPrefix: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const blocks = findMermaidMacroBlocks(html);
+  if (!blocks.length) return html;
+  // The `view` body renders the same macros — use it to fill a title/SVG the
+  // export_view block lacks (blocks pair up in document order).
+  const viewBlocks = macroHtml ? findMermaidMacroBlocks(macroHtml) : [];
+  let out = '';
+  let cursor = 0;
+  blocks.forEach((b, i) => {
+    out += html.slice(cursor, b.start);
+    cursor = b.end;
+    // Placeholder replaced below once the async work is done (keeps the
+    // synchronous splice simple).
+    out += ` MERMAID${i} `;
+  });
+  out += html.slice(cursor);
+
+  for (const [i, b] of blocks.entries()) {
+    signal?.throwIfAborted();
+    const twin = viewBlocks[i];
+    const title = b.title || twin?.title || `So-do-${i + 1}`;
+    const svg = b.svg ?? twin?.svg;
+    const stem = `${pageId}-${slug(title) || `so-do-${i + 1}`}`;
+    const saved: { svgRel?: string; codeRel?: string; code?: string } = {};
+    const srcBuf = await downloadConfluenceAttachmentByName(creds, pageId, title, signal);
+    const code = srcBuf ? srcBuf.toString('utf8') : null;
+    try {
+      await fs.mkdir(attachmentsDir, { recursive: true });
+      if (code && looksLikeMermaidSource(code)) {
+        await fs.writeFile(path.join(attachmentsDir, `${stem}.mmd`), `${code.trim()}\n`, 'utf8');
+        saved.codeRel = `${stem}.mmd`;
+        saved.code = code;
+      }
+      let svgText = svg ?? null;
+      if (!svgText) {
+        const svgBuf = await downloadConfluenceAttachmentByName(creds, pageId, `${title}.svg`, signal);
+        svgText = svgBuf ? svgBuf.toString('utf8') : null;
+      }
+      if (svgText && /<svg\b/i.test(svgText)) {
+        // Browser-serialised SVG (unclosed <br> in foreignObject, &nbsp;) is not
+        // XML → `<img>` shows a broken icon. Normalise before saving.
+        await fs.writeFile(path.join(attachmentsDir, `${stem}.svg`), svgForImgEmbedding(svgText), 'utf8');
+        saved.svgRel = `${stem}.svg`;
+      }
+    } catch (err) {
+      console.warn(`[bas] mermaid "${title}": could not save attachment files:`, err);
+    }
+    console.log(`[bas] mermaid "${title}" (page ${pageId}): ${saved.code ? 'nguồn ✓' : 'KHÔNG có nguồn'} · ${saved.svgRel ? 'svg ✓' : 'không svg'}`);
+    out = out.replace(` MERMAID${i} `, mermaidMacroReplacementHtml(title, relPrefix, saved));
+  }
+  return out;
+}
+
 /** Insert `extra` right after the <img> whose src carries `previewName`. */
 function appendAfterImage(html: string, previewName: string, extra: string): string {
   const re = new RegExp(
@@ -1537,6 +1763,24 @@ export async function fetchConfluencePages(
         ).catch((err) => {
           opts.signal?.throwIfAborted();
           console.warn(`[bas] drawio multi-page pass failed for page ${p.pageId} (keeping page-1 previews):`, err);
+          return html;
+        });
+      }
+      // Mermaid (Stratus macro): the viewer div carries no <img> at all — pull
+      // the source attachment + SVG and splice them in, else the section is
+      // empty in Markdown and the flow stage sees a text-only document.
+      if (src.creds && opts.attachmentsDir) {
+        html = await expandMermaidMacrosInExportView(
+          html,
+          p.macroHtml ?? '',
+          src.creds,
+          p.pageId,
+          opts.attachmentsDir,
+          attachmentsPrefix,
+          opts.signal,
+        ).catch((err) => {
+          opts.signal?.throwIfAborted();
+          console.warn(`[bas] mermaid macro pass failed for page ${p.pageId}:`, err);
           return html;
         });
       }

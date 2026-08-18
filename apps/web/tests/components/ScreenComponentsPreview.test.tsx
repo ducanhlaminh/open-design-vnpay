@@ -123,6 +123,7 @@ const DOC1 = {
   ],
   nav: [{ el: 'list', to: K2 }],
   notes: ['Tài liệu không nói loading.'],
+  warnings: ['element "list": "list item" khớp tên "List Item".'],
 };
 const DOC2 = { key: K2, name: 'Chọn gói cước', flowId: 'FLOW-a', platform: 'mobile', source: 'docs-feature/PRD-Mua-SIM.md', elements: [{ id: 'cta', label: 'Tiếp tục', role: 'primary-cta', ds: { component: 'Button', anchor: 'button' }, confidence: 'high', provenance: 'flow' }], nav: [] };
 const HTML1 = `<!doctype html><html><head><style>.wf-component{}</style></head><body data-screen="${K1}" data-layout="mobile"><main><div class="wf-component" data-el="appbar">Chọn quốc gia</div><div class="wf-component" data-el="list" data-nav="${K2}">Danh sách</div><div class="wf-component" data-el="empty">Trống</div></main></body></html>`;
@@ -167,6 +168,7 @@ describe('ScreenComponentsPreview', () => {
     const figma = list.querySelector('a[href^="https://www.figma.com/design/FK?node-id=1-2"]');
     expect(figma).toBeTruthy();
     expect(screen.getByText('Tài liệu không nói loading.')).toBeTruthy();
+    expect(screen.getByTestId('screen-warnings').textContent).toContain('khớp tên "List Item"');
 
     // Iframe: sandbox allow-scripts + srcDoc là wireframe đã chèn cầu nối.
     const frame = screen.getByTestId('wireframe-frame') as HTMLIFrameElement;

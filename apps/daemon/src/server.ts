@@ -501,6 +501,7 @@ import {
   parseChangesFile,
   parseNotesFile,
   validateNotes,
+  partitionNotesByAnchor,
   validateRuleIds,
   findReviewMarkers,
   collectCriteriaAnchors,
@@ -534,9 +535,9 @@ import {
 import {
   prepareScreenComponentInputs,
   parseRoleMap,
-  validateRoleMap,
+  normalizeRoleMap,
   parseScreenComponentsDoc,
-  validateScreenComponentsDoc,
+  normalizeScreenComponentsDoc,
   mergeScreenComponents,
   screenDocRel,
   wireframeRel,
@@ -16458,7 +16459,7 @@ export async function startServer({
               `${inputs.ds.examples ? ', cách lồng component thật tại "criteria/examples.md"' : ''}` +
               `${inputs.ds.rules ? ', quy tắc DS tại "criteria/rules.md"' : ''}` +
               `${inputs.ds.figmaCatalog ? ', fileKey/nodeId Figma tại ".figma-catalog/components.json"' : ''}. ` +
-              `Mọi "component"/"anchor"/data-comp phải là tên và anchor CÓ THẬT trong "criteria/components.md" — daemon đối chiếu và đánh hỏng lượt chạy nếu sai.`
+              `Mọi "component"/"anchor"/data-comp phải là tên và anchor CÓ THẬT trong "criteria/components.md": chép tên NGUYÊN VĂN từ heading "### \`#anchor\` Tên" (kể cả hậu tố " — [File] (id)" khi danh mục có nhiều mục cùng tên) và anchor đúng của mục đó — daemon đối chiếu; component không có trong danh mục bị hạ về null kèm cảnh báo.`
             : ` KHÔNG có "criteria/components.md" trong cwd này: vẫn liệt kê element theo vai trò (role) và vẽ wireframe, NHƯNG mọi "component" trong role-map và "ds" của element phải là null, wireframe KHÔNG có data-comp.`;
         const flowLine =
           ` Danh sách màn hình + ngữ cảnh từng màn (trang, mục tài liệu, bước luồng diễn ra trên màn, đi ra màn nào, phát hiện UX) nằm ở "${SCREEN_INPUTS_FILE}" — đọc nó trước.` +
@@ -16467,8 +16468,12 @@ export async function startServer({
 
         // ── Lượt 0: role-map cho cả feature ─────────────────────────────────
         const roleMapConvId = `pipeline-conv-${randomUUID()}`;
-        insertConversation(db, { id: roleMapConvId, projectId, title: `${def.name} · Bảng map vai trò → component DS`, createdAt: Date.now(), updatedAt: Date.now() });
-        const roleMapTask = { id: roleMapConvId, title: 'Bảng map vai trò → component DS', status: 'running' as 'queued' | 'running' | 'succeeded' | 'failed' };
+        // Tiêu đề nói rõ đây là LƯỢT CHẠY TRƯỚC: modal Status ghi "các tác vụ
+        // chạy song song" nên người xem thấy 1 chạy + N chờ dễ tưởng fan-out
+        // hỏng — thực ra các màn chỉ chạy song song SAU khi role-map xong.
+        const roleMapTitle = 'Lượt 0 · Bảng vai trò → component DS (chạy trước, các màn chạy song song sau)';
+        insertConversation(db, { id: roleMapConvId, projectId, title: `${def.name} · ${roleMapTitle}`, createdAt: Date.now(), updatedAt: Date.now() });
+        const roleMapTask = { id: roleMapConvId, title: roleMapTitle, status: 'running' as 'queued' | 'running' | 'succeeded' | 'failed' };
         const screenTasks = screenInputs.map((s) => {
           const id = `pipeline-conv-${randomUUID()}`;
           insertConversation(db, { id, projectId, title: `${def.name} · ${s.name}`, createdAt: Date.now(), updatedAt: Date.now() });
@@ -16542,8 +16547,20 @@ export async function startServer({
             const parsed = parseRoleMap(raw);
             if ('errors' in parsed) roleMapErrors.push(...parsed.errors);
             else {
-              roleMapErrors.push(...validateRoleMap(parsed.doc, catalog));
-              if (roleMapErrors.length === 0) roleMap = parsed.doc;
+              // KHOAN DUNG: tên component lệch danh mục (agent viết "Heading"
+              // trong khi danh mục ghi "Heading — [SDK] Web Lib (Slot) (…)")
+              // được đối chiếu theo anchor / tên gốc; không khớp thì hạ vai
+              // trò đó về null + ghi warning, KHÔNG đánh hỏng cả stage vì một
+              // dòng — người dùng còn có gì để xem và sửa.
+              const norm = normalizeRoleMap(parsed.doc, catalog);
+              roleMapErrors.push(...norm.errors);
+              if (roleMapErrors.length === 0) {
+                roleMap = norm.doc;
+                if (norm.warnings.length) {
+                  console.warn(`[docs-comp] role-map: ${norm.warnings.length} chỗ được chuẩn hoá:`, norm.warnings);
+                  await fs.promises.writeFile(path.join(cwd, ROLE_MAP_FILE), JSON.stringify(roleMap, null, 2), 'utf8').catch(() => null);
+                }
+              }
             }
           }
         }
@@ -16666,12 +16683,22 @@ export async function startServer({
               if ('errors' in parsed) errors.push(...parsed.errors);
               else {
                 const wireframeHtml = await fs.promises.readFile(path.join(cwd, wfRel), 'utf8').catch(() => null);
-                errors.push(...validateScreenComponentsDoc(parsed.doc, { expectedKey: s.key, screenKeys: screenKeySet, catalog, wireframeHtml }));
+                // Cùng tinh thần khoan dung như role-map: chỉ key sai / thiếu
+                // wireframe / có <script> mới là lỗi cứng; component lạ → ds
+                // null + why, data-comp/data-nav lạ → daemon gỡ, doctype /
+                // data-screen / data-layout → daemon sửa, tất cả ghi vào
+                // `warnings` để hiện trong panel.
+                const norm = normalizeScreenComponentsDoc(parsed.doc, { expectedKey: s.key, screenKeys: screenKeySet, catalog, wireframeHtml });
+                errors.push(...norm.errors);
                 if (errors.length === 0) {
                   // key/name/flowId/source là siêu dữ liệu daemon TỰ BIẾT — ghi
                   // đè để index không lệch chỉ vì agent gõ lại.
-                  doc = { ...parsed.doc, key: s.key, name: s.name, flowId: s.flowId, source: s.source };
+                  doc = { ...norm.doc, key: s.key, name: s.name, flowId: s.flowId, source: s.source };
                   await fs.promises.writeFile(path.join(cwd, outRel), JSON.stringify(doc, null, 2), 'utf8');
+                  if (norm.wireframeHtml != null && norm.wireframeHtml !== wireframeHtml) {
+                    await fs.promises.writeFile(path.join(cwd, wfRel), norm.wireframeHtml, 'utf8');
+                  }
+                  if (norm.warnings.length) console.warn(`[docs-comp] screen "${s.name}": ${norm.warnings.length} chỗ được chuẩn hoá:`, norm.warnings);
                 }
               }
             }
@@ -17281,6 +17308,7 @@ export async function startServer({
 
           let changes: DocChange[] = [];
           let notes: DocNote[] = [];
+          const warnings: string[] = [];
           let pageStatus: 'succeeded' | 'failed' = errors.length === 0 && !sawCancel ? 'succeeded' : 'failed';
 
           if (pageStatus === 'succeeded') {
@@ -17325,7 +17353,11 @@ export async function startServer({
               }
               if (errors.length === 0) {
                 errors.push(...validateChanges(original, revised, changes));
-                errors.push(...validateNotes(original, notes));
+                // Note neo trượt: cảnh báo, KHÔNG hỏng trang (xem partitionNotesByAnchor).
+                const partitioned = partitionNotesByAnchor(original, notes);
+                notes = partitioned.notes;
+                warnings.push(...partitioned.warnings);
+                errors.push(...partitioned.errors);
                 errors.push(
                   ...validateRuleIds(
                     [
@@ -17388,6 +17420,7 @@ export async function startServer({
             notes,
             status: pageStatus,
             ...(errors.length > 0 ? { errors } : {}),
+            ...(warnings.length > 0 ? { warnings } : {}),
           };
 
           // Trang là đơn vị đạt/hỏng, nên MỌI task của trang mang trạng thái

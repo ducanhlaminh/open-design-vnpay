@@ -51,7 +51,7 @@ import {
 } from './providers/registry';
 import { RUNS_CHANGED_EVENT, listProjectRuns } from './providers/daemon';
 import { startCriteriaGeneration } from './providers/design-system-criteria';
-import { navigate, useRoute } from './router';
+import { navigate, useRoute, navigateBack } from './router';
 import { useUiPreviewAutoOpen } from './components/pipeline-preview/ui-preview-watch';
 import {
   fetchDaemonConfig,
@@ -1180,8 +1180,10 @@ export function App() {
     void patchProject(id, { name: trimmed });
   }, []);
 
+  // Workspace "Back" follows history (pipelines list / result page / previous
+  // workspace…) — only a deep-linked / fresh tab lands on home.
   const handleBack = useCallback(() => {
-    navigate({ kind: 'home', view: 'home' });
+    navigateBack({ kind: 'home', view: 'home' });
   }, []);
 
   const handleClearPendingPrompt = useCallback(() => {

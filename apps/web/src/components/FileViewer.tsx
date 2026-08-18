@@ -64,6 +64,7 @@ import { ComponentAuditPreview, isComponentAuditFile } from './ComponentAuditPre
 import { ScreenComponentsPreview, isScreenComponentsFile } from './ScreenComponentsPreview';
 import { FlowchartPreview, isFlowchartFile } from './FlowchartPreview';
 import { FlowUxReviewPreview, isFlowUxFile } from './FlowUxReviewPreview';
+import { MermaidDiagram } from './MermaidDiagram';
 import { inlineMarkdownImages } from '../runtime/markdown-images';
 import { SpecFlowCanvas, isFlowDoc, type FlowDoc } from './SpecFlowCanvas';
 import { ReviewPreview, type ReviewReport } from './ReviewPreview';
@@ -637,6 +638,37 @@ const DIAGRAM_ALT_RE = /^flow-diagram\s+(.*?)\s+—\s+trang\s+(\d+)\s*$/;
  * document stays plain markdown: readable in any other viewer, and still N
  * images when a human opens the .md file directly.
  */
+const MARKDOWN_MERMAID_HOST_CLASS = 'md-mermaid';
+
+// Find ```mermaid blocks (rendered as <pre><code class="language-mermaid">),
+// insert a diagram host before each block and fold the source into <details>.
+// Returns the hosts + source so the caller can portal <MermaidDiagram> into them.
+function mountMarkdownMermaidHosts(root: HTMLElement): Array<{ host: HTMLElement; code: string }> {
+  const mounts: Array<{ host: HTMLElement; code: string }> = [];
+  const codes = [...root.querySelectorAll<HTMLElement>('pre > code.language-mermaid')];
+  for (const codeEl of codes) {
+    const pre = codeEl.parentElement;
+    if (!pre) continue;
+    const block = pre.closest<HTMLElement>(`[${MARKDOWN_CODE_BLOCK_ATTR}]`) ?? pre;
+    if (block.previousElementSibling?.classList.contains(MARKDOWN_MERMAID_HOST_CLASS)) continue;
+    const code = codeEl.textContent ?? '';
+    if (!code.trim()) continue;
+    const host = document.createElement('div');
+    host.className = MARKDOWN_MERMAID_HOST_CLASS;
+    block.parentElement?.insertBefore(host, block);
+    // Fold the source under the diagram — still copyable via the block's button.
+    const details = document.createElement('details');
+    details.className = `${MARKDOWN_MERMAID_HOST_CLASS}__source`;
+    const summary = document.createElement('summary');
+    summary.textContent = 'Mermaid';
+    details.appendChild(summary);
+    block.parentElement?.insertBefore(details, block);
+    details.appendChild(block);
+    mounts.push({ host, code });
+  }
+  return mounts;
+}
+
 function ensureMarkdownDiagramPagers(root: HTMLElement) {
   const images = [...root.querySelectorAll<HTMLImageElement>('img.md-doc-image')];
   const seen = new Set<HTMLImageElement>();
@@ -8867,6 +8899,20 @@ function MarkdownViewer({
     }
   }, [html, t]);
 
+  // ```mermaid fences → live diagram (zoom/pan) mounted through a portal into a
+  // host inserted before the code block; the source block stays below, collapsed
+  // (<details>) so it can still be copied. Re-run whenever the article's HTML is
+  // replaced — dangerouslySetInnerHTML wipes the hosts.
+  const [mermaidMounts, setMermaidMounts] = useState<Array<{ host: HTMLElement; code: string }>>([]);
+  useEffect(() => {
+    const article = markdownArticleRef.current;
+    if (!article) {
+      setMermaidMounts([]);
+      return;
+    }
+    setMermaidMounts(mountMarkdownMermaidHosts(article));
+  }, [html]);
+
   async function handleMarkdownBodyClick(event: ReactMouseEvent<HTMLElement>) {
     const target = event.target;
     if (!(target instanceof Element)) return;
@@ -8937,6 +8983,7 @@ function MarkdownViewer({
               onClick={(event) => void handleMarkdownBodyClick(event)}
               dangerouslySetInnerHTML={{ __html: html }}
             />
+            {mermaidMounts.map((m, i) => createPortal(<MermaidDiagram code={m.code} initialFit="width" />, m.host, `mermaid-${i}`))}
           </>
         )}
       </div>

@@ -418,3 +418,8 @@
   margin: 0;
   padding-left: 16px;
 }
+
+.warnings {
+  background: var(--amber-bg, #fff3e0);
+  color: var(--amber, #b26200);
+}

@@ -290,3 +290,29 @@ test('text-only: agent tự vẽ flows/<id>/as-is.mmd (+ proposed.mmd, screens.j
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test('prepare: trang do ingest Confluence mới viết (ảnh SVG + fence ```mermaid + <pageId>-<slug>.mmd/.svg trong attachments) → ĐÚNG MỘT luồng, tiêu đề theo heading, có as-is.svg', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-'));
+  try {
+    const dir = path.join(cwd, 'docs-feature', 'sim');
+    fs.mkdirSync(path.join(dir, 'attachments'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'attachments', '1008831307-Luong-nguoi-dung.mmd'), MERMAID);
+    fs.writeFileSync(path.join(dir, 'attachments', '1008831307-Luong-nguoi-dung.svg'), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>');
+    fs.writeFileSync(
+      path.join(dir, 'prd.md'),
+      `# PRD\n\n### 3.1 Luồng sơ đồ\n\n![flow-diagram Luồng người dùng](attachments/1008831307-Luong-nguoi-dung.svg)\n\n\`\`\`mermaid\n${MERMAID}\n\`\`\`\n\n*flow-diagram — nguồn: [x](attachments/1008831307-Luong-nguoi-dung.mmd)*\n\n### 3.2 Mô tả\n`,
+    );
+    const prep = await prepareFlowUxInputs(cwd);
+    assert.equal(prep.inputs.length, 1, JSON.stringify(prep.inputs.map((i) => [i.id, i.title])));
+    const flow = prep.inputs[0]!;
+    assert.equal(flow.kind, 'mermaid');
+    assert.equal(flow.title, '3.1 Luồng sơ đồ');
+    assert.equal(flow.source, 'docs-feature/sim/prd.md');
+    assert.ok(fs.existsSync(path.join(cwd, 'flows', flow.id, 'as-is.mmd')));
+    assert.ok(fs.existsSync(path.join(cwd, 'flows', flow.id, 'as-is.svg')));
+    // Không có createViewer nên trang không bị viết lại.
+    assert.deepEqual(prep.normalizedPages, []);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

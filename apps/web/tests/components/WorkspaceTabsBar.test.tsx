@@ -22,6 +22,8 @@ vi.mock('../../src/i18n', () => ({
       'common.close': 'Close',
       'common.untitled': 'Untitled',
       'entry.navDesignSystems': 'Design systems',
+      'workspaceTabs.designSystem': 'Design system',
+      'entry.navPipelines': 'Pipelines',
       'entry.navHome': 'Home',
       'entry.navProjects': 'Projects',
     };
@@ -223,5 +225,34 @@ describe('WorkspaceTabsBar navigation semantics', () => {
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'Search tabs' })).toBeNull();
     });
+  });
+
+  it('drill-down /pipelines/app/<id> lives in the "Pipelines" tab (not "Design system") and the tab remembers the deep path', async () => {
+    const { rerender } = render(
+      <WorkspaceTabsBar route={{ kind: 'home', view: 'pipelines' }} projects={[project]} />,
+    );
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab').map((tab) => tab.textContent ?? '').join('|')).toContain('Pipelines');
+    });
+
+    rerender(<WorkspaceTabsBar route={{ kind: 'pipelines-app', appId: 'sdk-sim' }} projects={[project]} />);
+    await waitFor(() => {
+      const labels = screen.getAllByRole('tab').map((tab) => tab.textContent ?? '');
+      expect(labels).toHaveLength(1);
+      expect(labels[0]).toContain('Pipelines');
+      expect(labels[0]).not.toContain('Design system');
+    });
+
+    // Go to Home (new singleton Home tab appended), then click the Pipelines
+    // tab again → it must reopen the App page, not the section root.
+    rerender(<WorkspaceTabsBar route={{ kind: 'home', view: 'home' }} projects={[project]} />);
+    await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
+    const pipelinesTab = screen.getAllByRole('tab').find((tab) => (tab.textContent ?? '').includes('Pipelines'))!;
+    fireEvent.click(pipelinesTab.querySelector('.workspace-tab__main')!);
+    expect(vi.mocked(navigate)).toHaveBeenLastCalledWith({ kind: 'pipelines-app', appId: 'sdk-sim' });
+
+    // Persisted shape survives reload (path kept, view accepted by reviveTab).
+    const stored = JSON.parse(window.localStorage.getItem('open-design:workspace-tabs:v1') ?? '{}') as { tabs?: Array<{ view?: string; path?: string }> };
+    expect(stored.tabs?.some((tab) => tab.view === 'pipelines' && tab.path === '/pipelines/app/sdk-sim')).toBe(true);
   });
 });

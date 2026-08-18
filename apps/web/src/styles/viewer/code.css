@@ -832,3 +832,27 @@
 .op-icon-edit  { background: var(--amber-bg); color: var(--amber); }
 .op-icon-read  { background: var(--blue-bg); color: var(--blue); }
 .op-title { font-weight: 500; }
+
+/* ```mermaid fences render as a live diagram (zoom/pan viewport, see
+   MermaidDiagram) mounted before the code block; the source folds under it. */
+.markdown-rendered .md-mermaid {
+  margin: 12px 0 4px;
+  height: 520px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  overflow: hidden;
+  resize: vertical;
+}
+.markdown-rendered .md-mermaid__source {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+.markdown-rendered .md-mermaid__source > summary {
+  cursor: pointer;
+  color: var(--fg-muted, var(--muted));
+  user-select: none;
+}
+.markdown-rendered .md-mermaid__source > .markdown-code-block {
+  margin-top: 6px;
+}

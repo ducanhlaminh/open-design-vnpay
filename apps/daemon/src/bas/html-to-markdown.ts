@@ -233,10 +233,15 @@ function createService(resolveHref?: ResolveHref, localizedImagePrefix?: string)
   // classes, not a `<code>` child), which Turndown's fenced-code rule does not
   // match. Read the raw text so angle brackets inside the snippet survive
   // instead of being mistaken for markup.
+  // `data-lang` (our own Mermaid-macro rewrite in bas-client sets
+  // `data-lang="mermaid"`) becomes the fence's info string so downstream
+  // stages can pick the block up by language.
   service.addRule('od-pre', {
     filter: (node) => node.nodeName === 'PRE',
-    replacement: (_content, node) =>
-      `\n\n\`\`\`\n${(asEl(node).textContent ?? '').replace(/\n+$/, '')}\n\`\`\`\n\n`,
+    replacement: (_content, node) => {
+      const lang = (asEl(node).getAttribute?.('data-lang') ?? '').trim().replace(/[^A-Za-z0-9_-]/g, '');
+      return `\n\n\`\`\`${lang}\n${(asEl(node).textContent ?? '').replace(/\n+$/, '')}\n\`\`\`\n\n`;
+    },
   });
 
   service.addRule('od-table', {
@@ -279,10 +284,17 @@ export function htmlToMarkdown(
   localizedImagePrefix?: string,
 ): string {
   const md = createService(resolveHref, localizedImagePrefix).turndown(html ?? '');
-  return md
-    .split(CELL_BREAK)
-    .join('<br>')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return (
+    md
+      .split(CELL_BREAK)
+      .join('<br>')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+      // Confluence trả tiếng Việt TRỘN NFC/NFD (tuỳ bộ gõ người soạn). Agent
+      // và trình duyệt làm việc bằng NFC → mọi so khớp nguyên văn (anchor/quote
+      // của dr-review, bôi vàng trong DocRedlinePreview) trượt trên đoạn NFD.
+      // Chuẩn hoá một lần ở đầu vào cho mọi tài liệu nạp về.
+      .normalize('NFC')
+  );
 }
