@@ -1365,7 +1365,11 @@ export function registerStaticSpaFallback(app, staticDir) {
   app.get('/*splat', (req, res, next) => {
     const indexPath = resolveStaticSpaFallbackPath(req, staticDir);
     if (indexPath == null) return next();
-    res.sendFile(indexPath);
+    // Serve relative to `root`, not by absolute path: `send` refuses any
+    // absolute path that has a dot-segment (default `dotfiles: 'ignore'`),
+    // and packaged installs live under `~/.open-design/...` -- an absolute
+    // sendFile there 404s every deep link even though index.html exists.
+    res.sendFile(path.basename(indexPath), { dotfiles: 'allow', root: path.dirname(indexPath) });
   });
 }
 
