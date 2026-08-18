@@ -414,6 +414,17 @@ Layout under the public URL:
                    (rolling pointer, overwritten on every publish)
 ```
 
+To backfill a release that was published before the secrets existed (or to
+try a new bucket without waiting for CI), run the same publish step from any
+machine with `gh` + `aws`:
+
+```bash
+AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… \
+scripts/host-runtime/mirror-publish.sh --tag host-runtime-v0.8.52 \
+  --bucket <bucket> --endpoint https://<account>.r2.cloudflarestorage.com \
+  --public-url https://dl.example.com/open-design   # add --dry-run to stage only
+```
+
 Install from the mirror — the base URL is remembered in `config.env` for
 updates:
 
