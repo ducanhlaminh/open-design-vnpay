@@ -320,3 +320,48 @@ test('Windows installer rejects invalid command combinations and ports', async (
   assert.match(ps, /-Port must be an integer from 1 to 65535/);
   assert.match(ps, /throw \[System\.InvalidOperationException\]::new\(\$msg\)/);
 });
+
+// 2026-08-18: OpenDesign-Install.cmd "downloads very slowly" at the VNPAY
+// office. Root cause was the network, not the script: the corporate proxy
+// TLS-inspects github.com (curl.exe: SEC_E_UNTRUSTED_ROOT) and caps a single
+// connection at ~200-500 KB/s, while a non-inspected CDN (nodejs.org) ran at
+// 11 MB/s from the same desk. Two mitigations are pinned here: a download
+// mirror selectable via OD_RELEASE_URL, and throughput on the progress bar so
+// the next report carries the diagnosis.
+test('Windows installer can install from a mirror via OD_RELEASE_URL and persists it for -Update', async () => {
+  const ps = await source();
+  const cmd = await readFile(join(repoRoot, 'deploy/host/install.cmd'), 'utf8');
+  assert.match(ps, /function Resolve-ReleaseUrl/);
+  const resolve = ps.slice(ps.indexOf('function Resolve-ReleaseUrl'), ps.indexOf('function Invoke-PreflightCheck'));
+  // Priority: -ReleaseUrl flag > env > config.env (so the daemon-spawned -Update keeps the mirror).
+  assert.match(resolve, /if \(-not \$ReleaseUrl\) \{/);
+  assert.match(resolve, /\$env:OD_RELEASE_URL/);
+  assert.match(resolve, /Get-ExistingConfigValue "OD_RELEASE_URL"/);
+  // Only a base URL (folder with release.json) is treated as a mirror; a
+  // one-off direct .tar.gz URL must never be persisted.
+  assert.match(resolve, /-notmatch '\\\.tar\\\.gz\$'/);
+  assert.match(resolve, /\$script:ReleaseUrlIsMirrorBase = \$true/);
+  const config = ps.slice(ps.indexOf('function Write-ConfigEnv'), ps.indexOf('function Set-CurrentPointer'));
+  assert.match(config, /if \(\$ReleaseUrlIsMirrorBase\) \{ \$lines\.Add\("OD_RELEASE_URL=\$ReleaseUrl"\) \}/);
+  // Resolve-ReleaseUrl runs before the preflight so the mirror host (not
+  // github.com) is what gets probed.
+  const main = ps.slice(ps.indexOf('function Invoke-Main'), ps.indexOf('Step1-VerifyPackage', ps.indexOf('function Invoke-Main')));
+  assert.match(main, /Resolve-ReleaseUrl\s*\n\s*Invoke-PreflightCheck/);
+  const preflight = ps.slice(ps.indexOf('function Invoke-PreflightCheck'), ps.indexOf('function Step1-VerifyPackage'));
+  assert.match(preflight, /if \(-not \$Archive -and \$ReleaseUrl\) \{/);
+  assert.match(preflight, /GetLeftPart\(\[System\.UriPartial\]::Authority\)/);
+  // The double-click .cmd fetches its bootstrap install.ps1 from the mirror too.
+  assert.match(cmd, /if defined OD_RELEASE_URL \(/);
+  assert.match(cmd, /set "OD_BOOTSTRAP_URL=!OD_BOOTSTRAP_URL!\/install\.ps1"/);
+  assert.match(cmd, /-Uri \$env:OD_BOOTSTRAP_URL/);
+});
+
+test('Windows download progress reports throughput (KB/s) on the bar and in the log', async () => {
+  const ps = await source();
+  const dl = ps.slice(ps.indexOf('function Invoke-DownloadFile'), ps.indexOf('function Invoke-WebText'));
+  assert.match(dl, /\$stopwatch = \[System\.Diagnostics\.Stopwatch\]::StartNew\(\)/);
+  assert.match(dl, /\$kbps = \[int\]\(\(\$received - \$resumeFrom\) \/ 1024 \/ \$elapsedSec\)/);
+  assert.match(dl, /\{4,6:N0\} KB\/s" -f \$bar, \$percent, \(\$received \/ 1MB\), \(\$total \/ 1MB\), \$kbps/);
+  assert.match(dl, /Write-DownloadLog "download \$milestone% \(\$received\/\$total bytes, \$kbps KB\/s\)"/);
+  assert.match(dl, /download complete \(\$received bytes, avg \$kbps KB\/s over/);
+});

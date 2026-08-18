@@ -20,12 +20,24 @@ rem the new version goes in. In-place updates are OpenDesign-Update.cmd /
 rem the web "Cap nhat" button / `od self-update` -- never this file.
 rem The installer is always the latest install.ps1 from `main` unless one
 rem sits next to this .cmd (release tarball layout / dev checkout).
+rem OD_RELEASE_URL (mirror base URL, see install.ps1 -ReleaseUrl) also
+rem changes WHERE the bootstrap installer comes from: <mirror>/install.ps1
+rem instead of raw.githubusercontent.com. Networks that TLS-inspect GitHub
+rem throttle both the installer and the runtime download; the mirror carries
+rem both. install.ps1 itself reads the same variable for the runtime.
+set "OD_BOOTSTRAP_URL=https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1"
+if defined OD_RELEASE_URL (
+  set "OD_BOOTSTRAP_URL=%OD_RELEASE_URL%"
+  if "%OD_RELEASE_URL:~-1%"=="/" set "OD_BOOTSTRAP_URL=%OD_RELEASE_URL:~0,-1%"
+  set "OD_BOOTSTRAP_URL=!OD_BOOTSTRAP_URL!/install.ps1"
+)
 if not exist "%OD_INSTALLER%" (
   set "OD_BOOTSTRAP_INSTALLER=%OD_BOOTSTRAP_CANDIDATE%"
   set "OD_INSTALLER=%OD_BOOTSTRAP_CANDIDATE%"
   echo Downloading the latest Open Design installer...
+  echo   from !OD_BOOTSTRAP_URL!
   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
-    "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1' -OutFile $env:OD_BOOTSTRAP_CANDIDATE"
+    "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri $env:OD_BOOTSTRAP_URL -OutFile $env:OD_BOOTSTRAP_CANDIDATE"
   if errorlevel 1 goto :download_failed
 )
 

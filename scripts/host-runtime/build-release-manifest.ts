@@ -10,9 +10,17 @@
 //
 // Usage:
 //   node --experimental-strip-types scripts/host-runtime/build-release-manifest.ts \
-//     --version <x.y.z> --tag <tag> --repo <owner>/<repo> --out release.json
+//     --version <x.y.z> --tag <tag> --repo <owner>/<repo> --out release.json \
+//     [--base-url <https://mirror.example/od/<tag>>]
 //   (run with cwd = the directory containing every open-design-runtime-*.tar.gz
 //   + its .sha256 sidecar)
+//
+// --base-url makes every "<platform>.url" point at <base-url>/<tarball> instead
+// of the GitHub release asset. Used by the release workflow's optional mirror
+// step: corporate networks that TLS-inspect github.com (measured 2026-08-18 at
+// the VNPAY office: ~200-500 KB/s through the inspecting proxy vs 11 MB/s to a
+// non-inspected CDN) can install from a mirror by pointing the installers at
+// that mirror's release.json (OD_RELEASE_URL / -ReleaseUrl / --release-url).
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 
 function argValue(name: string): string | undefined {
@@ -24,9 +32,10 @@ const version = argValue('version');
 const tag = argValue('tag');
 const repo = argValue('repo');
 const out = argValue('out') ?? 'release.json';
+const baseUrl = argValue('base-url')?.replace(/\/+$/, '');
 
 if (!version || !tag || !repo) {
-  console.error('Usage: build-release-manifest.ts --version <x.y.z> --tag <tag> --repo <owner>/<repo> [--out release.json]');
+  console.error('Usage: build-release-manifest.ts --version <x.y.z> --tag <tag> --repo <owner>/<repo> [--out release.json] [--base-url <url>]');
   process.exit(2);
 }
 
@@ -43,7 +52,9 @@ for (const entry of readdirSync('.')) {
   const sha256Line = readFileSync(sha256Path, 'utf8').trim();
   const sha256 = sha256Line.split(/\s+/)[0];
   if (!sha256) throw new Error(`could not read sha256 from ${sha256Path}`);
-  manifest[`${platform}.url`] = `https://github.com/${repo}/releases/download/${tag}/${entry}`;
+  manifest[`${platform}.url`] = baseUrl
+    ? `${baseUrl}/${entry}`
+    : `https://github.com/${repo}/releases/download/${tag}/${entry}`;
   manifest[`${platform}.sha256`] = sha256;
   found += 1;
 }

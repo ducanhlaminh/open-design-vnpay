@@ -230,12 +230,25 @@ find "${STAGE_DIR}/apps/daemon/node_modules" -type f \( \
     -name "*.tsbuildinfo" -o \
     -name "binding.gyp" \
   \) -delete 2>/dev/null || true
+# better-sqlite3 ships its C sources (deps/sqlite3/sqlite3.c alone is 9 MB
+# raw) and node-gyp inputs next to the prebuilt build/Release/*.node the
+# daemon actually loads. Nothing at runtime reads them -- they only matter
+# for a from-source rebuild, which pnpm deploy already did on this runner.
+# ~2.5 MB of the compressed tarball for a 100 % dead-weight subtree.
+rm -rf "${STAGE_DIR}/apps/daemon/node_modules/better-sqlite3/deps" \
+       "${STAGE_DIR}/apps/daemon/node_modules/better-sqlite3/src" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 5. Web static export
 # ---------------------------------------------------------------------------
 mkdir -p "${STAGE_DIR}/apps/web"
 cp -R "${WORKSPACE_ROOT}/apps/web/out" "${STAGE_DIR}/apps/web/out"
+# Next's static export leaves a source map next to every chunk (~4.5 MB
+# compressed, one of them 10 MB raw). Browsers only fetch .map files when
+# DevTools is open and a 404 there is harmless -- the daemon serves the
+# export as-is and never reads them. Same rule the node_modules prune above
+# already applies.
+find "${STAGE_DIR}/apps/web/out" -type f -name "*.map" -delete 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 6. Bundled resource trees — reused verbatim from tools/pack/src/resources.ts
@@ -249,6 +262,67 @@ cp -R "${WORKSPACE_ROOT}/apps/web/out" "${STAGE_DIR}/apps/web/out"
 log "copying bundled resource trees (reusing tools/pack/src/resources.ts)"
 node --experimental-strip-types "${SCRIPT_DIR}/copy-resources.ts" \
   "$WORKSPACE_ROOT" "${STAGE_DIR}/resources/open-design"
+
+# ---------------------------------------------------------------------------
+# 6b. Trim the resource tree. Measured on 0.8.48: the tarball was 104 MB
+#     compressed and 81 MB of that was resources/ -- the actual app (daemon +
+#     web export) is ~19 MB. Two kinds of weight go here:
+#
+#     (1) Human-only documentation imagery bundled next to a template:
+#         design-templates/*/docs/readme (README hero.gif/screenshots) and
+#         design-templates/*/scripts/verify-output (self-test screenshots).
+#         Nothing resolves them at runtime -- SKILL.md files never reference
+#         them; only the template's own README.md (which we ship for humans,
+#         not for the daemon) does.
+#     (2) Byte-identical duplicates: plugins/_official/examples/<x>/assets is
+#         a verbatim copy of design-templates/<x>/assets for some templates
+#         (open-design-landing alone: 22 MB of PNGs, twice). Both paths must
+#         stay valid at runtime, so instead of deleting one we HARDLINK the
+#         duplicate to the first copy. tar (GNU and bsdtar alike) records the
+#         second occurrence of a hard-linked file as a link entry, and every
+#         extractor we target (GNU tar, bsdtar, Windows 10+ tar.exe) recreates
+#         it as a hard link on NTFS/APFS/ext4 -- so the bytes travel once and
+#         both files exist after extraction. If `ln` is unavailable for any
+#         reason the file is left as a plain copy (no savings, still correct).
+#         Only files >= 256 KB are considered: below that the bookkeeping
+#         costs more than it saves.
+#
+#     Deliberately NOT removed (they back live features): community-pets
+#     (web pet UI), skills/*/assets (agents copy them into outputs),
+#     plugins/_official/examples themselves.
+# ---------------------------------------------------------------------------
+RESOURCE_ROOT="${STAGE_DIR}/resources/open-design"
+log "trimming resource tree: template README/self-test imagery"
+find "${RESOURCE_ROOT}/design-templates" -mindepth 2 -maxdepth 3 -type d \
+  \( -path "*/docs/readme" -o -path "*/scripts/verify-output" \) \
+  -prune -exec rm -rf '{}' + 2>/dev/null || true
+
+log "deduplicating identical resource files (>= 256 KB) via hard links"
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1"
+  else
+    shasum -a 256 "$1"
+  fi
+}
+DEDUPE_FILES=0
+DEDUPE_BYTES=0
+while IFS="$(printf '\t')" read -r keep dup; do
+  [ -n "${dup:-}" ] || continue
+  size="$(wc -c < "${RESOURCE_ROOT}/${dup}" | tr -d ' ')"
+  if ln -f "${RESOURCE_ROOT}/${keep}" "${RESOURCE_ROOT}/${dup}" 2>/dev/null; then
+    DEDUPE_FILES=$((DEDUPE_FILES + 1))
+    DEDUPE_BYTES=$((DEDUPE_BYTES + size))
+  fi
+done < <(
+  cd "$RESOURCE_ROOT" \
+    && find . -type f -size +256k -print \
+    | while IFS= read -r f; do sha256_of "$f"; done \
+    | sort \
+    | awk '{ h = substr($0, 1, 64); p = substr($0, 67); sub(/^\.\//, "", p);
+             if (h in first) { printf "%s\t%s\n", first[h], p } else { first[h] = p } }'
+)
+log "deduplicated ${DEDUPE_FILES} file(s), ${DEDUPE_BYTES} bytes now stored once"
 
 # ---------------------------------------------------------------------------
 # 7. Service templates + self-contained install.sh copy (for --update) + VERSION

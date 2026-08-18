@@ -39,8 +39,15 @@
 
 .PARAMETER ReleaseUrl
   A direct .tar.gz URL, or a release "asset base" URL (e.g. a GitHub
-  releases/download/<tag> folder) containing a release.json manifest.
-  Default: the latest GitHub release of this repo.
+  releases/download/<tag> folder, or a mirror folder) containing a
+  release.json manifest. Default: the OD_RELEASE_URL environment variable,
+  then OD_RELEASE_URL from an existing config.env (so -Update keeps using
+  the same mirror), then the latest GitHub release of this repo.
+  A base URL given here (or via OD_RELEASE_URL) is persisted as
+  OD_RELEASE_URL in config.env; a direct .tar.gz URL is not.
+  Why a mirror: corporate networks that TLS-inspect github.com throttle
+  release downloads to a few hundred KB/s while non-inspected CDNs run at
+  full speed (measured 2026-08-18) -- see deploy/host/README.md.
 
 .PARAMETER Sha256
   Expected sha256 of the tarball -- overrides any discovered .sha256
@@ -193,6 +200,7 @@ if ($Help) {
     Get-Help $PSCommandPath -Full
   } else {
     Write-Host "Open Design host runtime installer (Windows). See deploy/host/README.md for full docs."
+    Write-Host "Env: OD_RELEASE_URL (mirror base URL; same as -ReleaseUrl)"
     Write-Host "Flags: -Archive -ReleaseUrl -Sha256 -Port -DataDir -EnvFile -MediaUrl -MediaAppId -MediaUserId -MediaUserRole -IdentityUrl -GoogleClientId -GoogleClientSecret -SessionSecret -NoStart -Update -Start -Stop -Uninstall -DeleteData -Force -InsecureTls"
   }
   exit 0
@@ -508,6 +516,12 @@ function Invoke-DownloadFile {
       $lastPercent = -1
       $lastMilestone = -1
       [long]$lastByteReport = $resumeFrom
+      # Average throughput of THIS attempt (bytes fetched now / wall time), shown
+      # on the bar and written to the log: on networks that TLS-inspect GitHub
+      # the number is the diagnosis (0.8.48 report: ~200-500 KB/s through the
+      # proxy vs 11 MB/s to a non-inspected CDN from the same desk).
+      $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+      $kbps = 0
       # Re-arm the stall timer after every successful read: CancelAfter on a
       # not-yet-cancelled source restarts the countdown.
       $cts.CancelAfter([TimeSpan]::FromSeconds($TimeoutSec))
@@ -515,6 +529,8 @@ function Invoke-DownloadFile {
         $cts.CancelAfter([TimeSpan]::FromSeconds($TimeoutSec))
         $output.Write($buffer, 0, $count)
         $received += $count
+        $elapsedSec = $stopwatch.Elapsed.TotalSeconds
+        if ($elapsedSec -gt 0.5) { $kbps = [int](($received - $resumeFrom) / 1024 / $elapsedSec) }
         if ($total -and $total -gt 0) {
           $percent = [Math]::Min(100, [int](($received * 100) / $total))
           if ((Test-InteractiveOutput) -and $percent -ne $lastPercent) {
@@ -528,7 +544,7 @@ function Invoke-DownloadFile {
             # $b, $c): -f gets one value for a 4-slot format string, throws,
             # and the try/catch swallowed it -- the bar was never drawn
             # (0.8.39 report: "download step shows nothing").
-            $line = "`r      [{0}] {1,3}%  {2:N1}/{3:N1} MB" -f $bar, $percent, ($received / 1MB), ($total / 1MB)
+            $line = "`r      [{0}] {1,3}%  {2:N1}/{3:N1} MB  {4,6:N0} KB/s" -f $bar, $percent, ($received / 1MB), ($total / 1MB), $kbps
             try { [Console]::Write($line) } catch {}
             $lastPercent = $percent
           } else {
@@ -536,12 +552,12 @@ function Invoke-DownloadFile {
             # progress.percent for the web header's update button.
             $milestone = [int]([Math]::Floor($percent / 5) * 5)
             if ($milestone -gt $lastMilestone) {
-              Write-DownloadLog "download $milestone% ($received/$total bytes)"
+              Write-DownloadLog "download $milestone% ($received/$total bytes, $kbps KB/s)"
               $lastMilestone = $milestone
             }
           }
         } elseif ((Test-InteractiveOutput) -and ($received - $lastByteReport) -ge 1MB) {
-          $line = "`r      {0:N1} MB downloaded" -f ($received / 1MB)
+          $line = "`r      {0:N1} MB downloaded  {1,6:N0} KB/s" -f ($received / 1MB), $kbps
           try { [Console]::Write($line) } catch {}
           $lastByteReport = $received
         }
@@ -553,7 +569,10 @@ function Invoke-DownloadFile {
       $output.Dispose(); $output = $null
       if (Test-InteractiveOutput) { try { [Console]::WriteLine() } catch {} }
       Move-Item -LiteralPath $partial -Destination $Destination -Force
-      Write-DownloadLog "download complete ($received bytes): $Destination"
+      Write-DownloadLog "download complete ($received bytes, avg $kbps KB/s over $([int]$stopwatch.Elapsed.TotalSeconds) s): $Destination"
+      if ($kbps -gt 0 -and $kbps -lt 1024 -and ($received - $resumeFrom) -gt 20MB) {
+        Write-Warn "Toc do tai chi ~$kbps KB/s. Neu mang cong ty TLS-inspect github.com thi day la nguyen nhan -- xem OD_RELEASE_URL (mirror) trong deploy/host/README.md."
+      }
       return
     } catch {
       $failure = $_.Exception.Message
@@ -831,9 +850,56 @@ function Test-PreflightProbe {
   return $false
 }
 
+# -ReleaseUrl flag > OD_RELEASE_URL env (set by the user / IT, or inherited
+# from config.env by the daemon that spawns `-Update`) > OD_RELEASE_URL
+# persisted in config.env > GitHub. $script:ReleaseUrlIsMirrorBase is what
+# Write-ConfigEnv persists: only a base URL (folder with release.json), never
+# a one-off direct .tar.gz URL -- persisting that would pin every future
+# -Update to one fixed file.
+function Resolve-ReleaseUrl {
+  $script:ReleaseUrlIsMirrorBase = $false
+  if (-not $ReleaseUrl) {
+    $fromEnv = $env:OD_RELEASE_URL
+    if ($fromEnv) {
+      $script:ReleaseUrl = $fromEnv.Trim()
+    } else {
+      $fromConfig = Get-ExistingConfigValue "OD_RELEASE_URL"
+      if ($fromConfig) { $script:ReleaseUrl = $fromConfig.Trim() }
+    }
+  }
+  if ($ReleaseUrl -and ($ReleaseUrl -notmatch '\.tar\.gz$')) {
+    $script:ReleaseUrl = $ReleaseUrl.TrimEnd('/')
+    $script:ReleaseUrlIsMirrorBase = $true
+    Write-Info "Release source: $ReleaseUrl (OD_RELEASE_URL / -ReleaseUrl)"
+  } elseif ($ReleaseUrl) {
+    Write-Info "Release source: $ReleaseUrl (direct archive URL)"
+  }
+}
+
 function Invoke-PreflightCheck {
   Write-Phase "Kiem tra ket noi mang"
   $requiredOk = $true
+
+  if (-not $Archive -and $ReleaseUrl) {
+    # Mirror / explicit source: that host is the only one the download needs.
+    $releaseHost = ""
+    try { $releaseHost = ([System.Uri]$ReleaseUrl).GetLeftPart([System.UriPartial]::Authority) } catch {}
+    if ($releaseHost) {
+      $mirrorOk = Test-PreflightProbe $releaseHost
+      if (-not $mirrorOk -and -not $InsecureTlsActive -and (Test-TlsTrustFailure $releaseHost)) {
+        # Same corporate-proxy handling as the github.com branch below.
+        Write-Warn "$releaseHost -- chung chi TLS bi proxy/firewall cong ty thay the; bo qua kiem tra chung chi cho lan cai nay (chi trong installer)."
+        Enable-InsecureTls
+        $mirrorOk = Test-PreflightProbe $releaseHost
+      }
+      if ($mirrorOk) {
+        Write-Ok $(if ($InsecureTlsActive) { "$releaseHost (bo qua kiem tra chung chi TLS)" } else { $releaseHost })
+      } else {
+        $requiredOk = $false
+        Write-Warn "$releaseHost -- khong ket noi duoc"
+      }
+    }
+  }
 
   if (-not $Archive -and -not $ReleaseUrl) {
     $githubOk = Test-PreflightProbe "https://github.com"
@@ -889,6 +955,9 @@ function Invoke-PreflightCheck {
   }
 
   if (-not $requiredOk) {
+    if ($ReleaseUrl) {
+      Fail "Khong ket noi duoc toi nguon tai $ReleaseUrl -- kiem tra OD_RELEASE_URL / -ReleaseUrl, hoac dung -Archive <file da tai san>."
+    }
     Fail "Khong ket noi duoc toi github.com / release-assets.githubusercontent.com -- can 2 domain nay de tai goi cai dat. Nho IT mo domain roi thu lai, hoac dung -Archive <file da tai san>."
   }
 }
@@ -1159,6 +1228,10 @@ function Write-ConfigEnv {
   # applied and the UI banner never clears.
   $lines.Add("OD_APP_VERSION=$Version")
   if ($InsecureTlsActive) { $lines.Add("OD_INSECURE_TLS=1") }
+  # Mirror base URL survives into -Update (the daemon loads config.env into
+  # its env before spawning install.ps1 -Update; Resolve-ReleaseUrl reads it
+  # from either place). See .PARAMETER ReleaseUrl.
+  if ($ReleaseUrlIsMirrorBase) { $lines.Add("OD_RELEASE_URL=$ReleaseUrl") }
   if ($confluenceUrl) { $lines.Add("CONFLUENCE_URL=$confluenceUrl") }
   if ($mediaUrl) { $lines.Add("MEDIA_URL=$mediaUrl") }
   if ($mediaAppId) { $lines.Add("MEDIA_APP_ID=$mediaAppId") }
@@ -2187,6 +2260,7 @@ function Invoke-Main {
     Enable-InsecureTls
     Write-Warn "TLS certificate validation is OFF for this installer run (-InsecureTls / OD_INSECURE_TLS=1)."
   }
+  Resolve-ReleaseUrl
   Invoke-PreflightCheck
   Step1-VerifyPackage
   if (-not $Update) { Remove-ExistingInstallation }

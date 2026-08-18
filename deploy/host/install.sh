@@ -16,9 +16,16 @@
 # Options:
 #   --archive <path>        Use a local tarball instead of downloading.
 #   --release-url <url>     Direct .tar.gz URL, OR a release "asset base" URL
-#                            (e.g. .../releases/download/<tag>) containing a
-#                            release.json manifest. Default: the latest
-#                            GitHub release of this repo.
+#                            (e.g. .../releases/download/<tag>, or a mirror
+#                            folder) containing a release.json manifest.
+#                            Default: $OD_RELEASE_URL, then OD_RELEASE_URL
+#                            from an existing config.env (so --update keeps
+#                            using the same mirror), then the latest GitHub
+#                            release of this repo. A base URL is persisted
+#                            as OD_RELEASE_URL in config.env; a direct
+#                            .tar.gz URL is not. Why a mirror: networks that
+#                            TLS-inspect github.com throttle release downloads
+#                            to a few hundred KB/s (measured 2026-08-18).
 #   --sha256 <hex>          Expected sha256 of the tarball (overrides any
 #                            discovered .sha256 sidecar / release.json entry).
 #   --port <n>               Daemon port (default: 7456).
@@ -91,7 +98,7 @@ OPT_NO_START=0
 OPT_UPDATE=0
 
 print_help() {
-  sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_flag_value() {
@@ -376,9 +383,48 @@ preflight_probe() {
   curl -sS --connect-timeout 5 --max-time 8 -o /dev/null "$1" >/dev/null 2>&1
 }
 
+# --release-url flag > $OD_RELEASE_URL (set by the user / IT, or inherited
+# from config.env by the daemon that spawns `--update`) > OD_RELEASE_URL
+# persisted in config.env > GitHub. RELEASE_URL_IS_MIRROR_BASE is what
+# write_config_env persists: only a base URL (folder with release.json),
+# never a one-off direct .tar.gz URL -- persisting that would pin every
+# future --update to one fixed file.
+RELEASE_URL_IS_MIRROR_BASE=0
+resolve_release_url() {
+  if [ -z "$OPT_RELEASE_URL" ]; then
+    if [ -n "${OD_RELEASE_URL:-}" ]; then
+      OPT_RELEASE_URL="$OD_RELEASE_URL"
+    else
+      OPT_RELEASE_URL="$(existing_config_value OD_RELEASE_URL)"
+    fi
+  fi
+  case "$OPT_RELEASE_URL" in
+    "") ;;
+    *.tar.gz) info "Release source: ${OPT_RELEASE_URL} (direct archive URL)" ;;
+    *)
+      OPT_RELEASE_URL="${OPT_RELEASE_URL%/}"
+      RELEASE_URL_IS_MIRROR_BASE=1
+      info "Release source: ${OPT_RELEASE_URL} (OD_RELEASE_URL / --release-url)"
+      ;;
+  esac
+}
+
 preflight_check() {
   phase "Kiểm tra kết nối mạng"
   required_ok=1
+
+  if [ -z "$OPT_ARCHIVE" ] && [ -n "$OPT_RELEASE_URL" ]; then
+    # Mirror / explicit source: that host is the only one the download needs.
+    release_host="$(printf '%s' "$OPT_RELEASE_URL" | sed -E 's#^(https?://[^/]+).*$#\1#')"
+    if [ -n "$release_host" ]; then
+      if preflight_probe "$release_host"; then
+        ok "$release_host"
+      else
+        required_ok=0
+        warn "${release_host} — không kết nối được"
+      fi
+    fi
+  fi
 
   if [ -z "$OPT_ARCHIVE" ] && [ -z "$OPT_RELEASE_URL" ]; then
     if preflight_probe "https://github.com"; then
@@ -421,6 +467,9 @@ preflight_check() {
   fi
 
   if [ "$required_ok" = "0" ]; then
+    if [ -n "$OPT_RELEASE_URL" ]; then
+      fail "Không kết nối được tới nguồn tải ${OPT_RELEASE_URL} — kiểm tra OD_RELEASE_URL / --release-url, hoặc dùng --archive <file đã tải sẵn>."
+    fi
     fail "Không kết nối được tới github.com / release-assets.githubusercontent.com — cần 2 domain này để tải gói cài đặt. Nhờ IT mở domain rồi thử lại, hoặc dùng --archive <file đã tải sẵn>."
   fi
 }
@@ -675,6 +724,10 @@ write_config_env() {
     # version the update just installed, so it never sees the update as
     # applied and the UI banner never clears.
     echo "OD_APP_VERSION=${VERSION}"
+    # Mirror base URL survives into --update (the daemon loads config.env
+    # into its env before spawning install.sh --update; resolve_release_url
+    # reads it from either place). See --release-url in the header.
+    [ "$RELEASE_URL_IS_MIRROR_BASE" = "1" ] && echo "OD_RELEASE_URL=${OPT_RELEASE_URL}"
     [ -n "$confluence_url" ] && echo "CONFLUENCE_URL=${confluence_url}"
     [ -n "$media_url" ] && echo "MEDIA_URL=${media_url}"
     [ -n "$media_app_id" ] && echo "MEDIA_APP_ID=${media_app_id}"
@@ -1155,6 +1208,7 @@ main() {
 
   mkdir -p "$OD_HOME"
 
+  resolve_release_url
   preflight_check
   step1_verify_package
   [ "$OPT_UPDATE" = "1" ] || remove_existing_installation

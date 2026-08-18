@@ -991,3 +991,79 @@ test('step 5 prunes old releases only after a confirmed healthy start (not on --
   const rollback = sh.slice(sh.indexOf('rollback() {'), sh.indexOf('finalize_transaction() {'));
   assert.doesNotMatch(rollback, /remove_old_releases/);
 });
+
+// 2026-08-18: mirror support (OD_RELEASE_URL). See the matching Windows test
+// in host-install-windows.test.ts for the why (TLS-inspecting corporate proxy
+// throttling github.com downloads).
+test('resolve_release_url: flag > OD_RELEASE_URL env > config.env > GitHub; only a base URL is treated as a mirror', async () => {
+  const tmp = await mktmp('release-url');
+  const fakeHome = join(tmp, 'home');
+  await mkdir(join(fakeHome, '.open-design'), { recursive: true });
+  try {
+    const harness = join(tmp, 'harness.sh');
+    await writeFile(
+      harness,
+      [
+        '#!/usr/bin/env bash',
+        'set -eu',
+        `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+        'OPT_RELEASE_URL="${FLAG_URL:-}"',
+        'resolve_release_url',
+        'echo "url=[${OPT_RELEASE_URL}] base=${RELEASE_URL_IS_MIRROR_BASE}"',
+      ].join('\n'),
+    );
+    await chmod(harness, 0o755);
+    const run = async (extraEnv: Record<string, string>) => {
+      const { stdout } = await execFileAsync('bash', [harness], {
+        env: { ...process.env, HOME: fakeHome, OD_RELEASE_URL: '', FLAG_URL: '', ...extraEnv },
+      });
+      return stdout.trim().split('\n').pop()!;
+    };
+
+    // Nothing configured -> GitHub default (empty URL, not a mirror).
+    assert.equal(await run({}), 'url=[] base=0');
+    // Env base URL, trailing slash trimmed, flagged as mirror.
+    assert.equal(await run({ OD_RELEASE_URL: 'https://mirror.example/od/latest/' }), 'url=[https://mirror.example/od/latest] base=1');
+    // Direct tarball URL is used but NOT flagged as a mirror (never persisted).
+    assert.equal(
+      await run({ OD_RELEASE_URL: 'https://x.y/open-design-runtime-1.0.0-linux-x64.tar.gz' }),
+      'url=[https://x.y/open-design-runtime-1.0.0-linux-x64.tar.gz] base=0',
+    );
+    // Flag wins over env.
+    assert.equal(
+      await run({ OD_RELEASE_URL: 'https://env.example/x', FLAG_URL: 'https://flag.example/y/' }),
+      'url=[https://flag.example/y] base=1',
+    );
+    // config.env fallback (what a daemon-spawned --update relies on).
+    await writeFile(join(fakeHome, '.open-design', 'config.env'), 'OD_PORT=7456\nOD_RELEASE_URL=https://cfg.example/od/latest\n');
+    assert.equal(await run({}), 'url=[https://cfg.example/od/latest] base=1');
+    // Env still beats config.env.
+    assert.equal(await run({ OD_RELEASE_URL: 'https://env.example/z' }), 'url=[https://env.example/z] base=1');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('write_config_env persists OD_RELEASE_URL only for a mirror base URL', async () => {
+  const src = await readFile(installScript, 'utf8');
+  const block = src.slice(src.indexOf('write_config_env() {'), src.indexOf('mv "$CONFIG_TEMP" "${OD_HOME}/config.env"'));
+  assert.match(block, /\[ "\$RELEASE_URL_IS_MIRROR_BASE" = "1" \] && echo "OD_RELEASE_URL=\$\{OPT_RELEASE_URL\}"/);
+  // resolve_release_url runs before the preflight so the mirror host is what
+  // gets probed instead of github.com.
+  const main = src.slice(src.indexOf('preflight_check\n  step1_verify_package') - 40, src.indexOf('preflight_check\n  step1_verify_package'));
+  assert.match(main, /resolve_release_url\s*\n\s*$/);
+});
+
+test('build-runtime.sh trims documentation weight and hard-links duplicate resource files', async () => {
+  const build = await readFile(join(repoRoot, 'scripts/host-runtime/build-runtime.sh'), 'utf8');
+  // 0.8.48 measurement: 104 MB compressed, 81 MB of it resources/, the app
+  // itself ~19 MB. These prunes took the win32 payload from 99.2 to 63.4 MB.
+  assert.match(build, /find "\$\{STAGE_DIR\}\/apps\/web\/out" -type f -name "\*\.map" -delete/);
+  assert.match(build, /node_modules\/better-sqlite3\/deps/);
+  assert.match(build, /-path "\*\/docs\/readme" -o -path "\*\/scripts\/verify-output"/);
+  // Duplicates are hard-linked, never deleted: both paths must exist after
+  // extraction (plugins/_official/examples/<x>/assets == design-templates/<x>/assets).
+  assert.match(build, /ln -f "\$\{RESOURCE_ROOT\}\/\$\{keep\}" "\$\{RESOURCE_ROOT\}\/\$\{dup\}"/);
+  assert.match(build, /-size \+256k/);
+  assert.doesNotMatch(build, /rm -rf "\$\{RESOURCE_ROOT\}\/community-pets"/);
+});

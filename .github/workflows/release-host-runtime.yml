@@ -462,6 +462,16 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      # Optional download mirror (see the "Mirror" steps at the end of this
+      # job). All empty -> the mirror steps are skipped and GitHub Releases
+      # stays the only source, exactly as before.
+      OD_MIRROR_S3_BUCKET: ${{ secrets.OD_MIRROR_S3_BUCKET }}
+      OD_MIRROR_S3_ENDPOINT: ${{ secrets.OD_MIRROR_S3_ENDPOINT }}
+      OD_MIRROR_S3_PREFIX: ${{ secrets.OD_MIRROR_S3_PREFIX }}
+      OD_MIRROR_S3_REGION: ${{ secrets.OD_MIRROR_S3_REGION }}
+      OD_MIRROR_PUBLIC_URL: ${{ secrets.OD_MIRROR_PUBLIC_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.OD_MIRROR_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.OD_MIRROR_S3_SECRET_ACCESS_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -521,3 +531,85 @@ jobs:
               --notes "Host runtime (daemon + static web export, no Docker/Electron) for darwin-arm64, darwin-x64, linux-x64, win32-x64. macOS: download OpenDesign-macOS-Installer.zip and double-click OpenDesign-Install.command (first time: right-click → Open). Windows: download OpenDesign-Windows-Installer.zip, unzip, double-click OpenDesign-Install.cmd. Linux/terminal: curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ steps.tag.outputs.tag }}/deploy/host/install.sh -o install.sh && bash install.sh" \
               *.tar.gz *.tar.gz.sha256 *.zip release.json
           fi
+
+      # -----------------------------------------------------------------
+      # Mirror (optional). Why: corporate networks that TLS-inspect
+      # github.com (the VNPAY office, measured 2026-08-18) throttle release
+      # downloads to ~200-500 KB/s -- a 100 MB runtime takes 5-10 minutes --
+      # while non-inspected CDNs run at 5-11 MB/s from the same desk. Any
+      # S3-compatible bucket with a public URL works (Cloudflare R2, MinIO,
+      # AWS S3, an internal object store). Layout under the public URL:
+      #
+      #   <public>/<tag>/    open-design-runtime-*.tar.gz (+ .sha256),
+      #                      OpenDesign-*-Installer.zip, release.json
+      #                      (its <platform>.url keys point INTO this folder),
+      #                      install.ps1, install.sh
+      #   <public>/latest/   release.json, install.ps1, install.sh,
+      #                      OpenDesign-*-Installer.zip  (rolling pointer,
+      #                      overwritten on every publish; the release.json
+      #                      here still points at <public>/<tag>/…)
+      #
+      # Users / IT then install with OD_RELEASE_URL=<public>/latest (env),
+      # `install.ps1 -ReleaseUrl <public>/latest`, or
+      # `install.sh --release-url <public>/latest`. OpenDesign-Install.cmd
+      # also fetches its bootstrap install.ps1 from there when the variable
+      # is set. Both installers persist the base URL to config.env so the
+      # in-app update keeps using the mirror.
+      #
+      # Secrets: OD_MIRROR_S3_BUCKET, OD_MIRROR_S3_ENDPOINT (e.g.
+      # https://<account>.r2.cloudflarestorage.com), OD_MIRROR_S3_ACCESS_KEY_ID,
+      # OD_MIRROR_S3_SECRET_ACCESS_KEY, OD_MIRROR_PUBLIC_URL (e.g.
+      # https://dl.example.com/open-design). Optional: OD_MIRROR_S3_PREFIX
+      # (key prefix inside the bucket, default ""), OD_MIRROR_S3_REGION
+      # (default "auto", which is what R2 expects).
+      # -----------------------------------------------------------------
+      - name: Mirror -- stage assets with a mirror-pointing release.json
+        if: env.OD_MIRROR_S3_BUCKET != '' && env.OD_MIRROR_PUBLIC_URL != ''
+        working-directory: ${{ runner.temp }}/assets
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          public="${OD_MIRROR_PUBLIC_URL%/}"
+          mirror="${{ runner.temp }}/mirror"
+          rm -rf "$mirror" && mkdir -p "$mirror/$tag" "$mirror/latest"
+          cp *.tar.gz *.tar.gz.sha256 *.zip "$mirror/$tag/"
+          cp "${GITHUB_WORKSPACE}/deploy/host/install.ps1" "${GITHUB_WORKSPACE}/deploy/host/install.sh" "$mirror/$tag/"
+          node --experimental-strip-types "${GITHUB_WORKSPACE}/scripts/host-runtime/build-release-manifest.ts" \
+            --version "${{ needs.build.outputs.version }}" \
+            --tag "$tag" \
+            --repo "${{ github.repository }}" \
+            --base-url "$public/$tag" \
+            --out "$mirror/$tag/release.json"
+          cp "$mirror/$tag/release.json" "$mirror/$tag/install.ps1" "$mirror/$tag/install.sh" *.zip "$mirror/latest/"
+          cat "$mirror/latest/release.json"
+
+      - name: Mirror -- upload to the S3-compatible bucket
+        if: env.OD_MIRROR_S3_BUCKET != '' && env.OD_MIRROR_PUBLIC_URL != ''
+        env:
+          AWS_DEFAULT_REGION: ${{ env.OD_MIRROR_S3_REGION || 'auto' }}
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          mirror="${{ runner.temp }}/mirror"
+          prefix="${OD_MIRROR_S3_PREFIX#/}"; prefix="${prefix%/}"
+          dest="s3://${OD_MIRROR_S3_BUCKET}${prefix:+/$prefix}"
+          endpoint=()
+          if [ -n "${OD_MIRROR_S3_ENDPOINT:-}" ]; then endpoint=(--endpoint-url "$OD_MIRROR_S3_ENDPOINT"); fi
+          # Immutable per-tag folder: long cache. Rolling latest/: no-cache so
+          # a fresh install / update check sees a new release immediately.
+          aws s3 cp "${endpoint[@]}" --recursive --no-progress \
+            --cache-control "public, max-age=31536000, immutable" \
+            "$mirror/$tag" "$dest/$tag"
+          aws s3 cp "${endpoint[@]}" --recursive --no-progress \
+            --cache-control "no-cache" \
+            "$mirror/latest" "$dest/latest"
+          echo "mirrored to ${OD_MIRROR_PUBLIC_URL%/}/$tag and ${OD_MIRROR_PUBLIC_URL%/}/latest"
+
+      - name: Mirror -- verify the public URL serves the manifest
+        if: env.OD_MIRROR_S3_BUCKET != '' && env.OD_MIRROR_PUBLIC_URL != ''
+        run: |
+          set -euo pipefail
+          public="${OD_MIRROR_PUBLIC_URL%/}"
+          curl -fsSL "$public/latest/release.json" | tee /dev/stderr | grep -q "\"version\": \"${{ needs.build.outputs.version }}\""
+          curl -fsSI "$public/${{ steps.tag.outputs.tag }}/open-design-runtime-${{ needs.build.outputs.version }}-win32-x64.tar.gz" | head -1

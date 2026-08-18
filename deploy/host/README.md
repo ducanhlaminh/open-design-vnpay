@@ -83,6 +83,23 @@ with TLS certificate validation switched off for its own downloads, printing a
 warning. To restore full validation, ask IT for the proxy root CA and install it
 into *Trusted Root Certification Authorities*.
 
+The same proxy is also why the download is **slow** on such networks: the
+inspecting device re-encrypts and scans the whole 60-100 MB runtime, which
+typically caps a single connection at a few hundred KB/s (measured at the
+VNPAY office 2026-08-18: ~200-500 KB/s to GitHub vs 11 MB/s to a
+non-inspected CDN from the same desk). If IT publishes a download mirror (see
+"Mirror / offline install" below), set `OD_RELEASE_URL` before double-clicking
+— either as a user environment variable or in the same command window:
+
+```bat
+set OD_RELEASE_URL=https://dl.example.com/open-design/latest
+OpenDesign-Install.cmd
+```
+
+`OpenDesign-Install.cmd` then fetches its bootstrap `install.ps1` from the
+mirror too, and the installer saves the URL to `config.env` so in-app updates
+keep using it.
+
 After installation, Windows command files are available here:
 
 ```text
@@ -193,7 +210,7 @@ data under `~/od-data/open-design`), or under `%USERPROFILE%` on Windows
 | Flag | Purpose |
 | --- | --- |
 | `--archive <path>` | Use a local tarball instead of downloading. |
-| `--release-url <url>` | A direct `.tar.gz` URL, or a release "asset base" URL (e.g. a GitHub `releases/download/<tag>` folder) containing a `release.json` manifest. Default: the latest GitHub release of this repo. |
+| `--release-url <url>` | A direct `.tar.gz` URL, or a release "asset base" URL (e.g. a GitHub `releases/download/<tag>` folder, or a mirror folder) containing a `release.json` manifest. Default: `$OD_RELEASE_URL`, then `OD_RELEASE_URL` from an existing `config.env` (so `--update` keeps using the same mirror), then the latest GitHub release of this repo. A base URL is persisted as `OD_RELEASE_URL` in `config.env`; a direct `.tar.gz` URL is not. |
 | `--sha256 <hex>` | Expected sha256 of the tarball — overrides any discovered `.sha256`/`release.json` entry. |
 | `--port <n>` | Daemon port (default `7456`). |
 | `--data-dir <path>` | `OD_DATA_DIR` (default `$HOME/od-data/open-design`). |
@@ -371,6 +388,57 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\od-data\open-design"
 ```
 
 ## Mirror / offline install
+
+### Download mirror (`OD_RELEASE_URL`)
+
+The release workflow can publish every release to an S3-compatible bucket in
+addition to GitHub Releases (Cloudflare R2, MinIO, AWS S3, an internal object
+store — anything with a public HTTPS URL). It is switched on purely by
+repository secrets; with none set the workflow behaves exactly as before:
+
+| Secret | Value |
+| --- | --- |
+| `OD_MIRROR_S3_BUCKET` | Bucket name. |
+| `OD_MIRROR_S3_ENDPOINT` | S3 endpoint, e.g. `https://<account>.r2.cloudflarestorage.com` (empty for AWS S3). |
+| `OD_MIRROR_S3_ACCESS_KEY_ID` / `OD_MIRROR_S3_SECRET_ACCESS_KEY` | Write credentials for the bucket. |
+| `OD_MIRROR_PUBLIC_URL` | Public base URL that serves the bucket, e.g. `https://dl.example.com/open-design`. |
+| `OD_MIRROR_S3_PREFIX` (optional) | Key prefix inside the bucket. |
+| `OD_MIRROR_S3_REGION` (optional) | Default `auto` (R2). |
+
+Layout under the public URL:
+
+```text
+<public>/<tag>/    open-design-runtime-*.tar.gz (+ .sha256), OpenDesign-*-Installer.zip,
+                   release.json (points into this folder), install.ps1, install.sh
+<public>/latest/   release.json, install.ps1, install.sh, OpenDesign-*-Installer.zip
+                   (rolling pointer, overwritten on every publish)
+```
+
+Install from the mirror — the base URL is remembered in `config.env` for
+updates:
+
+```bash
+# macOS / Linux
+OD_RELEASE_URL=https://dl.example.com/open-design/latest bash install.sh
+# or: bash install.sh --release-url https://dl.example.com/open-design/latest
+```
+
+```bat
+rem Windows (double-click flow: set the variable first, then run the .cmd)
+set OD_RELEASE_URL=https://dl.example.com/open-design/latest
+OpenDesign-Install.cmd
+rem PowerShell: .\install.ps1 -ReleaseUrl https://dl.example.com/open-design/latest
+```
+
+Why: networks that TLS-inspect `github.com` throttle release downloads to a
+few hundred KB/s; a mirror on a non-inspected host restores full speed
+(measured 2026-08-18: 8 min → seconds for the Windows runtime).
+
+To go back to GitHub Releases, delete the `OD_RELEASE_URL=` line from
+`~/.open-design/config.env` (`%USERPROFILE%\.open-design\config.env` on
+Windows) and unset the environment variable.
+
+### Config mirror (`--env-file`)
 
 `--env-file` accepts a URL or a local path, so an internal mirror can serve
 one template file with `MEDIA_URL=`, `MEDIA_APP_ID=`, `IDENTITY_URL=`, etc.
