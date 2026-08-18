@@ -92,13 +92,24 @@ non-inspected CDN from the same desk). If IT publishes a download mirror (see
 — either as a user environment variable or in the same command window:
 
 ```bat
-set OD_RELEASE_URL=https://dl.example.com/open-design/latest
+rem cmd.exe
+set OD_RELEASE_URL=https://od-runtime.pages.dev/latest
 OpenDesign-Install.cmd
 ```
 
-`OpenDesign-Install.cmd` then fetches its bootstrap `install.ps1` from the
-mirror too, and the installer saves the URL to `config.env` so in-app updates
-keep using it.
+```powershell
+# PowerShell (`set X=...` does NOT create an environment variable there)
+$env:OD_RELEASE_URL = "https://od-runtime.pages.dev/latest"
+& "$env:USERPROFILE\.open-design\OpenDesign-Install.cmd"
+# or, once for the user account (takes effect in windows opened afterwards):
+setx OD_RELEASE_URL "https://od-runtime.pages.dev/latest"
+```
+
+`https://od-runtime.pages.dev` is the VNPAY mirror (Cloudflare Pages, fed by
+every release since 0.8.53 — verified 2026-08-18 from the office network:
+multi-MB/s vs a few hundred KB/s through the GitHub path). The `.cmd` then
+fetches its bootstrap `install.ps1` from the mirror too, and the installer
+saves the URL to `config.env` so in-app updates keep using it.
 
 After installation, Windows command files are available here:
 
@@ -456,15 +467,15 @@ updates:
 
 ```bash
 # macOS / Linux
-OD_RELEASE_URL=https://dl.example.com/open-design/latest bash install.sh
-# or: bash install.sh --release-url https://dl.example.com/open-design/latest
+OD_RELEASE_URL=https://od-runtime.pages.dev/latest bash install.sh
+# or: bash install.sh --release-url https://od-runtime.pages.dev/latest
 ```
 
 ```bat
-rem Windows (double-click flow: set the variable first, then run the .cmd)
-set OD_RELEASE_URL=https://dl.example.com/open-design/latest
+rem Windows cmd.exe (double-click flow: set the variable first, then run the .cmd)
+set OD_RELEASE_URL=https://od-runtime.pages.dev/latest
 OpenDesign-Install.cmd
-rem PowerShell: .\install.ps1 -ReleaseUrl https://dl.example.com/open-design/latest
+rem PowerShell: $env:OD_RELEASE_URL = "https://od-runtime.pages.dev/latest"; .\install.ps1
 ```
 
 Why: networks that TLS-inspect `github.com` throttle release downloads to a
