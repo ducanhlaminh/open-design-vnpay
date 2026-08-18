@@ -147,7 +147,7 @@ journey stage/flow names, sources). Read it and author AGAINST it:
   components/affordances it demands (e.g. inline-validation implies per-field
   error affordances in the spec).
 - Cite the criterion id in the screen's `screen_intent` rationale when it drove
-  a design choice (same style as citing a Mobbin reference).
+  a design choice.
 - `should`/`nice` criteria: apply when they don't conflict with docs/journey;
   conflicts resolve in favor of the docs (they are the requirements).
 
@@ -205,8 +205,8 @@ yet all mean this section is a no-op. Do not block or ask for them.
     dangerous/destructive action gets an explicit warning step before it
     commits.
 - When a rule DECIDES a design choice, cite its code in that screen's
-  `screen_intent` — same style as citing a `ux-research` criterion id (0b2) or a
-  Mobbin reference (0c), e.g. "Drawer (R-OVERLAY) vì form có 8 trường." Use the
+  `screen_intent` — same style as citing a `ux-research` criterion id (0b2),
+  e.g. "Drawer (R-OVERLAY) vì form có 8 trường." Use the
   **exact anchor as written in this DS's `rules.md`** (e.g. a color/spacing rule
   might be `R-COLOR-BRAND-PRIMARY`), not a guessed one.
 - **Conflicts resolve in favor of the docs** (they are the requirements), same
@@ -214,31 +214,6 @@ yet all mean this section is a no-op. Do not block or ask for them.
   the docs describe, follow the docs and record the deviation in
   `screen_intent` (e.g. "Docs vẽ Modal cho luồng 3 bước — giữ theo tài liệu,
   lệch R-OVERLAY").
-
-### 0c. Gather real-world references from Mobbin (when the `mobbin` MCP is available)
-If the run exposes Mobbin MCP tools (server id `mobbin`), use them BEFORE
-authoring screens — this is how the spec inherits real-market patterns instead
-of guessed ones:
-
-1. From the docs/journey, identify the app's **domain** (banking, e-commerce,
-   healthcare, …) and the 3-5 **key flows** (e.g. onboarding/KYC, transfer,
-   checkout).
-2. Search Mobbin for each key flow scoped to that domain and the target
-   platform from 0b (mobile/web). Prefer flow/screen searches over generic
-   app browsing.
-3. Save what you use into `./ux-refs/mobbin/` — downloaded screen images as
-   `<flow>-<app>-<nn>.png` plus ONE `notes.md` summarising, per flow: the
-   screen sequence observed, recurring components, and any pattern you adopted
-   or deliberately rejected (with reason).
-4. Let the references shape the SCREEN INVENTORY and per-screen components
-   (step 1), and cite them in each screen's `screen_intent` rationale when a
-   pattern came from a reference.
-
-Rules: `./ux-refs/` is **reference material only** — it is NOT a stage output,
-never sync it and never list it in the spec. Cap the effort (≤ ~15
-images total, one search pass per flow — no exhaustive crawling). If the
-`mobbin` tools are absent or every call errors (auth/plan), skip this step
-silently and continue — the stage must produce the same outputs without it.
 
 ### 1. Generate the JSON (content only — no project_id)
 Author a UX Spec file following `references/schema.md`. **Do NOT put a
