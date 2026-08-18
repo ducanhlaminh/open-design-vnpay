@@ -33,11 +33,6 @@ triggers:
 od:
   mode: utility
   category: ux-research
-  craft:
-    requires:
-      - state-coverage
-      - form-validation
-      - laws-of-ux
 ---
 
 # docs-spec-review — review + sửa một trang tài liệu theo bộ tiêu chí (Terminal, `docs-review`)
