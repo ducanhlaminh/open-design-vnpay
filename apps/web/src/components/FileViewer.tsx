@@ -61,6 +61,7 @@ import { adaptScreenSpec } from './pipeline-preview/screen-adapter';
 import { SpecPreview, type SpecDoc } from './SpecPreview';
 import { DocRedlinePreview } from './DocRedlinePreview';
 import { ComponentAuditPreview, isComponentAuditFile } from './ComponentAuditPreview';
+import { ScreenComponentsPreview, isScreenComponentsFile } from './ScreenComponentsPreview';
 import { FlowchartPreview, isFlowchartFile } from './FlowchartPreview';
 import { FlowUxReviewPreview, isFlowUxFile } from './FlowUxReviewPreview';
 import { inlineMarkdownImages } from '../runtime/markdown-images';
@@ -868,6 +869,12 @@ export function FileViewer({
   // (hand-uploaded, or a future classifier change) still finds its viewer.
   if ((file.kind === 'text' || file.kind === 'code') && isComponentAuditFile(file)) {
     return <ComponentAuditPreview projectId={projectId} file={file} />;
+  }
+  // dr-comp bản 2.0 ("Màn hình → Component"): `comp/<SCREEN-KEY>.screen.json`
+  // và `comp/index.json` mở khung rail màn hình + wireframe HTML + panel
+  // component DS (ScreenComponentsPreview). Cùng lý do gate 'code' như trên.
+  if ((file.kind === 'text' || file.kind === 'code') && isScreenComponentsFile(file)) {
+    return <ScreenComponentsPreview projectId={projectId} file={file} />;
   }
   // Manifest-declared markdown artifacts AND plain .md files (pipeline docs —
   // docs/confluence/*.md etc. carry no artifact manifest) both get the

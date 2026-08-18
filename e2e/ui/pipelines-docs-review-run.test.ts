@@ -7,10 +7,20 @@
 // are:
 //   dr-docs   (ingest, skillId 'confluence-ingest')      — file-derived status,
 //             no agent run needed when ingested via upload.
-//   dr-comp   (skillId 'docs-component-audit')           — PER-PAGE agent
-//             fan-out; each page's agent MUST write "comp/<slug>.components.json"
-//             or the page (and, if every page fails, the whole stage) is a
-//             hard error (apps/daemon/src/server.ts `runDocsComponentAuditFanout`).
+//   dr-comp   (skillId 'docs-screen-components')         — PER-SCREEN agent
+//             fan-out (screens come from dr-flow's flows/index.json) after a
+//             role-map run; each screen's agent MUST write
+//             "comp/<KEY>.screen.json" + "wireframes/<KEY>.html" or the screen
+//             (and, if every screen fails, the whole stage) is a hard error
+//             (apps/daemon/src/server.ts `runDocsComponentAuditFanout`).
+//             ⚠ TODO(dr-comp v2, 2026-08-18): this suite's fake codex still
+//             writes the v1 "comp/<slug>.components.json" and case 3 runs
+//             dr-comp IN PARALLEL with dr-flow — under v2 dr-comp fail-shuts
+//             when flows/index.json has no screens, so case 3 needs to run
+//             dr-flow first (with a fake that writes flows/index.json +
+//             flowchart.json) and the dr-comp fake must write
+//             comp/_role-map.json, then comp/<KEY>.screen.json +
+//             wireframes/<KEY>.html per screen. Not yet updated.
 //   dr-flow   (skillId 'docs-flow-ux')                    — generic single-agent
 //             path plus a deterministic pre-step (`prepareFlowUxInputs`:
 //             extract draw.io/Mermaid diagrams → flows/<id>/…) and post-step

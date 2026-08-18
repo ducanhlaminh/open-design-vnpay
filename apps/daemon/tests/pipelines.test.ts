@@ -87,7 +87,7 @@ test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -
   assert.ok(wf, 'docs-review workflow should exist');
   assert.deepEqual(wf!.pipelineIds, ['dr-docs', 'dr-flow', 'dr-comp', 'dr-review']);
   assert.equal(def('dr-docs').skillId, 'confluence-ingest');
-  assert.equal(def('dr-comp').skillId, 'docs-component-audit');
+  assert.equal(def('dr-comp').skillId, 'docs-screen-components');
   assert.equal(def('dr-review').skillId, 'docs-spec-review');
   assert.equal(def('dr-flow').skillId, 'docs-flow-ux');
   assert.deepEqual(def('dr-docs').dependsOn, []);

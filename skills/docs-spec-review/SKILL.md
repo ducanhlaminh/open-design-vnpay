@@ -11,9 +11,11 @@ description: |
   user-supplied set of criteria (`criteria/*.md` — rule text + a component
   list) across five lenses: ux-writing, flow, gap, edge-case, component. The
   `component` lens is NOT re-derived here — the upstream `dr-comp` stage
-  already audited every screen against the catalogue and wrote
-  `comp/<page-slug>.components.json`; read that file and turn each
-  non-`ok` verdict into a note. Embedded mockups/screenshots are illustrative
+  ("Màn hình → Component") already mapped every screen of the feature to the
+  Design System and wrote `comp/<SCREEN-KEY>.screen.json` (index in
+  `comp/index.json`); read those files and turn each element whose document
+  declaration disagrees with the DS proposal (`docType` ≠ `ds.component`, or
+  `ds: null` with a `why`) into a note. Embedded mockups/screenshots are illustrative
   only and must not be opened or used as evidence for flow, gap, edge-case, or
   component findings. Edit the clone in place with
   targeted Edit calls, then declare every change made in a
@@ -112,10 +114,11 @@ Mỗi tiêu chí ở đây có một **định danh riêng** (cột `rule_id`) �
   loading, giới hạn dữ liệu (validation, độ dài, số lượng) không được nêu ở
   nơi một hành động có thể thất bại.
 - **component:** nhóm này KHÔNG lấy tiêu chí từ bộ mặc định — nó lấy từ
-  **kết quả có sẵn** của bước `dr-comp` ở `comp/<page-slug>.components.json`
-  (xem Bước 1, nhóm 5), nên nó KHÔNG có `default#` nào. Không có file `comp/…`
-  thì quay về luật cũ: **BỎ QUA nhóm này** khi `criteria/` không cung cấp danh
-  sách component — không có gì để đối chiếu thì đừng đoán.
+  **kết quả có sẵn** của bước `dr-comp` ở `comp/<SCREEN-KEY>.screen.json`
+  (danh sách màn ở `comp/index.json`; xem Bước 1, nhóm 5), nên nó KHÔNG có
+  `default#` nào. Không có file `comp/…` thì quay về luật cũ: **BỎ QUA nhóm
+  này** khi `criteria/` không cung cấp danh sách component — không có gì để
+  đối chiếu thì đừng đoán.
 
 Bảy định danh trên là TẬP ĐÓNG — daemon đối chiếu và một `default#…` bịa ra
 làm hỏng cả trang, y như một anchor bịa trong `criteria/`.
@@ -150,27 +153,30 @@ theo đúng 5 nhóm:
 3. **gap** — thiếu mô tả cho một tính năng/màn hình đã được nhắc tới.
 4. **edge-case** — thiếu state lỗi/rỗng/loading/giới hạn.
 5. **component** — **ĐỌC KẾT QUẢ CÓ SẴN, KHÔNG SUY LẠI TỪ ĐẦU.** Bước
-   `dr-comp` chạy ngay trước bạn đã đối chiếu từng màn hình của trang này với
-   danh mục `criteria/components.md` và ghi kết quả ra
-   `comp/<page-slug>.components.json` (kickoff nêu đúng đường dẫn). Mở file đó,
-   lấy mọi `element` có `verdict != "ok"` **thuộc section của bạn**, và với mỗi
-   cái ghi **MỘT note** nhóm `component` ở Bước 4:
+   `dr-comp` ("Màn hình → Component") chạy trước bạn đã map từng màn hình của
+   feature (lấy từ bước Đánh giá luồng UX) sang Design System và ghi
+   `comp/<SCREEN-KEY>.screen.json` (SCREEN-KEY = `<tên-file-md>__<mã màn>`;
+   danh sách ở `comp/index.json`, trường `source` cho biết màn thuộc trang
+   nào). Mở các file của màn **thuộc trang và section của bạn**, và với mỗi
+   `element` mà tài liệu khai một kiểu khác đề xuất DS — `docType` có mà khác
+   `ds.component`, hoặc `ds: null` kèm `why` (DS không có thứ tài liệu đòi) —
+   ghi **MỘT note** nhóm `component` ở Bước 4:
 
    | Trường của note | Lấy từ |
    | --- | --- |
    | `kind` | luôn là `"component"` |
    | `anchor` | `label` của element — nguyên văn, phải tìm thấy trong bản GỐC |
-   | `rule_id` | `rule_id` của element nếu có; không có thì bỏ trống |
-   | `finding` | element sai ở đâu, dựa trên `note` của nó (`verdict` cho biết loại sai: `not-in-catalog`, `variant-mismatch`, `ambiguous`) |
-   | `suggestion` | phần "nên dùng gì" trong `note` của element |
+   | `rule_id` | `criteria/components.md#<ds.anchor>` nếu có `ds`; không có thì bỏ trống |
+   | `finding` | tài liệu khai `docType` nhưng DS dùng `ds.component` (hoặc DS không có) — dựa trên `why` của element |
+   | `suggestion` | component/biến thể DS đề xuất (`ds.component` + `ds.variant`), hoặc `fallback` của vai trò trong `comp/_role-map.json` |
 
-   Element có `verdict: "ok"` hoặc `"internal"` → **không ghi gì**. Element
-   thuộc màn hình nằm ngoài section của bạn → để cho lượt chạy của section đó.
+   Element có `docType` trùng `ds.component`, hoặc không có `docType` và có
+   `ds` → **không ghi gì** (không có mâu thuẫn). Element thuộc màn nằm ngoài
+   section của bạn → để cho lượt chạy của section đó.
 
-   **Vì sao đọc file thay vì tự phán:** `dr-comp` đã map khai báo chữ trong
-   tài liệu vào danh mục một lần cho cả trang. Một nguồn dữ liệu duy nhất giữ
-   kết luận nhất quán giữa các section mà không biến ảnh minh hoạ thành hướng
-   thiết kế.
+   **Vì sao đọc file thay vì tự phán:** `dr-comp` đã map màn hình vào Design
+   System một lần cho cả feature. Một nguồn dữ liệu duy nhất giữ kết luận nhất
+   quán giữa các section mà không biến ảnh minh hoạ thành hướng thiết kế.
 
    **Không có file `comp/…`** (dự án chạy từ trước khi có bước `dr-comp`) →
    quay về luật cũ: chỉ làm nhóm này khi `criteria/` có danh sách component,
@@ -301,11 +307,11 @@ tiêu chí nào.** Nhắm dưới 160 ký tự.
 vào tài liệu dưới dạng chú giải — cả hai đều sai. Ghi note khi bạn thấy:
 
 - văn bản yêu cầu dùng overlay/Modal/Drawer sai ngữ cảnh (sai `R-OVERLAY`);
-- mỗi element có `verdict != "ok"` trong `comp/<page-slug>.components.json`
-  thuộc section của bạn — `not-in-catalog` (dùng thứ không có trong danh mục),
-  `variant-mismatch` (sai biến thể/trạng thái), `ambiguous` (tài liệu khai hai
-  kiểu cho một phần tử). Ánh xạ sang các trường của note theo bảng ở Bước 1,
-  nhóm 5; **đừng tự phán lại** từ tài liệu hay từ ảnh;
+- mỗi element trong `comp/<SCREEN-KEY>.screen.json` (màn thuộc section của
+  bạn) mà tài liệu khai khác đề xuất DS — `docType` ≠ `ds.component`, hoặc
+  `ds: null` kèm `why` (tài liệu đòi thứ DS không có). Ánh xạ sang các trường
+  của note theo bảng ở Bước 1, nhóm 5; **đừng tự phán lại** từ tài liệu hay từ
+  ảnh;
 - thiếu hẳn một màn hình hoặc một nhánh luồng mà tài liệu ngụ ý là phải có;
 - **sơ đồ rỗng** — heading tồn tại nhưng không có nội dung (kickoff sẽ nêu đích
   danh khi section của bạn rơi vào ca này).

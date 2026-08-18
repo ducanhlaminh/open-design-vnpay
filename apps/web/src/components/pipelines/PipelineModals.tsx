@@ -3028,7 +3028,15 @@ function isUiPreviewFile(name: string): boolean {
   // so Quick result shows the readable failure reason instead of an empty
   // list when the stage failed before any page succeeded.
   if (base === 'review-khong-chay-duoc.md') return true;
+  // dr-comp's failure note (apps/daemon/src/docs-components.ts's
+  // DOCS_COMPONENT_FAILURE_NOTE) — same reasoning as review-khong-chay-duoc.md.
+  if (base === 'comp-khong-chay-duoc.md') return true;
   if (base === 'screen.json') return true;
+  // dr-comp ("Màn hình → Component" 2.0): one entry per screen —
+  // `comp/<SCREEN-KEY>.screen.json` opens ScreenComponentsPreview (rail of
+  // every screen + wireframe + DS component panel). Its wireframes/*.html,
+  // comp/index.json, _inputs.json, _role-map.json and summary.md stay hidden.
+  if (/(^|\/)comp\/[^/]+\.screen\.json$/.test(lower)) return true;
   // dr-flow ("Đánh giá luồng UX"): ONE entry per flow — `flows/<FLOW-ID>/
   // ux-review.json` opens the full source diagram + findings panel
   // (FlowUxReviewPreview). Its siblings (as-is/proposed.drawio|.mmd, patch/

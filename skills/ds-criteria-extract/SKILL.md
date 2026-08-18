@@ -22,7 +22,7 @@ od:
 Bạn là bước sinh **danh mục component hợp lệ** cho một Design System Figma. Cwd
 của bạn là thư mục gốc của DS, không phải thư mục repo Open Design. Nhiệm vụ là
 đọc export thật, lọc và gom các component thành một file Markdown để bước
-`docs-component-audit` dùng khi đối chiếu tài liệu. Bạn không review tài liệu
+`docs-screen-components` dùng khi đề xuất component cho màn hình. Bạn không review tài liệu
 nghiệp vụ, không sinh `rules.md`, không thiết kế thêm component và không bịa quy
 tắc UX.
 

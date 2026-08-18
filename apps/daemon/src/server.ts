@@ -526,13 +526,23 @@ import {
 } from './docs-review.js';
 import {
   collectComponentCatalog,
-  parseComponentReport,
-  validateComponentReport,
-  mergeComponentReports,
   writeDocsComponentFailureNote,
   DOCS_COMPONENT_FAILURE_NOTE,
-  type PageComponentReport,
 } from './docs-components.js';
+import {
+  prepareScreenComponentInputs,
+  parseRoleMap,
+  validateRoleMap,
+  parseScreenComponentsDoc,
+  validateScreenComponentsDoc,
+  mergeScreenComponents,
+  screenDocRel,
+  wireframeRel,
+  SCREEN_INPUTS_FILE,
+  ROLE_MAP_FILE,
+  type RoleMapDoc,
+  type ScreenComponentsDoc,
+} from './screen-components.js';
 import { renderFigmaComponentsMarkdown, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 import { readFigmaConfig } from './figma-config.js';
 import { FigmaDesktopClient } from './figma-desktop.js';
@@ -16004,63 +16014,29 @@ export async function startServer({
     return { projectId, completion };
   };
 
-  // Docs → Màn hình → Component (dr-comp) chạy fan-out theo TRANG: mỗi trang
-  // tài liệu là MỘT lượt agent, ghi đúng một file
-  // `comp/<page-slug>.components.json`; daemon đọc lại file đó, đối chiếu với
-  // TÀI LIỆU GỐC + DANH MỤC component, rồi tự gộp thành `comp/index.json` +
-  // `comp/summary.md`.
+  // Docs → Màn hình → Component (dr-comp, v2 2026-08-18) — fan-out theo MÀN
+  // HÌNH lấy từ bước Đánh giá luồng UX (flows/index.json[].screens), KHÔNG
+  // còn theo trang tài liệu:
+  //   - v1 chỉ thấy màn khi trang khai `Màn hình N: SCR-…` + bảng "Kiểu hiển
+  //     thị"; PRD viết bằng đoạn văn thì bước này trắng. v2 coi bảng đó (nếu
+  //     có) là THAM KHẢO, ảnh mockup KHÔNG phải đầu vào; đề xuất component do
+  //     Design System quyết (criteria/components.md + catalog/examples/rules).
+  //   - Daemon dựng `comp/_inputs.json` (prepareScreenComponentInputs — màn,
+  //     trang + mục tài liệu, bước luồng trên màn, đi ra màn nào, phát hiện
+  //     UX), chạy MỘT lượt role-map cho cả feature (`comp/_role-map.json`) để
+  //     các màn map nhất quán, rồi fan-out theo màn: mỗi lượt ghi
+  //     `comp/<KEY>.screen.json` + `wireframes/<KEY>.html` (HTML kiểu ux-spec).
+  //   - VALIDATE (screen-components.ts): key đúng màn được giao; component /
+  //     anchor / data-comp phải có trong danh mục; data-el ↔ elements[] khớp;
+  //     data-nav / nav.to phải là SCREEN-KEY của luồng; wireframe không script.
+  //     KHÔNG còn đối chiếu nguyên văn heading/label với trang.
+  //   - Daemon gộp `comp/index.json` (schema 2.0) + `comp/summary.md`.
   //
-  // ĐƠN VỊ FAN-OUT LÀ TRANG, KHÔNG PHẢI SECTION — cố ý khác dr-review ngay bên
-  // dưới, vì hai bước hỏi hai câu khác nhau:
-  //   - dr-review soi CÂU CHỮ, nên cắt nhỏ theo heading làm giảm tải chú ý của
-  //     mỗi lượt và không mất gì: một lỗi chính tả không cần biết section khác
-  //     viết gì.
-  //   - dr-comp phải MAP một phần tử sang danh mục component, mà muốn map đúng
-  //     thì phải nhìn CẢ TRANG: mã màn (`SCR-001`) khai ở heading của màn, bảng
-  //     "Kiểu hiển thị" nằm dưới nó, còn ảnh mockup của chính màn đó thường bị
-  //     đẩy sang một mục khác (phụ lục ảnh, hoặc mục "Giao diện" gom chung).
-  //     Cắt theo section thì lượt chạy cầm cái bảng sẽ không có ảnh, lượt cầm
-  //     ảnh lại không có bảng — và verdict `variant-mismatch` (thứ đáng giá
-  //     nhất của bước này) theo định nghĩa cần NHÌN THẤY biến thể trong ảnh,
-  //     nên nó sẽ không bao giờ được kết luận đúng nữa.
-  //   Hệ quả kéo theo: một trang = một file kết quả = một agent, nên ở đây
-  //   KHÔNG có lát cắt, KHÔNG có bước ghép, và KHÔNG có semaphore lồng nhau —
-  //   pool trang là trần song song duy nhất của cả stage.
-  //
-  // BƯỚC NÀY KHÔNG SỬA TÀI LIỆU: không clone `docs/`, không multiset dòng.
-  // `docs/` là bản gốc mà dr-review phía sau dùng để đối chiếu `before` của
-  // từng thay đổi, nên nó chỉ được đọc. Bản chụp nội dung trang được đọc MỘT
-  // LẦN TRƯỚC khi agent chạy và chính bản chụp đó (không phải bản đọc lại sau)
-  // là thứ validate đối chiếu — nếu agent lỡ (hoặc cố tình) sửa `docs/` để
-  // anchor của nó khớp, phép đối chiếu vẫn chạy trên bản gốc thật.
-  //
-  // VALIDATE là MỘT CỔNG cho mỗi trang, sau khi lượt chạy của trang đó xong:
-  // shape (parseComponentReport — `as PageComponentReport` không kiểm gì lúc
-  // chạy), rồi nội dung (validateComponentReport — màn/nhãn phải có thật trong
-  // tài liệu, tên component phải có thật trong danh mục, rule_id phải đúng
-  // anchor của chính component đó, verdict != 'ok' phải có note). Không có
-  // cổng này thì cả bước vô nghĩa: một `component: "Data Grid"` bịa ra trông
-  // y hệt một kết luận đúng, và dr-review chép thẳng `rule_id` của nó vào bản
-  // review cuối.
-  //
-  // FAIL-SHUT (giữ ở MỌI đường thoát của completion promise, không phải một
-  // checklist): không file nào dưới `comp/` được phép thuộc về một trang chưa
-  // được XÁC NHẬN đạt, và khi stage trả về thứ khác 'succeeded' mà KHÔNG trang
-  // nào đạt thì `comp/` phải TRỐNG HOÀN TOÀN. Đây là ràng buộc chịu lực chứ
-  // không phải dọn dẹp cho đẹp: `deriveStateFromLocalFiles`/`mergePipelineState`
-  // suy trạng thái stage từ SỰ CÓ MẶT của file dưới `outputs` (`['comp/']`),
-  // và tín hiệu đĩa THẮNG trạng thái vừa ghi vào DB — để sót dù chỉ một
-  // `comp/<slug>.components.json` của trang hỏng là stage hiện XANH trong khi
-  // DB vừa ghi 'failed', người dùng mở ra thấy một bản đối chiếu thiếu quá nửa
-  // số trang và tưởng tài liệu sạch. Các đường thoát:
-  //   - trang hỏng (parse/validate/agent run) → xoá file của RIÊNG trang đó;
-  //   - worker ném ngoại lệ → cũng xoá file của trang đó;
-  //   - không trang nào đạt (nhánh sau merge) → writeDocsComponentFailureNote
-  //     (xoá sạch `comp/`, ghi lý do ra file NGANG HÀNG `comp-khong-chay-duoc.md`
-  //     — đường dẫn cố ý không khớp outputs của stage nào);
-  //   - không có trang tài liệu nào → cùng primitive đó;
-  //   - huỷ và OUTER catch → xoá file của mọi trang chưa đạt, và nếu không
-  //     trang nào đạt thì xoá sạch `comp/`.
+  // FAIL-SHUT giữ nguyên tinh thần v1 (deriveStateFromLocalFiles suy trạng
+  // thái từ SỰ CÓ MẶT file dưới outputs `comp/`, `wireframes/`): màn hỏng →
+  // xoá file của riêng màn đó; role-map hỏng / không màn nào đạt / huỷ / outer
+  // catch → xoá sạch comp/ + wireframes/ và ghi lý do ra file ngang hàng
+  // (writeDocsComponentFailureNote → `comp-khong-chay-duoc.md`).
   const DOCS_COMPONENT_FANOUT_CONCURRENCY = 4;
   const FIGMA_CATALOG_EXTRACTION_TIMEOUT_MS = 12 * 60 * 1000;
   const replaceValidatedFile = async (candidate: string, target: string): Promise<void> => {
@@ -16095,23 +16071,20 @@ export async function startServer({
     registerPipelineCanceler(cancelKey, activeRuns, () => {
       canceled = true;
     });
-    /** Đường dẫn output của MỘT trang — dùng chung cho kickoff, đọc lại và
-     *  fail-shut, nên ba chỗ đó không thể lệch nhau về tên file. */
-    const compOutputRel = (slug: string): string => path.posix.join('comp', `${slug}.components.json`);
     // Gương của cwd/pages/results, cập nhật ngay khi từng thứ có giá trị, để
     // OUTER catch bên dưới (nó không với tới được các const block-scoped trong
     // try) vẫn fail-shut được. `outerResults` trỏ CÙNG mảng với `results`.
     let outerCwd: string | null = null;
     let outerPages: DocPage[] = [];
-    type CompPageResult = {
-      slug: string;
-      page: string;
-      docPath: string;
-      report: PageComponentReport | null;
+    let outerScreenKeys: string[] = [];
+    type CompScreenResult = {
+      key: string;
+      name: string;
+      doc: ScreenComponentsDoc | null;
       status: 'succeeded' | 'failed';
       errors: string[];
     };
-    let outerResults: Array<CompPageResult | undefined> = [];
+    let outerResults: Array<CompScreenResult | undefined> = [];
     const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
       const def = getPipelineDef(pipelineId)!;
       try {
@@ -16377,19 +16350,16 @@ export async function startServer({
         const pages = await listDocPages(cwd);
         outerPages = pages;
         if (pages.length === 0) {
-          // Không có trang nào để đối chiếu — đó là input hỏng (bước nạp tài
-          // liệu chưa chạy hoặc không ra gì), KHÔNG phải "sạch, không có gì để
-          // báo". Fail to và nói rõ phải chạy lại bước nào.
-          //
-          // FAIL-SHUT: KHÔNG ghi gì vào comp/ ở đây — dùng primitive chung để
-          // vừa xoá sạch comp/ (có thể còn sót từ lần chạy trước) vừa đặt lời
-          // giải thích ra file ngang hàng.
+          // Không có trang nào — input hỏng (bước nạp tài liệu chưa chạy),
+          // KHÔNG phải "không có gì để làm". FAIL-SHUT: dùng primitive chung để
+          // xoá sạch comp/ (có thể còn sót từ lần trước) và ghi lời giải thích
+          // ra file ngang hàng.
           await writeDocsComponentFailureNote(
             cwd,
             [
               '# Màn hình → Component — không chạy được',
               '',
-              'Không tìm thấy trang tài liệu nào dưới `docs/` nên không có màn hình nào để đối chiếu component.',
+              'Không tìm thấy trang tài liệu nào dưới `docs/` nên không có gì để mô tả màn hình.',
               '',
               'Chạy bước **Tài liệu → Markdown** trước, rồi chạy lại bước này.',
               '',
@@ -16400,52 +16370,58 @@ export async function startServer({
             subConversations: [],
             error: 'Không tìm thấy trang tài liệu nào dưới docs/ — chạy bước Tài liệu → Markdown trước, rồi chạy lại bước này.',
           });
-          console.warn(`[docs-comp] no doc pages under ${cwd}/docs — nothing to audit`);
+          console.warn(`[docs-comp] no doc pages under ${cwd}/docs — nothing to do`);
           return 'failed' as const;
         }
 
-        // DANH MỤC đọc MỘT LẦN cho cả stage, không phải mỗi trang: nó là input
-        // CHUNG và không đổi giữa các lượt chạy. Thiếu file => Map rỗng, và đó
-        // KHÔNG phải lỗi — validateComponentReport tự bỏ qua phần đối chiếu
-        // danh mục khi Map rỗng (không có gì để đối chiếu thì không được đánh
-        // hỏng trang), còn kickoff sẽ nói cho agent biết để nó không phán bừa.
+        // DANH MỤC đọc MỘT LẦN cho cả stage: input CHUNG, không đổi giữa các
+        // lượt. Thiếu file => Map rỗng — KHÔNG phải lỗi: validate bỏ qua phần
+        // đối chiếu danh mục và kickoff bảo agent để "ds": null.
         const catalogText = await fs.promises
           .readFile(path.join(cwd, 'criteria/components.md'), 'utf8')
           .catch(() => null);
         const catalog = catalogText != null ? collectComponentCatalog(catalogText) : new Map<string, string>();
+
+        // v2 (2026-08-18): ĐƠN VỊ FAN-OUT LÀ MÀN HÌNH lấy từ bước Đánh giá
+        // luồng UX (flows/index.json[].screens), KHÔNG còn là trang tài liệu:
+        // bảng "Kiểu hiển thị" (nếu có) chỉ là tham khảo, và ảnh mockup không
+        // phải đầu vào. Daemon dựng comp/_inputs.json (màn nào, thuộc trang
+        // nào, mục nào, bước flow nào diễn ra trên đó, đi ra màn nào) rồi:
+        //   lượt 0 — role-map cho cả feature (comp/_role-map.json) để các
+        //            màn map component nhất quán;
+        //   lượt theo màn (song song) — comp/<KEY>.screen.json +
+        //            wireframes/<KEY>.html.
+        const inputs = await prepareScreenComponentInputs(cwd, { pages });
+        const screenInputs = inputs.screens;
+        outerScreenKeys = screenInputs.map((s) => s.key);
         console.log(
-          `[docs-comp] ${pages.length} trang · danh mục: ${catalogText != null ? `${catalog.size} component` : 'KHÔNG có criteria/components.md'}`,
+          `[docs-comp] ${screenInputs.length} màn hình từ flows/ · danh mục: ${catalogText != null ? `${catalog.size} component` : 'KHÔNG có criteria/components.md'}`,
         );
+        if (screenInputs.length === 0) {
+          await writeDocsComponentFailureNote(
+            cwd,
+            [
+              '# Màn hình → Component — không chạy được',
+              '',
+              inputs.note ?? 'Bước Đánh giá luồng UX chưa cho ra màn hình nào.',
+              '',
+              'Chạy bước **Đánh giá luồng UX** (dr-flow) trước — bước này lấy danh sách màn hình từ đó — rồi chạy lại.',
+              '',
+            ].join('\n'),
+          );
+          setProjectPipelineStatus(db, projectId, pipelineId, {
+            status: 'failed',
+            subConversations: [],
+            error: inputs.note ?? 'Bước Đánh giá luồng UX chưa cho ra màn hình nào — chạy dr-flow trước.',
+          });
+          return 'failed' as const;
+        }
+        const screenKeySet = new Set(screenInputs.map((s) => s.key));
 
-        // Nội dung trang đọc TRƯỚC khi bất kỳ agent nào chạy — xem block comment
-        // trên hàm: validate phải đối chiếu với bản gốc THẬT, không phải bản
-        // đọc lại sau khi agent đã có cơ hội chạm vào docs/. Ảnh của trang lấy
-        // qua splitSections (đã có sẵn, không viết lại regex ảnh) rồi gộp mọi
-        // section lại: đơn vị ở đây là cả TRANG.
-        const pageUnits = await Promise.all(
-          pages.map(async (pg) => {
-            const original = await fs.promises.readFile(path.join(cwd, pg.mdPath), 'utf8').catch(() => '');
-            const images: string[] = [];
-            for (const sec of splitSections(original)) {
-              for (const ref of sec.imageRefs) if (!images.includes(ref)) images.push(ref);
-            }
-            return { pg, original, images };
-          }),
-        );
-
-        // Thư mục output dựng sẵn để lượt ghi đầu tiên của agent không phải tự
-        // tạo cây thư mục. Thư mục RỖNG không phát tín hiệu gì cho
-        // deriveStateFromLocalFiles (nó chỉ đọc FILE), nên việc này không làm
-        // stage hiện xanh sớm.
-        await fs.promises.mkdir(path.join(cwd, 'comp'), { recursive: true });
-
-        // Wireframe (2026-08-17): mỗi màn một `wireframes/<SCREEN-KEY>.html`
-        // do agent vẽ từ CHỮ tài liệu. CSS dùng chung chép MỘT LẦN cho cả stage
-        // từ skill ux-spec vào `wireframes/_wireframe.css` (sau re-run clear ở
-        // trên, trước fan-out) để N lượt trang song song chỉ Read + dán, không
-        // lượt nào tự tìm skill dir. File này không phải màn — viewer chỉ mở
-        // `<SCREEN-KEY>.html`. Thiếu CSS nguồn thì cảnh báo và chạy tiếp:
-        // kickoff bảo agent tự viết vài rule tối thiểu.
+        // Wireframe: mỗi màn một `wireframes/<SCREEN-KEY>.html` do agent viết
+        // theo đúng hợp đồng của skill ux-spec (HTML tự chứa, bố cục thật,
+        // data-comp = anchor DS, data-nav = SCREEN-KEY đích). CSS dùng chung
+        // chép MỘT LẦN cho cả stage vào `wireframes/_wireframe.css`.
         const wireframesDir = path.join(cwd, 'wireframes');
         await fs.promises.mkdir(wireframesDir, { recursive: true });
         const wireframeCssRel = 'wireframes/_wireframe.css';
@@ -16456,104 +16432,172 @@ export async function startServer({
             console.warn('[docs-comp] wireframe.css copy failed (continuing):', err?.message ?? err);
             return false;
           });
-        // `data-nav` lấy từ flow của dr-flow (chạy trước): liệt kê file một lần
-        // để kickoff nói thẳng có gì mà đọc, không có thì bảo bỏ data-nav.
-        const flowchartFiles = (await fs.promises.readdir(path.join(cwd, 'flows')).catch(() => [] as string[]))
-          .filter((name) => name.endsWith('.flowchart.json'))
-          .sort()
-          .map((name) => path.posix.join('flows', name));
 
-        // Mỗi TRANG một conversation riêng (đặt tên theo trang) để Status modal
-        // hiện tiến độ từng cái thay vì N agent trộn chung một log.
-        const graphNote =
-          ' This is a FILE-ONLY stage: produce the per-page JSON only — do not push anything anywhere.';
+        const dsLine =
+          catalogText != null
+            ? ` Design System: danh mục component hợp lệ (ĐÓNG) tại "criteria/components.md" (${catalog.size} component)` +
+              `${inputs.ds.catalog ? ', kiến thức chọn component ("Dùng khi / Không dùng khi", bảng Screen scaffolding) tại "criteria/catalog.md"' : ''}` +
+              `${inputs.ds.examples ? ', cách lồng component thật tại "criteria/examples.md"' : ''}` +
+              `${inputs.ds.rules ? ', quy tắc DS tại "criteria/rules.md"' : ''}` +
+              `${inputs.ds.figmaCatalog ? ', fileKey/nodeId Figma tại ".figma-catalog/components.json"' : ''}. ` +
+              `Mọi "component"/"anchor"/data-comp phải là tên và anchor CÓ THẬT trong "criteria/components.md" — daemon đối chiếu và đánh hỏng lượt chạy nếu sai.`
+            : ` KHÔNG có "criteria/components.md" trong cwd này: vẫn liệt kê element theo vai trò (role) và vẽ wireframe, NHƯNG mọi "component" trong role-map và "ds" của element phải là null, wireframe KHÔNG có data-comp.`;
+        const flowLine =
+          ` Danh sách màn hình + ngữ cảnh từng màn (trang, mục tài liệu, bước luồng diễn ra trên màn, đi ra màn nào, phát hiện UX) nằm ở "${SCREEN_INPUTS_FILE}" — đọc nó trước.` +
+          ` Ảnh mockup trong tài liệu CHỈ là minh hoạ của người viết — KHÔNG mở, KHÔNG dùng để chọn component hay bố cục; bảng cấu trúc màn (nếu có, trường "referenceTable") chỉ để tham khảo tên trường.`;
+        const graphNote = ' This is a FILE-ONLY stage — do not push anything anywhere.';
 
-        const pageTasks = pages.map((pg) => {
+        // ── Lượt 0: role-map cho cả feature ─────────────────────────────────
+        const roleMapConvId = `pipeline-conv-${randomUUID()}`;
+        insertConversation(db, { id: roleMapConvId, projectId, title: `${def.name} · Bảng map vai trò → component DS`, createdAt: Date.now(), updatedAt: Date.now() });
+        const roleMapTask = { id: roleMapConvId, title: 'Bảng map vai trò → component DS', status: 'running' as 'queued' | 'running' | 'succeeded' | 'failed' };
+        const screenTasks = screenInputs.map((s) => {
           const id = `pipeline-conv-${randomUUID()}`;
-          insertConversation(db, { id, projectId, title: `${def.name} · ${pg.page}`, createdAt: Date.now(), updatedAt: Date.now() });
-          return { id, title: pg.page, status: 'queued' as 'queued' | 'running' | 'succeeded' | 'failed' };
+          insertConversation(db, { id, projectId, title: `${def.name} · ${s.name}`, createdAt: Date.now(), updatedAt: Date.now() });
+          return { id, title: s.name, status: 'queued' as 'queued' | 'running' | 'succeeded' | 'failed' };
         });
-        const tasks = extractionTask ? [extractionTask, ...pageTasks] : pageTasks;
+        const tasks = extractionTask ? [extractionTask, roleMapTask, ...screenTasks] : [roleMapTask, ...screenTasks];
         const persistTasks = () =>
           setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: tasks.map((t) => ({ ...t })) });
-        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: pageTasks[0]?.id ?? extractionTask?.id });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: roleMapConvId });
         persistTasks();
 
-        const results: Array<CompPageResult | undefined> = new Array(pages.length);
+        const platformCounts = screenInputs.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.platformHint]: (acc[s.platformHint] ?? 0) + 1 }), {});
+        const platformGuess = (platformCounts.mobile ?? 0) > (platformCounts.web ?? 0) ? 'mobile' : 'web';
+        const roleMapKickoff =
+          `Run the "docs-screen-components" skill in ROLE-MAP mode for feature "${projectId}" (lượt 0 của bước Màn hình → Component).` +
+          flowLine +
+          dsLine +
+          ` Nền tảng đoán từ tài liệu: "${platformGuess}" — tự xác nhận lại theo tài liệu.` +
+          ` Nhiệm vụ: đọc "${SCREEN_INPUTS_FILE}" (mọi màn: tên, bước, mục tài liệu) và Design System, rồi ghi ĐÚNG MỘT file "${ROLE_MAP_FILE}": bảng map VAI TRÒ giao diện (app bar, list item, CTA đáy, input, select, bottom sheet, badge, empty state, error state, tab, card, table…) → component DS (tên + anchor + biến thể mặc định + khi nào dùng), phủ đủ mọi vai trò mà các màn trong feature này sẽ cần; DS không có vai trò nào thì "component": null kèm "fallback". ` +
+          `Schema và luật trong skill (mục "Chế độ ROLE-MAP"). KHÔNG ghi file nào khác, KHÔNG vẽ wireframe ở lượt này.${graphNote}`;
+        const roleMapAssistantId = `pipeline-assistant-${randomUUID()}`;
+        const roleMapRun = design.runs.create({
+          projectId,
+          conversationId: roleMapConvId,
+          assistantMessageId: roleMapAssistantId,
+          clientRequestId: `docs-comp-rolemap-${randomUUID()}`,
+          agentId: agentId!,
+        });
+        activeRuns.add(roleMapRun);
+        upsertMessage(db, roleMapConvId, { id: `pipeline-user-${roleMapRun.id}`, role: 'user', content: roleMapKickoff });
+        upsertMessage(db, roleMapConvId, {
+          id: roleMapAssistantId,
+          role: 'assistant',
+          content: '',
+          agentId: agentId!,
+          agentName: getAgentDef(agentId!)?.name ?? agentId!,
+          runId: roleMapRun.id,
+          runStatus: 'queued',
+          startedAt: Date.now(),
+        });
+        design.runs.start(roleMapRun, () =>
+          startChatRun(
+            {
+              agentId: agentId!,
+              projectId,
+              conversationId: roleMapConvId,
+              assistantMessageId: roleMapAssistantId,
+              clientRequestId: roleMapRun.clientRequestId,
+              skillId: def.skillId,
+              ...(wfDir ? { cwdSubdir: wfDir } : {}),
+              model: modelPrefs.model ?? null,
+              reasoning: modelPrefs.reasoning ?? null,
+              message: roleMapKickoff,
+              promptProfile: 'pipeline',
+              pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
+              ...(figmaDesktopGrant ? { [INTERNAL_TOOL_GRANT_EXTRAS]: figmaDesktopGrant } : {}),
+            },
+            roleMapRun,
+          ),
+        );
+        const roleMapFinal = await design.runs.wait(roleMapRun);
+        activeRuns.delete(roleMapRun);
+        db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(roleMapFinal.status, Date.now(), roleMapAssistantId);
+        const roleMapErrors: string[] = [];
+        if (roleMapFinal.status !== 'succeeded') roleMapErrors.push(`Lượt role-map kết thúc với trạng thái "${roleMapFinal.status}".`);
+        let roleMap: RoleMapDoc | null = null;
+        if (roleMapErrors.length === 0) {
+          const raw = await fs.promises.readFile(path.join(cwd, ROLE_MAP_FILE), 'utf8').catch(() => null);
+          if (raw == null) roleMapErrors.push(`Không tìm thấy "${ROLE_MAP_FILE}" — lượt role-map báo thành công nhưng không ghi gì.`);
+          else {
+            const parsed = parseRoleMap(raw);
+            if ('errors' in parsed) roleMapErrors.push(...parsed.errors);
+            else {
+              roleMapErrors.push(...validateRoleMap(parsed.doc, catalog));
+              if (roleMapErrors.length === 0) roleMap = parsed.doc;
+            }
+          }
+        }
+        if (!roleMap) {
+          roleMapTask.status = 'failed';
+          for (const t of screenTasks) t.status = 'failed';
+          if (canceled || roleMapFinal.status === 'canceled') {
+            await fs.promises.rm(path.join(cwd, 'comp'), { recursive: true, force: true }).catch(() => null);
+            await fs.promises.rm(wireframesDir, { recursive: true, force: true }).catch(() => null);
+            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'idle', subConversations: tasks.map((t) => ({ ...t })) });
+            console.log('[docs-comp] canceled during role-map');
+            return 'idle' as const;
+          }
+          // FAIL-SHUT: không role-map thì không màn nào chạy được — xoá sạch
+          // comp/ + wireframes/, ghi lý do ra file ngang hàng.
+          await writeDocsComponentFailureNote(
+            cwd,
+            ['# Màn hình → Component — không chạy được', '', 'Lượt lập bảng map vai trò → component DS hỏng:', '', ...roleMapErrors.map((e) => `- ${e}`), ''].join('\n'),
+          );
+          await fs.promises.rm(wireframesDir, { recursive: true, force: true }).catch(() => null);
+          setProjectPipelineStatus(db, projectId, pipelineId, {
+            status: 'failed',
+            subConversations: tasks.map((t) => ({ ...t })),
+            error: `Bảng map vai trò → component DS hỏng: ${roleMapErrors[0] ?? 'không rõ'}`,
+          });
+          console.warn('[docs-comp] role-map failed:', roleMapErrors);
+          return 'failed' as const;
+        }
+        roleMapTask.status = 'succeeded';
+        persistTasks();
+        console.log(`[docs-comp] role-map: ${roleMap.roles.length} vai trò (${roleMap.platform})`);
+
+        // ── Fan-out theo màn ────────────────────────────────────────────────
+        const results: Array<CompScreenResult | undefined> = new Array(screenInputs.length);
         outerResults = results;
         let done = 0;
+        const cssLine = wireframeCssOk
+          ? `một thẻ <style> chép NGUYÊN VĂN nội dung "${wireframeCssRel}" (Read nó rồi dán vào; thêm rule layout của riêng màn phía dưới), `
+          : `một thẻ <style> tự viết vài rule tối thiểu cho .wf-web/.wf-mobile/.wf-card/.wf-component (khung xám, viền 1px, padding 16px — "${wireframeCssRel}" không copy được lần này), `;
 
-        const runOnePage = async (
-          unit: (typeof pageUnits)[number],
-          idx: number,
-        ): Promise<'succeeded' | 'failed' | 'idle'> => {
-          const { pg, original, images } = unit;
-          const task = pageTasks[idx]!;
+        const runOneScreen = async (s: (typeof screenInputs)[number], idx: number): Promise<'succeeded' | 'failed' | 'idle'> => {
+          const task = screenTasks[idx]!;
           const conversationId = task.id;
           task.status = 'running';
           persistTasks();
-          const outRel = compOutputRel(pg.slug);
+          const outRel = screenDocRel(s.key);
+          const wfRel = wireframeRel(s.key);
           const assistantMessageId = `pipeline-assistant-${randomUUID()}`;
-
-          // Ảnh mockup: daemon KHÔNG nhồi ảnh vào prompt — nó nêu đích danh
-          // đường dẫn NGUYÊN VĂN và bắt agent tự Read, đúng khuôn
-          // runDocsReviewFanout / skills/docs-mockup-review.
-          //
-          // Kèm THÊM thư mục gốc để phân giải: ref trong markdown là tương đối
-          // so với CHÍNH TRANG (`docs/confluence/x.md` + `attachments/y.png`),
-          // còn cwd của agent là gốc workflow-dir — nên một ref chép nguyên văn
-          // vào Read sẽ trượt. dr-review không vấp chuyện này vì nó làm việc
-          // trên bản clone nằm đúng vị trí gương; bước này đọc tại chỗ nên phải
-          // nói ra chỗ neo. `images` vẫn giữ NGUYÊN VĂN để agent ghi lại đúng
-          // như tài liệu viết vào trường `images` của JSON.
-          const pageDirRel = path.posix.dirname(pg.mdPath);
-          const imageLine =
-            images.length > 0
-              ? ` Trang này nhúng ${images.length} ảnh: ${images.map((r) => `"${r}"`).join(', ')}. ` +
-                `Các đường dẫn đó tương đối so với THƯ MỤC CHỨA TRANG ("${pageDirRel}/"), không phải cwd — ghép tiền tố đó vào khi Read, nhưng khi ghi vào trường "images" của JSON thì giữ NGUYÊN VĂN như trong tài liệu. ` +
-                `BẮT BUỘC mở TỪNG ảnh bằng Read trước khi kết luận bất cứ điều gì về component, biến thể hay trạng thái — bảng "Kiểu hiển thị" là thứ tài liệu TỰ KHAI, ảnh mới là thứ sẽ được dựng. Không mở ảnh thì TUYỆT ĐỐI không được kết luận verdict "variant-mismatch".`
-              : ' Trang này không nhúng ảnh nào — chỉ được phán trên những gì bảng khai.';
-          const catalogLine =
-            catalogText != null
-              ? ` Danh mục component hợp lệ CÓ SẴN tại "criteria/components.md" (${catalog.size} component) — đọc nó và map mỗi "Kiểu hiển thị" sang component trong đó theo NGHĨA (tên tài liệu và tên danh mục không trùng nhau là chuyện bình thường). "component" phải là tên CÓ THẬT trong danh mục và "rule_id" phải đúng anchor của chính component đó; daemon đối chiếu lại và đánh hỏng CẢ TRANG nếu sai.`
-              : ` KHÔNG có "criteria/components.md" trong cwd này. Vẫn liệt kê đủ màn hình và đủ element với "doc_type" nguyên văn, NHƯNG mọi "verdict" phải là "ok" và "component"/"rule_id" phải BỎ TRỐNG — không có danh mục thì không có gì để phán đúng/sai, và một "not-in-catalog" dựng từ trí nhớ là lời buộc tội không có căn cứ.`;
-          // Wireframe mỗi màn — SCREEN-KEY prefix do daemon tính (tên file .md
-          // bỏ đuôi, KHÔNG phải slug) và ghi nguyên văn vào kickoff để agent
-          // của trang này và agent dr-flow (đọc cùng luật trong skill của nó)
-          // ghép ra cùng một khoá mà không cần nhìn nhau.
-          const screenKeyPrefix = path.posix.basename(pg.mdPath, '.md');
-          const flowsLine =
-            flowchartFiles.length > 0
-              ? ` "data-nav": thư mục "flows/" đang có ${flowchartFiles.length} file flowchart (${flowchartFiles.map((r) => `"${r}"`).join(', ')}) do bước Đánh giá luồng UX (dr-flow) sinh trước — đọc chúng; node có trường "screen" (= SCREEN-KEY) là bước diễn ra trên màn đó; khi có cạnh (edges[]) từ một node thuộc màn này sang một node thuộc màn KHÁC thì block nút/link tương ứng trên màn này mang data-nav="<SCREEN-KEY đích>"; không tìm được cạnh nào như vậy thì bỏ data-nav. `
-              : ` Thư mục "flows/" chưa có file *.flowchart.json nào nên KHÔNG dùng data-nav. `;
-          const cssLine = wireframeCssOk
-            ? `một thẻ <style> chép NGUYÊN VĂN nội dung file "${wireframeCssRel}" (daemon đã copy sẵn từ skill ux-spec — Read nó rồi dán vào; chỉ được thêm tối đa vài rule layout của riêng màn), `
-            : `một thẻ <style> tự viết vài rule tối thiểu cho .wf-web/.wf-mobile/.wf-card/.wf-component (khung xám, viền 1px, padding 16px — file "${wireframeCssRel}" không copy được lần này), `;
-          const wireframeLine =
-            ` NGOÀI RA, với MỖI màn trong "screens[]" hãy vẽ thêm MỘT wireframe HTML: "wireframes/<SCREEN-KEY>.html" (thư mục "wireframes/" nằm ở GỐC cwd, ngang "comp/" — một màn một file, tên file = SCREEN-KEY). ` +
-            `SCREEN-KEY = "<prefix>__<mã màn>": <prefix> của trang này CHÍNH XÁC là "${screenKeyPrefix}" (daemon tính sẵn từ tên file .md — ghi NGUYÊN VĂN, đừng tự suy hay rút gọn, kể cả khi trang chỉ có một màn) và <mã màn> là "id" nguyên văn của màn (vd "${screenKeyPrefix}__SCR-001"). ` +
-            `File tự chứa: "<!doctype html>", ${cssLine}không <script>, không <link>, không ảnh. File "${wireframeCssRel}" KHÔNG phải màn — đừng sửa hay xoá nó. ` +
-            `<body data-screen="<SCREEN-KEY>" data-layout="web|mobile"> ("web" mặc định — URD backoffice; "mobile" chỉ khi tài liệu nói rõ app di động), bên trong một <div class="wf-web"> (hoặc "wf-mobile"). ` +
-            `Mỗi element của màn = MỘT block <div class="wf-component"> theo đúng thứ tự tài liệu; verdict "ok" thì chữ trong block là TÊN component và block mang data-comp="<anchor>" (phần sau "#" của rule_id); verdict KHÁC "ok" thì chữ = doc_type nguyên văn + " ?" và KHÔNG có data-comp. ` +
-            `Dòng phân nhóm ("Khối …") → một <div class="wf-card"> bọc các block con; chỉ nhóm theo cụm tài liệu, không suy bố cục từ ảnh mockup; không màu, không icon, không nội dung mẫu. ` +
-            `Màn overlay (popup/dialog) → thêm data-overlay="dialog" và data-overlay-of="<SCREEN-KEY màn cơ sở>" trên <body> khi tài liệu nói popup thuộc màn nào; thân file chỉ chứa nội dung popup.` +
-            flowsLine +
-            `Wireframe vẽ từ CHỮ tài liệu (bảng element + verdict bạn vừa chốt) — KHÔNG mở ảnh mockup để vẽ. Ngoài "${outRel}" và "wireframes/<SCREEN-KEY>.html" của trang này, KHÔNG ghi file nào khác.`;
+          const sectionLine = s.section
+            ? ` Mục tài liệu mô tả màn: "${s.source}" dòng ${s.section.startLine}–${s.section.endLine} (heading: ${JSON.stringify(s.section.heading)}) — Read đúng khoảng dòng đó (và các mục lân cận nếu cần).`
+            : s.source
+              ? ` Không tìm thấy mục riêng cho màn này trong "${s.source}" — đọc trang đó và tìm theo tên màn; không có thì dựng từ các bước luồng.`
+              : ' Không xác định được trang tài liệu của màn — dựng từ các bước luồng và tên màn.';
+          const navLine = s.navOut.length
+            ? ` Từ màn này đi sang: ${s.navOut.map((n) => `"${n.to}" (qua "${n.via}"${n.condition ? `, điều kiện ${JSON.stringify(n.condition)}` : ''})`).join('; ')} — mỗi lối đi là MỘT element có data-nav tương ứng.`
+            : ' Màn này không đi sang màn nào khác trong luồng — không dùng data-nav.';
           const kickoff =
-            `Run the "docs-component-audit" audit for ONE page of project "${projectId}". ` +
-            `Read "${pg.mdPath}" (title: ${pg.page}) — CHỈ ĐỌC. TUYỆT ĐỐI KHÔNG sửa bất cứ file nào dưới "docs/": đó là bản gốc mà bước review phía sau dùng để đối chiếu, và bước này không có bản clone nào để sửa an toàn.${imageLine}${catalogLine} ` +
-            `Liệt kê MỌI màn hình khai trong trang (heading dạng "Màn hình N: SCR-… — …", mọi cấp heading) và MỌI dòng trong bảng của từng màn, rồi ghi kết quả ra ĐÚNG MỘT file: "${outRel}". ` +
-            `NGOẠI LỆ duy nhất là dòng PHÂN NHÓM: dòng có "Tên trường" (thường in đậm, vd "Khối Thông tin pháp lý", "Nút thao tác") nhưng cột "Kiểu hiển thị" TRỐNG — nó chỉ chia bảng thành cụm, không phải phần tử giao diện, ĐỪNG đưa vào "elements" (daemon tự loại nếu bạn lỡ đưa vào với "doc_type" là chuỗi rỗng ""). ` +
-            `"anchor" (nguyên văn cả dòng heading của màn) và "label" (nguyên văn ô tên trường) phải COPY từ tài liệu, đừng gõ lại — daemon đối chiếu lại với trang gốc và một chỗ trích sai làm hỏng CẢ TRANG (dấu "—" em dash và "-" hyphen là hai ký tự khác nhau). ` +
-            `"verdict" là tập đóng 5 giá trị (ok | not-in-catalog | variant-mismatch | ambiguous | internal); verdict khác "ok" thì BẮT BUỘC có "note" một câu nói sai ở đâu và nên dùng gì. ` +
-            `Trang không khai màn hình nào thì vẫn ghi file với "screens": [] — đừng nặn một màn hình ra từ một đoạn văn. ` +
-            `Do NOT audit any other page, and do NOT write "comp/index.json" or "comp/summary.md" — daemon gộp chúng từ file của mọi trang sau khi tất cả chạy xong; bạn tự ghi thì lượt chạy song song của trang khác sẽ ghi đè.${graphNote}${figmaDesktopNote}${wireframeLine}`;
+            `Run the "docs-screen-components" skill in SCREEN mode for ONE screen of feature "${projectId}": SCREEN-KEY "${s.key}" — "${s.name}" (luồng "${s.flowTitle}", thứ tự ${s.order + 1}/${screenInputs.length}).` +
+            flowLine +
+            dsLine +
+            ` Bảng map vai trò → component DS của feature đã chốt ở "${ROLE_MAP_FILE}" (nền tảng: ${roleMap.platform}) — BẮT BUỘC dùng đúng bảng đó; lệch phải ghi "why".` +
+            sectionLine +
+            navLine +
+            ` Ghi ĐÚNG HAI file: (1) "${outRel}" theo schema "Chế độ SCREEN" trong skill (mọi element có "id" ổn định, "role", "ds" {component, anchor, variant?} hoặc null, "confidence", "provenance" text|flow|table|ds, "docType" nếu bảng tài liệu có khai, "why" khi cần; "nav": [{el, to}] cho các lối đi kể trên; "platform" = "${roleMap.platform}"); ` +
+            `(2) "${wfRel}" — wireframe HTML tự chứa kiểu ux-spec: "<!doctype html>", ${cssLine}không <script>/<link>/ảnh; <body data-screen="${s.key}" data-layout="${roleMap.platform}">; DOM là bố cục THẬT của màn (header–thân–chân, hàng/cột, card lồng nhau theo criteria/examples.md), MỖI element trong JSON là một block mang data-el="<id>" (bắt buộc) + data-comp="<anchor>" khi có ds + data-nav="<SCREEN-KEY đích>" đúng như "nav"; text trong block = nhãn thật của element; không màu thương hiệu, không icon, không nội dung mẫu dài. ` +
+            `Không ghi file nào khác (không sửa flows/, docs/, criteria/, "${wireframeCssRel}", không tự ghi comp/index.json).${graphNote}${figmaDesktopNote}`;
 
           const run = design.runs.create({
             projectId,
             conversationId,
             assistantMessageId,
-            clientRequestId: `docs-comp-${pg.slug}-${randomUUID()}`,
+            clientRequestId: `docs-comp-${s.key}-${randomUUID()}`,
             agentId: agentId!,
           });
           activeRuns.add(run);
@@ -16583,8 +16627,6 @@ export async function startServer({
                 message: kickoff,
                 promptProfile: 'pipeline',
                 pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
-                // Figma Desktop drill-down grant — only when the preparation
-                // phase saw Figma Desktop's MCP server (see figmaDesktopGrant).
                 ...(figmaDesktopGrant ? { [INTERNAL_TOOL_GRANT_EXTRAS]: figmaDesktopGrant } : {}),
               },
               run,
@@ -16596,92 +16638,67 @@ export async function startServer({
 
           const errors: string[] = [];
           const sawCancel = final.status === 'canceled';
-          if (final.status !== 'succeeded') {
-            errors.push(`Agent run kết thúc với trạng thái "${final.status}".`);
-          }
-
-          // Đọc lại + validate: CHỈ khi lượt chạy thành công. Một run hỏng có
-          // thể đã ghi ra một file dở dang, và validate nó chỉ tạo thêm nhiễu
-          // trên một kết quả vốn đã bỏ đi.
-          let report: PageComponentReport | null = null;
+          if (final.status !== 'succeeded') errors.push(`Agent run kết thúc với trạng thái "${final.status}".`);
+          let doc: ScreenComponentsDoc | null = null;
           if (errors.length === 0) {
             const raw = await fs.promises.readFile(path.join(cwd, outRel), 'utf8').catch(() => null);
-            if (raw == null) {
-              errors.push(`Không tìm thấy file kết quả "${outRel}" — lượt chạy báo thành công nhưng không ghi gì.`);
-            } else {
-              const parsed = parseComponentReport(raw);
+            if (raw == null) errors.push(`Không tìm thấy "${outRel}" — lượt chạy báo thành công nhưng không ghi gì.`);
+            else {
+              const parsed = parseScreenComponentsDoc(raw);
               if ('errors' in parsed) errors.push(...parsed.errors);
               else {
-                errors.push(...validateComponentReport(original, parsed.report, catalog));
+                const wireframeHtml = await fs.promises.readFile(path.join(cwd, wfRel), 'utf8').catch(() => null);
+                errors.push(...validateScreenComponentsDoc(parsed.doc, { expectedKey: s.key, screenKeys: screenKeySet, catalog, wireframeHtml }));
                 if (errors.length === 0) {
-                  // `page`/`doc_path` là siêu dữ liệu daemon TỰ BIẾT — ghi đè
-                  // thay vì tin bản agent khai, để bảng trong summary.md không
-                  // lệch tên trang chỉ vì agent gõ lại tiêu đề.
-                  report = { ...parsed.report, page: pg.page, doc_path: pg.mdPath };
+                  // key/name/flowId/source là siêu dữ liệu daemon TỰ BIẾT — ghi
+                  // đè để index không lệch chỉ vì agent gõ lại.
+                  doc = { ...parsed.doc, key: s.key, name: s.name, flowId: s.flowId, source: s.source };
+                  await fs.promises.writeFile(path.join(cwd, outRel), JSON.stringify(doc, null, 2), 'utf8');
                 }
               }
             }
           }
-
-          const pageStatus: 'succeeded' | 'failed' = report != null ? 'succeeded' : 'failed';
-          if (pageStatus === 'failed') {
-            // FAIL-SHUT cấp TRANG — xem block comment trên hàm: file của một
-            // trang chưa được xác nhận đạt mà nằm lại dưới comp/ là đủ để
-            // deriveStateFromLocalFiles chấm cả stage 'succeeded'.
+          const status: 'succeeded' | 'failed' = doc != null ? 'succeeded' : 'failed';
+          if (status === 'failed') {
+            // FAIL-SHUT cấp MÀN: file của màn chưa đạt không được nằm lại.
             await fs.promises.rm(path.join(cwd, outRel), { force: true }).catch(() => null);
+            await fs.promises.rm(path.join(cwd, wfRel), { force: true }).catch(() => null);
           }
-
-          results[idx] = { slug: pg.slug, page: pg.page, docPath: pg.mdPath, report, status: pageStatus, errors };
-          task.status = pageStatus;
+          results[idx] = { key: s.key, name: s.name, doc, status, errors };
+          task.status = status;
           persistTasks();
           done += 1;
-          console.log(
-            `[docs-comp] page ${done}/${pages.length} "${pg.page}" → ${pageStatus}${errors.length > 0 ? ` (${errors.length} lỗi)` : ''}`,
-          );
-          return pageStatus === 'succeeded' ? 'succeeded' : sawCancel ? 'idle' : 'failed';
+          console.log(`[docs-comp] screen ${done}/${screenInputs.length} "${s.name}" → ${status}${errors.length > 0 ? ` (${errors.length} lỗi)` : ''}`);
+          return status === 'succeeded' ? 'succeeded' : sawCancel ? 'idle' : 'failed';
         };
 
         let cursor = 0;
         const worker = async () => {
           for (;;) {
-            // Cờ huỷ kiểm ở ĐẦU mỗi lượt trang: trang đang xếp hàng mà người
-            // dùng bấm dừng thì không được khởi động nữa.
             if (canceled) break;
             const i = cursor++;
-            if (i >= pageUnits.length) break;
-            await runOnePage(pageUnits[i]!, i).catch(async () => {
-              pageTasks[i]!.status = 'failed';
-              // runOnePage ném trước khi kịp tự fail-shut (vd đọc/parse nổ
-              // ngoài try của nó) — dọn ở đây, cùng lý do: file sót lại sau một
-              // ngoại lệ vẫn đọc ra "đã chạy xong" từ đĩa.
-              await fs.promises.rm(path.join(cwd, compOutputRel(pages[i]!.slug)), { force: true }).catch(() => null);
-              results[i] = {
-                slug: pages[i]!.slug,
-                page: pages[i]!.page,
-                docPath: pages[i]!.mdPath,
-                report: null,
-                status: 'failed',
-                errors: ['Lỗi không rõ khi chạy trang này.'],
-              };
+            if (i >= screenInputs.length) break;
+            await runOneScreen(screenInputs[i]!, i).catch(async () => {
+              screenTasks[i]!.status = 'failed';
+              await fs.promises.rm(path.join(cwd, screenDocRel(screenInputs[i]!.key)), { force: true }).catch(() => null);
+              await fs.promises.rm(path.join(cwd, wireframeRel(screenInputs[i]!.key)), { force: true }).catch(() => null);
+              results[i] = { key: screenInputs[i]!.key, name: screenInputs[i]!.name, doc: null, status: 'failed', errors: ['Lỗi không rõ khi chạy màn này.'] };
               persistTasks();
               return 'failed' as const;
             });
           }
         };
-        await Promise.all(
-          Array.from({ length: Math.min(DOCS_COMPONENT_FANOUT_CONCURRENCY, pageUnits.length) }, worker),
-        );
+        await Promise.all(Array.from({ length: Math.min(DOCS_COMPONENT_FANOUT_CONCURRENCY, screenInputs.length) }, worker));
 
         if (canceled) {
-          // FAIL-SHUT khi huỷ: dọn file của MỌI trang không đạt — kể cả trang
-          // pool chưa kịp chạy tới (một lần chạy trước có thể đã để lại file
-          // cùng tên, và tín hiệu đĩa thắng tín hiệu DB). Không trang nào đạt
-          // thì comp/ không còn gì đáng giữ: xoá sạch thay vì để lại cái vỏ.
           await Promise.all(
-            pages.map((pg, i) =>
+            screenInputs.map((s, i) =>
               results[i]?.status === 'succeeded'
                 ? Promise.resolve(null)
-                : fs.promises.rm(path.join(cwd, compOutputRel(pg.slug)), { force: true }).catch(() => null),
+                : Promise.all([
+                    fs.promises.rm(path.join(cwd, screenDocRel(s.key)), { force: true }).catch(() => null),
+                    fs.promises.rm(path.join(cwd, wireframeRel(s.key)), { force: true }).catch(() => null),
+                  ]),
             ),
           );
           if (!results.some((r) => r?.status === 'succeeded')) {
@@ -16693,44 +16710,18 @@ export async function startServer({
           return 'idle' as const;
         }
 
-        // Gộp: daemon làm, không LLM. Chỉ gộp báo cáo của các trang ĐẠT —
-        // trang hỏng đã bị xoá file, đưa nó vào bản gộp là đếm một kết quả
-        // không tồn tại.
-        const okReports = results.flatMap((r) => (r?.report ? [r.report] : []));
-        const { index, summaryMd } = mergeComponentReports(okReports);
-
-        // Trang hỏng KHÔNG có chỗ trong mergeComponentReports (nó nhận báo cáo
-        // đã đạt), nhưng im lặng bỏ qua thì người đọc không biết 3/5 trang đã
-        // rơi ra ngoài và tưởng bản gộp là toàn bộ tài liệu — nên phần này
-        // được nối thêm ở đây, kèm nguyên văn lý do hỏng để còn sửa được.
-        const failedPages = results.filter((r): r is CompPageResult => r?.status === 'failed');
-        const summaryWithFailures =
-          failedPages.length === 0
-            ? summaryMd
-            : `${summaryMd}\n## Trang chạy hỏng\n\n${failedPages
-                .map(
-                  (r) =>
-                    `- **${r.page}** (\`${r.docPath}\`): ${r.errors.length > 0 ? r.errors.join('; ') : 'không rõ lý do'}\n`,
-                )
-                .join('')}`;
-
-        // Một trang hỏng KHÔNG làm hỏng cả stage: đạt khi có ít nhất một trang
-        // qua được cổng validate, chỉ hỏng khi mọi trang đều hỏng.
-        const anySucceeded = okReports.length > 0;
+        // Gộp: daemon làm, không LLM. Chỉ màn ĐẠT vào index; màn hỏng liệt kê
+        // kèm lý do để còn sửa.
+        const okDocs = results.flatMap((r) => (r?.doc ? [r.doc] : []));
+        const failedScreens = results.filter((r): r is CompScreenResult => r?.status === 'failed').map((r) => ({ key: r.key, name: r.name, errors: r.errors }));
+        const { index, summaryMd } = mergeScreenComponents(okDocs, inputs, failedScreens, new Date().toISOString());
+        const anySucceeded = okDocs.length > 0;
         const next: 'succeeded' | 'failed' = anySucceeded ? 'succeeded' : 'failed';
         if (anySucceeded) {
-          await fs.promises.mkdir(path.join(cwd, 'comp'), { recursive: true });
           await fs.promises.writeFile(path.join(cwd, 'comp/index.json'), JSON.stringify(index, null, 2), 'utf8');
-          await fs.promises.writeFile(path.join(cwd, 'comp/summary.md'), summaryWithFailures, 'utf8');
+          await fs.promises.writeFile(path.join(cwd, 'comp/summary.md'), summaryMd, 'utf8');
         } else {
-          // FAIL-SHUT cấp STAGE: mọi trang đều hỏng — KHÔNG được để lại
-          // comp/index.json / comp/summary.md trong khi trả về 'failed', vì
-          // BẤT KỲ file nào dưới comp/ cũng ghi đè trạng thái DB bằng
-          // 'succeeded' khi suy từ đĩa. Nội dung chẩn đoán không bị mất: chính
-          // summary đó được chuyển ra file ngang hàng.
-          await writeDocsComponentFailureNote(cwd, summaryWithFailures);
-          // wireframes/ cũng là output của stage này (stagesForOutput) — để
-          // sót _wireframe.css hay HTML của trang hỏng là stage hiện xanh sai.
+          await writeDocsComponentFailureNote(cwd, summaryMd);
           await fs.promises.rm(wireframesDir, { recursive: true, force: true }).catch(() => null);
         }
         setProjectPipelineStatus(db, projectId, pipelineId, {
@@ -16739,38 +16730,32 @@ export async function startServer({
           ...(next === 'failed' ? { error: 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' } : {}),
         });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
-        console.log(`[docs-comp] fan-out done: ${okReports.length}/${pages.length} pages audited → ${next}`);
+        console.log(`[docs-comp] fan-out done: ${okDocs.length}/${screenInputs.length} screens → ${next}`);
         return next;
       } catch (error) {
-        // FAIL-SHUT ở OUTER catch — stage có thể nổ SAU khi vài trang đã ghi
-        // file (vd insertConversation ném khi dựng tasks, hoặc đĩa đầy lúc ghi
-        // index.json). `cwd`/`pages`/`results` block-scoped trong try nên chỗ
-        // này dùng các gương outerCwd/outerPages/outerResults. Dọn hỏng thì
-        // PHẢI kêu to: nuốt lỗi ở đúng đường fail-shut là tự phá mục đích của
-        // nó — file sót lại dưới comp/ sẽ khiến stage hiện xanh dù lần chạy này
-        // hỏng.
+        // FAIL-SHUT ở OUTER catch — dọn output của mọi màn chưa đạt; không màn
+        // nào đạt thì xoá sạch comp/ + wireframes/. Dọn hỏng thì PHẢI kêu to.
         if (outerCwd) {
           const cwd = outerCwd;
           await Promise.all(
-            outerPages.map((pg, i) =>
+            outerScreenKeys.map((key, i) =>
               outerResults[i]?.status === 'succeeded'
                 ? Promise.resolve(null)
-                : fs.promises.rm(path.join(cwd, compOutputRel(pg.slug)), { force: true }),
+                : Promise.all([
+                    fs.promises.rm(path.join(cwd, screenDocRel(key)), { force: true }),
+                    fs.promises.rm(path.join(cwd, wireframeRel(key)), { force: true }),
+                  ]),
             ),
           ).catch((cleanupError) =>
-            console.error('[docs-comp] FAIL-SHUT hỏng: không xoá được output của trang chưa thành công — stage có thể hiện xanh sai:', cleanupError),
+            console.error('[docs-comp] FAIL-SHUT hỏng: không xoá được output của màn chưa thành công — stage có thể hiện xanh sai:', cleanupError),
           );
           if (!outerResults.some((r) => r?.status === 'succeeded')) {
             await fs.promises
               .rm(path.join(cwd, 'comp'), { recursive: true, force: true })
-              .catch((cleanupError) =>
-                console.error(`[docs-comp] FAIL-SHUT hỏng: không xoá được ${path.join(cwd, 'comp')} — stage sẽ hiện xanh dù lần chạy này hỏng:`, cleanupError),
-              );
+              .catch((cleanupError) => console.error(`[docs-comp] FAIL-SHUT hỏng: không xoá được ${path.join(cwd, 'comp')}:`, cleanupError));
             await fs.promises
               .rm(path.join(cwd, 'wireframes'), { recursive: true, force: true })
-              .catch((cleanupError) =>
-                console.error(`[docs-comp] FAIL-SHUT hỏng: không xoá được ${path.join(cwd, 'wireframes')} — stage sẽ hiện xanh dù lần chạy này hỏng:`, cleanupError),
-              );
+              .catch((cleanupError) => console.error(`[docs-comp] FAIL-SHUT hỏng: không xoá được ${path.join(cwd, 'wireframes')}:`, cleanupError));
           }
         }
         setProjectPipelineStatus(db, projectId, pipelineId, {
@@ -18503,11 +18488,11 @@ export async function startServer({
       return runDocsMockupReviewFanout(pipelineId, projectId, wfDir, resetScope);
     }
 
-    // Docs → Màn hình → Component (dr-comp) → fan-out theo TRANG: mỗi trang một
-    // lượt agent ghi comp/<slug>.components.json, daemon validate (tên component
-    // phải có thật trong danh mục, anchor/label phải có thật trong tài liệu) rồi
-    // gộp thành comp/index.json + comp/summary.md.
-    if (def.skillId === 'docs-component-audit') {
+    // Docs → Màn hình → Component (dr-comp v2) → fan-out theo MÀN HÌNH lấy từ
+    // bước Đánh giá luồng UX: lượt role-map cho cả feature rồi mỗi màn một
+    // lượt agent ghi comp/<KEY>.screen.json + wireframes/<KEY>.html; daemon
+    // validate với danh mục DS + danh sách màn, gộp comp/index.json (2.0).
+    if (def.skillId === 'docs-screen-components') {
       return runDocsComponentAuditFanout(pipelineId, projectId, wfDir, resetScope);
     }
 
