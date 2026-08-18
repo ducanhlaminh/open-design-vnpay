@@ -77,6 +77,7 @@ import { Icon } from './Icon';
 import { AgentIcon } from './AgentIcon';
 import { IntegrationsView, type IntegrationTab } from './IntegrationsView';
 import { InlineModelSwitcher } from './InlineModelSwitcher';
+import { HostUpdateButton } from './HostUpdateButton';
 import { NewProjectModal } from './NewProjectModal';
 import { PluginsView } from './PluginsView';
 import type { CreateInput, CreateTab, ImportClaudeDesignOutcome } from './NewProjectPanel';
@@ -575,6 +576,9 @@ export function EntryShell({
                 onRefreshAgents={onRefreshAgents}
                 onOpenSettings={onOpenSettings}
               />
+              {/* Host-runtime update: only renders when a newer release
+                  exists; its own face shows the apply progress (%). */}
+              <HostUpdateButton />
             </div>
             {avatarMenu}
           </div>

@@ -32,6 +32,11 @@ export interface HostUpdateProgress {
   step: number;
   totalSteps: number;
   label: string;
+  /** Overall 0..99 estimate for the header button: completed steps plus the
+   *  last "NN%" seen inside the current step (installer download milestones /
+   *  curl's progress bar). Never 100 — only the replacement daemon's
+   *  `justUpdated` means done. */
+  percent: number;
 }
 
 /** Durable, renderer-neutral state for one host-runtime update attempt. */

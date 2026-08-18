@@ -1,0 +1,101 @@
+/* Header update button — same 32px pill silhouette as the topbar model /
+   CLI switcher chip (`.inline-switcher__chip`, entry-layout.css), but
+   accent-filled so it reads as THE call to action. While applying, the
+   button's own background is the progress bar: a left-anchored fill whose
+   width follows --od-update-percent (set inline by HostUpdateButton). */
+
+.button {
+  --od-update-percent: 0%;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 70%, var(--border));
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow:
+    var(--shadow-xs),
+    0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  transition: filter 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  animation: od-update-arrive 220ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.button:hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow:
+    var(--shadow-xs),
+    0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.button:disabled {
+  cursor: default;
+}
+
+/* Applying: panel base, translucent accent fill = progress. The fill is
+   deliberately translucent so the single label colour stays legible on
+   both the filled and unfilled halves in light and dark themes. */
+.button.applying {
+  background: var(--bg-panel);
+  color: color-mix(in srgb, var(--accent) 75%, var(--text));
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  box-shadow: var(--shadow-xs);
+  animation: none;
+}
+.button.applying::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--od-update-percent);
+  z-index: -1;
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  transition: width 400ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.button.applying .icon {
+  animation: od-update-spin 900ms linear infinite;
+}
+
+.button.restart {
+  background: color-mix(in srgb, var(--warning, #f5a524) 18%, var(--bg-panel));
+  color: color-mix(in srgb, var(--warning, #f5a524) 70%, var(--text));
+  border-color: color-mix(in srgb, var(--warning, #f5a524) 45%, var(--border));
+  box-shadow: var(--shadow-xs);
+  animation: none;
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.label {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes od-update-arrive {
+  from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes od-update-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .button { animation: none; }
+  .button.applying .icon { animation: none; }
+  .button.applying::before { transition: none; }
+}
+@media (max-width: 760px) {
+  .button { padding: 0 10px; }
+}

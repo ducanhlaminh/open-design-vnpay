@@ -1,9 +1,12 @@
-// Host-runtime self-update, UI-triggered (not silent). Polls GET
-// /api/update/status in the background; when a newer host-runtime release
-// exists it shows a small non-blocking banner with a button so the user
-// decides when to update — no more firing POST /api/update/apply on its
-// own the moment `updateAvailable` flips true (that used to happen here;
-// the repo owner asked for an explicit action instead). `od self-update`
+// Host-runtime self-update, UI-triggered (not silent). HEADLESS: polls GET
+// /api/update/status in the background and owns the outcome (reload on
+// `justUpdated`, error / restart-required toasts). The visible control is
+// components/HostUpdateButton.tsx in the entry topbar — a header button
+// whose own face shows the apply progress (no banner, no modal; asked for
+// on 2026-08-18: "button có state progress luôn"). State is shared through
+// state/host-update-store.ts so the button reflects an apply started
+// before the user navigated, and this poller keeps running (and reloads)
+// even while the button is off screen. `od self-update`
 // (apps/daemon/src/cli.ts) is the CLI mirror of the same two endpoints.
 // Once the daemon comes back up on the new version, the NEXT status poll
 // reports `justUpdated`; reload the page so it immediately picks up the
@@ -11,22 +14,14 @@
 //
 // Vietnamese-only copy on purpose — this fork's UI is Vietnamese and we
 // avoid new i18n keys here (see InfraSetupGate.tsx / ClaudeAccountSwitcher).
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect } from 'react';
 import { Toast } from './Toast';
-import styles from './UpdateCheck.module.css';
-
-interface UpdateStatusResponse {
-  currentVersion: string;
-  latestVersion: string | null;
-  updateAvailable: boolean;
-  justUpdated: { version: string; at: string } | null;
-  lastError: { message: string; at: string } | null;
-  state?: string | null;
-  // Parsed from the running install.sh/install.ps1's own "N/6 <label>" phase
-  // output — only non-null while THIS daemon process is still the one
-  // applying the update (see server.ts's readUpdateProgress).
-  progress: { step: number; totalSteps: number; label: string } | null;
-}
+import {
+  getHostUpdateState,
+  setHostUpdateState,
+  useHostUpdateState,
+  type UpdateStatusResponse,
+} from '../state/host-update-store';
 
 type UpdateApplyResponse = {
   started?: unknown;
@@ -85,65 +80,86 @@ const FAST_POLL_INTERVAL_MS = 4000;
 // nothing on this side can definitively confirm success beyond polling.
 const APPLY_TIMEOUT_MS = 90 * 1000;
 
+// Kick off POST /api/update/apply. Exported (not a hook) so the header
+// button can call it without owning the poll. The fast poll in UpdateCheck
+// notices the outcome (or times out) regardless of whether this POST itself
+// reached the daemon.
+export async function startHostUpdate(): Promise<void> {
+  if (getHostUpdateState().applying) return;
+  setHostUpdateState({
+    applying: true,
+    applyStartedAt: Date.now(),
+    applyError: null,
+    restartRequired: null,
+  });
+  try {
+    const res = await fetch('/api/update/apply', { method: 'POST' });
+    const body = await res.json().catch(() => null);
+    const failure = updateApplyFailureMessage(res.ok, body);
+    if (failure) {
+      setHostUpdateState({ applying: false, applyStartedAt: null, applyError: failure });
+      return;
+    }
+  } catch {
+    // Fire-and-forget — see above.
+  }
+  // Pick up the outcome immediately instead of waiting out the first
+  // fast-poll tick.
+  void checkHostUpdateStatus();
+}
+
+export async function checkHostUpdateStatus(): Promise<void> {
+  let body: UpdateStatusResponse;
+  try {
+    const res = await fetch('/api/update/status');
+    if (!res.ok) return;
+    body = (await res.json()) as UpdateStatusResponse;
+  } catch {
+    // Daemon unreachable — most likely mid-restart during its own
+    // update (install.sh/install.ps1's health-check-with-rollback
+    // window), or just a transient blip. Not a hard error: the next
+    // scheduled poll (fast, while an apply is in flight) retries.
+    return;
+  }
+
+  setHostUpdateState({ status: body });
+
+  if (shouldReloadAfterUpdate(body.justUpdated)) {
+    setHostUpdateState({ applying: false, applyStartedAt: null });
+    window.location.reload();
+    return;
+  }
+
+  const { applyStartedAt } = getHostUpdateState();
+  if (applyStartedAt == null) return;
+
+  const restartMessage = updateRestartRequiredMessage(body.state);
+  if (restartMessage) {
+    setHostUpdateState({ restartRequired: restartMessage, applying: false, applyStartedAt: null });
+    return;
+  }
+
+  if (body.lastError) {
+    setHostUpdateState({ applyError: body.lastError.message, applying: false, applyStartedAt: null });
+    return;
+  }
+
+  if (Date.now() - applyStartedAt > APPLY_TIMEOUT_MS) {
+    setHostUpdateState({
+      applyError: 'Cập nhật có thể chưa xong hoặc thất bại, thử tải lại trang.',
+      applying: false,
+      applyStartedAt: null,
+    });
+  }
+}
+
 export function UpdateCheck() {
-  const [status, setStatus] = useState<UpdateStatusResponse | null>(null);
-  const [applying, setApplying] = useState(false);
-  const [applyOutcomeError, setApplyOutcomeError] = useState<string | null>(null);
-  const [restartRequired, setRestartRequired] = useState<string | null>(null);
-  // Wall-clock start of the current apply attempt, for the timeout check
-  // in checkStatus below. A ref (not state) since it must not itself
-  // trigger a re-render.
-  const applyStartedAtRef = useRef<number | null>(null);
+  const { applying, applyError, restartRequired } = useHostUpdateState();
 
-  const checkStatus = useCallback(async () => {
-    let body: UpdateStatusResponse;
-    try {
-      const res = await fetch('/api/update/status');
-      if (!res.ok) return;
-      body = (await res.json()) as UpdateStatusResponse;
-    } catch {
-      // Daemon unreachable — most likely mid-restart during its own
-      // update (install.sh/install.ps1's health-check-with-rollback
-      // window), or just a transient blip. Not a hard error: the next
-      // scheduled poll (fast, while an apply is in flight) retries.
-      return;
-    }
-
-    setStatus(body);
-
-    if (shouldReloadAfterUpdate(body.justUpdated)) {
-      setApplying(false);
-      applyStartedAtRef.current = null;
-      window.location.reload();
-      return;
-    }
-
-    if (applyStartedAtRef.current == null) return;
-
-    const restartMessage = updateRestartRequiredMessage(body.state);
-    if (restartMessage) {
-      setRestartRequired(restartMessage);
-      setApplying(false);
-      applyStartedAtRef.current = null;
-      return;
-    }
-
-    if (body.lastError) {
-      setApplyOutcomeError(body.lastError.message);
-      setApplying(false);
-      applyStartedAtRef.current = null;
-      return;
-    }
-
-    if (Date.now() - applyStartedAtRef.current > APPLY_TIMEOUT_MS) {
-      setApplyOutcomeError('Cập nhật có thể chưa xong hoặc thất bại, thử tải lại trang.');
-      setApplying(false);
-      applyStartedAtRef.current = null;
-    }
-  }, []);
+  const checkStatus = useCallback(() => void checkHostUpdateStatus(), []);
 
   useEffect(() => {
-    void checkStatus();
+    checkStatus();
   }, [checkStatus]);
 
   // Poll cadence switches to FAST_POLL_INTERVAL_MS for as long as an apply
@@ -151,46 +167,18 @@ export function UpdateCheck() {
   // InfraSetupGate's docker-status poll gated on whether its setup flow is
   // active.
   useEffect(() => {
-    const id = window.setInterval(
-      () => void checkStatus(),
-      applying ? FAST_POLL_INTERVAL_MS : POLL_INTERVAL_MS,
-    );
+    const id = window.setInterval(checkStatus, applying ? FAST_POLL_INTERVAL_MS : POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, [applying, checkStatus]);
 
-  const startApply = useCallback(async () => {
-    setApplying(true);
-    setApplyOutcomeError(null);
-    setRestartRequired(null);
-    applyStartedAtRef.current = Date.now();
-    try {
-      const res = await fetch('/api/update/apply', { method: 'POST' });
-      const body = await res.json().catch(() => null);
-      const failure = updateApplyFailureMessage(res.ok, body);
-      if (failure) {
-        setApplyOutcomeError(failure);
-        setApplying(false);
-        applyStartedAtRef.current = null;
-        return;
-      }
-    } catch {
-      // Fire-and-forget — the fast poll above notices the outcome (or
-      // times out) regardless of whether this POST itself reached the
-      // daemon.
-    }
-    // Pick up the outcome immediately instead of waiting out the first
-    // fast-poll tick.
-    void checkStatus();
-  }, [checkStatus]);
-
   return (
     <>
-      {applyOutcomeError ? (
+      {applyError ? (
         <Toast
           role="alert"
           message="Cập nhật thất bại"
-          details={applyOutcomeError}
-          onDismiss={() => setApplyOutcomeError(null)}
+          details={applyError}
+          onDismiss={() => setHostUpdateState({ applyError: null })}
         />
       ) : null}
       {restartRequired ? (
@@ -198,40 +186,8 @@ export function UpdateCheck() {
           message="Cần khởi động lại"
           details={restartRequired}
           ttlMs={0}
-          onDismiss={() => setRestartRequired(null)}
+          onDismiss={() => setHostUpdateState({ restartRequired: null })}
         />
-      ) : null}
-      {status?.updateAvailable ? (
-        <div className={styles.banner} role="status">
-          <div className={styles.bannerRow}>
-            <span className={styles.bannerText}>
-              Có bản cập nhật mới: v{status.latestVersion} (đang chạy v{status.currentVersion})
-            </span>
-            <button
-              type="button"
-              className={styles.bannerBtn}
-              disabled={applying || status.state === 'restart-required'}
-              onClick={() => void startApply()}
-            >
-              {applying ? 'Đang cập nhật…'
-                : status.state === 'restart-required' ? 'Cần khởi động lại'
-                  : 'Cập nhật ngay'}
-            </button>
-          </div>
-          {applying && status.progress ? (
-            <>
-              <span className={styles.progressLabel}>
-                Bước {status.progress.step}/{status.progress.totalSteps} — {status.progress.label}
-              </span>
-              <div className={styles.progressTrack}>
-                <div
-                  className={styles.progressFill}
-                  style={{ width: `${Math.round((status.progress.step / status.progress.totalSteps) * 100)}%` }}
-                />
-              </div>
-            </>
-          ) : null}
-        </div>
       ) : null}
     </>
   );

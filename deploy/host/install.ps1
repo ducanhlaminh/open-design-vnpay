@@ -501,7 +501,9 @@ function Invoke-DownloadFile {
             try { [Console]::Write($line) } catch {}
             $lastPercent = $percent
           } else {
-            $milestone = [int]([Math]::Floor($percent / 25) * 25)
+            # 5% milestones: the daemon folds these into /api/update/status
+            # progress.percent for the web header's update button.
+            $milestone = [int]([Math]::Floor($percent / 5) * 5)
             if ($milestone -gt $lastMilestone) {
               Write-DownloadLog "download $milestone% ($received/$total bytes)"
               $lastMilestone = $milestone

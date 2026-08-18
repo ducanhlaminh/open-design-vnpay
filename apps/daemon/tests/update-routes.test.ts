@@ -351,9 +351,9 @@ setTimeout(() => {
       );
       const withPhase = await fetch(`${baseUrl}/api/update/status`);
       const withPhaseBody = (await withPhase.json()) as {
-        progress: { step: number; totalSteps: number; label: string } | null;
+        progress: { step: number; totalSteps: number; label: string; percent: number } | null;
       };
-      expect(withPhaseBody.progress).toEqual({ step: 2, totalSteps: 6, label: 'Kiem tra Node.js' });
+      expect(withPhaseBody.progress).toEqual({ step: 2, totalSteps: 6, label: 'Kiem tra Node.js', percent: 17 });
       const stateRes = await fetch(`${baseUrl}/api/update/status`);
       const stateBody = (await stateRes.json()) as {
         operationId: string;
@@ -364,7 +364,7 @@ setTimeout(() => {
       expect(stateBody).toMatchObject({
         targetVersion: FAKE_LATEST_VERSION,
         state: 'verifying',
-        phase: { step: 2, totalSteps: 6, label: 'Kiem tra Node.js' },
+        phase: { step: 2, totalSteps: 6, label: 'Kiem tra Node.js', percent: 17 },
       });
     });
 

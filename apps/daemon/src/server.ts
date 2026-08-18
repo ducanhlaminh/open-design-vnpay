@@ -3272,20 +3272,45 @@ function stripAnsiCodes(line: string): string {
 // never load-bearing, so it never throws.
 export async function readUpdateProgress(
   dataDir: string,
-): Promise<{ step: number; totalSteps: number; label: string } | null> {
+): Promise<{ step: number; totalSteps: number; label: string; percent: number } | null> {
   try {
     const raw = await fs.promises.readFile(path.join(dataDir, UPDATE_LOG_FILENAME), 'utf8');
-    const lines = raw.split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const match = UPDATE_PHASE_LINE_RE.exec(stripAnsiCodes(lines[i]).trim());
-      if (match) {
-        return { step: Number(match[1]), totalSteps: Number(match[2]), label: match[3].trim() };
-      }
-    }
-    return null;
+    return parseUpdateProgress(raw);
   } catch {
     return null;
   }
+}
+
+// Last "NN%" inside the current step's slice of the log — install.ps1's
+// Write-DownloadLog milestones ("download 35% (…)") and install.sh's curl
+// --progress-bar ("####  35.0%", \r-separated) both match. Only used to
+// refine the percent estimate; absence means "step just started".
+const UPDATE_INNER_PERCENT_RE = /(\d{1,3})(?:[.,]\d+)?%/g;
+
+export function parseUpdateProgress(
+  raw: string,
+): { step: number; totalSteps: number; label: string; percent: number } | null {
+  const lines = raw.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const match = UPDATE_PHASE_LINE_RE.exec(stripAnsiCodes(lines[i]).trim());
+    if (!match) continue;
+    const step = Number(match[1]);
+    const totalSteps = Number(match[2]);
+    let inner = 0;
+    for (const line of lines.slice(i + 1)) {
+      for (const seg of stripAnsiCodes(line).split('\r')) {
+        for (const m of seg.matchAll(UPDATE_INNER_PERCENT_RE)) {
+          const v = Number(m[1]);
+          if (v >= 0 && v <= 100) inner = v / 100;
+        }
+      }
+    }
+    const percent = totalSteps > 0
+      ? Math.min(99, Math.max(0, Math.round(((step - 1 + inner) / totalSteps) * 100)))
+      : 0;
+    return { step, totalSteps, label: match[3].trim(), percent };
+  }
+  return null;
 }
 
 function updateStateForProgress(progress) {
