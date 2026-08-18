@@ -178,6 +178,8 @@ import { createClaudeStreamHandler } from './claude-stream.js';
 import { diagnoseClaudeCliFailure } from './claude-diagnostics.js';
 import { fetchClaudeUsage } from './claude-usage.js';
 import { renderHtmlToPdf } from './bas/drawio-render.js';
+import { finalizeFlowUx, prepareFlowUxInputs } from './flow-ux/index.js';
+import { serveDrawioViewerJs } from './flow-ux/viewer-asset.js';
 import { loadCritiqueConfigFromEnv } from './critique/config.js';
 import { reconcileStaleRuns } from './critique/persistence.js';
 import { runOrchestrator } from './critique/orchestrator.js';
@@ -3118,9 +3120,13 @@ export const HOST_RUNTIME_RELEASE_CACHE_TTL_MS = 5 * 60 * 1000;
 let hostRuntimeLatestReleaseCache = null;
 let hostRuntimeLatestReleaseInflight = null;
 
-async function readHostRuntimeLatestReleaseInfo() {
+// `force` (GET /api/update/status?refresh=1 — the header "Kiểm tra cập nhật"
+// button) bypasses the TTL so a user-initiated check always asks GitHub;
+// concurrent callers still coalesce onto one in-flight request.
+async function readHostRuntimeLatestReleaseInfo({ force = false } = {}) {
   const now = Date.now();
   if (
+    !force &&
     hostRuntimeLatestReleaseCache &&
     now - hostRuntimeLatestReleaseCache.fetchedAt < HOST_RUNTIME_RELEASE_CACHE_TTL_MS
   ) {
@@ -4720,6 +4726,13 @@ export async function startServer({
     res.json({ version });
   });
 
+  // draw.io static viewer (Apache-2.0, ~4 MB) for the flow-UX preview. Too big
+  // to vendor into the repo, so it is fetched ONCE into the runtime data dir
+  // and served from there; the web falls back to the CDN when this 503s.
+  app.get('/api/vendor/drawio-viewer.js', async (req, res) => {
+    await serveDrawioViewerJs(req, res, RUNTIME_DATA_DIR);
+  });
+
   app.get('/api/github/open-design', async (_req, res) => {
     try {
       const stats = await readOpenDesignGithubRepoStats();
@@ -5570,19 +5583,29 @@ export async function startServer({
   // through `lastUpdateError` / GET /api/update/status's `lastError`
   // instead of failing silently.
   // ---------------------------------------------------------------------
-  app.get('/api/update/status', async (_req, res) => {
+  app.get('/api/update/status', async (req, res) => {
     const versionInfo = await readCurrentAppVersionInfo();
     const currentVersion = versionInfo.version;
+    // `?refresh=1` = explicit user check from the header button: bypass
+    // the release cache and report the outcome (`checkedAt` / `checkError`)
+    // so the UI can say "đã là bản mới nhất" or "không kiểm tra được"
+    // instead of silently showing the same stale answer.
+    const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
 
     let latestVersion = null;
+    let checkedAt = null;
+    let checkError = null;
     try {
-      const release = await readHostRuntimeLatestReleaseInfo();
+      const release = await readHostRuntimeLatestReleaseInfo({ force: refresh });
       latestVersion = release.version;
-    } catch {
+      checkedAt = new Date(release.fetchedAt).toISOString();
+      if (release.stale && refresh) checkError = 'Không kết nối được GitHub — đang hiển thị kết quả kiểm tra trước đó.';
+    } catch (err) {
       // GitHub unreachable / rate-limited — this is a quiet background
       // check, not a user-facing error. Leave latestVersion null; the
       // next poll (or the shared cache once GitHub recovers) picks it up.
       latestVersion = null;
+      checkError = refresh ? `Không kiểm tra được bản mới: ${(err as Error).message}` : null;
     }
 
     const updateAvailable =
@@ -5666,6 +5689,8 @@ export async function startServer({
       currentVersion,
       latestVersion,
       updateAvailable,
+      checkedAt,
+      checkError,
       justUpdated,
       lastError: durableError,
       progress,
@@ -16473,7 +16498,7 @@ export async function startServer({
           const screenKeyPrefix = path.posix.basename(pg.mdPath, '.md');
           const flowsLine =
             flowchartFiles.length > 0
-              ? ` "data-nav": thư mục "flows/" đang có ${flowchartFiles.length} file flowchart (${flowchartFiles.map((r) => `"${r}"`).join(', ')}) do bước Sơ đồ luồng màn hình vẽ trước — đọc chúng; node có trường "screen" (= SCREEN-KEY) là bước diễn ra trên màn đó; khi có cạnh (edges[]) từ một node thuộc màn này sang một node thuộc màn KHÁC thì block nút/link tương ứng trên màn này mang data-nav="<SCREEN-KEY đích>"; không tìm được cạnh nào như vậy thì bỏ data-nav. `
+              ? ` "data-nav": thư mục "flows/" đang có ${flowchartFiles.length} file flowchart (${flowchartFiles.map((r) => `"${r}"`).join(', ')}) do bước Đánh giá luồng UX (dr-flow) sinh trước — đọc chúng; node có trường "screen" (= SCREEN-KEY) là bước diễn ra trên màn đó; khi có cạnh (edges[]) từ một node thuộc màn này sang một node thuộc màn KHÁC thì block nút/link tương ứng trên màn này mang data-nav="<SCREEN-KEY đích>"; không tìm được cạnh nào như vậy thì bỏ data-nav. `
               : ` Thư mục "flows/" chưa có file *.flowchart.json nào nên KHÔNG dùng data-nav. `;
           const cssLine = wireframeCssOk
             ? `một thẻ <style> chép NGUYÊN VĂN nội dung file "${wireframeCssRel}" (daemon đã copy sẵn từ skill ux-spec — Read nó rồi dán vào; chỉ được thêm tối đa vài rule layout của riêng màn), `
@@ -18896,6 +18921,21 @@ export async function startServer({
     if (def.skillId === 'ui-react-ds' && reactDsStageId) {
       await stageReactDsBundle(reactDsStageId, projectId, wfDir);
     }
+    // dr-flow (docs-flow-ux): decode every draw.io / Mermaid diagram the docs
+    // carry into ./flows/<FLOW-ID>/ BEFORE the agent starts (after the re-run
+    // clear above, which wipes flows/). The skill reads flows/_inputs.json.
+    if (def.skillId === 'docs-flow-ux' && pipelineCwd) {
+      const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
+      try {
+        const prep = await prepareFlowUxInputs(runCwd);
+        console.log(
+          `[flow-ux] ${projectId}: prepared ${prep.inputs.length} diagram flow(s)` +
+            (prep.normalizedPages.length ? `, normalized ${prep.normalizedPages.length} page(s)` : ''),
+        );
+      } catch (error) {
+        console.warn('[flow-ux] prepare failed (continuing in text-only mode):', error);
+      }
+    }
     const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
     design.runs.start(run, () => startChatRun({
       agentId,
@@ -18927,11 +18967,27 @@ export async function startServer({
         const finalStatus = await design.runs.wait(run);
         db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`)
           .run(finalStatus.status, Date.now(), assistantMessageId);
-        const next = finalStatus.status === 'succeeded'
+        let next: 'succeeded' | 'failed' | 'idle' = finalStatus.status === 'succeeded'
           ? 'succeeded'
           : finalStatus.status === 'canceled'
             ? 'idle'
             : 'failed';
+        let finalizeError: string | null = null;
+        // dr-flow (docs-flow-ux): the agent emitted small JSON files; the daemon
+        // now applies patch.json -> proposed.drawio, derives flowchart.json and
+        // rebuilds flows/index.json. A finalize failure IS a stage failure —
+        // downstream stages need those files.
+        if (next === 'succeeded' && def.skillId === 'docs-flow-ux' && pipelineCwd) {
+          const runCwd = wfDir ? path.join(pipelineCwd, wfDir) : pipelineCwd;
+          try {
+            const fin = await finalizeFlowUx(runCwd);
+            console.log(`[flow-ux] ${projectId}: finalized ${fin.index.length} flow(s)${fin.warnings.length ? ` — ${fin.warnings.length} warning(s): ${fin.warnings.join(' | ')}` : ''}`);
+          } catch (error) {
+            finalizeError = `Hoàn tất sơ đồ luồng thất bại: ${String((error as Error)?.message ?? error)}`;
+            console.warn('[flow-ux] finalize failed:', error);
+            next = 'failed';
+          }
+        }
         // CHẨN ĐOÁN "stage chết trong run-all nhưng chạy lẻ thành công, không
         // có bảng `runs` để khám nghiệm lượt đã hỏng" (xem incident docs-map):
         // đây là chỗ DUY NHẤT vừa biết trạng thái cuối vừa còn cầm `run` object
@@ -18978,7 +19034,7 @@ export async function startServer({
           // reason, then the generic fallback — never leave a failed status
           // with nothing for "Xem lỗi" to show.
           ...(next === 'failed'
-              ? { error: finalStatus.error || 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' }
+              ? { error: finalizeError || finalStatus.error || 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' }
               : {}),
         });
         // History snapshot: this run's outputs become one .odhistory commit —

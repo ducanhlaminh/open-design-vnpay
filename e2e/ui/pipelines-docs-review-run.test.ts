@@ -11,10 +11,13 @@
 //             fan-out; each page's agent MUST write "comp/<slug>.components.json"
 //             or the page (and, if every page fails, the whole stage) is a
 //             hard error (apps/daemon/src/server.ts `runDocsComponentAuditFanout`).
-//   dr-flow   (skillId 'docs-flow-extract')               — no special-case
-//             handler in `runPipeline`; falls through to the fully generic
-//             single-agent path, whose status is set purely from the
-//             underlying run's terminal status — no file-content validation.
+//   dr-flow   (skillId 'docs-flow-ux')                    — generic single-agent
+//             path plus a deterministic pre-step (`prepareFlowUxInputs`:
+//             extract draw.io/Mermaid diagrams → flows/<id>/…) and post-step
+//             (`finalizeFlowUx`: apply patch.json → proposed.drawio, derive
+//             flowchart.json, write flows/index.json). With no diagrams in the
+//             docs both steps are no-ops, so status still follows the run's
+//             terminal status — no file-content validation.
 //   dr-review (skillId 'docs-spec-review')                — PER-SECTION agent
 //             fan-out; the agent is NOT required to write anything for a
 //             section (missing changes.json/notes.json = valid empty array,
@@ -74,7 +77,7 @@ const FEEDBACK_USERNAME = 'Pipelines Docs-Review E2E';
 const STAGE_NAME = {
   'dr-docs': 'Tài liệu (nạp)',
   'dr-comp': 'Màn hình → Component',
-  'dr-flow': 'Sơ đồ luồng màn hình',
+  'dr-flow': 'Đánh giá luồng UX',
   'dr-review': 'Review tài liệu',
 } as const;
 

@@ -89,7 +89,7 @@ test('docs-review: fully independent of docs-to-ui and docs-to-prd — dr-docs -
   assert.equal(def('dr-docs').skillId, 'confluence-ingest');
   assert.equal(def('dr-comp').skillId, 'docs-component-audit');
   assert.equal(def('dr-review').skillId, 'docs-spec-review');
-  assert.equal(def('dr-flow').skillId, 'docs-flow-extract');
+  assert.equal(def('dr-flow').skillId, 'docs-flow-ux');
   assert.deepEqual(def('dr-docs').dependsOn, []);
   // 2026-08-17: dr-flow chạy TRƯỚC dr-comp — wireframe của dr-comp lấy
   // `data-nav` từ flows/, nên run-all sắp flow trước và re-run dr-flow có

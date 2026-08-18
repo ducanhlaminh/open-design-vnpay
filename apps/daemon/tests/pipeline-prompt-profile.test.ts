@@ -8,14 +8,14 @@ import { renderPipelineFolderSummary } from '../src/server.js';
 // of which the stage's own skill is ~15–20k. These tests pin what the lean
 // profile drops and what it MUST keep.
 
-const skillBody = '# docs-flow-extract\n\n## Bước 0 — đọc input\n\nRead `docs/<page>.md`.';
+const skillBody = '# docs-flow-ux\n\n## Bước 0 — đọc input\n\nRead `docs/<page>.md`.';
 
 function compose(profile?: 'chat' | 'pipeline') {
   return composeSystemPrompt({
     agentId: 'claude',
     includeCodexImagegenOverride: false,
     skillBody,
-    skillName: 'docs-flow-extract',
+    skillName: 'docs-flow-ux',
     memoryBody: '### Project\n- **kg-seed** — remembered fact from a past chat',
     designSystemBody: '# Neutral Modern\n\nPalette: blue.',
     designSystemTitle: 'Neutral Modern',
@@ -42,7 +42,7 @@ describe('composeSystemPrompt — promptProfile: pipeline', () => {
 
     // What it must keep.
     expect(lean).toContain(PIPELINE_CHARTER);
-    expect(lean).toContain('## Active skill — docs-flow-extract');
+    expect(lean).toContain('## Active skill — docs-flow-ux');
     expect(lean).toContain(skillBody);
     expect(lean).toContain('## Custom instructions (user-level)');
     expect(lean).toContain('## Custom instructions (project-level)');
@@ -74,7 +74,7 @@ describe('composeSystemPrompt — promptProfile: pipeline', () => {
       promptProfile: 'pipeline',
       critique: { enabled: true, panelSize: 3, rounds: 1 } as never,
       critiqueBrand: { name: 'Neutral Modern', design_md: '# NM' },
-      critiqueSkill: { id: 'docs-flow-extract' },
+      critiqueSkill: { id: 'docs-flow-ux' },
     });
     expect(lean).not.toContain('CRITIQUE_RUN');
   });

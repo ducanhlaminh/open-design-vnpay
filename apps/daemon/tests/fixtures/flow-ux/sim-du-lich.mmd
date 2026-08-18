@@ -1,0 +1,55 @@
+flowchart TD
+    A([Bắt đầu: Mở App Kênh bán]) --> B[Chọn Mua SIM -> SIM Du lịch]
+    B --> C_Type{Loại SIM du lịch?}
+    
+    %% PHÂN NHÁNH 1: SIM DU LỊCH QUỐC TẾ
+    C_Type -- "SIM du lịch Quốc tế" --> C[Tìm kiếm & Chọn Quốc gia / Khu vực]
+    C --> D{Chọn loại sim?}
+    D -- eSIM --> E1[Hiển thị danh sách gói cước eSIM]
+    D -- SIM Vật lý --> E2[Hiển thị danh sách gói cước SIM vật lý]
+    
+    E1 --> G_Int[Khách hàng chọn Gói cước]
+    E2 --> G_Int
+    G_Int --> H[Màn hình Nhập thông tin]
+
+    %% PHÂN NHÁNH 2: SIM DU LỊCH VIỆT NAM (Chỉ có eSIM)
+    C_Type -- "SIM du lịch Việt Nam" --> E3[Hiển thị danh sách gói cước <br> eSIM Việt Nam]
+    E3 -->  G_Int
+    
+    %% MÀN HÌNH NHẬP THÔNG TIN DỰA TRÊN LOẠI SIM ĐÃ CHỌN
+    H --> I{Loại SIM đã chọn?}
+    I -- eSIM --> J1["Nhập:<br>• Họ tên<br>• SĐT liên hệ<br>• Email nhận QR"]
+    I -- SIM Vật lý --> J2["Nhập:<br>• Họ tên<br>• SĐT liên hệ<br>• Địa chỉ nhận SIM<br>• Email"]
+    
+    J1 --> K[KH bấm Thanh toán]
+    J2 --> K
+    
+    K --> L{"Kết quả thanh toán?"}
+
+    %% PHÂN NHÁNH THANH TOÁN (Giống SIM giá rẻ/data)
+    L -- "Thất bại" --> L_Fail["Bank báo lỗi"]
+    L -- "Timeout" --> L_Timeout["Billing revert tiền cho KH"]
+    L -- "Thành công" --> L_Success["Billing gọi gạch nợ sang SDK"]
+
+    %% LUỒNG XUẤT ĐƠN SAU THANH TOÁN THÀNH CÔNG
+    L_Success --> SDK_Call["SDK gọi sang NCC xuất đơn"]
+    SDK_Call --> NCC_Status{"Kết quả nhận trạng thái<br>xuất đơn từ NCC?"}
+
+    %% CÁC TRẠNG THÁI XUẤT ĐƠN
+    NCC_Status -- "Xuất đơn thành công" --> Success_Type{Loại SIM?}
+    Success_Type -- eSIM --> eSIM_Deliver["NCC trả QR eSIM<br>-> SDK gửi Email & Hiển thị QR<br>trong Lịch sử mua hàng"]
+    Success_Type -- SIM Vật lý --> Phys_Deliver["NCC giao SIM cho ĐVVC <br>để giao hàng"]
+
+    NCC_Status -- "Xuất đơn thất bại" --> SDK_Fail["SDK ghi nhận trạng thái thất bại"]
+    SDK_Fail --> Revert_From_Fail["Billing revert tiền cho KH"]
+
+    NCC_Status -- "Xuất đơn timeout" --> SDK_Timeout["SDK lưu trạng thái timeout"]
+    SDK_Timeout --> CSKH_Process["CSKH làm việc để cập nhật <br> lại giao dịch timeout"]
+
+    %% HỘI TỤ VỀ 1 KẾT THÚC DUY NHẤT
+    L_Fail --> End([Kết thúc])
+    L_Timeout --> End
+    eSIM_Deliver --> End
+    Phys_Deliver --> End
+    Revert_From_Fail --> End
+    CSKH_Process --> End

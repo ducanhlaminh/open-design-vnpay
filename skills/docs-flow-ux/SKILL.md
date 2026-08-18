@@ -1,251 +1,367 @@
 ---
-name: docs-flow-extract
+name: docs-flow-ux
 description: |
-  Stage `dr-flow` of the `docs-review` workflow — an INDEPENDENT workflow from
-  `docs-to-ui` and `docs-to-prd`, with its own docs ingest (`dr-docs`). Runs
-  BEFORE the final review stage (`dr-review`). Read the ingested documents
-  under `docs/**/*.md`, identify every screen flow / business process the
-  documents describe, and emit ONE flowchart JSON per flow at
-  `flows/<FLOW-ID>.flowchart.json` plus a `flows/index.json` listing them.
-  Classic flowchart notation only: oval start/end, rectangle action, diamond
-  decision, labeled arrows; action nodes carry `screen` (SCREEN-KEY) so the
-  viewer can show each screen's wireframe. Activate when the user runs the "Sơ đồ luồng màn
-  hình" pipeline or asks to draw the screen flow / process flowchart of a
-  document.
+  Stage `dr-flow` ("Đánh giá luồng UX") of the `docs-review` workflow — an
+  INDEPENDENT workflow from `docs-to-ui` and `docs-to-prd`, with its own docs
+  ingest (`dr-docs`). Runs BEFORE `dr-comp` and `dr-review`. The daemon has
+  already decoded every flow diagram the ingested documents carry (draw.io
+  pages, Mermaid flowcharts) into `flows/<FLOW-ID>/` and listed them in
+  `flows/_inputs.json`. Read each diagram TOGETHER with the document text,
+  judge whether the flow is good UX against a fixed checklist, and — when it
+  is not — propose a better flow as SMALL LOCAL EDITS on the original diagram
+  (`patch.json` for draw.io, `proposed.mmd` for Mermaid) plus a findings file
+  (`ux-review.json`) that links every reason to the cells it concerns. The
+  daemon turns your patch into the colour-coded `proposed.drawio`, derives
+  `flows/<FLOW-ID>.flowchart.json` (for dr-comp / dr-review) from the SOURCE
+  diagram plus your `screens.json`, and rebuilds `flows/index.json`. Activate
+  when the user runs the "Đánh giá luồng UX" pipeline or asks to review the
+  UX of a screen flow / process diagram in a document.
 triggers:
+  - "đánh giá luồng ux"
+  - "review luồng"
+  - "soi ux luồng"
   - "sơ đồ luồng"
   - "sơ đồ luồng màn hình"
-  - "vẽ luồng màn hình"
   - "flowchart tài liệu"
-  - "docs flow extract"
-  - "screen flow từ tài liệu"
-  - "trích luồng nghiệp vụ"
+  - "docs flow ux"
+  - "đề xuất luồng tốt hơn"
 od:
   mode: utility
   category: ux-research
 ---
 
-# docs-flow-extract — rút sơ đồ luồng màn hình từ tài liệu (`docs-review`)
+# docs-flow-ux — đánh giá UX của luồng trong tài liệu và đề xuất trên chính sơ đồ gốc (`docs-review`)
 
-Bạn là bước **Sơ đồ luồng màn hình** của workflow `docs-review` — độc lập hoàn
-toàn với `docs-to-ui` và `docs-to-prd`. Upstream trong CHÍNH workflow này,
-`dr-docs` đã nạp tài liệu vào `docs/`. Bước Màn hình → Component (`dr-comp`)
-chạy SAU bạn và đọc `flows/` để biết màn nào nối sang màn nào khi vẽ wireframe;
-bước Review tài liệu (`dr-review`) chạy sau cùng — nó là bước chốt cuối, soát
-cả tài liệu lẫn sơ đồ bạn rút ra.
+Bạn là bước **Đánh giá luồng UX** của workflow `docs-review`. Upstream trong
+CHÍNH workflow này, `dr-docs` đã nạp tài liệu vào `docs-feature/` (hoặc
+`docs/`). Bước Màn hình → Component (`dr-comp`) chạy SAU bạn và đọc
+`flows/*.flowchart.json` để biết màn nào nối sang màn nào; bước Review tài liệu
+(`dr-review`) chạy sau cùng và đọc cả `flows/<FLOW-ID>/ux-review.json` của bạn.
 
-Nhiệm vụ: đọc tài liệu, **nhận diện các LUỒNG MÀN HÌNH / QUY TRÌNH nghiệp vụ**
-mà tài liệu mô tả, và ghi MỖI luồng thành một file sơ đồ JSON. Bạn **không
-review, không sửa tài liệu, không thiết kế màn hình mới** — chỉ chuyển thứ tài
-liệu đã nói thành sơ đồ.
+Nhiệm vụ của bạn có ba phần, theo đúng thứ tự:
+
+1. **Đọc luồng như tài liệu vẽ** — sơ đồ gốc đã được daemon giải nén, không
+   phải vẽ lại từ chữ.
+2. **Đánh giá UX của luồng** theo checklist cố định bên dưới, mỗi phát hiện có
+   căn cứ trong tài liệu.
+3. **Đề xuất luồng tốt hơn (nếu có)** bằng các thao tác SỬA NHỎ trên chính sơ đồ
+   gốc — thêm bước, đổi nhãn, đánh dấu bỏ, nối lại cạnh — để daemon tô màu và
+   người xem so được "Hiện trạng" với "Đề xuất".
+
+Bạn **không sửa tài liệu, không tự viết XML draw.io, không tự viết
+`index.json`, không vẽ lại toàn bộ luồng**.
 
 ## Bước 0 — đọc input (từ cwd của dự án)
 
-**Bố cục tài liệu.** Với dự án gắn App (nguồn app-pool): làm việc từ `./docs-feature/` — các trang Confluence được chọn cho ĐÚNG feature này (Markdown gốc, cây phản chiếu Confluence, ảnh trong `./docs-feature/attachments/`). Đây là nguồn sự thật. `./docs-app/` chứa TOÀN BỘ pool tài liệu của App ở chế độ chỉ đọc để tham khảo phạm vi toàn App: đọc `./docs-app/_index.md` trước để biết có gì, chỉ mở từng trang khi cần đối chiếu cross-feature — không audit, fan-out, hoặc tạo deliverable từ `./docs-app/`. **Ngoại lệ:** để xác định đường vào feature, được phép đọc `./docs-app/_index.md` và các trang liên quan trong `./docs-app/`, vì đường vào là một phần của deliverable. Dự án legacy dùng `./docs/confluence/`, `./docs/jira/`, `./docs/context/` như mô tả bên dưới. Coi mọi `.md` trong thư mục làm việc đang hoạt động (trừ `_index.md` và `attachments/`) là trang nguồn.
-
-- **Nguồn:** `./docs/**/*.md` hoặc `./docs-feature/**/*.md` — tài liệu `dr-docs` đã nạp. Ngoại lệ cho việc xác định đường vào: đọc `./docs-app/_index.md` và các trang liên quan trong `./docs-app/`; đường vào là một phần của deliverable. Không audit hoặc tạo deliverable khác từ `./docs-app/`. Không có file `.md`
-  nào thì không có gì để làm — dừng lại và nói rõ, đừng bịa sơ đồ.
-- **Mockup/screenshot chỉ minh hoạ:** không mở hoặc suy luồng từ ảnh UI nhúng
-  trong URD/PRD. Trích node, nhánh và điều kiện từ chữ trong tài liệu; chỉ file
-  nguồn `.drawio` được ingest đánh dấu là `flow-diagram` mới là căn cứ bổ sung
-  cho thứ tự/nhánh nghiệp vụ. Nó không cung cấp hướng layout hay wireframe.
-- **CHỈ ĐỌC.** Stage này không sửa bất cứ file nào dưới `docs/`; nó chỉ GHI
-  vào `flows/`.
-- Bỏ qua các file phụ trợ không phải nội dung nghiệp vụ (`*.changes.json`,
-  `*.notes.json`, `review/index.json`, `review/summary.md`, `*.slice.md`).
-
-## Bước 1 — nhận diện luồng
-
-Một **luồng** là một chuỗi thao tác có mục tiêu nghiệp vụ rõ ràng, đi từ lúc
-người dùng bắt đầu tới lúc đạt (hoặc không đạt) mục tiêu đó — ví dụ "Đăng
-nhập", "Tạo mới nhân viên", "Duyệt đơn nghỉ phép". Dấu hiệu trong tài liệu:
-một mục mô tả các bước thao tác, một bảng luồng, một sơ đồ, một danh sách
-"Bước 1/2/3…", hoặc phần mô tả màn hình kèm điều kiện hợp lệ và thông báo lỗi.
-
-- Một tài liệu có thể chứa NHIỀU luồng; một luồng cũng có thể trải trên nhiều
-  mục của cùng một tài liệu.
-- Đừng cắt vụn: mỗi thao tác lẻ (bấm một nút) KHÔNG phải một luồng.
-- Đừng gộp to: hai nghiệp vụ khác mục tiêu là hai luồng, kể cả khi cùng một
-  màn hình.
-
-`FLOW-ID` là slug ngắn, chỉ `[A-Za-z0-9-]`, đặt theo dạng `FLOW-<việc>` không
-dấu — ví dụ `FLOW-login`, `FLOW-tao-nhan-vien`. Id là duy nhất trong cả dự án.
-
-## Bước 2 — ghi `flows/<FLOW-ID>.flowchart.json`
-
-Ghi ĐÚNG một file cho mỗi luồng, theo schema dưới đây. **Schema là ĐÓNG BĂNG**
-— viewer render đúng các field này, **không thêm, không bớt, không đổi tên**.
+**Đọc `flows/_inputs.json` TRƯỚC TIÊN.** Nó do daemon sinh ngay trước khi bạn
+chạy và liệt kê mọi sơ đồ luồng tìm thấy trong tài liệu:
 
 ```json
 {
-  "id": "FLOW-login",
-  "title": "Đăng nhập",
-  "source": "docs/2.1.1-urd-quan-ly-nhan-vien.md",
-  "nodes": [
-    { "id": "n1", "type": "start",    "label": "Trang chủ <tên app>" },
-    { "id": "n2", "type": "action",   "label": "Nhập tên đăng nhập + mật khẩu", "screen": "2.1.1-urd-quan-ly-nhan-vien__SCR-001" },
-    { "id": "n3", "type": "decision", "label": "Thông tin hợp lệ?" },
-    { "id": "n4", "type": "action",   "label": "Hiện thông báo lỗi", "screen": "2.1.1-urd-quan-ly-nhan-vien__SCR-001" },
-    { "id": "n5", "type": "end",      "label": "Vào màn hình chính" }
+  "flows": [
+    {
+      "id": "FLOW-mua-sim-du-lich",
+      "title": "Mua SIM du lịch",
+      "kind": "drawio",
+      "source": "docs-feature/…/2.1-PRD-Mua-SIM.md",
+      "diagram": "docs-feature/…/attachments/12345-Luong-mua-sim.drawio",
+      "page": { "index": 0, "name": "Mua SIM du lịch", "count": 2 },
+      "files": { "asIs": "flows/FLOW-mua-sim-du-lich/as-is.drawio", "cells": "flows/FLOW-mua-sim-du-lich/cells.json" },
+      "counts": { "nodes": 23, "edges": 31 }
+    },
+    {
+      "id": "FLOW-luong-nguoi-dung",
+      "title": "Luồng người dùng",
+      "kind": "mermaid",
+      "source": "docs-feature/…/21-prd-detail-mua-sim-du-lch.md",
+      "diagram": "docs-feature/…/attachments/luong-nguoi-dung.mmd",
+      "files": { "asIs": "flows/FLOW-luong-nguoi-dung/as-is.mmd", "svg": "flows/FLOW-luong-nguoi-dung/as-is.svg" },
+      "counts": { "nodes": 28, "edges": 35 }
+    }
   ],
-  "edges": [
-    { "from": "n1", "to": "n2" },
-    { "from": "n2", "to": "n3" },
-    { "from": "n3", "to": "n5", "label": "Có" },
-    { "from": "n3", "to": "n4", "label": "Không" },
-    { "from": "n4", "to": "n2" }
+  "note": "…chỉ có khi không tìm thấy sơ đồ nào…"
+}
+```
+
+- **`kind: "drawio"`** — đọc `flows/<id>/cells.json`: danh sách cell của trang
+  (`id`, `kind` vertex/edge, `label` chữ thuần, `source`/`target` với cạnh,
+  toạ độ với node). Đây là "bản đồ" bạn dùng để gọi tên cell trong
+  `patch.json` và `ux-review.json`. `as-is.drawio` là XML thuần (đã giải nén)
+  — mở khi cần xem style/nhóm, **không sửa, không ghi lại**.
+- **`kind: "mermaid"`** — đọc `flows/<id>/as-is.mmd` (nguồn Mermaid); id node
+  chính là id trong Mermaid (`A`, `L_Timeout`, …). `as-is.svg` (nếu có) là hình
+  tài liệu đã render — chỉ để đối chiếu, không cần mở.
+- **Tài liệu**: đọc trang `source` của mỗi luồng (và trang liên quan) — bảng mô
+  tả bước, quy tắc nghiệp vụ (BR), bảng màn hình. Sơ đồ nói CÁI GÌ xảy ra; tài
+  liệu nói TẠI SAO và ràng buộc gì. Đánh giá phải dựa trên cả hai.
+- Bố cục tài liệu: dự án gắn App dùng `./docs-feature/` (nguồn sự thật) và
+  `./docs-app/` (pool toàn App, chỉ đọc để đối chiếu, không audit); dự án
+  legacy dùng `./docs/`. Bỏ qua `_index.md`, `attachments/`, `*.changes.json`,
+  `*.notes.json`, `review/`, `*.slice.md`.
+- **Không có `_inputs.json` hoặc `flows` rỗng** → chế độ **text-only** (xem
+  cuối tài liệu): tài liệu không có sơ đồ nào, bạn tự VẼ MỘT sơ đồ Mermaid đầy
+  đủ từ chữ (`flows/<FLOW-ID>/as-is.mmd`), rồi vẫn đánh giá UX y như thường.
+
+## Bước 1 — hiểu luồng (không ghi gì)
+
+Với mỗi luồng: lập bảng cell → bước tài liệu (ví dụ `L_Timeout` ↔ "3.2 bước
+4.2c"). Ghi nhận: điểm bắt đầu, các kết cục, các điểm rẽ nhánh và nhánh của
+chúng, các bước hệ thống vs bước người dùng, và bước nào diễn ra trên màn nào
+(để gắn `screens.json`).
+
+Nếu sơ đồ và bảng mô tả **mâu thuẫn** (sơ đồ có nhánh bảng không có, hoặc
+ngược lại) — đó là một phát hiện (`heuristic: "Nhất quán tài liệu"`), không
+phải thứ để bạn tự "sửa" cho khớp.
+
+## Bước 2 — đánh giá UX theo checklist (bắt buộc dùng đúng các mục này)
+
+Chấm từng mục; mục nào có vấn đề thì thành một finding. Không chấm theo cảm
+tính ngoài danh sách; mục nào không áp dụng thì bỏ qua, không bịa.
+
+| # | Mục | Câu hỏi phải trả lời | `heuristic` ghi trong finding |
+| --- | --- | --- | --- |
+| 1 | Độ dài happy path | Số bước từ điểm vào tới mục tiêu có bước nào thừa/lặp/hỏi lại thứ đã biết không? | `Độ dài happy path` |
+| 2 | Ngõ cụt | Nhánh lỗi / timeout / từ chối có đường quay lại hoặc kết cục rõ cho người dùng không? Có nhánh nào "kết thúc" mà người dùng không biết chuyện gì đã xảy ra? | `Nielsen#9 Recognize, diagnose, recover from errors` |
+| 3 | Rẽ nhánh thiếu nhánh | Điểm quyết định nào chỉ có 1 lối ra, hoặc thiếu nhánh "Không/Thất bại"? | `Nielsen#5 Error prevention` |
+| 4 | Phản hồi trạng thái | Bước hệ thống chạy lâu (thanh toán, gọi NCC, chờ giao hàng) có bước hiển thị trạng thái/thông báo cho người dùng không? | `Nielsen#1 Visibility of system status` |
+| 5 | Mất dữ liệu khi quay lại | Quay lại giữa form nhiều bước có mất thứ đã nhập / có xác nhận không? Tài liệu có nói gì về Back không? | `Nielsen#3 User control and freedom` |
+| 6 | Nhất quán tên gọi | Tên bước/màn/nút trong sơ đồ và trong bảng mô tả có khớp không? Cùng một màn gọi hai tên? | `Nhất quán tài liệu` / `Nielsen#4 Consistency and standards` |
+| 7 | Gánh nặng nhận thức | Một bước bắt người dùng làm quá nhiều việc (nhập 6–7 trường không nhóm), quyết định khó không có gợi ý mặc định? | `Nielsen#6 Recognition rather than recall` |
+| 8 | Ràng buộc nghiệp vụ | Đề xuất của bạn có phá BR nào không (KYC bắt buộc, thứ tự gạch nợ, ưu tiên NCC…)? Nếu có → **không đề xuất**, hoặc ghi rõ `conflictsWith`. | (ghi trong finding liên quan) |
+
+**Mức độ** (`severity`): `blocker` — người dùng không hoàn thành được mục tiêu
+hoặc mất tiền/không biết trạng thái; `major` — hoàn thành được nhưng gây nhầm
+lẫn/quay lại rõ rệt; `minor` — tối ưu được; `note` — quan sát, không cần sửa.
+
+**Mỗi finding BẮT BUỘC có `evidence`** — đường dẫn tài liệu + mục (ví dụ
+`docs-feature/…/2.1-PRD.md#3.2 bước 4.2c`) hoặc chính cell của sơ đồ. Không có
+căn cứ = không phải finding. Không suy diễn "thường thì phải có OTP/xác nhận".
+
+## Bước 3 — ghi `flows/<FLOW-ID>/ux-review.json`
+
+Một file cho mỗi luồng (kể cả luồng tốt — khi đó `findings: []`).
+
+```json
+{
+  "flowId": "FLOW-mua-sim-du-lich",
+  "verdict": "needs-improvement",
+  "summary": "Happy path 7 bước hợp lý; nhánh timeout thanh toán và timeout NCC không cho người dùng biết tiền đang ở đâu.",
+  "findings": [
+    {
+      "id": "UX-01",
+      "severity": "major",
+      "heuristic": "Nielsen#1 Visibility of system status",
+      "title": "Timeout thanh toán kết thúc luồng mà không báo người dùng",
+      "reason": "Sơ đồ đi thẳng từ 'Billing revert tiền' tới Kết thúc; bảng 3.2 bước 4.2c cũng chỉ nói Billing hoàn tiền, không có màn/thông báo nào cho KH.",
+      "recommendation": "Thêm bước 'Hiện trạng thái đang xử lý + thông báo hoàn tiền' trước Kết thúc.",
+      "evidence": ["docs-feature/sim/2.1-PRD.md#3.2 bước 4.2c", "cell L_Timeout"],
+      "cells": { "asIs": ["L_Timeout"], "proposed": ["L_Timeout", "od-n1"] },
+      "change": "added"
+    }
   ]
 }
 ```
 
-- `id`: đúng `FLOW-ID` trong tên file.
-- `title`: tên luồng, tiếng Việt, ngắn gọn.
-- `source`: đường dẫn file `.md` gốc đã dựng nên luồng này, tương đối từ cwd
-  (ví dụ `docs/…md`). Một luồng trải trên nhiều file thì ghi file mô tả
-  nó chính.
-- `nodes[]`: `id` duy nhất trong file (dùng `n1`, `n2`, …), `type` thuộc tập
-  đóng bên dưới, `label` là chữ thuần, `screen` (tuỳ chọn) = SCREEN-KEY của màn
-  mà bước đó diễn ra trên đó — xem "Gắn màn hình cho từng bước" bên dưới.
-- `edges[]`: `from`/`to` phải là `id` có thật trong `nodes[]`; `label` tuỳ chọn
-  (bắt buộc với edge ra khỏi `decision`).
+- `verdict`: `good` | `needs-improvement` | `poor`.
+- `findings[].id`: `UX-01`, `UX-02`, … duy nhất trong file.
+- `cells.asIs`: id cell trong sơ đồ gốc mà finding nói tới; `cells.proposed`:
+  id cell (cũ + mới) trong bản đề xuất. Viewer highlight theo các id này.
+- `change`: `added` | `modified` | `removed` | `none` — loại sửa bạn đề xuất
+  cho finding này (`none` khi chỉ nêu, không sửa).
+- `conflictsWith` (tuỳ chọn): mã BR mà một đề xuất "tự nhiên" sẽ vi phạm, nếu
+  bạn quyết định KHÔNG đề xuất vì lý do đó.
 
-### Nhãn phải GỌI TÊN màn, không được để mã trần
+## Bước 4 — đề xuất trên sơ đồ gốc
 
-Người đọc sơ đồ không có tài liệu mở bên cạnh. `"Trên SCR-001, nhấn Thêm mới"`
-là nhãn hỏng: không ai biết SCR-001 là màn gì. Mã màn (`SCR-001`, `MH1`, `S01`…)
-còn được đánh **lại từ đầu trong TỪNG tài liệu URD**, nên đứng một mình nó vừa
-khó hiểu vừa nhập nhằng giữa các tài liệu.
+### 4a. draw.io → `flows/<FLOW-ID>/patch.json`
 
-- **Bắt buộc:** mọi nhắc tới màn hình trong `label` phải dùng TÊN màn như tài
-  liệu đặt. Mã chỉ được đi KÈM trong ngoặc, không bao giờ đứng một mình:
-  - ✅ `"Trên màn Danh sách Khách hàng (SCR-001), nhấn Thêm mới"`
-  - ✅ `"Màn Danh sách Khách hàng"`
-  - ❌ `"Trên SCR-001, nhấn Thêm mới"` · ❌ `"Về SCR-001"` · ❌ `"MH3"`
-- **Lấy tên ở đâu:** chính tài liệu nguồn luôn định nghĩa mã ngay chỗ mô tả màn
-  — heading kiểu `### Màn hình 1: SCR-001 — Danh sách Nhóm Hàng hóa dịch vụ`,
-  hoặc bảng "Danh sách màn hình". Lập bảng tra mã → tên TRƯỚC khi viết nhãn, rồi
-  thay mọi mã trong nhãn bằng tên.
-- Tài liệu thật sự không đặt tên cho một mã nào đó → viết mã kèm mô tả ngắn tự
-  suy từ ngữ cảnh câu văn (`"Màn danh sách (SCR-004)"`), tuyệt đối không bịa một
-  cái tên nghe hợp lý mà tài liệu không nói.
-- Luật này áp cho MỌI `label`: node `action`, `decision`, `end`, và cả nhãn cạnh.
-
-### Gắn màn hình cho từng bước (`screen`)
-
-Viewer vẽ thêm khung nhìn "Flow màn hình": node là MÀN HÌNH có thumbnail
-wireframe (bước `dr-comp` vẽ sau bạn), hình thoi là quyết định. Để làm được,
-mỗi node `action` (và `start`/`end` nếu chính nó là một màn) diễn ra TRÊN một
-màn tài liệu đã khai thì gắn `"screen": "<SCREEN-KEY>"`.
-
-- **SCREEN-KEY = `<file-stem>__<mã màn>`** — LUÔN prefix, kể cả feature chỉ có
-  một trang. `<file-stem>` = tên file `.md` chứa heading màn đó, bỏ đuôi `.md`,
-  không đổi gì khác (`docs-feature/…/4.1.2.1.1.-URD-Mua-sim-thuong.md` →
-  `4.1.2.1.1.-URD-Mua-sim-thuong`; `docs/confluence/2.1.1-URD-Quan-ly-nhan-vien.md`
-  → `2.1.1-URD-Quan-ly-nhan-vien`). `<mã màn>` = mã trong heading màn, nguyên
-  văn (`SCR-001`, `SCR-002.1`). Ví dụ: `2.1.1-URD-Quan-ly-nhan-vien__SCR-001`.
-  Mã màn đánh lại từ đầu trong từng URD nên không prefix là đụng nhau; `dr-comp`
-  đặt tên file wireframe đúng luật này, lệch một ký tự là màn mất thumbnail.
-- Bước hệ thống ("Server kiểm tra quyền"), bước điều hướng ngoài feature
-  ("Mở menu Danh mục"), node `decision`, node `end` thuần kết cục → **KHÔNG**
-  có `screen`. Đừng gán màn cho có.
-- Nhiều bước liên tiếp trên cùng một màn thì cùng một `screen` — viewer tự gộp.
-- Popup/dialog tài liệu khai là màn riêng (có mã) thì là một `screen` riêng.
-- Chỉ dùng mã màn tài liệu KHAI (bảng tra mã → tên bạn đã lập). Không bịa mã.
-
-## Đường vào (bắt buộc)
-
-- Node `start` là MÀN GỐC người dùng đang đứng trước khi bắt đầu nghiệp vụ (trang chủ / màn chính của app), KHÔNG phải chữ "Bắt đầu".
-- Ngay sau `start` là các node `action` mô tả TỪNG bước điều hướng tới màn của tính năng — ví dụ `"Mở menu Danh mục"` → `"Chọn Nhân viên"` → `"Màn danh sách Nhân viên"`. Mỗi bước một node, đúng thứ tự bấm.
-- **Nguồn để biết đường vào, theo thứ tự ưu tiên:**
-  1. Câu mô tả cách vào nằm trong chính tài liệu feature (`docs-feature/**`) — ví dụ "Chọn menu Danh mục → Nhân viên".
-  2. `docs-app/_index.md` — cây tài liệu toàn App; các cấp thư mục thường PHẢN CHIẾU cấu trúc menu (ví dụ `II. URD Danh mục / 2.1 Danh mục đối tượng / 2.1.3 Quản lý khách hàng` ⇒ Danh mục → Đối tượng → Khách hàng). Mở trang trong `docs-app/` để xác nhận tên menu đúng như tài liệu viết.
-- **CẤM BỊA:** chỉ ghi bước điều hướng có căn cứ trong tài liệu. Không suy đoán tên menu, không tự chế "Đăng nhập" nếu tài liệu không nói. Không tìm được căn cứ → giữ đúng một node `start` nhãn `"Bắt đầu"` như cũ VÀ ghi lý do vào `note` của mục tương ứng trong `flows/index.json` (ví dụ `"Chưa xác định được đường vào từ tài liệu"`).
-- Đường vào là phần CHUNG của mọi kịch bản trong flow đó — viết một lần ở đầu, không lặp lại giữa flow.
-
-## LUẬT FLOWCHART CHUẨN (bắt buộc)
-
-Sơ đồ này dùng đúng ký pháp flowchart kinh điển — viewer vẽ theo hình dạng
-tương ứng với `type`:
-
-| `type` | Hình | Nghĩa |
-| --- | --- | --- |
-| `start` | Oval | Điểm bắt đầu của luồng |
-| `end` | Oval | Điểm kết thúc (thành công hoặc dừng hẳn) |
-| `action` | Chữ nhật | Một bước hành động / xử lý |
-| `decision` | Hình thoi | Một câu hỏi rẽ nhánh |
-
-Mũi tên (`edges[]`) là hướng đi của luồng: `from` → `to`.
-
-Các luật phải giữ đúng:
-
-1. **`type` CHỈ được là `start` | `end` | `action` | `decision`.** Không có
-   loại nào khác.
-2. **Đúng MỘT node `start`** mỗi flow, và **≥1 node `end`**. `start` là màn gốc app, không phải nhãn chung chung.
-3. **Mọi node đều nằm trên đường đi từ `start`** — không có node mồ côi, không
-   có nhánh treo lơ lửng không ai trỏ tới.
-4. **Node `decision` có label là CÂU HỎI** (kết thúc bằng dấu `?`), có **≥2
-   edge đi ra**, và **MỖI edge ra phải có `label`** nêu điều kiện của nhánh
-   (`Có`/`Không`, `Đúng`/`Sai`, `Hợp lệ`/`Không hợp lệ`…). Một nhánh không tên
-   là một nhánh người đọc không biết khi nào đi vào.
-5. **Node `start` và `action` có tối đa MỘT edge ra**; node `end` **không có
-   edge ra nào**. Cần rẽ nhánh thì phải qua một `decision` — đó là chỗ duy
-   nhất luồng được chia đôi.
-6. **Label ngắn gọn, tiếng Việt, chữ thuần** — không markdown, không HTML,
-   không xuống dòng. `action` viết theo lối động từ ("Nhập mã nhân viên"),
-   `end` nêu kết cục ("Vào màn hình chính", "Huỷ thao tác").
-7. **Không bịa bước tài liệu không nói.** Không suy diễn thêm màn hình xác
-   nhận, thông báo lỗi, hay bước OTP chỉ vì "thường là vậy".
-
-## Bước 3 — ghi `flows/index.json`
-
-Một file duy nhất liệt kê mọi luồng đã dựng:
+Bạn **không viết XML**. Ghi danh sách thao tác; daemon áp lên trang gốc, tính
+toạ độ cho node mới, tô màu theo chú giải cố định (xanh lá = thêm mới, vàng =
+sửa đổi, đỏ gạch = đề nghị bỏ) và ghi `od-change`/`od-finding` lên cell.
 
 ```json
-[
-  {
-    "id": "FLOW-login",
-    "title": "Đăng nhập",
-    "source": "docs/2.1.1-urd-quan-ly-nhan-vien.md",
-    "screens": [{ "key": "2.1.1-urd-quan-ly-nhan-vien__SCR-001", "name": "Đăng nhập" }]
-  },
-  {
-    "id": "FLOW-duyet-don",
-    "title": "Duyệt đơn nghỉ phép",
-    "source": "docs/2.1.4-urd-nghi-phep.md",
-    "screens": [
-      { "key": "2.1.4-urd-nghi-phep__SCR-003", "name": "Danh sách đơn nghỉ phép" },
-      { "key": "2.1.4-urd-nghi-phep__SCR-004", "name": "Chi tiết đơn nghỉ phép" }
-    ],
-    "note": "Tài liệu không nêu điều gì xảy ra khi người duyệt từ chối — nhánh Không dừng ở đây."
-  }
-]
+{
+  "flowId": "FLOW-mua-sim-du-lich",
+  "ops": [
+    { "op": "relabel", "cell": "s1", "label": "Chọn Mua SIM → tab SIM Du lịch", "finding": "UX-03" },
+    { "op": "mark", "cell": "confirm2", "change": "removed", "finding": "UX-02" },
+    { "op": "addNode", "id": "od-n1", "shape": "action", "label": "Hiện trạng thái đang xử lý + thông báo hoàn tiền", "near": "L_Timeout", "dir": "below", "finding": "UX-01" },
+    { "op": "addEdge", "id": "od-e1", "from": "L_Timeout", "to": "od-n1", "label": "", "finding": "UX-01" },
+    { "op": "redirectEdge", "edge": "e12", "from": "od-n1", "finding": "UX-01" }
+  ]
+}
 ```
 
-- Mỗi phần tử: `id`, `title`, `source` — lấy đúng giá trị trong file flowchart
-  tương ứng.
-- `screens[]`: mọi SCREEN-KEY xuất hiện trong `screen` của flow đó, theo thứ tự
-  gặp lần đầu, kèm `name` = TÊN màn như tài liệu đặt (viewer hiện tên này, không
-  hiện key). Flow không gắn màn nào → `screens: []`.
-- `note` (tuỳ chọn): **chỗ duy nhất để ghi phần tài liệu mô tả mơ hồ.** Tài
-  liệu nói không rõ (thiếu nhánh, thiếu kết cục, mâu thuẫn giữa hai mục) thì
-  ghi chú ở đây; **KHÔNG đoán và vẽ bừa vào sơ đồ**.
-- `index.json` phải liệt kê ĐỦ và ĐÚNG số file `*.flowchart.json` đã ghi —
-  không thừa một id không có file, không thiếu một file không có trong index.
+| `op` | Nghĩa | Trường |
+| --- | --- | --- |
+| `relabel` | Đổi nhãn một cell (node hoặc cạnh) — tô vàng | `cell`, `label`, `finding` |
+| `mark` | Đánh dấu cell là `modified` (vàng) hoặc `removed` (đỏ gạch, cell VẪN CÒN để người xem thấy) | `cell`, `change`, `finding` |
+| `addNode` | Thêm node mới cạnh `near` theo hướng `dir` (`below` mặc định / `right` / `left` / `above`) — tô xanh | `id` (bắt đầu bằng `od-`), `shape` (`action` / `decision` / `start` / `end`), `label`, `near`, `dir`, `finding` |
+| `addEdge` | Thêm cạnh — tô xanh; `label` bắt buộc khi đi ra từ `decision` | `id` (bắt đầu bằng `od-`), `from`, `to`, `label`, `finding` |
+| `redirectEdge` | Đổi đầu `from` và/hoặc `to` của cạnh có sẵn — tô vàng | `edge`, `from`?, `to`?, `finding` |
+
+Luật:
+- Mọi `cell`/`edge`/`near`/`from`/`to` phải là id có thật trong `cells.json`
+  hoặc id `od-…` bạn vừa tạo trong CÙNG file (thao tác trước tạo, thao tác sau
+  dùng). Id sai → daemon bỏ qua thao tác đó và ghi vào index — đừng để xảy ra.
+- **Chỉ sửa cục bộ.** Không xoá cell (dùng `mark removed`), không di chuyển
+  cell cũ, không vẽ lại luồng thay thế. Nếu luồng cần làm lại từ đầu → nói ở
+  `summary` với `verdict: "poor"`, KHÔNG nặn ra hàng chục thao tác.
+- Mỗi thao tác phải gắn `finding` — người xem bấm vào cell là ra lý do.
+- Luồng tốt (`findings: []`) → **không tạo `patch.json`**.
+
+### 4b. Mermaid → `flows/<FLOW-ID>/proposed.mmd`
+
+Chép `as-is.mmd` sang `proposed.mmd` rồi sửa cục bộ bằng chính cú pháp
+Mermaid, tô màu bằng ĐÚNG ba classDef này (daemon và viewer nhận diện theo
+tên):
+
+```
+classDef od-added fill:#D5E8D4,stroke:#82B366,color:#1B4D1F
+classDef od-modified fill:#FFF2CC,stroke:#D6B656,color:#5C4A00
+classDef od-removed fill:#F8CECC,stroke:#B85450,stroke-dasharray:5 5,color:#5C1F1B
+class OD_N1 od-added
+class L_Timeout od-modified
+```
+
+- Node mới đặt id `OD_…`; node đề nghị bỏ GIỮ LẠI và gán `od-removed`.
+- Cạnh mới nối bằng cú pháp thường; không xoá cạnh cũ — nếu muốn đổi hướng thì
+  thêm cạnh mới và đánh dấu node liên quan `od-modified`.
+- Cùng luật "chỉ sửa cục bộ", "luồng tốt thì không tạo file".
+- Phần thêm vào phải giữ đúng "Quy tắc vẽ Mermaid dễ đọc" bên dưới (TD, nhãn
+  ngắn, không tạo thêm vòng lặp ngược).
+
+### Quy tắc vẽ Mermaid dễ đọc (áp cho `proposed.mmd` VÀ `as-is.mmd` text-only)
+
+Chuẩn tham chiếu là sơ đồ "Luồng người dùng" (Mermaid) mà các PRD/URD của VNPAY hay
+kèm: một flowchart **dọc**, đọc từ trên xuống, nhánh rẽ ra hai bên rồi **hội tụ
+lại**, không có mạng nhện cạnh chéo. Cụ thể:
+
+- `flowchart TD`, **MỘT** sơ đồ cho cả luồng (luồng chính + mọi nhánh thay thế
+  + ngoại lệ). Không tách "kịch bản 1/2/3", không vẽ nhiều sơ đồ con.
+- Hình: bắt đầu/kết thúc `A([Bắt đầu: …])` / `End([Kết thúc])`; hành động /
+  màn hình `B[Chọn gói cước]`; quyết định `C{Kết quả thanh toán?}`. Nhãn dài
+  xuống dòng bằng `<br>`, tối đa ~3 dòng; nhãn có ký tự đặc biệt (`(`, `:`,
+  `/`) thì bọc trong dấu nháy kép `["…"]`.
+- Quyết định là **câu hỏi cụ thể**, ≤ 8 từ, ra **2–3 nhánh**, nhãn nhánh ngắn
+  (`-- "Thành công" -->`, `-- Timeout -->`, `-->|Có|`). KHÔNG dùng quyết định
+  kiểu "KH làm gì?" toả 5–6 cạnh — tách thành các quyết định nối tiếp hoặc
+  liệt kê các lối rẽ phụ thành nhánh riêng.
+- Đường chính đi thẳng xuống; nhánh phụ rẽ ngang rồi quay về nút hội tụ (chọn
+  gói → nhập thông tin → thanh toán → kết quả → kết thúc). Mọi nhánh cuối
+  cùng gặp **một** `End` (hoặc tối đa 2 kết cục: thành công / dừng).
+- **Hạn chế cạnh quay ngược** (loop): chỉ giữ tối đa 2 vòng lặp thật sự quan
+  trọng (vd. "Thử lại" sau lỗi); các thao tác "quay lại màn trước", "đổi lựa
+  chọn", "back" KHÔNG vẽ thành cạnh — ghi trong nhãn hoặc bỏ. Mỗi cạnh ngược là
+  một đường cắt ngang sơ đồ.
+- Kích thước: 15–45 node. Quá 45 → gộp các bước hệ thống liên tiếp thành một
+  node ("SDK tạo đơn & điều hướng sang màn thanh toán"), không cắt sơ đồ.
+- Bước diễn ra trên màn nào thì gọi TÊN màn (kèm mã trong ngoặc) trong nhãn:
+  `H[Màn Nhập thông tin & thanh toán (4.4.1)]`. Bước hệ thống ghi chủ ngữ hệ
+  thống (`Billing gạch nợ`, `SDK BE tạo đơn Pending`).
+- Chia đoạn bằng chú thích `%% NHÁNH …` như ví dụ; không dùng `subgraph` (làm
+  vỡ bố cục và không parse thành flowchart.json).
+
+Mẫu rút gọn đúng chuẩn (từ sơ đồ "Luồng người dùng" trong PRD detail "Mua SIM du lịch" v1.0.1):
+
+```
+flowchart TD
+    A([Bắt đầu: Mở App Kênh bán]) --> B[Chọn Mua SIM -> SIM Du lịch]
+    B --> C_Type{Loại SIM du lịch?}
+    %% NHÁNH 1: QUỐC TẾ
+    C_Type -- "Quốc tế" --> C[Tìm kiếm & chọn Quốc gia / Khu vực]
+    C --> D{Chọn loại SIM?}
+    D -- eSIM --> E1[Danh sách gói cước eSIM]
+    D -- SIM vật lý --> E2[Danh sách gói cước SIM vật lý]
+    E1 --> G[Khách hàng chọn gói cước]
+    E2 --> G
+    %% NHÁNH 2: VIỆT NAM (chỉ eSIM)
+    C_Type -- "Việt Nam" --> E3[Danh sách gói cước<br>eSIM Việt Nam]
+    E3 --> G
+    G --> H[Màn Nhập thông tin]
+    H --> K[KH bấm Thanh toán]
+    K --> L{Kết quả thanh toán?}
+    L -- "Thất bại" --> L_Fail[Bank báo lỗi]
+    L -- "Timeout" --> L_Timeout[Billing revert tiền cho KH]
+    L -- "Thành công" --> SDK_Call[SDK gọi NCC xuất đơn]
+    SDK_Call --> NCC{Kết quả xuất đơn?}
+    NCC -- "Thành công" --> Deliver["NCC trả QR eSIM<br>-> gửi Email & hiện trong Lịch sử"]
+    NCC -- "Thất bại" --> Revert[Billing revert tiền cho KH]
+    %% HỘI TỤ
+    L_Fail --> End([Kết thúc])
+    L_Timeout --> End
+    Deliver --> End
+    Revert --> End
+```
+
+## Bước 5 — `flows/<FLOW-ID>/screens.json` (gắn màn hình cho bước)
+
+Daemon tự sinh `flows/<FLOW-ID>.flowchart.json` từ sơ đồ nguồn (node, cạnh,
+hình → `start`/`end`/`action`/`decision`). Thứ duy nhất nó cần bạn là **bước
+nào diễn ra trên màn nào**, để `dr-comp` vẽ wireframe và viewer hiện
+thumbnail:
+
+```json
+{
+  "cells": {
+    "s1": "2.1-PRD-Mua-SIM__SCR-001",
+    "pay": "2.1-PRD-Mua-SIM__SCR-005"
+  },
+  "names": {
+    "2.1-PRD-Mua-SIM__SCR-001": "Trang chủ SIM du lịch",
+    "2.1-PRD-Mua-SIM__SCR-005": "Thông tin thanh toán"
+  },
+  "note": "Tài liệu không nói nhánh timeout NCC hiển thị gì cho KH."
+}
+```
+
+- **SCREEN-KEY = `<file-stem>__<mã màn>`** — LUÔN prefix. `<file-stem>` = tên
+  file `.md` chứa heading màn đó, bỏ đuôi `.md`, không đổi gì khác
+  (`docs-feature/…/4.1.2.1.1.-URD-Mua-sim-thuong.md` →
+  `4.1.2.1.1.-URD-Mua-sim-thuong`). `<mã màn>` = mã trong heading màn, nguyên
+  văn (`SCR-001`, `SCR-002.1`, hoặc mã tài liệu dùng như `6.2.2`). Mã màn đánh
+  lại từ đầu trong từng URD nên không prefix là đụng nhau; `dr-comp` đặt tên
+  file wireframe đúng luật này, lệch một ký tự là màn mất thumbnail.
+- Chỉ gắn cho bước NGƯỜI DÙNG diễn ra trên một màn tài liệu đã khai. Bước hệ
+  thống ("Server kiểm tra", "Billing gạch nợ"), quyết định, kết cục thuần →
+  không gắn. Không bịa mã màn.
+- `names`: tên màn như tài liệu đặt (viewer hiện tên, không hiện key).
+- `note` (tuỳ chọn): chỗ duy nhất ghi phần tài liệu mô tả mơ hồ về luồng này.
+
+## Chế độ text-only (không tìm thấy sơ đồ nào)
+
+Khi `flows/_inputs.json` báo không có sơ đồ: bạn **vẽ MỘT sơ đồ Mermaid đầy
+đủ** từ chữ, rồi đánh giá UX và đề xuất y như luồng Mermaid có sẵn. Không ghi
+`flowchart.json` (daemon tự suy từ `as-is.mmd`), không chia kịch bản.
+
+- `FLOW-ID` = `FLOW-<việc>` không dấu, chỉ `[A-Za-z0-9-]`; mỗi luồng nghiệp vụ
+  độc lập một thư mục — thường tài liệu chỉ có MỘT.
+- Ghi `flows/<FLOW-ID>/as-is.mmd`: flowchart TD theo đúng "Quy tắc vẽ Mermaid
+  dễ đọc" ở trên — luồng chính + mọi nhánh thay thế/ngoại lệ tài liệu mô tả,
+  trong MỘT sơ đồ; node đầu là màn gốc người dùng đứng trước khi bắt đầu; mỗi
+  bước suy được từ tài liệu (không bịa; không thêm bước "thường là vậy").
+- Ghi `flows/<FLOW-ID>/ux-review.json` (Bước 3; `cells.asIs` = id node Mermaid).
+- Có đề xuất → `flows/<FLOW-ID>/proposed.mmd` (Bước 4b) — sửa cục bộ trên chính
+  `as-is.mmd` bạn vừa vẽ, tô 3 classDef; luồng tốt → không tạo.
+- Ghi `flows/<FLOW-ID>/screens.json` với **thêm `title` và `source`** (vì không
+  có `_inputs.json` để lấy): `title` = tên luồng như tài liệu gọi, `source` =
+  đường dẫn `.md` chính (tương đối cwd); `cells` = id node Mermaid → SCREEN-KEY
+  cho bước diễn ra trên màn; `names`, `note` như Bước 5.
+- Tài liệu thuần định nghĩa dữ liệu, không mô tả thao tác nào → nói rõ là không
+  tìm thấy luồng trong `ux-review.json` (summary) và không nặn ra sơ đồ ba node.
 
 ## Hard rules
 
-- **Chỉ ghi vào `flows/`** — `flows/<FLOW-ID>.flowchart.json` và
-  `flows/index.json`. Không ghi vào `docs/`, không ghi vào `review/`.
-  `flows/` nằm ở gốc thư mục workflow, KHÔNG lồng trong `review/`: lồng vào đó
-  thì một lần chạy lại bước review sẽ xoá sạch sơ đồ.
-- **Schema đóng băng.** Ngoài `screen` (tuỳ chọn, đúng luật SCREEN-KEY) không
-  thêm field nào khác (`x`, `y`, `swimlane`, `screenId`…), không đổi tên field,
-  không đổi tập giá trị `type`. Viewer đọc đúng schema trên; một field lạ hoặc
-  một `type` lạ làm sơ đồ không render được.
-- **Không luồng nào thì không tạo file rỗng.** Tài liệu thuần định nghĩa dữ
-  liệu, không mô tả thao tác nào → nói rõ là không tìm thấy luồng, đừng nặn ra
-  một sơ đồ ba node cho có.
-- **Không review, không sửa tài liệu.** Phát hiện tài liệu sai/thiếu thì ghi
-  `note` trong `index.json`; đó là việc của bước review chạy sau, không phải của
-  bước này.
+- **Chỉ ghi vào `flows/<FLOW-ID>/`** (`ux-review.json`, `patch.json` hoặc
+  `proposed.mmd`, `screens.json`; text-only thêm `as-is.mmd`). Không ghi
+  `flowchart.json`, `docs/`, `docs-feature/`, `review/`. Không sửa `as-is.*`
+  daemon đã tạo, `cells.json`, `_inputs.json`. Không tự tạo `proposed.drawio`
+  hay `index.json` — daemon làm sau khi bạn xong.
+- **Không bịa.** Mọi finding có `evidence`; mọi bước đề xuất phải suy được từ
+  tài liệu hoặc từ chính lỗ hổng trong sơ đồ (nhánh thiếu, kết cục mù). Không
+  thêm OTP/xác nhận/màn hình chỉ vì "thường là vậy".
+- **Không phá BR.** Đề xuất trái quy tắc nghiệp vụ tài liệu ghi → bỏ hoặc gắn
+  `conflictsWith`.
+- **Sửa cục bộ, không vẽ lại.** Bản đề xuất phải nhìn giống bản gốc cộng vài chỗ
+  tô màu; người đọc URD phải nhận ra sơ đồ của họ.
 - File-only: không đẩy bất cứ gì lên KGS.

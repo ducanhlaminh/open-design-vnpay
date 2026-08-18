@@ -35,12 +35,12 @@ test('docs-review có đúng 4 stage, đúng thứ tự: dr-docs → dr-flow →
     wf!.stages!.map((s) => s.id),
     wf!.pipelineIds,
   );
-  assert.equal(wf!.stages!.find((s) => s.id === 'dr-flow')?.name, 'Sơ đồ luồng màn hình');
+  assert.equal(wf!.stages!.find((s) => s.id === 'dr-flow')?.name, 'Đánh giá luồng UX');
 });
 
-test('dr-flow: skill docs-flow-extract, phụ thuộc dr-docs, output flows/ ở GỐC workflow-dir', () => {
+test('dr-flow: skill docs-flow-ux, phụ thuộc dr-docs, output flows/ ở GỐC workflow-dir', () => {
   const d = def('dr-flow');
-  assert.equal(d.skillId, 'docs-flow-extract');
+  assert.equal(d.skillId, 'docs-flow-ux');
   assert.deepEqual(d.dependsOn, ['dr-docs']);
   assert.deepEqual(d.outputs, ['flows/']);
   // File-only; không nhận upload / design system / platform.

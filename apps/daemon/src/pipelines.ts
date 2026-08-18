@@ -338,7 +338,15 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // một file, làm dr-review hiện xanh chỉ vì dr-flow đã chạy. Trùng tên với
   // `flows/` của stage `ux` bên docs-to-ui là vô hại: attribution có namespace
   // theo workflow nên `docs-review/flows/…` chỉ khớp stage của workflow này.
-  { id: 'dr-flow',          name: 'Sơ đồ luồng màn hình',      skillId: 'docs-flow-extract',     dependsOn: ['dr-docs'],          outputs: ['flows/'] },
+  // 2026-08-18: bước này KHÔNG còn "chép lại" sơ đồ từ chữ. Daemon giải nén
+  // sơ đồ GỐC (draw.io / Mermaid) vào `flows/<FLOW-ID>/as-is.*` trước khi
+  // agent chạy (prepareFlowUxInputs); agent ĐÁNH GIÁ UX của luồng, ghi
+  // `ux-review.json` + `patch.json` (thao tác sửa nhỏ, không đụng XML) +
+  // `screens.json`; daemon áp patch → `proposed.drawio` tô màu phần sửa, tự
+  // sinh `flows/<FLOW-ID>.flowchart.json` từ sơ đồ nguồn và dựng lại
+  // `flows/index.json` (finalizeFlowUx). Contract `flowchart.json`/`index.json`
+  // cho dr-comp/dr-review giữ nguyên.
+  { id: 'dr-flow',          name: 'Đánh giá luồng UX',         skillId: 'docs-flow-ux',          dependsOn: ['dr-docs'],          outputs: ['flows/'] },
   // Bước GIỮA: đối chiếu component + wireframe. Đọc `docs/` (bản GỐC, chưa
   // review) và với MỖI màn hình trong tài liệu, liệt kê phần tử nào dùng
   // component nào rồi đối chiếu với danh mục hợp lệ `criteria/components.md`,

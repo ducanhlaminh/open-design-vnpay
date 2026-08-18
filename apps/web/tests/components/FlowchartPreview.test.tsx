@@ -385,7 +385,7 @@ describe('FlowchartPreview', () => {
     await act(async () => { fireEvent.click(screen.getByRole('tab', { name: /^Flow màn hình/ })); });
 
     await waitFor(() => expect(container.querySelector('.react-flow')).toBeTruthy());
-    expect(screen.getByText(/Sơ đồ chưa gán màn hình — chạy lại bước Sơ đồ luồng màn hình bản mới/)).toBeTruthy();
+    expect(screen.getByText(/Sơ đồ chưa gán màn hình — chạy lại bước Đánh giá luồng UX \(dr-flow\)/)).toBeTruthy();
     expect(container.querySelectorAll('.react-flow__node-screen')).toHaveLength(0);
     expect(container.querySelectorAll('.react-flow__node-nav')).toHaveLength(3);
     expect(container.querySelectorAll('.react-flow__node-decision')).toHaveLength(1);

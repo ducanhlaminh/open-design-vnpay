@@ -59,7 +59,7 @@ const FEEDBACK_USERNAME = 'Pipelines Happy-Path E2E';
 const STAGE_NAME = {
   'dr-docs': 'Tài liệu (nạp)',
   'dr-comp': 'Màn hình → Component',
-  'dr-flow': 'Sơ đồ luồng màn hình',
+  'dr-flow': 'Đánh giá luồng UX',
   'dr-review': 'Review tài liệu',
 } as const;
 const WORKFLOW_CARD_LABEL = 'Rà soát chất lượng tài liệu';

@@ -1,0 +1,375 @@
+/*
+ * FlowUxReviewPreview — sơ đồ gốc (draw.io / Mermaid) + panel phát hiện UX.
+ * Màu lấy từ token toàn cục (styles/tokens.css) nên sáng/tối tự đúng; ba màu
+ * chú giải đề xuất (xanh lá / vàng / đỏ) là màu CỐ ĐỊNH của draw.io — phải
+ * khớp CHANGE_STYLE trong daemon (flow-ux/patch.ts) vì đó là màu tô trên cell.
+ */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg, #fff);
+  color: var(--text, #1a1916);
+}
+
+.head {
+  flex: 0 0 auto;
+  padding: 10px 16px 8px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #eef1f5);
+}
+.headMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+.source {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-muted, #57544e);
+}
+.source code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+.summary {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text, #1a1916);
+  max-width: 96ch;
+}
+
+.verdict {
+  font-size: 11px;
+  font-weight: 650;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e1e5eb);
+  background: var(--bg, #fff);
+}
+.verdict_good {
+  color: var(--green, #1f7a3a);
+  background: var(--green-bg, #e8f7ee);
+  border-color: var(--green-border, #c6ead2);
+}
+.verdict_needs_improvement {
+  color: var(--amber, #b26200);
+  background: var(--amber-bg, #fff3e0);
+  border-color: var(--amber-border, #f4d9a6);
+}
+.verdict_poor {
+  color: var(--red, #9c2a25);
+  background: var(--red-bg, #fdecea);
+  border-color: var(--red-border, #f5c6c2);
+}
+
+.count {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e1e5eb);
+}
+
+/* Mức độ — dùng chung cho chip đếm và badge trong thẻ. */
+.sev {
+  font-size: 10.5px;
+  font-weight: 650;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #e1e5eb);
+  letter-spacing: 0.01em;
+}
+.sev_blocker {
+  color: var(--red, #9c2a25);
+  background: var(--red-bg, #fdecea);
+  border-color: var(--red-border, #f5c6c2);
+}
+.sev_major {
+  color: var(--amber, #b26200);
+  background: var(--amber-bg, #fff3e0);
+  border-color: var(--amber-border, #f4d9a6);
+}
+.sev_minor {
+  color: var(--accent-strong, #00568f);
+  background: var(--accent-tint, #e6f0f8);
+  border-color: var(--accent-soft, #d6e7f4);
+}
+.sev_note {
+  color: var(--text-muted, #57544e);
+  background: var(--bg-subtle, #eef1f5);
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+}
+@media (max-width: 900px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(360px, 1fr) auto;
+  }
+}
+
+/* ── Sơ đồ ─────────────────────────────────────────────────────────────── */
+.diagram {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--border, #e1e5eb);
+}
+.diagramBar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+}
+.modeBar {
+  display: inline-flex;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg, #fff);
+}
+.modeBtn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted, #57544e);
+  cursor: pointer;
+}
+.modeBtn + .modeBtn {
+  border-left: 1px solid var(--border, #e1e5eb);
+}
+.modeBtnActive {
+  color: var(--accent-strong, #00568f);
+  background: var(--accent-tint, #e6f0f8);
+  font-weight: 650;
+}
+.legend {
+  display: inline-flex;
+  gap: 6px;
+  font-size: 11px;
+}
+.legendItem {
+  padding: 1px 8px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  color: #1a1916;
+}
+/* Màu cố định của draw.io — khớp CHANGE_STYLE (daemon). */
+.legend_added {
+  background: #d5e8d4;
+  border-color: #82b366;
+}
+.legend_modified {
+  background: #fff2cc;
+  border-color: #d6b656;
+}
+.legend_removed {
+  background: #f8cecc;
+  border-color: #b85450;
+  border-style: dashed;
+}
+.download {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--accent, #0066b3);
+  text-decoration: none;
+}
+.download:hover {
+  text-decoration: underline;
+}
+.diagramBox {
+  flex: 1 1 auto;
+  min-height: 360px;
+  position: relative;
+  overflow: auto;
+  background: var(--bg, #fff);
+}
+.drawio {
+  height: 100%;
+  min-height: 360px;
+}
+.fallbackBox {
+  height: 100%;
+  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+}
+.warn {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  color: var(--amber, #b26200);
+  background: var(--amber-bg, #fff3e0);
+  border-top: 1px solid var(--amber-border, #f4d9a6);
+}
+.warn code {
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
+/* ── Panel phát hiện ───────────────────────────────────────────────────── */
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-subtle, #eef1f5);
+}
+.panelHead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 650;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #eef1f5);
+}
+.panelMeta {
+  font-weight: 500;
+  color: var(--text-muted, #57544e);
+}
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.card {
+  appearance: none;
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e1e5eb);
+  background: var(--bg, #fff);
+  cursor: pointer;
+}
+.card:hover {
+  border-color: var(--accent-soft, #d6e7f4);
+}
+.cardActive {
+  border-color: var(--accent, #0066b3);
+  box-shadow: 0 0 0 2px var(--accent-soft, #d6e7f4);
+}
+.cardTop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.fid {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--text-muted, #57544e);
+}
+.change {
+  margin-left: auto;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  color: #1a1916;
+}
+.cardTitle {
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.heuristic {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--accent-strong, #00568f);
+}
+.reason {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text, #1a1916);
+}
+.reco {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.conflict {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--amber, #b26200);
+}
+.evidence {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--text-muted, #57544e);
+}
+.evidence code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10.5px;
+}
+.cells {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.cellChip {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-tint, #e6f0f8);
+  color: var(--accent-strong, #00568f);
+}
+.okBox {
+  margin: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--green, #1f7a3a);
+  background: var(--green-bg, #e8f7ee);
+  border: 1px solid var(--green-border, #c6ead2);
+}
+.note {
+  margin: 0 8px 8px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: var(--text-muted, #57544e);
+  border-top: 1px dashed var(--border, #e1e5eb);
+}
+.message {
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-muted, #57544e);
+}
+.message code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+}

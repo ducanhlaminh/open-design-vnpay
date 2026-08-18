@@ -23,7 +23,19 @@ function prefersDark(): boolean {
   }
 }
 
-export function MermaidDiagram({ code }: { code: string }) {
+export interface MermaidDiagramProps {
+  /** Mermaid source. Ignored when `svg` is given. */
+  code: string;
+  /** Pre-rendered SVG markup to show instead of rendering `code` (same
+   *  zoom/pan viewport) — e.g. the diagram image a document shipped with. */
+  svg?: string;
+  /** Initial fit: `contain` (default) fits the whole diagram in the viewport;
+   *  `width` fits the width only and starts at the top, so tall flows stay
+   *  legible and are read by panning down instead of shrinking to a thumbnail. */
+  initialFit?: 'contain' | 'width';
+}
+
+export function MermaidDiagram({ code, svg, initialFit = 'contain' }: MermaidDiagramProps) {
   const hostRef = useRef<HTMLDivElement>(null); // clipped viewport + wheel/pan target
   const innerRef = useRef<HTMLDivElement>(null); // transformed layer holding the SVG
   const [error, setError] = useState<string | null>(null);
@@ -66,34 +78,39 @@ export function MermaidDiagram({ code }: { code: string }) {
     if (sb.width === 0 || sb.height === 0) return;
     const pad = 32;
     const scale = clamp(
-      Math.min((hb.width - pad) / sb.width, (hb.height - pad) / sb.height, 1),
+      initialFit === 'width'
+        ? Math.min((hb.width - pad) / sb.width, 1)
+        : Math.min((hb.width - pad) / sb.width, (hb.height - pad) / sb.height, 1),
       MIN_SCALE,
       MAX_SCALE,
     );
     view.current = {
       scale,
       x: (hb.width - sb.width * scale) / 2,
-      y: (hb.height - sb.height * scale) / 2,
+      y: initialFit === 'width' ? Math.min(pad / 2, (hb.height - sb.height * scale) / 2) : (hb.height - sb.height * scale) / 2,
     };
     applyTransform();
     setScaleLabel(Math.round(scale * 100));
-  }, [applyTransform]);
+  }, [applyTransform, initialFit]);
 
-  // Render mermaid → SVG, then fit.
+  // Render mermaid → SVG (or mount the given SVG), then fit.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const mermaid = (await import('mermaid')).default;
-        const theme = prefersDark() ? 'dark' : 'neutral';
-        if (initialized !== theme) {
-          mermaid.initialize({ startOnLoad: false, theme, securityLevel: 'loose', fontFamily: 'inherit' });
-          initialized = theme;
+        let markup = svg;
+        if (markup == null) {
+          const mermaid = (await import('mermaid')).default;
+          const theme = prefersDark() ? 'dark' : 'neutral';
+          if (initialized !== theme) {
+            mermaid.initialize({ startOnLoad: false, theme, securityLevel: 'loose', fontFamily: 'inherit' });
+            initialized = theme;
+          }
+          seq += 1;
+          markup = (await mermaid.render(`mmd-${seq}`, code)).svg;
         }
-        seq += 1;
-        const { svg } = await mermaid.render(`mmd-${seq}`, code);
         if (cancelled || !innerRef.current) return;
-        innerRef.current.innerHTML = svg;
+        innerRef.current.innerHTML = markup;
         setError(null);
         // Pin the SVG to its intrinsic pixel size. Mermaid emits `width:100%` +
         // an inline `max-width`, which makes the diagram collapse/stretch inside
@@ -120,7 +137,7 @@ export function MermaidDiagram({ code }: { code: string }) {
     return () => {
       cancelled = true;
     };
-  }, [code, fit]);
+  }, [code, svg, fit]);
 
   // Wheel-to-zoom toward the cursor. Attached as a non-passive listener so we
   // can preventDefault (React's onWheel is passive and cannot block page zoom).

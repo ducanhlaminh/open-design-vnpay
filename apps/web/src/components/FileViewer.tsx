@@ -62,6 +62,7 @@ import { SpecPreview, type SpecDoc } from './SpecPreview';
 import { DocRedlinePreview } from './DocRedlinePreview';
 import { ComponentAuditPreview, isComponentAuditFile } from './ComponentAuditPreview';
 import { FlowchartPreview, isFlowchartFile } from './FlowchartPreview';
+import { FlowUxReviewPreview, isFlowUxFile } from './FlowUxReviewPreview';
 import { inlineMarkdownImages } from '../runtime/markdown-images';
 import { SpecFlowCanvas, isFlowDoc, type FlowDoc } from './SpecFlowCanvas';
 import { ReviewPreview, type ReviewReport } from './ReviewPreview';
@@ -896,6 +897,17 @@ export function FileViewer({
   // chuẩn (oval / chữ nhật / hình thoi) kèm hộp chú thích. Phải đứng TRƯỚC
   // nhánh JSON chung ngay dưới, nếu không SpecFileViewer nhận trước và file
   // rơi về khung nhìn mã nguồn.
+  // Đánh giá luồng UX (dr-flow bản mới): mọi artefact dưới `flows/<FLOW-ID>/`
+  // (ux-review.json, proposed/as-is.drawio, *.mmd, patch/screens/cells.json)
+  // mở CÙNG một khung: sơ đồ gốc bằng viewer draw.io/Mermaid + panel lý do.
+  // Đứng trước nhánh flowchart/JSON/text vì `.json`/`.drawio` sẽ bị bắt ở đó.
+  // `flows/<FLOW-ID>.flowchart.json` cũng vào đây: nếu luồng có dữ liệu bản
+  // mới thì hiện sơ đồ GỐC (đúng bố cục tài liệu) thay vì canvas tự xếp lại;
+  // luồng của lần chạy cũ / luồng dựng từ chữ vẫn dùng FlowchartPreview.
+  if (isFlowUxFile(file)) {
+    const legacy = isFlowchartFile(file) ? <FlowchartPreview projectId={projectId} file={file} /> : undefined;
+    return <FlowUxReviewPreview projectId={projectId} file={file} fallback={legacy} />;
+  }
   if (isFlowchartFile(file)) {
     return <FlowchartPreview projectId={projectId} file={file} />;
   }

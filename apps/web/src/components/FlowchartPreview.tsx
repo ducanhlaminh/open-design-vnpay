@@ -484,7 +484,7 @@ function ScreenFlowTab({
     <>
       {hasScreens ? null : (
         <div className={styles.hint}>
-          Sơ đồ chưa gán màn hình — chạy lại bước Sơ đồ luồng màn hình bản mới để có thumbnail
+          Sơ đồ chưa gán màn hình — chạy lại bước Đánh giá luồng UX (dr-flow) để có thumbnail
         </div>
       )}
       <FlowGraphView {...graph} />

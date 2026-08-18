@@ -3029,6 +3029,12 @@ function isUiPreviewFile(name: string): boolean {
   // list when the stage failed before any page succeeded.
   if (base === 'review-khong-chay-duoc.md') return true;
   if (base === 'screen.json') return true;
+  // dr-flow ("Đánh giá luồng UX"): ONE entry per flow — `flows/<FLOW-ID>/
+  // ux-review.json` opens the full source diagram + findings panel
+  // (FlowUxReviewPreview). Its siblings (as-is/proposed.drawio|.mmd, patch/
+  // screens/cells.json) and the derived flows/<id>.flowchart.json / index.json
+  // stay hidden — same diagram, no reason to list it five times.
+  if (/(^|\/)flows\/[^/]+\/ux-review\.json$/.test(lower)) return true;
   // UI-Spec previews: React per-screen pages + HTML prototype (not the
   // dist/index.html bundle, dev entry, or build assets).
   if (/\.html?$/.test(base)) {

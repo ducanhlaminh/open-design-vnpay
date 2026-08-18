@@ -54,7 +54,7 @@ describe('flowchartToFlowDoc', () => {
   });
 
   it('vòng lặp báo lỗi: cạnh nội bộ cụm biến mất, mọi cạnh khác giữ nguyên nhãn gốc', () => {
-    // Đúng ví dụ trong skill docs-flow-extract: n2 và n4 cùng màn, n4 → n2 quay lại.
+    // Đúng ví dụ trong skill docs-flow-ux (bản cũ docs-flow-extract): n2 và n4 cùng màn, n4 → n2 quay lại.
     const doc: FlowchartDoc = {
       id: 'FLOW-login',
       nodes: [
