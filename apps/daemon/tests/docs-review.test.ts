@@ -25,6 +25,8 @@ import {
   rebuildPageFromSlices,
   detectEol,
   sectionSlicePath,
+  pageOutlinePath,
+  renderPageOutline,
   type DocChange,
   type DocNote,
   type DocPageResult,
@@ -1316,4 +1318,52 @@ test('listDocPages and cloneDocsForReview prefer docs-feature and preserve its r
   assert.deepEqual(await cloneDocsForReview(cwd), ['review/docs-feature/feature.md']);
   assert.equal(await readFile(join(cwd, 'review/docs-feature/feature.md'), 'utf8'), '# Feature');
   await rm(cwd, { recursive: true, force: true });
+});
+
+test('pageOutlinePath sits next to the slices: <clone>.outline.md', () => {
+  assert.equal(pageOutlinePath('review/docs/confluence/a.md'), 'review/docs/confluence/a.outline.md');
+  assert.equal(pageOutlinePath('review/docs-feature/App/x/y.MD'), 'review/docs-feature/App/x/y.outline.md');
+});
+
+test('renderPageOutline lists every section with its line range and flags, names the slice pattern, and never copies body text', () => {
+  const md = [
+    '---',
+    'title: Trang A',
+    '---',
+    'Mở đầu nói về CIF và KH.',
+    '# 1. Tổng quan',
+    'Nội dung tổng quan dòng 6.',
+    '## 2. Sơ đồ luồng',
+    '## 3. Màn hình',
+    'Có ảnh ![m](attachments/a.png) ở đây.',
+    'Thêm dòng nữa.',
+  ].join('\n');
+  const sections = splitSections(md, { minLines: 1 });
+  const out = renderPageOutline({
+    page: 'Trang A',
+    mdPath: 'docs/confluence/a.md',
+    reviewRel: 'review/docs/confluence/a.md',
+    totalLines: md.split('\n').length,
+    sections,
+  });
+  assert.match(out, /^# Mục lục trang: Trang A/m);
+  assert.match(out, /`docs\/confluence\/a\.md` — 10 dòng, \d+ section/);
+  assert.match(out, /review\/docs\/confluence\/a\.s<NN>\.slice\.md/);
+  // One line per section, in index order, with 1-based inclusive ranges.
+  for (const sec of sections) {
+    const nn = String(sec.index).padStart(2, '0');
+    const re = new RegExp(`^- s${nn}  dòng ${sec.startLine}–${sec.endLine}  `, 'm');
+    assert.match(out, re, `section ${nn} listed`);
+  }
+  // Empty heading is flagged, image count is flagged.
+  const empty = sections.find((s) => s.bodyLines === 0);
+  const withImg = sections.find((s) => s.imageRefs.length > 0);
+  assert.ok(empty && withImg, 'fixture has an empty section and an image section');
+  assert.match(out, /RỖNG — chỉ có tiêu đề/);
+  assert.match(out, /\[.*1 ảnh.*\]/);
+  // Structure only: no body sentence leaks into the outline.
+  assert.doesNotMatch(out, /Nội dung tổng quan/);
+  assert.doesNotMatch(out, /Thêm dòng nữa/);
+  // The reading rule the kickoff relies on is spelled out in the file itself.
+  assert.match(out, /KHÔNG đọc cả trang/);
 });

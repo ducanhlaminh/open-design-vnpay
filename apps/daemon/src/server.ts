@@ -502,6 +502,8 @@ import {
   splitSections,
   sectionOutputPath,
   sectionSlicePath,
+  pageOutlinePath,
+  renderPageOutline,
   sliceSections,
   rebuildPageFromSlices,
   detectEol,
@@ -17046,12 +17048,13 @@ export async function startServer({
             sec.bodyLines === 0
               ? ` LƯU Ý: heading này KHÔNG CÓ NỘI DUNG (chỉ có dòng tiêu đề). Đó là một gap mức major — ghi một note vào "${secNotesRel}", KHÔNG tự bịa nội dung/sơ đồ vào tài liệu.`
               : '';
+          const outlineRel = pageOutlinePath(reviewRel);
           const kickoff =
-            `Run the "docs-spec-review" review for ONE SECTION of ONE page of project "${projectId}". ` +
-            `Read "${pg.mdPath}" (title: ${pg.page}) as the ORIGINAL — READ-ONLY. Do NOT modify any file under docs/. ` +
+            `Run the "docs-spec-review" review for ONE SECTION of ONE page of project "${projectId}" (page title: ${pg.page}; original: "${pg.mdPath}", READ-ONLY — do NOT modify any file under docs/). ` +
             `SECTION của bạn là "${sec.heading || '(phần mở đầu, trước heading đầu tiên)'}", dòng ${sec.startLine}-${sec.endLine} của trang gốc.${imageLine}${emptyLine} ` +
-            `Edit ONLY the slice file "${secSliceRel}" using the Edit tool (one targeted edit per change — never Write to overwrite the whole file). ` +
-            `File đó chứa ĐÚNG nội dung section của bạn, đã tách sẵn; daemon ghép các lát lại thành trang hoàn chỉnh sau khi mọi section chạy xong. ` +
+            `ĐỌC GÌ: (1) lát cắt "${secSliceRel}" — chứa ĐÚNG và ĐỦ nội dung section của bạn, đọc trọn; (2) mục lục trang "${outlineRel}" — cấu trúc cả trang + khoảng dòng từng section. ` +
+            `KHÔNG đọc cả trang gốc và KHÔNG đọc bản clone cả trang "${reviewRel}" — chúng dài gấp nhiều lần phần bạn phụ trách. Cần ngữ cảnh ngoài section (thuật ngữ, luồng được nhắc ở phần khác), Read "${pg.mdPath}" với offset/limit đúng khoảng dòng ghi trong mục lục, tối đa vài lần. ` +
+            `Edit ONLY the slice file "${secSliceRel}" using the Edit tool (one targeted edit per change — never Write to overwrite the whole file); daemon ghép các lát lại thành trang hoàn chỉnh sau khi mọi section chạy xong. ` +
             `TUYỆT ĐỐI KHÔNG sửa "${reviewRel}" — các section khác đang chạy SONG SONG và bản clone đó do daemon dựng lại, mọi sửa đổi trực tiếp vào nó sẽ bị ghi đè và mất. ` +
             `checking it against the criteria in "criteria/" if that folder exists (optional — fall back to the skill's built-in default criteria when it is absent). ` +
             `Write every change you actually made to "${secChangesRel}" as a JSON array of DocChange objects, ` +
@@ -17137,6 +17140,20 @@ export async function startServer({
               sections.map((sec, si) =>
                 fs.promises.writeFile(path.join(cwd, sectionSlicePath(reviewRel, sec.index)), slices[si] ?? '', 'utf8'),
               ),
+            );
+            // Mục lục trang: một file cho cả trang, để mỗi lượt section đọc
+            // lát của mình + mục lục thay vì đọc lại cả trang gốc lẫn bản clone
+            // (xem pageOutlinePath). Xoá cùng lúc với các lát bên dưới.
+            await fs.promises.writeFile(
+              path.join(cwd, pageOutlinePath(reviewRel)),
+              renderPageOutline({
+                page: pg.page,
+                mdPath: pg.mdPath,
+                reviewRel,
+                totalLines: cloneText.split(/\r?\n/).length,
+                sections,
+              }),
+              'utf8',
             );
           } catch (error) {
             errors.push(`Không cắt được trang thành lát: ${error instanceof Error ? error.message : String(error)}`);
@@ -17282,6 +17299,7 @@ export async function startServer({
                 .rm(path.join(cwd, sectionSlicePath(reviewRel, sec.index)), { force: true })
                 .catch(() => null);
             }
+            await fs.promises.rm(path.join(cwd, pageOutlinePath(reviewRel)), { force: true }).catch(() => null);
           }
 
           results[idx] = {

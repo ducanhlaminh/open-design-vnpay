@@ -202,6 +202,49 @@ export function sectionSlicePath(reviewRel: string, index: number): string {
   return reviewRel.replace(/\.md$/i, `.s${nn}.slice.md`);
 }
 
+/** File MỤC LỤC của một trang — một file cho cả trang, nằm cạnh các lát cắt,
+ *  ví dụ `review/docs/confluence/a.md` → `…/a.outline.md`.
+ *
+ *  Vì sao có (đo 2026-08 trên transcript thật): mỗi lượt section đọc lại CẢ
+ *  trang gốc (~190 KB ≈ 60k token) rồi cả bản clone, dù nó chỉ được sửa một
+ *  lát ~100–200 dòng — với 8 section là 8 lần đọc cùng một trang. Mục lục cho
+ *  agent biết trang có những phần nào, phần của mình nằm ở đâu, và cần ngữ
+ *  cảnh ngoài section thì Read đúng khoảng dòng nào của bản gốc thay vì đọc
+ *  hết. Được ghi cùng lúc với các lát và xoá cùng lúc với chúng. */
+export function pageOutlinePath(reviewRel: string): string {
+  return reviewRel.replace(/\.md$/i, '.outline.md');
+}
+
+/** Nội dung file mục lục (xem {@link pageOutlinePath}). Chỉ chứa cấu trúc —
+ *  heading nguyên văn + khoảng dòng + cờ rỗng/ảnh — không chép nội dung. */
+export function renderPageOutline(input: {
+  page: string;
+  mdPath: string;
+  reviewRel: string;
+  totalLines: number;
+  sections: ReadonlyArray<DocSection>;
+}): string {
+  const lines: string[] = [];
+  lines.push(`# Mục lục trang: ${input.page}`);
+  lines.push('');
+  lines.push(`Bản gốc (CHỈ ĐỌC): \`${input.mdPath}\` — ${input.totalLines} dòng, ${input.sections.length} section.`);
+  lines.push(`Lát cắt của section NN: \`${sectionSlicePath(input.reviewRel, 0).replace(/\.s00\.slice\.md$/, '.s<NN>.slice.md')}\` — chứa ĐÚNG nội dung section đó.`);
+  lines.push('');
+  lines.push('Chỉ đọc LÁT CẮT của bạn. Cần ngữ cảnh ngoài section (thuật ngữ, luồng nhắc ở phần khác): Read bản gốc với `offset`/`limit` theo khoảng dòng dưới đây — KHÔNG đọc cả trang, KHÔNG đọc bản clone cả trang.');
+  lines.push('');
+  for (const sec of input.sections) {
+    const nn = String(sec.index).padStart(2, '0');
+    const heading = sec.heading || '(phần mở đầu, trước heading đầu tiên)';
+    const flags: string[] = [];
+    if (sec.bodyLines === 0) flags.push('RỖNG — chỉ có tiêu đề');
+    if (sec.imageRefs.length > 0) flags.push(`${sec.imageRefs.length} ảnh`);
+    const range = `dòng ${sec.startLine}–${sec.endLine}`;
+    lines.push(`- s${nn}  ${range}  ${heading}${flags.length ? `  [${flags.join('; ')}]` : ''}`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
 /** Kiểu xuống dòng của một văn bản — giữ nguyên khi ghép lại để bản clone
  *  không bị đổi hàng loạt chỉ vì đi qua vòng cắt/ghép. */
 export function detectEol(text: string): '\r\n' | '\n' {

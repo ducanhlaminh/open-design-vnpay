@@ -64,16 +64,24 @@ sau khi tất cả chạy xong.
 
 **Bố cục tài liệu:** review bản gốc theo path kickoff (`docs/…` hoặc `docs-feature/…`) ở chế độ chỉ đọc; `docs-app/` không thuộc phạm vi review.
 
-- **Bản gốc (CHỈ ĐỌC):** `docs/<page>.md` — kickoff nêu đúng đường dẫn (có thể là `docs-feature/<branch>/…`). Đây là
-  nguồn sự thật, không được sửa.
-- **Lát cắt của bạn (nơi DUY NHẤT được sửa):** `review/docs/<page>.s<NN>.slice.md`
-  — daemon đã tách sẵn, chứa ĐÚNG nội dung section bạn phụ trách. Ref ảnh tương
-  đối vẫn trỏ đúng vì lát nằm cùng thư mục với bản clone (daemon nhân bản
-  NGUYÊN cây `docs/` kể cả `attachments/`) — đừng đụng vào chúng.
-- **Bản clone cả trang (CHỈ ĐỌC):** `review/docs/<page>.md` — dùng để tra ngữ
-  cảnh ngoài phạm vi section. **CẤM sửa nó.** Các section của cùng một trang
-  chạy SONG SONG, và daemon dựng lại file này bằng cách ghép mọi lát sau khi
-  tất cả chạy xong; mọi sửa đổi ghi thẳng vào đây sẽ bị ghi đè và mất.
+- **Lát cắt của bạn (ĐỌC TRỌN, và là nơi DUY NHẤT được sửa):**
+  `review/docs/<page>.s<NN>.slice.md` — daemon đã tách sẵn, chứa ĐÚNG và ĐỦ
+  nội dung section bạn phụ trách. Ref ảnh tương đối vẫn trỏ đúng vì lát nằm
+  cùng thư mục với bản clone (daemon nhân bản NGUYÊN cây `docs/` kể cả
+  `attachments/`) — đừng đụng vào chúng.
+- **Mục lục trang (CHỈ ĐỌC):** `review/docs/<page>.outline.md` — heading + khoảng
+  dòng của MỌI section, cờ "rỗng"/"có ảnh". Đọc để biết section của bạn đứng ở
+  đâu trong trang và phần nào nói về gì.
+- **Bản gốc (CHỈ ĐỌC, KHÔNG đọc cả trang):** `docs/<page>.md` — kickoff nêu
+  đúng đường dẫn (có thể là `docs-feature/<branch>/…`). Đây là nguồn sự thật,
+  không được sửa. Nó dài gấp nhiều lần lát của bạn, nên **không Read cả file**;
+  cần ngữ cảnh ngoài section (một thuật ngữ, một luồng được nhắc ở phần khác)
+  thì Read đúng khoảng dòng ghi trong mục lục bằng `offset`/`limit`, tối đa
+  vài lần.
+- **Bản clone cả trang:** `review/docs/<page>.md` — **KHÔNG đọc, CẤM sửa.** Các
+  section của cùng một trang chạy SONG SONG, và daemon dựng lại file này bằng
+  cách ghép mọi lát sau khi tất cả chạy xong; mọi sửa đổi ghi thẳng vào đây sẽ
+  bị ghi đè và mất.
 - **Bộ tiêu chí (tuỳ chọn):** `criteria/*.md` — người dùng có thể tải lên
   (`od files upload <proj> <file> --as docs-review/criteria/<name>.md`). Mỗi
   file có thể chứa rule văn bản (ux-writing, flow, gap, edge-case) và/hoặc một
@@ -136,8 +144,9 @@ làm nguồn đúng và không hướng dẫn đội thiết kế sao chép ản
 
 ## Bước 1 — review theo 5 nhóm
 
-Đọc bản clone (`review/docs/<page>.md`) và đối chiếu với tiêu chí (từ
-`criteria/` nếu có, hoặc bộ mặc định ở trên) theo đúng 5 nhóm:
+Đọc LÁT CẮT của bạn (`review/docs/<page>.s<NN>.slice.md`) cùng mục lục trang,
+và đối chiếu với tiêu chí (từ `criteria/` nếu có, hoặc bộ mặc định ở trên)
+theo đúng 5 nhóm:
 
 1. **ux-writing** — mơ hồ ai làm gì, thuật ngữ không nhất quán, viết tắt tối
    nghĩa, nhãn nút/thông báo không nói rõ hành động hoặc hậu quả. KHÔNG soi
@@ -207,10 +216,12 @@ Daemon gộp file của mọi section thành `a.changes.json` cấp trang sau kh
 trang chạy xong — **bạn không tự ghi file gộp đó**. Mỗi change mang được **cả
 hai phía**:
 
-- `before`: đoạn văn bản NGUYÊN VĂN lấy từ bản GỐC (`docs/<page>.md`) — đoạn
-  bị thay hoặc bị xoá.
-- `quote`: đoạn văn bản NGUYÊN VĂN lấy từ bản ĐÃ SỬA (`review/docs/<page>.md`)
-  — đoạn thay thế hoặc bổ sung.
+- `before`: đoạn văn bản NGUYÊN VĂN của bản GỐC — lấy từ lát cắt TRƯỚC KHI
+  bạn sửa (lát cắt là bản sao nguyên văn của `docs/<page>.md` trong khoảng
+  dòng của bạn, nên không cần mở bản gốc để chép) — đoạn bị thay hoặc bị xoá.
+- `quote`: đoạn văn bản NGUYÊN VĂN của bản ĐÃ SỬA — lấy từ lát cắt SAU KHI bạn
+  sửa (daemon ghép lát vào `review/docs/<page>.md`) — đoạn thay thế hoặc bổ
+  sung.
 
 **Quy ước theo loại thay đổi:**
 
