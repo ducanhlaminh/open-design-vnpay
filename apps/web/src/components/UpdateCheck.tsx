@@ -108,40 +108,59 @@ export async function startHostUpdate(): Promise<void> {
   void checkHostUpdateStatus();
 }
 
-export async function checkHostUpdateStatus(): Promise<void> {
+// Outcome of one status poll, for the header button's explicit
+// "Kiểm tra cập nhật" face: `update` = a newer version exists,
+// `latest` = GitHub answered and we are on it, `error` = daemon or GitHub
+// could not be reached (message when the daemon explained why).
+export type HostUpdateCheckOutcome =
+  | { kind: 'update'; latestVersion: string }
+  | { kind: 'latest'; currentVersion: string }
+  | { kind: 'error'; message: string | null };
+
+// `refresh` = user-initiated: `?refresh=1` makes the daemon bypass its
+// 5-minute release cache so the answer is live, not the last poll's.
+export async function checkHostUpdateStatus(
+  { refresh = false }: { refresh?: boolean } = {},
+): Promise<HostUpdateCheckOutcome> {
   let body: UpdateStatusResponse;
   try {
-    const res = await fetch('/api/update/status');
-    if (!res.ok) return;
+    const res = await fetch(refresh ? '/api/update/status?refresh=1' : '/api/update/status');
+    if (!res.ok) return { kind: 'error', message: null };
     body = (await res.json()) as UpdateStatusResponse;
   } catch {
     // Daemon unreachable — most likely mid-restart during its own
     // update (install.sh/install.ps1's health-check-with-rollback
     // window), or just a transient blip. Not a hard error: the next
     // scheduled poll (fast, while an apply is in flight) retries.
-    return;
+    return { kind: 'error', message: null };
   }
 
   setHostUpdateState({ status: body });
+  const outcome: HostUpdateCheckOutcome =
+    body.updateAvailable && body.latestVersion
+      ? { kind: 'update', latestVersion: body.latestVersion }
+      : body.checkError || body.latestVersion == null
+        ? { kind: 'error', message: body.checkError ?? null }
+        : { kind: 'latest', currentVersion: body.currentVersion };
 
   if (shouldReloadAfterUpdate(body.justUpdated)) {
     setHostUpdateState({ applying: false, applyStartedAt: null });
     window.location.reload();
-    return;
+    return outcome;
   }
 
   const { applyStartedAt } = getHostUpdateState();
-  if (applyStartedAt == null) return;
+  if (applyStartedAt == null) return outcome;
 
   const restartMessage = updateRestartRequiredMessage(body.state);
   if (restartMessage) {
     setHostUpdateState({ restartRequired: restartMessage, applying: false, applyStartedAt: null });
-    return;
+    return outcome;
   }
 
   if (body.lastError) {
     setHostUpdateState({ applyError: body.lastError.message, applying: false, applyStartedAt: null });
-    return;
+    return outcome;
   }
 
   if (Date.now() - applyStartedAt > APPLY_TIMEOUT_MS) {
@@ -151,6 +170,7 @@ export async function checkHostUpdateStatus(): Promise<void> {
       applyStartedAt: null,
     });
   }
+  return outcome;
 }
 
 export function UpdateCheck() {

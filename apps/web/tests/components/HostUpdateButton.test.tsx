@@ -6,7 +6,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HostUpdateButton, hostUpdateButtonLabel } from '../../src/components/HostUpdateButton';
+import { HostUpdateButton, hostUpdateButtonLabel, hostUpdateCheckLabel } from '../../src/components/HostUpdateButton';
 import {
   hostUpdatePercent,
   resetHostUpdateState,
@@ -55,10 +55,82 @@ describe('<HostUpdateButton />', () => {
     resetHostUpdateState();
   });
 
-  it('renders nothing when no update is available', () => {
-    setHostUpdateState({ status: status({ updateAvailable: false }) });
+  it('offers "Kiểm tra cập nhật" in the same slot when no update is available', () => {
+    setHostUpdateState({ status: status({ updateAvailable: false, latestVersion: '0.8.41' }) });
     render(<HostUpdateButton />);
     expect(screen.queryByTestId('host-update-button')).toBeNull();
+    const check = screen.getByTestId('host-update-check-button') as HTMLButtonElement;
+    expect(check.textContent).toContain('Kiểm tra cập nhật');
+    expect(check.disabled).toBe(false);
+    expect(hostUpdateCheckLabel('latest', '0.8.41')).toBe('Đã là bản mới nhất · v0.8.41');
+    expect(hostUpdateCheckLabel('error', null)).toBe('Không kiểm tra được');
+  });
+
+  it('check → live daemon check (?refresh=1); "Đã là bản mới nhất" when nothing newer', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/update/status?refresh=1') {
+        return new Response(
+          JSON.stringify(status({ updateAvailable: false, latestVersion: '0.8.41', checkedAt: new Date().toISOString(), checkError: null })),
+          { status: 200 },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    setHostUpdateState({ status: status({ updateAvailable: false, latestVersion: '0.8.41' }) });
+    render(<HostUpdateButton />);
+
+    fireEvent.click(screen.getByTestId('host-update-check-button'));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/update/status?refresh=1');
+      const check = screen.getByTestId('host-update-check-button') as HTMLButtonElement;
+      expect(check.textContent).toContain('Đã là bản mới nhất · v0.8.41');
+      expect(check.getAttribute('data-face')).toBe('latest');
+    });
+  });
+
+  it('check → flips to the accent "Cập nhật vX" CTA when the live check finds a release', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/update/status?refresh=1') {
+        return new Response(JSON.stringify(status({ updateAvailable: true, latestVersion: '0.8.42' })), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    setHostUpdateState({ status: status({ updateAvailable: false, latestVersion: '0.8.41' }) });
+    render(<HostUpdateButton />);
+
+    fireEvent.click(screen.getByTestId('host-update-check-button'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('host-update-check-button')).toBeNull();
+      expect(screen.getByTestId('host-update-button').textContent).toContain('Cập nhật v0.8.42');
+    });
+  });
+
+  it('check → "Không kiểm tra được" when the daemon could not reach GitHub', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/update/status?refresh=1') {
+        return new Response(
+          JSON.stringify(status({ updateAvailable: false, latestVersion: null, checkedAt: null, checkError: 'Không kiểm tra được bản mới: HTTP 503' })),
+          { status: 200 },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    setHostUpdateState({ status: status({ updateAvailable: false, latestVersion: null }) });
+    render(<HostUpdateButton />);
+
+    fireEvent.click(screen.getByTestId('host-update-check-button'));
+    await waitFor(() => {
+      const check = screen.getByTestId('host-update-check-button') as HTMLButtonElement;
+      expect(check.textContent).toContain('Không kiểm tra được');
+      expect(check.getAttribute('data-face')).toBe('error');
+      expect(check.getAttribute('title')).toContain('HTTP 503');
+    });
   });
 
   it('shows the accent CTA with the new version and starts the apply on click', async () => {

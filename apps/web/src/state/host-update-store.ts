@@ -12,6 +12,11 @@ export interface UpdateStatusResponse {
   currentVersion: string;
   latestVersion: string | null;
   updateAvailable: boolean;
+  /** Set by the daemon when it actually answered from GitHub (fresh or
+   *  cached); `checkError` is only populated for an explicit `?refresh=1`
+   *  check that could not reach GitHub. */
+  checkedAt?: string | null;
+  checkError?: string | null;
   justUpdated: { version: string; at: string } | null;
   lastError: { message: string; at: string } | null;
   state?: string | null;

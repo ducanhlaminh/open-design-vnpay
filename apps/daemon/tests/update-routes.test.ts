@@ -78,6 +78,8 @@ async function withFakeOpencodeAgent<T>(script: string, run: () => Promise<T>): 
   }
 }
 
+let githubReleaseCalls = 0;
+
 describe('host-runtime self-update routes', () => {
   let server: http.Server;
   let baseUrl: string;
@@ -103,6 +105,7 @@ describe('host-runtime self-update routes', () => {
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const href = typeof input === 'string' ? input : input.toString();
       if (href === 'https://api.github.com/repos/ducanhlaminh/open-design-vnpay/releases/latest') {
+        githubReleaseCalls += 1;
         return new Response(
           JSON.stringify({ tag_name: FAKE_LATEST_TAG, html_url: 'https://example.com/release' }),
           { status: 200, headers: { 'content-type': 'application/json' } },
@@ -155,6 +158,21 @@ describe('host-runtime self-update routes', () => {
       expect(body.latestVersion).toBe(FAKE_LATEST_VERSION);
       expect(body.updateAvailable).toBe(true);
       expect(body.justUpdated).toBeNull();
+    });
+
+    it('serves latestVersion from the 5-minute cache, but ?refresh=1 (header "Kiểm tra cập nhật") re-asks GitHub and reports checkedAt', async () => {
+      const before = githubReleaseCalls;
+      await fetch(`${baseUrl}/api/update/status`);
+      await fetch(`${baseUrl}/api/update/status`);
+      expect(githubReleaseCalls).toBe(before); // still within TTL from the first test
+
+      const res = await fetch(`${baseUrl}/api/update/status?refresh=1`);
+      const body = (await res.json()) as { latestVersion: string | null; checkedAt: string | null; checkError: string | null };
+      expect(githubReleaseCalls).toBe(before + 1);
+      expect(body.latestVersion).toBe(FAKE_LATEST_VERSION);
+      expect(typeof body.checkedAt).toBe('string');
+      expect(Number.isNaN(Date.parse(body.checkedAt as string))).toBe(false);
+      expect(body.checkError).toBeNull();
     });
 
     it('reports justUpdated exactly once when a marker matching the running version is present', async () => {
