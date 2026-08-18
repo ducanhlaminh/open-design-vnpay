@@ -14649,13 +14649,19 @@ export async function startServer({
           }
         },
       });
+      // One line in the daemon log per unavailable read — that log is what a
+      // prod machine can actually hand back to us.
+      if (!body.available) console.warn(`[usage/claude] unavailable: ${body.reason ?? '(no reason)'}`);
       res.json(body);
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[usage/claude] failed: ${message}`);
       res.json({
         available: false,
         fiveHour: { utilization: null, resetsAt: null },
         sevenDay: { utilization: null, resetsAt: null },
         subscriptionType: null,
+        reason: `Daemon không đọc được mức dùng Claude: ${message}`,
       } satisfies import('@open-design/contracts').ClaudeUsageResponse);
     }
   });
@@ -14668,30 +14674,49 @@ export async function startServer({
   // Docker sandbox is enabled does this fall back to the sandboxed volume —
   // mirrors `/api/usage/claude` just above.
   app.get('/api/usage/codex', async (_req, res) => {
-    const emptyUsage = {
+    const emptyUsage = (reason: string): import('@open-design/contracts').CodexUsageResponse => ({
       available: false,
       primary: { utilization: null, resetsAt: null, durationMinutes: null },
       secondary: null,
       planType: null,
       hasCredits: null,
-    } satisfies import('@open-design/contracts').CodexUsageResponse;
+      reason,
+    });
+    const describe = (err: unknown): string => {
+      const message = err instanceof Error ? err.message : String(err);
+      const head = message.split('\n').slice(0, 2).join(' ').trim();
+      // Our own Vietnamese diagnostics (CLI not found, timeout…) are already
+      // user-facing — pass them through untouched.
+      if (/^(Không|Codex usage check timed out|Codex CLI chưa|Codex app-server)/.test(head)) return head;
+      // A dead app-server usually means "not logged in" — codex prints its
+      // login hint on stderr and exits; keep that text, it is the actual cause.
+      if (/not logged in|codex login|unauthorized|401|refresh token|auth\.json/i.test(message)) {
+        return `Codex CLI chưa đăng nhập trên máy này — chạy \`codex login\`. (${head})`;
+      }
+      return head || 'lỗi không rõ';
+    };
+    let hostReason = '';
     try {
       const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
       try {
         res.json(await readHostCodexUsage(agentCliEnvForAgent(appConfig.agentCliEnv, 'codex')));
         return;
-      } catch {
+      } catch (err) {
         // Host Codex CLI not installed / not logged in / unreachable — fall
         // through to the Docker sandbox below when it is enabled.
+        hostReason = describe(err);
+        console.warn(`[usage/codex] host read failed: ${hostReason}`);
       }
       if (!resolveSandboxConfig(appConfig.sandbox, process.env).enabled) {
-        res.json(emptyUsage);
+        res.json(emptyUsage(hostReason));
         return;
       }
       const image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
       res.json(await readSandboxCodexUsage(image));
-    } catch {
-      res.json(emptyUsage);
+    } catch (err) {
+      const sandboxReason = `Docker sandbox không đọc được mức dùng Codex: ${describe(err)}`;
+      console.warn(`[usage/codex] ${sandboxReason}`);
+      res.json(emptyUsage(hostReason ? `${hostReason} · ${sandboxReason}` : sandboxReason));
     }
   });
 

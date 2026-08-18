@@ -86,3 +86,54 @@ describe('fetchClaudeUsage caching', () => {
     expect(usageCalls).toBe(2);
   });
 });
+
+describe('fetchClaudeUsage reasons (why the meter is unavailable)', () => {
+  it('names the sandbox volume when the sandbox owns Claude and holds no login', async () => {
+    const out = await fetchClaudeUsage({ sandboxOnly: true, sandboxCreds: async () => null });
+    expect(out.available).toBe(false);
+    expect(out.reason).toMatch(/od-claude-auth/);
+  });
+
+  it('401/403 → reason says the token was refused and to log in again', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: false, status: 401, json: async () => ({}) }) as unknown as Response);
+    const out = await fetchClaudeUsage({ sandboxOnly: true, sandboxCreds: async () => OAUTH_BLOB });
+    expect(out.available).toBe(false);
+    expect(out.reason).toMatch(/HTTP 401/);
+    expect(out.reason).toMatch(/đăng nhập lại/);
+  });
+
+  it('429 → reason says Anthropic is rate-limiting, not that the user is signed out', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: false, status: 429, json: async () => ({}) }) as unknown as Response);
+    const out = await fetchClaudeUsage({ sandboxOnly: true, sandboxCreds: async () => OAUTH_BLOB });
+    expect(out.reason).toMatch(/HTTP 429/);
+  });
+
+  it('TLS verification failure (corporate inspection) → reason names the cert error and the CA hint', async () => {
+    vi.stubGlobal('fetch', async () => {
+      const err = new TypeError('fetch failed') as TypeError & { cause?: unknown };
+      err.cause = Object.assign(new Error('unable to verify the first certificate'), { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' });
+      throw err;
+    });
+    const out = await fetchClaudeUsage({ sandboxOnly: true, sandboxCreds: async () => OAUTH_BLOB });
+    expect(out.available).toBe(false);
+    expect(out.reason).toMatch(/UNABLE_TO_VERIFY_LEAF_SIGNATURE/);
+    expect(out.reason).toMatch(/NODE_EXTRA_CA_CERTS/);
+  });
+
+  it('DNS failure → reason names the code', async () => {
+    vi.stubGlobal('fetch', async () => {
+      const err = new TypeError('fetch failed') as TypeError & { cause?: unknown };
+      err.cause = Object.assign(new Error('getaddrinfo ENOTFOUND api.anthropic.com'), { code: 'ENOTFOUND' });
+      throw err;
+    });
+    const out = await fetchClaudeUsage({ sandboxOnly: true, sandboxCreds: async () => OAUTH_BLOB });
+    expect(out.reason).toMatch(/ENOTFOUND/);
+  });
+
+  it('5xx with no earlier good reading → reason names the HTTP status', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: false, status: 503, json: async () => ({}) }) as unknown as Response);
+    const out = await fetchClaudeUsage({ sandboxOnly: true, sandboxCreds: async () => OAUTH_BLOB });
+    expect(out.available).toBe(false);
+    expect(out.reason).toMatch(/HTTP 503/);
+  });
+});

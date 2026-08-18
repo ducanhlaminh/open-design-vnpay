@@ -165,8 +165,13 @@ sha256_of() {
 # publishes (see .github/workflows/release-host-runtime.yml): top-level keys
 # named "<platform>.url" / "<platform>.sha256" rather than nested objects, so
 # a value can be pulled out with grep instead of a JSON parser.
+# Prints the value of a top-level "<key>": "<value>" pair, or nothing when the
+# key is absent. Absence is a normal answer (e.g. "<platform>.parts" only
+# exists on the Cloudflare mirror), so grep's exit 1 must NOT propagate — under
+# `set -e -o pipefail` it would kill the whole install at the release lookup.
 json_flat_value() {
-  printf '%s\n' "$1" | grep -o '"'"$2"'"[[:space:]]*:[[:space:]]*"[^"]*"' \
+  printf '%s\n' "$1" \
+    | { grep -o '"'"$2"'"[[:space:]]*:[[:space:]]*"[^"]*"' || true; } \
     | sed -E 's/.*"([^"]*)"$/\1/' | head -1
 }
 

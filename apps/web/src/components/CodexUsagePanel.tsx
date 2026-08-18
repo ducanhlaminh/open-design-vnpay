@@ -10,7 +10,7 @@ import { AgentAuthLine } from './AgentAuthLine';
 type State =
   | { phase: 'loading' }
   | { phase: 'ready'; usage: CodexUsageResponse; at: number }
-  | { phase: 'error' };
+  | { phase: 'error'; detail: string };
 
 function label(window: CodexUsageWindow): string {
   if (window.durationMinutes === 300) return '5 giờ';
@@ -41,11 +41,11 @@ export function CodexUsagePanel({ agent, onAuthChanged }: Props): JSX.Element {
     setState({ phase: 'loading' });
     try {
       const res = await fetch('/api/usage/codex', signal ? { signal } : undefined);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(`daemon trả về HTTP ${res.status}`);
       const usage = await res.json() as CodexUsageResponse;
       if (!signal?.aborted) setState({ phase: 'ready', usage, at: Date.now() });
-    } catch {
-      if (!signal?.aborted) setState({ phase: 'error' });
+    } catch (err) {
+      if (!signal?.aborted) setState({ phase: 'error', detail: err instanceof Error ? err.message : 'daemon không phản hồi' });
     }
   }, []);
   useEffect(() => { const ctrl = new AbortController(); void load(ctrl.signal); return () => ctrl.abort(); }, [load]);
@@ -57,8 +57,17 @@ export function CodexUsagePanel({ agent, onAuthChanged }: Props): JSX.Element {
       <CodexWindow window={state.usage.primary} now={state.at} />
       {state.usage.secondary ? <CodexWindow window={state.usage.secondary} now={state.at} /> : null}
     </> : null}
+    {/* Show the daemon's own reason (CLI missing, not logged in, app-server
+        timeout, Docker…) — the old fixed "check Docker" text was wrong in host
+        mode and hid the real cause from support. */}
     {state.phase === 'error' || (state.phase === 'ready' && !state.usage.available) ? <>
-      <p className="claude-usage-section__note">Chưa đọc được mức dùng Codex. Kiểm tra lại Docker và trạng thái đăng nhập.</p>
+      <p className="claude-usage-section__note" data-testid="codex-usage-reason">
+        {state.phase === 'ready' && state.usage.reason
+          ? state.usage.reason
+          : state.phase === 'error'
+            ? `Chưa đọc được mức dùng Codex — ${state.detail}. Thử lại sau một lát.`
+            : 'Chưa đọc được mức dùng Codex. Kiểm tra Codex CLI đã cài và đã đăng nhập (`codex login`).'}
+      </p>
       <button type="button" className="claude-usage-section__retry" onClick={() => void load()}>Thử lại</button>
     </> : null}
   </div>;

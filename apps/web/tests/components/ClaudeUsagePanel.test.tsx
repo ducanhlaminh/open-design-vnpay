@@ -129,6 +129,16 @@ describe('Claude quota in the Local CLI dropdown', () => {
     expect(screen.getByRole('button', { name: 'Thử lại' })).toBeTruthy();
   });
 
+  it('shows the daemon\'s reason verbatim when the read is unavailable', async () => {
+    usageBody = { ...UNAVAILABLE_USAGE, reason: 'Anthropic từ chối token (HTTP 401) — token hết hạn hoặc bị thu hồi, đăng nhập lại `claude`.' };
+    renderSwitcher();
+    openDropdown();
+
+    await waitFor(() => expect(screen.getByTestId('claude-usage-reason').textContent).toMatch(/HTTP 401/));
+    expect(screen.queryByText(/Chưa đọc được mức dùng/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Thử lại' })).toBeTruthy();
+  });
+
   it('retries on demand after a refused read', async () => {
     usageBody = UNAVAILABLE_USAGE;
     renderSwitcher();

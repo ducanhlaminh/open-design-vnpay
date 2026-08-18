@@ -20,6 +20,11 @@ export interface ClaudeUsageResponse {
   sevenDay: ClaudeUsageWindow;
   /** e.g. "max", "pro" — surfaced for the popover, null if unknown. */
   subscriptionType: string | null;
+  /** Why `available` is false, in user-facing Vietnamese (no CLI installed,
+   *  not logged in, Keychain refused, network/TLS error, HTTP status…). The
+   *  panel shows it verbatim so a support ticket carries the actual cause
+   *  instead of a generic "check Docker and login". Absent when available. */
+  reason?: string;
 }
 
 /** A Codex account limit window reported by the Codex CLI app-server. */
@@ -42,4 +47,6 @@ export interface CodexUsageResponse {
   secondary: CodexUsageWindow | null;
   planType: string | null;
   hasCredits: boolean | null;
+  /** Why `available` is false — see ClaudeUsageResponse.reason. */
+  reason?: string;
 }

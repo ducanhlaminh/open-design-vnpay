@@ -110,3 +110,20 @@ describe('exchangeCodexRateLimits', () => {
     await expect(promise).rejects.toThrow('spawn codex ENOENT');
   });
 });
+
+describe('exchangeCodexRateLimits — JSON-RPC error answers', () => {
+  it('a not-logged-in Codex answers rateLimits with an auth error → rejects immediately with a login hint', async () => {
+    const child = makeMockChild();
+    const promise = exchangeCodexRateLimits(() => child as unknown as ChildProcess);
+    child.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`);
+    child.stdout.write(`${JSON.stringify({ error: { code: -32600, message: 'codex account authentication required to read rate limits' }, id: 2 })}\n`);
+    await expect(promise).rejects.toThrow(/codex login/);
+  });
+
+  it('a non-auth JSON-RPC error is surfaced verbatim instead of waiting for the timeout', async () => {
+    const child = makeMockChild();
+    const promise = exchangeCodexRateLimits(() => child as unknown as ChildProcess);
+    child.stdout.write(`${JSON.stringify({ id: 1, error: { code: -32601, message: 'method not found' } })}\n`);
+    await expect(promise).rejects.toThrow(/method not found/);
+  });
+});

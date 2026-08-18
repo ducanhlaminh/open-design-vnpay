@@ -23,6 +23,7 @@ import type { SandboxConfigPrefs } from './app-config.js';
 import { getAgentDef } from './runtimes/registry.js';
 import { applyAgentLaunchEnv, resolveAgentLaunch } from './runtimes/launch.js';
 import { spawnEnvForAgent } from './runtimes/env.js';
+import { createCommandInvocation } from '@open-design/platform';
 import type {
   CodexUsageResponse,
   SandboxAccount,
@@ -573,6 +574,8 @@ async function dockerWriteStdin(args: string[], input: Buffer, timeoutMs = 30_00
  * whether it was spawned directly on the host or inside a throwaway Docker
  * container — this function does not know or care which.
  */
+const CODEX_USAGE_TIMEOUT_MS = 30_000;
+
 export async function exchangeCodexRateLimits(
   spawnFn: () => ChildProcess,
 ): Promise<CodexUsageResponse> {
@@ -589,7 +592,10 @@ export async function exchangeCodexRateLimits(
       child.kill('SIGKILL');
       value instanceof Error ? reject(value) : resolve(value);
     };
-    const timer = setTimeout(() => finish(new Error('Codex usage check timed out')), 15_000);
+    // 30s, not 15s: a cold `codex app-server` on a slow Windows laptop
+    // (Defender scanning the native binary on first launch) regularly needs
+    // more than 15s before it answers `initialize`.
+    const timer = setTimeout(() => finish(new Error(`Codex usage check timed out after ${CODEX_USAGE_TIMEOUT_MS / 1000}s (codex app-server không trả lời)`)), CODEX_USAGE_TIMEOUT_MS);
     timer.unref();
     const parseLines = (chunk: Buffer) => {
       buffer += chunk.toString();
@@ -597,7 +603,24 @@ export async function exchangeCodexRateLimits(
       buffer = lines.pop() ?? '';
       for (const line of lines) {
         try {
-          const message = JSON.parse(line) as { id?: number; result?: { rateLimits?: unknown } };
+          const message = JSON.parse(line) as {
+            id?: number;
+            result?: { rateLimits?: unknown };
+            error?: { code?: number; message?: string };
+          };
+          // A JSON-RPC error on either call is a terminal answer, not noise:
+          // a Codex that is not logged in replies to `account/rateLimits/read`
+          // with `{"error":{"message":"codex account authentication required
+          // to read rate limits"}}` — waiting for a `result` that will never
+          // come used to run the whole timeout (15–30s) and then report a
+          // generic "timed out" instead of "not logged in".
+          if ((message.id === 1 || message.id === 2) && message.error) {
+            const detail = message.error.message || `JSON-RPC error ${message.error.code ?? ''}`.trim();
+            finish(new Error(/auth/i.test(detail)
+              ? `Codex CLI chưa đăng nhập trên máy này — chạy \`codex login\`. (${detail})`
+              : `Codex app-server từ chối đọc mức dùng: ${detail}`));
+            return;
+          }
           // Codex 0.146 rejects/ignores account calls received before it has
           // acknowledged initialize. Keep the JSON-RPC ordering explicit.
           if (message.id === 1 && !initialized) {
@@ -681,14 +704,25 @@ export async function readHostCodexUsage(
   const def = getAgentDef('codex');
   if (!def) throw new Error('codex runtime is not registered');
   const launch = resolveAgentLaunch(def, configuredEnv);
-  if (!launch.launchPath) throw new Error('Codex CLI is not installed on this machine');
+  if (!launch.launchPath) {
+    throw new Error('Không tìm thấy Codex CLI trên máy này (không có `codex` trên PATH / CODEX_BIN). Cài `npm i -g @openai/codex` rồi `codex login`.');
+  }
   const launchPath = launch.launchPath;
   const env = applyAgentLaunchEnv(
     spawnEnvForAgent(def.id, { ...process.env, ...(def.env || {}) }, configuredEnv),
     launch,
   );
+  // On Windows an npm-installed Codex resolves to a `codex.cmd` shim when the
+  // native binary is not found next to it; Node refuses to spawn `.cmd`
+  // directly (EINVAL, CVE-2024-27980), so route it through cmd.exe exactly
+  // like host-codex-login / chat runs do. No-op on POSIX and for codex.exe.
+  const invocation = createCommandInvocation({ command: launchPath, args: ['app-server', '--stdio'], env });
   return exchangeCodexRateLimits(() =>
-    spawn(launchPath, ['app-server', '--stdio'], { stdio: ['pipe', 'pipe', 'pipe'], env }),
+    spawn(invocation.command, invocation.args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env,
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    }),
   );
 }
 

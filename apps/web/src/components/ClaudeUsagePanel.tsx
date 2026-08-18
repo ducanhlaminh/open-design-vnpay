@@ -46,7 +46,7 @@ function resetIn(iso: string | null, now: number): string {
 type State =
   | { phase: 'loading' }
   | { phase: 'ready'; usage: ClaudeUsageResponse; at: number }
-  | { phase: 'error' };
+  | { phase: 'error'; detail: string };
 
 interface Props {
   agent?: AgentInfo | null;
@@ -61,13 +61,13 @@ export function ClaudeUsagePanel({ agent, onAuthChanged }: Props): JSX.Element {
     setState({ phase: 'loading' });
     try {
       const res = await fetch('/api/usage/claude', signal ? { signal } : undefined);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(`daemon trả về HTTP ${res.status}`);
       const usage = (await res.json()) as ClaudeUsageResponse;
       if (signal?.aborted) return;
       setState({ phase: 'ready', usage, at: Date.now() });
-    } catch {
+    } catch (err) {
       if (signal?.aborted) return;
-      setState({ phase: 'error' });
+      setState({ phase: 'error', detail: err instanceof Error ? err.message : 'daemon không phản hồi' });
     }
   }, []);
 
@@ -98,9 +98,17 @@ export function ClaudeUsagePanel({ agent, onAuthChanged }: Props): JSX.Element {
           signed out and left no way to ask again. */}
       {state.phase === 'error' || (state.phase === 'ready' && !state.usage.available) ? (
         <>
-          <p className="claude-usage-section__note">
-            Chưa đọc được mức dùng. Nếu bạn vừa đăng nhập hoặc vừa mở lại nhiều lần, máy chủ có
-            thể đang tạm chặn — thử lại sau một lát.
+          <p className="claude-usage-section__note" data-testid="claude-usage-reason">
+            {state.phase === 'ready' && state.usage.reason ? (
+              state.usage.reason
+            ) : state.phase === 'error' ? (
+              `Chưa đọc được mức dùng — ${state.detail}. Thử lại sau một lát.`
+            ) : (
+              <>
+                Chưa đọc được mức dùng. Nếu bạn vừa đăng nhập hoặc vừa mở lại nhiều lần, máy chủ có
+                thể đang tạm chặn — thử lại sau một lát.
+              </>
+            )}
           </p>
           <button type="button" className="claude-usage-section__retry" onClick={() => void load()}>
             Thử lại
