@@ -352,6 +352,11 @@ test('Windows installer can install from a mirror via OD_RELEASE_URL and persist
   assert.match(preflight, /GetLeftPart\(\[System\.UriPartial\]::Authority\)/);
   // The double-click .cmd fetches its bootstrap install.ps1 from the mirror too.
   assert.match(cmd, /if defined OD_RELEASE_URL \(/);
+  // %VAR:~..% on an undefined variable inside a ( ) block breaks cmd's parse
+  // of the whole block ("The syntax of the command is incorrect.") -- the
+  // mirror block must use delayed !VAR:~..! expansion only.
+  assert.doesNotMatch(cmd, /%OD_RELEASE_URL:~/);
+  assert.match(cmd, /if "!OD_RELEASE_URL:~-1!"=="\/" set "OD_BOOTSTRAP_URL=!OD_RELEASE_URL:~0,-1!"/);
   assert.match(cmd, /set "OD_BOOTSTRAP_URL=!OD_BOOTSTRAP_URL!\/install\.ps1"/);
   assert.match(cmd, /-Uri \$env:OD_BOOTSTRAP_URL/);
 });

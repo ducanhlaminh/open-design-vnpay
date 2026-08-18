@@ -26,9 +26,16 @@ rem instead of raw.githubusercontent.com. Networks that TLS-inspect GitHub
 rem throttle both the installer and the runtime download; the mirror carries
 rem both. install.ps1 itself reads the same variable for the runtime.
 set "OD_BOOTSTRAP_URL=https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.ps1"
+rem Delayed (bang-VAR-bang) expansion ONLY inside this block, never the
+rem percent form with a substring modifier: cmd expands percent-vars for the
+rem whole block at parse time, and a substring expression on an UNDEFINED
+rem variable is not removed cleanly -- only the leading percent sign is
+rem dropped, the remaining ones re-pair across the line and the `if` loses
+rem its operator ("The syntax of the command is incorrect.", 0.8.51 CI: every
+rem fresh machine without OD_RELEASE_URL failed to start).
 if defined OD_RELEASE_URL (
-  set "OD_BOOTSTRAP_URL=%OD_RELEASE_URL%"
-  if "%OD_RELEASE_URL:~-1%"=="/" set "OD_BOOTSTRAP_URL=%OD_RELEASE_URL:~0,-1%"
+  set "OD_BOOTSTRAP_URL=!OD_RELEASE_URL!"
+  if "!OD_RELEASE_URL:~-1!"=="/" set "OD_BOOTSTRAP_URL=!OD_RELEASE_URL:~0,-1!"
   set "OD_BOOTSTRAP_URL=!OD_BOOTSTRAP_URL!/install.ps1"
 )
 if not exist "%OD_INSTALLER%" (
