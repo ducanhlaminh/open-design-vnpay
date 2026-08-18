@@ -295,6 +295,16 @@ jobs:
           $root = Invoke-WebRequest -Uri "http://127.0.0.1:7456/" -UseBasicParsing -TimeoutSec 15
           if ($root.StatusCode -ne 200 -or $root.Content -notmatch '<html') { throw "GET / after bootstrap install: $($root.StatusCode)" }
           Write-Host "[ok] OpenDesign-Install.cmd bootstrapped a fresh install, health: $($health | ConvertTo-Json -Compress)"
+          # Second run over the existing install = clean reinstall (2026-08-18):
+          # the old runtime is removed first, then installed again; must end
+          # healthy on the same version and say so.
+          $second = cmd.exe /c "`"$(Join-Path $dl 'OpenDesign-Install.cmd')`" --no-pause" 2>&1 | Out-String
+          Write-Host $second
+          if ($LASTEXITCODE -ne 0) { throw "second OpenDesign-Install.cmd (over existing install) exited $LASTEXITCODE" }
+          if ($second -notmatch 'Previous installation removed') { throw "second install did not remove the previous installation first" }
+          $health2 = Invoke-RestMethod -Uri "http://127.0.0.1:7456/api/health" -TimeoutSec 15
+          if (-not $health2.ok) { throw "health after clean reinstall: $($health2 | ConvertTo-Json -Compress)" }
+          Write-Host "[ok] clean reinstall over an existing install is healthy: $($health2 | ConvertTo-Json -Compress)"
           pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $odHome "current\install.ps1") -Uninstall -Force -DeleteData
           if ($LASTEXITCODE -ne 0) { throw "post-bootstrap -Uninstall exited $LASTEXITCODE" }
 

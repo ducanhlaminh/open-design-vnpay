@@ -1632,6 +1632,54 @@ function Invoke-StartCommand {
   }
 }
 
+# Fresh install over an existing one = uninstall first, then install (asked
+# 2026-08-18: "khi chay install thi truoc do se can go ban cu di truoc").
+# OpenDesign-Install.cmd therefore no longer routes to -Update; only
+# OpenDesign-Update.cmd / the web button / `od self-update` update in place.
+# Runs AFTER Step 1 verified the new package so a download failure leaves
+# the old install untouched. Project data (OD_DATA_DIR) is always kept;
+# everything under $OdHome (runtime, private Node, config.env, logs, HKCU
+# Run entry) goes.
+function Remove-ExistingInstallation {
+  $currentLink = Join-Path $OdHome "current"
+  $hasInstall = (Test-Path $currentLink) -or
+    (Test-Path (Join-Path $OdHome "releases")) -or
+    (Test-Path (Join-Path $OdHome "config.env"))
+  if (-not $hasInstall) { return }
+
+  $oldVersion = ""
+  try {
+    $versionFile = Join-Path $currentLink "VERSION"
+    if (Test-Path $versionFile) { $oldVersion = ((Get-Content $versionFile -Raw) -replace '\s', '') }
+  } catch {}
+  Write-Phase "Go ban cu"
+  Write-Step "Found an existing Open Design$(if ($oldVersion) { " $oldVersion" }) at $OdHome -- removing it before the fresh install (project data is kept)"
+
+  Stop-OdLauncher
+  Stop-OdService
+  try { Stop-StalePortOwner -PortNum (Resolve-ExistingPort) } catch {}
+  try {
+    Remove-ItemProperty -Path $StartupRegistryPath -Name $StartupValueName -Force -ErrorAction SilentlyContinue
+  } catch {}
+  try {
+    Unregister-ScheduledTask -TaskName $LegacyTaskName -Confirm:$false -ErrorAction SilentlyContinue
+  } catch {}
+
+  # The junction must go first: Remove-Item -Recurse on a directory that
+  # contains a junction is unreliable on Windows PowerShell 5.1.
+  if (Test-Path $currentLink) { try { cmd /c rmdir "$currentLink" 2>$null | Out-Null } catch {} }
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    Remove-Item -Recurse -Force $OdHome -ErrorAction SilentlyContinue
+    if (-not (Test-Path $OdHome)) { break }
+    Start-Sleep -Seconds 2
+  }
+  if (Test-Path $OdHome) {
+    Fail "could not remove the previous installation at $OdHome -- close programs using it (Explorer, terminals, editors) and run the installer again"
+  }
+  New-Item -ItemType Directory -Force -Path $OdHome | Out-Null
+  Write-Ok "Previous installation removed$(if ($oldVersion) { " ($oldVersion)" })"
+}
+
 function Invoke-UninstallCommand {
   if (-not (Test-Path $OdHome)) { Fail "nothing installed at $OdHome" }
 
@@ -2070,6 +2118,7 @@ function Invoke-Main {
   }
   Invoke-PreflightCheck
   Step1-VerifyPackage
+  if (-not $Update) { Remove-ExistingInstallation }
   Step2-EnsureNode
   Step3-ExtractAndConfigure
   Step4-ConfigureService

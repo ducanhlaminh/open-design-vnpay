@@ -60,14 +60,19 @@ test('install.command / update.command are executable and parse', async () => {
   }
 });
 
-test('install.command: existing install → runs the BUNDLED install.sh with --update, never downloads', async () => {
+// 2026-08-18: Install = CLEAN install. An existing install must NOT turn
+// this into `--update`; the latest install.sh is downloaded and run fresh
+// (its remove_existing_installation wipes the old runtime first).
+test('install.command: existing install → still downloads the latest install.sh and runs it FRESH (no --update)', async () => {
   const fx = await fixture();
   try {
     await fx.withInstalledCopy();
-    const out = await exec(INSTALL_CMD, { OD_HOME: fx.odHome, OD_INSTALL_SH_URL: 'file:///nonexistent/never-fetched.sh' });
+    const url = await fx.bootstrapFile(0);
+    const out = await exec(INSTALL_CMD, { OD_HOME: fx.odHome, OD_INSTALL_SH_URL: url });
     assert.equal(out.code, 0, out.stderr);
-    assert.match(out.stdout, /already installed.*safe update/i);
-    assert.equal((await fx.calls()).trim(), 'bundled --update');
+    assert.match(out.stdout, /already installed.*Removing the previous version first/i);
+    assert.equal((await fx.calls()).trim(), 'bootstrap');
+    assert.doesNotMatch(await fx.calls(), /--update/);
     assert.match(out.stdout, /Open Design is ready/);
     assert.doesNotMatch(out.stdout, /Press Enter/);
   } finally {

@@ -203,6 +203,29 @@ test('Windows start evicts a stale Open Design daemon on the port and health-che
   assert.match(step5, /Wait-OdHealth -PortNum \$ResolvedPort -Timeout \$HealthTimeout -ExpectedVersion \$Version/);
 });
 
+test('Windows fresh install removes an existing installation first (Install = clean install); .cmd never routes to -Update', async () => {
+  const ps = await source();
+  const remove = ps.slice(ps.indexOf('function Remove-ExistingInstallation'), ps.indexOf('function Invoke-UninstallCommand'));
+  assert.match(remove, /Stop-OdLauncher/);
+  assert.match(remove, /Stop-OdService/);
+  assert.match(remove, /Remove-ItemProperty -Path \$StartupRegistryPath/);
+  assert.match(remove, /cmd \/c rmdir "\$currentLink"/);
+  assert.match(remove, /Remove-Item -Recurse -Force \$OdHome/);
+  assert.match(remove, /project data is kept/);
+  const main = ps.slice(ps.indexOf('function Invoke-Main'));
+  assert.match(main, /Step1-VerifyPackage\s+if \(-not \$Update\) \{ Remove-ExistingInstallation \}\s+Step2-EnsureNode/);
+
+  const installCmd = await readFile(join(repoRoot, 'deploy/host/install.cmd'), 'utf8');
+  const installCmdCode = installCmd.split(/\r?\n/).filter((l) => !/^\s*rem\b/i.test(l)).join('\n');
+  assert.doesNotMatch(installCmdCode, /-Update/);
+  assert.match(installCmd, /Removing the previous version first/);
+  // The tail runs inside one parenthesised block (this .cmd may be deleted
+  // with the old install mid-run) and therefore uses delayed expansion.
+  assert.match(installCmd, /setlocal EnableDelayedExpansion/);
+  assert.match(installCmd, /\(\s*\r?\n\s*powershell\.exe -NoProfile -ExecutionPolicy Bypass -File "%OD_INSTALLER%"\s*\r?\n\s*set "OD_EXIT=!ERRORLEVEL!"/);
+  assert.match(installCmd, /exit \/b !OD_EXIT!/);
+});
+
 test('Windows config replacement and rollback are atomic and transaction guarded', async () => {
   const ps = await source();
   assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configTemp, \$configPath, \$ConfigBackupPath, \$true\)/);

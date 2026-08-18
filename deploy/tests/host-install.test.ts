@@ -7,7 +7,8 @@
 // sourcing install.sh with OD_INSTALL_SH_TEST_SOURCE=1 (see the guard at the
 // bottom of install.sh) and overriding start_service/write_service_files
 // with no-op shell functions before calling the function under test.
-import { mkdtemp, mkdir, readFile, rm, writeFile, chmod, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile, chmod, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -867,4 +868,73 @@ test('preflight_check warns but does not fail when only an optional domain (clau
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// remove_existing_installation (2026-08-18: Install = clean install). Sourced
+// with launchctl/systemctl stubbed; a fake ~/.open-design with a "running"
+// pid must be wiped (daemon killed, plist removed, OD_HOME recreated empty)
+// while the data dir outside OD_HOME is untouched. Skipped on --update by
+// main(), which is asserted separately below.
+// ---------------------------------------------------------------------------
+test('remove_existing_installation wipes OD_HOME + service files, kills the daemon, keeps data, no-ops when nothing is installed', async () => {
+  const tmp = await mktmp('remove-existing');
+  const odHome = join(tmp, 'home', '.open-design');
+  const dataDir = join(tmp, 'od-data');
+  const plist = join(tmp, 'plist');
+  const callsLog = join(tmp, 'calls.log');
+  try {
+    await mkdir(join(odHome, 'releases', '0.8.40'), { recursive: true });
+    await writeFile(join(odHome, 'releases', '0.8.40', 'VERSION'), '0.8.40\n');
+    await symlink(join(odHome, 'releases', '0.8.40'), join(odHome, 'current'));
+    await writeFile(join(odHome, 'config.env'), `OD_DATA_DIR=${dataDir}\n`);
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(join(dataDir, 'keep.txt'), 'kept');
+    await writeFile(plist, 'fake plist');
+
+    const harness = join(tmp, 'harness.sh');
+    await writeFile(
+      harness,
+      [
+        '#!/usr/bin/env bash',
+        'set -eu',
+        `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+        `OD_HOME="${odHome}"`,
+        `DARWIN_PLIST_PATH="${plist}"`,
+        `LINUX_UNIT_PATH="${join(tmp, 'unit')}"`,
+        `launchctl() { echo "launchctl $*" >> "${callsLog}"; }`,
+        `systemctl() { echo "systemctl $*" >> "${callsLog}"; }`,
+        // A real background sleeper stands in for the daemon.
+        'sleep 300 & echo $! > "$OD_HOME/open-design.pid"',
+        'DAEMON_PID=$(cat "$OD_HOME/open-design.pid")',
+        'remove_existing_installation',
+        'sleep 0.3',
+        'if kill -0 "$DAEMON_PID" 2>/dev/null; then echo "daemon-still-alive"; kill "$DAEMON_PID" || true; fi',
+        // Second call on the now-empty OD_HOME must be a silent no-op.
+        'remove_existing_installation && echo "second-call-ok"',
+      ].join('\n'),
+    );
+    await chmod(harness, 0o755);
+
+    const { stdout } = await execFileAsync('bash', [harness], { env: { ...process.env, HOME: join(tmp, 'home') } });
+    assert.match(stdout, /Gỡ bản cũ/);
+    assert.match(stdout, /existing Open Design 0\.8\.40/);
+    assert.match(stdout, /Previous installation removed \(0\.8\.40\)/);
+    assert.doesNotMatch(stdout, /daemon-still-alive/);
+    assert.match(stdout, /second-call-ok/);
+    assert.equal((await readdir(odHome)).length, 0, 'OD_HOME must be recreated empty');
+    assert.equal(await readFile(join(dataDir, 'keep.txt'), 'utf8'), 'kept', 'project data outside OD_HOME must survive');
+    if (process.platform === 'darwin') {
+      assert.equal(existsSync(plist), false, 'launchd plist must be removed');
+      assert.match(await readFile(callsLog, 'utf8'), /launchctl bootout/);
+    }
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('main() runs remove_existing_installation only for fresh installs, right after step 1', async () => {
+  const sh = await readFile(installScript, 'utf8');
+  const main = sh.slice(sh.indexOf('main() {'));
+  assert.match(main, /step1_verify_package\n\s+\[ "\$OPT_UPDATE" = "1" \] \|\| remove_existing_installation\n\s+step2_ensure_node/);
 });

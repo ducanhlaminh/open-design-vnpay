@@ -30,11 +30,17 @@ flow, not copied verbatim from any project).
    install; it stays open when it finishes so the result or the actionable
    error remains visible. Press Enter to close it.
 
-Keep the two files: double-clicking `OpenDesign-Install.command` again on a
-machine that already has Open Design performs a safe in-place update (it
-runs the bundled `~/.open-design/current/install.sh --update`) instead of a
-second fresh install; `OpenDesign-Update.command` only ever updates. For
-scripts/CI, run them with `--no-pause`.
+Keep the two files. They do different things:
+
+- `OpenDesign-Install.command` = **clean install**. On a machine that already
+  has Open Design it first removes the previous installation (stops the
+  service, deletes `~/.open-design` and the launchd plist — project data under
+  `~/od-data` is kept), then installs the latest release fresh.
+- `OpenDesign-Update.command` = **in-place update** (`install.sh --update`,
+  keeps `config.env`, rolls back on a failed health check). Same as the
+  "Cập nhật" button in the web header and `od self-update`.
+
+For scripts/CI, run them with `--no-pause`.
 
 The zip is the delivery format on purpose: a bare `.command` fetched over
 HTTP loses its executable bit and cannot be double-clicked; a zip keeps it.
@@ -86,10 +92,15 @@ After installation, Windows command files are available here:
 %USERPROFILE%\.open-design\OpenDesign-Stop.cmd
 ```
 
-Double-click the action you want. `OpenDesign-Install.cmd` also detects an existing
-installation and performs a safe update instead of attempting a second fresh
-install. For scripts/CI, pass `--no-pause` so the command window does not wait
-for a key press.
+Double-click the action you want. `OpenDesign-Install.cmd` is a **clean
+install**: on a machine that already has Open Design it first removes the
+previous installation (stops the daemon/launcher, removes the HKCU Run entry,
+deletes `%USERPROFILE%\.open-design` — project data under `%USERPROFILE%\od-data`
+is kept), then installs the latest release fresh. `OpenDesign-Update.cmd` is
+the **in-place update** (`install.ps1 -Update`, keeps `config.env`, rolls back
+on a failed health check) — same as the "Cập nhật" button in the web header.
+For scripts/CI, pass `--no-pause` so the command window does not wait for a
+key press.
 
 ### PowerShell alternative
 

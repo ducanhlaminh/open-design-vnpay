@@ -43,13 +43,15 @@ finish() {
 }
 
 printf '\n'
+# Install = CLEAN install: install.sh removes an existing ~/.open-design
+# (remove_existing_installation; project data is kept) before installing the
+# latest version. In-place updates are OpenDesign-Update.command / the web
+# "Cập nhật" button / `od self-update` — never this file.
 if [ -f "${OD_HOME}/current/install.sh" ]; then
-  printf 'Open Design is already installed. Running a safe update instead...\n\n'
-  bash "${OD_HOME}/current/install.sh" --update
-  finish $?
+  printf 'Open Design is already installed. Removing the previous version first, then installing the latest one (project data is kept)...\n'
+else
+  printf 'Installing Open Design...\n'
 fi
-
-printf 'Installing Open Design...\n'
 printf 'Downloading the latest Open Design installer...\n\n'
 tmp="$(mktemp -t open-design-install.XXXXXX)" || finish 1
 cleanup() { rm -f "$tmp"; }

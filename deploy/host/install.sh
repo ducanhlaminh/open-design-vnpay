@@ -732,6 +732,45 @@ write_service_files() {
   esac
 }
 
+# Fresh install over an existing one = uninstall first, then install (asked
+# 2026-08-18; mirrors install.ps1's Remove-ExistingInstallation).
+# OpenDesign-Install.command therefore no longer routes to --update; only
+# OpenDesign-Update.command / the web button / `od self-update` update in
+# place. Runs AFTER step 1 verified the new package so a download failure
+# leaves the old install untouched. Project data (OD_DATA_DIR) is kept;
+# everything under $OD_HOME plus the launchd plist / systemd unit goes.
+remove_existing_installation() {
+  if [ ! -e "${OD_HOME}/current" ] && [ ! -d "${OD_HOME}/releases" ] && [ ! -f "${OD_HOME}/config.env" ]; then
+    return 0
+  fi
+  local old_version=""
+  [ -f "${OD_HOME}/current/VERSION" ] && old_version="$(tr -d '[:space:]' < "${OD_HOME}/current/VERSION" 2>/dev/null || true)"
+  phase "Gỡ bản cũ"
+  step "Found an existing Open Design${old_version:+ ${old_version}} at ${OD_HOME} — removing it before the fresh install (project data is kept)"
+
+  case "$(uname -s)" in
+    Darwin)
+      launchctl bootout "gui/$(id -u)/${SERVICE_LABEL}" >/dev/null 2>&1 || true
+      rm -f "$DARWIN_PLIST_PATH"
+      ;;
+    Linux)
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable --now open-design >/dev/null 2>&1 || true
+        rm -f "$LINUX_UNIT_PATH"
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
+      fi
+      ;;
+  esac
+  if [ -f "${OD_HOME}/open-design.pid" ]; then
+    kill "$(cat "${OD_HOME}/open-design.pid" 2>/dev/null)" >/dev/null 2>&1 || true
+  fi
+
+  rm -rf "$OD_HOME"
+  [ -e "$OD_HOME" ] && fail "could not remove the previous installation at ${OD_HOME} — check permissions and run the installer again"
+  mkdir -p "$OD_HOME"
+  ok "Previous installation removed${old_version:+ (${old_version})}"
+}
+
 step3_extract_and_configure() {
   phase "3/6 Giải nén & cài đặt"
   [ -L "${OD_HOME}/current" ] && PREV_CURRENT="$(readlink "${OD_HOME}/current")"
@@ -1083,6 +1122,7 @@ main() {
 
   preflight_check
   step1_verify_package
+  [ "$OPT_UPDATE" = "1" ] || remove_existing_installation
   step2_ensure_node
   step3_extract_and_configure
   step4_configure_service
