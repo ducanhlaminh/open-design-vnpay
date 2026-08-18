@@ -8,6 +8,7 @@ import type { DockerSetupResponse, SandboxBuildResponse, WindowsFirmwareStatusRe
 import { useT } from '../i18n';
 import { ClaudeAccountSwitcher } from './ClaudeAccountSwitcher';
 import { CodexDeviceLogin } from './CodexDeviceLogin';
+import { useHostCodexDeviceLogin } from '../hooks/useHostCodexDeviceLogin';
 import {
   isSandboxRuntimeReady,
   type SandboxRuntimeStatus,
@@ -95,10 +96,8 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
     }
   }, [hostClaudeBusy, refresh]);
 
-  // Host-mode Codex snapshot: /api/usage/codex probes the HOST Codex CLI
-  // (installed + logged in) without touching Docker — the Docker-volume
-  // runtimeStatuses are meaningless while the sandbox is locked off.
-  const [hostCodex, setHostCodex] = useState<{ available: boolean } | null>(null);
+  // Host Codex CLI logout — `codex logout` on the machine through the daemon,
+  // then re-read the status snapshot so the card flips to "Cần đăng nhập".
   const [hostCodexBusy, setHostCodexBusy] = useState(false);
   const [hostCodexError, setHostCodexError] = useState<string | null>(null);
   const logoutHostCodexCli = useCallback(async () => {
@@ -113,7 +112,6 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
         setHostCodexError(body?.error?.message ?? `Không đăng xuất được Codex (lỗi ${response.status}).`);
         return;
       }
-      setHostCodex({ available: false });
       await refresh();
     } catch {
       setHostCodexError('Không kết nối được — thử lại.');
@@ -122,22 +120,11 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
     }
   }, [hostCodexBusy, refresh]);
 
-  useEffect(() => {
-    if (!daemonLive || !status || !isHostMode) {
-      setHostCodex(null);
-      return;
-    }
-    let cancelled = false;
-    void fetch('/api/usage/codex')
-      .then((r) => (r.ok ? (r.json() as Promise<{ available?: unknown }>) : null))
-      .then((j) => {
-        if (!cancelled && j && typeof j.available === 'boolean') setHostCodex({ available: j.available });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [daemonLive, status, isHostMode]);
+  // Host Codex device-code login (daemon runs `codex login --device-auth` on
+  // the machine; the card shows the URL + one-time code and polls until the
+  // login lands). `onDone` re-reads the status snapshot so the card flips to
+  // "Sẵn sàng" + account email without a manual re-check.
+  const hostCodexLogin = useHostCodexDeviceLogin({ onDone: refresh });
 
   useEffect(() => {
     if (!daemonLive || !isWindows || isHostMode || status?.dockerOk !== false) {
@@ -268,6 +255,20 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
       : status.hostClaude.authStatus === 'missing'
         ? 'needs-login'
         : 'unknown';
+  // Same for Codex (`status.hostCodex`, the Codex twin of the host probe).
+  const hostCodexState = !status?.hostCodex
+    ? 'unknown'
+    : !status.hostCodex.available
+      ? 'not-installed'
+      : status.hostCodex.authStatus === 'ok'
+        ? 'ready'
+        : status.hostCodex.authStatus === 'missing'
+          ? 'needs-login'
+          : 'unknown';
+  const hostCodexLoginLive =
+    hostCodexLogin.session.phase === 'starting' ||
+    hostCodexLogin.session.phase === 'awaiting-user' ||
+    hostCodexLogin.session.phase === 'verifying';
 
   const renderRuntimeRow = (runtime: SandboxRuntimeStatus | undefined) => {
     if (!runtime) {
@@ -465,36 +466,112 @@ export function SandboxSection({ daemonLive }: { daemonLive: boolean }) {
                     <h4>Codex</h4>
                     <span>Trợ lý AI thay thế — không bắt buộc.</span>
                   </div>
-                  {hostCodex === null ? (
-                    <span className={styles.chipMuted}>Đang kiểm tra…</span>
-                  ) : hostCodex.available ? (
+                  {hostCodexState === 'ready' ? (
                     <span className={styles.chipReady}>Sẵn sàng</span>
+                  ) : hostCodexState === 'needs-login' ? (
+                    <span className={styles.chipWarn}>Cần đăng nhập</span>
+                  ) : hostCodexState === 'not-installed' ? (
+                    <span className={styles.chipMuted}>Chưa cài</span>
                   ) : (
-                    <span className={styles.chipMuted}>Chưa dùng được</span>
+                    <span className={styles.chipMuted}>Đang kiểm tra…</span>
                   )}
                 </div>
                 <p className={styles.hostCardText}>
-                  {hostCodex === null
-                    ? 'Đang kiểm tra Codex trên máy…'
-                    : hostCodex.available
-                      ? 'Đã đăng nhập trên máy này — bạn có thể chọn Codex khi chạy.'
-                      : 'Chỉ cần khi bạn muốn dùng Codex thay cho Claude. Nếu cần, nhờ đội kỹ thuật cài và đăng nhập giúp bạn.'}
+                  {hostCodexState === 'ready'
+                    ? status.hostCodex?.account?.email
+                      ? `Đã đăng nhập với tài khoản ${status.hostCodex.account.email} — bạn có thể chọn Codex khi chạy.`
+                      : 'Đã đăng nhập trên máy này — bạn có thể chọn Codex khi chạy.'
+                    : hostCodexState === 'needs-login'
+                      ? 'Chưa đăng nhập Codex trên máy này. Bấm "Đăng nhập", mở đường dẫn hiện ra và nhập mã — không cần Terminal.'
+                      : hostCodexState === 'not-installed'
+                        ? 'Chỉ cần khi bạn muốn dùng Codex thay cho Claude. Máy này chưa cài Codex — nhờ đội kỹ thuật cài giúp bạn.'
+                        : 'Đang kiểm tra Codex trên máy…'}
                 </p>
-                {hostCodex !== null ? (
-                  <div className={styles.hostCardActions}>
+                {hostCodexLoginLive || hostCodexLogin.session.phase === 'error' ? (
+                  <div className={styles.deviceLogin} data-testid="host-codex-device-login">
+                    {hostCodexLogin.session.phase === 'starting' ? (
+                      <p className={styles.hostCardText}>Đang tạo mã đăng nhập…</p>
+                    ) : null}
+                    {hostCodexLogin.session.phase === 'awaiting-user' ? (
+                      <>
+                        <p className={styles.hostCardText}>
+                          1. Mở{' '}
+                          {hostCodexLogin.session.url ? (
+                            <a href={hostCodexLogin.session.url} target="_blank" rel="noreferrer">
+                              {hostCodexLogin.session.url}
+                            </a>
+                          ) : (
+                            'đường dẫn đăng nhập'
+                          )}{' '}
+                          và đăng nhập tài khoản ChatGPT.
+                        </p>
+                        <p className={styles.hostCardText}>
+                          2. Nhập mã:{' '}
+                          <code className={styles.deviceCode} data-testid="host-codex-device-code">
+                            {hostCodexLogin.session.code ?? '—'}
+                          </code>
+                          {hostCodexLogin.session.code ? (
+                            <button
+                              type="button"
+                              className={styles.hostGhostBtn}
+                              onClick={() => void hostCodexLogin.copyCode()}
+                            >
+                              {hostCodexLogin.copied ? 'Đã chép' : 'Chép mã'}
+                            </button>
+                          ) : null}
+                        </p>
+                        <p className={styles.hostCardText}>Đang chờ bạn xác nhận trên trình duyệt…</p>
+                      </>
+                    ) : null}
+                    {hostCodexLogin.session.phase === 'verifying' ? (
+                      <p className={styles.hostCardText}>Đang xác minh đăng nhập…</p>
+                    ) : null}
+                    {hostCodexLogin.session.phase === 'error' && hostCodexLogin.session.error ? (
+                      <p className={styles.hostCardErr}>{hostCodexLogin.session.error}</p>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className={styles.hostCardActions}>
+                  {hostCodexLoginLive ? (
+                    <button
+                      type="button"
+                      className={styles.hostGhostBtn}
+                      disabled={hostCodexLogin.busy}
+                      onClick={() => void hostCodexLogin.cancel()}
+                    >
+                      Hủy
+                    </button>
+                  ) : hostCodexState === 'ready' ? (
                     <button
                       type="button"
                       className={styles.hostGhostBtn}
                       disabled={hostCodexBusy}
-                      onClick={() => hostCodex.available ? void logoutHostCodexCli() : void refresh()}
+                      onClick={() => void logoutHostCodexCli()}
                     >
-                      {hostCodex.available
-                        ? hostCodexBusy ? 'Đang đăng xuất…' : 'Đăng xuất'
-                        : 'Kiểm tra lại'}
+                      {hostCodexBusy ? 'Đang đăng xuất…' : 'Đăng xuất'}
                     </button>
-                  </div>
-                ) : null}
+                  ) : hostCodexState === 'needs-login' ? (
+                    <>
+                      <button
+                        type="button"
+                        className={styles.hostPrimaryBtn}
+                        disabled={hostCodexLogin.busy}
+                        onClick={() => void hostCodexLogin.start()}
+                      >
+                        {hostCodexLogin.session.phase === 'error' ? 'Thử lại' : 'Đăng nhập'}
+                      </button>
+                      <button type="button" className={styles.hostGhostBtn} onClick={() => void refresh()}>
+                        Kiểm tra lại
+                      </button>
+                    </>
+                  ) : (
+                    <button type="button" className={styles.hostGhostBtn} onClick={() => void refresh()}>
+                      Kiểm tra lại
+                    </button>
+                  )}
+                </div>
                 {hostCodexError ? <p className={styles.hostCardErr}>{hostCodexError}</p> : null}
+                {hostCodexLogin.requestError ? <p className={styles.hostCardErr}>{hostCodexLogin.requestError}</p> : null}
               </div>
             </div>
           ) : hasRuntimeStatuses ? (

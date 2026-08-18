@@ -21,6 +21,7 @@ import type {
   SandboxRuntimeStatus,
   SandboxStatusResponse,
   SandboxHostClaudeStatus,
+  SandboxHostCodexStatus,
   SandboxMode,
   SandboxAccountsResponse,
   SandboxAccountsCheckResponse,
@@ -33,7 +34,15 @@ import { invalidateClaudeUsageCache, probeClaudeCredentials } from './claude-usa
 import { getAgentDef, resolveAgentLaunch } from './agents.js';
 import { applyAgentLaunchEnv } from './runtimes/launch.js';
 import { spawnEnvForAgent } from './runtimes/env.js';
-import { logoutHostClaude, logoutHostCodex, probeClaudeAuthStatus } from './runtimes/auth.js';
+import { logoutHostClaude, logoutHostCodex, probeClaudeAuthStatus, probeCodexAuthStatus } from './runtimes/auth.js';
+import {
+  cancelHostCodexDeviceLogin,
+  clearHostCodexDeviceLogin,
+  hostCodexDeviceLoginStatus,
+  parseCodexDeviceLoginOutput,
+  startHostCodexDeviceLogin,
+} from './host-codex-login.js';
+export { parseCodexDeviceLoginOutput } from './host-codex-login.js';
 import {
   dockerAvailable,
   dockerImagePresent,
@@ -115,6 +124,31 @@ export async function resolveHostClaudeStatus(): Promise<SandboxHostClaudeStatus
   const launch = def ? resolveAgentLaunch(def, {}) : null;
   const available = Boolean(launch?.selectedPath && launch?.launchPath);
   const auth = await probeClaudeAuthStatus(process.env);
+  return {
+    available,
+    authStatus: auth.status,
+    ...(auth.message ? { authMessage: auth.message } : {}),
+    ...(auth.account ? { account: auth.account } : {}),
+  };
+}
+
+/**
+ * Host Codex CLI snapshot, the Codex twin of `resolveHostClaudeStatus`:
+ * PATH resolution for `available` (same resolver chat/run use, so a
+ * configured launch override is honoured) + the `~/.codex/auth.json` probe
+ * `/api/agents` uses for auth. No Docker, no spawn — safe in every mode.
+ */
+export async function resolveHostCodexStatus(
+  configuredEnv: Record<string, string> = {},
+): Promise<SandboxHostCodexStatus> {
+  const def = getAgentDef('codex');
+  const launch = def ? resolveAgentLaunch(def, configuredEnv) : null;
+  const available = Boolean(launch?.selectedPath && launch?.launchPath);
+  const env =
+    def && launch
+      ? applyAgentLaunchEnv(spawnEnvForAgent(def.id, { ...process.env, ...(def.env || {}) }, configuredEnv), launch)
+      : process.env;
+  const auth = await probeCodexAuthStatus(env);
   return {
     available,
     authStatus: auth.status,
@@ -267,21 +301,6 @@ function cancelCodexDeviceLogin(): SandboxCodexDeviceLoginStatus {
   return codexDeviceLoginStatus();
 }
 
-export function parseCodexDeviceLoginOutput(output: string): { verificationUrl: string | null; userCode: string | null } {
-  // Codex colors the URL/code even without a TTY. Parse the visible text,
-  // otherwise fragments such as `90mOpenAI` can be mistaken for a device code
-  // and the URL retains an ESC suffix that breaks browser navigation.
-  const compact = output
-    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\r/g, '\n');
-  const urlMatch = compact.match(/https:\/\/[^\s]+\/codex\/device\b/i) ?? compact.match(/https:\/\/[^\s]+/i);
-  const codeMatch = compact.match(/\b[A-Z0-9]{4,6}-[A-Z0-9]{4,6}\b/i);
-  return {
-    verificationUrl: urlMatch ? urlMatch[0] : null,
-    userCode: codeMatch ? codeMatch[0] : null,
-  };
-}
-
 function startCodexDeviceLogin(image: string): SandboxCodexDeviceLoginStatus {
   clearCodexDeviceLogin();
   const containerName = `od.sandbox.codex.login.${Date.now()}`;
@@ -407,6 +426,7 @@ async function resolveSandboxStatusBody(
   const runtimeStatuses = await buildSandboxRuntimeStatuses(image, probeAuth, dockerOk);
   const activeContainers = dockerOk ? await listSandboxContainers() : [];
   const hostClaude = await resolveHostClaudeStatus();
+  const hostCodex = await resolveHostCodexStatus(agentCliEnvForAgent(prefs.agentCliEnv, 'codex'));
 
   return {
     enabled: cfg.enabled,
@@ -424,6 +444,7 @@ async function resolveSandboxStatusBody(
     activeContainers,
     builderDir,
     hostClaude,
+    hostCodex,
   };
 }
 
@@ -855,28 +876,62 @@ export function registerSandboxRoutes(app: Express, ctx: RegisterSandboxRoutesDe
     }
   });
 
+  // Host Codex launch resolution shared by the host login/logout routes:
+  // the same binary + env chat/run would spawn (configured overrides
+  // honoured), or a 503 when Codex is not installed on this machine.
+  const resolveHostCodexLaunch = async (): Promise<
+    | { ok: true; launchPath: string; env: NodeJS.ProcessEnv }
+    | { ok: false; status: number; code: string; message: string }
+  > => {
+    const appConfig = await readAppConfig(RUNTIME_DATA_DIR).catch((): AppConfigPrefs => ({}));
+    const configuredEnv = agentCliEnvForAgent(appConfig.agentCliEnv, 'codex');
+    const def = getAgentDef('codex');
+    if (!def) return { ok: false, status: 503, code: 'HOST_CODEX_UNAVAILABLE', message: 'Codex CLI chưa được đăng ký.' };
+    const launch = resolveAgentLaunch(def, configuredEnv);
+    if (!launch.launchPath) {
+      return { ok: false, status: 503, code: 'HOST_CODEX_UNAVAILABLE', message: 'Không tìm thấy Codex CLI trên máy này.' };
+    }
+    const env = applyAgentLaunchEnv(
+      spawnEnvForAgent(def.id, { ...process.env, ...(def.env || {}) }, configuredEnv),
+      launch,
+    );
+    return { ok: true, launchPath: launch.launchPath, env };
+  };
+
+  // Host Codex device-code login — the host twin of the Docker
+  // `/api/sandbox/runtimes/codex/login` flow above: same response shape
+  // (SandboxCodexDeviceLoginStatus), but the daemon drives the HOST `codex
+  // login --device-auth` binary directly, so it is deliberately NOT behind
+  // requireSandboxEnabled.
+  app.get('/api/sandbox/host/codex/login', (_req, res) => {
+    res.json(hostCodexDeviceLoginStatus());
+  });
+  app.post('/api/sandbox/host/codex/login', async (_req, res) => {
+    try {
+      const launch = await resolveHostCodexLaunch();
+      if (!launch.ok) return sendApiError(res, launch.status, launch.code, launch.message);
+      res.json(startHostCodexDeviceLogin(launch.launchPath, launch.env));
+    } catch (err) {
+      sendApiError(res, 500, 'HOST_CODEX_LOGIN_FAILED', (err as Error).message);
+    }
+  });
+  app.post('/api/sandbox/host/codex/login/cancel', (_req, res) => {
+    res.json(cancelHostCodexDeviceLogin());
+  });
+
   // Host Codex logout delegates to `codex logout` so Codex itself clears the
   // active credential backend. This remains independent of Docker just like
   // the host Claude action above.
   app.post('/api/sandbox/host/codex/logout', async (_req, res) => {
     try {
-      const appConfig = await readAppConfig(RUNTIME_DATA_DIR).catch((): AppConfigPrefs => ({}));
-      const configuredEnv = agentCliEnvForAgent(appConfig.agentCliEnv, 'codex');
-      const def = getAgentDef('codex');
-      if (!def) return sendApiError(res, 503, 'HOST_CODEX_UNAVAILABLE', 'Codex CLI chưa được đăng ký.');
-      const launch = resolveAgentLaunch(def, configuredEnv);
-      if (!launch.launchPath) {
-        return sendApiError(res, 503, 'HOST_CODEX_UNAVAILABLE', 'Không tìm thấy Codex CLI trên máy này.');
-      }
-      const env = applyAgentLaunchEnv(
-        spawnEnvForAgent(def.id, { ...process.env, ...(def.env || {}) }, configuredEnv),
-        launch,
-      );
-      const result = await logoutHostCodex(launch.launchPath, env);
+      const launch = await resolveHostCodexLaunch();
+      if (!launch.ok) return sendApiError(res, launch.status, launch.code, launch.message);
+      clearHostCodexDeviceLogin();
+      const result = await logoutHostCodex(launch.launchPath, launch.env);
       if (!result.ok) {
         return sendApiError(res, 409, 'HOST_CODEX_ENV_AUTH', result.message);
       }
-      res.json({ ok: true });
+      res.json({ ok: true, hostCodex: await resolveHostCodexStatus() });
     } catch (err) {
       sendApiError(res, 500, 'HOST_CODEX_LOGOUT_FAILED', (err as Error).message);
     }

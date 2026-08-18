@@ -50,6 +50,11 @@ export interface SandboxHostClaudeStatus {
   account?: { email?: string };
 }
 
+/** Host Codex CLI snapshot — same shape/semantics as `SandboxHostClaudeStatus`
+ *  (PATH resolution + `~/.codex/auth.json` probe, no Docker), so the host-mode
+ *  Codex card can show installed / needs-login / ready + the account email. */
+export type SandboxHostCodexStatus = SandboxHostClaudeStatus;
+
 /** `POST /api/sandbox/host/claude/logout` — clears the HOST Claude CLI login
  *  (credentials file + macOS Keychain item). Env-routed auth (API key /
  *  Bedrock / Vertex) has nothing to clear and answers 409 instead. */
@@ -100,6 +105,8 @@ export interface SandboxStatusResponse {
   builderDir: string;
   /** Host Claude CLI snapshot — see `SandboxHostClaudeStatus`. */
   hostClaude: SandboxHostClaudeStatus;
+  /** Host Codex CLI snapshot — see `SandboxHostCodexStatus`. */
+  hostCodex: SandboxHostCodexStatus;
 }
 
 // ── Claude account switching (Docker-only sandbox) ──────────────────────────

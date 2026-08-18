@@ -197,6 +197,7 @@ describe('SandboxSection runtime split', () => {
           timeoutMinutes: 30,
           builderDir: '/tmp/builder',
           hostClaude: { available: true, version: '2.1.198 (Claude Code)', authStatus: 'ok' },
+          hostCodex: { available: false, authStatus: 'missing' },
           runtimeStatuses: [{
             id: 'claude', version: '1.0.0', imageAvailable: true,
             authVolume: 'od-claude-auth', authVolumeAvailable: true,
@@ -206,9 +207,6 @@ describe('SandboxSection runtime split', () => {
       }
       if (url.endsWith('/sandbox/build')) {
         return jsonResponse({ building: false, ok: null, error: null, log: [] });
-      }
-      if (url.endsWith('/api/usage/codex')) {
-        return jsonResponse({ available: false, primary: { utilization: null, resetsAt: null, durationMinutes: null }, secondary: null });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -220,9 +218,10 @@ describe('SandboxSection runtime split', () => {
     expect(within(claudeCard).getByText(/Đã đăng nhập trên máy này/)).toBeTruthy();
 
     const codexCard = screen.getByTestId('host-runtime-codex');
-    await waitFor(() => {
-      expect(within(codexCard).getByText('Chưa dùng được')).toBeTruthy();
-    });
+    expect(within(codexCard).getByText('Chưa cài')).toBeTruthy();
+    // Not installed → no login button (nothing to log into), only a re-check.
+    expect(within(codexCard).queryByRole('button', { name: 'Đăng nhập' })).toBeNull();
+    expect(within(codexCard).getByRole('button', { name: 'Kiểm tra lại' })).toBeTruthy();
 
     // No tech jargon and no Docker cards/panels in host mode.
     expect(screen.queryByText('Auth volume')).toBeNull();
@@ -252,6 +251,7 @@ describe('SandboxSection runtime split', () => {
         authStatus,
         ...(email ? { account: { email } } : {}),
       },
+      hostCodex: { available: false, authStatus: 'missing' },
       runtimeStatuses: [],
     });
     let loggedOut = false;
@@ -262,9 +262,6 @@ describe('SandboxSection runtime split', () => {
       }
       if (url.endsWith('/sandbox/build')) {
         return jsonResponse({ building: false, ok: null, error: null, log: [] });
-      }
-      if (url.endsWith('/api/usage/codex')) {
-        return jsonResponse({ available: false, primary: { utilization: null, resetsAt: null, durationMinutes: null }, secondary: null });
       }
       if (url.endsWith('/api/sandbox/host/claude/logout') && init?.method === 'POST') {
         loggedOut = true;
@@ -290,41 +287,41 @@ describe('SandboxSection runtime split', () => {
     });
   });
 
+  const hostStatusWithCodex = (codex: Record<string, unknown>) => ({
+    enabled: false,
+    mode: 'host',
+    dockerOk: true,
+    image: 'od-agent-sandbox:latest',
+    imageOk: true,
+    authVolumeOk: true,
+    authLoggedIn: null,
+    activeContainers: [],
+    runtimes: ['claude', 'codex'],
+    skills: ['*'],
+    timeoutMinutes: 30,
+    builderDir: '/tmp/builder',
+    hostClaude: { available: true, version: '2.1.198 (Claude Code)', authStatus: 'ok' },
+    hostCodex: codex,
+    runtimeStatuses: [],
+  });
+
   it('logs out the host Codex CLI from the host card after a confirm', async () => {
     let loggedOut = false;
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.includes('/sandbox/status')) {
-        return jsonResponse({
-          enabled: false,
-          mode: 'host',
-          dockerOk: true,
-          image: 'od-agent-sandbox:latest',
-          imageOk: true,
-          authVolumeOk: true,
-          authLoggedIn: null,
-          activeContainers: [],
-          runtimes: ['claude', 'codex'],
-          skills: ['*'],
-          timeoutMinutes: 30,
-          builderDir: '/tmp/builder',
-          hostClaude: { available: true, version: '2.1.198 (Claude Code)', authStatus: 'ok' },
-          runtimeStatuses: [],
-        });
+        return jsonResponse(hostStatusWithCodex(
+          loggedOut
+            ? { available: true, authStatus: 'missing' }
+            : { available: true, authStatus: 'ok', account: { email: 'designer@vnpay.vn' } },
+        ));
       }
       if (url.endsWith('/sandbox/build')) {
         return jsonResponse({ building: false, ok: null, error: null, log: [] });
       }
-      if (url.endsWith('/api/usage/codex')) {
-        return jsonResponse({
-          available: !loggedOut,
-          primary: { utilization: null, resetsAt: null, durationMinutes: null },
-          secondary: null,
-        });
-      }
       if (url.endsWith('/api/sandbox/host/codex/logout') && init?.method === 'POST') {
         loggedOut = true;
-        return jsonResponse({ ok: true });
+        return jsonResponse({ ok: true, hostCodex: { available: true, authStatus: 'missing' } });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -335,6 +332,7 @@ describe('SandboxSection runtime split', () => {
     const codexCard = await screen.findByTestId('host-runtime-codex');
     await waitFor(() => {
       expect(within(codexCard).getByText('Sẵn sàng')).toBeTruthy();
+      expect(within(codexCard).getByText(/designer@vnpay\.vn/)).toBeTruthy();
       expect(within(codexCard).getByRole('button', { name: 'Đăng xuất' })).toBeTruthy();
     });
 
@@ -343,9 +341,81 @@ describe('SandboxSection runtime split', () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/sandbox/host/codex/logout', { method: 'POST' });
-      expect(within(codexCard).getByText('Chưa dùng được')).toBeTruthy();
+      expect(within(codexCard).getByText('Cần đăng nhập')).toBeTruthy();
+      expect(within(codexCard).getByRole('button', { name: 'Đăng nhập' })).toBeTruthy();
       expect(within(codexCard).getByRole('button', { name: 'Kiểm tra lại' })).toBeTruthy();
     });
+  });
+
+  it('logs in the host Codex CLI via device code from the host card (URL + code, then ready)', async () => {
+    let loggedIn = false;
+    let loginPhase: 'idle' | 'awaiting-user' | 'done' = 'idle';
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/sandbox/status')) {
+        return jsonResponse(hostStatusWithCodex(
+          loggedIn
+            ? { available: true, authStatus: 'ok', account: { email: 'designer@vnpay.vn' } }
+            : { available: true, authStatus: 'missing', authMessage: 'Codex CLI chưa đăng nhập trên máy này.' },
+        ));
+      }
+      if (url.endsWith('/sandbox/build')) {
+        return jsonResponse({ building: false, ok: null, error: null, log: [] });
+      }
+      if (url.endsWith('/api/sandbox/host/codex/login') && init?.method === 'POST') {
+        loginPhase = 'awaiting-user';
+        return jsonResponse({
+          phase: 'awaiting-user',
+          url: 'https://auth.openai.com/codex/device',
+          code: 'Y9S1-Q78TL',
+          expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+          error: null,
+        });
+      }
+      if (url.endsWith('/api/sandbox/host/codex/login')) {
+        // Second poll: the browser side approved and codex wrote auth.json.
+        if (loginPhase === 'awaiting-user') {
+          loginPhase = 'done';
+          loggedIn = true;
+        }
+        return jsonResponse({
+          phase: loginPhase,
+          url: 'https://auth.openai.com/codex/device',
+          code: 'Y9S1-Q78TL',
+          expiresAt: null,
+          error: null,
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    render(<SandboxSection daemonLive={true} />);
+
+    const codexCard = await screen.findByTestId('host-runtime-codex');
+    await waitFor(() => {
+      expect(within(codexCard).getByText('Cần đăng nhập')).toBeTruthy();
+    });
+
+    fireEvent.click(within(codexCard).getByRole('button', { name: 'Đăng nhập' }));
+
+    // URL + one-time code are shown, no Terminal involved.
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sandbox/host/codex/login', { method: 'POST' });
+      const link = within(codexCard).getByRole('link', { name: 'https://auth.openai.com/codex/device' });
+      expect(link.getAttribute('href')).toBe('https://auth.openai.com/codex/device');
+      expect(within(codexCard).getByTestId('host-codex-device-code').textContent).toBe('Y9S1-Q78TL');
+      expect(within(codexCard).getByRole('button', { name: 'Hủy' })).toBeTruthy();
+    });
+
+    // The poll flips to done → the card re-reads status and shows ready + email.
+    await waitFor(
+      () => {
+        expect(within(codexCard).getByText('Sẵn sàng')).toBeTruthy();
+        expect(within(codexCard).getByText(/designer@vnpay\.vn/)).toBeTruthy();
+        expect(within(codexCard).getByRole('button', { name: 'Đăng xuất' })).toBeTruthy();
+      },
+      { timeout: 6000 },
+    );
   });
 
   // WP4 (web-first migration): execution-mode toggle writes sandbox.enabled

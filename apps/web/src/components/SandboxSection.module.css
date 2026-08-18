@@ -479,3 +479,56 @@
   font-size: 12px;
   color: var(--danger, #c0392b);
 }
+
+/* Host Codex device-code login (inside the host Codex card). */
+.hostPrimaryBtn {
+  flex: none;
+  padding: 5px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: filter 0.15s var(--pl-ease, ease);
+}
+
+.hostPrimaryBtn:hover:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.hostPrimaryBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.deviceLogin {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.deviceLogin a {
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.deviceCode {
+  display: inline-block;
+  margin: 0 8px 0 2px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-soft);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-strong);
+}
