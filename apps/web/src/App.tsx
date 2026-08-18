@@ -884,7 +884,7 @@ export function App() {
         await syncConfigToDaemon(nextConfig);
         setConfig(nextConfig);
       }
-      const next = await fetchAgents({ throwOnError: options?.throwOnError });
+      const next = await fetchAgents({ throwOnError: options?.throwOnError, fresh: true });
       setAgents(next);
       return next;
     },

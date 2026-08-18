@@ -50,6 +50,23 @@ describe('sandbox mode: host is the default (no OD_SANDBOX override)', () => {
     expect(claude?.sandbox).toBeUndefined();
   });
 
+  it('GET /api/agents answers repeat calls from a short cache (same payload, fast); ?fresh=1 re-probes', async () => {
+    const t0 = Date.now();
+    const first = await (await fetch(`${baseUrl}/api/agents`)).json();
+    const firstMs = Date.now() - t0;
+    const t1 = Date.now();
+    const second = await (await fetch(`${baseUrl}/api/agents`)).json();
+    const secondMs = Date.now() - t1;
+    expect(second).toEqual(first);
+    // The cached answer must not re-run the 19-CLI probe: it is an in-memory
+    // JSON echo, so it comes back in a few ms even when the probe took long.
+    expect(secondMs).toBeLessThan(Math.max(50, firstMs));
+    const fresh = await fetch(`${baseUrl}/api/agents?fresh=1`);
+    expect(fresh.ok).toBe(true);
+    const freshBody = (await fresh.json()) as { agents: Array<{ id: string }> };
+    expect(freshBody.agents.map((a) => a.id)).toEqual((first as { agents: Array<{ id: string }> }).agents.map((a) => a.id));
+  });
+
   it('GET /api/usage/codex answers from the HOST Codex CLI, never touching Docker', async () => {
     // Host mode reads the machine's own Codex CLI directly (no Docker) —
     // `available` therefore genuinely depends on whether this machine has

@@ -81,6 +81,14 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   // treating the localStorage flag as permanent hid onboarding forever on
   // those machines. "Để sau" remains a session-only escape hatch.
   const active = daemonLive && !skippedThisSession;
+  // Background polling runs ONLY while the gate still has a verdict to reach
+  // or is on screen. Once the machine is judged ready (`dismissed`) the gate
+  // renders nothing — keeping the 4 s `/api/sandbox/status` + `/api/agents`
+  // loops alive after that made every Windows session spawn `docker`/
+  // `claude`/`codex` probes forever and starved every other request (the
+  // "chuyển trang chậm" report). Readiness is still re-probed on every
+  // launch: `dismissed` starts false.
+  const polling = active && !dismissed;
   const runtimeStatuses = status?.runtimeStatuses ?? [];
   const runtimeById = new Map(runtimeStatuses.map((runtime) => [runtime.id, runtime] as const));
   const selectedRuntimeStatus = runtimeById.get(selectedRuntime);
@@ -115,11 +123,11 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   }, []);
 
   useEffect(() => {
-    if (!active || !hostMode) return;
+    if (!polling || !hostMode) return;
     void refreshHostAgents();
     const id = window.setInterval(() => void refreshHostAgents(), 4000);
     return () => window.clearInterval(id);
-  }, [active, hostMode, refreshHostAgents]);
+  }, [polling, hostMode, refreshHostAgents]);
 
   const hostClaude = hostAgents?.find((a) => a.id === 'claude') ?? null;
   const hostClaudeLoggedIn = hostClaude?.authStatus === 'ok';
@@ -137,14 +145,24 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
   useEffect(() => {
     // Do not invoke Docker CLI while the signed macOS app is being installed.
     // Calling CLI symlinks during the bundle copy can leave Docker.app partial.
-    if (!active || dockerSetup?.running) return;
+    if (!polling || dockerSetup?.running) return;
     void refreshStatus();
+    // Host mode (the locked default) never looks at Docker: one status
+    // answer is enough to learn the mode; the live host verdict comes from
+    // the /api/agents loop above. Only sandbox mode keeps polling here.
+    if (hostMode) return;
     const id = window.setInterval(() => void refreshStatus(), 4000);
     return () => window.clearInterval(id);
-  }, [active, dockerSetup?.running, refreshStatus]);
+  }, [polling, hostMode, dockerSetup?.running, refreshStatus]);
 
   useEffect(() => {
-    if (!active || !isWindows || status?.dockerOk !== false) return;
+    // Windows virtualization/BIOS guidance only matters for the Docker
+    // sandbox. In host mode `dockerOk` is false on every machine without
+    // Docker, and this loop used to run `powershell.exe` (CIM detection)
+    // every 5 s for the whole session — the single heaviest background cost
+    // on the Windows pilot machines. Gate it on sandbox mode + an undecided
+    // gate.
+    if (!polling || hostMode || !isWindows || status?.dockerOk !== false) return;
     let cancelled = false;
     let requestRunning = false;
     const refreshWindowsSetup = async () => {
@@ -173,7 +191,7 @@ export function InfraSetupGate({ daemonLive, onOpenSettings }: Props): JSX.Eleme
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [active, isWindows, status?.dockerOk]);
+  }, [polling, hostMode, isWindows, status?.dockerOk]);
 
   const restartToFirmware = useCallback(async () => {
     if (!guidanceSaved) return;

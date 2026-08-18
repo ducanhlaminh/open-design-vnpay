@@ -6926,8 +6926,16 @@ export async function startServer({
     return statuses;
   };
 
-  app.get('/api/agents', async (_req, res) => {
-    try {
+  // /api/agents probes EVERY registered CLI (19 today: PATH scans, then
+  // `--version` / `--help` / model / auth probes for the installed ones).
+  // Many surfaces call it independently (agent picker, InfraSetupGate,
+  // login pollers, Settings) and on Windows each spawn is 5-10x dearer, so
+  // answer from a short cache and coalesce concurrent callers onto one
+  // probe. `?fresh=1` (explicit "Quét lại" / agentCliEnv change) bypasses.
+  const AGENTS_CACHE_TTL_MS = 8_000;
+  let agentsPayloadCache: { at: number; payload: unknown } | null = null;
+  let agentsPayloadInflight: Promise<unknown> | null = null;
+  const buildAgentsPayload = async (): Promise<unknown> => {
       const config = await readAppConfig(RUNTIME_DATA_DIR);
       const sandboxCfg = resolveSandboxConfig(config.sandbox, process.env);
       // Docker-only (sandbox owns Claude): the sandbox is the ONLY runtime
@@ -6982,10 +6990,28 @@ export async function startServer({
         // Docker-only install, so the picker/rescan shows just the active sandbox
         // runtime(s).
         const owned = (id: string) => sandboxCfg.runtimes.includes('*') || sandboxCfg.runtimes.includes(id);
-        res.json({ agents: list.filter((a) => owned(a.id)) });
+        return { agents: list.filter((a) => owned(a.id)) };
+      }
+      return { agents: list };
+  };
+  app.get('/api/agents', async (req, res) => {
+    const fresh = req.query.fresh === '1' || req.query.fresh === 'true';
+    try {
+      if (!fresh && agentsPayloadCache && Date.now() - agentsPayloadCache.at < AGENTS_CACHE_TTL_MS) {
+        res.json(agentsPayloadCache.payload);
         return;
       }
-      res.json({ agents: list });
+      if (!agentsPayloadInflight) {
+        agentsPayloadInflight = buildAgentsPayload()
+          .then((payload) => {
+            agentsPayloadCache = { at: Date.now(), payload };
+            return payload;
+          })
+          .finally(() => {
+            agentsPayloadInflight = null;
+          });
+      }
+      res.json(await agentsPayloadInflight);
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }

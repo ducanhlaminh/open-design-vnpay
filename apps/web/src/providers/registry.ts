@@ -88,9 +88,11 @@ function deployProviderQuery(providerId?: WebDeployProviderId): string {
   return providerId ? `?providerId=${encodeURIComponent(providerId)}` : '';
 }
 
-export async function fetchAgents(options?: { throwOnError?: boolean }): Promise<AgentInfo[]> {
+export async function fetchAgents(options?: { throwOnError?: boolean; fresh?: boolean }): Promise<AgentInfo[]> {
   try {
-    const resp = await fetch('/api/agents');
+    // `fresh` bypasses the daemon's short /api/agents cache — for explicit
+    // user actions (rescan, CLI env change); background callers stay cached.
+    const resp = await fetch(options?.fresh ? '/api/agents?fresh=1' : '/api/agents');
     if (!resp.ok) {
       if (options?.throwOnError) throw new Error(`agents ${resp.status}`);
       return [];
