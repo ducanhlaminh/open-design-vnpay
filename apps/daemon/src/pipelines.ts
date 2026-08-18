@@ -1250,6 +1250,7 @@ export function listPipelineStatus(
       // (db.ts) clears it on any other status transition, so a stale error
       // from an earlier failed run never survives onto a later succeeded run.
       ...(run?.status === 'failed' && run.error ? { error: run.error } : {}),
+      ...(run?.status === 'failed' && run.errorReportId ? { errorReportId: run.errorReportId } : {}),
     };
   });
 }

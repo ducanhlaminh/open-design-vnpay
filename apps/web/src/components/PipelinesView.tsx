@@ -996,6 +996,30 @@ export function PipelinesView() {
     prevRunningRef.current = anyRunning;
   }, [anyRunning, loadProjects]);
 
+  // A stage that just failed sent an error report to the developers (daemon
+  // error-reports.ts) — tell the designer the id so they can quote it. Only
+  // for transitions seen live (running/queued → failed) so opening a project
+  // with an old failed stage stays quiet; each report id toasts once.
+  const seenErrorReportsRef = useRef<Set<string>>(new Set());
+  const prevStatusRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    const next = new Map<string, string>();
+    for (const p of pipelines) {
+      next.set(p.id, p.status);
+      const before = prev.get(p.id);
+      const wasLive = before === 'running' || before === 'queued';
+      if (wasLive && p.status === 'failed' && p.errorReportId && !seenErrorReportsRef.current.has(p.errorReportId)) {
+        seenErrorReportsRef.current.add(p.errorReportId);
+        pushToast({
+          message: `Đã gửi báo cáo lỗi #${p.errorReportId} cho đội phát triển.`,
+          details: `Bước "${p.name}" thất bại — bạn có thể nhắc mã này khi trao đổi.`,
+        });
+      }
+    }
+    prevStatusRef.current = next;
+  }, [pipelines, pushToast]);
+
   // Keep the project-list running spinners live: while ANY project (not just the
   // selected one) has a pipeline in flight, re-poll the list so a run started or
   // finished on another project shows / clears its spinner without a manual

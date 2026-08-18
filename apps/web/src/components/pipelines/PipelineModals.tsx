@@ -2940,6 +2940,9 @@ export function PipelineStatusModal({
               <span>{RUN_STATUS_LABEL[pipeline.status] ?? pipeline.status}</span>
             </div>
             <pre className="pl-status-detail__error">{pipeline.error}</pre>
+            {pipeline.errorReportId ? (
+              <p className="pl-status-detail__hint">Đã gửi báo cáo lỗi <span className="pl-mono">#{pipeline.errorReportId}</span> cho đội phát triển.</p>
+            ) : null}
           </div>
         ) : pipeline.status === 'failed' ? (
           <p className="pl-modal-empty">{NO_ERROR_DETAIL_FALLBACK}</p>
@@ -2982,6 +2985,9 @@ export function PipelineStatusModal({
           ) : null}
           {!pipeline.error && !run?.error && !error && status === 'failed' ? (
             <p className="pl-modal-empty">{NO_ERROR_DETAIL_FALLBACK}</p>
+          ) : null}
+          {status === 'failed' && pipeline.errorReportId ? (
+            <p className="pl-status-detail__hint">Đã gửi báo cáo lỗi <span className="pl-mono">#{pipeline.errorReportId}</span> cho đội phát triển.</p>
           ) : null}
           {isRunning ? (
             <p className="pl-status-detail__hint">

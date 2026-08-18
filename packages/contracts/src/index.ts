@@ -18,6 +18,7 @@ export * from './api/figma-desktop.js';
 export * from './api/files.js';
 export * from './api/feedback.js';
 export * from './api/docs-review-feedback.js';
+export * from './api/error-reports.js';
 export * from './api/design-system-criteria.js';
 export * from './api/design-system-update.js';
 export * from './api/design-system-sync.js';

@@ -695,6 +695,26 @@ interface PipelineRunStateRow {
    *  explicitly clear a stale error on a later succeeded/running patch under
    *  `exactOptionalPropertyTypes`. */
   error?: string | undefined;
+  /** Id of the error report sent to the developers for the LAST failed run
+   *  (error-reports.ts). Cleared together with `error`. */
+  errorReportId?: string | undefined;
+}
+
+/** Fired from setProjectPipelineStatus for every transition INTO `failed`
+ *  (see error-reports.ts). Returns the report id to persist on the row, or
+ *  null when nothing was sent. Synchronous by contract — the hook must
+ *  never block or throw into the status write; the upload happens later. */
+export type PipelineFailureHook = (info: {
+  projectId: string;
+  pipelineId: string;
+  error: string | undefined;
+  lastRunId: string | undefined;
+}) => string | null;
+
+let pipelineFailureHook: PipelineFailureHook | null = null;
+
+export function setPipelineFailureHook(hook: PipelineFailureHook | null): void {
+  pipelineFailureHook = hook;
 }
 
 export function getProjectPipelineState(
@@ -747,10 +767,32 @@ export function setProjectPipelineStatus(
   // doesn't (a handful of legacy call sites), this leaves any prior error in
   // place rather than inventing one.
   const clearsError = patch.status !== undefined && patch.status !== 'failed' && patch.error === undefined;
+  // Report each NEW failure once: a transition into `failed`, or a repeat
+  // `failed` write that carries a different reason (a later run of the same
+  // stage failing differently). A same-reason repeat (e.g. an outer catch
+  // re-marking a stage its inner block already failed) is not a new event.
+  const newFailure =
+    patch.status === 'failed' &&
+    pipelineFailureHook !== null &&
+    (prev.status !== 'failed' || (patch.error !== undefined && patch.error !== prev.error));
+  let errorReportId: string | null = null;
+  if (newFailure) {
+    try {
+      errorReportId = pipelineFailureHook!({
+        projectId,
+        pipelineId,
+        error: patch.error,
+        lastRunId: patch.lastRunId ?? prev.lastRunId,
+      });
+    } catch {
+      errorReportId = null;
+    }
+  }
   pipelines[pipelineId] = {
     ...prev,
     ...patch,
-    ...(clearsError ? { error: undefined } : {}),
+    ...(clearsError ? { error: undefined, errorReportId: undefined } : {}),
+    ...(newFailure ? { errorReportId: errorReportId ?? undefined } : {}),
     updatedAt: Date.now(),
   };
   metadata.pipelines = pipelines;

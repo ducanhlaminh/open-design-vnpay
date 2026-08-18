@@ -340,6 +340,7 @@ import {
   validateTarget as validateRoutineTarget,
 } from './routines.js';
 import { createDiagnosticsExportHandler } from './diagnostics-export.js';
+import { attachStageFailureContext, createErrorReporter, resolveDaemonLogPath } from './error-reports.js';
 import { DIAGNOSTICS_EXPORT_PATH } from '@open-design/diagnostics';
 import {
   buildProjectArchive,
@@ -410,6 +411,7 @@ import {
   updateProject,
   upsertPipelineAppName,
   setPipelineAppDesignSystem,
+  setPipelineFailureHook,
   setProjectPipelineStatus,
   getProjectPipelineState,
   updateRoutine,
@@ -4531,6 +4533,18 @@ export async function startServer({
     next();
   });
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
+  // Every stage that ends `failed` sends one error report to the developers
+  // (error-reports.ts): outbox under the data dir, upload to the shared
+  // media store, listed by pipeline-studio. OD_ERROR_REPORTS=0 disables.
+  const errorReporter = createErrorReporter({
+    dataDir: RUNTIME_DATA_DIR,
+    logPath: resolveDaemonLogPath(runtime),
+    namespace: runtime?.namespace ?? null,
+    projectName: (id) => {
+      try { return getProject(db, id)?.name ?? undefined; } catch { return undefined; }
+    },
+  });
+  setPipelineFailureHook((info) => errorReporter.report(info));
   // Wire the upload-destination bridge to this db so multer can route
   // file uploads into baseDir-rooted projects' actual folders.
   projectMetadataLookup = (id) => {
@@ -13878,6 +13892,10 @@ export async function startServer({
         artifactQuietShutdownRequested,
       });
       if (status === 'failed') {
+        // Keep the tails on the run object: the pipeline completion block
+        // (error report to the developers) reads them after the run ends.
+        run.stderrTail = agentStderrTail;
+        run.stdoutTail = agentStdoutTail;
         const diagnostic = diagnoseClaudeCliFailure({
           agentId: def.id,
           exitCode: code,
@@ -19033,6 +19051,33 @@ export async function startServer({
           }
         } catch (diagError) {
           console.warn('[pipelines] stage-end diagnostic logging failed (continuing):', diagError);
+        }
+        // Error report to the developers (error-reports.ts): hand the hook
+        // fired by the failed-status write below everything only this block
+        // knows — agent, exit code, model, outputs summary, stderr tail.
+        if (next === 'failed') {
+          try {
+            attachStageFailureContext(projectId, pipelineId, {
+              runId: run.id,
+              agentId,
+              model: modelPrefs.model ?? null,
+              reasoning: modelPrefs.reasoning ?? null,
+              exitCode: finalStatus.exitCode ?? null,
+              signal: finalStatus.signal ?? null,
+              errorCode: finalStatus.errorCode ?? null,
+              durationMs:
+                typeof finalStatus.updatedAt === 'number' && typeof finalStatus.createdAt === 'number'
+                  ? finalStatus.updatedAt - finalStatus.createdAt
+                  : null,
+              outputs: await describeStageOutputs(pipelineCwd, wfDir, def.outputs).catch(() => null),
+              finalStatus: finalStatus.status ?? null,
+              stderrTail: (run as { stderrTail?: string }).stderrTail ?? null,
+              stdoutTail: (run as { stdoutTail?: string }).stdoutTail ?? null,
+              workflowId: workflowDirForPipeline(pipelineId) ?? null,
+            });
+          } catch {
+            /* diagnostics must never affect the run result */
+          }
         }
         // Upload to the media store is MANUAL (the share button /
         // POST /api/pipelines/upload). The run only produces files locally and

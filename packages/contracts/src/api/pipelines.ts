@@ -243,6 +243,12 @@ export interface PipelineView {
    * renders this instead of an empty panel. Absent for every other status.
    */
   error?: string;
+  /**
+   * Id of the error report the daemon sent to the developers for the LAST
+   * failed run (see `PipelineErrorReport`). Only alongside `status === 'failed'`;
+   * the FE shows it as "Đã gửi báo cáo lỗi #id" so a designer can quote it.
+   */
+  errorReportId?: string;
 }
 
 export interface PipelinesResponse {
@@ -906,6 +912,9 @@ export interface PipelineRunState {
   /** Short reason the last run failed — only meaningful alongside
    *  `status: 'failed'`; a later succeeded/running/idle status clears it. */
   error?: string;
+  /** Id of the error report sent to the developers for the last failed run
+   *  (see PipelineErrorReport); cleared together with `error`. */
+  errorReportId?: string;
 }
 
 export interface PipelineSubConversation {
