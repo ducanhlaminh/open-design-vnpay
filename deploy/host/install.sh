@@ -936,6 +936,38 @@ finalize_transaction() {
   CONFIG_BACKUP=""
 }
 
+# After a HEALTHY update, remove every release under $OD_HOME/releases that
+# is not the one `current` points at (asked 2026-08-18: the web "Cập nhật"
+# button must leave the machine with only the new version, i.e. old
+# version removed, new one installed and started -- ordered install ->
+# start -> remove-old so a failed health check can still roll back; not
+# run on --no-start, where nothing verified the new release). Never
+# touches the running release, project data, tools/ (private Node) or logs.
+# Best-effort: an undeletable directory only warns.
+remove_old_releases() {
+  local releases_dir="${OD_HOME}/releases"
+  [ -d "$releases_dir" ] || return 0
+  local current_target=""
+  if [ -L "${OD_HOME}/current" ]; then
+    current_target="$(cd "${OD_HOME}/current" 2>/dev/null && pwd -P || true)"
+  fi
+  [ -n "$current_target" ] || return 0
+  local removed=0
+  local entry entry_real
+  for entry in "$releases_dir"/* "$releases_dir"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    entry_real="$(cd "$entry" 2>/dev/null && pwd -P || true)"
+    [ -n "$entry_real" ] || continue
+    [ "$entry_real" != "$current_target" ] || continue
+    if rm -rf "$entry" 2>/dev/null; then
+      removed=$((removed + 1))
+    else
+      warn "could not remove old release: ${entry}"
+    fi
+  done
+  [ "$removed" -eq 0 ] || ok "Removed ${removed} old release(s); only $(basename "$current_target") remains"
+}
+
 step5_start_and_health_check() {
   phase "5/6 Khởi động & kiểm tra sức khỏe"
   if [ "$OPT_NO_START" = "1" ]; then
@@ -948,6 +980,9 @@ step5_start_and_health_check() {
   if wait_for_health "$PORT" "$HEALTH_TIMEOUT"; then
     ok "Daemon is healthy on port ${PORT}"
     finalize_transaction
+    # Only here -- after a CONFIRMED healthy start (not on --no-start, where
+    # nothing verified the new release and the old one is the only way back).
+    remove_old_releases
   else
     rollback
   fi

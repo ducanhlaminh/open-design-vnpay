@@ -39,7 +39,7 @@ export function HostUpdateButton() {
     ? `Đang cập nhật lên v${status?.latestVersion ?? '…'} — ${percent}%${status?.progress ? ` · ${status.progress.label}` : ''}`
     : restartRequired
       ? 'Bản cập nhật đã cài an toàn; đăng xuất/đăng nhập lại để kích hoạt.'
-      : `Có bản mới v${status?.latestVersion} (đang chạy v${status?.currentVersion}). Bấm để cập nhật.`;
+      : `Có bản mới v${status?.latestVersion} (đang chạy v${status?.currentVersion}). Bấm để cập nhật: cài bản mới, khởi động lại, gỡ bản cũ — tự động.`;
 
   return (
     <button

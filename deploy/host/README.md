@@ -261,12 +261,19 @@ bash ~/.open-design/current/install.sh --update
 (or re-run the freshly downloaded `install.sh` with `--update`; on macOS you
 can instead double-click `OpenDesign-Update.command` from the installer zip —
 same command underneath). This
-downloads/verifies the new release, extracts it alongside the existing ones,
+downloads/verifies the new release, extracts it alongside the existing one,
 restarts the service, health-checks it (with the same automatic rollback as
-a fresh install), and finally prints the new version straight from
-`GET /api/version`. `config.env` is left untouched unless you pass one of
-the config flags above — pass them again on `--update` if you want to change
-a value.
+a fresh install), **then removes every older release under
+`~/.open-design/releases/`** so only the new version remains (the web
+"Cập nhật" button, `OpenDesign-Update.*` and `od self-update` all end the
+same way: old version gone, new one installed and running — ordered
+install → start → remove-old so a failed health check can still roll back;
+`--no-start` skips the removal because nothing verified the new release).
+Finally it prints the new version straight from `GET /api/version`.
+`config.env` is regenerated: machine-specific values (`OD_PORT`,
+`OD_DATA_DIR`, `OD_INSECURE_TLS`) carry over, the bundled env defaults of the
+new release win for the rest — pass the config flags above on `--update` to
+override a value.
 
 Windows:
 
@@ -293,8 +300,13 @@ powershell -ExecutionPolicy Bypass -File "$env:TEMP\open-design-install.ps1" -Up
 
 ## Rollback (manual)
 
-Every extracted release stays under `~/.open-design/releases/`. To go back
-to an older one by hand:
+After a *successful* update only the current release is kept (older ones are
+removed — see Update above), so going back means installing the older
+tarball again: download `open-design-runtime-<older>-<platform>.tar.gz` from
+the release page and run `install.sh --archive <file> --update` /
+`install.ps1 -Archive <file> -Update`. The commands below only apply while an
+older directory still exists under `~/.open-design/releases/` (a failed
+update, or an install made with `--no-start`):
 
 ```bash
 ln -sfn ~/.open-design/releases/<older-version> ~/.open-design/current

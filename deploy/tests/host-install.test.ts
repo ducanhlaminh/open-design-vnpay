@@ -938,3 +938,56 @@ test('main() runs remove_existing_installation only for fresh installs, right af
   const main = sh.slice(sh.indexOf('main() {'));
   assert.match(main, /step1_verify_package\n\s+\[ "\$OPT_UPDATE" = "1" \] \|\| remove_existing_installation\n\s+step2_ensure_node/);
 });
+
+// ---------------------------------------------------------------------------
+// remove_old_releases (2026-08-18): after a HEALTHY update only the release
+// `current` points at may remain; everything else under releases/ goes,
+// tools/ and data stay. Wired into finalize_transaction.
+// ---------------------------------------------------------------------------
+test('remove_old_releases keeps only the current release (and nothing outside releases/)', async () => {
+  const tmp = await mktmp('remove-old-releases');
+  const odHome = join(tmp, '.open-design');
+  try {
+    for (const v of ['0.8.40', '0.8.43', '0.8.44']) {
+      await mkdir(join(odHome, 'releases', v), { recursive: true });
+      await writeFile(join(odHome, 'releases', v, 'VERSION'), `${v}\n`);
+    }
+    await mkdir(join(odHome, 'releases', '.0.8.44.replaced.123'), { recursive: true });
+    await symlink(join(odHome, 'releases', '0.8.44'), join(odHome, 'current'));
+    await mkdir(join(odHome, 'tools', 'node'), { recursive: true });
+    await writeFile(join(odHome, 'tools', 'node', 'bin'), 'x');
+
+    const harness = join(tmp, 'harness.sh');
+    await writeFile(
+      harness,
+      [
+        '#!/usr/bin/env bash',
+        'set -eu',
+        `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+        `OD_HOME="${odHome}"`,
+        'remove_old_releases',
+        // Idempotent: second run finds nothing to remove and prints nothing.
+        'remove_old_releases',
+      ].join('\n'),
+    );
+    await chmod(harness, 0o755);
+    const { stdout } = await execFileAsync('bash', [harness]);
+    assert.match(stdout, /Removed 3 old release\(s\); only 0\.8\.44 remains/);
+    assert.equal((stdout.match(/Removed \d+ old release/g) ?? []).length, 1);
+    assert.deepEqual((await readdir(join(odHome, 'releases'))).sort(), ['0.8.44']);
+    assert.equal(existsSync(join(odHome, 'tools', 'node', 'bin')), true, 'tools/ must be untouched');
+    assert.equal(await readFile(join(odHome, 'current', 'VERSION'), 'utf8'), '0.8.44\n');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('step 5 prunes old releases only after a confirmed healthy start (not on --no-start, never in rollback)', async () => {
+  const sh = await readFile(installScript, 'utf8');
+  const step5 = sh.slice(sh.indexOf('step5_start_and_health_check() {'), sh.indexOf('# Step 6/6'));
+  assert.match(step5, /ok "Daemon is healthy on port \$\{PORT\}"\s+finalize_transaction\s+(#[^\n]*\n\s+)*remove_old_releases/);
+  const noStart = step5.slice(0, step5.indexOf('start_service'));
+  assert.doesNotMatch(noStart, /remove_old_releases/);
+  const rollback = sh.slice(sh.indexOf('rollback() {'), sh.indexOf('finalize_transaction() {'));
+  assert.doesNotMatch(rollback, /remove_old_releases/);
+});

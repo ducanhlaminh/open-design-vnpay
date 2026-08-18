@@ -1621,6 +1621,7 @@ function Invoke-StartCommand {
     if ($transactionPending) {
       Complete-InstallationTransaction
       Write-Ok "Pending update transaction committed."
+      Remove-OldReleases
     }
     [void](Start-OdLauncher)
     Write-Host "  URL: http://127.0.0.1:$resolvedPort"
@@ -1870,6 +1871,39 @@ function Complete-InstallationTransaction {
   Remove-Item -LiteralPath $MaintenancePath -Force -ErrorAction SilentlyContinue
 }
 
+# After a HEALTHY install/update, remove every release under $OdHome\releases
+# that is not the one `current` points at (asked 2026-08-18: the web "Cap
+# nhat" button must leave the machine with only the new version -- old
+# removed, new installed and started -- ordered install -> start -> remove
+# so a failed health check can still roll back). Called ONLY after a
+# confirmed healthy start: Step 5 on a direct install/-Update, and the
+# launcher-owned -Start on a self-update (never on -NoStart, where nothing
+# verified the new release). In both cases the old daemon is already
+# gone. Never touches the running
+# release, project data, tools\ (private Node) or logs. Best-effort.
+function Remove-OldReleases {
+  $releasesDir = Join-Path $OdHome "releases"
+  if (-not (Test-Path $releasesDir)) { return }
+  $currentItem = Get-Item -LiteralPath (Join-Path $OdHome "current") -Force -ErrorAction SilentlyContinue
+  if (-not $currentItem) { return }
+  $currentTarget = $currentItem.Target
+  if ($currentTarget -is [array]) { $currentTarget = $currentTarget[0] }
+  if (-not $currentTarget) { return }
+  $currentFull = [System.IO.Path]::GetFullPath([string]$currentTarget).TrimEnd('\')
+  $removed = 0
+  foreach ($entry in (Get-ChildItem -LiteralPath $releasesDir -Force -ErrorAction SilentlyContinue)) {
+    $entryFull = [System.IO.Path]::GetFullPath($entry.FullName).TrimEnd('\')
+    if ($entryFull -ieq $currentFull) { continue }
+    try {
+      Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
+      $removed++
+    } catch {
+      Write-Warn "could not remove old release: $($entry.FullName) -- $($_.Exception.Message)"
+    }
+  }
+  if ($removed -gt 0) { Write-Ok "Removed $removed old release(s); only $(Split-Path $currentFull -Leaf) remains" }
+}
+
 function Step5-StartAndHealthCheck {
   Write-Phase "5/6 Khoi dong & kiem tra suc khoe"
   if ($NoStart) {
@@ -1906,6 +1940,7 @@ function Step5-StartAndHealthCheck {
   if (Wait-OdHealth -PortNum $ResolvedPort -Timeout $HealthTimeout -ExpectedVersion $Version) {
     Write-Ok "Daemon $Version is healthy on port $ResolvedPort"
     Complete-InstallationTransaction
+    Remove-OldReleases
     [void](Start-OdLauncher)
   } else {
     if ($LastHealthVersion -and $LastHealthVersion -ne $Version) {

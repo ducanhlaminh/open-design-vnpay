@@ -226,6 +226,21 @@ test('Windows fresh install removes an existing installation first (Install = cl
   assert.match(installCmd, /exit \/b !OD_EXIT!/);
 });
 
+test('Windows prunes old releases only after a confirmed healthy start, never on -NoStart or in rollback', async () => {
+  const ps = await source();
+  const complete = ps.slice(ps.indexOf('function Complete-InstallationTransaction'), ps.indexOf('function Remove-OldReleases'));
+  assert.doesNotMatch(complete, /Remove-OldReleases/); // -NoStart also commits; no health = no prune
+  const step5 = ps.slice(ps.indexOf('function Step5-StartAndHealthCheck'), ps.indexOf('# Step 6/6'));
+  assert.match(step5, /Write-Ok "Daemon \$Version is healthy on port \$ResolvedPort"\s+Complete-InstallationTransaction\s+Remove-OldReleases/);
+  const start = ps.slice(ps.indexOf('function Invoke-StartCommand'), ps.indexOf('function Remove-ExistingInstallation'));
+  assert.match(start, /Pending update transaction committed\."\s+Remove-OldReleases/);
+  const prune = ps.slice(ps.indexOf('function Remove-OldReleases'), ps.indexOf('function Step5-StartAndHealthCheck'));
+  assert.match(prune, /if \(\$entryFull -ieq \$currentFull\) \{ continue \}/);
+  assert.match(prune, /Remove-Item -LiteralPath \$entry\.FullName -Recurse -Force -ErrorAction Stop/);
+  const rollback = ps.slice(ps.indexOf('function Invoke-Rollback'), ps.indexOf('function Complete-InstallationTransaction'));
+  assert.doesNotMatch(rollback, /Remove-OldReleases/);
+});
+
 test('Windows config replacement and rollback are atomic and transaction guarded', async () => {
   const ps = await source();
   assert.match(ps, /\[System\.IO\.File\]::Replace\(\$configTemp, \$configPath, \$ConfigBackupPath, \$true\)/);
