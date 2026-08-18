@@ -642,6 +642,32 @@ export function resolveDaemonCliPath(env: NodeJS.ProcessEnv = process.env): stri
 const PROJECT_ROOT = resolveProjectRoot(__dirname);
 const RESOURCE_ROOT_ENV = 'OD_RESOURCE_ROOT';
 
+/**
+ * Pipeline-profile replacement for the full "Files already in this folder"
+ * listing. A stage's skill + kickoff already name every input path and every
+ * output path (fixed names, overwritten on re-run), so the agent does not
+ * need the tree — and a docs-review cwd easily lists 600+ entries (docs-app
+ * pool, per-slice review outputs, 150-char Confluence paths ≈ 15–20k tokens
+ * re-read on every call). Keep one line per top-level entry with a count so
+ * the agent can still orient itself; it can `ls` for anything deeper.
+ */
+export function renderPipelineFolderSummary(files) {
+  const list = Array.isArray(files) ? files : [];
+  if (list.length === 0) return '\nThis folder is empty.';
+  const top = new Map();
+  for (const f of list) {
+    const name = typeof f?.name === 'string' ? f.name : '';
+    if (!name) continue;
+    const slash = name.indexOf('/');
+    const key = slash === -1 ? name : `${name.slice(0, slash)}/`;
+    top.set(key, (top.get(key) ?? 0) + 1);
+  }
+  const lines = [...top.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, n]) => (key.endsWith('/') ? `- ${key} (${n} file${n === 1 ? '' : 's'})` : `- ${key}`));
+  return `\nTop-level contents of this folder (${list.length} files total; the active skill and the user request name the exact input/output paths — read only those, \`ls\` a folder if you must):\n${lines.join('\n')}`;
+}
+
 export function composeLiveInstructionPrompt({
   daemonSystemPrompt,
   runtimeToolPrompt,
@@ -11404,7 +11430,16 @@ export async function startServer({
     locale,
     connectedExternalMcp,
     appliedPluginSnapshotId,
+    // 'pipeline' = lean unattended profile (see ComposeInput.promptProfile).
+    promptProfile,
+    // Pipeline only: does THIS stage generate UI from a design system
+    // (`PipelineDef.acceptsDesignSystem`)? When false the DS blocks
+    // (DESIGN.md, tokens.css, manifest, pull index — ~17k chars) are not
+    // even resolved; review/flow/spec stages get their criteria as files
+    // in the cwd, not through the prompt.
+    pipelineUsesDesignSystem,
   }) => {
+    const isPipelineProfile = promptProfile === 'pipeline';
     const project =
       typeof projectId === 'string' && projectId
         ? getProject(db, projectId)
@@ -11412,9 +11447,11 @@ export async function startServer({
     const effectiveSkillId =
       typeof skillId === 'string' && skillId ? skillId : project?.skillId;
     const effectiveDesignSystemId =
-      typeof designSystemId === 'string' && designSystemId
-        ? designSystemId
-        : project?.designSystemId;
+      isPipelineProfile && !pipelineUsesDesignSystem
+        ? null
+        : typeof designSystemId === 'string' && designSystemId
+          ? designSystemId
+          : project?.designSystemId;
     const metadata = project?.metadata;
     let allSkillsPromise: ReturnType<typeof listAllSkillLikeEntries> | null = null;
     const loadAllSkills = async () => {
@@ -11582,10 +11619,12 @@ export async function startServer({
     // run. composeMemoryBody returns '' when memory is disabled or
     // empty; the composer drops the block on a falsy value.
     let memoryBody = '';
-    try {
-      memoryBody = await composeMemoryBody(RUNTIME_DATA_DIR);
-    } catch (err) {
-      console.warn('[memory] composeMemoryBody failed', err);
+    if (!isPipelineProfile) {
+      try {
+        memoryBody = await composeMemoryBody(RUNTIME_DATA_DIR);
+      } catch (err) {
+        console.warn('[memory] composeMemoryBody failed', err);
+      }
     }
 
     // User-level custom instructions from app-config.json.
@@ -11757,7 +11796,11 @@ export async function startServer({
       || resolvedExclusiveSurface === 'video'
       || resolvedExclusiveSurface === 'audio';
     const isPlainAdapter = (streamFormat ?? 'plain') === 'plain';
-    const critiqueShouldRun = critiqueEnabledForRun
+    // Pipeline stages never run Critique Theater (the composer drops the
+    // panel addendum for the pipeline profile, so the orchestrator must not
+    // wait for <CRITIQUE_RUN> tags either).
+    const critiqueShouldRun = !isPipelineProfile
+      && critiqueEnabledForRun
       && critiqueBrand !== undefined
       && critiqueSkill !== undefined
       && !isMediaSurface
@@ -11859,6 +11902,7 @@ export async function startServer({
       ...(activeStageBlocks ? { activeStageBlocks } : {}),
       userInstructions,
       projectInstructions,
+      ...(isPipelineProfile ? { promptProfile: 'pipeline' } : {}),
     });
     // The chat handler also needs to know where the active skill lives
     // on disk so it can stage a per-project copy of its side files
@@ -11993,7 +12037,13 @@ export async function startServer({
       research,
       context,
       cwdSubdir,
+      // Set by runPipeline for stage runs → lean unattended prompt (see
+      // ComposeInput.promptProfile). Anything else (chat, routines) keeps
+      // the full chat profile.
+      promptProfile,
+      pipelineUsesDesignSystem,
     } = chatBody;
+    const isPipelineProfile = promptProfile === 'pipeline';
     // Extra tool-token scope for THIS run only (e.g. dr-comp in Figma-link
     // mode grants `/api/tools/figma/*`). Keyed by a Symbol so a JSON body
     // arriving over `/api/chat` can never widen its own grant — only internal
@@ -12146,11 +12196,13 @@ export async function startServer({
     // doesn't have to guess what the user just dropped in.
     // Also ship the current file listing so the agent can pick a unique
     // filename instead of clobbering a previous artifact.
-    const filesListBlock = existingProjectFiles.length
-      ? `\nFiles already in this folder (do NOT overwrite unless the user asks; pick a fresh, descriptive name for new artifacts):\n${existingProjectFiles
-          .map((f) => `- ${f.name}`)
-          .join('\n')}`
-      : '\nThis folder is empty. Choose a clear, descriptive filename for whatever you create.';
+    const filesListBlock = isPipelineProfile
+      ? renderPipelineFolderSummary(existingProjectFiles)
+      : existingProjectFiles.length
+        ? `\nFiles already in this folder (do NOT overwrite unless the user asks; pick a fresh, descriptive name for new artifacts):\n${existingProjectFiles
+            .map((f) => `- ${f.name}`)
+            .join('\n')}`
+        : '\nThis folder is empty. Choose a clear, descriptive filename for whatever you create.';
     const projectRecord =
       typeof projectId === 'string' && projectId
         ? getProject(db, projectId)
@@ -12307,6 +12359,9 @@ export async function startServer({
         // prompt composer can splice in `## Active stage` blocks.
         // Default ON; set OD_BUNDLED_ATOM_PROMPTS=0 to opt out.
         appliedPluginSnapshotId: run?.appliedPluginSnapshotId ?? null,
+        ...(isPipelineProfile
+          ? { promptProfile: 'pipeline', pipelineUsesDesignSystem: pipelineUsesDesignSystem === true }
+          : {}),
       });
 
     // Make skill side files reachable through three layers, in order of
@@ -15791,6 +15846,8 @@ export async function startServer({
                 model: modelPrefs.model ?? null,
                 reasoning: modelPrefs.reasoning ?? null,
                 message: kickoff,
+                promptProfile: 'pipeline',
+                pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
               },
               run,
             ),
@@ -16448,6 +16505,8 @@ export async function startServer({
                 model: modelPrefs.model ?? null,
                 reasoning: modelPrefs.reasoning ?? null,
                 message: kickoff,
+                promptProfile: 'pipeline',
+                pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
                 // Figma Desktop drill-down grant — only when the preparation
                 // phase saw Figma Desktop's MCP server (see figmaDesktopGrant).
                 ...(figmaDesktopGrant ? { [INTERNAL_TOOL_GRANT_EXTRAS]: figmaDesktopGrant } : {}),
@@ -17031,6 +17090,8 @@ export async function startServer({
                 model: modelPrefs.model ?? null,
                 reasoning: modelPrefs.reasoning ?? null,
                 message: kickoff,
+                promptProfile: 'pipeline',
+                pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
               },
               run,
             ),
@@ -17559,6 +17620,8 @@ export async function startServer({
                 model: modelPrefs.model ?? null,
                 reasoning: modelPrefs.reasoning ?? null,
                 message: kickoff,
+                promptProfile: 'pipeline',
+                pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
               },
               run,
             ),
@@ -17844,6 +17907,8 @@ export async function startServer({
                 model: modelPrefs.model ?? null,
                 reasoning: modelPrefs.reasoning ?? null,
                 message: kickoff,
+                promptProfile: 'pipeline',
+                pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
               },
               run,
             ),
@@ -18806,6 +18871,10 @@ export async function startServer({
       model: modelPrefs.model ?? null,
       reasoning: modelPrefs.reasoning ?? null,
       message: kickoff,
+      // Lean unattended prompt: no chat charter / memory / DS blocks unless
+      // this stage generates UI (see ComposeInput.promptProfile).
+      promptProfile: 'pipeline',
+      pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
     }, run));
 
     // Reflect terminal status back into the gate so downstream pipelines unlock.

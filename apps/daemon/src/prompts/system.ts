@@ -222,6 +222,22 @@ export const SKIP_DISCOVERY_BRIEF_OVERRIDE = `# Automated project mode — skip 
 
 This project was created through the daemon API with \`skipDiscoveryBrief: true\`. Override the discovery rules below: do NOT emit \`<question-form id="discovery">\`, do NOT show "Quick brief — 30 seconds", and do NOT ask a first-turn clarification form. Treat the user's first message and project metadata as the brief, then proceed directly to planning/building under the normal artifact workflow. Ask at most one concise follow-up only if a required detail is impossible to infer safely.`;
 
+// Lean identity block for `promptProfile: 'pipeline'`. Replaces
+// DISCOVERY_AND_PHILOSOPHY + BASE_SYSTEM_PROMPT (~50k chars of chat-only
+// rules, several of which contradict an unattended run — e.g. "turn 1 must
+// emit a question-form"). Everything a stage actually needs to know about
+// HOW to do its job lives in its SKILL.md; this block only pins the
+// operating mode.
+export const PIPELINE_CHARTER = `# Pipeline stage run — unattended (read first)
+
+You are running ONE stage of an automated pipeline for Open Design. Nobody is watching this run and nobody will answer questions.
+
+- Do NOT emit \`<question-form>\`, do NOT call \`AskUserQuestion\`, do NOT ask for confirmation. When something is ambiguous, pick the most reasonable default, state the assumption in your final message, and finish.
+- Your deliverables are FILES written into the working directory at the exact paths the active skill names. Overwrite those paths when they already exist — a re-run is supposed to replace the previous output. Do not invent extra deliverables and do not write outside the paths the skill allows.
+- Read the inputs the active skill and the user request name. Do not explore or read unrelated files "for context"; if you need to know what a folder contains, list it once.
+- Keep chat prose short: what you produced, where, and any assumption or gap. Never paste file contents back into the chat.
+- Language: follow the response-language rule above for prose; file contents follow the active skill.`;
+
 const ACTIVE_DESIGN_SYSTEM_VISUAL_DIRECTION_OVERRIDE = `
 
 ---
@@ -372,6 +388,19 @@ export interface ComposeInput {
   // UI locale selected by the client. User-visible generated form copy
   // must follow this locale even when the user's initial prompt is brief.
   locale?: string | undefined;
+  // Which prompt profile to compose. `chat` (default) is the full design
+  // assistant stack. `pipeline` is the LEAN profile for unattended pipeline
+  // stage runs (docs→UI / docs-review / docs-prd): it drops everything that
+  // only makes sense with a human in the chat — the discovery/philosophy
+  // charter, the designer identity prompt, personal memory, deck/media
+  // frameworks, Critique Theater and the AskUserQuestion nudge — and keeps
+  // house style, custom instructions, the active skill(s), plugin/stage
+  // blocks, project metadata and the MCP directive. Design-system blocks are
+  // whatever the caller passed: the daemon only resolves them for stages
+  // that generate UI (`PipelineDef.acceptsDesignSystem`). Measured 2026-08:
+  // the chat profile costs a stage 80–113k prompt tokens per call, of which
+  // ~15–20k are the stage's own skill + rules.
+  promptProfile?: 'chat' | 'pipeline' | undefined;
 }
 
 export function composeSystemPrompt({
@@ -406,7 +435,9 @@ export function composeSystemPrompt({
   locale,
   userInstructions,
   projectInstructions,
+  promptProfile,
 }: ComposeInput): string {
+  const isPipelineProfile = promptProfile === 'pipeline';
   // Discovery + philosophy goes FIRST so its hard rules ("emit a form on
   // turn 1", "branch on brand on turn 2", "TodoWrite on turn 3", run
   // checklist + critique before <artifact>) win precedence over softer
@@ -451,13 +482,20 @@ export function composeSystemPrompt({
   parts.push(renderHouseStylePrompt(locale));
   parts.push('\n\n---\n\n');
 
-  parts.push(
-    DISCOVERY_AND_PHILOSOPHY,
-    '\n\n---\n\n# Identity and workflow charter (background)\n\n',
-    BASE_SYSTEM_PROMPT,
-  );
+  if (isPipelineProfile) {
+    parts.push(PIPELINE_CHARTER);
+  } else {
+    parts.push(
+      DISCOVERY_AND_PHILOSOPHY,
+      '\n\n---\n\n# Identity and workflow charter (background)\n\n',
+      BASE_SYSTEM_PROMPT,
+    );
+  }
 
-  if (memoryBody && memoryBody.trim().length > 0) {
+  // Personal memory is a chat-only layer: a pipeline stage takes its
+  // context from files in the cwd, and the memory store (which grows with
+  // every chat) would otherwise ride along on every stage call.
+  if (!isPipelineProfile && memoryBody && memoryBody.trim().length > 0) {
     parts.push(
       `\n\n## Personal memory (auto-extracted from past chats)\n\nThe following facts have been sedimented from this user's previous conversations and edited in the settings panel. Treat them as preferences and context, NOT hard rules: when they collide with the active design system tokens, the brand wins; when they collide with the active skill's workflow, the skill wins. They are still authoritative for tone, voice, terminology, and what the user already told you about themselves and their goals — never re-ask the user about something already captured here.\n\n${memoryBody.trim()}`,
     );
@@ -582,8 +620,8 @@ export function composeSystemPrompt({
   // skeleton would conflict. The skill-seed path takes over via
   // `derivePreflight` above, so we only fire the generic skeleton when no
   // skill seed is on offer.
-  const isDeckProject = resolvedExclusiveSurface === 'deck';
-  const isFreeformProject = activeSkillModes.size === 0 && (!metadata || metadata.kind === 'other');
+  const isDeckProject = !isPipelineProfile && resolvedExclusiveSurface === 'deck';
+  const isFreeformProject = !isPipelineProfile && activeSkillModes.size === 0 && (!metadata || metadata.kind === 'other');
   const hasSkillSeed =
     !!skillBody && /assets\/template\.html/.test(skillBody);
   if (isDeckProject && !hasSkillSeed) {
@@ -607,7 +645,7 @@ export function composeSystemPrompt({
     resolvedExclusiveSurface === 'image'
     || resolvedExclusiveSurface === 'video'
     || resolvedExclusiveSurface === 'audio';
-  if (isMediaSurface) {
+  if (isMediaSurface && !isPipelineProfile) {
     parts.push(MEDIA_GENERATION_CONTRACT);
   }
 
@@ -632,7 +670,7 @@ export function composeSystemPrompt({
   // the critique flag is a no-op there until a media-aware panel template
   // lands.
   const cfg = critique ?? defaultCritiqueConfig();
-  if (cfg.enabled && critiqueBrand && critiqueSkill && !isMediaSurface) {
+  if (!isPipelineProfile && cfg.enabled && critiqueBrand && critiqueSkill && !isMediaSurface) {
     parts.push('\n\n' + renderPanelPrompt({ cfg, brand: critiqueBrand, skill: critiqueSkill }));
   }
 
@@ -650,7 +688,7 @@ export function composeSystemPrompt({
   // `<question-form>` flow defined in DISCOVERY_AND_PHILOSOPHY; this only
   // covers follow-ups where the next action depends on a small set of
   // choices the user can pick quickly.
-  if (agentId === 'claude') {
+  if (agentId === 'claude' && !isPipelineProfile) {
     parts.push(
       "\n\n---\n\n## Clarifying questions\n\nWhen you need a mid-conversation clarification AND the natural answer is one of a small finite set of choices (2-4 options per question), call the `AskUserQuestion` tool instead of writing a bulleted list in markdown. The host chat renders the tool call as inline choice buttons; a markdown list renders as plain text and forces the user to type a reply. Skip the tool when the answer is naturally free-form text, when the answer needs more than ~4 options, or when you only have one yes/no choice to ask. First-turn discovery still uses the `<question-form id=\"discovery\">` workflow described earlier; `AskUserQuestion` is for follow-ups only.\n\n**When you call `AskUserQuestion`, that tool call is the entire response.** Do NOT also write the same questions or options as markdown text alongside it, do NOT add a trailing prose paragraph like \"what sounds right?\", do NOT hedge by listing the options twice. Emit the tool call and stop generating tokens. The host is waiting on the tool's `tool_result` and will resume your turn the moment the user answers. Anything you write before, between, or after the tool call in the same message just duplicates what the card already shows and confuses the user.",
     );
