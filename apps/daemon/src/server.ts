@@ -12295,7 +12295,17 @@ export async function startServer({
         err && err.message ? err.message : err,
       );
     }
-    const enabledExternalMcp = externalMcpConfig.servers.filter((s) => s.enabled);
+    // Pipeline stage runs never get external MCP servers: docs ingest is a
+    // daemon-side prefetch, dr-comp reads Figma through the daemon proxy
+    // (`od tools figma …`), and every other stage only reads/writes files
+    // (2026-08-18 audit of all three workflows). Attaching them only put
+    // every server's tool definitions into each stage call's context. Chat
+    // (and any non-pipeline run) keeps the user's Settings → External MCP.
+    // An empty list also makes the branches below UNLINK a stale `.mcp.json`
+    // / Codex profile a previous chat run left in the same cwd.
+    const enabledExternalMcp = isPipelineProfile
+      ? []
+      : externalMcpConfig.servers.filter((s) => s.enabled);
     const oauthTokensForSpawn = {};
     try {
       const stored = await readAllTokens(RUNTIME_DATA_DIR);
