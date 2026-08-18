@@ -1,35 +1,28 @@
-// ── Panel "Token Figma + kiểm tra link" (dùng chung cho Dự án mới / Thông tin dự án)
-// Khi App chọn nguồn component là "Link Figma", bước Màn hình → Component đọc
-// danh mục component thẳng từ Figma REST API bằng Personal Access Token
-// (daemon làm, không agent/MCP, không cần Figma Desktop đang mở). Vì vậy
-// người dùng chỉ cần đúng HAI thứ và panel này gom cả hai vào một chỗ:
-//   1. Token Figma (lưu một lần cho cả máy — GET không bao giờ trả lại token
-//      thật, chỉ `hasToken`), kèm hướng dẫn lấy token ngay tại chỗ.
+// ── Panel "Kiểm tra link Figma" (modal Nạp Design system từ link Figma)
+// Daemon đọc danh mục component thẳng từ Figma REST API bằng Personal Access
+// Token (không agent/MCP, không cần Figma Desktop đang mở). Token là cấu hình
+// cấp máy và được thiết lập ở route Tích hợp → tab MCP (FigmaCredentialSection);
+// panel này KHÔNG có ô nhập token nữa, chỉ:
+//   1. Báo trạng thái token (đã lưu / chưa có / lỗi) và dẫn sang Tích hợp khi
+//      cần — GET không bao giờ trả lại token thật, chỉ `hasToken`.
 //   2. Từng link đọc được hay không: tên file + số component, hoặc lý do lỗi
 //      (không có quyền, link sai, file chỉ dùng component thư viện khác…).
 // Có token + link hợp lệ → tự kiểm tra (debounce) để người dùng thấy dấu ✓
 // ngay khi dán link, không phải bấm thêm.
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FigmaLinkVerification } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
+import { navigate } from '../../router';
 import {
   fetchFigmaConfig,
   fetchFigmaDesktopStatus,
-  saveFigmaConfig,
   testFigmaConnection,
   verifyFigmaLinks,
 } from '../../state/figma-config';
 import type { FigmaDesktopStatusResponse } from '../../state/figma-config';
 import styles from './FigmaLinksPanel.module.css';
-
-export const FIGMA_TOKEN_GUIDE_STEPS: readonly string[] = [
-  'Mở Figma (web hoặc Desktop) → bấm ảnh đại diện góc trên → Settings.',
-  'Chọn thẻ Security → mục Personal access tokens → Generate new token.',
-  'Đặt tên (vd “Open Design”), thời hạn tuỳ ý; quyền chỉ cần File content: Read-only.',
-  'Bấm Generate, sao chép token (Figma chỉ hiện MỘT lần) rồi dán vào ô bên dưới.',
-];
 
 export type FigmaLinksPanelProps = {
   /** Link đã chuẩn hoá (normalizeFigmaLinks). Rỗng khi người dùng chưa dán/đang sai. */
@@ -39,6 +32,9 @@ export type FigmaLinksPanelProps = {
   /** Parent forms use this state as a hard gate: a syntactically-valid link
    *  is not enough until the daemon has read every file successfully. */
   onVerificationChange?: (state: FigmaLinksVerificationState) => void;
+  /** Where "Cấu hình ở Tích hợp" goes. Defaults to the Tích hợp → MCP route
+   *  (which closes whatever modal hosts this panel). */
+  onOpenTokenSettings?: () => void;
 };
 
 export type FigmaLinksVerificationState = {
@@ -71,12 +67,8 @@ type TokenState =
   | { kind: 'saved'; handle?: string }
   | { kind: 'error'; message: string };
 
-export function FigmaLinksPanel({ links, linksError, onVerificationChange }: FigmaLinksPanelProps) {
+export function FigmaLinksPanel({ links, linksError, onVerificationChange, onOpenTokenSettings }: FigmaLinksPanelProps) {
   const [token, setToken] = useState<TokenState>({ kind: 'loading' });
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [guideOpen, setGuideOpen] = useState(false);
   const [rows, setRows] = useState<FigmaLinkVerification[] | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
@@ -128,21 +120,33 @@ export function FigmaLinksPanel({ links, linksError, onVerificationChange }: Fig
     onVerificationChangeRef.current?.({ status: 'verified', linksKey: currentKey });
   };
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const cfg = await fetchFigmaConfig();
-      if (cancelled) return;
-      if (!cfg) { setToken({ kind: 'error', message: 'Không đọc được cấu hình Figma từ daemon.' }); return; }
-      if (!cfg.hasToken) { setToken({ kind: 'missing' }); return; }
-      const probe = await testFigmaConnection();
-      if (cancelled) return;
-      setToken(probe.ok
-        ? { kind: 'saved', ...(probe.handle ? { handle: probe.handle } : probe.email ? { handle: probe.email } : {}) }
-        : { kind: 'error', message: probe.detail ?? 'Token Figma đã lưu nhưng không dùng được.' });
-    })();
-    return () => { cancelled = true; };
+  // Token status is read-only here; the token itself is managed in Tích hợp.
+  // `loadToken` is exposed through "Kiểm tra lại" so someone who just saved a
+  // token in another tab does not have to reopen the modal.
+  const tokenLoadRef = useRef(0);
+  const loadToken = useCallback(async () => {
+    const generation = ++tokenLoadRef.current;
+    setToken({ kind: 'loading' });
+    const cfg = await fetchFigmaConfig();
+    if (generation !== tokenLoadRef.current) return;
+    if (!cfg) { setToken({ kind: 'error', message: 'Không đọc được cấu hình Figma từ daemon.' }); return; }
+    if (!cfg.hasToken) { setToken({ kind: 'missing' }); return; }
+    const probe = await testFigmaConnection();
+    if (generation !== tokenLoadRef.current) return;
+    setToken(probe.ok
+      ? { kind: 'saved', ...(probe.handle ? { handle: probe.handle } : probe.email ? { handle: probe.email } : {}) }
+      : { kind: 'error', message: probe.detail ?? 'Token Figma đã lưu nhưng không dùng được.' });
   }, []);
+
+  useEffect(() => {
+    void loadToken();
+    return () => { tokenLoadRef.current += 1; };
+  }, [loadToken]);
+
+  const openTokenSettings = () => {
+    if (onOpenTokenSettings) onOpenTokenSettings();
+    else navigate({ kind: 'home', view: 'integrations', integrationsTab: 'mcp' });
+  };
 
   // Có token + link hợp lệ → tự kiểm tra sau khi người dùng ngừng gõ.
   useEffect(() => {
@@ -155,7 +159,7 @@ export function FigmaLinksPanel({ links, linksError, onVerificationChange }: Fig
         ? 'Dán ít nhất một link Figma.'
         : token.kind === 'loading'
           ? 'Đang kiểm tra token Figma…'
-          : 'Cần lưu token Figma hợp lệ trước khi tiếp tục.');
+          : 'Cần token Figma hợp lệ (cấu hình ở Tích hợp) trước khi tiếp tục.');
       onVerificationChangeRef.current?.({
         status: token.kind === 'loading' ? 'pending' : linksError || links.length > 0 ? 'failed' : 'idle',
         linksKey,
@@ -194,57 +198,6 @@ export function FigmaLinksPanel({ links, linksError, onVerificationChange }: Fig
     setDesktopStatus(status);
   };
 
-  const saveToken = async () => {
-    const value = draft.trim();
-    if (!value || saving) return;
-    if (linksError || links.length === 0) {
-      const message = linksError
-        ? 'Hãy sửa link Figma ở trên trước khi lưu token.'
-        : 'Hãy dán ít nhất một link Figma trước khi lưu token.';
-      setVerifyError(message);
-      onVerificationChangeRef.current?.({ status: 'failed', linksKey, message });
-      return;
-    }
-    abortRef.current?.abort();
-    verificationGenerationRef.current += 1;
-    onVerificationChangeRef.current?.({ status: 'pending', linksKey });
-    setSaving(true);
-    // Validate the draft against the actual files before replacing a known-good
-    // saved token. /v1/me cannot prove file_content/library access.
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const verified = await verifyFigmaLinks({ links, token: value }, controller.signal);
-    if (controller.signal.aborted) {
-      setSaving(false);
-      return;
-    }
-    const failure = figmaVerificationFailure(links, verified);
-    if (failure) {
-      const message = failure;
-      setSaving(false);
-      setRows(verified?.links ?? null);
-      setVerifyError(message);
-      onVerificationChangeRef.current?.({ status: 'failed', linksKey, message });
-      return;
-    }
-    const saved = await saveFigmaConfig({ token: value });
-    setSaving(false);
-    if (!saved?.hasToken) {
-      const message = 'Không lưu được token vào daemon.';
-      setVerifyError(message);
-      onVerificationChangeRef.current?.({ status: 'failed', linksKey, message });
-      return;
-    }
-    setDraft('');
-    setEditing(false);
-    setVerifyError(null);
-    setRows(verified!.links);
-    setToken({ kind: 'saved' });
-    onVerificationChangeRef.current?.({ status: 'verified', linksKey });
-  };
-
-  const showTokenForm = token.kind === 'missing' || token.kind === 'error' || editing;
-
   return (
     <section className={styles.panel} aria-label="Token Figma và kiểm tra link">
       <div className={styles.row}>
@@ -254,50 +207,25 @@ export function FigmaLinksPanel({ links, linksError, onVerificationChange }: Fig
           {token.kind === 'saved' ? (
             <span data-ok="true">Đã lưu{token.handle ? ` · tài khoản ${token.handle}` : ''}. Dùng chung cho mọi dự án trên máy này.</span>
           ) : null}
-          {token.kind === 'missing' ? <span data-ok="false">Chưa có token. Dán Personal Access Token của Figma để ứng dụng đọc được file.</span> : null}
+          {token.kind === 'missing' ? <span data-ok="false">Chưa có token — ứng dụng chưa đọc được file Figma.</span> : null}
           {token.kind === 'error' ? <span data-ok="false">{token.message}</span> : null}
+          {token.kind === 'missing' || token.kind === 'error' ? (
+            <small className={styles.hint}>Personal Access Token được thiết lập một lần cho cả máy ở Tích hợp → MCP.</small>
+          ) : null}
         </div>
-        {token.kind === 'saved' && !editing ? (
-          <button type="button" className={styles.linkButton} onClick={() => setEditing(true)}>Đổi token</button>
-        ) : null}
+        <div className={styles.rowActions}>
+          {token.kind !== 'loading' ? (
+            <button type="button" className={styles.linkButton} data-testid="figma-token-settings" onClick={openTokenSettings}>
+              {token.kind === 'saved' ? 'Đổi token ở Tích hợp' : 'Cấu hình ở Tích hợp'}
+            </button>
+          ) : null}
+          {token.kind === 'missing' || token.kind === 'error' ? (
+            <button type="button" className={styles.linkButton} data-testid="figma-token-recheck" onClick={() => void loadToken()}>
+              Kiểm tra lại
+            </button>
+          ) : null}
+        </div>
       </div>
-
-      {showTokenForm ? (
-        <div className={styles.tokenForm}>
-          <input
-            type="password"
-            className={styles.tokenInput}
-            aria-label="Personal Access Token của Figma"
-            placeholder="figd_…"
-            value={draft}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void saveToken(); } }}
-            disabled={saving}
-          />
-          <button type="button" className={styles.primaryButton} onClick={() => void saveToken()} disabled={saving || !draft.trim() || Boolean(linksError) || links.length === 0} data-testid="figma-token-save">
-            <Icon name={saving ? 'spinner' : 'check'} size={14} />
-            <span>{saving ? 'Đang kiểm tra…' : 'Lưu token'}</span>
-          </button>
-          {editing && token.kind === 'saved' ? (
-            <button type="button" className={styles.linkButton} onClick={() => { setEditing(false); setDraft(''); }} disabled={saving}>Huỷ</button>
-          ) : null}
-          <button type="button" className={styles.linkButton} onClick={() => setGuideOpen((open) => !open)} aria-expanded={guideOpen}>
-            {guideOpen ? 'Ẩn hướng dẫn' : 'Cách lấy token'}
-          </button>
-          {guideOpen ? (
-            <ol className={styles.guide}>
-              {FIGMA_TOKEN_GUIDE_STEPS.map((step) => <li key={step}>{step}</li>)}
-            </ol>
-          ) : null}
-          {linksError || links.length === 0 ? (
-            <p className={styles.error} role="status">
-              {linksError ? 'Sửa link Figma ở trên trước khi lưu token.' : 'Dán ít nhất một link Figma trước khi lưu token.'}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
 
       <div className={styles.row}>
         <div className={styles.rowText}>

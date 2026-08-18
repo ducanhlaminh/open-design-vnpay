@@ -301,6 +301,11 @@ export function App() {
   // can't overwrite the saved state with `''` before hydration lands.
   const [composioConfigLoading, setComposioConfigLoading] = useState(true);
   const route = useRoute();
+  // `/integrations/<tab>` (deep link or in-app button such as "Cấu hình token
+  // Figma ở Tích hợp") wins over the last tab remembered in state.
+  const routedIntegrationTab = route.kind === 'home' && route.view === 'integrations'
+    ? route.integrationsTab
+    : undefined;
   const analytics = useAnalytics();
 
   // Survivor watcher: after the UI pipeline runs, auto-open its screen.json
@@ -1252,14 +1257,13 @@ export function App() {
 
   const openSettings = useCallback((section: SettingsSection = 'execution') => {
     if (section === 'composio' || section === 'mcpClient' || section === 'integrations') {
-      setIntegrationInitialTab(
-        section === 'composio'
-          ? 'connectors'
-          : section === 'mcpClient'
-            ? 'mcp'
-            : 'use-everywhere',
-      );
-      navigate({ kind: 'home', view: 'integrations' });
+      const tab: IntegrationTab = section === 'composio'
+        ? 'connectors'
+        : section === 'mcpClient'
+          ? 'mcp'
+          : 'use-everywhere';
+      setIntegrationInitialTab(tab);
+      navigate({ kind: 'home', view: 'integrations', integrationsTab: tab });
       return;
     }
     setSettingsWelcome(false);
@@ -1275,7 +1279,7 @@ export function App() {
 
   const openMcpSettings = useCallback(() => {
     setIntegrationInitialTab('mcp');
-    navigate({ kind: 'home', view: 'integrations' });
+    navigate({ kind: 'home', view: 'integrations', integrationsTab: 'mcp' });
   }, []);
 
   const handleCompleteOnboarding = useCallback(() => {
@@ -1536,7 +1540,7 @@ export function App() {
         defaultDesignSystemId={config.designSystemId}
         agents={agents}
         config={config}
-        integrationInitialTab={integrationInitialTab}
+        integrationInitialTab={routedIntegrationTab ?? integrationInitialTab}
         composioConfigLoading={composioConfigLoading}
         daemonLive={daemonLive}
         onModeChange={handleModeChange}

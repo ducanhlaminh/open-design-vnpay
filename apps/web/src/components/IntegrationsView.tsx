@@ -10,6 +10,7 @@ import {
 } from '../analytics/events';
 import { ConnectorSection } from './SettingsDialog';
 import { ConfluenceCredentialSection } from './ConfluenceCredentialSection';
+import { FigmaCredentialSection } from './FigmaCredentialSection';
 import { Icon } from './Icon';
 import { McpClientSection } from './McpClientSection';
 import { UseEverywhereGuidePanel } from './UseEverywhereModal';
@@ -123,9 +124,12 @@ export function IntegrationsView({
       <div className="integrations-view__panel">
         {activeTab === 'mcp' ? (
           <>
-            {/* Confluence credential — its own store, independent of the
-                external-MCP config below (WP8: JIRA ingest removed). */}
+            {/* Confluence + Figma credentials — each its own small store,
+                independent of the external-MCP config below (WP8: JIRA
+                ingest removed; Figma token moved here from the "Nạp Design
+                system từ link Figma" modal). */}
             <ConfluenceCredentialSection />
+            <FigmaCredentialSection />
             <McpClientSection />
           </>
         ) : null}

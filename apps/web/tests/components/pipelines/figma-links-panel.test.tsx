@@ -90,57 +90,51 @@ describe('FigmaLinksPanel', () => {
     await waitFor(() => expect(states.at(-1)).toMatchObject({ status: 'pending', linksKey: 'XYZ:' }));
   });
 
-  it('chưa có token → draft phải đọc được mọi link rồi mới PUT, sau đó tự kiểm tra link đã lưu', async () => {
+  it('chưa có token → KHÔNG có ô nhập token; nút "Cấu hình ở Tích hợp" mở /integrations/mcp', async () => {
     const { calls } = stubDaemon({ hasToken: false });
+    window.history.replaceState(null, '', '/design-systems');
     render(<FigmaLinksPanel links={LINKS} linksError={null} />);
     await screen.findByText(/Chưa có token/);
-    fireEvent.click(screen.getByRole('button', { name: 'Cách lấy token' }));
-    expect(screen.getByText(/Personal access tokens/)).toBeTruthy();
-
-    fireEvent.change(screen.getByLabelText('Personal Access Token của Figma'), { target: { value: 'figd_new' } });
-    fireEvent.click(screen.getByTestId('figma-token-save'));
-
-    await screen.findByText(/Đã lưu/);
-    const order = calls.filter((call) => call.url.startsWith('/api/figma-config')).map((call) => `${call.method} ${call.url}`);
-    expect(order.slice(0, 3)).toEqual(['GET /api/figma-config', 'POST /api/figma-config/verify-links', 'PUT /api/figma-config']);
-    expect(calls.find((call) => call.url === '/api/figma-config/verify-links')?.body).toEqual({ links: LINKS, token: 'figd_new' });
-    expect(calls.find((call) => call.method === 'PUT')?.body).toEqual({ token: 'figd_new' });
-    await screen.findByText('UI Kit');
     expect(screen.queryByLabelText('Personal Access Token của Figma')).toBeNull();
-  });
-
-  it('draft token thiếu quyền file → báo lỗi tại chỗ, KHÔNG ghi đè token', async () => {
-    const { calls } = stubDaemon({ hasToken: false, verify: (body) => ({ hasToken: Boolean(body?.token), links: [
-      { fileKey: 'ABC', url: LINKS[0]!.url, ok: false, detail: 'Token không có quyền đọc file này.' },
-    ] }) });
-    render(<FigmaLinksPanel links={LINKS} linksError={null} />);
-    await screen.findByText(/Chưa có token/);
-    fireEvent.change(screen.getByLabelText('Personal Access Token của Figma'), { target: { value: 'bad' } });
-    fireEvent.click(screen.getByTestId('figma-token-save'));
-    await screen.findByRole('alert');
-    expect(screen.getByRole('alert').textContent).toMatch(/không có quyền/);
+    expect(screen.queryByTestId('figma-token-save')).toBeNull();
+    fireEvent.click(screen.getByTestId('figma-token-settings'));
+    expect(window.location.pathname).toBe('/integrations/mcp');
     expect(calls.some((call) => call.method === 'PUT')).toBe(false);
+    expect(calls.some((call) => call.url === '/api/figma-config/verify-links')).toBe(false);
   });
 
-  it('response verify rỗng/thiếu file không được tính là hợp lệ và không PUT', async () => {
-    const { calls } = stubDaemon({ hasToken: true, verify: () => ({ hasToken: true, links: [] }) });
-    render(<FigmaLinksPanel links={LINKS} linksError={null} />);
+  it('onOpenTokenSettings được ưu tiên hơn điều hướng mặc định', async () => {
+    stubDaemon({ hasToken: false });
+    window.history.replaceState(null, '', '/design-systems');
+    const onOpen = vi.fn();
+    render(<FigmaLinksPanel links={LINKS} linksError={null} onOpenTokenSettings={onOpen} />);
+    await screen.findByText(/Chưa có token/);
+    fireEvent.click(screen.getByTestId('figma-token-settings'));
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(window.location.pathname).toBe('/design-systems');
+  });
+
+  it('chưa có token → "Kiểm tra lại" đọc lại config; token vừa lưu ở Tích hợp → tự kiểm tra link', async () => {
+    const state = { hasToken: false };
+    const { calls } = stubDaemon(state);
+    const states: Array<{ status: string }> = [];
+    render(<FigmaLinksPanel links={LINKS} linksError={null} onVerificationChange={(s) => states.push(s)} />);
+    await screen.findByText(/Chưa có token/);
+    expect(states.at(-1)).toMatchObject({ status: 'failed' });
+    state.hasToken = true;
+    fireEvent.click(screen.getByTestId('figma-token-recheck'));
     await screen.findByText(/tài khoản anh/);
-    fireEvent.click(screen.getByRole('button', { name: 'Đổi token' }));
-    fireEvent.change(screen.getByLabelText('Personal Access Token của Figma'), { target: { value: 'figd_partial' } });
-    fireEvent.click(screen.getByTestId('figma-token-save'));
-    await screen.findByText(/chưa trả kết quả kiểm tra cho file ABC/i);
-    expect(calls.some((call) => call.method === 'PUT')).toBe(false);
+    await screen.findByText('UI Kit');
+    expect(states.at(-1)).toMatchObject({ status: 'verified', linksKey: 'ABC:' });
+    expect(calls.filter((call) => call.method === 'GET' && call.url === '/api/figma-config')).toHaveLength(2);
   });
 
-  it('không cho lưu token khi chưa có link hợp lệ và hiện hướng dẫn', async () => {
-    const { calls } = stubDaemon({ hasToken: false });
-    render(<FigmaLinksPanel links={[]} linksError="Dán ít nhất 1 link Figma." />);
-    await screen.findByText(/Chưa có token/);
-    fireEvent.change(screen.getByLabelText('Personal Access Token của Figma'), { target: { value: 'figd_new' } });
-    expect((screen.getByTestId('figma-token-save') as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/Sửa link Figma ở trên trước khi lưu token/)).toBeTruthy();
-    expect(calls.some((call) => call.method === 'PUT')).toBe(false);
+  it('token đã lưu nhưng daemon báo hỏng → hiện lý do + dẫn sang Tích hợp, không verify link', async () => {
+    const { calls } = stubDaemon({ hasToken: true, testOk: false });
+    render(<FigmaLinksPanel links={LINKS} linksError={null} />);
+    await screen.findByText(/không hợp lệ hoặc đã bị thu hồi/);
+    expect(screen.getByTestId('figma-token-settings').textContent).toBe('Cấu hình ở Tích hợp');
+    expect(calls.some((call) => call.url === '/api/figma-config/verify-links')).toBe(false);
   });
 
   it('link không đọc được → dòng đỏ với lý do; link lỗi cú pháp → không gọi daemon', async () => {

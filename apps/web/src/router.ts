@@ -4,6 +4,7 @@
 // that in the URL is the simplest way to make it deep-linkable.
 
 import { useEffect, useState } from 'react';
+import type { IntegrationTab } from './components/IntegrationsView';
 
 // Entry-shell sub-views. The home/project landing renders one of three
 // columns and each sub-view now owns a top-level path so the browser
@@ -22,7 +23,10 @@ export type EntryHomeView =
   | 'integrations';
 
 export type Route =
-  | { kind: 'home'; view: EntryHomeView }
+  // `integrationsTab` only applies to `view: 'integrations'` — it lets deep
+  // links / in-app buttons (vd "Cấu hình token Figma ở Tích hợp") land on a
+  // specific tab: `/integrations/mcp`.
+  | { kind: 'home'; view: EntryHomeView; integrationsTab?: IntegrationTab }
   | { kind: 'design-system-create' }
   | { kind: 'design-system-detail'; designSystemId: string; section?: 'criteria' | 'figma-update' }
   | {
@@ -62,6 +66,8 @@ export type Route =
 
 /** Rổ chứa feature chưa gắn app nào (mirror pipeline-studio's bucket id). */
 export const UNASSIGNED_APP = '__unassigned';
+
+const INTEGRATION_TABS: ReadonlySet<IntegrationTab> = new Set<IntegrationTab>(['mcp', 'connectors', 'skills', 'use-everywhere']);
 
 export function parseRoute(pathname: string): Route {
   const parts = pathname.replace(/\/+$/, '').split('/').filter(Boolean);
@@ -166,6 +172,10 @@ export function parseRoute(pathname: string): Route {
     return { kind: 'home', view: 'plugins' };
   }
   if (parts[0] === 'integrations') {
+    const tab = parts[1];
+    if (tab && INTEGRATION_TABS.has(tab as IntegrationTab)) {
+      return { kind: 'home', view: 'integrations', integrationsTab: tab as IntegrationTab };
+    }
     return { kind: 'home', view: 'integrations' };
   }
   // Phase 2B / spec §11.6 — marketplace deep UI routes. Two paths:
@@ -192,7 +202,9 @@ export function buildPath(route: Route): string {
     if (route.view === 'feedback') return '/feedback';
     if (route.view === 'plugins') return '/plugins';
     if (route.view === 'design-systems') return '/design-systems';
-    if (route.view === 'integrations') return '/integrations';
+    if (route.view === 'integrations') {
+      return route.integrationsTab ? `/integrations/${route.integrationsTab}` : '/integrations';
+    }
     return '/';
   }
   if (route.kind === 'pipeline-result') {

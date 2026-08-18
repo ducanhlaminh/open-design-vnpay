@@ -147,6 +147,17 @@ describe('parseRoute / buildPath (issue #1505)', () => {
     expect(parseRoute('/workspaces')).toEqual({ kind: 'home', view: 'workspaces' });
   });
 
+  it('round-trips /integrations/<tab> and ignores unknown tabs', () => {
+    expect(parseRoute('/integrations')).toEqual({ kind: 'home', view: 'integrations' });
+    expect(parseRoute('/integrations/mcp')).toEqual({ kind: 'home', view: 'integrations', integrationsTab: 'mcp' });
+    expect(parseRoute('/integrations/connectors')).toEqual({ kind: 'home', view: 'integrations', integrationsTab: 'connectors' });
+    expect(parseRoute('/integrations/nope')).toEqual({ kind: 'home', view: 'integrations' });
+    expect(buildPath({ kind: 'home', view: 'integrations' })).toBe('/integrations');
+    expect(buildPath({ kind: 'home', view: 'integrations', integrationsTab: 'mcp' })).toBe('/integrations/mcp');
+    expect(roundTrip({ kind: 'home', view: 'integrations', integrationsTab: 'use-everywhere' }))
+      .toEqual({ kind: 'home', view: 'integrations', integrationsTab: 'use-everywhere' });
+  });
+
   it('falls back to home when the URL is unrecognized', () => {
     expect(parseRoute('/something/else')).toEqual({ kind: 'home', view: 'home' });
     expect(parseRoute('/workspaces')).toEqual({ kind: 'home', view: 'workspaces' });
