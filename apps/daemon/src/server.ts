@@ -178,7 +178,7 @@ import { createClaudeStreamHandler } from './claude-stream.js';
 import { diagnoseClaudeCliFailure } from './claude-diagnostics.js';
 import { fetchClaudeUsage } from './claude-usage.js';
 import { renderHtmlToPdf } from './bas/drawio-render.js';
-import { finalizeFlowUx, prepareFlowUxInputs } from './flow-ux/index.js';
+import { finalizeFlowUx, prepareFlowUxInputs, type FlowIndexEntry } from './flow-ux/index.js';
 import { serveDrawioViewerJs } from './flow-ux/viewer-asset.js';
 import { loadCritiqueConfigFromEnv } from './critique/config.js';
 import { reconcileStaleRuns } from './critique/persistence.js';
@@ -517,6 +517,7 @@ import {
   mergeChangeReports,
   writeDocsReviewFailureNote,
   DOCS_REVIEW_FAILURE_NOTE,
+  systemChangesPath,
   type DocChange,
   type DocNote,
   type DocPage,
@@ -527,6 +528,15 @@ import {
   // trong hai (must_not cấm đụng section-fanout).
   type DocSection as DocPageSection,
 } from './docs-review.js';
+// WP2 (dr-review enrich) — sơ đồ mermaid đề xuất (flows/) + nháp bảng "Cấu
+// thành màn hình" (comp/), xem docblock đầu docs-review-enrich.ts.
+import {
+  replaceDiagramInSlice,
+  mapScreensToSections,
+  parseCatalogue,
+  renderCompositionDraft,
+  buildEnrichKickoff,
+} from './docs-review-enrich.js';
 import {
   collectComponentCatalog,
   writeDocsComponentFailureNote,
@@ -545,6 +555,7 @@ import {
   ROLE_MAP_FILE,
   type RoleMapDoc,
   type ScreenComponentsDoc,
+  type ScreenComponentsIndex,
 } from './screen-components.js';
 import { renderFigmaComponentsMarkdown, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 import { readFigmaConfig } from './figma-config.js';
@@ -17321,6 +17332,60 @@ export async function startServer({
           return collectCriteriaAnchors(files);
         })();
 
+        // WP2 (dr-review enrich) — input dùng chung cho MỌI trang, đọc MỘT
+        // LẦN cho cả stage giống criteriaAnchors ngay trên (chúng không đổi
+        // giữa các lượt chạy trang):
+        //  - internalRefs: tập rule_id "kết quả nội bộ" (flows/…, comp/…) CÓ
+        //    THẬT trên đĩa — truyền vào validateRuleIds (WP1) để bắt agent
+        //    bịa rule_id trỏ vào file không tồn tại. Thiếu flows/ hoặc comp/
+        //    => Set rỗng (không phải lỗi — agent vẫn bị bắt nếu bịa).
+        //  - componentCatalogue: `criteria/components.md` đọc thành
+        //    anchor → {name, description} (xem parseCatalogue) để dựng nháp
+        //    bảng "Cấu thành màn hình". KHÔNG dùng chung với criteriaAnchors
+        //    ở trên vì đó chỉ giữ lại đúng token anchor, không giữ mô tả.
+        //  - compRoleMap: `comp/_role-map.json` (nếu có) — nguồn fallback khi
+        //    một role không có component DS.
+        const internalRefs = await (async () => {
+          const set = new Set<string>();
+          const flowsDir = path.join(cwd, 'flows');
+          const flowDirEntries = await fs.promises.readdir(flowsDir, { withFileTypes: true }).catch(() => []);
+          for (const entry of flowDirEntries) {
+            if (!entry.isDirectory()) continue;
+            const rel = path.posix.join('flows', entry.name, 'ux-review.json');
+            const exists = await fs.promises
+              .stat(path.join(cwd, rel))
+              .then(() => true)
+              .catch(() => false);
+            if (exists) set.add(rel);
+          }
+          const compNames = await fs.promises.readdir(path.join(cwd, 'comp')).catch(() => [] as string[]);
+          for (const name of compNames) {
+            if (name.toLowerCase().endsWith('.screen.json')) set.add(path.posix.join('comp', name));
+          }
+          return set;
+        })();
+        const componentCatalogue = await fs.promises
+          .readFile(path.join(cwd, 'criteria', 'components.md'), 'utf8')
+          .then(parseCatalogue)
+          .catch(() => new Map<string, { name: string; description: string }>());
+        const compRoleMap = await fs.promises
+          .readFile(path.join(cwd, 'comp', '_role-map.json'), 'utf8')
+          .then((raw) => JSON.parse(raw) as RoleMapDoc)
+          .catch(() => null as RoleMapDoc | null);
+        const compIndex = await fs.promises
+          .readFile(path.join(cwd, 'comp', 'index.json'), 'utf8')
+          .then((raw) => JSON.parse(raw) as ScreenComponentsIndex)
+          .catch(() => null as ScreenComponentsIndex | null);
+        const flowIndex = await fs.promises
+          .readFile(path.join(cwd, 'flows', 'index.json'), 'utf8')
+          .then((raw) => JSON.parse(raw) as FlowIndexEntry[])
+          .catch(() => [] as FlowIndexEntry[]);
+        /** `flows/index.json`/`comp/index.json` ghi path tương đối từ
+         *  workflowRoot giống hệt `DocPage.mdPath` (cả hai đều
+         *  `path.relative(cwd, …).replace(/\\/g, '/')`) — chuẩn hoá cho chắc
+         *  (bỏ backslash Windows, tiền tố `./`) trước khi so trực tiếp. */
+        const normEnrichSrc = (p: string | null | undefined): string => (p ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
+
         // Mỗi TRANG cắt thành SECTION theo heading; mỗi SECTION là một lượt
         // chạy riêng. Trang không đọc được => splitSections('') vẫn cho đúng
         // một section phủ cả trang, nên trang đó vẫn được review thay vì rơi
@@ -17365,6 +17430,11 @@ export async function startServer({
           pg: DocPage,
           sec: DocPageSection,
           task: (typeof tasks)[number],
+          // WP2 (dr-review enrich) — đoạn kickoff bổ sung do
+          // buildEnrichKickoff dựng SẴN cho đúng section này (sơ đồ đã thay,
+          // bảng cấu thành cần chèn, màn không định vị được…). Chuỗi rỗng =
+          // section này không dính flows/comp gì — kickoff y hệt trước WP2.
+          enrichKickoff: string = '',
         ): Promise<{ ok: boolean; canceled: boolean; error?: string }> => {
           const conversationId = task.id;
           task.status = 'running';
@@ -17403,7 +17473,8 @@ export async function startServer({
             `Write every change you actually made to "${secChangesRel}" as a JSON array of DocChange objects, ` +
             `and every finding you could NOT fix by editing text to "${secNotesRel}" as a JSON array of DocNote objects. ` +
             `TUYỆT ĐỐI KHÔNG chèn chuỗi chú giải "[Rà soát …]" (hay bất kỳ chú giải nào) vào lát cắt — daemon đánh hỏng CẢ TRANG nếu phát hiện; nhận xét không sửa được bằng chữ phải đi vào "${secNotesRel}". ` +
-            `Do NOT review any other page or section, and do NOT write review/index.json or review/summary.md — the pipeline aggregates those from every section's files.${graphNote}`;
+            `Do NOT review any other page or section, and do NOT write review/index.json or review/summary.md — the pipeline aggregates those from every section's files.${graphNote}` +
+            (enrichKickoff ? `\n\n${enrichKickoff}` : '');
           const run = design.runs.create({
             projectId,
             conversationId,
@@ -17471,6 +17542,13 @@ export async function startServer({
           const errors: string[] = [];
           let sawCancel = false;
 
+          // WP2 (dr-review enrich) — state của TRANG này, điền bởi khối enrich
+          // ngay dưới (sau khi ghi lát+outline, trước khi spawn agent) và đọc
+          // lại ở: (a) kickoff từng section, (b) dọn `review/_composition/`
+          // khi trang đạt/hỏng. Rỗng nếu trang không dính gì tới flows/comp.
+          const enrichKickoffBySection = new Map<number, string>();
+          const compDraftKeysForPage: string[] = [];
+
           // Cắt trang thành lát TRƯỚC khi chạy: mỗi section có file riêng nên
           // chúng chạy song song được. Đọc từ bản CLONE (không phải bản gốc) vì
           // clone là thứ agent được phép sửa và là thứ sẽ được dựng lại.
@@ -17502,6 +17580,163 @@ export async function startServer({
             errors.push(`Không cắt được trang thành lát: ${error instanceof Error ? error.message : String(error)}`);
           }
 
+          // WP2 (dr-review enrich) — SAU khi đã ghi các lát + outline, TRƯỚC
+          // khi spawn agent section nào: daemon tự đối chiếu `flows/` (thay
+          // sơ đồ mermaid bằng bản đề xuất NGAY TRONG lát, khai DocChange
+          // `origin: 'system'`) và `comp/` (dựng nháp bảng "Cấu thành màn
+          // hình" vào `review/_composition/`) — xem docs-review-enrich.ts và
+          // Phương án B trong `skills/docs-spec-review/SKILL.md` cho lý do việc này
+          // PHẢI xảy ra trước khi agent chạy (validateChanges đòi `before` có
+          // thật trong bản GỐC, nên daemon không thể "sửa hộ" sau khi agent
+          // đã Edit). BẤT CỨ lỗi nào ở đây (thiếu flows/comp, JSON hỏng, path
+          // không khớp…) chỉ bị BỎ QUA IM LẶNG — hành vi khi dự án không có
+          // flows/comp phải giống hệt trước khi có WP2.
+          if (errors.length === 0) {
+            try {
+              const cloneText = await fs.promises.readFile(path.join(cwd, reviewRel), 'utf8');
+              const pageLines = cloneText.split(/\r?\n/);
+              const thisPageSrc = normEnrichSrc(pg.mdPath);
+              const sysChanges: DocChange[] = [];
+              const diagramFlowIdBySection = new Map<number, string>();
+              const pageChangedFlowIds: string[] = [];
+
+              for (const flow of flowIndex) {
+                try {
+                  if (normEnrichSrc(flow.source) !== thisPageSrc) continue;
+                  const asIsRel = flow.files?.asIs;
+                  const proposedRel = flow.files?.proposed;
+                  const reviewRelPath = flow.files?.review;
+                  if (
+                    !asIsRel ||
+                    !proposedRel ||
+                    !reviewRelPath ||
+                    !asIsRel.endsWith('.mmd') ||
+                    !proposedRel.endsWith('.mmd')
+                  )
+                    continue;
+                  const asIsAbs = path.join(cwd, asIsRel);
+                  const proposedAbs = path.join(cwd, proposedRel);
+                  const reviewAbs = path.join(cwd, reviewRelPath);
+                  const [asIsExists, proposedExists, reviewExists] = await Promise.all([
+                    fs.promises.stat(asIsAbs).then(() => true).catch(() => false),
+                    fs.promises.stat(proposedAbs).then(() => true).catch(() => false),
+                    fs.promises.stat(reviewAbs).then(() => true).catch(() => false),
+                  ]);
+                  // Thiếu BẤT KỲ file nào trong 3 (as-is.mmd/proposed.mmd/ux-review.json)
+                  // => bỏ qua entry: nếu chỉ thiếu ux-review.json mà vẫn tạo sys change
+                  // rule_id flows/<id>/ux-review.json thì internalRefs (không có file đó)
+                  // làm validateRuleIds fail và hỏng cả trang oan cho một entry lẽ ra
+                  // phải bị bỏ qua giống hệt trường hợp thiếu as-is/proposed.
+                  if (!asIsExists || !proposedExists || !reviewExists) {
+                    console.debug(
+                      `[docs-review] enrich skipped: flow "${flow.id}" của trang "${pg.mdPath}": thiếu file (as-is=${asIsExists}, proposed=${proposedExists}, ux-review=${reviewExists})`,
+                    );
+                    continue; // vd `flows/FLOW-mua-sim-du-lich/` rỗng trong dự án mẫu
+                  }
+                  const [asIsMmd, proposedMmd, uxReviewRaw] = await Promise.all([
+                    fs.promises.readFile(asIsAbs, 'utf8'),
+                    fs.promises.readFile(proposedAbs, 'utf8'),
+                    fs.promises.readFile(reviewAbs, 'utf8').catch(() => null),
+                  ]);
+                  const uxReview = uxReviewRaw
+                    ? (JSON.parse(uxReviewRaw) as { verdict?: string; summary?: string })
+                    : {};
+
+                  for (const sec of sections) {
+                    const secSliceAbs = path.join(cwd, sectionSlicePath(reviewRel, sec.index));
+                    const sliceText = await fs.promises.readFile(secSliceAbs, 'utf8').catch(() => null);
+                    if (sliceText == null) continue;
+                    const replaced = replaceDiagramInSlice(sliceText, { asIsMmd, proposedMmd, flowId: flow.id, uxReview });
+                    if (!replaced) continue;
+                    await fs.promises.writeFile(secSliceAbs, replaced.text, 'utf8');
+                    sysChanges.push(replaced.change);
+                    diagramFlowIdBySection.set(sec.index, flow.id);
+                    pageChangedFlowIds.push(flow.id);
+                    break; // một sơ đồ chỉ nằm trong đúng một section của trang
+                  }
+                } catch (flowError) {
+                  console.debug(`[docs-review] enrich skipped: flow "${flow.id}" của trang "${pg.mdPath}":`, flowError);
+                }
+              }
+              if (sysChanges.length > 0) {
+                await fs.promises.writeFile(
+                  path.join(cwd, systemChangesPath(reviewRel)),
+                  JSON.stringify(sysChanges, null, 2),
+                  'utf8',
+                );
+              }
+
+              const screensBySection = new Map<number, Array<{ key: string; insertAfterLineText: string }>>();
+              const unplacedScreens: string[] = [];
+              if (compIndex && Array.isArray(compIndex.screens)) {
+                const screenNames = new Map(compIndex.screens.map((s) => [s.key, s.name] as const));
+                const pageScreenKeys = compIndex.screens
+                  .filter((s) => normEnrichSrc(s.source) === thisPageSrc)
+                  .map((s) => s.key);
+                if (pageScreenKeys.length > 0) {
+                  const { placed, unplaced } = mapScreensToSections(sections, pageLines, pageScreenKeys);
+                  unplacedScreens.push(...unplaced);
+                  const draftDir = path.join(cwd, 'review', '_composition');
+                  for (const [sectionIndex, entries] of placed) {
+                    for (const entry of entries) {
+                      try {
+                        const screenJsonRaw = await fs.promises.readFile(
+                          path.join(cwd, 'comp', `${entry.key}.screen.json`),
+                          'utf8',
+                        );
+                        const screenDoc = JSON.parse(screenJsonRaw) as ScreenComponentsDoc;
+                        const draftMd = renderCompositionDraft(screenDoc, componentCatalogue, compRoleMap, screenNames);
+                        await fs.promises.mkdir(draftDir, { recursive: true });
+                        const insertAfterLineText = (pageLines[entry.insertAfterLine - 1] ?? '').trim();
+                        await Promise.all([
+                          fs.promises.writeFile(path.join(draftDir, `${entry.key}.md`), draftMd, 'utf8'),
+                          fs.promises.writeFile(
+                            path.join(draftDir, `${entry.key}.placement.json`),
+                            JSON.stringify(
+                              {
+                                sectionIndex,
+                                insertAfterLine: entry.insertAfterLine,
+                                insertAfterLineText,
+                                sliceRel: sectionSlicePath(reviewRel, sectionIndex),
+                              },
+                              null,
+                              2,
+                            ),
+                            'utf8',
+                          ),
+                        ]);
+                        compDraftKeysForPage.push(entry.key);
+                        const arr = screensBySection.get(sectionIndex) ?? [];
+                        arr.push({ key: entry.key, insertAfterLineText });
+                        screensBySection.set(sectionIndex, arr);
+                      } catch (screenError) {
+                        console.debug(
+                          `[docs-review] enrich skipped: màn "${entry.key}" của trang "${pg.mdPath}":`,
+                          screenError,
+                        );
+                      }
+                    }
+                  }
+                }
+              }
+
+              const dedupedChangedFlowIds = [...new Set(pageChangedFlowIds)];
+              for (const sec of sections) {
+                const diagramFlowId = diagramFlowIdBySection.get(sec.index);
+                const otherChangedFlowIds = dedupedChangedFlowIds.filter((id) => id !== diagramFlowId);
+                const text = buildEnrichKickoff({
+                  diagramInThisSlice: diagramFlowId ? { flowId: diagramFlowId } : undefined,
+                  pageDiagramChanged: otherChangedFlowIds.length > 0 ? otherChangedFlowIds.map((flowId) => ({ flowId })) : undefined,
+                  screensInThisSlice: screensBySection.get(sec.index),
+                  unplacedScreens: unplacedScreens.length > 0 ? unplacedScreens : undefined,
+                });
+                if (text) enrichKickoffBySection.set(sec.index, text);
+              }
+            } catch (enrichError) {
+              console.debug(`[docs-review] enrich skipped: trang "${pg.mdPath}":`, enrichError);
+            }
+          }
+
           // Các section chạy SONG SONG (mỗi cái một lát riêng). Giới hạn chung
           // toàn stage là DOCS_REVIEW_FANOUT_CONCURRENCY — pool trang bên ngoài
           // và các section bên trong dùng CHUNG một semaphore, nếu không thì
@@ -17514,7 +17749,12 @@ export async function startServer({
                 if (canceled) return { ok: false, canceled: true } as const;
                 return sectionSlots.run(async () => {
                   if (canceled) return { ok: false, canceled: true } as const;
-                  return runOneSectionOfPage(pg, sec, tasks[taskIndexBySection[idx]![si]!]!);
+                  return runOneSectionOfPage(
+                    pg,
+                    sec,
+                    tasks[taskIndexBySection[idx]![si]!]!,
+                    enrichKickoffBySection.get(sec.index) ?? '',
+                  );
                 });
               }),
             );
@@ -17566,7 +17806,11 @@ export async function startServer({
                 if (rawChanges != null) {
                   const parsed = parseChangesFile(rawChanges);
                   if ('errors' in parsed) errors.push(...parsed.errors.map((e) => `s${sec.index}: ${e}`));
-                  else changes.push(...parsed.changes);
+                  // ÉP `origin: 'agent'` bất kể agent tự khai gì trong file —
+                  // chỉ `.sys.changes.json` (đọc ngay dưới) mới được giữ
+                  // 'system'. Đây là điều kiện để lỗi "agent tự tạo kind
+                  // flow-diagram" ngay dưới phân biệt được đúng nguồn.
+                  else changes.push(...parsed.changes.map((c) => ({ ...c, origin: 'agent' as const })));
                 }
                 const rawNotes = await fs.promises
                   .readFile(path.join(cwd, sectionOutputPath(reviewRel, sec.index, 'notes')), 'utf8')
@@ -17576,6 +17820,20 @@ export async function startServer({
                   if ('errors' in parsed) errors.push(...parsed.errors.map((e) => `s${sec.index}: ${e}`));
                   else notes.push(...parsed.notes);
                 }
+              }
+
+              // Sơ đồ mermaid do DAEMON tự thay (WP2, khối enrich TRƯỚC khi
+              // spawn agent ở trên) khai change ở MỘT file riêng, tách khỏi
+              // mọi file section của agent — nối vào ĐẦU mảng `changes` (xem
+              // systemChangesPath). File không tồn tại = trang không có sơ đồ
+              // nào được thay, không phải lỗi.
+              const rawSysChanges = await fs.promises
+                .readFile(path.join(cwd, systemChangesPath(reviewRel)), 'utf8')
+                .catch(() => null);
+              if (rawSysChanges != null) {
+                const parsedSys = parseChangesFile(rawSysChanges);
+                if ('errors' in parsedSys) errors.push(...parsedSys.errors.map((e) => `sys: ${e}`));
+                else changes.unshift(...parsedSys.changes.map((c) => ({ ...c, origin: 'system' as const })));
               }
 
               // Chú giải bị cấm kiểm TRƯỚC: nếu agent đã chèn "[Rà soát …]"
@@ -17592,6 +17850,19 @@ export async function startServer({
               }
               if (errors.length === 0) {
                 errors.push(...validateChanges(original, revised, changes));
+                // kind 'flow-diagram' chỉ daemon (origin 'system', từ
+                // .sys.changes.json) được tạo — xem Phương án B trong
+                // `skills/docs-spec-review/SKILL.md`. Mọi change origin 'agent' (ép ở
+                // vòng gộp phía trên, bất kể agent tự khai origin gì) mang
+                // kind này là agent lách cơ chế, đánh hỏng trang cùng cơ chế
+                // lỗi validate khác (fail-shut).
+                for (const c of changes) {
+                  if (c.kind === 'flow-diagram' && c.origin !== 'system') {
+                    errors.push(
+                      `Change "${c.id}" khai kind "flow-diagram" nhưng loại này chỉ do daemon tạo (xem flows/…/ux-review.json) — agent không được tự tạo change kind flow-diagram.`,
+                    );
+                  }
+                }
                 // Note neo trượt: cảnh báo, KHÔNG hỏng trang (xem partitionNotesByAnchor).
                 const partitioned = partitionNotesByAnchor(original, notes);
                 notes = partitioned.notes;
@@ -17604,6 +17875,7 @@ export async function startServer({
                       ...notes.map((n) => ({ id: n.id, kind: n.kind, ...(n.rule_id ? { rule_id: n.rule_id } : {}) })),
                     ],
                     criteriaAnchors,
+                    internalRefs,
                   ),
                 );
               }
@@ -17647,8 +17919,19 @@ export async function startServer({
             }
             // Fail-shut through the ONE shared primitive — see removePageOutputs's
             // docblock in docs-review.ts for why this delete is load-bearing.
-            // Nó dọn luôn mọi file tạm .s<NN>.* của trang.
+            // Nó dọn luôn mọi file tạm .s<NN>.* của trang (kể cả .sys.changes.json).
             await removePageOutputs(cwd, pg.mdPath);
+            // removePageOutputs không biết gì về `review/_composition/` (đây
+            // là output của WP2, không thuộc convention `<clone-stem>.*` mà
+            // nó dọn) — dọn riêng ở đây cho đúng phần trang này đã dựng.
+            await Promise.all(
+              compDraftKeysForPage.flatMap((key) => [
+                fs.promises.rm(path.join(cwd, 'review', '_composition', `${key}.md`), { force: true }).catch(() => null),
+                fs.promises
+                  .rm(path.join(cwd, 'review', '_composition', `${key}.placement.json`), { force: true })
+                  .catch(() => null),
+              ]),
+            );
             changes = [];
             notes = [];
           } else {
@@ -17678,6 +17961,20 @@ export async function startServer({
                 .catch(() => null);
             }
             await fs.promises.rm(path.join(cwd, pageOutlinePath(reviewRel)), { force: true }).catch(() => null);
+            // WP2 (dr-review enrich): các change trong .sys.changes.json đã
+            // được gộp vào mảng `changes` phía trên (đầu mảng) và vừa ghi
+            // vào `<page>.changes.json` ngay trên — file tạm .sys và nháp
+            // `_composition/<KEY>.md`/.placement.json không còn giá trị gì
+            // nữa, dọn cùng lúc với các file tạm khác của trang.
+            await fs.promises.rm(path.join(cwd, systemChangesPath(reviewRel)), { force: true }).catch(() => null);
+            await Promise.all(
+              compDraftKeysForPage.flatMap((key) => [
+                fs.promises.rm(path.join(cwd, 'review', '_composition', `${key}.md`), { force: true }).catch(() => null),
+                fs.promises
+                  .rm(path.join(cwd, 'review', '_composition', `${key}.placement.json`), { force: true })
+                  .catch(() => null),
+              ]),
+            );
           }
 
           results[idx] = {

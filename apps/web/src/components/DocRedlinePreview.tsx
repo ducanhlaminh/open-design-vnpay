@@ -36,9 +36,10 @@ import { inlineMarkdownImages } from '../runtime/markdown-images';
 import { injectDeletedRuns, injectHighlights, quoteSegments } from '../runtime/doc-highlight';
 import { wordDiff } from '../runtime/word-diff';
 import { Icon } from './Icon';
+import { MermaidDiagram } from './MermaidDiagram';
 import styles from './DocRedlinePreview.module.css';
 
-export type DocRedlineChangeKind = 'ux-writing' | 'flow' | 'gap' | 'edge-case' | 'component';
+export type DocRedlineChangeKind = 'ux-writing' | 'flow' | 'gap' | 'edge-case' | 'component' | 'flow-diagram';
 export type DocRedlineSeverity = 'blocker' | 'major' | 'minor';
 
 /** Mirrors apps/daemon/src/docs-review.ts's `DocChange` — the web side reads
@@ -63,7 +64,11 @@ export interface DocRedlineChange {
    *  shape để không phải parse lại khi màn hình có chỗ hiển thị. */
   doc_refs?: string[];
   reason: string;
-  origin?: 'agent' | 'user';
+  /** `'system'` = sinh bởi một bước tự động KHÔNG phải LLM review (ví dụ
+   *  `flows/<id>/ux-review.json` viết lại sơ đồ mermaid) — khác `'agent'`
+   *  (LLM review) và `'user'` (người dùng tự sửa), nhưng dùng chung mọi cơ chế
+   *  hiển thị/thao tác của `'agent'` trừ khi có nhánh riêng nói khác. */
+  origin?: 'agent' | 'system' | 'user';
   operation?: 'add' | 'edited' | 'delete';
   initialBefore?: string;
   initialQuote?: string;
@@ -116,14 +121,30 @@ interface DraftAnnotation {
   selected: string;
   replacement: string;
   reason: string;
+  /** wp4.yaml mục 3: loại của thay đổi tự tạo — chỉ có ý nghĩa (và chỉ hiện
+   *  select) cho Sửa/Thêm; Xoá không có "nội dung mới" để phân loại nên giữ
+   *  mặc định cũ (xem `defaultUserKind`). */
+  kind: DocRedlineChangeKind;
+  /** wp4.yaml mục 2, vá N1 (review attempt2): `true` khi `selected` đến từ
+   *  một heading chọn trong danh sách (`startHeadingAnnotation`) thay vì bôi
+   *  đen (`startUserAnnotation`) — `createUserAnnotation` cần biết để chèn
+   *  bằng `insertAfterHeadingLine` (line-anchored) thay vì
+   *  `insertAfterUniqueAnchor` (substring, đúng cho đoạn bôi đen nhưng SAI
+   *  cho một dòng heading có thể là tiền tố của heading con). */
+  viaHeading?: boolean;
 }
 
+// Nhãn thao tác đọc được với người không rành thuật ngữ review — thay cho mã
+// kỹ thuật cũ ("UX writing", "Trường hợp biên"…). `gap`/`edge-case` đổi tên
+// hẳn ("Thiếu sót" → "Thiếu mô tả", "Trường hợp biên" → "Thiếu ngoại lệ") theo
+// đúng chốt của người dùng — không có test cũ nào khoá chuỗi cũ.
 const KIND_LABEL: Record<DocRedlineChangeKind, string> = {
-  'ux-writing': 'UX writing',
+  'ux-writing': 'Sửa chữ',
   flow: 'Luồng',
-  gap: 'Thiếu sót',
-  'edge-case': 'Trường hợp biên',
+  gap: 'Thiếu mô tả',
+  'edge-case': 'Thiếu ngoại lệ',
   component: 'Component',
+  'flow-diagram': 'Sơ đồ',
 };
 const SEV_LABEL: Record<DocRedlineSeverity, string> = {
   blocker: 'Nghiêm trọng',
@@ -140,6 +161,43 @@ const SEV_CLASS: Record<DocRedlineSeverity, string> = {
 };
 const KIND_SET = new Set<string>(Object.keys(KIND_LABEL));
 const SEV_SET = new Set<string>(Object.keys(SEV_LABEL));
+
+/** wp4.yaml mục 3: các loại người dùng CHỌN được cho một thay đổi tự tạo —
+ *  cố ý bỏ `flow-diagram` (chỉ hệ thống sinh, xem docblock
+ *  `DocRedlineChange.origin`) khỏi danh sách chọn. Nhãn dùng lại `KIND_LABEL`
+ *  y hệt spec liệt kê ("Sửa chữ"/"Luồng"/"Thiếu mô tả"/"Thiếu ngoại lệ"
+ *  /"Component"), nên không cần một bảng nhãn thứ hai. */
+const USER_KIND_OPTIONS: DocRedlineChangeKind[] = ['ux-writing', 'flow', 'gap', 'edge-case', 'component'];
+
+/** Loại mặc định của một thay đổi tự tạo theo phép sửa: "Sửa chữ" cho thao
+ *  tác SỬA, "Thiếu mô tả" (kind cũ `gap`, giữ nguyên hành vi trước wp4.yaml)
+ *  cho THÊM và cho XOÁ — Xoá không hiện select "Loại" (mục 3 chỉ nói "cả
+ *  Sửa/Thêm") nên giữ đúng mặc định cũ, không đổi số liệu của phép xoá. */
+function defaultUserKind(operation: DraftAnnotation['operation']): DocRedlineChangeKind {
+  return operation === 'edited' ? 'ux-writing' : 'gap';
+}
+
+/** wp4.yaml mục 2: một heading của tài liệu — `line` là NGUYÊN VĂN dòng
+ *  markdown (dùng thẳng làm `anchor` để chèn ngay sau nó, cùng cơ chế
+ *  `insertAfterUniqueAnchor` mà "Thêm sau đoạn chọn" đã dùng); `text`/`level`
+ *  chỉ để hiện trong danh sách chọn. */
+interface DocHeading {
+  level: number;
+  text: string;
+  line: string;
+}
+/** Parse MỌI dòng bắt đầu `#` (1–6 cấp) từ `source` — không phân biệt heading
+ *  nằm trong khối mã hay không (đơn giản nhất chạy được; tài liệu review
+ *  hiếm khi có heading giả trong code fence, và spec không đòi phân biệt). */
+function parseDocHeadings(source: string): DocHeading[] {
+  const out: DocHeading[] = [];
+  for (const line of source.split(/\r?\n/)) {
+    const m = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+    if (!m) continue;
+    out.push({ level: m[1]!.length, text: m[2]!.trim(), line });
+  }
+  return out;
+}
 
 /** File do LLM sinh có thể lặp id (hai mục cùng "c1"). Id trùng làm key React
  *  đụng nhau và các map neo/scroll (`itemsByChangeRef`, `anchored`) đè lẫn —
@@ -196,7 +254,7 @@ export function parseDocChangesFile(raw: string): { changes: DocRedlineChange[];
         ? c.doc_refs.filter((ref): ref is string => typeof ref === 'string' && !!ref.trim())
         : undefined,
       reason: typeof c.reason === 'string' && c.reason.trim() ? c.reason : 'Người dùng tự chỉnh tài liệu.',
-      origin: c.origin === 'user' ? 'user' : 'agent',
+      origin: c.origin === 'user' ? 'user' : c.origin === 'system' ? 'system' : 'agent',
       operation: c.operation === 'add' || c.operation === 'edited' || c.operation === 'delete'
         ? c.operation
         : before && quote ? 'edited' : quote ? 'add' : 'delete',
@@ -292,6 +350,42 @@ function uniqueOccurrenceIndex(source: string, value: string): number | null {
   return first;
 }
 
+/** Vá N1 (review attempt2): kiểm duy nhất của một dòng heading theo DÒNG,
+ *  không phải substring như `uniqueOccurrenceIndex` — một heading cấp cha
+ *  (`# Đăng ký`) LÀ substring của một heading cấp con cùng tiền tố
+ *  (`## Đăng ký thành công`, ký tự `#` thứ hai + phần chữ trùng nhau), nên
+ *  `source.indexOf("# Đăng ký")` tìm thấy nó ở CẢ HAI dòng và báo trùng giả.
+ *  So khớp cả dòng (bằng đúng nội dung `headingLine`, không chứa ký tự xuống
+ *  dòng) mới coi là một mục. Trả offset NGAY SAU nội dung dòng heading khớp
+ *  (trước dấu xuống dòng theo sau nó) — cùng điểm chèn như
+ *  `insertAfterUniqueAnchor` (`first + anchor.length`) để hai đường chèn cho
+ *  cùng một kiểu kết quả.
+ *
+ *  Dùng `split(/(\r\n|\r|\n)/)` (giữ lại dấu xuống dòng ở các phần tử lẻ) để
+ *  cộng dồn đúng độ dài từng dấu xuống dòng gốc (`\n` 1 ký tự, `\r\n` 2 ký
+ *  tự) — không thể giả định đồng nhất kiểu `\r?\n` như khi chỉ ĐẾM dòng. */
+function uniqueHeadingLineOffset(source: string, headingLine: string): number | null {
+  const parts = source.split(/(\r\n|\r|\n)/);
+  const matchedContentIndexes: number[] = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    if (parts[i] === headingLine) matchedContentIndexes.push(i);
+  }
+  if (matchedContentIndexes.length !== 1) return null;
+  let offset = 0;
+  for (let i = 0; i < matchedContentIndexes[0]!; i += 1) offset += parts[i]!.length;
+  return offset + headingLine.length;
+}
+
+/** Chèn `insertion` ngay sau dòng heading duy nhất khớp `headingLine` (xem
+ *  `uniqueHeadingLineOffset`) — dùng cho "Thêm sau mục…" (wp4.yaml mục 2)
+ *  thay vì `insertAfterUniqueAnchor` (substring), giữ nguyên hành vi cũ của
+ *  "Thêm sau đoạn chọn" (bôi đen) không đổi. */
+function insertAfterHeadingLine(source: string, headingLine: string, insertion: string): string | null {
+  const offset = uniqueHeadingLineOffset(source, headingLine);
+  if (offset == null) return null;
+  return `${source.slice(0, offset)}${insertion}${source.slice(offset)}`;
+}
+
 /** Pick a surviving, unique piece of text immediately before a deletion. It is
  * kept as the tombstone anchor so the deleted annotation remains visible. */
 export function deletionAnchor(source: string, selected: string): string | null {
@@ -329,17 +423,18 @@ function eventFor(
 }
 
 function sidecarJson(changes: DocRedlineChange[], events: DocReviewAnnotationEvent[]): string {
-  const envelope: DocReviewAnnotationFileV2 = {
-    schemaVersion: 2,
-    annotations: changes.map((change) => ({
-      ...change,
-      origin: change.origin ?? 'agent',
-      operation: change.operation ?? (change.before && change.quote ? 'edited' : change.quote ? 'add' : 'delete'),
-      initialBefore: change.initialBefore ?? change.before,
-      initialQuote: change.initialQuote ?? change.quote,
-    })),
-    events,
-  };
+  // `change.origin` có thể là `'system'` (sơ đồ do một bước tự động sinh,
+  // không phải LLM review) — `DocReviewAnnotationOrigin` trong
+  // packages/contracts (KHÔNG được sửa ở WP này) nay đã khai `'agent'|'user'
+  // |'system'` nên giá trị này gán thẳng được, không cần ép kiểu.
+  const annotations: DocReviewAnnotationFileV2['annotations'] = changes.map((change) => ({
+    ...change,
+    origin: change.origin ?? 'agent',
+    operation: change.operation ?? (change.before && change.quote ? 'edited' : change.quote ? 'add' : 'delete'),
+    initialBefore: change.initialBefore ?? change.before,
+    initialQuote: change.initialQuote ?? change.quote,
+  }));
+  const envelope: DocReviewAnnotationFileV2 = { schemaVersion: 2, annotations, events };
   return `${JSON.stringify(envelope, null, 2)}\n`;
 }
 
@@ -347,6 +442,155 @@ function changeOp(c: DocRedlineChange): 'add' | 'del' | 'edit' {
   if (c.before && c.quote) return 'edit';
   if (c.quote) return 'add';
   return 'del';
+}
+
+/** Một "Bảng thành phần" là change `kind: 'component'` KHÔNG có `before` (chỉ
+ *  thêm mới) mà `rule_id` bắt đầu bằng `comp/` — phân biệt với change
+ *  `component` "thường" (một chỗ sửa chữ nói về component, có `before`). */
+function isComponentTableChange(c: Pick<DocRedlineChange, 'kind' | 'before' | 'rule_id'>): boolean {
+  return c.kind === 'component' && !c.before && !!c.rule_id?.startsWith('comp/');
+}
+
+/** Cắt `text` còn tối đa `max` ký tự, thêm "…" khi có cắt — dùng cho tiêu đề
+ *  thẻ (60 ký tự) và từng vế của dòng diff rút gọn (~40 ký tự). */
+function truncateText(text: string, max: number): string {
+  const flat = text.trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/** Trích nội dung GIỮA cặp rào ```` ```mermaid ``` ```` của một change sơ đồ.
+ *  `before`/`quote` của change `flow-diagram` là cả khối "rào + caption"
+ *  (xem docblock đầu file WP3), nên phải cắt rào ra mới có mã mermaid thuần
+ *  để đưa cho `MermaidDiagram`. Trả `null` khi không tìm thấy rào — dữ liệu
+ *  không đúng khuôn thì không cố đoán, để chỗ gọi tự quyết định rơi về đâu. */
+function extractMermaidFenceBody(text: string | undefined): string | null {
+  if (!text) return null;
+  const m = /```mermaid\r?\n([\s\S]*?)```/.exec(text);
+  return m ? (m[1] ?? '').replace(/\s+$/, '') : null;
+}
+
+/** Một vế ngắn gọn cho dòng diff rút gọn của thẻ (dòng 2): với sơ đồ mermaid,
+ *  chữ mermaid thô (`flowchart TD`, `A --> B`…) không đọc được ở dạng cắt 40
+ *  ký tự, nên ưu tiên dòng caption ("Gốc"/"Đề xuất …") nếu `text` có rào
+ *  mermaid; còn lại thì cắt thẳng, gộp khoảng trắng/xuống dòng thành một dòng. */
+function diffPreviewSide(text: string | undefined, max = 40): string {
+  if (!text) return '';
+  const withoutFence = text.replace(/```mermaid\r?\n[\s\S]*?```/, '').trim();
+  const flat = (withoutFence || text).replace(/\s+/g, ' ').replace(/^\*+|\*+$/g, '').trim();
+  return truncateText(flat, max);
+}
+
+/** Vế caption RIÊNG cho thẻ sơ đồ (khác `diffPreviewSide` ở TRÊN, dùng cho mọi
+ *  thẻ khác): khi không trích được caption (không có gì SAU rào ```mermaid```,
+ *  xem docblock đầu file WP3) trả về `null` thay vì rơi về in nguyên mã mermaid
+ *  thô — chỗ gọi (FlowDiagramCardBody) tự thay bằng chuỗi cố định (mục 0b, vá
+ *  review WP3b: mã thô không đọc được ở dạng cắt 40 ký tự). */
+function diagramCaption(text: string | undefined, max = 40): string | null {
+  if (!text) return null;
+  const withoutFence = text.replace(/```mermaid\r?\n[\s\S]*?```/, '').trim();
+  if (!withoutFence) return null;
+  const flat = withoutFence.replace(/\s+/g, ' ').replace(/^\*+|\*+$/g, '').trim();
+  return flat ? truncateText(flat, max) : null;
+}
+
+/** Đúng 8 cột theo khuôn của bảng thành phần (xem docblock đầu file WP3):
+ *  `# | Thành phần | Component DS | Biến thể | Vai trò / dùng để | Mô tả
+ *  component | Điều hướng tới | Ghi chú`. Bỏ dòng heading và dòng gạch `---`,
+ *  chỉ giữ các hàng DỮ LIỆU.
+ *
+ *  Vá B1 (review attempt2): tách theo dấu `|` CHƯA escape (lookbehind loại
+ *  `\|`) rồi unescape `\|`→`|` trong từng ô — `buildComponentTableQuote` ghi
+ *  `\|` khi một ô chứa dấu `|` thật (kể cả bảng do daemon sinh, xem
+ *  `docs-review-enrich.ts`); tách thẳng theo `|` như trước sẽ xé một ô có
+ *  `\|` thành hai, làm lệch cột và vỡ bảng khi lưu lại lần hai. */
+function parseMarkdownTableDataRows(md: string): string[][] {
+  const lines = md
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('|'));
+  if (lines.length < 2) return [];
+  return lines.slice(2).map((line) =>
+    line
+      .split(/(?<!\\)\|/)
+      .slice(1, -1)
+      .map((cell) => cell.trim().replace(/\\\|/g, '|')),
+  );
+}
+
+/** Đếm N/M/K của một bảng thành phần từ nguyên văn `quote` (rào bảng nằm
+ *  trong đó — xem docblock đầu file WP3): N = tổng hàng dữ liệu, K = hàng có
+ *  cột "Component DS" đọc "— (DS không có)", M = N − K. */
+function componentTableCounts(quote: string | undefined): { total: number; mapped: number; noDs: number } {
+  const rows = parseMarkdownTableDataRows(quote ?? '');
+  const noDs = rows.filter((row) => (row[2] ?? '').includes('DS không có')).length;
+  return { total: rows.length, mapped: rows.length - noDs, noDs };
+}
+
+/** wp4.yaml mục 1: mọi PHẦN của một "Bảng thành phần" cần để sửa theo hàng rồi
+ *  dựng lại nguyên văn — tiêu đề đậm, header, dòng gạch ngăn, các hàng dữ liệu
+ *  (dùng lại `parseMarkdownTableDataRows`), và caption. `null` khi `quote`
+ *  không đủ header+separator để coi là một bảng hợp lệ (không có gì sửa theo
+ *  hàng được). */
+interface ComponentTableParts {
+  title: string;
+  header: string;
+  separator: string;
+  rows: string[][];
+  caption: string;
+}
+function parseComponentTableQuote(quote: string): ComponentTableParts | null {
+  const trimmedLines = quote.split(/\r?\n/).map((line) => line.trim());
+  const tableLines = trimmedLines.filter((line) => line.startsWith('|'));
+  if (tableLines.length < 2) return null;
+  const title = trimmedLines.find((line) => line.startsWith('**') && line.endsWith('**')) ?? '';
+  // Caption: dòng nghiêng đơn `*...*` — KHÔNG phải tiêu đề đậm `**...**`. Lấy
+  // dòng CUỐI khớp vì caption luôn đứng sau bảng (xem khuôn bảng ở docblock
+  // đầu file WP3).
+  const caption = [...trimmedLines].reverse().find((line) => line.startsWith('*') && !line.startsWith('**')) ?? '';
+  return {
+    title,
+    header: tableLines[0]!,
+    separator: tableLines[1]!,
+    rows: parseMarkdownTableDataRows(quote),
+    caption,
+  };
+}
+
+/** Dựng lại nguyên văn `quote` từ các phần đã parse ở trên + danh sách hàng
+ *  MỚI (đã sửa ô / gỡ hàng) — giữ nguyên tiêu đề đậm, header, dòng gạch ngăn,
+ *  caption; escape `|` trong từng ô để không phá cú pháp bảng markdown khi
+ *  người dùng gõ dấu `|` vào một ô. */
+function buildComponentTableQuote(parts: ComponentTableParts, rows: string[][]): string {
+  const escapeCell = (cell: string) => cell.replace(/\|/g, '\\|');
+  const rowLines = rows.map((row) => `| ${row.map(escapeCell).join(' | ')} |`);
+  const lines = [parts.title, '', parts.header, parts.separator, ...rowLines];
+  if (parts.caption) lines.push('', parts.caption);
+  return lines.join('\n');
+}
+
+/** N4 (non-blocking, review attempt2): tra chỉ số cột theo NHÃN header thay vì
+ *  hard-code 4/7 — form "Sửa bảng" chỉ sửa được hai cột "Vai trò / dùng để" và
+ *  "Ghi chú"; nếu bảng lệch thứ tự cột so với khuôn chuẩn thì vẫn tìm đúng cột
+ *  qua tên thay vì đọc nhầm cột khác. `fallback` (4/7) giữ nguyên hành vi cũ
+ *  khi header không khớp nhãn nào (dữ liệu không đúng khuôn). */
+function tableColumnIndex(header: string | null, label: string, fallback: number): number {
+  if (!header) return fallback;
+  const cells = header
+    .split(/(?<!\\)\|/)
+    .slice(1, -1)
+    .map((cell) => cell.trim().replace(/\\\|/g, '|'));
+  const idx = cells.indexOf(label);
+  return idx >= 0 ? idx : fallback;
+}
+
+/** Tiêu đề dòng 1 của thẻ (mặt thẻ, không phải Chi tiết): hai loại thẻ MỚI có
+ *  tiêu đề CỐ ĐỊNH tả đúng hành động ("Thay sơ đồ…", "Chèn bảng N…") thay vì
+ *  cắt `reason` — `reason` của chúng nói vì sao rà soát lại sơ đồ/bảng, không
+ *  tả chỗ sửa này LÀM GÌ, nên cắt nó vào tiêu đề sẽ khó hiểu hơn câu cố định. */
+function cardTitle(c: DocRedlineChange): string {
+  if (c.kind === 'flow-diagram') return 'Thay sơ đồ bằng bản đề xuất';
+  if (isComponentTableChange(c)) return `Chèn bảng ${componentTableCounts(c.quote).total} thành phần`;
+  return truncateText(c.reason, 60);
 }
 
 /** Nền vùng bôi đặt thẳng trong thuộc tính style thay vì chỉ dựa vào class:
@@ -497,6 +741,16 @@ function ruleChipMeta(ruleId: string): { label: string; summary: string } {
   }
   const anchor = /^criteria\/[^#]+#(.+)$/.exec(ruleId)?.[1];
   if (anchor) return { label: anchor, summary: 'Tiêu chí riêng của dự án — bấm để xem nội dung' };
+  // Sơ đồ mermaid được viết lại sau rà soát UX (WP1/WP2 ghi `rule_id` dạng
+  // này, không có dấu `#`) — cùng lý do như hai nhánh trên: chip hiện nhãn dễ
+  // hiểu, đường dẫn kỹ thuật đầy đủ chỉ còn trong popover.
+  if (/^flows\/[^/]+\/ux-review\.json$/.test(ruleId)) {
+    return { label: 'Đánh giá luồng', summary: 'Sơ đồ được cập nhật theo bản đề xuất sau rà soát UX' };
+  }
+  // Bảng thành phần đối chiếu Design System cho một màn hình.
+  if (/^comp\/[^/]+\.screen\.json$/.test(ruleId)) {
+    return { label: 'Màn hình → Component', summary: 'Bảng thành phần đối chiếu với Design System của màn hình' };
+  }
   // Mã lạ (dữ liệu cũ, hoặc một skill khác ghi ra): hiện nguyên văn còn hơn
   // gán cho nó một nhãn bịa ra không ứng với gì.
   return { label: ruleId, summary: 'Bấm để xem nội dung tiêu chí' };
@@ -564,7 +818,41 @@ function setClass(el: HTMLElement, className: string, on: boolean): void {
   el.classList.toggle(className, on);
 }
 
-export function DocRedlinePreview({ projectId, file }: { projectId: string; file: ProjectFile }) {
+/** Key localStorage nhớ trạng thái right panel giữa các phiên (mục 6 WP3). */
+const PANEL_STORAGE_KEY = 'od.docRedline.panel';
+function readStoredPanelOpen(fallback: boolean): boolean {
+  try {
+    const saved = window.localStorage.getItem(PANEL_STORAGE_KEY);
+    if (saved === 'open') return true;
+    if (saved === 'closed') return false;
+  } catch {
+    // localStorage có thể bị chặn (chế độ riêng tư, iframe sandbox) — rơi về
+    // mặc định thay vì vỡ màn hình.
+  }
+  return fallback;
+}
+function writeStoredPanelOpen(open: boolean): void {
+  try {
+    window.localStorage.setItem(PANEL_STORAGE_KEY, open ? 'open' : 'closed');
+  } catch {
+    // Cùng lý do như readStoredPanelOpen — ghi thất bại thì panel vẫn đổi
+    // trong phiên này, chỉ không nhớ được qua lần tải lại.
+  }
+}
+
+export function DocRedlinePreview({
+  projectId,
+  file,
+  // Spec (wp3.yaml): "Quick result mặc định ẩn, workspace mặc định hiện — nếu
+  // không xác định được nơi gọi thì mặc định hiện và ghi report." `FileViewer`
+  // (nơi DUY NHẤT dựng component này) không mang prop nào phân biệt được nó
+  // đang ở trong khung Quick result hay workspace — phân biệt được đòi dò
+  // ngược MỌI nơi gọi `<FileViewer>` trong app, ngoài phạm vi `touches` của WP
+  // này (chỉ được sửa bảng DocsSpecReviewIndex). Rơi về nhánh "không xác định
+  // được": mặc định `true` (hiện) cho MỌI ngữ cảnh — xem `not_done` trong báo
+  // cáo WP3.
+  defaultPanelOpen = true,
+}: { projectId: string; file: ProjectFile; defaultPanelOpen?: boolean }) {
   const [editedText, setEditedText] = useState<string | null>(null);
   const [changesState, setChangesState] = useState<ChangesState>({ status: 'loading' });
   const [notes, setNotes] = useState<DocRedlineNote[]>(NO_NOTES);
@@ -576,6 +864,11 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
   const [errorById, setErrorById] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<DraftAnnotation | null>(null);
   const [draftError, setDraftError] = useState('');
+  // wp4.yaml mục 2: "Thêm sau mục…" — picker liệt kê heading của tài liệu,
+  // tách khỏi `draft`/`draftError` vì nó là một bước CHỌN anchor, không phải
+  // composer (composer mở SAU khi đã chọn xong, dùng lại y hệt `draft`).
+  const [headingPickerOpen, setHeadingPickerOpen] = useState(false);
+  const [headingPickerValue, setHeadingPickerValue] = useState('');
   // Snapshot markdown trước khi bỏ cho phép hoàn tác an toàn trong phiên này;
   // reload sẽ xoá snapshot, tránh áp lại một bản tài liệu đã cũ.
   const [undoableIds, setUndoableIds] = useState<Set<string>>(new Set());
@@ -606,6 +899,84 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
   // này tồn tại.
   const [paint, setPaint] = useState<PaintFlags>(ALL_PAINTED);
   const setPaintKind = (kind: PaintKind, on: boolean) => setPaint((prev) => ({ ...prev, [kind]: on }));
+  // Chip lọc RIÊNG cho "Sơ đồ"/"Bảng thành phần" (mục 7 WP3) — khác PaintFlags
+  // ngay trên: đây là lọc THEO KIND (ẩn/hiện MỤC trong rail), không phải lọc
+  // theo màu vùng bôi trong tài liệu (marks vẫn tô đúng theo add/edit như cũ,
+  // xem docRender) — cách đơn giản nhất không phải mở rộng PaintKind/pipeline
+  // bôi màu để phục vụ đúng hai chip mới.
+  const [kindFilter, setKindFilterState] = useState<{ diagram: boolean; compTable: boolean }>({
+    diagram: true,
+    compTable: true,
+  });
+  // Trạng thái "mở Chi tiết" của thẻ sơ đồ / bảng thành phần (kiểu 3-dòng mới
+  // — xem FlowDiagramCardBody/ComponentTableCardBody). Không tồn tại cho các
+  // loại thẻ CŨ (chúng giữ nguyên hiển thị đầy đủ như trước WP này, xem
+  // ChangeDetail), nên chỉ hai loại thẻ đó đọc map này.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  function toggleExpanded(id: string) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  // "Chấp nhận" của thẻ sơ đồ/bảng thành phần: đánh dấu TRONG PHIÊN NÀY, không
+  // ghi ra `*.changes.json` — `DocReviewAnnotationStatus` (packages/contracts,
+  // KHÔNG được sửa ở WP này) chỉ biết 'active'|'edited'|'dismissed', không có
+  // 'accepted'. "Không đổi text tài liệu" theo đúng yêu cầu; mất khi tải lại
+  // trang là đánh đổi đã biết, ghi trong report.
+  const [acceptedIds, setAcceptedIds] = useState<Set<string>>(new Set());
+  function acceptChange(id: string) {
+    setAcceptedIds((prev) => new Set(prev).add(id));
+  }
+
+  // ── Right panel ẩn/hiện (mục 6 WP3) ───────────────────────────────────────
+  // localStorage NHỚ giữa các phiên; `defaultPanelOpen` (prop) chỉ có tác dụng
+  // khi localStorage CHƯA có key này — người dùng đã tự chọn một lần thì nhớ
+  // lựa chọn đó, kể cả khi trang gọi lại với default khác.
+  const [panelOpen, setPanelOpenState] = useState<boolean>(() => readStoredPanelOpen(defaultPanelOpen));
+  // `selectFromDoc` (đọc panelOpen để quyết định có tự mở panel không) được
+  // GỌI TỪ MỘT CLOSURE CŨ: effect uỷ quyền click trên cột tài liệu chỉ đăng ký
+  // MỘT lần (deps `[loading]`, xem effect đó) nên hàm `fn` nó giữ mãi bản
+  // `selectFromDoc` của đúng LƯỢT RENDER lúc đăng ký — đọc thẳng biến
+  // `panelOpen` ở đó sẽ luôn thấy giá trị CŨ dù panel đã đổi sau đó. Ref luôn
+  // đọc được giá trị MỚI NHẤT bất kể closure nào giữ nó, cùng lý do
+  // `itemsByChangeRef`/`marksByChangeRef` ở trên là ref chứ không phải state.
+  const panelOpenRef = useRef(panelOpen);
+  useEffect(() => {
+    panelOpenRef.current = panelOpen;
+  }, [panelOpen]);
+  function togglePanel() {
+    setPanelOpenState((prev) => {
+      const next = !prev;
+      writeStoredPanelOpen(next);
+      return next;
+    });
+  }
+  function openPanel() {
+    setPanelOpenState((prev) => {
+      if (prev) return prev;
+      writeStoredPanelOpen(true);
+      return true;
+    });
+  }
+  // Phím tắt `]` — CHỈ khi tiêu điểm không nằm trong ô nhập, để không nuốt mất
+  // dấu `]` người dùng gõ trong textarea lý do/nội dung sửa. Đăng ký MỘT lần
+  // (deps rỗng) và dùng cập nhật hàm (setPanelOpenState(prev => …)) để không
+  // phải đăng ký lại mỗi lần panelOpen đổi.
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== ']') return;
+      const active = document.activeElement as HTMLElement | null;
+      const tag = active?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || active?.isContentEditable) return;
+      togglePanel();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -650,6 +1021,9 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     () => (changesState.status === 'ok' ? changesState.events : []),
     [changesState],
   );
+  // wp4.yaml mục 2: danh sách heading cho "Thêm sau mục…" — theo `editedText`
+  // (bản ĐÃ SỬA, giống mọi anchor khác trong file này).
+  const headings = useMemo(() => parseDocHeadings(editedText ?? ''), [editedText]);
 
   // `<page>.notes.json` — nhận xét không sửa trực tiếp. Không có file thì bỏ
   // qua IM LẶNG (đúng khuôn 404 của ChangesState): một trang review từ trước
@@ -736,6 +1110,16 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     // lượt trước và một đoạn nằm sát chỗ đã bôi sẽ trượt.
     const requests = changes.flatMap((c) => {
       if (c.status === 'dismissed') return [];
+      // B2 (wp3b.yaml): sơ đồ mermaid đã được neo bằng HOST MARK riêng (xem
+      // effect chèn host bên dưới — khớp theo NGUYÊN VĂN mã mermaid, không
+      // theo đoạn chữ), nên KHÔNG đưa segment chữ của `quote` vào injectHighlights
+      // nữa. Dòng đầu của mọi flowchart thường giống hệt nhau ("flowchart
+      // TD") — injectHighlights luôn dò lại từ ĐẦU tài liệu cho mỗi request
+      // (không nhớ đã dùng tới đâu), nên hai sơ đồ cùng dòng đầu từng khiến
+      // mark chữ của sơ đồ thứ hai khớp NHẦM vào khối của sơ đồ thứ nhất.
+      // `isAnchored`/`selectFromList` phía dưới coi sơ đồ có host là neo được,
+      // không cần dựa vào `matched` của lượt bôi này nữa.
+      if (c.kind === 'flow-diagram') return [];
       const raw = (c.quote ?? '').trim();
       if (!raw) return [];
       const add = changeOp(c) === 'add';
@@ -844,6 +1228,142 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
   // lấy `loading` làm dependency: mảng dependency được đánh giá trong lúc
   // render, nên một `const` khai báo sau useEffect sẽ vướng vùng chết (TDZ).
   const loading = editedText === null || changesState.status === 'loading';
+  // Đếm cho dải trạng thái (mục 7 WP3) + chip lọc mới — chỉ đếm chỗ CÒN hiệu
+  // lực, cùng quy ước với opCounts ngay trên.
+  const diagramCount = useMemo(
+    () => changes.filter((c) => c.kind === 'flow-diagram' && c.status !== 'dismissed').length,
+    [changes],
+  );
+  const compTableCount = useMemo(
+    () => changes.filter((c) => isComponentTableChange(c) && c.status !== 'dismissed').length,
+    [changes],
+  );
+  // S · D · X của tab dọc khi panel ẩn (mục 6 WP3): S = change còn hiệu lực, D
+  // = đã bỏ (change + note gộp — cùng định nghĩa "đã bỏ" của dải trạng thái
+  // phía trên), X = nhận xét còn hiệu lực.
+  const activeChangeCount = changes.filter((c) => c.status !== 'dismissed').length;
+  const dismissedTotalCount =
+    changes.filter((c) => c.status === 'dismissed').length + notes.filter((n) => n.status === 'dismissed').length;
+  const activeNoteCount = notes.filter((n) => n.status !== 'dismissed').length;
+
+  // ── Sơ đồ mermaid trong cột tài liệu (mục 4 WP3) ──────────────────────────
+  // `renderMarkdownToSafeHtml` (dùng chung với FileViewer) đã dựng fence
+  // ```mermaid thành <pre><code class="language-mermaid">mã thô</code></pre>
+  // — KHÔNG có sơ đồ sống. Mượn đúng khuôn `mountMarkdownMermaidHosts` của
+  // FileViewer.tsx (không import được — vòng import, xem docblock đầu file):
+  // chèn một host trước block, gập mã nguồn vào <details>, rồi portal
+  // <MermaidDiagram> vào host ở một lượt render kế tiếp.
+  //
+  // Host của change `flow-diagram` KHỚP ĐƯỢC là một <mark data-change-id> chứ
+  // không phải <div> trơn: nhờ vậy toàn khối ăn theo MIỄN PHÍ mọi cơ chế mark
+  // đã có (chọn/nổi/cuộn/uỷ quyền click ở effect dưới) — không phải thêm một
+  // listener nào, không đổi injectHighlights.
+  const [diagramMounts, setDiagramMounts] = useState<
+    Array<{ host: HTMLElement; changeId: string | null; code: string }>
+  >([]);
+  // 'proposed' (mặc định) render `quote`; 'original' render `before` — CHỈ đổi
+  // những gì đang hiện, không ghi gì ra tài liệu (khác hẳn dismiss).
+  const [diagramView, setDiagramView] = useState<Record<string, 'proposed' | 'original'>>({});
+
+  // Khai báo TRƯỚC effect gom marksByChangeRef ngay dưới: cả hai cùng chạy
+  // theo `docHtml`, và effect chèn host này PHẢI chạy trước để marksByChangeRef
+  // gom được luôn <mark> vừa chèn trong CÙNG một lượt hiệu ứng (React chạy các
+  // effect của một lượt commit theo đúng thứ tự khai báo).
+  useEffect(() => {
+    const container = docColRef.current;
+    if (!container) {
+      setDiagramMounts([]);
+      return;
+    }
+    const mermaidHostClass = (styles.mermaidHost ?? '').trim();
+    const codes = Array.from(container.querySelectorAll<HTMLElement>('pre > code.language-mermaid'));
+    const mounts: Array<{ host: HTMLElement; changeId: string | null; code: string }> = [];
+    for (const codeEl of codes) {
+      const pre = codeEl.parentElement;
+      const parent = pre?.parentElement;
+      if (!pre || !parent) continue;
+      if (mermaidHostClass && pre.previousElementSibling?.classList.contains(mermaidHostClass)) continue;
+      const rawCode = codeEl.textContent ?? '';
+      if (!rawCode.trim()) continue;
+      const owner = changes.find(
+        (c) => c.kind === 'flow-diagram' && c.status !== 'dismissed'
+          && extractMermaidFenceBody(c.quote)?.trim() === rawCode.trim(),
+      );
+      const host = document.createElement('mark');
+      // B1 (wp3b.yaml): CHỈ host có owner mới được sơn/bấm được — một sơ đồ
+      // KHÔNG thuộc change nào (ví dụ ảnh minh hoạ có sẵn trong tài liệu, không
+      // qua rà soát) không phải là một vùng bôi, nên không được ăn theo class
+      // hl/hlOff, style nội tuyến (nền vàng + cursor pointer), hay
+      // data-change-id — nó chỉ là khung hiển thị trơn (mermaidHostClass) cho
+      // sơ đồ sống portal vào.
+      if (owner) {
+        const on = paint.edit;
+        host.className = `${mermaidHostClass} ${on ? styles.hl ?? '' : styles.hlOff ?? ''}`.trim();
+        host.setAttribute('style', on ? HL_INLINE_STYLE : HL_OFF_INLINE_STYLE);
+        host.dataset.changeId = owner.id;
+      } else {
+        host.className = mermaidHostClass;
+      }
+      parent.insertBefore(host, pre);
+      // Gập mã nguồn xuống dưới một <details>, cùng khuôn <mark>-trước-<pre>
+      // với mountMarkdownMermaidHosts của FileViewer.tsx — khác một chỗ: cột
+      // này không có nút copy-khối-code (MARKDOWN_CODE_BLOCK_ATTR) như
+      // FileViewer, nên mã nguồn gập lại chỉ đọc/chọn tay được, không có nút
+      // riêng. Không thêm nút đó ở đây — ngoài phạm vi `do` của WP3.
+      const details = document.createElement('details');
+      details.className = 'md-mermaid__source';
+      const summary = document.createElement('summary');
+      summary.textContent = 'Mermaid';
+      details.appendChild(summary);
+      parent.insertBefore(details, pre);
+      details.appendChild(pre);
+      mounts.push({ host, changeId: owner?.id ?? null, code: rawCode });
+    }
+    setDiagramMounts(mounts);
+    // N1 (wp3b.yaml): `loading` PHẢI có trong deps, không chỉ `docHtml`. Cột
+    // tài liệu (nên cả `docColRef.current`) chỉ THỰC SỰ có mặt trong DOM khi
+    // `!loading` (xem nhánh `{loading ? … : <div className={styles.wrap}>…}`
+    // ở JSX bên dưới) — nhưng `docHtml` có thể đã đổi giá trị TỪ TRƯỚC lúc đó
+    // (editedText resolve trước changes.json). Nếu giá trị CHUỖI của `docHtml`
+    // ở lượt đó tình cờ TRÙNG HỆT lượt effect chạy lần đầu (== so sánh theo
+    // GIÁ TRỊ chuỗi, không theo tham chiếu) — đúng trường hợp một tài liệu chỉ
+    // có change sơ đồ, từ B2 không còn đưa segment chữ vào injectHighlights
+    // nên changes.json về sau không đổi lấy một ký tự nào của docHtml — thì
+    // effect bị React coi là "deps không đổi" và KHÔNG chạy lại đúng lúc
+    // `docColRef.current` mới thực sự khác null, nên host chẳng bao giờ được
+    // chèn. Thêm `loading` buộc effect chạy lại đúng lượt nó chuyển
+    // true → false, bất kể `docHtml` có đổi ký tự nào hay không.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docHtml, loading]);
+
+  // (d, review WP3b): effect RIÊNG chỉ đồng bộ class + style nội tuyến của
+  // host ĐÃ CHÈN theo `paint.edit` — KHÔNG gộp vào effect chèn host phía
+  // trên. Effect trên theo dõi `[docHtml, loading]`; một tài liệu CHỈ có
+  // change sơ đồ giữ `docHtml` NGUYÊN VĂN qua mọi lượt bật/tắt paint (B2:
+  // sơ đồ không còn đóng góp mark chữ vào docHtml — xem N1 phía trên), nên
+  // nếu thêm `paint` vào deps của effect đó, nó chạy lại nhưng
+  // `pre.previousElementSibling` đã LÀ host cũ (docHtml không đổi ⇒ React
+  // không dựng lại DOM), guard "đã có host" của effect đó sẽ bỏ qua toàn bộ
+  // — xoá mất host khỏi `diagramMounts` (mất luôn sơ đồ đang hiện) thay vì
+  // chỉ đổi màu. Effect này chỉ SỬA host đã tồn tại trong `diagramMounts`,
+  // không tạo/xoá gì, nên an toàn để chạy lại theo `paint.edit`.
+  useEffect(() => {
+    const mermaidHostClass = (styles.mermaidHost ?? '').trim();
+    for (const m of diagramMounts) {
+      if (!m.changeId) continue; // sơ đồ mồ côi (B1) không được sơn
+      const on = paint.edit;
+      m.host.className = `${mermaidHostClass} ${on ? styles.hl ?? '' : styles.hlOff ?? ''}`.trim();
+      m.host.setAttribute('style', on ? HL_INLINE_STYLE : HL_OFF_INLINE_STYLE);
+    }
+  }, [diagramMounts, paint.edit]);
+
+  /** Mã mermaid ĐANG hiện cho một host: `before` khi người dùng bật "○ Gốc",
+   *  ngược lại (mặc định) là `quote` — đúng đoạn đã dựng sẵn trong `code`. */
+  function activeDiagramCode(m: { changeId: string | null; code: string }): string {
+    if (!m.changeId || diagramView[m.changeId] !== 'original') return m.code;
+    const owner = changes.find((c) => c.id === m.changeId);
+    return extractMermaidFenceBody(owner?.before) ?? m.code;
+  }
 
   // Sau khi cột tài liệu đã chạy xong pass bôi highlight, gom lại mark theo
   // change id — chạy lại mỗi khi HTML đổi vì đó là lúc DOM có mark mới. Bản đồ
@@ -880,6 +1400,14 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
       const target = ev.target as HTMLElement | null;
       const mark = target?.closest?.('mark[data-change-id]') as HTMLElement | null;
       if (!mark) return; // bấm vào chỗ trống trong cột — không phải vùng bôi
+      // N6 (wp3b.yaml): host mermaid (chính LÀ <mark> này) chứa MermaidDiagram
+      // portal thẳng vào, và các nút zoom/pan/reset của nó KHÔNG tự
+      // stopPropagation (không được sửa MermaidDiagram.tsx — ngoài phạm vi
+      // touches). Một cú bấm rơi trúng <button> bên trong mark không phải bấm
+      // CHỌN change — nút "Gốc"/"Đề xuất" của khối sơ đồ đã tự stopPropagation
+      // riêng nên không lọt tới đây; chỉ còn nút của MermaidDiagram mới rơi
+      // vào nhánh này.
+      if (target?.closest?.('button')) return;
       const id = mark.dataset.changeId;
       if (!id) return;
       selectFromDoc(id);
@@ -893,11 +1421,30 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
 
+  /** B2 (wp3b.yaml): host mermaid CỦA ĐÚNG change `id`, lọc bằng `dataset`
+   *  thay vì đi qua `marksByChangeRef` — bản đồ đó gom TẤT CẢ `<mark
+   *  data-change-id>` trong cột (kể cả một mark chữ nào đó lỡ khớp trùng nhãn,
+   *  ví dụ một `doc_refs` của change khác trỏ vào đúng đoạn chữ trong khối
+   *  mermaid), nên không đảm bảo phần tử ĐẦU TIÊN trả về luôn là host. Đọc
+   *  thẳng host qua đây thì chắc chắn cuộn tới đúng khối sơ đồ của change này,
+   *  không phải một khối khác lỡ chứa chữ trùng. */
+  function hostMarksFor(id: string): HTMLElement[] {
+    const container = docColRef.current;
+    if (!container) return [];
+    const hostClass = (styles.mermaidHost ?? '').trim();
+    return Array.from(container.querySelectorAll<HTMLElement>('mark[data-change-id]')).filter(
+      (el) => el.dataset.changeId === id && (!hostClass || el.classList.contains(hostClass)),
+    );
+  }
+
   /** Bấm một mục trong rail: cuộn tài liệu tới vùng bôi đầu tiên của change đó
    *  và nháy sáng mọi mark của nó. */
   function selectFromList(id: string) {
     setSelectedId(id);
-    const marks = marksByChangeRef.current.get(id);
+    // Sơ đồ mermaid: cuộn tới HOST, không đi qua marksByChangeRef (xem
+    // hostMarksFor ngay trên — đúng vế (2) của B2 trong wp3b.yaml).
+    const change = changes.find((c) => c.id === id);
+    const marks = change?.kind === 'flow-diagram' ? hostMarksFor(id) : marksByChangeRef.current.get(id);
     if (!marks || marks.length === 0) return; // không neo được — không có gì để cuộn tới
     // `behavior: 'auto'`, KHÔNG 'smooth'. Cuộn mượt kéo dài vài trăm ms, và
     // trong lúc đó tài liệu vẫn đang trôi dưới con trỏ. Người dùng bấm tiếp một
@@ -925,6 +1472,18 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
         id.slice(REF_ID_PREFIX.length).replace(/:\d+$/, '')
       : id;
     setSelectedId(ownerId);
+    if (!panelOpenRef.current) {
+      // Panel đang ẩn: mở ra rồi mới cuộn. Rail VẪN Ở TRONG DOM khi ẩn (chỉ
+      // `hidden`/`aria-hidden`, xem docblock panelOpen) nên mục đã có ref sẵn
+      // — chỉ cần đợi một khung hình để `hidden` được gỡ trước khi
+      // `scrollIntoView` có chỗ để cuộn tới (gọi ngay trong cùng lượt thì phần
+      // tử vẫn `display: none`, trình duyệt không cuộn được).
+      openPanel();
+      window.requestAnimationFrame(() => {
+        itemsByChangeRef.current.get(ownerId)?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+      });
+      return;
+    }
     const item = itemsByChangeRef.current.get(ownerId);
     // `block: 'nearest'` để rail chỉ trượt tối thiểu — mục đã ở trong tầm nhìn
     // thì không nhảy. `behavior: 'auto'` cùng lý do như trên.
@@ -991,8 +1550,14 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
   // (injectDeletedRuns), nên thẻ của nó là button nhảy tới được như mọi thẻ
   // khác; chỗ xoá KHÔNG có `anchor` (dữ liệu từ trước khi có field này) thì
   // không có gì để neo vào — đó là đúng chứ không phải lỗi.
-  async function saveAction(id: string, action: () => { text?: string; changes?: DocRedlineChange[]; events?: DocReviewAnnotationEvent[]; notes?: DocRedlineNote[]; changedMd: boolean }) {
-    if (busyId) return;
+  /** Trả `true` khi lưu thành công, `false` khi bị chặn (đang bận) hoặc lỗi —
+   *  chỗ gọi (`saveComponentTableEdit`, vá N2 review attempt2) cần biết kết
+   *  quả để quyết định có đóng form nháp hay không: đóng SAU khi lưu xong,
+   *  không đóng trước rồi mất nháp nếu lưu hỏng. Các chỗ gọi cũ (editChange,
+   *  dismissChange…) không đọc giá trị trả về — thêm giá trị này không đổi
+   *  hành vi của chúng. */
+  async function saveAction(id: string, action: () => { text?: string; changes?: DocRedlineChange[]; events?: DocReviewAnnotationEvent[]; notes?: DocRedlineNote[]; changedMd: boolean }): Promise<boolean> {
+    if (busyId) return false;
     setBusyId(id); setErrorById((prev) => ({ ...prev, [id]: '' }));
     const beforeChanges = changesState; const beforeNotes = notes; const beforeText = editedText;
     try {
@@ -1017,7 +1582,8 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
       if (result.notes) { setNotesRaw(JSON.stringify(result.notes)); setNotes(result.notes); }
       setEditingId(null);
       setDraft(null);
-    } catch (error) { setChangesState(beforeChanges); setNotes(beforeNotes); setEditedText(beforeText); setErrorById((prev) => ({ ...prev, [id]: error instanceof Error ? error.message : 'Lỗi ghi file' })); }
+      return true;
+    } catch (error) { setChangesState(beforeChanges); setNotes(beforeNotes); setEditedText(beforeText); setErrorById((prev) => ({ ...prev, [id]: error instanceof Error ? error.message : 'Lỗi ghi file' })); return false; }
     finally { setBusyId(null); }
   }
 
@@ -1036,6 +1602,23 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     const next = editDocText(editedText ?? '', c.quote ?? '', editText);
     if (next == null) throw new Error('Không tìm thấy vùng sửa trong tài liệu');
     await saveAction(c.id, () => updateChange(c, { quote: editText, status: 'edited' }, true, next, 'edit'));
+  }
+
+  /** wp4.yaml mục 1: "Sửa bảng" của một Bảng thành phần — cùng khuôn
+   *  `editChange` ngay trên (thay-một-lần bằng `replaceOneOccurrence`,
+   *  `updateChange(status 'edited')` + event 'edit', qua `saveAction` hiện
+   *  có), chỉ khác nguồn văn bản mới đến từ form theo hàng
+   *  (`ComponentTableCardBody`) thay vì ô `editText` chung.
+   *
+   *  Trả `true`/`false` (vá N2 review attempt2) — `ComponentTableCardBody`
+   *  chỉ đóng form khi lưu thành công, giữ nguyên nháp + hiện lỗi khi hỏng. */
+  async function saveComponentTableEdit(c: DocRedlineChange, newQuote: string): Promise<boolean> {
+    const next = replaceOneOccurrence(editedText ?? '', c.quote ?? '', newQuote);
+    if (next == null) {
+      setErrorById((prev) => ({ ...prev, [c.id]: 'Không tìm thấy vùng sửa trong tài liệu' }));
+      return false;
+    }
+    return saveAction(c.id, () => updateChange(c, { quote: newQuote, status: 'edited' }, true, next, 'edit'));
   }
 
   async function dismissChange(c: DocRedlineChange) {
@@ -1090,7 +1673,27 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
       return;
     }
     setDraftError('');
-    setDraft({ operation, selected, replacement: '', reason: '' });
+    setDraft({ operation, selected, replacement: '', reason: '', kind: defaultUserKind(operation) });
+  }
+
+  /** wp4.yaml mục 2: "Thêm sau mục…" — cùng composer với "Thêm sau đoạn
+   *  chọn" (`startUserAnnotation('add')`), chỉ khác nguồn `selected`: một dòng
+   *  heading do người dùng CHỌN từ danh sách thay vì bôi đen. Cùng thông báo
+   *  lỗi ("Đoạn đã chọn phải xuất hiện đúng một lần…") nhưng kiểm duy nhất
+   *  theo DÒNG (`uniqueHeadingLineOffset`, vá N1 review attempt2) — không
+   *  dùng `uniqueOccurrenceIndex` (substring): một heading cấp cha là
+   *  substring của heading cấp con cùng tiền tố (`# Đăng ký` trong `##
+   *  Đăng ký thành công`) nên sẽ báo trùng giả. `viaHeading: true` để
+   *  `createUserAnnotation` chèn đúng bằng `insertAfterHeadingLine`. */
+  function startHeadingAnnotation(heading: DocHeading) {
+    if (uniqueHeadingLineOffset(editedText ?? '', heading.line) == null) {
+      setDraftError('Đoạn đã chọn phải xuất hiện đúng một lần trong mã nguồn tài liệu.');
+      return;
+    }
+    setDraftError('');
+    setDraft({ operation: 'add', selected: heading.line, replacement: '', reason: '', kind: defaultUserKind('add'), viaHeading: true });
+    setHeadingPickerOpen(false);
+    setHeadingPickerValue('');
   }
 
   async function createUserAnnotation() {
@@ -1115,7 +1718,13 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     } else {
       quote = replacement;
       anchor = draft.selected;
-      nextText = insertAfterUniqueAnchor(editedText, draft.selected, `\n\n${replacement}`);
+      // Vá N1 (review attempt2): nguồn từ "Thêm sau mục…" chèn theo DÒNG
+      // heading (`insertAfterHeadingLine`), không theo substring
+      // (`insertAfterUniqueAnchor`) — nguồn từ bôi đen ("Thêm sau đoạn
+      // chọn") giữ nguyên hành vi cũ, không đổi.
+      nextText = draft.viaHeading
+        ? insertAfterHeadingLine(editedText, draft.selected, `\n\n${replacement}`)
+        : insertAfterUniqueAnchor(editedText, draft.selected, `\n\n${replacement}`);
     }
     if (nextText == null) {
       setDraftError('Tài liệu đã thay đổi. Hãy chọn lại đoạn cần thao tác.');
@@ -1124,7 +1733,10 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     const id = uid('user');
     const change: DocRedlineChange = {
       id,
-      kind: 'gap',
+      // wp4.yaml mục 3: `draft.kind` — mặc định theo phép sửa (xem
+      // `defaultUserKind`), người dùng đổi được qua select "Loại" (chỉ hiện
+      // cho Sửa/Thêm; Xoá giữ mặc định `gap` như trước).
+      kind: draft.kind,
       severity: 'minor',
       reason: draft.reason.trim() || 'Người dùng tự chỉnh tài liệu.',
       origin: 'user',
@@ -1142,7 +1754,12 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
     }));
   }
 
-  const isAnchored = (c: DocRedlineChange) => anchored.has(c.id);
+  // B2 (wp3b.yaml), vế (1): sơ đồ mermaid không còn đóng góp vào `anchored`
+  // (bỏ segment chữ khỏi injectHighlights — xem `requests` phía trên), nên
+  // phải tự xét riêng: có HOST khớp được với change này (diagramMounts) thì
+  // coi là neo được, dù `anchored.has(c.id)` giờ luôn false với loại này.
+  const isAnchored = (c: DocRedlineChange) =>
+    c.kind === 'flow-diagram' ? diagramMounts.some((m) => m.changeId === c.id) : anchored.has(c.id);
 
   // Số thứ tự map LỖI ↔ VÙNG BÔI: chỗ sửa đánh 1..N theo thứ tự rail, nhận xét
   // đánh N1..Nk (namespace riêng để không lẫn với chỗ sửa). Cùng một map dùng
@@ -1178,6 +1795,8 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                 <span>
                   {opCounts.edit} sửa · {opCounts.add} thêm · {opCounts.del} xoá · {notes.filter((n) => n.status !== 'dismissed').length} nhận xét · {changes.filter((c) => c.status === 'dismissed').length + notes.filter((n) => n.status === 'dismissed').length} đã bỏ ·{' '}
                   {markCount} vùng bôi
+                  {diagramCount > 0 ? ` · ${diagramCount} sơ đồ` : ''}
+                  {compTableCount > 0 ? ` · ${compTableCount} bảng` : ''}
                 </span>
                 <button
                   type="button"
@@ -1206,6 +1825,36 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                   onChange={setPaintKind}
                   counts={{ add: opCounts.add, edit: opCounts.edit, del: opCounts.del, note: notes.filter((n) => n.status !== 'dismissed').length }}
                 />
+                {/* Hai chip lọc MỚI của WP3 — chỉ hiện khi có ÍT NHẤT một
+                    change tương ứng, cùng khuôn .chip/.chipSwatch với bốn chip
+                    màu ở trên nhưng lọc THEO KIND (ẩn/hiện mục rail), không
+                    lọc màu vùng bôi (xem kindFilter). */}
+                {diagramCount > 0 || compTableCount > 0 ? (
+                  <div className={styles.filters} role="group" aria-label="Lọc theo loại">
+                    {diagramCount > 0 ? (
+                      <label className={`${styles.chip} ${kindFilter.diagram ? '' : styles.chipOff ?? ''}`}>
+                        <input
+                          type="checkbox"
+                          className={styles.chipInput}
+                          checked={kindFilter.diagram}
+                          onChange={(ev) => setKindFilterState((prev) => ({ ...prev, diagram: ev.target.checked }))}
+                        />
+                        Sơ đồ<span className={styles.chipCount}>{diagramCount}</span>
+                      </label>
+                    ) : null}
+                    {compTableCount > 0 ? (
+                      <label className={`${styles.chip} ${kindFilter.compTable ? '' : styles.chipOff ?? ''}`}>
+                        <input
+                          type="checkbox"
+                          className={styles.chipInput}
+                          checked={kindFilter.compTable}
+                          onChange={(ev) => setKindFilterState((prev) => ({ ...prev, compTable: ev.target.checked }))}
+                        />
+                        Bảng thành phần<span className={styles.chipCount}>{compTableCount}</span>
+                      </label>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className={styles.strip}>
@@ -1222,8 +1871,44 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
               <button type="button" onClick={() => startUserAnnotation('edited')}>Sửa đoạn chọn</button>
               <button type="button" onClick={() => startUserAnnotation('delete')}>Xoá đoạn chọn</button>
               <button type="button" onClick={() => startUserAnnotation('add')}>Thêm sau đoạn chọn</button>
+              {/* wp4.yaml mục 2: bắt đầu từ một heading thay vì bôi đen — cùng
+                  composer "Thêm sau đoạn chọn" (`startHeadingAnnotation` chỉ
+                  đổi nguồn `selected`). */}
+              <button
+                type="button"
+                disabled={headings.length === 0}
+                title={headings.length === 0 ? 'Tài liệu không có mục nào (dòng bắt đầu #)' : undefined}
+                onClick={() => setHeadingPickerOpen((open) => !open)}
+              >
+                Thêm sau mục…
+              </button>
               {draftError && !draft ? <span className={styles.toolbarError}>{draftError}</span> : null}
             </div>
+            {headingPickerOpen ? (
+              <div className={styles.headingPicker ?? ''} role="group" aria-label="Chọn mục để thêm sau">
+                <select
+                  aria-label="Chọn mục"
+                  value={headingPickerValue}
+                  onChange={(event) => setHeadingPickerValue(event.target.value)}
+                >
+                  <option value="">— Chọn mục —</option>
+                  {headings.map((h, i) => (
+                    <option key={i} value={String(i)}>{`${'#'.repeat(h.level)} ${h.text}`}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={headingPickerValue === ''}
+                  onClick={() => {
+                    const heading = headings[Number(headingPickerValue)];
+                    if (heading) startHeadingAnnotation(heading);
+                  }}
+                >
+                  Thêm
+                </button>
+                <button type="button" onClick={() => { setHeadingPickerOpen(false); setHeadingPickerValue(''); }}>Đóng</button>
+              </div>
+            ) : null}
             {draft ? (
               <div className={styles.annotationComposer} role="group" aria-label="Tạo thay đổi của người dùng">
                 <div className={styles.annotationComposerHead}>
@@ -1232,12 +1917,27 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                 </div>
                 <p className={styles.selectedQuote}>“{refLabel(draft.selected)}”</p>
                 {draft.operation !== 'delete' ? (
-                  <textarea
-                    aria-label="Nội dung mới"
-                    placeholder={draft.operation === 'add' ? 'Nội dung cần thêm' : 'Nội dung thay thế'}
-                    value={draft.replacement}
-                    onChange={(event) => setDraft((current) => current ? { ...current, replacement: event.target.value } : current)}
-                  />
+                  <>
+                    {/* wp4.yaml mục 3: chỉ Sửa/Thêm mới phân loại được — Xoá
+                        không có "nội dung mới" nào để gắn một loại cho nó. */}
+                    <select
+                      aria-label="Loại"
+                      value={draft.kind}
+                      onChange={(event) =>
+                        setDraft((current) => (current ? { ...current, kind: event.target.value as DocRedlineChangeKind } : current))
+                      }
+                    >
+                      {USER_KIND_OPTIONS.map((k) => (
+                        <option key={k} value={k}>{KIND_LABEL[k]}</option>
+                      ))}
+                    </select>
+                    <textarea
+                      aria-label="Nội dung mới"
+                      placeholder={draft.operation === 'add' ? 'Nội dung cần thêm' : 'Nội dung thay thế'}
+                      value={draft.replacement}
+                      onChange={(event) => setDraft((current) => current ? { ...current, replacement: event.target.value } : current)}
+                    />
+                  </>
                 ) : null}
                 <input
                   aria-label="Lý do thay đổi"
@@ -1254,18 +1954,77 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                 </div>
               </div>
             ) : null}
-            <div className={styles.grid}>
+            <div className={`${styles.grid} ${panelOpen ? '' : styles.gridFull ?? ''}`}>
               <div className={styles.docCol} ref={docColRef}>
+                <div className={styles.docToolbarWp3 ?? ''}>
+                  <button
+                    type="button"
+                    className={styles.panelToggleBtn ?? ''}
+                    aria-label="Ẩn/Hiện chú giải"
+                    aria-pressed={panelOpen}
+                    onClick={togglePanel}
+                  >
+                    {panelOpen ? 'Ẩn chú giải ]' : 'Hiện chú giải ]'}
+                  </button>
+                </div>
                 {/* Safe by contract: renderMarkdownToSafeHtml escapes raw HTML
                     and rejects unsafe link protocols. */}
                 <article className="markdown-rendered" dangerouslySetInnerHTML={{ __html: docHtml ?? '' }} />
+                {/* Sơ đồ mermaid sống, portal vào các host đã chèn trong
+                    docHtml (xem effect dựng diagramMounts ở trên). */}
+                {diagramMounts.map((m, i) =>
+                  createPortal(
+                    <>
+                      {m.changeId ? (
+                        <div className={styles.diagramToggle ?? ''} role="group" aria-label="Xem sơ đồ gốc hay đề xuất">
+                          <button
+                            type="button"
+                            className={diagramView[m.changeId] !== 'original' ? styles.diagramToggleOn ?? '' : undefined}
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              setDiagramView((prev) => ({ ...prev, [m.changeId as string]: 'proposed' }));
+                            }}
+                          >
+                            ◉ Đề xuất
+                          </button>
+                          <button
+                            type="button"
+                            className={diagramView[m.changeId] === 'original' ? styles.diagramToggleOn ?? '' : undefined}
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              setDiagramView((prev) => ({ ...prev, [m.changeId as string]: 'original' }));
+                            }}
+                          >
+                            ○ Gốc
+                          </button>
+                        </div>
+                      ) : null}
+                      <MermaidDiagram code={activeDiagramCode(m)} initialFit="width" />
+                    </>,
+                    m.host,
+                    `diagram-${i}`,
+                  ),
+                )}
               </div>
-              <div className={styles.rail}>
+              {/* Panel ẩn: rail giữ NGUYÊN trong DOM (mục vẫn ref được để cuộn
+                  khi mở lại — xem selectFromDoc) nhưng `hidden` + aria-hidden,
+                  cùng lúc `.gridFull` ở trên trả hết bề rộng cho tài liệu. */}
+              <div
+                className={`${styles.rail} ${panelOpen ? '' : styles.railHidden ?? ''}`}
+                hidden={!panelOpen}
+                aria-hidden={!panelOpen}
+              >
                 {changes.length === 0 && notes.length === 0 ? (
                   <p className={styles.empty}>Không có chỗ sửa nào.</p>
                 ) : (
                   <>
                     {changes.map((c, changeIdx) => {
+                    // Chip "Sơ đồ"/"Bảng thành phần" tắt: ẩn MỤC khỏi rail
+                    // nhưng KHÔNG bỏ khỏi mảng `changes` — giữ số thứ tự
+                    // (STT/idxById) ổn định khi bật lại, đúng như bốn chip màu
+                    // (add/edit/del/note) ẩn mark chứ không xoá mark.
+                    if (c.kind === 'flow-diagram' && !kindFilter.diagram) return null;
+                    if (isComponentTableChange(c) && !kindFilter.compTable) return null;
                     const setItemRef = (el: HTMLElement | null) => {
                       if (el) itemsByChangeRef.current.set(c.id, el);
                       else itemsByChangeRef.current.delete(c.id);
@@ -1283,6 +2042,11 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                           openRefModal(`${REF_ID_PREFIX}${c.id}:${i}`, (c.doc_refs ?? [])[i] ?? '')
                         }
                         busy={busyId === c.id} error={errorById[c.id]} showActions={isAnchored(c) || c.status === 'dismissed'} undoable={undoableIds.has(c.id)} editing={editingId === c.id} editText={editText} onEditText={setEditText} onEdit={() => { setEditingId(c.id); setEditText(c.quote ?? ''); }} onSaveEdit={() => { if (!editText.trim()) { setErrorById((p) => ({ ...p, [c.id]: 'Nội dung sửa không được để trống' })); return; } void editChange(c); }} onCancelEdit={() => setEditingId(null)} onDismiss={() => { if (c.status === 'dismissed') { void dismissChange(c); } else if (window.confirm('Bỏ thay đổi này khỏi tài liệu? Bạn có thể hoàn tác trong phiên hiện tại.')) void dismissChange(c); }}
+                        expanded={expandedIds.has(c.id)}
+                        onToggleExpand={() => toggleExpanded(c.id)}
+                        accepted={acceptedIds.has(c.id)}
+                        onAccept={() => acceptChange(c.id)}
+                        onSaveTable={(newQuote) => saveComponentTableEdit(c, newQuote)}
                       />
                     );
                     // `div role="button"` chứ không phải `<button>` thật: thẻ
@@ -1395,6 +2159,17 @@ export function DocRedlinePreview({ projectId, file }: { projectId: string; file
                 )}
               </div>
             </div>
+            {/* Tab dọc mỏng ở mép phải — chỉ hiện khi panel ẩn, bấm mở lại. */}
+            {!panelOpen ? (
+              <button
+                type="button"
+                className={styles.panelTab ?? ''}
+                aria-label="Hiện chú giải"
+                onClick={togglePanel}
+              >
+                {activeChangeCount} · {dismissedTotalCount} · {activeNoteCount}
+              </button>
+            ) : null}
           </div>
         )}
       </div>
@@ -1661,13 +2436,66 @@ function NoteDetail({ note: n, idx, ruleOpen, ruleBody, onToggleRule, isRefAncho
   );
 }
 
+/** Props chung của "Chi tiết ▾" — chỉ hai loại thẻ MỚI (sơ đồ, bảng thành
+ *  phần) có nút này (xem docblock trên `ChangeDetail`); mở/đóng theo id, "Chấp
+ *  nhận" đánh dấu TRONG PHIÊN (không ghi file — xem `acceptedIds` ở component
+ *  cha, lý do không có status 'accepted' trong contracts). */
+interface CompactCardProps {
+  expanded: boolean;
+  onToggleExpand: () => void;
+  accepted: boolean;
+  onAccept: () => void;
+}
+
 /** Một khối chi tiết của một change: nhóm, mức độ, rule_id, lý do, và phần
  *  chữ cũ/chữ mới tuỳ theo phép sửa. Đây là nơi trường `before` (chữ cũ) tiếp
- *  tục sống sau khi cột tài liệu gốc bị bỏ. */
-function ChangeDetail({ change: c, idx, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, showActions, undoable, editing, editText, onEditText, onEdit, onSaveEdit, onCancelEdit, onDismiss }: { change: DocRedlineChange; idx?: string; showActions: boolean; undoable?: boolean; editing: boolean; editText: string; onEditText: (value: string) => void; onEdit: () => void; onSaveEdit: () => void; onCancelEdit: () => void; onDismiss: () => void } & RefProps) {
+ *  tục sống sau khi cột tài liệu gốc bị bỏ.
+ *
+ *  Hai loại MỚI của WP3 (sơ đồ `flow-diagram`, bảng thành phần — change
+ *  `component` không `before` với `rule_id` bắt đầu `comp/`) render theo
+ *  khuôn thẻ-3-dòng riêng (`FlowDiagramCardBody`/`ComponentTableCardBody`).
+ *
+ *  wp3b.yaml mục D mở khuôn 3-dòng đó cho MỌI thẻ, kể cả các loại CŨ
+ *  (`ux-writing`/`flow`/`gap`/`edge-case`/`component` có `before`, và change
+ *  `origin: 'user'`) — nhánh dưới đây. `rule_id` VẪN hiện trên mặt thẻ (chip
+ *  RuleChip, giữ nguyên như trước) vì đó là nhãn thân thiện chứ không phải mã
+ *  thô; `reason` đầy đủ/RefRow/diff đầy đủ chuyển vào sau "Chi tiết ▾" — mặt
+ *  thẻ chỉ còn tiêu đề (reason cắt 60 ký tự) + một dòng diff rút gọn. Các
+ *  test cũ (doc-redline-preview/.ops/.refs/.rule-chip.test.tsx — nay đều nằm
+ *  trong `touches` của wp3b.yaml) đã được cập nhật để mở "Chi tiết" trước khi
+ *  assert phần đã gập; class DOM của phần diff đầy đủ (EditDiff/blockAdd/
+ *  blockDel/diffBefore/diffAfter) giữ NGUYÊN để những test đó không phải đổi
+ *  cách tìm phần tử, chỉ đổi thời điểm tìm. */
+function ChangeDetail(
+  props: {
+    change: DocRedlineChange;
+    idx?: string;
+    showActions: boolean;
+    undoable?: boolean;
+    editing: boolean;
+    editText: string;
+    onEditText: (value: string) => void;
+    onEdit: () => void;
+    onSaveEdit: () => void;
+    onCancelEdit: () => void;
+    onDismiss: () => void;
+    /** wp4.yaml mục 1 — chỉ `ComponentTableCardBody` đọc prop này; các nhánh
+     *  khác của `ChangeDetail` nhận nó qua spread nhưng bỏ qua, cùng khuôn với
+     *  `onEdit`/`onSaveEdit`… (chỉ nhánh mặc định dùng). Trả `Promise<boolean>`
+     *  (vá N2 review attempt2): `ComponentTableCardBody` chờ kết quả trước khi
+     *  quyết định đóng form. */
+    onSaveTable: (newQuote: string) => Promise<boolean>;
+  } & RefProps & CompactCardProps,
+) {
+  const { change: c } = props;
+  if (c.kind === 'flow-diagram') return <FlowDiagramCardBody {...props} />;
+  if (isComponentTableChange(c)) return <ComponentTableCardBody {...props} />;
+  const { idx, ruleOpen, ruleBody, onToggleRule, isRefAnchored, onJumpRef, busy, error, showActions, undoable, editing, editText, onEditText, onEdit, onSaveEdit, onCancelEdit, onDismiss, expanded, onToggleExpand } = props;
   const op = changeOp(c);
+  const beforePreview = diffPreviewSide(c.before);
+  const afterPreview = diffPreviewSide(c.quote);
   return (
-    <div className={`${styles.card} ${SEV_CLASS[c.severity]} ${c.status === 'dismissed' ? styles.dismissed : ''}`}>
+    <div className={`${styles.card} ${styles.cardCompact ?? ''} ${SEV_CLASS[c.severity]} ${c.status === 'dismissed' ? styles.dismissed : ''}`}>
       <div className={styles.cardHead}>
         {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
         <span className={styles.cardKind}>{KIND_LABEL[c.kind]}</span>
@@ -1677,24 +2505,343 @@ function ChangeDetail({ change: c, idx, ruleOpen, ruleBody, onToggleRule, isRefA
         </span>
         {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : c.status === 'edited' ? <span className={styles.badgeEdited}>Đã sửa tay</span> : null}
       </div>
-      {c.rule_id ? <RuleChip ruleId={c.rule_id} open={ruleOpen} body={ruleBody} onToggle={onToggleRule} /> : null}
-      <p className={styles.reason}>{c.reason}</p>
-      <RefRow refs={c.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
-      {op === 'edit' && c.before && c.quote ? (
-        <EditDiff before={c.before} after={c.quote} />
-      ) : op === 'add' && c.quote ? (
-        <p className={styles.diff}>
-          <span className={styles.blockAdd}>{c.quote}</span>
-          <span className={styles.badgeAdded}>Đã thêm</span>
-        </p>
-      ) : c.before ? (
-        <p className={styles.diff}>
-          <span className={styles.blockDel}>{c.before}</span>
-          <span className={styles.badgeDeleted}>Đã xoá</span>
-        </p>
+      {/* Dòng 1 (tiếp): tiêu đề = reason cắt 60 ký tự; title = reason đầy đủ để
+          rê chuột đọc được ngay cả khi chưa mở "Chi tiết". */}
+      <p className={styles.cardTitle ?? ''} title={c.reason}>{cardTitle(c)}</p>
+      {/* Dòng 2: diff rút gọn MỘT dòng — sửa "cũ → mới", thêm "+ mới", xoá
+          "− cũ" (mỗi vế ≤ 40 ký tự, xem diffPreviewSide).
+          `diffPreviewBefore`/`diffPreviewAfter` — KHÔNG dùng lại
+          `diffBefore`/`diffAfter`: đó là hai class của layout-hai-khối-cũ bên
+          trong "Chi tiết" (EditDiff rơi về khi cặp quá lớn), và test cũ
+          (doc-redline-preview.ops.test.tsx) dùng chính sự CÓ MẶT của chúng để
+          khẳng định "đã/chưa rơi về layout cũ". Dòng rút gọn này LUÔN hiện
+          (không phụ thuộc cặp lớn hay nhỏ), nên phải là class khác để không
+          làm sai lệch phép đo đó. */}
+      <p className={styles.diffCompact ?? styles.diff}>
+        {op === 'edit' ? (
+          <>
+            <span className={styles.diffPreviewBefore ?? ''}>{beforePreview}</span>
+            <span aria-hidden="true"> → </span>
+            <span className={styles.diffPreviewAfter ?? ''}>{afterPreview}</span>
+          </>
+        ) : op === 'add' ? (
+          <span className={styles.diffPreviewAfter ?? ''}>+ {afterPreview}</span>
+        ) : (
+          <span className={styles.diffPreviewBefore ?? ''}>− {beforePreview}</span>
+        )}
+      </p>
+      {/* Dòng 3: sửa tay thay thế hẳn hàng hành động khi đang mở (giữ nguyên
+          hành vi/aria-label cũ) — RuleChip + "Chi tiết ▾" nằm ở hàng dưới,
+          KHÔNG phụ thuộc `showActions`: một chỗ sửa không neo được vẫn phải
+          xem được lý do đầy đủ của nó (xem `isAnchored`/"không neo được"). */}
+      {showActions && editing ? (
+        <div className={styles.editBox}>
+          <textarea value={editText} onChange={(ev) => onEditText(ev.target.value)} aria-label="Nội dung sửa" />
+          <div className={styles.actions}>
+            <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onSaveEdit(); }}>Lưu</button>
+            <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onCancelEdit(); }}>Hủy</button>
+          </div>
+        </div>
       ) : null}
-      {showActions && (editing ? <div className={styles.editBox}><textarea value={editText} onChange={(ev) => onEditText(ev.target.value)} aria-label="Nội dung sửa" /><div className={styles.actions}><button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onSaveEdit(); }}>Lưu</button><button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onCancelEdit(); }}>Hủy</button></div></div> : <div className={styles.actions}><button type="button" disabled={busy || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); onEdit(); }}>Sửa</button><button type="button" disabled={busy || (c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor)} title={c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor ? 'Không có anchor duy nhất để chèn lại' : undefined} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>{c.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Bỏ chỗ sửa'}</button>{c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}</div>)}
+      <div className={styles.actions}>
+        {showActions && !editing ? (
+          <>
+            <button type="button" disabled={busy || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); onEdit(); }}>Sửa</button>
+            <button type="button" disabled={busy || (c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor)} title={c.status !== 'dismissed' && c.before != null && c.quote == null && !c.anchor ? 'Không có anchor duy nhất để chèn lại' : undefined} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>{c.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Bỏ chỗ sửa'}</button>
+            {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}
+          </>
+        ) : null}
+        {c.rule_id ? <RuleChip ruleId={c.rule_id} open={ruleOpen} body={ruleBody} onToggle={onToggleRule} /> : null}
+        <button type="button" aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
+          {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
+        </button>
+      </div>
+      {expanded ? (
+        <div className={styles.cardDetail ?? ''}>
+          <p className={styles.reason}>{c.reason}</p>
+          <RefRow refs={c.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
+          {op === 'edit' && c.before && c.quote ? (
+            <EditDiff before={c.before} after={c.quote} />
+          ) : op === 'add' && c.quote ? (
+            <p className={styles.diff}>
+              <span className={styles.blockAdd}>{c.quote}</span>
+              <span className={styles.badgeAdded}>Đã thêm</span>
+            </p>
+          ) : c.before ? (
+            <p className={styles.diff}>
+              <span className={styles.blockDel}>{c.before}</span>
+              <span className={styles.badgeDeleted}>Đã xoá</span>
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       {showActions && (error ? <p className={styles.error}>{error}</p> : null)}
+    </div>
+  );
+}
+
+/** Thẻ 3-dòng của change `flow-diagram`: dòng 1 nhóm/mức/tiêu đề cố định,
+ *  dòng 2 diff rút gọn (caption Gốc → caption Đề xuất), dòng 3 hành động +
+ *  "Chi tiết ▾". `rule_id`/kind kỹ thuật/id/lý do đầy đủ/before-quote đầy đủ
+ *  chỉ hiện khi mở Chi tiết. */
+function FlowDiagramCardBody({
+  change: c,
+  idx,
+  isRefAnchored,
+  onJumpRef,
+  busy,
+  error,
+  showActions,
+  undoable,
+  onDismiss,
+  expanded,
+  onToggleExpand,
+  accepted,
+  onAccept,
+}: {
+  change: DocRedlineChange;
+  idx?: string;
+  showActions: boolean;
+  undoable?: boolean;
+  onDismiss: () => void;
+} & Pick<RefProps, 'isRefAnchored' | 'onJumpRef' | 'busy' | 'error'> & CompactCardProps) {
+  // (b, review WP3b): caption RIÊNG cho sơ đồ, KHÔNG dùng lại `diffPreviewSide`
+  // — text `null` (không trích được caption) rơi về chuỗi cố định thay vì in
+  // mã mermaid thô; `diffPreviewBefore`/`diffPreviewAfter` (không phải
+  // `diffBefore`/`diffAfter` — hai class đó thuộc layout-hai-khối-cũ của
+  // EditDiff/nhánh mặc định `ChangeDetail`, dùng lại ở đây là một chỗ trộn
+  // nghĩa class đã lọt qua review).
+  const beforeCaption = diagramCaption(c.before);
+  const afterCaption = diagramCaption(c.quote);
+  return (
+    <div className={`${styles.card} ${styles.cardCompact ?? ''} ${SEV_CLASS[c.severity]} ${c.status === 'dismissed' ? styles.dismissed : ''}`}>
+      <div className={styles.cardHead}>
+        {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
+        <span className={styles.cardKind}>{KIND_LABEL[c.kind]}</span>
+        <span className={styles.sevBadge}>{SEV_LABEL[c.severity]}</span>
+        {accepted ? <span className={styles.badgeAccepted ?? ''}>Đã chấp nhận</span> : null}
+        {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}
+      </div>
+      <p className={styles.cardTitle ?? ''}>{cardTitle(c)}</p>
+      <p className={styles.diffCompact ?? styles.diff}>
+        {afterCaption == null ? (
+          'Sơ đồ đề xuất thay sơ đồ gốc'
+        ) : (
+          <>
+            {beforeCaption ? <span className={styles.diffPreviewBefore ?? ''}>{beforeCaption}</span> : null}
+            {beforeCaption ? <span aria-hidden="true"> → </span> : null}
+            <span className={styles.diffPreviewAfter ?? ''}>{afterCaption}</span>
+          </>
+        )}
+      </p>
+      <div className={styles.actions}>
+        {showActions ? (
+          <>
+            <button type="button" disabled={busy || accepted || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); onAccept(); }}>
+              {accepted ? 'Đã chấp nhận' : 'Chấp nhận'}
+            </button>
+            <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>
+              {c.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Giữ sơ đồ gốc'}
+            </button>
+          </>
+        ) : null}
+        {/* (a, review WP3b): nút "Chi tiết ▾" ra NGOÀI gate `showActions` —
+            một sơ đồ không neo được (quote không khớp fence nào trong tài
+            liệu) trước đây MẤT LUÔN nút này, không có cách nào mở ra xem
+            reason/rule_id. Cùng khuôn với nhánh mặc định của `ChangeDetail`
+            (RuleChip + Chi tiết luôn hiện, chỉ Sửa/Bỏ mới theo showActions). */}
+        <button type="button" aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
+          {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
+        </button>
+      </div>
+      {expanded ? (
+        <div className={styles.cardDetail ?? ''}>
+          <p className={styles.detailRow ?? ''}>
+            <span className={styles.detailLabel ?? ''}>Đường dẫn</span> {c.rule_id ?? '—'}
+          </p>
+          <p className={styles.reason}>{c.reason}</p>
+          <RefRow refs={c.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
+          <p className={styles.detailRow ?? ''}>
+            <span className={styles.detailLabel ?? ''}>Gốc</span>
+          </p>
+          <pre className={styles.detailPre ?? ''}>{c.before ?? '—'}</pre>
+          <p className={styles.detailRow ?? ''}>
+            <span className={styles.detailLabel ?? ''}>Đề xuất</span>
+          </p>
+          <pre className={styles.detailPre ?? ''}>{c.quote ?? '—'}</pre>
+        </div>
+      ) : null}
+      {showActions && (error ? <p className={styles.error}>{error}</p> : null)}
+    </div>
+  );
+}
+
+/** Thẻ 3-dòng của một "Bảng thành phần" (change `component` không `before`,
+ *  `rule_id` bắt đầu `comp/`): dòng 2 LÀ chính đếm N/M/K, không phải diff chữ
+ *  — bảng không có "chữ cũ" để so. */
+function ComponentTableCardBody({
+  change: c,
+  idx,
+  isRefAnchored,
+  onJumpRef,
+  busy,
+  error,
+  showActions,
+  undoable,
+  onDismiss,
+  expanded,
+  onToggleExpand,
+  accepted,
+  onAccept,
+  onSaveTable,
+}: {
+  change: DocRedlineChange;
+  idx?: string;
+  showActions: boolean;
+  undoable?: boolean;
+  onDismiss: () => void;
+  /** wp4.yaml mục 1: "Sửa bảng" — chỗ gọi (DocRedlinePreview) đóng gói sẵn
+   *  change này, hàm chỉ cần đưa `quote` MỚI đã dựng lại. Trả `true`/`false`
+   *  (vá N2 review attempt2) để form biết có đóng được không. */
+  onSaveTable: (newQuote: string) => Promise<boolean>;
+} & Pick<RefProps, 'isRefAnchored' | 'onJumpRef' | 'busy' | 'error'> & CompactCardProps) {
+  const counts = componentTableCounts(c.quote);
+  // wp4.yaml mục 1: form theo hàng, tách khỏi "Chi tiết" — sửa được NGAY trên
+  // thẻ, không đòi bôi đen một ô ngắn (vấp luật "đoạn phải duy nhất", xem
+  // intent). Giữ state cục bộ trong thẻ này (không đẩy lên component cha):
+  // đây là một khung soạn thảo tạm, chỉ thẻ này cần biết nó đang mở hay đóng.
+  const [tableEditOpen, setTableEditOpen] = useState(false);
+  const [draftRows, setDraftRows] = useState<string[][] | null>(null);
+  // N4 (non-blocking, review attempt2): header của bảng ĐANG sửa, giữ lại
+  // cùng lúc mở form — tra chỉ số cột "Vai trò / dùng để"/"Ghi chú" theo NHÃN
+  // thay vì hard-code 4/7 (xem `tableColumnIndex`).
+  const [draftHeader, setDraftHeader] = useState<string | null>(null);
+  function openTableEdit() {
+    const parsed = parseComponentTableQuote(c.quote ?? '');
+    if (!parsed) return; // dữ liệu không đúng khuôn bảng — không có gì để sửa theo hàng
+    setDraftRows(parsed.rows.map((row) => [...row]));
+    setDraftHeader(parsed.header);
+    setTableEditOpen(true);
+  }
+  function closeTableEdit() {
+    setTableEditOpen(false);
+    setDraftRows(null);
+    setDraftHeader(null);
+  }
+  function setCell(rowIndex: number, colIndex: number, value: string) {
+    setDraftRows((prev) =>
+      prev ? prev.map((row, i) => (i === rowIndex ? row.map((cell, j) => (j === colIndex ? value : cell)) : row)) : prev,
+    );
+  }
+  function removeRow(rowIndex: number) {
+    setDraftRows((prev) => (prev ? prev.filter((_, i) => i !== rowIndex) : prev));
+  }
+  // N2 (phải vá, review attempt2): chỉ đóng form SAU KHI lưu thành công — lưu
+  // hỏng (POST lỗi) thì giữ nguyên form + nháp, người dùng không mất chỗ đã
+  // gõ. `onSaveTable` (qua `saveComponentTableEdit`/`saveAction`) trả
+  // `true`/`false` cho đúng mục đích này.
+  async function handleSaveTable() {
+    const parsed = parseComponentTableQuote(c.quote ?? '');
+    if (!parsed || !draftRows) return;
+    const newQuote = buildComponentTableQuote(parsed, draftRows);
+    const saved = await onSaveTable(newQuote);
+    if (saved) closeTableEdit();
+  }
+  return (
+    <div className={`${styles.card} ${styles.cardCompact ?? ''} ${SEV_CLASS[c.severity]} ${c.status === 'dismissed' ? styles.dismissed : ''}`}>
+      <div className={styles.cardHead}>
+        {idx ? <span className={styles.cardIdx}>{idx}</span> : null}
+        {/* Nhãn CỐ ĐỊNH "Bảng thành phần", không phải KIND_LABEL.component
+            ("Component") — đây là điểm phân biệt với change component "sửa
+            chữ nói về component" thường (có `before`). */}
+        <span className={styles.cardKind}>Bảng thành phần</span>
+        <span className={styles.sevBadge}>{SEV_LABEL[c.severity]}</span>
+        {accepted ? <span className={styles.badgeAccepted ?? ''}>Đã chấp nhận</span> : null}
+        {c.status === 'dismissed' ? <span className={styles.badgeDeleted}>Đã bỏ</span> : null}
+      </div>
+      <p className={styles.cardTitle ?? ''}>{cardTitle(c)}</p>
+      <p className={styles.diffCompact ?? styles.diff}>
+        {counts.total} thành phần · {counts.mapped} map DS · {counts.noDs} DS không có
+      </p>
+      <div className={styles.actions}>
+        {showActions ? (
+          <>
+            <button type="button" disabled={busy || accepted || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); onAccept(); }}>
+              {accepted ? 'Đã chấp nhận' : 'Chấp nhận'}
+            </button>
+            <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); onDismiss(); }}>
+              {c.status === 'dismissed' && undoable ? 'Hoàn tác' : 'Gỡ bảng'}
+            </button>
+            <button type="button" disabled={busy || c.status === 'dismissed'} onClick={(ev) => { ev.stopPropagation(); openTableEdit(); }}>
+              Sửa bảng
+            </button>
+          </>
+        ) : null}
+        {/* (a, review WP3b): nút "Chi tiết ▾" ra NGOÀI gate `showActions`,
+            cùng lý do như FlowDiagramCardBody ngay trên. */}
+        <button type="button" aria-expanded={expanded} onClick={(ev) => { ev.stopPropagation(); onToggleExpand(); }}>
+          {expanded ? 'Chi tiết ▴' : 'Chi tiết ▾'}
+        </button>
+      </div>
+      {tableEditOpen && draftRows ? (
+        <div className={styles.tableEditForm ?? ''} role="group" aria-label="Sửa bảng thành phần">
+          {(() => {
+            // N4 (non-blocking, review attempt2): tra cột theo nhãn header
+            // thật của bảng đang sửa, không hard-code 4/7 — fallback 4/7 khi
+            // header không khớp (dữ liệu không đúng khuôn).
+            const roleCol = tableColumnIndex(draftHeader, 'Vai trò / dùng để', 4);
+            const noteCol = tableColumnIndex(draftHeader, 'Ghi chú', 7);
+            return draftRows.map((row, i) => {
+              const rowLabel = row[1] || `hàng ${i + 1}`;
+              return (
+                <div key={i} className={styles.tableEditRow ?? ''} data-table-edit-row={i}>
+                  <span className={styles.tableEditCellLabel ?? ''}>{rowLabel}</span>
+                  <input
+                    aria-label={`Vai trò / dùng để — ${rowLabel}`}
+                    value={row[roleCol] ?? ''}
+                    onChange={(ev) => setCell(i, roleCol, ev.target.value)}
+                  />
+                  <input
+                    aria-label={`Ghi chú — ${rowLabel}`}
+                    value={row[noteCol] ?? ''}
+                    onChange={(ev) => setCell(i, noteCol, ev.target.value)}
+                  />
+                  <button type="button" onClick={(ev) => { ev.stopPropagation(); removeRow(i); }}>Gỡ hàng</button>
+                </div>
+              );
+            });
+          })()}
+          <div className={styles.actions}>
+            {/* N6 (non-blocking, review attempt2): gỡ hết hàng → chặn Lưu —
+                lưu một bảng rỗng không có ý nghĩa, và không có gì để dựng lại
+                `buildComponentTableQuote`. */}
+            <button type="button" disabled={busy || draftRows.length === 0} onClick={(ev) => { ev.stopPropagation(); void handleSaveTable(); }}>
+              {busy ? 'Đang lưu...' : 'Lưu'}
+            </button>
+            <button type="button" disabled={busy} onClick={(ev) => { ev.stopPropagation(); closeTableEdit(); }}>Hủy</button>
+          </div>
+          {/* N2 (phải vá, review attempt2): lỗi lưu hiện NGAY TRONG form, không
+              phụ thuộc `showActions` — mất `showActions` không được kéo theo
+              mất luôn thông báo lỗi khi nháp vẫn còn mở. */}
+          {error ? <p className={styles.error}>{error}</p> : null}
+        </div>
+      ) : null}
+      {expanded ? (
+        <div className={styles.cardDetail ?? ''}>
+          <p className={styles.detailRow ?? ''}>
+            <span className={styles.detailLabel ?? ''}>Đường dẫn</span> {c.rule_id ?? '—'}
+          </p>
+          <p className={styles.reason}>{c.reason}</p>
+          <RefRow refs={c.doc_refs ?? []} isRefAnchored={isRefAnchored} onJumpRef={onJumpRef} />
+          {/* Bảng đầy đủ, dựng lại bằng renderer markdown sẵn có của cột tài
+              liệu (an toàn theo hợp đồng của renderMarkdownToSafeHtml — xem
+              cột tài liệu ở trên). */}
+          <div className="markdown-rendered" dangerouslySetInnerHTML={{ __html: renderMarkdownToSafeHtml(c.quote ?? '') }} />
+        </div>
+      ) : null}
+      {/* Form đang mở đã tự hiện lỗi ngay bên trong nó (N2 ở trên) — tránh lặp
+          lại cùng một thông báo hai lần trên một thẻ. */}
+      {!tableEditOpen && showActions && (error ? <p className={styles.error}>{error}</p> : null)}
     </div>
   );
 }

@@ -74,14 +74,16 @@ beforeAll(() => {
   Element.prototype.scrollIntoView = function noop() {};
 });
 
-/** Chip rule của một thẻ, tìm theo `aria-expanded` — chỉ chip rule có thuộc
- *  tính đó, nên không đụng nút tham chiếu hay mục danh sách. */
+/** Chip rule của một thẻ, tìm theo class riêng của nút "?" (`ruleHelpBtn`) —
+ *  KHÔNG còn dùng `button[aria-expanded]` chung chung: wp3b.yaml mục D thêm
+ *  nút "Chi tiết ▾/▴" (cũng mang `aria-expanded`) vào mọi thẻ, nên selector cũ
+ *  đếm lẫn cả nút đó. `ruleHelpBtn` chỉ nút "?" của RuleChip mới có. */
 async function renderAndGetChips(): Promise<HTMLButtonElement[]> {
   const { container } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
   await waitFor(() => {
-    expect(container.querySelectorAll('button[aria-expanded]').length).toBe(2);
+    expect(container.querySelectorAll('[class*="ruleHelpBtn"]').length).toBe(2);
   });
-  return Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-expanded]'));
+  return Array.from(container.querySelectorAll<HTMLButtonElement>('[class*="ruleHelpBtn"]'));
 }
 
 describe('chip rule — nhãn dễ hiểu, tooltip, popover chi tiết', () => {

@@ -1,5 +1,10 @@
 export type DocReviewChangeOperation = 'add' | 'edited' | 'delete';
-export type DocReviewAnnotationOrigin = 'agent' | 'user';
+/** `'system'` = daemon-generated change (currently only the flow-diagram
+ *  replacement written by dr-review's enrich step, see docs-review.ts's
+ *  `DocChange.origin`) — kept distinct from `'agent'` (LLM review) so
+ *  aggregate metrics (see docs-review-feedback.ts's `DocsReviewEnrichMetrics`)
+ *  can count it without conflating the two sources. */
+export type DocReviewAnnotationOrigin = 'agent' | 'user' | 'system';
 export type DocReviewAnnotationStatus = 'active' | 'edited' | 'dismissed';
 
 export interface DocReviewAnnotation {
@@ -48,10 +53,24 @@ export interface DocReviewAgentCounts extends DocReviewOperationCounts {
   dismissed: number;
 }
 
+/** Counts for the two daemon-driven "enrich" surfaces (dr-review's WP2 —
+ *  see docs-review-enrich.ts): the flow-diagram replacement and the
+ *  "Cấu thành màn hình" composition table insertion. Separate from
+ *  {@link DocReviewAgentCounts} because those two surfaces have their own
+ *  accept/dismiss/edit semantics a reader cares about independently of the
+ *  generic agent-change tally (see docs-review-feedback.ts's
+ *  `aggregateDocsReviewMetrics`). Optional on both the artifact and each
+ *  page so older readers/writers that predate this field keep working. */
+export interface DocsReviewEnrichMetrics {
+  diagrams: { total: number; accepted: number; dismissed: number };
+  compositionTables: { total: number; accepted: number; dismissed: number; editedByUser: number };
+}
+
 export interface DocReviewFeedbackPageMetrics {
   page: string;
   agent: DocReviewAgentCounts;
   user: DocReviewOperationCounts;
+  enrich?: DocsReviewEnrichMetrics;
 }
 
 export interface DocsReviewFeedbackArtifact {
@@ -67,6 +86,7 @@ export interface DocsReviewFeedbackArtifact {
   agent: DocReviewAgentCounts;
   userChanges: DocReviewOperationCounts;
   pages: DocReviewFeedbackPageMetrics[];
+  enrich?: DocsReviewEnrichMetrics;
 }
 
 export interface ConfirmDocsReviewRequest {
@@ -106,7 +126,8 @@ export function parseDocReviewAnnotationFile(raw: string): DocReviewAnnotationFi
     const before = typeof value.before === 'string' && value.before ? value.before : undefined;
     const quote = typeof value.quote === 'string' && value.quote ? value.quote : undefined;
     if (!before && !quote) continue;
-    const origin: DocReviewAnnotationOrigin = value.origin === 'user' ? 'user' : 'agent';
+    const origin: DocReviewAnnotationOrigin =
+      value.origin === 'user' ? 'user' : value.origin === 'system' ? 'system' : 'agent';
     const operation = value.operation === 'add' || value.operation === 'edited' || value.operation === 'delete'
       ? value.operation : operationOf({ ...(before ? { before } : {}), ...(quote ? { quote } : {}) });
     annotations.push({

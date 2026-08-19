@@ -70,12 +70,17 @@ beforeAll(() => {
   };
 });
 
+// wp3b.yaml mục E: RefRow (nút tham chiếu) nay nằm trong vùng gập "Chi tiết"
+// của khuôn thẻ 3-dòng (mục D) — phải mở nó ra trước khi tìm nút tham chiếu.
 async function renderAndOpenRef() {
   const { container, baseElement } = render(<DocRedlinePreview projectId="p1" file={FILE} />);
   await waitFor(() => {
     expect(container.querySelector('mark[data-change-id="ref:c1:0"]')).not.toBeNull();
   });
   scrollTargets.length = 0;
+  const detailBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
+  expect(detailBtn, 'phải có nút "Chi tiết"').toBeTruthy();
+  fireEvent.click(detailBtn!);
   const refBtn = Array.from(container.querySelectorAll('button')).find((b) =>
     b.textContent?.includes('Kế toán và Hành chính'),
   );

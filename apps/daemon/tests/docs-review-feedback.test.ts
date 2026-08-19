@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
-import { aggregateDocsReviewMetrics, confirmDocsReview } from '../src/docs-review-feedback.js';
+import { aggregateDocsReviewMetrics, confirmDocsReview, readDocsReviewMetricsPages } from '../src/docs-review-feedback.js';
 import { parseDocReviewAnnotationFile } from '@open-design/contracts';
 import { closeDatabase, insertProject, openDatabase } from '../src/db.js';
 import { registerPipelineRoutes } from '../src/pipeline-routes.js';
@@ -71,6 +71,98 @@ describe('docs-review feedback metrics', () => {
     const artifact = JSON.parse(await readFile(path.join(root, result.localPath), 'utf8'));
     expect(artifact.confirmationId).toBe('confirm-1');
     expect(JSON.stringify(artifact)).not.toContain('new');
+  });
+
+  // Regression: App-pool projects (App docs pool, 08/2026) ingest into
+  // docs-feature/ instead of docs/, and dr-review clones that tree into
+  // review/docs-feature/ (docs-review.ts's cloneDocsForReview picks the root
+  // name from the ingested pages). listChangeFiles only walked review/docs,
+  // so an App-pool run had zero change files and confirmDocsReview always
+  // threw "Chưa có output dr-review để xác nhận" even though the redline
+  // pages existed on disk.
+  it('finds change files under review/docs-feature/ (App docs pool) with no review/docs/ present', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'od-doc-review-feedback-feature-'));
+    dirs.push(root);
+    const dir = path.join(root, 'review', 'docs-feature', 'A');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'B.changes.json'), JSON.stringify([{ id: 'a', quote: 'new', reason: 'r' }]));
+    const { pages } = await readDocsReviewMetricsPages(root);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.page).toBe('docs-feature/A/B.md');
+    // `page` must always use '/' regardless of OS (path.relative returns
+    // native separators — a Windows run would otherwise emit
+    // 'docs-feature\\A\\B.md').
+    expect(pages[0]?.page).not.toContain('\\');
+  });
+
+  // Compatibility: legacy Confluence-sourced runs clone into review/docs/;
+  // `page` stays relative to `review/` (not `review/docs/`) so both roots
+  // share the same addressing scheme.
+  it('finds change files under review/docs/ (legacy Confluence) and keeps `page` relative to review/', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'od-doc-review-feedback-legacy-'));
+    dirs.push(root);
+    const dir = path.join(root, 'review', 'docs', 'confluence');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'x.changes.json'), JSON.stringify([{ id: 'a', quote: 'new', reason: 'r' }]));
+    const { pages } = await readDocsReviewMetricsPages(root);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.page).toBe('docs/confluence/x.md');
+    expect(pages[0]?.page).not.toContain('\\');
+  });
+
+  // Enrich (WP5): diagrams (kind 'flow-diagram') and composition tables
+  // (kind 'component' + rule_id 'comp/…' + no `before`) are counted
+  // separately from the generic agent/user tallies above, per-page and
+  // summed into the artifact total. A page with none of those (pre-WP5
+  // fixture, no `kind` at all) must still get a zeroed — not undefined —
+  // enrich block.
+  it('counts enrich metrics (flow-diagram + composition tables) separately from agent/user tallies', () => {
+    const result = aggregateDocsReviewMetrics([
+      {
+        page: 'a.md',
+        annotations: {
+          schemaVersion: 2,
+          events: [],
+          annotations: [
+            {
+              id: 'sys-flow-diagram-f1', origin: 'system', operation: 'edited',
+              before: 'old mermaid', quote: 'new mermaid', kind: 'flow-diagram',
+              rule_id: 'flows/f1/ux-review.json',
+            },
+            {
+              id: 'comp-1', origin: 'agent', operation: 'add', quote: '| Component | ... |',
+              kind: 'component', rule_id: 'comp/screen-a.json',
+            },
+            {
+              id: 'comp-2', origin: 'agent', operation: 'add', quote: '| Component | ... |',
+              kind: 'component', rule_id: 'comp/screen-b.json', status: 'dismissed',
+            },
+          ],
+        },
+      },
+      {
+        page: 'b.md',
+        annotations: {
+          schemaVersion: 2,
+          events: [],
+          annotations: [
+            { id: 'legacy-1', origin: 'agent', operation: 'add', quote: 'old-style text' },
+          ],
+        },
+      },
+    ]);
+    expect(result.pages[0]?.enrich).toEqual({
+      diagrams: { total: 1, accepted: 1, dismissed: 0 },
+      compositionTables: { total: 2, accepted: 1, dismissed: 1, editedByUser: 0 },
+    });
+    expect(result.pages[1]?.enrich).toEqual({
+      diagrams: { total: 0, accepted: 0, dismissed: 0 },
+      compositionTables: { total: 0, accepted: 0, dismissed: 0, editedByUser: 0 },
+    });
+    expect(result.enrich).toEqual({
+      diagrams: { total: 1, accepted: 1, dismissed: 0 },
+      compositionTables: { total: 2, accepted: 1, dismissed: 1, editedByUser: 0 },
+    });
   });
 
   it('does not write a receipt before media-service accepts the artifact, so retry keeps the same path', async () => {

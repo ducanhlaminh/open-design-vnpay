@@ -85,6 +85,18 @@ sau khi tất cả chạy xong.
   danh sách component hợp lệ (cho nhóm component bên dưới). **Thiếu
   `criteria/` hoàn toàn KHÔNG phải lỗi** — dùng bộ mặc định ngay dưới đây thay
   vì dừng lại.
+- **Sơ đồ luồng đề xuất (chỉ khi kickoff nhắc):** trước khi bạn chạy, daemon đã
+  tự đối chiếu `flows/index.json` với trang của bạn và — nếu lát cắt của bạn
+  chứa sơ đồ ` ```mermaid ` của luồng đó — tự thay thân sơ đồ bằng
+  `flows/<id>/proposed.mmd` và đổi dòng caption ngay trong lát bạn sắp đọc.
+  Kickoff nêu đích danh khi việc này xảy ra với lát của bạn, hoặc khi sơ đồ
+  của CẢ TRANG đã đổi dù lát của bạn không chứa sơ đồ — đọc
+  `flows/<id>/ux-review.json` (`summary` + `findings`) để biết đổi gì. Xem
+  Bước 1 nhóm flow và Bước 2.
+- **Nháp bảng "Cấu thành màn hình" (chỉ khi kickoff nhắc):**
+  `review/_composition/<KEY>.md` — daemon dựng sẵn từ
+  `comp/<KEY>.screen.json` cho một màn hình cụ thể nằm trong lát của bạn.
+  Kickoff nêu đích danh `<KEY>` và vị trí cần chèn. Xem Bước 2 và Bước 3.
 
 ### Bộ tiêu chí mặc định (khi không có `criteria/`)
 
@@ -149,7 +161,13 @@ theo đúng 5 nhóm:
 1. **ux-writing** — mơ hồ ai làm gì, thuật ngữ không nhất quán, viết tắt tối
    nghĩa, nhãn nút/thông báo không nói rõ hành động hoặc hậu quả. KHÔNG soi
    chính tả (xem Hard rules).
-2. **flow** — luồng thao tác có logic, có điểm kết thúc.
+2. **flow** — luồng thao tác có logic, có điểm kết thúc. Kickoff báo sơ đồ
+   luồng của TRANG đã đổi (xem Bước 0) thì đối chiếu câu mô tả nhánh trong lát
+   của bạn với bản mới (`flows/<id>/proposed.mmd`, findings ở
+   `flows/<id>/ux-review.json`) — câu nào mô tả một nhánh đã đổi mà không còn
+   khớp thì sửa, `kind: "flow"`, `rule_id: "flows/<id>/ux-review.json"`. Đây
+   là nhóm DUY NHẤT được dùng rule_id dạng `flows/…` — xem Hard rules cho
+   sơ đồ chính nó (bạn không được tự sửa fence/caption, chỉ sửa CHỮ mô tả).
 3. **gap** — thiếu mô tả cho một tính năng/màn hình đã được nhắc tới.
 4. **edge-case** — thiếu state lỗi/rỗng/loading/giới hạn.
 5. **component** — **ĐỌC KẾT QUẢ CÓ SẴN, KHÔNG SUY LẠI TỪ ĐẦU.** Bước
@@ -206,6 +224,21 @@ vì rule nào.
   đang review. `docs/` là input read-only tuyệt đối của stage này.
 - **Giữ nguyên frontmatter và mọi ref ảnh** có trong lát cắt — chỉ sửa nội dung
   liên quan đến 5 nhóm ở bước 1.
+- **TUYỆT ĐỐI không đụng fence ` ```mermaid ` hay dòng caption `*flow-diagram
+  — …*`** dù nó nằm trong lát của bạn — daemon đã tự thay bằng sơ đồ đề xuất
+  TRƯỚC KHI bạn chạy (xem Bước 0). Sửa vào đó bị coi là "xoá không khai báo"
+  và đánh hỏng cả trang.
+
+**Chèn bảng "Cấu thành màn hình" (chỉ khi kickoff nhắc tên một `<KEY>`):**
+đọc nháp `review/_composition/<KEY>.md` daemon đã dựng sẵn, rồi Edit CHÈN
+NGUYÊN VĂN bảng đó vào lát của bạn, đúng vị trí kickoff nêu (ngay sau dòng
+kickoff trích, trước bảng field của màn). **Giữ nguyên số hàng và các cột
+`Component DS` / `Biến thể` / `Mô tả component` / `Điều hướng tới` / `Ghi
+chú`** — daemon dựng chúng từ `comp/<KEY>.screen.json`, không phải chỗ bạn
+suy diễn lại. Cột DUY NHẤT bạn được viết lại là **"Vai trò / dùng để"**: daemon
+chỉ điền placeholder (role + trích `why`), bạn đối chiếu với bảng field ngay
+bên dưới trong tài liệu rồi viết lại cho đúng, ngắn gọn. Không thêm hàng cho
+element không có trong nháp, không bớt hàng có sẵn.
 
 ## Bước 3 — ghi `review/docs/<...>.s<NN>.changes.json`
 
@@ -264,7 +297,21 @@ hai phía**:
 ]
 ```
 
-- `kind`: một trong `ux-writing` | `flow` | `gap` | `edge-case` | `component`.
+**Khai change khi chèn bảng "Cấu thành màn hình"** (Bước 2): đúng MỘT change
+mỗi `<KEY>` đã chèn — `kind: "component"`, `rule_id: "comp/<KEY>.screen.json"`,
+CHỈ có `quote` (nguyên văn CẢ BẢNG vừa chèn, kể cả dòng tiêu đề đậm
+`**Cấu thành màn hình…**` và caption `*Nguồn: …*` ở cuối — đây là bổ sung
+thuần, giống một đoạn mới), **KHÔNG có `before`**, `reason`: **"Bổ sung cấu
+thành màn hình từ kết quả Màn hình → Component."**
+
+**`kind: "flow-diagram"` là CỦA DAEMON, không phải của bạn.** Sơ đồ đề xuất ở
+Bước 0/2 do daemon tự thay và tự khai change — bạn **KHÔNG được tự tạo** một
+change kind này dù bạn thấy lát của mình chứa sơ đồ đã đổi; daemon đánh hỏng
+cả trang nếu phát hiện. Câu chữ mô tả nhánh luồng đổi theo sơ đồ mới thì khai
+`kind: "flow"` (xem Bước 1, nhóm flow), không phải `flow-diagram`.
+
+- `kind`: một trong `ux-writing` | `flow` | `gap` | `edge-case` | `component`
+  (`flow-diagram` tồn tại trong schema nhưng CHỈ daemon được dùng — xem trên).
 - `severity`: một trong `blocker` | `major` | `minor`.
 - `rule_id`: trace về tiêu chí. Có `criteria/` thì dùng anchor trong đó; áp bộ
   mặc định thì dùng đúng một trong bảy `default#…` liệt kê ở Bước 0. Bỏ trống
@@ -416,4 +463,13 @@ là mảng rỗng, không phải lỗi.
     khi dự án KHÔNG có `criteria/` (bộ mặc định nằm trong chính skill này, nó
     không phụ thuộc thư mục criteria), nên một `default#` bịa ra làm hỏng
     trang y như một anchor bịa.
+- **CẤM tự vẽ/sửa sơ đồ mermaid hay dòng caption của nó** (fence
+  ` ```mermaid ` và `*flow-diagram — …*` ngay dưới) — kể cả khi bạn thấy sơ đồ
+  sai hoặc thiếu nhánh. Đó là việc của bước Đánh giá luồng UX (`dr-flow`),
+  daemon đã tự thay bằng bản đề xuất trước khi bạn chạy (xem Bước 0). Bạn chỉ
+  được sửa CHỮ mô tả luồng ở nơi khác trong lát, không phải sơ đồ.
+- **CẤM thêm hoặc bớt hàng của bảng "Cấu thành màn hình"** khi chèn từ nháp
+  `review/_composition/<KEY>.md` (Bước 2) — daemon dựng đúng một hàng cho mỗi
+  element của `comp/<KEY>.screen.json`; bạn chỉ được viết lại đúng MỘT cột
+  ("Vai trò / dùng để"), giữ nguyên mọi cột và mọi hàng khác.
 - File-only: không đẩy bất cứ gì lên KGS.

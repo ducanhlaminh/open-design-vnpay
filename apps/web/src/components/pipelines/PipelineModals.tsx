@@ -3024,9 +3024,11 @@ const isScreenFile = (name: string) =>
 //   • ux-review / ux-research → the report JSON (ReviewPreview /
 //     UxResearchPreview); the sibling report.md stays hidden.
 //   • design-v3 screens → screen.json.
-// If a step produces NO previewable file (docs) we fall back to listing
-// everything so the modal is never empty.
-function isUiPreviewFile(name: string): boolean {
+//   • docs (dr-docs) / dr-review → the ingested/redline .md pages under
+//     docs/** or docs-feature/**.
+// If a step produces NO previewable file we fall back to listing everything
+// so the modal is never empty.
+export function isUiPreviewFile(name: string): boolean {
   const lower = name.toLowerCase();
   const base = lower.split('/').pop() ?? '';
   // dr-review's "the run produced no review" note (sibling of `review/`, see
@@ -3056,14 +3058,18 @@ function isUiPreviewFile(name: string): boolean {
   }
   // Prototype auto-demo recording (Playwright walkthrough video).
   if (/(^|\/)prototype-demo\/.*\.webm$/.test(lower)) return true;
-  // Ingested doc PAGES (docs/**/*.md) — the readable content. NOT the _index
-  // companion (a table of contents) and NOT the image files (those render
-  // INLINE inside each page now, so listing them as separate entries is noise).
-  if (/(^|\/)docs\/.+\.md$/.test(lower)) return base !== '_index.md';
+  // Ingested doc PAGES (docs/**/*.md AND docs-feature/**/*.md — App docs pool,
+  // 08/2026, ingests into docs-feature/ instead of docs/, and dr-review clones
+  // whichever root the pages came from into review/<root>/, same pairing as
+  // FileViewer.isDocsReviewRedlinePage) — the readable content. NOT the
+  // _index companion (a table of contents) and NOT the image files (those
+  // render INLINE inside each page now, so listing them as separate entries
+  // is noise).
+  if (/(^|\/)(docs|docs-feature)\/.+\.md$/.test(lower)) return base !== '_index.md';
   // Primary visual spec docs (UX Spec / Customer Journey).
   if (/-ux-spec\.json$/.test(base) || /-(customer-journey|journey|cj)\.json$/.test(base)) return true;
   // docs-review's digest (review/summary.md) — the clone pages themselves
-  // already match the docs/**/*.md rule above.
+  // already match the docs|docs-feature rule above.
   if (/(^|\/)review\/summary\.md$/.test(lower)) return true;
   // Visual report previews — UX Heuristic Review + UX Research + docs-to-prd's
   // PRD Mockup Review (DocsReviewPreview).

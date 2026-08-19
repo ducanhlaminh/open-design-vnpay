@@ -7,6 +7,7 @@ import type {
   DocReviewAnnotationFileV2,
   DocReviewFeedbackPageMetrics,
   DocReviewOperationCounts,
+  DocsReviewEnrichMetrics,
   DocsReviewFeedbackArtifact,
 } from '@open-design/contracts';
 import { parseDocReviewAnnotationFile } from '@open-design/contracts';
@@ -17,6 +18,10 @@ export interface DocsReviewMetricsPage { page: string; annotations: DocReviewAnn
 
 const emptyOps = (): DocReviewOperationCounts => ({ add: 0, edited: 0, delete: 0, total: 0 });
 const emptyAgent = (): DocReviewAgentCounts => ({ ...emptyOps(), accepted: 0, editedByUser: 0, dismissed: 0 });
+const emptyEnrich = (): DocsReviewEnrichMetrics => ({
+  diagrams: { total: 0, accepted: 0, dismissed: 0 },
+  compositionTables: { total: 0, accepted: 0, dismissed: 0, editedByUser: 0 },
+});
 
 function increment(counts: DocReviewOperationCounts, operation: 'add' | 'edited' | 'delete'): void {
   counts[operation] += 1;
@@ -41,18 +46,45 @@ function resolvedStatus(file: DocReviewAnnotationFileV2, annotation: DocReviewAn
   return fromEvent ?? annotation.status ?? 'active';
 }
 
+// Sơ đồ luồng (kind 'flow-diagram') do daemon TỰ dựng — origin luôn 'system'
+// trên đĩa, nhưng đếm KHÔNG lọc theo origin vì chỉ daemon mới tạo kind này
+// (xem docs-review-enrich.ts's replaceDiagramInSlice). Bảng "Cấu thành màn
+// hình" agent CHÈN MỚI — kind 'component', rule_id trỏ file kết quả nội bộ
+// `comp/…`, và `before` rỗng (chèn thuần, không sửa một bảng đã có).
+function isEnrichDiagram(annotation: DocReviewAnnotationFileV2['annotations'][number]): boolean {
+  return annotation.kind === 'flow-diagram';
+}
+function isEnrichCompositionTable(annotation: DocReviewAnnotationFileV2['annotations'][number]): boolean {
+  return annotation.kind === 'component'
+    && (annotation.rule_id ?? '').startsWith('comp/')
+    && !(annotation.before ?? '').trim();
+}
+
 export function aggregateDocsReviewMetrics(pages: readonly DocsReviewMetricsPage[]): {
   agent: DocReviewAgentCounts;
   userChanges: DocReviewOperationCounts;
   pages: DocReviewFeedbackPageMetrics[];
+  enrich: DocsReviewEnrichMetrics;
 } {
   const totalAgent = emptyAgent();
   const totalUser = emptyOps();
+  const totalEnrich = emptyEnrich();
   const pageMetrics = pages.map(({ page, annotations: file }) => {
     const agent = emptyAgent();
     const user = emptyOps();
+    const enrich = emptyEnrich();
     for (const annotation of file.annotations) {
       const status = resolvedStatus(file, annotation);
+      if (isEnrichDiagram(annotation)) {
+        enrich.diagrams.total += 1;
+        if (status === 'dismissed') enrich.diagrams.dismissed += 1;
+        else enrich.diagrams.accepted += 1;
+      } else if (isEnrichCompositionTable(annotation)) {
+        enrich.compositionTables.total += 1;
+        if (status === 'dismissed') enrich.compositionTables.dismissed += 1;
+        else if (status === 'edited') enrich.compositionTables.editedByUser += 1;
+        else enrich.compositionTables.accepted += 1;
+      }
       if (annotation.origin === 'user') {
         if (status !== 'dismissed') increment(user, annotation.operation);
         continue;
@@ -71,11 +103,25 @@ export function aggregateDocsReviewMetrics(pages: readonly DocsReviewMetricsPage
     totalAgent.accepted += agent.accepted;
     totalAgent.editedByUser += agent.editedByUser;
     totalAgent.dismissed += agent.dismissed;
-    return { page, agent, user };
+    totalEnrich.diagrams.total += enrich.diagrams.total;
+    totalEnrich.diagrams.accepted += enrich.diagrams.accepted;
+    totalEnrich.diagrams.dismissed += enrich.diagrams.dismissed;
+    totalEnrich.compositionTables.total += enrich.compositionTables.total;
+    totalEnrich.compositionTables.accepted += enrich.compositionTables.accepted;
+    totalEnrich.compositionTables.dismissed += enrich.compositionTables.dismissed;
+    totalEnrich.compositionTables.editedByUser += enrich.compositionTables.editedByUser;
+    return { page, agent, user, enrich };
   });
-  return { agent: totalAgent, userChanges: totalUser, pages: pageMetrics };
+  return { agent: totalAgent, userChanges: totalUser, pages: pageMetrics, enrich: totalEnrich };
 }
 
+// dr-review clones the ingested tree into `review/docs/` (Confluence, legacy)
+// OR `review/docs-feature/` (App docs pool, 08/2026 — see docs-review.ts's
+// cloneDocsForReview, which picks the root name from the ingested pages).
+// A workflow run only ever populates ONE of the two, but walk both roots so
+// this stays correct regardless of which one a given project used; a root
+// that does not exist is simply skipped (fs.readdir's `.catch(() => [])`
+// below already makes a missing directory a no-op).
 async function listChangeFiles(root: string): Promise<string[]> {
   const output: string[] = [];
   const walk = async (dir: string) => {
@@ -86,6 +132,7 @@ async function listChangeFiles(root: string): Promise<string[]> {
     }
   };
   await walk(path.join(root, 'review', 'docs'));
+  await walk(path.join(root, 'review', 'docs-feature'));
   return output.sort();
 }
 
@@ -100,7 +147,17 @@ export async function readDocsReviewMetricsPages(workflowRoot: string): Promise<
     hash.update(path.relative(workflowRoot, absolute)).update('\0').update(raw).update('\0');
     const parsed = parseDocReviewAnnotationFile(raw);
     if (!parsed) throw new Error(`Annotation file không hợp lệ: ${path.relative(workflowRoot, absolute)}`);
-    pages.push({ page: path.relative(path.join(workflowRoot, 'review', 'docs'), absolute).replace(/\.changes\.json$/i, '.md'), annotations: parsed });
+    // `page` is relative to `review/` (not `review/docs/`) so it stays
+    // addressable regardless of which root (`docs` or `docs-feature`)
+    // produced it — e.g. `docs/confluence/x.md` or `docs-feature/A/x.md`.
+    // `path.relative` returns OS-native separators; normalize to '/' so a
+    // Windows run doesn't emit 'docs\\a\\b.md' (the artifact/page id must
+    // stay stable across platforms — same reason `localPath` below is
+    // normalized).
+    const page = path.relative(path.join(workflowRoot, 'review'), absolute)
+      .split(path.sep).join('/')
+      .replace(/\.changes\.json$/i, '.md');
+    pages.push({ page, annotations: parsed });
   }
   if (pages.length === 0) throw new Error('Chưa có output dr-review để xác nhận');
   return { pages, digest: hash.digest('hex') };

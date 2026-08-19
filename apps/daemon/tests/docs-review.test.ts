@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, test } from 'vitest';
+import { afterEach, beforeEach, describe, test } from 'vitest';
 
 import {
   pageSlug,
@@ -26,6 +26,7 @@ import {
   detectEol,
   sectionSlicePath,
   pageOutlinePath,
+  systemChangesPath,
   renderPageOutline,
   type DocChange,
   type DocNote,
@@ -1414,4 +1415,225 @@ test('mergeChangeReports: trang đạt có warnings → mục "Cảnh báo (tran
   assert.ok(summaryMd.includes('| Trang A | Đã sửa |'));
   assert.ok(summaryMd.includes('không tìm thấy trong bản gốc — không bôi được'));
   assert.deepEqual((index as { pages: Array<{ warnings?: string[] }> }).pages[0]!.warnings?.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// WP2 nền: kind `flow-diagram` (change do daemon tự ghi, origin 'system') +
+// rule_id trỏ file kết quả nội bộ (`flows/…`, `comp/…`) thay vì `criteria/`.
+// Xem systemChangesPath, DocChange.origin, và nhánh (d) của validateRuleIds.
+// ---------------------------------------------------------------------------
+describe('WP2 nền — kind flow-diagram, origin, rule_id nội bộ', () => {
+  test('parseChangesFile: chấp nhận kind "flow-diagram" và giữ nguyên trường `origin` khi có', () => {
+    const raw = JSON.stringify([
+      {
+        id: 'c1',
+        kind: 'flow-diagram',
+        severity: 'minor',
+        quote: 'q1',
+        reason: 'sơ đồ vừa được daemon vẽ lại',
+        rule_id: 'flows/F-009.json',
+        origin: 'system',
+      },
+    ]);
+    const result = parseChangesFile(raw);
+    assert.ok('changes' in result, `expected changes, got ${JSON.stringify(result)}`);
+    if (!('changes' in result)) return;
+    assert.equal(result.changes.length, 1);
+    assert.equal(result.changes[0]!.kind, 'flow-diagram');
+    assert.equal(result.changes[0]!.origin, 'system');
+  });
+
+  test('parseChangesFile: `origin` vắng mặt vẫn hợp lệ (coi như agent, không tự gán)', () => {
+    const raw = JSON.stringify([
+      { id: 'c1', kind: 'ux-writing', severity: 'minor', quote: 'q1', reason: 'r1' },
+    ]);
+    const result = parseChangesFile(raw);
+    assert.ok('changes' in result, `expected changes, got ${JSON.stringify(result)}`);
+    if (!('changes' in result)) return;
+    assert.equal(result.changes[0]!.origin, undefined);
+  });
+
+  test('parseNotesFile: cũng chấp nhận kind "flow-diagram" (lọc kind dùng chung DOC_CHANGE_KINDS)', () => {
+    const raw = JSON.stringify([
+      { id: 'n1', kind: 'flow-diagram', severity: 'minor', anchor: 'A', finding: 'f', suggestion: 's' },
+    ]);
+    const result = parseNotesFile(raw);
+    assert.ok('notes' in result, `expected notes, got ${JSON.stringify(result)}`);
+    if (!('notes' in result)) return;
+    assert.equal(result.notes[0]!.kind, 'flow-diagram');
+  });
+
+  test('validateRuleIds: rule_id "flows/…" hợp lệ cho kind flow hoặc flow-diagram, sai kind thì lỗi', () => {
+    assert.deepEqual(
+      validateRuleIds([{ id: 'c1', kind: 'flow', rule_id: 'flows/F-009.json' }], new Set<string>()),
+      [],
+    );
+    assert.deepEqual(
+      validateRuleIds([{ id: 'c2', kind: 'flow-diagram', rule_id: 'flows/F-009.json' }], new Set<string>()),
+      [],
+    );
+    const errors = validateRuleIds(
+      [{ id: 'c3', kind: 'ux-writing', rule_id: 'flows/F-009.json' }],
+      new Set<string>(),
+    );
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]!, /c3/);
+    assert.match(errors[0]!, /flow/);
+  });
+
+  test('validateRuleIds: rule_id "comp/…" hợp lệ CHỈ cho kind component, sai kind thì lỗi', () => {
+    assert.deepEqual(
+      validateRuleIds([{ id: 'c1', kind: 'component', rule_id: 'comp/dang-nhap.screen.json' }], new Set<string>()),
+      [],
+    );
+    const errors = validateRuleIds(
+      [{ id: 'c2', kind: 'flow', rule_id: 'comp/dang-nhap.screen.json' }],
+      new Set<string>(),
+    );
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]!, /c2/);
+    assert.match(errors[0]!, /comp\//);
+  });
+
+  test('validateRuleIds: "flows/…"/"comp/…" KHÔNG bị đối chiếu với criteria/ dù anchors không rỗng', () => {
+    const anchors = new Set(['criteria/rules.md#R-OVERLAY']);
+    assert.deepEqual(
+      validateRuleIds(
+        [
+          { id: 'c1', kind: 'flow', rule_id: 'flows/F-009.json' },
+          { id: 'c2', kind: 'component', rule_id: 'comp/dang-nhap.screen.json' },
+        ],
+        anchors,
+      ),
+      [],
+    );
+  });
+
+  test('validateRuleIds: internalRefs truyền vào => rule_id phải nằm trong set (file có thật)', () => {
+    const internalRefs = new Set(['flows/F-009.json', 'comp/dang-nhap.screen.json']);
+    assert.deepEqual(
+      validateRuleIds(
+        [{ id: 'c1', kind: 'flow', rule_id: 'flows/F-009.json' }],
+        new Set<string>(),
+        internalRefs,
+      ),
+      [],
+    );
+    const errors = validateRuleIds(
+      [{ id: 'c2', kind: 'flow', rule_id: 'flows/KHONG-TON-TAI.json' }],
+      new Set<string>(),
+      internalRefs,
+    );
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]!, /c2/);
+    assert.match(errors[0]!, /KHONG-TON-TAI/);
+  });
+
+  test('validateRuleIds: internalRefs KHÔNG truyền => bỏ qua kiểm tra tồn tại', () => {
+    assert.deepEqual(
+      validateRuleIds([{ id: 'c1', kind: 'flow', rule_id: 'flows/khong-co-that.json' }], new Set<string>()),
+      [],
+    );
+  });
+
+  test('mergeChangeReports: đếm diagrams_updated (flow-diagram + origin system) và composition_tables (component, rule_id comp/…, không có before)', () => {
+    const results: DocPageResult[] = [
+      {
+        slug: 'a',
+        page: 'Trang A',
+        docPath: 'docs/a.md',
+        reviewPath: 'review/docs/a.md',
+        status: 'succeeded',
+        changes: [
+          {
+            id: 'd1',
+            kind: 'flow-diagram',
+            severity: 'minor',
+            quote: 'sơ đồ mới',
+            reason: 'daemon vẽ lại theo flows/F-009.json',
+            rule_id: 'flows/F-009.json',
+            origin: 'system',
+          },
+          // Change flow-diagram nhưng KHÔNG phải origin system — không được tính.
+          {
+            id: 'd2',
+            kind: 'flow-diagram',
+            severity: 'minor',
+            quote: 'sơ đồ khác',
+            reason: 'agent tự vẽ',
+            rule_id: 'flows/F-010.json',
+          },
+          {
+            id: 't1',
+            kind: 'component',
+            severity: 'minor',
+            quote: '| Component | Vai trò |\n| --- | --- |\n| Button | Xác nhận |',
+            reason: 'chèn bảng thành phần cho màn Đăng nhập',
+            rule_id: 'comp/dang-nhap.screen.json',
+          },
+          // Component có rule_id comp/… nhưng có `before` => coi là SỬA bảng cũ,
+          // không phải chèn mới — không được tính vào composition_tables.
+          {
+            id: 't2',
+            kind: 'component',
+            severity: 'minor',
+            before: '| Component cũ |',
+            quote: '| Component mới |',
+            reason: 'sửa bảng thành phần cũ',
+            rule_id: 'comp/dang-nhap.screen.json',
+          },
+        ],
+        notes: [],
+      },
+      {
+        slug: 'b',
+        page: 'Trang B',
+        docPath: 'docs/b.md',
+        reviewPath: 'review/docs/b.md',
+        status: 'succeeded',
+        changes: [],
+        notes: [],
+      },
+    ];
+    const { index, summaryMd } = mergeChangeReports(results);
+    const idx = index as any;
+    assert.equal(idx.summary.diagrams_updated, 1);
+    assert.equal(idx.summary.composition_tables, 1);
+    assert.equal(idx.pages.find((p: any) => p.slug === 'a').diagrams_updated, 1);
+    assert.equal(idx.pages.find((p: any) => p.slug === 'a').composition_tables, 1);
+    assert.equal(idx.pages.find((p: any) => p.slug === 'b').diagrams_updated, 0);
+    assert.equal(idx.pages.find((p: any) => p.slug === 'b').composition_tables, 0);
+    // Mọi trường sẵn có vẫn còn — GIỮ NGUYÊN, không phá test cũ.
+    assert.equal(idx.summary.changes, 4);
+    assert.match(summaryMd, /Sơ đồ đã thay: 1 · Bảng thành phần đã chèn: 1/);
+  });
+
+  test('removePageOutputs: xoá cả file `.sys.changes.json` của trang', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'docs-review-sys-'));
+    try {
+      const conf = join(cwd, 'docs', 'confluence');
+      await mkdir(conf, { recursive: true });
+      await writeFile(join(conf, 'a.md'), 'Trang A.\n');
+      await writeFile(join(conf, 'b.md'), 'Trang B.\n');
+      await cloneDocsForReview(cwd);
+      const dir = join(cwd, 'review', 'docs', 'confluence');
+      const reviewRelA = 'review/docs/confluence/a.md';
+      const reviewRelB = 'review/docs/confluence/b.md';
+      await writeFile(join(cwd, systemChangesPath(reviewRelA)), '[]\n');
+      await writeFile(join(cwd, systemChangesPath(reviewRelB)), '[]\n');
+      assert.equal(systemChangesPath(reviewRelA), 'review/docs/confluence/a.sys.changes.json');
+
+      await removePageOutputs(cwd, 'docs/confluence/a.md');
+
+      await assert.rejects(() => stat(join(cwd, systemChangesPath(reviewRelA))));
+      // Trang b không bị đụng.
+      await stat(join(cwd, systemChangesPath(reviewRelB)));
+      await stat(join(dir, 'b.md'));
+
+      // Gọi lại lần hai không lỗi (idempotent).
+      await removePageOutputs(cwd, 'docs/confluence/a.md');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

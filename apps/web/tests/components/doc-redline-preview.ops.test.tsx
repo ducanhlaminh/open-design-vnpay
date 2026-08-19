@@ -9,7 +9,7 @@
 // Mount thật dưới React, cùng lý do đã ghi trong doc-redline-preview.test.tsx:
 // các phép đo thuần không thấy được vòng đời React.
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 
 const EDITED = [
   '# Quản lý khách hàng',
@@ -119,6 +119,16 @@ function itemOf(container: HTMLElement, id: string): HTMLElement {
   return item;
 }
 
+// wp3b.yaml mục E: khuôn thẻ 3-dòng gập lý do đầy đủ + diff đầy đủ (EditDiff/
+// blockAdd/blockDel/diffBefore-diffAfter) sau nút "Chi tiết ▾" — các test dưới
+// đây đo ĐÚNG những phần đó nên phải mở "Chi tiết" trước khi assert. Class DOM
+// của phần diff không đổi, chỉ đổi THỜI ĐIỂM nó có mặt trong cây.
+function expandCard(card: HTMLElement): void {
+  const detailBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
+  if (!detailBtn) throw new Error('không tìm thấy nút "Chi tiết"');
+  fireEvent.click(detailBtn);
+}
+
 describe('DocRedlinePreview — ba màu theo phép sửa', () => {
   it('chỗ SỬA bôi vàng, chỗ THÊM bôi xanh — hai loại không được trông giống nhau', async () => {
     const container = await renderRedline();
@@ -182,6 +192,7 @@ describe('DocRedlinePreview — ba màu theo phép sửa', () => {
     const container = await renderRedline();
 
     const card = itemOf(container, 'e1');
+    expandCard(card);
     const del = card.querySelector('[class*="runDel"]');
     const add = card.querySelector('[class*="runAdd"]');
     expect(del?.textContent).toBe('OTP.');
@@ -198,12 +209,14 @@ describe('DocRedlinePreview — ba màu theo phép sửa', () => {
     const container = await renderRedline();
 
     const addCard = itemOf(container, 'a1');
+    expandCard(addCard);
     expect(addCard.querySelector('[class*="blockAdd"]')?.textContent).toBe(
       'Hệ thống gửi thông báo cho quản trị viên.',
     );
     expect(addCard.textContent).toContain('Đã thêm');
 
     const delCard = itemOf(container, 'd1');
+    expandCard(delCard);
     expect(delCard.querySelector('[class*="blockDel"]')?.textContent).toBe(DELETED_TEXT);
     expect(delCard.textContent).toContain('Đã xoá');
   });
@@ -212,6 +225,7 @@ describe('DocRedlinePreview — ba màu theo phép sửa', () => {
     const container = await renderRedline();
 
     const card = itemOf(container, 'e2');
+    expandCard(card);
     expect(card.querySelector('[class*="runDel"]')).toBeNull();
     expect(card.querySelector('[class*="diffBefore"]')?.textContent).toBe(BIG_BEFORE);
     expect(card.querySelector('[class*="diffAfter"]')?.textContent).toBe(BIG_AFTER);
@@ -220,7 +234,11 @@ describe('DocRedlinePreview — ba màu theo phép sửa', () => {
   it('parse khoan dung `doc_refs`: phần tử không phải chuỗi bị bỏ, không đánh hỏng thẻ', async () => {
     const container = await renderRedline();
     // doc_refs chưa được render trong task này; điều phải giữ là một mảng lẫn
-    // số không làm mất chỗ sửa nào.
+    // số không làm mất chỗ sửa nào. reason (50 ký tự, dưới ngưỡng cắt 60) đã
+    // đọc được ngay trên mặt thẻ, nhưng mở "Chi tiết" trước để nhất quán với
+    // các test khác của file này (wp3b.yaml mục E).
+    const card = itemOf(container, 'e1');
+    expandCard(card);
     expect(container.textContent).toContain('Nêu rõ định dạng OTP');
     expect(container.querySelectorAll('[data-change-item]').length).toBe(5);
   });

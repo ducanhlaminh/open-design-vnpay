@@ -162,17 +162,22 @@ export async function removePageOutputs(cwd: string, mdPath: string): Promise<vo
   const reviewRel = path.posix.join('review', mdPath);
   const changesRel = reviewRel.replace(/\.md$/i, '.changes.json');
   const notesRel = reviewRel.replace(/\.md$/i, '.notes.json');
+  const sysChangesRel = systemChangesPath(reviewRel);
   await fs.rm(path.join(cwd, reviewRel), { force: true }).catch(() => null);
   await fs.rm(path.join(cwd, changesRel), { force: true }).catch(() => null);
   await fs.rm(path.join(cwd, notesRel), { force: true }).catch(() => null);
+  await fs.rm(path.join(cwd, sysChangesRel), { force: true }).catch(() => null);
 
   const dirAbs = path.dirname(path.join(cwd, reviewRel));
   const stem = path.basename(reviewRel).replace(/\.md$/i, '');
   const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // Lát cắt `.s<NN>.slice.md` cũng là file tạm dưới `review/` nên phải bị dọn ở
   // đây, cùng lý do với changes/notes: một file sót lại đủ để
-  // `deriveStateFromLocalFiles` suy ra stage đã 'succeeded'.
-  const tempRe = new RegExp(`^${escaped}\\.s\\d+\\.((changes|notes)\\.json|slice\\.md)$`);
+  // `deriveStateFromLocalFiles` suy ra stage đã 'succeeded'. `.sys.changes.json`
+  // đã bị xoá trực tiếp ở trên (đường dẫn xác định, không cần liệt kê thư mục)
+  // nhưng vẫn được nhận trong regex này để chống sót nếu một biến thể nào đó
+  // sau này ghi thêm hậu tố `.s<NN>` trước `.sys.changes.json`.
+  const tempRe = new RegExp(`^${escaped}\\.(s\\d+\\.((changes|notes)\\.json|slice\\.md)|sys\\.changes\\.json)$`);
   const entries = await fs.readdir(dirAbs).catch(() => [] as string[]);
   for (const name of entries) {
     if (tempRe.test(name)) await fs.rm(path.join(dirAbs, name), { force: true }).catch(() => null);
@@ -213,6 +218,16 @@ export function sectionSlicePath(reviewRel: string, index: number): string {
  *  hết. Được ghi cùng lúc với các lát và xoá cùng lúc với chúng. */
 export function pageOutlinePath(reviewRel: string): string {
   return reviewRel.replace(/\.md$/i, '.outline.md');
+}
+
+/** File change do DAEMON tự ghi cho một trang (nguồn `system`, không phải
+ *  agent) — ví dụ WP2 đối chiếu lại `flows/…` rồi tự đánh dấu sơ đồ nào vừa
+ *  đổi, không cần một lượt agent riêng cho việc đó. Cùng convention với
+ *  {@link sectionOutputPath}/{@link pageOutlinePath}: `reviewRel` là đường dẫn
+ *  bản clone (`review/docs/…/a.md`), ví dụ `review/docs/confluence/a.md` →
+ *  `review/docs/confluence/a.sys.changes.json`. */
+export function systemChangesPath(reviewRel: string): string {
+  return reviewRel.replace(/\.md$/i, '.sys.changes.json');
 }
 
 /** Nội dung file mục lục (xem {@link pageOutlinePath}). Chỉ chứa cấu trúc —
@@ -297,7 +312,7 @@ export async function writeDocsReviewFailureNote(cwd: string, body: string): Pro
   await fs.writeFile(path.join(cwd, DOCS_REVIEW_FAILURE_NOTE), body, 'utf8');
 }
 
-export type DocChangeKind = 'ux-writing' | 'flow' | 'gap' | 'edge-case' | 'component';
+export type DocChangeKind = 'ux-writing' | 'flow' | 'gap' | 'edge-case' | 'component' | 'flow-diagram';
 export type DocChangeSeverity = 'blocker' | 'major' | 'minor';
 
 /** Một lát cắt của MỘT trang tài liệu → một lượt chạy agent.
@@ -454,6 +469,12 @@ export interface DocChange {
   kind: DocChangeKind;
   severity: DocChangeSeverity;
   rule_id?: string;
+  /** Ai tạo ra change này. `'system'` = daemon tự ghi (vd sơ đồ luồng
+   *  `flow-diagram` do WP2 dựng lại từ `flows/…`), `'agent'` = agent review
+   *  viết trong lượt chạy skill như mọi change khác. Tuỳ chọn — không có nghĩa
+   *  là agent (giá trị mặc định ngầm định), parser giữ nguyên nếu file có gửi
+   *  trường này, không tự gán khi thiếu. */
+  origin?: 'agent' | 'system';
   /** Nguyên văn đoạn trong bản GỐC bị thay hoặc bị xoá. */
   before?: string;
   /** Nguyên văn đoạn trong bản ĐÃ SỬA. */
@@ -483,7 +504,7 @@ export interface DocChange {
 // bổ sung thuần => chỉ `quote`; xoá thuần => chỉ `before` + BẮT BUỘC `anchor`.
 // Cả hai rỗng là lỗi.
 
-const DOC_CHANGE_KINDS: readonly DocChangeKind[] = ['ux-writing', 'flow', 'gap', 'edge-case', 'component'];
+const DOC_CHANGE_KINDS: readonly DocChangeKind[] = ['ux-writing', 'flow', 'gap', 'edge-case', 'component', 'flow-diagram'];
 const DOC_CHANGE_SEVERITIES: readonly DocChangeSeverity[] = ['blocker', 'major', 'minor'];
 
 /** Số tham chiếu tối đa cho `doc_refs`. Không phải con số tuỳ ý: mỗi ref là
@@ -944,10 +965,23 @@ export function collectCriteriaAnchors(files: Array<{ name: string; text: string
  *
  *  `anchors` rỗng nghĩa là dự án không có `criteria/` — mọi rule_id dạng
  *  `criteria/…` được bỏ qua hoàn toàn, không có gì để đối chiếu thì không được
- *  đánh hỏng trang. CHỈ nhóm (a)+(b) hưởng ngoại lệ đó, KHÔNG phải (c). */
+ *  đánh hỏng trang. CHỈ nhóm (a)+(b) hưởng ngoại lệ đó, KHÔNG phải (c).
+ *
+ *  (d) NGUỒN KẾT QUẢ NỘI BỘ — rule_id mở đầu bằng `flows/` hoặc `comp/` không
+ *      trỏ vào `criteria/` mà trỏ vào một file kết quả daemon tự dựng (sơ đồ
+ *      luồng, bảng thành phần — xem WP2): KHÔNG đối chiếu với `anchors` dù
+ *      dự án có `criteria/` hay không. Vẫn kiểm được hai thứ bằng máy:
+ *        - kind đúng chỗ — `flows/…` chỉ hợp lệ cho kind `flow` hoặc
+ *          `flow-diagram`; `comp/…` chỉ hợp lệ cho kind `component` (cùng tinh
+ *          thần với luật `criteria/components.md#…` ở (b) trên).
+ *        - tồn tại thật — nếu gọi kèm `internalRefs` (tập rule_id có file thật
+ *          trên đĩa) thì rule_id phải nằm trong tập đó; không truyền
+ *          `internalRefs` thì bỏ qua kiểm tra tồn tại (giữ hàm này pure, không
+ *          tự đọc đĩa). */
 export function validateRuleIds(
   entries: Array<{ id: string; kind: DocChangeKind; rule_id?: string }>,
   anchors: Set<string>,
+  internalRefs?: Set<string>,
 ): string[] {
   const errors: string[] = [];
 
@@ -963,12 +997,36 @@ export function validateRuleIds(
     }
   }
 
+  // (d) cũng trước early-return: nguồn kết quả nội bộ không đọc `criteria/`
+  // nên không phụ thuộc dự án có `criteria/` hay không, giống (c).
+  for (const entry of entries) {
+    const ruleId = (entry.rule_id ?? '').trim();
+    const isFlowsRef = ruleId.startsWith('flows/');
+    const isCompRef = ruleId.startsWith('comp/');
+    if (!isFlowsRef && !isCompRef) continue;
+
+    if (isFlowsRef && entry.kind !== 'flow' && entry.kind !== 'flow-diagram') {
+      errors.push(
+        `"${entry.id}" dùng rule_id "${ruleId}" cho kind "${entry.kind}": rule_id "flows/…" là nguồn kết quả nội bộ, chỉ được làm rule_id cho kind 'flow' hoặc 'flow-diagram'.`,
+      );
+    }
+    if (isCompRef && entry.kind !== 'component') {
+      errors.push(
+        `"${entry.id}" dùng rule_id "${ruleId}" cho kind "${entry.kind}": rule_id "comp/…" là nguồn kết quả nội bộ, chỉ được làm rule_id cho kind 'component'.`,
+      );
+    }
+    if (internalRefs && !internalRefs.has(ruleId)) {
+      errors.push(`"${entry.id}" có rule_id không tồn tại trong nguồn kết quả nội bộ: "${ruleId}"`);
+    }
+  }
+
   if (anchors.size === 0) return errors;
 
   for (const entry of entries) {
     const ruleId = (entry.rule_id ?? '').trim();
     if (!ruleId) continue; // dùng bộ tiêu chí mặc định của skill — hợp lệ
     if (ruleId.startsWith('default#')) continue; // đã kiểm ở (c) ngay trên
+    if (ruleId.startsWith('flows/') || ruleId.startsWith('comp/')) continue; // đã kiểm ở (d) ngay trên
     if (!anchors.has(ruleId)) {
       errors.push(`"${entry.id}" có rule_id không tồn tại trong criteria/: "${ruleId}"`);
       continue;
@@ -1000,6 +1058,21 @@ export interface DocPageResult {
  *  in Vietnamese — same shape/spirit as prd-review-fanout's mergePageReports
  *  but keyed by change kind/severity instead of image verdicts. */
 export function mergeChangeReports(results: DocPageResult[]): { index: unknown; summaryMd: string } {
+  // Sơ đồ luồng do DAEMON tự dựng lại (kind 'flow-diagram', origin 'system') —
+  // xem systemChangesPath. DocChange không có trường trạng thái riêng
+  // (dismissed/…), nên "còn hiệu lực" ở đây = có mặt trong `r.changes`; không
+  // có gì để phân biệt thì đếm tất cả, đúng quy ước "nếu không phân biệt thì
+  // đếm tất cả" của spec WP1.
+  const diagramsUpdatedFor = (r: DocPageResult): number =>
+    r.changes.filter((c) => c.kind === 'flow-diagram' && c.origin === 'system').length;
+  // Bảng thành phần agent CHÈN MỚI (rule_id trỏ file kết quả nội bộ comp/…,
+  // không phải sửa/xoá một bảng đã có — before rỗng/undefined mới tính là
+  // "chèn").
+  const compositionTablesFor = (r: DocPageResult): number =>
+    r.changes.filter(
+      (c) => c.kind === 'component' && (c.rule_id ?? '').startsWith('comp/') && !(c.before ?? '').trim(),
+    ).length;
+
   const pages = results.map((r) => ({
     slug: r.slug,
     page: r.page,
@@ -1007,6 +1080,8 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
     review_path: r.reviewPath,
     changes: r.changes.length,
     notes: r.notes.length,
+    diagrams_updated: diagramsUpdatedFor(r),
+    composition_tables: compositionTablesFor(r),
     status: r.status,
     ...(r.warnings && r.warnings.length > 0 ? { warnings: r.warnings } : {}),
   }));
@@ -1016,11 +1091,13 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
   const blockers = results.reduce((n, r) => n + r.changes.filter((c) => c.severity === 'blocker').length, 0);
   const majors = results.reduce((n, r) => n + r.changes.filter((c) => c.severity === 'major').length, 0);
   const minors = results.reduce((n, r) => n + r.changes.filter((c) => c.severity === 'minor').length, 0);
+  const diagrams_updated = results.reduce((n, r) => n + diagramsUpdatedFor(r), 0);
+  const composition_tables = results.reduce((n, r) => n + compositionTablesFor(r), 0);
 
   const index = {
     schema_version: '1.0',
     kind: 'docs-spec-review-index',
-    summary: { pages: results.length, changed_pages, changes, notes, blockers, majors, minors },
+    summary: { pages: results.length, changed_pages, changes, notes, diagrams_updated, composition_tables, blockers, majors, minors },
     pages,
   };
 
@@ -1030,6 +1107,7 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
     gap: 'Thiếu sót',
     'edge-case': 'Trường hợp biên',
     component: 'Component',
+    'flow-diagram': 'Sơ đồ luồng',
   };
   const sevLabel: Record<DocChangeSeverity, string> = {
     blocker: 'Nghiêm trọng',
@@ -1038,7 +1116,8 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
   };
 
   let summaryMd = `# Docs → Review tài liệu\n\n`;
-  summaryMd += `${results.length} trang · ${changed_pages} trang có chỗ sửa · ${changes} chỗ sửa · ${notes} nhận xét · ${blockers} nghiêm trọng · ${majors} nặng · ${minors} nhẹ\n\n`;
+  summaryMd += `${results.length} trang · ${changed_pages} trang có chỗ sửa · ${changes} chỗ sửa · ${notes} nhận xét · ${blockers} nghiêm trọng · ${majors} nặng · ${minors} nhẹ\n`;
+  summaryMd += `Sơ đồ đã thay: ${diagrams_updated} · Bảng thành phần đã chèn: ${composition_tables}\n\n`;
 
   const failed = results.filter((r) => r.status === 'failed');
   if (failed.length > 0) {

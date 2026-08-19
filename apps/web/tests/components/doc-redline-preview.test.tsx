@@ -222,16 +222,26 @@ describe('DocRedlinePreview', () => {
     }
   });
 
+  // wp3b.yaml mục E: khuôn thẻ 3-dòng cắt `reason` còn 60 ký tự trên mặt thẻ
+  // (REASON_C4 dài 61 ký tự — xem fixture) và chỉ có nút "Chi tiết" (không
+  // phải action Sửa/Bỏ) trên thẻ chết; mở "Chi tiết" trước khi assert lý do
+  // đầy đủ, giữ nguyên ý gốc "không bị nuốt im lặng".
   it('chỗ sửa không neo được vẫn hiện trong danh sách và không nhảy tới được', async () => {
     const { container, itemOf } = await renderAndWaitForMarks();
 
-    // Không bị nuốt im lặng: lý do của nó đọc được ngay trên màn hình.
-    expect(container.textContent).toContain(REASON_C4);
-
     const dead = itemOf('c4');
-    // Không phải control thật => không bấm được.
+    // Không phải control thật => không bấm được (nhảy tới vùng bôi).
     expect(dead.tagName.toLowerCase()).not.toBe('button');
-    expect(dead.querySelector('button')).toBeNull();
+    // Không có action Sửa/Bỏ nào cho một chỗ sửa không neo được — chỉ còn nút
+    // "Chi tiết" để xem lý do đầy đủ.
+    expect(Array.from(dead.querySelectorAll('button')).some((b) => b.textContent === 'Sửa')).toBe(false);
+
+    // Không bị nuốt im lặng: lý do đầy đủ đọc được sau khi mở "Chi tiết".
+    const detailBtn = Array.from(dead.querySelectorAll('button')).find((b) => b.textContent?.includes('Chi tiết'));
+    expect(detailBtn, 'phải có nút "Chi tiết"').toBeTruthy();
+    fireEvent.click(detailBtn!);
+    expect(dead.textContent).toContain(REASON_C4);
+    expect(container.textContent).toContain(REASON_C4);
 
     const before = scrollCalls.length;
     fireEvent.click(dead);

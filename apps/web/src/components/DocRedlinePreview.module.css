@@ -23,6 +23,9 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  /* N7 (wp3b.yaml): container tương đối cho .panelTab (position: absolute) —
+     xem chú thích tại .panelTab bên dưới. */
+  position: relative;
 }
 
 /* Dải trạng thái phía trên: tổng số chỗ sửa + số vùng bôi. Danh sách chỗ sửa
@@ -1144,4 +1147,288 @@
   .printAppendix th, .printAppendix td { border: 1px solid #999; padding: 4px; text-align: left; vertical-align: top; }
   .printAppendix th { background: #eee; }
   .printDismissed { opacity: 0.6; }
+}
+
+/* ── WP3/WP3b — thẻ 3-dòng (mọi loại thẻ change) ────────────────────────────
+   FlowDiagramCardBody/ComponentTableCardBody (WP3) VÀ nhánh mặc định của
+   ChangeDetail (WP3b, wp3b.yaml mục D — ux-writing/flow/gap/edge-case/
+   component có before/origin user) đều dùng các class dưới đây. `.card` +
+   `.cardHead` + `.sevBadge`/`.originUser`/`.originAgent`/`.badgeDeleted`/
+   `.badgeEdited` ở phần trên vẫn dùng chung cho dòng 1 (nhóm/mức/badge); phần
+   reason đầy đủ/RefRow/diff đầy đủ khi mở "Chi tiết" tái dùng `.reason`/
+   `.diff`/`.blockAdd`/`.blockDel`/`.diffInline` cũ (xem `.cardDetail` bên
+   dưới) — không phải class mới. */
+.cardCompact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cardTitle {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text, #1a1a1a);
+}
+.diffCompact {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-soft, #4b5563);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* wp3b.yaml mục D: hai vế của dòng 2 (nhánh mặc định của ChangeDetail — cũ
+   → mới / + mới / − cũ). Cùng NGÔN NGỮ MÀU với `.diffBefore`/`.diffAfter`
+   (gạch ngang mờ / đậm bình thường) nhưng KHÔNG dùng chung tên class — xem
+   chú thích tại chỗ dùng trong DocRedlinePreview.tsx: `.diffBefore`/
+   `.diffAfter` là dấu hiệu "đã rơi về layout hai khối cũ" mà test cũ dựa vào,
+   dòng rút gọn này luôn hiện nên phải là class riêng. */
+.diffPreviewBefore {
+  color: var(--text-muted, #6b7280);
+  text-decoration: line-through;
+}
+.diffPreviewAfter {
+  color: var(--text, #1a1a1a);
+  font-weight: 600;
+}
+.badgeAccepted {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  background: rgba(34, 197, 94, 0.16);
+  color: #15803d;
+  border: 1px solid rgba(34, 197, 94, 0.5);
+}
+.cardDetail {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border, #e1e5eb);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.detailRow {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-soft, #4b5563);
+}
+.detailLabel {
+  font-weight: 700;
+  margin-right: 4px;
+}
+.detailPre {
+  margin: 2px 0 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg-panel, #fff);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
+
+/* ── WP3 — sơ đồ mermaid trong cột tài liệu ─────────────────────────────────
+   Host được chèn NGAY TRƯỚC block ```mermaid``` gốc (giữ nguyên mã nguồn gập
+   lại bên dưới, xem mountFlowDiagramHosts trong DocRedlinePreview.tsx). Bọc
+   trong <mark data-change-id> nên toàn khối tham gia MỌI cơ chế mark sẵn có
+   (chọn/nổi/cuộn) mà không đổi injectHighlights. */
+.mermaidHost {
+  display: block;
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 8px;
+}
+.mermaidHost :global(.md-mermaid__source) {
+  margin-top: 6px;
+  font-size: 11px;
+}
+/* N7 (wp3b.yaml): host mermaid được CHỌN (selectedId trùng, xem .hlActive ở
+   trên) chỉ đổi VIỀN, không đổi NỀN — `.hlActive` mặc định sơn nền accent đậm
+   kín cả khối, hợp cho một cụm chữ ngắn nhưng phủ hết diện tích cả một sơ đồ
+   thì che luôn hình, cũng che cả nền trắng mà mermaid cần để đọc được. Đặc
+   hiệu 2 class thắng `.hlActive` một class mà không cần !important thứ hai. */
+.mermaidHost.hlActive {
+  background: transparent !important;
+  color: inherit;
+  box-shadow: none;
+  outline: 2px solid var(--accent, #0066b3) !important;
+  outline-offset: -1px;
+}
+.diagramToggle {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 11.5px;
+}
+.diagramToggle button {
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 999px;
+  background: var(--bg-panel, #fff);
+  color: var(--text-soft, #4b5563);
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.diagramToggleOn {
+  border-color: var(--accent, #0066b3) !important;
+  color: var(--accent, #0066b3) !important;
+  font-weight: 700;
+}
+
+/* ── WP3 — panel chú giải ẩn/hiện ───────────────────────────────────────────
+   Ẩn panel: tài liệu chiếm toàn bề rộng (.gridFull bỏ cột rail cố định), rail
+   giữ NGUYÊN trong DOM (item vẫn ref được để cuộn khi mở lại) nhưng
+   hidden+aria-hidden — xem docblock trong DocRedlinePreview.tsx. */
+.gridFull {
+  grid-template-columns: minmax(0, 1fr) 0;
+}
+.railHidden {
+  display: none;
+}
+.docToolbarWp3 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
+}
+.panelToggleBtn {
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg-panel, #fff);
+  color: var(--text-soft, #4b5563);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+/* Tab dọc mỏng ở mép phải khi panel đang ẩn — bấm mở lại panel. */
+/* N7 (wp3b.yaml): `position: absolute` trong `.wrap` (position: relative) —
+   KHÔNG `position: fixed` (neo theo viewport): DocRedlinePreview thường
+   render lồng trong nhiều container cao-cố-định + overflow hidden (khung
+   Quick result, panel…), và một phần tử fixed thì trồi ra ngoài mọi khung đó,
+   nổi đè lên UI khác của trang chủ thay vì nằm cạnh mép cột tài liệu của
+   riêng component này. */
+.panelTab {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  border: 1px solid var(--border, #e1e5eb);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  background: var(--bg-panel, #fff);
+  color: var(--text-soft, #4b5563);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 10px 4px;
+  cursor: pointer;
+}
+
+/* ── wp4.yaml mục 2 — "Thêm sau mục…": picker chọn heading, mở dưới thanh
+   userToolbar, cùng khuôn control với .annotationComposer select/input. */
+.headingPicker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-panel, #fff);
+  font-size: 11px;
+}
+.headingPicker select {
+  padding: 4px 6px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text, #1a1a1a);
+  font: inherit;
+  font-size: 11px;
+}
+.headingPicker button {
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg-panel, #fff);
+  color: var(--text, #1a1a1a);
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* ── wp4.yaml mục 3 — select "Loại" trong composer sửa tay: cùng khuôn
+   textarea/input của .annotationComposer ngay trên. */
+.annotationComposer select {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text, #1a1a1a);
+  font: inherit;
+  font-size: 12px;
+}
+.annotationComposer select:focus {
+  border-color: var(--accent, #0066b3);
+  outline: 2px solid color-mix(in srgb, var(--accent, #0066b3) 18%, transparent);
+  outline-offset: 1px;
+}
+
+/* ── wp4.yaml mục 1 — "Sửa bảng": form theo hàng của một Bảng thành phần,
+   thay ô ngắn ("Button") không vấp luật "đoạn phải duy nhất" của bôi đen. */
+.tableEditForm {
+  margin-top: 9px;
+  padding: 8px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 8px;
+  background: var(--bg-subtle, #f5f6f8);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tableEditRow {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(120px, 1.4fr) minmax(120px, 1.4fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+.tableEditCellLabel {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-soft, #4b5563);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tableEditRow input {
+  width: 100%;
+  padding: 4px 7px;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text, #1a1a1a);
+  font: inherit;
+  font-size: 11px;
+}
+.tableEditRow input:focus {
+  border-color: var(--accent, #0066b3);
+  outline: 2px solid color-mix(in srgb, var(--accent, #0066b3) 18%, transparent);
+  outline-offset: 1px;
+}
+.tableEditRow button {
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg-panel, #fff);
+  color: var(--red, #dc2626);
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
 }

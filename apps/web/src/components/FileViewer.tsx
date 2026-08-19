@@ -8190,7 +8190,20 @@ function PipelineSingleScreenViewer({ projectId, file }: { projectId: string; fi
 interface DocsSpecReviewIndex {
   kind?: string;
   schema_version?: string;
-  summary?: { pages?: number; changed_pages?: number; changes?: number; blockers?: number; majors?: number; minors?: number };
+  // `diagrams_updated`/`composition_tables` — WP3 (xem .tmp/pipeline/wp3.yaml):
+  // đếm change `kind: 'flow-diagram'` và bảng thành phần (`comp/*.screen.json`)
+  // trong đợt rà soát. OPTIONAL — index.json cũ (trước WP3) không có hai field
+  // này; bảng dưới (DocsSpecReviewIndexPreview) chỉ thêm cột khi field CÓ MẶT.
+  summary?: {
+    pages?: number;
+    changed_pages?: number;
+    changes?: number;
+    blockers?: number;
+    majors?: number;
+    minors?: number;
+    diagrams_updated?: number;
+    composition_tables?: number;
+  };
   pages?: Array<{
     slug?: string;
     page?: string;
@@ -8198,6 +8211,8 @@ interface DocsSpecReviewIndex {
     review_path?: string;
     changes?: number;
     status?: 'succeeded' | 'failed';
+    diagrams_updated?: number;
+    composition_tables?: number;
   }>;
 }
 
@@ -8214,18 +8229,32 @@ function isDocsSpecReviewIndex(v: unknown): v is DocsSpecReviewIndex {
 function DocsSpecReviewIndexPreview({ index }: { index: DocsSpecReviewIndex }) {
   const pages = index.pages ?? [];
   const s = index.summary;
+  // WP3: cột "Sơ đồ"/"Bảng thành phần" chỉ thêm khi field CÓ MẶT ở đâu đó
+  // trong dữ liệu (summary hoặc ít nhất một page) — index.json từ trước WP3
+  // không có hai field này, bảng của nó phải giữ NGUYÊN 3 cột như cũ.
+  const hasDiagramCol = s?.diagrams_updated != null || pages.some((p) => p.diagrams_updated != null);
+  const hasCompTableCol = s?.composition_tables != null || pages.some((p) => p.composition_tables != null);
+  const headers = [
+    'Trang',
+    'Trạng thái',
+    'Số chỗ sửa',
+    ...(hasDiagramCol ? ['Sơ đồ'] : []),
+    ...(hasCompTableCol ? ['Bảng thành phần'] : []),
+  ];
   return (
     <div className="viewer-body" style={{ padding: 18, overflow: 'auto' }}>
       {s ? (
         <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-soft, #4b5563)' }}>
           {s.pages ?? pages.length} trang · {s.changed_pages ?? 0} trang có chỗ sửa · {s.changes ?? 0} chỗ sửa ·{' '}
           {s.blockers ?? 0} nghiêm trọng · {s.majors ?? 0} nặng · {s.minors ?? 0} nhẹ
+          {typeof s.diagrams_updated === 'number' && s.diagrams_updated > 0 ? ` · ${s.diagrams_updated} sơ đồ` : ''}
+          {typeof s.composition_tables === 'number' && s.composition_tables > 0 ? ` · ${s.composition_tables} bảng` : ''}
         </p>
       ) : null}
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
         <thead>
           <tr>
-            {['Trang', 'Trạng thái', 'Số chỗ sửa'].map((h) => (
+            {headers.map((h) => (
               <th
                 key={h}
                 style={{
@@ -8253,6 +8282,16 @@ function DocsSpecReviewIndexPreview({ index }: { index: DocsSpecReviewIndex }) {
               <td style={{ padding: '6px 10px', borderBottom: '1px solid var(--border, #e1e5eb)' }}>
                 {p.changes ?? 0}
               </td>
+              {hasDiagramCol ? (
+                <td style={{ padding: '6px 10px', borderBottom: '1px solid var(--border, #e1e5eb)' }}>
+                  {p.diagrams_updated ?? 0}
+                </td>
+              ) : null}
+              {hasCompTableCol ? (
+                <td style={{ padding: '6px 10px', borderBottom: '1px solid var(--border, #e1e5eb)' }}>
+                  {p.composition_tables ?? 0}
+                </td>
+              ) : null}
             </tr>
           ))}
         </tbody>
