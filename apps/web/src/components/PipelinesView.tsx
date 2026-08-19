@@ -2466,7 +2466,18 @@ export function PipelinesView() {
             }
             const p = opts[0]!;
             const isBusy = busyId === p.id;
-            const isRunning = p.status === 'running' || p.status === 'queued';
+            // `queued` and `running` are NOT the same thing to a reader.
+            // Collapsing them (this used to be one `isRunning` flag) made a
+            // step that is merely waiting its turn render a spinner, a "Xem
+            // tiến trình" button that shows an empty run, no Run button, and a
+            // "Lần chạy gần nhất" line stamped by run-all's reset rather than
+            // by an actual run — four separate claims that the step is busy
+            // when it has not started. Kept apart here; `isActive` is for the
+            // few places where "not idle, not finished" genuinely is the
+            // question.
+            const isQueued = p.status === 'queued';
+            const isRunning = p.status === 'running';
+            const isActive = isRunning || isQueued;
             const meta = metaFor(p.id);
             const canChat = !!p.lastConversationId;
             const hasRunInfo = Boolean(p.updatedAt || p.lastInput || p.lastSource || p.lastRunId);
@@ -2476,7 +2487,7 @@ export function PipelinesView() {
             // không chặn ai cả và vẫn bấm chạy lẻ được. Chỉ tính là "bỏ qua"
             // khi bước CHƯA có kết quả — đã có output (từ lần chạy Đầy đủ
             // trước) thì vẫn là Done, không bao giờ giấu kết quả thật.
-            const isSkipped = p.skipped === true && p.status !== 'succeeded' && !isRunning;
+            const isSkipped = p.skipped === true && p.status !== 'succeeded' && !isActive;
 
             // Task 1: MỘT nút chính (theo trạng thái) + MỘT nút ⋯ gom phần còn
             // lại, thay cho 5 nút phẳng cùng kiểu (Quick result/Open chat/Run
@@ -2524,6 +2535,24 @@ export function PipelinesView() {
                 <button type="button" className="pl-btn pl-btn--run" onClick={() => setStatusFor(p)}>
                   <Icon name="spinner" size={14} />
                   <span>Xem tiến trình</span>
+                </button>
+              );
+              overflowItems = baseOverflow;
+            } else if (isQueued) {
+              // Waiting its turn in a run-all chain: no progress to show yet,
+              // so say that instead of offering a progress view of nothing.
+              // Still a button (opens the same run status panel) so the chain
+              // it is waiting on stays one click away.
+              primaryNode = (
+                <button
+                  type="button"
+                  className="pl-btn pl-btn--run"
+                  data-testid={`pipeline-queued-stage-${p.id}`}
+                  onClick={() => setStatusFor(p)}
+                  title="Bước này nằm trong hàng đợi của lần chạy đang diễn ra"
+                >
+                  <Icon name="history" size={14} />
+                  <span>Trong hàng đợi</span>
                 </button>
               );
               overflowItems = baseOverflow;
@@ -2612,7 +2641,7 @@ export function PipelinesView() {
                   <span className="pl-step__node">
                     {p.status === 'succeeded' ? (
                       <Icon name="check" size={14} />
-                    ) : isRunning ? (
+                    ) : isActive ? (
                       <Icon name="spinner" size={14} />
                     ) : isSkipped ? (
                       <Icon name="minus" size={13} />
@@ -2673,6 +2702,10 @@ export function PipelinesView() {
                         Last run: 35m ago", tự mâu thuẫn. Chi tiết lần chạy cũ
                         vẫn xem được ở nút (i) và Lịch sử. */}
                     {p.updatedAt && (isRunning || p.status === 'succeeded' || p.status === 'failed') ? (
+                      /* `isRunning` here is running-ONLY on purpose: run-all's
+                         clear-on-launch stamps `updatedAt` on every stage it
+                         queues, so a queued step would otherwise advertise a
+                         "last run" it never had. */
                       <p className="pl-step__lastrun">Lần chạy gần nhất: {relativeTimeLong(p.updatedAt, t)}</p>
                     ) : null}
                     {infoOpen ? (

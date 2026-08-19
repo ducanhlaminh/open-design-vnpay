@@ -545,7 +545,7 @@ test('kilo fetchModels falls back to fallbackModels when detection fails', async
 // (codex.fallbackModels / codex.reasoningOptions), so there is no user
 // input left to clamp — this test drives buildArgs directly instead.
 
-test('codex buildArgs always pins --model gpt-5.6-luna and -c model_reasoning_effort="max", ignoring options', () => {
+test('codex buildArgs always pins --model gpt-5.6-luna and -c model_reasoning_effort="high", ignoring options', () => {
   const optionVariants = [
     {},
     { model: 'gpt-5.5', reasoning: 'low' },
@@ -578,7 +578,7 @@ test('codex buildArgs always pins --model gpt-5.6-luna and -c model_reasoning_ef
     );
     assert.deepEqual(
       reasoningEntries,
-      ['model_reasoning_effort="max"'],
+      ['model_reasoning_effort="high"'],
       `options=${JSON.stringify(options)}, args=${JSON.stringify(args)}`,
     );
   }

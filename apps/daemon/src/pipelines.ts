@@ -1111,6 +1111,43 @@ export function deriveStateFromLocalFiles(relPaths: string[]): ProjectPipelineSt
 // and a re-run can still have preview files from an older successful attempt.
 // In both cases the latest explicit run state is authoritative until that run
 // itself reaches `succeeded`.
+/**
+ * Stages a finished run-all launch left stranded on `queued`.
+ *
+ * run-all marks EVERY stage it plans to run `queued` up front (clear-on-launch
+ * in server.ts deletes their outputs, so "Xong" would be a lie), then runs
+ * them one at a time and aborts the chain on the first failure. The stages it
+ * never reached keep the `queued` row forever: no timeout reaps them (nothing
+ * is running), and the web card renders `queued` with a spinner and no Run
+ * button — steps that look busy, cannot be started, never move.
+ *
+ * Returns the planned ids still sitting on `queued`, in the planned order and
+ * without duplicates, for the caller to reset to `idle`. Deliberately narrow:
+ *
+ *   - a stage the chain actually started (`running`) is NOT stranded — it is
+ *     still going, and a single-stage trigger outside this run-all can put a
+ *     stage there too;
+ *   - `succeeded` / `failed` / `idle` already tell the truth;
+ *   - a `queued` stage OUTSIDE `plannedStageIds` belongs to someone else's
+ *     launch and is never touched.
+ *
+ * Pure — no db, no clock — so the decision is unit-testable without driving a
+ * real workflow chain.
+ */
+export function strandedQueuedStages(
+  state: Record<string, { status?: string } | undefined>,
+  plannedStageIds: readonly string[],
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of plannedStageIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (state[id]?.status === 'queued') out.push(id);
+  }
+  return out;
+}
+
 export function mergePipelineState(
   local: ProjectPipelineState,
   kgs: ProjectPipelineState,

@@ -2397,7 +2397,7 @@ console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_messag
           // CODEX_FIXED_MODEL / CODEX_FIXED_REASONING) — the requested model
           // and the invalid effort never reach the CLI.
           expect(args).toEqual(expect.arrayContaining(['--model', 'gpt-5.6-luna']));
-          expect(args).toEqual(expect.arrayContaining(['-c', 'model_reasoning_effort="max"']));
+          expect(args).toEqual(expect.arrayContaining(['-c', 'model_reasoning_effort="high"']));
           expect(args.some((arg) => arg.includes('gpt-5"') || arg === 'gpt-5')).toBe(false);
           expect(args.some((arg) => arg.includes('totally-invalid-effort'))).toBe(false);
         },

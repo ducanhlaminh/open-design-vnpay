@@ -234,7 +234,7 @@ test('codex model picker is fixed to Luna at max reasoning (no user choice)', ()
     { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
   ]);
   assert.ok(codex.reasoningOptions, 'codex must define reasoningOptions');
-  assert.deepEqual(codex.reasoningOptions, [{ id: 'max', label: 'Max' }]);
+  assert.deepEqual(codex.reasoningOptions, [{ id: 'high', label: 'High' }]);
   assert.equal(codex.listModels, undefined, 'codex must not probe `debug models` anymore');
 
   const args = codex.buildArgs(
@@ -246,7 +246,7 @@ test('codex model picker is fixed to Luna at max reasoning (no user choice)', ()
   );
   assert.ok(args.includes('--model'));
   assert.equal(args[args.indexOf('--model') + 1], 'gpt-5.6-luna');
-  assert.ok(args.includes('model_reasoning_effort="max"'));
+  assert.ok(args.includes('model_reasoning_effort="high"'));
 });
 
 // `codex.listModels` was removed from the def (fixed-model product

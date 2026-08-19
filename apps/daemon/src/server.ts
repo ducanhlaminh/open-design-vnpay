@@ -466,7 +466,7 @@ import { registerDesignSystemSyncRoutes } from './design-system-sync-routes.js';
 import { isCriteriaGenerationJobActive, registerDesignSystemCriteriaWorkspaceRoutes } from './design-system-criteria-workspace.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { registerPipelineRoutes } from './pipeline-routes.js';
-import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isExportArtifact, isHistoryArtifact, isSyncExcluded, isTargetScopedWfDir, mergePipelineState, pickRunTarget, relClearedByRegen, relClearedByRunAllLaunch, selectRunStages, stageForOutput, stagesForOutput, stageRegenSet, upstreamStages, wfDirForStage, workflowDirForPipeline } from './pipelines.js';
+import { DEFAULT_WORKFLOW_ID, deriveStateFromLocalFiles, getPipelineDef, getWorkflow, isExportArtifact, isHistoryArtifact, isSyncExcluded, isTargetScopedWfDir, mergePipelineState, pickRunTarget, relClearedByRegen, relClearedByRunAllLaunch, selectRunStages, stageForOutput, strandedQueuedStages, stagesForOutput, stageRegenSet, upstreamStages, wfDirForStage, workflowDirForPipeline } from './pipelines.js';
 import { generateProjectExports } from './pipeline-exports.js';
 import {
   historyKeepCount,
@@ -20314,6 +20314,47 @@ export async function startServer({
         console.warn('[pipelines] run-all chain error:', error);
       } finally {
         workflowRunsInFlight.delete(runLockKey);
+        // Release the stages this launch marked `queued` but never reached.
+        //
+        // Clear-on-launch above marks EVERY planned stage `queued` up front
+        // (honest: their outputs were just deleted). The chain then runs them
+        // one at a time and `return`s on the first failure — leaving the rest
+        // sitting on `queued` FOREVER. Nothing ever reset them: the wall-clock
+        // timeout only reaps a stage that is genuinely running, and the web
+        // card renders `queued` exactly like `running` (spinner, no Run
+        // button), so the user is left staring at steps that look busy, cannot
+        // be started, and never move. That is the "click run-all and every
+        // step goes active" report of 19/08/2026 — the visible half of a chain
+        // that aborted at its first stage.
+        //
+        // `idle` is the truthful end state: the stage did not run, and its
+        // outputs were cleared at launch. mergePipelineState then lets the
+        // file-derived status show through again, so a stage whose outputs
+        // still exist reads `succeeded` rather than being falsely blanked.
+        //
+        // Skipped when ANOTHER workflow run is still in flight for this
+        // project: workflows can legitimately share a stage id, and resetting
+        // one that the other run has queued would lie in the opposite
+        // direction. Our own lock key is already deleted above.
+        try {
+          const anotherRunInFlight = [...workflowRunsInFlight].some((key) =>
+            key.startsWith(`${projectId}::`),
+          );
+          if (!anotherRunInFlight) {
+            const endState = getProjectPipelineState(db, projectId);
+            const stranded = strandedQueuedStages(endState, stages);
+            for (const id of stranded) {
+              setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
+            }
+            if (stranded.length > 0) {
+              console.log(
+                `[pipelines] run-all for ${projectId}/${wf.id}: released ${stranded.length} stage(s) left queued by an aborted chain (${stranded.join(', ')})`,
+              );
+            }
+          }
+        } catch (error) {
+          console.warn('[pipelines] run-all queued-release failed:', error);
+        }
       }
     })();
     return { projectId, workflowId: wf.id, stages };

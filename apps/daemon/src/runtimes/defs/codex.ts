@@ -3,14 +3,19 @@ import { DEFAULT_MODEL_OPTION } from './shared.js';
 import type { RuntimeModelOption } from '../types.js';
 import type { RuntimeAgentDef } from '../types.js';
 
-// Product decision 19/08/2026: Codex CLI runs pinned to Luna at the
-// highest reasoning effort Luna supports, always — not a user choice, not
-// read from stored config. `codex debug models` on the installed CLI lists
-// `gpt-5.6-luna` ("GPT-5.6-Luna") with effort levels
-// low/medium/high/xhigh/max; `max` is the highest. To change the pin,
-// change these two constants (and nothing else).
+// Product decision 19/08/2026: Codex CLI runs pinned to Luna at a fixed
+// reasoning effort, always — not a user choice, not read from stored config.
+// To change the pin, change these two constants (and nothing else).
+//
+// Effort: ONE notch above the model's own default (asked 19/08/2026, revised
+// down from `max`). `codex debug models` reports, for `gpt-5.6-luna`:
+// `default_reasoning_level: "medium"` over the ladder
+// low → medium → high → xhigh → max. One notch above `medium` is `high`
+// ("Greater reasoning depth for complex problems"). `max` was the original
+// pin; it buys depth on the hardest stages but costs latency and quota on
+// every stage, including the mechanical ones.
 export const CODEX_FIXED_MODEL = 'gpt-5.6-luna';
-export const CODEX_FIXED_REASONING = 'max';
+export const CODEX_FIXED_REASONING = 'high';
 
 // Retained even though the def below no longer wires up `listModels` (no
 // more live `codex debug models` probing now that the model is fixed) —
@@ -88,7 +93,7 @@ export const codexAgentDef = {
     // `codex debug models` probing and no picker beyond the one entry
     // below. `parseCodexDebugModels` above stays exported but unused here.
     fallbackModels: [{ id: CODEX_FIXED_MODEL, label: 'GPT-5.6-Luna' }],
-    reasoningOptions: [{ id: CODEX_FIXED_REASONING, label: 'Max' }],
+    reasoningOptions: [{ id: CODEX_FIXED_REASONING, label: 'High' }],
     // Prompt is delivered via stdin pipe (gated by `promptViaStdin: true`
     // below) to avoid Windows `spawn ENAMETOOLONG` while keeping Codex on
     // its structured JSON stream. Recent Codex CLI versions reject a bare
