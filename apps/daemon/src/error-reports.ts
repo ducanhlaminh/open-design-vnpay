@@ -277,7 +277,12 @@ export function contextFromSubRuns(
     if (run?.signal) bits.push(`signal ${run.signal}`);
     if (run?.errorCode) bits.push(run.errorCode);
     const detail = run?.error ? ` — ${run.error.split('\n')[0]}` : '';
-    return `- ${task.title || task.id}: ${run?.status ?? task.status}${bits.length ? ` (${bits.join(', ')})` : ''}${detail}`;
+    // Task status is what the stage decided; the run status is what the
+    // agent process did. They differ when the daemon rejected a finished
+    // run's output — show both so "failed (agent run: succeeded)" reads as
+    // "validation, not the agent".
+    const status = run?.status && run.status !== task.status ? `${task.status} (agent run: ${run.status})` : (run?.status ?? task.status);
+    return `- ${task.title || task.id}: ${status}${bits.length ? ` (${bits.join(', ')})` : ''}${detail}`;
   });
   const outputs = `fan-out: ${failed.length}/${rows.length} sub-run failed\n${lines.join('\n')}`;
   const ctx: StageFailureContext = {
@@ -298,6 +303,23 @@ export function contextFromSubRuns(
   const firstError = firstFailedRun?.error?.split('\n')[0]?.trim();
   const errorSuffix = `${failed.length}/${rows.length} bước con lỗi${firstError ? ` — lỗi đầu: ${firstError}` : ''}`;
   return { ctx, errorSuffix };
+}
+
+/** Fan-out stages whose verdict is decided by daemon-side validation AFTER
+ *  every agent run finished (docs-review, docs-comp…): the sub-conversations
+ *  are green, the stage is red, and the only place the reason lives is the
+ *  per-item `errors`. Flatten those into (a) one line per item for the
+ *  report's `outputs` and (b) a short "first reason" for the stage error. */
+export function fanoutFailureDetail(
+  items: Array<{ name: string; errors: string[] }>,
+  limit = 40,
+): { list: string; first: string } {
+  const failed = items.filter((it) => it.errors.length > 0);
+  const lines = failed.slice(0, limit).map((it) => `- ${it.name}: ${it.errors.join('; ')}`);
+  if (failed.length > limit) lines.push(`… và ${failed.length - limit} mục nữa`);
+  const head = failed[0];
+  const first = head ? `${head.name}: ${head.errors[0] ?? 'không rõ lý do'}` : 'không rõ lý do';
+  return { list: lines.join('\n') || '(không có chi tiết lỗi)', first };
 }
 
 export interface ErrorReporter {
@@ -376,10 +398,28 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
     const [who, app] = await Promise.all([identity(), version()]);
     let ctx = attached;
     let errorText = info.error ?? '(no error text)';
-    if (!ctx && options.subRunLookup) {
+    // Fan-out stages: the per-sub-run view (which pages/screens ran, exit
+    // codes, stderr of the first failure) is derived from design.runs. It
+    // complements — never replaces — what the stage attached itself (e.g.
+    // docs-review's per-page validation reasons): attached fields win,
+    // derived fills the gaps, both `outputs` texts are kept.
+    if (options.subRunLookup) {
       const derived = contextFromSubRuns(info, options.subRunLookup);
       if (derived) {
-        ctx = { ...derived.ctx, workflowId: options.workflowIdOf?.(info.pipelineId) ?? null };
+        const workflowId = attached?.workflowId ?? options.workflowIdOf?.(info.pipelineId) ?? null;
+        if (!attached) {
+          ctx = { ...derived.ctx, workflowId };
+        } else {
+          const definedAttached = Object.fromEntries(
+            Object.entries(attached).filter(([, v]) => v !== undefined && v !== null),
+          ) as Partial<StageFailureContext>;
+          ctx = {
+            ...derived.ctx,
+            ...definedAttached,
+            workflowId,
+            outputs: [attached.outputs, derived.ctx.outputs].filter(Boolean).join('\n\n'),
+          };
+        }
         if (derived.errorSuffix) errorText = `${errorText} · ${derived.errorSuffix}`;
       }
     }

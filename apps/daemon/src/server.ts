@@ -340,7 +340,7 @@ import {
   validateTarget as validateRoutineTarget,
 } from './routines.js';
 import { createDiagnosticsExportHandler } from './diagnostics-export.js';
-import { attachStageFailureContext, createErrorReporter, installConsoleTailCapture, resolveDaemonLogPath } from './error-reports.js';
+import { attachStageFailureContext, createErrorReporter, fanoutFailureDetail, installConsoleTailCapture, resolveDaemonLogPath } from './error-reports.js';
 import { DIAGNOSTICS_EXPORT_PATH } from '@open-design/diagnostics';
 import {
   buildProjectArchive,
@@ -16063,10 +16063,23 @@ export async function startServer({
         // one page produced a report; fail only if every page run came back empty.
         const anyReport = perPage.some((p) => p.report);
         const next: 'succeeded' | 'failed' = anyReport ? 'succeeded' : 'failed';
+        if (next === 'failed') {
+          const failureDetail = fanoutFailureDetail(
+            perPage.map((p, i) => ({ name: p.page, errors: [`không có review/${p.slug}/report.json (run: ${tasks[i]?.status ?? '?'})`] })),
+          );
+          attachStageFailureContext(projectId, pipelineId, {
+            agentId,
+            model: modelPrefs.model ?? null,
+            reasoning: modelPrefs.reasoning ?? null,
+            outputs: `prd-review: 0/${perPage.length} trang có report.json\n${failureDetail.list}`,
+            finalStatus: 'failed',
+            workflowId: wfDir,
+          });
+        }
         setProjectPipelineStatus(db, projectId, pipelineId, {
           status: next,
           subConversations: tasks.map((t) => ({ ...t })),
-          ...(next === 'failed' ? { error: 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' } : {}),
+          ...(next === 'failed' ? { error: `Không trang nào ghi được report.json (${perPage.length} trang) — xem hội thoại của từng trang` } : {}),
         });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[prd-review] fan-out done: ${perPage.filter((p) => p.report).length}/${pages.length} pages reported → ${next}`);
@@ -16821,13 +16834,28 @@ export async function startServer({
           await writeDocsComponentFailureNote(cwd, summaryMd);
           await fs.promises.rm(wireframesDir, { recursive: true, force: true }).catch(() => null);
         }
+        // Same as docs-review: name the per-screen reasons (the sub-
+        // conversations can be green when validation rejected every screen)
+        // and hand them to the error report.
+        const failureDetail = next === 'failed' ? fanoutFailureDetail(failedScreens.map((f) => ({ name: f.name || f.key, errors: f.errors ?? [] }))) : null;
+        if (failureDetail) {
+          attachStageFailureContext(projectId, pipelineId, {
+            agentId,
+            model: modelPrefs.model ?? null,
+            reasoning: modelPrefs.reasoning ?? null,
+            outputs: `docs-comp: 0/${screenInputs.length} màn đạt (validation sau fan-out)\n${failureDetail.list}`,
+            finalStatus: 'failed',
+            workflowId: wfDir,
+          });
+        }
         setProjectPipelineStatus(db, projectId, pipelineId, {
           status: next,
           subConversations: tasks.map((t) => ({ ...t })),
-          ...(next === 'failed' ? { error: 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' } : {}),
+          ...(failureDetail ? { error: `Không màn nào đạt kiểm tra sau khi rà soát (${screenInputs.length} màn) — ${failureDetail.first}` } : {}),
         });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[docs-comp] fan-out done: ${okDocs.length}/${screenInputs.length} screens → ${next}`);
+        if (failureDetail) console.warn(`[docs-comp] every screen failed validation:\n${failureDetail.list}`);
         return next;
       } catch (error) {
         // FAIL-SHUT ở OUTER catch — dọn output của mọi màn chưa đạt; không màn
@@ -17559,13 +17587,32 @@ export async function startServer({
           // instead of losing it outright.
           await writeDocsReviewFailureNote(cwd, summaryMd);
         }
+        // Every page failed. The sub-conversations may all be GREEN here —
+        // the agent runs finished, it was the daemon's post-run validation
+        // (bad .changes/.notes JSON, "[Rà soát …]" markers left in the clone,
+        // change diff mismatch, unknown rule ids…) that rejected each page.
+        // So the generic "see the step's conversation" text points nowhere;
+        // name the real per-page reasons in the stage error and hand them
+        // to the error report (attachStageFailureContext) as well.
+        const failureDetail = next === 'failed' ? fanoutFailureDetail(results.map((r) => ({ name: r.page, errors: r.errors ?? [] }))) : null;
+        if (failureDetail) {
+          attachStageFailureContext(projectId, pipelineId, {
+            agentId,
+            model: modelPrefs.model ?? null,
+            reasoning: modelPrefs.reasoning ?? null,
+            outputs: `docs-review: 0/${results.length} trang đạt (validation sau fan-out)\n${failureDetail.list}`,
+            finalStatus: 'failed',
+            workflowId: wfDir,
+          });
+        }
         setProjectPipelineStatus(db, projectId, pipelineId, {
           status: next,
           subConversations: tasks.map((t) => ({ ...t })),
-          ...(next === 'failed' ? { error: 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết' } : {}),
+          ...(failureDetail ? { error: `Không trang nào đạt kiểm tra sau khi rà soát (${results.length} trang) — ${failureDetail.first}. Chi tiết: ${DOCS_REVIEW_FAILURE_NOTE}` } : {}),
         });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: next, by: historyActor() }).catch(() => null);
         console.log(`[docs-review] fan-out done: ${results.filter((r) => r.status === 'succeeded').length}/${pages.length} pages reviewed → ${next}`);
+        if (failureDetail) console.warn(`[docs-review] every page failed validation:\n${failureDetail.list}`);
         return next;
       } catch (error) {
         // FAIL-SHUT — see the block comment above this function. The stage

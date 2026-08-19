@@ -14,6 +14,7 @@ import {
   contextFromSubRuns,
   createErrorReporter,
   ERROR_REPORTS_OUTBOX_DIR,
+  fanoutFailureDetail,
   pushConsoleTailLine,
   readLogTail,
   resetConsoleTailForTests,
@@ -297,5 +298,63 @@ describe('fan-out fallback context (contextFromSubRuns)', () => {
     expect(body.error).toContain('2/3 bước con lỗi — lỗi đầu: spawn claude ENOENT');
     expect(body.stderrTail).toBe('stderr of a');
     rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('shows "failed (agent run: succeeded)" when the stage rejected a finished run\'s output', () => {
+    // docs-review: every section run finished, the daemon's post-run
+    // validation failed the page → task failed, run succeeded.
+    const out = contextFromSubRuns(
+      { ...info, subConversations: [{ id: 'c-a', title: 'Trang A · Mở đầu', status: 'failed' }] },
+      () => ({ id: 'run-a', agentId: 'claude', status: 'succeeded', exitCode: 0 }),
+    );
+    expect(out!.ctx.outputs).toContain('- Trang A · Mở đầu: failed (agent run: succeeded) (exit 0)');
+    expect(out!.errorSuffix).toBe('1/1 bước con lỗi');
+  });
+
+  it('merges an attached stage context with the derived sub-run view (attached wins, both outputs kept)', async () => {
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), 'od-error-reports-fanout-merge-'));
+    delete process.env.OD_ERROR_REPORTS;
+    const client = fakeClient();
+    const reporter = createErrorReporter({
+      dataDir, logPath: null, namespace: null, client, identity: IDENTITY, version: VERSION,
+      subRunLookup: lookup, workflowIdOf: () => 'docs-review',
+    });
+    attachStageFailureContext('p1', 'dr-review', {
+      agentId: 'codex',
+      model: 'gpt-5',
+      outputs: 'docs-review: 0/3 trang đạt (validation sau fan-out)\n- Trang A: s1: JSON không hợp lệ',
+      finalStatus: 'failed',
+      workflowId: 'docs-review',
+    });
+    reporter.report({ ...info, error: 'Không trang nào đạt kiểm tra sau khi rà soát (3 trang) — Trang A: s1: JSON không hợp lệ' });
+    await reporter.idle();
+    const body = client.uploads[0]!.body;
+    expect(body.run.agentId).toBe('codex'); // attached wins
+    expect(body.run.model).toBe('gpt-5');
+    expect(body.run.exitCode).toBe(127); // derived fills the gap
+    expect(body.run.runId).toBe('run-a');
+    expect(body.run.outputs).toContain('0/3 trang đạt');
+    expect(body.run.outputs).toContain('2/3 sub-run failed');
+    expect(body.error).toContain('Trang A: s1: JSON không hợp lệ');
+    expect(body.error).toContain('2/3 bước con lỗi');
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+});
+
+describe('fanoutFailureDetail', () => {
+  it('lists one line per failed item and a first-reason string', () => {
+    const d = fanoutFailureDetail([
+      { name: 'Trang A', errors: [] },
+      { name: 'Trang B', errors: ['s2: JSON không hợp lệ', 'còn dấu [Rà soát …]'] },
+      { name: 'Trang C', errors: ['rule_id lạ: DS-99'] },
+    ]);
+    expect(d.list).toBe('- Trang B: s2: JSON không hợp lệ; còn dấu [Rà soát …]\n- Trang C: rule_id lạ: DS-99');
+    expect(d.first).toBe('Trang B: s2: JSON không hợp lệ');
+  });
+  it('caps the list and degrades gracefully with no errors', () => {
+    const many = Array.from({ length: 45 }, (_, i) => ({ name: `T${i}`, errors: ['x'] }));
+    expect(fanoutFailureDetail(many).list.split('\n')).toHaveLength(41);
+    expect(fanoutFailureDetail(many).list).toContain('… và 5 mục nữa');
+    expect(fanoutFailureDetail([{ name: 'A', errors: [] }])).toEqual({ list: '(không có chi tiết lỗi)', first: 'không rõ lý do' });
   });
 });
