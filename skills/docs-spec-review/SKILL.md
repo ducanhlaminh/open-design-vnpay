@@ -93,10 +93,15 @@ sau khi tất cả chạy xong.
   của CẢ TRANG đã đổi dù lát của bạn không chứa sơ đồ — đọc
   `flows/<id>/ux-review.json` (`summary` + `findings`) để biết đổi gì. Xem
   Bước 1 nhóm flow và Bước 2.
-- **Nháp bảng "Cấu thành màn hình" (chỉ khi kickoff nhắc):**
-  `review/_composition/<KEY>.md` — daemon dựng sẵn từ
-  `comp/<KEY>.screen.json` cho một màn hình cụ thể nằm trong lát của bạn.
-  Kickoff nêu đích danh `<KEY>` và vị trí cần chèn. Xem Bước 2 và Bước 3.
+- **Bảng "Cấu thành màn hình" đã nằm sẵn trong lát (chỉ khi kickoff nhắc):**
+  daemon TỰ CHÈN bảng này vào lát của bạn TRƯỚC KHI bạn chạy — nguồn là
+  `comp/<KEY>.screen.json` cho một màn hình cụ thể nằm trong lát của bạn,
+  chèn ngay sau mockup của màn. Kickoff nêu đích danh `<KEY>` và tên màn
+  (dòng tiêu đề đậm «Cấu thành màn hình (Design System) — <tên màn>»). Bạn
+  KHÔNG chèn bảng, chỉ sửa ô của nó — xem Bước 2 và Bước 3.
+- **Chỉ đọc file `criteria/` có thật** — liệt kê thư mục `criteria/` trước,
+  thiếu file nào (`rules.md`, `components.md`…) thì bỏ qua, đừng thử đọc rồi
+  báo lỗi.
 
 ### Bộ tiêu chí mặc định (khi không có `criteria/`)
 
@@ -228,17 +233,33 @@ vì rule nào.
   — …*`** dù nó nằm trong lát của bạn — daemon đã tự thay bằng sơ đồ đề xuất
   TRƯỚC KHI bạn chạy (xem Bước 0). Sửa vào đó bị coi là "xoá không khai báo"
   và đánh hỏng cả trang.
+- **Sửa lát BẰNG công cụ sửa file (Edit/apply_patch) từng chỗ một — KHÔNG
+  dùng lệnh shell** (`Set-Content`, `echo`/`cat >`, heredoc…) để ghi lại lát,
+  và **KHÔNG dán output của một lệnh vào lát**. Daemon quét lát tìm các dòng
+  kiểu `Wall time:`, `Total output lines:`, `Output:`, `---SLICE---` và coi
+  đó là rác lẫn vào tài liệu — phát hiện là huỷ kết quả của section (khôi
+  phục lát về bản gốc, bỏ mọi change/note section đó đã ghi).
 
-**Chèn bảng "Cấu thành màn hình" (chỉ khi kickoff nhắc tên một `<KEY>`):**
-đọc nháp `review/_composition/<KEY>.md` daemon đã dựng sẵn, rồi Edit CHÈN
-NGUYÊN VĂN bảng đó vào lát của bạn, đúng vị trí kickoff nêu (ngay sau dòng
-kickoff trích, trước bảng field của màn). **Giữ nguyên số hàng và các cột
-`Component DS` / `Biến thể` / `Mô tả component` / `Điều hướng tới` / `Ghi
-chú`** — daemon dựng chúng từ `comp/<KEY>.screen.json`, không phải chỗ bạn
-suy diễn lại. Cột DUY NHẤT bạn được viết lại là **"Vai trò / dùng để"**: daemon
-chỉ điền placeholder (role + trích `why`), bạn đối chiếu với bảng field ngay
-bên dưới trong tài liệu rồi viết lại cho đúng, ngắn gọn. Không thêm hàng cho
-element không có trong nháp, không bớt hàng có sẵn.
+**Sửa bảng "Cấu thành màn hình" (chỉ khi kickoff nhắc tên một `<KEY>`):**
+bảng này đã nằm sẵn trong lát của bạn — daemon TỰ CHÈN nó TRƯỚC KHI bạn chạy
+(xem Bước 0), bạn **không chèn/tạo bảng**. Bạn CHỈ được sửa ô của HAI cột
+**"Vai trò / dùng để"** và **"Ghi chú"** — đối chiếu với bảng field ngay bên
+dưới trong tài liệu rồi viết lại ngắn gọn bằng tiếng Việt, Edit từng hàng một.
+**CẤM:**
+
+- thêm hoặc bớt hàng;
+- sửa các cột khác (`#` / `Thành phần` / `Component DS` / `Biến thể` / `Mô tả
+  component` / `Điều hướng tới`);
+- sửa dòng tiêu đề đậm `**Cấu thành màn hình…**` hoặc dòng caption
+  `*Nguồn: comp/…*`;
+- dùng ký tự `|` trong nội dung ô (nó là ký tự phân cách cột — dùng `/` hoặc
+  `;` thay thế).
+
+**KHÔNG khai change cho việc sửa ô này** — daemon tự đối soát bảng bạn sửa
+với bảng gốc và tự ghi nhận (xem Bước 3). Nếu nội dung bảng mâu thuẫn với
+bảng field theo cách không sửa được bằng chữ (ví dụ component DS sai hẳn),
+ghi **note** `kind: "component"`, `rule_id: "comp/<KEY>.screen.json"` (Bước
+4) — đừng tự sửa các cột khoá.
 
 ## Bước 3 — ghi `review/docs/<...>.s<NN>.changes.json`
 
@@ -297,12 +318,15 @@ hai phía**:
 ]
 ```
 
-**Khai change khi chèn bảng "Cấu thành màn hình"** (Bước 2): đúng MỘT change
-mỗi `<KEY>` đã chèn — `kind: "component"`, `rule_id: "comp/<KEY>.screen.json"`,
-CHỈ có `quote` (nguyên văn CẢ BẢNG vừa chèn, kể cả dòng tiêu đề đậm
-`**Cấu thành màn hình…**` và caption `*Nguồn: …*` ở cuối — đây là bổ sung
-thuần, giống một đoạn mới), **KHÔNG có `before`**, `reason`: **"Bổ sung cấu
-thành màn hình từ kết quả Màn hình → Component."**
+**`change kind: "component"` với `rule_id: "comp/<KEY>.screen.json"` là CỦA
+DAEMON, không phải của bạn.** Daemon tự chèn bảng "Cấu thành màn hình" (Bước
+0/2) và tự khai change đó (`quote` = cả bảng, không có `before`); sau khi
+section chạy xong, daemon tự đối soát bảng bạn sửa (hai cột "Vai trò / dùng
+để" và "Ghi chú") với bảng gốc rồi cập nhật lại `quote` của đúng change đó.
+Bạn **KHÔNG khai change** cho việc sửa ô của bảng này dù bạn thấy lát của
+mình có bảng đó (xem Bước 2). Bạn vẫn có thể ghi **note**
+`rule_id: "comp/<KEY>.screen.json"` khi nội dung bảng mâu thuẫn với tài liệu
+theo cách không sửa được bằng chữ (Bước 4).
 
 **`kind: "flow-diagram"` là CỦA DAEMON, không phải của bạn.** Sơ đồ đề xuất ở
 Bước 0/2 do daemon tự thay và tự khai change — bạn **KHÔNG được tự tạo** một
@@ -468,8 +492,11 @@ là mảng rỗng, không phải lỗi.
   sai hoặc thiếu nhánh. Đó là việc của bước Đánh giá luồng UX (`dr-flow`),
   daemon đã tự thay bằng bản đề xuất trước khi bạn chạy (xem Bước 0). Bạn chỉ
   được sửa CHỮ mô tả luồng ở nơi khác trong lát, không phải sơ đồ.
-- **CẤM thêm hoặc bớt hàng của bảng "Cấu thành màn hình"** khi chèn từ nháp
-  `review/_composition/<KEY>.md` (Bước 2) — daemon dựng đúng một hàng cho mỗi
-  element của `comp/<KEY>.screen.json`; bạn chỉ được viết lại đúng MỘT cột
-  ("Vai trò / dùng để"), giữ nguyên mọi cột và mọi hàng khác.
+- **Bảng "Cấu thành màn hình" — chỉ được sửa ô của HAI cột "Vai trò / dùng
+  để" và "Ghi chú".** Daemon tự chèn bảng này vào lát (Bước 0/2) với đúng một
+  hàng cho mỗi element của `comp/<KEY>.screen.json`. CẤM thêm/bớt hàng, sửa
+  các cột khác, sửa dòng tiêu đề đậm hoặc dòng caption `*Nguồn: comp/…*`,
+  hoặc dùng ký tự `|` trong nội dung ô. Không khai change cho việc sửa ô này
+  (xem Bước 2/3) — daemon tự đối soát bảng sau khi section chạy xong; sửa sai
+  luật này bị coi là bảng hỏng cấu trúc và đánh hỏng section.
 - File-only: không đẩy bất cứ gì lên KGS.

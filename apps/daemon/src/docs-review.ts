@@ -695,9 +695,29 @@ function lineMultiset(text: string): Map<string, number> {
  *       phép phủ ở (b) (xem isCoveredByField bên dưới — nó chỉ đọc
  *       `quote`/`before`). Cho chúng phủ dòng thêm/xoá sẽ mở lại đúng cái lỗ
  *       (b) sinh ra để bịt: agent chỉ cần trích một câu lân cận vào `anchor`
- *       là mọi sửa đổi không khai báo quanh đó lọt hết. */
-export function validateChanges(original: string, revised: string, changes: DocChange[]): string[] {
+ *       là mọi sửa đổi không khai báo quanh đó lọt hết.
+ *
+ *  `opts.locateIn` (WP8b — validate theo LÁT, không phải theo TRANG): mặc
+ *  định `anchor`/`doc_refs` ở mục (c) được tìm trong `revised`, đúng bằng lát
+ *  agent vừa sửa. Nhưng WP8b gọi hàm này với `original`/`revised` là LÁT
+ *  (baseline đã enrich / lát sau agent) trong khi `anchor`/`doc_refs` của
+ *  agent có thể trỏ sang một đoạn khác của TRANG (ngoài lát của section này) —
+ *  ví dụ một nhận xét về section 6.1 viện dẫn một câu ở section 6.3. Không có
+ *  `locateIn`, validator sẽ báo "anchor không tìm thấy" oan dù agent viện dẫn
+ *  đúng, chỉ là đúng ở CHỖ KHÁC trong trang. Truyền `opts.locateIn` = cả
+ *  trang đã sửa để mục (c) tìm ở phạm vi rộng hơn; `quote` (vẫn tìm trong
+ *  `revised`) và `before` (vẫn tìm trong `original`) — cùng phép phủ (b) trên
+ *  cặp (original, revised) — GIỮ NGUYÊN vì chúng đối chiếu đúng những gì agent
+ *  sửa TRONG lát này, không phải toàn trang. Không truyền `opts` → hành vi
+ *  y hệt trước khi có WP8a (locateIn ngầm định = revised). */
+export function validateChanges(
+  original: string,
+  revised: string,
+  changes: DocChange[],
+  opts?: { locateIn?: string },
+): string[] {
   const errors: string[] = [];
+  const locateIn = opts?.locateIn ?? revised;
 
   for (const change of changes) {
     const quote = (change.quote ?? '').trim();
@@ -721,14 +741,14 @@ export function validateChanges(original: string, revised: string, changes: DocC
         `Change "${change.id}" xoá thuần nhưng thiếu 'anchor' — cần một đoạn nguyên văn trong bản đã sửa nằm cạnh chỗ xoá để định vị.`,
       );
     }
-    if (anchor && !fuzzyIncludes(revised, anchor)) {
+    if (anchor && !fuzzyIncludes(locateIn, anchor)) {
       errors.push(`Change "${change.id}" có anchor không tìm thấy trong bản đã sửa: "${anchor}"`);
     }
 
     for (const raw of change.doc_refs ?? []) {
       const ref = (raw ?? '').trim();
       if (!ref) continue;
-      if (!fuzzyIncludes(revised, ref)) {
+      if (!fuzzyIncludes(locateIn, ref)) {
         errors.push(`Change "${change.id}" có doc_ref không tìm thấy trong bản đã sửa: "${ref}"`);
       }
     }
@@ -1052,6 +1072,18 @@ export interface DocPageResult {
   errors?: string[];
   /** Trang vẫn đạt nhưng có chỗ daemon phải châm chước (note neo trượt…). */
   warnings?: string[];
+  /** Tổng số section của trang — CHỈ có mặt khi trang chạy fail-shut theo
+   *  SECTION (WP8b): một section hỏng thì daemon khôi phục lát về baseline đã
+   *  enrich, bỏ changes/notes của section đó, còn TRANG vẫn `succeeded`. Trang
+   *  không dùng đường fail-shut theo section (hoặc chưa nâng cấp) thì bỏ
+   *  trường này — {@link mergeChangeReports} chỉ ghi `sections_total`/
+   *  `sections_failed` vào index.json khi trường này có mặt, để không đổi
+   *  shape của những trang cũ. */
+  sectionsTotal?: number;
+  /** Danh sách section bị fail-shut của trang (đi kèm `sectionsTotal`) — mỗi
+   *  phần tử là MỘT section, giữ tối đa các lỗi khiến nó bị khôi phục về
+   *  baseline, để {@link mergeChangeReports} in vào summary.md. */
+  sectionsFailed?: Array<{ index: number; heading: string; errors: string[] }>;
 }
 
 /** Merge per-page results into the index.json manifest + a human summary.md,
@@ -1083,6 +1115,12 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
     diagrams_updated: diagramsUpdatedFor(r),
     composition_tables: compositionTablesFor(r),
     status: r.status,
+    // CHỈ ghi khi trang dùng đường fail-shut theo SECTION (WP8b) — file
+    // index.json của trang chưa nâng cấp giữ nguyên shape cũ, không có 2
+    // trường này (xem docblock DocPageResult.sectionsTotal).
+    ...(r.sectionsTotal !== undefined
+      ? { sections_total: r.sectionsTotal, sections_failed: r.sectionsFailed?.length ?? 0 }
+      : {}),
     ...(r.warnings && r.warnings.length > 0 ? { warnings: r.warnings } : {}),
   }));
   const changed_pages = results.filter((r) => r.status === 'succeeded' && r.changes.length > 0).length;
@@ -1138,6 +1176,24 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
     summaryMd += `\n`;
   }
 
+  // Section fail-shut (WP8b): trang vẫn `succeeded` (nội dung của mọi section
+  // đạt được giữ nguyên) nhưng một vài section bị khôi phục về baseline đã
+  // enrich — liệt kê từng section hỏng kèm tối đa 3 lỗi để người đọc tự đối
+  // chiếu, không phải lần theo log chạy.
+  const sectionsFailedPages = results.filter((r) => r.sectionsFailed && r.sectionsFailed.length > 0);
+  if (sectionsFailedPages.length > 0) {
+    summaryMd += `## Section không đạt (đã giữ nguyên nội dung gốc đã enrich)\n\n`;
+    for (const r of sectionsFailedPages) {
+      for (const f of r.sectionsFailed ?? []) {
+        const nn = String(f.index).padStart(2, '0');
+        const heading = f.heading.trim() || 'Mở đầu';
+        const errs = f.errors.slice(0, 3).join('; ');
+        summaryMd += `- **${r.page}** · s${nn} "${heading}": ${errs}\n`;
+      }
+    }
+    summaryMd += `\n`;
+  }
+
   summaryMd += `## Từng trang\n\n`;
   summaryMd += `| Trang | Trạng thái | Số chỗ sửa | Nhận xét | Theo nhóm | NT | Nặng | Nhẹ |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n`;
   for (const r of results) {
@@ -1149,7 +1205,13 @@ export function mergeChangeReports(results: DocPageResult[]): { index: unknown; 
     const b = r.changes.filter((c) => c.severity === 'blocker').length;
     const m = r.changes.filter((c) => c.severity === 'major').length;
     const mi = r.changes.filter((c) => c.severity === 'minor').length;
-    const statusLabel = r.status === 'succeeded' ? 'Đã sửa' : 'Chạy hỏng';
+    let statusLabel: string;
+    if (r.status === 'succeeded' && r.sectionsTotal !== undefined && r.sectionsFailed && r.sectionsFailed.length > 0) {
+      const ok = r.sectionsTotal - r.sectionsFailed.length;
+      statusLabel = `Đã sửa (${ok}/${r.sectionsTotal} section)`;
+    } else {
+      statusLabel = r.status === 'succeeded' ? 'Đã sửa' : 'Chạy hỏng';
+    }
     summaryMd += `| ${r.page} | ${statusLabel} | ${r.changes.length} | ${r.notes.length} | ${byKind || '—'} | ${b} | ${m} | ${mi} |\n`;
   }
 

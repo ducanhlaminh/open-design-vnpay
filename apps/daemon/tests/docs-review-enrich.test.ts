@@ -8,6 +8,14 @@ import {
   parseCatalogue,
   renderCompositionDraft,
   buildEnrichKickoff,
+  COMPOSITION_TITLE_PREFIX,
+  compositionCaptionFor,
+  insertCompositionTable,
+  resolveInsertAnchorIdx,
+  parseCompositionBlock,
+  reconcileCompositionTable,
+  isCompositionOwnedChange,
+  findToolOutputNoise,
 } from '../src/docs-review-enrich.js';
 import { splitSections, validateChanges } from '../src/docs-review.js';
 import { SCREEN_COMPONENTS_SCHEMA_VERSION, type ScreenComponentsDoc, type RoleMapDoc } from '../src/screen-components.js';
@@ -450,13 +458,24 @@ test('buildEnrichKickoff: có diagram → có câu cấm sửa fence mermaid', (
   assert.ok(text.includes('flows/FLOW-3-1-luong-so-do/ux-review.json'));
 });
 
-test('buildEnrichKickoff: có screens → nhắc review/_composition/<KEY>.md và rule_id comp/<KEY>.screen.json', () => {
+// WP8a: bảng "Cấu thành màn hình" nay do daemon TỰ CHÈN trước khi agent chạy
+// (không còn nháp review/_composition/<KEY>.md cho agent tự chèn) — shape của
+// `screensInThisSlice` đổi từ `{ key, insertAfterLineText }` sang `{ key, name }`
+// và kickoff chỉ còn dặn luật sửa ô, không còn dặn "chèn bảng".
+test('buildEnrichKickoff: có screens → nhắc «Cấu thành màn hình … — <name>», comp/<KEY>.screen.json, KHÔNG khai change, không còn nhắc _composition', () => {
   const text = buildEnrichKickoff({
-    screensInThisSlice: [{ key: 'PAGE__6.1.1', insertAfterLineText: '![](../a/img1.png)![](../a/img2.png)' }],
+    screensInThisSlice: [{ key: 'PAGE__6.1.1', name: 'Màn hình trang chủ' }],
   });
-  assert.ok(text.includes('review/_composition/PAGE__6.1.1.md'));
-  assert.ok(text.includes('rule_id comp/PAGE__6.1.1.screen.json'));
-  assert.ok(text.includes('KHÔNG before'));
+  assert.ok(text.includes('Cấu thành màn hình (Design System) — Màn hình trang chủ'));
+  assert.ok(text.includes('comp/PAGE__6.1.1.screen.json'));
+  assert.ok(text.includes('KHÔNG khai change'));
+  assert.ok(!text.includes('_composition'));
+});
+
+test('buildEnrichKickoff: có ít nhất một trường → nối thêm cảnh báo chung KHÔNG dùng shell/dán output tool', () => {
+  const text = buildEnrichKickoff({ unplacedScreens: ['PAGE__9.9.9'] });
+  assert.ok(text.includes('KHÔNG dùng lệnh shell'));
+  assert.ok(text.includes('Wall time:'));
 });
 
 test('buildEnrichKickoff: unplacedScreens → nhắc ghi note gap, không chèn bảng', () => {
@@ -470,4 +489,433 @@ test('buildEnrichKickoff: pageDiagramChanged → nhắc mọi section của tran
   const text = buildEnrichKickoff({ pageDiagramChanged: [{ flowId: 'FLOW-3-1-luong-so-do' }] });
   assert.ok(text.includes('flows/FLOW-3-1-luong-so-do/proposed.mmd'));
   assert.ok(text.includes("kind flow, rule_id flows/FLOW-3-1-luong-so-do/ux-review.json"));
+});
+
+/* ── (7) insertCompositionTable / parseCompositionBlock / reconcileCompositionTable
+ *  / isCompositionOwnedChange / findToolOutputNoise (WP8a) ──────────────────── */
+
+const COMP_KEY = 'PAGE__6.1.1';
+
+const DRAFT_MD = [
+  `${COMPOSITION_TITLE_PREFIX}Màn hình trang chủ**`,
+  '',
+  '| # | Thành phần | Component DS | Biến thể | Vai trò / dùng để | Mô tả component | Điều hướng tới | Ghi chú |',
+  '| --- | --- | --- | --- | --- | --- | --- | --- |',
+  '| 1 | Nút Lịch sử | Button | Type=Ghost | Chuyển màn Lịch sử | Nút bấm chuẩn. | — | — |',
+  '| 2 | App bar | — (DS không có) | — | Thanh điều hướng trên | — | — | tin cậy thấp |',
+  '',
+  compositionCaptionFor(COMP_KEY),
+].join('\n');
+
+const SLICE_FOR_INSERT = [
+  '#### 6.1.1 Màn hình trang chủ', // 0
+  '', // 1
+  '![](../a/img1.png)', // 2 — afterLineIdx0 = 2
+  '', // 3 — dòng trống ĐÃ CÓ SẴN ngay sau ảnh
+  '| Tên trường | Mô tả |', // 4
+  '| --- | --- |', // 5
+  '| A | B |', // 6
+].join('\n');
+
+test('insertCompositionTable: chèn sau dòng ảnh, đúng 1 dòng trống hai bên (kể cả khi lát đã có dòng trống sau ảnh)', () => {
+  const { text, change } = insertCompositionTable(SLICE_FOR_INSERT, 2, DRAFT_MD, COMP_KEY);
+  const lines = text.split('\n');
+  const titleIdx = lines.findIndex((l) => l.startsWith(COMPOSITION_TITLE_PREFIX));
+  assert.ok(titleIdx > 0);
+  assert.equal(lines[titleIdx - 1], ''); // đúng 1 dòng trống ngay trước tiêu đề
+  assert.notEqual(lines[titleIdx - 2], ''); // không phải 2 dòng trống liền
+
+  const captionIdx = lines.findIndex((l) => l.trim() === compositionCaptionFor(COMP_KEY));
+  assert.ok(captionIdx > titleIdx);
+  // Lát vốn đã có dòng trống ngay sau ảnh — dòng đó được TÁI SỬ DỤNG làm dòng
+  // trống sau caption, không bị chèn thêm một dòng nữa (không 2 dòng trống liền).
+  assert.equal(lines[captionIdx + 1], '');
+  assert.equal(lines[captionIdx + 2], '| Tên trường | Mô tả |');
+
+  assert.equal(change.kind, 'component');
+  assert.equal(change.origin, 'system');
+  assert.equal(change.rule_id, `comp/${COMP_KEY}.screen.json`);
+  assert.equal(change.before, undefined);
+  const errors = validateChanges(SLICE_FOR_INSERT, text, [change]);
+  assert.deepEqual(errors, []);
+});
+
+test('insertCompositionTable: giữ nguyên EOL CRLF của lát', () => {
+  const sliceCrlf = SLICE_FOR_INSERT.replace(/\n/g, '\r\n');
+  const { text, change } = insertCompositionTable(sliceCrlf, 2, DRAFT_MD, COMP_KEY);
+  assert.ok(text.includes('\r\n'));
+  assert.ok(!/[^\r]\n/.test(text)); // không có \n trần (không kèm \r) lẫn vào
+  assert.ok(change.quote!.includes('\r\n'));
+});
+
+test('insertCompositionTable: afterLineIdx0 vượt phạm vi lát → kẹp về dòng cuối', () => {
+  const { text } = insertCompositionTable(SLICE_FOR_INSERT, 999, DRAFT_MD, COMP_KEY);
+  const lines = text.split('\n');
+  const lastOrigIdx = lines.findIndex((l) => l === '| A | B |');
+  const titleIdx = lines.findIndex((l) => l.startsWith(COMPOSITION_TITLE_PREFIX));
+  assert.ok(lastOrigIdx >= 0);
+  assert.ok(titleIdx > lastOrigIdx);
+});
+
+test('insertCompositionTable: hai bảng cùng lát — chèn theo thứ tự afterLineIdx0 GIẢM DẦN thì cả hai vào đúng vị trí', () => {
+  const TWO_SCREEN_SLICE = [
+    '#### 6.1.1 Màn A', // 0
+    '', // 1
+    '![](a.png)', // 2 — anchor A
+    '', // 3
+    '#### 6.1.2 Màn B', // 4
+    '', // 5
+    '![](b.png)', // 6 — anchor B
+    '', // 7
+  ].join('\n');
+
+  const draftA = [`${COMPOSITION_TITLE_PREFIX}Màn A**`, '', '| h |', '| --- |', '| r |', '', compositionCaptionFor('A')].join('\n');
+  const draftB = [`${COMPOSITION_TITLE_PREFIX}Màn B**`, '', '| h |', '| --- |', '| r |', '', compositionCaptionFor('B')].join('\n');
+
+  // Chèn GIẢM DẦN: B (afterLineIdx0=6) trước rồi A (afterLineIdx0=2) sau — chỉ
+  // số dòng của điểm chèn A không bị lệch vì nó đứng TRƯỚC điểm chèn B.
+  const step1 = insertCompositionTable(TWO_SCREEN_SLICE, 6, draftB, 'B');
+  const step2 = insertCompositionTable(step1.text, 2, draftA, 'A');
+  const lines = step2.text.split('\n');
+
+  const idxA = lines.findIndex((l) => l.trim() === compositionCaptionFor('A'));
+  const idxB = lines.findIndex((l) => l.trim() === compositionCaptionFor('B'));
+  const idxHeadingB = lines.findIndex((l) => l.startsWith('#### 6.1.2'));
+  assert.ok(idxA > 0 && idxA < idxHeadingB, 'bảng A phải nằm TRƯỚC heading màn B');
+  assert.ok(idxB > idxHeadingB, 'bảng B phải nằm SAU heading màn B');
+
+  const errors = validateChanges(TWO_SCREEN_SLICE, step2.text, [step1.change, step2.change]);
+  assert.deepEqual(errors, []);
+});
+
+test('parseCompositionBlock: tách đúng title/header/separator/rows(8 ô)/caption', () => {
+  const sliceWithTable = insertCompositionTable(SLICE_FOR_INSERT, 2, DRAFT_MD, COMP_KEY).text;
+  const parsed = parseCompositionBlock(sliceWithTable, COMP_KEY);
+  assert.ok(!('error' in parsed), JSON.stringify(parsed));
+  if ('error' in parsed) return;
+  assert.ok(parsed.title.startsWith(COMPOSITION_TITLE_PREFIX));
+  assert.equal(parsed.header.startsWith('| # |'), true);
+  assert.equal(parsed.separator.startsWith('| --- |'), true);
+  assert.equal(parsed.rows.length, 2);
+  assert.equal(parsed.rows[0]!.length, 8);
+  assert.equal(parsed.rows[0]![1], 'Nút Lịch sử');
+  assert.equal(parsed.caption, compositionCaptionFor(COMP_KEY));
+});
+
+test('parseCompositionBlock: thiếu dòng caption → error', () => {
+  const sliceWithTable = insertCompositionTable(SLICE_FOR_INSERT, 2, DRAFT_MD, COMP_KEY).text;
+  const noCaption = sliceWithTable
+    .split('\n')
+    .filter((l) => l.trim() !== compositionCaptionFor(COMP_KEY))
+    .join('\n');
+  const parsed = parseCompositionBlock(noCaption, COMP_KEY);
+  assert.ok('error' in parsed);
+});
+
+test('parseCompositionBlock: hai dòng caption trùng nhau → error', () => {
+  const sliceWithTable = insertCompositionTable(SLICE_FOR_INSERT, 2, DRAFT_MD, COMP_KEY).text;
+  const dupCaption = `${sliceWithTable}\n${compositionCaptionFor(COMP_KEY)}`;
+  const parsed = parseCompositionBlock(dupCaption, COMP_KEY);
+  assert.ok('error' in parsed);
+});
+
+test('parseCompositionBlock: dòng lạ xen giữa tiêu đề và caption → error', () => {
+  const sliceWithTable = insertCompositionTable(SLICE_FOR_INSERT, 2, DRAFT_MD, COMP_KEY).text;
+  const withNoise = sliceWithTable.replace('| 1 | Nút Lịch sử', 'Ghi chú của agent chèn giữa bảng\n| 1 | Nút Lịch sử');
+  const parsed = parseCompositionBlock(withNoise, COMP_KEY);
+  assert.ok('error' in parsed);
+});
+
+test('parseCompositionBlock: ô chứa "\\|" giữ nguyên là ký tự trong ô (không bị coi là ranh giới cột)', () => {
+  const draftWithEscaped = [
+    `${COMPOSITION_TITLE_PREFIX}Màn escaped**`,
+    '',
+    '| # | Thành phần | Component DS | Biến thể | Vai trò / dùng để | Mô tả component | Điều hướng tới | Ghi chú |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| 1 | Nút A\\|B | Button | — | Xác nhận | Mô tả | — | — |',
+    '',
+    compositionCaptionFor('ESC'),
+  ].join('\n');
+  const parsed = parseCompositionBlock(draftWithEscaped, 'ESC');
+  assert.ok(!('error' in parsed), JSON.stringify(parsed));
+  if ('error' in parsed) return;
+  assert.equal(parsed.rows[0]!.length, 8);
+  assert.equal(parsed.rows[0]![1], 'Nút A\\|B');
+});
+
+test('reconcileCompositionTable: agent sửa ô Vai trò + Ghi chú 2 hàng → ok, changedRows 2, block đúng, baseWithFinal chứa block', () => {
+  const base = insertCompositionTable(SLICE_FOR_INSERT, 2, DRAFT_MD, COMP_KEY).text;
+  const revised = base
+    .replace('Chuyển màn Lịch sử', 'Chuyển sang màn Lịch sử giao dịch')
+    .replace('tin cậy thấp', 'tin cậy thấp; cần xác nhận lại vai trò');
+  const result = reconcileCompositionTable(base, revised, COMP_KEY);
+  assert.ok(result.ok, 'error' in result ? result.error : '');
+  if (!result.ok) return;
+  assert.equal(result.changedRows, 2);
+  assert.ok(result.block.includes('Chuyển sang màn Lịch sử giao dịch'));
+  assert.ok(result.baseWithFinal.includes('Chuyển sang màn Lịch sử giao dịch'));
+  assert.ok(result.baseWithFinal.includes('| Tên trường | Mô tả |')); // phần ngoài bảng của base vẫn còn nguyên
+});
+
+test('reconcileCompositionTable: sửa cột Component DS → error nêu hàng/cột', () => {
+  const base = insertCompositionTable(SLICE_FOR_INSERT, 2, DRAFT_MD, COMP_KEY).text;
+  const revised = base.replace('| Button |', '| Icon Button |');
+  const result = reconcileCompositionTable(base, revised, COMP_KEY);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.error, /Component DS/);
+  assert.match(result.error, /hàng 1/);
+});
+
+test('reconcileCompositionTable: xoá 1 hàng → error', () => {
+  const base = insertCompositionTable(SLICE_FOR_INSERT, 2, DRAFT_MD, COMP_KEY).text;
+  const revised = base
+    .split('\n')
+    .filter((l) => !l.includes('App bar'))
+    .join('\n');
+  const result = reconcileCompositionTable(base, revised, COMP_KEY);
+  assert.equal(result.ok, false);
+});
+
+test('reconcileCompositionTable: xoá caption → error', () => {
+  const base = insertCompositionTable(SLICE_FOR_INSERT, 2, DRAFT_MD, COMP_KEY).text;
+  const revised = base
+    .split('\n')
+    .filter((l) => l.trim() !== compositionCaptionFor(COMP_KEY))
+    .join('\n');
+  const result = reconcileCompositionTable(base, revised, COMP_KEY);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.error, /bị xoá\/hỏng cấu trúc/);
+});
+
+test('reconcileCompositionTable: không sửa gì → ok, changedRows 0', () => {
+  const base = insertCompositionTable(SLICE_FOR_INSERT, 2, DRAFT_MD, COMP_KEY).text;
+  const result = reconcileCompositionTable(base, base, COMP_KEY);
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  assert.equal(result.changedRows, 0);
+});
+
+const DRAFT_BLOCK = DRAFT_MD;
+const FINAL_BLOCK = DRAFT_MD.replace('Chuyển màn Lịch sử', 'Chuyển sang màn Lịch sử giao dịch');
+
+test('isCompositionOwnedChange: change.before = một hàng của draft → true', () => {
+  const change = {
+    before: '| 1 | Nút Lịch sử | Button | Type=Ghost | Chuyển màn Lịch sử | Nút bấm chuẩn. | — | — |',
+  };
+  assert.equal(isCompositionOwnedChange(change, DRAFT_BLOCK, FINAL_BLOCK), true);
+});
+
+test('isCompositionOwnedChange: change.quote = một hàng của final → true', () => {
+  const change = {
+    quote: '| 1 | Nút Lịch sử | Button | Type=Ghost | Chuyển sang màn Lịch sử giao dịch | Nút bấm chuẩn. | — | — |',
+  };
+  assert.equal(isCompositionOwnedChange(change, DRAFT_BLOCK, FINAL_BLOCK), true);
+});
+
+test('isCompositionOwnedChange: quote ngắn ("Button", không nguyên dòng) → false (so theo dòng, không substring)', () => {
+  const change = { quote: 'Button' };
+  assert.equal(isCompositionOwnedChange(change, DRAFT_BLOCK, FINAL_BLOCK), false);
+});
+
+test('isCompositionOwnedChange: change ngoài bảng → false', () => {
+  const change = {
+    before: 'Một câu hoàn toàn không liên quan tới bảng.',
+    quote: 'Một câu khác cũng vậy.',
+  };
+  assert.equal(isCompositionOwnedChange(change, DRAFT_BLOCK, FINAL_BLOCK), false);
+});
+
+test('findToolOutputNoise: fixture 6 dòng rác từ sự cố thật → bắt đủ', () => {
+  const text = [
+    'Nội dung bình thường của lát.',
+    'Wall time: 0.4 seconds',
+    'Total output lines: 218',
+    'Output:',
+    '---SLICE---',
+    '---DRAFT---',
+    'Exit code: 0',
+    'Chữ bình thường khác.',
+  ].join('\n');
+  const noise = findToolOutputNoise(text);
+  assert.equal(noise.length, 6);
+});
+
+test('findToolOutputNoise: văn bản thường có chữ "Output" trong câu → rỗng', () => {
+  const text = [
+    'Output của API trả về đúng định dạng JSON theo tài liệu.',
+    'Đoạn này liệt kê Output các bước xử lý — không phải rác tool.',
+  ].join('\n');
+  assert.deepEqual(findToolOutputNoise(text), []);
+});
+
+/* ── (8) resolveInsertAnchorIdx (WP8d — chốt chặn bằng NỘI DUNG dòng neo thay
+ *  vì tin thẳng chỉ số dòng gợi ý, xem .tmp/pipeline/wp8d.yaml) ─────────────── */
+
+const ANCHOR_SLICE = [
+  '#### 6.1.1 Màn hình trang chủ', // 0
+  '', // 1
+  '![](../a/img1.png)', // 2 — dòng neo
+  '', // 3
+  '| Tên trường | Mô tả |', // 4
+  '| --- | --- |', // 5
+  '| A | B |', // 6
+].join('\n');
+
+test('resolveInsertAnchorIdx: dòng tại hint khớp ngay → trả thẳng hint (đường tắt)', () => {
+  assert.equal(resolveInsertAnchorIdx(ANCHOR_SLICE, '![](../a/img1.png)', 2), 2);
+});
+
+test('resolveInsertAnchorIdx: hint lệch (mô phỏng sơ đồ dài thêm 3 dòng) → dò lại đúng theo nội dung dòng neo', () => {
+  const shifted = [
+    '#### 6.1.1 Màn hình trang chủ', // 0
+    'extra-1', // 1
+    'extra-2', // 2
+    'extra-3', // 3
+    '', // 4
+    '![](../a/img1.png)', // 5 — dòng neo đã dịch xuống 3 dòng so với hint cũ (2)
+    '', // 6
+    '| Tên trường | Mô tả |', // 7
+  ].join('\n');
+  assert.equal(resolveInsertAnchorIdx(shifted, '![](../a/img1.png)', 2), 5);
+});
+
+test('resolveInsertAnchorIdx: hai/nhiều dòng trùng nội dung → chọn dòng GẦN hint nhất, hoà thì lấy chỉ số nhỏ hơn', () => {
+  const dup = ['![](x.png)', 'a', 'b', '![](x.png)', 'c', '![](x.png)'].join('\n');
+  assert.equal(resolveInsertAnchorIdx(dup, '![](x.png)', 1), 0); // gần dòng 0 nhất (cách 1, so với dòng 3 cách 2)
+  assert.equal(resolveInsertAnchorIdx(dup, '![](x.png)', 4), 3); // hoà (dòng 3 và 5 cùng cách hint 1 dòng) → chọn chỉ số nhỏ hơn
+});
+
+test('resolveInsertAnchorIdx: không dòng nào khớp anchorText → null', () => {
+  assert.equal(resolveInsertAnchorIdx(ANCHOR_SLICE, '![](khong-ton-tai.png)', 2), null);
+});
+
+test('resolveInsertAnchorIdx: anchorText rỗng sau trim → trả hint đã kẹp trong phạm vi (giữ hành vi cũ)', () => {
+  assert.equal(resolveInsertAnchorIdx(ANCHOR_SLICE, '', 2), 2);
+  assert.equal(resolveInsertAnchorIdx(ANCHOR_SLICE, '   ', 4), 4);
+});
+
+test('resolveInsertAnchorIdx: hint âm hoặc vượt phạm vi (anchorText rỗng) → kẹp về [0, length-1]', () => {
+  assert.equal(resolveInsertAnchorIdx(ANCHOR_SLICE, '', -5), 0);
+  assert.equal(resolveInsertAnchorIdx(ANCHOR_SLICE, '', 999), ANCHOR_SLICE.split('\n').length - 1);
+});
+
+/* ── (9) Test HỒI QUY cho lỗi review chặn WP8b: thay sơ đồ TRƯỚC làm bảng
+ *  "Cấu thành màn hình" chèn lệch chỗ khi cùng section vừa có sơ đồ vừa có
+ *  màn có bảng (proposed.mmd dài hơn as-is.mmd làm lát dịch dòng) ───────────── */
+
+const REG_AS_IS_MMD = ['flowchart TD', '    A --> B', '    B --> C'].join('\n'); // thân fence 3 dòng
+
+const REG_PROPOSED_MMD = [
+  'flowchart TD',
+  '    A --> B',
+  '    B --> C',
+  '    C --> D',
+  '    D --> E',
+  '    E --> F',
+].join('\n'); // thân fence 6 dòng — dài hơn as-is 3 dòng
+
+const REG_SLICE = [
+  '### 3.1 Luồng và màn hình', // 0
+  '', // 1
+  '```mermaid', // 2
+  ...REG_AS_IS_MMD.split('\n'), // 3,4,5
+  '```', // 6
+  '', // 7
+  '#### 6.1.1 Màn hình ABC', // 8 — heading màn có bảng "Cấu thành"
+  '', // 9
+  '![](../a/mockup.png)', // 10 — dòng ảnh mockup: hintIdx0 tính từ LÁT GỐC (trước enrich)
+  '', // 11
+  '| Tên trường | Mô tả |', // 12 — bảng field, KHÔNG được bảng "Cấu thành" chèn lệch vào giữa
+  '| --- | --- |', // 13
+  '| A | B |', // 14
+].join('\n');
+
+test('Hồi quy WP8d: dùng THẲNG hintIdx0 (không resolve) sau khi sơ đồ đã bị thay TRƯỚC → bảng KHÔNG nằm đúng chỗ (chứng minh test bắt được lỗi review chặn)', () => {
+  const hintIdx0 = 10; // = chỉ số dòng ảnh mockup trong REG_SLICE gốc
+
+  const replaced = replaceDiagramInSlice(REG_SLICE, {
+    asIsMmd: REG_AS_IS_MMD,
+    proposedMmd: REG_PROPOSED_MMD,
+    flowId: 'FLOW-reg-wrong',
+    uxReview: {},
+  });
+  assert.ok(replaced);
+  const shiftedText = replaced!.text;
+
+  // Bằng chứng của bug: proposed dài hơn as-is 3 dòng → dòng neo đã dịch
+  // xuống 3 dòng, hintIdx0 cũ (10) KHÔNG còn trỏ vào dòng ảnh mockup nữa.
+  const shiftedLines = shiftedText.split('\n');
+  assert.notEqual((shiftedLines[hintIdx0] ?? '').trim(), '![](../a/mockup.png)');
+
+  const wrongInserted = insertCompositionTable(shiftedText, hintIdx0, DRAFT_MD, COMP_KEY);
+  const wrongLines = wrongInserted.text.split('\n');
+  const headingIdx = wrongLines.findIndex((l) => l.startsWith('#### 6.1.1'));
+  const titleIdxWrong = wrongLines.findIndex((l) => l.startsWith(COMPOSITION_TITLE_PREFIX));
+  assert.ok(headingIdx > 0 && titleIdxWrong > 0);
+  // Chèn sai chỗ: bảng rơi TRƯỚC heading màn (đáng lẽ phải nằm SAU heading,
+  // ngay sau dòng ảnh mockup) — đúng lỗi review chặn wp8d.yaml mô tả.
+  assert.ok(titleIdxWrong < headingIdx, 'bảng phải bị chèn sai (trước heading) để chứng minh test thật sự bắt được lỗi');
+});
+
+test('Hồi quy WP8d: resolveInsertAnchorIdx dò lại theo nội dung dòng neo → bảng nằm ĐÚNG chỗ (ngay sau ảnh mockup, trước bảng field) dù sơ đồ đã thay trước', () => {
+  const hintIdx0 = 10;
+  const anchorText = REG_SLICE.split('\n')[hintIdx0] ?? '';
+
+  const replaced = replaceDiagramInSlice(REG_SLICE, {
+    asIsMmd: REG_AS_IS_MMD,
+    proposedMmd: REG_PROPOSED_MMD,
+    flowId: 'FLOW-reg-right',
+    uxReview: {},
+  });
+  assert.ok(replaced);
+  const shiftedText = replaced!.text;
+
+  const idx = resolveInsertAnchorIdx(shiftedText, anchorText, hintIdx0);
+  assert.notEqual(idx, null);
+
+  const inserted = insertCompositionTable(shiftedText, idx!, DRAFT_MD, COMP_KEY);
+  const lines = inserted.text.split('\n');
+
+  const imageIdx = lines.findIndex((l) => l.trim() === '![](../a/mockup.png)');
+  const titleIdx = lines.findIndex((l) => l.startsWith(COMPOSITION_TITLE_PREFIX));
+  const captionIdx = lines.findIndex((l) => l.trim() === compositionCaptionFor(COMP_KEY));
+  const fieldTableIdx = lines.findIndex((l) => l.trim() === '| Tên trường | Mô tả |');
+
+  assert.ok(imageIdx > 0 && titleIdx > 0 && captionIdx > 0 && fieldTableIdx > 0);
+  assert.ok(titleIdx > imageIdx, 'bảng phải nằm NGAY SAU dòng ảnh mockup');
+  assert.ok(captionIdx < fieldTableIdx, 'bảng phải nằm TRƯỚC bảng field');
+
+  const errors = validateChanges(REG_SLICE, inserted.text, [replaced!.change, inserted.change]);
+  assert.deepEqual(errors, []);
+});
+
+test('Hồi quy WP8d: đảo thứ tự (như 2a) — chèn bảng TRƯỚC rồi thay sơ đồ SAU, replaceDiagramInSlice vẫn tìm thấy fence và thay đúng, không xáo trộn vị trí bảng', () => {
+  const hintIdx0 = 10;
+  const anchorText = REG_SLICE.split('\n')[hintIdx0] ?? '';
+  const idx = resolveInsertAnchorIdx(REG_SLICE, anchorText, hintIdx0);
+  assert.equal(idx, hintIdx0); // lát còn nguyên (chưa bị sửa gì) → hint khớp thẳng, không cần dò
+
+  const afterTable = insertCompositionTable(REG_SLICE, idx!, DRAFT_MD, COMP_KEY);
+
+  const replaced = replaceDiagramInSlice(afterTable.text, {
+    asIsMmd: REG_AS_IS_MMD,
+    proposedMmd: REG_PROPOSED_MMD,
+    flowId: 'FLOW-reg-reversed',
+    uxReview: {},
+  });
+  assert.ok(
+    replaced,
+    'replaceDiagramInSlice phải vẫn tìm thấy fence dù bảng đã chèn phía dưới nó (định vị theo NỘI DUNG fence, không phải chỉ số dòng)',
+  );
+  assert.ok(replaced!.text.includes('E --> F'));
+
+  const lines = replaced!.text.split('\n');
+  const imageIdx = lines.findIndex((l) => l.trim() === '![](../a/mockup.png)');
+  const titleIdx = lines.findIndex((l) => l.startsWith(COMPOSITION_TITLE_PREFIX));
+  const fieldTableIdx = lines.findIndex((l) => l.trim() === '| Tên trường | Mô tả |');
+  assert.ok(imageIdx > 0 && titleIdx > 0 && fieldTableIdx > 0);
+  assert.ok(titleIdx > imageIdx, 'bảng vẫn nằm ngay sau ảnh mockup sau khi sơ đồ đã được thay');
+  assert.ok(titleIdx < fieldTableIdx, 'bảng vẫn nằm trước bảng field sau khi sơ đồ đã được thay');
 });

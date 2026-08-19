@@ -373,13 +373,81 @@ describe('additive context helpers', () => {
     expect(classifyValidationError('Không ghép lại được trang từ các lát: x')).toBe('REBUILD');
     expect(classifyValidationError('s2: .changes.json không phải JSON hợp lệ')).toBe('INVALID_JSON');
     expect(classifyValidationError('Bản clone còn dấu [Rà soát …] ở dòng 12')).toBe('MARKER_LEFT');
-    expect(classifyValidationError('rule_id "DS-99" không có trong criteria/')).toBe('RULE_ID');
+    // SỬA (WP8a): thông báo cũ 'rule_id "DS-99" không có trong criteria/' không
+    // phải khuôn thật daemon phát ra (validateRuleIds không viết câu đó) — thay
+    // bằng khuôn thật `"<id>" có rule_id không tồn tại trong criteria/: "<ruleId>"`.
+    expect(classifyValidationError('"c1" có rule_id không tồn tại trong criteria/: "DS-99"')).toBe('RULE_ID');
     expect(classifyValidationError('files: s01.changes.json: 0B JSON ok, clone: thiếu')).toBe('EVIDENCE');
     expect(classifyValidationError('gì đó lạ')).toBe('OTHER');
     expect(structuredValidation([{ name: 'Trang A', errors: ['s1: JSON hỏng', 'files: clone: thiếu'] }])).toEqual([
       { item: 'Trang A', code: 'INVALID_JSON', detail: 's1: JSON hỏng' },
       { item: 'Trang A', code: 'EVIDENCE', detail: 'files: clone: thiếu' },
     ]);
+  });
+
+  // WP8a: mã mới trong classifyValidationError — bắt đúng khuôn thông báo thật
+  // của validateChanges/validateRuleIds/server.ts/reconcileCompositionTable/
+  // findToolOutputNoise TRƯỚC khi rơi về từ khoá lỏng (xem docblock hàm).
+  it('classifies the WP8a error codes (UNDECLARED_EDIT, CHANGE_ANCHOR, FORBIDDEN_KIND, COMPOSITION_TABLE, TOOL_NOISE)', () => {
+    // Sự cố thật (#465ee502): dòng thêm chứa "comp/…screen.json" (caption bảng
+    // thành phần) KHÔNG được để nhánh INVALID_JSON nuốt mất — phải là UNDECLARED_EDIT.
+    expect(
+      classifyValidationError(
+        'Dòng đã đổi/thêm nhưng không có change.quote nào khai báo: "*Nguồn: comp/PAGE__6.1.screen.json (bước Màn hình → Component)…*"',
+      ),
+    ).toBe('UNDECLARED_EDIT');
+    expect(classifyValidationError('Dòng đã bị xoá nhưng không có change.before nào khai báo: "x"')).toBe('UNDECLARED_EDIT');
+    // Khuôn thật vẫn đi INVALID_JSON khi bắt đầu bằng "sNN: changes.json…".
+    expect(classifyValidationError('s2: changes.json không phải JSON hợp lệ')).toBe('INVALID_JSON');
+
+    expect(classifyValidationError('Change "c1" có quote không tìm thấy trong bản đã sửa: "x"')).toBe('CHANGE_ANCHOR');
+    expect(classifyValidationError('Change "c1" xoá thuần nhưng thiếu \'anchor\' — cần một đoạn…')).toBe('CHANGE_ANCHOR');
+    expect(
+      classifyValidationError('Change "c1" khai kind "flow-diagram" nhưng loại này chỉ do daemon tạo (xem flows/…/ux-review.json)'),
+    ).toBe('FORBIDDEN_KIND');
+
+    expect(
+      classifyValidationError('Bảng thành phần PAGE__6.1: hàng 3 cột "Component DS" bị sửa — chỉ được sửa cột "Vai trò / dùng để" và "Ghi chú"'),
+    ).toBe('COMPOSITION_TABLE');
+    expect(classifyValidationError('Bảng thành phần PAGE__6.1 bị xoá/hỏng cấu trúc: không tìm thấy caption')).toBe(
+      'COMPOSITION_TABLE',
+    );
+
+    expect(classifyValidationError('Rác output-của-tool: "Wall time: 0.4 seconds"')).toBe('TOOL_NOISE');
+    expect(classifyValidationError('Lát chứa output của tool: "Total output lines: 218"')).toBe('TOOL_NOISE');
+  });
+
+  // WP8c: review độc lập chỉ ra WP8a chép sai khuôn cho 3 nhánh — server.ts
+  // luôn bọc thông báo cấp section bằng tiền tố `s<NN>: `/`sys: ` TRƯỚC khi
+  // đưa vào classifyValidationError; các case dưới đây đi thẳng qua đường
+  // bọc tiền tố thật (không phải khuôn "trần" như test WP8a ở trên).
+  it('strips the section prefix (`s<NN>: ` / `sys: `) before matching real WP8b/WP8a message shapes', () => {
+    expect(
+      classifyValidationError(
+        's02: Dòng đã đổi/thêm nhưng không có change.quote nào khai báo: "…comp/X.screen.json…"',
+      ),
+    ).toBe('UNDECLARED_EDIT');
+    expect(classifyValidationError('s10: Lát bị dính output của tool (5 dòng): "Wall time: 0.4 seconds"')).toBe(
+      'TOOL_NOISE',
+    );
+    expect(
+      classifyValidationError(
+        's03: Bảng thành phần PAGE__6.1.1: số hàng đã đổi (8 → 7) — cấm thêm hoặc bớt hàng.',
+      ),
+    ).toBe('COMPOSITION_TABLE');
+    expect(
+      classifyValidationError(
+        'Bảng thành phần PAGE__6.1.1: không tìm thấy dòng caption "*Nguồn: comp/PAGE__6.1.1.screen.json…*".',
+      ),
+    ).toBe('COMPOSITION_TABLE');
+    expect(classifyValidationError('s01: Phần tử thứ 0 không phải một object.')).toBe('INVALID_JSON');
+    expect(classifyValidationError('sys: changes.json không phải JSON hợp lệ: Unexpected token')).toBe(
+      'INVALID_JSON',
+    );
+    expect(classifyValidationError('s05: Change "c1" có quote không tìm thấy trong bản đã sửa: "x"')).toBe(
+      'CHANGE_ANCHOR',
+    );
+    expect(classifyValidationError('s07: files: s07.changes.json: 0B JSON ok')).toBe('EVIDENCE');
   });
 
   it('summarizes an assistant message: transcript tail (redacted), tool failures, token usage', () => {

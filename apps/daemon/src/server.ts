@@ -528,13 +528,19 @@ import {
   // trong hai (must_not cấm đụng section-fanout).
   type DocSection as DocPageSection,
 } from './docs-review.js';
-// WP2 (dr-review enrich) — sơ đồ mermaid đề xuất (flows/) + nháp bảng "Cấu
-// thành màn hình" (comp/), xem docblock đầu docs-review-enrich.ts.
+// WP2 (dr-review enrich) — sơ đồ mermaid đề xuất (flows/) + bảng "Cấu thành
+// màn hình" (comp/) daemon TỰ CHÈN thẳng vào lát (WP8b — không còn thư mục
+// nháp riêng cho agent tự chèn, xem docblock đầu docs-review-enrich.ts).
 import {
   replaceDiagramInSlice,
   mapScreensToSections,
   parseCatalogue,
   renderCompositionDraft,
+  insertCompositionTable,
+  resolveInsertAnchorIdx,
+  reconcileCompositionTable,
+  isCompositionOwnedChange,
+  findToolOutputNoise,
   buildEnrichKickoff,
 } from './docs-review-enrich.js';
 import {
@@ -17468,6 +17474,7 @@ export async function startServer({
             `ĐỌC GÌ: (1) lát cắt "${secSliceRel}" — chứa ĐÚNG và ĐỦ nội dung section của bạn, đọc trọn; (2) mục lục trang "${outlineRel}" — cấu trúc cả trang + khoảng dòng từng section. ` +
             `KHÔNG đọc cả trang gốc và KHÔNG đọc bản clone cả trang "${reviewRel}" — chúng dài gấp nhiều lần phần bạn phụ trách. Cần ngữ cảnh ngoài section (thuật ngữ, luồng được nhắc ở phần khác), Read "${pg.mdPath}" với offset/limit đúng khoảng dòng ghi trong mục lục, tối đa vài lần. ` +
             `Edit ONLY the slice file "${secSliceRel}" using the Edit tool (one targeted edit per change — never Write to overwrite the whole file); daemon ghép các lát lại thành trang hoàn chỉnh sau khi mọi section chạy xong. ` +
+            `KHÔNG ghi lát bằng lệnh shell (Set-Content, echo/cat >, heredoc) và KHÔNG dán output của lệnh (các dòng 'Wall time:', 'Total output lines:', 'Output:', '---…---') vào lát — daemon phát hiện là huỷ kết quả của section. ` +
             `TUYỆT ĐỐI KHÔNG sửa "${reviewRel}" — các section khác đang chạy SONG SONG và bản clone đó do daemon dựng lại, mọi sửa đổi trực tiếp vào nó sẽ bị ghi đè và mất. ` +
             `checking it against the criteria in "criteria/" if that folder exists (optional — fall back to the skill's built-in default criteria when it is absent). ` +
             `Write every change you actually made to "${secChangesRel}" as a JSON array of DocChange objects, ` +
@@ -17544,10 +17551,19 @@ export async function startServer({
 
           // WP2 (dr-review enrich) — state của TRANG này, điền bởi khối enrich
           // ngay dưới (sau khi ghi lát+outline, trước khi spawn agent) và đọc
-          // lại ở: (a) kickoff từng section, (b) dọn `review/_composition/`
-          // khi trang đạt/hỏng. Rỗng nếu trang không dính gì tới flows/comp.
+          // lại ở kickoff từng section. Rỗng nếu trang không dính gì tới
+          // flows/comp.
           const enrichKickoffBySection = new Map<number, string>();
-          const compDraftKeysForPage: string[] = [];
+          // WP8b — nguồn sự thật khi validate theo SECTION sau fan-out (xem
+          // khối C bên dưới): đọc lại `.sys.changes.json` từ đĩa ở đó sẽ LỆCH
+          // với `quote` mà reconcileCompositionTable cập nhật trong bộ nhớ
+          // sau khi agent sửa ô của bảng — nên `sysChanges` (mảng, không phải
+          // file) là thứ duy nhất section-validate được đọc. `tablesBySection`
+          // giữ `{ key, draftBlock, change }` của từng bảng "Cấu thành màn
+          // hình" đã chèn, theo section — cần cho reconcileCompositionTable +
+          // isCompositionOwnedChange ở khối C.
+          const sysChanges: DocChange[] = [];
+          const tablesBySection = new Map<number, Array<{ key: string; draftBlock: string; change: DocChange }>>();
 
           // Cắt trang thành lát TRƯỚC khi chạy: mỗi section có file riêng nên
           // chúng chạy song song được. Đọc từ bản CLONE (không phải bản gốc) vì
@@ -17583,20 +17599,114 @@ export async function startServer({
           // WP2 (dr-review enrich) — SAU khi đã ghi các lát + outline, TRƯỚC
           // khi spawn agent section nào: daemon tự đối chiếu `flows/` (thay
           // sơ đồ mermaid bằng bản đề xuất NGAY TRONG lát, khai DocChange
-          // `origin: 'system'`) và `comp/` (dựng nháp bảng "Cấu thành màn
-          // hình" vào `review/_composition/`) — xem docs-review-enrich.ts và
-          // Phương án B trong `skills/docs-spec-review/SKILL.md` cho lý do việc này
-          // PHẢI xảy ra trước khi agent chạy (validateChanges đòi `before` có
-          // thật trong bản GỐC, nên daemon không thể "sửa hộ" sau khi agent
-          // đã Edit). BẤT CỨ lỗi nào ở đây (thiếu flows/comp, JSON hỏng, path
-          // không khớp…) chỉ bị BỎ QUA IM LẶNG — hành vi khi dự án không có
+          // `origin: 'system'`) và `comp/` (WP8b: TỰ CHÈN thẳng bảng "Cấu
+          // thành màn hình" vào lát bằng insertCompositionTable — không còn
+          // thư mục nháp riêng cho agent tự chèn) — xem
+          // docs-review-enrich.ts và Phương án B trong
+          // `skills/docs-spec-review/SKILL.md` cho lý do việc này PHẢI xảy ra
+          // trước khi agent chạy (validateChanges đòi `before` có thật trong
+          // bản GỐC, nên daemon không thể "sửa hộ" sau khi agent đã Edit).
+          // BẤT CỨ lỗi nào ở đây (thiếu flows/comp, JSON hỏng, path không
+          // khớp…) chỉ bị BỎ QUA IM LẶNG — hành vi khi dự án không có
           // flows/comp phải giống hệt trước khi có WP2.
           if (errors.length === 0) {
             try {
               const cloneText = await fs.promises.readFile(path.join(cwd, reviewRel), 'utf8');
               const pageLines = cloneText.split(/\r?\n/);
               const thisPageSrc = normEnrichSrc(pg.mdPath);
-              const sysChanges: DocChange[] = [];
+              // `sysChanges`/`tablesBySection` là biến CẤP TRANG (khai ở đầu
+              // runOnePage) — đẩy thẳng vào đó thay vì khai lại cục bộ, vì
+              // khối C (validate theo section, sau fan-out) cần đọc lại đúng
+              // những gì enrich đã tạo, KHÔNG đọc lại từ đĩa (xem docblock ở
+              // chỗ khai `sysChanges` phía trên).
+              //
+              // WP8d (vá lỗi review chặn của WP8b, xem .tmp/pipeline/wp8d.yaml)
+              // — THỨ TỰ hai khối dưới đây cố ý: bảng "Cấu thành màn hình"
+              // (comp) chạy TRƯỚC sơ đồ mermaid (flows). insertCompositionTable
+              // định vị bằng CHỈ SỐ DÒNG (`entry.insertAfterLine` tính từ
+              // `pageLines` — bản trang TRƯỚC enrich), còn replaceDiagramInSlice
+              // định vị fence bằng NỘI DUNG thân mermaid (findMermaidFence) nên
+              // miễn nhiễm với việc lát bị dịch dòng. Nếu sơ đồ chạy trước (bản
+              // cũ), `proposedMmd` dài/ngắn khác `asIsMmd` làm lát dịch dòng
+              // đúng bằng độ chênh đó — bảng sau đó bị chèn lệch mà không lớp
+              // kiểm nào bắt được. Chạy bảng trước giữ lát còn NGUYÊN số dòng
+              // như lúc `mapScreensToSections` tính `insertAfterLine`; sơ đồ
+              // chạy sau vẫn đúng chỗ vì nó không phụ thuộc chỉ số dòng.
+              const screensBySection = new Map<number, Array<{ key: string; name: string }>>();
+              const unplacedScreens: string[] = [];
+              if (compIndex && Array.isArray(compIndex.screens)) {
+                const screenNames = new Map(compIndex.screens.map((s) => [s.key, s.name] as const));
+                const pageScreenKeys = compIndex.screens
+                  .filter((s) => normEnrichSrc(s.source) === thisPageSrc)
+                  .map((s) => s.key);
+                if (pageScreenKeys.length > 0) {
+                  const { placed, unplaced } = mapScreensToSections(sections, pageLines, pageScreenKeys);
+                  unplacedScreens.push(...unplaced);
+                  // WP8b — daemon TỰ CHÈN bảng thẳng vào lát (không còn nháp
+                  // markdown riêng cho agent tự chèn), bằng
+                  // insertCompositionTable — nhiều bảng cùng lát PHẢI chèn
+                  // theo `insertAfterLine` GIẢM DẦN (xem docblock hàm đó): chèn
+                  // tăng dần sẽ làm lệch chỉ số dòng của các điểm chèn còn lại.
+                  for (const [sectionIndex, entries] of placed) {
+                    const sec = sections[sectionIndex];
+                    if (!sec) continue;
+                    const secSliceAbs = path.join(cwd, sectionSlicePath(reviewRel, sectionIndex));
+                    let sliceText = await fs.promises.readFile(secSliceAbs, 'utf8').catch(() => null);
+                    if (sliceText == null) continue;
+                    const sortedEntries = [...entries].sort((a, b) => b.insertAfterLine - a.insertAfterLine);
+                    const kickoffEntries: Array<{ key: string; name: string }> = [];
+                    for (const entry of sortedEntries) {
+                      try {
+                        const screenJsonRaw = await fs.promises.readFile(
+                          path.join(cwd, 'comp', `${entry.key}.screen.json`),
+                          'utf8',
+                        );
+                        const screenDoc = JSON.parse(screenJsonRaw) as ScreenComponentsDoc;
+                        const draftMd = renderCompositionDraft(screenDoc, componentCatalogue, compRoleMap, screenNames);
+                        // WP8d — `entry.insertAfterLine` tính từ `pageLines`
+                        // (bản trang TRƯỚC enrich); `sliceText` của section
+                        // này có thể đã dài thêm/ngắn lại (một bảng khác đã
+                        // chèn trước đó trong CÙNG section). Chốt lại bằng NỘI
+                        // DUNG dòng neo (`pageLines` tại đúng chỉ số đó) thay
+                        // vì tin thẳng chỉ số — không dò được thì BỎ màn này,
+                        // thà bỏ qua còn hơn chèn sai chỗ (xem
+                        // resolveInsertAnchorIdx trong docs-review-enrich.ts).
+                        const anchorText = pageLines[entry.insertAfterLine - 1] ?? '';
+                        const idx = resolveInsertAnchorIdx(sliceText, anchorText, entry.insertAfterLine - sec.startLine);
+                        if (idx == null) {
+                          console.debug(
+                            `[docs-review] enrich skipped: bảng "Cấu thành màn hình" của màn "${entry.key}" trang "${pg.mdPath}": không định vị được dòng neo (anchorText="${anchorText.trim().slice(0, 80)}").`,
+                          );
+                          continue; // không chèn — coi như màn này không định vị được
+                        }
+                        const inserted = insertCompositionTable(sliceText, idx, draftMd, entry.key);
+                        sliceText = inserted.text;
+                        sysChanges.push(inserted.change);
+                        const tableEntries = tablesBySection.get(sectionIndex) ?? [];
+                        tableEntries.push({ key: entry.key, draftBlock: inserted.change.quote ?? '', change: inserted.change });
+                        tablesBySection.set(sectionIndex, tableEntries);
+                        kickoffEntries.push({ key: entry.key, name: screenDoc.name });
+                      } catch (screenError) {
+                        console.debug(
+                          `[docs-review] enrich skipped: màn "${entry.key}" của trang "${pg.mdPath}":`,
+                          screenError,
+                        );
+                      }
+                    }
+                    // Ghi lát MỘT LẦN sau khi xử lý hết entry của section (dù
+                    // 0 hay nhiều bảng đã chèn được) — tránh nhiều lượt ghi
+                    // đĩa chồng nhau cho cùng một section.
+                    await fs.promises.writeFile(secSliceAbs, sliceText, 'utf8');
+                    if (kickoffEntries.length > 0) screensBySection.set(sectionIndex, kickoffEntries);
+                  }
+                }
+              }
+
+              // Sơ đồ mermaid (flows) chạy SAU bảng — xem comment thứ tự ở
+              // trên. replaceDiagramInSlice định vị fence bằng NỘI DUNG thân
+              // mermaid (findMermaidFence, không phải chỉ số dòng) nên đọc lại
+              // `sliceText` mới nhất từ đĩa (đã có thể chứa bảng vừa chèn ở
+              // trên) vẫn tìm đúng fence và thay đúng chỗ.
               const diagramFlowIdBySection = new Map<number, string>();
               const pageChangedFlowIds: string[] = [];
 
@@ -17658,66 +17768,17 @@ export async function startServer({
                   console.debug(`[docs-review] enrich skipped: flow "${flow.id}" của trang "${pg.mdPath}":`, flowError);
                 }
               }
+
+              // Ghi `.sys.changes.json` SAU khi CẢ HAI khối (bảng rồi sơ đồ,
+              // theo thứ tự đã đảo ở trên) đã đẩy đủ change vào `sysChanges` —
+              // file này chỉ còn giá trị bằng chứng/đọc lại thủ công; validate
+              // thật đọc mảng `sysChanges` trong bộ nhớ (xem khối C).
               if (sysChanges.length > 0) {
                 await fs.promises.writeFile(
                   path.join(cwd, systemChangesPath(reviewRel)),
                   JSON.stringify(sysChanges, null, 2),
                   'utf8',
                 );
-              }
-
-              const screensBySection = new Map<number, Array<{ key: string; insertAfterLineText: string }>>();
-              const unplacedScreens: string[] = [];
-              if (compIndex && Array.isArray(compIndex.screens)) {
-                const screenNames = new Map(compIndex.screens.map((s) => [s.key, s.name] as const));
-                const pageScreenKeys = compIndex.screens
-                  .filter((s) => normEnrichSrc(s.source) === thisPageSrc)
-                  .map((s) => s.key);
-                if (pageScreenKeys.length > 0) {
-                  const { placed, unplaced } = mapScreensToSections(sections, pageLines, pageScreenKeys);
-                  unplacedScreens.push(...unplaced);
-                  const draftDir = path.join(cwd, 'review', '_composition');
-                  for (const [sectionIndex, entries] of placed) {
-                    for (const entry of entries) {
-                      try {
-                        const screenJsonRaw = await fs.promises.readFile(
-                          path.join(cwd, 'comp', `${entry.key}.screen.json`),
-                          'utf8',
-                        );
-                        const screenDoc = JSON.parse(screenJsonRaw) as ScreenComponentsDoc;
-                        const draftMd = renderCompositionDraft(screenDoc, componentCatalogue, compRoleMap, screenNames);
-                        await fs.promises.mkdir(draftDir, { recursive: true });
-                        const insertAfterLineText = (pageLines[entry.insertAfterLine - 1] ?? '').trim();
-                        await Promise.all([
-                          fs.promises.writeFile(path.join(draftDir, `${entry.key}.md`), draftMd, 'utf8'),
-                          fs.promises.writeFile(
-                            path.join(draftDir, `${entry.key}.placement.json`),
-                            JSON.stringify(
-                              {
-                                sectionIndex,
-                                insertAfterLine: entry.insertAfterLine,
-                                insertAfterLineText,
-                                sliceRel: sectionSlicePath(reviewRel, sectionIndex),
-                              },
-                              null,
-                              2,
-                            ),
-                            'utf8',
-                          ),
-                        ]);
-                        compDraftKeysForPage.push(entry.key);
-                        const arr = screensBySection.get(sectionIndex) ?? [];
-                        arr.push({ key: entry.key, insertAfterLineText });
-                        screensBySection.set(sectionIndex, arr);
-                      } catch (screenError) {
-                        console.debug(
-                          `[docs-review] enrich skipped: màn "${entry.key}" của trang "${pg.mdPath}":`,
-                          screenError,
-                        );
-                      }
-                    }
-                  }
-                }
               }
 
               const dedupedChangedFlowIds = [...new Set(pageChangedFlowIds)];
@@ -17734,6 +17795,22 @@ export async function startServer({
               }
             } catch (enrichError) {
               console.debug(`[docs-review] enrich skipped: trang "${pg.mdPath}":`, enrichError);
+            }
+          }
+
+          // WP8b — SAU khi enrich xong (kể cả khi enrich bỏ qua vì trang
+          // không dính flows/comp gì), chụp lại TOÀN BỘ lát ở trạng thái này
+          // làm BASELINE cho validate theo section (khối C bên dưới): sơ đồ
+          // đã thay + bảng đã chèn, TRƯỚC khi agent chạy. Đọc lát nào lỗi là
+          // trang hỏng như cũ — không có baseline thì không validate được.
+          const baseSlices: string[] = [];
+          if (errors.length === 0) {
+            try {
+              for (const sec of sections) {
+                baseSlices.push(await fs.promises.readFile(path.join(cwd, sectionSlicePath(reviewRel, sec.index)), 'utf8'));
+              }
+            } catch (error) {
+              errors.push(`Không đọc được lát baseline: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
 
@@ -17768,123 +17845,241 @@ export async function startServer({
             }
           }
 
-          // Ghép các lát lại thành bản clone hoàn chỉnh. Phải chạy TRƯỚC mọi
-          // bước validate bên dưới vì chúng đọc `reviewRel`. Lát nào không đọc
-          // được (agent xoá mất) là lỗi trang — im lặng bỏ qua sẽ làm mất hẳn
-          // một đoạn tài liệu mà validateChanges lại báo "xoá không khai báo"
-          // ở tận đâu đó, rất khó lần ra.
-          if (!sawCancel) {
-            try {
-              const parts: string[] = [];
-              for (const sec of sections) {
-                parts.push(await fs.promises.readFile(path.join(cwd, sectionSlicePath(reviewRel, sec.index)), 'utf8'));
-              }
-              await fs.promises.writeFile(path.join(cwd, reviewRel), rebuildPageFromSlices(parts, pageEol), 'utf8');
-            } catch (error) {
-              errors.push(`Không ghép lại được trang từ các lát: ${error instanceof Error ? error.message : String(error)}`);
-            }
-          }
-
+          // Ghép các lát lại và validate THEO TỪNG SECTION (Phương án B —
+          // WP8b, sự cố 19/08 #465ee502: một section hỏng — thiếu caption
+          // trong quote, dán rác output tool vào lát — trước đây làm hỏng
+          // validate CẤP TRANG và removePageOutputs xoá sạch CẢ TRANG, kể cả
+          // 10/12 section đã đạt. Từ đây mỗi section tự validate so với
+          // `basePrime` của NÓ (baseline đã enrich + bảng "Cấu thành màn
+          // hình" đã đối soát tại chỗ theo agent sửa, xem
+          // reconcileCompositionTable) — section hỏng chỉ bị khôi phục về
+          // baseline của chính nó; các section khác giữ nguyên nội dung agent
+          // đã sửa. Trang chỉ hỏng khi lỗi KHÔNG thuộc nội dung một section cụ
+          // thể (cắt lát/enrich/chạy agent thất bại — điều kiện
+          // `errors.length === 0` dưới đây), khi MỌI section đều không đạt,
+          // hoặc khi self-check daemon tự phát hiện bug (bên dưới) — must_not
+          // cấm bỏ fail-shut cấp trang cho các lỗi này.
           let changes: DocChange[] = [];
           let notes: DocNote[] = [];
           const warnings: string[] = [];
-          let pageStatus: 'succeeded' | 'failed' = errors.length === 0 && !sawCancel ? 'succeeded' : 'failed';
+          let sectionsFailed: Array<{ index: number; heading: string; errors: string[] }> = [];
 
-          if (pageStatus === 'succeeded') {
+          if (!sawCancel && errors.length === 0) {
             try {
-              const [original, revised] = await Promise.all([
-                fs.promises.readFile(path.join(cwd, pg.mdPath), 'utf8'),
-                fs.promises.readFile(path.join(cwd, reviewRel), 'utf8'),
-              ]);
-              // Gộp file tạm của MỌI section. File thiếu = mảng rỗng, KHÔNG
-              // phải lỗi: một section không có phát hiện nào là chuyện bình
-              // thường và không được làm hỏng trang.
+              const original = await fs.promises.readFile(path.join(cwd, pg.mdPath), 'utf8');
+
+              // Lát sau khi agent chạy — lỗi đọc (agent xoá mất file) → null,
+              // section đó tự bị đánh hỏng ngay dưới. `revisedPageDraft` chỉ
+              // dùng làm `locateIn` cho validateChanges (anchor/doc_refs của
+              // agent có thể trỏ sang section khác trong cùng trang).
+              const revisedSlices: Array<string | null> = [];
               for (const sec of sections) {
+                revisedSlices.push(
+                  await fs.promises
+                    .readFile(path.join(cwd, sectionSlicePath(reviewRel, sec.index)), 'utf8')
+                    .catch(() => null),
+                );
+              }
+              const revisedPageDraft = rebuildPageFromSlices(
+                revisedSlices.map((s, i) => s ?? baseSlices[i]!),
+                pageEol,
+              );
+
+              const finalSlices: string[] = new Array(sections.length);
+              const basePrimes: Array<string | undefined> = new Array(sections.length);
+              const keptChanges: DocChange[] = [];
+              const keptNotes: DocNote[] = [];
+
+              for (let si = 0; si < sections.length; si += 1) {
+                const sec = sections[si]!;
+                const secErrors: string[] = [];
+                let slice = revisedSlices[si];
+                if (slice == null) {
+                  secErrors.push('Lát cắt bị xoá/không đọc được');
+                  slice = baseSlices[si]!;
+                }
+
+                const noise = findToolOutputNoise(slice);
+                if (noise.length > 0) {
+                  secErrors.push(
+                    `Lát bị dính output của tool (${noise.length} dòng): "${noise.slice(0, 3).join('" | "')}"`,
+                  );
+                }
+
+                // Chú giải bị cấm kiểm cho LÁT (thay vì cả trang như trước) —
+                // section nào bị chèn "[Rà soát …]" chỉ section đó hỏng.
+                const markers = findReviewMarkers(slice);
+                if (markers.length > 0) {
+                  secErrors.push(
+                    `Lát bị chèn chú giải bị cấm ở ${markers.length} dòng — nhận xét không sửa được bằng text phải đi vào notes.json, không chèn vào tài liệu: ${markers
+                      .slice(0, 5)
+                      .map((m) => `"${m}"`)
+                      .join('; ')}`,
+                  );
+                }
+
+                // Đối soát bảng "Cấu thành màn hình" của section này (nếu có)
+                // trước — `basePrime` là baseline đã "gộp" bảng cuối cùng agent
+                // sửa, nên validateChanges ngay dưới không đòi agent khai
+                // change cho việc sửa ô của bảng.
+                let basePrime = baseSlices[si]!;
+                const finalQuotes = new Map<string, string>();
+                const tables = tablesBySection.get(sec.index) ?? [];
+                for (const t of tables) {
+                  const r = reconcileCompositionTable(basePrime, slice, t.key);
+                  if (!r.ok) secErrors.push(r.error);
+                  else {
+                    basePrime = r.baseWithFinal;
+                    finalQuotes.set(t.key, r.block);
+                  }
+                }
+
+                // File thiếu = mảng rỗng, KHÔNG phải lỗi: một section không
+                // có phát hiện nào là chuyện bình thường.
+                let agentChanges: DocChange[] = [];
                 const rawChanges = await fs.promises
                   .readFile(path.join(cwd, sectionOutputPath(reviewRel, sec.index, 'changes')), 'utf8')
                   .catch(() => null);
                 if (rawChanges != null) {
                   const parsed = parseChangesFile(rawChanges);
-                  if ('errors' in parsed) errors.push(...parsed.errors.map((e) => `s${sec.index}: ${e}`));
-                  // ÉP `origin: 'agent'` bất kể agent tự khai gì trong file —
-                  // chỉ `.sys.changes.json` (đọc ngay dưới) mới được giữ
-                  // 'system'. Đây là điều kiện để lỗi "agent tự tạo kind
-                  // flow-diagram" ngay dưới phân biệt được đúng nguồn.
-                  else changes.push(...parsed.changes.map((c) => ({ ...c, origin: 'agent' as const })));
+                  if ('errors' in parsed) secErrors.push(...parsed.errors.map((e) => `s${sec.index}: ${e}`));
+                  else agentChanges = parsed.changes.map((c) => ({ ...c, origin: 'agent' as const }));
                 }
+                // Bỏ change agent lỡ tự khai cho việc sửa ô bảng — daemon đã
+                // tự đối soát và cập nhật quote ở trên, khai lại là thừa và
+                // validateChanges sẽ không tìm thấy `before` đúng ngữ cảnh.
+                agentChanges = agentChanges.filter((c) => {
+                  const owned = tables.some((t) =>
+                    isCompositionOwnedChange(c, t.draftBlock, finalQuotes.get(t.key) ?? t.draftBlock),
+                  );
+                  if (owned) {
+                    console.debug(
+                      `[docs-review] change "${c.id}" bị lọc: thuộc bảng "Cấu thành màn hình" đã được daemon tự đối soát (agent không cần khai change cho việc sửa ô).`,
+                    );
+                  }
+                  return !owned;
+                });
+                // kind 'flow-diagram' chỉ daemon (origin 'system') được tạo —
+                // xem Phương án B trong `skills/docs-spec-review/SKILL.md`. Mọi
+                // agentChanges ở đây đều origin 'agent' (ép ngay trên), nên
+                // không cần so lại origin như bản cấp-trang trước đây.
+                for (const c of agentChanges) {
+                  if (c.kind === 'flow-diagram') {
+                    secErrors.push(
+                      `Change "${c.id}" khai kind "flow-diagram" nhưng loại này chỉ do daemon tạo (xem flows/…/ux-review.json) — agent không được tự tạo change kind flow-diagram.`,
+                    );
+                  }
+                }
+
+                let sectionNotes: DocNote[] = [];
                 const rawNotes = await fs.promises
                   .readFile(path.join(cwd, sectionOutputPath(reviewRel, sec.index, 'notes')), 'utf8')
                   .catch(() => null);
                 if (rawNotes != null) {
                   const parsed = parseNotesFile(rawNotes);
-                  if ('errors' in parsed) errors.push(...parsed.errors.map((e) => `s${sec.index}: ${e}`));
-                  else notes.push(...parsed.notes);
+                  if ('errors' in parsed) secErrors.push(...parsed.errors.map((e) => `s${sec.index}: ${e}`));
+                  else sectionNotes = parsed.notes;
                 }
-              }
 
-              // Sơ đồ mermaid do DAEMON tự thay (WP2, khối enrich TRƯỚC khi
-              // spawn agent ở trên) khai change ở MỘT file riêng, tách khỏi
-              // mọi file section của agent — nối vào ĐẦU mảng `changes` (xem
-              // systemChangesPath). File không tồn tại = trang không có sơ đồ
-              // nào được thay, không phải lỗi.
-              const rawSysChanges = await fs.promises
-                .readFile(path.join(cwd, systemChangesPath(reviewRel)), 'utf8')
-                .catch(() => null);
-              if (rawSysChanges != null) {
-                const parsedSys = parseChangesFile(rawSysChanges);
-                if ('errors' in parsedSys) errors.push(...parsedSys.errors.map((e) => `sys: ${e}`));
-                else changes.unshift(...parsedSys.changes.map((c) => ({ ...c, origin: 'system' as const })));
-              }
+                // WP8b: đối chiếu (basePrime, slice) — không phải (original,
+                // revised) cấp trang — với locateIn = cả trang đã sửa để
+                // anchor/doc_refs trỏ sang section khác vẫn định vị được.
+                secErrors.push(...validateChanges(basePrime, slice, agentChanges, { locateIn: revisedPageDraft }));
 
-              // Chú giải bị cấm kiểm TRƯỚC: nếu agent đã chèn "[Rà soát …]"
-              // vào bản clone thì mọi kiểm tra sau đó chỉ đang xác nhận một
-              // tài liệu đã hỏng.
-              const markers = findReviewMarkers(revised);
-              if (markers.length > 0) {
-                errors.push(
-                  `Bản clone bị chèn chú giải bị cấm ở ${markers.length} dòng — nhận xét không sửa được bằng text phải đi vào notes.json, không chèn vào tài liệu: ${markers
-                    .slice(0, 5)
-                    .map((m) => `"${m}"`)
-                    .join('; ')}`,
-                );
-              }
-              if (errors.length === 0) {
-                errors.push(...validateChanges(original, revised, changes));
-                // kind 'flow-diagram' chỉ daemon (origin 'system', từ
-                // .sys.changes.json) được tạo — xem Phương án B trong
-                // `skills/docs-spec-review/SKILL.md`. Mọi change origin 'agent' (ép ở
-                // vòng gộp phía trên, bất kể agent tự khai origin gì) mang
-                // kind này là agent lách cơ chế, đánh hỏng trang cùng cơ chế
-                // lỗi validate khác (fail-shut).
-                for (const c of changes) {
-                  if (c.kind === 'flow-diagram' && c.origin !== 'system') {
-                    errors.push(
-                      `Change "${c.id}" khai kind "flow-diagram" nhưng loại này chỉ do daemon tạo (xem flows/…/ux-review.json) — agent không được tự tạo change kind flow-diagram.`,
-                    );
-                  }
-                }
-                // Note neo trượt: cảnh báo, KHÔNG hỏng trang (xem partitionNotesByAnchor).
-                const partitioned = partitionNotesByAnchor(original, notes);
-                notes = partitioned.notes;
+                // Note neo trượt: cảnh báo, KHÔNG hỏng section (xem partitionNotesByAnchor).
+                const partitioned = partitionNotesByAnchor(original, sectionNotes);
                 warnings.push(...partitioned.warnings);
-                errors.push(...partitioned.errors);
-                errors.push(
+                secErrors.push(...partitioned.errors);
+
+                secErrors.push(
                   ...validateRuleIds(
                     [
-                      ...changes.map((c) => ({ id: c.id, kind: c.kind, ...(c.rule_id ? { rule_id: c.rule_id } : {}) })),
-                      ...notes.map((n) => ({ id: n.id, kind: n.kind, ...(n.rule_id ? { rule_id: n.rule_id } : {}) })),
+                      ...agentChanges.map((c) => ({ id: c.id, kind: c.kind, ...(c.rule_id ? { rule_id: c.rule_id } : {}) })),
+                      ...partitioned.notes.map((n) => ({ id: n.id, kind: n.kind, ...(n.rule_id ? { rule_id: n.rule_id } : {}) })),
                     ],
                     criteriaAnchors,
                     internalRefs,
                   ),
                 );
+
+                const taskIdx = taskIndexBySection[idx]![si]!;
+                if (secErrors.length > 0) {
+                  // Section hỏng: khôi phục lát về baseline đã enrich (KHÔNG
+                  // giữ sửa đổi của agent), bỏ changes/notes của section này —
+                  // đây là điểm khác biệt cốt lõi với validate cấp trang cũ.
+                  finalSlices[si] = baseSlices[si]!;
+                  sectionsFailed.push({ index: sec.index, heading: sec.heading, errors: secErrors });
+                  tasks[taskIdx]!.status = 'failed';
+                } else {
+                  finalSlices[si] = slice;
+                  keptChanges.push(...agentChanges);
+                  keptNotes.push(...partitioned.notes);
+                  // Cập nhật `quote` của change bảng (đối tượng CHUNG với
+                  // phần tử trong `sysChanges` — mutate tại đây phản ánh
+                  // thẳng vào đó) thành bảng cuối agent đã sửa ô.
+                  for (const t of tables) {
+                    const finalQuote = finalQuotes.get(t.key);
+                    if (finalQuote != null) t.change.quote = finalQuote;
+                  }
+                  basePrimes[si] = basePrime;
+                  tasks[taskIdx]!.status = 'succeeded';
+                }
               }
-              if (errors.length > 0) pageStatus = 'failed';
+
+              let revised = '';
+              try {
+                revised = rebuildPageFromSlices(finalSlices, pageEol);
+                await fs.promises.writeFile(path.join(cwd, reviewRel), revised, 'utf8');
+              } catch (error) {
+                errors.push(`Không ghép lại được trang từ các lát: ${error instanceof Error ? error.message : String(error)}`);
+              }
+
+              if (sections.length > 0 && sectionsFailed.length === sections.length) {
+                errors.push('Mọi section của trang đều không đạt kiểm tra');
+                errors.push(
+                  ...sectionsFailed.flatMap((f) => f.errors.map((e) => `s${String(f.index).padStart(2, '0')}: ${e}`)),
+                );
+              }
+
+              // sysChanges (sơ đồ + bảng, quote đã cập nhật cho section đạt)
+              // nối trước changes agent giữ lại từ các section đạt.
+              changes = [...sysChanges, ...keptChanges];
+              notes = keptNotes;
+
+              // Self-check daemon (chỉ khi chưa có lỗi nào khác): đối chiếu
+              // lại chính những gì daemon vừa dựng — đây là bug DAEMON nếu
+              // trượt (agent chỉ chạm tới `slice`, không chạm `basePrime`),
+              // nên fail-shut để lộ ra thay vì âm thầm ghi một trang sai.
+              if (errors.length === 0) {
+                const baselinePrimePage = rebuildPageFromSlices(
+                  sections.map((_, i) => basePrimes[i] ?? baseSlices[i]!),
+                  pageEol,
+                );
+                const selfCheckSys = validateChanges(original, baselinePrimePage, sysChanges);
+                const selfCheckAgent = validateChanges(baselinePrimePage, revised, keptChanges, { locateIn: revised });
+                // WP8d (mục non-blocking của review WP8b) — `sysChanges` (sơ
+                // đồ + bảng do daemon TỰ tạo) trước giờ không đi qua
+                // validateRuleIds ở đâu cả: đúng-do-cấu-tạo (rule_id lấy
+                // thẳng từ `flow.id`/`entry.key` có thật trên đĩa), nhưng đây
+                // là hồi quy âm thầm nếu sau này ai đổi cách sinh rule_id của
+                // hai hàm đó — cho chúng vào self-check cấp trang cho chắc.
+                const selfCheckSysRuleIds = validateRuleIds(
+                  sysChanges.map((c) => ({ id: c.id, kind: c.kind, ...(c.rule_id ? { rule_id: c.rule_id } : {}) })),
+                  criteriaAnchors,
+                  internalRefs,
+                );
+                if (selfCheckSys.length > 0 || selfCheckAgent.length > 0 || selfCheckSysRuleIds.length > 0) {
+                  errors.push(
+                    `Self-check daemon thất bại: ${[...selfCheckSys, ...selfCheckAgent, ...selfCheckSysRuleIds].join('; ')}`,
+                  );
+                }
+              }
             } catch (error) {
-              pageStatus = 'failed';
               errors.push(`Không đọc được output của trang: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
+
+          const pageStatus: 'succeeded' | 'failed' = errors.length === 0 && !sawCancel ? 'succeeded' : 'failed';
 
           if (pageStatus === 'failed') {
             // Evidence BEFORE the wipe below: what the agent actually left on
@@ -17921,19 +18116,9 @@ export async function startServer({
             // docblock in docs-review.ts for why this delete is load-bearing.
             // Nó dọn luôn mọi file tạm .s<NN>.* của trang (kể cả .sys.changes.json).
             await removePageOutputs(cwd, pg.mdPath);
-            // removePageOutputs không biết gì về `review/_composition/` (đây
-            // là output của WP2, không thuộc convention `<clone-stem>.*` mà
-            // nó dọn) — dọn riêng ở đây cho đúng phần trang này đã dựng.
-            await Promise.all(
-              compDraftKeysForPage.flatMap((key) => [
-                fs.promises.rm(path.join(cwd, 'review', '_composition', `${key}.md`), { force: true }).catch(() => null),
-                fs.promises
-                  .rm(path.join(cwd, 'review', '_composition', `${key}.placement.json`), { force: true })
-                  .catch(() => null),
-              ]),
-            );
             changes = [];
             notes = [];
+            sectionsFailed = [];
           } else {
             // Đạt: ghi file gộp cấp TRANG (đúng shape DocRedlinePreview đang
             // đọc), rồi xoá mọi file tạm theo section.
@@ -17962,19 +18147,12 @@ export async function startServer({
             }
             await fs.promises.rm(path.join(cwd, pageOutlinePath(reviewRel)), { force: true }).catch(() => null);
             // WP2 (dr-review enrich): các change trong .sys.changes.json đã
-            // được gộp vào mảng `changes` phía trên (đầu mảng) và vừa ghi
-            // vào `<page>.changes.json` ngay trên — file tạm .sys và nháp
-            // `_composition/<KEY>.md`/.placement.json không còn giá trị gì
-            // nữa, dọn cùng lúc với các file tạm khác của trang.
+            // được gộp vào mảng `changes` phía trên (đầu mảng) và vừa ghi vào
+            // `<page>.changes.json` ngay trên — file tạm .sys không còn giá
+            // trị gì nữa, dọn cùng lúc với các file tạm khác của trang. WP8b:
+            // không còn thư mục nháp riêng để dọn — bảng được daemon chèn
+            // thẳng vào lát từ đầu (xem khối enrich phía trên).
             await fs.promises.rm(path.join(cwd, systemChangesPath(reviewRel)), { force: true }).catch(() => null);
-            await Promise.all(
-              compDraftKeysForPage.flatMap((key) => [
-                fs.promises.rm(path.join(cwd, 'review', '_composition', `${key}.md`), { force: true }).catch(() => null),
-                fs.promises
-                  .rm(path.join(cwd, 'review', '_composition', `${key}.placement.json`), { force: true })
-                  .catch(() => null),
-              ]),
-            );
           }
 
           results[idx] = {
@@ -17987,15 +18165,33 @@ export async function startServer({
             status: pageStatus,
             ...(errors.length > 0 ? { errors } : {}),
             ...(warnings.length > 0 ? { warnings } : {}),
+            // Chỉ có mặt khi trang ĐẠT qua đường validate theo SECTION (WP8b)
+            // — xem docblock DocPageResult.sectionsTotal trong docs-review.ts:
+            // trang chưa đi hết vòng validate theo section (dừng sớm ở lỗi
+            // cấp trang) giữ nguyên shape cũ, không có 2 trường này.
+            ...(pageStatus === 'succeeded'
+              ? { sectionsTotal: sections.length, ...(sectionsFailed.length > 0 ? { sectionsFailed } : {}) }
+              : {}),
           };
 
-          // Trang là đơn vị đạt/hỏng, nên MỌI task của trang mang trạng thái
-          // của trang — kể cả section chạy xong rồi mà trang hỏng ở bước
-          // validate gộp, và section chưa kịp chạy vì trang dừng sớm.
-          for (const ti of taskIndexBySection[idx]!) tasks[ti]!.status = pageStatus;
+          // WP8b: trang hỏng → mọi task của trang mang trạng thái 'failed' —
+          // kể cả section đã validate đạt riêng lẻ, vì lỗi khiến trang hỏng ở
+          // đây LUÔN là lỗi CẤP TRANG (cắt lát/ghép/self-check/mọi section
+          // hỏng — xem khối validate ở trên), không phải lỗi của một section
+          // cụ thể. Trang đạt thì GIỮ NGUYÊN trạng thái từng task đã đặt
+          // ngay trong vòng lặp per-section ở trên — không ghi đè hàng loạt
+          // thành 'succeeded' nữa, vì một section có thể đã bị khôi phục về
+          // baseline (task 'failed') trong khi trang vẫn đạt.
+          if (pageStatus === 'failed') {
+            for (const ti of taskIndexBySection[idx]!) tasks[ti]!.status = pageStatus;
+          }
           persistTasks();
           done += 1;
-          console.log(`[docs-review] page ${done}/${pages.length} "${pg.page}" (${sections.length} section) → ${pageStatus}`);
+          const sectionSummary =
+            pageStatus === 'succeeded' ? ` (${sections.length - sectionsFailed.length}/${sections.length} section đạt)` : '';
+          console.log(
+            `[docs-review] page ${done}/${pages.length} "${pg.page}" (${sections.length} section) → ${pageStatus}${sectionSummary}`,
+          );
           return pageStatus === 'succeeded' ? 'succeeded' : sawCancel ? 'idle' : 'failed';
         };
 

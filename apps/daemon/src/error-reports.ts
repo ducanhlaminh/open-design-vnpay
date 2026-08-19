@@ -373,17 +373,68 @@ const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', '.turbo', '.
 
 /** Stable tag for a daemon-side validation error string (docs-review /
  *  docs-comp / prd-review). Pattern-matched on the daemon's OWN messages, so
- *  it is exact for known shapes and `OTHER` for anything else. */
+ *  it is exact for known shapes and `OTHER` for anything else.
+ *
+ *  Thứ tự các nhánh CỐ Ý là tiền tố/khuôn CHẶT trước, từ khoá LỎNG sau — sự cố
+ *  thật (error report #465ee502, 19/08/2026) đo được hai lần khớp nhầm vì làm
+ *  ngược: (1) thông báo "Dòng đã đổi/thêm nhưng không có change.quote nào khai
+ *  báo: \"…comp/…screen.json…\"" bị nhánh `/json/` trần nuốt mất thành
+ *  INVALID_JSON dù đúng ra là UNDECLARED_EDIT (agent quên khai quote cho dòng
+ *  caption bảng thành phần); (2) nhánh RULE_ID lỏng (`rule[_ ]?id|tiêu
+ *  chí|criteria`) khớp nhầm cả những thông báo không liên quan gì tới rule_id.
+ *  Sửa bằng cách bắt đúng KHUÔN THÔNG BÁO thật của validateChanges/
+ *  validateRuleIds/reconcileCompositionTable/findToolOutputNoise (docs-review.ts,
+ *  docs-review-enrich.ts) TRƯỚC khi rơi về các từ khoá lỏng còn lại.
+ *
+ *  WP8c (review độc lập chỉ ra WP8a chép sai khuôn cho 3 nhánh): server.ts
+ *  bọc MỌI thông báo cấp section bằng tiền tố `s<NN>: ` (fan-out theo
+ *  section) hoặc `sys: ` (change hệ thống) TRƯỚC KHI gọi hàm này — nếu mỗi
+ *  nhánh tự thêm bản có tiền tố thì phải nhân đôi toàn bộ regex phía dưới.
+ *  Bỏ tiền tố đó MỘT LẦN ngay sau lowercase để mọi nhánh khớp thẳng vào khuôn
+ *  thông báo GỐC (không tiền tố) mà validateChanges/parseChangesFile/
+ *  reconcileCompositionTable… thật sự phát ra. */
 export function classifyValidationError(text: string): string {
-  const t = text.toLowerCase();
+  // Bỏ tiền tố section MỘT LẦN ở đây thay vì nhân đôi từng regex nhánh bên
+  // dưới với một bản có tiền tố (xem docblock).
+  const t = text.toLowerCase().replace(/^(?:s\d+|sys):\s*/, '');
   if (/^files:/.test(t)) return 'EVIDENCE';
   if (/agent run kết thúc|agent run ended|trạng thái "failed"|trạng thái "canceled"/.test(t)) return 'AGENT_RUN';
   if (/không cắt được/.test(t)) return 'SLICE';
   if (/không ghép lại được/.test(t)) return 'REBUILD';
   if (/không đọc được output|không có review\//.test(t)) return 'OUTPUT_MISSING';
-  if (/json/.test(t)) return 'INVALID_JSON';
-  if (/\[rà soát/.test(t)) return 'MARKER_LEFT';
-  if (/rule[_ ]?id|tiêu chí|criteria/.test(t)) return 'RULE_ID';
+  // validateChanges (docs-review.ts): "Dòng đã đổi/thêm…"/"Dòng đã bị xoá…" —
+  // phải bắt TRƯỚC INVALID_JSON vì detail hay trích nguyên văn dòng chứa
+  // "comp/…screen.json" (bảng thành phần) làm `/json/` trần khớp nhầm.
+  if (/^dòng đã (đổi|thêm|bị xoá)/.test(t)) return 'UNDECLARED_EDIT';
+  // validateChanges: mọi thông báo `Change "<id>" …` (quote/before/anchor/
+  // doc_ref/xoá thuần/không có cả) — neo hỏng hoặc thiếu neo của MỘT change.
+  if (/^change "[^"]*" (có quote|có before|có anchor|có doc_ref|xoá thuần|không có cả)/.test(t)) return 'CHANGE_ANCHOR';
+  // server.ts: agent tự khai kind 'flow-diagram' (chỉ daemon được tạo).
+  if (/^change "[^"]*" khai kind "flow-diagram"/.test(t)) return 'FORBIDDEN_KIND';
+  // validateNotes/partitionNotesByAnchor: mọi thông báo `Note "<id>" …`.
+  if (/^note "/.test(t)) return 'NOTE_ANCHOR';
+  if (/bản clone bị chèn chú giải|\[rà soát/.test(t)) return 'MARKER_LEFT';
+  // validateRuleIds (docs-review.ts) — đọc đúng khuôn trong code, không phải
+  // bản tiếng Việt xấp xỉ: `"<id>" có rule_id…`/`"<id>" dùng rule_id "…" cho
+  // kind "…": … chỉ được làm rule_id cho kind '…'`.
+  if (/^"[^"]*" có rule_id|có rule_id không tồn tại|chỉ được làm rule_id cho kind/.test(t)) {
+    return 'RULE_ID';
+  }
+  // parseCompositionBlock/reconcileCompositionTable (docs-review-enrich.ts):
+  // MỌI thông báo của bảng "Cấu thành màn hình" — lỗi parse (caption/tiêu đề/
+  // hàng lạ…) lẫn lỗi đối chiếu (số hàng/cột khoá bị sửa…) — đều bắt đầu bằng
+  // đúng chuỗi này. Bắt TRƯỚC INVALID_JSON vì một thông báo bảng có thể nhắc
+  // "comp/<KEY>.screen.json" (tên file) làm nhánh JSON khớp nhầm.
+  if (/^bảng thành phần /.test(t)) return 'COMPOSITION_TABLE';
+  // parseChangesFile/parseNotesFile (docs-review.ts) sau khi bỏ tiền tố:
+  // "changes.json/notes.json không phải JSON hợp lệ/một mảng", "Phần tử thứ
+  // N …", hoặc bất kỳ thông báo nào khác mở đầu bằng tên file JSON đó.
+  if (/không phải json hợp lệ|json hỏng|không phải một mảng|^phần tử thứ|^(changes|notes)\.json/.test(t)) {
+    return 'INVALID_JSON';
+  }
+  // findToolOutputNoise (docs-review-enrich.ts): agent dán rác output shell
+  // vào lát thay vì sửa bằng công cụ sửa file.
+  if (/output của tool|wall time|total output lines/.test(t)) return 'TOOL_NOISE';
   if (/neo|anchor/.test(t)) return 'NOTE_ANCHOR';
   if (/không khớp|mismatch|diff/.test(t)) return 'DIFF_MISMATCH';
   if (/schema|thiếu trường|missing field/.test(t)) return 'SCHEMA';

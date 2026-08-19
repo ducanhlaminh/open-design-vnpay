@@ -1637,3 +1637,74 @@ describe('WP2 nền — kind flow-diagram, origin, rule_id nội bộ', () => {
     }
   });
 });
+
+describe('WP8a — validateChanges opts.locateIn, mergeChangeReports sectionsTotal/sectionsFailed', () => {
+  test('validateChanges: anchor chỉ có trong locateIn (không có trong revised) → không lỗi khi truyền opts.locateIn; không truyền => lỗi như cũ', () => {
+    const original = 'Section gốc.\n';
+    const revised = 'Section gốc đã sửa chữ.\n';
+    const locateIn = 'Toàn trang: phần khác có câu "Điểm neo ở section khác."\n' + revised;
+    const changes: DocChange[] = [
+      {
+        id: 'c1',
+        kind: 'ux-writing',
+        severity: 'minor',
+        before: 'Section gốc.',
+        quote: 'Section gốc đã sửa chữ.',
+        anchor: 'Điểm neo ở section khác.',
+        reason: 'sửa chữ, viện dẫn đoạn khác của trang',
+      },
+    ];
+
+    const errorsWithoutOpts = validateChanges(original, revised, changes);
+    assert.ok(errorsWithoutOpts.some((e) => e.includes('anchor')), JSON.stringify(errorsWithoutOpts));
+
+    const errorsWithLocateIn = validateChanges(original, revised, changes, { locateIn });
+    assert.deepEqual(errorsWithLocateIn, []);
+  });
+
+  test('mergeChangeReports: page có sectionsTotal 12/sectionsFailed 2 → index có sections_total/sections_failed, summary có mục mới + "(10/12 section)"; page không có sectionsTotal → index y như cũ', () => {
+    const results: DocPageResult[] = [
+      {
+        slug: 'a',
+        page: 'Trang A',
+        docPath: 'docs/a.md',
+        reviewPath: 'review/docs/a.md',
+        status: 'succeeded',
+        changes: [],
+        notes: [],
+        sectionsTotal: 12,
+        sectionsFailed: [
+          {
+            index: 3,
+            heading: '6.1 Màn trang chủ',
+            errors: ['Dòng đã đổi/thêm nhưng không có change.quote nào khai báo: "x"'],
+          },
+          { index: 7, heading: '', errors: ['Rác output-của-tool: "Wall time: 0.4 seconds"'] },
+        ],
+      },
+      {
+        slug: 'b',
+        page: 'Trang B',
+        docPath: 'docs/b.md',
+        reviewPath: 'review/docs/b.md',
+        status: 'succeeded',
+        changes: [],
+        notes: [],
+      },
+    ];
+    const { index, summaryMd } = mergeChangeReports(results);
+    const idx = index as any;
+    const pageA = idx.pages.find((p: any) => p.slug === 'a');
+    const pageB = idx.pages.find((p: any) => p.slug === 'b');
+
+    assert.equal(pageA.sections_total, 12);
+    assert.equal(pageA.sections_failed, 2);
+    assert.ok(!('sections_total' in pageB), 'trang không có sectionsTotal thì index KHÔNG có trường sections_total');
+    assert.ok(!('sections_failed' in pageB));
+
+    assert.match(summaryMd, /## Section không đạt \(đã giữ nguyên nội dung gốc đã enrich\)/);
+    assert.match(summaryMd, /Trang A.*s03 "6\.1 Màn trang chủ"/);
+    assert.match(summaryMd, /Trang A.*s07 "Mở đầu"/);
+    assert.match(summaryMd, /Đã sửa \(10\/12 section\)/);
+  });
+});
