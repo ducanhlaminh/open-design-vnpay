@@ -164,6 +164,46 @@ test('codex args use danger-full-access sandbox on Windows because workspace-wri
   });
 });
 
+// 19/08/2026: a fresh host install (install.sh writes
+// OD_WRITE_ISOLATION=required) runs the agent under `sandbox-exec`. Codex's
+// own workspace-write is Seatbelt too and shells out to `sandbox-exec` per
+// command; macOS refuses the nested `sandbox_apply`, so EVERY tool call —
+// including a read like `cat flows/_inputs.json` — dies before it runs.
+test('codex args drop codex\'s own Seatbelt sandbox when OD already wraps the spawn (no nested sandbox)', () => {
+  delete process.env.OD_CODEX_DISABLE_PLUGINS;
+
+  withPlatform('darwin', () => {
+    const args = codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project', writeIsolated: true });
+
+    assert.deepEqual(args.slice(0, 5), [
+      'exec',
+      '--json',
+      '--skip-git-repo-check',
+      '--sandbox',
+      'danger-full-access',
+    ]);
+    assert.equal(args.includes('workspace-write'), false);
+    assert.equal(args.includes('sandbox_workspace_write.network_access=true'), false);
+    // Still headless: nothing here may reintroduce an approval prompt.
+    assert.ok(args.includes('approval_policy="never"'));
+  });
+});
+
+test('codex keeps workspace-write when OD is NOT wrapping the spawn (writeIsolated false/absent)', () => {
+  delete process.env.OD_CODEX_DISABLE_PLUGINS;
+
+  withPlatform('darwin', () => {
+    for (const ctx of [
+      { cwd: '/tmp/od-project' },
+      { cwd: '/tmp/od-project', writeIsolated: false },
+    ]) {
+      const args = codex.buildArgs('', [], [], {}, ctx);
+      assert.equal(args[4], 'workspace-write', `expected workspace-write for ${JSON.stringify(ctx)}`);
+      assert.ok(args.includes('sandbox_workspace_write.network_access=true'));
+    }
+  });
+});
+
 test('codex args keep plugins enabled when OD_CODEX_DISABLE_PLUGINS is unset', () => {
   delete process.env.OD_CODEX_DISABLE_PLUGINS;
 

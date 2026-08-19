@@ -110,6 +110,24 @@ export const codexAgentDef = {
       // and Linux (Landlock+seccomp) keep workspace-write because their
       // sandbox enforcement permits shell while restricting writes.
       const isWindows = process.platform === 'win32';
+      // macOS + OD write isolation: the daemon is about to run this very
+      // process under `/usr/bin/sandbox-exec` (write-isolation.ts). Codex's
+      // own `workspace-write` is Seatbelt too — it shells out to
+      // `/usr/bin/sandbox-exec` for EVERY command it runs — and macOS
+      // refuses a nested sandbox: the inner call dies with `sandbox_apply:
+      // Operation not permitted` BEFORE the command runs. The agent then
+      // reports every tool call, even a plain `cat file`, as "blocked by the
+      // sandbox environment before it ran" and the stage fails without
+      // reading a single file (reported 19/08/2026 on a fresh host install,
+      // where install.sh writes OD_WRITE_ISOLATION=required).
+      //
+      // So hand write-scope enforcement to the OUTER sandbox, which is
+      // strictly stronger: OD's profile confines codex itself and every
+      // child it spawns to the run cwd + a fixed allowlist, kernel-enforced,
+      // whereas codex's workspace-write only covers the commands codex
+      // chooses to route through it. `danger-full-access` here means "no
+      // SECOND sandbox", not "unsandboxed".
+      const outerSandboxOwnsWrites = runtimeContext.writeIsolated === true;
       // OD spawns Codex headlessly via SSE; there is no TTY for the
       // user to approve commands, so the default policy silently
       // cancels MCP tool calls and any shell invocation not on the
@@ -119,7 +137,7 @@ export const codexAgentDef = {
       // than `--ask-for-approval` because the latter is a top-level
       // codex flag and would be rejected as "unexpected argument"
       // after the `exec` subcommand.
-      const args = isWindows
+      const args = isWindows || outerSandboxOwnsWrites
         ? [
             'exec',
             '--json',

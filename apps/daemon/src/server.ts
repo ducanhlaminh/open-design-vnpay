@@ -331,6 +331,7 @@ import {
   resolveWritableStatePaths,
   wrapInvocationInWriteIsolation,
   writeIsolationMode,
+  writeIsolationPossible,
 } from './write-isolation.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
@@ -12933,12 +12934,19 @@ export async function startServer({
     const agentLaunch = resolveAgentLaunch(def, configuredAgentEnv);
     const resolvedBin = agentLaunch.selectedPath;
 
+    // Whether this spawn will be wrapped in `sandbox-exec` has to be known
+    // HERE, before buildArgs, even though the plan itself is only built at
+    // the spawn gate far below: codex's argv depends on it (a nested
+    // Seatbelt sandbox is refused by macOS, so codex must not apply its own
+    // — see runtimes/defs/codex.ts). `willSandbox` (docker) wins: a docker
+    // sandboxed run skips the write-isolation tier entirely.
+    const willWriteIsolate = !willSandbox && writeIsolationPossible();
     const args = def.buildArgs(
       composed,
       safeImages,
       extraAllowedDirs,
       agentOptions,
-      { cwd: effectiveCwd, codexProfileName },
+      { cwd: effectiveCwd, codexProfileName, writeIsolated: willWriteIsolate },
     );
 
     // Second-pass budget check that knows about the Windows `.cmd` shim
@@ -13232,6 +13240,17 @@ export async function startServer({
         send('stderr', {
           chunk: `\n[write-isolation] unavailable on this host (needs macOS + /usr/bin/sandbox-exec) — run is NOT write-isolated.${writeIsolationError ? ` (${writeIsolationError})` : ''}\n`,
         });
+        // Narrow but real: `willWriteIsolate` was true when argv was built
+        // (so codex was told to skip its own sandbox), yet planning then
+        // failed — profile build or mkdtemp, not the three not-possible
+        // cases. Say so instead of letting a run that looks isolated have no
+        // write scope at all. Mode `required` never reaches here: it fails
+        // the run above.
+        if (willWriteIsolate && agentId === 'codex') {
+          send('stderr', {
+            chunk: '[write-isolation] codex was launched with --sandbox danger-full-access for this run because OD expected to isolate it — this run has NO write scope enforcement.\n',
+          });
+        }
       }
     }
     // Per-run profile file lives in its own mkdtemp'd dir (write-isolation.ts);

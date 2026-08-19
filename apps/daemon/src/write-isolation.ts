@@ -50,6 +50,32 @@ export function writeIsolationMode(
   return platform === 'darwin' ? 'on' : 'off';
 }
 
+/**
+ * Sync answer to "would a run spawned right now be wrapped in
+ * `sandbox-exec`?" — the three not-possible cases `planWriteIsolation`
+ * checks, factored out so a caller can know the answer BEFORE the plan
+ * exists. server.ts needs exactly that: `def.buildArgs` runs earlier in the
+ * spawn path than the plan, and Codex's argv depends on the answer (see
+ * runtimes/defs/codex.ts — macOS forbids a nested Seatbelt sandbox, so Codex
+ * must not apply its own when OD is already applying one).
+ *
+ * Kept in lockstep with planWriteIsolation by construction: that function
+ * calls this one instead of repeating the checks.
+ */
+export function writeIsolationPossible(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (writeIsolationMode(env, platform) === 'off') return false;
+  if (platform !== 'darwin') return false;
+  try {
+    fs.accessSync(WRITE_ISOLATION_BIN, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface BuildWriteIsolationProfileInput {
   /** The ONLY project-area writable root. Callers should pass the
    *  realpath-resolved cwd — Seatbelt matches the canonical
@@ -216,16 +242,8 @@ export async function planWriteIsolation(
   input: PlanWriteIsolationInput,
 ): Promise<WriteIsolationPlan | null> {
   const env = input.env ?? process.env;
-  if (writeIsolationMode(env) === 'off') return null;
-
   const platform = input.platform ?? process.platform;
-  if (platform !== 'darwin') return null;
-
-  try {
-    await fs.promises.access(WRITE_ISOLATION_BIN, fs.constants.X_OK);
-  } catch {
-    return null;
-  }
+  if (!writeIsolationPossible(env, platform)) return null;
 
   // Seatbelt matches the canonical path, not a symlink (macOS's /tmp ->
   // /private/tmp being the prototypical case) — realpath-resolve the cwd

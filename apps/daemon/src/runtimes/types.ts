@@ -24,6 +24,13 @@ export type RuntimeContext = {
   // OD's MCP server config on top of the user's base ~/.codex/config.toml
   // without mutating it.
   codexProfileName?: string;
+  // True when the daemon is about to wrap this spawn in
+  // `/usr/bin/sandbox-exec` (write-isolation.ts). Runtimes whose own
+  // sandbox is ALSO Seatbelt-based must turn theirs off when this is set:
+  // macOS refuses a nested `sandbox_apply` ("Operation not permitted"), so
+  // the inner sandbox does not weaken — it fails every command outright,
+  // before it runs. Only codex reads it today.
+  writeIsolated?: boolean;
 };
 
 export type RuntimeCapabilityMap = Record<string, boolean>;
