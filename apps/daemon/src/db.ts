@@ -709,6 +709,10 @@ export type PipelineFailureHook = (info: {
   pipelineId: string;
   error: string | undefined;
   lastRunId: string | undefined;
+  /** Fan-out stages: the per-task conversations of the failing run (patch
+   *  first, then the previous row) so the report can name which sub-runs
+   *  failed and why — the stage-level error is generic for those. */
+  subConversations: Array<{ id: string; title: string; status: string }> | undefined;
 }) => string | null;
 
 let pipelineFailureHook: PipelineFailureHook | null = null;
@@ -783,6 +787,7 @@ export function setProjectPipelineStatus(
         pipelineId,
         error: patch.error,
         lastRunId: patch.lastRunId ?? prev.lastRunId,
+        subConversations: patch.subConversations ?? prev.subConversations,
       });
     } catch {
       errorReportId = null;

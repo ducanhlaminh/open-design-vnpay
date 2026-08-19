@@ -55,6 +55,64 @@ export interface StageFailureContext {
 
 const pendingContext = new Map<string, { at: number; ctx: StageFailureContext }>();
 
+// ── Console tail (log fallback for launches without sidecar file logs) ────
+// The host runtime (launchd / systemd / the Windows launcher — i.e. every
+// prod install) has no `logs/daemon/latest.log`: stdout/stderr go wherever
+// the service manager points them, which the daemon cannot read back. The
+// first real prod report (Windows, 0.8.63) therefore arrived with
+// `logTail: null` and nothing else to go on. Keep the last few hundred
+// console lines in memory and use them whenever the file path is unknown or
+// unreadable. Wrapping preserves the original console behaviour exactly.
+const CONSOLE_TAIL_MAX_LINES = 400;
+const consoleTail: string[] = [];
+let consoleTailInstalled = false;
+
+function formatConsoleArg(arg: unknown): string {
+  if (typeof arg === 'string') return arg;
+  if (arg instanceof Error) return arg.stack ?? `${arg.name}: ${arg.message}`;
+  try {
+    return typeof arg === 'object' ? JSON.stringify(arg) : String(arg);
+  } catch {
+    return String(arg);
+  }
+}
+
+export function pushConsoleTailLine(level: string, args: unknown[]): void {
+  const stamp = new Date().toISOString();
+  const text = args.map(formatConsoleArg).join(' ');
+  for (const line of text.split('\n')) {
+    consoleTail.push(`${stamp} [${level}] ${line}`);
+  }
+  if (consoleTail.length > CONSOLE_TAIL_MAX_LINES) consoleTail.splice(0, consoleTail.length - CONSOLE_TAIL_MAX_LINES);
+}
+
+/** Idempotent. Call once at daemon start, before anything worth logging. */
+export function installConsoleTailCapture(target: Console = console): void {
+  if (consoleTailInstalled) return;
+  consoleTailInstalled = true;
+  for (const level of ['log', 'info', 'warn', 'error'] as const) {
+    const original = target[level].bind(target);
+    target[level] = (...args: unknown[]) => {
+      try {
+        pushConsoleTailLine(level, args);
+      } catch {
+        /* never let diagnostics break logging */
+      }
+      original(...args);
+    };
+  }
+}
+
+/** Snapshot of the in-memory console tail (tests + readLogTail fallback). */
+export function consoleTailSnapshot(): string[] {
+  return consoleTail.slice();
+}
+
+/** Tests only. */
+export function resetConsoleTailForTests(): void {
+  consoleTail.length = 0;
+}
+
 /** Called by runPipeline's completion block right BEFORE it writes the
  *  failed status, so the hook fired by that write can enrich the report. */
 export function attachStageFailureContext(projectId: string, pipelineId: string, ctx: StageFailureContext): void {
@@ -93,7 +151,25 @@ export function resolveDaemonLogPath(runtime: SidecarRuntimeContext<SidecarStamp
  *  run id is known, prefer the window starting at its first mention so a
  *  long-running stage's own lines are not pushed out by later chatter. */
 export async function readLogTail(logPath: string | null, runId?: string): Promise<string | null> {
-  if (!logPath) return null;
+  const fromFile = logPath ? await readLogTailFromFile(logPath, runId) : null;
+  if (fromFile) return fromFile;
+  return readLogTailFromConsole(runId);
+}
+
+function readLogTailFromConsole(runId?: string): string | null {
+  if (consoleTail.length === 0) return null;
+  let lines = consoleTail;
+  if (runId) {
+    const first = lines.findIndex((l) => l.includes(runId));
+    if (first > 0) lines = lines.slice(Math.max(0, first - 20));
+  }
+  lines = lines.slice(-LOG_TAIL_MAX_LINES);
+  let text = lines.join('\n');
+  if (text.length > LOG_TAIL_MAX_CHARS) text = text.slice(-LOG_TAIL_MAX_CHARS);
+  return scrub(text);
+}
+
+async function readLogTailFromFile(logPath: string, runId?: string): Promise<string | null> {
   let handle: fs.promises.FileHandle | null = null;
   try {
     handle = await fs.promises.open(logPath, 'r');
@@ -139,11 +215,90 @@ export interface ErrorReporterOptions {
   identity?: () => Promise<{ user: string; installationId: string }>;
   version?: () => Promise<{ version: string; channel: string; packaged: boolean }>;
   projectName?: (projectId: string) => string | undefined;
+  /** Latest run of a sub-conversation (fan-out fallback, see contextFromSubRuns). */
+  subRunLookup?: (projectId: string, conversationId: string) => SubRunSnapshot | null;
+  /** Workflow dir of a stage (fan-out fallback). */
+  workflowIdOf?: (pipelineId: string) => string | null;
   now?: () => number;
   log?: (message: string) => void;
 }
 
-export type FailureInfo = { projectId: string; pipelineId: string; error: string | undefined; lastRunId: string | undefined };
+export type FailureInfo = {
+  projectId: string;
+  pipelineId: string;
+  error: string | undefined;
+  lastRunId: string | undefined;
+  /** Fan-out stages: per-task conversations of the failing run. */
+  subConversations?: Array<{ id: string; title: string; status: string }> | undefined;
+};
+
+/** What the reporter needs to know about one sub-run of a fan-out stage —
+ *  a projection of design.runs' statusBody + the stderr/stdout tails the
+ *  chat runner stashes on the run object. */
+export interface SubRunSnapshot {
+  id: string;
+  agentId?: string | null;
+  status?: string | null;
+  error?: string | null;
+  exitCode?: number | null;
+  signal?: string | null;
+  errorCode?: string | null;
+  createdAt?: number | null;
+  updatedAt?: number | null;
+  stderrTail?: string | null;
+  stdoutTail?: string | null;
+}
+
+/** Fan-out fallback: when the failing stage attached no context (fan-out
+ *  stages finish in daemon code, not in runPipeline's completion block),
+ *  derive one from the latest run of every sub-conversation — which pages /
+ *  screens failed, the first failure's error + exit code + stderr. */
+export function contextFromSubRuns(
+  info: FailureInfo,
+  lookup: (projectId: string, conversationId: string) => SubRunSnapshot | null,
+): { ctx: StageFailureContext; errorSuffix: string | null } | null {
+  const tasks = info.subConversations ?? [];
+  if (tasks.length === 0) return null;
+  const rows = tasks.map((task) => {
+    let run: SubRunSnapshot | null = null;
+    try {
+      run = lookup(info.projectId, task.id);
+    } catch {
+      run = null;
+    }
+    return { task, run };
+  });
+  const failed = rows.filter((r) => r.task.status === 'failed' || (r.run?.status && r.run.status !== 'succeeded' && r.run.status !== 'running' && r.run.status !== 'queued'));
+  const firstFailedRun = failed.map((r) => r.run).find((r): r is SubRunSnapshot => Boolean(r)) ?? null;
+  const anyRun = rows.map((r) => r.run).find((r): r is SubRunSnapshot => Boolean(r)) ?? null;
+  const lines = rows.map(({ task, run }) => {
+    const bits: string[] = [];
+    if (run?.exitCode !== null && run?.exitCode !== undefined) bits.push(`exit ${run.exitCode}`);
+    if (run?.signal) bits.push(`signal ${run.signal}`);
+    if (run?.errorCode) bits.push(run.errorCode);
+    const detail = run?.error ? ` — ${run.error.split('\n')[0]}` : '';
+    return `- ${task.title || task.id}: ${run?.status ?? task.status}${bits.length ? ` (${bits.join(', ')})` : ''}${detail}`;
+  });
+  const outputs = `fan-out: ${failed.length}/${rows.length} sub-run failed\n${lines.join('\n')}`;
+  const ctx: StageFailureContext = {
+    ...(firstFailedRun?.id ? { runId: firstFailedRun.id } : {}),
+    ...(firstFailedRun?.agentId || anyRun?.agentId ? { agentId: (firstFailedRun?.agentId || anyRun?.agentId) as string } : {}),
+    exitCode: firstFailedRun?.exitCode ?? null,
+    signal: firstFailedRun?.signal ?? null,
+    errorCode: firstFailedRun?.errorCode ?? null,
+    durationMs:
+      typeof firstFailedRun?.createdAt === 'number' && typeof firstFailedRun?.updatedAt === 'number'
+        ? firstFailedRun.updatedAt - firstFailedRun.createdAt
+        : null,
+    outputs: outputs.length > 6000 ? `${outputs.slice(0, 6000)}\n…` : outputs,
+    finalStatus: firstFailedRun?.status ?? null,
+    stderrTail: firstFailedRun?.stderrTail ?? null,
+    stdoutTail: firstFailedRun?.stdoutTail ?? null,
+  };
+  const firstError = firstFailedRun?.error?.split('\n')[0]?.trim();
+  const errorSuffix = `${failed.length}/${rows.length} bước con lỗi${firstError ? ` — lỗi đầu: ${firstError}` : ''}`;
+  return { ctx, errorSuffix };
+}
 
 export interface ErrorReporter {
   /** Synchronous: allocates the id, kicks off build+send in the background. */
@@ -217,8 +372,17 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
     }
   }
 
-  async function build(info: FailureInfo, id: string, ctx: StageFailureContext | null): Promise<PipelineErrorReport> {
+  async function build(info: FailureInfo, id: string, attached: StageFailureContext | null): Promise<PipelineErrorReport> {
     const [who, app] = await Promise.all([identity(), version()]);
+    let ctx = attached;
+    let errorText = info.error ?? '(no error text)';
+    if (!ctx && options.subRunLookup) {
+      const derived = contextFromSubRuns(info, options.subRunLookup);
+      if (derived) {
+        ctx = { ...derived.ctx, workflowId: options.workflowIdOf?.(info.pipelineId) ?? null };
+        if (derived.errorSuffix) errorText = `${errorText} · ${derived.errorSuffix}`;
+      }
+    }
     const runId = ctx?.runId ?? info.lastRunId;
     const logTail = await readLogTail(options.logPath, runId);
     const projectName = options.projectName?.(info.projectId);
@@ -250,7 +414,7 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
         outputs: ctx?.outputs ?? null,
         finalStatus: ctx?.finalStatus ?? null,
       },
-      error: scrub(info.error ?? '(no error text)'),
+      error: scrub(errorText),
       stderrTail: ctx?.stderrTail ? scrub(ctx.stderrTail) : null,
       stdoutTail: ctx?.stdoutTail ? scrub(ctx.stdoutTail) : null,
       logTail,

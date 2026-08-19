@@ -11,9 +11,12 @@ import { PIPELINE_ERROR_REPORTS_FOLDER, type PipelineErrorReport } from '@open-d
 
 import {
   attachStageFailureContext,
+  contextFromSubRuns,
   createErrorReporter,
   ERROR_REPORTS_OUTBOX_DIR,
+  pushConsoleTailLine,
   readLogTail,
+  resetConsoleTailForTests,
 } from '../src/error-reports.js';
 import {
   closeDatabase,
@@ -181,7 +184,7 @@ describe('setProjectPipelineStatus failure hook', () => {
     expect(hook).not.toHaveBeenCalled();
     setProjectPipelineStatus(db, 'PROJ', 'docs', { status: 'failed', error: 'boom' });
     expect(hook).toHaveBeenCalledTimes(1);
-    expect(hook).toHaveBeenCalledWith({ projectId: 'PROJ', pipelineId: 'docs', error: 'boom', lastRunId: 'run-1' });
+    expect(hook).toHaveBeenCalledWith({ projectId: 'PROJ', pipelineId: 'docs', error: 'boom', lastRunId: 'run-1', subConversations: undefined });
     expect(getProjectPipelineState(db, 'PROJ').docs).toMatchObject({ status: 'failed', error: 'boom', errorReportId: 'rep00001' });
 
     // Same failure written again (outer catch re-marking) → no second report.
@@ -189,9 +192,12 @@ describe('setProjectPipelineStatus failure hook', () => {
     setProjectPipelineStatus(db, 'PROJ', 'docs', { status: 'failed' });
     expect(hook).toHaveBeenCalledTimes(1);
 
-    // A different reason while still failed IS a new failure.
-    setProjectPipelineStatus(db, 'PROJ', 'docs', { status: 'failed', error: 'other' });
+    // A different reason while still failed IS a new failure — and a fan-out
+    // stage's sub-conversations ride along so the report can name them.
+    const subs = [{ id: 'c1', title: 'Trang 1', status: 'failed' }];
+    setProjectPipelineStatus(db, 'PROJ', 'docs', { status: 'failed', error: 'other', subConversations: subs });
     expect(hook).toHaveBeenCalledTimes(2);
+    expect(hook).toHaveBeenLastCalledWith(expect.objectContaining({ error: 'other', subConversations: subs }));
 
     setProjectPipelineStatus(db, 'PROJ', 'docs', { status: 'succeeded' });
     const state = getProjectPipelineState(db, 'PROJ').docs;
@@ -206,5 +212,90 @@ describe('setProjectPipelineStatus failure hook', () => {
     setProjectPipelineStatus(db, 'PROJ', 'docs', { status: 'failed', error: 'boom' });
     expect(getProjectPipelineState(db, 'PROJ').docs).toMatchObject({ status: 'failed', error: 'boom' });
     expect(getProjectPipelineState(db, 'PROJ').docs?.errorReportId).toBeUndefined();
+  });
+});
+
+describe('readLogTail — console-tail fallback (host runtime has no log file)', () => {
+  afterEach(() => resetConsoleTailForTests());
+
+  it('uses the in-memory console tail when there is no log path, windowed on the run id and scrubbed', async () => {
+    for (let i = 0; i < 100; i += 1) pushConsoleTailLine('log', [`noise ${i}`]);
+    pushConsoleTailLine('warn', ['[pipelines] run run-42 started token=abc42', { detail: 'obj' }]);
+    pushConsoleTailLine('error', ['agent exited', new Error('boom')]);
+    const tail = await readLogTail(null, 'run-42');
+    expect(tail).toBeTruthy();
+    expect(tail).toContain('[warn] [pipelines] run run-42 started');
+    expect(tail).toContain('[error] agent exited Error: boom');
+    expect(tail).toContain('noise 80');
+    expect(tail).not.toContain('noise 10 ');
+    expect(tail).not.toContain('token=abc42');
+    expect(tail).toContain('token=[REDACTED]');
+    expect(tail).toContain('{"detail":"obj"}');
+  });
+
+  it('falls back to the console tail when the log file is missing too', async () => {
+    pushConsoleTailLine('log', ['hello from console']);
+    expect(await readLogTail('/nonexistent/latest.log')).toContain('hello from console');
+  });
+});
+
+describe('fan-out fallback context (contextFromSubRuns)', () => {
+  const info = {
+    projectId: 'p1',
+    pipelineId: 'dr-review',
+    error: 'Bước chạy thất bại — xem hội thoại của bước để biết chi tiết',
+    lastRunId: undefined,
+    subConversations: [
+      { id: 'c-a', title: 'Trang A', status: 'failed' },
+      { id: 'c-b', title: 'Trang B', status: 'failed' },
+      { id: 'c-c', title: 'Trang C', status: 'succeeded' },
+    ],
+  };
+  const lookup = (_projectId: string, conversationId: string) =>
+    conversationId === 'c-a'
+      ? { id: 'run-a', agentId: 'claude', status: 'failed', error: 'spawn claude ENOENT\nmore', exitCode: 127, errorCode: 'AGENT_SPAWN', createdAt: 1000, updatedAt: 4000, stderrTail: 'stderr of a' }
+      : conversationId === 'c-b'
+        ? { id: 'run-b', agentId: 'claude', status: 'failed', error: null, exitCode: 1 }
+        : { id: 'run-c', agentId: 'claude', status: 'succeeded', exitCode: 0 };
+
+  it('names failed sub-runs, carries the first failure\'s exit code / stderr and appends a summary to the error', () => {
+    const out = contextFromSubRuns(info, lookup);
+    expect(out).toBeTruthy();
+    expect(out!.ctx.agentId).toBe('claude');
+    expect(out!.ctx.runId).toBe('run-a');
+    expect(out!.ctx.exitCode).toBe(127);
+    expect(out!.ctx.errorCode).toBe('AGENT_SPAWN');
+    expect(out!.ctx.durationMs).toBe(3000);
+    expect(out!.ctx.stderrTail).toBe('stderr of a');
+    expect(out!.ctx.outputs).toContain('2/3 sub-run failed');
+    expect(out!.ctx.outputs).toContain('- Trang A: failed (exit 127, AGENT_SPAWN) — spawn claude ENOENT');
+    expect(out!.ctx.outputs).toContain('- Trang C: succeeded');
+    expect(out!.errorSuffix).toBe('2/3 bước con lỗi — lỗi đầu: spawn claude ENOENT');
+  });
+
+  it('returns null when the stage had no sub-conversations', () => {
+    expect(contextFromSubRuns({ ...info, subConversations: [] }, lookup)).toBeNull();
+    expect(contextFromSubRuns({ ...info, subConversations: undefined }, lookup)).toBeNull();
+  });
+
+  it('createErrorReporter uses it when no context was attached', async () => {
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), 'od-error-reports-fanout-'));
+    delete process.env.OD_ERROR_REPORTS;
+    const client = fakeClient();
+    const reporter = createErrorReporter({
+      dataDir, logPath: null, namespace: null, client, identity: IDENTITY, version: VERSION,
+      subRunLookup: lookup, workflowIdOf: () => 'docs-review',
+    });
+    reporter.report(info);
+    await reporter.idle();
+    expect(client.uploads).toHaveLength(1);
+    const body = client.uploads[0]!.body;
+    expect(body.run.agentId).toBe('claude');
+    expect(body.run.exitCode).toBe(127);
+    expect(body.run.workflowId).toBe('docs-review');
+    expect(body.run.outputs).toContain('2/3 sub-run failed');
+    expect(body.error).toContain('2/3 bước con lỗi — lỗi đầu: spawn claude ENOENT');
+    expect(body.stderrTail).toBe('stderr of a');
+    rmSync(dataDir, { recursive: true, force: true });
   });
 });

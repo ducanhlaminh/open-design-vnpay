@@ -340,7 +340,7 @@ import {
   validateTarget as validateRoutineTarget,
 } from './routines.js';
 import { createDiagnosticsExportHandler } from './diagnostics-export.js';
-import { attachStageFailureContext, createErrorReporter, resolveDaemonLogPath } from './error-reports.js';
+import { attachStageFailureContext, createErrorReporter, installConsoleTailCapture, resolveDaemonLogPath } from './error-reports.js';
 import { DIAGNOSTICS_EXPORT_PATH } from '@open-design/diagnostics';
 import {
   buildProjectArchive,
@@ -4095,6 +4095,10 @@ export async function startServer({
   returnServer = false,
   runtime = null,
 }: StartServerOptions = {}) {
+  // Keep the last few hundred console lines in memory from the very start:
+  // error reports (error-reports.ts) fall back to them on the host runtime,
+  // where there is no sidecar log file to tail.
+  installConsoleTailCapture();
   let resolvedPort = port;
   let daemonShuttingDown = false;
   const extraAllowedOrigins = configuredAllowedOrigins();
@@ -4544,6 +4548,29 @@ export async function startServer({
     projectName: (id) => {
       try { return getProject(db, id)?.name ?? undefined; } catch { return undefined; }
     },
+    // Fan-out stages (dr-review pages, dr-comp screens, ui slices…) finish in
+    // daemon code and attach no context; let the reporter read the latest run
+    // of each sub-conversation instead so the report says which sub-runs
+    // failed and why.
+    subRunLookup: (projectId, conversationId) => {
+      const runs = design.runs.list({ projectId, conversationId }) as Array<Record<string, unknown>>;
+      if (!runs.length) return null;
+      const latest = runs.slice().sort((a, b) => Number(b.createdAt ?? 0) - Number(a.createdAt ?? 0))[0]!;
+      return {
+        id: String(latest.id),
+        agentId: (latest.agentId as string | undefined) ?? null,
+        status: (latest.status as string | undefined) ?? null,
+        error: (latest.error as string | undefined) ?? null,
+        exitCode: (latest.exitCode as number | null | undefined) ?? null,
+        signal: (latest.signal as string | null | undefined) ?? null,
+        errorCode: (latest.errorCode as string | null | undefined) ?? null,
+        createdAt: (latest.createdAt as number | undefined) ?? null,
+        updatedAt: (latest.updatedAt as number | undefined) ?? null,
+        stderrTail: (latest.stderrTail as string | undefined) ?? null,
+        stdoutTail: (latest.stdoutTail as string | undefined) ?? null,
+      };
+    },
+    workflowIdOf: (pipelineId) => workflowDirForPipeline(pipelineId) ?? null,
   });
   setPipelineFailureHook((info) => errorReporter.report(info));
   // Wire the upload-destination bridge to this db so multer can route
