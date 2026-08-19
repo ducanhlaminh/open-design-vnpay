@@ -564,6 +564,18 @@ import {
   type ScreenComponentsDoc,
   type ScreenComponentsIndex,
 } from './screen-components.js';
+// WP14: nối lớp 2 (trích màn bằng agent khi lớp 1 yếu) + lớp 3 (manifest +
+// overrides người dùng) vào khối docs-comp — xem docblock ở nơi dùng trong
+// runDocsComponentAuditFanout.
+import { needsAgentScreenExtract, validateDocScreenExtract, mergeExtractedScreens, DOC_SCREENS_FILE } from './screen-extract.js';
+import {
+  parseScreensOverrides,
+  applyScreenOverrides,
+  buildScreensManifest,
+  SCREENS_MANIFEST_FILE,
+  SCREENS_OVERRIDES_REL,
+} from './screen-overrides.js';
+import type { ScreensManifest, ScreensOverrides } from '@open-design/contracts';
 import { renderFigmaComponentsMarkdown, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 import { readFigmaConfig } from './figma-config.js';
 import { FigmaDesktopClient } from './figma-desktop.js';
@@ -9457,6 +9469,71 @@ export async function startServer({
     }
   });
 
+  // WP14 (lớp 3 của dr-comp v2, kiến trúc 3 lớp 19/08) — 2 route cho
+  // ScreenListManager.tsx (apps/web, WP13b đã code UI theo ĐÚNG contract
+  // này, đóng — không đổi path/shape): đọc comp/_screens.json (manifest —
+  // ẢNH của lần chạy dr-comp gần nhất, do runDocsComponentAuditFanout ghi
+  // trong khối docs-comp) + docs-review/screens-overrides.json (nguồn sự
+  // thật do người dùng giữ), và ghi ĐÈ TOÀN BỘ overrides đó. `dr-comp` luôn
+  // chạy dưới workflow-dir "docs-review" (workflowDirForPipeline) — cwd của
+  // 2 route này PHẢI khớp cwd mà runDocsComponentAuditFanout dùng, nếu
+  // không manifest/overrides sẽ đọc/ghi nhầm thư mục.
+  app.get('/api/projects/:projectId/docs-review/screens', async (req, res) => {
+    try {
+      const projectRoot = await ensureProject(PROJECTS_DIR, req.params.projectId);
+      const cwd = path.join(projectRoot, workflowDirForPipeline('dr-comp') ?? 'docs-review');
+      const manifest = await fs.promises
+        .readFile(path.join(cwd, SCREENS_MANIFEST_FILE), 'utf8')
+        .then((raw) => {
+          try {
+            return JSON.parse(raw) as ScreensManifest;
+          } catch {
+            return null;
+          }
+        })
+        .catch(() => null);
+      // Đọc lại qua parseScreensOverrides (khoan dung) thay vì JSON.parse
+      // trần — PUT bên dưới luôn ghi bản đã sạch shape, nhưng file có thể bị
+      // sửa tay ngoài route (không throw dù đĩa hỏng giữa chừng).
+      const overrides = await fs.promises
+        .readFile(path.join(cwd, SCREENS_OVERRIDES_REL), 'utf8')
+        .then((raw) => parseScreensOverrides(raw).doc)
+        .catch(() => null);
+      const body: { manifest: ScreensManifest | null; overrides: ScreensOverrides | null } = { manifest, overrides };
+      res.json(body);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.put('/api/projects/:projectId/docs-review/screens-overrides', async (req, res) => {
+    try {
+      // (do.0 review note) LUÔN đi qua parseScreensOverrides trước khi ghi —
+      // bất biến "screens-overrides.json trên đĩa luôn sạch shape" mà lượt
+      // đọc lại ở khối docs-comp (runDocsComponentAuditFanout) dựa vào,
+      // KHÔNG ghi thẳng body người dùng gửi. Entry hỏng (action lạ/thiếu
+      // field) → parseScreensOverrides tự bỏ entry đó kèm warning; route NÀY
+      // coi BẤT KỲ warning nào là lỗi validate → 400, KHÔNG ghi gì (fail-
+      // closed: thà từ chối còn hơn âm thầm làm rơi entry người dùng gửi).
+      const { doc, warnings } = parseScreensOverrides(JSON.stringify(req.body ?? null));
+      if (warnings.length > 0) {
+        return res.status(400).json({ error: warnings.join('; '), warnings });
+      }
+      const projectRoot = await ensureProject(PROJECTS_DIR, req.params.projectId);
+      const cwd = path.join(projectRoot, workflowDirForPipeline('dr-comp') ?? 'docs-review');
+      await fs.promises.mkdir(cwd, { recursive: true });
+      const target = path.join(cwd, SCREENS_OVERRIDES_REL);
+      // Atomic write-then-rename — khuôn confluence-config.ts's doWrite (mkdir
+      // -> write tmp -> rename) để một crash giữa chừng không làm hỏng file.
+      const tmp = `${target}.${randomUUID()}.tmp`;
+      await fs.promises.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');
+      await fs.promises.rename(tmp, target);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.get('/api/runs/:runId/genui/:surfaceId', (req, res) => {
     try {
       const row = db.prepare(
@@ -16663,32 +16740,259 @@ export async function startServer({
         // bảng "Kiểu hiển thị" (nếu có) chỉ là tham khảo, và ảnh mockup không
         // phải đầu vào. Daemon dựng comp/_inputs.json (màn nào, thuộc trang
         // nào, mục nào, bước flow nào diễn ra trên đó, đi ra màn nào) rồi:
+        //   lượt trích màn (lớp 2, WP14 — CHỈ khi lớp 1 tất định yếu, xem
+        //            khối "Lượt trích màn từ tài liệu" ngay dưới);
+        //   lớp 3 (WP14) — áp docs-review/screens-overrides.json (người dùng
+        //            sửa tay) rồi ghi comp/_screens.json (manifest) TRƯỚC khi
+        //            role-map chạy;
         //   lượt 0 — role-map cho cả feature (comp/_role-map.json) để các
         //            màn map component nhất quán;
         //   lượt theo màn (song song) — comp/<KEY>.screen.json +
         //            wireframes/<KEY>.html.
         const inputs = await prepareScreenComponentInputs(cwd, { pages });
-        const screenInputs = inputs.screens;
-        outerScreenKeys = screenInputs.map((s) => s.key);
+        let screenInputs = inputs.screens;
         console.log(
-          `[docs-comp] ${screenInputs.length} màn hình từ flows/ · danh mục: ${catalogText != null ? `${catalog.size} component` : 'KHÔNG có criteria/components.md'}`,
+          `[docs-comp] lớp 1 (flows/ + quét tài liệu tất định): ${screenInputs.length} màn hình · danh mục: ${catalogText != null ? `${catalog.size} component` : 'KHÔNG có criteria/components.md'}`,
         );
-        if (screenInputs.length === 0) {
-          await writeDocsComponentFailureNote(
-            cwd,
-            [
-              '# Màn hình → Component — không chạy được',
-              '',
-              inputs.note ?? 'Bước Đánh giá luồng UX chưa cho ra màn hình nào.',
-              '',
-              'Chạy bước **Đánh giá luồng UX** (dr-flow) trước — bước này lấy danh sách màn hình từ đó — rồi chạy lại.',
-              '',
-            ].join('\n'),
+        const graphNote = ' This is a FILE-ONLY stage — do not push anything anywhere.';
+
+        // Note cuối cùng ghi vào comp/_inputs.json: bắt đầu từ note của lớp 1
+        // (prepareScreenComponentInputs); lớp 2/3 bên dưới NỐI THÊM chứ không
+        // thay thế. `persistInputs` chỉ được GỌI khi có gì thật sự đổi (lớp 2
+        // trích được / lớp 3 áp overrides) — không trang nào trigger và không
+        // có overrides thì comp/_inputs.json giữ NGUYÊN VĂN bản lớp 1 đã ghi,
+        // đúng bất biến "không đổi hành vi" của WP14 (xem wp14.yaml must_not).
+        const noteParts: string[] = inputs.note ? [inputs.note] : [];
+        const persistInputs = async (): Promise<void> => {
+          const next = { ...inputs, screens: screenInputs, ...(noteParts.length ? { note: noteParts.join(' ') } : {}) };
+          await fs.promises.mkdir(path.join(cwd, 'comp'), { recursive: true });
+          await fs.promises.writeFile(path.join(cwd, SCREEN_INPUTS_FILE), JSON.stringify(next, null, 2), 'utf8');
+        };
+        // Lý do lượt trích (lớp 2) hỏng — chỉ set khi hỏng THẬT SỰ (run !=
+        // succeeded / thiếu file / JSON hoặc shape hỏng TOÀN PHẦN), dùng để
+        // giải thích failure-note nếu gate 0-màn (dời xuống sau merge lớp 2 +
+        // lớp 3, xem dưới) vẫn trúng.
+        let extractFailureReason: string | null = null;
+
+        // ── Lượt trích màn từ tài liệu (lớp 2, WP14, kiến trúc 3 lớp 19/08) ──
+        // Kích hoạt CHỈ KHI: (a) KHÔNG màn nào trong screenInputs (lớp 1) có
+        // source == trang đó, VÀ (b) needsAgentScreenExtract báo trang có tín
+        // hiệu "danh sách/mô tả màn hình" mà lớp 1 tất định không quét ra mã
+        // nào. Rỗng → không lượt trích, không token, hành vi Y HỆT trước
+        // WP14 (must_not). Mô phỏng khuôn "Lượt 0 role-map" bên dưới:
+        // conversation riêng + task trong subConversations + design.runs.
+        // create/start/wait + đọc file + normalize + FAIL-SHUT CỤC BỘ.
+        const pagesNeedingExtract: DocPage[] = [];
+        const extractMdBySource = new Map<string, string>();
+        for (const page of pages) {
+          if (screenInputs.some((s) => s.source === page.mdPath)) continue;
+          const md = await fs.promises.readFile(path.join(cwd, page.mdPath), 'utf8').catch(() => null);
+          if (md == null) continue;
+          if (needsAgentScreenExtract(md)) {
+            pagesNeedingExtract.push(page);
+            extractMdBySource.set(page.mdPath, md);
+          }
+        }
+
+        let docScreenExtractTask: { id: string; title: string; status: 'queued' | 'running' | 'succeeded' | 'failed' } | null = null;
+        if (pagesNeedingExtract.length > 0) {
+          const extractConvId = `pipeline-conv-${randomUUID()}`;
+          const extractTitle = 'Lượt trích màn từ tài liệu (format lạ)';
+          insertConversation(db, { id: extractConvId, projectId, title: `${def.name} · ${extractTitle}`, createdAt: Date.now(), updatedAt: Date.now() });
+          docScreenExtractTask = { id: extractConvId, title: extractTitle, status: 'running' };
+          setProjectPipelineStatus(db, projectId, pipelineId, {
+            status: 'running',
+            lastConversationId: extractConvId,
+            subConversations: [{ ...docScreenExtractTask }],
+          });
+
+          const extractKickoff =
+            `Run the "docs-screen-components" skill in EXTRACT mode for feature "${projectId}" (lượt trích màn hình từ tài liệu — lớp 1 quét tất định không ra mã nào dù trang có tín hiệu "danh sách/mô tả màn hình").` +
+            ` CÁC TRANG cần đọc (đọc TỪNG trang, tìm MỌI màn hình tài liệu khai, bất kể cách trình bày — heading, dòng in đậm, hàng bảng…): ${pagesNeedingExtract.map((p) => `"${p.mdPath}"`).join(', ')}.` +
+            ` "anchorText" của MỖI màn PHẢI là NGUYÊN VĂN CẢ MỘT DÒNG của trang, DUY NHẤT trong trang (khớp y nguyên sau khi trim khoảng trắng đầu/cuối) — daemon đối chiếu tất định: không tìm thấy, xuất hiện hơn một lần, hoặc chỉ nằm trong code fence → màn đó bị loại kèm lý do, KHÔNG suy diễn hộ, đừng diễn giải lại câu chữ. KHÔNG khai mục tài liệu (danh sách/mô tả/luồng màn hình) làm màn.` +
+            ` Ghi ĐÚNG MỘT file "${DOC_SCREENS_FILE}" theo schema mục "Chế độ EXTRACT" của skill. KHÔNG ghi file nào khác, KHÔNG sửa trang.${graphNote}`;
+          const extractAssistantId = `pipeline-assistant-${randomUUID()}`;
+          const extractRun = design.runs.create({
+            projectId,
+            conversationId: extractConvId,
+            assistantMessageId: extractAssistantId,
+            clientRequestId: `docs-comp-extract-${randomUUID()}`,
+            agentId: agentId!,
+          });
+          activeRuns.add(extractRun);
+          upsertMessage(db, extractConvId, { id: `pipeline-user-${extractRun.id}`, role: 'user', content: extractKickoff });
+          upsertMessage(db, extractConvId, {
+            id: extractAssistantId,
+            role: 'assistant',
+            content: '',
+            agentId: agentId!,
+            agentName: getAgentDef(agentId!)?.name ?? agentId!,
+            runId: extractRun.id,
+            runStatus: 'queued',
+            startedAt: Date.now(),
+          });
+          design.runs.start(extractRun, () =>
+            startChatRun(
+              {
+                agentId: agentId!,
+                projectId,
+                conversationId: extractConvId,
+                assistantMessageId: extractAssistantId,
+                clientRequestId: extractRun.clientRequestId,
+                skillId: def.skillId,
+                ...(wfDir ? { cwdSubdir: wfDir } : {}),
+                model: modelPrefs.model ?? null,
+                reasoning: modelPrefs.reasoning ?? null,
+                message: extractKickoff,
+                promptProfile: 'pipeline',
+                pipelineUsesDesignSystem: def.acceptsDesignSystem === true,
+              },
+              extractRun,
+            ),
           );
+          const extractFinal = await design.runs.wait(extractRun);
+          activeRuns.delete(extractRun);
+          db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(extractFinal.status, Date.now(), extractAssistantId);
+
+          if (canceled || extractFinal.status === 'canceled') {
+            // Chưa có comp/<key>.screen.json / wireframes/ nào ở lượt trích —
+            // chỉ cần dọn comp/ (đã có _inputs.json của lớp 1 + có thể
+            // _doc-screens.json dở dang).
+            await fs.promises.rm(path.join(cwd, 'comp'), { recursive: true, force: true }).catch(() => null);
+            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'idle', subConversations: [{ ...docScreenExtractTask }] });
+            console.log('[docs-comp] canceled during lượt trích màn (lớp 2)');
+            return 'idle' as const;
+          }
+
+          let brokenReason: string | null = null;
+          let extractedAccepted: ReturnType<typeof validateDocScreenExtract>['accepted'] = [];
+          let extractedRejected: ReturnType<typeof validateDocScreenExtract>['rejected'] = [];
+          if (extractFinal.status !== 'succeeded') {
+            brokenReason = `Lượt trích màn kết thúc với trạng thái "${extractFinal.status}".`;
+          } else {
+            const raw = await fs.promises.readFile(path.join(cwd, DOC_SCREENS_FILE), 'utf8').catch(() => null);
+            if (raw == null) {
+              brokenReason = `Không tìm thấy "${DOC_SCREENS_FILE}" — lượt trích báo thành công nhưng không ghi gì.`;
+            } else {
+              let parsedDoc: unknown;
+              try {
+                parsedDoc = JSON.parse(raw);
+              } catch (err) {
+                brokenReason = `"${DOC_SCREENS_FILE}" không phải JSON hợp lệ: ${(err as Error).message}.`;
+              }
+              if (!brokenReason) {
+                const result = validateDocScreenExtract(extractMdBySource, parsedDoc);
+                extractedAccepted = result.accepted;
+                extractedRejected = result.rejected;
+                // "Hỏng TOÀN PHẦN": validateDocScreenExtract trả ĐÚNG MỘT
+                // rejected chỉ có "reason" (schema_version lạ / "pages" không
+                // phải mảng / không phải object) — khác trường hợp từng màn
+                // bị loại riêng lẻ (rejected có source/code/name/anchorText).
+                const first = extractedRejected[0];
+                const fullyBroken =
+                  extractedAccepted.length === 0 &&
+                  extractedRejected.length === 1 &&
+                  first != null &&
+                  first.source === undefined &&
+                  first.code === undefined &&
+                  first.name === undefined &&
+                  first.anchorText === undefined;
+                if (fullyBroken) brokenReason = first!.reason;
+              }
+            }
+          }
+
+          if (brokenReason) {
+            // FAIL-SHUT CỤC BỘ, KHÔNG LÂY (do.A.4): lớp 1 đã có màn thì KHÔNG
+            // đánh hỏng cả stage vì lớp 2 gãy — chỉ đánh dấu lượt này failed,
+            // cảnh báo, và CHẠY TIẾP với danh sách lớp 1 đang có. Gate 0-màn
+            // (dời xuống sau merge lớp 2 + lớp 3, xem dưới) mới quyết định có
+            // fail cả stage hay không.
+            docScreenExtractTask.status = 'failed';
+            extractFailureReason = brokenReason;
+            console.warn(
+              `[docs-comp] lượt trích màn (lớp 2) hỏng — dùng danh sách lớp 1 hiện có (${screenInputs.length} màn), không đánh hỏng cả stage:`,
+              brokenReason,
+            );
+          } else {
+            docScreenExtractTask.status = 'succeeded';
+            const merged = mergeExtractedScreens(screenInputs, extractedAccepted, extractMdBySource);
+            screenInputs = merged.screens;
+            if (extractedRejected.length > 0) {
+              console.warn(`[docs-comp] lượt trích màn: +${merged.added.length} màn, loại ${extractedRejected.length} —`, extractedRejected);
+              noteParts.push(`Trích màn bằng agent: +${merged.added.length} màn, loại ${extractedRejected.length} — xem ${DOC_SCREENS_FILE}.`);
+            } else {
+              console.log(`[docs-comp] lượt trích màn (lớp 2): +${merged.added.length} màn`);
+            }
+            // (do.A.3) Ghi ĐÈ comp/_inputs.json để role-map + fan-out thấy đủ
+            // màn, VÀ bản normalize (accepted+rejected kèm reason) đè lại
+            // comp/_doc-screens.json — file agent ghi tay không đáng tin giữ
+            // nguyên; bản daemon đã đối chiếu tất định mới là sự thật.
+            await persistInputs();
+            await fs.promises.writeFile(
+              path.join(cwd, DOC_SCREENS_FILE),
+              JSON.stringify({ schema_version: 1, accepted: extractedAccepted, rejected: extractedRejected }, null, 2),
+              'utf8',
+            );
+          }
+          setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: [{ ...docScreenExtractTask }] });
+        }
+
+        // ── Lớp 3: overrides người dùng + manifest (WP14) ───────────────────
+        // screens-overrides.json nằm NGAY DƯỚI cwd (docs-review/), NGOÀI
+        // comp/ — cùng tầng criteria/, sống sót re-run clear (xem docblock
+        // SCREENS_OVERRIDES_REL ở screen-overrides.ts). Đường PUT route (mục
+        // C) đã luôn ghi qua parseScreensOverrides trước khi lưu, nên file
+        // trên đĩa ở đây LUÔN đã sạch shape — parse lại vẫn khoan dung (đọc
+        // tay/đĩa hỏng giữa chừng không throw).
+        const overridesRaw = await fs.promises.readFile(path.join(cwd, SCREENS_OVERRIDES_REL), 'utf8').catch(() => null);
+        if (overridesRaw != null) {
+          const { doc: overridesDoc, warnings: parseWarnings } = parseScreensOverrides(overridesRaw);
+          // anchorText của override 'add' có thể trỏ BẤT KỲ trang nào (không
+          // chỉ trang vừa được lớp 2 trích) — nạp thêm md của những trang
+          // chưa có trong extractMdBySource.
+          const overridesMdBySource = new Map<string, string>(extractMdBySource);
+          for (const page of pages) {
+            if (overridesMdBySource.has(page.mdPath)) continue;
+            const md = await fs.promises.readFile(path.join(cwd, page.mdPath), 'utf8').catch(() => null);
+            if (md != null) overridesMdBySource.set(page.mdPath, md);
+          }
+          const applied = applyScreenOverrides(screenInputs, overridesDoc, overridesMdBySource);
+          screenInputs = applied.screens;
+          const allWarnings = [...parseWarnings, ...applied.warnings];
+          if (allWarnings.length > 0) {
+            console.warn(`[docs-comp] overrides: ${allWarnings.length} cảnh báo —`, allWarnings);
+            noteParts.push(`Overrides người dùng: ${allWarnings.length} cảnh báo — ${allWarnings.join('; ')}`);
+          }
+          // (do.B.1) Ghi đè _inputs.json LẦN CUỐI — role-map + fan-out phải
+          // thấy đúng danh sách sau khi người dùng đã sửa.
+          await persistInputs();
+        }
+
+        // (do.B.2) buildScreensManifest NGAY SAU khi chốt danh sách màn,
+        // TRƯỚC role-map — để một lượt chạy hỏng giữa chừng ngay sau đây
+        // người dùng vẫn thấy máy đã đoán những màn nào.
+        await fs.promises.mkdir(path.join(cwd, 'comp'), { recursive: true });
+        await fs.promises.writeFile(path.join(cwd, SCREENS_MANIFEST_FILE), JSON.stringify(buildScreensManifest(screenInputs), null, 2), 'utf8');
+
+        outerScreenKeys = screenInputs.map((s) => s.key);
+
+        // Gate "0 màn → failed" — DỜI xuống ĐÂY (do.A.4/B), SAU merge lớp 2
+        // VÀ áp overrides lớp 3: một override 'add' hoàn toàn có thể cứu một
+        // stage mà lớp 1 + lớp 2 đều trắng tay.
+        if (screenInputs.length === 0) {
+          const failureLines = ['# Màn hình → Component — không chạy được', '', inputs.note ?? 'Bước Đánh giá luồng UX chưa cho ra màn hình nào.'];
+          if (extractFailureReason) {
+            failureLines.push('', `Đã thử trích màn bằng agent (lớp 2) cho ${pagesNeedingExtract.length} trang nhưng hỏng: ${extractFailureReason}`);
+          }
+          failureLines.push('', 'Chạy bước **Đánh giá luồng UX** (dr-flow) trước — bước này lấy danh sách màn hình từ đó — rồi chạy lại.', '');
+          await writeDocsComponentFailureNote(cwd, failureLines.join('\n'));
           setProjectPipelineStatus(db, projectId, pipelineId, {
             status: 'failed',
-            subConversations: [],
-            error: inputs.note ?? 'Bước Đánh giá luồng UX chưa cho ra màn hình nào — chạy dr-flow trước.',
+            subConversations: docScreenExtractTask ? [{ ...docScreenExtractTask }] : [],
+            error: extractFailureReason
+              ? `Đã thử trích màn bằng agent nhưng hỏng: ${extractFailureReason}`
+              : inputs.note ?? 'Bước Đánh giá luồng UX chưa cho ra màn hình nào — chạy dr-flow trước.',
           });
           return 'failed' as const;
         }
@@ -16721,7 +17025,7 @@ export async function startServer({
         const flowLine =
           ` Danh sách màn hình + ngữ cảnh từng màn (trang, mục tài liệu, bước luồng diễn ra trên màn, đi ra màn nào, phát hiện UX) nằm ở "${SCREEN_INPUTS_FILE}" — đọc nó trước.` +
           ` Ảnh mockup trong tài liệu CHỈ là minh hoạ của người viết — KHÔNG mở, KHÔNG dùng để chọn component hay bố cục; bảng cấu trúc màn (nếu có, trường "referenceTable") chỉ để tham khảo tên trường.`;
-        const graphNote = ' This is a FILE-ONLY stage — do not push anything anywhere.';
+        // graphNote đã khai ở đầu block (WP14 — lượt trích lớp 2 cũng cần nó).
 
         // ── Lượt 0: role-map cho cả feature ─────────────────────────────────
         const roleMapConvId = `pipeline-conv-${randomUUID()}`;
@@ -16736,7 +17040,15 @@ export async function startServer({
           insertConversation(db, { id, projectId, title: `${def.name} · ${s.name}`, createdAt: Date.now(), updatedAt: Date.now() });
           return { id, title: s.name, status: 'queued' as 'queued' | 'running' | 'succeeded' | 'failed' };
         });
-        const tasks = extractionTask ? [extractionTask, roleMapTask, ...screenTasks] : [roleMapTask, ...screenTasks];
+        // WP14: docScreenExtractTask (lượt trích lớp 2, nếu có chạy) đứng
+        // NGAY TRƯỚC roleMapTask — extractionTask (đọc component Figma, nếu
+        // có) vẫn đứng đầu như trước.
+        const tasks = [
+          ...(extractionTask ? [extractionTask] : []),
+          ...(docScreenExtractTask ? [docScreenExtractTask] : []),
+          roleMapTask,
+          ...screenTasks,
+        ];
         const persistTasks = () =>
           setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: tasks.map((t) => ({ ...t })) });
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: roleMapConvId });

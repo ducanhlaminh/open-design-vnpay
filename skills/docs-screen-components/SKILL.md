@@ -46,9 +46,27 @@ component nào của Design System hiện tại**, và trông ra sao ở mức k
 
 Ba nguyên tắc cố định:
 
-1. **Nguồn màn hình = bước Flow.** Không tự tìm màn trong tài liệu, không bịa
-   thêm màn. Bảng "cấu trúc màn hình" / "Kiểu hiển thị" trong tài liệu (nếu
-   có) chỉ để **tham khảo tên trường và thứ tự** — không phải hợp đồng.
+1. **Nguồn màn hình = bước Flow + tài liệu, HỢP NHẤT.** Danh sách `screens[]`
+   trong `_inputs.json` là **hợp của hai nguồn**, không phải chỉ Flow: mỗi màn
+   Flow gắn được (`origin: "flow"`) CỘNG những màn tài liệu khai rõ mà Flow
+   không gắn được vào bước nào (`origin: "doc"` — daemon tự quét khai màn theo
+   4 khuôn: heading `MH1`/`SCR-001`/`S01`, mã mục nhiều cấp `6.1.1` (chỉ khi
+   tài liệu không tự đánh mã màn riêng), dòng in đậm đứng riêng `**MH1:
+   Tên**`, hoặc hàng trong bảng "Danh sách màn hình"; `origin: "agent"` khi cả
+   4 khuôn đó vẫn không ra mã (chế độ EXTRACT bên dưới đọc hiểu tự do); rồi bổ
+   sung). Lý do phổ
+   biến nhất một màn chỉ có ở tài liệu: sơ đồ kiểu sequence không có node cho
+   nó, hoặc agent gắn màn đó vào một node chỉ tồn tại ở bản ĐỀ XUẤT (patch),
+   không có ở flowchart hiện trạng. Bảng "cấu trúc màn hình" / "Kiểu hiển thị"
+   trong tài liệu vẫn chỉ để **tham khảo tên trường và thứ tự** — không phải
+   hợp đồng, dù màn đó `origin` gì. Với màn `origin: "doc"` hoặc `"agent"`:
+   `steps[]`/`navOut[]`/`navIn[]` RỖNG là BÌNH THƯỜNG, không phải lỗi — đừng cố
+   suy diễn luồng hay `nav[]` không có căn cứ; dựng cấu thành màn từ `section`
+   (mục tài liệu mô tả màn) + `referenceTable` (bảng trường) + ảnh mockup của
+   chính mục đó (LƯU Ý: nguyên tắc 3 bên dưới về "ảnh mockup không phải đầu
+   vào" vẫn giữ nguyên cho việc CHỌN component — ảnh chỉ giúp bạn hiểu bố cục
+   khi hoàn toàn không có bước luồng nào). Không tự tìm thêm màn ngoài
+   `_inputs.json`, không bịa màn.
 2. **Component do Design System quyết.** Chỉ đề xuất component CÓ THẬT trong
    `criteria/components.md`; chọn theo `catalog.md` ("Dùng khi / Không dùng
    khi", Screen scaffolding), lồng theo `examples.md`, tuân `rules.md`. Không
@@ -223,7 +241,72 @@ Ví dụ rút gọn (mobile):
 </html>
 ```
 
-## Cách quyết định component (áp cho cả hai chế độ)
+## Chế độ EXTRACT (lớp 2 — khi lớp 1 quét không ra)
+
+Kiến trúc trích màn hình có 3 lớp: lớp 1 = daemon tự quét tất định theo 4
+khuôn ĐÃ THẤY (heading `MH1`/`SCR-001`/`S01`, mã mục nhiều cấp `6.1.1`, dòng
+in đậm đứng riêng `**MH1: Tên**`, hàng bảng "Danh sách màn hình"); lớp 2 = CHẾ ĐỘ
+NÀY, agent đọc hiểu khi lớp 1 báo hiệu trang có màn hình (heading kiểu "Danh
+sách màn hình" / "Mô tả các màn hình") nhưng không nhận ra mã màn nào — tài
+liệu trình bày tự do, ngoài khuôn lớp 1 biết đọc; lớp 3 = manifest cho người
+dùng tự sửa (không thuộc chế độ này). Vì lớp 2 để bạn tự đọc hiểu, daemon
+KHÔNG tin lời bạn khai tay không — mọi màn phải kèm bằng chứng đối chiếu
+được, cùng triết lý chống ảo giác của bước review tài liệu.
+
+Kickoff nói "EXTRACT mode" kèm danh sách CÁC TRANG (đường dẫn `.md`) mà lớp 1
+không quét ra được. Nhiệm vụ: đọc TỪNG TRANG đó, tìm MỌI màn hình tài liệu
+khai — bất kể cách trình bày (heading, dòng in đậm, hàng bảng…) — rồi ghi
+**đúng một file** `comp/_doc-screens.json`:
+
+```json
+{
+  "schema_version": 1,
+  "pages": [
+    {
+      "source": "docs-feature/2.1-PRD-Mua-SIM.md",
+      "screens": [
+        { "code": "MH1", "name": "Trang chủ", "anchorText": "| MH1 | Trang chủ |" },
+        { "code": null, "name": "Xác nhận thanh toán", "anchorText": "**Màn xác nhận thanh toán**" }
+      ]
+    }
+  ]
+}
+```
+
+Ví dụ input rút gọn tương ứng (trang khai màn bằng bảng + một dòng in đậm rời
+rạc, khuôn tự do lớp 1 không đọc được):
+
+```
+| Mã MH | Tên màn hình |
+|---|---|
+| MH1 | Trang chủ |
+
+**Màn xác nhận thanh toán**
+```
+
+Luật:
+
+- `source`: đúng đường dẫn trang mà kickoff liệt kê, chép nguyên văn.
+- `anchorText`: chép **NGUYÊN VĂN CẢ MỘT DÒNG** của trang — dòng heading, dòng
+  in đậm, hay một hàng bảng đều được, miễn là dòng đó DUY NHẤT trong trang
+  (khớp y nguyên sau khi trim khoảng trắng đầu/cuối). Daemon đối chiếu tất
+  định: không tìm thấy, xuất hiện hơn một lần, hoặc chỉ nằm trong code fence
+  → màn đó bị loại kèm lý do, không suy diễn hộ bạn — đừng diễn giải lại câu
+  chữ, đừng ghép nhiều dòng.
+- **Mỗi màn một `anchorText` riêng** — không dùng chung một dòng cho hai màn
+  khác nhau.
+- `code`: lấy đúng mã tài liệu đã ghi (giữ nguyên chữ/số, kể cả hậu tố). Tài
+  liệu KHÔNG có mã thì để `null` — **KHÔNG BỊA MÃ**; daemon tự đánh `X1`,
+  `X2`… theo thứ tự xuất hiện trong trang, không cần bạn tự đếm.
+- **KHÔNG khai mục tài liệu làm màn**: heading kiểu "Danh sách màn hình", "Mô
+  tả các màn hình", "Luồng màn hình", "Phạm vi", "Quy tắc"… là tiêu đề MỤC
+  của tài liệu, không phải một màn hình cụ thể — đừng liệt các heading cấp
+  trên đó vào `screens[]`.
+- **Chỉ ghi đúng một file `comp/_doc-screens.json`.** Không ghi file nào
+  khác, không sửa trang tài liệu, không đụng `_inputs.json`, `flows/`,
+  `criteria/`.
+
+## Cách quyết định component (áp cho cả hai chế độ ROLE-MAP/SCREEN)
 
 1. Xác định **vai trò** của phần tử từ chữ tài liệu / bước luồng (đây là
    "chọn 1 trong danh sách", "nhập số điện thoại", "xác nhận trước khi trả

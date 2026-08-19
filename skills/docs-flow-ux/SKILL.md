@@ -204,6 +204,10 @@ Luật:
 - Mọi `cell`/`edge`/`near`/`from`/`to` phải là id có thật trong `cells.json`
   hoặc id `od-…` bạn vừa tạo trong CÙNG file (thao tác trước tạo, thao tác sau
   dùng). Id sai → daemon bỏ qua thao tác đó và ghi vào index — đừng để xảy ra.
+- `addNode.near` cũng được phép là id CẠNH (sơ đồ sequence không có đỉnh gần
+  chỗ bạn muốn chèn) — daemon đặt node mới cạnh đỉnh ĐÍCH của cạnh đó (thiếu
+  thì đỉnh NGUỒN). Không tìm được đỉnh nào ở cả hai đầu thì thao tác bị bỏ như
+  bình thường.
 - **Chỉ sửa cục bộ.** Không xoá cell (dùng `mark removed`), không di chuyển
   cell cũ, không vẽ lại luồng thay thế. Nếu luồng cần làm lại từ đầu → nói ở
   `summary` với `verdict: "poor"`, KHÔNG nặn ra hàng chục thao tác.
@@ -327,6 +331,19 @@ thumbnail:
   không gắn. Không bịa mã màn.
 - `names`: tên màn như tài liệu đặt (viewer hiện tên, không hiện key).
 - `note` (tuỳ chọn): chỗ duy nhất ghi phần tài liệu mô tả mơ hồ về luồng này.
+- **`cells` được phép trỏ vào id CẠNH, không chỉ id đỉnh.** Sơ đồ kiểu
+  sequence (UML — lifeline User/App/Server, thao tác nằm TRÊN mũi tên, ví dụ
+  "Click Đăng nhập SSO") không có đỉnh nào để gắn màn; trỏ thẳng vào id cạnh
+  đó trong `cells.json`, daemon tự quy về node ĐÍCH của cạnh (đích không dùng
+  được thì lùi về node NGUỒN). Đừng cố "phát minh" một đỉnh giả chỉ để có chỗ
+  gắn `screens.json`.
+- **Không trỏ `cells` vào một node CHỈ tồn tại ở bản đề xuất** (id bạn vừa tạo
+  bằng `addNode` ở Bước 4a, thường bắt đầu `od-`). `flows/<FLOW-ID>.flowchart.json`
+  daemon dựng từ sơ đồ HIỆN TRẠNG (as-is) — node đề xuất không bao giờ có
+  trong đó nên mapping sẽ bị daemon bỏ (ghi lại ở `screensDropped` +
+  `flows/_warnings.json`, không báo lỗi cứng). Muốn nói "màn này chưa có
+  bước nào trong luồng hiện tại, đề xuất mới có" → viết vào `note`, không gắn
+  `cells`.
 
 ## Chế độ text-only (không tìm thấy sơ đồ nào)
 

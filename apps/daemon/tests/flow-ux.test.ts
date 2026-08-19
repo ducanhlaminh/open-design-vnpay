@@ -11,7 +11,7 @@ import { test } from 'vitest';
 
 import { decodeMxfile, encodeMxfile, listCells, loadGraph } from '../src/flow-ux/mxfile.js';
 import { applyPatch, parsePatchDoc } from '../src/flow-ux/patch.js';
-import { drawioPageToFlowchart, mermaidToFlowchart } from '../src/flow-ux/to-flowchart.js';
+import { drawioPageToFlowchart, mermaidToFlowchart, resolveScreenCells } from '../src/flow-ux/to-flowchart.js';
 import { findEmbeddedMermaid, replaceCreateViewerCalls } from '../src/flow-ux/mermaid-detect.js';
 import { finalizeFlowUx, prepareFlowUxInputs, slugify } from '../src/flow-ux/index.js';
 
@@ -312,6 +312,412 @@ test('prepare: trang do ingest Confluence mới viết (ảnh SVG + fence ```mer
     assert.ok(fs.existsSync(path.join(cwd, 'flows', flow.id, 'as-is.svg')));
     // Không có createViewer nên trang không bị viết lại.
     assert.deepEqual(prep.normalizedPages, []);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// ── Sự cố #5d13309f: dr-flow nuốt mapping màn trỏ vào cạnh, patch bỏ near là
+// cạnh, sơ đồ mồ côi vẫn tốn lượt agent, warnings không tới người dùng. ──────
+
+test('resolveScreenCells: mapping vào cạnh quy về node đích/nguồn; id lạ và node decision bị dropped có lý do', () => {
+  const nodes = [
+    { id: 'a', type: 'start' as const },
+    { id: 'b', type: 'action' as const },
+    { id: 'c', type: 'decision' as const },
+    { id: 'd', type: 'action' as const },
+  ];
+  const edges = [
+    { id: 'e1', from: 'a', to: 'b' }, // đích b là action → gắn thẳng vào b
+    { id: 'e2', from: 'd', to: 'c' }, // đích c là decision → lùi về nguồn d
+  ];
+  const { byNode, dropped } = resolveScreenCells(
+    { nodes, edges },
+    { e1: 'doc__MH1', e2: 'doc__MH2', zzz: 'doc__MH3', c: 'doc__MH4' },
+  );
+  assert.deepEqual(byNode, { b: 'doc__MH1', d: 'doc__MH2' });
+  assert.deepEqual(
+    dropped.sort((x, y) => x.cell.localeCompare(y.cell)),
+    [
+      { cell: 'c', key: 'doc__MH4', reason: 'node loại quyết định (decision) không phải màn' },
+      { cell: 'zzz', key: 'doc__MH3', reason: 'không có trong sơ đồ' },
+    ],
+  );
+});
+
+test('resolveScreenCells: WP9b — cạnh TRÔI (không source/target) bị dropped với lý do đúng bản chất, không lẫn với "không có trong sơ đồ"', () => {
+  const nodes = [
+    { id: 'a', type: 'start' as const },
+    { id: 'b', type: 'action' as const },
+  ];
+  // 'floaty' là cạnh CÓ id thật trong sơ đồ (sequence, vẽ theo toạ độ) nhưng
+  // không có source/target — khác hẳn 'zzz' (id không tồn tại trong sơ đồ).
+  const edges = [
+    { id: 'e1', from: 'a', to: 'b' },
+    { id: 'floaty' },
+  ];
+  const { byNode, dropped } = resolveScreenCells({ nodes, edges }, { e1: 'doc__MH1', floaty: 'doc__MH2', zzz: 'doc__MH3' });
+  assert.deepEqual(byNode, { b: 'doc__MH1' });
+  assert.deepEqual(
+    dropped.sort((x, y) => x.cell.localeCompare(y.cell)),
+    [
+      { cell: 'floaty', key: 'doc__MH2', reason: 'là cạnh không nối hai đỉnh (sơ đồ kiểu sequence)' },
+      { cell: 'zzz', key: 'doc__MH3', reason: 'không có trong sơ đồ' },
+    ],
+  );
+});
+
+// ── Bổ sung sau review: resolveScreenCells mất mapping ÂM THẦM khi hai khoá
+// cùng quy về MỘT node (`byNode[target] = key` ghi đè không cảnh báo). ──────
+
+test('resolveScreenCells: hai khoá cùng quy về MỘT node — mapping TRỎ THẲNG thắng mapping suy ra từ cạnh, khoá thua vào dropped có lý do', () => {
+  const nodes = [
+    { id: 'a', type: 'start' as const },
+    { id: 'b', type: 'action' as const },
+  ];
+  const edges = [{ id: 'e1', from: 'a', to: 'b' }];
+  // Tái hiện đúng ca review: e1 (cạnh, suy ra → b) và b (trỏ thẳng) cùng khai
+  // hai màn khác nhau — trước đây 'doc__MH1' biến mất không lý do.
+  const { byNode, dropped } = resolveScreenCells({ nodes, edges }, { e1: 'doc__MH1', b: 'doc__MH2' });
+  assert.deepEqual(byNode, { b: 'doc__MH2' });
+  assert.deepEqual(dropped, [{ cell: 'e1', key: 'doc__MH1', reason: 'node "b" đã gắn màn "doc__MH2" — mỗi bước chỉ mang một màn' }]);
+});
+
+test('resolveScreenCells: hai CẠNH cùng đổ về một node — giữ cái ĐẦU (thứ tự khoá trong screens), cái sau vào dropped', () => {
+  const nodes = [
+    { id: 'a', type: 'start' as const },
+    { id: 'b', type: 'action' as const },
+    { id: 'c', type: 'start' as const },
+  ];
+  const edges = [
+    { id: 'e1', from: 'a', to: 'b' },
+    { id: 'e2', from: 'c', to: 'b' },
+  ];
+  const { byNode, dropped } = resolveScreenCells({ nodes, edges }, { e1: 'doc__MH1', e2: 'doc__MH2' });
+  assert.deepEqual(byNode, { b: 'doc__MH1' });
+  assert.deepEqual(dropped, [{ cell: 'e2', key: 'doc__MH2', reason: 'node "b" đã gắn màn "doc__MH1" — mỗi bước chỉ mang một màn' }]);
+});
+
+test('resolveScreenCells: không đụng độ (mỗi node một khoá) → byNode/dropped như cũ, không có lý do đụng độ nào', () => {
+  const nodes = [
+    { id: 'a', type: 'start' as const },
+    { id: 'b', type: 'action' as const },
+    { id: 'd', type: 'action' as const },
+  ];
+  const edges = [{ id: 'e1', from: 'a', to: 'b' }];
+  const { byNode, dropped } = resolveScreenCells({ nodes, edges }, { e1: 'doc__MH1', d: 'doc__MH2' });
+  assert.deepEqual(byNode, { b: 'doc__MH1', d: 'doc__MH2' });
+  assert.deepEqual(dropped, []);
+});
+
+test('to-flowchart: mapping vào id CẠNH (sơ đồ sequence, thao tác nằm trên mũi tên) → daemon quy về node đích thay vì loại thẳng tay', () => {
+  const page = decodeMxfile(DRAWIO)[0]!;
+  // 'e1' là id cạnh có thật trong fixture (s1 -> pay theo cells.json sample).
+  const cells = listCells(page.graphXml);
+  const anEdge = cells.find((c) => c.kind === 'edge' && c.source && c.target)!;
+  const fc = drawioPageToFlowchart(page.graphXml, { id: 'FLOW-x', title: 't', source: 's.md' }, { [anEdge.id]: 'doc__MH1' });
+  const target = fc.nodes.find((n) => n.id === anEdge.target);
+  const usedTarget = target && target.type !== 'decision';
+  const holder = usedTarget ? target : fc.nodes.find((n) => n.id === anEdge.source);
+  assert.equal(holder?.screen, 'doc__MH1');
+});
+
+test('patch: addNode.near là CẠNH → quy về đỉnh đích; node vừa thêm nhìn thấy được bởi addNode sau (od-n3 near od-n2)', () => {
+  const graphXml = `<mxGraphModel><root>
+<mxCell id="0"/>
+<mxCell id="1" parent="0"/>
+<mxCell id="v1" value="Bắt đầu" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="120" height="60" as="geometry"/></mxCell>
+<mxCell id="v2" value="Kết thúc" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="300" y="0" width="120" height="60" as="geometry"/></mxCell>
+<mxCell id="e1" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="v1" target="v2"><mxGeometry relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+  const patch = parsePatchDoc(
+    JSON.stringify({
+      ops: [
+        { op: 'addNode', id: 'od-n2', shape: 'action', label: 'Node 2', near: 'e1', dir: 'below' },
+        { op: 'addNode', id: 'od-n3', shape: 'action', label: 'Node 3', near: 'od-n2', dir: 'below' },
+      ],
+    }),
+  );
+  const r = applyPatch(graphXml, patch);
+  assert.equal(r.applied, 2);
+  assert.equal(r.skipped.length, 0);
+  const cells = listCells(r.graphXml);
+  const n2 = cells.find((c) => c.id === 'od-n2')!;
+  const n3 = cells.find((c) => c.id === 'od-n3')!;
+  assert.ok(n2 && n3, 'cả hai node được thêm');
+  assert.ok((n3.y ?? 0) > (n2.y ?? 0), 'od-n3 đặt dưới od-n2 (near = od-n2 vừa thêm)');
+});
+
+test('patch: addNode.near là CẠNH TRÔI (không source/target, sơ đồ sequence) → skip có lý do đúng bản chất, khác "not found or not a vertex"', () => {
+  const graphXml = `<mxGraphModel><root>
+<mxCell id="0"/>
+<mxCell id="1" parent="0"/>
+<mxCell id="v1" value="Bắt đầu" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="120" height="60" as="geometry"/></mxCell>
+<mxCell id="floaty" value="Thao tác" style="edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1"><mxGeometry x="150" y="30" width="80" height="20" relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+  const patch = parsePatchDoc(
+    JSON.stringify({
+      ops: [
+        { op: 'addNode', id: 'od-n1', shape: 'action', label: 'Báo lỗi', near: 'floaty', dir: 'below' },
+        { op: 'addNode', id: 'od-n2', shape: 'action', label: 'x', near: 'khong-ton-tai', dir: 'below' },
+      ],
+    }),
+  );
+  const r = applyPatch(graphXml, patch);
+  assert.equal(r.applied, 0);
+  assert.equal(r.skipped.length, 2);
+  const floatySkip = r.skipped.find((s) => (s.op as { near?: string }).near === 'floaty')!;
+  assert.equal(floatySkip.reason, 'near cell "floaty" là cạnh không nối hai đỉnh (sơ đồ kiểu sequence) — không đặt được node cạnh nó');
+  const missingSkip = r.skipped.find((s) => (s.op as { near?: string }).near === 'khong-ton-tai')!;
+  assert.equal(missingSkip.reason, 'near cell "khong-ton-tai" not found or not a vertex');
+});
+
+test('prepareFlowUxInputs: pageReferencing khoan dung (bỏ tiền tố số Confluence + đuôi + chuẩn hoá _/khoảng trắng) và sơ đồ mồ côi không vào flows', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-orphan-'));
+  try {
+    const dir = path.join(cwd, 'docs-feature', 'sso');
+    fs.mkdirSync(path.join(dir, 'attachments'), { recursive: true });
+    const diagramXml = (a: string, b: string) => `<mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="v1" value="${a}" style="ellipse;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="v2" value="${b}" style="ellipse;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="e1" edge="1" parent="1" source="v1" target="v2"><mxGeometry relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+    fs.writeFileSync(path.join(dir, 'attachments', '901-Untitled_Diagram-123.drawio'), diagramXml('Bắt đầu', 'Kết thúc'));
+    fs.writeFileSync(path.join(dir, 'attachments', '902-Mo-coi-Diagram.drawio'), diagramXml('X', 'Y'));
+    // Trang chỉ nhúng ẢNH cùng gốc tên với sơ đồ 901 (không tiền tố, `_`→khoảng trắng).
+    fs.writeFileSync(path.join(dir, 'doc.md'), '# Doc\n\n![](attachments/Untitled Diagram-123.png)\n');
+
+    const prep = await prepareFlowUxInputs(cwd);
+    const referenced = prep.inputs.find((i) => i.diagram.endsWith('901-Untitled_Diagram-123.drawio'));
+    assert.ok(referenced, 'khớp khoan dung — sơ đồ 901 phải nằm trong flows');
+    assert.equal(referenced!.source, 'docs-feature/sso/doc.md');
+    assert.equal(
+      prep.inputs.some((i) => i.diagram.endsWith('902-Mo-coi-Diagram.drawio')),
+      false,
+      'sơ đồ mồ côi không trang nào tham chiếu → không vào flows',
+    );
+    assert.deepEqual(prep.orphans, [
+      { diagram: 'docs-feature/sso/attachments/902-Mo-coi-Diagram.drawio', reason: 'không có trang tài liệu nào tham chiếu sơ đồ này' },
+    ]);
+    const inputsJson = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', '_inputs.json'), 'utf8'));
+    assert.deepEqual(inputsJson.orphans, prep.orphans);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('prepareFlowUxInputs: mọi sơ đồ đều mồ côi → safety net giữ nguyên hết trong flows (không mất luồng) + cảnh báo', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-allorphan-'));
+  try {
+    const dir = path.join(cwd, 'docs-feature', 'sso');
+    fs.mkdirSync(path.join(dir, 'attachments'), { recursive: true });
+    const diagramXml = (a: string, b: string) => `<mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="v1" value="${a}" style="ellipse;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="v2" value="${b}" style="ellipse;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="e1" edge="1" parent="1" source="v1" target="v2"><mxGeometry relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+    fs.writeFileSync(path.join(dir, 'attachments', '901-A.drawio'), diagramXml('A1', 'A2'));
+    fs.writeFileSync(path.join(dir, 'attachments', '902-B.drawio'), diagramXml('B1', 'B2'));
+    // Không có trang .md nào cả — mọi sơ đồ chắc chắn mồ côi.
+
+    const prep = await prepareFlowUxInputs(cwd);
+    assert.equal(prep.inputs.length, 2, 'safety net: cả 2 sơ đồ vẫn vào flows dù mồ côi');
+    assert.deepEqual(prep.orphans, []);
+    const inputsJson = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', '_inputs.json'), 'utf8'));
+    assert.match(inputsJson.note ?? '', /vẫn đưa hết vào flows/);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('finalizeFlowUx: screens.json khai mapping hỏng (id lạ + node decision) → entry.screens rỗng, screensDropped đủ, flows/_warnings.json được ghi', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-dropped-'));
+  try {
+    const fdir = path.join(cwd, 'flows', 'FLOW-x');
+    fs.mkdirSync(fdir, { recursive: true });
+    const graphXml = `<mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="v1" value="Bắt đầu" style="ellipse;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="v2" value="Quyết định" style="rhombus;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="v3" value="Kết thúc" style="ellipse;" vertex="1" parent="1"><mxGeometry x="400" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="e1" edge="1" parent="1" source="v1" target="v2"><mxGeometry relative="1" as="geometry"/></mxCell>
+<mxCell id="e2" edge="1" parent="1" source="v2" target="v3"><mxGeometry relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+    fs.writeFileSync(path.join(fdir, 'as-is.drawio'), encodeMxfile([{ id: 'p1', name: 'Hiện trạng', graphXml }]));
+    fs.writeFileSync(path.join(fdir, 'screens.json'), JSON.stringify({ cells: { zzz: 'doc__MH1', v2: 'doc__MH2' } }));
+    fs.writeFileSync(path.join(fdir, 'ux-review.json'), JSON.stringify({ summary: 'ok', findings: [] }));
+    fs.mkdirSync(path.join(cwd, 'flows'), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, 'flows', '_inputs.json'),
+      JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        flows: [
+          {
+            id: 'FLOW-x',
+            title: 'x',
+            kind: 'drawio',
+            source: 'doc.md',
+            diagram: 'doc.drawio',
+            files: { asIs: 'flows/FLOW-x/as-is.drawio', cells: 'flows/FLOW-x/cells.json' },
+            counts: { nodes: 3, edges: 2 },
+          },
+        ],
+      }),
+    );
+
+    const fin = await finalizeFlowUx(cwd);
+    assert.equal(fin.index.length, 1);
+    const entry = fin.index[0]!;
+    assert.deepEqual(entry.screens, []);
+    assert.equal(entry.screensDropped?.length, 2);
+    assert.deepEqual(
+      entry.screensDropped?.map((d) => d.reason).sort(),
+      ['không có trong sơ đồ', 'node loại quyết định (decision) không phải màn'],
+    );
+    assert.ok(fin.warnings.some((w) => w.includes('mapping màn "doc__MH1" trỏ vào "zzz" bị bỏ')));
+    assert.ok(fin.warnings.some((w) => w.includes('mapping màn "doc__MH2" trỏ vào "v2" bị bỏ')));
+    assert.ok(fin.warnings.some((w) => w.includes('khai 2 mapping màn nhưng không cái nào dùng được')));
+    const warningsFile = JSON.parse(fs.readFileSync(path.join(cwd, 'flows', '_warnings.json'), 'utf8'));
+    assert.deepEqual(warningsFile.warnings, fin.warnings);
+    assert.ok(typeof warningsFile.generatedAt === 'string');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('finalizeFlowUx: WP9b — screens.json trỏ màn vào cạnh TRÔI (không source/target) → entry.screens rỗng, screensDropped có đúng lý do "cạnh không nối hai đỉnh", warnings tương ứng', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-floaty-drop-'));
+  try {
+    const fdir = path.join(cwd, 'flows', 'FLOW-x');
+    fs.mkdirSync(fdir, { recursive: true });
+    // 'floaty' là cạnh có NHÃN, có id thật trong sơ đồ, nhưng không có
+    // source/target (kiểu vẽ theo toạ độ của sơ đồ sequence) — trước WP9b,
+    // apps/daemon/src/flow-ux/index.ts tự lọc edgesForDrop chỉ giữ cạnh có cả
+    // source&&target nên cạnh này không bao giờ tới được resolveScreenCells
+    // (đường dùng cho screensDropped thật); lý do đúng chỉ nằm trong hàm,
+    // không tới người dùng.
+    const graphXml = `<mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="v1" value="Bắt đầu" style="ellipse;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="v2" value="Kết thúc" style="ellipse;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="e1" edge="1" parent="1" source="v1" target="v2"><mxGeometry relative="1" as="geometry"/></mxCell>
+<mxCell id="floaty" value="Click Đăng nhập" style="edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1"><mxGeometry x="90" y="10" width="60" height="20" relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+    fs.writeFileSync(path.join(fdir, 'as-is.drawio'), encodeMxfile([{ id: 'p1', name: 'Hiện trạng', graphXml }]));
+    fs.writeFileSync(path.join(fdir, 'screens.json'), JSON.stringify({ cells: { floaty: 'doc__MH1' } }));
+    fs.writeFileSync(path.join(fdir, 'ux-review.json'), JSON.stringify({ summary: 'ok', findings: [] }));
+    fs.writeFileSync(
+      path.join(cwd, 'flows', '_inputs.json'),
+      JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        flows: [
+          {
+            id: 'FLOW-x',
+            title: 'x',
+            kind: 'drawio',
+            source: 'doc.md',
+            diagram: 'doc.drawio',
+            files: { asIs: 'flows/FLOW-x/as-is.drawio', cells: 'flows/FLOW-x/cells.json' },
+            counts: { nodes: 2, edges: 2 },
+          },
+        ],
+      }),
+    );
+
+    const fin = await finalizeFlowUx(cwd);
+    assert.equal(fin.index.length, 1);
+    const entry = fin.index[0]!;
+    assert.deepEqual(entry.screens, [], 'cạnh trôi không gắn được màn nào — hành vi phần screens thật không đổi');
+    assert.deepEqual(entry.screensDropped, [{ cell: 'floaty', key: 'doc__MH1', reason: 'là cạnh không nối hai đỉnh (sơ đồ kiểu sequence)' }]);
+    assert.ok(
+      fin.warnings.some((w) => w.includes('mapping màn "doc__MH1" trỏ vào "floaty" bị bỏ — là cạnh không nối hai đỉnh (sơ đồ kiểu sequence)')),
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('finalizeFlowUx: lượt chạy sau KHÔNG còn warning → flows/_warnings.json của lượt trước bị XOÁ (không để lại cảnh báo cũ đã hết hiệu lực)', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-warnclear-'));
+  try {
+    const fdir = path.join(cwd, 'flows', 'FLOW-x');
+    fs.mkdirSync(fdir, { recursive: true });
+    const graphXml = `<mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="v1" value="Bắt đầu" style="ellipse;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="v2" value="Kết thúc" style="ellipse;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="e1" edge="1" parent="1" source="v1" target="v2"><mxGeometry relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+    fs.writeFileSync(path.join(fdir, 'as-is.drawio'), encodeMxfile([{ id: 'p1', name: 'Hiện trạng', graphXml }]));
+    // Lượt đầu: mapping hỏng (id lạ) → có warning, _warnings.json được ghi.
+    fs.writeFileSync(path.join(fdir, 'screens.json'), JSON.stringify({ cells: { zzz: 'doc__MH1' } }));
+    fs.writeFileSync(path.join(fdir, 'ux-review.json'), JSON.stringify({ summary: 'ok', findings: [] }));
+    fs.writeFileSync(
+      path.join(cwd, 'flows', '_inputs.json'),
+      JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        flows: [
+          {
+            id: 'FLOW-x',
+            title: 'x',
+            kind: 'drawio',
+            source: 'doc.md',
+            diagram: 'doc.drawio',
+            files: { asIs: 'flows/FLOW-x/as-is.drawio', cells: 'flows/FLOW-x/cells.json' },
+            counts: { nodes: 2, edges: 1 },
+          },
+        ],
+      }),
+    );
+
+    const first = await finalizeFlowUx(cwd);
+    assert.ok(first.warnings.length > 0, 'lượt đầu phải có warning (mapping hỏng)');
+    const warningsPath = path.join(cwd, 'flows', '_warnings.json');
+    assert.ok(fs.existsSync(warningsPath), 'lượt đầu ghi flows/_warnings.json');
+
+    // Lượt sau: agent (giả lập) sửa lại, screens.json không còn mapping hỏng.
+    fs.writeFileSync(path.join(fdir, 'screens.json'), JSON.stringify({ cells: {} }));
+    const second = await finalizeFlowUx(cwd);
+    assert.deepEqual(second.warnings, []);
+    assert.ok(!fs.existsSync(warningsPath), 'flows/_warnings.json của lượt trước phải bị xoá khi lượt này sạch warning');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('prepareFlowUxInputs: pageReferencing khoan dung có guard độ dài (≥ 8 ký tự sau chuẩn hoá, phải có chữ số) — token ngắn/chung chung không khớp nhầm', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'od-flow-ux-loose-guard-'));
+  try {
+    const dir = path.join(cwd, 'docs-feature', 'x');
+    fs.mkdirSync(path.join(dir, 'attachments'), { recursive: true });
+    const diagramXml = (a: string, b: string) => `<mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="v1" value="${a}" style="ellipse;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="v2" value="${b}" style="ellipse;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="80" height="40" as="geometry"/></mxCell>
+<mxCell id="e1" edge="1" parent="1" source="v1" target="v2"><mxGeometry relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+    // Token khoan dung ngắn/chung chung ("a-1", 3 ký tự) — KHÔNG được khớp
+    // nhầm dù chuỗi con "a-1" có mặt tình cờ trong một trang bất kỳ.
+    fs.writeFileSync(path.join(dir, 'attachments', 'a-1.drawio'), diagramXml('P', 'Q'));
+    // Token thật (tiền tố Confluence + số dài) — vẫn khớp trang chỉ nhúng ảnh
+    // cùng gốc tên, không có đuôi ".drawio".
+    fs.writeFileSync(path.join(dir, 'attachments', '901-Untitled_Diagram-1769153289432.drawio'), diagramXml('Bắt đầu', 'Kết thúc'));
+    fs.writeFileSync(
+      path.join(dir, 'doc.md'),
+      '# Doc\n\nNhắc tới a-1 ở đây nhưng đây không phải sơ đồ.\n\n![](attachments/Untitled Diagram-1769153289432.png)\n',
+    );
+
+    const prep = await prepareFlowUxInputs(cwd);
+    assert.equal(
+      prep.inputs.some((i) => i.diagram.endsWith('a-1.drawio')),
+      false,
+      'token khoan dung ngắn/chung chung không được khớp nhầm — sơ đồ mồ côi',
+    );
+    const matched = prep.inputs.find((i) => i.diagram.endsWith('901-Untitled_Diagram-1769153289432.drawio'));
+    assert.ok(matched, 'token khoan dung đủ dài + có chữ số vẫn khớp trang chỉ nhúng ảnh cùng gốc tên');
+    assert.equal(matched!.source, 'docs-feature/x/doc.md');
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

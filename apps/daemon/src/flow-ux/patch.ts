@@ -254,7 +254,25 @@ export function applyPatch(graphXml: string, patch: PatchDoc): PatchResult {
           skipped.push({ op, reason: `node id "${op.id}" missing or already used` });
           break;
         }
-        const near = cells.find((c) => c.id === op.near && c.kind === 'vertex');
+        let near = cells.find((c) => c.id === op.near && c.kind === 'vertex');
+        if (!near) {
+          // Sự cố #5d13309f: sơ đồ sequence đặt thao tác trên CẠNH, nên agent
+          // tự nhiên trỏ `near` vào một id cạnh. Quy về đỉnh ĐÍCH của cạnh đó
+          // (thiếu thì đỉnh NGUỒN) thay vì bỏ luôn — đỉnh đích là nơi thao
+          // tác đó dẫn tới, hợp lý nhất để đặt node mới cạnh nó.
+          const edge = cells.find((c) => c.id === op.near && c.kind === 'edge');
+          const target = edge?.target ? cells.find((c) => c.id === edge.target && c.kind === 'vertex') : undefined;
+          const source = edge?.source ? cells.find((c) => c.id === edge.source && c.kind === 'vertex') : undefined;
+          near = target ?? source;
+          if (!near && edge && !edge.source && !edge.target) {
+            // WP9b: sơ đồ sequence có nhiều cạnh TRÔI — vẽ theo toạ độ giữa
+            // các lifeline, mxCell không có source/target — nên id đúng
+            // nhưng không quy được về đỉnh nào cả. Lý do cũ "not found or not
+            // a vertex" khiến agent tưởng nhầm là id sai và thử lại vô ích.
+            skipped.push({ op, reason: `near cell "${op.near}" là cạnh không nối hai đỉnh (sơ đồ kiểu sequence) — không đặt được node cạnh nó` });
+            break;
+          }
+        }
         if (!near) {
           skipped.push({ op, reason: `near cell "${op.near}" not found or not a vertex` });
           break;

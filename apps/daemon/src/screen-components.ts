@@ -76,6 +76,15 @@ export interface ScreenInput {
   findings: { id: string; severity: string; title: string; recommendation?: string }[];
   /** 'mobile' | 'web' guess from the document wording — the agent decides. */
   platformHint: 'mobile' | 'web';
+  /** Where this screen came from — 'flow' (mặc định) khi dr-flow gắn được;
+   *  'doc' khi dr-flow gắn KHÔNG màn nào và daemon phải quét heading tài
+   *  liệu thay (sự cố #5d13309f); 'agent' khi lớp 2 (screen-extract.ts) trích
+   *  màn bằng agent lúc lớp 1 (quét tất định) yếu; 'user' khi lớp 3
+   *  (screen-overrides.ts) ghi đè theo yêu cầu người dùng. Union CHÍNH THỨC
+   *  hợp nhất tại WP14 — trước đó 'agent'/'user' chỉ tồn tại qua cast cục bộ
+   *  ở hai module song song (WP12/WP13a) vì file này đang bị WP11 sửa cùng
+   *  lúc. Cho agent/người đọc biết vì sao `steps`/`navOut`/`navIn` rỗng. */
+  origin?: 'flow' | 'doc' | 'agent' | 'user';
 }
 
 export interface ScreenComponentsInputs {
@@ -189,7 +198,23 @@ export function splitScreenKey(key: string): { prefix: string; code: string } | 
 /** Find the section of a page that describes a screen: a heading containing
  *  the screen code (`SCR-001`, `4.2.1`) or, failing that, the screen name.
  *  Returns 1-based inclusive line range up to the next heading of the same
- *  or a higher level. */
+ *  or a higher level.
+ *
+ *  WP11 (sweep WP10, nguyên nhân 3 — DÒNG BOLD, xem docblock trên
+ *  matchBoldScreenLine): khi KHÔNG heading nào khớp, thử tiếp trong các dòng
+ *  bold-khai-màn đứng riêng — Group-Chia-se-nhom.md thật không có heading MH
+ *  nào nên trước WP11 hàm này luôn trả `null` cho mọi màn dù tài liệu khai
+ *  đủ. Section của một màn bold không có "cấp heading" để so — chạy tới
+ *  heading kế tiếp (MỌI cấp) HOẶC dòng bold-khai-màn kế tiếp, tuỳ cái nào
+ *  đứng trước; không có cái nào phía sau thì chạy tới cuối tài liệu.
+ *
+ *  WP11b (review độc lập wave 1, lỗi chặn): `boldLines` (biên section, dùng
+ *  ở `matchIn`/`nextBoldLine` bên dưới) PHẢI chỉ gồm dòng bold-KHAI-MÀN qua
+ *  `matchBoldScreenLine` — nhất quán với `scanDocScreens` (dùng đúng hàm này
+ *  để dựng `boldDecls`). Trước WP11b, dòng dùng nhầm `matchBoldLineText`
+ *  (khớp MỌI dòng bold đứng riêng, kể cả `**Ghi chú:**`/`**Lưu ý:**` không
+ *  khai màn nào) — một dòng ghi-chú/lưu-ý chen giữa nội dung màn bold làm
+ *  `nextBoldLine` cắt section cụt sớm, excerpt/endLine hụt phần sau. */
 export function findScreenSection(
   md: string,
   code: string,
@@ -197,6 +222,7 @@ export function findScreenSection(
 ): { heading: string; startLine: number; endLine: number; excerpt: string; referenceTable?: string } | null {
   const lines = md.split(/\r?\n/);
   const headings: { line: number; level: number; text: string }[] = [];
+  const boldLines: { line: number; text: string }[] = [];
   let fence: string | null = null;
   lines.forEach((raw, i) => {
     const f = /^\s*(```+|~~~+)/.exec(raw);
@@ -207,25 +233,46 @@ export function findScreenSection(
     }
     if (fence) return;
     const m = HEADING_RE.exec(raw);
-    if (m) headings.push({ line: i, level: m[1]!.length, text: m[2]!.trim() });
+    if (m) {
+      headings.push({ line: i, level: m[1]!.length, text: m[2]!.trim() });
+      return;
+    }
+    // WP11b: chỉ dòng bold-KHAI-MÀN (matchBoldScreenLine) mới được tính là
+    // biên section — xem docblock trên findScreenSection.
+    const boldScreen = matchBoldScreenLine(raw);
+    if (boldScreen != null) boldLines.push({ line: i, text: matchBoldLineText(raw)! });
   });
   const codeNorm = normalizeVi(code);
   const nameNorm = normalizeVi(name);
   const codeRe = new RegExp(`(^|[^\\w.])${code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w])`, 'i');
-  let hit =
-    headings.find((h) => codeRe.test(h.text)) ??
-    headings.find((h) => normalizeVi(h.text).includes(codeNorm) && codeNorm.length >= 3) ??
-    (nameNorm.length >= 4 ? headings.find((h) => normalizeVi(h.text).includes(nameNorm)) : undefined);
-  if (!hit) return null;
-  const idx = headings.indexOf(hit);
-  let end = lines.length - 1;
-  for (let j = idx + 1; j < headings.length; j += 1) {
-    if (headings[j]!.level <= hit.level) {
-      end = headings[j]!.line - 1;
-      break;
+  const matchIn = <T extends { text: string }>(entries: T[]): T | undefined =>
+    entries.find((e) => codeRe.test(e.text)) ??
+    entries.find((e) => normalizeVi(e.text).includes(codeNorm) && codeNorm.length >= 3) ??
+    (nameNorm.length >= 4 ? entries.find((e) => normalizeVi(e.text).includes(nameNorm)) : undefined);
+
+  let startLine: number;
+  let end: number;
+  const headingHit = matchIn(headings);
+  if (headingHit) {
+    const idx = headings.indexOf(headingHit);
+    startLine = headingHit.line;
+    end = lines.length - 1;
+    for (let j = idx + 1; j < headings.length; j += 1) {
+      if (headings[j]!.level <= headingHit.level) {
+        end = headings[j]!.line - 1;
+        break;
+      }
     }
+  } else {
+    const boldHit = matchIn(boldLines);
+    if (!boldHit) return null;
+    startLine = boldHit.line;
+    const nextHeadingLine = headings.find((h) => h.line > boldHit.line)?.line;
+    const nextBoldLine = boldLines.find((b) => b.line > boldHit.line)?.line;
+    const bounds = [nextHeadingLine, nextBoldLine].filter((x): x is number => x != null);
+    end = bounds.length ? Math.min(...bounds) - 1 : lines.length - 1;
   }
-  const body = lines.slice(hit.line + 1, end + 1);
+  const body = lines.slice(startLine + 1, end + 1);
   // Reference table: a markdown table whose header row mentions "Kiểu hiển thị"
   // (or "Component"/"Loại") — the v1 contract, now advisory.
   let referenceTable: string | undefined;
@@ -246,15 +293,407 @@ export function findScreenSection(
     .trim();
   const excerpt = excerptSrc.length > 900 ? `${excerptSrc.slice(0, 900)}…` : excerptSrc;
   return {
-    heading: lines[hit.line]!,
-    startLine: hit.line + 1,
+    heading: lines[startLine]!,
+    startLine: startLine + 1,
     endLine: end + 1,
     excerpt,
     ...(referenceTable ? { referenceTable } : {}),
   };
 }
 
-const MOBILE_HINT_RE = /\b(sdk|mobile|ios|android|app di động|ứng dụng di động|màn hình điện thoại|smartphone|super ?app|mini ?app|bottom sheet)\b/i;
+// Mã màn ở ĐẦU heading, theo các khuôn tài liệu nghiệp vụ có thật: `MH1`/
+// `MH-01`/`MH 2` (khoảng trắng giữa MH và số bị chuẩn hoá bỏ khi lấy code,
+// dấu `-` thì giữ nguyên), `SCR-001`/`SCR-002.1`, hệ mã `S01`/`S02` (WP11 —
+// xem docblock trên S_CODE_RE), hoặc mã mục nhiều cấp (≥ 2 đoạn số, `6.1.1`)
+// — một số đơn lẻ như `2/` là số mục thường, không phải mã màn, nên yêu cầu
+// có dấu chấm mới tính. WP9c: `MH` còn nhận hậu tố `-<số>` (`MH05-1` …
+// `MH05-7`, tài liệu Chinh-sua-anh-gui.md thật — các màn CON, trước đây bị
+// gộp hết về `MH05` vì phần `-1`/`-2` rơi ra ngoài mã). WP11 (sweep WP10,
+// nguyên nhân 2 — HẬU TỐ CHẤM): MH_CODE_RE mở rộng nhận CẢ hậu tố chấm
+// (`MH6.1`, `MH10.4` — Trang-chu.md thật, mục "3.1/ Danh sách màn hình -
+// APP") — trước WP11 regex chỉ nhận `-<số>` nên các màn con `MH6.1`/`MH6.2`/
+// `MH6.3` bị gộp âm thầm về `MH6` (không lỗi, không cảnh báo — mất luôn 2
+// màn). Hậu tố (chấm HOẶC gạch, không trộn) giữ nguyên trong code chuẩn hoá.
+const MH_CODE_RE = /^MH([\s-]?)(\d+(?:[.-]\d+)*)\b/i;
+const SCR_CODE_RE = /^SCR-\d+(?:\.\d+)*\b/i;
+// WP11 (sweep WP10, nguyên nhân 1 — HỆ MÃ S): hệ mã `S01`…`S05` có thật trên
+// nhiều URD (Webhooks-Incoming-Webhook-…md, URD-Dang-ky-cham-cong-…md,
+// URD-Hoi-dap-du-lieu-SalesGo-…md) nhưng trước WP11 không nhánh nào của
+// matchLeadingCode nhận `S` làm tiền tố màn — heading `### S01 — Panel Danh
+// sách Webhook` rơi thẳng vào nhánh mã mục (SECTION_CODE_RE, đòi dấu chấm)
+// nên bị bỏ trắng, kéo theo lượt 2 (fallback mã mục) sinh màn ma "2.1 Danh
+// sách màn hình". Bắt buộc `S` HOA + số dính liền ngay sau — cố tình KHÔNG
+// dùng cờ `i` — để "Sóc"/"AF-01"/"MF-01"/"BR-08"/"EX-02" (chữ thường hoặc mã
+// hệ khác bắt đầu bằng ký tự khác) không khớp nhầm; trong matchLeadingCode,
+// SCR luôn được thử trước S nên "SCR-001" không bao giờ lọt vào nhánh này.
+const S_CODE_RE = /^S\d{1,3}(?:[.-]\d+)*\b/;
+const SECTION_CODE_RE = /^\d+(?:\.\d+)+\b/;
+// Sau mã phải là một trong các dấu phân cách rồi tới tên (KHÔNG rỗng) — heading
+// mục lục thuần như `3.1/ Danh sách màn hình` dùng "/" (không nằm trong tập
+// này) nên tự động bị loại, không cần luật riêng.
+const CODE_SEPARATOR_RE = /^[\s:.\-—–]+/;
+// Khuôn v1 URD: `Màn hình 1: SCR-001 — Tên` — mã màn thật là SCR-xxx, không
+// phải số thứ tự "1" đứng trước.
+const URD_HEADING_RE = /^m[aà]n\s*h[ìi]nh\s*\d+\s*[:.\-—–]?\s*(SCR-\d+(?:\.\d+)*)\s*[:.\-—–]?\s*(.*)$/i;
+
+// Mã mục nhiều cấp (`SECTION_CODE_RE`, `6.1.1`) chỉ được nhận là MÀN khi cả
+// hai điều kiện dưới đây đúng — số đo thật trên tài liệu PRD SIM du lịch
+// (2.1.-PRD-Detail-Mua-SIM-du-lich.md, WP9b): quét cũ (chỉ theo `SECTION_CODE_RE`
+// + có tên) trả 17 "màn", gồm cả `3.1 Luồng sơ đồ`/`3.2 Mô tả` (nằm dưới
+// "3. Luồng nghiệp vụ tính năng", không phải chương giao diện), `8.1 Trong
+// Phạm Vi`/`8.2 Ngoài Phạm Vi` (không có chương "8." nào còn là heading thật —
+// export Confluence làm hỏng `## **8. …**` thành `##` rỗng), và 4 mục NHÓM
+// `6.1`/`6.2`/`6.3`/`6.4` (mỗi mục có mục con sâu hơn, không phải bản thân là
+// màn). Sau khi siết hai điều kiện dưới, quét đúng 9 màn: 6.1.1, 6.2.1,
+// 6.2.2, 6.3.1, 6.3.2, 6.4.1, 6.4.2, 6.4.3, 6.4.4 (tài liệu SSO — mã `MH1`/
+// `MH2`/`MH3`, rule (a) — không đổi, vẫn ra đúng 3).
+//   (vùng) một trong các heading TỔ TIÊN THEO MÃ (cắt dần đoạn cuối: `6.2.2`
+//   → thử `6.2` rồi `6`) có chữ khớp /giao diện|màn hình|screen|wireframe/i.
+//   Cố tình đối chiếu theo MÃ SỐ chứ KHÔNG theo cấp heading `#`/`##`/`###` —
+//   tài liệu PRD SIM du lịch có `## 6.2.2. Màn hình…` ở cấp `##` xen giữa
+//   các heading `###` khác của cùng chương (lỗi paste từ Confluence); lấy
+//   quan hệ cha-con theo cấp `#` sẽ đứt gãy đúng chỗ heading hỏng cấp này.
+//   (lá) không có heading nào SAU nó (trước heading không phải hậu duệ) có
+//   mã bắt đầu bằng `<mã>.` — nếu có, heading đó là MỤC NHÓM (`6.1 Màn trang
+//   chủ` có mục con `6.1.1`), không phải bản thân nó là một màn.
+const ANCESTOR_HINT_RE = /giao diện|màn hình|screen|wireframe/i;
+const LEADING_CODE_RE = /^\*{0,3}\s*(\d+(?:\.\d+)*)\b/;
+
+/** Mã số ở đầu heading (bỏ qua `**` in đậm) — dựng quan hệ cha-con THEO MÃ
+ *  cho `isDocScreenSection`, không phải theo cấp `#`/`##`/`###` (xem docblock
+ *  trên `SECTION_CODE_RE`). `null` khi heading không mở đầu bằng một số. */
+function leadingSectionCode(text: string): string | null {
+  const m = LEADING_CODE_RE.exec(text);
+  return m ? m[1]! : null;
+}
+
+/** Có phải mã mục nhiều cấp `code` (tại `headings[idx]`) là MỘT MÀN — xem
+ *  docblock trên `SECTION_CODE_RE` cho quy tắc và số đo thật. */
+function isDocScreenSection(headings: { text: string }[], codes: (string | null)[], idx: number, code: string): boolean {
+  const parts = code.split('.');
+  let hasAncestorHint = false;
+  for (let p = parts.length - 1; p >= 1 && !hasAncestorHint; p -= 1) {
+    const prefix = parts.slice(0, p).join('.');
+    for (let j = idx - 1; j >= 0; j -= 1) {
+      if (codes[j] === prefix) {
+        if (ANCESTOR_HINT_RE.test(headings[j]!.text)) hasAncestorHint = true;
+        break;
+      }
+    }
+  }
+  if (!hasAncestorHint) return false;
+  for (let j = idx + 1; j < headings.length; j += 1) {
+    const later = codes[j];
+    if (later == null || later === code) continue;
+    return !later.startsWith(`${code}.`);
+  }
+  return true;
+}
+
+/** Cố khớp một mã màn Ở ĐẦU `text` — mã tường minh (`MH`/`SCR`/`S`, WP11) hoặc
+ *  mã mục nhiều cấp (`SECTION_CODE_RE`) — trả `{code, name, isSection}` hoặc
+ *  `null` khi không có mã, hoặc phần sau mã rỗng (không có tên).
+ *
+ *  WP9c (BLOCKING 1, review độc lập vòng 2): heading GỘP số mục + mã màn
+ *  thật, khuôn có thật `### 4.1 SCR-001 Chọn quốc gia` — trước đây mã màn
+ *  chỉ nhận MH/SCR khi đứng ĐẦU heading nên "4.1" (mã mục) bị đọc thành mã
+ *  màn, sinh khoá `…__4.1` song song với `…__SCR-001` mà flow đã khai —
+ *  CÙNG một màn vật lý nhân đôi vì dedupe theo khoá nguyên văn không thấy
+ *  trùng. Khi mã đầu là mã mục, thử khớp LẠI phần còn lại bằng chính hàm
+ *  này; nếu phần còn lại LẠI mở đầu bằng MH/SCR/S thì dùng mã ĐÓ
+ *  (`isSection: false`) — "4.1" hay "2.1.1" chỉ là số mục bao ngoài, không
+ *  phải mã màn (WP11: "2.1.1. S01 Tên" → S01, cùng cơ chế). */
+function matchLeadingCode(text: string): { code: string; name: string; isSection: boolean } | null {
+  const mh = MH_CODE_RE.exec(text);
+  const scr = mh ? null : SCR_CODE_RE.exec(text);
+  const s = mh || scr ? null : S_CODE_RE.exec(text);
+  const sec = mh || scr || s ? null : SECTION_CODE_RE.exec(text);
+  const hit = mh ?? scr ?? s ?? sec;
+  if (!hit) return null;
+  const rawCode = hit[0];
+  const rest = text.slice(rawCode.length);
+  const sep = CODE_SEPARATOR_RE.exec(rest);
+  const restName = sep ? rest.slice(sep[0].length).trim() : '';
+  if (!restName) return null;
+  if (sec) {
+    const inner = matchLeadingCode(restName);
+    if (inner && !inner.isSection) return inner;
+  }
+  const code = mh ? `MH${mh[1] === ' ' ? '' : mh[1]}${mh[2]}` : rawCode;
+  return { code, name: restName, isSection: sec != null };
+}
+
+// WP11 (sweep WP10, nguyên nhân 5 — blocklist tên mục): fallback mã mục
+// (SECTION_CODE_RE) và cả heading/bold/bảng tường minh đôi khi khai một MỤC
+// LIỆT KÊ chứ không phải một MÀN — "2.1 Danh sách màn hình" (URD-Dang-ky-
+// cham-cong-…md, sau khi rút gọn mã S vẫn còn "2.1.1 Danh sách màn hình và
+// trạng thái"), "6.1 Danh sách màn hình" (B.-PRD-Feature-Detail-…md, trang
+// mẫu/template) đều là chính cái MỤC liệt kê màn, không phải một màn riêng.
+// Tên như "Danh sách danh bạ"/"Danh sách reaction" (WP10 sweep gắn cờ
+// "suspicious-ghost-code" nhưng orchestrator soát tay xác nhận là màn thật,
+// xem non_goals wp11.yaml) KHÔNG khớp — chỉ chặn khi tên mở đầu ĐÚNG
+// "danh sách"/"mô tả" + (các) + "màn hình", hoặc "luồng màn hình".
+const BLOCKLIST_NAME_RE = /^(danh sách|mô tả)\s+(các\s+)?màn hình\b/i;
+const BLOCKLIST_FLOW_RE = /^luồng màn hình\b/i;
+// WP14: export MỘT bản cho screen-extract.ts (lớp 2, validateDocScreenExtract)
+// dùng chung — trước đó module đó giữ một bản chép cục bộ (chạy song song
+// WP11 nên không import được file này lúc đang sửa).
+export function isBlockedScreenName(name: string): boolean {
+  const n = name.trim();
+  return BLOCKLIST_NAME_RE.test(n) || BLOCKLIST_FLOW_RE.test(n);
+}
+
+// WP11 (sweep WP10, nguyên nhân 3 — DÒNG BOLD): một số URD khai màn bằng một
+// dòng đứng riêng in đậm (`**MH1: Tên**`), KHÔNG phải heading `#` —
+// Group-Chia-se-nhom.md / Web-Group-Chia-se-nhom-…md thật khai TOÀN BỘ 16
+// màn (MH1, MH2, MH3.1–3.4, MH4.1, MH4.2, MH5, MH6.1–6.2, MH7.1–7.4, MH8)
+// kiểu này — trước WP11 scanDocScreens chỉ đọc heading `#{1,6}` nên trang
+// trắng màn dù có đủ mục "Danh sách/Mô tả màn hình" (cờ đỏ sweep
+// zero-screens-despite-heading). Chỉ nhận dòng mà TOÀN BỘ nội dung (sau khi
+// trim) là MỘT cặp `**…**` duy nhất, ruột không còn `*` nào khác — để loại
+// dòng gộp nhiều mã tham chiếu chéo (`**MH3.1: … +** **MH3.2: …**`, có thật
+// ở Web-Group-Chia-se-nhom-…md) và dòng bảng (loại trước bằng cách tự kiểm
+// `|`, vì `**` trong ô bảng không đứng riêng một dòng).
+const BOLD_LINE_RE = /^\*\*([^*]+)\*\*$/;
+
+/** Nội dung bên trong một dòng in đậm ĐƠN, đứng riêng, ngoài bảng — `null`
+ *  khi dòng không khớp khuôn này. Dùng chung cho `scanDocScreens` (nhận diện
+ *  khai màn) và `findScreenSection` (tìm section của màn bold, WP11). */
+function matchBoldLineText(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('|')) return null;
+  const m = BOLD_LINE_RE.exec(trimmed);
+  if (!m) return null;
+  const inner = m[1]!.trim();
+  return inner.length ? inner : null;
+}
+
+/** Dòng bold-khai-màn: mã khớp MH/SCR/S — KHÔNG nhận mã mục (bold-prefix số
+ *  mục kiểu `**6.2.2.** SCR-001` để lại cho backlog riêng, xem non_goals
+ *  wp11.yaml). */
+function matchBoldScreenLine(raw: string): { code: string; name: string } | null {
+  const inner = matchBoldLineText(raw);
+  if (inner == null) return null;
+  const result = matchLeadingCode(inner);
+  if (!result || result.isSection) return null;
+  return { code: result.code, name: result.name };
+}
+
+// WP11 (sweep WP10, nguyên nhân 4 — BẢNG DANH SÁCH MÀN HÌNH): một số URD chỉ
+// khai màn trong bảng `| Mã MH | Tên màn hình | … |` dưới heading khớp
+// /danh sách màn hình/i, không có heading/bold riêng cho từng mã —
+// URD-Bao-cao-dinh-ky-SalesGo-…md (S01–S03 chỉ trong bảng, hàng rác
+// "*(ngoài SocChat)*") và hàng MH05-7 của Chinh-sua-anh-gui.md thật (MH05-1…
+// MH05-6 CÓ heading riêng, MH05-7 thì không, chỉ có trong bảng). Bảng là
+// nguồn BỔ SUNG — trộn vào lượt 1 nhưng thua heading/bold cùng mã (xem
+// scanDocScreens); màn chỉ-trong-bảng không có section vì findScreenSection
+// không quét hàng bảng (ScreenInput.section vốn optional, không đổi shape).
+const TABLE_TRIGGER_HEADING_RE = /danh sách màn hình/i;
+const TABLE_CODE_HEADER_RE = /mã/i;
+const TABLE_NAME_HEADER_RE = /tên màn hình/i;
+
+function splitTableRow(line: string): string[] {
+  const inner = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  return inner.split('|').map((c) => c.trim());
+}
+function isTableSeparatorRow(line: string): boolean {
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
+}
+/** Mã ở một Ô bảng (đã bỏ `**` in đậm + khoảng trắng) — phải khớp TRỌN Ô
+ *  (khác `matchLeadingCode`, cho phép có tên theo sau) vì một ô mã chỉ nên
+ *  chứa đúng mã; khớp một phần thì coi là rác (`*(ngoài SocChat)*`, hàng ghi
+ *  chú thật của URD-Bao-cao-dinh-ky-…md) và bị bỏ. */
+function matchTableCode(cell: string): string | null {
+  const stripped = cell.replace(/\*\*/g, '').trim();
+  if (!stripped) return null;
+  const mh = MH_CODE_RE.exec(stripped);
+  const hit = mh ?? SCR_CODE_RE.exec(stripped) ?? S_CODE_RE.exec(stripped);
+  if (!hit || hit[0] !== stripped) return null;
+  return mh ? `MH${mh[1] === ' ' ? '' : mh[1]}${mh[2]}` : stripped;
+}
+
+/** Quét mọi bảng "Danh sách màn hình" trong tài liệu — xem docblock trên
+ *  TABLE_TRIGGER_HEADING_RE. `headings` cần có `level` (cấp `#`); một bảng có
+ *  thể bị quét lặp khi ≥2 heading tổ tiên cùng khớp trigger (vô hại — dedupe
+ *  ở scanDocScreens theo mã, giữ lần đầu). */
+function scanScreenTables(
+  lines: string[],
+  headings: Array<{ text: string; line: number; level: number }>,
+): Array<{ code: string; name: string; heading: string; line: number }> {
+  const out: Array<{ code: string; name: string; heading: string; line: number }> = [];
+  headings.forEach((h, idx) => {
+    if (!TABLE_TRIGGER_HEADING_RE.test(h.text)) return;
+    let end = lines.length - 1;
+    for (let j = idx + 1; j < headings.length; j += 1) {
+      if (headings[j]!.level <= h.level) {
+        end = headings[j]!.line - 2; // headings[j].line là 1-based; dừng trước dòng heading đó
+        break;
+      }
+    }
+    for (let i = h.line; i <= end; i += 1) {
+      const raw = lines[i];
+      if (raw == null || !raw.trim().startsWith('|')) continue;
+      const header = splitTableRow(raw);
+      const codeIdx = header.findIndex((c) => TABLE_CODE_HEADER_RE.test(c));
+      const nameIdx = header.findIndex((c) => TABLE_NAME_HEADER_RE.test(c));
+      if (codeIdx === -1 || nameIdx === -1) continue;
+      let j = i + 1;
+      if (j <= end && lines[j] != null && isTableSeparatorRow(lines[j]!)) j += 1;
+      const rows: Array<{ code: string; name: string; raw: string; line: number }> = [];
+      while (j <= end && lines[j] != null && lines[j]!.trim().startsWith('|')) {
+        const cells = splitTableRow(lines[j]!);
+        const code = matchTableCode(cells[codeIdx] ?? '');
+        const name = (cells[nameIdx] ?? '').trim();
+        if (code && name) rows.push({ code, name, raw: lines[j]!, line: j + 1 });
+        j += 1;
+      }
+      // Hàng NHÓM (`**MH05**` — Chinh-sua-anh-gui.md thật): có mã cha C khi
+      // tồn tại hàng khác mã bắt đầu "C-" hoặc "C." — bản thân C không phải
+      // một màn, chỉ là mục cha của các màn con.
+      for (const r of rows) {
+        const isGroup = rows.some((other) => other.code !== r.code && (other.code.startsWith(`${r.code}-`) || other.code.startsWith(`${r.code}.`)));
+        if (isGroup) continue;
+        out.push({ code: r.code, name: r.name, heading: r.raw, line: r.line });
+      }
+      i = j - 1;
+    }
+  });
+  return out;
+}
+
+/** Quét heading/bold/bảng khai MỘT màn hình trong tài liệu, theo thứ tự xuất
+ *  hiện, loại trùng theo mã (giữ lần đầu). Dùng khi dr-flow không gắn được
+ *  màn nào (sự cố #5d13309f: 13 sơ đồ sequence, agent gắn màn đúng ý nhưng
+ *  daemon loại sạch không cảnh báo → dr-comp chết vì gate cứng "chưa gắn màn
+ *  nào") — đọc thẳng danh sách màn từ chính tài liệu thay vì bó tay. Từ
+ *  WP9b cũng là nguồn BỔ SUNG khi dr-flow gắn được MỘT PHẦN màn (xem
+ *  `prepareScreenComponentInputs`).
+ *
+ *  WP9c (BLOCKING 2, review độc lập vòng 2): quét theo HAI LƯỢT, ưu tiên hệ
+ *  mã ở mức TÀI LIỆU (không phải từng heading riêng lẻ) — lượt 1 gom mọi
+ *  màn có mã TƯỜNG MINH; lượt 2 — CHỈ KHI lượt 1 TRẮNG TAY — mới nhận mã
+ *  mục nhiều cấp qua `isDocScreenSection` (siết chặt theo docblock trên
+ *  `SECTION_CODE_RE`, để không bơm mục tài liệu — luồng sơ đồ, phạm vi, mục
+ *  nhóm — vào làm màn ma). Lý do ưu tiên tuyệt đối: một khi tài liệu đã TỰ
+ *  đánh mã màn riêng, mọi heading số mục còn lại chỉ là mục lục tài liệu,
+ *  không phải màn — kể cả khi ancestor hint khớp "màn hình" (bug review độc
+ *  lập vòng 2: `### 3.1 Danh sách màn hình` dưới `## 3. Danh sách màn hình`,
+ *  tài liệu Chinh-sua-anh-gui.md thật). Mã mục nhiều cấp chỉ còn là fallback
+ *  cho tài liệu kiểu PRD SIM không có hệ mã màn riêng.
+ *
+ *  WP11 (sweep WP10 — 24/70 URD cờ đỏ, soát tay quy về 4 nguyên nhân thật):
+ *  "mã TƯỜNG MINH" của lượt 1 nay gồm CẢ BA nguồn — heading (như cũ, cộng
+ *  thêm hệ mã `S`, xem S_CODE_RE), dòng bold-khai-màn đứng riêng
+ *  (`matchBoldScreenLine`, nguyên nhân 3 — Group-Chia-se-nhom.md không có
+ *  heading MH nào), và hàng bảng "Danh sách màn hình" (`scanScreenTables`,
+ *  nguyên nhân 4 — URD-Bao-cao-dinh-ky-…md chỉ khai màn trong bảng). Heading
+ *  và bold trộn theo đúng THỨ TỰ DÒNG trước khi loại trùng (giữ lần đầu);
+ *  bảng chỉ BỔ SUNG mã nào CHƯA thấy — heading/bold luôn thắng cùng mã vì
+ *  được xét trước. Cả hai lượt đều lọc qua `isBlockedScreenName` (nguyên
+ *  nhân 5) để giết "2.1 Danh sách màn hình" kiểu mục lục, dù đứng ở nguồn
+ *  nào hay ancestor hint có khớp hay không — xem BLOCKLIST_NAME_RE. Heading
+ *  rác kiểu `#### ![](…)` (ảnh làm heading, Trang-chu.md dòng 112 thật)
+ *  không cần luật riêng: matchLeadingCode không khớp gì với "![...]" nên tự
+ *  rơi khỏi mọi nhánh, không crash. */
+export function scanDocScreens(md: string): Array<{ code: string; name: string; heading: string; line: number }> {
+  const lines = md.split(/\r?\n/);
+  const headings: Array<{ text: string; raw: string; line: number; level: number }> = [];
+  const boldDecls: Array<{ code: string; name: string; raw: string; line: number }> = [];
+  let fence: string | null = null;
+  lines.forEach((raw, i) => {
+    const f = /^\s*(```+|~~~+)/.exec(raw);
+    if (f) {
+      if (fence == null) fence = f[1]!;
+      else if (raw.trim().startsWith(fence)) fence = null;
+      return;
+    }
+    if (fence) return;
+    const m = HEADING_RE.exec(raw);
+    if (m) {
+      headings.push({ text: m[2]!.trim(), raw, line: i + 1, level: m[1]!.length });
+      return;
+    }
+    const bold = matchBoldScreenLine(raw);
+    if (bold) boldDecls.push({ ...bold, raw, line: i + 1 });
+  });
+  const codes = headings.map((h) => leadingSectionCode(h.text));
+
+  // LƯỢT 1 — mã tường minh (URD / MH / SCR / S) từ heading, bold, bảng —
+  // thắng tuyệt đối nếu có ở bất kỳ đâu trong tài liệu (xem docblock trên).
+  type Cand = { code: string; name: string; heading: string; line: number };
+  const fromHeadingBold: Cand[] = [];
+  headings.forEach((h) => {
+    const urd = URD_HEADING_RE.exec(h.text);
+    const urdName = urd ? (urd[2] ?? '').trim() : '';
+    const result = urd ? (urdName ? { code: urd[1]!.toUpperCase(), name: urdName, isSection: false } : null) : matchLeadingCode(h.text);
+    if (!result || result.isSection) return;
+    fromHeadingBold.push({ code: result.code, name: result.name, heading: h.raw, line: h.line });
+  });
+  boldDecls.forEach((b) => fromHeadingBold.push({ code: b.code, name: b.name, heading: b.raw, line: b.line }));
+  fromHeadingBold.sort((a, b) => a.line - b.line);
+
+  const explicit: Cand[] = [];
+  const seenExplicit = new Set<string>();
+  for (const c of fromHeadingBold) {
+    if (isBlockedScreenName(c.name)) continue;
+    if (seenExplicit.has(c.code)) continue;
+    seenExplicit.add(c.code);
+    explicit.push(c);
+  }
+  for (const c of scanScreenTables(lines, headings)) {
+    if (isBlockedScreenName(c.name)) continue;
+    if (seenExplicit.has(c.code)) continue;
+    seenExplicit.add(c.code);
+    explicit.push(c);
+  }
+  if (explicit.length > 0) return explicit;
+
+  // LƯỢT 2 — fallback: mã mục nhiều cấp, CHỈ khi lượt 1 trắng tay.
+  const out: Cand[] = [];
+  const seen = new Set<string>();
+  headings.forEach((h, idx) => {
+    const m = matchLeadingCode(h.text);
+    if (!m || !m.isSection) return;
+    if (isBlockedScreenName(m.name)) return;
+    if (!isDocScreenSection(headings, codes, idx, m.code)) return;
+    if (seen.has(m.code)) return;
+    seen.add(m.code);
+    out.push({ code: m.code, name: m.name, heading: h.raw, line: h.line });
+  });
+  return out;
+}
+
+// WP14: export MỘT bản cho screen-extract.ts (lớp 2) dùng chung — trước đó
+// module đó giữ một bản chép cục bộ vì chạy song song WP11.
+export const MOBILE_HINT_RE = /\b(sdk|mobile|ios|android|app di động|ứng dụng di động|màn hình điện thoại|smartphone|super ?app|mini ?app|bottom sheet)\b/i;
+
+// WP14: nguồn đối chiếu tất định DUY NHẤT cho "anchorText" của lớp 2
+// (screen-extract.ts, agent trích) và lớp 3 (screen-overrides.ts, override
+// 'add' có anchor) — một dòng NGUYÊN VĂN (sau trim), NGOÀI code fence. Trước
+// đó cả hai module giữ một bản chép cục bộ của đúng cùng một thuật toán
+// (review độc lập wave 1 xác nhận semantic khớp) vì chạy song song, không
+// import được lẫn nhau. Trả về MỌI dòng khớp theo thứ tự xuất hiện (1-based)
+// để caller tự quyết định 0/1/nhiều lần là hợp lệ hay không (validate của
+// lớp 2 cần phân biệt "không thấy" vs "không duy nhất"; lớp 3 chỉ cần biết
+// đúng-một-lần).
+export function findAnchorTextLines(md: string, anchorText: string): number[] {
+  const needle = anchorText.trim();
+  const lines = md.split(/\r?\n/);
+  let fence: string | null = null;
+  const hits: number[] = [];
+  lines.forEach((raw, i) => {
+    const f = /^\s*(```+|~~~+)/.exec(raw);
+    if (f) {
+      if (fence == null) fence = f[1]!;
+      else if (raw.trim().startsWith(fence)) fence = null;
+      return;
+    }
+    if (fence) return;
+    if (raw.trim() === needle) hits.push(i + 1);
+  });
+  return hits;
+}
 
 /** Ways out of `key`: follow edges from a node on this screen through
  *  non-screen nodes (decisions, system steps) until another screen is
@@ -346,6 +785,7 @@ export async function prepareScreenComponentInputs(
         navIn: [],
         findings,
         platformHint,
+        origin: 'flow',
       };
       if (section) {
         input.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
@@ -354,7 +794,53 @@ export async function prepareScreenComponentInputs(
       screens.push(input);
     }
   }
-  // navIn from navOut.
+  const flowScreenCount = screens.length;
+
+  // HỢP NHẤT (WP9b, sự cố dự án "Đăng nhập SSO" — #5d13309f phần 2): dr-flow
+  // chỉ gắn được màn khi agent trỏ đúng node CÒN TỒN TẠI ở bản hiện trạng —
+  // 2/3 màn tài liệu khai (MH2/MH3) trỏ vào node chỉ có ở bản ĐỀ XUẤT
+  // (flowchart dựng từ hiện trạng, đúng thiết kế) nên KHÔNG BAO GIỜ gắn
+  // được, dù tài liệu khai rõ ràng. Trước WP9b, nhánh quét tài liệu CHỈ chạy
+  // khi flows trắng tay (`screens.length === 0`) nên MH2/MH3 mất hẳn khỏi
+  // dr-comp dù flow đã gắn được MH1. Từ đây LUÔN quét tài liệu và BỔ SUNG
+  // những màn CHƯA có trong danh sách từ flow (so trùng theo key
+  // `<file-stem>__<code>`) — không còn thay thế "hoặc-là" như trước.
+  const addedDocKeys: string[] = [];
+  let docOrder = flowScreenCount;
+  for (const page of opts.pages) {
+    const md = await readMd(page.mdPath);
+    if (!md) continue;
+    const stem = path.posix.basename(page.mdPath, '.md');
+    for (const h of scanDocScreens(md)) {
+      const key = `${stem}__${h.code}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const section = findScreenSection(md, h.code, h.name);
+      const input: ScreenInput = {
+        key,
+        name: h.name,
+        order: docOrder++,
+        flowId: '',
+        flowTitle: '',
+        source: page.mdPath,
+        steps: [],
+        navOut: [],
+        navIn: [],
+        findings: [],
+        platformHint: MOBILE_HINT_RE.test(md) ? 'mobile' : 'web',
+        origin: 'doc',
+      };
+      if (section) {
+        input.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
+        if (section.referenceTable) input.referenceTable = section.referenceTable;
+      }
+      screens.push(input);
+      addedDocKeys.push(key);
+    }
+  }
+
+  // navIn from navOut — tính SAU khi hợp nhất để một cạnh từ màn-flow trỏ
+  // tới một màn vừa bổ sung từ tài liệu cũng được ghi nhận.
   const byKey = new Map(screens.map((s) => [s.key, s]));
   for (const s of screens) for (const n of s.navOut) byKey.get(n.to)?.navIn.push(s.key);
   for (const s of screens) s.navIn = [...new Set(s.navIn)];
@@ -373,10 +859,17 @@ export async function prepareScreenComponentInputs(
     screens,
   };
   if (screens.length === 0) {
+    // Cả hai nguồn đều rỗng — giữ nguyên 2 note cũ của WP9.
     inputs.note =
       index.length === 0
         ? 'Chưa có flows/index.json — chạy bước "Đánh giá luồng UX" (dr-flow) trước.'
         : 'Bước Đánh giá luồng UX chưa gắn màn hình nào (screens.json rỗng) — chạy lại dr-flow với gắn màn.';
+  } else if (addedDocKeys.length > 0) {
+    inputs.note =
+      flowScreenCount === 0
+        ? // flows trắng tay, danh sách hoàn toàn từ tài liệu — giữ nguyên note của WP9.
+          'dr-flow chưa gắn được màn nào — danh sách màn lấy TỪ TÀI LIỆU (heading khai màn); không có bước luồng/điều hướng cho từng màn.'
+        : `Bổ sung ${addedDocKeys.length} màn lấy từ tài liệu (dr-flow không gắn được): ${addedDocKeys.join(', ')} — các màn này không có bước luồng/điều hướng.`;
   }
   await fs.mkdir(path.join(cwd, 'comp'), { recursive: true });
   await fs.writeFile(path.join(cwd, SCREEN_INPUTS_FILE), JSON.stringify(inputs, null, 2), 'utf8');

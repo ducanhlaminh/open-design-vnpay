@@ -43,6 +43,7 @@ export * from './api/render.js';
 export * from './api/routines.js';
 export * from './api/registry.js';
 export * from './api/research.js';
+export * from './api/screens-overrides.js';
 export * from './api/sandbox.js';
 export * from './api/usage.js';
 export * from './api/version.js';

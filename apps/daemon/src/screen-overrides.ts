@@ -1,0 +1,267 @@
+// Lớp 3 của kiến trúc 3 lớp đã duyệt (19/08): người dùng phải nhìn thấy máy
+// đoán màn nào (comp/_screens.json — manifest, kèm nguồn gốc từng màn) và
+// sửa được khi máy sai (docs-review/screens-overrides.json), thay vì sửa
+// prompt hay sửa tài liệu gốc.
+//
+// Pure (không DB, không agent). WP14 đã nối module này vào server.ts (gọi
+// `applyScreenOverrides` sau lượt trích lớp 2, `buildScreensManifest` trước
+// role-map, 2 route HTTP GET/PUT) và hợp nhất helper anchor (`findAnchorLine`
+// nay chỉ còn quyết định "đúng 1 lần") + origin 'user' vào union chính thức
+// của `ScreenInput` — không còn cast cục bộ như bản WP13a song song.
+
+import path from 'node:path';
+
+import type {
+  ScreensManifest,
+  ScreensManifestEntry,
+  ScreensOverrides,
+  ScreensOverrideAdd,
+  ScreensOverrideEntry,
+} from '@open-design/contracts';
+
+import { findAnchorTextLines, type ScreenInput } from './screen-components.js';
+
+/** `comp/<key>.screen.json` sibling — manifest của LẦN CHẠY HIỆN TẠI (sau khi
+ *  áp overrides lên danh sách máy đoán). Nằm DƯỚI `comp/` nên bị "Run lại"
+ *  (re-run clear) dọn cùng stage — ĐÚNG Ý: nó mô tả riêng lần chạy này, không
+ *  phải nơi lưu sửa đổi của người dùng. */
+export const SCREENS_MANIFEST_FILE = 'comp/_screens.json';
+
+/** Nằm NGAY DƯỚI cwd của run (`docs-review/`), NGOÀI `comp/` — cùng lý do
+ *  `criteria/` sống sót re-run clear: đây là nguồn sự thật do NGƯỜI DÙNG giữ,
+ *  không được phép bị dọn theo mỗi lần "Run lại" stage. WP14 sẽ có test tích
+ *  hợp chứng minh việc này qua cơ chế re-run clear thật; ở đây chỉ khai hằng
+ *  số đường dẫn. */
+export const SCREENS_OVERRIDES_REL = 'screens-overrides.json';
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v.trim() : '';
+}
+
+const ACTIONS = new Set(['add', 'rename', 'remove']);
+
+/** Đọc `screens-overrides.json` một cách KHOAN DUNG: JSON hỏng hoặc
+ *  `schema_version` lạ → coi như rỗng (không throw, kèm 1 warning); từng
+ *  entry sai hình dạng (action lạ, thiếu field bắt buộc) → bỏ RIÊNG entry đó
+ *  kèm warning, các entry hợp lệ khác vẫn được giữ. Người dùng không nên mất
+ *  toàn bộ override chỉ vì gõ tay sai một mục. */
+export function parseScreensOverrides(raw: string): { doc: ScreensOverrides; warnings: string[] } {
+  const empty: ScreensOverrides = { schema_version: 1, overrides: [] };
+  const warnings: string[] = [];
+
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch (e) {
+    warnings.push(`screens-overrides.json không phải JSON hợp lệ: ${(e as Error).message} — coi như rỗng.`);
+    return { doc: empty, warnings };
+  }
+  if (!json || typeof json !== 'object' || Array.isArray(json)) {
+    warnings.push('screens-overrides.json phải là một object — coi như rỗng.');
+    return { doc: empty, warnings };
+  }
+  const o = json as Record<string, unknown>;
+  if (o.schema_version !== 1) {
+    warnings.push(`screens-overrides.json có "schema_version" lạ (nhận "${String(o.schema_version)}", chỉ hỗ trợ 1) — coi như rỗng.`);
+    return { doc: empty, warnings };
+  }
+
+  const overrides: ScreensOverrideEntry[] = [];
+  const rawList = Array.isArray(o.overrides) ? o.overrides : [];
+  rawList.forEach((item, i) => {
+    if (!item || typeof item !== 'object') {
+      warnings.push(`overrides[${i}]: không phải object — bỏ qua.`);
+      return;
+    }
+    const e = item as Record<string, unknown>;
+    if (!ACTIONS.has(str(e.action))) {
+      warnings.push(`overrides[${i}]: "action" không hợp lệ (nhận "${String(e.action)}") — bỏ qua.`);
+      return;
+    }
+    if (e.action === 'add') {
+      const source = str(e.source);
+      const code = str(e.code);
+      const name = str(e.name);
+      if (!source || !code || !name) {
+        warnings.push(`overrides[${i}] (add): thiếu "source"/"code"/"name" — bỏ qua.`);
+        return;
+      }
+      const entry: ScreensOverrideAdd = { action: 'add', source, code, name };
+      if (str(e.anchorText)) entry.anchorText = str(e.anchorText);
+      overrides.push(entry);
+      return;
+    }
+    if (e.action === 'rename') {
+      const key = str(e.key);
+      const name = str(e.name);
+      if (!key || !name) {
+        warnings.push(`overrides[${i}] (rename): thiếu "key"/"name" — bỏ qua.`);
+        return;
+      }
+      overrides.push({ action: 'rename', key, name });
+      return;
+    }
+    // 'remove'
+    const key = str(e.key);
+    if (!key) {
+      warnings.push(`overrides[${i}] (remove): thiếu "key" — bỏ qua.`);
+      return;
+    }
+    overrides.push({ action: 'remove', key });
+  });
+
+  return { doc: { schema_version: 1, overrides }, warnings };
+}
+
+// ── Anchor (add) ─────────────────────────────────────────────────────────
+// Luật anchor TRÙNG với WP12 (screen-extract.ts — máy tự chọn anchor khi
+// phát hiện màn từ tài liệu): một dòng NGUYÊN VĂN, DUY NHẤT trong trang,
+// NGOÀI code fence (```/~~~). WP14 hợp nhất về `findAnchorTextLines`
+// (screen-components.ts) — module này chỉ còn quyết định "đúng 1 lần mới
+// hợp lệ", còn thuật toán fence-walk sống ở một nơi duy nhất.
+function findAnchorLine(md: string, anchorText: string): number | null {
+  const hits = findAnchorTextLines(md, anchorText);
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+/** Tính section từ một anchor hợp lệ: từ dòng anchor tới HẾT TRANG (không
+ *  dừng ở heading kế tiếp như `findScreenSection` của screen-components.ts —
+ *  overrides không biết cấu trúc heading của màn người dùng đang thêm, chỉ
+ *  biết một dòng mô tả nó). */
+function sectionFromAnchor(md: string, anchorLine: number): ScreenInput['section'] {
+  const lines = md.split(/\r?\n/);
+  const body = lines.slice(anchorLine); // sau dòng anchor tới hết trang
+  const excerptSrc = body.join('\n').trim();
+  return {
+    heading: lines[anchorLine - 1]!,
+    startLine: anchorLine,
+    endLine: lines.length,
+    excerpt: excerptSrc.length > 900 ? `${excerptSrc.slice(0, 900)}…` : excerptSrc,
+  };
+}
+
+function resolveAnchor(source: string, anchorText: string, md: string | null): { section?: ScreenInput['section']; warning?: string } {
+  if (!md) return { warning: `anchorText của "${source}" không kiểm được — daemon không đọc được nội dung trang này.` };
+  const line = findAnchorLine(md, anchorText);
+  if (line == null) return { warning: `anchorText không khớp đúng MỘT dòng ngoài code fence trong "${source}" — bỏ qua section.` };
+  return { section: sectionFromAnchor(md, line) };
+}
+
+/** SCREEN-KEY quy ước `<file-stem>__<code>` dùng chung với dr-flow /
+ *  screen-components.ts. */
+function screenKey(source: string, code: string): string {
+  return `${path.posix.basename(source, '.md')}__${code}`;
+}
+
+/** Trích mã màn từ một SCREEN-KEY đã có (đầu ra của screen-components.ts) —
+ *  chép cục bộ thay vì import `splitScreenKey` (không phải type, phạm vi
+ *  cho phép của WP này chỉ import TYPE-ONLY `ScreenInput`). */
+function codeOfKey(key: string): string {
+  const i = key.lastIndexOf('__');
+  return i >= 0 && i + 2 < key.length ? key.slice(i + 2) : key;
+}
+
+/** Áp `overrides` lên danh sách màn máy đoán (`screens`, đầu ra
+ *  `prepareScreenComponentInputs`), NGƯỜI DÙNG THẮNG máy khi trùng
+ *  SCREEN-KEY. `mdBySource` = nội dung markdown từng trang (key = `source`,
+ *  relative cwd) để kiểm anchorText của các override `add`. Trả về danh sách
+ *  mới (không sửa `screens` gốc) + warnings gộp từ mọi override. */
+export function applyScreenOverrides(
+  screens: ScreenInput[],
+  overrides: ScreensOverrides,
+  mdBySource: Map<string, string>,
+): { screens: ScreenInput[]; warnings: string[] } {
+  const warnings: string[] = [];
+  let out: ScreenInput[] = screens.map((s) => ({ ...s }));
+  const byKey = new Map(out.map((s) => [s.key, s]));
+
+  for (const ov of overrides.overrides) {
+    if (ov.action === 'add') {
+      const key = screenKey(ov.source, ov.code);
+      const md = mdBySource.get(ov.source) ?? null;
+      let section: ScreenInput['section'] | undefined;
+      if (ov.anchorText) {
+        const resolved = resolveAnchor(ov.source, ov.anchorText, md);
+        section = resolved.section;
+        if (resolved.warning) warnings.push(`add "${key}": ${resolved.warning}`);
+      }
+      const existing = byKey.get(key);
+      if (existing) {
+        // Trùng key màn máy đã có — NGƯỜI DÙNG THẮNG: tên/origin của user;
+        // section của user CHỈ KHI có anchor hợp lệ, ngược lại GIỮ NGUYÊN
+        // section máy đã đoán (đừng xoá thông tin máy chỉ vì override không
+        // kèm anchor — máy có thể đã đoán đúng, người dùng chỉ sửa tên).
+        existing.name = ov.name;
+        // WP14: 'user' nay là thành viên chính thức của ScreenInput['origin']
+        // — không còn cần cast cục bộ như WP13a.
+        existing.origin = 'user';
+        if (section) existing.section = section;
+        continue;
+      }
+      const added: ScreenInput = {
+        key,
+        name: ov.name,
+        order: 0, // đánh lại liên tục ở cuối
+        flowId: '',
+        flowTitle: '',
+        source: ov.source,
+        steps: [],
+        navOut: [],
+        navIn: [],
+        findings: [],
+        // Không có tín hiệu nào để đoán mobile/web cho màn người dùng tự
+        // thêm — mặc định 'web' (đa số tài liệu nghiệp vụ đang xử lý là web;
+        // xem ScreenInput.platformHint — agent vẫn tự quyết ở bước sau).
+        platformHint: 'web',
+        origin: 'user',
+      };
+      if (section) added.section = section;
+      out.push(added);
+      byKey.set(key, added);
+      continue;
+    }
+    if (ov.action === 'rename') {
+      const s = byKey.get(ov.key);
+      if (!s) {
+        warnings.push(`rename "${ov.key}": không tìm thấy màn — bỏ qua.`);
+        continue;
+      }
+      s.name = ov.name;
+      continue;
+    }
+    // 'remove'
+    if (!byKey.has(ov.key)) {
+      warnings.push(`remove "${ov.key}": không tìm thấy màn — bỏ qua.`);
+      continue;
+    }
+    byKey.delete(ov.key);
+    out = out.filter((s) => s.key !== ov.key);
+  }
+
+  // navIn lọc bỏ key đã remove; navOut GIỮ NGUYÊN (SCREEN-mode kickoff chịu
+  // được key vắng — xem docblock đầu file). order đánh lại LIÊN TỤC sau khi
+  // add/remove, bất kể thứ tự các override được áp.
+  const remainingKeys = new Set(out.map((s) => s.key));
+  out = out.map((s, i) => ({ ...s, order: i, navIn: s.navIn.filter((k) => remainingKeys.has(k)) }));
+
+  return { screens: out, warnings };
+}
+
+/** Dựng `comp/_screens.json` từ danh sách màn SAU khi áp overrides — map
+ *  1-1, KHÔNG đọc/ghi ngược `screens-overrides.json` (manifest chỉ là ảnh
+ *  của lần chạy này, xem docblock đầu file). */
+export function buildScreensManifest(screens: ScreenInput[]): ScreensManifest {
+  const entries: ScreensManifestEntry[] = screens.map((s) => ({
+    key: s.key,
+    code: codeOfKey(s.key),
+    name: s.name,
+    source: s.source,
+    // Màn cũ chưa từng khai `origin` (trước khi field này tồn tại) → 'flow',
+    // đúng với thực tế hiện tại (mọi màn không khai origin đều tới từ
+    // dr-flow).
+    origin: s.origin ?? 'flow',
+    line: s.section?.startLine ?? null,
+    hasSection: !!s.section,
+  }));
+  return { schema_version: 1, screens: entries };
+}

@@ -16,6 +16,7 @@ import {
   normalizeRoleMap,
   normalizeScreenComponentsDoc,
   resolveCatalogEntry,
+  scanDocScreens,
   scanWireframe,
   mergeScreenComponents,
   screenDocRel,
@@ -43,6 +44,13 @@ const CATALOG_MD = [
   '',
 ].join('\n');
 
+// Heading GỘP số mục + mã màn thật ("4.1 SCR-001 …") — khuôn tài liệu có
+// thật (BLOCKING 1, review độc lập vòng 2 sau WP9b). scanDocScreens phải
+// nhận SCR-001/SCR-002 làm mã màn (không phải "4.1"/"4.2" — số mục bao
+// ngoài) để khoá `…__SCR-001` khớp đúng khoá flow đã khai, không nhân đôi
+// khi prepareScreenComponentInputs hợp nhất (WP9b). WP9b từng LÉN đổi
+// fixture này sang "SCR-001 …" (bỏ hẳn tiền tố số mục) để né lỗi thay vì sửa
+// gốc rễ ở scanDocScreens — WP9c trả fixture về khuôn gốc và sửa gốc rễ.
 const PAGE_MD = [
   '# 2.1 PRD Mua SIM',
   '',
@@ -156,6 +164,17 @@ test('findScreenSection: tìm theo mã màn, cắt tới heading cùng cấp, t�
   assert.equal(findScreenSection(PAGE_MD, 'SCR-999', 'Không có'), null);
 });
 
+test('scanDocScreens: heading GỘP số mục + mã màn thật ("4.1 SCR-001 …") → nhận SCR-001/SCR-002, không phải "4.1"/"4.2" (BLOCKING 1, review độc lập vòng 2)', () => {
+  const found = scanDocScreens(PAGE_MD);
+  assert.deepEqual(
+    found.map((f) => [f.code, f.name]),
+    [
+      ['SCR-001', 'Chọn quốc gia'],
+      ['SCR-002', 'Chọn gói cước'],
+    ],
+  );
+});
+
 test('prepareScreenComponentInputs: màn từ flows/, mục tài liệu, navOut qua decision, findings chạm màn', async () => {
   await seedFlowRun();
   const inputs = await prepareScreenComponentInputs(cwd, {
@@ -178,6 +197,12 @@ test('prepareScreenComponentInputs: màn từ flows/, mục tài liệu, navOut 
   assert.deepEqual(s2!.navIn, [KEY1]);
   assert.deepEqual(s2!.navOut, []);
   assert.equal(s2!.findings.length, 0);
+  // WP9c: prepareScreenComponentInputs giờ LUÔN quét tài liệu để hợp nhất, và
+  // scanDocScreens tự nhận ra mã màn SCR-001/SCR-002 dù heading có tiền tố số
+  // mục ("4.1"/"4.2") đứng trước (BLOCKING 1) → khoá trùng với flow, dedup
+  // sạch, không có màn bổ sung nào (khác test dưới, dùng mã MH).
+  assert.equal(s1!.origin, 'flow');
+  assert.equal(s2!.origin, 'flow');
   const onDisk = JSON.parse(await readFile(join(cwd, SCREEN_INPUTS_FILE), 'utf8')) as ScreenComponentsInputs;
   assert.equal(onDisk.screens.length, 2);
 });
@@ -186,6 +211,663 @@ test('prepareScreenComponentInputs: chưa có flows → screens rỗng + note b�
   const inputs = await prepareScreenComponentInputs(cwd, { pages: [] });
   assert.equal(inputs.screens.length, 0);
   assert.match(inputs.note ?? '', /dr-flow/);
+});
+
+// ── Sự cố #5d13309f: dr-comp chết vì dr-flow không gắn được màn nào (sơ đồ
+// sequence). Fixture rút gọn từ tài liệu thật "Đăng nhập SSO" (dự án
+// dang-nhap-sso, docs-review/docs-feature/…/Dang-nhap-SSO.md). ──────────────
+
+const HEADING_CASES_MD = [
+  '## 2/ Luồng sơ đồ',
+  '',
+  '### 3.1/ Danh sách màn hình',
+  '',
+  '#### MH1: Đăng nhập SSO',
+  '',
+  '#### MH2: Đồng ý chia sẻ dữ liệu cá nhân',
+  '',
+  '#### MH3: Popup chia sẻ dữ liệu với bên thứ 3',
+  '',
+  '### 3.2/ Mô tả màn hình',
+  '',
+  '#### MH1: Đăng nhập SSO',
+  '',
+  '###### Màn hình 1: SCR-001 — Trang chủ',
+  '',
+  // WP9c (BLOCKING trong review độc lập vòng 2, letter b): trước đây (WP9b)
+  // mã mục nhiều cấp (`6.1.1`) được nhận CÙNG với MH/SCR trong một tài liệu
+  // khi có heading tổ tiên nhắc "giao diện"/"màn hình". Luật 2 lượt mới đổi
+  // điều đó — một khi tài liệu đã có mã màn TƯỜNG MINH (MH/SCR/URD) ở BẤT KỲ
+  // đâu, lượt 2 (mã mục nhiều cấp) không chạy nữa, dù chương "6. …" dưới đây
+  // có ancestor hint hợp lệ. Giữ chương này lại đúng để chứng minh nó KHÔNG
+  // còn lọt vào kết quả (xem assert.ok bên dưới).
+  '## 6. Khung giao diện sơ bộ',
+  '',
+  '### 6.1.1 Màn hình chi tiết gói cước',
+  '',
+  '```',
+  '#### MH9: Trong code fence, không tính',
+  '```',
+].join('\n');
+
+test('scanDocScreens: bắt MH/SCR ở đầu heading + khuôn v1 URD, bỏ heading số mục thường/mục lục và nội dung trong fence, loại trùng mã (giữ lần đầu); mã mục nhiều cấp KHÔNG chạy khi tài liệu đã có mã tường minh (WP9c, luật 2 lượt)', () => {
+  const found = scanDocScreens(HEADING_CASES_MD);
+  assert.deepEqual(
+    found.map((f) => [f.code, f.name]),
+    [
+      ['MH1', 'Đăng nhập SSO'],
+      ['MH2', 'Đồng ý chia sẻ dữ liệu cá nhân'],
+      ['MH3', 'Popup chia sẻ dữ liệu với bên thứ 3'],
+      ['SCR-001', 'Trang chủ'],
+    ],
+  );
+  assert.ok(!found.some((f) => f.code === '6.1.1'), 'lượt 2 (mã mục nhiều cấp) không được chạy khi tài liệu đã có mã tường minh ở nơi khác');
+  assert.deepEqual(scanDocScreens('## 3.1/ Danh sách màn hình\n\n## 2/ Luồng sơ đồ\n'), []);
+});
+
+// Fixture RÚT GỌN chép từ tài liệu PRD SIM du lịch thật (2.1.-PRD-Detail-Mua-
+// SIM-du-lich.md, dự án 2-1-prd-detail-mua-sim-du-lich) — giữ nguyên các
+// heading nêu trong spec WP9b, kể cả lỗi thật của export Confluence: mục "8."
+// mất `#` (còn `##` rỗng + text đậm rời) và `6.2.2.` nằm ở cấp `##` xen giữa
+// các heading `###` khác cùng chương (không đọc od-data lúc chạy test).
+const PRD_SIM_SECTION_MD = [
+  '## **3. Luồng nghiệp vụ tính năng**',
+  '',
+  '### 3.1 Luồng sơ đồ',
+  '',
+  'sơ đồ mermaid ở đây (không tính vì tổ tiên "3. Luồng nghiệp vụ" không nhắc giao diện/màn hình).',
+  '',
+  '### 3.2 Mô tả',
+  '',
+  'bảng bước luồng.',
+  '',
+  '## **6. Khung giao diện sơ bộ**',
+  '',
+  '### 6.1. Màn trang chủ',
+  '',
+  '#### 6.1.1 Màn hình trang chủ',
+  '',
+  '### 6.2. Trường hợp: KH chọn đi du lịch nước ngoài',
+  '',
+  '### 6.2.1. Màn hình chọn Quốc gia & Khu vực',
+  '',
+  '## 6.2.2. Màn hình Danh sách gói cước Nước ngoài',
+  '',
+  '### 6.3. Trường hợp: KH chọn đi du lịch Việt Nam',
+  '',
+  '#### 6.3.1. Màn hình danh sách gói cước Việt Nam',
+  '',
+  '#### 6.3.2. Chi tiết gói cước Việt Nam (mô tả tương tự phần chi tiết gói nước ngoài 6.2.3. Lưu ý: chi tiết gói VN chỉ áp dụng với quốc gia = Việt Nam)',
+  '',
+  '### 6.4. Thông tin chung',
+  '',
+  '#### 6.4.1 Nhập thông tin',
+  '',
+  '#### 6.4.2 Địa chỉ nhận hàng (Sim vật lý)',
+  '',
+  '#### 6.4.3. Thông tin xuất hóa đơn',
+  '',
+  '#### 6.4.4. Mã voucher',
+  '',
+  '## **7. Tiêu chí nghiệm thu**',
+  '',
+  '##',
+  '**8. Trong phạm vi & ngoài phạm vi tính năng**',
+  '',
+  '### 8.1 Trong Phạm Vi (In Scope)',
+  '',
+  '### 8.2 Ngoài Phạm Vi (Out of Scope)',
+].join('\n');
+
+test('scanDocScreens: PRD SIM du lịch thật — 9 màn (6.1.1…6.4.4), KHÔNG có luồng sơ đồ/phạm vi/mục nhóm (trước WP9b quét ra 17)', () => {
+  const found = scanDocScreens(PRD_SIM_SECTION_MD);
+  assert.deepEqual(
+    found.map((f) => f.code),
+    ['6.1.1', '6.2.1', '6.2.2', '6.3.1', '6.3.2', '6.4.1', '6.4.2', '6.4.3', '6.4.4'],
+  );
+  for (const bad of ['3.1', '3.2', '8.1', '8.2', '6.1', '6.2', '6.3', '6.4']) {
+    assert.ok(!found.some((f) => f.code === bad), `không được nhận "${bad}" là màn`);
+  }
+});
+
+// Mục lục lặp mã MH ở 3 mục khác nhau (3.1/, 3.2/, 4/) — chỉ heading "3.1/"
+// bản thân (dùng dấu "/" không nằm trong tập phân cách) không được tính.
+const SSO_HEADINGS_MD = [
+  '## 3/ Luồng màn hình',
+  '',
+  '### 3.1/ Danh sách màn hình',
+  '',
+  '#### MH1: Đăng nhập SSO',
+  '',
+  '#### MH2: Đồng ý chia sẻ dữ liệu cá nhân',
+  '',
+  '#### MH3: Popup chia sẻ dữ liệu với bên thứ 3',
+  '',
+  '### 3.2/ Mô tả màn hình',
+  '',
+  '#### MH1: Đăng nhập SSO',
+  '',
+  '#### MH2: Đồng ý chia sẻ dữ liệu cá nhân',
+  '',
+  '#### MH3: Popup chia sẻ dữ liệu với bên thứ 3',
+  '',
+  '## 4/ Logic xử lý',
+  '',
+  '#### MH1: Đăng nhập SSO',
+  '',
+  '#### MH2: Đồng ý chia sẻ dữ liệu cá nhân',
+  '',
+  '#### MH3: Popup chia sẻ dữ liệu với bên thứ 3',
+].join('\n');
+
+test('scanDocScreens: SSO thật (mục lục 3/→3.1/→MH1-3, lặp ở 3.2/ và 4/) → đúng 3 màn MH1-3, không có "3.1"', () => {
+  const found = scanDocScreens(SSO_HEADINGS_MD);
+  assert.deepEqual(found.map((f) => f.code), ['MH1', 'MH2', 'MH3']);
+});
+
+// ── WP9c (BLOCKING 2, review độc lập vòng 2): heading NHÓM số mục
+// ("### 3.1 Danh sách màn hình") dưới chương "## 3. Danh sách màn hình" bị
+// leaf-check cũ coi là lá (con thật đánh mã MHxx, không phải "3.1.x") nên
+// thành màn ma. Fixture rút gọn từ Chinh-sua-anh-gui.md thật (dự án
+// dang-nhap-sso, docs-app/…/Quy-tac-chung/). ─────────────────────────────────
+const SECTION_GROUP_VS_MH_MD = [
+  '## 3. Danh sách màn hình',
+  '',
+  '### 3.1 Danh sách màn hình',
+  '',
+  '#### MH01: Trang chủ',
+].join('\n');
+
+test('scanDocScreens: luật 2 lượt (i) — tài liệu đã có mã MH tường minh thì heading nhóm số mục ("3.1 Danh sách màn hình") không còn được xét, dù ancestor hint "màn hình" khớp (BLOCKING 2)', () => {
+  const found = scanDocScreens(SECTION_GROUP_VS_MH_MD);
+  assert.deepEqual(found.map((f) => [f.code, f.name]), [['MH01', 'Trang chủ']]);
+  assert.ok(!found.some((f) => f.code === '3.1'), 'heading nhóm "3.1" không được thành màn ma');
+});
+
+// Kiểu PRD SIM rút gọn — không có heading MH/SCR nào, chỉ có mã mục nhiều
+// cấp (nhóm "6.1" + màn lá "6.1.1"): lượt 2 (fallback) phải vẫn chạy đúng
+// như WP9b khi lượt 1 trắng tay.
+const SECTION_ONLY_MD = [
+  '## 6. Giao diện',
+  '',
+  '### 6.1 Nhóm màn chọn gói',
+  '',
+  '#### 6.1.1 Màn hình chọn gói',
+].join('\n');
+
+test('scanDocScreens: luật 2 lượt (ii) — tài liệu KHÔNG có mã MH/SCR nào (kiểu PRD SIM) → mã mục nhiều cấp vẫn fallback đúng như WP9b (nhóm "6.1" bị loại, lá "6.1.1" được nhận)', () => {
+  const found = scanDocScreens(SECTION_ONLY_MD);
+  assert.deepEqual(found.map((f) => f.code), ['6.1.1']);
+});
+
+// ── WP9c: MH nhận hậu tố "-<số>" (MH05-1 … MH05-7 trong Chinh-sua-anh-gui.md
+// thật là các màn CON riêng biệt, trước đây bị gộp hết về "MH05"). ──────────
+const MH_SUFFIX_MD = [
+  '#### MH05-1: Khung chung',
+  '',
+  '#### MH05-2: Nhiều ảnh',
+  '',
+  '#### MH 2 — Tên',
+].join('\n');
+
+test('scanDocScreens: MH nhận hậu tố "-<số>" (MH05-1, MH05-2 tách riêng, không gộp về "MH05"); "MH 2 — Tên" vẫn ra MH2 như cũ', () => {
+  const found = scanDocScreens(MH_SUFFIX_MD);
+  assert.deepEqual(
+    found.map((f) => [f.code, f.name]),
+    [
+      ['MH05-1', 'Khung chung'],
+      ['MH05-2', 'Nhiều ảnh'],
+      ['MH2', 'Tên'],
+    ],
+  );
+});
+
+// ── WP11 (sweep WP10, 24 trang URD cờ đỏ — 4 nguyên nhân thật soát tay từ
+// Webhooks-Incoming-Webhook-…md, URD-Dang-ky-cham-cong-…md,
+// URD-Hoi-dap-du-lieu-SalesGo-…md, Trang-chu.md, Group-Chia-se-nhom.md,
+// Chinh-sua-anh-gui.md, URD-Bao-cao-dinh-ky-…md thật). ──────────────────────
+
+// Nguyên nhân 1 — HỆ MÃ S: rút gọn từ Webhooks-Incoming-Webhook-…md (S01–S05)
+// + URD-Hoi-dap-du-lieu-SalesGo-…md (`### S01 - Tên`).
+const S_CODE_HEADINGS_MD = [
+  '### S01 - Chuỗi tin — hỏi Sóc trong channel',
+  '',
+  '### S02 — DM Trợ lý Sóc',
+  '',
+  '### S03 Card kết quả submit',
+  '',
+  '### AF-01 — Thiếu slot bắt buộc',
+  '',
+  '### MF-01 — Tạo Webhook',
+  '',
+  '### Sóc trả lời',
+].join('\n');
+
+test('scanDocScreens: hệ mã S (WP11, nguyên nhân 1) — "S01 - Tên"/"S02 — Tên"/"S03 Tên" là màn; "AF-01"/"MF-01"/"Sóc trả lời" thì không', () => {
+  const found = scanDocScreens(S_CODE_HEADINGS_MD);
+  assert.deepEqual(
+    found.map((f) => [f.code, f.name]),
+    [
+      ['S01', 'Chuỗi tin — hỏi Sóc trong channel'],
+      ['S02', 'DM Trợ lý Sóc'],
+      ['S03', 'Card kết quả submit'],
+    ],
+  );
+});
+
+test('scanDocScreens: mã mục dính mã S ("2.1.1. S01 Tên") → nhận S01, không phải "2.1.1" (matchLeadingCode, WP11)', () => {
+  const found = scanDocScreens('### 2.1.1. S01 Tên màn hình chi tiết\n');
+  assert.deepEqual(found.map((f) => [f.code, f.name]), [['S01', 'Tên màn hình chi tiết']]);
+});
+
+test('scanDocScreens: tài liệu có S01 + heading "2.1. Danh sách màn hình" → không có màn ma "2.1" (lượt 1 đã có S nên lượt 2 không chạy, WP11)', () => {
+  const md = ['## 2.1. Danh sách màn hình', '', '### S01 - Tên', ''].join('\n');
+  assert.deepEqual(
+    scanDocScreens(md).map((f) => f.code),
+    ['S01'],
+  );
+});
+
+// Nguyên nhân 2 — HẬU TỐ CHẤM: rút gọn từ Trang-chu.md thật (MH6.1–6.3,
+// MH10.1–10.4 bị gộp về "MH6"/"MH10" trước WP11 vì MH_CODE_RE cũ chỉ nhận
+// hậu tố "-<số>").
+const MH_DOT_SUFFIX_MD = [
+  '#### MH6.1: Tên A',
+  '',
+  '#### MH6.2: Tên B',
+  '',
+  '#### MH10.4: Tên C',
+  '',
+  '#### MH 2 — Tên D',
+  '',
+  '#### MH05-1: Tên E',
+].join('\n');
+
+test('scanDocScreens: MH nhận hậu tố chấm (WP11, nguyên nhân 2, Trang-chu.md thật) — MH6.1/MH6.2 là hai màn riêng, MH10.4 giữ nguyên; "MH 2" vẫn MH2; "MH05-1" (hậu tố gạch, WP9c) không hồi quy', () => {
+  const found = scanDocScreens(MH_DOT_SUFFIX_MD);
+  assert.deepEqual(
+    found.map((f) => [f.code, f.name]),
+    [
+      ['MH6.1', 'Tên A'],
+      ['MH6.2', 'Tên B'],
+      ['MH10.4', 'Tên C'],
+      ['MH2', 'Tên D'],
+      ['MH05-1', 'Tên E'],
+    ],
+  );
+});
+
+// Nguyên nhân 3 — DÒNG BOLD: rút gọn từ Group-Chia-se-nhom.md /
+// Web-Group-Chia-se-nhom-…md thật (16 màn khai bằng dòng bold đứng riêng,
+// không heading MH nào — trang trắng màn trước WP11).
+const BOLD_ONLY_MD = [
+  '## 1/ Danh sách màn hình',
+  '',
+  '**MH1: Đăng nhập SSO**',
+  '',
+  'Mô tả ngắn cho MH1.',
+  '',
+  '**MH2: Đồng ý chia sẻ**',
+  '',
+  'Mô tả ngắn cho MH2.',
+  '',
+  '## 2/ Mô tả màn hình',
+  '',
+  'Nội dung khác không liên quan.',
+].join('\n');
+
+test('scanDocScreens: doc chỉ có bold-khai-màn (không heading MH nào) → vẫn nhận đủ màn (WP11, nguyên nhân 3)', () => {
+  const found = scanDocScreens(BOLD_ONLY_MD);
+  assert.deepEqual(
+    found.map((f) => [f.code, f.name]),
+    [
+      ['MH1', 'Đăng nhập SSO'],
+      ['MH2', 'Đồng ý chia sẻ'],
+    ],
+  );
+});
+
+test('findScreenSection: section của màn bold chạy từ dòng bold tới bold kế/heading kế (WP11)', () => {
+  const s1 = findScreenSection(BOLD_ONLY_MD, 'MH1', 'Đăng nhập SSO');
+  assert.ok(s1);
+  assert.equal(s1!.heading, '**MH1: Đăng nhập SSO**');
+  assert.ok(s1!.excerpt.includes('Mô tả ngắn cho MH1'));
+  assert.ok(!s1!.excerpt.includes('MH2'));
+  const s2 = findScreenSection(BOLD_ONLY_MD, 'MH2', 'Đồng ý chia sẻ');
+  assert.ok(s2);
+  assert.equal(s2!.heading, '**MH2: Đồng ý chia sẻ**');
+  assert.ok(s2!.excerpt.includes('Mô tả ngắn cho MH2'));
+  assert.ok(!s2!.excerpt.includes('Nội dung khác'));
+});
+
+const BOLD_IN_TABLE_MD = ['| Cột | Nội dung |', '| --- | --- |', '| 1 | **MH1: Không tính vì đứng trong bảng** |'].join('\n');
+
+test('scanDocScreens: dòng bold trong ô bảng (bắt đầu "|") KHÔNG thành màn; "**Mục đích:** abc" (bold không phải mã màn) không thành màn (WP11)', () => {
+  assert.deepEqual(scanDocScreens(BOLD_IN_TABLE_MD), []);
+  assert.deepEqual(scanDocScreens('**Mục đích:** abc\n'), []);
+});
+
+// Nguyên nhân 4 — BẢNG DANH SÁCH MÀN HÌNH: rút gọn từ URD-Bao-cao-dinh-ky-…md
+// thật (S01–S03 chỉ trong bảng, hàng rác "*(ngoài SocChat)*").
+const TABLE_ONLY_MD = [
+  '## 2. Màn hình',
+  '',
+  '### 2.1. Danh sách màn hình',
+  '',
+  '| Mã | Tên màn hình | Ghi chú |',
+  '| --- | --- | --- |',
+  '| S01 | Thread báo cáo | ghi chú 1 |',
+  '| S02 | Thông báo đẩy | ghi chú 2 |',
+  '| *(ngoài SocChat)* | Trang chi tiết ngoài | không tính |',
+  '',
+  '## 3. Khác',
+].join('\n');
+
+test('scanDocScreens: bảng "Danh sách màn hình" → mỗi hàng hợp lệ thành màn, hàng mã không hợp lệ bị bỏ (WP11, nguyên nhân 4)', () => {
+  const found = scanDocScreens(TABLE_ONLY_MD);
+  assert.deepEqual(
+    found.map((f) => [f.code, f.name]),
+    [
+      ['S01', 'Thread báo cáo'],
+      ['S02', 'Thông báo đẩy'],
+    ],
+  );
+});
+
+// Rút gọn từ Chinh-sua-anh-gui.md thật: MH05-1…MH05-6 có heading riêng,
+// MH05-7 chỉ có trong bảng; hàng nhóm "**MH05**" phải bị bỏ.
+const TABLE_GROUP_ROW_MD = [
+  '#### MH01: Khung hội thoại',
+  '',
+  '#### MH05-1: Trình chỉnh sửa - Khung chung',
+  '',
+  '## 3. Danh sách màn hình',
+  '',
+  '### 3.1 Danh sách màn hình',
+  '',
+  '| Mã MH | Tên màn hình |',
+  '| --- | --- |',
+  '| MH01 | Khung hội thoại |',
+  '| **MH05** | Trình chỉnh sửa ảnh |',
+  '| MH05-1 | Trình chỉnh sửa - Khung chung |',
+  '| MH05-2 | Nhiều ảnh |',
+].join('\n');
+
+test('scanDocScreens: bảng — hàng nhóm ("**MH05**") bị bỏ khi có MH05-1; màn đã có từ heading không bị bảng ghi đè (giữ section); màn chỉ-trong-bảng không có section nhưng vẫn vào danh sách (WP11, nguyên nhân 4)', () => {
+  const found = scanDocScreens(TABLE_GROUP_ROW_MD);
+  assert.deepEqual(found.map((f) => f.code), ['MH01', 'MH05-1', 'MH05-2']);
+  assert.ok(!found.some((f) => f.code === 'MH05'), 'hàng nhóm "MH05" không được thành màn');
+  assert.equal(found.find((f) => f.code === 'MH01')?.heading, '#### MH01: Khung hội thoại');
+  assert.equal(findScreenSection(TABLE_GROUP_ROW_MD, 'MH05-2', 'Nhiều ảnh'), null);
+});
+
+// Blocklist tên mục (WP11, giết màn ma "X.Y Danh sách màn hình").
+test('scanDocScreens: blocklist — "MH1: Danh sách màn hình" bị loại; "MH1: Danh sách danh bạ" được giữ (WP11)', () => {
+  const md1 = ['#### MH1: Danh sách màn hình', '', '#### MH2: Trang chủ'].join('\n');
+  assert.deepEqual(
+    scanDocScreens(md1).map((f) => f.code),
+    ['MH2'],
+  );
+  const md2 = '#### MH1: Danh sách danh bạ\n';
+  assert.deepEqual(
+    scanDocScreens(md2).map((f) => [f.code, f.name]),
+    [['MH1', 'Danh sách danh bạ']],
+  );
+});
+
+test('scanDocScreens: blocklist áp dụng cả fallback mã mục — "2.1 Danh sách màn hình" bị loại dù ancestor-hint đạt (WP11, luật 2 lượt)', () => {
+  const md = ['## 2. Màn hình', '', '### 2.1 Danh sách màn hình', '', 'nội dung không có mã màn nào khác.'].join('\n');
+  assert.deepEqual(scanDocScreens(md), []);
+});
+
+// WP11b (review độc lập wave 1, lỗi chặn): `boldLines` dùng cho biên section
+// của một màn bold PHẢI chỉ gồm dòng bold-KHAI-MÀN (qua matchBoldScreenLine),
+// không phải MỌI dòng bold đứng riêng (matchBoldLineText) — xem docblock trên
+// findScreenSection. Doc dưới có một dòng "**Ghi chú:**" đứng riêng, TOÀN BỘ
+// dòng in đậm (khớp matchBoldLineText — trước fix bị tính nhầm là biên section
+// — nhưng KHÔNG khớp matchBoldScreenLine vì "Ghi chú:" không phải mã màn)
+// chen giữa nội dung MH1 và màn bold kế MH2; sau đó một heading chen giữa
+// MH2 và MH3 để khoá luôn việc heading vẫn cắt đúng biên (không bị fix này
+// ảnh hưởng).
+const BOLD_NOTE_BETWEEN_MD = [
+  '**MH1: Đăng nhập**',
+  '',
+  'Dòng nội dung 1.',
+  '',
+  '**Ghi chú:**',
+  '',
+  'Một lưu ý chen giữa, không phải màn — dòng nội dung 2 sau ghi chú.',
+  '',
+  '**MH2: Trang chủ**',
+  '',
+  'Nội dung MH2 trước heading.',
+  '',
+  '## Heading chen giữa',
+  '',
+  'Nội dung dưới heading, không thuộc MH2.',
+  '',
+  '**MH3: Cài đặt**',
+  '',
+  'Nội dung MH3.',
+].join('\n');
+
+test('findScreenSection: dòng bold thường ("**Ghi chú:**") chen giữa KHÔNG cắt cụt section của màn bold — chạy qua tới màn bold kế; heading chen giữa vẫn cắt đúng tại heading (WP11b, bug review độc lập wave 1)', () => {
+  const s1 = findScreenSection(BOLD_NOTE_BETWEEN_MD, 'MH1', 'Đăng nhập');
+  assert.ok(s1);
+  assert.equal(s1!.heading, '**MH1: Đăng nhập**');
+  assert.ok(s1!.excerpt.includes('Dòng nội dung 1'));
+  assert.ok(s1!.excerpt.includes('Ghi chú'), 'section phải CHẠY QUA dòng Ghi chú, không dừng ở đó');
+  assert.ok(s1!.excerpt.includes('dòng nội dung 2 sau ghi chú'), 'nội dung SAU dòng Ghi chú phải còn trong excerpt');
+  assert.ok(!s1!.excerpt.includes('MH2'), 'section MH1 vẫn phải dừng đúng ở màn bold kế (MH2)');
+
+  const s2 = findScreenSection(BOLD_NOTE_BETWEEN_MD, 'MH2', 'Trang chủ');
+  assert.ok(s2);
+  assert.equal(s2!.heading, '**MH2: Trang chủ**');
+  assert.ok(s2!.excerpt.includes('Nội dung MH2 trước heading'));
+  assert.ok(!s2!.excerpt.includes('không thuộc MH2'), 'heading chen giữa vẫn phải cắt đúng biên, không chạy sang MH3');
+  assert.ok(!s2!.excerpt.includes('MH3'));
+});
+
+test('scanDocScreens: "### s01 Tên" (s thường) không phải mã hệ S (chữ hoa mới tính) → không là màn (WP11b)', () => {
+  assert.deepEqual(scanDocScreens('### s01 Tên màn hình\n'), []);
+});
+
+test('scanDocScreens: doc có cả "### SCR-002 B" và "### S01 A" → 2 mã đúng, SCR không bị hệ mã S nuốt (WP11b)', () => {
+  const md = ['### SCR-002 B', '', '### S01 A'].join('\n');
+  assert.deepEqual(
+    scanDocScreens(md).map((f) => [f.code, f.name]),
+    [
+      ['SCR-002', 'B'],
+      ['S01', 'A'],
+    ],
+  );
+});
+
+test('scanDocScreens: 2 heading "Danh sách màn hình" lồng nhau cùng bao 1 bảng → mỗi mã chỉ vào danh sách đúng 1 lần (WP11b, dedupe theo mã giữ lần đầu)', () => {
+  const md = [
+    '## 2. Danh sách màn hình',
+    '',
+    '### 2.1 Danh sách màn hình',
+    '',
+    '| Mã | Tên màn hình |',
+    '| --- | --- |',
+    '| S01 | Trang chủ |',
+    '| S02 | Cài đặt |',
+  ].join('\n');
+  assert.deepEqual(
+    scanDocScreens(md).map((f) => [f.code, f.name]),
+    [
+      ['S01', 'Trang chủ'],
+      ['S02', 'Cài đặt'],
+    ],
+  );
+});
+
+test('scanDocScreens: bảng dưới heading KHÔNG khớp trigger "danh sách màn hình" → 0 màn (WP11b)', () => {
+  const md = ['## 2. Bảng dữ liệu', '', '| Mã | Tên màn hình |', '| --- | --- |', '| S01 | Trang chủ |'].join('\n');
+  assert.deepEqual(scanDocScreens(md), []);
+});
+
+test('scanDocScreens: "**MH3.1: A +** **MH3.2: B**" (2 cặp ** trên một dòng) không khớp khuôn bold-khai-màn đơn → không màn nào (WP11b)', () => {
+  assert.deepEqual(scanDocScreens('**MH3.1: A +** **MH3.2: B**\n'), []);
+});
+
+test('scanDocScreens + findScreenSection: bold "**MH1: Tên Bold**" và hàng bảng MH1 cùng trang → bold thắng, tên VÀ section lấy từ bold (WP11b)', () => {
+  const md = ['**MH1: Tên Bold**', '', '## Danh sách màn hình', '', '| Mã | Tên màn hình |', '| --- | --- |', '| MH1 | Tên Bảng |'].join('\n');
+  assert.deepEqual(
+    scanDocScreens(md).map((f) => [f.code, f.name, f.heading]),
+    [['MH1', 'Tên Bold', '**MH1: Tên Bold**']],
+  );
+  const section = findScreenSection(md, 'MH1', 'Tên Bold');
+  assert.ok(section);
+  assert.equal(section!.heading, '**MH1: Tên Bold**');
+});
+
+test('scanDocScreens: "#### MH 2.1 Tên" (khoảng trắng + hậu tố chấm cùng lúc) → MH2.1 (WP11b)', () => {
+  assert.deepEqual(scanDocScreens('#### MH 2.1 Tên\n').map((f) => [f.code, f.name]), [['MH2.1', 'Tên']]);
+});
+
+const SSO_DOC_MD = [
+  '---',
+  'title: Đăng nhập SSO',
+  '---',
+  '',
+  '## 3/ Luồng màn hình',
+  '',
+  '### 3.1/ Danh sách màn hình',
+  '',
+  '#### MH1: Đăng nhập SSO',
+  '',
+  '![](../attachments/mh1.png)',
+  '',
+  '#### MH2: Đồng ý chia sẻ dữ liệu cá nhân',
+  '',
+  '![](../attachments/mh2.png)',
+  '',
+  '#### MH3: Popup chia sẻ dữ liệu với bên thứ 3',
+  '',
+  '![](../attachments/mh3.png)',
+  '',
+  '### 3.2/ Mô tả màn hình',
+  '',
+  '#### MH1: Đăng nhập SSO',
+  '',
+  '| STT | Hạng mục | Kiểu hiển thị |',
+  '| --- | --- | --- |',
+  '| 1 | Nút Đăng nhập SSO | Button |',
+].join('\n');
+
+test('prepareScreenComponentInputs: dr-flow không gắn được màn nào → dựng danh sách màn TỪ TÀI LIỆU (heading MH), origin: "doc", section khớp heading, note nói rõ lý do', async () => {
+  await mkdir(join(cwd, 'docs-feature'), { recursive: true });
+  await writeFile(join(cwd, 'docs-feature', 'Dang-nhap-SSO.md'), SSO_DOC_MD, 'utf8');
+  // Không có flows/index.json (dr-flow chưa gắn được màn nào, hoặc chưa chạy).
+  const inputs = await prepareScreenComponentInputs(cwd, {
+    pages: [{ mdPath: 'docs-feature/Dang-nhap-SSO.md', page: 'Đăng nhập SSO' }],
+  });
+  assert.equal(inputs.screens.length, 3);
+  const [s1, s2, s3] = inputs.screens;
+  assert.equal(s1!.key, 'Dang-nhap-SSO__MH1');
+  assert.equal(s1!.name, 'Đăng nhập SSO');
+  assert.equal(s1!.origin, 'doc');
+  assert.equal(s1!.flowId, '');
+  assert.equal(s1!.flowTitle, '');
+  assert.equal(s1!.source, 'docs-feature/Dang-nhap-SSO.md');
+  assert.deepEqual(s1!.steps, []);
+  assert.deepEqual(s1!.navOut, []);
+  assert.deepEqual(s1!.navIn, []);
+  assert.deepEqual(s1!.findings, []);
+  assert.equal(s1!.section?.heading, '#### MH1: Đăng nhập SSO');
+  assert.equal(s2!.key, 'Dang-nhap-SSO__MH2');
+  assert.equal(s2!.name, 'Đồng ý chia sẻ dữ liệu cá nhân');
+  assert.equal(s3!.key, 'Dang-nhap-SSO__MH3');
+  assert.equal(s3!.name, 'Popup chia sẻ dữ liệu với bên thứ 3');
+  assert.match(inputs.note ?? '', /TỪ TÀI LIỆU/);
+});
+
+// ── WP9b: HỢP NHẤT thay vì "hoặc-là" (dự án "Đăng nhập SSO" thật: dr-flow
+// chỉ gắn được MH1 — MH2/MH3 trỏ vào node chỉ có ở bản đề xuất, không bao
+// giờ gắn được từ flow, dù tài liệu khai rõ). ───────────────────────────────
+
+test('prepareScreenComponentInputs: HỢP NHẤT — flow gắn được 1/3 màn (MH1) → bổ sung MH2/MH3 từ tài liệu, MH1 giữ nguyên origin "flow" + steps, note nêu đúng số màn bổ sung', async () => {
+  await mkdir(join(cwd, 'docs-feature'), { recursive: true });
+  await writeFile(join(cwd, 'docs-feature', 'Dang-nhap-SSO.md'), SSO_DOC_MD, 'utf8');
+  await mkdir(join(cwd, 'flows'), { recursive: true });
+  await writeFile(
+    join(cwd, 'flows', 'FLOW-sso.flowchart.json'),
+    JSON.stringify({
+      nodes: [
+        { id: 'n0', type: 'start', label: 'Bắt đầu' },
+        { id: 'n1', type: 'action', label: 'Đăng nhập SSO', screen: 'Dang-nhap-SSO__MH1' },
+      ],
+      edges: [{ from: 'n0', to: 'n1' }],
+    }),
+    'utf8',
+  );
+  await writeFile(
+    join(cwd, 'flows', 'index.json'),
+    JSON.stringify([
+      {
+        id: 'FLOW-sso',
+        title: 'Đăng nhập SSO',
+        source: 'docs-feature/Dang-nhap-SSO.md',
+        kind: 'mermaid',
+        screens: [{ key: 'Dang-nhap-SSO__MH1', name: 'Đăng nhập SSO' }],
+        files: { flowchart: 'flows/FLOW-sso.flowchart.json' },
+      },
+    ]),
+    'utf8',
+  );
+
+  const inputs = await prepareScreenComponentInputs(cwd, {
+    pages: [{ mdPath: 'docs-feature/Dang-nhap-SSO.md', page: 'Đăng nhập SSO' }],
+  });
+  assert.equal(inputs.screens.length, 3);
+  const [s1, s2, s3] = inputs.screens;
+  assert.equal(s1!.key, 'Dang-nhap-SSO__MH1');
+  assert.equal(s1!.origin, 'flow');
+  assert.equal(s1!.flowId, 'FLOW-sso');
+  assert.deepEqual(s1!.steps.map((x) => x.id), ['n1']);
+  assert.equal(s2!.key, 'Dang-nhap-SSO__MH2');
+  assert.equal(s2!.origin, 'doc');
+  assert.equal(s2!.flowId, '');
+  assert.equal(s3!.key, 'Dang-nhap-SSO__MH3');
+  assert.equal(s3!.origin, 'doc');
+  assert.match(inputs.note ?? '', /Bổ sung 2 màn/);
+  assert.ok(inputs.note?.includes('Dang-nhap-SSO__MH2'));
+  assert.ok(inputs.note?.includes('Dang-nhap-SSO__MH3'));
+});
+
+test('prepareScreenComponentInputs: flow đã khớp ĐỦ 9 màn với tài liệu (PRD SIM) → vẫn 9, không nhân đôi, không note bổ sung', async () => {
+  const stem = 'PRD-Sim-du-lich';
+  const codes = ['6.1.1', '6.2.1', '6.2.2', '6.3.1', '6.3.2', '6.4.1', '6.4.2', '6.4.3', '6.4.4'];
+  await mkdir(join(cwd, 'docs-feature'), { recursive: true });
+  await writeFile(join(cwd, 'docs-feature', `${stem}.md`), PRD_SIM_SECTION_MD, 'utf8');
+  await mkdir(join(cwd, 'flows'), { recursive: true });
+  await writeFile(
+    join(cwd, 'flows', 'index.json'),
+    JSON.stringify([
+      {
+        id: 'FLOW-prd',
+        title: 'Mua SIM du lịch',
+        source: `docs-feature/${stem}.md`,
+        kind: 'mermaid',
+        screens: codes.map((c) => ({ key: `${stem}__${c}`, name: c })),
+        files: {},
+      },
+    ]),
+    'utf8',
+  );
+
+  const inputs = await prepareScreenComponentInputs(cwd, {
+    pages: [{ mdPath: `docs-feature/${stem}.md`, page: 'PRD SIM du lịch' }],
+  });
+  assert.equal(inputs.screens.length, 9);
+  assert.equal(inputs.note, undefined);
+  assert.ok(inputs.screens.every((s) => s.origin === 'flow'));
+  assert.deepEqual(
+    inputs.screens.map((s) => s.key),
+    codes.map((c) => `${stem}__${c}`),
+  );
 });
 
 test('parseRoleMap + validateRoleMap: component phải có trong danh mục; DS trống thì component phải null', () => {

@@ -32,7 +32,104 @@ interface RawGraph {
   edges: FlowchartEdge[];
 }
 
-function finish(raw: RawGraph, meta: { id: string; title: string; source: string }, screens: Record<string, string>): FlowchartDoc {
+/** Sự cố #5d13309f: sơ đồ kiểu sequence (UML) đặt thao tác trên CẠNH, không
+ *  trên đỉnh, nên `screens.json` của agent hợp lệ trỏ vào một id cạnh —
+ *  daemon trước đây âm thầm loại bỏ vì chỉ khớp id đỉnh. Quy mapping-vào-cạnh
+ *  về đỉnh ĐÍCH của cạnh đó (người dùng vừa đi TỚI đâu thì đó là màn hình);
+ *  đích không dùng được (không tồn tại / là decision) thì lùi về đỉnh NGUỒN.
+ *  Tách thành hàm thuần để `index.ts` gọi lại với cùng input và lấy đúng
+ *  danh sách `dropped` cho báo cáo, mà không phải đổi shape `FlowchartDoc`.
+ *
+ *  WP9b, 2 bổ sung:
+ *  - Cạnh TRÔI (sơ đồ sequence vẽ theo toạ độ giữa các lifeline, mxCell
+ *    không có source/target) có id THẬT nhưng không quy được về đỉnh nào —
+ *    trước đây lẫn vào "không có trong sơ đồ" (id sai), gây hiểu nhầm; giờ
+ *    có lý do riêng.
+ *  - Mỗi ĐỈNH chỉ mang MỘT màn: khi hai khoá của `screens` cùng quy về một
+ *    node (trực tiếp hoặc qua cạnh), trước đây khoá đến sau ghi đè khoá đến
+ *    trước ÂM THẦM (`byNode[target] = key` không kiểm tra đã có giá trị) —
+ *    ví dụ tái hiện: `{e1:'doc__MH1', b:'doc__MH2'}` với cạnh `e1: a→b` thì
+ *    `doc__MH1` biến mất không lý do. Giờ ưu tiên mapping TRỎ THẲNG vào node
+ *    hơn suy ra từ cạnh; cùng loại thì giữ khoá ĐẾN TRƯỚC theo thứ tự
+ *    `Object.entries(screens)` duyệt — khoá thua vào `dropped` có lý do.
+ *    WP9c: thứ tự đó KHÔNG LUÔN LÀ thứ tự soạn thảo trong `screens` — id
+ *    dạng số nguyên thuần ("2", "10") là "khoá chỉ số mảng" theo đặc tả
+ *    JS, `Object.entries` duyệt chúng theo thứ tự SỐ TĂNG DẦN trước mọi
+ *    khoá chuỗi khác (JS Spec §OrdinaryOwnPropertyKeys), bất kể vị trí
+ *    trong object literal — vẫn tất định, chỉ không phải thứ tự soạn thảo.
+ *    Id draw.io thật dạng UUID-prefix (`wLl92Z-3KRblUW1EAXX-1`) không phải
+ *    khoá chỉ số nên không bị ảnh hưởng. */
+export function resolveScreenCells(
+  input: { nodes: Array<{ id: string; type: FlowchartNodeType }>; edges: Array<{ id?: string; from?: string | undefined; to?: string | undefined }> },
+  screens: Record<string, string>,
+): { byNode: Record<string, string>; dropped: Array<{ cell: string; key: string; reason: string }> } {
+  const nodeType = new Map(input.nodes.map((n) => [n.id, n.type]));
+  const edgeById = new Map<string, { from?: string | undefined; to?: string | undefined }>();
+  for (const e of input.edges) if (e.id) edgeById.set(e.id, { from: e.from, to: e.to });
+  const usable = (id: string) => nodeType.has(id) && nodeType.get(id) !== 'decision';
+  const dropped: Array<{ cell: string; key: string; reason: string }> = [];
+
+  type Candidate = { cell: string; key: string; direct: boolean };
+  const byTargetNode = new Map<string, Candidate>();
+  const registerCandidate = (node: string, cand: Candidate) => {
+    const existing = byTargetNode.get(node);
+    if (!existing) {
+      byTargetNode.set(node, cand);
+      return;
+    }
+    // `existing` luôn đến trước `cand` (ta xử lý theo thứ tự `Object.entries`
+    // duyệt `screens` — xem docblock trên hàm về ngoại lệ id dạng số nguyên
+    // thuần) — chỉ cần so ưu tiên: trỏ thẳng vào node thắng cạnh suy ra;
+    // cùng loại thì giữ cái đến trước.
+    if (!existing.direct && cand.direct) {
+      dropped.push({ cell: existing.cell, key: existing.key, reason: `node "${node}" đã gắn màn "${cand.key}" — mỗi bước chỉ mang một màn` });
+      byTargetNode.set(node, cand);
+    } else {
+      dropped.push({ cell: cand.cell, key: cand.key, reason: `node "${node}" đã gắn màn "${existing.key}" — mỗi bước chỉ mang một màn` });
+    }
+  };
+
+  for (const [cell, key] of Object.entries(screens)) {
+    if (nodeType.has(cell)) {
+      if (!usable(cell)) {
+        dropped.push({ cell, key, reason: 'node loại quyết định (decision) không phải màn' });
+        continue;
+      }
+      registerCandidate(cell, { cell, key, direct: true });
+      continue;
+    }
+    const edge = edgeById.get(cell);
+    if (!edge) {
+      dropped.push({ cell, key, reason: 'không có trong sơ đồ' });
+      continue;
+    }
+    if (!edge.from && !edge.to) {
+      dropped.push({ cell, key, reason: 'là cạnh không nối hai đỉnh (sơ đồ kiểu sequence)' });
+      continue;
+    }
+    const target = edge.to && usable(edge.to) ? edge.to : edge.from && usable(edge.from) ? edge.from : null;
+    if (!target) {
+      dropped.push({ cell, key, reason: 'là cạnh nhưng hai đầu không phải bước dùng được' });
+      continue;
+    }
+    registerCandidate(target, { cell, key, direct: false });
+  }
+
+  const byNode: Record<string, string> = {};
+  for (const [node, cand] of byTargetNode) byNode[node] = cand.key;
+  return { byNode, dropped };
+}
+
+function finish(
+  raw: RawGraph,
+  meta: { id: string; title: string; source: string },
+  screens: Record<string, string>,
+  // WP9c: `from`/`to` optional — cạnh TRÔI (draw.io, không source/target)
+  // vẫn có mặt trong bảng này (xem `drawioPageToFlowchart`) để
+  // `resolveScreenCells` nội bộ tự phân loại đúng lý do, nhất quán với
+  // `edgesForDrop` ở `flow-ux/index.ts`.
+  edgeById: Record<string, { from?: string | undefined; to?: string | undefined }> = {},
+): FlowchartDoc {
   const ids = new Set(raw.nodes.map((n) => n.id));
   const edges = raw.edges.filter((e) => ids.has(e.from) && ids.has(e.to) && e.from !== e.to);
   const indeg = new Map<string, number>();
@@ -41,14 +138,21 @@ function finish(raw: RawGraph, meta: { id: string; title: string; source: string
     outdeg.set(e.from, (outdeg.get(e.from) ?? 0) + 1);
     indeg.set(e.to, (indeg.get(e.to) ?? 0) + 1);
   }
-  const nodes: FlowchartNode[] = raw.nodes.map((n) => {
+  const typed = raw.nodes.map((n) => {
     let type: FlowchartNodeType;
     if (n.shape === 'decision') type = 'decision';
     else if (n.shape === 'terminal') type = (indeg.get(n.id) ?? 0) === 0 ? 'start' : (outdeg.get(n.id) ?? 0) === 0 ? 'end' : 'action';
     else type = 'action';
-    const node: FlowchartNode = { id: n.id, type, label: n.label };
-    const screen = screens[n.id];
-    if (screen && (type === 'action' || type === 'start' || type === 'end')) node.screen = screen;
+    return { id: n.id, type, label: n.label };
+  });
+  const { byNode } = resolveScreenCells(
+    { nodes: typed.map(({ id, type }) => ({ id, type })), edges: Object.entries(edgeById).map(([id, e]) => ({ id, ...e })) },
+    screens,
+  );
+  const nodes: FlowchartNode[] = typed.map((n) => {
+    const node: FlowchartNode = { id: n.id, type: n.type, label: n.label };
+    const screen = byNode[n.id];
+    if (screen) node.screen = screen;
     return node;
   });
   // A flow with no ellipse at all still needs a start: the first node with
@@ -116,14 +220,26 @@ export function drawioPageToFlowchart(
     nodes.push({ id: c.id, label: c.label || '(không nhãn)', shape: shapeOf(c) });
   }
   const edges: FlowchartEdge[] = [];
+  // Bảng id cạnh → {from,to}: draw.io có id cạnh thật (khác Mermaid), dùng để
+  // quy mapping-vào-cạnh của agent về node (xem resolveScreenCells). WP9c:
+  // ghi MỌI cạnh vào đây, kể cả cạnh TRÔI (sơ đồ sequence, không
+  // source/target) — nhất quán với `edgesForDrop` ở `flow-ux/index.ts`
+  // (WP9b) để `resolveScreenCells` nội bộ của `finish()` tự phân loại đúng
+  // lý do ("là cạnh không nối hai đỉnh") thay vì lọc trước làm mất lý do đó
+  // (kết quả `dropped` của lượt gọi nội bộ này không dùng cho warnings —
+  // chỉ để JSDoc không nói một đằng code làm một nẻo). `edges`/`edgeSet`
+  // (đồ thị thật) vẫn CHỈ nhận cạnh có đủ hai đầu như cũ.
+  const edgeById: Record<string, { from?: string | undefined; to?: string | undefined }> = {};
   for (const c of cells) {
-    if (c.kind !== 'edge' || !c.source || !c.target) continue;
+    if (c.kind !== 'edge') continue;
+    edgeById[c.id] = { from: c.source, to: c.target };
+    if (!c.source || !c.target) continue;
     const key = `${c.source}→${c.target}`;
     if (edgeSet.has(key)) continue;
     edgeSet.add(key);
     edges.push(c.label ? { from: c.source, to: c.target, label: c.label } : { from: c.source, to: c.target });
   }
-  return finish({ nodes, edges }, meta, screens);
+  return finish({ nodes, edges }, meta, screens, edgeById);
 }
 
 /* ── Mermaid flowchart ───────────────────────────────────────────────────── */

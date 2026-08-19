@@ -20,7 +20,7 @@ import path from 'node:path';
 
 import { decodeMxfile, encodeMxfile, listCells, type MxPage } from './mxfile.js';
 import { applyPatch, parsePatchDoc, type PatchOp } from './patch.js';
-import { drawioPageToFlowchart, mermaidToFlowchart, type FlowchartDoc } from './to-flowchart.js';
+import { drawioPageToFlowchart, mermaidToFlowchart, resolveScreenCells, type FlowchartDoc } from './to-flowchart.js';
 import { svgForImgEmbedding } from '../bas/svg-xml.js';
 import { findEmbeddedMermaid, isMermaidFlowchart, looksLikeMermaid, replaceCreateViewerCalls } from './mermaid-detect.js';
 
@@ -76,6 +76,9 @@ export interface FlowIndexEntry {
   hasProposal?: boolean;
   files?: { asIs?: string; proposed?: string; review?: string; flowchart?: string; svg?: string };
   patchSkipped?: { op: PatchOp; reason: string }[];
+  /** Mapping màn (`screens.json`) daemon không dùng được — sự cố #5d13309f:
+   *  trước đây bị loại thẳng tay, không một cảnh báo. Chỉ ghi khi có. */
+  screensDropped?: { cell: string; key: string; reason: string }[];
 }
 
 const DOC_ROOTS = ['docs-feature', 'docs'];
@@ -154,15 +157,50 @@ export interface PrepareResult {
   inputs: FlowInput[];
   /** Markdown pages rewritten (createViewer → image + .mmd link). */
   normalizedPages: string[];
+  /** draw.io diagrams no markdown page references — sự cố #5d13309f: trước
+   *  đây vẫn vào `flows` và tốn một lượt agent cho mỗi cái. Rỗng khi không
+   *  có sơ đồ mồ côi (hoặc khi safety net bên dưới giữ lại hết). */
+  orphans: { diagram: string; reason: string }[];
 }
 
-/** Which markdown page references a diagram file (by basename)? */
+/** Loose form of a diagram filename for tolerant matching: strip the
+ *  Confluence numeric export prefix (`903353914-…`) and the extension, fold
+ *  `_`/`%20`/runs of whitespace to single spaces, lowercase. Two names that
+ *  differ only by that noise (`903353914-Untitled_Diagram-123.drawio` vs the
+ *  rendered `Untitled Diagram-123.png` a page embeds) become the same token. */
+function looseDiagramToken(s: string): string {
+  return s
+    .replace(/^\d+-/, '')
+    .replace(/\.[a-z0-9]+$/i, '')
+    .replace(/%20/gi, ' ')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/** Which markdown page references a diagram file (by basename)? Exact match
+ *  first (verbatim basename, or its `encodeURI` form); a tolerant pass
+ *  second — sự cố #5d13309f: 12/13 sơ đồ draw.io của một dự án thật chỉ được
+ *  Confluence export dưới tên có tiền tố số, còn trang tài liệu chỉ nhúng
+ *  ẢNH PNG cùng gốc tên (không có tiền tố, `_` thành khoảng trắng); khớp
+ *  nguyên văn bỏ lỡ hết, khiến mọi sơ đồ trông như "mồ côi". */
 function pageReferencing(mdByRel: Map<string, string>, diagramBase: string): string | null {
   const needle = diagramBase.toLowerCase();
   const enc = encodeURI(diagramBase).toLowerCase();
   for (const [rel, text] of mdByRel) {
     const low = text.toLowerCase();
     if (low.includes(needle) || low.includes(enc)) return rel;
+  }
+  const loose = looseDiagramToken(diagramBase);
+  // WP9b: token khoan dung ngắn/chung chung (`a-1`) có thể khớp nhầm bất kỳ
+  // trang nào chứa cùng chuỗi con tình cờ — guard tối thiểu 8 ký tự SAU
+  // chuẩn hoá và phải còn ít nhất một chữ số (dấu hiệu của tiền tố export
+  // Confluence thật, `1769153289432` trong `Untitled Diagram-1769153289432`);
+  // không đạt thì bỏ hẳn pass khoan dung, chỉ dùng khớp nguyên văn ở trên.
+  if (!loose || loose.length < 8 || !/\d/.test(loose)) return null;
+  for (const [rel, text] of mdByRel) {
+    if (looseDiagramToken(text).includes(loose)) return rel;
   }
   return null;
 }
@@ -190,7 +228,12 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
     }
   }
 
-  // (1) draw.io files — every page is one flow.
+  // (1) draw.io files — every page is one flow, EXCEPT a diagram no markdown
+  // page references at all: that one is "mồ côi" (sự cố #5d13309f — 12/13 sơ
+  // đồ của một dự án thật không trang nào tham chiếu, mỗi cái vẫn tốn một
+  // lượt agent và đẻ ra flow rác). Candidates are built first and only
+  // committed to `inputs`/disk once we know which diagrams are referenced.
+  const drawioCandidates: { input: FlowInput; write: () => Promise<void>; orphan: boolean; diagram: string }[] = [];
   for (const rel of files.filter((f) => /\.drawio$/i.test(f)).sort()) {
     const xml = await readText(path.join(cwd, rel));
     if (xml == null) continue;
@@ -202,7 +245,9 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
       continue;
     }
     const stem = path.basename(rel).replace(/\.drawio$/i, '').replace(/^\d+-/, '');
-    const source = pageReferencing(mdByRel, path.basename(rel)) ?? rel;
+    const referencedBy = pageReferencing(mdByRel, path.basename(rel));
+    const orphan = referencedBy == null;
+    const source = referencedBy ?? rel;
     pages.forEach((page, i) => {
       const cells = listCells(page.graphXml);
       const nodes = cells.filter((c) => c.kind === 'vertex' && c.label).length;
@@ -211,30 +256,58 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
       const generic = /^page-?\d*$/i.test(page.name.trim()) || !page.name.trim();
       const title = generic ? (pages.length > 1 ? `${stem} — trang ${i + 1}` : stem) : page.name.trim();
       const id = uniqueFlowId(generic ? `${stem}${pages.length > 1 ? `-p${i + 1}` : ''}` : page.name, taken);
-      inputs.push({
-        id,
-        title,
-        kind: 'drawio',
-        source,
+      drawioCandidates.push({
+        input: {
+          id,
+          title,
+          kind: 'drawio',
+          source,
+          diagram: rel,
+          page: { index: i, name: page.name, count: pages.length },
+          files: { asIs: `flows/${id}/as-is.drawio`, cells: `flows/${id}/cells.json` },
+          counts: { nodes, edges },
+        },
+        orphan,
         diagram: rel,
-        page: { index: i, name: page.name, count: pages.length },
-        files: { asIs: `flows/${id}/as-is.drawio`, cells: `flows/${id}/cells.json` },
-        counts: { nodes, edges },
-      });
-      // Written below once we know the id set is final.
-      pendingWrites.push(async () => {
-        const dir = path.join(flowsDir, id);
-        await fs.promises.mkdir(dir, { recursive: true });
-        await fs.promises.writeFile(path.join(dir, 'as-is.drawio'), encodeMxfile([{ ...page, name: 'Hiện trạng' }]), 'utf8');
-        await writeJson(
-          path.join(dir, 'cells.json'),
-          cells.map((c) => {
-            const { style: _style, ...rest } = c;
-            return rest;
-          }),
-        );
+        write: async () => {
+          const dir = path.join(flowsDir, id);
+          await fs.promises.mkdir(dir, { recursive: true });
+          await fs.promises.writeFile(path.join(dir, 'as-is.drawio'), encodeMxfile([{ ...page, name: 'Hiện trạng' }]), 'utf8');
+          await writeJson(
+            path.join(dir, 'cells.json'),
+            cells.map((c) => {
+              const { style: _style, ...rest } = c;
+              return rest;
+            }),
+          );
+        },
       });
     });
+  }
+  const referenced = drawioCandidates.filter((c) => !c.orphan);
+  const orphanedCandidates = drawioCandidates.filter((c) => c.orphan);
+  const orphans: PrepareResult['orphans'] = [];
+  let orphanSafetyNote: string | undefined;
+  if (referenced.length === 0 && orphanedCandidates.length > 0) {
+    // Safety net: đừng để một dự án đang chạy được (có sơ đồ thật) biến thành
+    // không còn luồng nào chỉ vì việc khớp trang tham chiếu trượt hết —
+    // hành vi cũ (mọi sơ đồ vào flows) + cảnh báo thay vì im lặng bỏ hết.
+    orphanSafetyNote = `${orphanedCandidates.length} sơ đồ draw.io không trang tài liệu nào tham chiếu được, nhưng đó là TOÀN BỘ sơ đồ dự án — vẫn đưa hết vào flows để không mất luồng nào.`;
+    for (const c of drawioCandidates) {
+      inputs.push(c.input);
+      pendingWrites.push(c.write);
+    }
+  } else {
+    for (const c of referenced) {
+      inputs.push(c.input);
+      pendingWrites.push(c.write);
+    }
+    const seenDiagram = new Set<string>();
+    for (const c of orphanedCandidates) {
+      if (seenDiagram.has(c.diagram)) continue;
+      seenDiagram.add(c.diagram);
+      orphans.push({ diagram: c.diagram, reason: 'không có trang tài liệu nào tham chiếu sơ đồ này' });
+    }
   }
 
   // (2) Mermaid — standalone files, exported macro calls, fenced blocks.
@@ -358,12 +431,13 @@ export async function prepareFlowUxInputs(cwd: string): Promise<PrepareResult> {
   await writeJson(path.join(flowsDir, '_inputs.json'), {
     generatedAt: new Date().toISOString(),
     flows: inputs,
+    ...(orphans.length ? { orphans } : {}),
     note:
       inputs.length === 0
         ? 'Không tìm thấy sơ đồ draw.io/Mermaid nào trong tài liệu — chạy chế độ text-only (tự dựng flowchart.json từ chữ).'
-        : undefined,
+        : orphanSafetyNote,
   });
-  return { inputs, normalizedPages };
+  return { inputs, normalizedPages, orphans };
 }
 
 /* ── finalize ────────────────────────────────────────────────────────────── */
@@ -481,6 +555,17 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
     const cellScreens = screensFile.cells ?? {};
     const names = screensFile.names ?? {};
     let flowchart: FlowchartDoc | null = null;
+    // Bảng id cạnh → {from,to} + id node do patch đề xuất thêm, dùng SAU khi
+    // dựng flowchart để tính lại `screensDropped` (resolveScreenCells) và
+    // phân loại đúng lý do — sự cố #5d13309f: agent gắn màn đúng ý nhưng bị
+    // loại thẳng tay, không một dòng cảnh báo nào tới người dùng. WP9b: đưa
+    // MỌI cạnh vào đây (kể cả cạnh TRÔI — sequence, không source/target),
+    // không lọc trước như trước, để resolveScreenCells tự phân loại đúng lý
+    // do; trước đây lọc `source && target` khiến cạnh trôi không bao giờ tới
+    // được lệnh gọi này nên lý do "là cạnh không nối hai đỉnh" chỉ tồn tại
+    // trong hàm, không bao giờ lên `entry.screensDropped` thật.
+    let edgesForDrop: Array<{ id?: string; from?: string | undefined; to?: string | undefined }> = [];
+    let patchAddNodeIds = new Set<string>();
 
     if (input.kind === 'drawio') {
       const asIsXml = await readText(path.join(dir, 'as-is.drawio'));
@@ -497,9 +582,15 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
         continue;
       }
       flowchart = drawioPageToFlowchart(page.graphXml, { id: input.id, title: input.title, source: input.source }, cellScreens);
+      edgesForDrop = listCells(page.graphXml)
+        .filter((c) => c.kind === 'edge')
+        .map((c) => ({ id: c.id, from: c.source, to: c.target }));
       const patchRaw = await readText(path.join(dir, 'patch.json'));
       if (patchRaw != null) {
         const patch = parsePatchDoc(patchRaw);
+        patchAddNodeIds = new Set(
+          patch.ops.filter((o): o is Extract<PatchOp, { op: 'addNode' }> => o.op === 'addNode').map((o) => o.id),
+        );
         if (patch.ops.length) {
           const result = applyPatch(page.graphXml, patch);
           if (result.applied > 0) {
@@ -539,6 +630,28 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
       await writeJson(path.join(flowsDir, `${input.id}.flowchart.json`), flowchart);
       entry.files!.flowchart = `flows/${input.id}.flowchart.json`;
       entry.screens = screensOf(flowchart, names);
+    }
+    // Mapping màn bị bỏ (id lạ / trỏ vào cạnh mà hai đầu không dùng được /
+    // node decision / chỉ có ở bản đề xuất patch.json chưa vào flowchart) —
+    // tính lại bằng CHÍNH cây node cuối cùng để không lệch với `entry.screens`
+    // ở trên, rồi báo ra cho người dùng thay vì im lặng như trước.
+    if (flowchart && Object.keys(cellScreens).length) {
+      const { dropped } = resolveScreenCells(
+        { nodes: flowchart.nodes.map((n) => ({ id: n.id, type: n.type })), edges: edgesForDrop },
+        cellScreens,
+      );
+      const classified = dropped.map((d) =>
+        d.reason === 'không có trong sơ đồ' && (d.cell.startsWith('od-') || patchAddNodeIds.has(d.cell))
+          ? { ...d, reason: 'chỉ có ở bản đề xuất (node do patch thêm)' }
+          : d,
+      );
+      if (classified.length) {
+        entry.screensDropped = classified;
+        for (const d of classified) warnings.push(`${input.id}: mapping màn "${d.key}" trỏ vào "${d.cell}" bị bỏ — ${d.reason}`);
+      }
+      if (entry.screens.length === 0) {
+        warnings.push(`${input.id}: khai ${Object.keys(cellScreens).length} mapping màn nhưng không cái nào dùng được — xem screensDropped`);
+      }
     }
     const reviewRaw = await readJson<unknown>(path.join(dir, 'ux-review.json'));
     const review = normalizeReview(reviewRaw, input.id);
@@ -586,5 +699,11 @@ export async function finalizeFlowUx(cwd: string): Promise<FinalizeResult> {
   }
 
   await writeJson(path.join(flowsDir, 'index.json'), index);
+  // Trước đây warnings CHỈ đi ra console.log — người dùng không bao giờ thấy.
+  // Ghi ra file để studio/web đọc được; không làm stage thất bại vì chuyện
+  // này (fail-soft), và xoá file cũ khi lần chạy này không còn cảnh báo.
+  const warningsPath = path.join(flowsDir, '_warnings.json');
+  if (warnings.length > 0) await writeJson(warningsPath, { generatedAt: new Date().toISOString(), warnings });
+  else await fs.promises.unlink(warningsPath).catch(() => {});
   return { index, warnings };
 }

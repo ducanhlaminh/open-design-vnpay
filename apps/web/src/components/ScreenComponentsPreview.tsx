@@ -13,6 +13,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectFile } from '../types';
 
 import { fetchProjectFileText } from '../providers/registry';
+// WP13b (.tmp/pipeline/wp13b.yaml): quản lý danh sách "Màn hình" (lớp 3 —
+// đây là nơi người dùng xem kết quả dr-comp thường nhất) mở qua panel riêng.
+import { ScreenListManager } from './ScreenListManager';
 import styles from './ScreenComponentsPreview.module.css';
 
 export type ScreenPlatform = 'mobile' | 'web';
@@ -381,6 +384,7 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
   const [device, setDevice] = useState<DeviceKey>('desktop');
   const [showRoles, setShowRoles] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showScreenManager, setShowScreenManager] = useState(false);
 
   // Rail + role-map + Figma refs (một lần cho cả run).
   useEffect(() => {
@@ -479,6 +483,13 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
         <div className={styles.railHead}>
           <span className={styles.railTitle}>Màn hình</span>
           <span className={styles.railCount}>{rail.length}</span>
+          <button
+            type="button"
+            onClick={() => setShowScreenManager(true)}
+            style={{ marginLeft: 'auto', fontSize: 11, padding: '3px 8px', borderRadius: 999, border: '1px solid var(--border, #e1e5eb)', background: 'var(--bg, #fff)', cursor: 'pointer' }}
+          >
+            Màn hình…
+          </button>
         </div>
         <ol className={styles.railList}>
           {rail.map((r, i) => {
@@ -666,6 +677,8 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
           </div>
         ) : null}
       </aside>
+
+      {showScreenManager ? <ScreenListManager projectId={projectId} onClose={() => setShowScreenManager(false)} /> : null}
     </div>
   );
 }
