@@ -38,8 +38,24 @@
     <false/>
   </dict>
 
+  <!--
+    Interactive, NOT Background. `Background` puts the job in macOS's throttled
+    tier (PRIO_DARWIN_BG): lowest CPU priority, throttled disk I/O, background
+    socket traffic class -- and every child it spawns (the agent CLI, docker,
+    build scripts) inherits it. A user sitting in the web UI is waiting on this
+    process for EVERY request, so that tier is exactly wrong here.
+
+    Measured on 0.8.69 (same binary, only this key differing):
+      idle   GET /api/skills   0.12 s  (Background)  vs  0.04 s (Interactive)
+      loaded GET /api/skills   0.50 s               vs  0.07 s
+      loaded GET /api/agents   9.1 s                vs  0.3-0.7 s
+    Reported from the field as "cài trên Mac Intel chạy rất chậm" -- weaker
+    single-core machines under real desktop load are starved hardest.
+
+    The Linux systemd unit deliberately carries no Nice=/IO limits either.
+  -->
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
 
   <key>StandardOutPath</key>
   <string>@OD_HOME@/logs/open-design.out.log</string>
