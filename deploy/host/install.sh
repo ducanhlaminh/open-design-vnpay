@@ -48,6 +48,11 @@
 #                            anonymous/installation-id attribution.)
 #   --no-start                Install everything but do not start/enable the service.
 #   --update                  Update an existing ~/.open-design install in place.
+#   --start                   Start the already-installed daemon and exit
+#                            (no download, no config rewrite). Backs
+#                            OpenDesign-Start.command.
+#   --stop                    Stop the running daemon and exit. Backs
+#                            OpenDesign-Stop.command.
 #   -h, --help                 Show this help.
 #
 # No sudo. Everything lives under $HOME (~/.open-design by default).
@@ -96,9 +101,11 @@ OPT_IDENTITY_URL=""
 OPT_GOOGLE_CLIENT_ID="" OPT_GOOGLE_CLIENT_SECRET="" OPT_SESSION_SECRET=""
 OPT_NO_START=0
 OPT_UPDATE=0
+OPT_START=0
+OPT_STOP=0
 
 print_help() {
-  sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_flag_value() {
@@ -140,11 +147,23 @@ while [ $# -gt 0 ]; do
     --session-secret=*) OPT_SESSION_SECRET="${1#--session-secret=}"; [ -n "$OPT_SESSION_SECRET" ] || fail "--session-secret requires a non-empty value" ;;
     --no-start) OPT_NO_START=1 ;;
     --update) OPT_UPDATE=1 ;;
+    --start) OPT_START=1 ;;
+    --stop) OPT_STOP=1 ;;
     --help|-h) print_help; exit 0 ;;
     *) fail "Unknown argument: $1" ;;
   esac
   shift
 done
+
+# --start / --stop are lifecycle COMMANDS, not install options: they never
+# download, extract, or rewrite config.env. Mirrors install.ps1's
+# `Assert-Parameters` ("-Start, -Stop, and -Uninstall are mutually exclusive").
+if [ "$OPT_START" = "1" ] && [ "$OPT_STOP" = "1" ]; then
+  fail "--start and --stop are mutually exclusive"
+fi
+if { [ "$OPT_START" = "1" ] || [ "$OPT_STOP" = "1" ]; } && [ "$OPT_UPDATE" = "1" ]; then
+  fail "--start / --stop cannot be combined with --update"
+fi
 
 if [ "$OPT_UPDATE" = "1" ] && [ ! -L "${OD_HOME}/current" ]; then
   fail "--update given but no existing install found at ${OD_HOME} (run without --update first)"
@@ -1252,11 +1271,111 @@ main() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# `--start` / `--stop` — lifecycle commands for an ALREADY-installed runtime.
+#
+# These never download, extract, or rewrite config.env: they only drive the
+# service manager the install already registered. They exist so macOS can ship
+# OpenDesign-Start.command / OpenDesign-Stop.command, the double-click
+# counterparts of the Windows OpenDesign-Start.cmd / OpenDesign-Stop.cmd
+# (which call install.ps1 -Start / -Stop the same way). A designer must not
+# have to type `launchctl bootout gui/$(id -u)/com.vnpay.open-design`.
+#
+# The launchd bootstrap race (`Bootstrap failed: 5: Input/output error` when
+# bootstrap runs before launchd finished tearing the old job down) is already
+# handled by start_service()'s retry loop — that is exactly why these route
+# through start_service instead of calling launchctl directly.
+# ---------------------------------------------------------------------------
+
+# Service mode for an install that already exists. Unlike write_service_files
+# (the install path) this NEVER renders a template — a stop must not rewrite
+# the plist, and a start must use whatever the install registered. Falls back
+# to nohup when the unit/plist is absent (e.g. installed with --no-start on a
+# machine with no launchd/systemd), which is the same daemon, just unmanaged.
+detect_service_mode() {
+  case "$(uname -s)" in
+    Darwin)
+      SERVICE_MODE="launchd"
+      [ -f "$DARWIN_PLIST_PATH" ] || SERVICE_MODE="nohup"
+      ;;
+    Linux)
+      if command -v systemctl >/dev/null 2>&1 && [ -f "$LINUX_UNIT_PATH" ]; then
+        SERVICE_MODE="systemd"
+      else
+        SERVICE_MODE="nohup"
+      fi
+      ;;
+    *) SERVICE_MODE="nohup" ;;
+  esac
+}
+
+require_existing_install() {
+  [ -f "${OD_HOME}/current/apps/daemon/dist/cli.js" ] \
+    || fail "Open Design chưa được cài ở ${OD_HOME} — chạy OpenDesign-Install.command trước."
+}
+
+# Node for the nohup path (launchd/systemd already have the interpreter baked
+# into the plist/unit). System Node when it matches engines, else the private
+# copy install.sh downloaded under $OD_HOME/tools.
+resolve_existing_node_bin() {
+  if node_satisfies_engine; then
+    NODE_BIN="$(command -v node)"
+    return 0
+  fi
+  for candidate in "${OD_HOME}/tools"/node-v*/bin/node; do
+    if [ -x "$candidate" ]; then
+      NODE_BIN="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_existing_port() {
+  existing_port="$(existing_config_value OD_PORT)"
+  printf '%s' "${existing_port:-$DEFAULT_PORT}"
+}
+
+run_start_command() {
+  require_existing_install
+  detect_service_mode
+  resolve_existing_node_bin \
+    || fail "không tìm thấy Node.js ${REQUIRED_NODE_MAJOR}.x — chạy lại OpenDesign-Install.command."
+  start_port="$(resolve_existing_port)"
+  phase "Khởi động Open Design"
+  start_service
+  step "Chờ daemon sẵn sàng (tối đa ${HEALTH_TIMEOUT}s)..."
+  if wait_for_health "$start_port"; then
+    ok "Open Design đang chạy trên cổng ${start_port}"
+    info "URL: http://127.0.0.1:${start_port}"
+  else
+    fail "daemon không phản hồi health check — xem log tại ${OD_HOME}/logs/"
+  fi
+}
+
+run_stop_command() {
+  require_existing_install
+  detect_service_mode
+  phase "Dừng Open Design"
+  stop_service
+  # A launchd/systemd stop can still race a detached child, and the nohup path
+  # only knows the pid it wrote — sweep anything still running from THIS
+  # install so a following --start does not hit "port already in use".
+  pkill -f "${OD_HOME}/current/apps/daemon/dist/cli.js" >/dev/null 2>&1 || true
+  ok "Open Design đã dừng."
+}
+
 # deploy/tests/host-install.test.ts sources this script with
 # OD_INSTALL_SH_TEST_SOURCE=1 to unit-test individual functions (tar safety,
 # checksum, config.env generation, rollback) without ever driving a real
 # launchd/systemd session. Every real invocation (curl | bash, bash
 # install.sh …) leaves this unset and runs normally.
 if [ "${OD_INSTALL_SH_TEST_SOURCE:-0}" != "1" ]; then
-  main
+  if [ "$OPT_STOP" = "1" ]; then
+    run_stop_command
+  elif [ "$OPT_START" = "1" ]; then
+    run_start_command
+  else
+    main
+  fi
 fi

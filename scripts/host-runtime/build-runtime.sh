@@ -383,9 +383,16 @@ if [ "$PLATFORM" = "darwin-arm64" ]; then
   mkdir -p "$MAC_CMD_STAGE"
   cp "${WORKSPACE_ROOT}/deploy/host/install.command" "${MAC_CMD_STAGE}/OpenDesign-Install.command"
   cp "${WORKSPACE_ROOT}/deploy/host/update.command" "${MAC_CMD_STAGE}/OpenDesign-Update.command"
+  # Start/Stop complete the parity with the Windows zip's four .cmd files.
+  # macOS gets them for the same reason Windows does: the alternative is
+  # asking a designer to type `launchctl bootout gui/$(id -u)/…` by hand.
+  cp "${WORKSPACE_ROOT}/deploy/host/start.command" "${MAC_CMD_STAGE}/OpenDesign-Start.command"
+  cp "${WORKSPACE_ROOT}/deploy/host/stop.command" "${MAC_CMD_STAGE}/OpenDesign-Stop.command"
   chmod +x "${MAC_CMD_STAGE}"/*.command
   rm -f "${OUT_DIR}/OpenDesign-macOS-Installer.zip"
-  (cd "$MAC_CMD_STAGE" && zip -X -q "${OUT_DIR}/OpenDesign-macOS-Installer.zip" OpenDesign-Install.command OpenDesign-Update.command)
+  (cd "$MAC_CMD_STAGE" && zip -X -q "${OUT_DIR}/OpenDesign-macOS-Installer.zip" \
+    OpenDesign-Install.command OpenDesign-Update.command \
+    OpenDesign-Start.command OpenDesign-Stop.command)
   rm -rf "$MAC_CMD_STAGE"
 fi
 

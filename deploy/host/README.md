@@ -19,8 +19,10 @@ flow, not copied verbatim from any project).
 
 1. Download [`OpenDesign-macOS-Installer.zip`](https://github.com/ducanhlaminh/open-design-vnpay/releases/latest/download/OpenDesign-macOS-Installer.zip)
    and unzip it (Safari does this automatically; in other browsers
-   double-click the zip). Inside: `OpenDesign-Install.command` and
-   `OpenDesign-Update.command`.
+   double-click the zip). Inside: `OpenDesign-Install.command`,
+   `OpenDesign-Update.command`, `OpenDesign-Start.command` and
+   `OpenDesign-Stop.command` — the same four entry points the Windows zip
+   ships.
 2. **First time only:** macOS Gatekeeper blocks a downloaded `.command`
    ("cannot be opened because it is from an unidentified developer").
    Right-click (or Control-click) `OpenDesign-Install.command` → **Open** →
@@ -30,7 +32,7 @@ flow, not copied verbatim from any project).
    install; it stays open when it finishes so the result or the actionable
    error remains visible. Press Enter to close it.
 
-Keep the two files. They do different things:
+Keep all four files. They do different things:
 
 - `OpenDesign-Install.command` = **clean install**. On a machine that already
   has Open Design it first removes the previous installation (stops the
@@ -39,6 +41,19 @@ Keep the two files. They do different things:
 - `OpenDesign-Update.command` = **in-place update** (`install.sh --update`,
   keeps `config.env`, rolls back on a failed health check). Same as the
   "Cập nhật" button in the web header and `od self-update`.
+- `OpenDesign-Start.command` = **start** an installed but stopped runtime
+  (`install.sh --start`): loads the LaunchAgent and waits for the health
+  check. Normally unnecessary — the LaunchAgent starts at login and restarts
+  on crash — so this is for after a `Stop`, or when the daemon is down.
+- `OpenDesign-Stop.command` = **stop** the running daemon
+  (`install.sh --stop`). Nothing is uninstalled and no data is touched.
+
+The terminal equivalents, if you prefer them:
+
+```bash
+bash ~/.open-design/current/install.sh --start
+bash ~/.open-design/current/install.sh --stop
+```
 
 For scripts/CI, run them with `--no-pause`.
 

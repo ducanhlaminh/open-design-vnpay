@@ -80,6 +80,8 @@ test('install.sh --help exits 0 and documents the minimum flag set', async () =>
   assert.match(stdout, /--env-file/);
   assert.match(stdout, /--no-start/);
   assert.match(stdout, /--update/);
+  assert.match(stdout, /--start/);
+  assert.match(stdout, /--stop/);
 });
 
 test('fails fast for unknown flags and flags with missing values', async () => {
@@ -1135,4 +1137,102 @@ test('resolve_archive forwards "<platform>.parts" from release.json to download_
   const block = src.slice(src.indexOf('resolve_archive() {'), src.indexOf('# Step 0 — network preflight'));
   assert.match(block, /tarball_parts="\$\(json_flat_value "\$rel_json" "\$\{PLATFORM\}\.parts"\)"/);
   assert.match(block, /download_archive "\$tarball_url" "" "\$\{tarball_parts:-0\}"/);
+});
+
+// ---------------------------------------------------------------------------
+// --start / --stop — lifecycle commands (the macOS OpenDesign-Start.command /
+// OpenDesign-Stop.command entry points, mirroring install.ps1 -Start/-Stop).
+// Argument validation and the "nothing installed" refusal run for real; the
+// service calls themselves are stubbed through the OD_INSTALL_SH_TEST_SOURCE
+// seam, so no test here ever touches a real launchctl/systemctl session.
+// ---------------------------------------------------------------------------
+test('--start / --stop reject bad combinations and refuse to run with nothing installed', async () => {
+  const tmp = await mktmp('lifecycle-args');
+  const fakeHome = join(tmp, 'home');
+  await mkdir(fakeHome, { recursive: true });
+  try {
+    // Argument validation runs BEFORE any state check, so --start --update
+    // reports the real mistake instead of "no existing install".
+    for (const [args, pattern] of [
+      [['--start', '--stop'], /mutually exclusive/],
+      [['--start', '--update'], /cannot be combined with --update/],
+      [['--stop', '--update'], /cannot be combined with --update/],
+    ] as [string[], RegExp][]) {
+      await assert.rejects(
+        execFileAsync('bash', [installScript, ...args], { env: { ...process.env, HOME: fakeHome } }),
+        (err: any) => {
+          assert.match(String(err.stderr ?? ''), pattern);
+          return true;
+        },
+      );
+    }
+
+    // No install at all → a message that names the entry point to run first,
+    // not a launchctl error.
+    for (const flag of ['--start', '--stop']) {
+      await assert.rejects(
+        execFileAsync('bash', [installScript, flag], { env: { ...process.env, HOME: fakeHome } }),
+        (err: any) => {
+          assert.match(String(err.stderr ?? ''), /chưa được cài|OpenDesign-Install\.command/);
+          return true;
+        },
+      );
+    }
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('run_start_command starts the installed release on the configured port; run_stop_command stops it', async () => {
+  const tmp = await mktmp('lifecycle-run');
+  const fakeHome = join(tmp, 'home');
+  const odHome = join(fakeHome, '.open-design');
+  const log = join(tmp, 'calls.log');
+  try {
+    // An installed tree: cli.js is what require_existing_install looks for,
+    // config.env carries the port, and tools/node-v* is the private Node the
+    // nohup path must find when the system Node does not satisfy engines.
+    await mkdir(join(odHome, 'current', 'apps', 'daemon', 'dist'), { recursive: true });
+    await writeFile(join(odHome, 'current', 'apps', 'daemon', 'dist', 'cli.js'), '// stub\n');
+    await writeFile(join(odHome, 'config.env'), 'OD_PORT=19457\nOD_DATA_DIR=/tmp/od\n');
+    const privateNode = join(odHome, 'tools', 'node-v24.9.9-darwin-arm64', 'bin');
+    await mkdir(privateNode, { recursive: true });
+    await writeFile(join(privateNode, 'node'), '#!/bin/sh\nexit 0\n');
+    await chmod(join(privateNode, 'node'), 0o755);
+
+    const harness = join(tmp, 'lifecycle-harness.sh');
+    await writeFile(
+      harness,
+      [
+        '#!/usr/bin/env bash',
+        'set -eu',
+        `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+        // Force the private-Node lookup regardless of the Node running these
+        // tests, and stub every side-effecting call.
+        'node_satisfies_engine() { return 1; }',
+        `start_service() { echo "start:\${SERVICE_MODE}:\${NODE_BIN}" >> "${log}"; }`,
+        `stop_service() { echo "stop:\${SERVICE_MODE}" >> "${log}"; }`,
+        `wait_for_health() { echo "health:$1" >> "${log}"; return 0; }`,
+        `write_service_files() { echo "RENDERED-TEMPLATE" >> "${log}"; }`,
+        'run_start_command',
+        'run_stop_command',
+      ].join('\n'),
+    );
+    await chmod(harness, 0o755);
+    await execFileAsync('bash', [harness], { env: { ...process.env, HOME: fakeHome } });
+
+    const calls = await readFile(log, 'utf8');
+    // No plist/unit on this fake machine → the unmanaged nohup path, driven
+    // with the private Node, never the system one.
+    assert.match(calls, /start:nohup:.*tools\/node-v24\.9\.9-darwin-arm64\/bin\/node/);
+    // Health is awaited on the port config.env holds, not the 7456 default.
+    assert.match(calls, /health:19457/);
+    assert.match(calls, /stop:nohup/);
+    // A lifecycle command must never rewrite the service template — that is
+    // install/update work, and rewriting it here would silently re-render a
+    // plist from a release the user did not ask to change.
+    assert.doesNotMatch(calls, /RENDERED-TEMPLATE/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 });

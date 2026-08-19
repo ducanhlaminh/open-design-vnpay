@@ -16,6 +16,8 @@ const run = promisify(execFile);
 const HOST_DIR = resolve(import.meta.dirname, '..', 'host');
 const INSTALL_CMD = join(HOST_DIR, 'install.command');
 const UPDATE_CMD = join(HOST_DIR, 'update.command');
+const START_CMD = join(HOST_DIR, 'start.command');
+const STOP_CMD = join(HOST_DIR, 'stop.command');
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'od-command-'));
@@ -52,8 +54,8 @@ async function exec(script: string, env: Record<string, string>) {
   }
 }
 
-test('install.command / update.command are executable and parse', async () => {
-  for (const f of [INSTALL_CMD, UPDATE_CMD]) {
+test('every macOS .command wrapper is executable and parses', async () => {
+  for (const f of [INSTALL_CMD, UPDATE_CMD, START_CMD, STOP_CMD]) {
     await run('bash', ['-n', f]);
     const mode = (await import('node:fs/promises')).stat(f).then((s) => s.mode & 0o111);
     assert.notEqual(await mode, 0, `${f} must be +x (a .command without the exec bit cannot be double-clicked)`);
@@ -129,6 +131,45 @@ test('update.command: existing install → bundled install.sh --update; no insta
     assert.equal(ok.code, 0, ok.stderr);
     assert.equal((await fx.calls()).trim(), 'bundled --update');
     assert.match(ok.stdout, /up to date/);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+// Start/Stop are the macOS twins of OpenDesign-Start.cmd / OpenDesign-Stop.cmd
+// (which call install.ps1 -Start / -Stop). Like update.command they never
+// download anything: they dispatch to the BUNDLED install.sh of the current
+// install, so a machine with no install must say so instead of doing nothing.
+test('start.command: existing install → bundled install.sh --start; no install → exit 1 pointing at Install', async () => {
+  const fx = await fixture();
+  try {
+    const none = await exec(START_CMD, { OD_HOME: fx.odHome });
+    assert.equal(none.code, 1);
+    assert.match(none.stdout, /not installed yet/);
+    assert.match(none.stdout, /OpenDesign-Install\.command/);
+    await fx.withInstalledCopy();
+    const ok = await exec(START_CMD, { OD_HOME: fx.odHome });
+    assert.equal(ok.code, 0, ok.stderr);
+    assert.equal((await fx.calls()).trim(), 'bundled --start');
+    assert.match(ok.stdout, /is running/);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test('stop.command: existing install → bundled install.sh --stop; failure propagates its exit code', async () => {
+  const fx = await fixture();
+  try {
+    await fx.withInstalledCopy();
+    const ok = await exec(STOP_CMD, { OD_HOME: fx.odHome });
+    assert.equal(ok.code, 0, ok.stderr);
+    assert.equal((await fx.calls()).trim(), 'bundled --stop');
+    assert.match(ok.stdout, /is stopped/);
+
+    await writeFile(join(fx.odHome, 'current', 'install.sh'), '#!/bin/bash\nexit 4\n');
+    const bad = await exec(STOP_CMD, { OD_HOME: fx.odHome });
+    assert.equal(bad.code, 4);
+    assert.match(bad.stdout, /could not be stopped/i);
   } finally {
     await fx.cleanup();
   }
