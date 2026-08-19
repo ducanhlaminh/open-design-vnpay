@@ -435,6 +435,18 @@ jobs:
           new_health="$(curl -fsS http://127.0.0.1:7456/api/health)"
           echo "[ok] launchctl kickstart restarted the daemon, health: $new_health"
 
+      # When the health/PID checks above fail, the daemon's own log is the
+      # only place the cause lives (a crash after the first healthy answer,
+      # a launchd throttle, a port clash) -- print it before teardown wipes it.
+      - name: Dump daemon logs + launchd state (on failure)
+        if: failure()
+        run: |
+          for f in "$HOME/.open-design/logs/open-design.out.log" "$HOME/.open-design/logs/open-design.err.log"; do
+            echo "===== $f (last 200 lines)"; tail -n 200 "$f" 2>/dev/null || echo "(missing)"
+          done
+          echo "===== launchctl print"; launchctl print "gui/$(id -u)/com.vnpay.open-design" 2>&1 | head -80 || true
+          echo "===== listeners on 7456"; lsof -nP -iTCP:7456 -sTCP:LISTEN 2>/dev/null || echo "(none)"
+
       # install.sh has no --uninstall flag (install.ps1 has -Uninstall;
       # this asymmetry is tracked, not accidental -- see deploy/host/README.md
       # Uninstall section). This runs the exact manual steps README
