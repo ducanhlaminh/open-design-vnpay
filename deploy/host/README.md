@@ -15,7 +15,37 @@ flow, not copied verbatim from any project).
 
 ## Install (macOS)
 
-### Recommended: download and double-click
+### Recommended: one-line Terminal install (macOS / Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.sh -o install.sh
+bash install.sh
+```
+
+Linux has no double-click entry point — this is the only way to install
+there. On macOS this is also the recommended path, for a specific reason:
+macOS attaches `com.apple.quarantine` only to files a browser downloads —
+never to files a script/Terminal creates. So this install step also
+generates 4 local `.command` launchers under `~/Applications/Open Design/`
+(`OpenDesign-Install.command`, `OpenDesign-Update.command`,
+`OpenDesign-Start.command`, `OpenDesign-Stop.command`), copied fresh from the
+release you just installed. From then on, double-click any of them straight
+from Finder/Launchpad — no Gatekeeper "Open Anyway" prompt, ever. (Every
+`--update` afterwards — from the web "Cập nhật" button, `od self-update`, or
+`OpenDesign-Update.command` itself — regenerates the same 4 files, so they
+never go stale.)
+
+Without `--archive` / `--release-url`, the script downloads the latest
+tagged release of this repo (immutable — pinned to whatever release was
+"latest" at install time, never to a mutable branch) and picks the tarball
+matching your `uname -s`/`uname -m` (`darwin-arm64`, `darwin-x64`, or
+`linux-x64`; anything else is a clear error).
+
+### Alternative (macOS): download the zip and double-click
+
+We don't sign/notarize the app yet (no Apple Developer ID), so this path
+does hit Gatekeeper once — the Terminal install above avoids that entirely
+because its launchers are generated locally, never downloaded.
 
 1. Download [`OpenDesign-macOS-Installer.zip`](https://github.com/ducanhlaminh/open-design-vnpay/releases/latest/download/OpenDesign-macOS-Installer.zip)
    and unzip it (Safari does this automatically; in other browsers
@@ -23,11 +53,12 @@ flow, not copied verbatim from any project).
    `OpenDesign-Update.command`, `OpenDesign-Start.command` and
    `OpenDesign-Stop.command` — the same four entry points the Windows zip
    ships.
-2. **First time only:** macOS Gatekeeper blocks a downloaded `.command`
-   ("cannot be opened because it is from an unidentified developer").
-   Right-click (or Control-click) `OpenDesign-Install.command` → **Open** →
-   **Open** again. After that a plain double-click works. (No `sudo`, no
-   admin account — everything installs under `~/.open-design`.)
+2. **First time only:** because these 4 files traveled inside a browser
+   download, they DO carry `com.apple.quarantine`, and macOS Gatekeeper
+   blocks them ("cannot be opened because it is from an unidentified
+   developer"). Right-click (or Control-click) `OpenDesign-Install.command`
+   → **Open** → **Open** again. After that a plain double-click works. (No
+   `sudo`, no admin account — everything installs under `~/.open-design`.)
 3. A Terminal window opens and shows the same 6 steps as the terminal
    install; it stays open when it finishes so the result or the actionable
    error remains visible. Press Enter to close it.
@@ -59,21 +90,6 @@ For scripts/CI, run them with `--no-pause`.
 
 The zip is the delivery format on purpose: a bare `.command` fetched over
 HTTP loses its executable bit and cannot be double-clicked; a zip keeps it.
-
-### Terminal alternative (macOS / Linux)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.sh -o install.sh
-bash install.sh
-```
-
-Linux has no double-click entry point — use the two lines above.
-
-Without `--archive` / `--release-url`, the script downloads the latest
-tagged release of this repo (immutable — pinned to whatever release was
-"latest" at install time, never to a mutable branch) and picks the tarball
-matching your `uname -s`/`uname -m` (`darwin-arm64`, `darwin-x64`, or
-`linux-x64`; anything else is a clear error).
 
 ## Install (Windows)
 

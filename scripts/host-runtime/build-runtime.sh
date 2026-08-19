@@ -334,6 +334,26 @@ cp "${SCRIPT_DIR}/service/open-design.service.in" "${STAGE_DIR}/runtime/service/
 cp "${WORKSPACE_ROOT}/deploy/host/install.sh" "${STAGE_DIR}/install.sh"
 chmod +x "${STAGE_DIR}/install.sh"
 
+# Darwin-only: stage the same 4 macOS double-click launchers INSIDE the
+# tarball too (runtime/launchers/), so install.sh's install_mac_launchers()
+# can copy them out onto disk as freshly-created, unquarantined files after
+# extraction -- com.apple.quarantine only ever attaches to a browser
+# download, never to a file a script copies from an already-verified local
+# payload. deploy/host/*.command stays the single source of truth; this is a
+# copy for the payload, not a fork -- OpenDesign-macOS-Installer.zip below
+# still ships the same 4 files for the browser-download path, which DOES
+# pick up quarantine (unavoidably, that's the part this feature works around).
+case "$PLATFORM" in
+  darwin-*)
+    mkdir -p "${STAGE_DIR}/runtime/launchers"
+    cp "${WORKSPACE_ROOT}/deploy/host/install.command" "${STAGE_DIR}/runtime/launchers/OpenDesign-Install.command"
+    cp "${WORKSPACE_ROOT}/deploy/host/update.command" "${STAGE_DIR}/runtime/launchers/OpenDesign-Update.command"
+    cp "${WORKSPACE_ROOT}/deploy/host/start.command" "${STAGE_DIR}/runtime/launchers/OpenDesign-Start.command"
+    cp "${WORKSPACE_ROOT}/deploy/host/stop.command" "${STAGE_DIR}/runtime/launchers/OpenDesign-Stop.command"
+    chmod +x "${STAGE_DIR}/runtime/launchers"/*.command
+    ;;
+esac
+
 # win32-x64 also gets a self-contained copy of install.ps1 (its --update
 # entrypoint is `powershell -File <current>/install.ps1 -Update`, mirroring
 # install.sh's own bundled copy above). The unconditional install.sh copy

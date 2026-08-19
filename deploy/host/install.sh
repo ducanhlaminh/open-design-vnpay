@@ -1089,6 +1089,56 @@ step5_start_and_health_check() {
 }
 
 # ---------------------------------------------------------------------------
+# macOS-only: regenerate the 4 local launcher .command files (CÁCH B, no
+# Developer ID / notarization yet). macOS attaches com.apple.quarantine to a
+# file ONLY when a browser (or anything using the Quarantine API, e.g.
+# curl'd-then-unzipped-by-Safari) writes it -- never to a file a script
+# copies from an already-downloaded-and-verified payload like this install's
+# own extracted release. So every successful install/update regenerates
+# fresh, unquarantined copies under ~/Applications/Open Design/ (a standard
+# user-writable location Finder/Launchpad already show) from the payload
+# that was just installed/updated. From then on the user can double-click
+# any of them with no Gatekeeper "Open Anyway" prompt -- unlike the 4
+# .command files inside OpenDesign-macOS-Installer.zip, which DO inherit
+# quarantine from the browser download of the zip itself.
+#
+# Entirely best-effort: a missing runtime/launchers/ (older tarball built
+# before this feature) or a copy/chmod failure only warns, it never fails
+# the install/update. --start / --stop intentionally do NOT call this --
+# they stay zero-side-effect, per their own docblock above.
+install_mac_launchers() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  src_dir="${OD_HOME}/current/runtime/launchers"
+  if [ ! -d "$src_dir" ]; then
+    warn "Không thấy runtime/launchers trong bản cài này (${src_dir}) — bỏ qua tạo launcher cục bộ."
+    return 0
+  fi
+  dest_dir="${HOME}/Applications/Open Design"
+  mkdir -p "$dest_dir" 2>/dev/null || { warn "không tạo được ${dest_dir} — bỏ qua tạo launcher cục bộ"; return 0; }
+  found=0
+  for src in "$src_dir"/*.command; do
+    [ -e "$src" ] || continue
+    found=1
+    name="$(basename "$src")"
+    if cp "$src" "${dest_dir}/${name}" 2>/dev/null; then
+      chmod +x "${dest_dir}/${name}" 2>/dev/null || true
+      # Best-effort self-heal only: a file this loop just copied never has
+      # the flag in the first place, so this only matters if the user
+      # previously overwrote it with a quarantined copy from elsewhere.
+      xattr -d com.apple.quarantine "${dest_dir}/${name}" 2>/dev/null || true
+    else
+      warn "không copy được ${name} vào ${dest_dir}"
+    fi
+  done
+  if [ "$found" = "0" ]; then
+    warn "runtime/launchers trống trong bản cài này (${src_dir}) — bỏ qua tạo launcher cục bộ."
+    return 0
+  fi
+  ok "Launcher cục bộ: ${dest_dir}"
+  info "Double-click các file trên — không bị Gatekeeper hỏi \"Open Anyway\" (file sinh cục bộ, không tải qua trình duyệt)."
+}
+
+# ---------------------------------------------------------------------------
 # Step 6/6 — Claude CLI + login probe + final checklist
 # ---------------------------------------------------------------------------
 
@@ -1215,6 +1265,7 @@ step6_claude_and_summary() {
   printf "  Update:    bash %s/install.sh --update\n" "$OD_HOME"
   printf "  Uninstall/rollback: see deploy/host/README.md\n"
   printf "\n"
+  install_mac_launchers
 }
 
 # ---------------------------------------------------------------------------
@@ -1223,6 +1274,7 @@ step6_claude_and_summary() {
 print_update_summary() {
   if [ "$OPT_NO_START" = "1" ]; then
     ok "Update installed (not started — --no-start)."
+    install_mac_launchers
     return
   fi
   # /api/version returns {"version":{...}} — parsed with Node (already
@@ -1234,6 +1286,7 @@ print_update_summary() {
       catch { console.log("unknown"); }
     });' 2>/dev/null || echo unknown)"
   ok "Updated. Running /api/version: ${printed}"
+  install_mac_launchers
 }
 
 # ---------------------------------------------------------------------------
