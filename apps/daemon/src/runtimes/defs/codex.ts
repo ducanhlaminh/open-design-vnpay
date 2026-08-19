@@ -1,8 +1,20 @@
 import { agentCapabilities } from '../capabilities.js';
-import { DEFAULT_MODEL_OPTION, clampCodexReasoning } from './shared.js';
+import { DEFAULT_MODEL_OPTION } from './shared.js';
 import type { RuntimeModelOption } from '../types.js';
 import type { RuntimeAgentDef } from '../types.js';
 
+// Product decision 19/08/2026: Codex CLI runs pinned to Luna at the
+// highest reasoning effort Luna supports, always — not a user choice, not
+// read from stored config. `codex debug models` on the installed CLI lists
+// `gpt-5.6-luna` ("GPT-5.6-Luna") with effort levels
+// low/medium/high/xhigh/max; `max` is the highest. To change the pin,
+// change these two constants (and nothing else).
+export const CODEX_FIXED_MODEL = 'gpt-5.6-luna';
+export const CODEX_FIXED_REASONING = 'max';
+
+// Retained even though the def below no longer wires up `listModels` (no
+// more live `codex debug models` probing now that the model is fixed) —
+// still exported in case another caller / test wants the raw parser.
 export function parseCodexDebugModels(stdout: string): RuntimeModelOption[] | null {
   let parsed: unknown;
   try {
@@ -72,35 +84,11 @@ export const codexAgentDef = {
       '--profile-v2 ': 'profileFlagIsV2',
       '--profile <': 'profileFlag',
     },
-    // Codex exposes its installed model catalog through `debug models` on
-    // recent CLIs. Older builds fall back to these static hints.
-    listModels: {
-      args: ['debug', 'models'],
-      parse: parseCodexDebugModels,
-      timeoutMs: 5000,
-    },
-    fallbackModels: [
-      DEFAULT_MODEL_OPTION,
-      { id: 'gpt-5.5', label: 'gpt-5.5' },
-      { id: 'gpt-5.4', label: 'gpt-5.4' },
-      { id: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
-      { id: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
-      { id: 'gpt-5.1', label: 'gpt-5.1' },
-      { id: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
-      { id: 'gpt-5-codex', label: 'gpt-5-codex' },
-      { id: 'gpt-5', label: 'gpt-5' },
-      { id: 'o3', label: 'o3' },
-      { id: 'o4-mini', label: 'o4-mini' },
-    ],
-    reasoningOptions: [
-      { id: 'default', label: 'Default' },
-      { id: 'none', label: 'None' },
-      { id: 'minimal', label: 'Minimal' },
-      { id: 'low', label: 'Low' },
-      { id: 'medium', label: 'Medium' },
-      { id: 'high', label: 'High' },
-      { id: 'xhigh', label: 'XHigh' },
-    ],
+    // Model is fixed to Luna (see CODEX_FIXED_MODEL above) — no live
+    // `codex debug models` probing and no picker beyond the one entry
+    // below. `parseCodexDebugModels` above stays exported but unused here.
+    fallbackModels: [{ id: CODEX_FIXED_MODEL, label: 'GPT-5.6-Luna' }],
+    reasoningOptions: [{ id: CODEX_FIXED_REASONING, label: 'Max' }],
     // Prompt is delivered via stdin pipe (gated by `promptViaStdin: true`
     // below) to avoid Windows `spawn ENAMETOOLONG` while keeping Codex on
     // its structured JSON stream. Recent Codex CLI versions reject a bare
@@ -158,6 +146,14 @@ export const codexAgentDef = {
       if (runtimeContext.cwd) {
         args.push('-C', runtimeContext.cwd);
       }
+      // Model + reasoning are pinned (CODEX_FIXED_MODEL /
+      // CODEX_FIXED_REASONING above) — always pushed, regardless of
+      // `options.model` / `options.reasoning` (including a leftover
+      // 'default' or a stale value from old stored config). Codex accepts
+      // `-c key=value` config overrides; reasoning effort is exposed as
+      // `model_reasoning_effort`.
+      args.push('--model', CODEX_FIXED_MODEL);
+      args.push('-c', `model_reasoning_effort="${CODEX_FIXED_REASONING}"`);
       // Layer OD's per-run MCP profile on top of the user's base
       // ~/.codex/config.toml. The daemon writes the file at
       // `$CODEX_HOME/<name>.config.toml` BEFORE buildArgs is called
@@ -181,15 +177,6 @@ export const codexAgentDef = {
       );
       for (const d of dirs) {
         args.push('--add-dir', d);
-      }
-      if (options.model && options.model !== 'default') {
-        args.push('--model', options.model);
-      }
-      if (options.reasoning && options.reasoning !== 'default') {
-        const effort = clampCodexReasoning(options.model, options.reasoning);
-        // Codex accepts `-c key=value` config overrides; reasoning effort
-        // is exposed as `model_reasoning_effort`.
-        args.push('-c', `model_reasoning_effort="${effort}"`);
       }
       return args;
     },

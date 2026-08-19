@@ -3,6 +3,7 @@ import {
   AGENT_DEFS, assert, chmodSync, codex, cursorAgent, detectAgents, join, mkdtempSync, rmSync, tmpdir, withEnvSnapshot, withPlatform, writeFileSync,
 } from './helpers/test-helpers.js';
 import { readLocalAgentProfileDefs } from '../../src/runtimes/registry.js';
+import { parseCodexDebugModels } from '../../src/runtimes/defs/codex.js';
 
 test('AGENT_DEFS ids are unique', () => {
   const ids = AGENT_DEFS.map((a) => a.id);
@@ -185,72 +186,35 @@ test('codex args keep plugins enabled when OD_CODEX_DISABLE_PLUGINS is not 1', (
   });
 });
 
-test('codex model picker includes current OpenAI choices in priority order', async () => {
-  const expectedModels = [
-    'default',
-    'gpt-5.5',
-    'gpt-5.4',
-    'gpt-5.4-mini',
-    'gpt-5.3-codex',
-    'gpt-5.1',
-    'gpt-5.1-codex-mini',
-    'gpt-5-codex',
-    'gpt-5',
-    'o3',
-    'o4-mini',
-  ];
-
-  assert.deepEqual(codex.fallbackModels.map((m) => m.id), expectedModels);
-  assert.ok(codex.reasoningOptions, 'codex must define reasoningOptions');
-  assert.deepEqual(codex.reasoningOptions.map((o) => o.id), [
-    'default',
-    'none',
-    'minimal',
-    'low',
-    'medium',
-    'high',
-    'xhigh',
+// Product decision 19/08/2026: Codex CLI is pinned to Luna at max
+// reasoning effort, always — the picker collapses to that single choice on
+// both axes and there is no live model probing left to detect.
+test('codex model picker is fixed to Luna at max reasoning (no user choice)', () => {
+  assert.deepEqual(codex.fallbackModels, [
+    { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
   ]);
+  assert.ok(codex.reasoningOptions, 'codex must define reasoningOptions');
+  assert.deepEqual(codex.reasoningOptions, [{ id: 'max', label: 'Max' }]);
+  assert.equal(codex.listModels, undefined, 'codex must not probe `debug models` anymore');
 
   const args = codex.buildArgs(
     '',
     [],
     [],
-    { model: 'gpt-5.5', reasoning: 'xhigh' },
+    {},
     { cwd: '/tmp/od-project' },
   );
   assert.ok(args.includes('--model'));
-  assert.ok(args.includes('gpt-5.5'));
-  assert.ok(args.includes('model_reasoning_effort="xhigh"'));
-
-  const dir = mkdtempSync(join(tmpdir(), 'od-agents-codex-models-'));
-  try {
-    await withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], async () => {
-      const codexBin = join(dir, 'codex');
-      writeFileSync(
-        codexBin,
-        '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex 1.0.0"; exit 0; fi\nexit 0\n',
-      );
-      chmodSync(codexBin, 0o755);
-      process.env.OD_AGENT_HOME = dir;
-      process.env.PATH = dir;
-
-      const agents = await detectAgents();
-      const detected = agents.find((agent) => agent.id === 'codex');
-
-      assert.ok(detected);
-      assert.equal(detected.available, true);
-      assert.equal(detected.version, 'codex 1.0.0');
-      assert.deepEqual(detected.models.map((m: { id: string }) => m.id), expectedModels);
-    });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  assert.equal(args[args.indexOf('--model') + 1], 'gpt-5.6-luna');
+  assert.ok(args.includes('model_reasoning_effort="max"'));
 });
 
-test('codex parses live model catalog from debug models JSON', () => {
-  assert.ok(codex.listModels, 'codex must define live model discovery');
-  const parsed = codex.listModels.parse(JSON.stringify({
+// `codex.listModels` was removed from the def (fixed-model product
+// decision, 19/08/2026) so nothing wires this parser up anymore, but it
+// stays exported from codex.ts — exercise it directly here so the parsing
+// logic itself doesn't silently rot.
+test('parseCodexDebugModels parses live model catalog JSON (parser retained though unused by the def)', () => {
+  const parsed = parseCodexDebugModels(JSON.stringify({
     models: [
       {
         slug: 'gpt-6-codex',
@@ -277,7 +241,11 @@ test('codex parses live model catalog from debug models JSON', () => {
   ]);
 });
 
-test('codex detection surfaces live debug models separately from fallback models', async () => {
+// codex.listModels was intentionally removed (fixed-model product decision,
+// 19/08/2026): detection.ts's fetchModels() falls back to def.fallbackModels
+// whenever `def.listModels` is absent, so a CLI that still answers
+// `debug models` must no longer be probed live for codex.
+test('codex detection no longer probes live "debug models" — always resolves to the fixed fallback', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'od-agents-codex-live-models-'));
   try {
     await withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], async () => {
@@ -302,10 +270,9 @@ exit 2
 
       assert.ok(detected);
       assert.equal(detected.available, true);
-      assert.equal(detected.modelsSource, 'live');
+      assert.equal(detected.modelsSource, 'fallback');
       assert.deepEqual(detected.models.map((m: { id: string }) => m.id), [
-        'default',
-        'gpt-6-codex',
+        'gpt-5.6-luna',
       ]);
     });
   } finally {
@@ -313,11 +280,11 @@ exit 2
   }
 });
 
-test('codex picker includes gpt-5.1 model family', () => {
+test('codex picker is fixed to the Luna model only (no user-selectable family)', () => {
   const pickerModels = new Set(codex.fallbackModels.map((model) => model.id));
 
-  assert.equal(pickerModels.has('gpt-5.1'), true);
-  assert.equal(pickerModels.has('gpt-5.1-codex-mini'), true);
+  assert.equal(pickerModels.size, 1);
+  assert.equal(pickerModels.has('gpt-5.6-luna'), true);
 });
 
 test('cursor-agent parses live model ids separately from display labels', () => {
