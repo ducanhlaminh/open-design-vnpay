@@ -14,11 +14,16 @@
 // failed status, and the hook merges it in. Deterministic (non-agent)
 // failures simply report without it.
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { PipelineErrorReport } from '@open-design/contracts';
+import type {
+  ErrorReportAgentContext,
+  ErrorReportEnvContext,
+  ErrorReportStageContext,
+  PipelineErrorReport,
+} from '@open-design/contracts';
 import { PIPELINE_ERROR_REPORTS_FOLDER, PIPELINE_ERROR_REPORTS_PREFIX } from '@open-design/contracts';
 import { redactText } from '@open-design/diagnostics';
 import { APP_KEYS, OPEN_DESIGN_SIDECAR_CONTRACT, SIDECAR_MODES, type SidecarStamp } from '@open-design/sidecar-proto';
@@ -37,6 +42,14 @@ const OUTBOX_MAX_FILES = 200;
 const FLUSH_DELAY_MS = 30_000;
 const CONTEXT_TTL_MS = 60_000;
 
+function safe<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
+
 export interface StageFailureContext {
   runId?: string;
   agentId?: string;
@@ -51,6 +64,13 @@ export interface StageFailureContext {
   stderrTail?: string | null;
   stdoutTail?: string | null;
   workflowId?: string | null;
+  /** Kickoff prompt size + skill of the run (report.agent.prompt). */
+  promptChars?: number | null;
+  skillId?: string | null;
+  /** Structured per-item validation failures (fan-out stages). */
+  validation?: Array<{ item: string; code: string; detail: string }> | null;
+  /** Directory whose file listing (names/sizes only) goes into the report. */
+  outputsDir?: string | null;
 }
 
 const pendingContext = new Map<string, { at: number; ctx: StageFailureContext }>();
@@ -219,6 +239,21 @@ export interface ErrorReporterOptions {
   subRunLookup?: (projectId: string, conversationId: string) => SubRunSnapshot | null;
   /** Workflow dir of a stage (fan-out fallback). */
   workflowIdOf?: (pipelineId: string) => string | null;
+  /** Last assistant message of a conversation (content + raw events_json)
+   *  → report.agent.transcriptTail / tools / usage. */
+  lastAssistantMessage?: (conversationId: string) => { content: string | null; eventsJson: string | null } | null;
+  /** The CLI as the Local CLI panel sees it → report.agent.cli. */
+  agentInfo?: (agentId: string) => Promise<ErrorReportAgentContext['cli']>;
+  /** Subscription quota snapshot → report.agent.quota. */
+  quota?: (agentId: string) => Promise<ErrorReportAgentContext['quota']>;
+  /** Project root on disk (path length + disk-free probe). */
+  projectRoot?: (projectId: string) => string | null;
+  /** URLs to probe for reachability when a report is built. */
+  connectivityTargets?: (agentId: string | null) => string[];
+  activeRuns?: () => number | null;
+  sandboxEnabled?: () => boolean | null;
+  /** Injectable fetch for the connectivity probes (tests). */
+  fetchImpl?: typeof fetch;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -230,6 +265,10 @@ export type FailureInfo = {
   lastRunId: string | undefined;
   /** Fan-out stages: per-task conversations of the failing run. */
   subConversations?: Array<{ id: string; title: string; status: string }> | undefined;
+  /** Conversation of the stage's last run (single-conversation stages). */
+  conversationId?: string | undefined;
+  /** Report id of the previous failure of the same stage, if any. */
+  previousReportId?: string | undefined;
 };
 
 /** What the reporter needs to know about one sub-run of a fan-out stage —
@@ -320,6 +359,273 @@ export function fanoutFailureDetail(
   const head = failed[0];
   const first = head ? `${head.name}: ${head.errors[0] ?? 'không rõ lý do'}` : 'không rõ lý do';
   return { list: lines.join('\n') || '(không có chi tiết lỗi)', first };
+}
+
+// ── Additive context helpers (report.agent / .stage / .env / fingerprint) ──
+// All deterministic: DB rows, process/os/fs reads, a few HEAD probes. No LLM.
+
+const TRANSCRIPT_TAIL_CHARS = 3000;
+const TOOL_FAILURES_MAX = 10;
+const OUTPUTS_LISTING_MAX_ENTRIES = 150;
+const OUTPUTS_LISTING_MAX_DEPTH = 4;
+const CONNECTIVITY_TIMEOUT_MS = 3000;
+const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', '.turbo', '.odhistory']);
+
+/** Stable tag for a daemon-side validation error string (docs-review /
+ *  docs-comp / prd-review). Pattern-matched on the daemon's OWN messages, so
+ *  it is exact for known shapes and `OTHER` for anything else. */
+export function classifyValidationError(text: string): string {
+  const t = text.toLowerCase();
+  if (/^files:/.test(t)) return 'EVIDENCE';
+  if (/agent run kết thúc|agent run ended|trạng thái "failed"|trạng thái "canceled"/.test(t)) return 'AGENT_RUN';
+  if (/không cắt được/.test(t)) return 'SLICE';
+  if (/không ghép lại được/.test(t)) return 'REBUILD';
+  if (/không đọc được output|không có review\//.test(t)) return 'OUTPUT_MISSING';
+  if (/json/.test(t)) return 'INVALID_JSON';
+  if (/\[rà soát/.test(t)) return 'MARKER_LEFT';
+  if (/rule[_ ]?id|tiêu chí|criteria/.test(t)) return 'RULE_ID';
+  if (/neo|anchor/.test(t)) return 'NOTE_ANCHOR';
+  if (/không khớp|mismatch|diff/.test(t)) return 'DIFF_MISMATCH';
+  if (/schema|thiếu trường|missing field/.test(t)) return 'SCHEMA';
+  return 'OTHER';
+}
+
+/** Structured validation list from the same items fanoutFailureDetail takes. */
+export function structuredValidation(
+  items: Array<{ name: string; errors: string[] }>,
+  limit = 60,
+): Array<{ item: string; code: string; detail: string }> {
+  const out: Array<{ item: string; code: string; detail: string }> = [];
+  for (const it of items) {
+    for (const err of it.errors) {
+      if (out.length >= limit) return out;
+      out.push({ item: it.name, code: classifyValidationError(err), detail: err.length > 400 ? `${err.slice(0, 400)}…` : err });
+    }
+  }
+  return out;
+}
+
+/** Transcript tail + tool summary + token usage from one persisted assistant
+ *  message (messages.content + messages.events_json). */
+export function summarizeAssistantMessage(
+  row: { content: string | null; eventsJson: string | null } | null,
+): Pick<ErrorReportAgentContext, 'transcriptTail' | 'tools' | 'usage'> {
+  if (!row) return { transcriptTail: null, tools: null, usage: null };
+  let events: Array<Record<string, unknown>> = [];
+  if (row.eventsJson) {
+    try {
+      const parsed = JSON.parse(row.eventsJson) as unknown;
+      if (Array.isArray(parsed)) events = parsed.filter((e): e is Record<string, unknown> => Boolean(e) && typeof e === 'object');
+    } catch {
+      events = [];
+    }
+  }
+  // Text: prefer the persisted content (already coalesced); fall back to
+  // concatenating text events.
+  let text = typeof row.content === 'string' ? row.content : '';
+  if (!text.trim()) text = events.filter((e) => e.kind === 'text' && typeof e.text === 'string').map((e) => e.text as string).join('');
+  text = text.trim();
+  const transcriptTail = text ? redactSecrets(redactText(text.length > TRANSCRIPT_TAIL_CHARS ? `…${text.slice(-TRANSCRIPT_TAIL_CHARS)}` : text)) : null;
+
+  const uses = new Map<string, string>();
+  let total = 0;
+  let failed = 0;
+  let lastTool: string | null = null;
+  const failures: string[] = [];
+  const usageAcc = { seen: false, inputTokens: null as number | null, outputTokens: null as number | null, costUsd: null as number | null };
+  for (const e of events) {
+    if (e.kind === 'tool_use') {
+      total += 1;
+      const name = typeof e.name === 'string' ? e.name : '?';
+      lastTool = name;
+      if (typeof e.id === 'string') uses.set(e.id, name);
+    } else if (e.kind === 'tool_result') {
+      if (e.isError) {
+        failed += 1;
+        if (failures.length < TOOL_FAILURES_MAX) {
+          const name = (typeof e.toolUseId === 'string' && uses.get(e.toolUseId)) || '?';
+          const content = typeof e.content === 'string' ? e.content : String(e.content ?? '');
+          const first = content.split('\n').find((l) => l.trim())?.trim() ?? '';
+          failures.push(redactSecrets(`${name}: ${first.length > 200 ? `${first.slice(0, 200)}…` : first}`));
+        }
+      }
+    } else if (e.kind === 'usage') {
+      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+      usageAcc.seen = true;
+      usageAcc.inputTokens = num(e.inputTokens) ?? usageAcc.inputTokens;
+      usageAcc.outputTokens = num(e.outputTokens) ?? usageAcc.outputTokens;
+      usageAcc.costUsd = num(e.costUsd) ?? usageAcc.costUsd;
+    }
+  }
+  const tools = events.length ? { total, failed, lastTool, failures } : null;
+  const usage = usageAcc.seen ? { inputTokens: usageAcc.inputTokens, outputTokens: usageAcc.outputTokens, costUsd: usageAcc.costUsd } : null;
+  return { transcriptTail, tools, usage };
+}
+
+/** "relative/path  size  mtime" lines under `dir` (names only). Depth- and
+ *  count-capped; skips node_modules/.git-like dirs. */
+export async function listOutputsDir(
+  dir: string,
+  opts: { maxEntries?: number; maxDepth?: number } = {},
+): Promise<string | null> {
+  const maxEntries = opts.maxEntries ?? OUTPUTS_LISTING_MAX_ENTRIES;
+  const maxDepth = opts.maxDepth ?? OUTPUTS_LISTING_MAX_DEPTH;
+  const lines: string[] = [];
+  let truncated = false;
+  const walk = async (abs: string, rel: string, depth: number): Promise<void> => {
+    if (truncated) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const ent of entries) {
+      if (truncated) return;
+      const childRel = rel ? `${rel}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) {
+        if (SKIP_DIRS.has(ent.name)) continue;
+        if (depth + 1 >= maxDepth) {
+          lines.push(`${childRel}/  (…)`);
+        } else {
+          await walk(path.join(abs, ent.name), childRel, depth + 1);
+        }
+      } else {
+        let size = 0;
+        let mtime = '';
+        try {
+          const st = await fs.promises.stat(path.join(abs, ent.name));
+          size = st.size;
+          mtime = st.mtime.toISOString();
+        } catch {
+          /* listing is best-effort */
+        }
+        lines.push(`${childRel}  ${size}B  ${mtime}`);
+      }
+      if (lines.length >= maxEntries) {
+        truncated = true;
+        lines.push('… (truncated)');
+      }
+    }
+  };
+  try {
+    const st = await fs.promises.stat(dir);
+    if (!st.isDirectory()) return null;
+  } catch {
+    return `(missing) ${dir}`;
+  }
+  await walk(dir, '', 0);
+  return lines.length ? lines.join('\n') : '(empty)';
+}
+
+export function taskCounts(
+  tasks: Array<{ status: string }> | undefined,
+): ErrorReportStageContext['tasks'] {
+  if (!tasks || tasks.length === 0) return null;
+  const counts = { total: tasks.length, queued: 0, running: 0, succeeded: 0, failed: 0 };
+  for (const t of tasks) {
+    if (t.status === 'queued') counts.queued += 1;
+    else if (t.status === 'running') counts.running += 1;
+    else if (t.status === 'succeeded') counts.succeeded += 1;
+    else if (t.status === 'failed') counts.failed += 1;
+  }
+  return counts;
+}
+
+/** HEAD each target with a short timeout; result is a status code, a
+ *  network error code, or "timeout". Never throws. */
+export async function probeConnectivity(
+  targets: string[],
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = CONNECTIVITY_TIMEOUT_MS,
+): Promise<ErrorReportEnvContext['connectivity']> {
+  const unique = [...new Set(targets.filter((t) => /^https?:\/\//.test(t)))];
+  if (unique.length === 0) return null;
+  return Promise.all(
+    unique.map(async (target) => {
+      const started = Date.now();
+      try {
+        const res = await fetchImpl(target, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
+        return { target, result: `HTTP ${res.status}`, ms: Date.now() - started };
+      } catch (error) {
+        const err = error as { name?: string; code?: string; cause?: { code?: string; errors?: Array<{ code?: string }> }; message?: string };
+        // undici wraps ECONNREFUSED & co. in `cause` (an AggregateError when
+        // several addresses were tried) — dig the first real code out.
+        const code =
+          err?.cause?.code ??
+          err?.cause?.errors?.find((e) => e?.code)?.code ??
+          err?.code ??
+          (err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : null);
+        return { target, result: code ?? (err?.message ?? 'error').slice(0, 80), ms: Date.now() - started };
+      }
+    }),
+  );
+}
+
+export async function collectEnv(opts: {
+  projectRoot: string | null;
+  activeRuns: number | null;
+  sandboxEnabled: boolean | null;
+  connectivity: ErrorReportEnvContext['connectivity'];
+  env?: NodeJS.ProcessEnv;
+}): Promise<ErrorReportEnvContext> {
+  const env = opts.env ?? process.env;
+  let diskFreeBytes: number | null = null;
+  const statfs = (fs.promises as { statfs?: (p: string) => Promise<{ bavail: number | bigint; bsize: number | bigint }> }).statfs;
+  if (statfs) {
+    try {
+      const st = await statfs(opts.projectRoot ?? os.homedir());
+      diskFreeBytes = Number(st.bavail) * Number(st.bsize);
+    } catch {
+      diskFreeBytes = null;
+    }
+  }
+  let locale: string | null = null;
+  let timezone: string | null = null;
+  try {
+    const dtf = Intl.DateTimeFormat().resolvedOptions();
+    locale = dtf.locale ?? null;
+    timezone = dtf.timeZone ?? null;
+  } catch {
+    /* Intl unavailable */
+  }
+  return {
+    diskFreeBytes,
+    memFreeBytes: os.freemem(),
+    memTotalBytes: os.totalmem(),
+    projectRootLength: opts.projectRoot ? opts.projectRoot.length : null,
+    locale,
+    timezone,
+    daemonUptimeMs: Math.round(process.uptime() * 1000),
+    activeRuns: opts.activeRuns,
+    proxy: Boolean(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy),
+    extraCaCerts: Boolean(env.NODE_EXTRA_CA_CERTS),
+    sandboxEnabled: opts.sandboxEnabled,
+    connectivity: opts.connectivity,
+  };
+}
+
+/** sha1(stage | cause) — cause = first validation code, else errorCode,
+ *  else the error's first line with numbers/quotes/paths normalized. */
+export function computeFingerprint(
+  stageId: string,
+  cause: { validation?: Array<{ code: string }> | null; errorCode?: string | null; error: string },
+): string {
+  let key: string;
+  if (cause.validation && cause.validation.length > 0) {
+    key = `validation:${[...new Set(cause.validation.map((v) => v.code))].sort().join('+')}`;
+  } else if (cause.errorCode) {
+    key = `code:${cause.errorCode}`;
+  } else {
+    key = `error:${(cause.error.split('\n')[0] ?? '')
+      .toLowerCase()
+      .replace(/["'`“”‘’].*?["'`“”‘’]/g, '"…"')
+      .replace(/[a-z]:\\[^\s]+|\/[^\s]+/g, '<path>')
+      .replace(/\d+/g, '#')
+      .trim()}`;
+  }
+  return createHash('sha1').update(`${stageId}|${key}`).digest('hex').slice(0, 12);
 }
 
 export interface ErrorReporter {
@@ -426,6 +732,10 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
     const runId = ctx?.runId ?? info.lastRunId;
     const logTail = await readLogTail(options.logPath, runId);
     const projectName = options.projectName?.(info.projectId);
+    const additive = await collectAdditiveContext(info, ctx, errorText).catch((error) => {
+      log(`[error-reports] additive context failed (report still sent): ${(error as Error)?.message ?? error}`);
+      return null;
+    });
     return {
       schemaVersion: 1,
       id,
@@ -458,7 +768,58 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
       stderrTail: ctx?.stderrTail ? scrub(ctx.stderrTail) : null,
       stdoutTail: ctx?.stdoutTail ? scrub(ctx.stdoutTail) : null,
       logTail,
+      agent: additive?.agent ?? null,
+      stage: additive?.stage ?? null,
+      env: additive?.env ?? null,
+      fingerprint: additive?.fingerprint ?? null,
+      previousReportId: info.previousReportId ?? null,
     };
+  }
+
+  /** report.agent / .stage / .env / fingerprint — every piece independent
+   *  and best-effort; one failing probe never drops the others. */
+  async function collectAdditiveContext(
+    info: FailureInfo,
+    ctx: StageFailureContext | null,
+    errorText: string,
+  ): Promise<{ agent: ErrorReportAgentContext; stage: ErrorReportStageContext; env: ErrorReportEnvContext; fingerprint: string }> {
+    const agentId = ctx?.agentId ?? null;
+    // Which conversation to read: the stage's own, else the first failed
+    // sub-conversation, else the first sub-conversation.
+    const subs = info.subConversations ?? [];
+    const conversationId =
+      info.conversationId ?? subs.find((t) => t.status === 'failed')?.id ?? subs[0]?.id ?? null;
+    const row = conversationId && options.lastAssistantMessage ? safe(() => options.lastAssistantMessage!(conversationId), null) : null;
+    const [cli, quota, connectivity, outputsListing] = await Promise.all([
+      agentId && options.agentInfo ? options.agentInfo(agentId).catch(() => null) : Promise.resolve(null),
+      agentId && options.quota ? options.quota(agentId).catch(() => null) : Promise.resolve(null),
+      probeConnectivity(safe(() => options.connectivityTargets?.(agentId) ?? [], []), options.fetchImpl ?? fetch),
+      ctx?.outputsDir ? listOutputsDir(ctx.outputsDir).catch(() => null) : Promise.resolve(null),
+    ]);
+    const projectRoot = safe(() => options.projectRoot?.(info.projectId) ?? null, null);
+    const env = await collectEnv({
+      projectRoot,
+      activeRuns: safe(() => options.activeRuns?.() ?? null, null),
+      sandboxEnabled: safe(() => options.sandboxEnabled?.() ?? null, null),
+      connectivity,
+    });
+    const summary = summarizeAssistantMessage(row);
+    const agent: ErrorReportAgentContext = {
+      conversationId,
+      transcriptTail: summary.transcriptTail,
+      tools: summary.tools,
+      usage: summary.usage,
+      cli,
+      quota,
+      prompt: ctx?.promptChars != null || ctx?.skillId ? { chars: ctx?.promptChars ?? null, skillId: ctx?.skillId ?? null } : null,
+    };
+    const stage: ErrorReportStageContext = {
+      tasks: taskCounts(info.subConversations),
+      validation: ctx?.validation && ctx.validation.length > 0 ? ctx.validation : null,
+      outputsListing: outputsListing ? scrub(outputsListing) : null,
+    };
+    const fingerprint = computeFingerprint(info.pipelineId, { validation: ctx?.validation ?? null, errorCode: ctx?.errorCode ?? null, error: errorText });
+    return { agent, stage, env, fingerprint };
   }
 
   async function flushOutbox(): Promise<{ sent: number; left: number }> {

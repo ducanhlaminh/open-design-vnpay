@@ -15,6 +15,13 @@ import {
   createErrorReporter,
   ERROR_REPORTS_OUTBOX_DIR,
   fanoutFailureDetail,
+  classifyValidationError,
+  computeFingerprint,
+  listOutputsDir,
+  probeConnectivity,
+  structuredValidation,
+  summarizeAssistantMessage,
+  taskCounts,
   pushConsoleTailLine,
   readLogTail,
   resetConsoleTailForTests,
@@ -356,5 +363,148 @@ describe('fanoutFailureDetail', () => {
     expect(fanoutFailureDetail(many).list.split('\n')).toHaveLength(41);
     expect(fanoutFailureDetail(many).list).toContain('… và 5 mục nữa');
     expect(fanoutFailureDetail([{ name: 'A', errors: [] }])).toEqual({ list: '(không có chi tiết lỗi)', first: 'không rõ lý do' });
+  });
+});
+
+describe('additive context helpers', () => {
+  it('classifies the daemon\'s own validation strings into stable codes', () => {
+    expect(classifyValidationError('Section "Mở đầu": agent run kết thúc với trạng thái "failed".')).toBe('AGENT_RUN');
+    expect(classifyValidationError('Không cắt được trang thành lát: boom')).toBe('SLICE');
+    expect(classifyValidationError('Không ghép lại được trang từ các lát: x')).toBe('REBUILD');
+    expect(classifyValidationError('s2: .changes.json không phải JSON hợp lệ')).toBe('INVALID_JSON');
+    expect(classifyValidationError('Bản clone còn dấu [Rà soát …] ở dòng 12')).toBe('MARKER_LEFT');
+    expect(classifyValidationError('rule_id "DS-99" không có trong criteria/')).toBe('RULE_ID');
+    expect(classifyValidationError('files: s01.changes.json: 0B JSON ok, clone: thiếu')).toBe('EVIDENCE');
+    expect(classifyValidationError('gì đó lạ')).toBe('OTHER');
+    expect(structuredValidation([{ name: 'Trang A', errors: ['s1: JSON hỏng', 'files: clone: thiếu'] }])).toEqual([
+      { item: 'Trang A', code: 'INVALID_JSON', detail: 's1: JSON hỏng' },
+      { item: 'Trang A', code: 'EVIDENCE', detail: 'files: clone: thiếu' },
+    ]);
+  });
+
+  it('summarizes an assistant message: transcript tail (redacted), tool failures, token usage', () => {
+    const events = [
+      { kind: 'text', text: 'Đang đọc file…' },
+      { kind: 'tool_use', id: 't1', name: 'Read', input: {} },
+      { kind: 'tool_result', toolUseId: 't1', content: 'ok', isError: false },
+      { kind: 'tool_use', id: 't2', name: 'Edit', input: {} },
+      { kind: 'tool_result', toolUseId: 't2', content: 'ENOENT: no such file C:\\x\\y.md\nmore', isError: true },
+      { kind: 'usage', inputTokens: 1200, outputTokens: 300, costUsd: 0.02 },
+    ];
+    const out = summarizeAssistantMessage({ content: 'Tôi không tìm thấy file. token=abc42', eventsJson: JSON.stringify(events) });
+    expect(out.transcriptTail).toContain('Tôi không tìm thấy file');
+    expect(out.transcriptTail).not.toContain('abc42');
+    expect(out.tools).toEqual({ total: 2, failed: 1, lastTool: 'Edit', failures: ['Edit: ENOENT: no such file C:\\x\\y.md'] });
+    expect(out.usage).toEqual({ inputTokens: 1200, outputTokens: 300, costUsd: 0.02 });
+    expect(summarizeAssistantMessage(null)).toEqual({ transcriptTail: null, tools: null, usage: null });
+    // Malformed events_json → text only, no tool summary.
+    expect(summarizeAssistantMessage({ content: 'x', eventsJson: '{nope' }).tools).toBeNull();
+    // Long text keeps the END (that is where the agent explains why it stopped).
+    const long = 'a'.repeat(5000) + 'CUỐI';
+    expect(summarizeAssistantMessage({ content: long, eventsJson: null }).transcriptTail!.endsWith('CUỐI')).toBe(true);
+    expect(summarizeAssistantMessage({ content: long, eventsJson: null }).transcriptTail!.length).toBeLessThan(3100);
+  });
+
+  it('lists an outputs dir as names/sizes only, capped, skipping node_modules', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'od-outputs-'));
+    writeFileSync(path.join(dir, 'review-khong-chay-duoc.md'), '# note');
+    const sub = path.join(dir, 'review', 'docs');
+    await import('node:fs').then((fs) => fs.mkdirSync(sub, { recursive: true }));
+    writeFileSync(path.join(sub, 'a.md'), 'secret content of the doc');
+    await import('node:fs').then((fs) => fs.mkdirSync(path.join(dir, 'node_modules', 'x'), { recursive: true }));
+    const listing = (await listOutputsDir(dir))!;
+    expect(listing).toContain('review-khong-chay-duoc.md  6B');
+    expect(listing).toContain('review/docs/a.md  25B');
+    expect(listing).not.toContain('secret content');
+    expect(listing).not.toContain('node_modules');
+    expect(await listOutputsDir(path.join(dir, 'missing'))).toMatch(/^\(missing\)/);
+    const capped = (await listOutputsDir(dir, { maxEntries: 1 }))!;
+    expect(capped).toContain('… (truncated)');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('counts sub-conversation statuses', () => {
+    expect(taskCounts(undefined)).toBeNull();
+    expect(taskCounts([{ status: 'failed' }, { status: 'succeeded' }, { status: 'queued' }, { status: 'running' }, { status: 'failed' }]))
+      .toEqual({ total: 5, queued: 1, running: 1, succeeded: 1, failed: 2 });
+  });
+
+  it('probes connectivity with an injectable fetch and never throws', async () => {
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes('ok')) return new Response(null, { status: 204 });
+      if (u.includes('tls')) throw Object.assign(new Error('fetch failed'), { cause: { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' } });
+      const err = new Error('timeout');
+      err.name = 'TimeoutError';
+      throw err;
+    }) as unknown as typeof fetch;
+    const out = (await probeConnectivity(['https://ok.example/', 'https://tls.example/', 'https://slow.example/', 'https://ok.example/', 'not-a-url'], fetchImpl))!;
+    expect(out.map((o) => `${o.target} ${o.result}`)).toEqual([
+      'https://ok.example/ HTTP 204',
+      'https://tls.example/ UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+      'https://slow.example/ timeout',
+    ]);
+    expect(await probeConnectivity([], fetchImpl)).toBeNull();
+  });
+
+  it('fingerprints by validation codes, else errorCode, else the normalized error line', () => {
+    const a = computeFingerprint('dr-review', { validation: [{ code: 'INVALID_JSON' }, { code: 'EVIDENCE' }], error: 'x' });
+    const b = computeFingerprint('dr-review', { validation: [{ code: 'EVIDENCE' }, { code: 'INVALID_JSON' }], error: 'y' });
+    expect(a).toBe(b);
+    expect(a).toHaveLength(12);
+    expect(computeFingerprint('ux', { errorCode: 'AGENT_SPAWN', error: 'a' })).toBe(computeFingerprint('ux', { errorCode: 'AGENT_SPAWN', error: 'b' }));
+    expect(computeFingerprint('ux', { error: 'Không trang nào đạt (3 trang) — "Trang A": lỗi 12' }))
+      .toBe(computeFingerprint('ux', { error: 'Không trang nào đạt (7 trang) — "Trang B": lỗi 99' }));
+    expect(computeFingerprint('ux', { error: 'a' })).not.toBe(computeFingerprint('ui', { error: 'a' }));
+  });
+
+  it('createErrorReporter fills report.agent / .stage / .env / fingerprint from the lookups', async () => {
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), 'od-error-reports-additive-'));
+    const outputsDir = mkdtempSync(path.join(os.tmpdir(), 'od-outputs-'));
+    writeFileSync(path.join(outputsDir, 'review-khong-chay-duoc.md'), '# note');
+    delete process.env.OD_ERROR_REPORTS;
+    const client = fakeClient();
+    const reporter = createErrorReporter({
+      dataDir, logPath: null, namespace: null, client, identity: IDENTITY, version: VERSION,
+      lastAssistantMessage: (id) => (id === 'c-a' ? { content: 'Không tìm thấy criteria/', eventsJson: JSON.stringify([{ kind: 'usage', inputTokens: 10, outputTokens: 2 }]) } : null),
+      agentInfo: async () => ({ available: true, version: '2.1.0', path: '/usr/local/bin/claude', authStatus: 'ok', sandbox: false }),
+      quota: async () => ({ source: 'claude', windows: [{ label: '5 giờ', utilization: 97, resetsAt: null }], reason: null, readAt: 1 }),
+      projectRoot: () => '/Users/x/od-data/projects/p1',
+      connectivityTargets: () => ['https://ok.example/'],
+      fetchImpl: (async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
+      activeRuns: () => 2,
+      sandboxEnabled: () => false,
+    });
+    attachStageFailureContext('p1', 'dr-review', {
+      agentId: 'claude',
+      validation: [{ item: 'Trang A', code: 'INVALID_JSON', detail: 's1: JSON hỏng' }],
+      outputsDir,
+      promptChars: 4321,
+      skillId: 'docs-spec-review',
+    });
+    reporter.report({
+      projectId: 'p1', pipelineId: 'dr-review', error: 'Không trang nào đạt', lastRunId: undefined,
+      subConversations: [{ id: 'c-a', title: 'Trang A', status: 'failed' }, { id: 'c-b', title: 'Trang B', status: 'succeeded' }],
+      previousReportId: 'deadbeef',
+    });
+    await reporter.idle();
+    const body = client.uploads[0]!.body;
+    expect(body.agent?.conversationId).toBe('c-a');
+    expect(body.agent?.transcriptTail).toBe('Không tìm thấy criteria/');
+    expect(body.agent?.usage).toEqual({ inputTokens: 10, outputTokens: 2, costUsd: null });
+    expect(body.agent?.cli?.version).toBe('2.1.0');
+    expect(body.agent?.quota?.windows[0]?.utilization).toBe(97);
+    expect(body.agent?.prompt).toEqual({ chars: 4321, skillId: 'docs-spec-review' });
+    expect(body.stage?.tasks).toEqual({ total: 2, queued: 0, running: 0, succeeded: 1, failed: 1 });
+    expect(body.stage?.validation).toEqual([{ item: 'Trang A', code: 'INVALID_JSON', detail: 's1: JSON hỏng' }]);
+    expect(body.stage?.outputsListing).toContain('review-khong-chay-duoc.md');
+    expect(body.env?.projectRootLength).toBe('/Users/x/od-data/projects/p1'.length);
+    expect(body.env?.activeRuns).toBe(2);
+    expect(body.env?.connectivity).toEqual([{ target: 'https://ok.example/', result: 'HTTP 200', ms: expect.any(Number) }]);
+    expect(typeof body.env?.memTotalBytes).toBe('number');
+    expect(body.fingerprint).toBe(computeFingerprint('dr-review', { validation: [{ code: 'INVALID_JSON' }], error: 'x' }));
+    expect(body.previousReportId).toBe('deadbeef');
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(outputsDir, { recursive: true, force: true });
   });
 });

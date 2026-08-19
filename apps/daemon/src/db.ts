@@ -713,6 +713,11 @@ export type PipelineFailureHook = (info: {
    *  first, then the previous row) so the report can name which sub-runs
    *  failed and why — the stage-level error is generic for those. */
   subConversations: Array<{ id: string; title: string; status: string }> | undefined;
+  /** Conversation of the failing run (patch first, then the previous row)
+   *  so the report can quote the agent's last message + tool errors. */
+  conversationId: string | undefined;
+  /** Report id of the previous failure of this stage, for chaining. */
+  previousReportId: string | undefined;
 }) => string | null;
 
 let pipelineFailureHook: PipelineFailureHook | null = null;
@@ -788,6 +793,8 @@ export function setProjectPipelineStatus(
         error: patch.error,
         lastRunId: patch.lastRunId ?? prev.lastRunId,
         subConversations: patch.subConversations ?? prev.subConversations,
+        conversationId: patch.lastConversationId ?? prev.lastConversationId,
+        previousReportId: prev.errorReportId,
       });
     } catch {
       errorReportId = null;

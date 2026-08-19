@@ -340,7 +340,7 @@ import {
   validateTarget as validateRoutineTarget,
 } from './routines.js';
 import { createDiagnosticsExportHandler } from './diagnostics-export.js';
-import { attachStageFailureContext, createErrorReporter, fanoutFailureDetail, installConsoleTailCapture, resolveDaemonLogPath } from './error-reports.js';
+import { attachStageFailureContext, createErrorReporter, fanoutFailureDetail, installConsoleTailCapture, resolveDaemonLogPath, structuredValidation } from './error-reports.js';
 import { DIAGNOSTICS_EXPORT_PATH } from '@open-design/diagnostics';
 import {
   buildProjectArchive,
@@ -4571,6 +4571,79 @@ export async function startServer({
       };
     },
     workflowIdOf: (pipelineId) => workflowDirForPipeline(pipelineId) ?? null,
+    // ── Additive context (report.agent / .stage / .env). Everything below is
+    // a plain read — DB row, cached agent probe, usage snapshot, env — no LLM.
+    lastAssistantMessage: (conversationId) => {
+      try {
+        const row = db
+          .prepare(
+            `SELECT content, events_json AS eventsJson FROM messages
+              WHERE conversation_id = ? AND role = 'assistant'
+              ORDER BY position DESC LIMIT 1`,
+          )
+          .get(conversationId) as { content: string | null; eventsJson: string | null } | undefined;
+        return row ?? null;
+      } catch {
+        return null;
+      }
+    },
+    agentInfo: async (agentId) => {
+      // Reuse the Local CLI panel's probe (cached 8s; a fresh probe costs a
+      // few `--version` spawns, acceptable in the background of a failure).
+      const payload = (agentsPayloadCache && Date.now() - agentsPayloadCache.at < 10 * 60_000
+        ? agentsPayloadCache.payload
+        : await buildAgentsPayload().catch(() => null)) as { agents?: Array<Record<string, unknown>> } | null;
+      const info = payload?.agents?.find((a) => a.id === agentId) ?? null;
+      let sandbox: boolean | null = null;
+      try {
+        const cfg = resolveSandboxConfig((await readAppConfig(RUNTIME_DATA_DIR)).sandbox, process.env);
+        sandbox = cfg.enabled && (cfg.runtimes.includes('*') || cfg.runtimes.includes(agentId));
+      } catch {
+        sandbox = null;
+      }
+      if (!info) return { available: null, version: null, path: null, authStatus: null, sandbox };
+      return {
+        available: typeof info.available === 'boolean' ? info.available : null,
+        version: typeof info.version === 'string' ? info.version : null,
+        path: typeof info.path === 'string' ? info.path : null,
+        authStatus: typeof info.authStatus === 'string' ? info.authStatus : null,
+        sandbox,
+      };
+    },
+    quota: (agentId) => usageSnapshotForReport(agentId),
+    projectRoot: (projectId) => {
+      try {
+        const project = getProject(db, projectId);
+        return project ? resolveProjectDir(PROJECTS_DIR, projectId, project.metadata) : null;
+      } catch {
+        return null;
+      }
+    },
+    connectivityTargets: (agentId) => {
+      const targets: string[] = [];
+      if (agentId === 'claude') targets.push('https://api.anthropic.com/');
+      if (agentId === 'codex') targets.push('https://chatgpt.com/');
+      if (agentId === 'gemini') targets.push('https://generativelanguage.googleapis.com/');
+      for (const key of ['MEDIA_URL', 'KGS_URL', 'CONFLUENCE_URL', 'IDENTITY_URL'] as const) {
+        const v = process.env[key];
+        if (v && /^https?:\/\//.test(v)) targets.push(v);
+      }
+      return targets;
+    },
+    activeRuns: () => {
+      try {
+        return design.runs.list({ status: 'active' }).length;
+      } catch {
+        return null;
+      }
+    },
+    sandboxEnabled: () => {
+      try {
+        return resolveSandboxConfig(undefined, process.env).enabled;
+      } catch {
+        return null;
+      }
+    },
   });
   setPipelineFailureHook((info) => errorReporter.report(info));
   // Wire the upload-destination bridge to this db so multer can route
@@ -4759,6 +4832,24 @@ export async function startServer({
       return detectAgents(config.agentCliEnv ?? {}, sandboxSkipProbe(config));
     })
     .catch(() => detectAgents().catch(() => {}));
+
+  // Every install gets a stable anonymous installationId. The web used to
+  // mint it only when the privacy banner was accepted, so host-runtime
+  // installs (and any config that skipped that path) reported as
+  // "unknown-install" — error reports / feedback could not be grouped per
+  // machine. Mint once here; app-config mirrors it to installation.json.
+  void readAppConfig(RUNTIME_DATA_DIR)
+    .then(async (config) => {
+      if (typeof config.installationId === 'string' && config.installationId.length > 0) return;
+      // Respect an explicit decline: PrivacySection clears the id when the
+      // user turns every telemetry switch off — never re-mint over that.
+      const declined = config.privacyDecisionAt != null && !Object.values(config.telemetry ?? {}).some((v) => v === true);
+      if (declined) return;
+      const installationId = randomUUID();
+      await writeAppConfig(RUNTIME_DATA_DIR, { installationId });
+      console.log(`[od] minted installationId ${installationId}`);
+    })
+    .catch((error) => console.warn('[od] could not ensure installationId:', error));
 
   await recoverStaleLiveArtifactRefreshes({ projectsRoot: PROJECTS_DIR }).catch((error) => {
     console.warn('[od] Failed to recover stale live artifact refreshes:', error);
@@ -14651,7 +14742,15 @@ export async function startServer({
 
   // Always-visible Usage meter feed: Claude account quota % (rolling 5-hour
   // and 7-day subscription limits), the same data Claude Code's `/usage` shows.
-  app.get('/api/usage/claude', async (_req, res) => {
+  // Last usage snapshot per agent — the error reporter quotes it (quota at
+  // failure time) without re-prompting the macOS Keychain.
+  const lastUsageSnapshot: {
+    claude?: { at: number; body: import('@open-design/contracts').ClaudeUsageResponse };
+    codex?: { at: number; body: import('@open-design/contracts').CodexUsageResponse };
+  } = {};
+
+  async function readClaudeUsageForUi(): Promise<import('@open-design/contracts').ClaudeUsageResponse> {
+    let body: import('@open-design/contracts').ClaudeUsageResponse;
     try {
       // When the sandbox OWNS Claude runs (Docker-only), the meter must reflect
       // the DOCKER account, not the host — read the token ONLY from the
@@ -14665,7 +14764,7 @@ export async function startServer({
         sandboxCfg.enabled &&
         sandboxCfg.skills.includes('*') &&
         (sandboxCfg.runtimes.includes('*') || sandboxCfg.runtimes.includes('claude'));
-      const body = await fetchClaudeUsage({
+      body = await fetchClaudeUsage({
         sandboxOnly: sandboxOwnsClaude,
         sandboxCreds: async () => {
           try {
@@ -14679,18 +14778,23 @@ export async function startServer({
       // One line in the daemon log per unavailable read — that log is what a
       // prod machine can actually hand back to us.
       if (!body.available) console.warn(`[usage/claude] unavailable: ${body.reason ?? '(no reason)'}`);
-      res.json(body);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[usage/claude] failed: ${message}`);
-      res.json({
+      body = {
         available: false,
         fiveHour: { utilization: null, resetsAt: null },
         sevenDay: { utilization: null, resetsAt: null },
         subscriptionType: null,
         reason: `Daemon không đọc được mức dùng Claude: ${message}`,
-      } satisfies import('@open-design/contracts').ClaudeUsageResponse);
+      };
     }
+    lastUsageSnapshot.claude = { at: Date.now(), body };
+    return body;
+  }
+
+  app.get('/api/usage/claude', async (_req, res) => {
+    res.json(await readClaudeUsageForUi());
   });
 
   // Read once when the Local CLI menu is opened. This uses Codex's own
@@ -14700,7 +14804,7 @@ export async function startServer({
   // own `~/.codex/auth.json` directly; only when that is unreachable AND the
   // Docker sandbox is enabled does this fall back to the sandboxed volume —
   // mirrors `/api/usage/claude` just above.
-  app.get('/api/usage/codex', async (_req, res) => {
+  async function readCodexUsageForUi(): Promise<import('@open-design/contracts').CodexUsageResponse> {
     const emptyUsage = (reason: string): import('@open-design/contracts').CodexUsageResponse => ({
       available: false,
       primary: { utilization: null, resetsAt: null, durationMinutes: null },
@@ -14723,11 +14827,13 @@ export async function startServer({
       return head || 'lỗi không rõ';
     };
     let hostReason = '';
+    let body: import('@open-design/contracts').CodexUsageResponse;
     try {
       const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
       try {
-        res.json(await readHostCodexUsage(agentCliEnvForAgent(appConfig.agentCliEnv, 'codex')));
-        return;
+        body = await readHostCodexUsage(agentCliEnvForAgent(appConfig.agentCliEnv, 'codex'));
+        lastUsageSnapshot.codex = { at: Date.now(), body };
+        return body;
       } catch (err) {
         // Host Codex CLI not installed / not logged in / unreachable — fall
         // through to the Docker sandbox below when it is enabled.
@@ -14735,17 +14841,64 @@ export async function startServer({
         console.warn(`[usage/codex] host read failed: ${hostReason}`);
       }
       if (!resolveSandboxConfig(appConfig.sandbox, process.env).enabled) {
-        res.json(emptyUsage(hostReason));
-        return;
+        body = emptyUsage(hostReason);
+      } else {
+        const image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
+        body = await readSandboxCodexUsage(image);
       }
-      const image = sandboxImageTag(path.join(SKILLS_DIR, 'ui-react', 'builder'));
-      res.json(await readSandboxCodexUsage(image));
     } catch (err) {
       const sandboxReason = `Docker sandbox không đọc được mức dùng Codex: ${describe(err)}`;
       console.warn(`[usage/codex] ${sandboxReason}`);
-      res.json(emptyUsage(hostReason ? `${hostReason} · ${sandboxReason}` : sandboxReason));
+      body = emptyUsage(hostReason ? `${hostReason} · ${sandboxReason}` : sandboxReason);
     }
+    lastUsageSnapshot.codex = { at: Date.now(), body };
+    return body;
+  }
+
+  app.get('/api/usage/codex', async (_req, res) => {
+    res.json(await readCodexUsageForUi());
   });
+
+  /** Quota snapshot for the error report: a recent UI read (≤30 min) wins;
+   *  otherwise a live read — except Claude on macOS, whose read may pop a
+   *  Keychain prompt, so only a cached snapshot is used there. */
+  async function usageSnapshotForReport(agentId: string): Promise<import('@open-design/contracts').ErrorReportAgentContext['quota']> {
+    const MAX_AGE_MS = 30 * 60_000;
+    if (agentId === 'claude') {
+      let snap = lastUsageSnapshot.claude;
+      if ((!snap || Date.now() - snap.at > MAX_AGE_MS) && process.platform !== 'darwin') {
+        await readClaudeUsageForUi().catch(() => null);
+        snap = lastUsageSnapshot.claude;
+      }
+      if (!snap) return { source: 'claude', windows: [], reason: 'chưa có snapshot (macOS: chỉ dùng số đã đọc từ UI để không hỏi Keychain)', readAt: null };
+      const b = snap.body;
+      return {
+        source: 'claude',
+        windows: [
+          { label: '5 giờ', utilization: b.fiveHour.utilization, resetsAt: b.fiveHour.resetsAt },
+          { label: '7 ngày', utilization: b.sevenDay.utilization, resetsAt: b.sevenDay.resetsAt },
+        ],
+        reason: b.available ? null : (b.reason ?? 'unavailable'),
+        readAt: snap.at,
+      };
+    }
+    if (agentId === 'codex') {
+      let snap = lastUsageSnapshot.codex;
+      if (!snap || Date.now() - snap.at > MAX_AGE_MS) {
+        await readCodexUsageForUi().catch(() => null);
+        snap = lastUsageSnapshot.codex;
+      }
+      if (!snap) return null;
+      const b = snap.body;
+      const label = (w: import('@open-design/contracts').CodexUsageWindow, fallback: string) =>
+        w.durationMinutes === 300 ? '5 giờ' : w.durationMinutes === 10080 ? '7 ngày' : w.durationMinutes ? `${w.durationMinutes} phút` : fallback;
+      const iso = (epochSeconds: number | null) => (epochSeconds ? new Date(epochSeconds * 1000).toISOString() : null);
+      const windows = [{ label: label(b.primary, 'primary'), utilization: b.primary.utilization, resetsAt: iso(b.primary.resetsAt) }];
+      if (b.secondary) windows.push({ label: label(b.secondary, 'secondary'), utilization: b.secondary.utilization, resetsAt: iso(b.secondary.resetsAt) });
+      return { source: 'codex', windows, reason: b.available ? null : (b.reason ?? 'unavailable'), readAt: snap.at };
+    }
+    return null;
+  }
 
   app.get('/api/runs/:id', (req, res) => {
     const run = design.runs.get(req.params.id);
@@ -16074,6 +16227,9 @@ export async function startServer({
             outputs: `prd-review: 0/${perPage.length} trang có report.json\n${failureDetail.list}`,
             finalStatus: 'failed',
             workflowId: wfDir,
+            skillId: def.skillId ?? null,
+            validation: perPage.map((p) => ({ item: p.page, code: 'OUTPUT_MISSING', detail: `không có review/${p.slug}/report.json` })),
+            outputsDir: cwd,
           });
         }
         setProjectPipelineStatus(db, projectId, pipelineId, {
@@ -16846,6 +17002,9 @@ export async function startServer({
             outputs: `docs-comp: 0/${screenInputs.length} màn đạt (validation sau fan-out)\n${failureDetail.list}`,
             finalStatus: 'failed',
             workflowId: wfDir,
+            skillId: def.skillId ?? null,
+            validation: structuredValidation(failedScreens.map((f) => ({ name: f.name || f.key, errors: f.errors ?? [] }))),
+            outputsDir: cwd,
           });
         }
         setProjectPipelineStatus(db, projectId, pipelineId, {
@@ -17456,6 +17615,36 @@ export async function startServer({
           }
 
           if (pageStatus === 'failed') {
+            // Evidence BEFORE the wipe below: what the agent actually left on
+            // disk for this page — file names, sizes and whether each JSON
+            // parses (never content). Goes into the page's errors → failure
+            // note + error report, where "s02.changes.json: 0B" or "clone:
+            // thiếu" answers the question the validation message alone can't.
+            try {
+              const evidence: string[] = [];
+              for (const sec of sections) {
+                for (const kind of ['changes', 'notes'] as const) {
+                  const rel = sectionOutputPath(reviewRel, sec.index, kind);
+                  const st = await fs.promises.stat(path.join(cwd, rel)).catch(() => null);
+                  if (!st) {
+                    evidence.push(`${path.posix.basename(rel)}: thiếu`);
+                    continue;
+                  }
+                  let valid = 'JSON ok';
+                  try {
+                    JSON.parse(await fs.promises.readFile(path.join(cwd, rel), 'utf8'));
+                  } catch {
+                    valid = 'JSON hỏng';
+                  }
+                  evidence.push(`${path.posix.basename(rel)}: ${st.size}B ${valid}`);
+                }
+              }
+              const cloneSt = await fs.promises.stat(path.join(cwd, reviewRel)).catch(() => null);
+              evidence.push(`clone: ${cloneSt ? `${cloneSt.size}B` : 'thiếu'}`);
+              errors.push(`files: ${evidence.join(', ')}`);
+            } catch {
+              /* evidence is best-effort */
+            }
             // Fail-shut through the ONE shared primitive — see removePageOutputs's
             // docblock in docs-review.ts for why this delete is load-bearing.
             // Nó dọn luôn mọi file tạm .s<NN>.* của trang.
@@ -17603,6 +17792,9 @@ export async function startServer({
             outputs: `docs-review: 0/${results.length} trang đạt (validation sau fan-out)\n${failureDetail.list}`,
             finalStatus: 'failed',
             workflowId: wfDir,
+            skillId: def.skillId ?? null,
+            validation: structuredValidation(results.map((r) => ({ name: r.page, errors: r.errors ?? [] }))),
+            outputsDir: cwd,
           });
         }
         setProjectPipelineStatus(db, projectId, pipelineId, {
@@ -19206,6 +19398,9 @@ export async function startServer({
               stderrTail: (run as { stderrTail?: string }).stderrTail ?? null,
               stdoutTail: (run as { stdoutTail?: string }).stdoutTail ?? null,
               workflowId: workflowDirForPipeline(pipelineId) ?? null,
+              promptChars: kickoff.length,
+              skillId: def.skillId ?? null,
+              outputsDir: pipelineCwd,
             });
           } catch {
             /* diagnostics must never affect the run result */
