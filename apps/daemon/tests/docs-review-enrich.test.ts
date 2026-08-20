@@ -445,6 +445,28 @@ test('renderCompositionDraft: đủ 8 cột, DS null → placeholder + fallback,
   assert.ok(md.includes('*Nguồn: comp/PAGE__6.1.1.screen.json (bước Màn hình → Component)'));
 });
 
+test('renderCompositionDraft: WP19a — mô tả fromGuide (fallback AI sinh) gắn hậu tố " (AI sinh)"; mô tả thật từ Figma thì KHÔNG', () => {
+  const catalogue = new Map([
+    // fromGuide: true — mô tả đến từ criteria/components-guide.md (fallback).
+    ['figma-297be0fb5f', { name: 'Button', description: 'Mô tả AI sinh cho Button.', fromGuide: true }],
+  ]);
+  const screenNames = new Map([['PAGE__6.2.1', 'Màn hình chọn Quốc gia & Khu vực']]);
+  const md = renderCompositionDraft(SCREEN_DOC, catalogue, ROLE_MAP_DOC, screenNames);
+  const rowLines = md.split('\n').filter((l) => l.startsWith('| 1 '));
+  assert.ok(rowLines[0]!.includes('Mô tả AI sinh cho Button. (AI sinh)'));
+});
+
+test('renderCompositionDraft: mô tả thật từ Figma (fromGuide vắng mặt) — KHÔNG có hậu tố "(AI sinh)"', () => {
+  const catalogue = new Map([
+    ['figma-297be0fb5f', { name: 'Button', description: 'Mô tả thật từ Figma.' }],
+  ]);
+  const screenNames = new Map([['PAGE__6.2.1', 'Màn hình chọn Quốc gia & Khu vực']]);
+  const md = renderCompositionDraft(SCREEN_DOC, catalogue, ROLE_MAP_DOC, screenNames);
+  const rowLines = md.split('\n').filter((l) => l.startsWith('| 1 '));
+  assert.ok(rowLines[0]!.includes('Mô tả thật từ Figma.'));
+  assert.ok(!rowLines[0]!.includes('(AI sinh)'));
+});
+
 /* ── (6) buildEnrichKickoff ────────────────────────────────────────────────── */
 
 test('buildEnrichKickoff: input rỗng → chuỗi rỗng', () => {

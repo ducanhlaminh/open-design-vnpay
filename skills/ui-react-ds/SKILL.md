@@ -170,6 +170,14 @@ DS phải dựng. Đối chiếu anchor với `criteria/components.md` và vai t
 markup + class `tk-*`. Wireframe nhắc component đặc thù qua nội dung và cấu
 trúc HTML — tra catalog để chọn đúng component.
 
+Component trong `criteria/components.md` không có dòng "Mô tả:" → tra
+`criteria/components-guide.md` (cùng thư mục, nếu tồn tại) theo đúng anchor
+`#figma-…`: đó là mô tả do AI sinh từ phân tích node + ảnh Figma — dùng làm
+ngữ cảnh để hiểu component, KHÔNG dùng thay cho anchor DS phải trỏ tới (vẫn
+chỉ `criteria/components.md#…`), và khi trích dẫn trong code comment phải ghi
+rõ nguồn "(AI sinh)". File không tồn tại hoặc không có entry cho component đó
+→ coi như component không có mô tả, xử lý như trước nay.
+
 **Block wireframe có `data-comp` = lựa chọn ĐÃ ĐƯỢC NGƯỜI CHỐT** (gán trong
 preview ux-spec): block đó PHẢI dựng bằng đúng component ấy — không thương
 lượng. Verify sẽ fail nếu một component đã chốt không được dùng.

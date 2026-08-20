@@ -91,6 +91,13 @@ Bạn **không review câu chữ, không sửa tài liệu, không sửa `flows/
   examples.md` — component nào chứa component nào; `criteria/rules.md` — quy
   tắc (R-OVERLAY, R-FEEDBACK, R-TABLE, R-BADGE, R-HEURISTIC, R-COLOR-*…);
   `.figma-catalog/components.json` — fileKey/nodeId khi DS là Link Figma.
+  Component trong `components.md` không có dòng "Mô tả:" → tra
+  `criteria/components-guide.md` (cùng thư mục, nếu tồn tại) theo đúng anchor
+  `#figma-…`: đó là mô tả do AI sinh từ phân tích node + ảnh Figma — dùng làm
+  ngữ cảnh để hiểu component khi viết `why`, KHÔNG dùng làm `rule_id`/`anchor`
+  của `ds` (những trường đó vẫn chỉ trỏ `criteria/components.md#…`), và khi
+  trích dẫn phải ghi rõ nguồn "(AI sinh)". File không tồn tại hoặc không có
+  entry cho component đó → coi như component không có mô tả, xử lý như trước nay.
 - **Tài liệu** (CHỈ ĐỌC): trang `source` của màn — Read đúng khoảng dòng
   `section` (mở rộng sang mục lân cận nếu thiếu); dự án gắn App: `docs-feature/`
   là nguồn sự thật, `docs-app/` chỉ tham khảo. Bỏ qua `attachments/`, ảnh.

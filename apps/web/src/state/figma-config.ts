@@ -4,7 +4,9 @@
 
 import type {
   AppFigmaCatalogResponse,
+  AppFigmaGuideJob,
   FigmaConfigResponse,
+  GenerateAppFigmaGuideResponse,
   PutFigmaConfigRequest,
   TestFigmaConfigRequest,
   TestFigmaConfigResponse,
@@ -14,7 +16,9 @@ import type {
 
 export type {
   AppFigmaCatalogResponse,
+  AppFigmaGuideJob,
   FigmaConfigResponse,
+  GenerateAppFigmaGuideResponse,
   PutFigmaConfigRequest,
   TestFigmaConfigRequest,
   TestFigmaConfigResponse,
@@ -124,5 +128,31 @@ export async function refreshAppFigmaCatalog(appId: string, signal?: AbortSignal
     return { ok: true, catalog: body };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// WP19b: nút "Sinh mô tả (N thiếu)" — bấm POST một job nền (202 {jobId, job}),
+// rồi UI poll `fetchAppFigmaGuideJob` ~3s cho tới khi job kết thúc. Cả hai
+// hàm trả `null`/`error` thay vì throw, giống mọi client khác trong file này
+// — panel tự quyết cách hiện lỗi.
+export async function generateAppFigmaGuide(appId: string, signal?: AbortSignal): Promise<{ ok: true; jobId: string; job: AppFigmaGuideJob } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/figma-catalog/generate-guide`, { method: 'POST', signal });
+    const body = await readJson<GenerateAppFigmaGuideResponse & { error?: string }>(res);
+    if (!res.ok || !body?.job) return { ok: false, error: body?.error ?? `HTTP ${res.status}` };
+    return { ok: true, jobId: body.jobId, job: body.job };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function fetchAppFigmaGuideJob(appId: string, jobId: string, signal?: AbortSignal): Promise<AppFigmaGuideJob | null> {
+  try {
+    const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/figma-catalog/generate-guide/${encodeURIComponent(jobId)}`, { signal });
+    if (!res.ok) return null;
+    const body = await readJson<{ job?: AppFigmaGuideJob }>(res);
+    return body?.job ?? null;
+  } catch {
+    return null;
   }
 }

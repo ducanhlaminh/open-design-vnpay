@@ -87,4 +87,54 @@ export interface AppFigmaCatalogResponse {
   componentCount: number;
   /** Rendered `criteria/components.md` (closed catalogue format), or null. */
   markdown: string | null;
+  /** Rendered `figma-catalog/components-guide.md` (WP19a — AI-generated
+   *  fallback description guide, mirrors the closed catalogue format; see
+   *  `figma-component-guide.ts`). Optional and omitted (not `null`) when the
+   *  App has no guide yet, so responses for every project that predates this
+   *  field stay byte-for-byte identical to before. */
+  guideMarkdown?: string | null;
+  /** WP19b coverage counts, computed from the snapshot + guide. Optional and
+   *  omitted when there is no snapshot yet (`generatedAt == null`) — same
+   *  "omit rather than send a zeroed shape" rule as `guideMarkdown`. Powers
+   *  the DS tab's "X/Y component có mô tả · Z từ AI · N thiếu" line and the
+   *  "Sinh mô tả (N thiếu)" button's N. */
+  coverage?: AppFigmaCatalogCoverage;
+}
+
+/** WP19b: how many of an App's Figma components have a description, and
+ *  where it came from. `described` counts BOTH a real Figma description and
+ *  one filled in from `components-guide.md` (`fromGuide` is the subset of
+ *  `described` that came from the guide, not an addition to it). */
+export interface AppFigmaCatalogCoverage {
+  total: number;
+  described: number;
+  fromGuide: number;
+  missing: number;
+}
+
+/** WP19b: `POST /api/pipelines/apps/:appId/figma-catalog/generate-guide`
+ *  background job status — same "queued → running → succeeded/failed" shape
+ *  as the DS criteria-generation jobs it is modeled after (see
+ *  `docs-review-enrich`/`ds-criteria` in the daemon), polled by
+ *  `GET .../generate-guide/:jobId`. */
+export interface AppFigmaGuideJob {
+  id: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  /** Short human-readable (Vietnamese) status line for the button/progress UI. */
+  message: string;
+  /** How many descriptions this run accepted so far (updates as chunks land). */
+  generated: number;
+  /** How many candidate descriptions this run rejected (validation failed). */
+  rejected: number;
+  /** How many components are still missing a description AFTER this run
+   *  (capped at 60/click) — > 0 means "bấm tiếp" is still useful. */
+  remaining: number;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GenerateAppFigmaGuideResponse {
+  jobId: string;
+  job: AppFigmaGuideJob;
 }

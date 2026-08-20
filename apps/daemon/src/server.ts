@@ -441,7 +441,15 @@ import { registerActiveContextRoutes } from './active-context-routes.js';
 import { registerHostToolsRoutes } from './host-tools-routes.js';
 import { registerMcpRoutes } from './mcp-routes.js';
 import { registerConfluenceConfigRoutes } from './confluence-config-routes.js';
-import { registerFigmaCatalogRoutes, writeAppFigmaCatalog } from './figma-catalog-routes.js';
+import {
+  registerFigmaCatalogRoutes,
+  writeAppFigmaCatalog,
+  readAppComponentsGuide,
+  writeAppComponentsGuide,
+  downloadFigmaImage,
+  runDescribeChunk,
+  appFigmaCatalogDir,
+} from './figma-catalog-routes.js';
 import { registerFigmaDesignSystemRoutes } from './figma-design-system-routes.js';
 import { registerFigmaConfigRoutes } from './figma-config-routes.js';
 import { registerXaiRoutes } from './xai-routes.js';
@@ -576,12 +584,24 @@ import {
   SCREENS_OVERRIDES_REL,
 } from './screen-overrides.js';
 import type { ScreensManifest, ScreensOverrides } from '@open-design/contracts';
-import { renderFigmaComponentsMarkdown, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
+import { renderFigmaComponentsMarkdown, anchorFor, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
+// WP19a: fallback description guide (hạ tầng — xem docblock đầu file đó cho
+// bối cảnh/bất biến "Figma luôn thắng").
+import {
+  renderComponentsGuideMarkdown,
+  parseComponentsGuide,
+  mergeCatalogueWithGuide,
+  type ComponentsGuideEntry,
+} from './figma-component-guide.js';
 import { readFigmaConfig } from './figma-config.js';
 import { FigmaDesktopClient } from './figma-desktop.js';
 import { registerFigmaDesktopToolRoutes } from './figma-desktop-tool-routes.js';
 import type { FigmaDesktopScope } from './figma-desktop-tool-routes.js';
-import { buildFigmaComponentCatalog } from './figma-rest.js';
+import { buildFigmaComponentCatalog, fetchNodeImages, fetchNodeSubtrees } from './figma-rest.js';
+// WP19b: vòng sinh bù trong khối docs-comp prep (SAU freeze — xem chỗ dùng
+// bên dưới). `generateComponentDescriptions` là hàm CHUNG với job POST
+// /generate-guide (figma-catalog-routes.ts) — chỉ khác cách tiêm deps.
+import { computeMissingDescriptions, generateComponentDescriptions } from './figma-guide-generate.js';
 import { listSections, mergeCjSections, mergeUxrSections, mergeUxSpecSections, type DocSection } from './section-fanout.js';
 import { listScreens, mergeHeuristicScreens, renderPrototypeIndex, type UiScreen } from './ui-fanout.js';
 import { pushUxKb, resolveUxKbDir } from './ux-kb-sync.js';
@@ -6466,10 +6486,22 @@ export async function startServer({
   });
   // App-level Figma catalogue (DS tab of an App whose component source is
   // Figma links): read + refresh on demand.
+  //
+  // WP19b (nút "Sinh mô tả (N thiếu)"): `design`/`chat.startChatRun` là
+  // closure `const` khai báo SAU điểm này trong file (`design` ở trên,
+  // `startChatRun` mãi ở dòng ~12328) — bọc trong arrow function thay vì gọi
+  // thẳng để tránh TDZ; các route mới chỉ GỌI chúng lúc xử lý request (sau
+  // khi server khởi động xong, mọi biến đã gán), không gọi lúc đăng ký route
+  // này. `agents.resolveAgent` tái dùng CHÍNH `resolveCriteriaAgent` của
+  // dsCriteriaJobs (server.ts, ~dòng 7381) — cùng một cách chọn agent khả
+  // dụng, không nhân đôi logic detect agent/sandbox fallback.
   registerFigmaCatalogRoutes(app, {
     db,
     http: httpDeps,
     paths: pathDeps,
+    design,
+    chat: { startChatRun: (...args: Parameters<typeof startChatRun>) => startChatRun(...args) },
+    agents: { getAgentDef: agentDeps.getAgentDef, resolveAgent: () => resolveCriteriaAgent() },
   });
   registerFigmaDesignSystemRoutes(app, {
     db,
@@ -16392,6 +16424,11 @@ export async function startServer({
   // (writeDocsComponentFailureNote → `comp-khong-chay-duoc.md`).
   const DOCS_COMPONENT_FANOUT_CONCURRENCY = 4;
   const FIGMA_CATALOG_EXTRACTION_TIMEOUT_MS = 12 * 60 * 1000;
+  // WP19b: trần thời gian cho vòng sinh bù mô tả component (best-effort,
+  // SAU khi catalogue/guide đã đóng băng — xem chỗ dùng bên dưới). Không
+  // được kéo dài vô hạn (quyết định đã chốt) — hết giờ thì bỏ dở, KHÔNG fail
+  // stage: components.md/guide đã đóng băng ở trên rồi mới là nguồn thật.
+  const FIGMA_GUIDE_PREP_TIMEOUT_MS = 8 * 60 * 1000;
   const replaceValidatedFile = async (candidate: string, target: string): Promise<void> => {
     const backup = `${target}.${randomUUID()}.bak`;
     let backedUp = false;
@@ -16622,6 +16659,154 @@ export async function startServer({
             await writeAppFigmaCatalog(PROJECTS_DIR, componentSourceAppId, snapshot).catch((err) => {
               console.warn('[docs-comp] app-level figma catalogue write failed (continuing):', err?.message ?? err);
             });
+            // Fallback description guide (WP19a — hạ tầng; nội dung do WP-B
+            // sinh sau qua một nút ở DS tab). Guide sống ở App-level
+            // (figma-catalog/components-guide.md, xem figma-catalog-routes.ts)
+            // và phải được đóng băng cùng components.md vào MỖI lần chạy,
+            // cạnh nhau trong criteria/ của cwd NÀY (dr-comp và dr-review
+            // dùng CHUNG một cwd — cả hai đều thuộc workflow "docs-review",
+            // xem workflowDirForPipeline/wfDirForStage trong pipelines.ts —
+            // nên một lần đóng băng ở đây là đủ cho cả khối componentCatalogue
+            // của dr-review bên dưới, không cần đóng băng lần hai).
+            // Lọc còn lại đúng những anchor CÒN THẬT trong snapshot Figma vừa
+            // đọc — component đã bị xoá khỏi Figma thì không mang mô tả cũ
+            // theo sang (đừng chèn mô tả ma). Best-effort TUYỆT ĐỐI: guide chỉ
+            // là fallback hiển thị, lỗi ở đây không được làm hỏng cả stage —
+            // components.md/catalog.json ở trên đã ghi xong, đó mới là nguồn
+            // thật của stage.
+            try {
+              const guideMd = await readAppComponentsGuide(PROJECTS_DIR, componentSourceAppId);
+              const guideTarget = path.join(criteriaDir, 'components-guide.md');
+              if (guideMd == null) {
+                // App chưa có guide (WP-B chưa chạy, hoặc dự án không cần) —
+                // dọn bản đóng băng từ một lần chạy trước (nếu có) để không
+                // để lại mô tả đã hết hiệu lực. `rm force` trên file không
+                // tồn tại là no-op — dự án chưa từng có guide vẫn byte-
+                // identical với hành vi trước WP19a.
+                await fs.promises.rm(guideTarget, { force: true });
+              } else {
+                const validAnchors = new Set(
+                  snapshot.files.flatMap((file) => file.components.map((component) => anchorFor(file.fileKey, component.nodeId))),
+                );
+                const filtered: ComponentsGuideEntry[] = [];
+                for (const [anchor, entry] of parseComponentsGuide(guideMd)) {
+                  if (validAnchors.has(anchor)) filtered.push({ anchor, name: entry.name, description: entry.description });
+                }
+                if (filtered.length > 0) {
+                  await fs.promises.writeFile(guideTarget, renderComponentsGuideMarkdown(filtered), 'utf8');
+                } else {
+                  await fs.promises.rm(guideTarget, { force: true });
+                }
+              }
+            } catch (err: any) {
+              console.warn('[docs-comp] components-guide.md freeze copy failed (continuing):', err?.message ?? err);
+            }
+
+            // WP19b: vòng sinh bù (best-effort) — SAU khi catalogue + guide đã
+            // đóng băng ở trên. Nếu còn component thiếu mô tả (không có ở
+            // components.md LẪN guide), tự sinh bù trước khi dr-comp fan-out
+            // chạy, để agent phân tích màn có ngữ cảnh ngay từ lần chạy đầu —
+            // không phải đợi người dùng bấm nút "Sinh mô tả" ở tab DS. CÙNG
+            // ENGINE với job đó (`generateComponentDescriptions`,
+            // `runDescribeChunk`, `downloadFigmaImage` — figma-guide-generate.ts
+            // / figma-catalog-routes.ts), chỉ khác cách tiêm agent runner (gọi
+            // thẳng closure của server.ts thay vì qua ctx route). Toàn bộ khối
+            // này TUYỆT ĐỐI không được fail stage: components.md/guide đã đóng
+            // băng ở trên rồi mới là nguồn thật của dr-comp — lỗi/timeout ở
+            // đây chỉ log tiếng Việt vào logLines rồi bỏ qua.
+            try {
+              const guideMdForPrep = await readAppComponentsGuide(PROJECTS_DIR, componentSourceAppId);
+              const stillMissing = computeMissingDescriptions(snapshot, guideMdForPrep);
+              if (stillMissing.length > 0) {
+                logLines.push(`Còn ${stillMissing.length} component thiếu mô tả — đang sinh bù (tối đa 60, best-effort)…`);
+                const prepExecution = await resolveCriteriaAgent();
+                const prepDir = path.join(appFigmaCatalogDir(PROJECTS_DIR, componentSourceAppId), '_describe-prep', randomUUID());
+                const prepProjectId = `figma-guide-${componentSourceAppId}`;
+                const prepConversationId = `figma-guide-prep-conv-${randomUUID()}`;
+                const prepRowNow = Date.now();
+                const existingPrepProject = getProject(db, prepProjectId);
+                if (!existingPrepProject) {
+                  insertProject(db, {
+                    id: prepProjectId,
+                    name: `Sinh mô tả component · ${componentSourceAppId}`,
+                    skillId: null,
+                    designSystemId: null,
+                    pendingPrompt: null,
+                    metadata: { kind: 'figma-guide', baseDir: prepDir, appId: componentSourceAppId },
+                    createdAt: prepRowNow,
+                    updatedAt: prepRowNow,
+                  });
+                } else {
+                  updateProject(db, prepProjectId, {
+                    metadata: { ...(existingPrepProject.metadata ?? {}), kind: 'figma-guide', baseDir: prepDir, appId: componentSourceAppId },
+                  });
+                }
+                insertConversation(db, {
+                  id: prepConversationId,
+                  projectId: prepProjectId,
+                  title: `Sinh mô tả component (dr-comp) · ${new Date(prepRowNow).toLocaleString('vi-VN')}`,
+                  createdAt: prepRowNow,
+                  updatedAt: prepRowNow,
+                });
+                const totalPrepChunks = Math.ceil(Math.min(stillMissing.length, 60) / 12);
+                const genPromise = generateComponentDescriptions(snapshot, guideMdForPrep, {
+                  baseDir: prepDir,
+                  fetchTree: (fileKey, ids) => fetchNodeSubtrees(figmaCfg.token, fileKey, ids),
+                  fetchImages: (fileKey, ids) => fetchNodeImages(figmaCfg.token, fileKey, ids),
+                  downloadImage: (url, destPath) => downloadFigmaImage(url, destPath),
+                  runAgentChunk: (input, chunkDir, index) => runDescribeChunk(
+                    { design, startChatRun, db, getAgentDef: agentDeps.getAgentDef },
+                    { projectId: prepProjectId, conversationId: prepConversationId, chunkDir, index, totalChunks: totalPrepChunks, execution: prepExecution },
+                  ),
+                });
+                // Dọn prepDir (_describe-prep/<uuid>: input + ảnh tạm) trong
+                // finally — kể cả khi nhánh timeout của Promise.race thắng và
+                // throw trước khi chạy tới các bước ghi guide bên dưới. Trước
+                // sửa, rm() nằm cuối khối try nên bị timeout throw nhảy qua,
+                // để lại thư mục rác vĩnh viễn mỗi lần timeout (review WP19b,
+                // `.tmp/pipeline/wp19b-fix.yaml` điểm 2). best-effort .catch —
+                // không được ném, giữ đúng bất biến fail-soft của khối prep.
+                try {
+                  const prepResult = await Promise.race([
+                    genPromise,
+                    new Promise((_resolve, reject) => {
+                      const timer = setTimeout(
+                        () => reject(new Error(`Vòng sinh bù mô tả component quá ${Math.round(FIGMA_GUIDE_PREP_TIMEOUT_MS / 60_000)} phút.`)),
+                        FIGMA_GUIDE_PREP_TIMEOUT_MS,
+                      );
+                      timer.unref?.();
+                    }),
+                  ]);
+                  // Nếu nhánh timeout thắng race, genPromise vẫn chạy nền — không
+                  // ai await nó nữa, chỉ cần chặn unhandled rejection.
+                  genPromise.catch(() => {});
+                  await writeAppComponentsGuide(PROJECTS_DIR, componentSourceAppId, prepResult.guideMarkdown);
+                  // Copy lại vào criteria/ giống hệt bước freeze ở trên, để CHÍNH
+                  // dr-comp fan-out sắp chạy đọc được guide vừa sinh bù ngay,
+                  // không phải đợi lần chạy sau.
+                  const validAnchorsAfterPrep = new Set(
+                    snapshot.files.flatMap((file) => file.components.map((component) => anchorFor(file.fileKey, component.nodeId))),
+                  );
+                  const filteredAfterPrep: ComponentsGuideEntry[] = [];
+                  for (const [anchor, entry] of parseComponentsGuide(prepResult.guideMarkdown)) {
+                    if (validAnchorsAfterPrep.has(anchor)) filteredAfterPrep.push({ anchor, name: entry.name, description: entry.description });
+                  }
+                  const guideTargetAfterPrep = path.join(criteriaDir, 'components-guide.md');
+                  if (filteredAfterPrep.length > 0) {
+                    await fs.promises.writeFile(guideTargetAfterPrep, renderComponentsGuideMarkdown(filteredAfterPrep), 'utf8');
+                  } else {
+                    await fs.promises.rm(guideTargetAfterPrep, { force: true });
+                  }
+                  logLines.push(`Vòng sinh bù: +${prepResult.generated} mô tả, loại ${prepResult.rejected}, còn ${prepResult.remaining} chưa xử lý.`);
+                } finally {
+                  await fs.promises.rm(prepDir, { recursive: true, force: true }).catch(() => {});
+                }
+              }
+            } catch (err: any) {
+              const detail = String(err && err.message ? err.message : err);
+              console.warn('[docs-comp] vòng sinh bù mô tả component thất bại (continuing):', detail);
+              logLines.push(`Vòng sinh bù mô tả component thất bại (bỏ qua, dùng kết quả hiện có): ${detail}`);
+            }
           }
           const totalComponents = snapshot.files.reduce((sum, file) => sum + file.components.length, 0);
           extractionTask.status = 'succeeded';
@@ -17701,10 +17886,20 @@ export async function startServer({
           }
           return set;
         })();
-        const componentCatalogue = await fs.promises
-          .readFile(path.join(cwd, 'criteria', 'components.md'), 'utf8')
-          .then(parseCatalogue)
-          .catch(() => new Map<string, { name: string; description: string }>());
+        // WP19a: criteria/components-guide.md (đóng băng ở khối docs-comp,
+        // xem freeze phía trên — cùng cwd "docs-review" nên đã có mặt ở đây
+        // ngay khi dr-comp chạy trước dr-review) điền description fallback
+        // cho những anchor components.md có mặt nhưng thiếu "- Mô tả:" (DS
+        // Figma dự án cũ không khai description trên node). Thiếu guide (dự
+        // án không có, hoặc chưa từng chạy WP-B) → componentCatalogue y hệt
+        // hành vi trước WP19a (chỉ parseCatalogue của components.md).
+        const componentCatalogue = await (async () => {
+          const catalogueMd = await fs.promises.readFile(path.join(cwd, 'criteria', 'components.md'), 'utf8').catch(() => null);
+          if (catalogueMd == null) return new Map<string, { name: string; description: string; fromGuide?: boolean }>();
+          const catalogue = parseCatalogue(catalogueMd);
+          const guideMd = await fs.promises.readFile(path.join(cwd, 'criteria', 'components-guide.md'), 'utf8').catch(() => null);
+          return guideMd == null ? catalogue : mergeCatalogueWithGuide(catalogue, parseComponentsGuide(guideMd));
+        })();
         const compRoleMap = await fs.promises
           .readFile(path.join(cwd, 'comp', '_role-map.json'), 'utf8')
           .then((raw) => JSON.parse(raw) as RoleMapDoc)

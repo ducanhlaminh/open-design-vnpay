@@ -24,3 +24,6 @@
 .fileList a:hover { text-decoration: underline; }
 .errorText { margin: 0 0 10px; color: var(--danger, #c0392b); font-size: 12px; }
 .markdownPreview { max-width: 900px; margin: 22px auto 0; padding: 0 4px 40px; }
+.guideBar { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+.guideDetails { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
+.guideSummary { cursor: pointer; color: var(--text-strong); font-size: 13px; font-weight: 600; }

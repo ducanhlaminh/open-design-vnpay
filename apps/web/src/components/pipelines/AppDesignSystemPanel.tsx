@@ -6,8 +6,20 @@ import { DesignSpecView } from '../DesignSpecView';
 import { renderMarkdownToSafeHtml } from '../../artifacts/markdown';
 import { fetchFigmaDesignSystemDetail } from '../../providers/figma-design-systems';
 import { fetchDesignSystemCriteriaFile, fetchDesignSystemReactInfo, fetchDesignSystems } from '../../providers/registry';
-import { fetchAppFigmaCatalog, refreshAppFigmaCatalog, type AppFigmaCatalogResponse } from '../../state/figma-config';
+import {
+  fetchAppFigmaCatalog,
+  fetchAppFigmaGuideJob,
+  generateAppFigmaGuide,
+  refreshAppFigmaCatalog,
+  type AppFigmaCatalogResponse,
+  type AppFigmaGuideJob,
+} from '../../state/figma-config';
 import styles from './AppDesignSystemPanel.module.css';
+
+/** UI poll cadence for the "Sinh mô tả" background job — same order of
+ *  magnitude as other job-status polls in this codebase (ds-criteria/rules),
+ *  fast enough to feel live without hammering the daemon. */
+const GUIDE_JOB_POLL_MS = 3_000;
 
 type View = 'showcase' | 'criteria';
 
@@ -79,6 +91,9 @@ function AppFigmaCatalogPanel({ appId, linkCount }: { appId: string; linkCount: 
   const [catalog, setCatalog] = useState<AppFigmaCatalogResponse | null | undefined>(undefined);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // WP19b: nút "Sinh mô tả (N thiếu)" — job nền, poll ~3s tới khi kết thúc.
+  const [guideJob, setGuideJob] = useState<AppFigmaGuideJob | null>(null);
+  const [guideError, setGuideError] = useState<string | null>(null);
   const requestGeneration = useRef(0);
   const activeController = useRef<AbortController | null>(null);
 
@@ -104,6 +119,8 @@ function AppFigmaCatalogPanel({ appId, linkCount }: { appId: string; linkCount: 
     setCatalog(undefined);
     setRefreshing(false);
     setError(null);
+    setGuideJob(null);
+    setGuideError(null);
     void fetchAppFigmaCatalog(appId, controller.signal).then((res) => {
       if (controller.signal.aborted || generation !== requestGeneration.current) return;
       setCatalog(res);
@@ -115,6 +132,45 @@ function AppFigmaCatalogPanel({ appId, linkCount }: { appId: string; linkCount: 
       if (activeController.current === controller) activeController.current = null;
     };
   }, [appId, refresh]);
+
+  const missingCount = catalog?.coverage?.missing ?? 0;
+  const guideJobRunning = guideJob != null && (guideJob.status === 'queued' || guideJob.status === 'running');
+
+  const startGuideGeneration = useCallback(async () => {
+    setGuideError(null);
+    const result = await generateAppFigmaGuide(appId);
+    if (!result.ok) {
+      setGuideError(result.error);
+      return;
+    }
+    setGuideJob(result.job);
+  }, [appId]);
+
+  // Poll while the job is queued/running; stop as soon as it lands on a
+  // terminal status, and refetch the catalog once (guideMarkdown + coverage
+  // đã đổi) instead of re-hitting Figma — the job never touches components.
+  useEffect(() => {
+    if (!guideJob || (guideJob.status !== 'queued' && guideJob.status !== 'running')) return undefined;
+    let alive = true;
+    const jobId = guideJob.id;
+    const timer = setInterval(() => {
+      void fetchAppFigmaGuideJob(appId, jobId).then((job) => {
+        if (!alive || !job) return;
+        setGuideJob(job);
+        if (job.status === 'succeeded') {
+          clearInterval(timer);
+          void fetchAppFigmaCatalog(appId).then((res) => { if (alive && res) setCatalog(res); });
+        } else if (job.status === 'failed') {
+          clearInterval(timer);
+          setGuideError(job.error ?? 'Sinh mô tả thất bại.');
+        }
+      });
+    }, GUIDE_JOB_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [appId, guideJob?.id, guideJob?.status]);
 
   const generatedLabel = catalog?.generatedAt ? new Date(catalog.generatedAt).toLocaleString('vi-VN') : null;
 
@@ -157,8 +213,28 @@ function AppFigmaCatalogPanel({ appId, linkCount }: { appId: string; linkCount: 
                   ))}
                 </ul>
               ) : null}
+              {catalog.coverage ? (
+                <p className={styles.meta}>
+                  {catalog.coverage.described}/{catalog.coverage.total} component có mô tả · {catalog.coverage.fromGuide} từ AI · {catalog.coverage.missing} thiếu
+                </p>
+              ) : null}
             </div>
+            {catalog.coverage ? (
+              <div className={styles.guideBar}>
+                <button
+                  type="button"
+                  className={styles.refreshButton}
+                  data-testid="figma-guide-generate"
+                  disabled={missingCount === 0 || guideJobRunning}
+                  onClick={() => { void startGuideGeneration(); }}
+                >
+                  {guideJobRunning ? 'Đang sinh mô tả…' : `Sinh mô tả (${missingCount} thiếu)`}
+                </button>
+                {guideJobRunning ? <p className={styles.muted}>{guideJob?.message ?? 'Đang xử lý…'}</p> : null}
+              </div>
+            ) : null}
             {error ? <p className={styles.errorText} role="alert">{error}</p> : null}
+            {guideError ? <p className={styles.errorText} role="alert">{guideError}</p> : null}
             {!catalog.hasToken ? (
               <div className={styles.empty}><p>Chưa có token Figma nên chưa đọc được danh mục. Vào <strong>Sửa dự án</strong> → Nguồn đối chiếu component → dán Personal Access Token.</p></div>
             ) : catalog.markdown ? (
@@ -168,6 +244,12 @@ function AppFigmaCatalogPanel({ appId, linkCount }: { appId: string; linkCount: 
             ) : (
               <div className={styles.empty}><p>Chưa có danh mục. Bấm <strong>Đọc lại từ Figma</strong>.</p></div>
             )}
+            {catalog.guideMarkdown ? (
+              <details className={styles.guideDetails}>
+                <summary className={styles.guideSummary}>Mô tả AI sinh (components-guide.md)</summary>
+                <DesignSpecView source={catalog.guideMarkdown} loadingLabel="Đang tải mô tả AI sinh…" />
+              </details>
+            ) : null}
           </>
         )}
       </div>

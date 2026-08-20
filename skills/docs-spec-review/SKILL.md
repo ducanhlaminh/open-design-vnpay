@@ -144,6 +144,15 @@ làm hỏng cả trang, y như một anchor bịa trong `criteria/`.
 
 Khi daemon đã stage `criteria/rules.md`, đọc file này trước khi review và dùng anchor thật (`criteria/rules.md#R-...`) cho finding/pass liên quan. File này có thể do người dùng nạp tay HOẶC do daemon tự sinh từ showcase + token của DS, nên ngoài quyết định UX nó còn có thể phủ màu, typography, spacing, elevation/radius, component-usage — trích đúng anchor CÓ THẬT trong file, đừng giả định một tập anchor cố định. Nếu có `criteria/components.md`, dùng nó làm danh mục component hợp lệ đóng; không suy đoán từ trí nhớ. Thiếu một hoặc cả hai file là hợp lệ.
 
+Component trong `criteria/components.md` không có dòng "Mô tả:" → tra
+`criteria/components-guide.md` (cùng thư mục, nếu tồn tại) theo đúng anchor
+`#figma-…`: đó là mô tả do AI sinh từ phân tích node + ảnh Figma — dùng làm
+ngữ cảnh để hiểu component khi viết `finding`/`suggestion` của nhóm
+`component`, KHÔNG dùng làm `rule_id` (rule_id vẫn chỉ trỏ
+`criteria/components.md#…` / `criteria/rules.md#…`), và khi trích dẫn phải
+ghi rõ nguồn "(AI sinh)". File không tồn tại hoặc không có entry cho
+component đó → coi như component không có mô tả, xử lý như trước nay.
+
 ## Bước 0.5 — tách yêu cầu khỏi ảnh minh hoạ
 
 Mọi `![alt](attachments/…)` trong URD/PRD là **minh hoạ, không phải đặc tả hay
@@ -499,4 +508,8 @@ là mảng rỗng, không phải lỗi.
   hoặc dùng ký tự `|` trong nội dung ô. Không khai change cho việc sửa ô này
   (xem Bước 2/3) — daemon tự đối soát bảng sau khi section chạy xong; sửa sai
   luật này bị coi là bảng hỏng cấu trúc và đánh hỏng section.
+  - Cột "Mô tả component" mang hậu tố **"(AI sinh)"** nghĩa là mô tả đó lấy
+    từ `criteria/components-guide.md` chứ không phải mô tả gốc trong Figma —
+    giữ nguyên hậu tố khi đối chiếu bảng, KHÔNG được coi là lỗi và KHÔNG được
+    tự xoá.
 - File-only: không đẩy bất cứ gì lên KGS.

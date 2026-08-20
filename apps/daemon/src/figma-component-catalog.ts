@@ -34,7 +34,10 @@ export interface FigmaComponentCatalogSnapshot {
   files: FigmaCatalogFile[];
 }
 
-function anchorFor(fileKey: string, nodeId: string): string {
+// Exported (WP19a): figma-component-guide.ts / server.ts (khối docs-comp
+// freeze) cần tính lại đúng tập anchor còn hợp lệ trong một snapshot Figma để
+// lọc `components-guide.md` — không được chép lại thuật toán hash ở nơi khác.
+export function anchorFor(fileKey: string, nodeId: string): string {
   const digest = createHash('sha256').update(`${fileKey}\0${nodeId}`).digest('hex').slice(0, 10);
   return `figma-${digest}`;
 }

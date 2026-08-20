@@ -402,7 +402,12 @@ export function compositionCaptionFor(key: string): string {
  *  file). `screenNames` map SCREEN-KEY → tên hiển thị, dùng để dịch `nav[].to`. */
 export function renderCompositionDraft(
   screen: ScreenComponentsDoc,
-  catalogue: Map<string, { name: string; description: string }>,
+  // `fromGuide` (WP19a, tuỳ chọn): server.ts merge components.md với fallback
+  // `criteria/components-guide.md` (xem figma-component-guide.ts,
+  // mergeCatalogueWithGuide) trước khi gọi hàm này — cờ này đánh dấu mô tả
+  // ĐẾN TỪ guide (AI sinh) chứ không phải từ Figma, để cột "Mô tả component"
+  // gắn hậu tố cho người đọc biết xuất xứ (xem `desc` bên dưới).
+  catalogue: Map<string, { name: string; description: string; fromGuide?: boolean }>,
   roleMap: RoleMapDoc | null,
   screenNames: Map<string, string>,
 ): string {
@@ -427,7 +432,12 @@ export function renderCompositionDraft(
     const whyTrunc = (el.why ?? '').trim().slice(0, 120);
     const roleText = whyTrunc ? `${el.role} — ${whyTrunc}` : el.role;
     const catEntry = el.ds?.anchor ? catalogue.get(el.ds.anchor) : undefined;
-    const desc = catEntry?.description ? escapeCell(catEntry.description) : '—';
+    // Hậu tố " (AI sinh)" (WP19a) khi mô tả đến từ guide fallback thay vì
+    // Figma — chỉ gắn SAU escape, không phải nội dung do agent/Figma cung
+    // cấp nên không cần escape riêng.
+    const desc = catEntry?.description
+      ? `${escapeCell(catEntry.description)}${catEntry.fromGuide ? ' (AI sinh)' : ''}`
+      : '—';
     const navTos = (screen.nav ?? [])
       .filter((n) => n.el === el.id)
       .map((n) => screenNames.get(n.to) ?? n.to);

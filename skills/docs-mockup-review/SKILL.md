@@ -61,7 +61,15 @@ Also read, when present:
   `./cj/` for documented actors, goals, handoffs, and pain points;
 - `./ux-research/report.json` for evidence-based UX criteria;
 - `./criteria/rules.md` and `./criteria/components.md` for the selected Design
-  System's documented rules and allowed component catalogue.
+  System's documented rules and allowed component catalogue. If a component
+  entry in `components.md` has no "Mô tả:" line, look up
+  `./criteria/components-guide.md` (same directory, when present) at the
+  matching anchor `#figma-…`: an AI-generated description from node + Figma
+  screenshot analysis — use it as **context only**, never as a rule anchor
+  (anchors still only point to `criteria/components.md#…` /
+  `criteria/rules.md#…`), and cite it with the source tag "(AI sinh)" when
+  quoted. Missing file or no matching entry means treat the component as
+  having no description, same as before.
 
 Ignore every `![...](attachments/...)` UI-image reference. Preserve their paths
 only as report traceability where the existing report format requires it.

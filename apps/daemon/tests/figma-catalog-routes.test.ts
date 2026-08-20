@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { writeFigmaConfig } from '../src/figma-config.js';
-import { readAppFigmaCatalog, registerFigmaCatalogRoutes, writeAppFigmaCatalog } from '../src/figma-catalog-routes.js';
+import { downloadFigmaImage, readAppFigmaCatalog, registerFigmaCatalogRoutes, writeAppFigmaCatalog } from '../src/figma-catalog-routes.js';
 import {
   FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION,
   renderFigmaComponentsMarkdown,
@@ -121,5 +121,63 @@ describe('app figma-catalog routes', () => {
     const names = await (await import('node:fs/promises')).readdir(path.join(projectsDir, 'retail', 'figma-catalog'));
     expect(names).toEqual(expect.arrayContaining(['components.json', 'components.md']));
     expect(names.some((name) => name.endsWith('.tmp'))).toBe(false);
+  });
+
+  /* ── downloadFigmaImage: kiểm content-type/size (điểm 4 review WP19b-fix) ── */
+  // Trước sửa: hàm buffer hoá thẳng response không kiểm gì — một URL trả
+  // nhầm asset không phải ảnh, hoặc ảnh khổng lồ, vẫn bị ghi ra đĩa. Reject ở
+  // đây đi CÙNG đường "ảnh hỏng" hiện có (trả false), KHÔNG throw — caller
+  // (generateComponentDescriptions) chỉ bỏ qua phần ảnh của đúng component
+  // đó, không fail cả chunk.
+  describe('downloadFigmaImage', () => {
+    it('reject khi Content-Type không phải image/* — trả false, không ghi file', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'od-figma-image-'));
+      roots.push(root);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('not an image', { status: 200, headers: { 'content-type': 'application/json' } })));
+      const destPath = path.join(root, 'img.png');
+      const ok = await downloadFigmaImage('https://s3.example/fake.png', destPath);
+      expect(ok).toBe(false);
+      await expect(readFile(destPath)).rejects.toThrow();
+    });
+
+    it('reject khi Content-Length vượt 15MB — trả false trước khi buffer hoá', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'od-figma-image-'));
+      roots.push(root);
+      const oversize = 15 * 1024 * 1024 + 1;
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(1), {
+        status: 200,
+        headers: { 'content-type': 'image/png', 'content-length': String(oversize) },
+      })));
+      const destPath = path.join(root, 'img.png');
+      const ok = await downloadFigmaImage('https://s3.example/big.png', destPath);
+      expect(ok).toBe(false);
+      await expect(readFile(destPath)).rejects.toThrow();
+    });
+
+    it('reject khi byteLength thật vượt 15MB dù thiếu/sai Content-Length', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'od-figma-image-'));
+      roots.push(root);
+      const oversizeBody = new Uint8Array(15 * 1024 * 1024 + 1);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(oversizeBody, { status: 200, headers: { 'content-type': 'image/png' } })));
+      const destPath = path.join(root, 'img.png');
+      const ok = await downloadFigmaImage('https://s3.example/big-no-header.png', destPath);
+      expect(ok).toBe(false);
+      await expect(readFile(destPath)).rejects.toThrow();
+    }, 20_000);
+
+    it('ảnh hợp lệ (image/* + dưới 15MB) vẫn tải và ghi file bình thường', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'od-figma-image-'));
+      roots.push(root);
+      const body = new Uint8Array([1, 2, 3, 4]);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'image/png', 'content-length': String(body.byteLength) },
+      })));
+      const destPath = path.join(root, 'img.png');
+      const ok = await downloadFigmaImage('https://s3.example/ok.png', destPath);
+      expect(ok).toBe(true);
+      const written = await readFile(destPath);
+      expect(written.equals(Buffer.from(body))).toBe(true);
+    });
   });
 });

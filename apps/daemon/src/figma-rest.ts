@@ -365,6 +365,65 @@ async function fetchProperties(
   return result;
 }
 
+/** WP19b (`figma-guide-generate.ts`): full (un-cut) `document` subtree of a
+ *  batch of nodes, for `summarizeNodeTree` to rut gọn trước khi đưa cho
+ *  agent sinh mô tả. Deliberately NO `depth` param (unlike {@link
+ *  fetchProperties}'s `depth=1`) — the agent needs the real children to
+ *  recognize the component, not just its top-level property defs. Missing
+ *  document (node id no longer exists) is silently skipped — caller
+ *  (`generateComponentDescriptions`) falls back to the image alone. */
+export async function fetchNodeSubtrees(
+  token: string,
+  fileKey: string,
+  nodeIds: readonly string[],
+  deps: FigmaRestDeps = {},
+): Promise<Map<string, unknown>> {
+  const result = new Map<string, unknown>();
+  for (let start = 0; start < nodeIds.length; start += NODES_BATCH_SIZE) {
+    const batch = nodeIds.slice(start, start + NODES_BATCH_SIZE);
+    const body = record(await figmaGet(
+      `/v1/files/${encodeURIComponent(fileKey)}/nodes?ids=${encodeURIComponent(batch.join(','))}`,
+      token,
+      deps,
+    ));
+    const nodes = record(body?.nodes) ?? {};
+    for (const nodeId of batch) {
+      const document = record(nodes[nodeId])?.document;
+      if (document) result.set(nodeId, document);
+    }
+  }
+  return result;
+}
+
+/** WP19b: `GET /v1/images/:key?ids=…&format=png&scale=2` — one Figma-hosted
+ *  (S3) URL per rendered node, valid for a short window. Batches many ids per
+ *  call like {@link fetchProperties}. A node Figma could not render (locked,
+ *  deleted mid-batch, etc.) comes back `null` in the `images` map and is
+ *  simply omitted here — caller treats a missing entry as "ảnh lỗi", not a
+ *  hard failure (fail-soft, per the decided plan). */
+export async function fetchNodeImages(
+  token: string,
+  fileKey: string,
+  nodeIds: readonly string[],
+  deps: FigmaRestDeps = {},
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  for (let start = 0; start < nodeIds.length; start += NODES_BATCH_SIZE) {
+    const batch = nodeIds.slice(start, start + NODES_BATCH_SIZE);
+    const body = record(await figmaGet(
+      `/v1/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(batch.join(','))}&format=png&scale=2`,
+      token,
+      deps,
+    ));
+    const images = record(body?.images) ?? {};
+    for (const nodeId of batch) {
+      const url = images[nodeId];
+      if (typeof url === 'string' && url) result.set(nodeId, url);
+    }
+  }
+  return result;
+}
+
 /** One link → verification row for the App form ("Kiểm tra link"). Never
  *  throws: every failure is a `{ ok: false, detail }` row. */
 export async function verifyFigmaLink(
