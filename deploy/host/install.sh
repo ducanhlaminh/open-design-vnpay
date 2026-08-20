@@ -63,6 +63,14 @@ set -o pipefail
 # Configuration
 # ---------------------------------------------------------------------------
 DEFAULT_GH_REPO="ducanhlaminh/open-design-vnpay"
+# Cloudflare Pages mirror published in parallel with every GitHub Release
+# (scripts/host-runtime/mirror-publish.sh: <public>/latest/ carries
+# release.json + install.sh + install.ps1 + the runtime tarball). This is
+# the DEFAULT release source (not a fallback) when nothing else is
+# configured: this installer's user base sits inside the VNPAY network,
+# which blocks/TLS-inspects github.com for most users (WP16). GitHub is the
+# fallback -- see resolve_release_url()/preflight_check() below.
+DEFAULT_MIRROR_URL="https://od-runtime.pages.dev/latest"
 OD_HOME="${HOME}/.open-design"
 DEFAULT_PORT=7456
 DEFAULT_DATA_DIR="${HOME}/od-data/open-design"
@@ -432,11 +440,20 @@ preflight_probe() {
 
 # --release-url flag > $OD_RELEASE_URL (set by the user / IT, or inherited
 # from config.env by the daemon that spawns `--update`) > OD_RELEASE_URL
-# persisted in config.env > GitHub. RELEASE_URL_IS_MIRROR_BASE is what
-# write_config_env persists: only a base URL (folder with release.json),
-# never a one-off direct .tar.gz URL -- persisting that would pin every
-# future --update to one fixed file.
+# persisted in config.env > DEFAULT_MIRROR_URL (with GitHub as preflight's
+# runtime fallback if the mirror is unreachable -- see preflight_check()).
+# RELEASE_URL_IS_MIRROR_BASE is what write_config_env persists: only a
+# user/IT-provided base URL (folder with release.json), never a one-off
+# direct .tar.gz URL (would pin every future --update to one fixed file)
+# and never the untouched default (see RELEASE_URL_IS_DEFAULT below).
 RELEASE_URL_IS_MIRROR_BASE=0
+# Set only when OPT_RELEASE_URL was filled in by the DEFAULT_MIRROR_URL
+# fallback below, i.e. nothing in flag/env/config.env named a source.
+# write_config_env must not persist OD_RELEASE_URL in that case: the
+# default can change release-to-release, and persisting it would pin every
+# future --update to whatever mirror happened to be default at install
+# time instead of tracking the shipped default.
+RELEASE_URL_IS_DEFAULT=0
 resolve_release_url() {
   if [ -z "$OPT_RELEASE_URL" ]; then
     if [ -n "${OD_RELEASE_URL:-}" ]; then
@@ -445,8 +462,18 @@ resolve_release_url() {
       OPT_RELEASE_URL="$(existing_config_value OD_RELEASE_URL)"
     fi
   fi
+  if [ -z "$OPT_RELEASE_URL" ]; then
+    # Nothing configured anywhere -- default to the mirror (WP16), treated
+    # exactly like a user-provided mirror base except it is not persisted
+    # (RELEASE_URL_IS_DEFAULT=1, see above). preflight_check() below falls
+    # back to GitHub at runtime if the mirror itself is unreachable.
+    OPT_RELEASE_URL="$DEFAULT_MIRROR_URL"
+    RELEASE_URL_IS_MIRROR_BASE=1
+    RELEASE_URL_IS_DEFAULT=1
+    info "Release source: ${OPT_RELEASE_URL} (default mirror)"
+    return
+  fi
   case "$OPT_RELEASE_URL" in
-    "") ;;
     *.tar.gz) info "Release source: ${OPT_RELEASE_URL} (direct archive URL)" ;;
     *)
       OPT_RELEASE_URL="${OPT_RELEASE_URL%/}"
@@ -460,8 +487,10 @@ preflight_check() {
   phase "Kiểm tra kết nối mạng"
   required_ok=1
 
-  if [ -z "$OPT_ARCHIVE" ] && [ -n "$OPT_RELEASE_URL" ]; then
-    # Mirror / explicit source: that host is the only one the download needs.
+  if [ -z "$OPT_ARCHIVE" ] && [ -n "$OPT_RELEASE_URL" ] && [ "$RELEASE_URL_IS_DEFAULT" != "1" ]; then
+    # User/IT-provided source (flag / OD_RELEASE_URL / config.env): that
+    # host is the only one the download needs, and it never fails over --
+    # it's the one place they explicitly told us to use.
     release_host="$(printf '%s' "$OPT_RELEASE_URL" | sed -E 's#^(https?://[^/]+).*$#\1#')"
     if [ -n "$release_host" ]; then
       if preflight_probe "$release_host"; then
@@ -473,18 +502,36 @@ preflight_check() {
     fi
   fi
 
-  if [ -z "$OPT_ARCHIVE" ] && [ -z "$OPT_RELEASE_URL" ]; then
-    if preflight_probe "https://github.com"; then
-      ok "github.com"
+  if [ -z "$OPT_ARCHIVE" ] && [ "$RELEASE_URL_IS_DEFAULT" = "1" ]; then
+    # Default source is the Cloudflare Pages mirror (see DEFAULT_MIRROR_URL
+    # above) -- probe it first. Only if the mirror itself is unreachable do
+    # we fall back to the old GitHub path (github.com + its asset CDN),
+    # exactly as this installer behaved before WP16.
+    mirror_host="$(printf '%s' "$OPT_RELEASE_URL" | sed -E 's#^(https?://[^/]+).*$#\1#')"
+    if preflight_probe "$mirror_host"; then
+      ok "$mirror_host"
     else
-      required_ok=0
-      warn "github.com — không kết nối được"
-    fi
-    if preflight_probe "https://release-assets.githubusercontent.com"; then
-      ok "release-assets.githubusercontent.com"
-    else
-      required_ok=0
-      warn "release-assets.githubusercontent.com — không kết nối được"
+      warn "${mirror_host} — không kết nối được"
+      info "mirror không tới được — dùng GitHub"
+      # Clear the mirror default so resolve_archive()'s "no OPT_RELEASE_URL"
+      # branch runs (looks up the latest GitHub release), and so
+      # write_config_env's mirror-persist check (RELEASE_URL_IS_MIRROR_BASE)
+      # stays correctly off for this run.
+      OPT_RELEASE_URL=""
+      RELEASE_URL_IS_MIRROR_BASE=0
+      RELEASE_URL_IS_DEFAULT=0
+      if preflight_probe "https://github.com"; then
+        ok "github.com"
+      else
+        required_ok=0
+        warn "github.com — không kết nối được"
+      fi
+      if preflight_probe "https://release-assets.githubusercontent.com"; then
+        ok "release-assets.githubusercontent.com"
+      else
+        required_ok=0
+        warn "release-assets.githubusercontent.com — không kết nối được"
+      fi
     fi
   fi
 
@@ -517,7 +564,7 @@ preflight_check() {
     if [ -n "$OPT_RELEASE_URL" ]; then
       fail "Không kết nối được tới nguồn tải ${OPT_RELEASE_URL} — kiểm tra OD_RELEASE_URL / --release-url, hoặc dùng --archive <file đã tải sẵn>."
     fi
-    fail "Không kết nối được tới github.com / release-assets.githubusercontent.com — cần 2 domain này để tải gói cài đặt. Nhờ IT mở domain rồi thử lại, hoặc dùng --archive <file đã tải sẵn>."
+    fail "Không kết nối được tới od-runtime.pages.dev (mirror) / github.com / release-assets.githubusercontent.com — cần ít nhất 1 trong các nguồn này để tải gói cài đặt. Nhờ IT mở domain rồi thử lại, hoặc dùng --archive <file đã tải sẵn>."
   fi
 }
 
@@ -773,8 +820,13 @@ write_config_env() {
     echo "OD_APP_VERSION=${VERSION}"
     # Mirror base URL survives into --update (the daemon loads config.env
     # into its env before spawning install.sh --update; resolve_release_url
-    # reads it from either place). See --release-url in the header.
-    [ "$RELEASE_URL_IS_MIRROR_BASE" = "1" ] && echo "OD_RELEASE_URL=${OPT_RELEASE_URL}"
+    # reads it from either place). See --release-url in the header. The
+    # RELEASE_URL_IS_DEFAULT guard keeps the untouched DEFAULT_MIRROR_URL
+    # (WP16) out of config.env -- only a user/IT-provided source is durable;
+    # the shipped default is free to change release-to-release.
+    if [ "$RELEASE_URL_IS_DEFAULT" != "1" ]; then
+      [ "$RELEASE_URL_IS_MIRROR_BASE" = "1" ] && echo "OD_RELEASE_URL=${OPT_RELEASE_URL}"
+    fi
     [ -n "$confluence_url" ] && echo "CONFLUENCE_URL=${confluence_url}"
     [ -n "$media_url" ] && echo "MEDIA_URL=${media_url}"
     [ -n "$media_app_id" ] && echo "MEDIA_APP_ID=${media_app_id}"

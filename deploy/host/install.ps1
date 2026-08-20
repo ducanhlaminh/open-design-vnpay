@@ -223,6 +223,14 @@ $PSNativeCommandUseErrorActionPreference = $false
 # Configuration -- mirrors install.sh's "Configuration" block.
 # ---------------------------------------------------------------------------
 $DefaultGhRepo = "ducanhlaminh/open-design-vnpay"
+# Cloudflare Pages mirror published in parallel with every GitHub Release
+# (scripts/host-runtime/mirror-publish.sh: <public>/latest/ carries
+# release.json + install.ps1 + install.sh + the runtime tarball). This is
+# the DEFAULT release source (not a fallback) when nothing else is
+# configured: this installer's user base sits inside the VNPAY network,
+# which blocks/TLS-inspects github.com for most users (WP16). GitHub is the
+# fallback -- see Resolve-ReleaseUrl/Invoke-PreflightCheck below.
+$DefaultMirrorUrl = "https://od-runtime.pages.dev/latest"
 $OdHome = Join-Path $env:USERPROFILE ".open-design"
 $DefaultPort = 7456
 $DefaultDataDir = Join-Path $env:USERPROFILE "od-data\open-design"
@@ -890,12 +898,21 @@ function Test-PreflightProbe {
 
 # -ReleaseUrl flag > OD_RELEASE_URL env (set by the user / IT, or inherited
 # from config.env by the daemon that spawns `-Update`) > OD_RELEASE_URL
-# persisted in config.env > GitHub. $script:ReleaseUrlIsMirrorBase is what
-# Write-ConfigEnv persists: only a base URL (folder with release.json), never
-# a one-off direct .tar.gz URL -- persisting that would pin every future
-# -Update to one fixed file.
+# persisted in config.env > $DefaultMirrorUrl (with GitHub as preflight's
+# runtime fallback if the mirror is unreachable -- see Invoke-PreflightCheck).
+# $script:ReleaseUrlIsMirrorBase is what Write-ConfigEnv persists: only a
+# user/IT-provided base URL (folder with release.json), never a one-off
+# direct .tar.gz URL (would pin every future -Update to one fixed file) and
+# never the untouched default (see $script:ReleaseUrlIsDefault below).
 function Resolve-ReleaseUrl {
   $script:ReleaseUrlIsMirrorBase = $false
+  # Set only when $script:ReleaseUrl was filled in by the $DefaultMirrorUrl
+  # fallback below, i.e. nothing in flag/env/config.env named a source.
+  # Write-ConfigEnv must not persist OD_RELEASE_URL in that case: the
+  # default can change release-to-release, and persisting it would pin every
+  # future -Update to whatever mirror happened to be default at install time
+  # instead of tracking the shipped default.
+  $script:ReleaseUrlIsDefault = $false
   if (-not $ReleaseUrl) {
     $fromEnv = $env:OD_RELEASE_URL
     if ($fromEnv) {
@@ -905,11 +922,23 @@ function Resolve-ReleaseUrl {
       if ($fromConfig) { $script:ReleaseUrl = $fromConfig.Trim() }
     }
   }
-  if ($ReleaseUrl -and ($ReleaseUrl -notmatch '\.tar\.gz$')) {
+  if (-not $ReleaseUrl) {
+    # Nothing configured anywhere -- default to the mirror (WP16), treated
+    # exactly like a user-provided mirror base except it is not persisted
+    # ($script:ReleaseUrlIsDefault = $true, see above). Invoke-PreflightCheck
+    # below falls back to GitHub at runtime if the mirror itself is
+    # unreachable.
+    $script:ReleaseUrl = $DefaultMirrorUrl
+    $script:ReleaseUrlIsMirrorBase = $true
+    $script:ReleaseUrlIsDefault = $true
+    Write-Info "Release source: $ReleaseUrl (default mirror)"
+    return
+  }
+  if ($ReleaseUrl -notmatch '\.tar\.gz$') {
     $script:ReleaseUrl = $ReleaseUrl.TrimEnd('/')
     $script:ReleaseUrlIsMirrorBase = $true
     Write-Info "Release source: $ReleaseUrl (OD_RELEASE_URL / -ReleaseUrl)"
-  } elseif ($ReleaseUrl) {
+  } else {
     Write-Info "Release source: $ReleaseUrl (direct archive URL)"
   }
 }
@@ -918,52 +947,78 @@ function Invoke-PreflightCheck {
   Write-Phase "Kiem tra ket noi mang"
   $requiredOk = $true
 
-  if (-not $Archive -and $ReleaseUrl) {
-    # Mirror / explicit source: that host is the only one the download needs.
-    $releaseHost = ""
-    try { $releaseHost = ([System.Uri]$ReleaseUrl).GetLeftPart([System.UriPartial]::Authority) } catch {}
-    if ($releaseHost) {
-      $mirrorOk = Test-PreflightProbe $releaseHost
-      if (-not $mirrorOk -and -not $InsecureTlsActive -and (Test-TlsTrustFailure $releaseHost)) {
-        # Same corporate-proxy handling as the github.com branch below.
-        Write-Warn "$releaseHost -- chung chi TLS bi proxy/firewall cong ty thay the; bo qua kiem tra chung chi cho lan cai nay (chi trong installer)."
-        Enable-InsecureTls
+  if (-not $ReleaseUrlIsDefault) {
+    if (-not $Archive -and $ReleaseUrl) {
+      # User/IT-provided source (flag / OD_RELEASE_URL / config.env): that
+      # host is the only one the download needs, and it never fails over --
+      # it's the one place they explicitly told us to use.
+      $releaseHost = ""
+      try { $releaseHost = ([System.Uri]$ReleaseUrl).GetLeftPart([System.UriPartial]::Authority) } catch {}
+      if ($releaseHost) {
         $mirrorOk = Test-PreflightProbe $releaseHost
-      }
-      if ($mirrorOk) {
-        Write-Ok $(if ($InsecureTlsActive) { "$releaseHost (bo qua kiem tra chung chi TLS)" } else { $releaseHost })
-      } else {
-        $requiredOk = $false
-        Write-Warn "$releaseHost -- khong ket noi duoc"
+        if (-not $mirrorOk -and -not $InsecureTlsActive -and (Test-TlsTrustFailure $releaseHost)) {
+          # Same corporate-proxy handling as the github.com branch below.
+          Write-Warn "$releaseHost -- chung chi TLS bi proxy/firewall cong ty thay the; bo qua kiem tra chung chi cho lan cai nay (chi trong installer)."
+          Enable-InsecureTls
+          $mirrorOk = Test-PreflightProbe $releaseHost
+        }
+        if ($mirrorOk) {
+          Write-Ok $(if ($InsecureTlsActive) { "$releaseHost (bo qua kiem tra chung chi TLS)" } else { $releaseHost })
+        } else {
+          $requiredOk = $false
+          Write-Warn "$releaseHost -- khong ket noi duoc"
+        }
       }
     }
   }
 
-  if (-not $Archive -and -not $ReleaseUrl) {
-    $githubOk = Test-PreflightProbe "https://github.com"
-    if (-not $githubOk -and -not $InsecureTlsActive -and (Test-TlsTrustFailure "https://github.com")) {
-      # Default behaviour (decided 2026-08-17 after the VNPAY office network
-      # hit exactly this): do NOT stop and ask -- the person double-clicking
-      # OpenDesign-Install.cmd cannot fix a corporate proxy anyway. Say what
-      # happened, switch validation off for this installer process, carry on.
-      # Certificate validation stays ON on every network where github.com's
-      # real certificate is served (this branch is only reached on TrustFailure).
-      Write-Warn "github.com -- chung chi TLS bi proxy/firewall cong ty thay the; bo qua kiem tra chung chi cho lan cai nay (chi trong installer)."
-      Write-Host "      Sua tan goc: nho IT cai root CA cua proxy vao Windows (Trusted Root Certification Authorities)." -ForegroundColor DarkGray
-      Enable-InsecureTls
+  if (-not $Archive -and $ReleaseUrlIsDefault) {
+    # Default source is the Cloudflare Pages mirror (see $DefaultMirrorUrl
+    # above) -- probe it first. Only if the mirror itself is unreachable do
+    # we fall back to the old GitHub path (github.com + its asset CDN, with
+    # the same TrustFailure/InsecureTls auto-bypass it always had), exactly
+    # as this installer behaved before WP16.
+    $mirrorHost = ""
+    try { $mirrorHost = ([System.Uri]$ReleaseUrl).GetLeftPart([System.UriPartial]::Authority) } catch {}
+    $mirrorOk = if ($mirrorHost) { Test-PreflightProbe $mirrorHost } else { $false }
+    if ($mirrorOk) {
+      Write-Ok $mirrorHost
+    } else {
+      Write-Warn "$mirrorHost -- khong ket noi duoc"
+      Write-Info "mirror khong toi duoc -- dung GitHub"
+      # Clear the mirror default so Resolve-Archive's "no $ReleaseUrl" branch
+      # runs (looks up the latest GitHub release), and so Write-ConfigEnv's
+      # mirror-persist check ($script:ReleaseUrlIsMirrorBase) stays correctly
+      # off for this run.
+      $script:ReleaseUrl = ""
+      $script:ReleaseUrlIsMirrorBase = $false
+      $script:ReleaseUrlIsDefault = $false
+
       $githubOk = Test-PreflightProbe "https://github.com"
-    }
-    if ($githubOk) {
-      Write-Ok $(if ($InsecureTlsActive) { "github.com (bo qua kiem tra chung chi TLS)" } else { "github.com" })
-    } else {
-      $requiredOk = $false
-      Write-Warn "github.com -- khong ket noi duoc"
-    }
-    if (Test-PreflightProbe "https://release-assets.githubusercontent.com") {
-      Write-Ok "release-assets.githubusercontent.com"
-    } else {
-      $requiredOk = $false
-      Write-Warn "release-assets.githubusercontent.com -- khong ket noi duoc"
+      if (-not $githubOk -and -not $InsecureTlsActive -and (Test-TlsTrustFailure "https://github.com")) {
+        # Default behaviour (decided 2026-08-17 after the VNPAY office network
+        # hit exactly this): do NOT stop and ask -- the person double-clicking
+        # OpenDesign-Install.cmd cannot fix a corporate proxy anyway. Say what
+        # happened, switch validation off for this installer process, carry on.
+        # Certificate validation stays ON on every network where github.com's
+        # real certificate is served (this branch is only reached on TrustFailure).
+        Write-Warn "github.com -- chung chi TLS bi proxy/firewall cong ty thay the; bo qua kiem tra chung chi cho lan cai nay (chi trong installer)."
+        Write-Host "      Sua tan goc: nho IT cai root CA cua proxy vao Windows (Trusted Root Certification Authorities)." -ForegroundColor DarkGray
+        Enable-InsecureTls
+        $githubOk = Test-PreflightProbe "https://github.com"
+      }
+      if ($githubOk) {
+        Write-Ok $(if ($InsecureTlsActive) { "github.com (bo qua kiem tra chung chi TLS)" } else { "github.com" })
+      } else {
+        $requiredOk = $false
+        Write-Warn "github.com -- khong ket noi duoc"
+      }
+      if (Test-PreflightProbe "https://release-assets.githubusercontent.com") {
+        Write-Ok "release-assets.githubusercontent.com"
+      } else {
+        $requiredOk = $false
+        Write-Warn "release-assets.githubusercontent.com -- khong ket noi duoc"
+      }
     }
   }
 
@@ -996,7 +1051,7 @@ function Invoke-PreflightCheck {
     if ($ReleaseUrl) {
       Fail "Khong ket noi duoc toi nguon tai $ReleaseUrl -- kiem tra OD_RELEASE_URL / -ReleaseUrl, hoac dung -Archive <file da tai san>."
     }
-    Fail "Khong ket noi duoc toi github.com / release-assets.githubusercontent.com -- can 2 domain nay de tai goi cai dat. Nho IT mo domain roi thu lai, hoac dung -Archive <file da tai san>."
+    Fail "Khong ket noi duoc toi od-runtime.pages.dev (mirror) / github.com / release-assets.githubusercontent.com -- can it nhat 1 trong cac nguon nay de tai goi cai dat. Nho IT mo domain roi thu lai, hoac dung -Archive <file da tai san>."
   }
 }
 
@@ -1268,8 +1323,13 @@ function Write-ConfigEnv {
   if ($InsecureTlsActive) { $lines.Add("OD_INSECURE_TLS=1") }
   # Mirror base URL survives into -Update (the daemon loads config.env into
   # its env before spawning install.ps1 -Update; Resolve-ReleaseUrl reads it
-  # from either place). See .PARAMETER ReleaseUrl.
-  if ($ReleaseUrlIsMirrorBase) { $lines.Add("OD_RELEASE_URL=$ReleaseUrl") }
+  # from either place). See .PARAMETER ReleaseUrl. The ReleaseUrlIsDefault
+  # guard keeps the untouched $DefaultMirrorUrl (WP16) out of config.env --
+  # only a user/IT-provided source is durable; the shipped default is free
+  # to change release-to-release.
+  if (-not $ReleaseUrlIsDefault) {
+    if ($ReleaseUrlIsMirrorBase) { $lines.Add("OD_RELEASE_URL=$ReleaseUrl") }
+  }
   if ($confluenceUrl) { $lines.Add("CONFLUENCE_URL=$confluenceUrl") }
   if ($mediaUrl) { $lines.Add("MEDIA_URL=$mediaUrl") }
   if ($mediaAppId) { $lines.Add("MEDIA_APP_ID=$mediaAppId") }

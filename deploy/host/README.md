@@ -18,9 +18,22 @@ flow, not copied verbatim from any project).
 ### Recommended: one-line Terminal install (macOS / Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ducanhlaminh/open-design-vnpay/main/deploy/host/install.sh -o install.sh
+curl -fsSL https://od-runtime.pages.dev/latest/install.sh -o install.sh
 bash install.sh
 ```
+
+`od-runtime.pages.dev` is the VNPAY Cloudflare Pages mirror (CI publishes
+`install.sh`/`install.ps1` there alongside every GitHub Release — see
+"Download mirror" below); it's the recommended source because corporate
+networks that block or TLS-inspect `github.com` can usually still reach it.
+
+**Network blocks `github.com`? Nothing to do** — the mirror above is this
+installer's default release source, not just this bootstrap download: with
+no `--release-url`/`-ReleaseUrl`/`OD_RELEASE_URL` set, every install and
+`--update`/`-Update` reaches for `od-runtime.pages.dev` first, and only
+falls back to `github.com` if the mirror itself is unreachable. See
+"Download mirror" below only if you want to point at a mirror/source of
+your own.
 
 Linux has no double-click entry point — this is the only way to install
 there. On macOS this is also the recommended path, for a specific reason:
@@ -36,10 +49,11 @@ from Finder/Launchpad — no Gatekeeper "Open Anyway" prompt, ever. (Every
 never go stale.)
 
 Without `--archive` / `--release-url`, the script downloads the latest
-tagged release of this repo (immutable — pinned to whatever release was
-"latest" at install time, never to a mutable branch) and picks the tarball
-matching your `uname -s`/`uname -m` (`darwin-arm64`, `darwin-x64`, or
-`linux-x64`; anything else is a clear error).
+release (from the mirror first, GitHub as fallback — see above; immutable
+either way, pinned to whatever release was "latest" at install time, never
+to a mutable branch) and picks the tarball matching your `uname -s`/`uname
+-m` (`darwin-arm64`, `darwin-x64`, or `linux-x64`; anything else is a clear
+error).
 
 ### Alternative (macOS): download the zip and double-click
 
@@ -118,9 +132,11 @@ The same proxy is also why the download is **slow** on such networks: the
 inspecting device re-encrypts and scans the whole 60-100 MB runtime, which
 typically caps a single connection at a few hundred KB/s (measured at the
 VNPAY office 2026-08-18: ~200-500 KB/s to GitHub vs 11 MB/s to a
-non-inspected CDN from the same desk). If IT publishes a download mirror (see
-"Mirror / offline install" below), set `OD_RELEASE_URL` before double-clicking
-— either as a user environment variable or in the same command window:
+non-inspected CDN from the same desk). The installer now defaults to the
+VNPAY mirror automatically, so most installs on this network are unaffected —
+`OD_RELEASE_URL` is only needed to point at a different mirror (e.g. IT's own
+one, see "Mirror / offline install" below). Set it before double-clicking —
+either as a user environment variable or in the same command window:
 
 ```bat
 rem cmd.exe

@@ -803,7 +803,7 @@ test('preflight_check skips every probe when archive is local, Node satisfies, a
   }
 });
 
-test('preflight_check fails fast when github.com/the asset CDN are unreachable', async () => {
+test('preflight_check fails fast when the default mirror, github.com, and the asset CDN are all unreachable', async () => {
   const tmp = await mktmp('preflight-required-down');
   const fakeHome = join(tmp, 'home');
   try {
@@ -819,19 +819,57 @@ test('preflight_check fails fast when github.com/the asset CDN are unreachable',
         'OPT_ARCHIVE=""',
         'OPT_RELEASE_URL=""',
         'OPT_UPDATE="0"',
+        // Nothing configured -> resolve_release_url defaults OPT_RELEASE_URL
+        // to the mirror (same as install.sh's real main flow, which always
+        // calls resolve_release_url before preflight_check).
+        'resolve_release_url',
         'preflight_check',
       ].join('\n'),
     );
     await chmod(harness, 0o755);
 
     await assert.rejects(
-      execFileAsync('bash', [harness], { env: { ...process.env, HOME: fakeHome } }),
+      execFileAsync('bash', [harness], { env: { ...process.env, HOME: fakeHome, OD_RELEASE_URL: '' } }),
       (err: any) => {
+        assert.match(String(err.stderr ?? ''), /od-runtime\.pages\.dev/);
         assert.match(String(err.stderr ?? ''), /github\.com/);
         assert.match(String(err.stderr ?? ''), /release-assets\.githubusercontent\.com/);
         return true;
       },
     );
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('preflight_check falls back to GitHub and passes when only the default mirror is unreachable', async () => {
+  const tmp = await mktmp('preflight-mirror-down-github-up');
+  const fakeHome = join(tmp, 'home');
+  try {
+    const harness = join(tmp, 'harness.sh');
+    await writeFile(
+      harness,
+      [
+        '#!/usr/bin/env bash',
+        'set -eu',
+        `OD_INSTALL_SH_TEST_SOURCE=1 source "${installScript}"`,
+        // Only the mirror host is "unreachable" -- github.com and the asset
+        // CDN it falls back to both respond.
+        'preflight_probe() { [ "$1" = "https://od-runtime.pages.dev" ] && return 1; return 0; }',
+        'node_satisfies_engine() { return 0; }',
+        'OPT_ARCHIVE=""',
+        'OPT_RELEASE_URL=""',
+        'OPT_UPDATE="0"',
+        'resolve_release_url',
+        'preflight_check',
+      ].join('\n'),
+    );
+    await chmod(harness, 0o755);
+
+    const { stdout } = await execFileAsync('bash', [harness], {
+      env: { ...process.env, HOME: fakeHome, OD_RELEASE_URL: '' },
+    });
+    assert.match(stdout, /Kiểm tra kết nối mạng/);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
@@ -1022,8 +1060,9 @@ test('resolve_release_url: flag > OD_RELEASE_URL env > config.env > GitHub; only
       return stdout.trim().split('\n').pop()!;
     };
 
-    // Nothing configured -> GitHub default (empty URL, not a mirror).
-    assert.equal(await run({}), 'url=[] base=0');
+    // Nothing configured -> defaults to the mirror (WP16), treated as a
+    // mirror base like a user-provided one.
+    assert.equal(await run({}), 'url=[https://od-runtime.pages.dev/latest] base=1');
     // Env base URL, trailing slash trimmed, flagged as mirror.
     assert.equal(await run({ OD_RELEASE_URL: 'https://mirror.example/od/latest/' }), 'url=[https://mirror.example/od/latest] base=1');
     // Direct tarball URL is used but NOT flagged as a mirror (never persisted).
