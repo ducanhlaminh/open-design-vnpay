@@ -3310,7 +3310,10 @@ function RailFile({ file }: { file: ProjectFile }) {
 }
 
 // The rail + embedded FileViewer, shared by the modal and the route page.
-function PipelineResultBody({
+// Exported (named) so pipeline-result-rail.test.tsx can render it directly —
+// PipelineResultBody backs BOTH surfaces (modal + route page), so a test
+// against this function covers every step that uses Quick result.
+export function PipelineResultBody({
   projectId,
   projectKind,
   state,
@@ -3331,6 +3334,24 @@ function PipelineResultBody({
     active,
     outputs,
   } = state;
+  // Rail thu gọn/mở nhớ qua localStorage, dùng chung cho mọi bước Quick result
+  // (WP17b, 2026-08-20) — người dùng đối chiếu sơ đồ cần bề ngang cho viewer
+  // hơn là cây file 244px luôn hiện. Đọc localStorage ngay trong initializer
+  // (không phải useEffect) để lần render đầu đã đúng trạng thái, tránh
+  // flash-mở-rồi-gọn; guard typeof window vì component này SSR-safe tới nay.
+  const [railOpen, setRailOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return window.localStorage.getItem('od.quickResult.rail') !== '0';
+  });
+  const toggleRail = useCallback(() => {
+    setRailOpen((open) => {
+      const next = !open;
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('od.quickResult.rail', next ? '1' : '0');
+      }
+      return next;
+    });
+  }, []);
   if (error) {
     return (
       <div className="pl-modal-error" role="alert">
@@ -3368,32 +3389,51 @@ function PipelineResultBody({
   }
   return (
     <div className="pl-result-preview">
-      <aside className="pl-result-rail" aria-label="Output files">
-        {availableTargets.length > 1 ? (
-          <div className="pl-result-rail__targets" role="tablist" aria-label="Target">
-            {availableTargets.map((t) => (
-              <button
-                key={t}
-                type="button"
-                role="tab"
-                aria-selected={activeTarget === t}
-                className={`pl-result-rail__target${activeTarget === t ? ' pl-result-rail__target--active' : ''}`}
-                onClick={() => {
-                  setActiveTarget(t);
-                  const first = (files ?? []).find((f) => targetOfFile(f.name) === t);
-                  if (first) setActiveName(first.name);
-                }}
-              >
-                {UI_TARGETS[t].label}
-              </button>
-            ))}
-          </div>
+      <aside
+        className={`pl-result-rail${railOpen ? '' : ' pl-result-rail--collapsed'}`}
+        aria-label="Output files"
+      >
+        {/* Nút thu gọn luôn ở đầu rail. Gọn lại vẫn giữ một dải mỏng (không ẩn
+            hẳn aside) vì cần chỗ cho nút bấm mở lại — ẩn hẳn thì người dùng
+            hết cách quay lại cây file. */}
+        <button
+          type="button"
+          className="pl-result-rail__toggle"
+          onClick={toggleRail}
+          aria-label={railOpen ? 'Ẩn danh sách file' : 'Hiện danh sách file'}
+          title={railOpen ? 'Ẩn danh sách file' : 'Hiện danh sách file'}
+        >
+          <Icon name={railOpen ? 'chevron-left' : 'chevron-right'} size={14} />
+        </button>
+        {railOpen ? (
+          <>
+            {availableTargets.length > 1 ? (
+              <div className="pl-result-rail__targets" role="tablist" aria-label="Target">
+                {availableTargets.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTarget === t}
+                    className={`pl-result-rail__target${activeTarget === t ? ' pl-result-rail__target--active' : ''}`}
+                    onClick={() => {
+                      setActiveTarget(t);
+                      const first = (files ?? []).find((f) => targetOfFile(f.name) === t);
+                      if (first) setActiveName(first.name);
+                    }}
+                  >
+                    {UI_TARGETS[t].label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <RailCtx.Provider value={{ activeName: active?.name ?? null, onPick: setActiveName }}>
+              {buildRailTree(visibleFiles).map((n, i) => (
+                <RailNodeView key={railKey(n, i)} node={n} />
+              ))}
+            </RailCtx.Provider>
+          </>
         ) : null}
-        <RailCtx.Provider value={{ activeName: active?.name ?? null, onPick: setActiveName }}>
-          {buildRailTree(visibleFiles).map((n, i) => (
-            <RailNodeView key={railKey(n, i)} node={n} />
-          ))}
-        </RailCtx.Provider>
       </aside>
       <div className="pl-result-stage">
         {active ? (

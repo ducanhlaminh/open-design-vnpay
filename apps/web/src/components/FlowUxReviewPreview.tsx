@@ -1,9 +1,22 @@
 // Khung nhìn "Đánh giá luồng UX" (bước dr-flow bản mới của docs-review) cho
 // các file dưới `flows/<FLOW-ID>/`: sơ đồ GỐC render bằng đúng viewer của
-// draw.io (hoặc Mermaid), chuyển qua lại "Hiện trạng" ↔ "Đề xuất" (phần sửa đã
-// được daemon tô màu theo chú giải cố định), và panel lý do UX bên phải —
-// bấm một finding thì cell liên quan sáng lên trên sơ đồ, bấm một cell thì
-// finding tương ứng được chọn.
+// draw.io (hoặc Mermaid), Hiện trạng và Đề xuất (phần sửa đã được daemon tô
+// màu theo chú giải cố định) hiện CẠNH NHAU mặc định để đối chiếu (chế độ
+// "Từng bản" quay lại kiểu tab cũ khi cần phóng to một bản), và panel lý do
+// UX bên phải — bấm một finding thì cell liên quan sáng lên trên sơ đồ, bấm
+// một cell thì finding tương ứng được chọn.
+//
+// wp17a.yaml (2026-08-20): người dùng duyệt là phải đối chiếu 2 bản cùng lúc
+// thay vì nhớ-rồi-bấm-qua-lại. Hai khung KHÔNG đồng bộ pan/zoom — layout 2
+// bản lệch nhau vì node thêm/bớt (không có toạ độ chung để đồng bộ theo), và
+// GraphViewer không lộ API pan/zoom ra ngoài để làm chuyện đó dù muốn; đồng bộ
+// duy nhất là qua finding (mỗi khung tự highlight + tự cuộn tới cell của nó).
+// Toàn màn hình dùng CSS overlay (position:fixed) tự làm, KHÔNG dùng
+// Fullscreen API (jsdom không có, hay trục trặc khi phần tử nằm trong dialog)
+// và KHÔNG dùng lightbox của GraphViewer (2 kiểu fullscreen cạnh tranh) — vì
+// vậy mọi <DrawioViewer> ở đây đều truyền `options={{ toolbar: 'zoom' }}` để
+// bỏ nút lightbox, qua đúng prop `options` sẵn có (không sửa DrawioViewer.tsx
+// — nó còn được nơi khác dùng).
 //
 // Dữ liệu (đều là output của daemon `finalizeFlowUx`, KHÔNG phải của LLM
 // trực tiếp): `ux-review.json` (đã chuẩn hoá), `proposed.drawio` (2 trang:
@@ -144,6 +157,49 @@ export function drawioPageCount(xml: string): number {
 }
 
 type ViewMode = 'as-is' | 'proposed' | 'svg';
+/** Bố cục khung sơ đồ: 'side' = Hiện trạng/Đề xuất cạnh nhau (mặc định khi có
+ *  đề xuất), 'single' = kiểu tab cũ (as-is/proposed/svg đổi qua lại). */
+type LayoutMode = 'side' | 'single';
+
+const LAYOUT_STORAGE_KEY = 'od.flowUx.layout';
+/** Đọc bố cục đã lưu, khoan dung với localStorage bị chặn (chế độ riêng tư,
+ *  iframe sandbox) — rơi về mặc định thay vì vỡ màn hình. */
+function readStoredLayout(fallback: LayoutMode): LayoutMode {
+  try {
+    const saved = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (saved === 'side' || saved === 'single') return saved;
+  } catch {
+    // xem lý do ở trên.
+  }
+  return fallback;
+}
+function writeStoredLayout(v: LayoutMode): void {
+  try {
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, v);
+  } catch {
+    // Ghi thất bại thì layout vẫn đổi trong phiên này, chỉ không nhớ được qua
+    // lần tải lại — cùng đánh đổi như panel bên dưới.
+  }
+}
+
+const PANEL_STORAGE_KEY = 'od.flowUx.panel';
+function readStoredPanelOpen(fallback: boolean): boolean {
+  try {
+    const saved = window.localStorage.getItem(PANEL_STORAGE_KEY);
+    if (saved === '1') return true;
+    if (saved === '0') return false;
+  } catch {
+    // xem lý do ở readStoredLayout.
+  }
+  return fallback;
+}
+function writeStoredPanelOpen(open: boolean): void {
+  try {
+    window.localStorage.setItem(PANEL_STORAGE_KEY, open ? '1' : '0');
+  } catch {
+    // xem lý do ở readStoredLayout.
+  }
+}
 
 interface LoadedFlow {
   review: UxReview | null;
@@ -172,6 +228,72 @@ export function FlowUxReviewPreview({
   const [failed, setFailed] = useState(false);
   const [mode, setMode] = useState<ViewMode>('as-is');
   const [activeId, setActiveId] = useState<string | null>(null);
+  // Bố cục thô đọc từ localStorage (mặc định 'side') — bị "ép" về 'single' ở
+  // effectiveLayout bên dưới khi luồng không có bản đề xuất (không thể đối
+  // chiếu 2 bản khi chỉ có 1).
+  const [layout, setLayoutState] = useState<LayoutMode>(() => readStoredLayout('side'));
+  function setLayout(next: LayoutMode) {
+    setLayoutState(next);
+    writeStoredLayout(next);
+  }
+  const [panelOpen, setPanelOpenState] = useState<boolean>(() => readStoredPanelOpen(true));
+  function togglePanel() {
+    setPanelOpenState((prev) => {
+      const next = !prev;
+      writeStoredPanelOpen(next);
+      return next;
+    });
+  }
+  function openPanel() {
+    setPanelOpenState((prev) => {
+      if (prev) return prev;
+      writeStoredPanelOpen(true);
+      return true;
+    });
+  }
+  // Toàn màn hình: overlay CSS tự làm (xem docblock đầu file lý do không dùng
+  // Fullscreen API), không persist qua localStorage — mỗi lần mở lại trang là
+  // một phiên xem mới, không có lý do giữ nguyên trạng thái phóng to.
+  const [fullscreen, setFullscreen] = useState(false);
+  function enterFullscreen() {
+    setFullscreen(true);
+    // Vào fullscreen: ẩn panel mặc định để sơ đồ chiếm trọn — đây là GHI ĐÈ
+    // HIỂN THỊ tạm thời cho phiên fullscreen, KHÔNG ghi localStorage (không
+    // gọi writeStoredPanelOpen) để không đánh mất lựa chọn thật của người
+    // dùng; thoát fullscreen khôi phục đúng lựa chọn đó.
+    setPanelOpenState(false);
+  }
+  function exitFullscreen() {
+    setFullscreen(false);
+    setPanelOpenState(readStoredPanelOpen(true));
+  }
+  // Phím Esc thoát fullscreen — chỉ lắng nghe khi đang bật để không nuốt Esc
+  // của UI khác lúc màn hình bình thường.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') exitFullscreen();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullscreen]);
+  // Phím tắt `]` ẩn/hiện panel — CHỈ khi tiêu điểm không nằm trong ô nhập, để
+  // không nuốt dấu `]` người dùng gõ trong textarea khác của trang. Đăng ký
+  // MỘT lần (deps rỗng) và dùng cập nhật hàm trong togglePanel để không phải
+  // đăng ký lại mỗi lần panelOpen đổi (cùng khuôn với DocRedlinePreview).
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== ']') return;
+      const active = document.activeElement as HTMLElement | null;
+      const tag = active?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || active?.isContentEditable) return;
+      togglePanel();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!loc) return;
@@ -240,6 +362,9 @@ export function FlowUxReviewPreview({
   const title = data.index?.title ?? loc.flowId;
   const kind: IndexEntry['kind'] = data.index?.kind ?? (data.drawioXml ? 'drawio' : data.mermaidAsIs ? 'mermaid' : 'text');
   const hasProposal = kind === 'drawio' ? data.drawioHasProposal : kind === 'mermaid' ? !!data.mermaidProposed : false;
+  // Không có bản đề xuất thì không có gì để đối chiếu — ép về 'single' bất kể
+  // localStorage lưu gì (WP17a do mục 1).
+  const effectiveLayout: LayoutMode = hasProposal ? layout : 'single';
   const counts = SEVERITY_ORDER.map((s) => [s, findings.filter((f) => f.severity === s).length] as const).filter(([, n]) => n > 0);
 
   const onCellClick = (cellId: string | null) => {
@@ -247,9 +372,35 @@ export function FlowUxReviewPreview({
     const hit = cellToFinding.get(`${mode === 'proposed' ? 'proposed' : 'as-is'}:${cellId}`) ?? cellToFinding.get(`as-is:${cellId}`) ?? cellToFinding.get(`proposed:${cellId}`);
     if (hit) setActiveId(hit);
   };
+  // Bố cục cạnh nhau: khung trái highlight cells.asIs, khung phải highlight
+  // cells.proposed — KHÔNG fallback chéo (cả 2 khung đang hiện cùng lúc, khác
+  // với mode đơn ở single chỉ có một khung nên fallback mới hợp lý).
+  const sideLeftHighlight = active?.cells?.asIs ? [...active.cells.asIs] : [];
+  const sideRightHighlight = active?.cells?.proposed ? [...active.cells.proposed] : [];
+  const onSideLeftCellClick = (cellId: string | null) => {
+    if (!cellId) return;
+    const hit = cellToFinding.get(`as-is:${cellId}`) ?? cellToFinding.get(`proposed:${cellId}`);
+    if (hit) {
+      setActiveId(hit);
+      openPanel(); // bấm cell khi panel đang ẩn → mở panel + chọn finding.
+    }
+  };
+  const onSideRightCellClick = (cellId: string | null) => {
+    if (!cellId) return;
+    const hit = cellToFinding.get(`proposed:${cellId}`) ?? cellToFinding.get(`as-is:${cellId}`);
+    if (hit) {
+      setActiveId(hit);
+      openPanel();
+    }
+  };
+  // Chip cell trên card finding: ở bố cục cạnh nhau ưu tiên cells.proposed
+  // (như mode 'proposed' hôm nay), vì cả 2 khung đang hiện nên "bản mới" là
+  // thứ đáng chỉ ra trước.
+  const cardCellsFor = (f: UxFinding): string[] =>
+    effectiveLayout === 'side' || mode === 'proposed' ? f.cells?.proposed ?? f.cells?.asIs ?? [] : f.cells?.asIs ?? [];
 
   return (
-    <div className={styles.root}>
+    <div className={`${styles.root} ${fullscreen ? styles.fullscreen ?? '' : ''}`}>
       <header className={styles.head}>
         <div className={styles.headMain}>
           <h2 className={styles.title}>{title}</h2>
@@ -272,25 +423,49 @@ export function FlowUxReviewPreview({
         {data.review?.summary ? <p className={styles.summary}>{data.review.summary}</p> : null}
       </header>
 
-      <div className={styles.body}>
+      <div className={`${styles.body} ${panelOpen ? '' : styles.bodyPanelHidden ?? ''}`}>
         <section className={styles.diagram} aria-label="Sơ đồ luồng">
           <div className={styles.diagramBar}>
-            <div className={styles.modeBar} role="tablist" aria-label="Chế độ xem sơ đồ">
-              <button type="button" role="tab" aria-selected={mode === 'as-is'} className={`${styles.modeBtn} ${mode === 'as-is' ? styles.modeBtnActive : ''}`} onClick={() => setMode('as-is')}>
-                Hiện trạng
-              </button>
-              {hasProposal ? (
-                <button type="button" role="tab" aria-selected={mode === 'proposed'} className={`${styles.modeBtn} ${mode === 'proposed' ? styles.modeBtnActive : ''}`} onClick={() => setMode('proposed')}>
-                  Đề xuất
+            {effectiveLayout === 'single' ? (
+              <div className={styles.modeBar} role="tablist" aria-label="Chế độ xem sơ đồ">
+                <button type="button" role="tab" aria-selected={mode === 'as-is'} className={`${styles.modeBtn} ${mode === 'as-is' ? styles.modeBtnActive : ''}`} onClick={() => setMode('as-is')}>
+                  Hiện trạng
                 </button>
-              ) : null}
-              {kind === 'mermaid' && data.svg ? (
-                <button type="button" role="tab" aria-selected={mode === 'svg'} className={`${styles.modeBtn} ${mode === 'svg' ? styles.modeBtnActive : ''}`} onClick={() => setMode('svg')}>
-                  Ảnh gốc
-                </button>
-              ) : null}
-            </div>
+                {hasProposal ? (
+                  <button type="button" role="tab" aria-selected={mode === 'proposed'} className={`${styles.modeBtn} ${mode === 'proposed' ? styles.modeBtnActive : ''}`} onClick={() => setMode('proposed')}>
+                    Đề xuất
+                  </button>
+                ) : null}
+                {kind === 'mermaid' && data.svg ? (
+                  <button type="button" role="tab" aria-selected={mode === 'svg'} className={`${styles.modeBtn} ${mode === 'svg' ? styles.modeBtnActive : ''}`} onClick={() => setMode('svg')}>
+                    Ảnh gốc
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             {hasProposal ? (
+              // "Cạnh nhau" là mặc định để đối chiếu ngay (quyết định người
+              // dùng 2026-08-20); "Từng bản" trả lại đúng khối tab cũ ở trên.
+              <div className={styles.layoutBar} role="group" aria-label="Bố cục xem sơ đồ">
+                <button
+                  type="button"
+                  aria-pressed={effectiveLayout === 'side'}
+                  className={`${styles.layoutBtn} ${effectiveLayout === 'side' ? styles.layoutBtnActive : ''}`}
+                  onClick={() => setLayout('side')}
+                >
+                  Cạnh nhau
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={effectiveLayout === 'single'}
+                  className={`${styles.layoutBtn} ${effectiveLayout === 'single' ? styles.layoutBtnActive : ''}`}
+                  onClick={() => setLayout('single')}
+                >
+                  Từng bản
+                </button>
+              </div>
+            ) : null}
+            {hasProposal && effectiveLayout === 'single' ? (
               <div className={styles.legend} aria-label="Chú giải màu đề xuất">
                 <span className={`${styles.legendItem} ${styles.legend_added}`}>Thêm mới</span>
                 <span className={`${styles.legendItem} ${styles.legend_modified}`}>Sửa đổi</span>
@@ -306,32 +481,92 @@ export function FlowUxReviewPreview({
                 Tải .drawio
               </a>
             ) : null}
+            <button type="button" className={styles.fullscreenBtn ?? ''} onClick={fullscreen ? exitFullscreen : enterFullscreen}>
+              {fullscreen ? 'Thoát' : 'Toàn màn hình'}
+            </button>
           </div>
-          <div className={styles.diagramBox}>
-            {kind === 'drawio' && data.drawioXml ? (
-              <DrawioViewer
-                className={styles.drawio}
-                xml={data.drawioXml}
-                page={mode === 'proposed' && data.drawioHasProposal ? 1 : 0}
-                highlightCells={highlightCells}
-                onCellClick={onCellClick}
-              />
-            ) : null}
-            {kind === 'mermaid' ? (
-              // Vừa chiều RỘNG rồi đọc từ trên xuống (không co cả sơ đồ vào
-              // khung thành ảnh tí hon); cuộn/kéo/zoom như viewer draw.io.
-              mode === 'svg' && data.svg ? (
-                <MermaidDiagram code="" svg={data.svg} initialFit="width" />
-              ) : (
-                <MermaidDiagram code={(mode === 'proposed' ? data.mermaidProposed : null) ?? data.mermaidAsIs ?? ''} initialFit="width" />
-              )
-            ) : null}
-            {kind === 'text' && fallback ? <div className={styles.fallbackBox}>{fallback}</div> : null}
-            {kind === 'text' && !fallback ? (
-              <div className={styles.message}>
-                Tài liệu không có sơ đồ nguồn — luồng được dựng từ chữ. Mở <code>{loc.flowsDir}{loc.flowId}.flowchart.json</code> để xem sơ đồ.
+          <div className={`${styles.diagramBox} ${effectiveLayout === 'side' ? styles.diagramBoxSide ?? '' : ''}`}>
+            {effectiveLayout === 'side' ? (
+              // Hai khung ĐỘC LẬP (không đồng bộ pan/zoom — xem docblock đầu
+              // file): mỗi bên tự nhận highlight + tự cuộn tới cell của mình
+              // khi bấm một finding.
+              <div className={styles.sideWrap}>
+                <div className={styles.sidePane} data-testid="side-pane-left">
+                  <div className={styles.sidePaneHead}>
+                    <h3 className={styles.paneTitle}>Hiện trạng</h3>
+                  </div>
+                  <div className={styles.sidePaneBox}>
+                    {kind === 'drawio' && data.drawioXml ? (
+                      <DrawioViewer
+                        key={`side-left-${fullscreen}`}
+                        className={styles.drawio}
+                        xml={data.drawioXml}
+                        page={0}
+                        highlightCells={sideLeftHighlight}
+                        onCellClick={onSideLeftCellClick}
+                        // Bỏ nút lightbox (xem docblock đầu file) — chỉ còn
+                        // một kiểu toàn màn hình: overlay CSS của khung này.
+                        options={{ toolbar: 'zoom' }}
+                      />
+                    ) : null}
+                    {kind === 'mermaid' ? <MermaidDiagram code={data.mermaidAsIs ?? ''} initialFit="width" /> : null}
+                  </div>
+                </div>
+                <div className={styles.sidePane} data-testid="side-pane-right">
+                  <div className={styles.sidePaneHead}>
+                    <h3 className={styles.paneTitle}>Đề xuất</h3>
+                    <div className={styles.legend} aria-label="Chú giải màu đề xuất">
+                      <span className={`${styles.legendItem} ${styles.legend_added}`}>Thêm mới</span>
+                      <span className={`${styles.legendItem} ${styles.legend_modified}`}>Sửa đổi</span>
+                      <span className={`${styles.legendItem} ${styles.legend_removed}`}>Đề nghị bỏ</span>
+                    </div>
+                  </div>
+                  <div className={styles.sidePaneBox}>
+                    {kind === 'drawio' && data.drawioXml ? (
+                      <DrawioViewer
+                        key={`side-right-${fullscreen}`}
+                        className={styles.drawio}
+                        xml={data.drawioXml}
+                        page={1}
+                        highlightCells={sideRightHighlight}
+                        onCellClick={onSideRightCellClick}
+                        options={{ toolbar: 'zoom' }}
+                      />
+                    ) : null}
+                    {kind === 'mermaid' ? <MermaidDiagram code={data.mermaidProposed ?? data.mermaidAsIs ?? ''} initialFit="width" /> : null}
+                  </div>
+                </div>
               </div>
-            ) : null}
+            ) : (
+              <>
+                {kind === 'drawio' && data.drawioXml ? (
+                  <DrawioViewer
+                    key={`single-${fullscreen}`}
+                    className={styles.drawio}
+                    xml={data.drawioXml}
+                    page={mode === 'proposed' && data.drawioHasProposal ? 1 : 0}
+                    highlightCells={highlightCells}
+                    onCellClick={onCellClick}
+                    options={{ toolbar: 'zoom' }}
+                  />
+                ) : null}
+                {kind === 'mermaid' ? (
+                  // Vừa chiều RỘNG rồi đọc từ trên xuống (không co cả sơ đồ vào
+                  // khung thành ảnh tí hon); cuộn/kéo/zoom như viewer draw.io.
+                  mode === 'svg' && data.svg ? (
+                    <MermaidDiagram code="" svg={data.svg} initialFit="width" />
+                  ) : (
+                    <MermaidDiagram code={(mode === 'proposed' ? data.mermaidProposed : null) ?? data.mermaidAsIs ?? ''} initialFit="width" />
+                  )
+                ) : null}
+                {kind === 'text' && fallback ? <div className={styles.fallbackBox}>{fallback}</div> : null}
+                {kind === 'text' && !fallback ? (
+                  <div className={styles.message}>
+                    Tài liệu không có sơ đồ nguồn — luồng được dựng từ chữ. Mở <code>{loc.flowsDir}{loc.flowId}.flowchart.json</code> để xem sơ đồ.
+                  </div>
+                ) : null}
+              </>
+            )}
           </div>
           {data.index?.patchSkipped?.length ? (
             <div className={styles.warn}>
@@ -346,68 +581,81 @@ export function FlowUxReviewPreview({
           ) : null}
         </section>
 
-        <aside className={styles.panel} aria-label="Lý do UX">
-          <div className={styles.panelHead}>
-            <span>Phát hiện UX</span>
-            <span className={styles.panelMeta}>{findings.length}</span>
-          </div>
-          {!data.review ? (
-            <div className={styles.message}>Chưa có ux-review.json cho luồng này.</div>
-          ) : findings.length === 0 ? (
-            <div className={styles.okBox}>Không có phát hiện nào — luồng đạt checklist. {data.review.summary ? '' : 'Bước đánh giá không ghi thêm nhận xét.'}</div>
-          ) : (
-            <ol className={styles.list}>
-              {SEVERITY_ORDER.flatMap((sev) => findings.filter((f) => f.severity === sev)).map((f) => {
-                const isActive = f.id === activeId;
-                return (
-                  <li key={f.id}>
-                    <button
-                      type="button"
-                      className={`${styles.card} ${isActive ? styles.cardActive : ''}`}
-                      aria-pressed={isActive}
-                      onClick={() => setActiveId(isActive ? null : f.id)}
-                      data-testid={`finding-${f.id}`}
-                    >
-                      <div className={styles.cardTop}>
-                        <span className={`${styles.sev} ${styles[`sev_${f.severity}`]}`}>{SEVERITY_LABEL[f.severity]}</span>
-                        <span className={styles.fid}>{f.id}</span>
-                        {f.change && f.change !== 'none' ? <span className={`${styles.change} ${styles[`legend_${f.change}`]}`}>{CHANGE_LABEL[f.change]}</span> : null}
-                      </div>
-                      <div className={styles.cardTitle}>{f.title}</div>
-                      {f.heuristic ? <div className={styles.heuristic}>{f.heuristic}</div> : null}
-                      <p className={styles.reason}>{f.reason}</p>
-                      {f.recommendation ? (
-                        <p className={styles.reco}>
-                          <strong>Đề xuất:</strong> {f.recommendation}
-                        </p>
-                      ) : null}
-                      {f.conflictsWith ? <p className={styles.conflict}>Không đề xuất sửa vì vướng {f.conflictsWith}.</p> : null}
-                      {f.evidence?.length ? (
-                        <ul className={styles.evidence}>
-                          {f.evidence.map((e, i) => (
-                            <li key={i}>
-                              <code>{e}</code>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-                      {f.cells?.asIs?.length || f.cells?.proposed?.length ? (
-                        <div className={styles.cells}>
-                          {(mode === 'proposed' ? f.cells.proposed ?? f.cells.asIs ?? [] : f.cells.asIs ?? []).map((c) => (
-                            <span key={c} className={styles.cellChip}>
-                              {c}
-                            </span>
-                          ))}
+        {panelOpen ? (
+          <aside className={styles.panel} aria-label="Lý do UX">
+            <div className={styles.panelHead}>
+              <span>Phát hiện UX</span>
+              <span className={styles.panelMeta}>{findings.length}</span>
+              <button type="button" className={styles.panelToggleBtn ?? ''} aria-label="Ẩn chú giải" onClick={togglePanel}>
+                Ẩn ]
+              </button>
+            </div>
+            {!data.review ? (
+              <div className={styles.message}>Chưa có ux-review.json cho luồng này.</div>
+            ) : findings.length === 0 ? (
+              <div className={styles.okBox}>Không có phát hiện nào — luồng đạt checklist. {data.review.summary ? '' : 'Bước đánh giá không ghi thêm nhận xét.'}</div>
+            ) : (
+              <ol className={styles.list}>
+                {SEVERITY_ORDER.flatMap((sev) => findings.filter((f) => f.severity === sev)).map((f) => {
+                  const isActive = f.id === activeId;
+                  return (
+                    <li key={f.id}>
+                      <button
+                        type="button"
+                        className={`${styles.card} ${isActive ? styles.cardActive : ''}`}
+                        aria-pressed={isActive}
+                        onClick={() => setActiveId(isActive ? null : f.id)}
+                        data-testid={`finding-${f.id}`}
+                      >
+                        <div className={styles.cardTop}>
+                          <span className={`${styles.sev} ${styles[`sev_${f.severity}`]}`}>{SEVERITY_LABEL[f.severity]}</span>
+                          <span className={styles.fid}>{f.id}</span>
+                          {f.change && f.change !== 'none' ? <span className={`${styles.change} ${styles[`legend_${f.change}`]}`}>{CHANGE_LABEL[f.change]}</span> : null}
                         </div>
-                      ) : null}
-                    </button>
-                  </li>
-                );
-              })}
-            </ol>
-          )}
-          {data.index?.note ? <div className={styles.note}>Ghi chú: {data.index.note}</div> : null}
-        </aside>
+                        <div className={styles.cardTitle}>{f.title}</div>
+                        {f.heuristic ? <div className={styles.heuristic}>{f.heuristic}</div> : null}
+                        <p className={styles.reason}>{f.reason}</p>
+                        {f.recommendation ? (
+                          <p className={styles.reco}>
+                            <strong>Đề xuất:</strong> {f.recommendation}
+                          </p>
+                        ) : null}
+                        {f.conflictsWith ? <p className={styles.conflict}>Không đề xuất sửa vì vướng {f.conflictsWith}.</p> : null}
+                        {f.evidence?.length ? (
+                          <ul className={styles.evidence}>
+                            {f.evidence.map((e, i) => (
+                              <li key={i}>
+                                <code>{e}</code>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        {f.cells?.asIs?.length || f.cells?.proposed?.length ? (
+                          <div className={styles.cells}>
+                            {cardCellsFor(f).map((c) => (
+                              <span key={c} className={styles.cellChip}>
+                                {c}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+            {data.index?.note ? <div className={styles.note}>Ghi chú: {data.index.note}</div> : null}
+          </aside>
+        ) : (
+          // Panel ẩn: tab dọc mỏng bám mép phải, hiện tổng số finding — bấm mở
+          // lại. `position: absolute` bên trong `.body` (position: relative)
+          // để không tràn ra ngoài khung component (cùng khuôn với
+          // DocRedlinePreview's panelTab).
+          <button type="button" className={styles.panelTab ?? ''} aria-label="Hiện chú giải" onClick={togglePanel}>
+            {findings.length}
+          </button>
+        )}
       </div>
     </div>
   );

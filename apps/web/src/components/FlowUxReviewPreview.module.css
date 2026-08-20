@@ -13,6 +13,18 @@
   background: var(--bg, #fff);
   color: var(--text, #1a1916);
 }
+/* Toàn màn hình: overlay CSS tự làm (position:fixed), KHÔNG dùng Fullscreen
+ * API (wp17a.yaml — jsdom không có, requestFullscreen trong dialog hay trục
+ * trặc) và KHÔNG dùng lightbox của GraphViewer (2 kiểu fullscreen cạnh
+ * tranh). z-index phải CAO HƠN HẲN .pl-modal-backdrop (1000, pipelines.css)
+ * — bằng nhau thì chỉ thắng nhờ side-effect stacking-context của
+ * backdrop-filter, đổi CSS modal là thua theo thứ tự DOM. */
+.fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: var(--bg, #fff);
+}
 
 .head {
   flex: 0 0 auto;
@@ -113,12 +125,21 @@
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  /* Container tương đối cho .panelTab (position: absolute) khi panel ẩn —
+   * xem chú thích tại .panelTab bên dưới. */
+  position: relative;
 }
 @media (max-width: 900px) {
   .body {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(360px, 1fr) auto;
   }
+}
+/* Panel ẩn: sơ đồ chiếm trọn bề rộng — panel vẫn ra khỏi DOM (không giữ như
+ * DocRedlinePreview) vì panel này không có state cuộn/scroll-anchor cần nhớ
+ * giữa các lần ẩn/hiện. */
+.bodyPanelHidden {
+  grid-template-columns: minmax(0, 1fr) 0;
 }
 
 /* ── Sơ đồ ─────────────────────────────────────────────────────────────── */
@@ -163,6 +184,47 @@
   background: var(--accent-tint, #e6f0f8);
   font-weight: 650;
 }
+/* Toggle bố cục "Cạnh nhau" / "Từng bản" — cùng khuôn .modeBar/.modeBtn ở
+ * trên, tách riêng vì đây là một chiều lựa chọn KHÁC (bố cục khung, không
+ * phải trang đang xem). */
+.layoutBar {
+  display: inline-flex;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg, #fff);
+}
+.layoutBtn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted, #57544e);
+  cursor: pointer;
+}
+.layoutBtn + .layoutBtn {
+  border-left: 1px solid var(--border, #e1e5eb);
+}
+.layoutBtnActive {
+  color: var(--accent-strong, #00568f);
+  background: var(--accent-tint, #e6f0f8);
+  font-weight: 650;
+}
+.fullscreenBtn {
+  /* Đẩy sang mép phải cùng .download (xem docblock .download bên dưới) —
+   * nhiều item margin-left:auto trong cùng hàng flex vẫn nhóm đúng thứ tự ở
+   * mép phải, không cần biết trước .download có render hay không. */
+  margin-left: auto;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text-muted, #57544e);
+  font-size: 11.5px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
 .legend {
   display: inline-flex;
   gap: 6px;
@@ -203,6 +265,58 @@
   position: relative;
   overflow: auto;
   background: var(--bg, #fff);
+}
+/* Bố cục cạnh nhau: mỗi khung tự cuộn (sideWrap không cuộn để tránh 2 lớp
+ * thanh cuộn lồng nhau). */
+.diagramBoxSide {
+  overflow: hidden;
+  display: flex;
+}
+.sideWrap {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 1px; /* đường phân cách 1px = màu var(--border) lộ ra qua background */
+  background: var(--border, #e1e5eb);
+  min-height: 0;
+  min-width: 0;
+}
+/* Dưới ~1100px chuyển thành xếp DỌC — vẫn đối chiếu được (cuộn xuống thay vì
+ * cuộn ngang), không vỡ ngang trên màn hẹp. */
+@media (max-width: 1100px) {
+  .sideWrap {
+    flex-direction: column;
+  }
+}
+.sidePane {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #fff);
+}
+.sidePaneHead {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border, #e1e5eb);
+  background: var(--bg-subtle, #eef1f5);
+}
+.paneTitle {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text-muted, #57544e);
+}
+.sidePaneBox {
+  flex: 1 1 auto;
+  min-height: 360px;
+  min-width: 0;
+  position: relative;
+  overflow: auto;
 }
 .drawio {
   height: 100%;
@@ -250,6 +364,37 @@
 .panelMeta {
   font-weight: 500;
   color: var(--text-muted, #57544e);
+}
+.panelToggleBtn {
+  margin-left: auto;
+  border: 1px solid var(--border, #e1e5eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text-muted, #57544e);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+/* Tab dọc mỏng ở mép phải khi panel đang ẩn — bấm mở lại panel. `position:
+ * absolute` trong `.body` (position: relative), KHÔNG `position: fixed`:
+ * component này thường render lồng trong nhiều container cao-cố-định +
+ * overflow hidden (khung Quick result, panel…) — fixed sẽ trồi ra ngoài mọi
+ * khung đó (cùng lý do đã áp dụng cho DocRedlinePreview's panelTab). */
+.panelTab {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  border: 1px solid var(--border, #e1e5eb);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  background: var(--bg, #fff);
+  color: var(--text-muted, #57544e);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 10px 4px;
+  cursor: pointer;
 }
 .list {
   list-style: none;

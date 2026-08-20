@@ -2494,6 +2494,35 @@
   background: var(--bg-subtle);
 }
 
+/* Gọn thành dải mỏng thay vì ẩn hẳn — vẫn cần chỗ để chứa nút mở lại
+   (.pl-result-rail__toggle), nên chỉ siết width/padding + ẩn overflow. */
+.pl-result-rail--collapsed {
+  width: 36px;
+  padding: 6px 4px;
+  overflow: hidden;
+}
+
+/* Nút thu gọn/mở rail — icon-button phẳng cùng phong cách với các nút khác
+   trong rail (nền trong suốt, hover nổi nhẹ), dùng token màu sẵn có. */
+.pl-result-rail__toggle {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-bottom: 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: background 0.16s var(--pl-ease), color 0.16s var(--pl-ease);
+}
+.pl-result-rail__toggle:hover {
+  background: var(--bg-app);
+  color: var(--text);
+}
+
 /* Multi-target tabs at the top of the result rail. */
 .pl-result-rail__targets {
   display: flex;
@@ -2820,6 +2849,14 @@
   border-right-color: var(--border);
   background: color-mix(in srgb, var(--bg-subtle) 78%, var(--bg-panel));
   scrollbar-width: thin;
+}
+
+/* .pl-result-page .pl-result-rail (trên) và .pl-result-rail--collapsed (global)
+   cùng độ đặc hiệu (2 lớp) — nếu không override riêng ở đây thì width clamp()
+   của trang route sẽ thắng, khiến rail KHÔNG thu gọn được trên trang kết quả. */
+.pl-result-page .pl-result-rail--collapsed {
+  width: 36px;
+  padding: 6px 4px;
 }
 
 .pl-result-page .pl-result-rail__targets {
