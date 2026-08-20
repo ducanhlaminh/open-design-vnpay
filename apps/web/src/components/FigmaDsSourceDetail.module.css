@@ -278,8 +278,13 @@
 
 .progressItems {
   display: grid;
+  /* Scroll-container grid: khong co 2 dong duoi, WebKit bop deu cac hang
+     auto de nhet vua max-height (con overflow:hidden co min-size 0) thay vi
+     tran ra thanh cuon -> chu bi cat cut nua duoi. */
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 6px;
-  max-height: 320px;
+  max-height: min(48vh, 480px);
   overflow: auto;
 }
 
