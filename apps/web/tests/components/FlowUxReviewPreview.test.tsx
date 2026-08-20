@@ -200,18 +200,61 @@ describe('FlowUxReviewPreview — panel "Phát hiện UX" ẩn/hiện (wp17a m�
   });
 });
 
-describe('FlowUxReviewPreview — toàn màn hình (wp17a mục 4)', () => {
-  it('bật fullscreen → root có class overlay (2 khung vẫn cạnh nhau), Esc → tắt', async () => {
+describe('FlowUxReviewPreview — toàn màn hình qua portal, viewer trễ 1 frame, khoá cuộn body (wp18.yaml, fix bug 0.8.78)', () => {
+  // Bug 0.8.78: class `fullscreen` (position:fixed) gắn TẠI CHỖ lên root —
+  // tổ tiên có transform/backdrop-filter (pipelines.css) trở thành containing
+  // block của position:fixed ⇒ overlay lệch/tràn thay vì phủ kín viewport.
+  // Test này ĐỎ trước khi sửa (root vẫn còn nhận class overlay + không có gì
+  // gắn thẳng vào document.body) — sau khi sửa (createPortal lên
+  // document.body, viewer mount trễ 1 frame qua fsReady, khoá cuộn body) mới
+  // xanh. Bằng chứng red→green: xem report.
+  it('overlay là con trực tiếp của document.body (KHÔNG còn ở root tại chỗ); viewer mount sau rAF; Esc thoát khôi phục cuộn', async () => {
     const { container } = renderSideDefault();
     await waitFor(() => expect(screen.getAllByTestId('drawio-stub').length).toBe(2));
     const root = container.firstElementChild as HTMLElement;
     expect(root.classList.contains(styles.fullscreen ?? '__never__')).toBe(false);
+    expect(document.body.style.overflow).toBe('');
+
     fireEvent.click(screen.getByRole('button', { name: 'Toàn màn hình' }));
-    await waitFor(() => expect(root.classList.contains(styles.fullscreen ?? '__never__')).toBe(true));
-    // 2 khung vẫn cạnh nhau trong fullscreen (chỉ remount để GraphViewer đo lại kích thước).
-    expect(screen.getAllByTestId('drawio-stub').length).toBe(2);
+
+    // Root tại chỗ KHÔNG còn nhận class overlay — nó chỉ còn placeholder gọn
+    // để layout khung bao quanh (workspace/modal) không sập.
+    expect(root.classList.contains(styles.fullscreen ?? '__never__')).toBe(false);
+    expect(root.textContent).toContain('Đang xem toàn màn hình');
+
+    // Overlay thật là phần tử RIÊNG, con TRỰC TIẾP của document.body (portal)
+    // — không lồng trong root/container của lần render này.
+    const overlay = document.body.querySelector('[data-testid="fs-overlay"]') as HTMLElement | null;
+    expect(overlay).toBeTruthy();
+    expect(overlay!.parentElement).toBe(document.body);
+    expect(overlay!.classList.contains(styles.fullscreen ?? '__never__')).toBe(true);
+    expect(container.contains(overlay)).toBe(false);
+
+    // Cuộn trang phía sau bị khoá trong lúc overlay mở.
+    expect(document.body.style.overflow).toBe('hidden');
+
+    // Ngay sau khi bật, GraphViewer CHƯA mount (đang chờ rAF layout ổn định)
+    // — overlay chỉ có placeholder "Đang tải…", tránh đo kích thước sớm gây
+    // auto-fit sai (bug 0.8.78: sơ đồ bé tí + khoảng trắng khổng lồ).
+    expect(within(overlay!).queryAllByTestId('drawio-stub').length).toBe(0);
+    expect(within(overlay!).getAllByText('Đang tải…').length).toBeGreaterThan(0);
+
+    // Sau khi rAF flush (jsdom thật — không mock, xem ghi chú đầu file test),
+    // viewer xuất hiện trong overlay, đủ 2 khung page 0/1 như bố cục cạnh nhau.
+    await waitFor(() => expect(within(overlay!).getAllByTestId('drawio-stub').length).toBe(2));
+    const pages = within(overlay!)
+      .getAllByTestId('drawio-stub')
+      .map((el) => el.getAttribute('data-page'))
+      .sort();
+    expect(pages).toEqual(['0', '1']);
+    // Không render trùng 2 bộ viewer: root tại chỗ (placeholder) không có viewer nào.
+    expect(within(root).queryAllByTestId('drawio-stub').length).toBe(0);
+
     fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() => expect(root.classList.contains(styles.fullscreen ?? '__never__')).toBe(false));
+    await waitFor(() => expect(document.body.querySelector('[data-testid="fs-overlay"]')).toBeNull());
+    // Viewer quay lại render tại chỗ (root), không còn trong overlay.
+    await waitFor(() => expect(screen.getAllByTestId('drawio-stub').length).toBe(2));
+    expect(document.body.style.overflow).toBe('');
   });
 });
 

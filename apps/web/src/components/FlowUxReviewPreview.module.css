@@ -18,12 +18,29 @@
  * trặc) và KHÔNG dùng lightbox của GraphViewer (2 kiểu fullscreen cạnh
  * tranh). z-index phải CAO HƠN HẲN .pl-modal-backdrop (1000, pipelines.css)
  * — bằng nhau thì chỉ thắng nhờ side-effect stacking-context của
- * backdrop-filter, đổi CSS modal là thua theo thứ tự DOM. */
+ * backdrop-filter, đổi CSS modal là thua theo thứ tự DOM.
+ *
+ * wp18.yaml: div này giờ được `createPortal` thẳng lên `document.body`
+ * (component .tsx) thay vì gắn tại chỗ lên root — vì vậy nó PHẢI tự mang đủ
+ * layout flex-column mà trước đây `.root` cấp cho `.head`/`.body` bên trong
+ * (không còn `.root` làm cha nữa trong nhánh fullscreen). Portal thoát khỏi
+ * mọi tổ tiên có transform/backdrop-filter, nên inset:0 neo đúng viewport
+ * thay vì neo theo containing block của tổ tiên transform gần nhất (bug
+ * 0.8.78: sơ đồ lệch/tràn vì neo sai). */
 .fullscreen {
   position: fixed;
   inset: 0;
   z-index: 1100;
   background: var(--bg, #fff);
+  color: var(--text, #1a1916);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* 100vh làm fallback cho trình duyệt chưa hỗ trợ dvh; 100dvh loại trừ phần
+   * thanh địa chỉ/toolbar mobile che mất — khai báo sau đè khai báo trước ở
+   * trình duyệt hỗ trợ, bỏ qua (giữ 100vh) ở trình duyệt không hỗ trợ. */
+  height: 100vh;
+  height: 100dvh;
 }
 
 .head {

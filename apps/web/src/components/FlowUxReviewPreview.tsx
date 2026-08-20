@@ -18,12 +18,29 @@
 // bỏ nút lightbox, qua đúng prop `options` sẵn có (không sửa DrawioViewer.tsx
 // — nó còn được nơi khác dùng).
 //
+// wp18.yaml (fix bug 0.8.78): overlay TRƯỚC ĐÂY gắn class `fullscreen` tại
+// chỗ lên root — root nằm sâu trong DOM workspace/modal, và nhiều tổ tiên có
+// transform/backdrop-filter (pipelines.css) là CONTAINING BLOCK của
+// position:fixed theo spec CSS ⇒ inset:0 neo theo tổ tiên đó chứ không theo
+// viewport ⇒ overlay lệch + tràn. Sửa bằng `createPortal` lên
+// `document.body`: portal thoát mọi tổ tiên transform nên fixed neo đúng
+// viewport, giống hệt cách lightbox draw.io/hầu hết modal thật vẫn làm.
+// GraphViewer đo kích thước container LÚC MOUNT để auto-fit; nếu mount cùng
+// lúc với việc overlay vừa gắn (chưa kịp layout) thì đo sai (sơ đồ bé tí +
+// khoảng trắng khổng lồ) — nên overlay hiện placeholder "Đang tải…" và chỉ
+// mount viewer thật SAU một (hai, cho chắc) khung `requestAnimationFrame`
+// (state `fsReady`), để browser kịp flush layout của overlay trước khi
+// GraphViewer đo. Khoá `document.body.style.overflow` khi overlay mở (khôi
+// phục khi đóng/unmount) vì overlay giờ là anh em của toàn bộ trang, không
+// còn nằm trong khung cuộn cũ để tự nhiên chặn cuộn trang phía sau.
+//
 // Dữ liệu (đều là output của daemon `finalizeFlowUx`, KHÔNG phải của LLM
 // trực tiếp): `ux-review.json` (đã chuẩn hoá), `proposed.drawio` (2 trang:
 // Hiện trạng | Đề xuất) hoặc `as-is.drawio`, `as-is.mmd` / `proposed.mmd` /
 // `as-is.svg` cho Mermaid, và `flows/index.json` cho tiêu đề + patchSkipped.
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import type { ProjectFile } from '../types';
 
 import { fetchProjectFileText } from '../providers/registry';
@@ -278,6 +295,43 @@ export function FlowUxReviewPreview({
     return () => document.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullscreen]);
+  // fsReady: GraphViewer (DrawioViewer/MermaidDiagram) đo kích thước container
+  // NGAY LÚC MOUNT để auto-fit sơ đồ — nếu mount cùng render với lúc overlay
+  // portal vừa gắn vào document.body (chưa layout xong: position:fixed +
+  // inset:0 + height:100dvh chưa được trình duyệt tính ra kích thước cuối
+  // cùng) thì đo sai (sơ đồ bé tí giữa khoảng trắng lớn, đúng bug 0.8.78
+  // người dùng báo). Trễ mount viewer thật SAU 2 khung requestAnimationFrame
+  // (khung đầu xếp sau lần paint đã có overlay, khung hai để chắc layout đã
+  // ổn định — một rAF đôi khi chưa đủ trên một số trình duyệt/kịch bản đo).
+  // Trước fsReady, overlay hiện placeholder "Đang tải…" thay viewer thật.
+  const [fsReady, setFsReady] = useState(false);
+  useEffect(() => {
+    if (!fullscreen) {
+      setFsReady(false);
+      return undefined;
+    }
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setFsReady(true));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, [fullscreen]);
+  // Khoá cuộn trang phía sau khi overlay mở — overlay giờ là con của
+  // document.body (portal) chứ không còn nằm trong khung cuộn nội bộ của
+  // trang để tự nhiên chặn cuộn hộ. Nhớ giá trị overflow cũ để khôi phục
+  // đúng, kể cả khi component unmount ngay giữa lúc đang fullscreen (cleanup
+  // effect chạy cả hai trường hợp: fullscreen tắt lẫn unmount).
+  useEffect(() => {
+    if (!fullscreen) return undefined;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [fullscreen]);
   // Phím tắt `]` ẩn/hiện panel — CHỈ khi tiêu điểm không nằm trong ô nhập, để
   // không nuốt dấu `]` người dùng gõ trong textarea khác của trang. Đăng ký
   // MỘT lần (deps rỗng) và dùng cập nhật hàm trong togglePanel để không phải
@@ -399,8 +453,14 @@ export function FlowUxReviewPreview({
   const cardCellsFor = (f: UxFinding): string[] =>
     effectiveLayout === 'side' || mode === 'proposed' ? f.cells?.proposed ?? f.cells?.asIs ?? [] : f.cells?.asIs ?? [];
 
-  return (
-    <div className={`${styles.root} ${fullscreen ? styles.fullscreen ?? '' : ''}`}>
+  // Có viewer thật để render (thay vì placeholder "Đang tải…") khi: đang ở
+  // chế độ thường (luôn sẵn — không có bug đo-sớm vì overlay không tồn tại),
+  // HOẶC đang fullscreen và overlay portal đã layout xong (fsReady).
+  const showViewer = !fullscreen || fsReady;
+  // Thân dùng CHUNG cho cả 2 nơi render (tại chỗ khi thường, trong overlay
+  // portal khi fullscreen) — do mục 1 wp18.yaml: không viết 2 bản markup.
+  const content = (
+    <>
       <header className={styles.head}>
         <div className={styles.headMain}>
           <h2 className={styles.title}>{title}</h2>
@@ -496,20 +556,28 @@ export function FlowUxReviewPreview({
                     <h3 className={styles.paneTitle}>Hiện trạng</h3>
                   </div>
                   <div className={styles.sidePaneBox}>
-                    {kind === 'drawio' && data.drawioXml ? (
-                      <DrawioViewer
-                        key={`side-left-${fullscreen}`}
-                        className={styles.drawio}
-                        xml={data.drawioXml}
-                        page={0}
-                        highlightCells={sideLeftHighlight}
-                        onCellClick={onSideLeftCellClick}
-                        // Bỏ nút lightbox (xem docblock đầu file) — chỉ còn
-                        // một kiểu toàn màn hình: overlay CSS của khung này.
-                        options={{ toolbar: 'zoom' }}
-                      />
-                    ) : null}
-                    {kind === 'mermaid' ? <MermaidDiagram code={data.mermaidAsIs ?? ''} initialFit="width" /> : null}
+                    {!showViewer ? (
+                      // Chờ overlay portal layout xong (fsReady) trước khi
+                      // mount GraphViewer — xem effect fsReady phía trên.
+                      <div className={styles.message}>Đang tải…</div>
+                    ) : (
+                      <>
+                        {kind === 'drawio' && data.drawioXml ? (
+                          <DrawioViewer
+                            key={`side-left-${fullscreen}`}
+                            className={styles.drawio}
+                            xml={data.drawioXml}
+                            page={0}
+                            highlightCells={sideLeftHighlight}
+                            onCellClick={onSideLeftCellClick}
+                            // Bỏ nút lightbox (xem docblock đầu file) — chỉ còn
+                            // một kiểu toàn màn hình: overlay CSS của khung này.
+                            options={{ toolbar: 'zoom' }}
+                          />
+                        ) : null}
+                        {kind === 'mermaid' ? <MermaidDiagram code={data.mermaidAsIs ?? ''} initialFit="width" /> : null}
+                      </>
+                    )}
                   </div>
                 </div>
                 <div className={styles.sidePane} data-testid="side-pane-right">
@@ -522,21 +590,29 @@ export function FlowUxReviewPreview({
                     </div>
                   </div>
                   <div className={styles.sidePaneBox}>
-                    {kind === 'drawio' && data.drawioXml ? (
-                      <DrawioViewer
-                        key={`side-right-${fullscreen}`}
-                        className={styles.drawio}
-                        xml={data.drawioXml}
-                        page={1}
-                        highlightCells={sideRightHighlight}
-                        onCellClick={onSideRightCellClick}
-                        options={{ toolbar: 'zoom' }}
-                      />
-                    ) : null}
-                    {kind === 'mermaid' ? <MermaidDiagram code={data.mermaidProposed ?? data.mermaidAsIs ?? ''} initialFit="width" /> : null}
+                    {!showViewer ? (
+                      <div className={styles.message}>Đang tải…</div>
+                    ) : (
+                      <>
+                        {kind === 'drawio' && data.drawioXml ? (
+                          <DrawioViewer
+                            key={`side-right-${fullscreen}`}
+                            className={styles.drawio}
+                            xml={data.drawioXml}
+                            page={1}
+                            highlightCells={sideRightHighlight}
+                            onCellClick={onSideRightCellClick}
+                            options={{ toolbar: 'zoom' }}
+                          />
+                        ) : null}
+                        {kind === 'mermaid' ? <MermaidDiagram code={data.mermaidProposed ?? data.mermaidAsIs ?? ''} initialFit="width" /> : null}
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
+            ) : !showViewer ? (
+              <div className={styles.message}>Đang tải…</div>
             ) : (
               <>
                 {kind === 'drawio' && data.drawioXml ? (
@@ -657,6 +733,29 @@ export function FlowUxReviewPreview({
           </button>
         )}
       </div>
-    </div>
+    </>
   );
+
+  // Fullscreen bật: overlay thật render qua createPortal lên document.body
+  // (lý do containing-block — xem docblock đầu file), root TẠI CHỖ chỉ còn
+  // placeholder gọn để layout khung bao quanh (workspace/modal) không sập —
+  // KHÔNG render `content` ở cả 2 nơi cùng lúc, viewer nặng (mục "LƯU Ý kỹ
+  // thuật" wp18.yaml).
+  if (fullscreen) {
+    return (
+      <>
+        <div className={styles.root}>
+          <div className={styles.message}>Đang xem toàn màn hình…</div>
+        </div>
+        {createPortal(
+          <div className={styles.fullscreen} data-testid="fs-overlay" role="dialog" aria-modal="true" aria-label={`${title} — toàn màn hình`}>
+            {content}
+          </div>,
+          document.body,
+        )}
+      </>
+    );
+  }
+
+  return <div className={styles.root}>{content}</div>;
 }
