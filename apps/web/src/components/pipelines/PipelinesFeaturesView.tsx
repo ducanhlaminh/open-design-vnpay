@@ -14,12 +14,13 @@
 // tab is meaningless for the "Chưa gán app" bucket (`app.unassigned` — it has
 // no real App entity, so no pool), so both the tab bar and the tab default
 // only apply once a real App is resolved.
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AppPoolResponse, DesignSystemSummary, PipelineProject, PipelineWorkflowSummary, ProjectSyncScopeStatus } from '@open-design/contracts';
 
 import { Icon } from '../Icon';
 import { projectSyncUserStatusOf, SyncStatusBadge } from '../project-sync';
 import { navigate } from '../../router';
+import { AppImportBanner } from './AppImportBanner';
 import { AppPoolSection } from './AppPoolSection';
 import { AppDesignSystemPanel } from './AppDesignSystemPanel';
 import { fetchDesignSystems } from '../../providers/registry';
@@ -130,24 +131,21 @@ export function PipelinesFeaturesView({
   // its own full fetch independently; this small GET lets the summary show
   // up on the Features tab without mounting the whole section up front.
   const [poolSummary, setPoolSummary] = useState<{ pages: number } | null>(null);
+  const loadPoolSummary = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/pool`);
+      if (!res.ok) return;
+      const j = (await res.json()) as AppPoolResponse;
+      setPoolSummary({ pages: j.pages.length });
+    } catch {
+      /* tóm tắt chỉ là gợi ý trên tab — im lặng bỏ qua, AppPoolSection tự báo lỗi khi mở tab */
+    }
+  }, [appId]);
   useEffect(() => {
     setPoolSummary(null);
     if (!hasDocsTab) return undefined;
-    let alive = true;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/pipelines/apps/${encodeURIComponent(appId)}/pool`);
-        if (!res.ok) return;
-        const j = (await res.json()) as AppPoolResponse;
-        if (alive) setPoolSummary({ pages: j.pages.length });
-      } catch {
-        /* tóm tắt chỉ là gợi ý trên tab — im lặng bỏ qua, AppPoolSection tự báo lỗi khi mở tab */
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [appId, hasDocsTab]);
+    void loadPoolSummary();
+  }, [hasDocsTab, loadPoolSummary]);
 
   const counts = useMemo(() => {
     const features = app?.features ?? [];
@@ -280,6 +278,11 @@ export function PipelinesFeaturesView({
           </div>
         ) : null}
       </div>
+
+      {/* WP22b — tiến độ import tài liệu chạy nền (start-job từ NewAppModal
+          hoặc AppPoolSection). Tự ẩn khi appId không có job active/vừa
+          xong; "Chưa gán app" không có App entity thật nên không mount. */}
+      {hasDocsTab ? <AppImportBanner appId={appId} onFinished={() => void loadPoolSummary()} /> : null}
 
       <section className={styles.panel}>
         {hasDocsTab ? (

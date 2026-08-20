@@ -6,6 +6,7 @@ import type { AppPoolPage, AppPoolResponse } from '@open-design/contracts';
 import { Icon } from '../Icon';
 import { renderMarkdownToSafeHtml } from '../../artifacts/markdown';
 import { fetchProjectFileText } from '../../providers/registry';
+import { AppImportBanner } from './AppImportBanner';
 import { AppPoolTree } from './AppPoolTree';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { ConfluenceTreeImport } from './ConfluenceTreeImport';
@@ -126,6 +127,10 @@ export function AppPoolSection({ appId, hideImport }: AppPoolSectionProps) {
           </p>
         </div>
       </div>
+      {/* WP22b — tiến độ import tài liệu chạy nền (start-job từ NewAppModal
+          hoặc "Nhập tài liệu từ Confluence" bên dưới). Job xong → refetch cây
+          pool của CHÍNH section này để hiện đúng trang vừa nhập. */}
+      <AppImportBanner appId={appId} onFinished={() => void loadPool(true)} />
       {error ? <p className={styles.error}>{error}</p> : null}
 
       {pool.pages.length > 0 ? (() => {

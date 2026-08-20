@@ -758,6 +758,55 @@ export interface AppPoolImportResponse {
   pages: AppPoolPage[];
 }
 
+// ── App Docs Pool import job (WP22: background import, daemon-side) ─────────
+// Runs the same 8-ref batches the browser used to loop through itself, but in
+// the daemon so navigating away / closing the tab no longer aborts it.
+
+/** A background Confluence import job for one App (in-memory on the daemon;
+ *  lost on daemon restart — the pool itself keeps whatever batches already
+ *  committed). */
+export interface AppImportJob {
+  id: string;
+  appId: string;
+  status: 'running' | 'succeeded' | 'failed' | 'cancelled';
+  /** Pha của LÔ hiện tại — chỉ có nghĩa khi status==='running'. */
+  phase?: 'preparing' | 'committing';
+  /** Số ref đã ĐƯỢC COMMIT vào pool (cộng dồn theo lô đã xong). */
+  done: number;
+  total: number;
+  /** cộng dồn từ AppPoolImportResponse các lô đã xong. */
+  imported: number;
+  /** cộng dồn. */
+  updated: number;
+  /** khi status==='failed' (lỗi của lô làm dừng job). */
+  error?: string;
+  startedAt: number;
+  finishedAt?: number;
+}
+
+/** `POST /api/pipelines/apps/:appId/import-confluence/start` response (202). */
+export interface AppImportJobStartResponse {
+  job: AppImportJob;
+}
+
+/** `GET /api/pipelines/apps/:appId/import-jobs/:jobId` response. */
+export interface AppImportJobResponse {
+  job: AppImportJob;
+}
+
+/** `POST /api/pipelines/apps/:appId/import-jobs/:jobId/cancel` response. */
+export interface AppImportJobCancelResponse {
+  ok: true;
+  job: AppImportJob;
+}
+
+/** `GET /api/pipelines/app-import-jobs/active` response — every 'running' job
+ *  plus jobs that finished within the last 10 minutes (so a client reopening
+ *  the page still sees the result). */
+export interface AppImportJobsActiveResponse {
+  jobs: AppImportJob[];
+}
+
 // A feature within a KG document (from kg_get_document_subgraph's FEATURE nodes).
 // `documentId` is carried because kg_get_feature_detail needs BOTH ids.
 export interface BasFeature {

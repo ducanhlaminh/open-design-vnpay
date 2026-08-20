@@ -4,8 +4,11 @@
 
 import type { Express } from 'express';
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+
+import type { AppImportJob } from '@open-design/contracts';
 
 import { getFigmaDesignSystemSource, getPipelineApp, listPipelineApps, listProjects } from './db.js';
 import type { FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
@@ -65,6 +68,33 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
   };
   const importKey = (appId: string, operationId: string) => `${appId}\u0000${operationId}`;
 
+  // WP22: background import jobs — daemon-side replacement for the browser's
+  // per-batch loop (contract: .tmp/pipeline/wp22-contract.md). Job registry
+  // is in-memory only (lost on daemon restart; the pool itself keeps
+  // whatever batches already committed) and TTL-pruned lazily on the next
+  // request, mirroring `completedImports`/`cancelledBeforeStart` above — no
+  // setInterval.
+  type ImportJobEntry = { job: AppImportJob; controller: AbortController; stopRequested: boolean };
+  const importJobs = new Map<string, ImportJobEntry>();
+  const IMPORT_JOB_BATCH_SIZE = 8;
+  const IMPORT_JOB_TTL_MS = 10 * 60_000;
+  // Marker stored in `activeImportByApp` for a background job — distinct from
+  // the sync route's `importKey(appId, operationId)` values but read through
+  // the SAME map so the two kinds of import are mutually exclusive per App.
+  const jobActiveMarker = (jobId: string) => `job:${jobId}`;
+  const pruneImportJobs = () => {
+    const now = Date.now();
+    for (const [id, entry] of importJobs) {
+      if (entry.job.status === 'running') continue;
+      if (entry.job.finishedAt !== undefined && now - entry.job.finishedAt > IMPORT_JOB_TTL_MS) importJobs.delete(id);
+    }
+  };
+  const chunkRefs = (refs: string[], size: number): string[][] => {
+    const batches: string[][] = [];
+    for (let i = 0; i < refs.length; i += size) batches.push(refs.slice(i, i + size));
+    return batches;
+  };
+
   const versionAfterMutation = async (appId: string) => {
     const app = getPipelineApp(db, appId);
     const linked = listProjects(db).find((p: { metadata?: Record<string, unknown> }) => {
@@ -121,6 +151,17 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
     } catch (err: any) {
       res.status(502).json({ error: String(err?.message ?? err) });
     }
+  });
+
+  // GET /api/pipelines/app-import-jobs/active — WP22. Registered ahead of the
+  // /api/pipelines/apps/:appId/... routes below: the path segments never
+  // actually collide ("app-import-jobs" vs "apps"), but the contract calls
+  // for this ordering explicitly, so it's kept first for anyone reading
+  // route registration order as a guide to precedence.
+  app.get('/api/pipelines/app-import-jobs/active', (_req, res) => {
+    pruneImportJobs();
+    const jobs: AppImportJob[] = [...importJobs.values()].map((entry) => ({ ...entry.job }));
+    res.json({ jobs });
   });
 
   // POST /api/pipelines/apps/:appId/import-confluence — §2.2.
@@ -226,6 +267,165 @@ export function registerAppPoolRoutes(app: Express, ctx: RegisterAppPoolRoutesDe
       cancelled: cancellable || (!operation && !completed),
       phase: operation?.phase ?? (completed ? 'finished' : 'queued'),
     });
+  });
+
+  // POST /api/pipelines/apps/:appId/import-confluence/start — WP22 background
+  // job variant: runs the SAME per-batch import as the sync route above, but
+  // in the daemon so the client can navigate away/close the tab without
+  // aborting it. Returns 202 immediately; the batch loop below runs after the
+  // response is sent (no await in this handler).
+  app.post('/api/pipelines/apps/:appId/import-confluence/start', (req, res) => {
+    pruneImportJobs();
+    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
+    if (!appId || !appExistsLocally(db, appId)) {
+      return res.status(404).json({ error: `app "${appId}" not found` });
+    }
+    const refs = Array.isArray(req.body?.refs)
+      ? (req.body.refs as unknown[]).filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+      : [];
+    if (refs.length === 0) return res.status(400).json({ error: 'refs (Confluence URLs/ids) is required' });
+    // Shares `activeImportByApp` with the sync route: a job holds the SAME
+    // per-App lock, so the two kinds of import are mutually exclusive.
+    if (activeImportByApp.has(appId)) return res.status(409).json({ error: 'another import is already running for this app' });
+    const followLinks = req.body?.followLinks === true;
+    const includeDescendants = req.body?.includeDescendants === true;
+    const relatedRefs = Array.isArray(req.body?.relatedRefs)
+      ? (req.body.relatedRefs as unknown[]).filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+      : [];
+
+    const jobId = crypto.randomUUID();
+    const controller = new AbortController();
+    const job: AppImportJob = {
+      id: jobId,
+      appId,
+      status: 'running',
+      phase: 'preparing',
+      done: 0,
+      total: refs.length,
+      imported: 0,
+      updated: 0,
+      startedAt: Date.now(),
+    };
+    const entry: ImportJobEntry = { job, controller, stopRequested: false };
+    importJobs.set(jobId, entry);
+    activeImportByApp.set(appId, jobActiveMarker(jobId));
+    // Respond AFTER the loop is kicked off: if res.json ever threw before the
+    // loop started, the job would sit 'running' forever (prune skips running)
+    // and the app lock would leak. A serialization failure must never be able
+    // to strand the job, so kick first, answer second.
+
+    // Fire-and-forget: the client gets the 202 + job id right below and polls
+    // GET .../import-jobs/:jobId (or the /active listing) for progress.
+    // runImportJob() turns every per-batch failure into job.status/error
+    // itself; this .catch is only a last-resort guard against something
+    // outside that per-batch try/catch throwing, so we never leave an
+    // unhandled rejection.
+    void runImportJob(entry, { refs, relatedRefs, followLinks, includeDescendants }).catch((err) => {
+      console.warn(`[app-pool] import job ${jobId} crashed outside its batch loop:`, err);
+      entry.job.status = 'failed';
+      entry.job.error = String(err?.message ?? err);
+      entry.job.finishedAt = entry.job.finishedAt ?? Date.now();
+      if (activeImportByApp.get(appId) === jobActiveMarker(jobId)) activeImportByApp.delete(appId);
+    });
+    res.status(202).json({ job: { ...job } });
+  });
+
+  async function runImportJob(
+    entry: ImportJobEntry,
+    opts: { refs: string[]; relatedRefs: string[]; followLinks: boolean; includeDescendants: boolean },
+  ) {
+    const { job, controller } = entry;
+    const appId = job.appId;
+    let anyCommitted = false;
+    try {
+      const batches = chunkRefs(opts.refs, IMPORT_JOB_BATCH_SIZE);
+      for (const batch of batches) {
+        if (entry.stopRequested) {
+          job.status = 'cancelled';
+          break;
+        }
+        job.phase = 'preparing';
+        try {
+          const result = await importConfluenceIntoPool({
+            projectsDir: paths.PROJECTS_DIR,
+            runtimeDataDir: paths.RUNTIME_DATA_DIR,
+            appId,
+            refs: batch,
+            relatedRefs: opts.relatedRefs,
+            followLinks: opts.followLinks,
+            includeDescendants: opts.includeDescendants,
+            signal: controller.signal,
+            onCommitStart: async () => {
+              job.phase = 'committing';
+              await ctx.onImportCommitStart?.(appId);
+            },
+          });
+          anyCommitted = true;
+          job.done += batch.length;
+          job.imported += result.imported;
+          job.updated += result.updated;
+        } catch (err: any) {
+          // Distinguish an explicit cancel (this loop only ever aborts the
+          // controller from the cancel route below) from a real batch
+          // failure — same 'cancelled' vs 'failed' split the sync route
+          // makes for its own operation.controller.
+          if (controller.signal.aborted) {
+            job.status = 'cancelled';
+          } else {
+            job.status = 'failed';
+            job.error = String(err?.message ?? err);
+          }
+          break;
+        }
+        if (entry.stopRequested) {
+          job.status = 'cancelled';
+          break;
+        }
+      }
+      if (job.status === 'running') job.status = 'succeeded';
+    } finally {
+      delete job.phase;
+      job.finishedAt = Date.now();
+      if (activeImportByApp.get(appId) === jobActiveMarker(job.id)) activeImportByApp.delete(appId);
+      if (anyCommitted) {
+        try {
+          await versionAfterMutation(appId);
+        } catch (err) {
+          console.warn(`[app-pool] versionAfterMutation after import job ${job.id} failed:`, err);
+        }
+      }
+    }
+  }
+
+  // GET /api/pipelines/apps/:appId/import-jobs/:jobId — WP22.
+  app.get('/api/pipelines/apps/:appId/import-jobs/:jobId', (req, res) => {
+    pruneImportJobs();
+    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
+    const jobId = typeof req.params.jobId === 'string' ? req.params.jobId.trim() : '';
+    const entry = importJobs.get(jobId);
+    if (!entry || entry.job.appId !== appId) {
+      return res.status(404).json({ error: `import job "${jobId}" not found` });
+    }
+    res.json({ job: { ...entry.job } });
+  });
+
+  // POST /api/pipelines/apps/:appId/import-jobs/:jobId/cancel — WP22.
+  // 'preparing' → abort the in-flight batch; 'committing' → let it finish
+  // (atomic commit, matching the sync route's cancel semantics) and stop
+  // after. Idempotent: a finished job is returned as-is.
+  app.post('/api/pipelines/apps/:appId/import-jobs/:jobId/cancel', (req, res) => {
+    pruneImportJobs();
+    const appId = typeof req.params.appId === 'string' ? req.params.appId.trim() : '';
+    const jobId = typeof req.params.jobId === 'string' ? req.params.jobId.trim() : '';
+    const entry = importJobs.get(jobId);
+    if (!entry || entry.job.appId !== appId) {
+      return res.status(404).json({ error: `import job "${jobId}" not found` });
+    }
+    if (entry.job.status === 'running') {
+      entry.stopRequested = true;
+      if (entry.job.phase === 'preparing') entry.controller.abort(new Error('Cancelled by user'));
+    }
+    res.json({ ok: true, job: { ...entry.job } });
   });
 
   // GET /api/pipelines/apps/:appId/pool — §2.2.

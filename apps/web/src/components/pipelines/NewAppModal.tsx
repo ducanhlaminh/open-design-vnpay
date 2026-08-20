@@ -18,26 +18,22 @@
 // App (AppPoolSection's "Nhập tài liệu từ Confluence" — CHỈ hiện ở đó, màn
 // kết quả bên dưới cố tình KHÔNG lặp lại affordance import thứ hai).
 //
-// `submit` chờ import-confluence RESOLVE (thành công hay lỗi) rồi mới lật
-// sang màn "App đã tạo" — AppPoolSection tự fetch pool ngay lúc mount, nên
-// mount nó SỚM hơn (trước khi import xong) là một race: pool fetch đầu tiên
-// trả về rỗng, "Đã nhập N trang" hiện ra nhưng card pool vẫn nói "Chưa có
-// tài liệu". Đợi import xong trước khi setCreatedAppId loại bỏ race đó.
+// WP22b — App tạo xong với nhiều tài liệu KHÔNG còn giam người dùng trong
+// modal chờ import chạy xong: `submit` gọi `startAppImport` (job nền daemon,
+// xem .tmp/pipeline/wp22-contract.md) rồi ĐÓNG MODAL NGAY khi nhận 202,
+// không còn chờ RESOLVE và không còn màn "App đã tạo" trung gian cho ca
+// thành công. Theo dõi tiến độ import chuyển sang `AppImportBanner`
+// (PipelinesFeaturesView + AppPoolSection) — modal không còn hiện %.
 //
-// `phase` hiện trạng thái từng bước thay vì im lặng trong lúc `busy`: 'creating'
-// ('Đang tạo App…') → 'importing' (progress bar % thật — xem dưới — chỉ khi
-// có trang tick) → setCreatedAppId. Tạo App CHỈ NẠP tài liệu vào pool —
-// Tạo App chỉ nạp tài liệu vào pool; bước 1 của workflow sẽ copy các trang
-// được chọn vào workspace khi chạy.
-//
-// Import dùng `importConfluenceInBatches` (ConfluenceTreeImport.tsx) thay vì
-// một POST refs[N] duy nhất — daemon trả về MỘT response cho cả yêu cầu, nên
-// batch nhỏ dần tuần tự là cách duy nhất có %-thật thay vì "im lặng rồi xong".
-// Batch lỗi giữa chừng → KHÔNG rollback (phần trước đã ghi lên đĩa); vẫn
-// setImportResult với phần đã nhập và hiện lỗi kèm "đã nhập X/N".
+// start-job LỖI (409/400/502…) vẫn giữ hành vi cũ: App đã tồn tại tại thời
+// điểm đó (POST tạo App đã resolve OK trước), nên lỗi start KHÔNG coi là lỗi
+// tạo App — modal lật sang màn "App đã tạo" để hiện lỗi, người dùng thử nhập
+// lại ở màn Sửa App. Import cũ dùng `importConfluenceInBatches`
+// (ConfluenceTreeImport.tsx) VẪN CÒN TỒN TẠI (dùng ở AppPoolSection/
+// ConfluenceTreeImport) — chỉ NewAppModal thôi dùng nó.
 
-import { useEffect, useRef, useState } from 'react';
-import type { AppPoolImportResponse, DocsReviewComponentSource, FigmaDesignSystemSource, ListFigmaDesignSystemSourcesResponse } from '@open-design/contracts';
+import { useEffect, useState } from 'react';
+import type { DocsReviewComponentSource, FigmaDesignSystemSource, ListFigmaDesignSystemSourcesResponse } from '@open-design/contracts';
 
 import {
   FormError,
@@ -49,8 +45,8 @@ import {
   TextInput,
 } from './PipelineFormModal';
 import { AppPoolSection } from './AppPoolSection';
-import { ConfluenceImportBatchError, ConfluenceTreePicker, importConfluenceInBatches } from './ConfluenceTreeImport';
-import { ProgressBar } from './ProgressBar';
+import { ConfluenceTreePicker } from './ConfluenceTreeImport';
+import { startAppImport } from '../../providers/app-import-jobs';
 import { appLabelOf, toSlugId, useAppOptions } from './newProjectForm';
 import { fetchDesignSystems } from '../../providers/registry';
 import { ProjectDesignSystemPicker } from '../ProjectDesignSystemPicker';
@@ -73,21 +69,16 @@ export function NewAppModal({
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [relatedTicked, setRelatedTicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
-  const [phase, setPhase] = useState<'creating' | 'importing' | null>(null);
+  const [phase, setPhase] = useState<'creating' | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // App vừa tạo xong: giữ modal MỞ thêm một bước để hiện kết quả nhập tài
-  // liệu (nếu có) + pool đầy đủ — đóng modal luôn thì người dùng phải tự mở
-  // lại App vừa tạo (kebab → Sửa) mới thấy được phần Import/pool. `onCreated`
-  // (điều hướng sang màn Features) chỉ gọi khi bấm "Xong" ở bước này.
+  // App vừa tạo xong nhưng START IMPORT lỗi: giữ modal MỞ thêm một bước để
+  // hiện lỗi đó + pool (rỗng, vì import chưa chạy lô nào) — đóng modal luôn
+  // thì người dùng phải tự mở lại App vừa tạo (kebab → Sửa) mới thấy được lỗi.
+  // Ca THÀNH CÔNG (202, hoặc không tick trang nào) không còn màn này —
+  // xem docblock đầu file. `onCreated` (điều hướng sang màn Features) chỉ
+  // gọi khi bấm "Xong" ở bước này, hoặc ngay khi thành công ở nhánh dưới.
   const [createdAppId, setCreatedAppId] = useState<string | null>(null);
-  const [importResult, setImportResult] = useState<AppPoolImportResponse | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
-  // "Dừng nhập" while batches are flying: abort the in-flight batch, skip the
-  // rest. The App already exists at that point, so we keep whatever landed
-  // and close like a success — the pool section shows what got imported.
-  const importAbortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => importAbortRef.current?.abort(), []);
 
   useEffect(() => {
     void fetchDesignSystems().then(setSystems);
@@ -140,47 +131,26 @@ export function NewAppModal({
       return;
     }
 
-    // Từ đây App đã tồn tại — mọi lỗi tiếp theo là lỗi IMPORT, không phải lỗi
-    // tạo App; nhưng vẫn phải RESOLVE trước khi lật màn (xem docblock ở đầu
-    // file) để AppPoolSection's mount-time pool fetch thấy đúng dữ liệu.
-    let importFailed = false;
+    // Từ đây App đã tồn tại — mọi lỗi tiếp theo là lỗi START IMPORT, không
+    // phải lỗi tạo App. Không tick trang nào → hành vi cũ nguyên vẹn: không
+    // gọi start, đóng modal luôn.
     if (ticked.size > 0) {
-      setPhase('importing');
-      const refs = [...ticked];
-      setImportProgress({ done: 0, total: refs.length });
-      const controller = new AbortController();
-      importAbortRef.current = controller;
-      try {
-        const result = await importConfluenceInBatches(newAppId, refs, (done, total) => setImportProgress({ done, total }), [...relatedTicked], controller.signal);
-        setImportResult(result);
-      } catch (cause) {
-        if (cause instanceof ConfluenceImportBatchError && cause.aborted) {
-          // Người dùng bấm Dừng: App + các trang đã nhập được giữ nguyên,
-          // đóng modal như thành công (phần còn lại nhập sau ở Sửa dự án).
-          if (cause.succeededRefs.length > 0) setImportResult(cause.partial);
-        } else if (cause instanceof ConfluenceImportBatchError) {
-          importFailed = true;
-          setImportError(
-            `${cause.message} (đã nhập ${cause.succeededRefs.length}/${refs.length} trang trước khi lỗi — không rollback)`,
-          );
-          if (cause.succeededRefs.length > 0) setImportResult(cause.partial);
-        } else {
-          importFailed = true;
-          setImportError(cause instanceof Error ? cause.message : 'Nhập tài liệu thất bại.');
-        }
+      const started = await startAppImport(newAppId, { refs: [...ticked], relatedRefs: [...relatedTicked] });
+      if (!started.ok) {
+        // Modal lật sang màn "App đã tạo" CHỈ để hiện lỗi này — đóng câm là
+        // nuốt mất thông tin người dùng cần thấy. Chưa lô nào chạy nên pool
+        // vẫn rỗng; người dùng thử lại ở màn Sửa App.
+        setImportError(`${started.error} — chưa nhập trang nào, thử lại ở màn Sửa App.`);
+        setPhase(null);
+        setBusy(false);
+        setCreatedAppId(newAppId);
+        return;
       }
-      importAbortRef.current = null;
-      setImportProgress(null);
+      // 202: job đã bắt đầu chạy nền daemon. Modal KHÔNG chờ nữa — tiến độ
+      // hiện ở AppImportBanner (màn App / AppPoolSection) sau khi đóng.
     }
-    // KHÔNG còn màn "App đã tạo" trung gian: thành công → đóng modal luôn,
-    // card App mới xuất hiện là xác nhận. Màn xác nhận CHỈ giữ cho ca import
-    // LỖI — đóng câm khi lỗi là nuốt mất thông tin người dùng cần thấy.
     setPhase(null);
     setBusy(false);
-    if (importFailed) {
-      setCreatedAppId(newAppId);
-      return;
-    }
     await onCreated(newAppId);
     onClose();
   };
@@ -204,15 +174,9 @@ export function NewAppModal({
           </PrimaryButton>
         }
       >
-        <FormText>
-          App “{nameTrim}” đã tạo.
-          {importResult
-            ? ` Đã nhập ${importResult.imported} trang mới${importResult.updated > 0 ? `, cập nhật ${importResult.updated} trang` : ''}.`
-            : null}
-          {' '}Tài liệu đã nạp vào App — bước 1 của workflow sẽ copy trang được chọn vào workspace khi chạy.
-        </FormText>
-        {importError ? <FormError>{importError} — App vẫn đã tạo; nhập lại ở màn Sửa App.</FormError> : null}
-        {/* Màn xác nhận NẠP: cây trang để soát lại đã import đúng chưa. */}
+        <FormText>App “{nameTrim}” đã tạo.</FormText>
+        {importError ? <FormError>{importError}</FormError> : null}
+        {/* Màn xác nhận: cây trang pool (rỗng — job start lỗi, chưa lô nào chạy). */}
         <AppPoolSection appId={createdAppId} hideImport />
       </PipelineFormModal>
     );
@@ -227,15 +191,9 @@ export function NewAppModal({
       onClose={onClose}
       footer={
         <>
-          {phase === 'importing' ? (
-            <QuietButton onClick={() => importAbortRef.current?.abort()} data-testid="new-app-stop-import">
-              Dừng nhập
-            </QuietButton>
-          ) : (
-            <QuietButton onClick={onClose} disabled={busy}>
-              Hủy
-            </QuietButton>
-          )}
+          <QuietButton onClick={onClose} disabled={busy}>
+            Hủy
+          </QuietButton>
           <PrimaryButton
             icon="check"
             busy={busy}
@@ -243,7 +201,7 @@ export function NewAppModal({
             onClick={() => void submit()}
             disabled={busy || !canSubmit}
           >
-            {phase === 'importing' ? 'Đang nhập tài liệu…' : busy ? 'Đang tạo…' : 'Tạo'}
+            {busy ? 'Đang tạo…' : 'Tạo'}
           </PrimaryButton>
         </>
       }
@@ -332,7 +290,7 @@ export function NewAppModal({
         // còn nói điều panel không nói được: chuyện gì xảy ra khi bấm Tạo.
         hint={
           ticked.size > 0
-            ? 'Các trang này được nhập vào kho tài liệu của dự án ngay khi bấm Tạo.'
+            ? 'Các trang này bắt đầu nhập vào kho tài liệu ngay khi bấm Tạo — modal đóng luôn, xem tiến độ ở màn dự án.'
             : 'Tìm và tick trang muốn nhập ngay khi tạo dự án, hoặc bỏ qua và nhập sau ở màn Sửa dự án.'
         }
       >
@@ -342,18 +300,6 @@ export function NewAppModal({
       </FormField>
 
       {phase === 'creating' ? <FormText>Đang tạo dự án…</FormText> : null}
-      {phase === 'importing' ? (
-        importProgress ? (
-          <ProgressBar
-            label={`Đang nhập tài liệu… ${importProgress.done}/${importProgress.total} trang (${
-              importProgress.total > 0 ? Math.round((importProgress.done / importProgress.total) * 100) : 0
-            }%)`}
-            percent={importProgress.total > 0 ? (importProgress.done / importProgress.total) * 100 : 0}
-          />
-        ) : (
-          <FormText>{`Đang nhập tài liệu từ Confluence (${ticked.size} trang)…`}</FormText>
-        )
-      ) : null}
       {error ? <FormError>{error}</FormError> : null}
     </PipelineFormModal>
   );
