@@ -70,6 +70,7 @@
   background: var(--bg-panel);
   color: var(--text);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .primaryButton:hover:not(:disabled),
@@ -266,9 +267,45 @@
 }
 
 .cardActions {
+  flex-direction: column;
+  align-items: stretch;
   gap: 7px;
   padding-top: 12px;
   border-top: 1px solid var(--border);
+}
+
+/* Hàng nút phụ (Chạy lại / Sửa / Xoá) nằm dưới nút điều hướng full-width. */
+.cardActionsRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* Hành động chính của card: sang trang detail của nguồn (WP21b). Accent nhẹ
+   để nổi hơn nút phụ nhưng không nặng như primaryButton của section. */
+.detailButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease;
+}
+
+.detailButton:hover {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
 }
 
 .iconButton {

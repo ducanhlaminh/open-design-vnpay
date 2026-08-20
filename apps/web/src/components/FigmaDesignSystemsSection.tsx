@@ -285,23 +285,25 @@ export function FigmaDesignSystemsSection() {
                       browser + sinh mô tả); card ở đây chỉ điều hướng sang. */}
                   <button
                     type="button"
-                    className={styles.secondaryButton}
+                    className={styles.detailButton}
                     onClick={() => navigate({ kind: 'figma-ds-detail', sourceId: source.id })}
                   >
                     <Icon name="external-link" size={13} />
                     Mở trang Design system →
                   </button>
-                  <button type="button" className={styles.secondaryButton} disabled={busyId !== null} onClick={() => void refresh(source)}>
-                    <Icon name="refresh" size={13} />
-                    {busy ? t('ds.figmaLinksRefreshRunning') : t('ds.figmaLinksRefreshAction')}
-                  </button>
-                  <button type="button" className={styles.secondaryButton} disabled={busyId !== null} onClick={() => openEdit(source)}>
-                    <Icon name="edit" size={13} />
-                    {t('common.edit')}
-                  </button>
-                  <button type="button" className={styles.iconButton} disabled={busyId !== null} aria-label={t('ds.figmaLinksDeleteAria', { name: source.name })} onClick={() => void remove(source)}>
-                    <Icon name="trash" size={13} />
-                  </button>
+                  <div className={styles.cardActionsRow}>
+                    <button type="button" className={styles.secondaryButton} disabled={busyId !== null} onClick={() => void refresh(source)}>
+                      <Icon name="refresh" size={13} />
+                      {busy ? t('ds.figmaLinksRefreshRunning') : t('ds.figmaLinksRefreshAction')}
+                    </button>
+                    <button type="button" className={styles.secondaryButton} disabled={busyId !== null} onClick={() => openEdit(source)}>
+                      <Icon name="edit" size={13} />
+                      {t('common.edit')}
+                    </button>
+                    <button type="button" className={styles.iconButton} disabled={busyId !== null} aria-label={t('ds.figmaLinksDeleteAria', { name: source.name })} onClick={() => void remove(source)}>
+                      <Icon name="trash" size={13} />
+                    </button>
+                  </div>
                 </div>
               </article>
             );
