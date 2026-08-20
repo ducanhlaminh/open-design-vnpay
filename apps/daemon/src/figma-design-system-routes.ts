@@ -5,8 +5,10 @@ import type { Express } from 'express';
 import type {
   FigmaDesignSystemSource,
   FigmaDesignSystemCatalogSummary,
+  FigmaDesignSystemGuideJob,
   FigmaDesignSystemRefreshChanges,
   FigmaDesignSystemRefreshProgress,
+  GenerateFigmaDesignSystemGuideResponse,
   GetFigmaDesignSystemSourceResponse,
 } from '@open-design/contracts';
 
@@ -14,21 +16,37 @@ import {
   commitFigmaDesignSystemSourceCatalog,
   deleteFigmaDesignSystemSource,
   getFigmaDesignSystemSource,
+  getProject,
+  insertConversation,
   insertFigmaDesignSystemSource,
+  insertProject,
   listFigmaDesignSystemSources,
   recoverInterruptedFigmaDesignSystemRefreshes,
   setFigmaDesignSystemSourceRefreshState,
   updateFigmaDesignSystemSource,
+  updateProject,
+  upsertMessage,
 } from './db.js';
 import { readFigmaConfig } from './figma-config.js';
 import {
+  anchorFor,
   renderFigmaComponentsMarkdown,
   type FigmaComponentCatalogSnapshot,
 } from './figma-component-catalog.js';
-import { buildFigmaComponentCatalog, describeFigmaError } from './figma-rest.js';
+import {
+  parseComponentsGuide,
+  renderComponentsGuideMarkdown,
+  type ComponentsGuideEntry,
+} from './figma-component-guide.js';
+import { downloadFigmaImage, runDescribeChunk } from './figma-catalog-routes.js';
+// WP20: "Sinh mô tả component thiếu" (WP19b) áp cho nguồn Figma DÙNG CHUNG —
+// tái dùng NGUYÊN engine tất định của WP19b (không chép lại một bản song
+// song có thể trôi lệch), chỉ khác nơi lưu (kho nguồn thay vì App-level).
+import { computeGuideCoverage, computeMissingDescriptions, generateComponentDescriptions } from './figma-guide-generate.js';
+import { buildFigmaComponentCatalog, describeFigmaError, fetchNodeImages, fetchNodeSubtrees } from './figma-rest.js';
 import type { RouteDeps } from './server-context.js';
 
-export interface RegisterFigmaDesignSystemRoutesDeps extends RouteDeps<'db' | 'http' | 'paths'> {
+export interface RegisterFigmaDesignSystemRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'design' | 'chat' | 'agents'> {
   buildCatalog?: typeof buildFigmaComponentCatalog;
   timeoutMs?: number;
   now?: () => number;
@@ -83,6 +101,93 @@ async function readFigmaDesignSystemComponents(
 async function removeFigmaDesignSystemFiles(runtimeDataDir: string, sourceId: string): Promise<void> {
   const componentsPath = figmaDesignSystemComponentsPath(runtimeDataDir, sourceId);
   await fs.promises.rm(path.dirname(path.dirname(componentsPath)), { recursive: true, force: true });
+}
+
+/* ── WP20: kho nguồn cho components-guide.md của nguồn Figma dùng chung ────
+ * Mirror ĐÚNG khuôn App-level của WP19a (readAppComponentsGuide/
+ * writeAppComponentsGuide, figma-catalog-routes.ts) — khác duy nhất ở NƠI
+ * lưu: cạnh `criteria/components.md` của NGUỒN (figma-design-systems/<id>/
+ * criteria/components-guide.md) thay vì `figma-catalog/` của một App, vì
+ * guide này DÙNG CHUNG giữa mọi App gắn cùng nguồn — không App nào sở hữu
+ * riêng. */
+export function figmaDesignSystemGuidePath(runtimeDataDir: string, sourceId: string): string {
+  return path.join(path.dirname(figmaDesignSystemComponentsPath(runtimeDataDir, sourceId)), 'components-guide.md');
+}
+
+// Serialize writes theo sourceId — cùng lý do writeAppFigmaCatalog/
+// writeAppComponentsGuide dùng `appCatalogWrites` (figma-catalog-routes.ts):
+// job POST /generate-guide VÀ vòng sinh bù của dr-comp (server.ts) có thể
+// ghi kho nguồn gần như đồng thời cho CÙNG một nguồn khi hai App dùng chung
+// nó chạy dr-comp song song.
+const guideWrites = new Map<string, Promise<void>>();
+function serializeGuideWrite(sourceId: string, task: () => Promise<void>): Promise<void> {
+  const previous = guideWrites.get(sourceId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(task);
+  guideWrites.set(sourceId, current);
+  return current.finally(() => {
+    if (guideWrites.get(sourceId) === current) guideWrites.delete(sourceId);
+  });
+}
+
+export async function writeFigmaDesignSystemGuide(runtimeDataDir: string, sourceId: string, markdown: string): Promise<void> {
+  const target = figmaDesignSystemGuidePath(runtimeDataDir, sourceId);
+  return serializeGuideWrite(sourceId, async () => {
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    try {
+      await fs.promises.writeFile(temporary, markdown, 'utf8');
+      await fs.promises.rename(temporary, target);
+    } finally {
+      await fs.promises.rm(temporary, { force: true });
+    }
+  });
+}
+
+/** `null` khi nguồn chưa từng sinh guide (chưa bấm nút, hoặc nguồn mới) —
+ *  cùng "guide vắng mặt" fallback shape với mọi chỗ đọc guide App-level. */
+export async function readFigmaDesignSystemGuide(runtimeDataDir: string, sourceId: string): Promise<string | null> {
+  const target = figmaDesignSystemGuidePath(runtimeDataDir, sourceId);
+  return fs.promises.readFile(target, 'utf8').catch(() => null);
+}
+
+/** WP20b (fix review WP20 blocking): lọc `guideMarkdown` của nguồn Figma
+ *  dùng chung theo `snapshot` hiện tại (chỉ giữ anchor CÒN THẬT — component
+ *  đã bị xoá khỏi Figma kể từ lần guide được sinh thì rớt), rồi ghi/xoá
+ *  `<criteriaDir>/components-guide.md`. VÔ ĐIỀU KIỆN theo nghĩa: guide có
+ *  entry sau khi lọc → ghi (đè bản cũ nếu có — kho nguồn luôn mới nhất);
+ *  không còn entry nào (guide `null`, hoặc lọc xong rỗng) → rm(force), đồng
+ *  bộ với hành vi nhánh figma-links App-level (WP19a): guide vắng mặt nghĩa
+ *  là "chưa có mô tả nào", không phải "giữ nguyên bản cũ" — nếu không rm thì
+ *  một lần bind trước còn guide, rồi component bị xoá khỏi Figma, sẽ để lại
+ *  mô tả ma vĩnh viễn trong cwd.
+ *
+ *  Tách thành hàm thuần (chỉ nhận dữ liệu đã đọc sẵn, không tự đọc DB/kho
+ *  nguồn) để server.ts gọi được từ HAI nơi — staging vô điều kiện ngay sau
+ *  `stageBoundAppContextForRun` VÀ sau vòng sinh bù mô tả — mà không trôi
+ *  lệch giữa hai bản sao logic lọc, và để test được ở mức hàm (server.ts có
+ *  `@ts-nocheck`, không export gì để import thẳng). */
+export async function writeFilteredComponentsGuideToCriteria(
+  criteriaDir: string,
+  snapshot: FigmaComponentCatalogSnapshot,
+  guideMarkdown: string | null,
+): Promise<{ entryCount: number }> {
+  const target = path.join(criteriaDir, 'components-guide.md');
+  const validAnchors = new Set(
+    snapshot.files.flatMap((file) => file.components.map((component) => anchorFor(file.fileKey, component.nodeId))),
+  );
+  const filtered: ComponentsGuideEntry[] = [];
+  if (guideMarkdown) {
+    for (const [anchor, entry] of parseComponentsGuide(guideMarkdown)) {
+      if (validAnchors.has(anchor)) filtered.push({ anchor, name: entry.name, description: entry.description });
+    }
+  }
+  if (filtered.length > 0) {
+    await fs.promises.mkdir(criteriaDir, { recursive: true });
+    await fs.promises.writeFile(target, renderComponentsGuideMarkdown(filtered), 'utf8');
+  } else {
+    await fs.promises.rm(target, { force: true });
+  }
+  return { entryCount: filtered.length };
 }
 
 function canonicalLinks(value: unknown): string[] | null {
@@ -216,13 +321,16 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
     if (!guard(req, res)) return;
     const source = getFigmaDesignSystemSource(db, req.params.id);
     if (!source) return notFound(res);
+    const catalog = source.catalog as FigmaComponentCatalogSnapshot | null;
+    const guideMarkdown = await readFigmaDesignSystemGuide(deps.paths.RUNTIME_DATA_DIR, source.id);
     const body: GetFigmaDesignSystemSourceResponse = {
       source: figmaDesignSystemSourceToContract(source),
-      componentsMarkdown: await readFigmaDesignSystemComponents(
-        deps.paths.RUNTIME_DATA_DIR,
-        source.id,
-        source.catalog as FigmaComponentCatalogSnapshot | null,
-      ),
+      componentsMarkdown: await readFigmaDesignSystemComponents(deps.paths.RUNTIME_DATA_DIR, source.id, catalog),
+      // WP20: optional fields — omit (not `null`/zeroed) khi chưa có gì, giữ
+      // đúng "compatibility" đã chốt ở WP19a cho response này (client cũ
+      // không thấy field lạ, không cần đổi shape mặc định).
+      ...(guideMarkdown != null ? { guideMarkdown } : {}),
+      ...(catalog ? { coverage: computeGuideCoverage(catalog, guideMarkdown) } : {}),
     };
     res.json(body);
   });
@@ -303,4 +411,196 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
       refreshProgress.delete(current.id);
     }
   });
+
+  // ── WP20: nút "Sinh mô tả (N thiếu)" cho nguồn Figma DÙNG CHUNG — khuôn Y
+  // HỆT job App-level (figma-catalog-routes.ts, WP19b): POST trả 202
+  // {jobId, job} ngay, job chạy nền, UI poll GET job. Chống double-submit
+  // theo SOURCE ID (không phải appId) — hai App gắn CÙNG nguồn bấm gần nhau
+  // vẫn chỉ tạo một job cho nguồn đó, y hệt hai lần check existing/raced
+  // quanh resolveAgent của khuôn gốc.
+  const figmaGuideJobs = new Map<string, FigmaDesignSystemGuideJobState>();
+  const figmaGuideJobBySource = new Map<string, string>();
+
+  const toGuideJobResponse = (job: FigmaDesignSystemGuideJobState): FigmaDesignSystemGuideJob => ({
+    id: job.id,
+    status: job.status,
+    message: job.message,
+    generated: job.generated,
+    rejected: job.rejected,
+    remaining: job.remaining,
+    error: job.error,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  });
+
+  const startFigmaDesignSystemGuideJob = (
+    sourceId: string,
+    snapshot: FigmaComponentCatalogSnapshot,
+    token: string,
+    execution: { agentId: string; modelPrefs: { model?: string | null; reasoning?: string | null } },
+  ): FigmaDesignSystemGuideJobState => {
+    const nowIso = () => new Date().toISOString();
+    const rowNow = Date.now();
+    const projectId = `figma-guide-source-${sourceId}`;
+    // Thư mục riêng theo job id — cạnh criteria/ của nguồn, tự dọn ở finally
+    // (kho nguồn `components-guide.md` mới là nơi lưu kết quả lâu dài).
+    const describeDir = path.join(
+      path.dirname(figmaDesignSystemGuidePath(deps.paths.RUNTIME_DATA_DIR, sourceId)),
+      '_describe',
+      randomUUID(),
+    );
+
+    const existingProject = getProject(db, projectId);
+    if (!existingProject) {
+      insertProject(db, {
+        id: projectId,
+        name: `Sinh mô tả component (nguồn dùng chung) · ${sourceId}`,
+        skillId: null,
+        designSystemId: null,
+        pendingPrompt: null,
+        metadata: { kind: 'figma-guide-source', baseDir: describeDir, sourceId },
+        createdAt: rowNow,
+        updatedAt: rowNow,
+      });
+    } else {
+      updateProject(db, projectId, {
+        metadata: { ...(existingProject.metadata ?? {}), kind: 'figma-guide-source', baseDir: describeDir, sourceId },
+      });
+    }
+    const conversationId = `figma-guide-source-conv-${randomUUID()}`;
+    insertConversation(db, {
+      id: conversationId,
+      projectId,
+      title: `Sinh mô tả component · ${new Date(rowNow).toLocaleString('vi-VN')}`,
+      createdAt: rowNow,
+      updatedAt: rowNow,
+    });
+
+    const job: FigmaDesignSystemGuideJobState = {
+      id: randomUUID(),
+      sourceId,
+      status: 'queued',
+      message: 'Đã xếp hàng',
+      generated: 0,
+      rejected: 0,
+      remaining: 0,
+      error: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    figmaGuideJobs.set(job.id, job);
+    figmaGuideJobBySource.set(sourceId, job.id);
+    const touch = () => { job.updatedAt = nowIso(); };
+
+    void (async () => {
+      job.status = 'running';
+      job.message = 'Đang tính danh sách component thiếu mô tả…';
+      touch();
+      try {
+        const existingGuideMd = await readFigmaDesignSystemGuide(deps.paths.RUNTIME_DATA_DIR, sourceId);
+        const missingCount = computeMissingDescriptions(snapshot, existingGuideMd).length;
+        if (missingCount === 0) {
+          job.status = 'succeeded';
+          job.message = 'Không có gì để sinh — mọi component đã có mô tả.';
+          touch();
+          return;
+        }
+        let chunkCounter = 0;
+        const result = await generateComponentDescriptions(snapshot, existingGuideMd, {
+          baseDir: describeDir,
+          fetchTree: (fileKey, ids) => fetchNodeSubtrees(token, fileKey, ids),
+          fetchImages: (fileKey, ids) => fetchNodeImages(token, fileKey, ids),
+          downloadImage: (url, destPath) => downloadFigmaImage(url, destPath),
+          runAgentChunk: async (input, chunkDir, index) => {
+            chunkCounter = index + 1;
+            return runDescribeChunk(
+              { design: deps.design, startChatRun: deps.chat.startChatRun, db: deps.db, getAgentDef: deps.agents?.getAgentDef },
+              { projectId, conversationId, chunkDir, index, totalChunks: Math.ceil(missingCount / 12), execution },
+            );
+          },
+          onProgress: (info) => { job.message = info.note; touch(); },
+        });
+        await writeFigmaDesignSystemGuide(deps.paths.RUNTIME_DATA_DIR, sourceId, result.guideMarkdown);
+        job.status = 'succeeded';
+        job.generated = result.generated;
+        job.rejected = result.rejected;
+        job.remaining = result.remaining;
+        job.message = result.chunkErrors.length > 0
+          ? `Đã sinh ${result.generated} mô tả (loại ${result.rejected}, còn ${result.remaining} chưa xử lý) — ${result.chunkErrors.length}/${chunkCounter} lượt lỗi, đã bỏ qua.`
+          : `Đã sinh ${result.generated} mô tả, loại ${result.rejected}, còn ${result.remaining} chưa xử lý.`;
+        touch();
+      } catch (error: any) {
+        const detail = String(error && error.message ? error.message : error);
+        job.status = 'failed';
+        job.error = detail;
+        job.message = detail;
+        touch();
+        console.warn(`[figma-design-system-guide] sinh mô tả cho nguồn "${sourceId}" thất bại:`, detail);
+      } finally {
+        await fs.promises.rm(describeDir, { recursive: true, force: true }).catch(() => {});
+      }
+    })();
+
+    return job;
+  };
+
+  app.post('/api/figma-design-systems/:id/generate-guide', async (req, res) => {
+    if (!guard(req, res)) return;
+    const current = getFigmaDesignSystemSource(db, req.params.id);
+    if (!current) return notFound(res);
+    const existingId = figmaGuideJobBySource.get(current.id);
+    const existing = existingId ? figmaGuideJobs.get(existingId) : undefined;
+    if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+      return res.status(202).json({ jobId: existing.id, job: toGuideJobResponse(existing) });
+    }
+    const snapshot = current.catalog as FigmaComponentCatalogSnapshot | null;
+    if (!snapshot) {
+      return res.status(409).json({ error: { code: 'CATALOG_REQUIRED', message: 'Nguồn chưa có danh mục component — làm mới trước khi sinh mô tả.' } });
+    }
+    try {
+      const cfg = await readFigmaConfig(deps.paths.RUNTIME_DATA_DIR);
+      if (!cfg?.token) {
+        return res.status(400).json({ error: { code: 'FIGMA_TOKEN_REQUIRED', message: 'Chưa có token Figma trên máy này.' } });
+      }
+      if (typeof deps.agents?.resolveAgent !== 'function') {
+        return res.status(501).json({ error: { code: 'AGENT_UNAVAILABLE', message: 'Chưa cấu hình agent cho việc sinh mô tả.' } });
+      }
+      const execution = await deps.agents.resolveAgent();
+      // resolveAgent async (đọc app-config, detect agent) — re-check sau khi
+      // await để hai POST gần nhau (race) không tạo hai job song song.
+      const racedId = figmaGuideJobBySource.get(current.id);
+      const raced = racedId ? figmaGuideJobs.get(racedId) : undefined;
+      if (raced && (raced.status === 'queued' || raced.status === 'running')) {
+        return res.status(202).json({ jobId: raced.id, job: toGuideJobResponse(raced) });
+      }
+      const job = startFigmaDesignSystemGuideJob(current.id, snapshot, cfg.token, execution);
+      const body: GenerateFigmaDesignSystemGuideResponse = { jobId: job.id, job: toGuideJobResponse(job) };
+      res.status(202).json(body);
+    } catch (err: any) {
+      res.status(500).json({ error: { code: 'INTERNAL', message: String(err && err.message ? err.message : err) } });
+    }
+  });
+
+  app.get('/api/figma-design-systems/:id/generate-guide/:jobId', (req, res) => {
+    if (!guard(req, res)) return;
+    const job = figmaGuideJobs.get(req.params.jobId);
+    if (!job || job.sourceId !== req.params.id) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'job not found' } });
+    }
+    res.json({ job: toGuideJobResponse(job) });
+  });
+}
+
+/* ── WP20 internals: job state (khuôn FigmaGuideJobState App-level) ───────── */
+interface FigmaDesignSystemGuideJobState {
+  id: string;
+  sourceId: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  message: string;
+  generated: number;
+  rejected: number;
+  remaining: number;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
 }

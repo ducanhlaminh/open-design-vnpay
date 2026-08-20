@@ -12,7 +12,12 @@ import type {
   FeatureContextBinding,
   RunContextLock,
 } from '@open-design/contracts';
-import { renderFigmaComponentsMarkdown, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
+import { anchorFor, renderFigmaComponentsMarkdown, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
+// WP20: nguồn Figma dùng chung mang theo guide (fallback mô tả AI sinh, xem
+// figma-component-guide.ts) cạnh catalog — lọc còn đúng anchor CÒN THẬT
+// trong catalog, cùng bất biến "Figma luôn thắng / không mang mô tả ma"
+// server.ts áp dụng khi đóng băng guide App-level vào criteria/.
+import { parseComponentsGuide, renderComponentsGuideMarkdown, type ComponentsGuideEntry } from './figma-component-guide.js';
 
 const CONTEXT_DIR = 'context';
 const VERSIONS_DIR = 'versions';
@@ -27,7 +32,15 @@ export interface SnapshotAppContextOptions {
   appName: string;
   designSystemId: string | null;
   docsReviewComponentSource?: DocsReviewComponentSource;
-  figmaDesignSystemSource?: { id: string; catalog: FigmaComponentCatalogSnapshot } | null;
+  figmaDesignSystemSource?: {
+    id: string;
+    catalog: FigmaComponentCatalogSnapshot;
+    /** WP20: guide (fallback mô tả AI sinh) của nguồn dùng chung, RAW —
+     *  chưa lọc theo catalog (caller đọc thẳng kho nguồn best-effort). `null`/
+     *  omitted khi nguồn chưa từng sinh guide — bằng CHÍNH "guide vắng mặt"
+     *  đã có từ trước, không entry ảo nào được thêm, digest không đổi. */
+    guideMarkdown?: string | null;
+  } | null;
   designSystemDir?: string | null;
   expectedCurrentDigest?: `sha256:${string}` | null;
   now?: Date;
@@ -325,7 +338,9 @@ async function collectTree(root: string, prefix: string, source: AppContextFileS
 function includeDesignSystemFile(rel: string): boolean {
   const normalized = rel.replace(/\\/g, '/');
   const base = path.posix.basename(normalized).toLowerCase();
-  if (normalized.startsWith('criteria/')) return base === 'components.md' || base === 'rules.md' || base === '_meta.json';
+  // WP20: 'components-guide.md' — file ảo lọc từ guide nguồn dùng chung (xem
+  // chỗ dựng ở createAppContextVersion bên dưới) đứng CẠNH components.md.
+  if (normalized.startsWith('criteria/')) return base === 'components.md' || base === 'rules.md' || base === '_meta.json' || base === 'components-guide.md';
   if (normalized.startsWith('tokens/')) return /\.(json|css|ts|md)$/i.test(normalized);
   return ['design.md', 'manifest.json', 'components.manifest.json', 'tokens.json', '_meta.json', 'components.md', 'rules.md'].includes(base);
 }
@@ -352,6 +367,26 @@ export async function createAppContextVersion(
   const figmaComponentsMarkdown = options.figmaDesignSystemSource
     ? Buffer.from(renderFigmaComponentsMarkdown(options.figmaDesignSystemSource.catalog), 'utf8')
     : null;
+  // WP20: guide của nguồn dùng chung — lọc còn đúng anchor CÒN THẬT trong
+  // catalog (component đã bị xoá khỏi Figma không mang mô tả ma sang App
+  // Context), rồi chỉ thêm file ảo khi còn ÍT NHẤT một entry sau lọc. `null`
+  // khi nguồn chưa có guide (option vắng/`null`) HOẶC lọc xong rỗng — cả hai
+  // trường hợp này KHÔNG thêm file, digest của app không có guide giữ nguyên
+  // y hệt trước WP20 (bất biến tương thích ngược đã chốt).
+  const figmaGuideMarkdown = ((): Buffer | null => {
+    const raw = options.figmaDesignSystemSource?.guideMarkdown;
+    if (!raw) return null;
+    const validAnchors = new Set(
+      options.figmaDesignSystemSource!.catalog.files.flatMap((file) =>
+        file.components.map((component) => anchorFor(file.fileKey, component.nodeId))),
+    );
+    const filtered: ComponentsGuideEntry[] = [];
+    for (const [anchor, entry] of parseComponentsGuide(raw)) {
+      if (validAnchors.has(anchor)) filtered.push({ anchor, name: entry.name, description: entry.description });
+    }
+    if (filtered.length === 0) return null;
+    return Buffer.from(renderComponentsGuideMarkdown(filtered), 'utf8');
+  })();
   const collectedCandidates = [
     ...(await collectTree(path.join(mutableRoot, 'app-context'), 'app-context', 'app-context')),
     ...(await collectTree(path.join(mutableRoot, 'docs'), 'docs', 'docs')),
@@ -360,6 +395,11 @@ export async function createAppContextVersion(
       path: 'design-system/criteria/components.md',
       source: 'design-system' as const,
       content: figmaComponentsMarkdown!,
+    }].map((file) => ({ ...file, digest: digestBuffer(file.content), size: file.content.byteLength })) : []),
+    ...(figmaGuideMarkdown ? [{
+      path: 'design-system/criteria/components-guide.md',
+      source: 'design-system' as const,
+      content: figmaGuideMarkdown,
     }].map((file) => ({ ...file, digest: digestBuffer(file.content), size: file.content.byteLength })) : []),
   ];
   // A reusable Figma catalogue intentionally overrides components.md from a

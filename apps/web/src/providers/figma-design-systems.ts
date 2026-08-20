@@ -1,12 +1,14 @@
 import type {
   CreateFigmaDesignSystemSourceRequest,
+  FigmaDesignSystemGuideJob,
   FigmaDesignSystemSource,
+  GenerateFigmaDesignSystemGuideResponse,
   GetFigmaDesignSystemSourceResponse,
   ListFigmaDesignSystemSourcesResponse,
   RefreshFigmaDesignSystemSourceResponse,
 } from '@open-design/contracts';
 
-export type { FigmaDesignSystemSource } from '@open-design/contracts';
+export type { FigmaDesignSystemGuideJob, FigmaDesignSystemSource } from '@open-design/contracts';
 
 type SourcePayload = CreateFigmaDesignSystemSourceRequest;
 
@@ -65,4 +67,42 @@ export async function refreshFigmaDesignSystem(id: string): Promise<RefreshFigma
 export async function deleteFigmaDesignSystem(id: string): Promise<void> {
   const response = await fetch(`/api/figma-design-systems/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!response.ok) throw new Error(await errorMessage(response, 'Không thể xóa Design system Figma.'));
+}
+
+// WP20: nút "Sinh mô tả (N thiếu)" của panel DS App khi App gắn qua nguồn
+// dùng chung — cùng khuôn job App-level (state/figma-config.ts:
+// generateAppFigmaGuide/fetchAppFigmaGuideJob), khác chỗ trả `{ok, error}`
+// thay vì throw (mọi hàm khác của module này throw) để panel tự quyết cách
+// hiện lỗi giống hệt panel App-level, không cần try/catch ở call site.
+async function readJson<T>(response: Response): Promise<T | null> {
+  try { return (await response.json()) as T; } catch { return null; }
+}
+
+export async function generateFigmaDesignSystemGuide(
+  sourceId: string,
+  signal?: AbortSignal,
+): Promise<{ ok: true; jobId: string; job: FigmaDesignSystemGuideJob } | { ok: false; error: string }> {
+  try {
+    const response = await fetch(`/api/figma-design-systems/${encodeURIComponent(sourceId)}/generate-guide`, { method: 'POST', signal });
+    const body = await readJson<GenerateFigmaDesignSystemGuideResponse & { error?: string | { message?: string } }>(response);
+    if (!response.ok || !body?.job) {
+      const err = body?.error;
+      const message = typeof err === 'string' ? err : err?.message;
+      return { ok: false, error: message ?? `HTTP ${response.status}` };
+    }
+    return { ok: true, jobId: body.jobId, job: body.job };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function fetchFigmaDesignSystemGuideJob(sourceId: string, jobId: string, signal?: AbortSignal): Promise<FigmaDesignSystemGuideJob | null> {
+  try {
+    const response = await fetch(`/api/figma-design-systems/${encodeURIComponent(sourceId)}/generate-guide/${encodeURIComponent(jobId)}`, { signal });
+    if (!response.ok) return null;
+    const body = await readJson<{ job?: FigmaDesignSystemGuideJob }>(response);
+    return body?.job ?? null;
+  } catch {
+    return null;
+  }
 }

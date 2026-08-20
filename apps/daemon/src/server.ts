@@ -450,7 +450,13 @@ import {
   runDescribeChunk,
   appFigmaCatalogDir,
 } from './figma-catalog-routes.js';
-import { registerFigmaDesignSystemRoutes } from './figma-design-system-routes.js';
+import {
+  figmaDesignSystemGuidePath,
+  readFigmaDesignSystemGuide,
+  registerFigmaDesignSystemRoutes,
+  writeFigmaDesignSystemGuide,
+  writeFilteredComponentsGuideToCriteria,
+} from './figma-design-system-routes.js';
 import { registerFigmaConfigRoutes } from './figma-config-routes.js';
 import { registerXaiRoutes } from './xai-routes.js';
 import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
@@ -1639,14 +1645,19 @@ const dsDirForId = async (designSystemId: string): Promise<string | null> => {
   }
   return null;
 };
-const figmaDesignSystemSourceForApp = (
+// WP20: kèm guideMarkdown RAW của nguồn (đọc kho nguồn best-effort — lỗi đọc
+// KHÔNG được chặn versioning, chỉ coi như "nguồn chưa có guide", giống hệt
+// cách mọi chỗ khác trong file này đọc guide App-level). createAppContextVersion
+// tự lọc theo catalog trước khi đưa vào file ảo (xem app-context-version.ts).
+const figmaDesignSystemSourceForApp = async (
   database: Parameters<typeof getFigmaDesignSystemSource>[0],
   app: { figmaDesignSystemSourceId?: string | null } | null | undefined,
 ) => {
   if (!app?.figmaDesignSystemSourceId) return null;
   const source = getFigmaDesignSystemSource(database, app.figmaDesignSystemSourceId);
   if (!source?.catalog) return null;
-  return { id: source.id, catalog: source.catalog as FigmaComponentCatalogSnapshot };
+  const guideMarkdown = await readFigmaDesignSystemGuide(RUNTIME_DATA_DIR, source.id).catch(() => null);
+  return { id: source.id, catalog: source.catalog as FigmaComponentCatalogSnapshot, guideMarkdown };
 };
 const versionAppsUsingDesignSystem = async (designSystemId: string, dsDir: string) => {
   const apps = listPipelineApps(db).filter((item) => item.designSystemId === designSystemId);
@@ -1654,7 +1665,7 @@ const versionAppsUsingDesignSystem = async (designSystemId: string, dsDir: strin
     try {
       const result = await createAppContextVersion({ projectsDir: PROJECTS_DIR, appId: item.id,
         appName: item.name, designSystemId, docsReviewComponentSource: item.docsReviewComponentSource,
-        figmaDesignSystemSource: figmaDesignSystemSourceForApp(db, item), designSystemDir: dsDir });
+        figmaDesignSystemSource: await figmaDesignSystemSourceForApp(db, item), designSystemDir: dsDir });
       return { appId: item.id, status: result.status, contextVersion: result.manifest.contextVersion };
     } catch (error) {
       return { appId: item.id, status: 'failed', contextVersion: null, error: String(error) };
@@ -6507,6 +6518,12 @@ export async function startServer({
     db,
     http: httpDeps,
     paths: pathDeps,
+    // WP20: nút "Sinh mô tả (N thiếu)" của nguồn dùng chung — cùng khuôn TDZ
+    // với registerFigmaCatalogRoutes ngay trên (design/startChatRun/
+    // resolveCriteriaAgent là const khai báo SAU điểm này trong file).
+    design,
+    chat: { startChatRun: (...args: Parameters<typeof startChatRun>) => startChatRun(...args) },
+    agents: { getAgentDef: agentDeps.getAgentDef, resolveAgent: () => resolveCriteriaAgent() },
   });
   /** Which component catalogue the docs-review Screen → Component stage
    *  (dr-comp) compares against for a project: the App's setting, overridden
@@ -15521,7 +15538,7 @@ export async function startServer({
         appName,
         designSystemId,
         docsReviewComponentSource: app?.docsReviewComponentSource ?? { mode: 'app-design-system' },
-        figmaDesignSystemSource: figmaDesignSystemSourceForApp(db, app),
+        figmaDesignSystemSource: await figmaDesignSystemSourceForApp(db, app),
         designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
       });
       let featureBinding = featureContextBindingFromMetadata(localCfg?.metadata);
@@ -16512,7 +16529,7 @@ export async function startServer({
             appName: localApp?.name ?? localAppId,
             designSystemId,
             docsReviewComponentSource: localApp?.docsReviewComponentSource ?? { mode: 'app-design-system' },
-            figmaDesignSystemSource: figmaDesignSystemSourceForApp(db, localApp),
+            figmaDesignSystemSource: await figmaDesignSystemSourceForApp(db, localApp),
             designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
           });
           let binding = featureContextBindingFromMetadata(featureProject?.metadata);
@@ -16542,6 +16559,36 @@ export async function startServer({
           console.log(
             `[docs-comp] staged App Context ${binding.contextVersion} for ${projectId}: ${staged.stagedDesignSystem.length} Design System file(s)`,
           );
+          // WP20b (fix review WP20 blocking): đồng bộ guide của NGUỒN DÙNG
+          // CHUNG vào cwd VÔ ĐIỀU KIỆN ngay sau staging — không chỉ khi nhánh
+          // sinh bù bên dưới chạy (stillMissing > 0, xem `else if (localAppId)`
+          // phía dưới). Trước sửa: Feature bind contextVersion v1 lúc nguồn
+          // CHƯA có guide (binding chỉ tạo một lần, không tự refresh); sau đó
+          // guide nguồn được sinh đầy đủ; chạy lại dr-comp → stillMissing = 0
+          // → nhánh sinh bù skip toàn bộ → guide đã có ở kho nguồn KHÔNG BAO
+          // GIỜ tới cwd. `stageBoundAppContextForRun` ở trên chỉ copy snapshot
+          // ĐÓNG BĂNG lúc bind (map design-system/criteria/* → criteria/*),
+          // không phải guide runtime mới nhất — guide runtime sống độc lập ở
+          // RUNTIME_DATA_DIR/figma-design-systems/<sourceId>/criteria/
+          // components-guide.md và đổi bất cứ lúc nào job "Sinh mô tả" chạy.
+          // Guard `sharedSnapshotForGuide` giống hệt nhánh sinh bù bên dưới:
+          // chưa có catalog cho nguồn thì không có gì để lọc theo.
+          const sharedSourceIdForGuide = localApp?.figmaDesignSystemSourceId ?? null;
+          if (sharedSourceIdForGuide) {
+            try {
+              const sharedSourceForGuide = getFigmaDesignSystemSource(db, sharedSourceIdForGuide);
+              const sharedSnapshotForGuide = sharedSourceForGuide?.catalog as FigmaComponentCatalogSnapshot | null | undefined;
+              if (sharedSnapshotForGuide) {
+                const sharedGuideMdForStage = await readFigmaDesignSystemGuide(RUNTIME_DATA_DIR, sharedSourceIdForGuide);
+                await writeFilteredComponentsGuideToCriteria(path.join(cwd, 'criteria'), sharedSnapshotForGuide, sharedGuideMdForStage);
+              }
+            } catch (err: any) {
+              // fail-soft — cùng bất biến với toàn khối docs-comp prep: lỗi ở
+              // đây KHÔNG được chặn stage, criteria/components.md đã staging
+              // xong ở trên rồi mới là nguồn thật của dr-comp.
+              console.warn('[docs-comp] đồng bộ guide nguồn dùng chung vào cwd thất bại (continuing):', err?.message ?? err);
+            }
+          }
         }
         const { source: componentSource, appId: componentSourceAppId } = await resolveDocsReviewComponentSourceForProject(projectId);
         const modelPrefs = appConfig.agentModels?.[agentId] ?? {};
@@ -16851,6 +16898,109 @@ export async function startServer({
           }
           flushLog('succeeded');
           setProjectPipelineStatus(db, projectId, pipelineId, { subConversations: [{ ...extractionTask }] });
+        } else if (localAppId) {
+          // WP20: App gắn Design System qua NGUỒN FIGMA DÙNG CHUNG
+          // (figmaDesignSystemSourceId) thay vì docsReviewComponentSource.mode
+          // === 'figma-links' (nhánh trên — link gắn riêng App). Hai chế độ
+          // loại trừ nhau ở UI nên `else if` là đủ, không chạy đè nhau.
+          // components.md (+ components-guide.md nếu nguồn đã có guide) đã
+          // lên `cwd/criteria/` qua stageBoundAppContextForRun ở trên (map
+          // design-system/criteria/* → criteria/* — xem
+          // stageBoundAppContextForRun, app-context-version.ts); khối này
+          // CHỈ lo vòng sinh bù (best-effort) TRƯỚC fan-out — CÙNG ENGINE
+          // WP19b (generateComponentDescriptions/runDescribeChunk/
+          // downloadFigmaImage) với nhánh figma-links ở trên, khác NƠI lưu
+          // (kho nguồn dùng chung thay vì App-level, xem
+          // figma-design-system-routes.ts). TUYỆT ĐỐI không được fail stage:
+          // criteria/ đã staging xong ở trên rồi mới là nguồn thật của
+          // dr-comp — lỗi/timeout ở đây chỉ log rồi bỏ qua.
+          try {
+            const sharedApp = getPipelineApp(db, localAppId);
+            const sharedSourceId = sharedApp?.figmaDesignSystemSourceId ?? null;
+            const sharedSource = sharedSourceId ? getFigmaDesignSystemSource(db, sharedSourceId) : null;
+            const sharedSnapshot = sharedSource?.catalog as FigmaComponentCatalogSnapshot | null | undefined;
+            if (sharedSourceId && sharedSnapshot) {
+              const sharedGuideMd = await readFigmaDesignSystemGuide(RUNTIME_DATA_DIR, sharedSourceId);
+              const stillMissing = computeMissingDescriptions(sharedSnapshot, sharedGuideMd);
+              if (stillMissing.length > 0) {
+                const figmaCfg = await readFigmaConfig(RUNTIME_DATA_DIR);
+                if (!figmaCfg?.token) {
+                  console.warn(`[docs-comp] nguồn dùng chung "${sharedSourceId}" còn ${stillMissing.length} component thiếu mô tả nhưng chưa có token Figma trên máy này — bỏ qua vòng sinh bù.`);
+                } else {
+                  const prepExecution = await resolveCriteriaAgent();
+                  const prepDir = path.join(path.dirname(figmaDesignSystemGuidePath(RUNTIME_DATA_DIR, sharedSourceId)), '_describe-prep', randomUUID());
+                  const prepProjectId = `figma-guide-source-${sharedSourceId}`;
+                  const prepConversationId = `figma-guide-source-prep-conv-${randomUUID()}`;
+                  const prepRowNow = Date.now();
+                  const existingPrepProject = getProject(db, prepProjectId);
+                  if (!existingPrepProject) {
+                    insertProject(db, {
+                      id: prepProjectId,
+                      name: `Sinh mô tả component (nguồn dùng chung) · ${sharedSourceId}`,
+                      skillId: null,
+                      designSystemId: null,
+                      pendingPrompt: null,
+                      metadata: { kind: 'figma-guide-source', baseDir: prepDir, sourceId: sharedSourceId },
+                      createdAt: prepRowNow,
+                      updatedAt: prepRowNow,
+                    });
+                  } else {
+                    updateProject(db, prepProjectId, {
+                      metadata: { ...(existingPrepProject.metadata ?? {}), kind: 'figma-guide-source', baseDir: prepDir, sourceId: sharedSourceId },
+                    });
+                  }
+                  insertConversation(db, {
+                    id: prepConversationId,
+                    projectId: prepProjectId,
+                    title: `Sinh mô tả component (dr-comp, nguồn dùng chung) · ${new Date(prepRowNow).toLocaleString('vi-VN')}`,
+                    createdAt: prepRowNow,
+                    updatedAt: prepRowNow,
+                  });
+                  const totalPrepChunks = Math.ceil(Math.min(stillMissing.length, 60) / 12);
+                  const genPromise = generateComponentDescriptions(sharedSnapshot, sharedGuideMd, {
+                    baseDir: prepDir,
+                    fetchTree: (fileKey, ids) => fetchNodeSubtrees(figmaCfg.token, fileKey, ids),
+                    fetchImages: (fileKey, ids) => fetchNodeImages(figmaCfg.token, fileKey, ids),
+                    downloadImage: (url, destPath) => downloadFigmaImage(url, destPath),
+                    runAgentChunk: (input, chunkDir, index) => runDescribeChunk(
+                      { design, startChatRun, db, getAgentDef: agentDeps.getAgentDef },
+                      { projectId: prepProjectId, conversationId: prepConversationId, chunkDir, index, totalChunks: totalPrepChunks, execution: prepExecution },
+                    ),
+                  });
+                  // Dọn prepDir trong finally kể cả khi timeout thắng race —
+                  // cùng bài học WP19b-fix điểm 2 (xem nhánh figma-links trên).
+                  try {
+                    const prepResult = await Promise.race([
+                      genPromise,
+                      new Promise<never>((_resolve, reject) => {
+                        const timer = setTimeout(
+                          () => reject(new Error(`Vòng sinh bù mô tả component quá ${Math.round(FIGMA_GUIDE_PREP_TIMEOUT_MS / 60_000)} phút.`)),
+                          FIGMA_GUIDE_PREP_TIMEOUT_MS,
+                        );
+                        timer.unref?.();
+                      }),
+                    ]);
+                    // Nếu nhánh timeout thắng race, genPromise vẫn chạy nền —
+                    // không ai await nó nữa, chỉ cần chặn unhandled rejection.
+                    genPromise.catch(() => {});
+                    await writeFigmaDesignSystemGuide(RUNTIME_DATA_DIR, sharedSourceId, prepResult.guideMarkdown);
+                    // Ghi bản lọc vào cwd/criteria/ TRƯỚC fan-out — cạnh
+                    // components.md đã staging từ App Context ở trên, để
+                    // CHÍNH dr-comp fan-out sắp chạy đọc được guide vừa sinh
+                    // bù ngay, không phải đợi lần chạy sau. Dùng CHUNG helper
+                    // với bước staging vô điều kiện ở trên (WP20b) để khỏi
+                    // trôi lệch giữa hai bản sao logic lọc.
+                    await writeFilteredComponentsGuideToCriteria(path.join(cwd, 'criteria'), sharedSnapshot, prepResult.guideMarkdown);
+                    console.log(`[docs-comp] vòng sinh bù (nguồn dùng chung "${sharedSourceId}"): +${prepResult.generated} mô tả, loại ${prepResult.rejected}, còn ${prepResult.remaining} chưa xử lý.`);
+                  } finally {
+                    await fs.promises.rm(prepDir, { recursive: true, force: true }).catch(() => {});
+                  }
+                }
+              }
+            }
+          } catch (err: any) {
+            console.warn('[docs-comp] vòng sinh bù mô tả component (nguồn dùng chung) thất bại (continuing):', err?.message ?? err);
+          }
         }
 
         // From this point a failure belongs to the audit itself, so arm the
@@ -19735,7 +19885,7 @@ export async function startServer({
             appName: localApp?.name ?? deterministicAppId,
             designSystemId,
             docsReviewComponentSource: localApp?.docsReviewComponentSource ?? { mode: 'app-design-system' },
-            figmaDesignSystemSource: figmaDesignSystemSourceForApp(db, localApp),
+            figmaDesignSystemSource: await figmaDesignSystemSourceForApp(db, localApp),
             designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
           });
           let binding = featureContextBindingFromMetadata(project.metadata);
@@ -20092,7 +20242,7 @@ export async function startServer({
           appName: (localApp?.name ?? featureAppName) || localAppId,
           designSystemId,
           docsReviewComponentSource: localApp?.docsReviewComponentSource ?? { mode: 'app-design-system' },
-          figmaDesignSystemSource: figmaDesignSystemSourceForApp(db, localApp),
+          figmaDesignSystemSource: await figmaDesignSystemSourceForApp(db, localApp),
           designSystemDir: designSystemId ? await dsDirForId(designSystemId) : null,
         });
         let binding = featureContextBindingFromMetadata(project.metadata);

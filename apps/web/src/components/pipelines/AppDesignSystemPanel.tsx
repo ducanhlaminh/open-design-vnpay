@@ -1,10 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DesignSystemFileDetail, DesignSystemReactInfo, DesignSystemSummary, DocsReviewComponentSource, GetFigmaDesignSystemSourceResponse } from '@open-design/contracts';
+import type { DesignSystemFileDetail, DesignSystemReactInfo, DesignSystemSummary, DocsReviewComponentSource, FigmaDesignSystemGuideJob, GetFigmaDesignSystemSourceResponse } from '@open-design/contracts';
 import { DesignSpecView } from '../DesignSpecView';
 import { renderMarkdownToSafeHtml } from '../../artifacts/markdown';
-import { fetchFigmaDesignSystemDetail } from '../../providers/figma-design-systems';
+import {
+  fetchFigmaDesignSystemDetail,
+  fetchFigmaDesignSystemGuideJob,
+  generateFigmaDesignSystemGuide,
+} from '../../providers/figma-design-systems';
 import { fetchDesignSystemCriteriaFile, fetchDesignSystemReactInfo, fetchDesignSystems } from '../../providers/registry';
 import {
   fetchAppFigmaCatalog,
@@ -42,15 +46,69 @@ export function AppDesignSystemPanel({ appId, designSystemId, componentSource, f
   return <AppDesignSystemView appId={appId} designSystemId={designSystemId} />;
 }
 
+/** DS của một App gắn qua NGUỒN FIGMA DÙNG CHUNG (`figmaDesignSystemSourceId`
+ *  — WP20, hoàn tất scope WP19b cho chế độ gắn DS này). Guide (mô tả AI sinh)
+ *  DÙNG CHUNG giữa mọi App gắn cùng nguồn — nút + coverage nằm ở ĐÂY (panel
+ *  App), nhưng job/kho lưu ở NGUỒN (sourceId), khác `AppFigmaCatalogPanel`
+ *  bên dưới lưu theo appId. Logic poll/nút cố tình mirror
+ *  AppFigmaCatalogPanel (không tách hook dùng chung: hai state độc lập theo
+ *  key khác nhau — appId vs sourceId — tách hook chỉ đổi chỗ code, không
+ *  giảm rủi ro, nên giữ 1-1 cho dễ đọc/dễ diff khi WP19b đổi). */
 function SharedFigmaCatalogPanel({ sourceId }: { sourceId: string }) {
   const [detail, setDetail] = useState<GetFigmaDesignSystemSourceResponse | null | undefined>(undefined);
+  const [guideJob, setGuideJob] = useState<FigmaDesignSystemGuideJob | null>(null);
+  const [guideError, setGuideError] = useState<string | null>(null);
+
   useEffect(() => {
     const controller = new AbortController();
+    setDetail(undefined);
+    setGuideJob(null);
+    setGuideError(null);
     void fetchFigmaDesignSystemDetail(sourceId)
       .then((result) => { if (!controller.signal.aborted) setDetail(result); })
       .catch(() => { if (!controller.signal.aborted) setDetail(null); });
     return () => controller.abort();
   }, [sourceId]);
+
+  const missingCount = detail?.coverage?.missing ?? 0;
+  const guideJobRunning = guideJob != null && (guideJob.status === 'queued' || guideJob.status === 'running');
+
+  const startGuideGeneration = useCallback(async () => {
+    setGuideError(null);
+    const result = await generateFigmaDesignSystemGuide(sourceId);
+    if (!result.ok) {
+      setGuideError(result.error);
+      return;
+    }
+    setGuideJob(result.job);
+  }, [sourceId]);
+
+  // Poll trong lúc job queued/running; dừng ngay khi job vào trạng thái
+  // chung cuộc, rồi tải lại detail MỘT lần (guideMarkdown + coverage đã đổi)
+  // thay vì gọi lại Figma — job không đụng gì tới catalog.
+  useEffect(() => {
+    if (!guideJob || (guideJob.status !== 'queued' && guideJob.status !== 'running')) return undefined;
+    let alive = true;
+    const jobId = guideJob.id;
+    const timer = setInterval(() => {
+      void fetchFigmaDesignSystemGuideJob(sourceId, jobId).then((job) => {
+        if (!alive || !job) return;
+        setGuideJob(job);
+        if (job.status === 'succeeded') {
+          clearInterval(timer);
+          void fetchFigmaDesignSystemDetail(sourceId).then((result) => { if (alive) setDetail(result); }).catch(() => {});
+        } else if (job.status === 'failed') {
+          clearInterval(timer);
+          setGuideError(job.error ?? 'Sinh mô tả thất bại.');
+        }
+      });
+    }, GUIDE_JOB_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [sourceId, guideJob?.id, guideJob?.status]);
+
   return (
     <section className={styles.section} aria-label="Design system Figma">
       <div className={styles.header}>
@@ -66,8 +124,28 @@ function SharedFigmaCatalogPanel({ sourceId }: { sourceId: string }) {
               <div className={styles.criteriaHead}>
                 <h3 className={styles.subheading}>Danh mục component</h3>
                 <p className={styles.meta}>{detail.source.catalog?.componentCount ?? 0} component · {detail.source.catalog?.fileCount ?? detail.source.links.length} file</p>
+                {detail.coverage ? (
+                  <p className={styles.meta}>
+                    {detail.coverage.described}/{detail.coverage.total} component có mô tả · {detail.coverage.fromGuide} từ AI · {detail.coverage.missing} thiếu
+                  </p>
+                ) : null}
               </div>
               <p className={styles.muted}>Cập nhật {new Date(detail.source.updatedAt).toLocaleString('vi-VN')} · Quản lý link và làm mới catalog tại trang Design system.</p>
+              {detail.coverage ? (
+                <div className={styles.guideBar}>
+                  <button
+                    type="button"
+                    className={styles.refreshButton}
+                    data-testid="figma-design-system-guide-generate"
+                    disabled={missingCount === 0 || guideJobRunning}
+                    onClick={() => { void startGuideGeneration(); }}
+                  >
+                    {guideJobRunning ? 'Đang sinh mô tả…' : `Sinh mô tả (${missingCount} thiếu)`}
+                  </button>
+                  {guideJobRunning ? <p className={styles.muted}>{guideJob?.message ?? 'Đang xử lý…'}</p> : null}
+                </div>
+              ) : null}
+              {guideError ? <p className={styles.errorText} role="alert">{guideError}</p> : null}
               {detail.componentsMarkdown ? (
                 <article
                   className={`markdown-rendered ${styles.markdownPreview}`}
@@ -77,6 +155,12 @@ function SharedFigmaCatalogPanel({ sourceId }: { sourceId: string }) {
               ) : (
                 <div className={styles.empty}><p>Chưa có `criteria/components.md`. Vào trang Design system và chọn <strong>Chạy lại</strong>.</p></div>
               )}
+              {detail.guideMarkdown ? (
+                <details className={styles.guideDetails}>
+                  <summary className={styles.guideSummary}>Mô tả AI sinh (components-guide.md)</summary>
+                  <DesignSpecView source={detail.guideMarkdown} loadingLabel="Đang tải mô tả AI sinh…" />
+                </details>
+              ) : null}
             </>}
       </div>
     </section>

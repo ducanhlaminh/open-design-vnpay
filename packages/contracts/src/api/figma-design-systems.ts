@@ -66,6 +66,57 @@ export interface GetFigmaDesignSystemSourceResponse {
   source: FigmaDesignSystemSource;
   /** Rendered `criteria/components.md`, or null before the first successful load. */
   componentsMarkdown: string | null;
+  /** WP20: rendered `components-guide.md` of this SHARED source (AI-generated
+   *  fallback description guide, same closed format as
+   *  `AppFigmaCatalogResponse.guideMarkdown` — mirrors the App-level field
+   *  one-for-one, this is the same feature applied to a source that many
+   *  Apps can point at via `figmaDesignSystemSourceId`). Optional and omitted
+   *  (not `null`) when the source has no guide yet, so responses for every
+   *  source created before this field stay byte-for-byte identical. */
+  guideMarkdown?: string | null;
+  /** WP20 coverage counts, computed from the source's catalog + guide. Optional
+   *  and omitted when there is no catalog yet — same "omit rather than send a
+   *  zeroed shape" rule as `guideMarkdown`. */
+  coverage?: FigmaDesignSystemGuideCoverage;
+}
+
+/** WP20: how many of a shared source's Figma components have a description,
+ *  and where it came from — one-for-one mirror of `AppFigmaCatalogCoverage`
+ *  (figma-config.ts) applied to a source instead of an App. `described`
+ *  counts BOTH a real Figma description and one filled in from
+ *  `components-guide.md`. */
+export interface FigmaDesignSystemGuideCoverage {
+  total: number;
+  described: number;
+  fromGuide: number;
+  missing: number;
+}
+
+/** WP20: `POST /api/figma-design-systems/:id/generate-guide` background job
+ *  status — same "queued → running → succeeded/failed" shape as
+ *  `AppFigmaGuideJob` (figma-config.ts), scoped to a shared source instead of
+ *  an App because the guide is shared between every App that points at this
+ *  source. Polled by `GET .../generate-guide/:jobId`. */
+export interface FigmaDesignSystemGuideJob {
+  id: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  /** Short human-readable (Vietnamese) status line for the button/progress UI. */
+  message: string;
+  /** How many descriptions this run accepted so far (updates as chunks land). */
+  generated: number;
+  /** How many candidate descriptions this run rejected (validation failed). */
+  rejected: number;
+  /** How many components are still missing a description AFTER this run
+   *  (capped at 60/click) — > 0 means "bấm tiếp" is still useful. */
+  remaining: number;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GenerateFigmaDesignSystemGuideResponse {
+  jobId: string;
+  job: FigmaDesignSystemGuideJob;
 }
 
 export interface FigmaDesignSystemRefreshChanges {
