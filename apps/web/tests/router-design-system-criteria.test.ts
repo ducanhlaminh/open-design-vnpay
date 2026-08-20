@@ -29,3 +29,36 @@ describe('design system criteria route', () => {
     expect(parseRoute(buildPath(route))).toEqual(route);
   });
 });
+
+// WP21b — `/design-systems/figma/:sourceId` phải tách khỏi
+// `design-system-detail`: segment literal "figma" không được nuốt nhầm làm
+// designSystemId.
+describe('figma design system detail route', () => {
+  it('parses /design-systems/figma/:sourceId', () => {
+    expect(parseRoute('/design-systems/figma/src-1')).toEqual({
+      kind: 'figma-ds-detail',
+      sourceId: 'src-1',
+    });
+  });
+
+  it('does not swallow "figma" into design-system-detail', () => {
+    const route = parseRoute('/design-systems/figma/src-1');
+    expect(route.kind).not.toBe('design-system-detail');
+  });
+
+  it('serializes figma-ds-detail', () => {
+    expect(buildPath({ kind: 'figma-ds-detail', sourceId: 'src-1' })).toBe('/design-systems/figma/src-1');
+  });
+
+  it('round-trips encoded sourceId', () => {
+    const route = { kind: 'figma-ds-detail' as const, sourceId: 'user:src-1' };
+    expect(parseRoute(buildPath(route))).toEqual(route);
+  });
+
+  it('keeps plain design-system-detail routes unaffected', () => {
+    expect(parseRoute('/design-systems/abc')).toEqual({
+      kind: 'design-system-detail',
+      designSystemId: 'abc',
+    });
+  });
+});

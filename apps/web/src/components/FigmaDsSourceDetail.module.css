@@ -1,0 +1,464 @@
+.page {
+  display: grid;
+  gap: 18px;
+  padding: 18px 22px 40px;
+}
+
+.backRow {
+  display: flex;
+  align-items: center;
+}
+
+.backButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.backButton:hover {
+  color: var(--text-strong);
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+}
+
+.headerCopy {
+  min-width: 0;
+}
+
+.heading {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 19px;
+  line-height: 1.3;
+}
+
+.meta {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.linkList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.linkList a {
+  color: var(--accent-strong);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.linkList a:hover {
+  text-decoration: underline;
+}
+
+.headerActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.refreshButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.refreshButton:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.refreshButton:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.lastRun {
+  margin-top: 10px;
+  color: var(--text-strong);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.lastRunFailures {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lastRunFailures li {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+}
+
+.lastRunFailures strong {
+  color: var(--text-strong);
+}
+
+.lastRunFailures span {
+  display: block;
+  margin-top: 2px;
+  color: var(--danger, #a42626);
+}
+
+.errorText {
+  margin: 0;
+  color: var(--danger, #a42626);
+  font-size: 12.5px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+}
+
+.searchInput {
+  flex: 1 1 220px;
+  min-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.pageSelect {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.missingToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.missingToggleActive {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+  color: var(--accent-strong);
+}
+
+.generateButton {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 13px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font: inherit;
+  font-weight: 650;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.generateButton:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.progressPanel {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-tint) 30%, var(--bg-panel));
+}
+
+.progressBar {
+  display: block;
+  width: 100%;
+  height: 6px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border);
+  accent-color: var(--accent);
+}
+
+.progressCounts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 8px;
+}
+
+.progressCounts div {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  text-align: center;
+}
+
+.progressCounts strong {
+  display: block;
+  color: var(--text-strong);
+  font-size: 16px;
+}
+
+.progressCounts span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.progressFallback {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 12.5px;
+}
+
+.progressRemaining {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.progressItems {
+  display: grid;
+  gap: 6px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.progressGroup {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+
+.progressGroupHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.progressGroupItems {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0 9px 8px;
+  list-style: none;
+}
+
+.progressGroupItems li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: var(--bg-panel);
+  font-size: 12px;
+}
+
+.progressItemReason {
+  flex-basis: 100%;
+  color: var(--danger, #a42626);
+}
+
+.itemBadge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.itemBadgeQueued { background: var(--bg-subtle); color: var(--text-muted); }
+.itemBadgeRunning { background: color-mix(in srgb, var(--accent) 15%, var(--bg-panel)); color: var(--accent-strong); }
+.itemBadgeSucceeded { background: color-mix(in srgb, #16824a 12%, var(--bg-panel)); color: #12673d; }
+.itemBadgeFailed { background: color-mix(in srgb, var(--danger, #b12b2b) 12%, var(--bg-panel)); color: var(--danger, #a42626); }
+
+.list {
+  display: grid;
+  gap: 8px;
+}
+
+.row {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+}
+
+.rowHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.rowName {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.rowNodeId {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sourceBadge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.sourceBadgeFigma { background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel)); color: var(--accent-strong); }
+.sourceBadgeAi { background: color-mix(in srgb, #7b3fe4 14%, var(--bg-panel)); color: #6229c4; }
+.sourceBadgeNone { background: color-mix(in srgb, var(--danger, #b12b2b) 12%, var(--bg-panel)); color: var(--danger, #a42626); }
+
+.rowDescription {
+  margin: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.rowToggle {
+  align-self: flex-start;
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.propsTable {
+  width: 100%;
+  margin-top: 4px;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.propsTable th,
+.propsTable td {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.propsTable th {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-weight: 650;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pagination button {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pagination button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.empty {
+  padding: 24px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  text-align: center;
+}

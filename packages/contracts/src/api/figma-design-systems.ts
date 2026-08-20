@@ -78,6 +78,34 @@ export interface GetFigmaDesignSystemSourceResponse {
    *  and omitted when there is no catalog yet — same "omit rather than send a
    *  zeroed shape" rule as `guideMarkdown`. */
   coverage?: FigmaDesignSystemGuideCoverage;
+  /** WP21a: outcome of the most recent finished `generate-guide` run (kể cả
+   *  partial — job stopped early / some chunks failed), persisted at
+   *  `figma-design-systems/<sourceId>/criteria/components-guide.meta.json` so
+   *  it survives a daemon restart. Optional and omitted when no run has ever
+   *  finished for this source — same "omit rather than send a zeroed shape"
+   *  rule as `guideMarkdown`/`coverage`. See `.tmp/pipeline/wp21-contract.md`
+   *  mục 3. */
+  lastGuideRun?: FigmaDesignSystemLastGuideRun;
+}
+
+/** WP21a: one component that failed to get a description in the most recent
+ *  `generate-guide` run — either validation rejected it, or the whole chunk
+ *  it belonged to errored. */
+export interface FigmaDesignSystemGuideRunFailure {
+  anchor: string;
+  name: string;
+  reason: string;
+}
+
+/** WP21a: summary of the most recent finished `generate-guide` run for a
+ *  source, persisted so `GET /:id` can show it after a daemon restart (the
+ *  in-memory job map does not survive one). See
+ *  `.tmp/pipeline/wp21-contract.md` mục 3. */
+export interface FigmaDesignSystemLastGuideRun {
+  finishedAt: string;
+  generated: number;
+  failed: number;
+  failures: FigmaDesignSystemGuideRunFailure[];
 }
 
 /** WP20: how many of a shared source's Figma components have a description,
@@ -90,6 +118,22 @@ export interface FigmaDesignSystemGuideCoverage {
   described: number;
   fromGuide: number;
   missing: number;
+}
+
+/** WP21a: per-component status inside a running/finished `generate-guide` job
+ *  — one entry per component in THIS round, so the UI can show live progress
+ *  instead of only 3 aggregate numbers. `page` is the Figma page this
+ *  component belongs to, so the UI can group progress by page (the engine
+ *  fans generation out by (fileKey, page) group — see
+ *  `.tmp/pipeline/wp21-contract.md` mục 2). `reason` is only present for
+ *  `'failed'` (validation rejection message, or "agent lỗi: <msg>" when the
+ *  whole chunk errored). */
+export interface FigmaDesignSystemGuideJobItem {
+  anchor: string;
+  name: string;
+  page?: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  reason?: string;
 }
 
 /** WP20: `POST /api/figma-design-systems/:id/generate-guide` background job
@@ -112,6 +156,17 @@ export interface FigmaDesignSystemGuideJob {
   error: string | null;
   createdAt: string;
   updatedAt: string;
+  /** WP21a: per-component live status for this round — optional so older
+   *  daemon builds (or a client reading a job that predates this field) stay
+   *  compatible; see `FigmaDesignSystemGuideJobItem`. */
+  items?: FigmaDesignSystemGuideJobItem[];
+  /** WP21a: number of components still missing a description outside the cap
+   *  of THIS round — only meaningful for the capped dr-comp catch-up round
+   *  (cap 60); the "Sinh mô tả" button run has no cap (generates every
+   *  missing component in one click, per the 2026-08-20 decision), so this
+   *  is absent/0 there. Optional for the same reason as `items`. See
+   *  `.tmp/pipeline/wp21-contract.md` mục 2. */
+  remainingAfterCap?: number;
 }
 
 export interface GenerateFigmaDesignSystemGuideResponse {
@@ -131,4 +186,29 @@ export interface FigmaDesignSystemRefreshChanges {
 export interface RefreshFigmaDesignSystemSourceResponse {
   source: FigmaDesignSystemSource;
   changes: FigmaDesignSystemRefreshChanges;
+}
+
+/** WP21a: `GET /api/figma-design-systems/:id/components` — a structured,
+ *  per-component view of the source's catalog for the source detail page
+ *  (replaces trying to render the closed `components.md`/`components-guide.md`
+ *  Markdown documents directly, which doesn't scale past a few hundred
+ *  components). `description` is already merged with the shared guide
+ *  (verbatim — no "(AI sinh)" suffix); `descriptionSource` tells the UI where
+ *  it came from. See `.tmp/pipeline/wp21-contract.md` mục 1. */
+export interface FigmaDesignSystemComponentItem {
+  anchor: string;
+  name: string;
+  nodeId: string;
+  fileKey: string;
+  fileName: string;
+  page?: string;
+  description?: string;
+  descriptionSource: 'figma' | 'ai' | 'none';
+  properties: { name: string; type: string; values: string[] }[];
+}
+
+/** Ordered the same as the frozen catalog snapshot (file → component) —
+ *  callers must NOT re-sort; see `FigmaDesignSystemComponentItem`. */
+export interface ListFigmaDesignSystemComponentsResponse {
+  components: FigmaDesignSystemComponentItem[];
 }

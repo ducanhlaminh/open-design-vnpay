@@ -11,6 +11,7 @@ import {
   updateFigmaDesignSystem,
   type FigmaDesignSystemSource,
 } from '../providers/figma-design-systems';
+import { navigate } from '../router';
 import { Icon } from './Icon';
 import { normalizeFigmaLinks } from './pipelines/EditAppModal';
 import {
@@ -279,6 +280,17 @@ export function FigmaDesignSystemsSection() {
                   ) : null}
                 </div>
                 <div className={styles.cardActions}>
+                  {/* WP21b — trang detail (/design-systems/figma/:id) là nơi
+                      chính của mọi thao tác trên nguồn này (component
+                      browser + sinh mô tả); card ở đây chỉ điều hướng sang. */}
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => navigate({ kind: 'figma-ds-detail', sourceId: source.id })}
+                  >
+                    <Icon name="external-link" size={13} />
+                    Mở trang Design system →
+                  </button>
                   <button type="button" className={styles.secondaryButton} disabled={busyId !== null} onClick={() => void refresh(source)}>
                     <Icon name="refresh" size={13} />
                     {busy ? t('ds.figmaLinksRefreshRunning') : t('ds.figmaLinksRefreshAction')}

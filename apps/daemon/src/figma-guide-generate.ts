@@ -382,14 +382,48 @@ export interface GuideGenerationDeps {
   downloadImage: (url: string, destPath: string) => Promise<boolean>;
   /** Chạy MỘT lượt agent cho một chunk: caller ghi input, spawn agent, đọc lại
    *  `output-<n>.json`, trả về nội dung thô (text) — hoặc throw khi agent
-   *  không ra kết quả (chunk đó bị bỏ, fail-soft ở tầng gọi). */
-  runAgentChunk: (input: DescribeInputFile, chunkDir: string, chunkIndex: number) => Promise<string>;
-  /** Tối đa bao nhiêu component xử lý trong MỘT lần gọi (mặc định 60, theo
-   *  quyết định đã chốt: "mỗi click sinh tối đa 60 comp"). */
-  cap?: number;
+   *  không ra kết quả (chunk đó bị bỏ, fail-soft ở tầng gọi). `group` (WP21a):
+   *  nhóm trang Figma (fileKey + page) chunk này thuộc về — caller có thể
+   *  dùng để tách hội thoại/tài nguyên riêng cho từng nhóm khi các nhóm chạy
+   *  song song (`concurrency`), tránh xen lượt agent của nhiều nhóm vào CÙNG
+   *  một cuộc hội thoại. Deps hiện có (server.ts, figma-guide-generate.test.ts)
+   *  khai `runAgentChunk` với ít hơn 4 tham số vẫn hợp lệ — TypeScript cho
+   *  phép implementation khai ít tham số hơn type yêu cầu. */
+  runAgentChunk: (
+    input: DescribeInputFile,
+    chunkDir: string,
+    chunkIndex: number,
+    group: { fileKey: string; page?: string },
+  ) => Promise<string>;
+  /** Tối đa bao nhiêu component xử lý trong MỘT lần gọi. Mặc định 60 (giữ
+   *  đúng quyết định cũ — vòng sinh bù dr-comp trong server.ts KHÔNG truyền
+   *  option này nên vẫn 60 y hệt trước WP21a). WP21a: truyền `null` để KHÔNG
+   *  cap — sinh TOÀN BỘ comp thiếu trong một lượt (nút "Sinh mô tả" ở nguồn
+   *  dùng chung, xem `.tmp/pipeline/wp21-contract.md` mục 2). Chỉ
+   *  `undefined` (không truyền field) mới rơi vào mặc định 60 — `null` là một
+   *  giá trị CÓ CHỦ Ý, khác `??`. */
+  cap?: number | null;
   /** Bao nhiêu component mỗi lượt agent (mặc định 12). */
   chunkSize?: number;
+  /** WP21a: số NHÓM TRANG Figma chạy song song tối đa (mặc định 1 = tuần tự,
+   *  hành vi y hệt trước WP21a — điểm hồi quy phải giữ). Trong MỘT nhóm, các
+   *  chunk 12 luôn chạy TUẦN TỰ (rate-limit Figma REST nhẹ nhàng — không đổi
+   *  so với trước); chỉ CÁC NHÓM chạy song song với nhau. Route job "Sinh mô
+   *  tả" (figma-design-system-routes.ts) truyền 3. */
+  concurrency?: number;
   onProgress?: (info: { chunkIndex: number; totalChunks: number; note: string }) => void;
+  /** WP21a: callback trạng thái TỪNG component trong lượt này — optional,
+   *  KHÔNG truyền thì hành vi/giá trị trả về y hệt trước WP21a (đây là điểm
+   *  hồi quy phải giữ, xem test "hồi quy" trong
+   *  figma-design-system-guide.test.ts). Đúng chuỗi trạng thái theo
+   *  `.tmp/pipeline/wp21-contract.md` mục 2: 'queued' cho mọi comp trong
+   *  `capped` ngay khi biết danh sách lượt; 'running' cho 12 comp của một
+   *  chunk khi chunk đó bắt đầu; sau validate — accepted 'succeeded', rejected
+   *  'failed' kèm `reason` (lý do validate, hoặc lý do chunk-level như "output
+   *  không phải JSON hợp lệ" khi KHÔNG có anchor riêng — áp dụng cho mọi comp
+   *  của chunk đó chưa có trạng thái); chunk agent lỗi (throw) → cả chunk
+   *  'failed' reason `"agent lỗi: <msg>"`. */
+  onItemStatus?: (anchor: string, status: 'queued' | 'running' | 'succeeded' | 'failed', reason?: string) => void;
 }
 
 export interface GuideGenerationResult {
@@ -404,22 +438,64 @@ export interface GuideGenerationResult {
   chunkErrors: string[];
 }
 
+/** WP21a: chạy tối đa `limit` task đồng thời — pool đơn giản tự viết (không
+ *  thêm dependency mới). Mỗi task tự bọc try/catch nội bộ (xem các group task
+ *  trong {@link generateComponentDescriptions}: một nhóm lỗi ghi lỗi vào
+ *  mảng dùng chung rồi tiếp tục, KHÔNG throw) nên `Promise.all` ở đây không
+ *  cần `allSettled` — một task throw thật (bug, không phải lỗi nghiệp vụ) vẫn
+ *  nên văng ra ngoài để lộ ra thay vì nuốt câm lặng. */
+async function runWithConcurrencyLimit(tasks: ReadonlyArray<() => Promise<void>>, limit: number): Promise<void> {
+  if (tasks.length === 0) return;
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const current = cursor;
+      cursor += 1;
+      if (current >= tasks.length) return;
+      await tasks[current]!();
+    }
+  }
+  const workerCount = Math.max(1, Math.min(limit, tasks.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+}
+
+function guideGroupLabel(meta: { fileKey: string; page?: string }): string {
+  return meta.page ? `${meta.fileKey}/${meta.page}` : meta.fileKey;
+}
+
 /** Sinh mô tả cho những component còn thiếu (fail-soft theo chunk — TRỪ khi
  *  0 chunk nào thành công, lúc đó throw kèm lỗi gốc để caller đánh job/stage
  *  là thất bại, theo đúng khuôn trong `.tmp/pipeline/wp19b.yaml`). Dùng
- *  CHUNG bởi job POST /generate-guide (figma-catalog-routes.ts) VÀ vòng sinh
- *  bù của dr-comp (server.ts, khối docs-comp prep) — hai caller khác nhau ở
- *  CÁCH tiêm `runAgentChunk`/`fetchTree`/`fetchImages`, không ở logic sinh. */
+ *  CHUNG bởi job POST /generate-guide (figma-catalog-routes.ts /
+ *  figma-design-system-routes.ts) VÀ vòng sinh bù của dr-comp (server.ts,
+ *  khối docs-comp prep) — hai/ba caller khác nhau ở CÁCH tiêm
+ *  `runAgentChunk`/`fetchTree`/`fetchImages`/`cap`/`concurrency`, không ở
+ *  logic sinh.
+ *
+ *  WP21a fan-out: component thiếu được nhóm theo (fileKey, page) — mỗi nhóm
+ *  vẫn chunk 12 + chạy TUẦN TỰ bên trong (y hệt trước, giữ rate-limit Figma
+ *  REST nhẹ nhàng); các NHÓM chạy song song tối đa `deps.concurrency` (mặc
+ *  định 1 — tuần tự, hồi quy y hệt bản trước WP21a). `accepted` được gom
+ *  TRONG BỘ NHỚ từ mọi nhóm rồi merge+trả về guideMarkdown ĐÚNG MỘT LẦN ở
+ *  cuối hàm — không nhóm nào tự ghi đĩa riêng — nên không có lost-update dù
+ *  nhiều nhóm chạy đồng thời (JS đơn luồng: `accepted.push`/các counter dùng
+ *  chung chỉ đổi giữa các điểm `await`, không bao giờ xen ngang giữa chừng
+ *  một lần gán). */
 export async function generateComponentDescriptions(
   snapshot: FigmaComponentCatalogSnapshot,
   existingGuideMd: string | null,
   deps: GuideGenerationDeps,
 ): Promise<GuideGenerationResult> {
   const missing = computeMissingDescriptions(snapshot, existingGuideMd);
-  const cap = deps.cap ?? 60;
   const chunkSize = deps.chunkSize ?? 12;
-  const capped = missing.slice(0, cap);
-  const remaining = missing.length - capped.length;
+  const concurrency = Math.max(1, deps.concurrency ?? 1);
+  // `cap: null` (CÓ CHỦ Ý) = không cap — khác `undefined` (không truyền field
+  // = mặc định 60). Dùng so sánh tường minh thay vì `??` vì `??` sẽ biến
+  // `null` thành 60, phá đúng ngữ nghĩa "null = sinh hết" mà nút "Sinh mô tả"
+  // (figma-design-system-routes.ts) cần.
+  const capValue = deps.cap === undefined ? 60 : deps.cap;
+  const capped = capValue == null ? missing : missing.slice(0, capValue);
+  const remaining = capValue == null ? 0 : missing.length - capped.length;
 
   if (capped.length === 0) {
     return {
@@ -431,9 +507,40 @@ export async function generateComponentDescriptions(
     };
   }
 
+  // WP21a: 'queued' cho MỌI comp của lượt này ngay khi biết danh sách — trước
+  // khi chunk đầu tiên chạy. Không truyền onItemStatus (deps.onItemStatus
+  // undefined) → optional chaining no-op, hành vi hồi quy y hệt cũ.
+  for (const item of capped) deps.onItemStatus?.(item.anchor, 'queued');
+
   const allowedAnchors = new Map(capped.map((item) => [item.anchor, item.name] as const));
-  const chunks: MissingComponentDescription[][] = [];
-  for (let i = 0; i < capped.length; i += chunkSize) chunks.push(capped.slice(i, i + chunkSize));
+
+  // WP21-fix điểm 1 (review WP21a): nhóm theo (fileKey, page) CHỈ khi
+  // `concurrency > 1` — fan-out song song thật sự cần tách nhóm để mỗi nhóm
+  // chạy độc lập. Khi `concurrency === 1` (không truyền, hoặc truyền =1 —
+  // đường prep dr-comp trong server.ts KHÔNG truyền concurrency nên luôn rơi
+  // vào đây), MỌI item dùng CHUNG một groupKey hằng số ⇒ đúng MỘT nhóm chứa
+  // TOÀN BỘ `capped` theo thứ tự gốc, chunk 12 span qua page — byte-for-byte
+  // với cách chunk thẳng trên `capped` của bản trước WP21a (tránh 60 comp
+  // rải nhiều page thành nhiều lượt agent hơn cần thiết trong timeout 8'
+  // của prep). Khi snapshot chỉ có một file/page, hai nhánh cho kết quả
+  // giống hệt nhau (mọi test hồi quy hiện có).
+  const groupKeyOf = concurrency > 1
+    ? (item: MissingComponentDescription) => `${item.fileKey}\0${item.page ?? ''}`
+    : (_item: MissingComponentDescription) => '__ungrouped__';
+  const groupOrder: string[] = [];
+  const groupItems = new Map<string, MissingComponentDescription[]>();
+  const groupMeta = new Map<string, { fileKey: string; page?: string }>();
+  for (const item of capped) {
+    const key = groupKeyOf(item);
+    let list = groupItems.get(key);
+    if (!list) {
+      list = [];
+      groupOrder.push(key);
+      groupItems.set(key, list);
+      groupMeta.set(key, { fileKey: item.fileKey, ...(item.page ? { page: item.page } : {}) });
+    }
+    list.push(item);
+  }
 
   await fs.promises.mkdir(deps.baseDir, { recursive: true });
 
@@ -444,65 +551,149 @@ export async function generateComponentDescriptions(
   // dùng chunkErrors.length — chunkErrors đếm SỐ THÔNG ĐIỆP lỗi phụ (tree lỗi
   // + ảnh lỗi của cùng một chunk đều bị push riêng), nên một chunk chạy xong
   // bình thường vẫn có thể đẩy 2 message vào đó (xem điểm 1,
-  // `.tmp/pipeline/wp19b-fix.yaml`).
+  // `.tmp/pipeline/wp19b-fix.yaml`). Dùng chung giữa các nhóm chạy song song —
+  // an toàn vì JS đơn luồng, `+= 1`/`.push` không bao giờ xen ngang nhau.
   let successfulChunks = 0;
+  let totalChunksAcrossGroups = 0;
 
-  for (const [index, chunk] of chunks.entries()) {
-    try {
-      // Tuần tự theo file trong chunk (rate-limit nhẹ nhàng — quyết định đã
-      // chốt: "không bắn song song vô hạn").
-      const byFile = new Map<string, MissingComponentDescription[]>();
-      for (const item of chunk) {
-        const list = byFile.get(item.fileKey) ?? [];
-        list.push(item);
-        byFile.set(item.fileKey, list);
-      }
-      const treeByNode = new Map<string, SummarizedNode | null>();
-      const imagePathByNode = new Map<string, string>();
-      for (const [fileKey, items] of byFile) {
-        const nodeIds = items.map((item) => item.nodeId);
-        const trees = await deps.fetchTree(fileKey, nodeIds).catch((err) => {
-          chunkErrors.push(`chunk ${index + 1}: cây node của ${fileKey} lỗi (tiếp tục bằng ảnh) — ${String((err as Error)?.message ?? err)}`);
-          return new Map<string, unknown>();
-        });
-        for (const [nodeId, tree] of trees) treeByNode.set(nodeId, summarizeNodeTree(tree));
-        const images = await deps.fetchImages(fileKey, nodeIds).catch((err) => {
-          chunkErrors.push(`chunk ${index + 1}: ảnh của ${fileKey} lỗi (tiếp tục bằng cây node) — ${String((err as Error)?.message ?? err)}`);
-          return new Map<string, string>();
-        });
-        for (const [nodeId, url] of images) {
-          const destName = `img-${anchorFor(fileKey, nodeId)}.png`;
-          const ok = await deps.downloadImage(url, path.join(deps.baseDir, destName)).catch(() => false);
-          if (ok) imagePathByNode.set(nodeId, destName);
+  const groups = groupOrder.map((key) => {
+    const items = groupItems.get(key)!;
+    const chunks: MissingComponentDescription[][] = [];
+    for (let i = 0; i < items.length; i += chunkSize) chunks.push(items.slice(i, i + chunkSize));
+    totalChunksAcrossGroups += chunks.length;
+    return { meta: groupMeta.get(key)!, chunks };
+  });
+
+  // globalIndex CỐ ĐỊNH theo thứ tự NHÓM (không theo thứ tự hoàn tất — các
+  // nhóm chạy song song nên thứ tự hoàn tất không tất định) để
+  // `input-<n>.json` không đụng tên nhau trong `baseDir` DÙNG CHUNG giữa các
+  // nhóm, và để `chunkErrors`/`onProgress` có số thứ tự ổn định giữa các lần
+  // chạy giống hệt nhau.
+  let globalIndexCursor = 0;
+  const groupTasks = groups.map(({ meta, chunks }) => {
+    const globalIndices = chunks.map(() => globalIndexCursor++);
+    return async (): Promise<void> => {
+      for (const [localIndex, chunk] of chunks.entries()) {
+        const globalIndex = globalIndices[localIndex]!;
+        const label = guideGroupLabel(meta);
+        // WP21a: 'running' cho cả chunk NGAY khi lượt này bắt đầu — trước try
+        // để luôn bắn dù chunk lỗi sớm (vd runAgentChunk throw ngay).
+        for (const item of chunk) deps.onItemStatus?.(item.anchor, 'running');
+        try {
+          // Tuần tự theo file TRONG một nhóm (rate-limit nhẹ nhàng — quyết
+          // định đã chốt: "không bắn song song vô hạn"; một nhóm luôn chỉ có
+          // MỘT fileKey nên vòng lặp này chỉ có đúng 1 lần, giữ nguyên hình
+          // dạng code trước WP21a để dễ so sánh).
+          const byFile = new Map<string, MissingComponentDescription[]>();
+          for (const item of chunk) {
+            const list = byFile.get(item.fileKey) ?? [];
+            list.push(item);
+            byFile.set(item.fileKey, list);
+          }
+          const treeByNode = new Map<string, SummarizedNode | null>();
+          const imagePathByNode = new Map<string, string>();
+          for (const [fileKey, items] of byFile) {
+            const nodeIds = items.map((item) => item.nodeId);
+            const trees = await deps.fetchTree(fileKey, nodeIds).catch((err) => {
+              chunkErrors.push(`nhóm ${label} · lượt ${localIndex + 1}: cây node của ${fileKey} lỗi (tiếp tục bằng ảnh) — ${String((err as Error)?.message ?? err)}`);
+              return new Map<string, unknown>();
+            });
+            for (const [nodeId, tree] of trees) treeByNode.set(nodeId, summarizeNodeTree(tree));
+            const images = await deps.fetchImages(fileKey, nodeIds).catch((err) => {
+              chunkErrors.push(`nhóm ${label} · lượt ${localIndex + 1}: ảnh của ${fileKey} lỗi (tiếp tục bằng cây node) — ${String((err as Error)?.message ?? err)}`);
+              return new Map<string, string>();
+            });
+            for (const [nodeId, url] of images) {
+              const destName = `img-${anchorFor(fileKey, nodeId)}.png`;
+              const ok = await deps.downloadImage(url, path.join(deps.baseDir, destName)).catch(() => false);
+              if (ok) imagePathByNode.set(nodeId, destName);
+            }
+          }
+          const input = buildDescribeInput(chunk, treeByNode, imagePathByNode);
+          await fs.promises.writeFile(path.join(deps.baseDir, `input-${globalIndex}.json`), JSON.stringify(input, null, 2), 'utf8');
+          const rawOutput = await deps.runAgentChunk(input, deps.baseDir, globalIndex, meta);
+          const result = validateDescribeOutput(rawOutput, allowedAnchors);
+          accepted.push(...result.accepted);
+          rejectedCount += result.rejected.length;
+          // WP21a: sau validate — accepted 'succeeded'; rejected CÓ anchor riêng
+          // 'failed' kèm đúng reason validate. Rejected KHÔNG có anchor (JSON
+          // hỏng/không phải mảng — áp cho CẢ chunk, không đoán entry nào) dùng
+          // làm reason dự phòng cho những comp của chunk này chưa có trạng thái
+          // (agent không nhắc tới anchor đó trong output) — không bao giờ để một
+          // comp kẹt ở 'running' vĩnh viễn.
+          const statusedAnchors = new Set<string>();
+          for (const entry of result.accepted) {
+            deps.onItemStatus?.(entry.anchor, 'succeeded');
+            statusedAnchors.add(entry.anchor);
+          }
+          // WP21-fix điểm 3 (review WP21a): agent có thể hallucinate một
+          // anchor KHÔNG thuộc batch đã gửi cho chunk này (validateDescribeOutput
+          // vẫn kiểm theo `allowedAnchors` TOÀN CỤC của cả lượt, không phải
+          // riêng chunk — xem khai báo `allowedAnchors` ở trên). Rejected loại
+          // "anchor không thuộc batch" vẫn đếm vào `rejectedCount` như cũ
+          // (không đổi ở trên), nhưng KHÔNG được bắn onItemStatus cho anchor lạ
+          // đó — nếu bắn, figma-design-system-routes.ts (onItemStatus callback,
+          // `missingByAnchor.get(anchor)` miss) tạo item ma `name: ''` trong
+          // job.items/meta.failures. Chỉ bắn cho anchor THẬT SỰ thuộc batch của
+          // CHÍNH chunk này (`allowedAnchorsInChunk`, không phải allowedAnchors
+          // toàn cục — một anchor thuộc chunk KHÁC trong cùng lượt cũng không
+          // hợp lệ ở đây).
+          const allowedAnchorsInChunk = new Set(chunk.map((item) => item.anchor));
+          let chunkLevelReason: string | undefined;
+          for (const entry of result.rejected) {
+            if (entry.anchor && allowedAnchorsInChunk.has(entry.anchor)) {
+              deps.onItemStatus?.(entry.anchor, 'failed', entry.reason);
+              statusedAnchors.add(entry.anchor);
+            } else if (!entry.anchor && chunkLevelReason === undefined) {
+              chunkLevelReason = entry.reason;
+            }
+          }
+          for (const item of chunk) {
+            if (statusedAnchors.has(item.anchor)) continue;
+            deps.onItemStatus?.(item.anchor, 'failed', chunkLevelReason ?? 'agent không trả kết quả cho component này');
+          }
+          deps.onProgress?.({
+            chunkIndex: globalIndex,
+            totalChunks: totalChunksAcrossGroups,
+            note: `Nhóm ${label} · lượt ${localIndex + 1}/${chunks.length}: +${result.accepted.length} mô tả, loại ${result.rejected.length}.`,
+          });
+          // Tới được đây nghĩa là agent đã chạy xong và output đã đọc/parse được
+          // (dù accepted có thể là 0) — tính là 1 chunk thành công.
+          successfulChunks += 1;
+        } catch (err) {
+          const msg = String((err as Error)?.message ?? err);
+          chunkErrors.push(`nhóm ${label} · lượt ${localIndex + 1}: ${msg}`);
+          // WP21a: chunk agent lỗi → CẢ chunk 'failed' reason "agent lỗi:
+          // <msg>" (contract mục 2) — không phân biệt component nào trong
+          // chunk gây lỗi, vì lỗi xảy ra ở tầng chunk (spawn agent/ghi
+          // input/…), trước khi có output riêng cho từng comp. Nhóm này lỗi
+          // KHÔNG chặn nhóm khác — bắt lỗi ở đây (trong task của nhóm), rồi
+          // vòng lặp chunk của CHÍNH nhóm này vẫn tiếp tục sang chunk sau.
+          for (const item of chunk) deps.onItemStatus?.(item.anchor, 'failed', `agent lỗi: ${msg}`);
         }
       }
-      const input = buildDescribeInput(chunk, treeByNode, imagePathByNode);
-      await fs.promises.writeFile(path.join(deps.baseDir, `input-${index}.json`), JSON.stringify(input, null, 2), 'utf8');
-      const rawOutput = await deps.runAgentChunk(input, deps.baseDir, index);
-      const result = validateDescribeOutput(rawOutput, allowedAnchors);
-      accepted.push(...result.accepted);
-      rejectedCount += result.rejected.length;
-      deps.onProgress?.({
-        chunkIndex: index,
-        totalChunks: chunks.length,
-        note: `Lượt ${index + 1}/${chunks.length}: +${result.accepted.length} mô tả, loại ${result.rejected.length}.`,
-      });
-      // Tới được đây nghĩa là agent đã chạy xong và output đã đọc/parse được
-      // (dù accepted có thể là 0) — tính là 1 chunk thành công.
-      successfulChunks += 1;
-    } catch (err) {
-      chunkErrors.push(`chunk ${index + 1}: ${String((err as Error)?.message ?? err)}`);
-    }
+    };
+  });
+
+  // Các NHÓM chạy song song tối đa `concurrency` — mỗi group task ở trên tự
+  // bọc try/catch theo TỪNG CHUNK nên một chunk lỗi không làm cả nhóm dừng
+  // giữa chừng, và một nhóm lỗi không ảnh hưởng nhóm khác (chạy độc lập trong
+  // pool). concurrency=1 (mặc định) ⇒ 1 worker ⇒ các nhóm chạy tuần tự đúng
+  // thứ tự `groups` — hồi quy y hệt bản trước WP21a khi chỉ có 1 nhóm.
+  await runWithConcurrencyLimit(groupTasks, concurrency);
+
+  // Job failed CHỈ khi 0 chunk nào thành công (trên TOÀN BỘ mọi nhóm) và có
+  // ≥1 chunk để chạy — không phải khi số MESSAGE lỗi phụ (chunkErrors) chạm
+  // số chunk, vì một chunk có thể vừa thành công vừa đẩy nhiều message lỗi
+  // phụ (tree/ảnh) mà không ảnh hưởng tới việc agent chạy xong.
+  if (successfulChunks === 0 && totalChunksAcrossGroups > 0) {
+    throw new Error(`Toàn bộ ${totalChunksAcrossGroups} lượt sinh mô tả đều lỗi — ${chunkErrors.join('; ')}`);
   }
 
-  // Job failed CHỈ khi 0 chunk nào thành công và có ≥1 chunk để chạy — không
-  // phải khi số MESSAGE lỗi phụ (chunkErrors) chạm số chunk, vì một chunk có
-  // thể vừa thành công vừa đẩy nhiều message lỗi phụ (tree/ảnh) mà không ảnh
-  // hưởng tới việc agent chạy xong.
-  if (successfulChunks === 0 && chunks.length > 0) {
-    throw new Error(`Toàn bộ ${chunks.length} lượt sinh mô tả đều lỗi — ${chunkErrors.join('; ')}`);
-  }
-
+  // WP21a: gom `accepted` từ MỌI nhóm rồi merge+trả về guideMarkdown ĐÚNG MỘT
+  // LẦN ở đây — không nhóm nào tự gọi writeFigmaDesignSystemGuide riêng —
+  // caller (figma-design-system-routes.ts) chỉ ghi đĩa MỘT LẦN với kết quả
+  // này, nên không có lost-update dù nhiều nhóm chạy đồng thời.
   return {
     guideMarkdown: mergeGuideEntries(existingGuideMd, accepted, snapshot),
     generated: accepted.length,

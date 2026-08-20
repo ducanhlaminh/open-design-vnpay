@@ -30,6 +30,7 @@ import {
   DesignSystemCreationFlow,
   DesignSystemDetailView,
 } from './components/DesignSystemFlow';
+import { FigmaDsSourceDetail } from './components/FigmaDsSourceDetail';
 import {
   SettingsDialog,
   switchApiProtocolConfig,
@@ -1462,6 +1463,17 @@ export function App() {
           conversationId,
           fileName: null,
         })}
+      />
+    );
+  } else if (route.kind === 'figma-ds-detail') {
+    // WP21b — trang detail nguồn Figma dùng chung, ngang cấp với
+    // design-system-detail (cùng render trực tiếp dưới workspace-shell,
+    // không lồng trong ProjectView/EntryView) vì nguồn Figma không thuộc về
+    // một dự án cụ thể — giống hệt cách design-system-detail đã làm.
+    appMain = (
+      <FigmaDsSourceDetail
+        sourceId={route.sourceId}
+        onBack={() => navigate({ kind: 'home', view: 'design-systems' })}
       />
     );
   } else if (route.kind === 'design-system-detail') {

@@ -5,11 +5,15 @@ import type { Express } from 'express';
 import type {
   FigmaDesignSystemSource,
   FigmaDesignSystemCatalogSummary,
+  FigmaDesignSystemComponentItem,
   FigmaDesignSystemGuideJob,
+  FigmaDesignSystemGuideJobItem,
+  FigmaDesignSystemLastGuideRun,
   FigmaDesignSystemRefreshChanges,
   FigmaDesignSystemRefreshProgress,
   GenerateFigmaDesignSystemGuideResponse,
   GetFigmaDesignSystemSourceResponse,
+  ListFigmaDesignSystemComponentsResponse,
 } from '@open-design/contracts';
 
 import {
@@ -190,6 +194,109 @@ export async function writeFilteredComponentsGuideToCriteria(
   return { entryCount: filtered.length };
 }
 
+/* ── WP21a: GET /components — structured per-component view ────────────────
+ * Preview markdown 564 component không dùng được (người dùng duyệt
+ * 2026-08-20) — hàm THUẦN (không đọc đĩa/DB, test được thẳng) dựng danh sách
+ * có cấu trúc từ đúng snapshot (row.catalog) + guide kho nguồn hiện có, theo
+ * contract mục 1 (`.tmp/pipeline/wp21-contract.md`): KHÔNG re-sort, giữ thứ
+ * tự snapshot (file → component). */
+export function buildFigmaDesignSystemComponentItems(
+  snapshot: FigmaComponentCatalogSnapshot,
+  guideMarkdown: string | null,
+): FigmaDesignSystemComponentItem[] {
+  const guide = guideMarkdown != null ? parseComponentsGuide(guideMarkdown) : new Map<string, { name: string; description: string }>();
+  const items: FigmaDesignSystemComponentItem[] = [];
+  for (const file of snapshot.files) {
+    for (const component of file.components) {
+      const anchor = anchorFor(file.fileKey, component.nodeId);
+      // Bất biến Figma LUÔN thắng (cùng {@link mergeCatalogueWithGuide}):
+      // mô tả Figma thật có trước; guide chỉ là fallback khi Figma KHÔNG có.
+      // `description` trả ra verbatim — KHÔNG kèm hậu tố "(AI sinh)" (đó là
+      // quy ước hiển thị của bảng dr-review, không phải của API JSON này).
+      let description: string | undefined;
+      let descriptionSource: FigmaDesignSystemComponentItem['descriptionSource'];
+      if (component.description) {
+        description = component.description;
+        descriptionSource = 'figma';
+      } else {
+        const guideEntry = guide.get(anchor);
+        if (guideEntry?.description) {
+          description = guideEntry.description;
+          descriptionSource = 'ai';
+        } else {
+          descriptionSource = 'none';
+        }
+      }
+      items.push({
+        anchor,
+        name: component.name,
+        nodeId: component.nodeId,
+        fileKey: file.fileKey,
+        fileName: file.name,
+        ...(component.page ? { page: component.page } : {}),
+        ...(description !== undefined ? { description } : {}),
+        descriptionSource,
+        properties: component.properties,
+      });
+    }
+  }
+  return items;
+}
+
+/* ── WP21a: persist lượt "Sinh mô tả" gần nhất (qua restart) ────────────────
+ * `components-guide.meta.json` cạnh `components-guide.md`, cùng thư mục
+ * `criteria/` của nguồn — bất biến "kết thúc job → ghi atomic" (contract mục
+ * 3), độc lập với `figmaGuideJobs` (Map trong bộ nhớ, mất khi daemon restart)
+ * để GET detail vẫn hiện được kết quả lượt gần nhất sau khi restart. */
+export function figmaDesignSystemGuideMetaPath(runtimeDataDir: string, sourceId: string): string {
+  return path.join(path.dirname(figmaDesignSystemGuidePath(runtimeDataDir, sourceId)), 'components-guide.meta.json');
+}
+
+export async function writeFigmaDesignSystemGuideMeta(
+  runtimeDataDir: string,
+  sourceId: string,
+  meta: FigmaDesignSystemLastGuideRun,
+): Promise<void> {
+  const target = figmaDesignSystemGuideMetaPath(runtimeDataDir, sourceId);
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    await fs.promises.writeFile(temporary, JSON.stringify(meta, null, 2), 'utf8');
+    await fs.promises.rename(temporary, target);
+  } finally {
+    await fs.promises.rm(temporary, { force: true });
+  }
+}
+
+/** `null` khi chưa từng có lượt "Sinh mô tả" nào kết thúc CHO NGUỒN NÀY, hoặc
+ *  file hỏng/không đọc được — best-effort đúng nghĩa contract mục 3 ("GET
+ *  detail đọc meta best-effort"): một file meta hỏng không được làm hỏng GET
+ *  detail của cả nguồn. */
+export async function readFigmaDesignSystemGuideMeta(
+  runtimeDataDir: string,
+  sourceId: string,
+): Promise<FigmaDesignSystemLastGuideRun | null> {
+  const target = figmaDesignSystemGuideMetaPath(runtimeDataDir, sourceId);
+  const raw = await fs.promises.readFile(target, 'utf8').catch(() => null);
+  if (raw == null) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      parsed && typeof parsed === 'object' &&
+      typeof parsed.finishedAt === 'string' &&
+      typeof parsed.generated === 'number' &&
+      typeof parsed.failed === 'number' &&
+      Array.isArray(parsed.failures)
+    ) {
+      return parsed as FigmaDesignSystemLastGuideRun;
+    }
+  } catch {
+    // best-effort: JSON hỏng → coi như chưa có lượt nào (không throw, không
+    // làm hỏng GET detail).
+  }
+  return null;
+}
+
 function canonicalLinks(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > 5) return null;
   const result: string[] = [];
@@ -323,14 +430,37 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
     if (!source) return notFound(res);
     const catalog = source.catalog as FigmaComponentCatalogSnapshot | null;
     const guideMarkdown = await readFigmaDesignSystemGuide(deps.paths.RUNTIME_DATA_DIR, source.id);
+    // WP21a: best-effort — meta hỏng/vắng mặt không được làm hỏng GET detail
+    // (xem readFigmaDesignSystemGuideMeta).
+    const lastGuideRun = await readFigmaDesignSystemGuideMeta(deps.paths.RUNTIME_DATA_DIR, source.id);
     const body: GetFigmaDesignSystemSourceResponse = {
       source: figmaDesignSystemSourceToContract(source),
       componentsMarkdown: await readFigmaDesignSystemComponents(deps.paths.RUNTIME_DATA_DIR, source.id, catalog),
-      // WP20: optional fields — omit (not `null`/zeroed) khi chưa có gì, giữ
-      // đúng "compatibility" đã chốt ở WP19a cho response này (client cũ
+      // WP20/WP21a: optional fields — omit (not `null`/zeroed) khi chưa có gì,
+      // giữ đúng "compatibility" đã chốt ở WP19a cho response này (client cũ
       // không thấy field lạ, không cần đổi shape mặc định).
       ...(guideMarkdown != null ? { guideMarkdown } : {}),
       ...(catalog ? { coverage: computeGuideCoverage(catalog, guideMarkdown) } : {}),
+      ...(lastGuideRun ? { lastGuideRun } : {}),
+    };
+    res.json(body);
+  });
+
+  // ── WP21a: GET /components — API JSON có cấu trúc thay preview markdown
+  // 564 comp không dùng được (contract mục 1). 404 nguồn không tồn tại; 409
+  // CATALOG_REQUIRED khi nguồn chưa từng refresh (đúng khuôn lỗi POST
+  // /generate-guide bên dưới).
+  app.get('/api/figma-design-systems/:id/components', async (req, res) => {
+    if (!guard(req, res)) return;
+    const source = getFigmaDesignSystemSource(db, req.params.id);
+    if (!source) return notFound(res);
+    const catalog = source.catalog as FigmaComponentCatalogSnapshot | null;
+    if (!catalog) {
+      return res.status(409).json({ error: { code: 'CATALOG_REQUIRED', message: 'Nguồn chưa có danh mục component — làm mới trước khi xem chi tiết.' } });
+    }
+    const guideMarkdown = await readFigmaDesignSystemGuide(deps.paths.RUNTIME_DATA_DIR, source.id);
+    const body: ListFigmaDesignSystemComponentsResponse = {
+      components: buildFigmaDesignSystemComponentItems(catalog, guideMarkdown),
     };
     res.json(body);
   });
@@ -431,6 +561,11 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
     error: job.error,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
+    // WP21a: snapshot Map items → mảng LÚC SERIALIZE (job.items đổi live qua
+    // callback onItemStatus mỗi khi trạng thái một comp đổi) — GET job vì vậy
+    // luôn trả trạng thái mới nhất tại thời điểm poll.
+    items: [...job.items.values()],
+    remainingAfterCap: job.remainingAfterCap,
   });
 
   const startFigmaDesignSystemGuideJob = (
@@ -467,14 +602,6 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
         metadata: { ...(existingProject.metadata ?? {}), kind: 'figma-guide-source', baseDir: describeDir, sourceId },
       });
     }
-    const conversationId = `figma-guide-source-conv-${randomUUID()}`;
-    insertConversation(db, {
-      id: conversationId,
-      projectId,
-      title: `Sinh mô tả component · ${new Date(rowNow).toLocaleString('vi-VN')}`,
-      createdAt: rowNow,
-      updatedAt: rowNow,
-    });
 
     const job: FigmaDesignSystemGuideJobState = {
       id: randomUUID(),
@@ -484,6 +611,8 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
       generated: 0,
       rejected: 0,
       remaining: 0,
+      remainingAfterCap: 0,
+      items: new Map(),
       error: null,
       createdAt: nowIso(),
       updatedAt: nowIso(),
@@ -492,39 +621,103 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
     figmaGuideJobBySource.set(sourceId, job.id);
     const touch = () => { job.updatedAt = nowIso(); };
 
+    // Một hội thoại DUY NHẤT cho cả job — giữ ĐÚNG hành vi/thời điểm tạo của
+    // bản trước WP21a (tạo NGAY, đồng bộ, trước khi job async bắt đầu chạy).
+    // Từng thử tách hội thoại RIÊNG theo từng nhóm trang (lười, tạo bên
+    // trong closure `runAgentChunk`) để 3 nhóm chạy song song (concurrency=3
+    // bên dưới) không xen lượt agent vào CÙNG một hội thoại của
+    // `runDescribeChunk` (figma-catalog-routes.ts, không sửa được — giả định
+    // "nhiều lượt = nhiều run NỐI TIẾP trong CÙNG hội thoại") — nhưng việc
+    // đó dời thời điểm gọi `insertConversation` sang SAU nhiều `await`, tạo
+    // race với `afterEach` đóng DB giữa các test (lộ ra ở test hiện có "GET
+    // /generate-guide/:jobId…" — ENOTEMPTY vì job mồ côi của test trước vẫn
+    // ghi file sau khi DB/thư mục test đó đã bị dọn). Quay lại MỘT hội
+    // thoại, giữ đúng bất biến gốc — theo dõi xen lượt thật giữa 3 nhóm song
+    // song (nếu phát sinh vấn đề thật khi vận hành) là việc của backlog,
+    // không phải scope WP21a.
+    const groupKeyOf = (fileKey: string, page: string | undefined) => `${fileKey} ${page ?? ''}`;
+    const conversationId = `figma-guide-source-conv-${randomUUID()}`;
+    insertConversation(db, {
+      id: conversationId,
+      projectId,
+      title: `Sinh mô tả component · ${new Date(rowNow).toLocaleString('vi-VN')}`,
+      createdAt: rowNow,
+      updatedAt: rowNow,
+    });
+
     void (async () => {
       job.status = 'running';
       job.message = 'Đang tính danh sách component thiếu mô tả…';
       touch();
       try {
         const existingGuideMd = await readFigmaDesignSystemGuide(deps.paths.RUNTIME_DATA_DIR, sourceId);
-        const missingCount = computeMissingDescriptions(snapshot, existingGuideMd).length;
-        if (missingCount === 0) {
+        const missingList = computeMissingDescriptions(snapshot, existingGuideMd);
+        if (missingList.length === 0) {
           job.status = 'succeeded';
           job.message = 'Không có gì để sinh — mọi component đã có mô tả.';
           touch();
           return;
         }
+        // Tra `name`/`page` cho items[] từ callback onItemStatus (callback chỉ
+        // truyền `anchor`) — nút "Sinh mô tả" KHÔNG cap (xem `cap: null` bên
+        // dưới) nên `missingList` ĐÚNG BẰNG tập comp thật sự được xử lý, dùng
+        // được luôn để suy ra tổng số lượt của TỪNG nhóm cho kickoff message.
+        const missingByAnchor = new Map(missingList.map((m) => [m.anchor, { name: m.name, page: m.page }] as const));
+        const groupTotalChunks = new Map<string, number>();
+        {
+          const counts = new Map<string, number>();
+          for (const item of missingList) {
+            const key = groupKeyOf(item.fileKey, item.page);
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+          }
+          for (const [key, count] of counts) groupTotalChunks.set(key, Math.ceil(count / 12));
+        }
         let chunkCounter = 0;
         const result = await generateComponentDescriptions(snapshot, existingGuideMd, {
           baseDir: describeDir,
+          // WP21a (người dùng chốt 2026-08-20): nút "Sinh mô tả" phải sinh
+          // ĐỦ TOÀN BỘ comp thiếu trong MỘT lần bấm — không cap, fan-out 3
+          // nhóm trang song song. Vòng sinh bù dr-comp (server.ts, gọi
+          // generateComponentDescriptions TRỰC TIẾP, không qua route này)
+          // KHÔNG truyền cap/concurrency nên vẫn giữ mặc định cũ (60, tuần
+          // tự) — không cần và không được sửa server.ts.
+          cap: null,
+          concurrency: 3,
           fetchTree: (fileKey, ids) => fetchNodeSubtrees(token, fileKey, ids),
           fetchImages: (fileKey, ids) => fetchNodeImages(token, fileKey, ids),
           downloadImage: (url, destPath) => downloadFigmaImage(url, destPath),
-          runAgentChunk: async (input, chunkDir, index) => {
-            chunkCounter = index + 1;
+          runAgentChunk: async (input, chunkDir, index, group) => {
+            chunkCounter = Math.max(chunkCounter, index + 1);
+            const totalChunks = groupTotalChunks.get(groupKeyOf(group.fileKey, group.page)) ?? 1;
             return runDescribeChunk(
               { design: deps.design, startChatRun: deps.chat.startChatRun, db: deps.db, getAgentDef: deps.agents?.getAgentDef },
-              { projectId, conversationId, chunkDir, index, totalChunks: Math.ceil(missingCount / 12), execution },
+              { projectId, conversationId, chunkDir, index, totalChunks, execution },
             );
           },
           onProgress: (info) => { job.message = info.note; touch(); },
+          // WP21a: dựng items[] từ callback — Map anchor→item, snapshot vào
+          // job state (job.items) mỗi lần một comp đổi trạng thái; GET job
+          // (toGuideJobResponse) đọc lại Map này mỗi lần poll.
+          onItemStatus: (anchor, status, reason) => {
+            const known = missingByAnchor.get(anchor);
+            const existingItem = job.items.get(anchor);
+            const name = known?.name ?? existingItem?.name ?? '';
+            const page = known?.page ?? existingItem?.page;
+            job.items.set(anchor, { anchor, name, ...(page ? { page } : {}), status, ...(reason !== undefined ? { reason } : {}) });
+            touch();
+          },
         });
         await writeFigmaDesignSystemGuide(deps.paths.RUNTIME_DATA_DIR, sourceId, result.guideMarkdown);
         job.status = 'succeeded';
         job.generated = result.generated;
         job.rejected = result.rejected;
         job.remaining = result.remaining;
+        // WP21a: nút "Sinh mô tả" không cap (cap: null ở trên) nên
+        // result.remaining luôn 0 — remainingAfterCap CHỈ còn ý nghĩa cho
+        // vòng sinh bù dr-comp (cap 60, không đi qua field JSON này). Giữ
+        // đồng bộ với `remaining` thay vì hard-code 0 để không rời khỏi kết
+        // quả thật của engine nếu sau này route này đổi cap.
+        job.remainingAfterCap = result.remaining;
         job.message = result.chunkErrors.length > 0
           ? `Đã sinh ${result.generated} mô tả (loại ${result.rejected}, còn ${result.remaining} chưa xử lý) — ${result.chunkErrors.length}/${chunkCounter} lượt lỗi, đã bỏ qua.`
           : `Đã sinh ${result.generated} mô tả, loại ${result.rejected}, còn ${result.remaining} chưa xử lý.`;
@@ -537,6 +730,39 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
         touch();
         console.warn(`[figma-design-system-guide] sinh mô tả cho nguồn "${sourceId}" thất bại:`, detail);
       } finally {
+        // WP21a: ghi components-guide.meta.json khi JOB KẾT THÚC — kể cả
+        // partial/failed (contract mục 3) — để GET detail vẫn hiện được kết
+        // quả lượt gần nhất sau khi daemon restart (figmaGuideJobs chỉ sống
+        // trong bộ nhớ). Tính từ `job.items` (trạng thái CUỐI của TỪNG comp)
+        // thay vì job.generated/job.rejected: hai field đó chỉ được gán ở
+        // nhánh THÀNH CÔNG, không phản ánh đúng khi job.status === 'failed'
+        // (generateComponentDescriptions throw) — nhưng job.items đã đúng
+        // trong CẢ hai trường hợp vì mọi item của một chunk lỗi được đánh
+        // 'failed' TRƯỚC KHI throw (xem catch trong figma-guide-generate.ts).
+        //
+        // WP21-fix điểm 2 (review WP21a): CHỈ ghi khi engine THẬT SỰ chạy —
+        // `job.items` có ít nhất 1 item, tức generateComponentDescriptions đã
+        // gọi onItemStatus ít nhất một lần (chunk đầu tiên đã 'queued'/
+        // 'running'…). Job kết thúc SỚM trước khi engine chạy (nhánh
+        // `missingList.length === 0` ở trên — "Không có gì để sinh", hoặc lỗi
+        // ném ra TRƯỚC generateComponentDescriptions, ví dụ readFigmaDesignSystemGuide
+        // throw) thì `job.items` rỗng — KHÔNG được ghi đè file meta cũ bằng
+        // zeros, vì đó không phải một lượt sinh thật, chỉ là job rỗng.
+        const finishedItems = [...job.items.values()];
+        if (finishedItems.length > 0) {
+          const failures = finishedItems
+            .filter((item) => item.status === 'failed')
+            .map((item) => ({ anchor: item.anchor, name: item.name, reason: item.reason ?? '' }));
+          const generatedCount = finishedItems.filter((item) => item.status === 'succeeded').length;
+          await writeFigmaDesignSystemGuideMeta(deps.paths.RUNTIME_DATA_DIR, sourceId, {
+            finishedAt: new Date().toISOString(),
+            generated: generatedCount,
+            failed: failures.length,
+            failures,
+          }).catch((err) => {
+            console.warn(`[figma-design-system-guide] ghi components-guide.meta.json cho nguồn "${sourceId}" thất bại:`, err);
+          });
+        }
         await fs.promises.rm(describeDir, { recursive: true, force: true }).catch(() => {});
       }
     })();
@@ -591,7 +817,7 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
   });
 }
 
-/* ── WP20 internals: job state (khuôn FigmaGuideJobState App-level) ───────── */
+/* ── WP20/WP21a internals: job state (khuôn FigmaGuideJobState App-level) ── */
 interface FigmaDesignSystemGuideJobState {
   id: string;
   sourceId: string;
@@ -600,6 +826,14 @@ interface FigmaDesignSystemGuideJobState {
   generated: number;
   rejected: number;
   remaining: number;
+  /** WP21a: xem `FigmaDesignSystemGuideJob.remainingAfterCap` — job từ nút
+   *  "Sinh mô tả" không cap nên field này luôn 0 (nhưng vẫn gán từ
+   *  `result.remaining` thật, không hard-code, xem call site). */
+  remainingAfterCap: number;
+  /** WP21a: Map anchor→trạng thái, đổi LIVE qua callback `onItemStatus`
+   *  (generateComponentDescriptions) — toGuideJobResponse snapshot Map này
+   *  thành mảng mỗi lần GET job được gọi. */
+  items: Map<string, FigmaDesignSystemGuideJobItem>;
   error: string | null;
   createdAt: string;
   updatedAt: string;

@@ -1,0 +1,283 @@
+// @vitest-environment jsdom
+//
+// WP21b — trang detail nguồn Figma (`FigmaDsSourceDetail`): component browser
+// có cấu trúc (thay markdown) + nút "Sinh mô tả (N thiếu)" + panel tiến độ
+// per-component. Contract API ở .tmp/pipeline/wp21-contract.md (WP21a dựng
+// song song) — mock fetch theo ĐÚNG path/shape nguyên văn contract đó.
+
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { GetFigmaDesignSystemSourceResponse } from '@open-design/contracts';
+
+import { FigmaDsSourceDetail } from '../../src/components/FigmaDsSourceDetail';
+import type {
+  FigmaDesignSystemComponentItem,
+  FigmaDesignSystemGuideJobV2,
+} from '../../src/providers/figma-design-systems';
+
+vi.mock('../../src/components/Icon', () => ({ Icon: () => null }));
+
+afterEach(() => cleanup());
+
+const baseDetail: GetFigmaDesignSystemSourceResponse = {
+  source: {
+    id: 'src-1',
+    name: 'EIB - MB',
+    kind: 'figma-links',
+    links: ['https://www.figma.com/design/ABC'],
+    status: 'ready',
+    refreshProgress: null,
+    catalog: {
+      generatedAt: '2026-08-19T00:00:00Z',
+      digest: 'sha256:abc',
+      fileCount: 1,
+      componentCount: 3,
+      files: [{ fileKey: 'ABC', name: 'Kit', url: 'https://www.figma.com/design/ABC', componentCount: 3 }],
+    },
+    lastError: null,
+    hasShowcase: false,
+    hasReactBundle: false,
+    createdAt: '2026-08-19T00:00:00Z',
+    updatedAt: '2026-08-19T00:00:00Z',
+  },
+  componentsMarkdown: '# Danh mục component từ Figma\n',
+  coverage: { total: 3, described: 1, fromGuide: 0, missing: 2 },
+};
+
+const baseComponents: FigmaDesignSystemComponentItem[] = [
+  {
+    anchor: 'figma-aaaaaaaaaa',
+    name: 'Button/Primary',
+    nodeId: '1:1',
+    fileKey: 'ABC',
+    fileName: 'Kit',
+    page: 'Buttons',
+    description: 'Mô tả gốc từ Figma.',
+    descriptionSource: 'figma',
+    properties: [{ name: 'size', type: 'variant', values: ['sm', 'md'] }],
+  },
+  {
+    anchor: 'figma-bbbbbbbbbb',
+    name: 'Button/Secondary',
+    nodeId: '1:2',
+    fileKey: 'ABC',
+    fileName: 'Kit',
+    page: 'Buttons',
+    description: 'Mô tả do AI sinh.',
+    descriptionSource: 'ai',
+    properties: [],
+  },
+  {
+    anchor: 'figma-cccccccccc',
+    name: 'Input/Text',
+    nodeId: '1:3',
+    fileKey: 'ABC',
+    fileName: 'Kit',
+    page: 'Inputs',
+    descriptionSource: 'none',
+    properties: [],
+  },
+];
+
+function mockFetchSequence(handlers: Record<string, (init?: RequestInit) => Response>) {
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
+    const url = String(input);
+    for (const [pattern, handler] of Object.entries(handlers)) {
+      if (url.includes(pattern)) return handler(init);
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }));
+}
+
+function mockSourceFetchSequence(handlers: {
+  getJob?: (init?: RequestInit) => Response;
+  postGenerate?: (init?: RequestInit) => Response;
+  refresh?: (init?: RequestInit) => Response;
+  getDetail: (init?: RequestInit) => Response;
+  getComponents: (init?: RequestInit) => Response;
+}) {
+  mockFetchSequence({
+    // Thứ tự khai báo QUAN TRỌNG (mock đơn giản, khớp theo substring theo thứ
+    // tự declare): '/generate-guide/' (GET poll, có jobId) phải khớp TRƯỚC
+    // '/generate-guide' (POST khởi job, là tiền tố nguyên văn của URL GET).
+    // '/refresh' phải khai TRƯỚC '/api/figma-design-systems/' (tiền tố nguyên
+    // văn của URL refresh).
+    ...(handlers.getJob ? { '/generate-guide/': handlers.getJob } : {}),
+    ...(handlers.postGenerate ? { '/generate-guide': handlers.postGenerate } : {}),
+    ...(handlers.refresh ? { '/refresh': handlers.refresh } : {}),
+    '/components': handlers.getComponents,
+    '/api/figma-design-systems/': handlers.getDetail,
+  });
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe('FigmaDsSourceDetail · component browser', () => {
+  it('(a) render list từ components JSON, badge đúng 3 nguồn', async () => {
+    mockSourceFetchSequence({
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+
+    await screen.findByText('Button/Primary');
+    expect(screen.getByText('Button/Secondary')).toBeTruthy();
+    expect(screen.getByText('Input/Text')).toBeTruthy();
+
+    const rowPrimary = screen.getByTestId('figma-ds-detail-component-figma-aaaaaaaaaa');
+    expect(within(rowPrimary).getByText('Figma')).toBeTruthy();
+    const rowSecondary = screen.getByTestId('figma-ds-detail-component-figma-bbbbbbbbbb');
+    expect(within(rowSecondary).getByText('AI')).toBeTruthy();
+    const rowMissing = screen.getByTestId('figma-ds-detail-component-figma-cccccccccc');
+    expect(within(rowMissing).getByText('Thiếu')).toBeTruthy();
+  });
+
+  it('(b) filter "Thiếu mô tả" lọc đúng', async () => {
+    mockSourceFetchSequence({
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    fireEvent.click(screen.getByTestId('figma-ds-detail-missing-only'));
+
+    expect(screen.queryByText('Button/Primary')).toBeNull();
+    expect(screen.queryByText('Button/Secondary')).toBeNull();
+    expect(screen.getByText('Input/Text')).toBeTruthy();
+  });
+
+  it('(c) bấm Sinh → POST đúng path, panel tiến độ hiện các nhóm đếm từ items', async () => {
+    const runningJob: FigmaDesignSystemGuideJobV2 = {
+      id: 'job-1', status: 'running', message: 'Đang xử lý…', generated: 0, rejected: 0, remaining: 2,
+      error: null, createdAt: '2026-08-19T00:00:00Z', updatedAt: '2026-08-19T00:00:00Z',
+      items: [
+        { anchor: 'figma-bbbbbbbbbb', name: 'Button/Secondary', page: 'Buttons', status: 'succeeded' },
+        { anchor: 'figma-cccccccccc', name: 'Input/Text', page: 'Inputs', status: 'failed', reason: 'Không sinh được mô tả hợp lệ.' },
+      ],
+      remainingAfterCap: 5,
+    };
+    mockSourceFetchSequence({
+      postGenerate: (init) => {
+        expect(init?.method).toBe('POST');
+        return new Response(JSON.stringify({ jobId: runningJob.id, job: runningJob }), { status: 202 });
+      },
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    const button = await screen.findByTestId('figma-ds-detail-generate');
+    expect(button.textContent).toContain('Sinh mô tả (2 thiếu)');
+
+    fireEvent.click(button);
+
+    const fetchMock = vi.mocked(fetch);
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/generate-guide') && !String(c[0]).includes('job-1'));
+      expect(call?.[0]).toBe('/api/figma-design-systems/src-1/generate-guide');
+      expect(call?.[1]?.method).toBe('POST');
+    });
+
+    const progress = await screen.findByTestId('figma-ds-detail-progress');
+    // 4 đếm tổng.
+    expect(within(progress).getByText(/Thành công/)).toBeTruthy();
+    expect(within(progress).getByText(/Lỗi/)).toBeTruthy();
+    expect(within(progress).getByText(/còn 5 comp chờ lượt sau/)).toBeTruthy();
+    // Danh sách nhóm THEO PAGE — mỗi page một khối "<page> — x/y · trạng thái".
+    const items = within(progress).getByTestId('figma-ds-detail-progress-items');
+    expect(within(items).getByText(/Buttons — 1\/1 · xong/)).toBeTruthy();
+    expect(within(items).getByText(/Inputs — 1\/1 · có lỗi/)).toBeTruthy();
+    // Nhóm có lỗi tự mở — thấy reason không cần bấm xổ thêm.
+    expect(within(items).getByText('Không sinh được mô tả hợp lệ.')).toBeTruthy();
+  });
+
+  it('(d) job không items → fallback 3 con số', async () => {
+    const runningJob: FigmaDesignSystemGuideJobV2 = {
+      id: 'job-2', status: 'running', message: 'Đang xử lý…', generated: 1, rejected: 0, remaining: 1,
+      error: null, createdAt: '2026-08-19T00:00:00Z', updatedAt: '2026-08-19T00:00:00Z',
+    };
+    mockSourceFetchSequence({
+      postGenerate: () => new Response(JSON.stringify({ jobId: runningJob.id, job: runningJob }), { status: 202 }),
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    const button = await screen.findByTestId('figma-ds-detail-generate');
+    fireEvent.click(button);
+
+    const progress = await screen.findByTestId('figma-ds-detail-progress');
+    // Fallback 3 con số cũ — không vỡ khi job (daemon cũ) không có `items`.
+    expect(within(progress).getByText(/1/)).toBeTruthy();
+    expect(screen.queryByTestId('figma-ds-detail-progress-items')).toBeNull();
+  });
+
+  it('(e) lastGuideRun hiển thị', async () => {
+    const detailWithRun = {
+      ...baseDetail,
+      lastGuideRun: {
+        finishedAt: '2026-08-19T10:00:00Z',
+        generated: 4,
+        failed: 1,
+        failures: [{ anchor: 'figma-cccccccccc', name: 'Input/Text', reason: 'Lỗi validate.' }],
+      },
+    };
+    mockSourceFetchSequence({
+      getDetail: () => new Response(JSON.stringify(detailWithRun), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+
+    await screen.findByText(/Lượt sinh gần nhất/);
+    expect(screen.getByText(/4 ✓/)).toBeTruthy();
+    expect(screen.getByText(/1 ✗/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText(/Lượt sinh gần nhất/));
+    expect(await screen.findByText('Lỗi validate.')).toBeTruthy();
+  });
+
+  // WP21-fix điểm 4 (review WP21a): refresh() lỗi trước đây bị nuốt im lặng
+  // khi `detail` đã có dữ liệu (banner cũ chỉ render lúc `detail === null`).
+  it('(f) refresh() lỗi vẫn hiện banner dù detail đang có dữ liệu cũ', async () => {
+    mockSourceFetchSequence({
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+      refresh: () => new Response(JSON.stringify({ error: { message: 'Lỗi máy chủ khi làm mới.' } }), { status: 500 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    fireEvent.click(screen.getByText('Làm mới'));
+
+    expect(await screen.findByText('Lỗi máy chủ khi làm mới.')).toBeTruthy();
+    // detail vẫn còn hiện dữ liệu cũ — banner không thay thế trang.
+    expect(screen.getByText('Button/Primary')).toBeTruthy();
+  });
+
+  // WP21-fix điểm 5 (review WP21a): nhóm "không page" trước đây dùng key
+  // hiển thị 'Khác' để nhóm trong Map — đụng nếu Figma có page thật tên
+  // "Khác" (gộp chung nhóm). Phải tách được 2 nhóm riêng biệt.
+  it('(g) nhóm page thật tên "Khác" và item không có page là 2 nhóm riêng biệt', async () => {
+    const runningJob: FigmaDesignSystemGuideJobV2 = {
+      id: 'job-3', status: 'running', message: 'Đang xử lý…', generated: 0, rejected: 0, remaining: 2,
+      error: null, createdAt: '2026-08-19T00:00:00Z', updatedAt: '2026-08-19T00:00:00Z',
+      items: [
+        { anchor: 'figma-x1', name: 'X1', page: 'Khác', status: 'succeeded' },
+        { anchor: 'figma-x2', name: 'X2', status: 'succeeded' }, // không có page
+      ],
+      remainingAfterCap: 0,
+    };
+    mockSourceFetchSequence({
+      postGenerate: () => new Response(JSON.stringify({ jobId: runningJob.id, job: runningJob }), { status: 202 }),
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    const button = await screen.findByTestId('figma-ds-detail-generate');
+    fireEvent.click(button);
+
+    const items = await screen.findByTestId('figma-ds-detail-progress-items');
+    // 2 khối riêng biệt, cả hai hiện nhãn "Khác — 1/1 · xong" — không gộp lại.
+    const khacHeadings = within(items).getAllByText(/Khác — 1\/1 · xong/);
+    expect(khacHeadings).toHaveLength(2);
+  });
+});

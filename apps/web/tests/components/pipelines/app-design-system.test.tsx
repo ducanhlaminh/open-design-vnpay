@@ -48,12 +48,18 @@ beforeEach(() => {
   }));
 });
 
+// WP21b — panel App khi gắn qua nguồn Figma dùng chung RÚT GỌN: markdown
+// dump (criteria/components.md render thô) đã dọn khỏi panel này, chuyển
+// hẳn sang trang detail `/design-systems/figma/:sourceId`
+// (FigmaDsSourceDetail — component browser có cấu trúc, xem
+// figma-ds-source-detail.test.tsx). Panel ở đây chỉ còn coverage + nút link
+// điều hướng.
 describe('AppDesignSystemPanel · shared Figma catalogue', () => {
-  it('preview nội dung criteria/components.md thay vì chỉ hiện summary', async () => {
+  it('hiện tên nguồn + số component, KHÔNG còn render markdown thô', async () => {
     render(<AppDesignSystemPanel appId="retail" figmaDesignSystemSourceId="shared-figma" />);
     expect(await screen.findByRole('heading', { name: 'VNPAY Components' })).toBeTruthy();
-    expect(screen.getByRole('article', { name: 'Nội dung criteria/components.md' })).toBeTruthy();
-    expect(screen.getByText('Primary button from Figma')).toBeTruthy();
+    expect(screen.queryByRole('article', { name: 'Nội dung criteria/components.md' })).toBeNull();
+    expect(screen.getByTestId('figma-design-system-open-detail')).toBeTruthy();
   });
 });
 

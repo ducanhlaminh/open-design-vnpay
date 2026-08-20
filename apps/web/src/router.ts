@@ -34,6 +34,12 @@ export type Route =
       designSystemId: string;
       criteriaKind: 'components' | 'rules';
     }
+  // WP21b — trang detail nguồn Figma dùng chung: `/design-systems/figma/:sourceId`.
+  // Segment literal `figma` tách hẳn nhánh này khỏi `design-system-detail`
+  // (`/design-systems/:designSystemId`) — phải kiểm TRƯỚC nhánh generic
+  // `if (parts[1])` trong parseRoute bên dưới, nếu không "figma" sẽ bị nuốt
+  // nhầm làm designSystemId.
+  | { kind: 'figma-ds-detail'; sourceId: string }
   | {
       kind: 'project';
       projectId: string;
@@ -107,6 +113,11 @@ export function parseRoute(pathname: string): Route {
   if (parts[0] === 'design-systems') {
     if (parts[1] === 'create') {
       return { kind: 'design-system-create' };
+    }
+    // Kiểm TRƯỚC nhánh generic bên dưới: nếu không, "figma" sẽ bị nuốt nhầm
+    // làm designSystemId của design-system-detail.
+    if (parts[1] === 'figma' && parts[2]) {
+      return { kind: 'figma-ds-detail', sourceId: decodeURIComponent(parts[2]) };
     }
     if (parts[1]) {
       if (
@@ -225,6 +236,7 @@ export function buildPath(route: Route): string {
   if (route.kind === 'marketplace') return '/marketplace';
   if (route.kind === 'marketplace-detail') return `/marketplace/${encodeURIComponent(route.pluginId)}`;
   if (route.kind === 'design-system-create') return '/design-systems/create';
+  if (route.kind === 'figma-ds-detail') return `/design-systems/figma/${encodeURIComponent(route.sourceId)}`;
   if (route.kind === 'design-system-criteria-workspace') {
     return (
       `/design-systems/${encodeURIComponent(route.designSystemId)}`
