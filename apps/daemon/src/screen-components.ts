@@ -27,7 +27,7 @@ import path from 'node:path';
 import type { FlowchartDoc } from './flow-ux/to-flowchart.js';
 import type { FlowIndexEntry, UxReview } from './flow-ux/index.js';
 
-export const SCREEN_COMPONENTS_SCHEMA_VERSION = '2.0' as const;
+export const SCREEN_COMPONENTS_SCHEMA_VERSION = '2.1' as const;
 export const SCREEN_INPUTS_FILE = 'comp/_inputs.json';
 export const ROLE_MAP_FILE = 'comp/_role-map.json';
 
@@ -66,6 +66,13 @@ export interface ScreenInput {
   section?: { heading: string; startLine: number; endLine: number; excerpt: string };
   /** A screen-structure table found inside that section — REFERENCE only. */
   referenceTable?: string;
+  /** WP24a: ảnh mockup thật (tồn tại trên đĩa) tìm thấy trong khoảng dòng
+   *  section của trang nguồn — đường dẫn tương đối từ cwd dự án, giữ thứ tự
+   *  xuất hiện, khử trùng lặp, tối đa 6. Đây là NGUỒN SỰ THẬT về bố cục +
+   *  nội dung khi kickoff màn liệt kê (server.ts); mảng rỗng/vắng = màn
+   *  không có ảnh, agent tự dựng bố cục + nội dung mẫu. KHÔNG dùng để chọn
+   *  component/anchor — việc đó vẫn chỉ dựa vào chữ tài liệu + DS. */
+  mockups?: string[];
   /** Flowchart steps that happen on this screen. */
   steps: ScreenStep[];
   /** Ways out of this screen into other screens (→ `data-nav`). */
@@ -131,6 +138,11 @@ export interface ScreenElement {
   /** What the document's own table declared for it (reference only). */
   docType?: string;
   why?: string;
+  /** WP24a: nội dung thật của element — chép từ ảnh mockup (khi có) hay từ
+   *  chữ tài liệu/bảng field, hoặc do agent tự đặt (nội dung mẫu thực tế) khi
+   *  màn không có ảnh. Chỉ 5 khoá này được nhận; khoá lạ / kiểu sai bị
+   *  parseScreenComponentsDoc bỏ kèm warning (không hard-fail). */
+  content?: { text?: string; secondary?: string; value?: string; badge?: string; items?: string[] };
 }
 
 export interface ScreenComponentsDoc {
@@ -148,6 +160,11 @@ export interface ScreenComponentsDoc {
    *  dropped to `ds: null`, stray wireframe attributes stripped…). Shown in
    *  the viewer so a reader knows what was corrected. */
   warnings?: string[];
+  /** WP24a: 'doc-image' khi màn có ảnh mockup thật (ScreenInput.mockups
+   *  không rỗng), 'agent' khi không. Daemon ghi ĐÈ giá trị này SAU normalize
+   *  (server.ts, chỗ ghi đè key/name/flowId/source) — nó tự biết đã đưa ảnh
+   *  vào kickoff hay chưa, không hỏi agent để tránh ảo giác. */
+  layoutSource?: 'doc-image' | 'agent';
 }
 
 // ── Prepare ────────────────────────────────────────────────────────────────
@@ -299,6 +316,54 @@ export function findScreenSection(
     excerpt,
     ...(referenceTable ? { referenceTable } : {}),
   };
+}
+
+const IMAGE_REF_CAPTURE_RE = /!\[[^\]]*\]\(([^)]+)\)/g;
+const MOCKUP_CAP = 6;
+
+/** WP24a: quét ảnh mockup THẬT (tồn tại trên đĩa) trong khoảng dòng section
+ *  của một trang — dùng lại đúng khoảng dòng `findScreenSection` trả về
+ *  (`section.startLine`/`endLine`, 1-based), KHÔNG đổi việc excerpt strip ảnh
+ *  ở trên (mục đích khác: excerpt là văn bản đưa thẳng vào prompt, mockups là
+ *  đường dẫn file daemon tự kiểm chứng). Ref markdown resolve tương đối từ
+ *  thư mục chứa trang .md rồi kiểm tra tồn tại từ `cwd` dự án; giữ thứ tự
+ *  xuất hiện trong section (ảnh ngay sau heading đứng trước), khử trùng lặp
+ *  theo đường dẫn đã resolve, cap 6 (hằng số `MOCKUP_CAP`). */
+export async function extractSectionMockups(
+  cwd: string,
+  pageMdPath: string,
+  md: string,
+  section: { startLine: number; endLine: number },
+): Promise<string[]> {
+  const lines = md.split(/\r?\n/);
+  const body = lines.slice(section.startLine, section.endLine);
+  const pageDir = path.posix.dirname(pageMdPath.split(path.sep).join('/'));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of body) {
+    if (out.length >= MOCKUP_CAP) break;
+    IMAGE_REF_CAPTURE_RE.lastIndex = 0;
+    for (let m = IMAGE_REF_CAPTURE_RE.exec(line); m; m = IMAGE_REF_CAPTURE_RE.exec(line)) {
+      if (out.length >= MOCKUP_CAP) break;
+      const raw = m[1]!.trim();
+      if (!raw) continue;
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(raw);
+      } catch {
+        decoded = raw;
+      }
+      const rel = path.posix.normalize(path.posix.join(pageDir, decoded));
+      // Ref `../` trèo ra ngoài cwd dự án → bỏ: kickoff không được bảo agent
+      // Read file ngoài dự án.
+      if (rel === '..' || rel.startsWith('../')) continue;
+      if (seen.has(rel)) continue;
+      if (!(await exists(path.join(cwd, rel)))) continue;
+      seen.add(rel);
+      out.push(rel);
+    }
+  }
+  return out;
 }
 
 // Mã màn ở ĐẦU heading, theo các khuôn tài liệu nghiệp vụ có thật: `MH1`/
@@ -790,6 +855,10 @@ export async function prepareScreenComponentInputs(
       if (section) {
         input.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
         if (section.referenceTable) input.referenceTable = section.referenceTable;
+        if (md && page) {
+          const mockups = await extractSectionMockups(cwd, page.mdPath, md, section);
+          if (mockups.length) input.mockups = mockups;
+        }
       }
       screens.push(input);
     }
@@ -833,6 +902,8 @@ export async function prepareScreenComponentInputs(
       if (section) {
         input.section = { heading: section.heading, startLine: section.startLine, endLine: section.endLine, excerpt: section.excerpt };
         if (section.referenceTable) input.referenceTable = section.referenceTable;
+        const mockups = await extractSectionMockups(cwd, page.mdPath, md, section);
+        if (mockups.length) input.mockups = mockups;
       }
       screens.push(input);
       addedDocKeys.push(key);
@@ -884,6 +955,58 @@ const PROVENANCES = new Set<Provenance>(['text', 'flow', 'table', 'ds']);
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
+}
+
+const CONTENT_KEYS = new Set(['text', 'secondary', 'value', 'badge', 'items']);
+const CONTENT_STR_MAX = 160;
+const CONTENT_ITEMS_MAX = 12;
+const LAYOUT_SOURCES = new Set(['doc-image', 'agent']);
+
+/** WP24a: lọc `elements[].content` theo đúng 5 khoá {text, secondary, value,
+ *  badge, items} — khoá lạ hoặc kiểu sai bị BỎ (không hard-fail), kèm cảnh
+ *  báo vào `warnings`. Mỗi string trim + cắt 160 ký tự (hằng số
+ *  `CONTENT_STR_MAX`); `items` tối đa 12 phần tử (hằng số `CONTENT_ITEMS_MAX`,
+ *  dư thì cắt), phần tử không
+ *  phải string bị bỏ lặng lẽ (khoá "items" tồn tại và đúng kiểu mảng — chỉ
+ *  từng phần tử sai kiểu, không đáng một cảnh báo riêng). Trả về `undefined`
+ *  khi content không phải object hoặc rỗng sau khi lọc. */
+function parseElementContent(raw: unknown, id: string, warnings: string[]): ScreenElement['content'] {
+  if (raw == null) return undefined;
+  const label = id || '?';
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    warnings.push(`elements[${label}].content phải là object — bỏ.`);
+    return undefined;
+  }
+  const o = raw as Record<string, unknown>;
+  const out: NonNullable<ScreenElement['content']> = {};
+  for (const k of Object.keys(o)) {
+    if (!CONTENT_KEYS.has(k)) {
+      warnings.push(`elements[${label}].content: khoá lạ "${k}" — bỏ.`);
+      continue;
+    }
+    if (k === 'items') {
+      const v = o[k];
+      if (!Array.isArray(v)) {
+        warnings.push(`elements[${label}].content.items phải là mảng string — bỏ.`);
+        continue;
+      }
+      const strs = v
+        .filter((x): x is string => typeof x === 'string')
+        .map((s) => s.trim().slice(0, CONTENT_STR_MAX))
+        .filter(Boolean);
+      const capped = strs.slice(0, CONTENT_ITEMS_MAX);
+      if (capped.length) out.items = capped;
+      continue;
+    }
+    const v = o[k];
+    if (typeof v !== 'string') {
+      warnings.push(`elements[${label}].content.${k} phải là string — bỏ.`);
+      continue;
+    }
+    const trimmed = v.trim().slice(0, CONTENT_STR_MAX);
+    if (trimmed) (out as Record<string, string>)[k] = trimmed;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 export function parseRoleMap(raw: string): { doc: RoleMapDoc } | { errors: string[] } {
@@ -1030,6 +1153,9 @@ export function parseScreenComponentsDoc(raw: string): { doc: ScreenComponentsDo
   if (!json || typeof json !== 'object' || Array.isArray(json)) return { errors: ['screen.json phải là một object.'] };
   const o = json as Record<string, unknown>;
   const errors: string[] = [];
+  // WP24a: cảnh báo mềm (content/layoutSource lạ) — không hard-fail, thread
+  // qua doc.warnings để normalizeScreenComponentsDoc gộp thêm warning của nó.
+  const parseWarnings: string[] = [];
   const key = str(o.key);
   if (!key) errors.push('Thiếu "key" (SCREEN-KEY).');
   const platform = str(o.platform);
@@ -1075,6 +1201,8 @@ export function parseScreenComponentsDoc(raw: string): { doc: ScreenComponentsDo
     };
     if (str(el.docType)) entry.docType = str(el.docType);
     if (str(el.why)) entry.why = str(el.why);
+    const content = parseElementContent(el.content, id, parseWarnings);
+    if (content) entry.content = content;
     elements.push(entry);
   }
   const nav: { el: string; to: string }[] = [];
@@ -1099,6 +1227,16 @@ export function parseScreenComponentsDoc(raw: string): { doc: ScreenComponentsDo
     nav,
   };
   if (Array.isArray(o.notes)) doc.notes = o.notes.filter((n): n is string => typeof n === 'string');
+  // WP24a: layoutSource là siêu dữ liệu daemon TỰ GHI ĐÈ sau normalize
+  // (server.ts) — agent có khai gì ở đây cũng không quyết; giá trị lạ chỉ bị
+  // bỏ + cảnh báo (không hard-fail), để tránh chặn cả màn vì một field agent
+  // không cần biết.
+  if (o.layoutSource != null) {
+    const ls = str(o.layoutSource);
+    if (LAYOUT_SOURCES.has(ls)) doc.layoutSource = ls as 'doc-image' | 'agent';
+    else parseWarnings.push(`"layoutSource" phải là "doc-image" | "agent" (nhận "${ls}") — bỏ.`);
+  }
+  if (parseWarnings.length) doc.warnings = parseWarnings;
   return { doc };
 }
 
@@ -1178,7 +1316,10 @@ export function normalizeScreenComponentsDoc(
   ctx: ValidateScreenContext,
 ): { doc: ScreenComponentsDoc; wireframeHtml: string | null; errors: string[]; warnings: string[] } {
   const errors: string[] = [];
-  const warnings: string[] = [];
+  // WP24a: giữ lại warning mềm từ parseScreenComponentsDoc (content/layoutSource
+  // lạ) — trước đây `out.warnings` bị GHI ĐÈ (xem cuối hàm) nên chỉ còn
+  // warning của normalize; nay cộng dồn để không mất cảnh báo parse-time.
+  const warnings: string[] = doc.warnings ? [...doc.warnings] : [];
   if (doc.key !== ctx.expectedKey) errors.push(`"key" phải là "${ctx.expectedKey}" (nhận "${doc.key}").`);
   const anchors = new Set([...ctx.catalog.values()].map((r) => r.slice(r.indexOf('#') + 1)));
   const hasCatalog = ctx.catalog.size > 0;
@@ -1282,6 +1423,8 @@ export interface ScreenComponentsIndexEntry {
   mapped: number;
   files: { screen: string; wireframe: string };
   navOut: string[];
+  /** WP24a: chép nguyên từ ScreenComponentsDoc.layoutSource — xem docblock ở đó. */
+  layoutSource?: 'doc-image' | 'agent';
 }
 
 export interface ScreenComponentsIndex {
@@ -1314,6 +1457,7 @@ export function mergeScreenComponents(
     mapped: d.elements.filter((e) => e.ds).length,
     files: { screen: screenDocRel(d.key), wireframe: wireframeRel(d.key) },
     navOut: [...new Set(d.nav.map((n) => n.to))],
+    ...(d.layoutSource ? { layoutSource: d.layoutSource } : {}),
   }));
   const index: ScreenComponentsIndex = { schema_version: SCREEN_COMPONENTS_SCHEMA_VERSION, generatedAt, roleMap: ROLE_MAP_FILE, screens, failed };
 

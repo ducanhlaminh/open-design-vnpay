@@ -100,6 +100,41 @@ describe('parsers', () => {
     expect(out).toContain(WF_MSG.highlight);
     expect(out.trim().endsWith('</body></html>')).toBe(true);
   });
+  // WP24b (.tmp/pipeline/wp24b.yaml): screen.json 2.1 thêm elements[].content và
+  // layoutSource — parse khoan dung, thiếu/sai kiểu/giá trị lạ thì bỏ qua êm.
+  it('parseScreenDoc đọc content{}/layoutSource (2.1) khoan dung: sai kiểu bị bỏ qua êm, doc 2.0 cũ vẫn undefined', () => {
+    const withContent = parseScreenDoc(
+      JSON.stringify({
+        key: K1,
+        name: 'Chọn quốc gia',
+        platform: 'mobile',
+        layoutSource: 'doc-image',
+        elements: [
+          { id: 'a', label: 'A', role: 'r', confidence: 'high', provenance: 'text', content: { text: 'Hà Nội', secondary: 'Miền Bắc', value: '+84', badge: 'Mặc định', items: ['Quận 1', 'Quận 2'] } },
+        ],
+      }),
+      'fallback',
+    );
+    expect(withContent?.layoutSource).toBe('doc-image');
+    expect(withContent?.elements[0]?.content).toEqual({ text: 'Hà Nội', secondary: 'Miền Bắc', value: '+84', badge: 'Mặc định', items: ['Quận 1', 'Quận 2'] });
+
+    const legacy = parseScreenDoc(JSON.stringify({ key: K1, name: 'A', platform: 'mobile', elements: [{ id: 'a', label: 'A', role: 'r', confidence: 'high', provenance: 'text' }] }), 'fallback');
+    expect(legacy?.layoutSource).toBeUndefined();
+    expect(legacy?.elements[0]?.content).toBeUndefined();
+
+    const badTypes = parseScreenDoc(
+      JSON.stringify({
+        key: K1,
+        name: 'A',
+        platform: 'mobile',
+        layoutSource: 'từ-sao-hoả',
+        elements: [{ id: 'a', label: 'A', role: 'r', confidence: 'high', provenance: 'text', content: { text: 42, items: 'không phải mảng', badge: 'OK' } }],
+      }),
+      'fallback',
+    );
+    expect(badTypes?.layoutSource).toBeUndefined();
+    expect(badTypes?.elements[0]?.content).toEqual({ badge: 'OK' });
+  });
 });
 
 const INDEX = {
@@ -217,5 +252,42 @@ describe('ScreenComponentsPreview', () => {
     cleanup();
     render(<ScreenComponentsPreview projectId="p1" file={file('other/comp/index.json')} />);
     await waitFor(() => expect(screen.getByText(/Chưa có màn hình nào/)).toBeTruthy());
+  });
+
+  // WP24b (.tmp/pipeline/wp24b.yaml): badge nguồn bố cục + dòng nội dung gộp trong panel.
+  it('doc 2.1 layoutSource "doc-image": badge "theo ảnh tài liệu" + panel hiện dòng nội dung gộp', async () => {
+    seed();
+    const doc = { ...DOC1, layoutSource: 'doc-image' as const, elements: [{ ...DOC1.elements[0]!, content: { text: 'Việt Nam', secondary: '+84', value: 'VN', badge: 'Mặc định', items: ['Hà Nội', 'TP.HCM'] } }, DOC1.elements[1]!, DOC1.elements[2]!] };
+    FILES[`docs-review/comp/${K1}.screen.json`] = JSON.stringify(doc);
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+    expect(screen.getByText('Bố cục & nội dung: theo ảnh tài liệu')).toBeTruthy();
+    expect(screen.getByTestId('el-appbar').textContent).toContain('Việt Nam · +84 · VN · Mặc định · Hà Nội | TP.HCM');
+  });
+
+  it('doc 2.1 layoutSource "agent": badge cảnh báo "agent tự dựng…"', async () => {
+    seed();
+    const doc = { ...DOC1, layoutSource: 'agent' as const };
+    FILES[`docs-review/comp/${K1}.screen.json`] = JSON.stringify(doc);
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+    expect(screen.getByText('Bố cục & nội dung: agent tự dựng (tài liệu không có mockup)')).toBeTruthy();
+  });
+
+  it('doc 2.0 cũ (không content/layoutSource): không có badge nguồn bố cục, panel như cũ, không crash', async () => {
+    seed();
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+    expect(screen.queryByText(/Bố cục & nội dung/)).toBeNull();
+    expect(screen.getByTestId('el-appbar').textContent).toContain('Top App Bar');
+  });
+
+  it('content sai kiểu (text là số, items là string) → bỏ qua êm, không crash, panel vẫn hiện phần hợp lệ', async () => {
+    seed();
+    const doc = { ...DOC1, elements: [{ ...DOC1.elements[0]!, content: { text: 42, items: 'không phải mảng', badge: 'OK' } }, DOC1.elements[1]!, DOC1.elements[2]!] };
+    FILES[`docs-review/comp/${K1}.screen.json`] = JSON.stringify(doc);
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+    expect(screen.getByTestId('el-appbar').textContent).toContain('OK');
   });
 });

@@ -22,6 +22,7 @@ import {
   screenDocRel,
   wireframeRel,
   SCREEN_INPUTS_FILE,
+  SCREEN_COMPONENTS_SCHEMA_VERSION,
   type ScreenComponentsInputs,
 } from '../src/screen-components.js';
 
@@ -870,6 +871,61 @@ test('prepareScreenComponentInputs: flow đã khớp ĐỦ 9 màn với tài li�
   );
 });
 
+// ── WP24a: mockups per màn — ảnh mockup thật (tồn tại trên đĩa) tìm trong
+// khoảng dòng section, KHÔNG dùng để quyết bố cục/component ở lớp này (đó là
+// việc của kickoff server.ts) — chỉ input builder trích đúng danh sách. ─────
+
+const MOCKUP_PAGE_MD = [
+  '# 3 PRD Mockup',
+  '',
+  '## 4. Màn hình',
+  '',
+  '### 4.1 SCR-010 Danh sách gói cước',
+  '',
+  '![a](attachments/scr-010-a.png) ![b](attachments/scr-010-b.png)',
+  '',
+  '| STT | Trường | Ảnh | Kiểu hiển thị |',
+  '|---|---|---|---|',
+  '| 1 | Card gói | ![c](attachments/scr-010-c.png) | Card |',
+  '',
+  '![missing](attachments/scr-010-missing.png)',
+  '',
+  '![dup](attachments/scr-010-a.png)',
+  '',
+  '![d](attachments/scr-010-d.png)',
+  '![e](attachments/scr-010-e.png)',
+  '![f](attachments/scr-010-f.png)',
+  '![g](attachments/scr-010-g.png)',
+  '',
+  '### 4.2 SCR-011 Không có ảnh',
+  '',
+  'Màn này không có ảnh mockup nào cả.',
+].join('\n');
+
+test('prepareScreenComponentInputs: WP24a — mockups per màn: ảnh cụm 1 dòng + ảnh trong bảng đứng trước theo thứ tự, ref không tồn tại bị bỏ, ref trùng bị khử, cap 6; màn không ảnh → mockups vắng', async () => {
+  await mkdir(join(cwd, 'docs-feature', 'attachments'), { recursive: true });
+  for (const name of ['scr-010-a.png', 'scr-010-b.png', 'scr-010-c.png', 'scr-010-d.png', 'scr-010-e.png', 'scr-010-f.png', 'scr-010-g.png']) {
+    await writeFile(join(cwd, 'docs-feature', 'attachments', name), 'x', 'utf8');
+  }
+  await writeFile(join(cwd, 'docs-feature', 'Mockup-Page.md'), MOCKUP_PAGE_MD, 'utf8');
+  const inputs = await prepareScreenComponentInputs(cwd, {
+    pages: [{ mdPath: 'docs-feature/Mockup-Page.md', page: 'Mockup Page' }],
+  });
+  const s010 = inputs.screens.find((s) => s.key === 'Mockup-Page__SCR-010');
+  const s011 = inputs.screens.find((s) => s.key === 'Mockup-Page__SCR-011');
+  assert.ok(s010);
+  assert.ok(s011);
+  assert.deepEqual(s010!.mockups, [
+    'docs-feature/attachments/scr-010-a.png',
+    'docs-feature/attachments/scr-010-b.png',
+    'docs-feature/attachments/scr-010-c.png',
+    'docs-feature/attachments/scr-010-d.png',
+    'docs-feature/attachments/scr-010-e.png',
+    'docs-feature/attachments/scr-010-f.png',
+  ]);
+  assert.ok(!s011!.mockups || s011!.mockups.length === 0);
+});
+
 test('parseRoleMap + validateRoleMap: component phải có trong danh mục; DS trống thì component phải null', () => {
   const catalog = collectComponentCatalog(CATALOG_MD);
   const ok = parseRoleMap(
@@ -980,6 +1036,78 @@ test('parseScreenComponentsDoc: id trùng / id lạ / nav.el không tồn tại 
   assert.ok(r.errors.some((e) => e.includes('"zzz"')));
 });
 
+// ── WP24a: schema 2.1 — elements[].content + doc.layoutSource. ─────────────
+
+test('parseScreenComponentsDoc: WP24a — content hợp lệ giữ nguyên; khoá lạ trong content bị drop + warning; string 200 ký tự cắt còn 160; items 15 phần tử cắt còn 12; layoutSource giá trị lạ bị drop + warning; schema_version "2.0" (khai bởi agent) không content vẫn parse như cũ', () => {
+  const longStr = 'x'.repeat(200);
+  const items15 = Array.from({ length: 15 }, (_, i) => `item-${i}`);
+  const raw = {
+    schema_version: '2.0',
+    key: KEY1,
+    name: 'Chọn gói',
+    flowId: 'FLOW-a',
+    platform: 'mobile',
+    source: null,
+    elements: [
+      {
+        id: 'card',
+        label: 'Gói cước',
+        role: 'card',
+        ds: null,
+        confidence: 'high',
+        provenance: 'text',
+        content: { text: 'VN Traveler 79', secondary: '5GB/ngày · 7 ngày', value: '79.000đ', badge: '-21%', items: items15, weird: 'nope' },
+      },
+      {
+        id: 'card2',
+        label: 'Gói cước 2',
+        role: 'card',
+        ds: null,
+        confidence: 'high',
+        provenance: 'text',
+        content: { text: longStr },
+      },
+      { id: 'card3', label: 'Gói cước 3', role: 'card', ds: null, confidence: 'high', provenance: 'text' },
+    ],
+    nav: [],
+    layoutSource: 'not-a-real-value',
+  };
+  const r = parseScreenComponentsDoc(JSON.stringify(raw));
+  assert.ok('doc' in r);
+  // schema_version "2.0" khai bởi agent không làm hỏng gì — daemon luôn ghi
+  // đúng phiên bản đang pin (SCREEN_COMPONENTS_SCHEMA_VERSION), bất kể agent
+  // khai gì (tương thích ngược 2.0 → 2.1).
+  assert.equal(r.doc.schema_version, SCREEN_COMPONENTS_SCHEMA_VERSION);
+  assert.deepEqual(r.doc.elements[0]!.content, {
+    text: 'VN Traveler 79',
+    secondary: '5GB/ngày · 7 ngày',
+    value: '79.000đ',
+    badge: '-21%',
+    items: items15.slice(0, 12),
+  });
+  assert.equal(r.doc.elements[1]!.content?.text?.length, 160);
+  assert.equal(r.doc.elements[2]!.content, undefined);
+  assert.equal(r.doc.layoutSource, undefined);
+  assert.ok(r.doc.warnings?.some((w) => w.includes('khoá lạ "weird"')));
+  assert.ok(r.doc.warnings?.some((w) => w.includes('layoutSource')));
+});
+
+test('mergeScreenComponents: WP24a — doc có layoutSource → index entry có layoutSource', () => {
+  const inputs = {
+    schema_version: SCREEN_COMPONENTS_SCHEMA_VERSION,
+    generatedAt: 'g',
+    ds: { components: true, catalog: false, rules: false, examples: false, figmaCatalog: false },
+    screens: [
+      { key: KEY1, name: 'Chọn quốc gia', order: 0, flowId: 'FLOW-a', flowTitle: 't', source: 'x.md', steps: [], navOut: [], navIn: [], findings: [], platformHint: 'mobile' },
+    ],
+  } as unknown as ScreenComponentsInputs;
+  const d1 = parseScreenComponentsDoc(JSON.stringify(GOOD_DOC));
+  assert.ok('doc' in d1);
+  const docWithLayout = { ...d1.doc, layoutSource: 'doc-image' as const };
+  const { index } = mergeScreenComponents([docWithLayout], inputs, [], '2026-08-21T00:00:00Z');
+  assert.equal(index.screens[0]!.layoutSource, 'doc-image');
+});
+
 test('validateScreenComponentsDoc: component lạ, anchor sai, nav ngoài luồng, DS trống', () => {
   const catalog = collectComponentCatalog(CATALOG_MD);
   const doc = {
@@ -1042,7 +1170,11 @@ test('mergeScreenComponents: index theo thứ tự luồng, đếm mapped, summa
   const d1 = parseScreenComponentsDoc(JSON.stringify(GOOD_DOC));
   assert.ok('doc' in d1);
   const { index, summaryMd } = mergeScreenComponents([d1.doc], inputs, [{ key: KEY2, name: 'Chọn gói cước', errors: ['hỏng'] }], '2026-08-18T00:00:00Z');
-  assert.equal(index.schema_version, '2.0');
+  // WP24a: bump schema_version '2.0' → '2.1' (mockups/content/layoutSource);
+  // GOOD_DOC ở trên khai "2.0" NGUYÊN — kiểm tra ngầm parse vẫn chấp nhận
+  // (parseScreenComponentsDoc không đọc schema_version của agent, luôn ghi
+  // đúng phiên bản daemon đang pin).
+  assert.equal(index.schema_version, '2.1');
   assert.equal(index.screens.length, 1);
   assert.equal(index.screens[0]!.elements, 4);
   assert.equal(index.screens[0]!.mapped, 3);

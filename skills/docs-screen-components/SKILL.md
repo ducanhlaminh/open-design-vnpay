@@ -10,8 +10,11 @@ description: |
   screen should be built from — driven by the DS catalogue
   (`criteria/components.md`, `catalog.md`, `examples.md`, `rules.md`), NOT by
   the document's own "Kiểu hiển thị" table (reference only) and NOT by mockup
-  images (illustrations only) — and draw ONE ux-spec-style HTML wireframe per
-  screen (`wireframes/<SCREEN-KEY>.html`) whose blocks carry `data-el` /
+  images (component/anchor choice never comes from a picture) — but the
+  screen's mockup image(s), when the kickoff lists any, ARE the source of
+  truth for LAYOUT + CONTENT (wireframe layout, `elements[].content`) — and
+  draw ONE ux-spec-style HTML wireframe per screen
+  (`wireframes/<SCREEN-KEY>.html`) whose blocks carry `data-el` /
   `data-comp` / `data-nav`, plus a machine-checkable
   `comp/<SCREEN-KEY>.screen.json`. Two kickoff modes: ROLE-MAP (once per
   feature → `comp/_role-map.json`, role → DS component) and SCREEN (one screen
@@ -63,16 +66,22 @@ Ba nguyên tắc cố định:
    `steps[]`/`navOut[]`/`navIn[]` RỖNG là BÌNH THƯỜNG, không phải lỗi — đừng cố
    suy diễn luồng hay `nav[]` không có căn cứ; dựng cấu thành màn từ `section`
    (mục tài liệu mô tả màn) + `referenceTable` (bảng trường) + ảnh mockup của
-   chính mục đó (LƯU Ý: nguyên tắc 3 bên dưới về "ảnh mockup không phải đầu
-   vào" vẫn giữ nguyên cho việc CHỌN component — ảnh chỉ giúp bạn hiểu bố cục
-   khi hoàn toàn không có bước luồng nào). Không tự tìm thêm màn ngoài
+   chính mục đó khi kickoff liệt kê (LƯU Ý: nguyên tắc 3 bên dưới — ảnh giúp
+   bạn dựng bố cục + nội dung, KHÔNG giúp bạn chọn component/anchor, kể cả khi
+   hoàn toàn không có bước luồng nào). Không tự tìm thêm màn ngoài
    `_inputs.json`, không bịa màn.
 2. **Component do Design System quyết.** Chỉ đề xuất component CÓ THẬT trong
    `criteria/components.md`; chọn theo `catalog.md` ("Dùng khi / Không dùng
    khi", Screen scaffolding), lồng theo `examples.md`, tuân `rules.md`. Không
    có DS ⇒ mọi `ds` là `null`, chỉ ghi vai trò.
-3. **Ảnh mockup KHÔNG phải đầu vào.** Đó là hình minh hoạ của người viết tài
-   liệu. Không mở, không mô tả, không dùng để chọn component hay bố cục.
+3. **Ảnh mockup = nguồn sự thật BỐ CỤC + NỘI DUNG, KHÔNG bao giờ là nguồn
+   chọn component.** Khi kickoff liệt kê ảnh mockup của màn (`mockups[]`
+   trong `_inputs.json`), đó là ẢNH THẬT — BẮT BUỘC mở bằng Read: wireframe vẽ
+   đúng bố cục trong ảnh (thứ tự khối, hàng/cột, nhóm card), `elements[].content`
+   chép nội dung thật (tên gói, giá, nhãn, badge…). Nhưng việc CHỌN
+   component/anchor vẫn CHỈ dựa vào chữ tài liệu + Design System (nguyên tắc
+   2) — TUYỆT ĐỐI không suy component/anchor từ ảnh. Màn không có ảnh (kickoff
+   không liệt kê) → tự dựng bố cục hợp lý + nội dung mẫu thực tế (không lorem).
 
 Bạn **không review câu chữ, không sửa tài liệu, không sửa `flows/`**.
 
@@ -81,10 +90,12 @@ Bạn **không review câu chữ, không sửa tài liệu, không sửa `flows/
 - **`comp/_inputs.json`** (daemon dựng, ĐỌC TRƯỚC TIÊN): `screens[]` theo thứ tự
   luồng — mỗi màn có `key` (SCREEN-KEY), `name`, `flowTitle`, `source` (trang
   `.md`), `section` {heading, startLine, endLine, excerpt} (mục tài liệu mô tả
-  màn, nếu tìm thấy), `referenceTable` (bảng cấu trúc — tham khảo), `steps[]`
-  (bước luồng diễn ra trên màn), `navOut[]` (đi sang màn nào, qua bước nào,
-  điều kiện gì), `navIn[]`, `findings[]` (phát hiện UX của dr-flow chạm màn
-  này), `platformHint`; và `ds` (file nào của DS đang có).
+  màn, nếu tìm thấy), `referenceTable` (bảng cấu trúc — tham khảo), `mockups[]`
+  (đường dẫn ảnh mockup THẬT của màn — daemon tự quét, tồn tại trên đĩa, tối
+  đa 6, có thể vắng/rỗng khi tài liệu không có ảnh cho màn này; xem nguyên tắc
+  3), `steps[]` (bước luồng diễn ra trên màn), `navOut[]` (đi sang màn nào,
+  qua bước nào, điều kiện gì), `navIn[]`, `findings[]` (phát hiện UX của
+  dr-flow chạm màn này), `platformHint`; và `ds` (file nào của DS đang có).
 - **Design System** (có file nào đọc file đó; thiếu là bình thường):
   `criteria/components.md` — danh mục ĐÓNG (`### \`#anchor\` Tên`); `criteria/
   catalog.md` — kiến thức chọn component + bảng Screen scaffolding; `criteria/
@@ -100,7 +111,9 @@ Bạn **không review câu chữ, không sửa tài liệu, không sửa `flows/
   entry cho component đó → coi như component không có mô tả, xử lý như trước nay.
 - **Tài liệu** (CHỈ ĐỌC): trang `source` của màn — Read đúng khoảng dòng
   `section` (mở rộng sang mục lân cận nếu thiếu); dự án gắn App: `docs-feature/`
-  là nguồn sự thật, `docs-app/` chỉ tham khảo. Bỏ qua `attachments/`, ảnh.
+  là nguồn sự thật, `docs-app/` chỉ tham khảo. Ảnh mockup của màn nằm ở
+  `mockups[]` (xem nguyên tắc 3) — mở TỪNG ảnh đó khi kickoff liệt kê; các file
+  khác trong `attachments/` không liên quan tới màn đang chạy thì bỏ qua.
 - **`flows/`**: đã được tóm vào `_inputs.json`; cần chi tiết thì đọc
   `flows/<FLOW-ID>.flowchart.json` và `flows/<FLOW-ID>/ux-review.json`.
 - **`wireframes/_wireframe.css`**: CSS dùng chung (daemon copy từ skill
@@ -163,7 +176,8 @@ sang màn khác. Bạn ghi **đúng hai file**.
   "elements": [
     { "id": "appbar",   "label": "Chọn gói cước",           "role": "app-bar",     "ds": { "component": "Top App Bar", "anchor": "top-app-bar", "variant": "Back=true" }, "confidence": "high",   "provenance": "flow" },
     { "id": "tabs",     "label": "eSIM | SIM vật lý",        "role": "tab",         "ds": { "component": "Tabs", "anchor": "tabs" },                                    "confidence": "high",   "provenance": "text",  "docType": "Tab" },
-    { "id": "plan-list","label": "Danh sách gói cước",       "role": "list-item",   "ds": { "component": "List Item", "anchor": "list-item", "variant": "Trailing=Radio" }, "confidence": "medium", "provenance": "text",  "why": "Tài liệu mô tả chọn 1 gói → List Item + Radio thay vì Card (catalog.md: Card cho nội dung hỗn hợp)" },
+    { "id": "plan-list","label": "Danh sách gói cước",       "role": "list-item",   "ds": { "component": "List Item", "anchor": "list-item", "variant": "Trailing=Radio" }, "confidence": "medium", "provenance": "text",  "why": "Tài liệu mô tả chọn 1 gói → List Item + Radio thay vì Card (catalog.md: Card cho nội dung hỗn hợp)",
+      "content": { "text": "VN Traveler 79", "secondary": "5GB/ngày · 7 ngày", "value": "79.000đ", "badge": "-21%" } },
     { "id": "cta-next", "label": "Tiếp tục",                 "role": "primary-cta", "ds": { "component": "Button", "anchor": "button", "variant": "Hierarchy=Primary · Size=Large" }, "confidence": "high", "provenance": "flow" },
     { "id": "empty",    "label": "Chưa có gói cước phù hợp", "role": "empty-state", "ds": null,                                                                          "confidence": "low",    "provenance": "ds",    "why": "DS không có Empty State (role-map) — dùng Typography + Button" }
   ],
@@ -191,9 +205,17 @@ sang màn khác. Bạn ghi **đúng hai file**.
     tương ứng — chỉ để người đọc đối chiếu "tài liệu khai X, DS dùng Y".
   - `why`: một câu, bắt buộc khi lệch role-map, khi `ds: null` dù DS có, hoặc
     khi `docType` khác component chọn.
+  - `content` (tuỳ chọn, tối đa 5 khoá `text`/`secondary`/`value`/`badge`/
+    `items[]`): NỘI DUNG THẬT của element — chép từ ảnh mockup khi màn có
+    ảnh (`mockups[]`), hoặc từ chữ/bảng tài liệu khi không, hoặc do bạn tự đặt
+    (nội dung mẫu thực tế, không lorem) khi cả hai đều không đủ. Khoá lạ hay
+    kiểu sai bị daemon bỏ kèm cảnh báo — không hard-fail.
 - `nav[]`: mỗi lối đi kickoff kể → `{el, to}` (`el` = id của nút/dòng dẫn đi,
   `to` = SCREEN-KEY đích, phải là màn của luồng). Không bịa đích.
 - `notes[]`: chỗ tài liệu mơ hồ ảnh hưởng tới màn (không phải review câu chữ).
+- `layoutSource`: **daemon tự ghi ĐÈ** sau khi bạn nộp bài (`"doc-image"` khi
+  màn có ảnh mockup thật, `"agent"` khi không) — bạn KHÔNG cần khai trường
+  này, khai gì cũng bị ghi đè (tránh ảo giác "tôi tự nhận có ảnh").
 
 ### 2. `wireframes/<SCREEN-KEY>.html`
 
@@ -204,18 +226,24 @@ file HTML tự chứa, DOM là bố cục thật của màn, không vocabulary �
   rồi thêm rule layout của riêng màn; không `<script>`, `<link>`, font, ảnh.
 - `<body data-screen="<SCREEN-KEY>" data-layout="mobile|web">` (= `platform`);
   bên trong `<main class="wf-mobile">` hoặc `<main class="wf-web">`.
-- Bố cục thật: header (app bar) – thân (cuộn) – chân (CTA); hàng/cột bằng
-  grid/flex; nhóm bằng `<section class="wf-card">`; lồng đúng như DS lồng
-  (`examples.md`). Web: desktop-first + `@media (max-width: 834px)` và `390px`.
+- Bố cục thật: màn có ảnh mockup (`mockups[]`) → vẽ ĐÚNG bố cục trong ảnh
+  (thứ tự khối, hàng/cột, nhóm card — nhiều ảnh = các trạng thái/đoạn cuộn của
+  CÙNG màn, hợp nhất thành MỘT wireframe, trạng thái phụ ghi vào `notes`
+  thay vì vẽ riêng); màn không có ảnh → tự dựng bố cục hợp lý theo khuôn
+  header (app bar) – thân (cuộn) – chân (CTA); hàng/cột bằng grid/flex; nhóm
+  bằng `<section class="wf-card">`; lồng đúng như DS lồng (`examples.md`).
+  Web: desktop-first + `@media (max-width: 834px)` và `390px`.
 - **Mỗi element trong JSON = một block** `class="wf-component"` mang
   `data-el="<id>"` (BẮT BUỘC, đúng id), `data-comp="<anchor>"` khi `ds` có,
   `data-variant="…"` nếu có, `data-nav="<SCREEN-KEY đích>"` đúng như `nav`.
-  Chữ trong block = `label`. Không có `ds` ⇒ không `data-comp` (CSS tự ẩn tên).
+  Chữ trong block = nội dung thật, ngắn gọn của element (content chính trong
+  `content` khi có, không thì `label`). Không có `ds` ⇒ không `data-comp` (CSS
+  tự ẩn tên).
 - Overlay (dialog/bottom sheet): `data-overlay="dialog|sheet"` +
   `data-overlay-of="<SCREEN-KEY màn cơ sở>"` trên `<body>`, thân chỉ có nội
   dung overlay.
-- Xám, cấu trúc, low-fi: không màu thương hiệu, không icon, không nội dung
-  mẫu dài. Không suy bố cục từ ảnh mockup.
+- Xám, cấu trúc, low-fi: không màu thương hiệu, không icon, nội dung thật,
+  ngắn gọn.
 
 Ví dụ rút gọn (mobile):
 
@@ -348,8 +376,11 @@ Luật:
   SCREEN-KEY của luồng (trong `_inputs.json`). Daemon kiểm và ghi cảnh báo.
 - **Lỗi cứng (hỏng lượt màn):** thiếu một trong hai file, JSON không đọc
   được, `key` sai, wireframe có `<script>`.
-- **Không mở ảnh mockup, không dựng màn ngoài danh sách của Flow, không chia
-  kịch bản.** Một màn = một wireframe đầy đủ.
+- **Không dựng màn ngoài danh sách của Flow, không chia kịch bản.** Một màn =
+  một wireframe đầy đủ.
+- **Không dùng ảnh mockup để chọn component/anchor** — dù ảnh mở được và là
+  nguồn sự thật cho bố cục/nội dung, việc chọn component vẫn CHỈ theo chữ tài
+  liệu + Design System (nguyên tắc 2).
 - **Wireframe không `<script>`**, tự chứa, bắt đầu bằng `<!doctype html>`,
   `data-screen` đúng key, `data-layout` = `platform`.
 - File-only: không đẩy bất cứ gì lên KGS.

@@ -201,6 +201,24 @@
   border: 1px solid var(--border, #e1e5eb);
   background: var(--bg, #fff);
 }
+.layoutSource {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e1e5eb);
+}
+.layoutSourceDocImage {
+  color: var(--green, #1f7a3a);
+  background: var(--green-bg, #e8f7ee);
+  border-color: var(--green-border, #c6ead2);
+}
+.layoutSourceAgent {
+  color: var(--amber, #b26200);
+  background: var(--amber-bg, #fff3e0);
+  /* tokens.css không có --amber-border (khác --green-border) — pha từ --amber
+     để đúng cả dark theme thay vì fallback tĩnh */
+  border-color: color-mix(in srgb, var(--amber, #b26200) 40%, transparent);
+}
 .headMeta {
   margin-top: 4px;
   display: flex;
@@ -349,6 +367,11 @@
   color: var(--red, #9c2a25);
   background: var(--red-bg, #fdecea);
   border-color: var(--red-border, #f5c6c2);
+}
+.elContent {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-muted, #57544e);
 }
 .elDs {
   display: flex;

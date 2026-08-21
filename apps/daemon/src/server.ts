@@ -570,6 +570,7 @@ import {
   parseScreenComponentsDoc,
   normalizeScreenComponentsDoc,
   mergeScreenComponents,
+  extractSectionMockups,
   screenDocRel,
   wireframeRel,
   SCREEN_INPUTS_FILE,
@@ -16421,7 +16422,8 @@ export async function startServer({
   // còn theo trang tài liệu:
   //   - v1 chỉ thấy màn khi trang khai `Màn hình N: SCR-…` + bảng "Kiểu hiển
   //     thị"; PRD viết bằng đoạn văn thì bước này trắng. v2 coi bảng đó (nếu
-  //     có) là THAM KHẢO, ảnh mockup KHÔNG phải đầu vào; đề xuất component do
+  //     có) là THAM KHẢO; WP24a: ảnh mockup của màn là nguồn sự thật BỐ CỤC +
+  //     NỘI DUNG (elements[].content), nhưng đề xuất component vẫn do
   //     Design System quyết (criteria/components.md + catalog/examples/rules).
   //   - Daemon dựng `comp/_inputs.json` (prepareScreenComponentInputs — màn,
   //     trang + mục tài liệu, bước luồng trên màn, đi ra màn nào, phát hiện
@@ -17072,8 +17074,9 @@ export async function startServer({
 
         // v2 (2026-08-18): ĐƠN VỊ FAN-OUT LÀ MÀN HÌNH lấy từ bước Đánh giá
         // luồng UX (flows/index.json[].screens), KHÔNG còn là trang tài liệu:
-        // bảng "Kiểu hiển thị" (nếu có) chỉ là tham khảo, và ảnh mockup không
-        // phải đầu vào. Daemon dựng comp/_inputs.json (màn nào, thuộc trang
+        // bảng "Kiểu hiển thị" (nếu có) chỉ là tham khảo; ảnh mockup của màn
+        // (WP24a) là nguồn bố cục + nội dung nhưng KHÔNG quyết component.
+        // Daemon dựng comp/_inputs.json (màn nào, thuộc trang
         // nào, mục nào, bước flow nào diễn ra trên đó, đi ra màn nào) rồi:
         //   lượt trích màn (lớp 2, WP14 — CHỈ khi lớp 1 tất định yếu, xem
         //            khối "Lượt trích màn từ tài liệu" ngay dưới);
@@ -17304,6 +17307,29 @@ export async function startServer({
           await persistInputs();
         }
 
+        // WP24a (review follow-up): màn do lớp 2 (EXTRACT) / lớp 3 (override
+        // 'add') thêm vào KHÔNG đi qua prepareScreenComponentInputs nên chưa
+        // được quét ảnh mockup — quét bù ở đây để kickoff + layoutSource không
+        // báo sai "tài liệu không có mockup" cho những màn đó.
+        {
+          const mockupMdCache = new Map<string, string | null>();
+          let mockupsEnriched = false;
+          for (const s of screenInputs) {
+            if (!s.section || (s.mockups && s.mockups.length > 0)) continue;
+            if (!mockupMdCache.has(s.source)) {
+              mockupMdCache.set(s.source, await fs.promises.readFile(path.join(cwd, s.source), 'utf8').catch(() => null));
+            }
+            const md = mockupMdCache.get(s.source);
+            if (md == null) continue;
+            const mockups = await extractSectionMockups(cwd, s.source, md, s.section);
+            if (mockups.length > 0) {
+              s.mockups = mockups;
+              mockupsEnriched = true;
+            }
+          }
+          if (mockupsEnriched) await persistInputs();
+        }
+
         // (do.B.2) buildScreensManifest NGAY SAU khi chốt danh sách màn,
         // TRƯỚC role-map — để một lượt chạy hỏng giữa chừng ngay sau đây
         // người dùng vẫn thấy máy đã đoán những màn nào.
@@ -17359,7 +17385,11 @@ export async function startServer({
             : ` KHÔNG có "criteria/components.md" trong cwd này: vẫn liệt kê element theo vai trò (role) và vẽ wireframe, NHƯNG mọi "component" trong role-map và "ds" của element phải là null, wireframe KHÔNG có data-comp.`;
         const flowLine =
           ` Danh sách màn hình + ngữ cảnh từng màn (trang, mục tài liệu, bước luồng diễn ra trên màn, đi ra màn nào, phát hiện UX) nằm ở "${SCREEN_INPUTS_FILE}" — đọc nó trước.` +
-          ` Ảnh mockup trong tài liệu CHỈ là minh hoạ của người viết — KHÔNG mở, KHÔNG dùng để chọn component hay bố cục; bảng cấu trúc màn (nếu có, trường "referenceTable") chỉ để tham khảo tên trường.`;
+          // WP24a: ảnh mockup của màn (khi kickoff màn liệt kê, xem mockupLine ở
+          // fan-out) là NGUỒN SỰ THẬT về bố cục + nội dung — không còn là "minh
+          // hoạ, không mở". Component/anchor vẫn CHỈ chọn theo chữ tài liệu + DS,
+          // ảnh KHÔNG được quyết chỗ đó (tránh ảo giác đọc component từ ảnh).
+          ` Ảnh mockup của màn (nếu kickoff màn này liệt kê) là NGUỒN SỰ THẬT về BỐ CỤC và NỘI DUNG; TUYỆT ĐỐI không dùng ảnh để chọn component/anchor — việc đó vẫn CHỈ dựa vào chữ tài liệu + Design System. Bảng cấu trúc màn (nếu có, trường "referenceTable") vẫn chỉ để tham khảo tên trường.`;
         // graphNote đã khai ở đầu block (WP14 — lượt trích lớp 2 cũng cần nó).
 
         // ── Lượt 0: role-map cho cả feature ─────────────────────────────────
@@ -17521,6 +17551,15 @@ export async function startServer({
           const navLine = s.navOut.length
             ? ` Từ màn này đi sang: ${s.navOut.map((n) => `"${n.to}" (qua "${n.via}"${n.condition ? `, điều kiện ${JSON.stringify(n.condition)}` : ''})`).join('; ')} — mỗi lối đi là MỘT element có data-nav tương ứng.`
             : ' Màn này không đi sang màn nào khác trong luồng — không dùng data-nav.';
+          // WP24a: mockupLine — daemon nêu đích danh ảnh mockup THẬT của màn
+          // (ScreenInput.mockups, quét ở prepareScreenComponentInputs) khi có,
+          // hoặc bảo agent tự dựng khi không. layoutSource ghi lại quyết định
+          // này SAU normalize (xem chỗ ghi đè key/name/flowId/source bên dưới)
+          // — daemon tự biết, không hỏi agent, tránh ảo giác.
+          const mockupLine =
+            s.mockups && s.mockups.length > 0
+              ? ` Ảnh mockup của màn: ${s.mockups.map((m) => `"${m}"`).join(', ')}. BẮT BUỘC mở TỪNG ảnh bằng Read. Wireframe vẽ ĐÚNG bố cục trong ảnh (thứ tự khối, hàng/cột, nhóm card). elements[].content chép NỘI DUNG THẬT từ ảnh (tên gói, giá, nhãn, badge); giá trị lệch với bảng field của tài liệu thì bảng thắng và ghi notes. Nhiều ảnh = các trạng thái/đoạn cuộn của CÙNG màn — hợp nhất thành MỘT wireframe; trạng thái phụ (bottom sheet, error, empty…) không vẽ riêng, ghi notes.`
+              : ` Tài liệu KHÔNG có ảnh mockup cho màn này — bạn TỰ dựng bố cục hợp lý và nội dung mẫu THỰC TẾ (nhãn/giá/tên hợp ngữ cảnh nghiệp vụ; không lorem, không "Nội dung 1") từ section + referenceTable + steps, và điền elements[].content tương ứng.`;
           const kickoff =
             `Run the "docs-screen-components" skill in SCREEN mode for ONE screen of feature "${projectId}": SCREEN-KEY "${s.key}" — "${s.name}" (luồng "${s.flowTitle}", thứ tự ${s.order + 1}/${screenInputs.length}).` +
             flowLine +
@@ -17528,6 +17567,7 @@ export async function startServer({
             ` Bảng map vai trò → component DS của feature đã chốt ở "${ROLE_MAP_FILE}" (nền tảng: ${roleMap.platform}) — BẮT BUỘC dùng đúng bảng đó; lệch phải ghi "why".` +
             sectionLine +
             navLine +
+            mockupLine +
             ` Ghi ĐÚNG HAI file: (1) "${outRel}" theo schema "Chế độ SCREEN" trong skill (mọi element có "id" ổn định, "role", "ds" {component, anchor, variant?} hoặc null, "confidence", "provenance" text|flow|table|ds, "docType" nếu bảng tài liệu có khai, "why" khi cần; "nav": [{el, to}] cho các lối đi kể trên; "platform" = "${roleMap.platform}"); ` +
             `(2) "${wfRel}" — wireframe HTML tự chứa kiểu ux-spec: "<!doctype html>", ${cssLine}không <script>/<link>/ảnh; <body data-screen="${s.key}" data-layout="${roleMap.platform}">; DOM là bố cục THẬT của màn (header–thân–chân, hàng/cột, card lồng nhau theo criteria/examples.md), MỖI element trong JSON là một block mang data-el="<id>" (bắt buộc) + data-comp="<anchor>" khi có ds + data-nav="<SCREEN-KEY đích>" đúng như "nav"; text trong block = nhãn thật của element; không màu thương hiệu, không icon, không nội dung mẫu dài. ` +
             `Không ghi file nào khác (không sửa flows/, docs/, criteria/, "${wireframeCssRel}", không tự ghi comp/index.json).${graphNote}${figmaDesktopNote}`;
@@ -17596,8 +17636,18 @@ export async function startServer({
                 errors.push(...norm.errors);
                 if (errors.length === 0) {
                   // key/name/flowId/source là siêu dữ liệu daemon TỰ BIẾT — ghi
-                  // đè để index không lệch chỉ vì agent gõ lại.
-                  doc = { ...norm.doc, key: s.key, name: s.name, flowId: s.flowId, source: s.source };
+                  // đè để index không lệch chỉ vì agent gõ lại. WP24a:
+                  // layoutSource cũng vậy — daemon tự biết đã đưa ảnh mockup
+                  // của màn vào kickoff hay chưa (s.mockups), ghi đè MỌI giá
+                  // trị agent khai để tránh ảo giác ("agent tự nhận doc-image").
+                  doc = {
+                    ...norm.doc,
+                    key: s.key,
+                    name: s.name,
+                    flowId: s.flowId,
+                    source: s.source,
+                    layoutSource: (s.mockups?.length ?? 0) > 0 ? 'doc-image' : 'agent',
+                  };
                   await fs.promises.writeFile(path.join(cwd, outRel), JSON.stringify(doc, null, 2), 'utf8');
                   if (norm.wireframeHtml != null && norm.wireframeHtml !== wireframeHtml) {
                     await fs.promises.writeFile(path.join(cwd, wfRel), norm.wireframeHtml, 'utf8');

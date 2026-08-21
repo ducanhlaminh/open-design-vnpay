@@ -22,6 +22,9 @@ export type ScreenPlatform = 'mobile' | 'web';
 export type ScreenConfidence = 'high' | 'medium' | 'low';
 export type ScreenProvenance = 'text' | 'flow' | 'table' | 'ds';
 
+// WP24b (.tmp/pipeline/wp24b.yaml): screen.json 2.1 thêm elements[].content và
+// layoutSource, do daemon ghi (WP24a chạy song song). Khai LOCAL ở đây — chờ
+// hợp nhất sang @open-design/contracts — không import từ apps/daemon.
 export interface ScreenElementView {
   id: string;
   label: string;
@@ -31,6 +34,8 @@ export interface ScreenElementView {
   provenance: ScreenProvenance;
   docType?: string;
   why?: string;
+  /** Nội dung thật của element (WP24, doc 2.1). Vắng ở doc 2.0 cũ. */
+  content?: { text?: string; secondary?: string; value?: string; badge?: string; items?: string[] };
 }
 export interface ScreenDocView {
   key: string;
@@ -43,6 +48,22 @@ export interface ScreenDocView {
   notes: string[];
   /** Daemon-side normalisations of the agent's output (see screen-components.ts). */
   warnings: string[];
+  /** Nguồn của bố cục & nội dung (WP24, doc 2.1). Vắng ở doc 2.0 cũ. */
+  layoutSource?: 'doc-image' | 'agent';
+}
+
+const LAYOUT_SOURCE_BADGE: Record<'doc-image' | 'agent', string> = {
+  'doc-image': 'Bố cục & nội dung: theo ảnh tài liệu',
+  agent: 'Bố cục & nội dung: agent tự dựng (tài liệu không có mockup)',
+};
+
+/** Gộp content thành một dòng phụ: `text · secondary · value · badge · items[0] | items[1]`.
+ *  Phần vắng bị bỏ; items nối bằng " | " rồi thêm vào cuối. */
+export function contentLineOf(content: ScreenElementView['content']): string {
+  if (!content) return '';
+  const parts = [content.text, content.secondary, content.value, content.badge].filter((s): s is string => !!s);
+  if (content.items?.length) parts.push(content.items.join(' | '));
+  return parts.join(' · ');
 }
 export interface ScreenRailEntry {
   key: string;
@@ -129,6 +150,17 @@ export function parseScreenDoc(raw: string, fallbackKey: string): ScreenDocView 
     };
     if (str(el.docType)) view.docType = str(el.docType);
     if (str(el.why)) view.why = str(el.why);
+    if (el.content && typeof el.content === 'object') {
+      const c = el.content as Record<string, unknown>;
+      const content: NonNullable<ScreenElementView['content']> = {};
+      if (str(c.text)) content.text = str(c.text);
+      if (str(c.secondary)) content.secondary = str(c.secondary);
+      if (str(c.value)) content.value = str(c.value);
+      if (str(c.badge)) content.badge = str(c.badge);
+      const items = strList(c.items);
+      if (items.length) content.items = items;
+      if (Object.keys(content).length) view.content = content;
+    }
     elements.push(view);
   }
   const nav: { el: string; to: string }[] = [];
@@ -138,6 +170,7 @@ export function parseScreenDoc(raw: string, fallbackKey: string): ScreenDocView 
     if (str(nn.el) && str(nn.to) && ids.has(str(nn.el))) nav.push({ el: str(nn.el), to: str(nn.to) });
   }
   const platform = str(o.platform) === 'web' ? 'web' : 'mobile';
+  const layoutSource = str(o.layoutSource);
   return {
     key: str(o.key) || fallbackKey,
     name: str(o.name),
@@ -148,6 +181,7 @@ export function parseScreenDoc(raw: string, fallbackKey: string): ScreenDocView 
     nav,
     notes: strList(o.notes),
     warnings: strList(o.warnings),
+    ...(layoutSource === 'doc-image' || layoutSource === 'agent' ? { layoutSource } : {}),
   };
 }
 
@@ -543,6 +577,14 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
             <h2 className={styles.title}>{doc?.name || currentEntry?.name || current}</h2>
             <code className={styles.key}>{code}</code>
             <span className={styles.platform}>{PLATFORM_LABEL[platform]}</span>
+            {doc?.layoutSource ? (
+              <span
+                className={`${styles.layoutSource} ${doc.layoutSource === 'agent' ? styles.layoutSourceAgent : styles.layoutSourceDocImage}`}
+                data-testid="layout-source-badge"
+              >
+                {LAYOUT_SOURCE_BADGE[doc.layoutSource]}
+              </span>
+            ) : null}
             {doc ? (
               <span className={styles.mapped} data-testid="mapped-count">
                 {mappedCount}/{doc.elements.length} element có component DS
@@ -628,6 +670,7 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
                       <span className={styles.elLabel}>{el.label}</span>
                       <span className={`${styles.conf} ${styles[`conf_${el.confidence}`]}`}>{CONFIDENCE_LABEL[el.confidence]}</span>
                     </span>
+                    {el.content ? <span className={styles.elContent}>{contentLineOf(el.content)}</span> : null}
                     <span className={styles.elDs}>
                       {el.ds ? (
                         <>
