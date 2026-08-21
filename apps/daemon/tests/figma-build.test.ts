@@ -16,11 +16,29 @@ import {
 } from '../src/figma-build.js';
 import { registerFigmaBuildRoutes } from '../src/figma-build-routes.js';
 
+// Trạng thái mock DB chỉnh được per-test (vi.hoisted vì factory vi.mock bị
+// hoist lên đầu file): projectMetadata mô phỏng studioConfig.appId, apps/
+// dsSources mô phỏng pipeline_apps + figma_design_system_sources cho nhánh
+// fallback catalog mode app-design-system.
+const dbMockState = vi.hoisted(() => ({
+  projectMetadata: undefined as Record<string, unknown> | undefined,
+  apps: {} as Record<string, { figmaDesignSystemSourceId: string | null }>,
+  dsSources: {} as Record<string, { catalog: unknown }>,
+}));
+
 vi.mock('../src/db.js', () => ({
-  getProject: (_db: unknown, id: string) => ({ id, name: id === 'proj-1' ? 'Ví điện tử' : id }),
+  getProject: (_db: unknown, id: string) => ({ id, name: id === 'proj-1' ? 'Ví điện tử' : id, metadata: dbMockState.projectMetadata }),
+  getPipelineApp: (_db: unknown, id: string) => dbMockState.apps[id] ?? null,
+  getFigmaDesignSystemSource: (_db: unknown, id: string) => dbMockState.dsSources[id] ?? null,
   insertConversation: () => undefined,
   upsertMessage: () => undefined,
 }));
+
+afterEach(() => {
+  dbMockState.projectMetadata = undefined;
+  dbMockState.apps = {};
+  dbMockState.dsSources = {};
+});
 
 const DS_FILE_KEY = 'DS_FILE';
 
@@ -417,6 +435,47 @@ describe('figma-build job routes: precheck error codes', () => {
     const handlers = register(root);
     const r = response();
     await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, r.res);
+    expect((r.output.body as any).error.code).toBe('CATALOG_REQUIRED');
+  });
+
+  it('app-design-system mode: falls back to the App DS-source catalog in DB when no frozen .figma-catalog exists', async () => {
+    // Bug thật từ 0.8.90: App mode mặc định không bao giờ ghi .figma-catalog/
+    // (chỉ figma-links mode ghi) → precheck cũ trả CATALOG_REQUIRED vĩnh viễn
+    // dù DS source đã Refresh và có key. Fallback phải đọc được catalog DB.
+    const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-'));
+    roots.push(root);
+    const cwd = path.join(root, 'projects', 'proj-1', 'docs-review');
+    await mkdir(cwd, { recursive: true });
+    await writeFile(path.join(cwd, '.figma-preview.json'), JSON.stringify({ fileKey: 'PREVIEW', url: 'https://www.figma.com/design/PREVIEW' }), 'utf8');
+    await writeFile(path.join(root, 'mcp-config.json'), JSON.stringify({ servers: [{ id: 'figma', enabled: true, transport: 'http', templateId: 'figma', url: 'https://mcp.figma.com/mcp', authMode: 'oauth' }] }), 'utf8');
+    await writeFile(path.join(root, 'mcp-tokens.json'), JSON.stringify({ servers: { figma: { accessToken: 'tok', tokenType: 'Bearer', savedAt: Date.now() } } }), 'utf8');
+    dbMockState.projectMetadata = { studioConfig: { appId: 'app-1' } };
+    dbMockState.apps['app-1'] = { figmaDesignSystemSourceId: 'src-1' };
+    dbMockState.dsSources['src-1'] = { catalog: catalogWithVariants() };
+    const handlers = register(root, {}); // no resolveAgent — catalog OK phải trượt tới AGENT_UNAVAILABLE
+    const r = response();
+    await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, r.res);
+    expect(r.output.status).toBe(501);
+    expect((r.output.body as any).error.code).toBe('AGENT_UNAVAILABLE');
+  });
+
+  it('app-design-system mode: DB catalog WITHOUT keys (refreshed pre-0.8.89) still → CATALOG_REQUIRED', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-'));
+    roots.push(root);
+    const cwd = path.join(root, 'projects', 'proj-1', 'docs-review');
+    await mkdir(cwd, { recursive: true });
+    await writeFile(path.join(cwd, '.figma-preview.json'), JSON.stringify({ fileKey: 'PREVIEW', url: 'https://www.figma.com/design/PREVIEW' }), 'utf8');
+    await writeFile(path.join(root, 'mcp-config.json'), JSON.stringify({ servers: [{ id: 'figma', enabled: true, transport: 'http', templateId: 'figma', url: 'https://mcp.figma.com/mcp', authMode: 'oauth' }] }), 'utf8');
+    await writeFile(path.join(root, 'mcp-tokens.json'), JSON.stringify({ servers: { figma: { accessToken: 'tok', tokenType: 'Bearer', savedAt: Date.now() } } }), 'utf8');
+    dbMockState.projectMetadata = { studioConfig: { appId: 'app-1' } };
+    dbMockState.apps['app-1'] = { figmaDesignSystemSourceId: 'src-1' };
+    const legacy = catalogWithVariants();
+    for (const f of legacy.files) for (const c of f.components) { delete (c as { key?: string }).key; delete (c as { variants?: unknown }).variants; }
+    dbMockState.dsSources['src-1'] = { catalog: legacy };
+    const handlers = register(root);
+    const r = response();
+    await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, r.res);
+    expect(r.output.status).toBe(400);
     expect((r.output.body as any).error.code).toBe('CATALOG_REQUIRED');
   });
 

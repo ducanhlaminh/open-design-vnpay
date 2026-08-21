@@ -16,7 +16,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Express } from 'express';
 
-import { getProject, insertConversation, upsertMessage } from './db.js';
+import { getFigmaDesignSystemSource, getPipelineApp, getProject, insertConversation, upsertMessage } from './db.js';
 import {
   catalogHasComponentKeys,
   compileScreenBuildInput,
@@ -336,11 +336,25 @@ export function registerFigmaBuildRoutes(app: Express, deps: RegisterFigmaBuildR
           return res.status(400).json({ error: { code: 'MCP_FIGMA_CONNECT_REQUIRED', message: 'Server Figma MCP đã có nhưng chưa đăng nhập — vào Cài đặt → MCP bấm Connect.' } });
         }
       }
-      const catalog = await readFrozenFigmaCatalog(cwd);
+      // Catalog theo đúng nguồn dr-comp đã dùng: mode `figma-links` đóng băng
+      // snapshot per-run ở docs-review/.figma-catalog/; mode `app-design-system`
+      // (mặc định của App) KHÔNG ghi file đó — catalog sống trong DB theo DS
+      // source gắn ở App (project.metadata.studioConfig.appId →
+      // pipeline_apps.figma_design_system_source_id → catalog_json). Thiếu
+      // fallback này thì mọi App mode mặc định bị CATALOG_REQUIRED vĩnh viễn
+      // dù đã Refresh DS (bug phát hiện khi user test 0.8.90).
+      let catalog = await readFrozenFigmaCatalog(cwd);
+      if (!catalog) {
+        const project = getProject(db, projectId);
+        const studioConfig = (project?.metadata as Record<string, unknown> | undefined)?.studioConfig as Record<string, unknown> | undefined;
+        const appId = typeof studioConfig?.appId === 'string' ? studioConfig.appId.trim() : '';
+        const dsSourceId = appId ? getPipelineApp(db, appId)?.figmaDesignSystemSourceId ?? null : null;
+        catalog = dsSourceId ? ((getFigmaDesignSystemSource(db, dsSourceId)?.catalog ?? null) as typeof catalog) : null;
+      }
       // 400 chứ KHÔNG 409 — web coi 409-kèm-job là "job đang chạy, adopt đi";
       // dùng 409 ở đây bắt client phân biệt bằng body, fragile không cần thiết.
       if (!catalog || !catalogHasComponentKeys(catalog)) {
-        return res.status(400).json({ error: { code: 'CATALOG_REQUIRED', message: 'Danh mục component Figma chưa có hoặc thiếu key — Làm mới DS Figma rồi thử lại.' } });
+        return res.status(400).json({ error: { code: 'CATALOG_REQUIRED', message: 'Danh mục component Figma chưa có hoặc thiếu key — Làm mới DS Figma (Refresh ở Design system); App dùng Figma links thì chạy lại bước Màn hình → Component.' } });
       }
       if (typeof deps.agents?.resolveAgent !== 'function') {
         return res.status(501).json({ error: { code: 'AGENT_UNAVAILABLE', message: 'Chưa cấu hình agent để chạy job này.' } });
