@@ -47,6 +47,7 @@ import {
   buildFigmaDesignSystemComponentItems,
   figmaDesignSystemGuideMetaPath,
   figmaDesignSystemGuidePath,
+  figmaDesignSystemImagesDir,
   readFigmaDesignSystemGuide,
   readFigmaDesignSystemGuideMeta,
   registerFigmaDesignSystemRoutes,
@@ -63,8 +64,18 @@ import {
 // đã bị mock ở trên. `runDescribeChunk` import Ở ĐÂY là để test job route
 // end-to-end (section 9) ghi đè implementation MẶC ĐỊNH "không bao giờ
 // resolve" — cùng object mock nhờ vi.mock hoisted theo module specifier.
-import { runDescribeChunk } from '../src/figma-catalog-routes.js';
-import { generateComponentDescriptions, type GuideGenerationDeps } from '../src/figma-guide-generate.js';
+import { downloadFigmaImage, runDescribeChunk } from '../src/figma-catalog-routes.js';
+// WP23a: `fetchNodeSubtrees`/`fetchNodeImages` import THẲNG ở đây (cùng object
+// mock hoisted như `runDescribeChunk` ở trên) để mục 12/16 kiểm được số lần
+// gọi (isJunkComponentName bypass không được đụng REST) và ghi đè URL ảnh cho
+// test prefetch.
+import { fetchNodeImages, fetchNodeSubtrees } from '../src/figma-rest.js';
+import {
+  classifyComponentKind,
+  generateComponentDescriptions,
+  isJunkComponentName,
+  type GuideGenerationDeps,
+} from '../src/figma-guide-generate.js';
 
 type Handler = (req: any, res: any) => unknown;
 function response() {
@@ -73,6 +84,10 @@ function response() {
     status(code: number) { output.status = code; return res; },
     json(body: unknown) { output.body = body; return res; },
     send(body?: unknown) { output.body = body; return res; },
+    // WP23a mục 4: route serve component-image gọi res.set(...) (Express thật
+    // hỗ trợ, giả res ở đây thì không) — no-op chainable, đủ cho route chạy
+    // không văng lỗi trong test.
+    set(_key: string, _value: string) { return res; },
   };
   return { output, res };
 }
@@ -99,7 +114,13 @@ describe('WP20: nguồn Figma dùng chung — guide + coverage + job "Sinh mô t
     }],
   });
 
-  async function setup(buildCatalog = vi.fn(async () => catalog())) {
+  async function setup(
+    buildCatalog = vi.fn(async () => catalog()),
+    // WP23a: mặc định giữ nguyên hằng số cố định (mọi test double-submit/meta
+    // hiện có phụ thuộc timestamp ổn định này) — chỉ test active-listing (mục
+    // 5, cần vi.setSystemTime tiến thời gian thật) truyền `() => Date.now()`.
+    nowFn: () => number = () => Date.parse('2026-08-19T00:00:00.000Z'),
+  ) {
     const root = await mkdtemp(path.join(tmpdir(), 'od-figma-ds-guide-'));
     roots.push(root);
     const db = openDatabase(root, { dataDir: root });
@@ -115,7 +136,7 @@ describe('WP20: nguồn Figma dùng chung — guide + coverage + job "Sinh mô t
       http: { isLocalSameOrigin: () => true, resolvedPortRef: { current: 7456 } },
       paths: { RUNTIME_DATA_DIR: root },
       buildCatalog: buildCatalog as never,
-      now: () => Date.parse('2026-08-19T00:00:00.000Z'),
+      now: nowFn,
       design: { runs: { create: () => ({}), start: () => {}, wait: async () => ({ status: 'succeeded' }) } },
       chat: { startChatRun: () => {} },
       agents: { getAgentDef: () => undefined, resolveAgent: async () => ({ agentId: 'test-agent', modelPrefs: {} }) },
@@ -718,18 +739,23 @@ describe('WP20: nguồn Figma dùng chung — guide + coverage + job "Sinh mô t
       expect(result.chunkErrors.some((e) => e.includes('agent nhóm B hỏng'))).toBe(true);
     });
 
-    /* ── WP21-fix điểm 1 (review WP21a): grouping theo page CHỈ khi
-     * concurrency > 1 — đường prep dr-comp (server.ts) không truyền
-     * concurrency nên phải giữ đúng cách chunk cũ (span qua page) để không
-     * rải 60 comp thành nhiều lượt agent hơn cần thiết trong timeout 8'. */
-    it('WP21-fix điểm 1: không truyền concurrency (mặc định 1) — chunk 12 span qua page, KHÔNG nhóm theo page', async () => {
+    /* ── WP23a mục 3 (THAY luật WP21-fix điểm 1): đơn vị chunk giờ LUÔN là
+     * (fileKey, page, kind) — KHÔNG còn phụ thuộc `concurrency` như bản
+     * WP21a/WP21-fix cũ ("concurrency<=1 span qua page"). Test này TRƯỚC ghi
+     * "không truyền concurrency → span qua page, 1 lượt duy nhất 12 comp" —
+     * SỬA LẠI vì contract WP23a mục 3 nói rõ: "Thay thế hẳn luật cũ … luật
+     * WP21-fix 'concurrency<=1 span qua page'". Hành vi MỚI: vẫn 2 lượt riêng
+     * theo page (7 + 5) dù concurrency mặc định 1 (tuần tự — chỉ khác PHẦN
+     * concurrency<=1 KHÔNG còn gộp chung). Xem `.tmp/pipeline/wp23-contract.md`
+     * mục 3. */
+    it('WP23a mục 3: không truyền concurrency (mặc định 1) — vẫn chunk theo page (2 lượt: 7 + 5), KHÔNG span qua page nữa', async () => {
       const baseDir = await makeBaseDir();
       const snapshot = snapshotOf([
         ...Array.from({ length: 7 }, (_, i) => ({ nodeId: `1:${i}`, name: `A${i}`, page: 'A' })),
         ...Array.from({ length: 5 }, (_, i) => ({ nodeId: `2:${i}`, name: `B${i}`, page: 'B' })),
       ]);
       let calls = 0;
-      let lastInputLen = 0;
+      const chunkSizes: number[] = [];
       const deps: GuideGenerationDeps = {
         baseDir,
         fetchTree: async () => new Map(),
@@ -737,17 +763,17 @@ describe('WP20: nguồn Figma dùng chung — guide + coverage + job "Sinh mô t
         downloadImage: async () => false,
         runAgentChunk: async (input) => {
           calls += 1;
-          lastInputLen = input.components.length;
+          chunkSizes.push(input.components.length);
           return JSON.stringify(input.components.map((c) => ({ anchor: c.anchor, description: `Mô tả cho ${c.name}.` })));
         },
       };
       const result = await generateComponentDescriptions(snapshot, null, deps);
-      expect(calls).toBe(1); // 1 lượt duy nhất — span qua cả 2 page
-      expect(lastInputLen).toBe(12);
+      expect(calls).toBe(2); // 2 lượt riêng theo page (7 và 5) — KHÔNG còn span
+      expect(chunkSizes.sort((a, b) => a - b)).toEqual([5, 7]);
       expect(result.generated).toBe(12);
     });
 
-    it('WP21-fix điểm 1: concurrency=3 — nhóm theo page, 2 lượt riêng (7 + 5)', async () => {
+    it('WP21-fix điểm 1 (vẫn đúng ở WP23a): concurrency=3 — nhóm theo page, 2 lượt riêng (7 + 5)', async () => {
       const baseDir = await makeBaseDir();
       const snapshot = snapshotOf([
         ...Array.from({ length: 7 }, (_, i) => ({ nodeId: `1:${i}`, name: `A${i}`, page: 'A' })),
@@ -805,11 +831,15 @@ describe('WP20: nguồn Figma dùng chung — guide + coverage + job "Sinh mô t
     it('write/read roundtrip atomic — không để lại .tmp', async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'od-figma-ds-meta-'));
       roots5.push(root);
+      // WP23a: `skipped` là field mới trên FigmaDesignSystemLastGuideRun —
+      // thêm vào đây để roundtrip so khớp CHÍNH XÁC (readFigmaDesignSystemGuideMeta
+      // chuẩn hoá field vắng mặt về 0, không phải giữ nguyên object thiếu field).
       const meta = {
         finishedAt: '2026-08-20T00:00:00.000Z',
         generated: 2,
         failed: 1,
         failures: [{ anchor: 'figma-abc', name: 'Card', reason: 'agent lỗi: timeout' }],
+        skipped: 3,
       };
       await writeFigmaDesignSystemGuideMeta(root, 'src-1', meta);
       expect(await readFigmaDesignSystemGuideMeta(root, 'src-1')).toEqual(meta);
@@ -826,7 +856,8 @@ describe('WP20: nguồn Figma dùng chung — guide + coverage + job "Sinh mô t
       await handlers.get('GET /api/figma-design-systems/:id')!({ params: { id } }, beforeMeta.res);
       expect('lastGuideRun' in beforeMeta.output.body).toBe(false);
 
-      const meta = { finishedAt: '2026-08-20T00:00:00.000Z', generated: 1, failed: 1, failures: [{ anchor: 'figma-x', name: 'X', reason: 'lỗi' }] };
+      // WP23a: field `skipped` mới — có mặt để so khớp CHÍNH XÁC ở assertion dưới.
+      const meta = { finishedAt: '2026-08-20T00:00:00.000Z', generated: 1, failed: 1, failures: [{ anchor: 'figma-x', name: 'X', reason: 'lỗi' }], skipped: 0 };
       await writeFigmaDesignSystemGuideMeta(root, id, meta);
 
       const afterMeta = response();
@@ -846,7 +877,8 @@ describe('WP20: nguồn Figma dùng chung — guide + coverage + job "Sinh mô t
       // Card cũng đã có mô tả trong guide kho nguồn → missingList rỗng khi job chạy.
       const guideMd = renderComponentsGuideMarkdown([{ anchor: anchorFor('ABC', '1:2'), name: 'Card', description: 'Đã có mô tả từ trước.' }]);
       await writeFigmaDesignSystemGuide(root, id, guideMd);
-      const oldMeta = { finishedAt: '2026-08-18T00:00:00.000Z', generated: 9, failed: 0, failures: [] };
+      // WP23a: field `skipped` mới — có mặt để so khớp CHÍNH XÁC ở assertion dưới.
+      const oldMeta = { finishedAt: '2026-08-18T00:00:00.000Z', generated: 9, failed: 0, failures: [], skipped: 0 };
       await writeFigmaDesignSystemGuideMeta(root, id, oldMeta);
 
       const started = response();
@@ -957,6 +989,438 @@ describe('WP20: nguồn Figma dùng chung — guide + coverage + job "Sinh mô t
       const detail = response();
       await handlers.get('GET /api/figma-design-systems/:id')!({ params: { id } }, detail.res);
       expect(detail.output.body.lastGuideRun.failures.some((f: { name: string }) => f.name === '')).toBe(false);
+    });
+  });
+
+  /* ── 11. WP23a mục 1: isJunkComponentName / classifyComponentKind ────────
+   * Bảng case đúng nguyên văn `.tmp/pipeline/wp23-contract.md` mục 1. */
+  describe('WP23a mục 1: isJunkComponentName / classifyComponentKind', () => {
+    it.each([
+      ['Frame 123', true],
+      ['Vector', true],
+      ['Group 5', true],
+      ['123', true],
+      ['Property 1=Default', true],
+      ['ic-arrow-left', false],
+      ['Button/Primary', false],
+    ] as const)('isJunkComponentName(%j) === %j', (name, expected) => {
+      expect(isJunkComponentName(name)).toBe(expected);
+    });
+
+    it('classifyComponentKind: trang chứa "icon" (không phân biệt hoa/thường) → asset dù tên không theo quy ước', () => {
+      expect(classifyComponentKind('Icons', 'Arrow Left')).toBe('asset');
+      expect(classifyComponentKind('ICON LIBRARY', 'Arrow Left')).toBe('asset');
+    });
+
+    it('classifyComponentKind: tên bắt đầu tiền tố asset ("ic-"…) → asset dù trang bình thường', () => {
+      expect(classifyComponentKind('Misc', 'ic-close')).toBe('asset');
+      expect(classifyComponentKind(undefined, 'logo-vnpay')).toBe('asset');
+    });
+
+    it('classifyComponentKind: trang + tên đều bình thường → normal', () => {
+      expect(classifyComponentKind('Actions', 'Button')).toBe('normal');
+      expect(classifyComponentKind(undefined, 'Card')).toBe('normal');
+    });
+  });
+
+  /* ── 12. WP23a mục 1+3: job — tên rác bypass ('skipped'), asset lẫn normal ──
+   * Test đỏ trước (b) theo `.tmp/pipeline/wp23a.yaml` mục 5: mix 2 tên rác (1
+   * asset-kind, 1 normal-kind) trong cùng một job → cả hai 'skipped' NGAY,
+   * KHÔNG có trong bất kỳ input-<n>.json nào (không tốn một lượt agent), đếm
+   * đúng vào job.skipped + lastGuideRun.skipped. */
+  describe('WP23a mục 1+3: job — tên rác bypass hoàn toàn (skipped)', () => {
+    const catalogMix = (): FigmaComponentCatalogSnapshot => ({
+      schemaVersion: FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION,
+      generatedAt: '2026-08-19T00:00:00.000Z',
+      files: [{
+        fileKey: 'ABC',
+        name: 'Kit',
+        url: 'https://www.figma.com/design/ABC',
+        components: [
+          { nodeId: '1:1', name: 'Vector', page: 'Icons', properties: [] }, // rác + asset-kind (trang Icons)
+          { nodeId: '1:2', name: 'Frame 123', page: 'Screens', properties: [] }, // rác + normal-kind
+          { nodeId: '1:3', name: 'Card', properties: [] }, // tên thật — vẫn xử lý bình thường
+        ],
+      }],
+    });
+
+    it('mix 2 tên rác (1 asset 1 normal) → skipped ngay + reason đúng, không tốn lượt agent, đếm đúng skipped', async () => {
+      const { root, handlers } = await setup(vi.fn(async () => catalogMix()));
+      const id = await createSourceWithCatalog(root, handlers);
+      await writeFigmaConfig(root, { token: 'tok' });
+
+      vi.mocked(runDescribeChunk).mockImplementation(async (_deps: unknown, opts: any) => {
+        const inputRaw = await fs.promises.readFile(path.join(opts.chunkDir, `input-${opts.index}.json`), 'utf8');
+        const input = JSON.parse(inputRaw) as { components: { anchor: string; name: string }[] };
+        return JSON.stringify(input.components.map((c) => ({ anchor: c.anchor, description: `Mô tả AI cho ${c.name}.` })));
+      });
+
+      const started = response();
+      await handlers.get('POST /api/figma-design-systems/:id/generate-guide')!({ params: { id } }, started.res);
+      expect(started.output.status).toBe(202);
+      const jobId = started.output.body.jobId;
+
+      let job = started.output.body.job;
+      for (let i = 0; i < 100 && job.status !== 'succeeded' && job.status !== 'failed'; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const poll = response();
+        await handlers.get('GET /api/figma-design-systems/:id/generate-guide/:jobId')!({ params: { id, jobId } }, poll.res);
+        job = poll.output.body.job;
+      }
+      expect(job.status).toBe('succeeded');
+
+      const vectorAnchor = anchorFor('ABC', '1:1');
+      const frameAnchor = anchorFor('ABC', '1:2');
+      const cardAnchor = anchorFor('ABC', '1:3');
+      const RENAME_REASON = 'Tên không đủ nghĩa — cần đặt lại tên trong Figma';
+      expect(job.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ anchor: vectorAnchor, name: 'Vector', status: 'skipped', reason: RENAME_REASON }),
+        expect.objectContaining({ anchor: frameAnchor, name: 'Frame 123', status: 'skipped', reason: RENAME_REASON }),
+        expect.objectContaining({ anchor: cardAnchor, name: 'Card', status: 'succeeded' }),
+      ]));
+      expect(job.skipped).toBe(2);
+
+      // Không tốn một lượt agent nào cho 2 anchor rác: CHỈ Card (tên thật) là
+      // component thiếu mô tả duy nhất được xử lý → đúng MỘT lượt agent.
+      expect(vi.mocked(runDescribeChunk).mock.calls.length).toBe(1);
+
+      const detail = response();
+      await handlers.get('GET /api/figma-design-systems/:id')!({ params: { id } }, detail.res);
+      expect(detail.output.body.lastGuideRun.skipped).toBe(2);
+    });
+  });
+
+  /* ── 13. WP23a mục 3: chunk kind 'asset' — 100/lượt, không fetchTree/ảnh ──── */
+  describe('WP23a mục 3: chunk kind asset — ASSET_CHUNK_SIZE=100, input chỉ tên, không tree/ảnh', () => {
+    const roots6: string[] = [];
+    afterEach(async () => {
+      await Promise.all(roots6.splice(0).map((r) => rm(r, { recursive: true, force: true })));
+    });
+    async function makeBaseDir(): Promise<string> {
+      const root = await mkdtemp(path.join(tmpdir(), 'od-figma-ds-asset-chunk-'));
+      roots6.push(root);
+      return root;
+    }
+    function assetSnapshotOf(count: number): FigmaComponentCatalogSnapshot {
+      return {
+        schemaVersion: FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION,
+        generatedAt: '2026-08-19T00:00:00.000Z',
+        files: [{
+          fileKey: 'ABC',
+          name: 'Kit',
+          url: 'https://www.figma.com/design/ABC',
+          components: Array.from({ length: count }, (_, i) => ({
+            nodeId: `1:${i}`, name: `ic-item-${i}`, page: 'Icons', properties: [],
+          })),
+        }],
+      };
+    }
+
+    it('250 component asset cùng 1 trang → 3 chunk (100/100/50); input KHÔNG có tree/image; KHÔNG gọi fetchTree/fetchImages', async () => {
+      const baseDir = await makeBaseDir();
+      const snapshot = assetSnapshotOf(250);
+      let fetchTreeCalls = 0;
+      let fetchImagesCalls = 0;
+      const chunkSizes: number[] = [];
+      const deps: GuideGenerationDeps = {
+        baseDir,
+        cap: null,
+        fetchTree: async () => { fetchTreeCalls += 1; return new Map(); },
+        fetchImages: async () => { fetchImagesCalls += 1; return new Map(); },
+        downloadImage: async () => false,
+        runAgentChunk: async (input) => {
+          chunkSizes.push(input.components.length);
+          for (const c of input.components) {
+            expect('tree' in c).toBe(false);
+            expect('image' in c).toBe(false);
+            expect((c as { kind?: string }).kind).toBe('asset');
+          }
+          return JSON.stringify(input.components.map((c) => ({ anchor: c.anchor, description: `Icon dùng cho ${c.name}.` })));
+        },
+      };
+      const result = await generateComponentDescriptions(snapshot, null, deps);
+      expect(chunkSizes.sort((a, b) => a - b)).toEqual([50, 100, 100]);
+      expect(fetchTreeCalls).toBe(0);
+      expect(fetchImagesCalls).toBe(0);
+      expect(result.generated).toBe(250);
+    });
+  });
+
+  /* ── 14. WP23a mục 3: pool song song ở MỨC CHUNK (không phải mức nhóm) ────
+   * KHÁC WP21a: trước đây các chunk CÙNG một nhóm trang luôn chạy tuần tự —
+   * giờ MỌI chunk (kể cả cùng page/kind) chia sẻ CHUNG một pool `concurrency`. */
+  describe('WP23a mục 3: pool ở MỨC CHUNK — 1 trang 30 comp + concurrency 3 → 3 chunk chạy đồng thời', () => {
+    const roots7: string[] = [];
+    afterEach(async () => {
+      await Promise.all(roots7.splice(0).map((r) => rm(r, { recursive: true, force: true })));
+    });
+    async function makeBaseDir(): Promise<string> {
+      const root = await mkdtemp(path.join(tmpdir(), 'od-figma-ds-chunk-pool-'));
+      roots7.push(root);
+      return root;
+    }
+
+    it('1 trang normal 30 comp (3 chunk 12/12/6) + concurrency 3 → maxActive > 1 (chạy song song dù CÙNG page/kind)', async () => {
+      const baseDir = await makeBaseDir();
+      const snapshot: FigmaComponentCatalogSnapshot = {
+        schemaVersion: FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION,
+        generatedAt: '2026-08-19T00:00:00.000Z',
+        files: [{
+          fileKey: 'ABC',
+          name: 'Kit',
+          url: 'https://www.figma.com/design/ABC',
+          components: Array.from({ length: 30 }, (_, i) => ({ nodeId: `1:${i}`, name: `Comp${i}`, page: 'Screens', properties: [] })),
+        }],
+      };
+      let active = 0;
+      let maxActive = 0;
+      const deps: GuideGenerationDeps = {
+        baseDir,
+        cap: null,
+        concurrency: 3,
+        fetchTree: async () => new Map(),
+        fetchImages: async () => new Map(),
+        downloadImage: async () => false,
+        runAgentChunk: async (input) => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          active -= 1;
+          return JSON.stringify(input.components.map((c) => ({ anchor: c.anchor, description: `Mô tả cho ${c.name}.` })));
+        },
+      };
+      const result = await generateComponentDescriptions(snapshot, null, deps);
+      expect(maxActive).toBeGreaterThan(1);
+      expect(maxActive).toBeLessThanOrEqual(3);
+      expect(result.generated).toBe(30);
+    });
+  });
+
+  /* ── 15. WP23a mục 1.d: imageCache — cache trước, REST sau + ghi bù ──────── */
+  describe('WP23a mục 1.d: imageCache — chunk normal ưu tiên cache, thiếu mới REST + ghi bù', () => {
+    const roots8: string[] = [];
+    afterEach(async () => {
+      await Promise.all(roots8.splice(0).map((r) => rm(r, { recursive: true, force: true })));
+    });
+    async function makeDirs(): Promise<{ baseDir: string; cacheDir: string }> {
+      const root = await mkdtemp(path.join(tmpdir(), 'od-figma-ds-imgcache-'));
+      roots8.push(root);
+      const baseDir = path.join(root, 'describe');
+      const cacheDir = path.join(root, 'cache');
+      await fs.promises.mkdir(baseDir, { recursive: true });
+      await fs.promises.mkdir(cacheDir, { recursive: true });
+      return { baseDir, cacheDir };
+    }
+    function oneCompSnapshot(): FigmaComponentCatalogSnapshot {
+      return {
+        schemaVersion: FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION,
+        generatedAt: '2026-08-19T00:00:00.000Z',
+        files: [{
+          fileKey: 'ABC', name: 'Kit', url: 'https://www.figma.com/design/ABC',
+          components: [{ nodeId: '1:1', name: 'Card', properties: [] }],
+        }],
+      };
+    }
+
+    it('có cache → dùng file cache, KHÔNG gọi downloadImage', async () => {
+      const { baseDir, cacheDir } = await makeDirs();
+      const anchor = anchorFor('ABC', '1:1');
+      await fs.promises.writeFile(path.join(cacheDir, `${anchor}.png`), 'cached-bytes');
+      let downloadCalls = 0;
+      const deps: GuideGenerationDeps = {
+        baseDir,
+        fetchTree: async () => new Map(),
+        fetchImages: async () => new Map(),
+        downloadImage: async () => { downloadCalls += 1; return false; },
+        imageCache: {
+          pathFor: (a) => path.join(cacheDir, `${a}.png`),
+          has: async (a) => fs.existsSync(path.join(cacheDir, `${a}.png`)),
+        },
+        runAgentChunk: async (input) => {
+          const only = input.components[0] as { image?: string | null };
+          expect(only.image).toBe(`img-${anchor}.png`);
+          return JSON.stringify(input.components.map((c) => ({ anchor: c.anchor, description: 'Thẻ hiển thị nội dung.' })));
+        },
+      };
+      const result = await generateComponentDescriptions(oneCompSnapshot(), null, deps);
+      expect(downloadCalls).toBe(0);
+      expect(fs.existsSync(path.join(baseDir, `img-${anchor}.png`))).toBe(true);
+      expect(result.generated).toBe(1);
+    });
+
+    it('thiếu cache → gọi fetchImages/downloadImage như cũ, rồi ghi bù vào cache', async () => {
+      const { baseDir, cacheDir } = await makeDirs();
+      const anchor = anchorFor('ABC', '1:1');
+      let downloadCalls = 0;
+      const deps: GuideGenerationDeps = {
+        baseDir,
+        fetchTree: async () => new Map(),
+        fetchImages: async () => new Map([['1:1', 'https://figma-s3/card.png']]),
+        downloadImage: async (_url, destPath) => {
+          downloadCalls += 1;
+          await fs.promises.writeFile(destPath, 'fresh-bytes');
+          return true;
+        },
+        imageCache: {
+          pathFor: (a) => path.join(cacheDir, `${a}.png`),
+          has: async (a) => fs.existsSync(path.join(cacheDir, `${a}.png`)),
+        },
+        runAgentChunk: async (input) => JSON.stringify(input.components.map((c) => ({ anchor: c.anchor, description: 'Thẻ hiển thị nội dung.' }))),
+      };
+      const result = await generateComponentDescriptions(oneCompSnapshot(), null, deps);
+      expect(downloadCalls).toBe(1);
+      expect(result.generated).toBe(1);
+      // Ghi bù best-effort — lần sau khỏi tải lại REST.
+      expect(await fs.promises.readFile(path.join(cacheDir, `${anchor}.png`), 'utf8')).toBe('fresh-bytes');
+    });
+  });
+
+  /* ── 16. WP23a mục 4: prefetch ảnh PNG sau refresh + route serve + imageCache GET detail ── */
+  describe('WP23a mục 4: prefetch ảnh sau refresh, route serve component-image, GET detail imageCache', () => {
+    const catalog2 = (): FigmaComponentCatalogSnapshot => ({
+      schemaVersion: FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION,
+      generatedAt: '2026-08-19T00:00:00.000Z',
+      files: [{
+        fileKey: 'ABC', name: 'Kit', url: 'https://www.figma.com/design/ABC',
+        components: [
+          { nodeId: '1:1', name: 'Button', properties: [] },
+          { nodeId: '1:2', name: 'Card', properties: [] },
+        ],
+      }],
+    });
+
+    it('sau refresh → tải ảnh cho anchor thiếu, anchor có sẵn không tải lại, trigger kép không chạy đôi; GET detail đếm đúng; route serve 200/404', async () => {
+      const { root, handlers } = await setup(vi.fn(async () => catalog2()));
+      await writeFigmaConfig(root, { token: 'setup-token' });
+      const created = response();
+      await handlers.get('POST /api/figma-design-systems')!({ body: { name: 'Kit', links: ['https://figma.com/design/ABC'] } }, created.res);
+      const id = created.output.body.source.id;
+
+      const buttonAnchor = anchorFor('ABC', '1:1');
+      const cardAnchor = anchorFor('ABC', '1:2');
+      const imagesDir = figmaDesignSystemImagesDir(root, id);
+      await fs.promises.mkdir(imagesDir, { recursive: true });
+      // Button đã có ảnh sẵn — không được tải lại.
+      await fs.promises.writeFile(path.join(imagesDir, `${buttonAnchor}.png`), 'existing-png');
+
+      let downloadCalls = 0;
+      vi.mocked(fetchNodeImages).mockResolvedValueOnce(new Map([['1:2', 'https://figma-s3/card.png']]));
+      vi.mocked(downloadFigmaImage).mockImplementation(async (_url: string, destPath: string) => {
+        downloadCalls += 1;
+        await fs.promises.writeFile(destPath, 'card-png-bytes');
+        return true;
+      });
+
+      const refreshed = response();
+      await handlers.get('POST /api/figma-design-systems/:id/refresh')!({ params: { id } }, refreshed.res);
+      expect(refreshed.output.status).toBe(200);
+
+      // Trigger kép NGAY sau — task đầu (đăng ký đồng bộ trong prefetchComponentImages
+      // trước khi handler refresh#1 trả response) vẫn đang chạy → no-op.
+      vi.mocked(fetchNodeImages).mockResolvedValueOnce(new Map([['1:2', 'https://figma-s3/card.png']]));
+      const refreshed2 = response();
+      await handlers.get('POST /api/figma-design-systems/:id/refresh')!({ params: { id } }, refreshed2.res);
+      expect(refreshed2.output.status).toBe(200);
+
+      const cardPngPath = path.join(imagesDir, `${cardAnchor}.png`);
+      for (let i = 0; i < 100 && !fs.existsSync(cardPngPath); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(fs.existsSync(cardPngPath)).toBe(true);
+      expect(await fs.promises.readFile(path.join(imagesDir, `${buttonAnchor}.png`), 'utf8')).toBe('existing-png');
+      expect(downloadCalls).toBe(1); // chỉ Card tải — trigger kép không tải đôi
+
+      const detail = response();
+      await handlers.get('GET /api/figma-design-systems/:id')!({ params: { id } }, detail.res);
+      expect(detail.output.body.imageCache).toEqual({ total: 2, cached: 2, running: false });
+
+      const served = response();
+      await handlers.get('GET /api/figma-design-systems/:id/component-image/:anchor')!({ params: { id, anchor: cardAnchor } }, served.res);
+      expect(served.output.status).toBe(200);
+      expect(served.output.body.toString()).toBe('card-png-bytes');
+
+      const missingAnchor = 'figma-0000000000';
+      const notFoundServe = response();
+      await handlers.get('GET /api/figma-design-systems/:id/component-image/:anchor')!({ params: { id, anchor: missingAnchor } }, notFoundServe.res);
+      expect(notFoundServe.output.status).toBe(404);
+
+      const invalidAnchorServe = response();
+      await handlers.get('GET /api/figma-design-systems/:id/component-image/:anchor')!({ params: { id, anchor: '../../etc/passwd' } }, invalidAnchorServe.res);
+      expect(invalidAnchorServe.output.status).toBe(404);
+    });
+  });
+
+  /* ── 17. WP23a mục 5: GET /api/figma-guide-jobs/active — re-attach cross-source ── */
+  describe('WP23a mục 5: GET /api/figma-guide-jobs/active', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('job running hiện trong danh sách; job xong ≤10 phút vẫn hiện; >10 phút biến mất (dọn lười)', async () => {
+      // `now` thật (không hằng số) — cần vi.setSystemTime tiến thời gian.
+      const { root, handlers } = await setup(vi.fn(async () => catalog()), () => Date.now());
+      const idRunning = await createSourceWithCatalog(root, handlers);
+      await writeFigmaConfig(root, { token: 'tok' });
+      // `vi.clearAllMocks()` (afterEach) KHÔNG xoá mockImplementation đã set ở
+      // các test TRƯỚC (section 9/10/12 override runDescribeChunk để job chạy
+      // xong thật) — set lại tường minh "không bao giờ resolve" ở đây, không
+      // dựa vào factory mặc định của `vi.mock` (chỉ áp dụng cho LẦN gọi đầu
+      // tiên của toàn bộ file test).
+      vi.mocked(runDescribeChunk).mockImplementation(() => new Promise(() => {}));
+      const startedRunning = response();
+      await handlers.get('POST /api/figma-design-systems/:id/generate-guide')!({ params: { id: idRunning } }, startedRunning.res);
+      expect(startedRunning.output.status).toBe(202);
+      const runningJobId = startedRunning.output.body.jobId;
+
+      const active1 = response();
+      await handlers.get('GET /api/figma-guide-jobs/active')!({}, active1.res);
+      const runningEntry = (active1.output.body.jobs as Array<{ jobId: string; sourceId: string; status: string }>).find((j) => j.jobId === runningJobId);
+      expect(runningEntry).toBeTruthy();
+      expect(runningEntry!.sourceId).toBe(idRunning);
+      expect(runningEntry!.status).toBe('running');
+
+      // Nguồn thứ hai — job kết thúc thật (mock runDescribeChunk trả JSON hợp lệ).
+      // Dùng `mockImplementation` THƯỜNG TRỰC (không phải `mockImplementationOnce`)
+      // rẽ nhánh theo `opts.chunkDir` (chứa sourceId — xem describeDir trong
+      // startFigmaDesignSystemGuideJob) thay vì theo THỨ TỰ gọi: lượt agent của
+      // idRunning (đăng ký TRƯỚC nhưng chạy NỀN, không đồng bộ với awaits của
+      // test) có thể chưa tới lúc gọi runDescribeChunk khi ta set mock ở đây —
+      // "once" sẽ bị lượt CỦA idRunning nuốt mất, khiến job đó VÔ TÌNH kết thúc
+      // thay vì kẹt 'running' như test cần.
+      const idFinished = await createSourceWithCatalog(root, handlers);
+      vi.mocked(runDescribeChunk).mockImplementation(async (_deps: unknown, opts: any) => {
+        if (!String(opts.chunkDir).includes(idFinished)) return new Promise(() => {}); // idRunning: vẫn không bao giờ resolve
+        const inputRaw = await fs.promises.readFile(path.join(opts.chunkDir, `input-${opts.index}.json`), 'utf8');
+        const input = JSON.parse(inputRaw) as { components: { anchor: string; name: string }[] };
+        return JSON.stringify(input.components.map((c) => ({ anchor: c.anchor, description: `Mô tả AI cho ${c.name}.` })));
+      });
+      const startedFinished = response();
+      await handlers.get('POST /api/figma-design-systems/:id/generate-guide')!({ params: { id: idFinished } }, startedFinished.res);
+      const finishedJobId = startedFinished.output.body.jobId;
+      let finishedJobStatus = 'queued';
+      for (let i = 0; i < 100 && finishedJobStatus !== 'succeeded' && finishedJobStatus !== 'failed'; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const poll = response();
+        await handlers.get('GET /api/figma-design-systems/:id/generate-guide/:jobId')!({ params: { id: idFinished, jobId: finishedJobId } }, poll.res);
+        finishedJobStatus = poll.output.body.job.status;
+      }
+      expect(finishedJobStatus).toBe('succeeded');
+
+      const active2 = response();
+      await handlers.get('GET /api/figma-guide-jobs/active')!({}, active2.res);
+      const jobs2 = active2.output.body.jobs as Array<{ jobId: string }>;
+      expect(jobs2.some((j) => j.jobId === finishedJobId)).toBe(true);
+      expect(jobs2.some((j) => j.jobId === runningJobId)).toBe(true);
+
+      // >10 phút sau khi job thứ hai kết thúc → biến mất khỏi danh sách (dọn
+      // lười), job vẫn đang chạy vẫn còn nguyên.
+      vi.useFakeTimers();
+      vi.setSystemTime(Date.now() + 10 * 60_000 + 1_000);
+      const active3 = response();
+      await handlers.get('GET /api/figma-guide-jobs/active')!({}, active3.res);
+      const jobs3 = active3.output.body.jobs as Array<{ jobId: string }>;
+      expect(jobs3.some((j) => j.jobId === finishedJobId)).toBe(false);
+      expect(jobs3.some((j) => j.jobId === runningJobId)).toBe(true);
     });
   });
 });

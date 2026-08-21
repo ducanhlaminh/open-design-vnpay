@@ -141,8 +141,16 @@ describe('SharedFigmaCatalogPanel · rút gọn còn coverage + link (nguồn d�
     return { ...baseDetail, coverage: { total: 3, described, fromGuide: 0, missing } };
   }
 
-  function mockSourceFetchSequence(handlers: { getDetail: (init?: RequestInit) => Response }) {
-    mockFetchSequence({ '/api/figma-design-systems/': handlers.getDetail });
+  function mockSourceFetchSequence(handlers: {
+    getDetail: (init?: RequestInit) => Response;
+    active?: (init?: RequestInit) => Response;
+    getJob?: (init?: RequestInit) => Response;
+  }) {
+    mockFetchSequence({
+      ...(handlers.active ? { '/figma-guide-jobs/active': handlers.active } : {}),
+      ...(handlers.getJob ? { '/generate-guide/': handlers.getJob } : {}),
+      '/api/figma-design-systems/': handlers.getDetail,
+    });
   }
 
   it('KHÔNG còn nút "Sinh mô tả" (case cũ WP20 — trách nhiệm chuyển hẳn sang trang detail)', async () => {
@@ -174,5 +182,41 @@ describe('SharedFigmaCatalogPanel · rút gọn còn coverage + link (nguồn d�
     render(<AppDesignSystemPanel appId="ss1" figmaDesignSystemSourceId="src-1" />);
     await screen.findByText('Danh mục component');
     expect(screen.getByTestId('figma-design-system-open-detail')).toBeTruthy();
+  });
+
+  // WP23b item 4 — useFigmaGuideJob(figmaDesignSystemSourceId): một dòng
+  // "Đang sinh mô tả x/y…" cạnh link khi nguồn có job active.
+  it('hiện dòng "Đang sinh mô tả x/y…" cạnh link khi nguồn có job active', async () => {
+    mockSourceFetchSequence({
+      getDetail: () => new Response(JSON.stringify(detailWithMissing(2)), { status: 200 }),
+      active: () => new Response(JSON.stringify({
+        jobs: [{ jobId: 'job-1', sourceId: 'src-1', status: 'running', done: 1, total: 4, startedAt: 1_000 }],
+      }), { status: 200 }),
+      getJob: () => new Response(JSON.stringify({
+        job: {
+          id: 'job-1', status: 'running', message: 'Đang xử lý…', generated: 0, rejected: 0, remaining: 3,
+          error: null, createdAt: '2026-08-19T00:00:00Z', updatedAt: '2026-08-19T00:00:00Z',
+          items: [
+            { anchor: 'a1', name: 'A1', status: 'succeeded' },
+            { anchor: 'a2', name: 'A2', status: 'running' },
+            { anchor: 'a3', name: 'A3', status: 'queued' },
+            { anchor: 'a4', name: 'A4', status: 'queued' },
+          ],
+        },
+      }), { status: 200 }),
+    });
+    render(<AppDesignSystemPanel appId="ss1" figmaDesignSystemSourceId="src-1" />);
+
+    expect((await screen.findByTestId('figma-design-system-guide-active')).textContent).toContain('Đang sinh mô tả 1/4…');
+    expect(screen.getByTestId('figma-design-system-open-detail')).toBeTruthy();
+  });
+
+  it('KHÔNG hiện dòng tiến độ khi nguồn không có job active', async () => {
+    mockSourceFetchSequence({
+      getDetail: () => new Response(JSON.stringify(detailWithMissing(2)), { status: 200 }),
+    });
+    render(<AppDesignSystemPanel appId="ss1" figmaDesignSystemSourceId="src-1" />);
+    await screen.findByText('Danh mục component');
+    expect(screen.queryByTestId('figma-design-system-guide-active')).toBeNull();
   });
 });

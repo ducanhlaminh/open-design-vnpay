@@ -8,8 +8,10 @@ import { FigmaDesignSystemsSection } from '../../src/components/FigmaDesignSyste
 import {
   createFigmaDesignSystem,
   deleteFigmaDesignSystem,
+  fetchActiveGuideJobs,
   fetchFigmaDesignSystems,
   refreshFigmaDesignSystem,
+  type FigmaGuideActiveJob,
 } from '../../src/providers/figma-design-systems';
 
 vi.mock('../../src/providers/figma-design-systems', () => ({
@@ -19,6 +21,9 @@ vi.mock('../../src/providers/figma-design-systems', () => ({
   updateFigmaDesignSystem: vi.fn(),
   refreshFigmaDesignSystem: vi.fn(),
   deleteFigmaDesignSystem: vi.fn(),
+  // WP23b — badge "Đang sinh mô tả x/y (z%)" trên card; mặc định không có
+  // job active nào (mảng rỗng) trừ khi một test cụ thể ghi đè.
+  fetchActiveGuideJobs: vi.fn(),
 }));
 
 vi.mock('../../src/components/pipelines/FigmaLinksPanel', async () => {
@@ -63,6 +68,7 @@ const source: FigmaDesignSystemSource = {
 
 beforeEach(() => {
   vi.mocked(fetchFigmaDesignSystems).mockResolvedValue([source]);
+  vi.mocked(fetchActiveGuideJobs).mockResolvedValue([]);
   vi.mocked(createFigmaDesignSystem).mockResolvedValue({ ...source, status: 'empty', catalog: null });
   vi.mocked(refreshFigmaDesignSystem).mockResolvedValue({
     source,
@@ -163,5 +169,35 @@ describe('FigmaDesignSystemsSection', () => {
       links: ['https://www.figma.com/design/Abc123'],
     }));
     await waitFor(() => expect(refreshFigmaDesignSystem).toHaveBeenCalledWith('figma:retail'));
+  });
+
+  // WP23b (e) — badge "Đang sinh mô tả x/y (z%)" trên card khi có job active
+  // của nguồn đó (mount fetch 1 lần; % = round(done/total*100)).
+  it('hiện badge "Đang sinh mô tả x/y (z%)" khi có job active của nguồn', async () => {
+    const activeJob: FigmaGuideActiveJob = {
+      jobId: 'job-1', sourceId: 'figma:retail', status: 'running', done: 3, total: 12, startedAt: 1_000,
+    };
+    vi.mocked(fetchActiveGuideJobs).mockResolvedValue([activeJob]);
+    render(<FigmaDesignSystemsSection />);
+
+    expect(await screen.findByText('Đang sinh mô tả 3/12 (25%)')).toBeTruthy();
+  });
+
+  it('ẩn badge khi active không có job của nguồn nào', async () => {
+    vi.mocked(fetchActiveGuideJobs).mockResolvedValue([]);
+    render(<FigmaDesignSystemsSection />);
+    await screen.findByText('Retail UI Library');
+
+    expect(screen.queryByTestId('figma-design-systems-guide-badge-figma:retail')).toBeNull();
+  });
+
+  it('total=0 → hiện 0%, không chia cho 0', async () => {
+    const activeJob: FigmaGuideActiveJob = {
+      jobId: 'job-2', sourceId: 'figma:retail', status: 'queued', done: 0, total: 0, startedAt: 1_000,
+    };
+    vi.mocked(fetchActiveGuideJobs).mockResolvedValue([activeJob]);
+    render(<FigmaDesignSystemsSection />);
+
+    expect(await screen.findByText('Đang sinh mô tả 0/0 (0%)')).toBeTruthy();
   });
 });

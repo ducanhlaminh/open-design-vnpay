@@ -8,11 +8,14 @@ import type {
   FigmaDesignSystemComponentItem,
   FigmaDesignSystemGuideJob,
   FigmaDesignSystemGuideJobItem,
+  FigmaDesignSystemImageCacheInfo,
   FigmaDesignSystemLastGuideRun,
   FigmaDesignSystemRefreshChanges,
   FigmaDesignSystemRefreshProgress,
+  FigmaGuideActiveJob,
   GenerateFigmaDesignSystemGuideResponse,
   GetFigmaDesignSystemSourceResponse,
+  ListActiveFigmaGuideJobsResponse,
   ListFigmaDesignSystemComponentsResponse,
 } from '@open-design/contracts';
 
@@ -46,7 +49,13 @@ import { downloadFigmaImage, runDescribeChunk } from './figma-catalog-routes.js'
 // WP20: "Sinh mô tả component thiếu" (WP19b) áp cho nguồn Figma DÙNG CHUNG —
 // tái dùng NGUYÊN engine tất định của WP19b (không chép lại một bản song
 // song có thể trôi lệch), chỉ khác nơi lưu (kho nguồn thay vì App-level).
-import { computeGuideCoverage, computeMissingDescriptions, generateComponentDescriptions } from './figma-guide-generate.js';
+import {
+  classifyComponentKind,
+  computeGuideCoverage,
+  computeMissingDescriptions,
+  generateComponentDescriptions,
+  isJunkComponentName,
+} from './figma-guide-generate.js';
 import { buildFigmaComponentCatalog, describeFigmaError, fetchNodeImages, fetchNodeSubtrees } from './figma-rest.js';
 import type { RouteDeps } from './server-context.js';
 
@@ -59,6 +68,9 @@ export interface RegisterFigmaDesignSystemRoutesDeps extends RouteDeps<'db' | 'h
 type SourceRow = NonNullable<ReturnType<typeof getFigmaDesignSystemSource>>;
 const activeRefreshes = new Set<string>();
 const refreshProgress = new Map<string, FigmaDesignSystemRefreshProgress>();
+// WP23a mục 4: một task prefetch ảnh tại một thời điểm CHO MỖI sourceId —
+// trigger mới trong lúc một task đang chạy là no-op (xem prefetchComponentImages).
+const prefetchTasks = new Map<string, Promise<void>>();
 
 /** Durable Markdown materialization of a reusable Figma catalogue. SQLite
  * remains the structured source of truth; this file is the human/agent-facing
@@ -116,6 +128,92 @@ async function removeFigmaDesignSystemFiles(runtimeDataDir: string, sourceId: st
  * riêng. */
 export function figmaDesignSystemGuidePath(runtimeDataDir: string, sourceId: string): string {
   return path.join(path.dirname(figmaDesignSystemComponentsPath(runtimeDataDir, sourceId)), 'components-guide.md');
+}
+
+/* ── WP23a mục 4: kho ảnh PNG prefetch của nguồn ────────────────────────────
+ * `figma-design-systems/<sourceId>/images/<anchor>.png` — CẠNH `criteria/`
+ * (dirname hai lần từ components.md = thư mục gốc của nguồn), KHÔNG dưới
+ * `criteria/` (ảnh không phải nội dung agent-facing, chỉ là cache phục vụ
+ * engine + route serve bên dưới). `anchor` ổn định qua rename/refresh (xem
+ * `anchorFor`) nên cache sống sót qua nhiều lần refresh catalog. */
+export function figmaDesignSystemImagesDir(runtimeDataDir: string, sourceId: string): string {
+  const componentsPath = figmaDesignSystemComponentsPath(runtimeDataDir, sourceId);
+  return path.join(path.dirname(path.dirname(componentsPath)), 'images');
+}
+
+/** WP23a mục 4: tải ảnh PNG (render 2x) cho MỌI component của nguồn CHƯA có
+ *  file cache — chạy nền (fire-and-forget, caller KHÔNG await), gọi SAU khi
+ *  refresh/tạo catalog commit thành công (xem hai call site ở route
+ *  POST /refresh). Gỡ điểm flaky "Figma phản hồi quá lâu" của job sinh mô tả
+ *  (nó không còn phải tự tải ảnh trong lúc job chạy — chunk 'normal' đọc cache
+ *  này qua deps.imageCache, xem generateComponentDescriptions).
+ *
+ *  Một task/nguồn: `prefetchTasks` là guard — trigger mới trong lúc một task
+ *  CÙNG sourceId đang chạy là no-op (không xếp hàng, không hủy task cũ — lần
+ *  refresh tiếp theo sẽ tự trigger lại nếu còn ảnh thiếu). Lỗi từng ảnh chỉ
+ *  đếm lại (console.warn), KHÔNG retry loop, KHÔNG throw — bọc catch nội bộ
+ *  đúng nghĩa "fire-and-forget" caller yêu cầu. */
+function prefetchComponentImages(
+  sourceId: string,
+  snapshot: FigmaComponentCatalogSnapshot,
+  token: string,
+  runtimeDataDir: string,
+): void {
+  if (prefetchTasks.has(sourceId)) return;
+  const task = (async () => {
+    const imagesDir = figmaDesignSystemImagesDir(runtimeDataDir, sourceId);
+    await fs.promises.mkdir(imagesDir, { recursive: true });
+    const existing = new Set(await fs.promises.readdir(imagesDir).catch(() => [] as string[]));
+    const byFile = new Map<string, string[]>();
+    for (const file of snapshot.files) {
+      for (const component of file.components) {
+        const anchor = anchorFor(file.fileKey, component.nodeId);
+        if (existing.has(`${anchor}.png`)) continue;
+        const list = byFile.get(file.fileKey) ?? [];
+        list.push(component.nodeId);
+        byFile.set(file.fileKey, list);
+      }
+    }
+    let errors = 0;
+    for (const [fileKey, nodeIds] of byFile) {
+      // fetchNodeImages (figma-rest.ts) đã tự chia lô ≤40 nodeId/request —
+      // trong ngưỡng "≤50/request" của contract mục 4, không cần chia lại.
+      const images = await fetchNodeImages(token, fileKey, nodeIds).catch(() => new Map<string, string>());
+      for (const nodeId of nodeIds) {
+        const anchor = anchorFor(fileKey, nodeId);
+        const url = images.get(nodeId);
+        if (!url) {
+          errors += 1;
+          continue;
+        }
+        const ok = await downloadFigmaImage(url, path.join(imagesDir, `${anchor}.png`)).catch(() => false);
+        if (!ok) errors += 1;
+      }
+    }
+    if (errors > 0) {
+      console.warn(`[figma-design-system-guide] prefetch ảnh cho nguồn "${sourceId}": ${errors} ảnh lỗi (bỏ qua, không retry).`);
+    }
+  })();
+  prefetchTasks.set(sourceId, task);
+  void task.catch((err) => {
+    console.warn(`[figma-design-system-guide] prefetch ảnh cho nguồn "${sourceId}" thất bại:`, err);
+  }).finally(() => {
+    if (prefetchTasks.get(sourceId) === task) prefetchTasks.delete(sourceId);
+  });
+}
+
+/** WP23a mục 4: `imageCache` của GET detail — đủ rẻ để tính live (đếm số file
+ *  `.png`, không đọc nội dung) với quy mô thực tế (~600 file/nguồn). */
+async function computeImageCacheInfo(
+  runtimeDataDir: string,
+  sourceId: string,
+  catalog: FigmaComponentCatalogSnapshot,
+): Promise<FigmaDesignSystemImageCacheInfo> {
+  const total = catalog.files.reduce((sum, file) => sum + file.components.length, 0);
+  const imagesDir = figmaDesignSystemImagesDir(runtimeDataDir, sourceId);
+  const files = await fs.promises.readdir(imagesDir).catch(() => [] as string[]);
+  const cached = files.filter((name) => name.endsWith('.png')).length;
+  return { total, cached, running: prefetchTasks.has(sourceId) };
 }
 
 // Serialize writes theo sourceId — cùng lý do writeAppFigmaCatalog/
@@ -237,6 +335,11 @@ export function buildFigmaDesignSystemComponentItems(
         ...(description !== undefined ? { description } : {}),
         descriptionSource,
         properties: component.properties,
+        // WP23a mục 2: đúng NGUỒN SỰ THẬT của engine (figma-guide-generate.ts)
+        // — daemon LUÔN set (client cũ vẫn thấy field lạ vô hại, optional chỉ
+        // để không phá contract cũ).
+        needsRename: isJunkComponentName(component.name),
+        kind: classifyComponentKind(component.page, component.name),
       });
     }
   }
@@ -288,7 +391,10 @@ export async function readFigmaDesignSystemGuideMeta(
       typeof parsed.failed === 'number' &&
       Array.isArray(parsed.failures)
     ) {
-      return parsed as FigmaDesignSystemLastGuideRun;
+      // WP23a: `skipped` là field mới — meta ghi TRƯỚC WP23a không có field
+      // này. Chuẩn hoá về 0 thay vì coi cả file là hỏng (best-effort đọc
+      // ngược tương thích, không phải một field bắt buộc để tin file này).
+      return { ...parsed, skipped: typeof parsed.skipped === 'number' ? parsed.skipped : 0 } as FigmaDesignSystemLastGuideRun;
     }
   } catch {
     // best-effort: JSON hỏng → coi như chưa có lượt nào (không throw, không
@@ -442,8 +548,32 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
       ...(guideMarkdown != null ? { guideMarkdown } : {}),
       ...(catalog ? { coverage: computeGuideCoverage(catalog, guideMarkdown) } : {}),
       ...(lastGuideRun ? { lastGuideRun } : {}),
+      ...(catalog ? { imageCache: await computeImageCacheInfo(deps.paths.RUNTIME_DATA_DIR, source.id, catalog) } : {}),
     };
     res.json(body);
+  });
+
+  // ── WP23a mục 4: route serve ảnh prefetch cho một component — anchor xác
+  // thực bằng regex CHẶT (chữ "figma-" cố định + đúng 10 hex, đúng shape
+  // `anchorFor` sinh ra) trước khi path.join, nên không thể escape thư mục
+  // images/ dù input có "../".
+  app.get('/api/figma-design-systems/:id/component-image/:anchor', async (req, res) => {
+    if (!guard(req, res)) return;
+    const source = getFigmaDesignSystemSource(db, req.params.id);
+    if (!source) return notFound(res);
+    const anchor = String(req.params.anchor ?? '');
+    if (!/^figma-[0-9a-f]{10}$/.test(anchor)) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'anchor không hợp lệ' } });
+    }
+    const target = path.join(figmaDesignSystemImagesDir(deps.paths.RUNTIME_DATA_DIR, source.id), `${anchor}.png`);
+    const exists = await fs.promises.access(target).then(() => true).catch(() => false);
+    if (!exists) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Chưa có ảnh cho component này.' } });
+    }
+    const buffer = await fs.promises.readFile(target);
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'private, max-age=300');
+    res.status(200).send(buffer);
   });
 
   // ── WP21a: GET /components — API JSON có cấu trúc thay preview markdown
@@ -530,6 +660,12 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
       const changes = diffFigmaComponentCatalogs(current.catalog as FigmaComponentCatalogSnapshot | null, snapshot);
       await writeFigmaDesignSystemComponents(deps.paths.RUNTIME_DATA_DIR, current.id, snapshot);
       const source = commitFigmaDesignSystemSourceCatalog(db, current.id, { catalog: snapshot, digest, updatedAt: now() });
+      // WP23a mục 4: fire-and-forget SAU KHI commit catalog thành công — job
+      // sinh mô tả (chạy sau, riêng lượt) đọc thẳng cache này qua imageCache,
+      // không tự tải ảnh trong lúc chạy nữa (gỡ điểm flaky "Figma phản hồi
+      // quá lâu"). KHÔNG await — không được ảnh hưởng timeout 120s của chính
+      // route /refresh này.
+      prefetchComponentImages(current.id, snapshot, config.token, deps.paths.RUNTIME_DATA_DIR);
       res.json({ source: figmaDesignSystemSourceToContract(source!), changes });
     } catch (error) {
       const message = controller.signal.aborted ? 'Hết thời gian chờ Figma phản hồi.' : describeFigmaError(error);
@@ -551,22 +687,29 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
   const figmaGuideJobs = new Map<string, FigmaDesignSystemGuideJobState>();
   const figmaGuideJobBySource = new Map<string, string>();
 
-  const toGuideJobResponse = (job: FigmaDesignSystemGuideJobState): FigmaDesignSystemGuideJob => ({
-    id: job.id,
-    status: job.status,
-    message: job.message,
-    generated: job.generated,
-    rejected: job.rejected,
-    remaining: job.remaining,
-    error: job.error,
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-    // WP21a: snapshot Map items → mảng LÚC SERIALIZE (job.items đổi live qua
-    // callback onItemStatus mỗi khi trạng thái một comp đổi) — GET job vì vậy
-    // luôn trả trạng thái mới nhất tại thời điểm poll.
-    items: [...job.items.values()],
-    remainingAfterCap: job.remainingAfterCap,
-  });
+  const toGuideJobResponse = (job: FigmaDesignSystemGuideJobState): FigmaDesignSystemGuideJob => {
+    const items = [...job.items.values()];
+    return {
+      id: job.id,
+      status: job.status,
+      message: job.message,
+      generated: job.generated,
+      rejected: job.rejected,
+      remaining: job.remaining,
+      // WP23a mục 3: tính LIVE từ job.items (không phải một counter riêng) —
+      // item 'skipped' được đánh ngay khi job bắt đầu (trước cả chunk đầu
+      // tiên), nên luôn đúng dù job vẫn 'running'.
+      skipped: items.filter((item) => item.status === 'skipped').length,
+      error: job.error,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      // WP21a: snapshot Map items → mảng LÚC SERIALIZE (job.items đổi live qua
+      // callback onItemStatus mỗi khi trạng thái một comp đổi) — GET job vì vậy
+      // luôn trả trạng thái mới nhất tại thời điểm poll.
+      items,
+      remainingAfterCap: job.remainingAfterCap,
+    };
+  };
 
   const startFigmaDesignSystemGuideJob = (
     sourceId: string,
@@ -616,6 +759,9 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
       error: null,
       createdAt: nowIso(),
       updatedAt: nowIso(),
+      // WP23a mục 5: dùng bởi GET /api/figma-guide-jobs/active (số nguyên,
+      // không parse lại createdAt/updatedAt ISO mỗi lần liệt kê).
+      startedAtMs: rowNow,
     };
     figmaGuideJobs.set(job.id, job);
     figmaGuideJobBySource.set(sourceId, job.id);
@@ -635,7 +781,7 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
     // thoại, giữ đúng bất biến gốc — theo dõi xen lượt thật giữa 3 nhóm song
     // song (nếu phát sinh vấn đề thật khi vận hành) là việc của backlog,
     // không phải scope WP21a.
-    const groupKeyOf = (fileKey: string, page: string | undefined) => `${fileKey} ${page ?? ''}`;
+    const groupKeyOfKind = (fileKey: string, page: string | undefined, kind: 'asset' | 'normal') => `${fileKey} ${page ?? ''} ${kind}`;
     const conversationId = `figma-guide-source-conv-${randomUUID()}`;
     insertConversation(db, {
       id: conversationId,
@@ -654,6 +800,7 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
         const missingList = computeMissingDescriptions(snapshot, existingGuideMd);
         if (missingList.length === 0) {
           job.status = 'succeeded';
+          job.finishedAtMs = Date.now();
           job.message = 'Không có gì để sinh — mọi component đã có mô tả.';
           touch();
           return;
@@ -663,16 +810,26 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
         // dưới) nên `missingList` ĐÚNG BẰNG tập comp thật sự được xử lý, dùng
         // được luôn để suy ra tổng số lượt của TỪNG nhóm cho kickoff message.
         const missingByAnchor = new Map(missingList.map((m) => [m.anchor, { name: m.name, page: m.page }] as const));
+        // WP23a: bỏ item tên rác (isJunkComponentName) khỏi ước lượng số lượt —
+        // chúng bị bypass 'skipped' NGAY, không bao giờ vào một chunk nào (xem
+        // generateComponentDescriptions), tính chúng vào đây sẽ thổi phồng
+        // totalChunks hiển thị trong kickoff message của agent.
         const groupTotalChunks = new Map<string, number>();
         {
           const counts = new Map<string, number>();
           for (const item of missingList) {
-            const key = groupKeyOf(item.fileKey, item.page);
+            if (isJunkComponentName(item.name)) continue;
+            const kind = classifyComponentKind(item.page, item.name);
+            const key = groupKeyOfKind(item.fileKey, item.page, kind);
             counts.set(key, (counts.get(key) ?? 0) + 1);
           }
-          for (const [key, count] of counts) groupTotalChunks.set(key, Math.ceil(count / 12));
+          for (const [key, count] of counts) {
+            const size = key.endsWith(' asset') ? 100 : 12;
+            groupTotalChunks.set(key, Math.ceil(count / size));
+          }
         }
         let chunkCounter = 0;
+        const imagesDir = figmaDesignSystemImagesDir(deps.paths.RUNTIME_DATA_DIR, sourceId);
         const result = await generateComponentDescriptions(snapshot, existingGuideMd, {
           baseDir: describeDir,
           // WP21a (người dùng chốt 2026-08-20): nút "Sinh mô tả" phải sinh
@@ -686,9 +843,18 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
           fetchTree: (fileKey, ids) => fetchNodeSubtrees(token, fileKey, ids),
           fetchImages: (fileKey, ids) => fetchNodeImages(token, fileKey, ids),
           downloadImage: (url, destPath) => downloadFigmaImage(url, destPath),
+          // WP23a mục 1.d/2.b: chunk 'normal' đọc cache ảnh đã prefetch (sau
+          // refresh, xem prefetchComponentImages) TRƯỚC khi gọi REST — nguồn
+          // dùng chung có tới ~600 component, tải ảnh giữa lúc job chạy là
+          // đúng điểm flaky "Figma phản hồi quá lâu" cũ.
+          imageCache: {
+            pathFor: (anchor) => path.join(imagesDir, `${anchor}.png`),
+            has: (anchor) => fs.promises.access(path.join(imagesDir, `${anchor}.png`)).then(() => true).catch(() => false),
+          },
           runAgentChunk: async (input, chunkDir, index, group) => {
             chunkCounter = Math.max(chunkCounter, index + 1);
-            const totalChunks = groupTotalChunks.get(groupKeyOf(group.fileKey, group.page)) ?? 1;
+            const isAssetChunk = input.components.length > 0 && 'kind' in input.components[0]! && input.components[0]!.kind === 'asset';
+            const totalChunks = groupTotalChunks.get(groupKeyOfKind(group.fileKey, group.page, isAssetChunk ? 'asset' : 'normal')) ?? 1;
             return runDescribeChunk(
               { design: deps.design, startChatRun: deps.chat.startChatRun, db: deps.db, getAgentDef: deps.agents?.getAgentDef },
               { projectId, conversationId, chunkDir, index, totalChunks, execution },
@@ -697,7 +863,9 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
           onProgress: (info) => { job.message = info.note; touch(); },
           // WP21a: dựng items[] từ callback — Map anchor→item, snapshot vào
           // job state (job.items) mỗi lần một comp đổi trạng thái; GET job
-          // (toGuideJobResponse) đọc lại Map này mỗi lần poll.
+          // (toGuideJobResponse) đọc lại Map này mỗi lần poll. WP23a: `status`
+          // giờ có thêm 'skipped' (tên rác) — callback không cần đổi gì, mọi
+          // status đều đi qua CÙNG đường gán này.
           onItemStatus: (anchor, status, reason) => {
             const known = missingByAnchor.get(anchor);
             const existingItem = job.items.get(anchor);
@@ -709,6 +877,7 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
         });
         await writeFigmaDesignSystemGuide(deps.paths.RUNTIME_DATA_DIR, sourceId, result.guideMarkdown);
         job.status = 'succeeded';
+        job.finishedAtMs = Date.now();
         job.generated = result.generated;
         job.rejected = result.rejected;
         job.remaining = result.remaining;
@@ -725,6 +894,7 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
       } catch (error: any) {
         const detail = String(error && error.message ? error.message : error);
         job.status = 'failed';
+        job.finishedAtMs = Date.now();
         job.error = detail;
         job.message = detail;
         touch();
@@ -754,11 +924,15 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
             .filter((item) => item.status === 'failed')
             .map((item) => ({ anchor: item.anchor, name: item.name, reason: item.reason ?? '' }));
           const generatedCount = finishedItems.filter((item) => item.status === 'succeeded').length;
+          // WP23a mục 3: đếm 'skipped' (tên rác, bypass — xem
+          // figma-guide-generate.ts) riêng, không lẫn vào `failed`.
+          const skippedCount = finishedItems.filter((item) => item.status === 'skipped').length;
           await writeFigmaDesignSystemGuideMeta(deps.paths.RUNTIME_DATA_DIR, sourceId, {
             finishedAt: new Date().toISOString(),
             generated: generatedCount,
             failed: failures.length,
             failures,
+            skipped: skippedCount,
           }).catch((err) => {
             console.warn(`[figma-design-system-guide] ghi components-guide.meta.json cho nguồn "${sourceId}" thất bại:`, err);
           });
@@ -815,7 +989,45 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
     }
     res.json({ job: toGuideJobResponse(job) });
   });
+
+  // ── WP23a mục 5: GET /api/figma-guide-jobs/active — re-attach cross-source.
+  // Path CỐ Ý không nằm dưới /figma-design-systems/:id (job có thể thuộc BẤT
+  // KỲ nguồn nào — hook web hỏi TRƯỚC khi biết sourceId nào có job) — Express
+  // khớp theo path chữ nguyên văn ("figma-guide-jobs" khác "figma-design-
+  // systems"), không đụng route pattern nào khác trong file này.
+  app.get('/api/figma-guide-jobs/active', (req, res) => {
+    if (!guard(req, res)) return;
+    const nowMs = now();
+    const jobs: FigmaGuideActiveJob[] = [];
+    for (const job of [...figmaGuideJobs.values()]) {
+      const isFinished = job.status === 'succeeded' || job.status === 'failed';
+      if (isFinished && job.finishedAtMs !== undefined && nowMs - job.finishedAtMs > ACTIVE_GUIDE_JOB_RETENTION_MS) {
+        // Dọn lười: job kết thúc >10' trước bị loại khỏi registry ở ĐÂY (lần
+        // GET active kế tiếp) — GET-by-jobId cho job này 404 sau đó, kết quả
+        // đã persist ở components-guide.meta.json (đúng contract mục 5).
+        figmaGuideJobs.delete(job.id);
+        if (figmaGuideJobBySource.get(job.sourceId) === job.id) figmaGuideJobBySource.delete(job.sourceId);
+        continue;
+      }
+      const items = [...job.items.values()];
+      jobs.push({
+        jobId: job.id,
+        sourceId: job.sourceId,
+        status: job.status,
+        done: items.filter((item) => item.status === 'succeeded' || item.status === 'failed' || item.status === 'skipped').length,
+        total: items.length,
+        startedAt: job.startedAtMs,
+        ...(job.finishedAtMs !== undefined ? { finishedAt: job.finishedAtMs } : {}),
+      });
+    }
+    const body: ListActiveFigmaGuideJobsResponse = { jobs };
+    res.json(body);
+  });
 }
+
+// WP23a mục 5: dọn lười — job kết thúc >10' trước bị loại khỏi registry lần
+// GET /active kế tiếp.
+const ACTIVE_GUIDE_JOB_RETENTION_MS = 10 * 60 * 1000;
 
 /* ── WP20/WP21a internals: job state (khuôn FigmaGuideJobState App-level) ── */
 interface FigmaDesignSystemGuideJobState {
@@ -837,4 +1049,11 @@ interface FigmaDesignSystemGuideJobState {
   error: string | null;
   createdAt: string;
   updatedAt: string;
+  /** WP23a mục 5: dùng bởi GET /api/figma-guide-jobs/active — số nguyên
+   *  (epoch ms), tách khỏi `createdAt`/`updatedAt` (ISO string, giữ nguyên
+   *  cho tương thích ngược) để route active không phải parse lại mỗi lần. */
+  startedAtMs: number;
+  /** Gán khi job đạt trạng thái cuối ('succeeded'/'failed') — dùng để dọn lười
+   *  registry + trả `finishedAt` cho GET /active. */
+  finishedAtMs?: number;
 }

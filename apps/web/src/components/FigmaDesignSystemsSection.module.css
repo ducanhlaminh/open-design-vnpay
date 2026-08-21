@@ -225,6 +225,19 @@
   margin: 8px 0 0;
 }
 
+/* WP23b — badge "Đang sinh mô tả x/y (z%)" khi nguồn có job sinh mô tả
+   active (contract mục 5/6). */
+.guideJobBadge {
+  margin: 8px 0 0;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-subtle));
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 650;
+  width: fit-content;
+}
+
 .error {
   margin: 8px 0 0;
   color: var(--danger, #a42626);

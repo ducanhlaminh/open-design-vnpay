@@ -13,6 +13,7 @@ import { FigmaDsSourceDetail } from '../../src/components/FigmaDsSourceDetail';
 import type {
   FigmaDesignSystemComponentItem,
   FigmaDesignSystemGuideJobV2,
+  FigmaGuideActiveJob,
 } from '../../src/providers/figma-design-systems';
 
 vi.mock('../../src/components/Icon', () => ({ Icon: () => null }));
@@ -93,6 +94,10 @@ function mockSourceFetchSequence(handlers: {
   getJob?: (init?: RequestInit) => Response;
   postGenerate?: (init?: RequestInit) => Response;
   refresh?: (init?: RequestInit) => Response;
+  /** GET /api/figma-guide-jobs/active — contract mục 5. Không khai báo →
+   *  fallback `{ok:true}` (jobs undefined → mảng rỗng), tức "không có job
+   *  active nào" — khớp hành vi mặc định của mọi test không quan tâm re-attach. */
+  active?: (init?: RequestInit) => Response;
   getDetail: (init?: RequestInit) => Response;
   getComponents: (init?: RequestInit) => Response;
 }) {
@@ -101,7 +106,9 @@ function mockSourceFetchSequence(handlers: {
     // tự declare): '/generate-guide/' (GET poll, có jobId) phải khớp TRƯỚC
     // '/generate-guide' (POST khởi job, là tiền tố nguyên văn của URL GET).
     // '/refresh' phải khai TRƯỚC '/api/figma-design-systems/' (tiền tố nguyên
-    // văn của URL refresh).
+    // văn của URL refresh). '/figma-guide-jobs/active' không đụng tiền tố nào
+    // khác nên thứ tự không quan trọng với nó.
+    ...(handlers.active ? { '/figma-guide-jobs/active': handlers.active } : {}),
     ...(handlers.getJob ? { '/generate-guide/': handlers.getJob } : {}),
     ...(handlers.postGenerate ? { '/generate-guide': handlers.postGenerate } : {}),
     ...(handlers.refresh ? { '/refresh': handlers.refresh } : {}),
@@ -279,5 +286,146 @@ describe('FigmaDsSourceDetail · component browser', () => {
     // 2 khối riêng biệt, cả hai hiện nhãn "Khác — 1/1 · xong" — không gộp lại.
     const khacHeadings = within(items).getAllByText(/Khác — 1\/1 · xong/);
     expect(khacHeadings).toHaveLength(2);
+  });
+
+  // WP23b (a) — re-attach: vào trang lúc job đang chạy (registry active
+  // GET /api/figma-guide-jobs/active) là thấy nguyên panel tiến độ, KHÔNG
+  // cần bấm nút "Sinh mô tả" lại.
+  it('(h) re-attach — active trả job running → panel tiến độ tự hiện không cần bấm nút', async () => {
+    const activeJob: FigmaGuideActiveJob = {
+      jobId: 'job-active-1', sourceId: 'src-1', status: 'running', done: 1, total: 2, startedAt: 1_000,
+    };
+    const fullJob: FigmaDesignSystemGuideJobV2 = {
+      id: 'job-active-1', status: 'running', message: 'Đang xử lý…', generated: 0, rejected: 0, remaining: 1,
+      error: null, createdAt: '2026-08-19T00:00:00Z', updatedAt: '2026-08-19T00:00:00Z',
+      items: [
+        { anchor: 'figma-bbbbbbbbbb', name: 'Button/Secondary', page: 'Buttons', status: 'succeeded' },
+        { anchor: 'figma-cccccccccc', name: 'Input/Text', page: 'Inputs', status: 'running' },
+      ],
+    };
+    mockSourceFetchSequence({
+      active: () => new Response(JSON.stringify({ jobs: [activeJob] }), { status: 200 }),
+      getJob: () => new Response(JSON.stringify({ job: fullJob }), { status: 200 }),
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+
+    // KHÔNG bấm nút "Sinh mô tả (N thiếu)" — panel tiến độ vẫn tự hiện.
+    const progress = await screen.findByTestId('figma-ds-detail-progress');
+    expect(within(progress).getByText(/Buttons — 1\/1 · xong/)).toBeTruthy();
+    expect(within(progress).getByText(/Inputs — 0\/1 · đang sinh/)).toBeTruthy();
+  });
+
+  // WP23b (b) — 5 ô đếm (thêm "Bỏ qua") + item skipped có badge riêng + reason.
+  it('(i) item skipped → đếm riêng "Bỏ qua" + badge + reason hiện khi nhóm mở', async () => {
+    const runningJob: FigmaDesignSystemGuideJobV2 = {
+      id: 'job-skip-1', status: 'succeeded', message: 'Xong', generated: 1, rejected: 0, remaining: 0,
+      error: null, createdAt: '2026-08-19T00:00:00Z', updatedAt: '2026-08-19T00:00:00Z',
+      skipped: 1,
+      items: [
+        { anchor: 'figma-bbbbbbbbbb', name: 'Button/Secondary', page: 'Buttons', status: 'succeeded' },
+        {
+          anchor: 'figma-cccccccccc', name: 'Rectangle 12', page: 'Inputs', status: 'skipped',
+          reason: 'Tên không đủ nghĩa — cần đặt lại tên trong Figma',
+        },
+      ],
+    };
+    mockSourceFetchSequence({
+      postGenerate: () => new Response(JSON.stringify({ jobId: runningJob.id, job: runningJob }), { status: 202 }),
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    const button = await screen.findByTestId('figma-ds-detail-generate');
+    fireEvent.click(button);
+
+    const progress = await screen.findByTestId('figma-ds-detail-progress');
+    // Ô đếm "Bỏ qua" trong 5 ô tổng.
+    expect(within(progress).getByText('Bỏ qua')).toBeTruthy();
+    // Nhóm "Inputs" chỉ có 1 item skipped — done/total = 1/1 tính cả skipped.
+    const items = await screen.findByTestId('figma-ds-detail-progress-items');
+    expect(within(items).getByText(/Inputs — 1\/1/)).toBeTruthy();
+    fireEvent.click(within(items).getByText(/Inputs — 1\/1/));
+    expect(within(items).getByText('Bỏ qua')).toBeTruthy();
+    expect(within(items).getByText('Tên không đủ nghĩa — cần đặt lại tên trong Figma')).toBeTruthy();
+  });
+
+  // WP23b (c) — khối "Cần đặt lại tên trong Figma (N)" tính thẳng từ
+  // components API, hiện cả khi KHÔNG có job nào chạy; filter "Tên rác" lọc
+  // đúng danh sách.
+  it('(j) khối "Cần đặt lại tên trong Figma (N)" hiện khi có needsRename, không cần job; filter Tên rác lọc đúng', async () => {
+    const componentsWithJunk: FigmaDesignSystemComponentItem[] = [
+      ...baseComponents,
+      {
+        anchor: 'figma-junk1', name: 'Rectangle 12', nodeId: '1:9', fileKey: 'ABC', fileName: 'Kit',
+        page: 'Buttons', descriptionSource: 'none', properties: [], needsRename: true, kind: 'normal',
+      },
+    ];
+    mockSourceFetchSequence({
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: componentsWithJunk }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    // Không có job nào chạy — khối vẫn hiện đúng N=1.
+    const block = screen.getByTestId('figma-ds-detail-needs-rename');
+    expect(within(block).getByText('Cần đặt lại tên trong Figma (1)')).toBeTruthy();
+    fireEvent.click(within(block).getByText('Cần đặt lại tên trong Figma (1)'));
+    expect(within(block).getByText('Rectangle 12')).toBeTruthy();
+    // Đóng khối lại trước khi kiểm tra danh sách browser — tránh 2 nơi cùng
+    // hiện chữ "Rectangle 12" (khối xổ + hàng trong browser) làm query mơ hồ.
+    fireEvent.click(within(block).getByText('Cần đặt lại tên trong Figma (1)'));
+    expect(within(block).queryByText('Rectangle 12')).toBeNull();
+
+    // Filter "Tên rác (1)" chỉ còn item needsRename — assert theo testid hàng
+    // (không theo text) để không lẫn với text bên trong khối.
+    fireEvent.click(screen.getByTestId('figma-ds-detail-needs-rename-only'));
+    expect(screen.queryByTestId('figma-ds-detail-component-figma-aaaaaaaaaa')).toBeNull();
+    expect(screen.queryByTestId('figma-ds-detail-component-figma-cccccccccc')).toBeNull();
+    expect(screen.getByTestId('figma-ds-detail-component-figma-junk1')).toBeTruthy();
+  });
+
+  it('(k) không có needsRename nào → không render khối/chip', async () => {
+    mockSourceFetchSequence({
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    expect(screen.queryByTestId('figma-ds-detail-needs-rename')).toBeNull();
+    expect(screen.queryByTestId('figma-ds-detail-needs-rename-only')).toBeNull();
+  });
+
+  // WP23b (d) — thumbnail: src đúng route component-image, loading="lazy".
+  it('(l) mỗi hàng browser có ảnh thumbnail src đúng route component-image', async () => {
+    mockSourceFetchSequence({
+      getDetail: () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    const row = screen.getByTestId('figma-ds-detail-component-figma-aaaaaaaaaa');
+    const img = within(row).getByAltText('Button/Primary') as HTMLImageElement;
+    expect(img.getAttribute('src')).toBe('/api/figma-design-systems/src-1/component-image/figma-aaaaaaaaaa');
+    expect(img.getAttribute('loading')).toBe('lazy');
+  });
+
+  // WP23b (e) — dòng phụ header khi detail.imageCache có.
+  it('(m) header hiện "Ảnh comp: cached/total" khi detail.imageCache có, kèm "đang tải…" lúc running', async () => {
+    mockSourceFetchSequence({
+      getDetail: () => new Response(JSON.stringify({
+        ...baseDetail,
+        imageCache: { total: 3, cached: 1, running: true },
+      }), { status: 200 }),
+      getComponents: () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+    });
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+
+    expect(await screen.findByText(/Ảnh comp: 1\/3/)).toBeTruthy();
+    expect(screen.getByText(/đang tải…/)).toBeTruthy();
   });
 });

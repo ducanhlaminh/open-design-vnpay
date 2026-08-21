@@ -86,6 +86,24 @@ export interface GetFigmaDesignSystemSourceResponse {
    *  rule as `guideMarkdown`/`coverage`. See `.tmp/pipeline/wp21-contract.md`
    *  mục 3. */
   lastGuideRun?: FigmaDesignSystemLastGuideRun;
+  /** WP23a mục 4: prefetch PNG progress for this source's component images
+   *  (`figma-design-systems/<sourceId>/images/<anchor>.png`, filled in the
+   *  background right after a successful catalogue refresh — see
+   *  `prefetchComponentImages`, figma-design-system-routes.ts). Optional and
+   *  omitted when there is no catalog yet — same "omit rather than send a
+   *  zeroed shape" rule as `guideMarkdown`/`coverage`/`lastGuideRun`. See
+   *  `.tmp/pipeline/wp23-contract.md` mục 4. */
+  imageCache?: FigmaDesignSystemImageCacheInfo;
+}
+
+/** WP23a mục 4: `total` = component count in the source's catalog snapshot;
+ *  `cached` = how many of them already have a prefetched PNG on disk;
+ *  `running` = a prefetch task is in flight for this source right now (at
+ *  most one at a time — a new trigger while one runs is a no-op). */
+export interface FigmaDesignSystemImageCacheInfo {
+  total: number;
+  cached: number;
+  running: boolean;
 }
 
 /** WP21a: one component that failed to get a description in the most recent
@@ -106,6 +124,12 @@ export interface FigmaDesignSystemLastGuideRun {
   generated: number;
   failed: number;
   failures: FigmaDesignSystemGuideRunFailure[];
+  /** WP23a: how many components in this run were bypassed for having a junk
+   *  Figma layer name (Frame 123, Vector, "123", "Property 1=Default"…) —
+   *  never sent to the agent. Optional so a meta file persisted before
+   *  WP23a still parses (best-effort reader treats it as 0). See
+   *  `.tmp/pipeline/wp23-contract.md` mục 3. */
+  skipped?: number;
 }
 
 /** WP20: how many of a shared source's Figma components have a description,
@@ -132,7 +156,11 @@ export interface FigmaDesignSystemGuideJobItem {
   anchor: string;
   name: string;
   page?: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  /** WP23a: `'skipped'` = component bị bypass vì tên rác (Frame 123, Vector,
+   *  "123", "Property 1=Default"…) — never sent to the agent; `reason` is
+   *  always present for it ("Tên không đủ nghĩa — cần đặt lại tên trong
+   *  Figma"). See `.tmp/pipeline/wp23-contract.md` mục 3. */
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped';
   reason?: string;
 }
 
@@ -153,6 +181,10 @@ export interface FigmaDesignSystemGuideJob {
   /** How many components are still missing a description AFTER this run
    *  (capped at 60/click) — > 0 means "bấm tiếp" is still useful. */
   remaining: number;
+  /** WP23a: how many components in this run were bypassed for having a junk
+   *  Figma layer name — never sent to the agent, not counted in `rejected`.
+   *  See `.tmp/pipeline/wp23-contract.md` mục 3. */
+  skipped: number;
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -205,10 +237,49 @@ export interface FigmaDesignSystemComponentItem {
   description?: string;
   descriptionSource: 'figma' | 'ai' | 'none';
   properties: { name: string; type: string; values: string[] }[];
+  /** WP23a: true when the raw Figma layer name is "junk" (Frame 123, Vector,
+   *  "123", "Property 1=Default"…) and cannot carry a description without a
+   *  rename in Figma first — always set by the daemon (never undefined in
+   *  practice), optional only so older clients reading a cached response
+   *  shape don't break. See `.tmp/pipeline/wp23-contract.md` mục 1+2. */
+  needsRename?: boolean;
+  /** WP23a: 'asset' (icon/logo/avatar/image…) vs 'normal' — mirrors the
+   *  engine's fan-out classification (`classifyComponentKind`,
+   *  figma-guide-generate.ts). Always set by the daemon; optional for the
+   *  same backward-compat reason as `needsRename`. */
+  kind?: 'asset' | 'normal';
 }
 
 /** Ordered the same as the frozen catalog snapshot (file → component) —
  *  callers must NOT re-sort; see `FigmaDesignSystemComponentItem`. */
 export interface ListFigmaDesignSystemComponentsResponse {
   components: FigmaDesignSystemComponentItem[];
+}
+
+/** WP23a mục 5: `GET /api/figma-guide-jobs/active` — lightweight cross-source
+ * listing so a web hook (`useFigmaGuideJob`) can re-attach to an in-flight
+ * `generate-guide` job after leaving/reloading the source detail page,
+ * without needing to already know the `jobId`. Deliberately thin (no
+ * `items[]`) — the caller adopts `jobId` from this list, then polls the full
+ * `GET /:id/generate-guide/:jobId` for per-component detail, same as the
+ * detail page already does. Includes jobs `queued`/`running` PLUS jobs that
+ * finished ≤10 minutes ago (lazy cleanup — the daemon prunes older finished
+ * jobs from its in-memory registry on the next call to this route; a
+ * `GET .../:jobId` for a pruned job then 404s, its outcome already persisted
+ * in `components-guide.meta.json`). See `.tmp/pipeline/wp23-contract.md`
+ * mục 5. */
+export interface FigmaGuideActiveJob {
+  jobId: string;
+  sourceId: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  /** `items` counted as succeeded + failed + skipped so far. */
+  done: number;
+  /** `items.length` for this round. */
+  total: number;
+  startedAt: number;
+  finishedAt?: number;
+}
+
+export interface ListActiveFigmaGuideJobsResponse {
+  jobs: FigmaGuideActiveJob[];
 }

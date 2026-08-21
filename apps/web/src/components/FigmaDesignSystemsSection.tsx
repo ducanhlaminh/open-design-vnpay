@@ -5,11 +5,13 @@ import { useI18n } from '../i18n';
 import {
   createFigmaDesignSystem,
   deleteFigmaDesignSystem,
+  fetchActiveGuideJobs,
   fetchFigmaDesignSystem,
   fetchFigmaDesignSystems,
   refreshFigmaDesignSystem,
   updateFigmaDesignSystem,
   type FigmaDesignSystemSource,
+  type FigmaGuideActiveJob,
 } from '../providers/figma-design-systems';
 import { navigate } from '../router';
 import { Icon } from './Icon';
@@ -56,6 +58,10 @@ export function FigmaDesignSystemsSection() {
   const [formProgress, setFormProgress] = useState<FigmaDesignSystemSource['refreshProgress']>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [refreshResults, setRefreshResults] = useState<Record<string, FigmaDesignSystemRefreshChanges>>({});
+  // WP23b (contract mục 5/6) — badge "Đang sinh mô tả x/y (z%)" trên card khi
+  // nguồn đó có job sinh mô tả active. Mount: fetch 1 lần; poll 5s CHỈ khi có
+  // job active nào đó, dừng khi hết (khuôn useAppImportJob).
+  const [activeGuideJobs, setActiveGuideJobs] = useState<FigmaGuideActiveJob[]>([]);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -73,6 +79,38 @@ export function FigmaDesignSystemsSection() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const stopPoll = () => {
+      if (timer !== null) { clearInterval(timer); timer = null; }
+    };
+    const poll = async (): Promise<boolean> => {
+      const jobs = await fetchActiveGuideJobs();
+      if (!alive) return false;
+      setActiveGuideJobs(jobs);
+      const stillActive = jobs.some((job) => job.status === 'queued' || job.status === 'running');
+      if (!stillActive) stopPoll();
+      return stillActive;
+    };
+    void poll().then((stillActive) => {
+      if (!alive || !stillActive) return;
+      timer = setInterval(() => { void poll(); }, 5_000);
+    });
+    return () => {
+      alive = false;
+      stopPoll();
+    };
+  }, []);
+
+  const activeGuideJobBySource = useMemo(() => {
+    const map = new Map<string, FigmaGuideActiveJob>();
+    for (const job of activeGuideJobs) {
+      if (job.status === 'queued' || job.status === 'running') map.set(job.sourceId, job);
+    }
+    return map;
+  }, [activeGuideJobs]);
 
   const normalized = useMemo(() => normalizeFigmaLinks(linksText), [linksText]);
   const linksKey = figmaLinksVerificationKey(normalized.links);
@@ -230,6 +268,10 @@ export function FigmaDesignSystemsSection() {
           {sources.map((source) => {
             const busy = busyId === source.id || source.status === 'refreshing';
             const refreshResult = refreshResults[source.id];
+            const activeGuideJob = activeGuideJobBySource.get(source.id);
+            const activeGuidePercent = activeGuideJob && activeGuideJob.total > 0
+              ? Math.round((activeGuideJob.done / activeGuideJob.total) * 100)
+              : 0;
             const statusClass = source.status === 'ready'
               ? `${styles.status} ${styles.statusReady}`
               : source.status === 'error'
@@ -255,6 +297,11 @@ export function FigmaDesignSystemsSection() {
                       <span>{t('ds.figmaLinksComponents')}</span>
                     </div>
                   </div>
+                  {activeGuideJob ? (
+                    <p className={styles.guideJobBadge} data-testid={`figma-design-systems-guide-badge-${source.id}`}>
+                      {`Đang sinh mô tả ${activeGuideJob.done}/${activeGuideJob.total} (${activeGuidePercent}%)`}
+                    </p>
+                  ) : null}
                   <p className={styles.updated}>{t('ds.figmaLinksUpdatedAt', { date: formatUpdatedAt(source.catalog?.generatedAt ?? source.updatedAt, locale) })}</p>
                   {source.status === 'refreshing' ? (
                     <progress

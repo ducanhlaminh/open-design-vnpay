@@ -145,6 +145,57 @@
   font-size: 12.5px;
 }
 
+/* Contract mục 6c — khối "Cần đặt lại tên trong Figma (N)", độc lập với job
+   sinh mô tả (tính thẳng từ components API). */
+.needsRenameBlock {
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, #b8860b 30%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, #b8860b 8%, var(--bg-panel));
+}
+
+.needsRenameToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.needsRenameList {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.needsRenameList li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+}
+
+.needsRenameList strong {
+  color: var(--text-strong);
+}
+
+.needsRenameList span {
+  color: var(--text-muted);
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -347,6 +398,7 @@
 .itemBadgeRunning { background: color-mix(in srgb, var(--accent) 15%, var(--bg-panel)); color: var(--accent-strong); }
 .itemBadgeSucceeded { background: color-mix(in srgb, #16824a 12%, var(--bg-panel)); color: #12673d; }
 .itemBadgeFailed { background: color-mix(in srgb, var(--danger, #b12b2b) 12%, var(--bg-panel)); color: var(--danger, #a42626); }
+.itemBadgeSkipped { background: color-mix(in srgb, #b8860b 14%, var(--bg-panel)); color: #8a6408; }
 
 .list {
   display: grid;
@@ -354,12 +406,43 @@
 }
 
 .row {
-  display: grid;
-  gap: 6px;
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg-elevated);
+}
+
+/* Contract mục 6d — cột ảnh nhỏ (~40px) đầu mỗi hàng + phần nội dung còn
+   lại; onerror ẩn <img> nhưng .rowThumbWrap giữ nguyên kích thước để layout
+   không nhảy khi ảnh 404/chưa cache. */
+.rowLayout {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.rowThumbWrap {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-subtle);
+}
+
+.rowThumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.rowBody {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 6px;
 }
 
 .rowHead {

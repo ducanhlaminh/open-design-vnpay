@@ -13,24 +13,19 @@
 // @open-design/contracts"), KHÔNG import từ @open-design/contracts vì
 // contracts chưa có các type này lúc hai WP chạy song song.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Icon } from './Icon';
 import {
   fetchFigmaDesignSystemComponents,
   fetchFigmaDesignSystemDetail,
-  fetchFigmaDesignSystemGuideJob,
   generateFigmaDesignSystemGuide,
   refreshFigmaDesignSystem,
+  useFigmaGuideJob,
   type FigmaDesignSystemComponentItem,
-  type FigmaDesignSystemGuideJobV2,
   type GetFigmaDesignSystemSourceResponseV2,
 } from '../providers/figma-design-systems';
 import styles from './FigmaDsSourceDetail.module.css';
-
-/** Cùng cadence poll với AppDesignSystemPanel — đủ sống động, không dồn dập
- *  daemon. */
-const GUIDE_JOB_POLL_MS = 3_000;
 
 /** 564 comp render phẳng có thể nặng; phân trang đơn giản thay vì kéo thêm
  *  lib virtual-scroll (must_not cấm dependency mới). */
@@ -49,6 +44,7 @@ const ITEM_STATUS_LABEL: Record<string, string> = {
   running: 'Đang xử lý',
   succeeded: 'Hoàn tất',
   failed: 'Thất bại',
+  skipped: 'Bỏ qua',
 };
 
 // WP21-fix điểm 5 (review WP21a): sentinel nội bộ cho nhóm "item không có
@@ -67,6 +63,7 @@ const ITEM_STATUS_BADGE_CLASS: Record<string, string> = {
   running: styles.itemBadgeRunning ?? '',
   succeeded: styles.itemBadgeSucceeded ?? '',
   failed: styles.itemBadgeFailed ?? '',
+  skipped: styles.itemBadgeSkipped ?? '',
 };
 
 function sourceBadge(source: FigmaDesignSystemComponentItem['descriptionSource']): { label: string; className: string } {
@@ -85,17 +82,27 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
   const [search, setSearch] = useState('');
   const [pageFilter, setPageFilter] = useState('all');
   const [missingOnly, setMissingOnly] = useState(false);
+  // Contract mục 6c — filter chip "Tên rác (N)" lọc theo needsRename, độc
+  // lập với job (tính thẳng từ components API, hiện cả khi chưa chạy job).
+  const [needsRenameOnly, setNeedsRenameOnly] = useState(false);
+  const [needsRenameExpanded, setNeedsRenameExpanded] = useState(false);
   const [page, setPage] = useState(1);
   const [expandedAnchor, setExpandedAnchor] = useState<string | null>(null);
   const [lastRunExpanded, setLastRunExpanded] = useState(false);
 
-  const [job, setJob] = useState<FigmaDesignSystemGuideJobV2 | null>(null);
+  // WP23b — re-attach: hook khuôn useAppImportJob, tự hỏi
+  // /api/figma-guide-jobs/active lúc mount để hiện panel tiến độ ngay cả khi
+  // người dùng chưa bấm nút "Sinh mô tả" ở lượt vào trang này.
+  const { job, adopt: adoptJob } = useFigmaGuideJob(sourceId);
   const [jobError, setJobError] = useState<string | null>(null);
   // Nhóm nào đang "xổ" (mở) trong panel tiến độ theo-page. Nhóm nào ĐANG có
   // item lỗi tự mở ngay (người dùng cần thấy lý do lỗi mà không phải bấm) —
   // effect bên dưới hợp (union) thêm page lỗi mỗi lần items cập nhật, không
   // đè lựa chọn đóng/mở người dùng đã tự bấm cho nhóm khác.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  // Job vừa refetch-once cho lượt xong gần nhất — tránh gọi lại loadComponents
+  // /loadDetail nhiều lần khi hook tiếp tục poll xung quanh trạng thái terminal.
+  const refetchedJobIdRef = useRef<string | null>(null);
 
   const loadDetail = useCallback(async () => {
     try {
@@ -120,9 +127,9 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
   useEffect(() => {
     setDetail(undefined);
     setComponents(undefined);
-    setJob(null);
     setJobError(null);
     setPage(1);
+    refetchedJobIdRef.current = null;
     void loadDetail();
     void loadComponents();
   }, [sourceId, loadDetail, loadComponents]);
@@ -150,31 +157,18 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
       setJobError(result.error);
       return;
     }
-    setJob(result.job);
-  }, [sourceId]);
+    adoptJob(result.job);
+  }, [sourceId, adoptJob]);
 
-  // Poll trong lúc job queued/running; job xong → refetch components +
-  // coverage (badge Thiếu → AI tại chỗ), KHÔNG đụng lại Figma (job không
-  // đụng gì tới catalog, chỉ ghi guide).
+  // Job xong (qua hook re-attach hoặc qua startGeneration) → refetch
+  // components + coverage (badge Thiếu → AI tại chỗ) ĐÚNG MỘT LẦN, KHÔNG đụng
+  // lại Figma (job không đụng gì tới catalog, chỉ ghi guide).
   useEffect(() => {
-    if (!job || (job.status !== 'queued' && job.status !== 'running')) return undefined;
-    let alive = true;
-    const jobId = job.id;
-    const timer = setInterval(() => {
-      void fetchFigmaDesignSystemGuideJob(sourceId, jobId).then((latest) => {
-        if (!alive || !latest) return;
-        setJob(latest);
-        if (latest.status === 'succeeded' || latest.status === 'failed') {
-          clearInterval(timer);
-          void loadComponents();
-          void loadDetail();
-        }
-      });
-    }, GUIDE_JOB_POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
+    if (!job || (job.status !== 'succeeded' && job.status !== 'failed')) return;
+    if (refetchedJobIdRef.current === job.id) return;
+    refetchedJobIdRef.current = job.id;
+    void loadComponents();
+    void loadDetail();
   }, [sourceId, job?.id, job?.status, loadComponents, loadDetail]);
 
   const pageOptions = useMemo(() => {
@@ -188,6 +182,14 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
     ?? components?.filter((item) => item.descriptionSource === 'none').length
     ?? 0;
 
+  // Contract mục 6c — tính thẳng từ components API, hiện cả khi chưa chạy
+  // job sinh mô tả nào.
+  const needsRenameItems = useMemo(
+    () => components?.filter((item) => item.needsRename) ?? [],
+    [components],
+  );
+  const needsRenameCount = needsRenameItems.length;
+
   const filtered = useMemo(() => {
     if (!components) return [];
     const term = search.trim().toLowerCase();
@@ -195,9 +197,10 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
       if (term && !item.name.toLowerCase().includes(term)) return false;
       if (pageFilter !== 'all' && item.page !== pageFilter) return false;
       if (missingOnly && item.descriptionSource !== 'none') return false;
+      if (needsRenameOnly && !item.needsRename) return false;
       return true;
     });
-  }, [components, search, pageFilter, missingOnly]);
+  }, [components, search, pageFilter, missingOnly, needsRenameOnly]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const clampedPage = Math.min(page, totalPages);
@@ -214,10 +217,14 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
         running: jobItems.filter((item) => item.status === 'running').length,
         succeeded: jobItems.filter((item) => item.status === 'succeeded').length,
         failed: jobItems.filter((item) => item.status === 'failed').length,
+        // Contract mục 3/6b — comp needsRename bị đánh 'skipped' ngay khi job
+        // start (không gửi agent, không tính vào failed); panel đếm riêng.
+        skipped: jobItems.filter((item) => item.status === 'skipped').length,
       }
     : null;
   const jobTotal = jobItems?.length ?? 0;
-  const jobDone = jobCounts ? jobCounts.succeeded + jobCounts.failed : 0;
+  // Contract mục 6b — "progress done gồm succeeded+failed+skipped".
+  const jobDone = jobCounts ? jobCounts.succeeded + jobCounts.failed + jobCounts.skipped : 0;
 
   // Contract mục 2 (bổ sung 2026-08-20): daemon fan-out theo NHÓM TRANG Figma
   // — panel tiến độ nhóm items theo `page` (item không có page → nhóm "Khác")
@@ -238,7 +245,7 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
     return order.map((key) => {
       const items = byKey.get(key)!;
       const label = key === NO_PAGE_GROUP_KEY ? 'Khác' : key;
-      const done = items.filter((item) => item.status === 'succeeded' || item.status === 'failed').length;
+      const done = items.filter((item) => item.status === 'succeeded' || item.status === 'failed' || item.status === 'skipped').length;
       const hasFailed = items.some((item) => item.status === 'failed');
       const hasRunning = items.some((item) => item.status === 'running');
       const allDone = done === items.length;
@@ -308,6 +315,12 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
                   {`${detail.coverage.described}/${detail.coverage.total} component có mô tả · ${detail.coverage.fromGuide} từ AI · ${detail.coverage.missing} thiếu`}
                 </p>
               ) : null}
+              {detail.imageCache ? (
+                <p className={styles.meta}>
+                  {`Ảnh comp: ${detail.imageCache.cached}/${detail.imageCache.total}`}
+                  {detail.imageCache.running ? ' · đang tải…' : ''}
+                </p>
+              ) : null}
               {detail.lastGuideRun ? (
                 <div>
                   <button
@@ -338,6 +351,29 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
             </div>
           </header>
 
+          {needsRenameCount > 0 ? (
+            <div className={styles.needsRenameBlock} data-testid="figma-ds-detail-needs-rename">
+              <button
+                type="button"
+                className={styles.needsRenameToggle}
+                onClick={() => setNeedsRenameExpanded((current) => !current)}
+              >
+                <Icon name={needsRenameExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
+                {`Cần đặt lại tên trong Figma (${needsRenameCount})`}
+              </button>
+              {needsRenameExpanded ? (
+                <ul className={styles.needsRenameList}>
+                  {needsRenameItems.map((item) => (
+                    <li key={item.anchor}>
+                      <strong>{item.name}</strong>
+                      {item.page ? <span>{item.page}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className={styles.toolbar}>
             <input
               type="search"
@@ -365,6 +401,17 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
             >
               {`Thiếu mô tả (${missingCount})`}
             </button>
+            {needsRenameCount > 0 ? (
+              <button
+                type="button"
+                data-testid="figma-ds-detail-needs-rename-only"
+                className={`${styles.missingToggle} ${needsRenameOnly ? styles.missingToggleActive : ''}`}
+                aria-pressed={needsRenameOnly}
+                onClick={() => { setNeedsRenameOnly((current) => !current); setPage(1); }}
+              >
+                {`Tên rác (${needsRenameCount})`}
+              </button>
+            ) : null}
             {detail.coverage ? (
               <button
                 type="button"
@@ -390,6 +437,7 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
                     <div><strong>{jobCounts.running}</strong><span>Đang sinh</span></div>
                     <div><strong>{jobCounts.succeeded}</strong><span>Thành công</span></div>
                     <div><strong>{jobCounts.failed}</strong><span>Lỗi</span></div>
+                    <div><strong>{jobCounts.skipped}</strong><span>Bỏ qua</span></div>
                   </div>
                   <div className={styles.progressItems} data-testid="figma-ds-detail-progress-items">
                     {jobGroups!.map((group) => {
@@ -412,7 +460,7 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
                                     {ITEM_STATUS_LABEL[item.status]}
                                   </span>
                                   <span>{item.name}</span>
-                                  {item.status === 'failed' && item.reason ? (
+                                  {(item.status === 'failed' || item.status === 'skipped') && item.reason ? (
                                     <span className={styles.progressItemReason}>{item.reason}</span>
                                   ) : null}
                                 </li>
@@ -452,37 +500,53 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
                   const expanded = expandedAnchor === item.anchor;
                   return (
                     <article key={item.anchor} className={styles.row} data-testid={`figma-ds-detail-component-${item.anchor}`}>
-                      <div className={styles.rowHead}>
-                        <span className={`${styles.sourceBadge} ${badge.className}`}>{badge.label}</span>
-                        <h3 className={styles.rowName}>{item.name}</h3>
-                        <span className={styles.rowNodeId}>{item.nodeId}</span>
+                      <div className={styles.rowLayout}>
+                        <div className={styles.rowThumbWrap}>
+                          {/* Contract mục 6d — ảnh cache theo anchor, ổn định
+                              qua rename/refresh; 404/chưa cache → onError ẩn
+                              ảnh, giữ nguyên khoảng chừa (không vỡ layout). */}
+                          <img
+                            className={styles.rowThumb}
+                            src={`/api/figma-design-systems/${encodeURIComponent(sourceId)}/component-image/${encodeURIComponent(item.anchor)}`}
+                            alt={item.name}
+                            loading="lazy"
+                            onError={(event) => { event.currentTarget.style.display = 'none'; }}
+                          />
+                        </div>
+                        <div className={styles.rowBody}>
+                          <div className={styles.rowHead}>
+                            <span className={`${styles.sourceBadge} ${badge.className}`}>{badge.label}</span>
+                            <h3 className={styles.rowName}>{item.name}</h3>
+                            <span className={styles.rowNodeId}>{item.nodeId}</span>
+                          </div>
+                          <p className={styles.rowDescription}>{item.description || 'Chưa có mô tả.'}</p>
+                          {item.properties.length > 0 ? (
+                            <button
+                              type="button"
+                              className={styles.rowToggle}
+                              onClick={() => setExpandedAnchor(expanded ? null : item.anchor)}
+                            >
+                              {expanded ? 'Ẩn thuộc tính' : `Xem thuộc tính (${item.properties.length})`}
+                            </button>
+                          ) : null}
+                          {expanded ? (
+                            <table className={styles.propsTable}>
+                              <thead>
+                                <tr><th>Thuộc tính</th><th>Kiểu</th><th>Giá trị</th></tr>
+                              </thead>
+                              <tbody>
+                                {item.properties.map((prop) => (
+                                  <tr key={prop.name}>
+                                    <td>{prop.name}</td>
+                                    <td>{prop.type}</td>
+                                    <td>{prop.values.join(', ')}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          ) : null}
+                        </div>
                       </div>
-                      <p className={styles.rowDescription}>{item.description || 'Chưa có mô tả.'}</p>
-                      {item.properties.length > 0 ? (
-                        <button
-                          type="button"
-                          className={styles.rowToggle}
-                          onClick={() => setExpandedAnchor(expanded ? null : item.anchor)}
-                        >
-                          {expanded ? 'Ẩn thuộc tính' : `Xem thuộc tính (${item.properties.length})`}
-                        </button>
-                      ) : null}
-                      {expanded ? (
-                        <table className={styles.propsTable}>
-                          <thead>
-                            <tr><th>Thuộc tính</th><th>Kiểu</th><th>Giá trị</th></tr>
-                          </thead>
-                          <tbody>
-                            {item.properties.map((prop) => (
-                              <tr key={prop.name}>
-                                <td>{prop.name}</td>
-                                <td>{prop.type}</td>
-                                <td>{prop.values.join(', ')}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      ) : null}
                     </article>
                   );
                 })}

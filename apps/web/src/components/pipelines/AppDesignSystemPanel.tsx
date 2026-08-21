@@ -6,6 +6,7 @@ import { DesignSpecView } from '../DesignSpecView';
 import { navigate } from '../../router';
 import {
   fetchFigmaDesignSystemDetail,
+  useFigmaGuideJob,
   type GetFigmaDesignSystemSourceResponseV2,
 } from '../../providers/figma-design-systems';
 import { fetchDesignSystemCriteriaFile, fetchDesignSystemReactInfo, fetchDesignSystems } from '../../providers/registry';
@@ -57,6 +58,17 @@ export function AppDesignSystemPanel({ appId, designSystemId, componentSource, f
 function SharedFigmaCatalogPanel({ sourceId }: { sourceId: string }) {
   const [detail, setDetail] = useState<GetFigmaDesignSystemSourceResponseV2 | null | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // WP23b (contract mục 5/6) — re-attach: hiện MỘT dòng "Đang sinh mô tả
+  // x/y…" cạnh link "Mở trang Design system" khi nguồn này có job sinh mô tả
+  // active (kể cả job người dùng bắt đầu ở trang detail, không phải ở đây —
+  // panel này không còn nút bấm riêng, xem FigmaDsSourceDetail).
+  const { job: guideJob } = useFigmaGuideJob(sourceId);
+  const guideJobRunning = guideJob != null && (guideJob.status === 'queued' || guideJob.status === 'running');
+  const guideJobItems = guideJob?.items;
+  const guideJobDone = guideJobItems
+    ? guideJobItems.filter((item) => item.status === 'succeeded' || item.status === 'failed' || item.status === 'skipped').length
+    : null;
+  const guideJobTotal = guideJobItems?.length ?? null;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -103,6 +115,13 @@ function SharedFigmaCatalogPanel({ sourceId }: { sourceId: string }) {
                 >
                   Mở trang Design system →
                 </button>
+                {guideJobRunning ? (
+                  <p className={styles.muted} data-testid="figma-design-system-guide-active">
+                    {guideJobDone != null && guideJobTotal != null
+                      ? `Đang sinh mô tả ${guideJobDone}/${guideJobTotal}…`
+                      : 'Đang sinh mô tả…'}
+                  </p>
+                ) : null}
               </div>
             </>}
       </div>

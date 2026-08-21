@@ -52,6 +52,36 @@ không chờ xác nhận, không sửa file nào khác.
   hết hạn) — lúc đó dùng cây node làm bằng chứng chính. Nếu CẢ HAI đều thiếu,
   vẫn cố mô tả bằng `name`/`properties`, đừng bỏ qua component đó.
 
+## Mode asset — entry có `"kind": "asset"`
+
+Một entry có field `kind: "asset"` nghĩa là daemon phân loại component này là
+icon/logo/avatar/ảnh minh hoạ (theo tên trang hoặc tiền tố tên) — shape KHÁC
+mode thường, CHỈ có tên + trang, KHÔNG có `tree`/`image`/`properties`:
+
+```json
+{ "anchor": "figma-<hash>", "name": "ic-arrow-left", "page": "Icons", "kind": "asset" }
+```
+
+Không có cây node hay ảnh để soi — viết ĐÚNG MỘT dòng ≤120 ký tự theo khuôn:
+
+> "Icon/Logo/Ảnh &lt;cái gì&gt; — dùng cho &lt;ngữ cảnh suy TỪ TÊN/NHÓM TRANG&gt;."
+
+- Chọn "Icon"/"Logo"/"Ảnh" theo tên/trang (ví dụ trang "Icons" hoặc tên bắt
+  đầu `ic-`/`icon` → "Icon…"; tên/trang có "logo" → "Logo…"; còn lại (avatar,
+  illustration, cover, thumbnail…) → "Ảnh…").
+- "&lt;cái gì&gt;" và "&lt;ngữ cảnh&gt;" CHỈ được suy từ chữ có trong
+  `name`/`page` — ví dụ `name: "ic-arrow-left"`, `page: "Icons"` → "Icon mũi
+  tên trái — dùng cho điều hướng/quay lại." KHÔNG bịa hành vi/trạng thái
+  runtime (không tồn tại bằng chứng cho việc đó ở mode này, càng không được
+  suy diễn hơn mode thường).
+- Tên MƠ HỒ (không đủ chữ để suy ra "cái gì" — ví dụ chỉ có số/ký tự lạ dù đã
+  qua bộ lọc tên rác của daemon) → đưa `anchor` đó vào `rejected` của output
+  (xem mục Output) kèm lý do ngắn, KHÔNG cố đoán bừa.
+- Vẫn áp mọi luật chung (không markdown, không xuống dòng, không `|`, không
+  lặp nguyên văn `name`).
+
+Mode thường (không có `kind`) giữ NGUYÊN hướng dẫn ở trên — không đổi.
+
 ## Luật viết mô tả — chỉ tả những gì THẤY được
 
 - Chỉ dựa vào bằng chứng có trong `tree`/`image`/`properties` của ĐÚNG
