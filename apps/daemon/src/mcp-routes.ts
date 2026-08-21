@@ -1,6 +1,6 @@
 import type { Express } from 'express';
 import { MCP_TEMPLATES, buildAcpMcpServers, buildClaudeMcpJson, isManagedProjectCwd, readMcpConfig, writeMcpConfig } from './mcp-config.js';
-import { beginAuth, exchangeCodeForToken, refreshAccessToken } from './mcp-oauth.js';
+import { beginAuth, exchangeCodeForToken, oauthClientNameForMcpServer, refreshAccessToken } from './mcp-oauth.js';
 import { clearToken, getToken, isTokenExpired, readAllTokens, setToken } from './mcp-tokens.js';
 import type { RouteDeps } from './server-context.js';
 
@@ -94,6 +94,8 @@ export function registerMcpRoutes(app: Express, ctx: RegisterMcpRoutesDeps) {
         redirectUri,
         dataDir: RUNTIME_DATA_DIR,
         fetchImpl: fetch,
+        // Figma allow-lists DCR client_name — see oauthClientNameForMcpServer.
+        clientName: oauthClientNameForMcpServer(server),
       });
       pendingAuth.put(result.state, result.pending);
       console.log(

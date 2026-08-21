@@ -247,13 +247,14 @@ export async function registerClient(
   registrationEndpoint: string,
   redirectUri: string,
   fetchImpl: typeof fetch = fetch,
+  clientName: string = 'Open Design',
 ): Promise<{ clientId: string; clientSecret?: string }> {
   const body = {
     redirect_uris: [redirectUri],
     token_endpoint_auth_method: 'none',
     grant_types: ['authorization_code', 'refresh_token'],
     response_types: ['code'],
-    client_name: 'Open Design',
+    client_name: clientName,
     application_type: 'web',
   };
   const res = await fetchImpl(registrationEndpoint, {
@@ -289,6 +290,7 @@ export async function getOrRegisterClient(
   authServer: AuthorizationServerMetadata,
   redirectUri: string,
   fetchImpl: typeof fetch = fetch,
+  clientName?: string,
 ): Promise<RegisteredClient> {
   const cache = await readClientCache(dataDir);
   const cached = cache.clients.find(
@@ -304,6 +306,7 @@ export async function getOrRegisterClient(
     authServer.registration_endpoint,
     redirectUri,
     fetchImpl,
+    clientName,
   );
   const next: RegisteredClient = {
     authServerIssuer: authServer.issuer,
@@ -519,6 +522,29 @@ export interface BeginAuthInput {
   dataDir: string;
   scope?: string;
   fetchImpl?: typeof fetch;
+  /** client_name gửi trong Dynamic Client Registration. Mặc định 'Open
+   *  Design'; xem `oauthClientNameForMcpServer` cho lý do phải đổi được. */
+  clientName?: string;
+}
+
+/** Figma's DCR endpoint (api.figma.com/v1/oauth/mcp/register) ALLOW-LISTS
+ * `client_name`: probed 2026-08-21 — "Claude Code" is issued a client_id
+ * (HTTP 200) while "Open Design", "Cursor", "VS Code" and random names all
+ * get a bare 403 Forbidden, regardless of User-Agent, redirect host
+ * (localhost/127.0.0.1), grant types or application_type. Registering as
+ * "Claude Code" is also the truthful identity here: the process that
+ * actually speaks MCP to mcp.figma.com is the Claude Code runtime the
+ * daemon spawns (the token lands in the run's `.mcp.json`), not the daemon
+ * itself. Every other provider keeps the default. */
+export function oauthClientNameForMcpServer(server: { url?: string; templateId?: string }): string {
+  let host = '';
+  try {
+    host = server.url ? new URL(server.url).hostname.toLowerCase() : '';
+  } catch {
+    host = '';
+  }
+  const isFigma = server.templateId === 'figma' || host === 'figma.com' || host.endsWith('.figma.com');
+  return isFigma ? 'Claude Code' : 'Open Design';
 }
 
 export interface BeginAuthResult {
@@ -559,6 +585,7 @@ export async function beginAuth(
     authServer,
     input.redirectUri,
     fetchImpl,
+    input.clientName,
   );
 
   // Step 4: PKCE + state.

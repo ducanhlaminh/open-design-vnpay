@@ -15,6 +15,7 @@ import {
   generateCodeVerifier,
   generateState,
   getOrRegisterClient,
+  oauthClientNameForMcpServer,
   refreshAccessToken,
 } from '../src/mcp-oauth.js';
 
@@ -412,6 +413,22 @@ describe('PendingAuthCache', () => {
   });
 });
 
+describe('oauthClientNameForMcpServer', () => {
+  it('Figma servers (templateId or *.figma.com URL) register as "Claude Code" — Figma DCR allow-lists that name', () => {
+    expect(oauthClientNameForMcpServer({ templateId: 'figma' })).toBe('Claude Code');
+    expect(oauthClientNameForMcpServer({ url: 'https://mcp.figma.com/mcp' })).toBe('Claude Code');
+    expect(oauthClientNameForMcpServer({ url: 'https://api.figma.com/mcp' })).toBe('Claude Code');
+  });
+
+  it('everything else keeps the default "Open Design" (incl. lookalike hosts and bad URLs)', () => {
+    expect(oauthClientNameForMcpServer({ url: 'https://mcp.higgsfield.ai/mcp' })).toBe('Open Design');
+    expect(oauthClientNameForMcpServer({ url: 'https://notfigma.com/mcp' })).toBe('Open Design');
+    expect(oauthClientNameForMcpServer({ url: 'https://evil-figma.com.attacker.io/mcp' })).toBe('Open Design');
+    expect(oauthClientNameForMcpServer({ url: 'not a url' })).toBe('Open Design');
+    expect(oauthClientNameForMcpServer({})).toBe('Open Design');
+  });
+});
+
 describe('beginAuth (end-to-end with mocked discovery + DCR)', () => {
   let dataDir: string;
   beforeEach(async () => {
@@ -419,6 +436,29 @@ describe('beginAuth (end-to-end with mocked discovery + DCR)', () => {
   });
   afterEach(async () => {
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('threads input.clientName into the DCR request body (default stays "Open Design")', async () => {
+    const registerBodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (input: FetchInput, init?: FetchInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/.well-known/oauth-protected-resource/mcp')) {
+        return new Response(JSON.stringify({ resource: 'https://mcp.example.com/mcp', authorization_servers: ['https://auth.example.com'] }), { status: 200 });
+      }
+      if (url === 'https://auth.example.com/.well-known/oauth-authorization-server') {
+        return new Response(JSON.stringify({ issuer: 'https://auth.example.com', authorization_endpoint: 'https://auth.example.com/authorize', token_endpoint: 'https://auth.example.com/token', registration_endpoint: 'https://auth.example.com/register' }), { status: 200 });
+      }
+      if (url === 'https://auth.example.com/register') {
+        registerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ client_id: `cid-${registerBodies.length}` }), { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('404', { status: 404 });
+    }) as typeof fetch;
+
+    // redirectUri khác nhau để né cache client theo (issuer, redirectUri).
+    await beginAuth({ serverId: 's1', serverUrl: 'https://mcp.example.com/mcp', redirectUri: 'https://a.example.com/cb', dataDir, fetchImpl });
+    await beginAuth({ serverId: 's2', serverUrl: 'https://mcp.example.com/mcp', redirectUri: 'https://b.example.com/cb', dataDir, fetchImpl, clientName: 'Claude Code' });
+    expect(registerBodies.map((b) => b.client_name)).toEqual(['Open Design', 'Claude Code']);
   });
 
   it('discovers, registers, generates PKCE, returns a usable authorize URL', async () => {
