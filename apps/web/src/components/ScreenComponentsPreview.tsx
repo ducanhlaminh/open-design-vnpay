@@ -72,6 +72,7 @@ const LAYOUT_SOURCE_BADGE: Record<'doc-image' | 'agent', string> = {
 const FIGMA_BUILD_ERROR_MESSAGE: Record<FigmaBuildStartErrorCode, string> = {
   FIGMA_PREVIEW_FILE_REQUIRED: 'Chưa cấu hình file Figma preview — dán link file preview bên dưới rồi thử lại.',
   MCP_FIGMA_REQUIRED: 'Thêm Figma MCP trong Cài đặt → MCP rồi đăng nhập.',
+  MCP_FIGMA_CONNECT_REQUIRED: 'Server Figma MCP đã có sẵn — vào Cài đặt → MCP bấm Connect để đăng nhập rồi thử lại.',
   CATALOG_REQUIRED: 'Làm mới DS Figma để lấy component key (Refresh ở Design system).',
   AGENT_UNAVAILABLE: 'Không có agent khả dụng để dựng — thử lại sau.',
 };

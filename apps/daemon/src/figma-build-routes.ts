@@ -29,7 +29,8 @@ import {
   type McpServerLike,
   type ScreenBuildSourceDoc,
 } from './figma-build.js';
-import { readMcpConfig } from './mcp-config.js';
+import { effectiveMcpAuthMode, readMcpConfig, type McpServerConfig } from './mcp-config.js';
+import { getToken } from './mcp-tokens.js';
 import { workflowDirForPipeline } from './pipelines.js';
 import { ensureProject } from './projects.js';
 import { screenDocRel, wireframeRel } from './screen-components.js';
@@ -309,6 +310,31 @@ export function registerFigmaBuildRoutes(app: Express, deps: RegisterFigmaBuildR
       const mcpServer = pickFigmaMcpServer(mcpConfig.servers);
       if (!mcpServer) {
         return res.status(400).json({ error: { code: 'MCP_FIGMA_REQUIRED', message: 'Chưa có Figma MCP server đang bật trong Cài đặt → MCP — thêm rồi đăng nhập.' } });
+      }
+      // WP26: distinguish "no server picked at all" (above) from "server is
+      // there but OAuth was never completed" — the seeded default (WP26 seed,
+      // mcp-config.ts) means the FIRST branch rarely fires post-install, so
+      // this is the message a fresh machine actually sees. A DISTINCT error
+      // code, because the web maps codes to hardcoded messages — reusing
+      // MCP_FIGMA_REQUIRED would show the stale "thêm server" text; unknown
+      // codes fall through to the daemon's raw message by design.
+      //
+      // The check only applies where a missing token actually breaks the run:
+      // effective authMode 'oauth' AND no user-pinned Authorization header
+      // (mergeAuthHeader lets a pinned header win over the daemon Bearer, and
+      // stdio/authMode-none servers never use stored tokens at all). We only
+      // check presence, NOT expiry: an expired-but-refreshable token still
+      // means "connected" — the spawn path (buildClaudeMcpJson) refreshes it
+      // transparently, refreshing here would duplicate that logic for no
+      // observable benefit.
+      const pinnedAuth = Object.entries((mcpServer as McpServerConfig).headers ?? {}).some(
+        ([k, v]) => k.toLowerCase() === 'authorization' && typeof v === 'string' && v.trim() !== '',
+      );
+      if (effectiveMcpAuthMode(mcpServer as McpServerConfig) === 'oauth' && !pinnedAuth) {
+        const token = await getToken(RUNTIME_DATA_DIR, mcpServer.id).catch(() => null);
+        if (!token) {
+          return res.status(400).json({ error: { code: 'MCP_FIGMA_CONNECT_REQUIRED', message: 'Server Figma MCP đã có nhưng chưa đăng nhập — vào Cài đặt → MCP bấm Connect.' } });
+        }
       }
       const catalog = await readFrozenFigmaCatalog(cwd);
       // 400 chứ KHÔNG 409 — web coi 409-kèm-job là "job đang chạy, adopt đi";

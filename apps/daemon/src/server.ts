@@ -4861,10 +4861,11 @@ export async function startServer({
     console.warn(`[plugins] registry seed failed: ${(err)?.message ?? err}`);
   }
 
-  // Default external MCP servers for a fresh data dir (none since 2026-08-18
-  // — see defaultMcpServers), then drop the `ba-agent` entry older versions
-  // auto-seeded so upgraded machines stop showing a pre-filled external MCP
-  // server in Settings. Both best-effort: never block startup.
+  // Default external MCP servers for a fresh data dir — the official Figma
+  // remote MCP as of WP26 2026-08-21, see defaultMcpServers's docblock —
+  // then drop the `ba-agent` entry older versions auto-seeded so upgraded
+  // machines stop showing a pre-filled external MCP server in Settings.
+  // Both best-effort: never block startup.
   try {
     const seededMcp = await seedDefaultMcpConfig(RUNTIME_DATA_DIR);
     if (seededMcp.length > 0) {

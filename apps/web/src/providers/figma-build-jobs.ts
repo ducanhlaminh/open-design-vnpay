@@ -38,10 +38,13 @@ export interface FigmaBuildActiveJob {
   finishedAt?: number;
 }
 
-/** Mã lỗi precheck của POST .../figma-build/start (Spec WP25b intent). */
+/** Mã lỗi precheck của POST .../figma-build/start (Spec WP25b intent;
+ *  MCP_FIGMA_CONNECT_REQUIRED thêm ở WP26 — server đã seed sẵn nhưng chưa
+ *  bấm Connect/OAuth, khác với chưa có server nào). */
 export type FigmaBuildStartErrorCode =
   | 'FIGMA_PREVIEW_FILE_REQUIRED'
   | 'MCP_FIGMA_REQUIRED'
+  | 'MCP_FIGMA_CONNECT_REQUIRED'
   | 'CATALOG_REQUIRED'
   | 'AGENT_UNAVAILABLE';
 

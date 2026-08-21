@@ -363,6 +363,63 @@ describe('figma-build job routes: precheck error codes', () => {
     expect((r.output.body as any).error.code).toBe('MCP_FIGMA_REQUIRED');
   });
 
+  it('MCP_FIGMA_CONNECT_REQUIRED when the Figma MCP server is enabled but has no stored OAuth token', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-'));
+    roots.push(root);
+    const cwd = path.join(root, 'projects', 'proj-1', 'docs-review');
+    await mkdir(cwd, { recursive: true });
+    await writeFile(path.join(cwd, '.figma-preview.json'), JSON.stringify({ fileKey: 'PREVIEW', url: 'https://www.figma.com/design/PREVIEW' }), 'utf8');
+    await writeFile(path.join(root, 'mcp-config.json'), JSON.stringify({ servers: [{ id: 'figma', enabled: true, transport: 'http', templateId: 'figma', url: 'https://mcp.figma.com/mcp' }] }), 'utf8');
+    // No mcp-tokens.json at all — the seeded server was never OAuth'd.
+    const handlers = register(root);
+    const r = response();
+    await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, r.res);
+    expect(r.output.status).toBe(400);
+    // Distinct code from MCP_FIGMA_REQUIRED — the web maps known codes to
+    // hardcoded messages, and only an UNKNOWN code falls through to this
+    // daemon message, so reusing the old code would hide the "Connect" hint.
+    expect((r.output.body as any).error.code).toBe('MCP_FIGMA_CONNECT_REQUIRED');
+    expect((r.output.body as any).error.message).toContain('Connect');
+  });
+
+  it('token check skipped for a user-pinned Authorization header and for non-oauth transports', async () => {
+    // Both configs pass the MCP precheck WITHOUT any mcp-tokens.json and land
+    // on CATALOG_REQUIRED — a stored OAuth token is only demanded where its
+    // absence would actually break the run (oauth mode, nothing pinned).
+    const cases = [
+      // http + oauth but the user pinned a manual token (mergeAuthHeader lets it win)
+      { id: 'figma', enabled: true, transport: 'http', templateId: 'figma', url: 'https://mcp.figma.com/mcp', authMode: 'oauth', headers: { Authorization: 'Bearer manual' } },
+      // stdio server whose id matches /figma/i (e.g. figma-context) — no token concept at all
+      { id: 'figma-context', enabled: true, transport: 'stdio', command: 'npx' },
+    ];
+    for (const server of cases) {
+      const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-'));
+      roots.push(root);
+      const cwd = path.join(root, 'projects', 'proj-1', 'docs-review');
+      await mkdir(cwd, { recursive: true });
+      await writeFile(path.join(cwd, '.figma-preview.json'), JSON.stringify({ fileKey: 'PREVIEW', url: 'https://www.figma.com/design/PREVIEW' }), 'utf8');
+      await writeFile(path.join(root, 'mcp-config.json'), JSON.stringify({ servers: [server] }), 'utf8');
+      const handlers = register(root);
+      const r = response();
+      await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, r.res);
+      expect((r.output.body as any).error.code).toBe('CATALOG_REQUIRED');
+    }
+  });
+
+  it('an expired token WITH a refreshToken still counts as connected (spawn path refreshes it)', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-'));
+    roots.push(root);
+    const cwd = path.join(root, 'projects', 'proj-1', 'docs-review');
+    await mkdir(cwd, { recursive: true });
+    await writeFile(path.join(cwd, '.figma-preview.json'), JSON.stringify({ fileKey: 'PREVIEW', url: 'https://www.figma.com/design/PREVIEW' }), 'utf8');
+    await writeFile(path.join(root, 'mcp-config.json'), JSON.stringify({ servers: [{ id: 'figma', enabled: true, transport: 'http', templateId: 'figma', url: 'https://mcp.figma.com/mcp', authMode: 'oauth' }] }), 'utf8');
+    await writeFile(path.join(root, 'mcp-tokens.json'), JSON.stringify({ servers: { figma: { accessToken: 'tok', tokenType: 'Bearer', savedAt: Date.now() - 10_000_000, expiresAt: Date.now() - 1_000, refreshToken: 'refresh' } } }), 'utf8');
+    const handlers = register(root);
+    const r = response();
+    await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, r.res);
+    expect((r.output.body as any).error.code).toBe('CATALOG_REQUIRED');
+  });
+
   it('CATALOG_REQUIRED when the frozen .figma-catalog/components.json is missing', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-'));
     roots.push(root);
@@ -370,6 +427,7 @@ describe('figma-build job routes: precheck error codes', () => {
     await mkdir(cwd, { recursive: true });
     await writeFile(path.join(cwd, '.figma-preview.json'), JSON.stringify({ fileKey: 'PREVIEW', url: 'https://www.figma.com/design/PREVIEW' }), 'utf8');
     await writeFile(path.join(root, 'mcp-config.json'), JSON.stringify({ servers: [{ id: 'figma', enabled: true, transport: 'http', templateId: 'figma', url: 'https://mcp.figma.com/mcp' }] }), 'utf8');
+    await writeFile(path.join(root, 'mcp-tokens.json'), JSON.stringify({ servers: { figma: { accessToken: 'tok', tokenType: 'Bearer', savedAt: Date.now() } } }), 'utf8');
     const handlers = register(root);
     const r = response();
     await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, r.res);
@@ -384,6 +442,7 @@ describe('figma-build job routes: precheck error codes', () => {
     await mkdir(path.join(cwd, '.figma-catalog'), { recursive: true });
     await writeFile(path.join(cwd, '.figma-preview.json'), JSON.stringify({ fileKey: 'PREVIEW', url: 'https://www.figma.com/design/PREVIEW' }), 'utf8');
     await writeFile(path.join(root, 'mcp-config.json'), JSON.stringify({ servers: [{ id: 'figma', enabled: true, transport: 'http', templateId: 'figma', url: 'https://mcp.figma.com/mcp' }] }), 'utf8');
+    await writeFile(path.join(root, 'mcp-tokens.json'), JSON.stringify({ servers: { figma: { accessToken: 'tok', tokenType: 'Bearer', savedAt: Date.now() } } }), 'utf8');
     await writeFile(path.join(cwd, '.figma-catalog', 'components.json'), JSON.stringify(catalogWithVariants()), 'utf8');
     const handlers = register(root, {}); // no resolveAgent
     const r = response();

@@ -17,6 +17,7 @@ import {
   removeLegacyBaAgentSeed,
   writeMcpConfig,
 } from '../src/mcp-config.js';
+import { pickFigmaMcpServer } from '../src/figma-build.js';
 
 
 describe('mcp-config storage', () => {
@@ -628,6 +629,15 @@ describe('isManagedProjectCwd', () => {
 });
 
 describe('MCP_TEMPLATES', () => {
+  it('includes the official Figma remote template (oauth, streamable HTTP /mcp)', () => {
+    const tpl = MCP_TEMPLATES.find((t) => t.id === 'figma');
+    expect(tpl).toBeDefined();
+    expect(tpl?.transport).toBe('http');
+    expect(tpl?.authMode).toBe('oauth');
+    expect(tpl?.url).toBe('https://mcp.figma.com/mcp');
+    expect(tpl?.category).toBe('design-systems');
+  });
+
   it('includes the Higgsfield openclaw entry pointing at the streamable HTTP /mcp endpoint', () => {
     const tpl = MCP_TEMPLATES.find((t) => t.id === 'higgsfield-openclaw');
     expect(tpl).toBeDefined();
@@ -757,6 +767,7 @@ describe('MCP_TEMPLATES', () => {
   it('groups design-systems templates in declaration order', () => {
     const ids = MCP_TEMPLATES.filter((t) => t.category === 'design-systems').map((t) => t.id);
     expect(ids).toEqual([
+      'figma',
       'figma-context',
       'design-token-bridge',
       'design-system-extractor',
@@ -1085,11 +1096,24 @@ describe('MCP_TEMPLATES', () => {
 });
 
 describe('defaultMcpServers', () => {
-  it('seeds NOTHING: an install must not show a pre-filled external MCP server (2026-08-18)', () => {
-    expect(defaultMcpServers({})).toEqual([]);
-    // Env-baked gateway credentials no longer turn into an MCP entry either —
-    // bas/bas-client.ts reads OD_BA_AGENT_URL/OD_BA_AGENT_TOKEN directly.
-    expect(defaultMcpServers({ OD_BA_AGENT_URL: 'https://example.test/mcp/', OD_BA_AGENT_TOKEN: 'tok' })).toEqual([]);
+  // WP26 (2026-08-21): the ba-agent "seed nothing" policy (2026-08-18) still
+  // holds for every OTHER default — the one exception is the official Figma
+  // remote MCP, pre-added so "Dựng trong Figma" only needs a Connect click.
+  it('seeds exactly the official Figma remote MCP server, sourced from its MCP_TEMPLATES entry', () => {
+    const servers = defaultMcpServers({});
+    expect(servers).toHaveLength(1);
+    const [figma] = servers;
+    expect(figma?.id).toBe('figma');
+    expect(figma?.enabled).toBe(true);
+    expect(figma?.transport).toBe('http');
+    expect(figma?.templateId).toBe('figma');
+    expect(figma?.authMode).toBe('oauth');
+    expect(figma?.url).toBe('https://mcp.figma.com/mcp');
+  });
+
+  it('env-baked gateway credentials still do not turn into an MCP entry — bas/bas-client.ts reads them directly', () => {
+    const withEnv = defaultMcpServers({ OD_BA_AGENT_URL: 'https://example.test/mcp/', OD_BA_AGENT_TOKEN: 'tok' });
+    expect(withEnv.map((s) => s.id)).toEqual(['figma']);
   });
 });
 
@@ -1104,7 +1128,35 @@ describe('seedDefaultMcpConfig / removeLegacyBaAgentSeed', () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
-  it('a fresh data dir gets no mcp-config.json and no servers', async () => {
+  it('a fresh data dir gets seeded with exactly one enabled Figma server', async () => {
+    const seeded = await seedDefaultMcpConfig(dataDir, {});
+    expect(seeded).toEqual(['figma']);
+    const cfg = await readMcpConfig(dataDir);
+    expect(cfg.servers).toHaveLength(1);
+    const [figma] = cfg.servers;
+    expect(figma?.id).toBe('figma');
+    expect(figma?.enabled).toBe(true);
+    expect(figma?.templateId).toBe('figma');
+    expect(figma?.authMode).toBe('oauth');
+    expect(figma?.url).toBe('https://mcp.figma.com/mcp');
+    // pickFigmaMcpServer (figma-build.ts) must recognize the seeded server.
+    expect(pickFigmaMcpServer(cfg.servers)?.id).toBe('figma');
+  });
+
+  it('is idempotent: seeding twice does not duplicate or rewrite the file', async () => {
+    const first = await seedDefaultMcpConfig(dataDir, {});
+    expect(first).toEqual(['figma']);
+    const beforeSecond = await readFile(path.join(dataDir, 'mcp-config.json'), 'utf8');
+    const second = await seedDefaultMcpConfig(dataDir, {});
+    expect(second).toEqual([]); // config already exists — no-op
+    const afterSecond = await readFile(path.join(dataDir, 'mcp-config.json'), 'utf8');
+    expect(afterSecond).toBe(beforeSecond);
+    const cfg = await readMcpConfig(dataDir);
+    expect(cfg.servers).toHaveLength(1);
+  });
+
+  it('never seeds over an existing mcp-config.json, even an empty one (respects a user who removed the default)', async () => {
+    await writeMcpConfig(dataDir, { servers: [] });
     const seeded = await seedDefaultMcpConfig(dataDir, {});
     expect(seeded).toEqual([]);
     const cfg = await readMcpConfig(dataDir);

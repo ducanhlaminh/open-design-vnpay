@@ -161,7 +161,7 @@ function sanitizeMcpAuthMode(raw: unknown): McpAuthMode | undefined {
     : undefined;
 }
 
-function effectiveMcpAuthMode(server: McpServerConfig): McpAuthMode {
+export function effectiveMcpAuthMode(server: McpServerConfig): McpAuthMode {
   if (server.transport !== 'http' && server.transport !== 'sse') return 'none';
   return server.authMode ?? inferMcpAuthModeForUrl(server.url);
 }
@@ -286,25 +286,45 @@ async function doWrite(dataDir: string, body: unknown): Promise<McpConfig> {
 // — was removed; Confluence credentials now live in their own store, see
 // confluence-config.ts.)
 //
-// 2026-08-18: the `ba-agent` seed is GONE. It used to be seeded on every fresh
-// data dir so the BAS gateway (a2.openledger.vn) showed up in Settings →
-// External MCP; but (a) no pipeline stage uses an MCP server any more (docs
-// ingest is a daemon-side prefetch, Confluence goes through its own
-// credential store, the BAS source is locked), and (b) the daemon-side BAS
-// endpoint resolves from env (BAS_MCP_URL/BAS_MCP_TOKEN or
-// OD_BA_AGENT_URL/OD_BA_AGENT_TOKEN — see bas/bas-client.ts) without an MCP
-// entry. Product decision: an install must not show a pre-filled external
-// MCP server. `removeLegacyBaAgentSeed` below cleans the entry off machines
-// that were seeded by older versions.
+// 2026-08-18: the `ba-agent` seed is GONE (see `LEGACY_BA_AGENT_SERVER_ID`
+// below) — no pipeline stage uses an MCP server, so a pre-filled BAS gateway
+// entry only confused users.
+//
+// WP26 (2026-08-21): the Figma REMOTE MCP is the one exception to "seed
+// nothing". "Dựng trong Figma" (Screens → Components) needs a Figma MCP
+// server picked in Settings before it can run at all (see
+// figma-build-routes.ts's `MCP_FIGMA_REQUIRED` precheck) — every fresh
+// install now gets the official `figma` template pre-added (disabled state
+// aside, `enabled: true` from the start) so a designer only has to click
+// "Connect" instead of also adding the server by hand. `seedDefaultMcpConfig`
+// below still only runs this once, on a config file that doesn't exist yet.
 // ───────────────────────────────────────────────────────────────────────
 
-/** Default external MCP servers for a fresh data dir: none. Kept as a
- *  function (env-parameterised) so a deployment can grow a seed list again
- *  without changing the call sites. */
+/** Id of the officially-seeded Figma remote MCP server — matches the
+ *  `MCP_TEMPLATES` entry with the same id (see below) and is what
+ *  `figma-build.ts`'s `pickFigmaMcpServer` matches on via `templateId`. */
+export const DEFAULT_FIGMA_MCP_SERVER_ID = 'figma';
+
+/** Default external MCP servers for a fresh data dir: just the official
+ *  Figma remote MCP (see WP26 note above), pre-filled from its
+ *  `MCP_TEMPLATES` entry. Kept as a function (env-parameterised) so a
+ *  deployment can grow/shrink the seed list without changing call sites. */
 export function defaultMcpServers(
   _env: NodeJS.ProcessEnv = process.env,
 ): McpServerConfig[] {
-  return [];
+  const template = MCP_TEMPLATES.find((t) => t.id === DEFAULT_FIGMA_MCP_SERVER_ID);
+  if (!template || !template.url) return [];
+  return [
+    {
+      id: DEFAULT_FIGMA_MCP_SERVER_ID,
+      label: template.label,
+      templateId: template.id,
+      transport: template.transport,
+      enabled: true,
+      authMode: template.authMode ?? 'oauth',
+      url: template.url,
+    },
+  ];
 }
 
 /** Id of the server older daemons seeded automatically (see above). */
@@ -980,6 +1000,27 @@ export const MCP_TEMPLATES: McpTemplate[] = [
   },
 
   // ── design-systems ──────────────────────────────────────────────────
+  {
+    id: 'figma',
+    label: 'Figma (official remote)',
+    description:
+      'Figma\'s own official MCP server — reads live design context AND writes back to the canvas (create/update frames, components, layers), unlike the read-only Figma Context template below. This is what the "Dựng trong Figma" button (tab Màn hình → Component) uses to push a screen straight into your Figma file. OAuth-only, streamable HTTP at /mcp: after saving, click "Connect" — Open Design completes the OAuth handshake and stores the token server-side; no terminal step needed.',
+    transport: 'http',
+    authMode: 'oauth',
+    category: 'design-systems',
+    homepage: 'https://developers.figma.com/docs/mcp-server/',
+    example:
+      'Create a "[OD] Checkout" page in the currently open Figma file with a frame named "6.3.1 — Payment method" using our Button and Card components.',
+    url: 'https://mcp.figma.com/mcp',
+    headerFields: [
+      {
+        key: 'Authorization',
+        label: 'Authorization (override)',
+        placeholder: 'Bearer <token>  ← only set this if you want to pin a manual token',
+        secret: true,
+      },
+    ],
+  },
   {
     id: 'figma-context',
     label: 'Figma Context (read designs → code)',

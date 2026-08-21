@@ -375,6 +375,7 @@ describe('ScreenComponentsPreview · Dựng trong Figma (WP25b)', () => {
   it.each([
     ['FIGMA_PREVIEW_FILE_REQUIRED', 'Chưa cấu hình file Figma preview — dán link file preview bên dưới rồi thử lại.'],
     ['MCP_FIGMA_REQUIRED', 'Thêm Figma MCP trong Cài đặt → MCP rồi đăng nhập.'],
+    ['MCP_FIGMA_CONNECT_REQUIRED', 'Server Figma MCP đã có sẵn — vào Cài đặt → MCP bấm Connect để đăng nhập rồi thử lại.'],
     ['CATALOG_REQUIRED', 'Làm mới DS Figma để lấy component key (Refresh ở Design system).'],
     ['AGENT_UNAVAILABLE', 'Không có agent khả dụng để dựng — thử lại sau.'],
   ])('lỗi start mã %s → thông điệp tiếng Việt hành động được', async (code, expected) => {
