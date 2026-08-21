@@ -468,6 +468,21 @@ export function wrapInvocationInSandbox(input: SandboxWrapInput): {
     const value = env[key];
     if (typeof value === 'string' && value) dockerArgs.push('-e', `${key}=${value}`);
   }
+  // Codex external-MCP bearer tokens (WP27): `buildCodexMcpBearerEnv` names
+  // these `OD_MCP_BEARER_<SERVER-ID>` dynamically, one per enabled http MCP
+  // server, so they can't be enumerated in the static `forwardedEnvKeys`
+  // list above (that list is keyed by exact literal names). Forward the
+  // whole pattern instead — same "-e KEY=value" shape, still a whitelist
+  // (nothing else off `env` crosses into the container), just matched by
+  // prefix rather than by a fixed name. Only codex reads a
+  // `bearer_token_env_var`, so this is a no-op for the claude runtime.
+  if (runtimeId === 'codex') {
+    for (const [key, value] of Object.entries(env)) {
+      if (key.startsWith('OD_MCP_BEARER_') && typeof value === 'string' && value) {
+        dockerArgs.push('-e', `${key}=${value}`);
+      }
+    }
+  }
   const containerArgs = [...args];
   if (runtimeId === 'codex') {
     // buildArgs runs on the host before the Docker decision, so Codex's `-C`

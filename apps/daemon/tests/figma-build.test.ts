@@ -510,6 +510,27 @@ describe('figma-build job routes: precheck error codes', () => {
     expect((r.output.body as any).error.code).toBe('AGENT_UNAVAILABLE');
   });
 
+  it('resolveAgent THROWS (no claude-capable runtime) → 501 AGENT_UNAVAILABLE with the thrown message, not 500', async () => {
+    // server.ts's resolveFigmaBuildAgent throws when no runtime with
+    // externalMcpInjection 'claude-mcp-json' is available (default agent =
+    // codex on the user machine that hit this) — the route must surface it
+    // as an actionable AGENT_UNAVAILABLE, not a generic INTERNAL.
+    const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-'));
+    roots.push(root);
+    const cwd = path.join(root, 'projects', 'proj-1', 'docs-review');
+    await mkdir(path.join(cwd, '.figma-catalog'), { recursive: true });
+    await writeFile(path.join(cwd, '.figma-preview.json'), JSON.stringify({ fileKey: 'PREVIEW', url: 'https://www.figma.com/design/PREVIEW' }), 'utf8');
+    await writeFile(path.join(root, 'mcp-config.json'), JSON.stringify({ servers: [{ id: 'figma', enabled: true, transport: 'http', templateId: 'figma', url: 'https://mcp.figma.com/mcp' }] }), 'utf8');
+    await writeFile(path.join(root, 'mcp-tokens.json'), JSON.stringify({ servers: { figma: { accessToken: 'tok', tokenType: 'Bearer', savedAt: Date.now() } } }), 'utf8');
+    await writeFile(path.join(cwd, '.figma-catalog', 'components.json'), JSON.stringify(catalogWithVariants()), 'utf8');
+    const handlers = register(root, { resolveAgent: () => Promise.reject(new Error('Bước "Dựng trong Figma" cần Claude CLI khả dụng.')) });
+    const r = response();
+    await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, r.res);
+    expect(r.output.status).toBe(501);
+    expect((r.output.body as any).error.code).toBe('AGENT_UNAVAILABLE');
+    expect((r.output.body as any).error.message).toContain('Claude CLI');
+  });
+
   it('missing/empty screenKeys → INVALID_INPUT before any precheck', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-'));
     roots.push(root);

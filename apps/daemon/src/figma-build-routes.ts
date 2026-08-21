@@ -359,7 +359,16 @@ export function registerFigmaBuildRoutes(app: Express, deps: RegisterFigmaBuildR
       if (typeof deps.agents?.resolveAgent !== 'function') {
         return res.status(501).json({ error: { code: 'AGENT_UNAVAILABLE', message: 'Chưa cấu hình agent để chạy job này.' } });
       }
-      const execution = await deps.agents.resolveAgent();
+      // resolveAgent của job này đòi ĐÚNG runtime gắn được Figma MCP
+      // (server.ts resolveFigmaBuildAgent) — không có thì đây là lỗi cấu
+      // hình agent, trả AGENT_UNAVAILABLE kèm message hành động được thay
+      // vì rơi xuống 500 INTERNAL chung chung.
+      let execution: { agentId: string; modelPrefs: { model?: string | null; reasoning?: string | null } };
+      try {
+        execution = await deps.agents.resolveAgent();
+      } catch (err) {
+        return res.status(501).json({ error: { code: 'AGENT_UNAVAILABLE', message: err instanceof Error ? err.message : String(err) } });
+      }
       // Re-check sau await (resolveAgent là async) — hai POST gần nhau không
       // tạo hai job song song, cùng khuôn double-check của figma-guide job.
       const racedId = jobByProject.get(projectId);

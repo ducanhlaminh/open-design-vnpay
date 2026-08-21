@@ -7,8 +7,10 @@ import {
   MCP_TEMPLATES,
   buildAcpMcpServers,
   buildClaudeMcpJson,
+  buildCodexMcpBearerEnv,
   buildCodexMcpToml,
   buildOpenCodeMcpConfigContent,
+  codexBearerEnvVarName,
   defaultMcpServers,
   isManagedProjectCwd,
   readMcpConfig,
@@ -587,6 +589,172 @@ describe('buildOpenCodeMcpConfigContent', () => {
     expect((raw as string).charCodeAt(0)).not.toBe(0xfeff);
     // Round-trip MUST parse cleanly.
     expect(() => JSON.parse(raw as string)).not.toThrow();
+  });
+});
+
+describe('codexBearerEnvVarName', () => {
+  it('upper-cases the server id', () => {
+    expect(codexBearerEnvVarName('figma')).toBe('OD_MCP_BEARER_FIGMA');
+  });
+
+  it('replaces non [A-Z0-9] characters (e.g. "-") with "_"', () => {
+    expect(codexBearerEnvVarName('my-server_id')).toBe('OD_MCP_BEARER_MY_SERVER_ID');
+  });
+});
+
+describe('buildCodexMcpBearerEnv', () => {
+  it('uses the stored OAuth token for an http server with no pinned header', () => {
+    const env = buildCodexMcpBearerEnv(
+      [{ id: 'figma', transport: 'http', enabled: true, url: 'https://mcp.figma.com/mcp' }],
+      { figma: 'oauth-access-token' },
+    );
+    expect(env).toEqual({ OD_MCP_BEARER_FIGMA: 'oauth-access-token' });
+  });
+
+  it('prefers a user-pinned Authorization header over the stored token, stripping the Bearer prefix', () => {
+    const env = buildCodexMcpBearerEnv(
+      [
+        {
+          id: 'figma',
+          transport: 'http',
+          enabled: true,
+          url: 'https://mcp.figma.com/mcp',
+          headers: { Authorization: 'Bearer abc' },
+        },
+      ],
+      { figma: 'oauth-access-token' },
+    );
+    expect(env).toEqual({ OD_MCP_BEARER_FIGMA: 'abc' });
+  });
+
+  it('omits a server with neither a pinned header nor a stored token', () => {
+    const env = buildCodexMcpBearerEnv(
+      [{ id: 'figma', transport: 'http', enabled: true, url: 'https://mcp.figma.com/mcp' }],
+      {},
+    );
+    expect(env).toEqual({});
+  });
+
+  it('env-name collision ("fig-ma" vs "fig_ma"): first server wins, the collider gets NO bearer at all', () => {
+    // Tên env sinh lossy (hoa hoá, mọi separator → '_') nên 2 id khác nhau có
+    // thể trùng tên. Không có guard thì server thua sẽ được TOML trỏ vào token
+    // của server thắng → gửi credential chéo host.
+    const servers = [
+      { id: 'fig-ma', transport: 'http' as const, enabled: true, url: 'https://a.example.com/mcp' },
+      { id: 'fig_ma', transport: 'http' as const, enabled: true, url: 'https://b.example.com/mcp' },
+    ];
+    const env = buildCodexMcpBearerEnv(servers, { 'fig-ma': 'token-a', 'fig_ma': 'token-b' });
+    expect(env).toEqual({ OD_MCP_BEARER_FIG_MA: 'token-a' });
+
+    const toml = buildCodexMcpToml(servers, { 'fig-ma': 'token-a', 'fig_ma': 'token-b' })!;
+    // Server thắng có bearer_token_env_var; server thua CHỈ có url trần.
+    const loserSection = toml.slice(toml.indexOf('[mcp_servers.fig_ma]'));
+    expect(toml.indexOf('bearer_token_env_var')).toBeGreaterThan(-1);
+    expect(loserSection).not.toContain('bearer_token_env_var');
+    expect(toml).not.toContain('token-a');
+    expect(toml).not.toContain('token-b');
+  });
+
+  it('skips disabled and non-http servers', () => {
+    const env = buildCodexMcpBearerEnv(
+      [
+        { id: 'figma', transport: 'http', enabled: false, url: 'https://mcp.figma.com/mcp' },
+        { id: 'github', transport: 'stdio', enabled: true, command: 'gh-mcp' },
+      ],
+      { figma: 'tok', github: 'tok2' },
+    );
+    expect(env).toEqual({});
+  });
+});
+
+describe('buildCodexMcpToml', () => {
+  it('emits url + bearer_token_env_var for an http server with a stored token, never the token value itself', () => {
+    const toml = buildCodexMcpToml(
+      [{ id: 'figma', transport: 'http', enabled: true, url: 'https://mcp.figma.com/mcp' }],
+      { figma: 'super-secret-token' },
+    );
+    expect(toml).not.toBeNull();
+    expect(toml).toContain('[mcp_servers.figma]');
+    expect(toml).toContain('url = "https://mcp.figma.com/mcp"');
+    expect(toml).toContain('bearer_token_env_var = "OD_MCP_BEARER_FIGMA"');
+    expect(toml).not.toContain('super-secret-token');
+  });
+
+  it('emits a bare url with no bearer_token_env_var when there is no header nor stored token', () => {
+    const toml = buildCodexMcpToml([
+      { id: 'figma', transport: 'http', enabled: true, url: 'https://mcp.figma.com/mcp' },
+    ]);
+    expect(toml).not.toBeNull();
+    expect(toml).toContain('url = "https://mcp.figma.com/mcp"');
+    expect(toml).not.toContain('bearer_token_env_var');
+  });
+
+  it('uses the pinned Authorization header (Bearer prefix stripped) over the stored token', () => {
+    const toml = buildCodexMcpToml(
+      [
+        {
+          id: 'figma',
+          transport: 'http',
+          enabled: true,
+          url: 'https://mcp.figma.com/mcp',
+          headers: { Authorization: 'Bearer abc' },
+        },
+      ],
+      { figma: 'oauth-token' },
+    );
+    expect(toml).toContain('bearer_token_env_var = "OD_MCP_BEARER_FIGMA"');
+    expect(toml).not.toContain('oauth-token');
+  });
+
+  it('skips sse servers entirely (Codex only accepts streamable http)', () => {
+    const toml = buildCodexMcpToml([
+      { id: 'ssesvc', transport: 'sse', enabled: true, url: 'https://example.com/sse' },
+    ]);
+    expect(toml).toBeNull();
+  });
+
+  it('keeps the existing stdio behaviour unchanged', () => {
+    const toml = buildCodexMcpToml([
+      {
+        id: 'github',
+        transport: 'stdio',
+        enabled: true,
+        command: 'npx',
+        args: ['-y', 'github-mcp'],
+        env: { GITHUB_TOKEN: 'gh-tok' },
+      },
+    ]);
+    expect(toml).toContain('[mcp_servers.github]');
+    expect(toml).toContain('command = "npx"');
+    expect(toml).toContain('args = ["-y", "github-mcp"]');
+    expect(toml).toContain('[mcp_servers.github.env]');
+    expect(toml).toContain('GITHUB_TOKEN = "gh-tok"');
+  });
+
+  it('emits both stdio and http entries when servers of both transports are enabled', () => {
+    const toml = buildCodexMcpToml(
+      [
+        { id: 'github', transport: 'stdio', enabled: true, command: 'gh-mcp' },
+        { id: 'figma', transport: 'http', enabled: true, url: 'https://mcp.figma.com/mcp' },
+      ],
+      { figma: 'tok' },
+    );
+    expect(toml).toContain('[mcp_servers.github]');
+    expect(toml).toContain('[mcp_servers.figma]');
+    expect(toml).toContain('bearer_token_env_var = "OD_MCP_BEARER_FIGMA"');
+  });
+
+  it('returns null when servers is empty', () => {
+    expect(buildCodexMcpToml([])).toBeNull();
+  });
+
+  it('returns null when no server is enabled / emit-able (sse-only, all disabled)', () => {
+    expect(
+      buildCodexMcpToml([
+        { id: 'ssesvc', transport: 'sse', enabled: true, url: 'https://example.com/sse' },
+        { id: 'github', transport: 'stdio', enabled: false, command: 'gh-mcp' },
+      ]),
+    ).toBeNull();
   });
 });
 

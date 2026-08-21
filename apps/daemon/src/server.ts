@@ -275,6 +275,7 @@ import {
   MCP_TEMPLATES,
   buildAcpMcpServers,
   buildClaudeMcpJson,
+  buildCodexMcpBearerEnv,
   buildCodexMcpToml,
   buildOpenCodeMcpConfigContent,
   isManagedProjectCwd,
@@ -6563,7 +6564,13 @@ export async function startServer({
         [INTERNAL_MCP_SERVER_IDS]: serverIds,
       }),
     },
-    agents: { getAgentDef: agentDeps.getAgentDef, resolveAgent: () => resolveCriteriaAgent() },
+    // KHÔNG dùng resolveCriteriaAgent thẳng (agent mặc định của máy có thể
+    // KHÔNG có đường gắn external MCP): run dựng Figma PHẢI là một runtime
+    // có `externalMcpInjection` ∈ {'claude-mcp-json', 'codex-profile-v2'}
+    // — claude gắn qua `.mcp.json`, codex gắn qua profile TOML + bearer env
+    // (0.147.0 hỗ trợ streamable HTTP `url` + `bearer_token_env_var`).
+    // resolveFigmaBuildAgent ưu tiên agent mặc định nếu nó hợp lệ.
+    agents: { getAgentDef: agentDeps.getAgentDef, resolveAgent: () => resolveFigmaBuildAgent() },
   });
   /** Which component catalogue the docs-review Screen → Component stage
    *  (dr-comp) compares against for a project: the App's setting, overridden
@@ -7469,6 +7476,51 @@ export async function startServer({
     if (!agentId) agentId = await sandboxFallbackRuntimeId();
     if (!agentId) throw new Error('Chưa cấu hình agent nào khả dụng — chọn agent trong Cài đặt trước.');
     return { agentId, modelPrefs: appConfig.agentModels?.[agentId] ?? {} };
+  };
+
+  /** Agent cho job "Dựng trong Figma" (figma-build-routes). KHÁC
+   *  resolveCriteriaAgent: không lấy vô điều kiện agent mặc định của máy mà
+   *  đòi một runtime có đường gắn external MCP — `externalMcpInjection` ∈
+   *  {'claude-mcp-json', 'codex-profile-v2'} — vì đó là 2 cách duy nhất
+   *  daemon gắn được server MCP HTTP+OAuth của Figma vào run (claude: ghi
+   *  `.mcp.json` + bơm Bearer; codex 0.147.0: profile TOML `url` +
+   *  `bearer_token_env_var`, token qua env — xem buildCodexMcpToml /
+   *  buildCodexMcpBearerEnv trong mcp-config.ts). Ưu tiên agent mặc định
+   *  của máy (appConfig.agentId) nếu nó hợp lệ, để tránh spawn một agent
+   *  khác agent user đã chọn khi cả hai đều gắn được; nếu agent mặc định
+   *  không hợp lệ (hoặc không được set) thì rơi xuống ứng viên khả dụng
+   *  đầu tiên. */
+  const resolveFigmaBuildAgent = async () => {
+    const appConfig = await readAppConfig(RUNTIME_DATA_DIR);
+    const agents = await detectAgents(appConfig.agentCliEnv ?? {}, sandboxSkipProbe(appConfig)).catch(() => []);
+    const isEligible = (agent: (typeof agents)[number]) =>
+      agent.available &&
+      (agentDeps.getAgentDef(agent.id)?.externalMcpInjection === 'claude-mcp-json' ||
+        agentDeps.getAgentDef(agent.id)?.externalMcpInjection === 'codex-profile-v2');
+    const defaultAgentId =
+      typeof appConfig.agentId === 'string' && appConfig.agentId ? appConfig.agentId : null;
+    const defaultCandidate = defaultAgentId
+      ? agents.find((agent) => agent.id === defaultAgentId)
+      : undefined;
+    const eligible =
+      defaultCandidate && isEligible(defaultCandidate)
+        ? defaultCandidate
+        : agents.find(isEligible);
+    if (eligible) {
+      return { agentId: eligible.id, modelPrefs: appConfig.agentModels?.[eligible.id] ?? {} };
+    }
+    // Sandbox-owned runs: detectAgents báo mọi CLI host là unavailable by
+    // design (skipProbe) dù nhánh sandbox codex-profile (server.ts, khối
+    // codex-profile-v2) chạy được đầy đủ trong container — cùng fallback với
+    // resolveCriteriaAgent, nhưng CHỈ nhận runtime có đường inject Figma MCP.
+    const sandboxId = await sandboxFallbackRuntimeId();
+    const sandboxInjection = sandboxId ? agentDeps.getAgentDef(sandboxId)?.externalMcpInjection : undefined;
+    if (sandboxId && (sandboxInjection === 'claude-mcp-json' || sandboxInjection === 'codex-profile-v2')) {
+      return { agentId: sandboxId, modelPrefs: appConfig.agentModels?.[sandboxId] ?? {} };
+    }
+    throw new Error(
+      'Bước "Dựng trong Figma" cần Claude hoặc Codex CLI khả dụng — cài/đăng nhập một trong hai rồi thử lại.',
+    );
   };
 
   const startDsCriteriaJob = (
@@ -13001,12 +13053,23 @@ export async function startServer({
     // od-injected`. Codex layers it on top of the user's base
     // ~/.codex/config.toml without mutating it — adding a server in
     // Settings → External MCP becomes visible to Codex on the next run
-    // without the user editing TOML by hand. When no stdio servers are
-    // enabled, we delete the stale file and SKIP the flag so Codex
-    // doesn't try to load an empty (or absent) layer.
+    // without the user editing TOML by hand. When no stdio/http servers
+    // are enabled, we delete the stale file and SKIP the flag so Codex
+    // doesn't try to load an empty (or absent) layer. `oauthTokensForSpawn`
+    // is passed through so http servers (e.g. Figma) get a
+    // `bearer_token_env_var` line — the actual token value never lands in
+    // this TOML text, only the spawn env (see the `bearerEnv` spread near
+    // OPENCODE_CONFIG_CONTENT below).
     const CODEX_PROFILE_NAME = 'od-injected';
     let codexProfileName: string | undefined;
     let sandboxCodexProfile: { name: string; toml: string } | null = null;
+    // Bearer values for Codex's `bearer_token_env_var` config, spread into
+    // the spawn env (near OPENCODE_CONFIG_CONTENT below) instead of the
+    // TOML text — see buildCodexMcpBearerEnv in mcp-config.ts. Only ever
+    // non-empty when this agent's def is codex-profile-v2 AND a profile
+    // was actually written (codexProfileName set), guarded at the spread
+    // site so a stale value can't leak into a non-codex spawn.
+    let codexBearerEnv: Record<string, string> = {};
     if (def.externalMcpInjection === 'codex-profile-v2') {
       const codexHome =
         process.env.CODEX_HOME && process.env.CODEX_HOME.trim()
@@ -13016,8 +13079,9 @@ export async function startServer({
         codexHome,
         `${CODEX_PROFILE_NAME}.config.toml`,
       );
-      const toml = buildCodexMcpToml(enabledExternalMcp);
+      const toml = buildCodexMcpToml(enabledExternalMcp, oauthTokensForSpawn);
       if (toml) {
+        codexBearerEnv = buildCodexMcpBearerEnv(enabledExternalMcp, oauthTokensForSpawn);
         if (willSandbox && agentId === 'codex') {
           const name = sandboxCodexProfileName(runId);
           sandboxCodexProfile = { name, toml };
@@ -13543,6 +13607,18 @@ export async function startServer({
         ...(opencodeConfigContent
           ? { OPENCODE_CONFIG_CONTENT: opencodeConfigContent }
           : {}),
+        // Codex external-MCP bearer tokens (this WP). Same layering
+        // rationale as OPENCODE_CONFIG_CONTENT above: AFTER
+        // spawnEnvForAgent/odMediaEnv/configuredAgentEnv so a daemon-issued
+        // OAuth token (or a freshly pinned Authorization header) wins over
+        // anything stale in the shell. Only ever non-empty when a codex
+        // profile-v2 TOML was actually written for THIS spawn
+        // (codexProfileName set) — guarding on that instead of `agentId`
+        // keeps this in lockstep with the profile file itself, so a spawn
+        // that skipped the profile write never gets a bearer env with
+        // nothing in the TOML to consume it. The token value itself never
+        // touches the TOML file — only this process env.
+        ...(codexProfileName ? codexBearerEnv : {}),
       }, agentLaunch);
       spawnedAgentEnv = env;
       let invocation = createCommandInvocation({

@@ -488,36 +488,121 @@ export interface AcpMcpServer {
 }
 
 /**
+ * Env var name Codex's `bearer_token_env_var` config key reads for a given
+ * server id at process start. Server ids are already constrained by
+ * `SERVER_ID_PATTERN` (alphanumeric + `-`/`_`), so normalization is just
+ * upper-casing and swapping any remaining separator into `_`.
+ */
+export function codexBearerEnvVarName(serverId: string): string {
+  return 'OD_MCP_BEARER_' + serverId.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+}
+
+/**
+ * Bearer values to hand Codex via spawn-time env — NEVER written into the
+ * TOML profile itself (that's the whole point of `bearer_token_env_var`
+ * over an inline header). Mirrors the priority `mergeAuthHeader` uses for
+ * Claude/OpenCode: a user-pinned `Authorization` header wins over the
+ * daemon's stored OAuth access token, with the `Bearer ` prefix stripped
+ * since the env var must hold the raw token. Only 'http' transport servers
+ * are considered — `buildCodexMcpToml`'s http branch is the only consumer,
+ * and sse is never emitted for Codex (see there).
+ */
+export function buildCodexMcpBearerEnv(
+  servers: McpServerConfig[],
+  tokens: Record<string, string> = {},
+): Record<string, string> {
+  return codexBearerAssignments(servers, tokens).env;
+}
+
+/** Shared by `buildCodexMcpBearerEnv` and `buildCodexMcpToml`: the env map
+ * PLUS which server id owns each env var name. Ownership matters because the
+ * name is derived lossily (`fig-ma` and `fig_ma` both become
+ * `OD_MCP_BEARER_FIG_MA`, and ids are case-preserved while names upper-case)
+ * — without it, a colliding second server would get `bearer_token_env_var`
+ * pointing at the FIRST server's token and Codex would present that token to
+ * the second server's URL (cross-host credential leak). First server wins;
+ * later colliders are skipped with a warning that names servers, never token
+ * values. */
+function codexBearerAssignments(
+  servers: McpServerConfig[],
+  tokens: Record<string, string> = {},
+): { env: Record<string, string>; owner: Map<string, string> } {
+  const env: Record<string, string> = {};
+  const owner = new Map<string, string>();
+  for (const s of servers) {
+    if (!s.enabled || s.transport !== 'http') continue;
+    let pinned: string | undefined;
+    for (const [k, v] of Object.entries(s.headers ?? {})) {
+      if (k.toLowerCase() === 'authorization' && typeof v === 'string' && v.trim() !== '') {
+        pinned = v.trim();
+      }
+    }
+    const bearer = pinned
+      ? pinned.replace(/^Bearer\s+/i, '')
+      : typeof tokens[s.id] === 'string' && tokens[s.id]
+        ? tokens[s.id]
+        : undefined;
+    if (!bearer) continue;
+    const name = codexBearerEnvVarName(s.id);
+    const existing = owner.get(name);
+    if (existing !== undefined) {
+      console.warn(
+        `[mcp-config] Codex bearer env name collision: servers "${existing}" and "${s.id}" both map to ${name}; keeping "${existing}", skipping bearer for "${s.id}".`,
+      );
+      continue;
+    }
+    owner.set(name, s.id);
+    env[name] = bearer;
+  }
+  return { env, owner };
+}
+
+/**
  * Encode `servers` as a Codex profile-v2 TOML document for `--profile-v2`.
  *
- * Codex's `mcp_servers.<id>` table only models stdio transports today
- * (per `codex mcp add` and `~/.codex/config.toml` docs); SSE/HTTP
- * servers are silently dropped here with a console warning so users
- * notice the gap without breaking the spawn. The same OAuth Bearer
- * merging applied for Claude/OpenCode would have no place to land
- * inside a Codex stdio entry, so HTTP-with-token servers stay limited
- * to Claude Code until Codex grows native HTTP MCP support.
+ * Codex CLI 0.147.0 accepts two `mcp_servers.<id>` shapes: the original
+ * stdio triple (`command`/`args`/`env`) AND streamable HTTP (`url` +
+ * `bearer_token_env_var`, confirmed via `codex mcp add --help` on the
+ * user's machine). SSE is still NOT modeled — Codex only speaks streamable
+ * HTTP, so an `sse` server is silently skipped here (same as before)
+ * rather than mis-declared as `http`.
+ *
+ * The bearer token itself NEVER lands in this TOML text — Codex reads it
+ * from the env var named by `bearer_token_env_var` at process start, which
+ * the daemon populates at spawn time via `buildCodexMcpBearerEnv`. That
+ * keeps the token off disk/log, matching the hygiene the OAuth flow
+ * already guarantees for Claude's `.mcp.json`.
+ *
+ * `tokens` is the same `serverId -> OAuth access token` map used by
+ * `buildClaudeMcpJson` / `buildOpenCodeMcpConfigContent`.
  *
  * Returns the TOML text the daemon should write to
  * `$CODEX_HOME/<profile-name>.config.toml`. Returns `null` when no
- * stdio servers are enabled — caller should delete any stale profile
- * file and SKIP the `--profile-v2` flag in that case so Codex doesn't
- * try to load an empty layer.
+ * stdio or http servers are enabled — caller should delete any stale
+ * profile file and SKIP the `--profile-v2` flag in that case so Codex
+ * doesn't try to load an empty layer.
  *
  * Open Design runs Codex headlessly, so there is no interactive approval
  * surface for MCP calls. Enabled servers are already an explicit user choice
  * in Settings; mark their tools approved or Codex reports every call as
  * "user cancelled MCP tool call".
  */
-export function buildCodexMcpToml(servers: McpServerConfig[]): string | null {
-  const enabled = servers.filter((s) => s.enabled && s.transport === 'stdio');
-  if (enabled.length === 0) return null;
+export function buildCodexMcpToml(
+  servers: McpServerConfig[],
+  tokens: Record<string, string> = {},
+): string | null {
+  const stdioEnabled = servers.filter((s) => s.enabled && s.transport === 'stdio');
+  const httpEnabled = servers.filter(
+    (s) => s.enabled && s.transport === 'http' && typeof s.url === 'string' && s.url.trim(),
+  );
+  if (stdioEnabled.length === 0 && httpEnabled.length === 0) return null;
+  const { env: bearerEnv, owner: bearerOwner } = codexBearerAssignments(servers, tokens);
   const lines: string[] = [];
   lines.push('# Generated by Open Design — do not edit by hand.');
   lines.push('# Overwritten on every Codex spawn. To stop OD from managing');
   lines.push('# this file, remove the server from Settings → External MCP servers.');
   lines.push('');
-  for (const s of enabled) {
+  for (const s of stdioEnabled) {
     const id = tomlBareKey(s.id);
     lines.push(`[mcp_servers.${id}]`);
     lines.push(`command = ${tomlString(s.command ?? '')}`);
@@ -529,6 +614,19 @@ export function buildCodexMcpToml(servers: McpServerConfig[]): string | null {
       for (const [k, v] of Object.entries(s.env)) {
         lines.push(`${tomlBareKey(k)} = ${tomlString(String(v))}`);
       }
+    }
+    lines.push('');
+  }
+  for (const s of httpEnabled) {
+    const id = tomlBareKey(s.id);
+    lines.push(`[mcp_servers.${id}]`);
+    lines.push(`url = ${tomlString(s.url!.trim())}`);
+    const envVarName = codexBearerEnvVarName(s.id);
+    // Chỉ emit khi CHÍNH server này sở hữu env name — server thua trong va
+    // chạm tên (xem codexBearerAssignments) không được trỏ vào token của
+    // server khác.
+    if (bearerEnv[envVarName] && bearerOwner.get(envVarName) === s.id) {
+      lines.push(`bearer_token_env_var = ${tomlString(envVarName)}`);
     }
     lines.push('');
   }

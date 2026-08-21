@@ -193,6 +193,36 @@ describe('wrapInvocationInSandbox', () => {
     expect(args.slice(imageIdx + 1)).toEqual(['claude', '-p', '--input-format', 'stream-json']);
   });
 
+  it('forwards OD_MCP_BEARER_* env into the container ONLY for the codex runtime (WP27)', () => {
+    const base = {
+      agentBin: 'codex',
+      args: ['exec', '--json'],
+      env: {
+        OD_TOOL_TOKEN: 'tok-1',
+        OD_MCP_BEARER_FIGMA: 'bearer-secret',
+        OD_MCP_BEARER_OTHER: 'bearer-two',
+        AWS_SECRET_ACCESS_KEY: 'leak-me-not',
+      },
+      cwd: '/data/projects/p1/docs-to-react',
+      runId: 'run-43',
+      projectId: 'p1',
+      daemonUrl: 'http://127.0.0.1:7456',
+      image: 'od-agent-sandbox:0.1.0',
+      cfg,
+    };
+    const codexRun = wrapInvocationInSandbox({ ...base, runtimeId: 'codex' as const });
+    const codexEnvFlags = codexRun.args.flatMap((a, i) => (a === '-e' ? [codexRun.args[i + 1]] : []));
+    expect(codexEnvFlags).toContain('OD_MCP_BEARER_FIGMA=bearer-secret');
+    expect(codexEnvFlags).toContain('OD_MCP_BEARER_OTHER=bearer-two');
+    expect(codexEnvFlags.some((f) => f.startsWith('AWS_SECRET_ACCESS_KEY='))).toBe(false);
+
+    // Claude container: bearer vars must NOT cross — claude reads MCP auth
+    // from .mcp.json headers, and the pattern-forward is codex-gated.
+    const claudeRun = wrapInvocationInSandbox({ ...base, agentBin: 'claude', runtimeId: 'claude' as const });
+    const claudeEnvFlags = claudeRun.args.flatMap((a, i) => (a === '-e' ? [claudeRun.args[i + 1]] : []));
+    expect(claudeEnvFlags.some((f) => f.startsWith('OD_MCP_BEARER_'))).toBe(false);
+  });
+
   it('mounts exactly the project dir, auth volume and cache volume', () => {
     const { args } = wrap();
     const mounts = args.flatMap((a, i) => (a === '-v' ? [args[i + 1]] : []));
