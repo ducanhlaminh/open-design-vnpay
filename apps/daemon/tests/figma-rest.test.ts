@@ -242,6 +242,14 @@ describe('figma-rest', () => {
         { name: 'State', type: 'VARIANT', values: ['Default', 'Disabled'] },
         { name: 'Label', type: 'TEXT', values: ['Continue'] },
         { name: 'Show icon', type: 'BOOLEAN', values: [] },
+      ],
+      // WP25a: publishedComponentsA's two variants (10:2/10:3) declare
+      // `containing_frame.containingStateGroup.nodeId: '10:1'` — they attach
+      // here as `variants` (no `key` in this fixture, so each variant entry
+      // omits it too — additive, doesn't disturb anything else in this test).
+      variants: [
+        { nodeId: '10:2', name: 'State=Default' },
+        { nodeId: '10:3', name: 'State=Disabled' },
       ] },
       { nodeId: '11:1', name: 'Avatar', page: 'People', properties: [] },
     ]);
@@ -259,5 +267,46 @@ describe('figma-rest', () => {
       links: [{ url: 'https://www.figma.com/design/A', fileKey: 'A' }, { url: 'https://www.figma.com/design/B', fileKey: 'B' }],
       deps: { fetch },
     })).rejects.toThrow(/File 2\/2 \(B\): .*File content: Read/);
+  });
+
+  // ── WP25a: catalog carries `key` (needed to import a component cross-file
+  // for "Dựng trong Figma") + per-set `variants` (a set itself can't be
+  // imported by key — only its individual COMPONENT variants can). A payload
+  // that carries no `key` (every test above) must keep producing the EXACT
+  // same shape as before — proven above; this only covers the NEW, additive
+  // behaviour when the payload does carry keys. ──
+  it('carries key on standalone/set entries and variants (with their own key) on a set — additive, does not disturb key-less payloads', async () => {
+    const setsWithKey = { meta: { component_sets: [
+      { node_id: '10:1', key: 'set-key', name: 'Button', description: 'Primary action', containing_frame: { pageName: 'Actions' } },
+    ] } };
+    const componentsWithKey = { meta: { components: [
+      { node_id: '10:2', key: 'variant-key-default', name: 'State=Default', containing_frame: { pageName: 'Actions', containingStateGroup: { nodeId: '10:1', name: 'Button' } } },
+      { node_id: '10:3', key: 'variant-key-disabled', name: 'State=Disabled', containing_frame: { pageName: 'Actions', containingStateGroup: { nodeId: '10:1', name: 'Button' } } },
+      { node_id: '11:1', key: 'avatar-key', name: 'Avatar', description: '', containing_frame: { pageName: 'People' } },
+    ] } };
+    const { fetch } = fakeFetch((url) => {
+      if (url.pathname === '/v1/files/A') return { body: fileA };
+      if (url.pathname === '/v1/files/A/component_sets') return { body: setsWithKey };
+      if (url.pathname === '/v1/files/A/components') return { body: componentsWithKey };
+      if (url.pathname === '/v1/files/A/nodes') return { body: nodesA };
+      return { status: 404, body: {} };
+    });
+    const snapshot = await buildFigmaComponentCatalog({
+      token: 'tok',
+      links: [{ url: 'https://www.figma.com/design/A/Core', fileKey: 'A' }],
+      deps: { fetch },
+    });
+    const [file] = snapshot.files;
+    expect(file!.components).toEqual([
+      { nodeId: '10:1', name: 'Button', description: 'Primary action', page: 'Actions', key: 'set-key', properties: [
+        { name: 'State', type: 'VARIANT', values: ['Default', 'Disabled'] },
+        { name: 'Label', type: 'TEXT', values: ['Continue'] },
+        { name: 'Show icon', type: 'BOOLEAN', values: [] },
+      ], variants: [
+        { nodeId: '10:2', key: 'variant-key-default', name: 'State=Default' },
+        { nodeId: '10:3', key: 'variant-key-disabled', name: 'State=Disabled' },
+      ] },
+      { nodeId: '11:1', name: 'Avatar', page: 'People', key: 'avatar-key', properties: [] },
+    ]);
   });
 });

@@ -457,6 +457,13 @@ import {
   writeFigmaDesignSystemGuide,
   writeFilteredComponentsGuideToCriteria,
 } from './figma-design-system-routes.js';
+// WP25a: "Dựng trong Figma" per màn — job + input compiler. `computeEnabledMcp`
+// is the pure function behind `enabledExternalMcp` below (INTERNAL_MCP_SERVER_IDS
+// gate); the route module itself never imports anything FROM server.ts (would
+// create an import cycle) — see the `withMcpServerIds` wrapper at the
+// registerFigmaBuildRoutes call site.
+import { registerFigmaBuildRoutes } from './figma-build-routes.js';
+import { computeEnabledMcp } from './figma-build.js';
 import { registerFigmaConfigRoutes } from './figma-config-routes.js';
 import { registerXaiRoutes } from './xai-routes.js';
 import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
@@ -1561,6 +1568,16 @@ const PLUGIN_LOCKFILE_PATH = path.join(RUNTIME_DATA_DIR, 'od-plugin-lock.json');
 // A Symbol cannot arrive in a JSON request body, so `/api/chat` clients can't
 // grant themselves anything through it.
 const INTERNAL_TOOL_GRANT_EXTRAS = Symbol('od.internalToolGrantExtras');
+// WP25a: same Symbol-gate pattern as INTERNAL_TOOL_GRANT_EXTRAS above, but for
+// NARROWING (never widening) a run's external MCP servers to an explicit
+// allow-list of server ids. Only an INTERNAL caller can set this (a Symbol
+// can't arrive in a JSON `/api/chat` body) — the figma-build job
+// (figma-build-routes.ts) is the one caller today, granting exactly the one
+// Figma MCP server the run needs. That route module never imports this
+// Symbol directly (would create a server.ts ⇄ figma-build-routes.ts import
+// cycle) — it goes through the `chat.withMcpServerIds` wrapper set up at the
+// registerFigmaBuildRoutes call site instead.
+const INTERNAL_MCP_SERVER_IDS = Symbol('od.internalMcpServerIds');
 // One Figma Desktop MCP client for the whole daemon: it holds the Streamable
 // HTTP session with Figma's local server (127.0.0.1:3845) and serialises
 // file switching, so every route/fan-out must share it.
@@ -6524,6 +6541,27 @@ export async function startServer({
     // resolveCriteriaAgent là const khai báo SAU điểm này trong file).
     design,
     chat: { startChatRun: (...args: Parameters<typeof startChatRun>) => startChatRun(...args) },
+    agents: { getAgentDef: agentDeps.getAgentDef, resolveAgent: () => resolveCriteriaAgent() },
+  });
+  // WP25a: "Dựng trong Figma" per màn — same TDZ closure caveat as the two
+  // registrations above (design/startChatRun/resolveCriteriaAgent are consts
+  // declared LATER in this file; the arrow wrappers defer the actual call to
+  // request time). `withMcpServerIds` is the ONLY way figma-build-routes.ts
+  // reaches the INTERNAL_MCP_SERVER_IDS Symbol-gate — it wraps the Symbol
+  // assignment here so that route module never imports it directly (which
+  // would create a server.ts ⇄ figma-build-routes.ts import cycle).
+  registerFigmaBuildRoutes(app, {
+    db,
+    http: httpDeps,
+    paths: pathDeps,
+    design,
+    chat: {
+      startChatRun: (...args: Parameters<typeof startChatRun>) => startChatRun(...args),
+      withMcpServerIds: (chatBody: Record<string, unknown>, serverIds: string[]) => ({
+        ...chatBody,
+        [INTERNAL_MCP_SERVER_IDS]: serverIds,
+      }),
+    },
     agents: { getAgentDef: agentDeps.getAgentDef, resolveAgent: () => resolveCriteriaAgent() },
   });
   /** Which component catalogue the docs-review Screen → Component stage
@@ -12655,9 +12693,16 @@ export async function startServer({
     // (and any non-pipeline run) keeps the user's Settings → External MCP.
     // An empty list also makes the branches below UNLINK a stale `.mcp.json`
     // / Codex profile a previous chat run left in the same cwd.
-    const enabledExternalMcp = isPipelineProfile
-      ? []
-      : externalMcpConfig.servers.filter((s) => s.enabled);
+    //
+    // WP25a: an INTERNAL caller (figma-build job) can narrow (never widen)
+    // that same "keep the user's Settings" list to an explicit allow-list of
+    // server ids via the INTERNAL_MCP_SERVER_IDS Symbol-gate — a JSON
+    // `/api/chat` body can never set a Symbol key, so this can't be
+    // self-granted. `computeEnabledMcp` is the pure function (figma-build.ts,
+    // unit-tested there) behind both branches; every existing call site keeps
+    // passing no allow-list (`null`), so behaviour is unchanged.
+    const internalMcpServerIds = chatBody[INTERNAL_MCP_SERVER_IDS] ?? null;
+    const enabledExternalMcp = computeEnabledMcp(externalMcpConfig.servers, isPipelineProfile, internalMcpServerIds);
     const oauthTokensForSpawn = {};
     try {
       const stored = await readAllTokens(RUNTIME_DATA_DIR);

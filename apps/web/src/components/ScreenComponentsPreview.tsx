@@ -16,6 +16,16 @@ import { fetchProjectFileText } from '../providers/registry';
 // WP13b (.tmp/pipeline/wp13b.yaml): quản lý danh sách "Màn hình" (lớp 3 —
 // đây là nơi người dùng xem kết quả dr-comp thường nhất) mở qua panel riêng.
 import { ScreenListManager } from './ScreenListManager';
+// WP25b (.tmp/pipeline/wp25-plan.md, Spec WP25b): nút "Dựng trong Figma" per
+// màn qua job nền (WP25a daemon, chạy song song trên nhánh khác). Type khai
+// LOCAL trong provider (chờ hợp nhất sang @open-design/contracts).
+import {
+  fetchFigmaPreviewConfig,
+  putFigmaPreviewConfig,
+  startFigmaBuild,
+  useFigmaBuildJob,
+} from '../providers/figma-build-jobs';
+import type { FigmaBuildStartErrorCode, FigmaPreviewConfig } from '../providers/figma-build-jobs';
 import styles from './ScreenComponentsPreview.module.css';
 
 export type ScreenPlatform = 'mobile' | 'web';
@@ -55,6 +65,15 @@ export interface ScreenDocView {
 const LAYOUT_SOURCE_BADGE: Record<'doc-image' | 'agent', string> = {
   'doc-image': 'Bố cục & nội dung: theo ảnh tài liệu',
   agent: 'Bố cục & nội dung: agent tự dựng (tài liệu không có mockup)',
+};
+
+// WP25b — mã lỗi precheck POST .../figma-build/start → thông điệp tiếng Việt
+// hành động được (Spec WP25b, mục 4).
+const FIGMA_BUILD_ERROR_MESSAGE: Record<FigmaBuildStartErrorCode, string> = {
+  FIGMA_PREVIEW_FILE_REQUIRED: 'Chưa cấu hình file Figma preview — dán link file preview bên dưới rồi thử lại.',
+  MCP_FIGMA_REQUIRED: 'Thêm Figma MCP trong Cài đặt → MCP rồi đăng nhập.',
+  CATALOG_REQUIRED: 'Làm mới DS Figma để lấy component key (Refresh ở Design system).',
+  AGENT_UNAVAILABLE: 'Không có agent khả dụng để dựng — thử lại sau.',
 };
 
 /** Gộp content thành một dòng phụ: `text · secondary · value · badge · items[0] | items[1]`.
@@ -420,6 +439,17 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
   const [error, setError] = useState<string | null>(null);
   const [showScreenManager, setShowScreenManager] = useState(false);
 
+  // WP25b — job "Dựng trong Figma" của project (re-attach qua /active) + cấu
+  // hình file preview (docs-review/.figma-preview.json qua route daemon).
+  const { job: buildJob, adopt: adoptBuildJob } = useFigmaBuildJob(projectId);
+  const [buildStarting, setBuildStarting] = useState(false);
+  const [buildError, setBuildError] = useState<string | null>(null);
+  const [previewConfig, setPreviewConfig] = useState<FigmaPreviewConfig | null>(null);
+  const [showFigmaConfig, setShowFigmaConfig] = useState(false);
+  const [figmaUrlInput, setFigmaUrlInput] = useState('');
+  const [figmaConfigError, setFigmaConfigError] = useState<string | null>(null);
+  const [figmaConfigSaving, setFigmaConfigSaving] = useState(false);
+
   // Rail + role-map + Figma refs (một lần cho cả run).
   useEffect(() => {
     if (!loc) return;
@@ -486,12 +516,64 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
     };
   }, [projectId, loc, current, screens]);
 
+  // WP25b — cấu hình file Figma preview (docs-review/.figma-preview.json).
+  useEffect(() => {
+    let cancelled = false;
+    void fetchFigmaPreviewConfig(projectId).then((res) => {
+      if (cancelled) return;
+      if (res.ok) {
+        setPreviewConfig(res.config);
+        setFigmaUrlInput(res.config.url ?? '');
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
   const nameOf = useMemo(() => new Map((rail ?? []).map((r) => [r.key, r.name])), [rail]);
   const loaded = current ? screens.get(current) ?? null : null;
   const doc = loaded?.doc ?? null;
   const platform: ScreenPlatform = doc?.platform ?? roleMap?.platform ?? 'mobile';
   const navByEl = useMemo(() => new Map((doc?.nav ?? []).map((n) => [n.el, n.to])), [doc]);
   const roleByName = useMemo(() => new Map((roleMap?.roles ?? []).map((r) => [r.role, r])), [roleMap]);
+
+  // WP25b — job "Dựng trong Figma" đang chạy/vừa xong: item của MÀN hiện tại,
+  // đếm tiến trình x/y để hiện trong headMeta.
+  const buildItemsByKey = useMemo(() => new Map((buildJob?.items ?? []).map((i) => [i.screenKey, i])), [buildJob]);
+  const currentBuildItem = current ? buildItemsByKey.get(current) ?? null : null;
+  const isBuildRunning = buildJob?.status === 'queued' || buildJob?.status === 'running';
+  const buildDoneCount = (buildJob?.items ?? []).filter((i) => i.status === 'succeeded' || i.status === 'failed').length;
+  const buildTotalCount = buildJob?.items.length ?? 0;
+
+  const handleStartFigmaBuild = async (screenKeys: string[]) => {
+    if (buildStarting || isBuildRunning) return;
+    setBuildStarting(true);
+    setBuildError(null);
+    const res = await startFigmaBuild(projectId, screenKeys);
+    setBuildStarting(false);
+    if (res.ok) {
+      adoptBuildJob(res.job);
+      return;
+    }
+    // Mã lỗi lạ (chưa có trong bảng — vd daemon thêm code mới sau này) → rơi về
+    // res.error thô thay vì im lặng hiện chuỗi rỗng.
+    setBuildError((res.code && FIGMA_BUILD_ERROR_MESSAGE[res.code]) || res.error);
+    if (res.code === 'FIGMA_PREVIEW_FILE_REQUIRED') setShowFigmaConfig(true);
+  };
+
+  const handleSaveFigmaConfig = async () => {
+    setFigmaConfigSaving(true);
+    setFigmaConfigError(null);
+    const res = await putFigmaPreviewConfig(projectId, { url: figmaUrlInput.trim() });
+    setFigmaConfigSaving(false);
+    if (!res.ok) {
+      setFigmaConfigError(res.error);
+      return;
+    }
+    setPreviewConfig(res.config);
+    setFigmaUrlInput(res.config.url ?? '');
+  };
 
   const selectScreen = (key: string) => {
     if (key === current) return;
@@ -590,8 +672,57 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
                 {mappedCount}/{doc.elements.length} element có component DS
               </span>
             ) : null}
+            {/* WP25b — "Dựng trong Figma" per màn + "Dựng tất cả" (job nền, WP25a daemon). */}
+            <span className={styles.figmaBuildGroup}>
+              <button
+                type="button"
+                className={styles.figmaBuildBtn}
+                data-testid="figma-build-current"
+                onClick={() => void handleStartFigmaBuild([current])}
+                disabled={buildStarting || isBuildRunning}
+              >
+                {isBuildRunning && currentBuildItem?.status === 'running' ? 'Đang dựng…' : 'Dựng trong Figma'}
+              </button>
+              {rail.length > 1 ? (
+                <button
+                  type="button"
+                  className={styles.figmaBuildAllBtn}
+                  data-testid="figma-build-all"
+                  onClick={() => void handleStartFigmaBuild(rail.map((r) => r.key))}
+                  disabled={buildStarting || isBuildRunning}
+                >
+                  {`Dựng tất cả (${rail.length} màn)`}
+                </button>
+              ) : null}
+              {currentBuildItem?.status === 'succeeded' && currentBuildItem.frameUrl ? (
+                <a
+                  className={styles.figmaFrameLink}
+                  href={currentBuildItem.frameUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-testid="figma-frame-link"
+                >
+                  Mở frame Figma ↗
+                </a>
+              ) : null}
+              {currentBuildItem?.status === 'failed' ? (
+                <span className={styles.figmaBuildItemError} data-testid="figma-build-item-error">
+                  {currentBuildItem.error || 'Dựng màn này thất bại — thử lại.'}
+                </span>
+              ) : null}
+            </span>
           </div>
           <div className={styles.headMeta}>
+            {isBuildRunning ? (
+              <span className={styles.figmaBuildProgress} data-testid="figma-build-progress">
+                {`Đang dựng ${buildDoneCount}/${buildTotalCount}…`}
+              </span>
+            ) : null}
+            {buildError ? (
+              <span className={styles.figmaBuildError} data-testid="figma-build-error">
+                {buildError}
+              </span>
+            ) : null}
             {doc?.source ? (
               <span>
                 Nguồn: <code>{doc.source}</code>
@@ -613,6 +744,57 @@ export function ScreenComponentsPreview({ projectId, file }: { projectId: string
               </span>
             ) : null}
           </div>
+          {/* WP25b — file Figma preview do designer cung cấp (không auto-create). */}
+          <button
+            type="button"
+            className={styles.figmaConfigToggle}
+            onClick={() => setShowFigmaConfig((v) => !v)}
+            aria-expanded={showFigmaConfig}
+            data-testid="figma-config-toggle"
+          >
+            {showFigmaConfig ? 'Ẩn cấu hình file Figma preview' : 'Cấu hình file Figma preview'}
+          </button>
+          {showFigmaConfig ? (
+            <div className={styles.figmaConfigPanel} data-testid="figma-config-panel">
+              <div className={styles.figmaConfigCurrent}>
+                {previewConfig?.url ? (
+                  <>
+                    Đang dùng:{' '}
+                    <a href={previewConfig.url} target="_blank" rel="noreferrer">
+                      {previewConfig.url}
+                    </a>
+                  </>
+                ) : (
+                  'Chưa cấu hình file Figma preview.'
+                )}
+              </div>
+              <div className={styles.figmaConfigRow}>
+                <input
+                  type="text"
+                  className={styles.figmaConfigInput}
+                  placeholder="https://www.figma.com/design/..."
+                  value={figmaUrlInput}
+                  onChange={(e) => setFigmaUrlInput(e.target.value)}
+                  data-testid="figma-config-input"
+                />
+                <button
+                  type="button"
+                  className={styles.figmaConfigSave}
+                  onClick={() => void handleSaveFigmaConfig()}
+                  disabled={figmaConfigSaving}
+                  data-testid="figma-config-save"
+                >
+                  Lưu
+                </button>
+              </div>
+              {figmaConfigError ? (
+                <div className={styles.figmaConfigError} data-testid="figma-config-error">
+                  {figmaConfigError}
+                </div>
+              ) : null}
+              <div className={styles.figmaConfigHint}>Tạo một file Figma trống làm nơi chứa preview rồi dán link vào đây.</div>
+            </div>
+          ) : null}
         </header>
         {platform === 'web' && loaded?.html ? (
           <div className={styles.deviceBar} role="tablist" aria-label="Kích thước khung">

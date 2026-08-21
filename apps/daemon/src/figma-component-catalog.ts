@@ -13,12 +13,35 @@ export interface FigmaCatalogProperty {
   values: string[];
 }
 
+/** WP25a: one variant (a real COMPONENT node) inside a COMPONENT_SET entry —
+ *  a set itself cannot be imported cross-file by key (Figma's plugin API only
+ *  imports COMPONENT nodes), so the "Dựng trong Figma" skill needs each
+ *  variant's OWN key. `name` is the variant's property string exactly as
+ *  Figma renders it (e.g. "State=Default, Size=Large") — the input compiler
+ *  (figma-build.ts) matches this against a screen element's `ds.variant`. */
+export interface FigmaCatalogVariant {
+  nodeId: string;
+  key?: string;
+  name: string;
+}
+
 export interface FigmaCatalogComponent {
   nodeId: string;
   name: string;
   description?: string;
   page?: string;
   properties: FigmaCatalogProperty[];
+  /** WP25a: component key from the published-library payload (`/components` /
+   *  `/component_sets`) — needed to import this exact node cross-file via
+   *  `importComponentByKeyAsync`. Present only when the snapshot came from
+   *  the published-library path (`fetchPublishedEntries` in figma-rest.ts);
+   *  the page-walk fallback for unpublished files does not carry it. Older
+   *  catalogues (frozen before WP25a) simply lack this field — optional so
+   *  they still parse. */
+  key?: string;
+  /** WP25a: only present for a COMPONENT_SET entry with at least one variant
+   *  captured from the published-library payload. */
+  variants?: FigmaCatalogVariant[];
 }
 
 export interface FigmaCatalogFile {

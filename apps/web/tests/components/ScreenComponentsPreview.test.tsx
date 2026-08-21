@@ -30,8 +30,41 @@ const {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   for (const k of Object.keys(FILES)) delete FILES[k];
 });
+
+// WP25b (.tmp/pipeline/wp25-plan.md, Spec WP25b) — mock global fetch cho 3
+// route "Dựng trong Figma" (providers/figma-build-jobs.ts). Route không khai
+// handler → phản hồi mặc định vô hại (active rỗng / 500) — chỉ test nào cần
+// mới truyền handler cho route đó.
+function mockFigmaBuildFetch(opts: {
+  active?: () => Response;
+  previewGet?: () => Response;
+  previewPut?: (body: unknown) => Response;
+  start?: (body: unknown) => Response;
+} = {}) {
+  const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('/figma-build-jobs/active')) {
+      return (opts.active ?? (() => new Response(JSON.stringify({ jobs: [] }), { status: 200 })))();
+    }
+    if (url.includes('/docs-review/figma-build/start')) {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      return (opts.start ?? (() => new Response(JSON.stringify({}), { status: 500 })))(body);
+    }
+    if (url.includes('/docs-review/figma-preview')) {
+      if (init?.method === 'PUT') {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        return (opts.previewPut ?? (() => new Response(JSON.stringify({}), { status: 500 })))(body);
+      }
+      return (opts.previewGet ?? (() => new Response(JSON.stringify({ config: null }), { status: 200 })))();
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
 
 const file = (name: string) => ({ name, size: 1, mtime: 1, kind: 'code' as const, mime: 'application/json' });
 const K1 = 'PRD-Mua-SIM__SCR-001';
@@ -289,5 +322,148 @@ describe('ScreenComponentsPreview', () => {
     render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
     await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
     expect(screen.getByTestId('el-appbar').textContent).toContain('OK');
+  });
+});
+
+// WP25b (.tmp/pipeline/wp25-plan.md, Spec WP25b) — "Dựng trong Figma" per màn:
+// nút render, POST start body {screenKeys}, mã lỗi → thông điệp hành động
+// được, frameUrl → link, cấu hình file preview GET/PUT.
+describe('ScreenComponentsPreview · Dựng trong Figma (WP25b)', () => {
+  it('nút "Dựng trong Figma" + "Dựng tất cả (N màn)" render khi có current; bấm nút hiện tại → POST {screenKeys:[current]}', async () => {
+    seed();
+    const runningJob = { id: 'job-1', projectId: 'p1', status: 'running', items: [{ screenKey: K1, status: 'running' }] };
+    const fetchMock = mockFigmaBuildFetch({
+      start: (body) => {
+        expect(body).toEqual({ screenKeys: [K1] });
+        return new Response(JSON.stringify({ job: runningJob }), { status: 202 });
+      },
+    });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+
+    const btn = screen.getByTestId('figma-build-current');
+    expect(btn.textContent).toBe('Dựng trong Figma');
+    expect(screen.getByTestId('figma-build-all').textContent).toBe('Dựng tất cả (3 màn)');
+
+    fireEvent.click(btn);
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/docs-review/figma-build/start'));
+      expect(call?.[1]?.method).toBe('POST');
+    });
+    await waitFor(() => expect(screen.getByTestId('figma-build-progress').textContent).toBe('Đang dựng 0/1…'));
+    expect((screen.getByTestId('figma-build-current') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('figma-build-all') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('"Dựng tất cả" gửi đúng danh sách toàn bộ screenKeys của rail', async () => {
+    seed();
+    const fetchMock = mockFigmaBuildFetch({
+      start: (body) => {
+        expect(body).toEqual({ screenKeys: [K1, K2, K3] });
+        return new Response(JSON.stringify({ job: { id: 'job-2', projectId: 'p1', status: 'running', items: [] } }), { status: 202 });
+      },
+    });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('figma-build-all'));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/docs-review/figma-build/start'));
+      expect(call).toBeTruthy();
+    });
+  });
+
+  it.each([
+    ['FIGMA_PREVIEW_FILE_REQUIRED', 'Chưa cấu hình file Figma preview — dán link file preview bên dưới rồi thử lại.'],
+    ['MCP_FIGMA_REQUIRED', 'Thêm Figma MCP trong Cài đặt → MCP rồi đăng nhập.'],
+    ['CATALOG_REQUIRED', 'Làm mới DS Figma để lấy component key (Refresh ở Design system).'],
+    ['AGENT_UNAVAILABLE', 'Không có agent khả dụng để dựng — thử lại sau.'],
+  ])('lỗi start mã %s → thông điệp tiếng Việt hành động được', async (code, expected) => {
+    seed();
+    mockFigmaBuildFetch({ start: () => new Response(JSON.stringify({ error: { code, message: 'raw daemon message' } }), { status: 422 }) });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('figma-build-current'));
+    await waitFor(() => expect(screen.getByTestId('figma-build-error').textContent).toBe(expected));
+    if (code === 'FIGMA_PREVIEW_FILE_REQUIRED') {
+      expect(screen.getByTestId('figma-config-panel')).toBeTruthy();
+    }
+  });
+
+  it('409 (job khác của project đang chạy) → adopt job hiện có, không hiện lỗi', async () => {
+    seed();
+    const runningJob = { id: 'job-3', projectId: 'p1', status: 'running', items: [{ screenKey: K1, status: 'queued' }] };
+    mockFigmaBuildFetch({ start: () => new Response(JSON.stringify({ job: runningJob }), { status: 409 }) });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('figma-build-current'));
+    await waitFor(() => expect(screen.getByTestId('figma-build-progress')).toBeTruthy());
+    expect(screen.queryByTestId('figma-build-error')).toBeNull();
+  });
+
+  it('item màn hiện tại succeeded + frameUrl → link "Mở frame Figma ↗"; item failed → chữ lỗi ngắn, nút vẫn bấm lại được', async () => {
+    seed();
+    const succeededJob = {
+      id: 'job-4', projectId: 'p1', status: 'succeeded',
+      items: [{ screenKey: K1, status: 'succeeded', frameUrl: 'https://www.figma.com/design/FK/?node-id=1-2' }],
+    };
+    mockFigmaBuildFetch({ start: () => new Response(JSON.stringify({ job: succeededJob }), { status: 202 }) });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('figma-build-current'));
+    await waitFor(() => expect(screen.getByTestId('figma-frame-link')).toBeTruthy());
+    expect(screen.getByTestId('figma-frame-link').getAttribute('href')).toBe('https://www.figma.com/design/FK/?node-id=1-2');
+    expect((screen.getByTestId('figma-build-current') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('item màn hiện tại failed → hiện lỗi ngắn cạnh nút, nút không bị khoá', async () => {
+    seed();
+    const failedJob = {
+      id: 'job-5', projectId: 'p1', status: 'failed',
+      items: [{ screenKey: K1, status: 'failed', error: 'Không tìm thấy component key.' }],
+    };
+    mockFigmaBuildFetch({ start: () => new Response(JSON.stringify({ job: failedJob }), { status: 202 }) });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('figma-build-current'));
+    await waitFor(() => expect(screen.getByTestId('figma-build-item-error').textContent).toBe('Không tìm thấy component key.'));
+    expect((screen.getByTestId('figma-build-current') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('khối cấu hình file preview: hiện url hiện tại; nhập link mới + Lưu → PUT đúng route/body, cập nhật hiển thị', async () => {
+    seed();
+    const fetchMock = mockFigmaBuildFetch({
+      previewGet: () => new Response(JSON.stringify({ config: { fileKey: 'FK', url: 'https://www.figma.com/design/FK' } }), { status: 200 }),
+      previewPut: (body) => {
+        expect(body).toEqual({ url: 'https://www.figma.com/design/NEW' });
+        return new Response(JSON.stringify({ config: { fileKey: 'NEW', url: 'https://www.figma.com/design/NEW' } }), { status: 200 });
+      },
+    });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('figma-config-toggle'));
+    await waitFor(() => expect(screen.getByTestId('figma-config-panel').textContent).toContain('https://www.figma.com/design/FK'));
+    expect(screen.getByTestId('figma-config-panel').textContent).toContain('Tạo một file Figma trống làm nơi chứa preview rồi dán link vào đây.');
+
+    fireEvent.change(screen.getByTestId('figma-config-input'), { target: { value: 'https://www.figma.com/design/NEW' } });
+    fireEvent.click(screen.getByTestId('figma-config-save'));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/docs-review/figma-preview') && c[1]?.method === 'PUT');
+      expect(call).toBeTruthy();
+    });
+    await waitFor(() => expect(screen.getByTestId('figma-config-panel').textContent).toContain('https://www.figma.com/design/NEW'));
+  });
+
+  it('PUT lỗi validate → hiện message dưới ô nhập, không đóng khối cấu hình', async () => {
+    seed();
+    mockFigmaBuildFetch({ previewPut: () => new Response(JSON.stringify({ error: 'Link Figma không hợp lệ.' }), { status: 400 }) });
+    render(<ScreenComponentsPreview projectId="p1" file={file(`docs-review/comp/${K1}.screen.json`)} />);
+    await waitFor(() => expect(screen.getByTestId('element-list')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('figma-config-toggle'));
+    fireEvent.change(screen.getByTestId('figma-config-input'), { target: { value: 'bad-link' } });
+    fireEvent.click(screen.getByTestId('figma-config-save'));
+    await waitFor(() => expect(screen.getByTestId('figma-config-error').textContent).toBe('Link Figma không hợp lệ.'));
+    expect(screen.getByTestId('figma-config-panel')).toBeTruthy();
   });
 });

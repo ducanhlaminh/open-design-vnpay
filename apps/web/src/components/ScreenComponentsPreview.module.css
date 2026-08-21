@@ -219,6 +219,107 @@
      để đúng cả dark theme thay vì fallback tĩnh */
   border-color: color-mix(in srgb, var(--amber, #b26200) 40%, transparent);
 }
+/* ── WP25b: "Dựng trong Figma" ───────────────────────────────────────── */
+.figmaBuildGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.figmaBuildBtn,
+.figmaBuildAllBtn {
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--accent, #0066b3);
+  color: var(--accent, #0066b3);
+  background: var(--bg, #fff);
+  cursor: pointer;
+}
+.figmaBuildBtn:disabled,
+.figmaBuildAllBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.figmaBuildAllBtn {
+  color: var(--text-muted, #57544e);
+  border-color: var(--border, #e1e5eb);
+}
+.figmaFrameLink {
+  font-size: 11px;
+  color: var(--accent, #0066b3);
+}
+.figmaBuildItemError {
+  font-size: 11px;
+  color: var(--red, #9c2a25);
+}
+.figmaBuildProgress {
+  color: var(--accent, #0066b3);
+}
+.figmaBuildError {
+  color: var(--red, #9c2a25);
+}
+.figmaConfigToggle {
+  align-self: flex-start;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: none;
+  background: none;
+  color: var(--accent, #0066b3);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.figmaConfigPanel {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e1e5eb);
+  background: var(--bg, #fff);
+  display: grid;
+  gap: 6px;
+  font-size: 11.5px;
+}
+.figmaConfigCurrent {
+  color: var(--text-muted, #57544e);
+}
+.figmaConfigRow {
+  display: flex;
+  gap: 6px;
+}
+.figmaConfigInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e1e5eb);
+  background: var(--bg, #fff);
+  color: var(--text, #1a1916);
+}
+.figmaConfigSave {
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--accent, #0066b3);
+  color: #fff;
+  background: var(--accent, #0066b3);
+  cursor: pointer;
+}
+.figmaConfigSave:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.figmaConfigError {
+  color: var(--red, #9c2a25);
+}
+.figmaConfigHint {
+  color: var(--text-muted, #57544e);
+}
+
 .headMeta {
   margin-top: 4px;
   display: flex;

@@ -26,6 +26,7 @@ import type {
   FigmaCatalogComponent,
   FigmaCatalogFile,
   FigmaCatalogProperty,
+  FigmaCatalogVariant,
   FigmaComponentCatalogSnapshot,
 } from './figma-component-catalog.js';
 import { FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION } from './figma-component-catalog.js';
@@ -205,29 +206,34 @@ export async function figmaWhoAmI(token: string, deps: FigmaRestDeps = {}): Prom
 interface FileSummary {
   name: string;
   /** Catalogue entries owned by this file, in Figma's order. */
-  entries: Array<{ nodeId: string; name: string; description?: string; page?: string; kind: 'set' | 'component' }>;
+  entries: Array<{ nodeId: string; name: string; description?: string; page?: string; kind: 'set' | 'component'; key?: string }>;
   /** Components the file only USES from other libraries (page-walk only). */
   remoteCount: number;
   /** 'published' = library endpoints; 'pages' = walked every page (unpublished file). */
   source: 'published' | 'pages';
+  /** WP25a: set nodeId → its variants (published-library path only — see
+   *  {@link fetchPublishedEntries}). Empty for the page-walk fallback. */
+  variantsBySet: Map<string, FigmaCatalogVariant[]>;
 }
 
 function pushEntry(
   entries: FileSummary['entries'],
   seen: Set<string>,
-  entry: { nodeId: string; name: unknown; description?: unknown; page?: unknown; kind: 'set' | 'component' },
+  entry: { nodeId: string; name: unknown; description?: unknown; page?: unknown; kind: 'set' | 'component'; key?: unknown },
 ): void {
   const name = cleanText(entry.name, 300);
   if (!name || seen.has(entry.nodeId)) return;
   seen.add(entry.nodeId);
   const description = cleanText(entry.description, 2_000);
   const page = cleanText(entry.page, 300);
+  const key = cleanText(entry.key, 200);
   entries.push({
     nodeId: entry.nodeId,
     name,
     ...(description ? { description } : {}),
     ...(page ? { page } : {}),
     kind: entry.kind,
+    ...(key ? { key } : {}),
   });
 }
 
@@ -236,7 +242,11 @@ function pushEntry(
  *  `containing_frame.containingStateGroup` → its set, so only stand-alone
  *  components become entries). Cheap and file-wide, but EMPTY for a file
  *  whose components were never published. */
-async function fetchPublishedEntries(token: string, fileKey: string, deps: FigmaRestDeps): Promise<FileSummary['entries']> {
+async function fetchPublishedEntries(
+  token: string,
+  fileKey: string,
+  deps: FigmaRestDeps,
+): Promise<{ entries: FileSummary['entries']; variantsBySet: Map<string, FigmaCatalogVariant[]> }> {
   const base = `/v1/files/${encodeURIComponent(fileKey)}`;
   const entries: FileSummary['entries'] = [];
   const seen = new Set<string>();
@@ -245,18 +255,35 @@ async function fetchPublishedEntries(token: string, fileKey: string, deps: Figma
     const item = record(raw);
     const nodeId = cleanText(item?.node_id, 100);
     if (!nodeId) continue;
-    pushEntry(entries, seen, { nodeId, name: item?.name, description: item?.description, page: record(item?.containing_frame)?.pageName, kind: 'set' });
+    pushEntry(entries, seen, { nodeId, name: item?.name, description: item?.description, page: record(item?.containing_frame)?.pageName, kind: 'set', key: item?.key });
   }
+  // WP25a: variants aren't file-wide "entries" (the set already covers them
+  // in components.md) but the input compiler for "Dựng trong Figma" needs
+  // each variant's own key + containing set nodeId to import + place the
+  // exact variant the screen asked for.
+  const variantsBySet = new Map<string, FigmaCatalogVariant[]>();
   const components = record(await figmaGet(`${base}/components`, token, deps));
   for (const raw of Array.isArray(record(components?.meta)?.components) ? (record(components?.meta)?.components as unknown[]) : []) {
     const item = record(raw);
     const nodeId = cleanText(item?.node_id, 100);
     if (!nodeId) continue;
     const frame = record(item?.containing_frame);
-    if (record(frame?.containingStateGroup)) continue; // variant → covered by its set
-    pushEntry(entries, seen, { nodeId, name: item?.name, description: item?.description, page: frame?.pageName, kind: 'component' });
+    const stateGroup = record(frame?.containingStateGroup);
+    if (stateGroup) {
+      // variant → covered by its set entry above, not a standalone entry.
+      const setNodeId = cleanText(stateGroup.nodeId, 100);
+      const variantName = cleanText(item?.name, 300);
+      if (setNodeId && variantName) {
+        const key = cleanText(item?.key, 200);
+        const list = variantsBySet.get(setNodeId) ?? [];
+        list.push({ nodeId, name: variantName, ...(key ? { key } : {}) });
+        variantsBySet.set(setNodeId, list);
+      }
+      continue;
+    }
+    pushEntry(entries, seen, { nodeId, name: item?.name, description: item?.description, page: frame?.pageName, kind: 'component', key: item?.key });
   }
-  return entries;
+  return { entries, variantsBySet };
 }
 
 /** Fallback for unpublished files: `GET /v1/files/:key?depth=N` only lists
@@ -302,22 +329,25 @@ async function fetchFileSummary(token: string, fileKey: string, deps: FigmaRestD
   if (!file) throw new FigmaRestError('invalid', 'file payload is not an object');
   const name = cleanText(file.name, 300) || fileKey;
   let published: FileSummary['entries'] = [];
+  let variantsBySet = new Map<string, FigmaCatalogVariant[]>();
   try {
-    published = await fetchPublishedEntries(token, fileKey, deps);
+    const result = await fetchPublishedEntries(token, fileKey, deps);
+    published = result.entries;
+    variantsBySet = result.variantsBySet;
   } catch (err) {
     // Published-library endpoints need library_content:read. The token guide
     // intentionally asks only for file_content:read, so fall back after the
     // base file request has already proved that this file is readable.
     if (!(err instanceof FigmaRestError) || err.kind !== 'forbidden') throw err;
   }
-  if (published.length > 0) return { name, entries: published, remoteCount: 0, source: 'published' };
+  if (published.length > 0) return { name, entries: published, remoteCount: 0, source: 'published', variantsBySet };
   const children = record(file.document)?.children;
   const pages = (Array.isArray(children) ? children : [])
     .map((raw) => record(raw))
     .filter((page): page is Record<string, unknown> => Boolean(page && typeof page.id === 'string'))
     .map((page) => ({ id: page.id as string, name: cleanText(page.name, 300) }));
   const walked = await walkPagesForEntries(token, fileKey, pages, deps);
-  return { name, entries: walked.entries, remoteCount: walked.remoteCount, source: 'pages' };
+  return { name, entries: walked.entries, remoteCount: walked.remoteCount, source: 'pages', variantsBySet: new Map() };
 }
 
 function propertiesOf(node: Record<string, unknown> | null): FigmaCatalogProperty[] {
@@ -501,13 +531,18 @@ export async function buildFigmaComponentCatalog(options: {
     } catch (err) {
       throw new Error(`File ${index}/${total} “${summary.name}”: ${describeFigmaError(err)}`);
     }
-    const components: FigmaCatalogComponent[] = summary.entries.map((entry) => ({
-      nodeId: entry.nodeId,
-      name: entry.name,
-      ...(entry.description ? { description: entry.description } : {}),
-      ...(entry.page ? { page: entry.page } : {}),
-      properties: properties.get(entry.nodeId) ?? [],
-    }));
+    const components: FigmaCatalogComponent[] = summary.entries.map((entry) => {
+      const variants = entry.kind === 'set' ? summary.variantsBySet.get(entry.nodeId) ?? [] : [];
+      return {
+        nodeId: entry.nodeId,
+        name: entry.name,
+        ...(entry.description ? { description: entry.description } : {}),
+        ...(entry.page ? { page: entry.page } : {}),
+        properties: properties.get(entry.nodeId) ?? [],
+        ...(entry.key ? { key: entry.key } : {}),
+        ...(variants.length > 0 ? { variants } : {}),
+      };
+    });
     files.push({ fileKey: link.fileKey, name: summary.name, url: link.url, components });
     reportProgress({ index, total, fileKey: link.fileKey, name: summary.name, phase: 'done' });
   }
