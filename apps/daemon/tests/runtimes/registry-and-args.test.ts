@@ -226,27 +226,31 @@ test('codex args keep plugins enabled when OD_CODEX_DISABLE_PLUGINS is not 1', (
   });
 });
 
-// Product decision 19/08/2026: Codex CLI is pinned to Luna at max
-// reasoning effort, always — the picker collapses to that single choice on
-// both axes and there is no live model probing left to detect.
-test('codex model picker is fixed to Luna at max reasoning (no user choice)', () => {
+// Product decision 19/08/2026 (revised 21/08/2026): Codex CLI stays pinned to
+// Luna on the MODEL axis (no live probing), but reasoning effort is now a user
+// choice — the picker exposes the full ladder, default `high`.
+test('codex model picker is fixed to Luna; reasoning exposes the full ladder (user choice)', () => {
   assert.deepEqual(codex.fallbackModels, [
     { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
   ]);
   assert.ok(codex.reasoningOptions, 'codex must define reasoningOptions');
-  assert.deepEqual(codex.reasoningOptions, [{ id: 'high', label: 'High' }]);
+  // Option đầu là sentinel 'default' (convention pi) — SettingsDialog hiển
+  // thị option [0] khi user chưa chọn nên nó phải là hành vi mặc định thật.
+  assert.deepEqual(
+    codex.reasoningOptions.map((o: { id: string }) => o.id),
+    ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+  );
   assert.equal(codex.listModels, undefined, 'codex must not probe `debug models` anymore');
 
-  const args = codex.buildArgs(
-    '',
-    [],
-    [],
-    {},
-    { cwd: '/tmp/od-project' },
-  );
-  assert.ok(args.includes('--model'));
-  assert.equal(args[args.indexOf('--model') + 1], 'gpt-5.6-luna');
-  assert.ok(args.includes('model_reasoning_effort="high"'));
+  // Unset reasoning → default high; chosen reasoning → passed through.
+  const argsDefault = codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project' });
+  assert.ok(argsDefault.includes('--model'));
+  assert.equal(argsDefault[argsDefault.indexOf('--model') + 1], 'gpt-5.6-luna');
+  assert.ok(argsDefault.includes('model_reasoning_effort="high"'));
+
+  const argsChosen = codex.buildArgs('', [], [], { reasoning: 'max' }, { cwd: '/tmp/od-project' });
+  assert.equal(argsChosen[argsChosen.indexOf('--model') + 1], 'gpt-5.6-luna');
+  assert.ok(argsChosen.includes('model_reasoning_effort="max"'));
 });
 
 // `codex.listModels` was removed from the def (fixed-model product

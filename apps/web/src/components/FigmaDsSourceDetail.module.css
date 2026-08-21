@@ -1,7 +1,15 @@
+/* Trang này render trực tiếp dưới `.workspace-shell__body` (overflow: hidden —
+   shell giao việc cuộn cho từng view tự lo, xem ghi chú ở
+   design-system-flow.css `.ds-workspace`). Thiếu height + overflow-y ở đây thì
+   nội dung dài hơn shell bị CẮT, không cuộn được. */
 .page {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
   display: grid;
   gap: 18px;
   padding: 18px 22px 40px;
+  align-content: start;
 }
 
 .backRow {

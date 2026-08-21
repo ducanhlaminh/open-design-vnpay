@@ -537,21 +537,23 @@ test('kilo fetchModels falls back to fallbackModels when detection fails', async
   assert.equal(kilo.fallbackModels.length, 1);
 });
 
-// ---- fixed model / reasoning (product decision 19/08/2026) ----------------
-// Codex CLI is pinned to Luna (`gpt-5.6-luna`) at `max` reasoning effort
-// always, regardless of what the caller passes in `options` — including
-// stale/legacy values ('default', an old stored model id, etc). The picker
-// in Settings/AvatarMenu is reduced to that single choice on both axes
-// (codex.fallbackModels / codex.reasoningOptions), so there is no user
-// input left to clamp — this test drives buildArgs directly instead.
+// ---- fixed model / user-chosen reasoning (19/08/2026, revised 21/08) ------
+// Codex CLI stays pinned to Luna (`gpt-5.6-luna`) regardless of
+// `options.model` — including stale/legacy values ('default', an old stored
+// model id, etc). Reasoning effort is a USER choice since 21/08/2026:
+// `options.reasoning` is honored when it's on the ladder
+// (codex.reasoningOptions), anything else falls back to the default `high`.
 
-test('codex buildArgs always pins --model gpt-5.6-luna and -c model_reasoning_effort="high", ignoring options', () => {
-  const optionVariants = [
-    {},
-    { model: 'gpt-5.5', reasoning: 'low' },
-    { model: 'default', reasoning: 'default' },
+test('codex buildArgs pins --model gpt-5.6-luna but honors a valid options.reasoning', () => {
+  const cases: Array<{ options: Record<string, string>; effort: string }> = [
+    { options: {}, effort: 'high' },
+    { options: { model: 'gpt-5.5', reasoning: 'low' }, effort: 'low' },
+    { options: { reasoning: 'max' }, effort: 'max' },
+    // stale/legacy stored values fall back to the default
+    { options: { model: 'default', reasoning: 'default' }, effort: 'high' },
+    { options: { reasoning: 'totally-invalid' }, effort: 'high' },
   ];
-  for (const options of optionVariants) {
+  for (const { options, effort } of cases) {
     const args = codex.buildArgs(
       '',
       [],
@@ -578,7 +580,7 @@ test('codex buildArgs always pins --model gpt-5.6-luna and -c model_reasoning_ef
     );
     assert.deepEqual(
       reasoningEntries,
-      ['model_reasoning_effort="high"'],
+      [`model_reasoning_effort="${effort}"`],
       `options=${JSON.stringify(options)}, args=${JSON.stringify(args)}`,
     );
   }
