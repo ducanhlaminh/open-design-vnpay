@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { load, type Cheerio } from 'cheerio';
 
 import { anchorFor, type FigmaCatalogComponent, type FigmaComponentCatalogSnapshot } from './figma-component-catalog.js';
 import { scanWireframe } from './screen-components.js';
@@ -155,7 +156,11 @@ export function catalogHasComponentKeys(catalog: FigmaComponentCatalogSnapshot):
 
 // ── compileScreenBuildInput ──────────────────────────────────────────────
 
-export const SCREEN_BUILD_INPUT_SCHEMA_VERSION = 1 as const;
+/** WP29: v1→v2 chỉ THÊM field tuỳ chọn `layout`/`mockups` — `elements[]` và
+ *  `result.json` giữ nguyên shape, nên input.json v1 cũ (không `layout`) vẫn
+ *  đọc được bởi skill mới (skill rẽ nhánh theo việc `layout` có mặt hay
+ *  không, không theo số này). */
+export const SCREEN_BUILD_INPUT_SCHEMA_VERSION = 2 as const;
 
 export interface ScreenBuildContent {
   text?: string;
@@ -189,6 +194,13 @@ export interface ScreenBuildInputElement {
   warning?: string;
 }
 
+/** WP29: một node của cây bố cục — xem `buildWireframeLayoutTree`. */
+export type ScreenBuildLayoutNode =
+  | { type: 'el'; id: string }
+  | { type: 'group'; id: string; children: ScreenBuildLayoutNode[] }
+  | { type: 'row'; children: ScreenBuildLayoutNode[] }
+  | { type: 'heading'; text: string };
+
 export interface ScreenBuildInput {
   schema_version: typeof SCREEN_BUILD_INPUT_SCHEMA_VERSION;
   screenKey: string;
@@ -203,11 +215,89 @@ export interface ScreenBuildInput {
   pageName: string;
   frameName: string;
   elements: ScreenBuildInputElement[];
+  /** WP29: cây bố cục THẬT của màn (xem `buildWireframeLayoutTree`) — vắng
+   *  mặt khi không có wireframe hoặc wireframe không khớp phần tử nào
+   *  (`elements[]` + thứ tự vẫn là nguồn dữ liệu duy nhất lúc đó, skill xếp
+   *  dọc như v1). Có mặt → skill dựng ĐỆ QUY theo cây thay vì xếp phẳng. */
+  layout?: ScreenBuildLayoutNode[];
+  /** WP29: đường dẫn ảnh mockup BA (tương đối từ cwd docs-review), đã lọc
+   *  còn file tồn tại thật trên đĩa — tham chiếu spacing/tỉ lệ cho agent,
+   *  KHÔNG dùng để đổi cấu trúc (`layout` vẫn quyết định). Vắng mặt = không
+   *  có ảnh cho màn này. */
+  mockups?: string[];
   rules: {
     scope: string;
     naming: string;
     idempotent: string;
   };
+}
+
+// ── buildWireframeLayoutTree (WP29) ───────────────────────────────────────
+
+/** Cây bố cục suy ra tất định từ wireframe HTML — nguồn cấu trúc cho
+ *  `figma-screen-build` skill dựng đúng hàng-ngang/nhóm-lồng-nhau thay vì
+ *  luôn xếp `elements[]` thành MỘT cột dọc (lý do WP29: "chồng comp một
+ *  cột"). Bốn loại node:
+ *  - `el`: lá — phần tử `data-el` (∈ knownIds) KHÔNG chứa `data-el` con nào.
+ *  - `group`: phần tử `data-el` (∈ knownIds) CÓ chứa `data-el` con — `id`
+ *    của chính nó + `children` là cây con lồng bên trong. LƯU Ý: instance
+ *    Figma không nhận children (xem SKILL.md) — skill dựng instance của
+ *    chính `id` đứng ĐẦU rồi tới `children`, một xấp xỉ v1 chấp nhận được.
+ *  - `row`: thẻ mang class `wf-row` — các con xếp NGANG. Chỉ phát sinh khi
+ *    còn ≥2 con sau khi parse (đúng 1 con → nâng con lên thay row; 0 con →
+ *    bỏ).
+ *  - `heading`: thẻ mang class `wf-section` — chữ đầu mục (rỗng thì bỏ).
+ *  Container không khớp loại nào ở trên (div bọc vô danh, `<main>`,
+ *  `<body>`…) bị "xuyên qua": con của nó được nâng thẳng lên cấp cha.
+ *  `data-el` NGOÀI `knownIds` cũng bị bỏ như một wrapper vô danh — con của
+ *  nó vẫn được duyệt bình thường. Trùng `data-el` (đã xuất hiện) → bỏ lần
+ *  sau, giữ lần đầu. Trả về `null` khi cây rỗng (không phần tử nào khớp).
+ *  Thuần: chỉ parse chuỗi (cheerio), không fs/network. */
+export function buildWireframeLayoutTree(wireframeHtml: string, knownIds: readonly string[]): ScreenBuildLayoutNode[] | null {
+  const known = new Set(knownIds);
+  const seen = new Set<string>();
+  const $ = load(wireframeHtml);
+
+  const parseChildren = (container: Cheerio<any>): ScreenBuildLayoutNode[] => {
+    const out: ScreenBuildLayoutNode[] = [];
+    container.children().each((_i: number, el: any) => {
+      out.push(...parseNode($(el)));
+    });
+    return out;
+  };
+
+  const parseNode = (el: Cheerio<any>): ScreenBuildLayoutNode[] => {
+    const dataElRaw = el.attr('data-el');
+    const dataEl = typeof dataElRaw === 'string' ? dataElRaw.trim() : '';
+    if (dataEl) {
+      if (!known.has(dataEl)) {
+        // Ngoài knownIds — bỏ chính nó như một wrapper vô danh, con vẫn duyệt.
+        return parseChildren(el);
+      }
+      if (seen.has(dataEl)) return []; // trùng — bỏ, giữ lần xuất hiện đầu.
+      const hasNestedDataEl = el.find('[data-el]').length > 0;
+      seen.add(dataEl);
+      if (hasNestedDataEl) {
+        return [{ type: 'group', id: dataEl, children: parseChildren(el) }];
+      }
+      return [{ type: 'el', id: dataEl }];
+    }
+    if (el.hasClass('wf-row')) {
+      const children = parseChildren(el);
+      if (children.length === 0) return [];
+      if (children.length === 1) return children; // 1 con → nâng lên thay row.
+      return [{ type: 'row', children }];
+    }
+    if (el.hasClass('wf-section')) {
+      const text = el.text().trim();
+      return text ? [{ type: 'heading', text }] : [];
+    }
+    // Wrapper vô danh (div bọc, <main>, <body>…) — xuyên qua.
+    return parseChildren(el);
+  };
+
+  const roots = parseChildren($('body'));
+  return roots.length > 0 ? roots : null;
 }
 
 /** Minimal shape this module needs from `ScreenComponentsDoc` (screen-
@@ -236,6 +326,10 @@ export interface CompileScreenBuildInputOptions {
   catalog: FigmaComponentCatalogSnapshot;
   previewFileKey: string;
   appFeature: string;
+  /** WP29: đường dẫn ảnh mockup BA (tương đối từ cwd docs-review) đã lọc còn
+   *  file tồn tại — routes.ts đọc `comp/_inputs.json` rồi truyền vào đây;
+   *  module này chỉ passthrough (thuần, không tự kiểm tra đĩa). */
+  mockups?: string[];
 }
 
 /** "Prop=Value" pairs, unordered, case/space-insensitive — Figma renders a
@@ -260,6 +354,50 @@ function variantPairsEqual(a: Set<string>, b: Set<string>): boolean {
   if (a.size !== b.size) return false;
   for (const v of a) if (!b.has(v)) return false;
   return true;
+}
+
+/** WP28: các state PROP=VALUE coi là "đang nghỉ" (bậc 1 của `pickDefaultVariant`). */
+const REST_STATE_MARKERS = ['default', 'enabled', 'rest'];
+
+/** WP28: giá trị prop nào rơi vào các state này thì KHÔNG được coi là mặc định
+ *  (bậc 2 của `pickDefaultVariant`) — nút "State=Pressed"/"State=Hover" trông
+ *  như đang bị bấm/hover ngay khi vừa dựng xong, dù đó không phải trục screen
+ *  yêu cầu. */
+const NON_REST_STATE_MARKERS = ['pressed', 'hover', 'disabled', 'focus', 'error', 'active', 'selected'];
+
+/** WP28: chọn variant "trạng thái nghỉ" thay vì luôn lấy `variants[0]` — trước
+ *  đó, khi screen khai variant không khớp bất kỳ trục nào của component (VD
+ *  "Hierarchy=Secondary" trong khi component chỉ có trục Type/Size/State/Icon
+ *  Btn), fallback rơi thẳng vào `variants[0]` — với nhiều component DS thật,
+ *  `variants[0]` lại là "State=Pressed" (thứ tự Figma trả về không đảm bảo
+ *  trạng thái nghỉ đứng đầu) khiến nút dựng ra trông như đang bị bấm.
+ *
+ *  Dừng ở bậc đầu tiên có ứng viên (KHÔNG partial-match trục của screen —
+ *  đây thuần là chọn 1 variant "an toàn" trong chính component, không liên
+ *  quan gì đến variant mà screen đã khai):
+ *  1. Variant có prop `state` = default|enabled|rest (so trên cặp đã qua
+ *     `parseVariantPairs`, case/space-insensitive).
+ *  2. Variant KHÔNG có prop nào mang giá trị thuộc {pressed, hover, disabled,
+ *     focus, error, active, selected}.
+ *  3. `variants[0]` như hành vi cũ.
+ *  Nhiều ứng viên cùng bậc → lấy cái đầu tiên (ổn định, không random). */
+export function pickDefaultVariant<V extends { name: string }>(variants: readonly V[]): V {
+  if (variants.length === 0) {
+    throw new Error('pickDefaultVariant: danh sách variants rỗng.');
+  }
+  for (const variant of variants) {
+    const pairs = parseVariantPairs(variant.name);
+    if (REST_STATE_MARKERS.some((marker) => pairs.has(`state=${marker}`))) return variant;
+  }
+  for (const variant of variants) {
+    const pairs = parseVariantPairs(variant.name);
+    const hasNonRestMarker = [...pairs].some((pair) => {
+      const value = pair.includes('=') ? pair.slice(pair.indexOf('=') + 1) : pair;
+      return NON_REST_STATE_MARKERS.includes(value);
+    });
+    if (!hasNonRestMarker) return variant;
+  }
+  return variants[0]!;
 }
 
 /** Element order = order `data-el` first appears in the wireframe DOM (WP25a
@@ -296,10 +434,13 @@ function buildAnchorIndex(catalog: FigmaComponentCatalogSnapshot): Map<string, {
  *  replace-by-name; it never has to decide WHICH component/variant/key to
  *  use (WP25a decision #4). Pure: no fs/network. */
 export function compileScreenBuildInput(opts: CompileScreenBuildInputOptions): ScreenBuildInput {
-  const { screenDoc, wireframeHtml, catalog, previewFileKey, appFeature } = opts;
+  const { screenDoc, wireframeHtml, catalog, previewFileKey, appFeature, mockups } = opts;
   const anchorIndex = buildAnchorIndex(catalog);
   const byId = new Map(screenDoc.elements.map((el) => [el.id, el] as const));
   const order = elementOrder(wireframeHtml, screenDoc.elements.map((el) => el.id));
+  // WP29: cây bố cục thật — chỉ có khi có wireframe (không thì elements[]
+  // vẫn xếp phẳng như v1, xem docblock `ScreenBuildInput.layout`).
+  const layout = wireframeHtml ? buildWireframeLayoutTree(wireframeHtml, screenDoc.elements.map((el) => el.id)) : null;
 
   let dsFileKey: string | null = null;
   const elements: ScreenBuildInputElement[] = [];
@@ -329,7 +470,7 @@ export function compileScreenBuildInput(opts: CompileScreenBuildInputOptions): S
     const { component } = found;
     if (component.variants && component.variants.length > 0) {
       const wanted = el.ds.variant ? parseVariantPairs(el.ds.variant) : null;
-      let chosen = component.variants[0]!;
+      let chosen = pickDefaultVariant(component.variants);
       let warning: string | undefined;
       if (wanted) {
         const match = component.variants.find((v) => variantPairsEqual(parseVariantPairs(v.name), wanted));
@@ -368,6 +509,8 @@ export function compileScreenBuildInput(opts: CompileScreenBuildInputOptions): S
     pageName: `[OD] ${appFeature}`,
     frameName: `${screenDoc.key} — ${screenDoc.name}`,
     elements,
+    ...(layout ? { layout } : {}),
+    ...(mockups && mockups.length > 0 ? { mockups } : {}),
     rules: {
       scope: `CHỈ thao tác trên file preview "${previewFileKey}" — TUYỆT ĐỐI không mở/sửa file Figma nào khác (kể cả file DS, ngoài việc import component theo key).`,
       naming: `Trang tên "[OD] ${appFeature}" (tạo nếu chưa có, tái dùng nếu có); frame tên "${screenDoc.key} — ${screenDoc.name}".`,

@@ -5,16 +5,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { anchorFor, type FigmaComponentCatalogSnapshot } from '../src/figma-component-catalog.js';
 import {
+  buildWireframeLayoutTree,
   catalogHasComponentKeys,
   compileScreenBuildInput,
   computeEnabledMcp,
   parseFigmaPreviewLink,
+  pickDefaultVariant,
   pickFigmaMcpServer,
   readFigmaPreviewConfig,
   readFrozenFigmaCatalog,
   writeFigmaPreviewConfig,
 } from '../src/figma-build.js';
 import { registerFigmaBuildRoutes } from '../src/figma-build-routes.js';
+import { SCREEN_INPUTS_FILE } from '../src/screen-components.js';
 
 // Trạng thái mock DB chỉnh được per-test (vi.hoisted vì factory vi.mock bị
 // hoist lên đầu file): projectMetadata mô phỏng studioConfig.appId, apps/
@@ -215,6 +218,194 @@ describe('compileScreenBuildInput', () => {
     expect(input.frameName).toBe('SCR-001 — Đăng nhập');
     expect(input.platform).toBe('web');
   });
+
+  it('WP28: variant khai không khớp trục nào của component (VD "Hierarchy=Secondary" trên Button chỉ có trục Type/Size/State/Icon Btn) → dùng heuristic "nghỉ" thay vì variants[0] khi variants[0] là State=Pressed', () => {
+    const catalogRealButton: FigmaComponentCatalogSnapshot = {
+      schemaVersion: '1.0',
+      generatedAt: '2026-08-21T00:00:00.000Z',
+      files: [
+        {
+          fileKey: DS_FILE_KEY,
+          name: 'DS Kit',
+          url: 'https://www.figma.com/design/DS_FILE',
+          components: [
+            {
+              nodeId: '20:1',
+              name: 'Button',
+              key: 'set-key-btn',
+              properties: [],
+              variants: [
+                { nodeId: '20:2', key: 'key-pressed', name: 'Type=Primary, Size=Medium, State=Pressed, Icon Btn=false' },
+                { nodeId: '20:3', key: 'key-default', name: 'Type=Primary, Size=Medium, State=Default, Icon Btn=false' },
+                { nodeId: '20:4', key: 'key-hover', name: 'Type=Primary, Size=Medium, State=Hover, Icon Btn=false' },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const buttonRealAnchor = anchorFor(DS_FILE_KEY, '20:1');
+    const input = compileScreenBuildInput({
+      screenDoc: {
+        key: 'SCR-001',
+        name: 'Đăng nhập',
+        platform: 'mobile',
+        elements: [
+          { id: 'el-1', label: 'Nút', role: 'primary-button', ds: { component: 'Button', anchor: buttonRealAnchor, variant: 'Hierarchy=Secondary' } },
+        ],
+      },
+      wireframeHtml: null,
+      catalog: catalogRealButton,
+      previewFileKey: 'PREVIEW',
+      appFeature: 'Ví điện tử',
+    });
+    expect(input.elements[0]!.component).toMatchObject({ variantNodeId: '20:3', key: 'key-default' });
+    expect(input.elements[0]!.warning).toMatch(/không khớp/);
+    expect(input.elements[0]!.warning).toMatch(/State=Default/);
+  });
+
+  it('WP29: schema_version === 2 và "layout" gắn khi wireframe có cấu trúc (wf-section + wf-row)', () => {
+    const html = `<!doctype html><html><body data-screen="SCR-001">
+      <div class="wf-section">Thông tin</div>
+      <div class="wf-row">
+        <div data-el="el-1"></div>
+        <div data-el="el-2"></div>
+      </div>
+    </body></html>`;
+    const input = compileScreenBuildInput({
+      screenDoc: {
+        key: 'SCR-001',
+        name: 'Đăng nhập',
+        platform: 'mobile',
+        elements: [
+          { id: 'el-1', label: 'A', role: 'a', ds: null },
+          { id: 'el-2', label: 'B', role: 'b', ds: null },
+        ],
+      },
+      wireframeHtml: html,
+      catalog: catalogWithVariants(),
+      previewFileKey: 'PREVIEW',
+      appFeature: 'Ví điện tử',
+    });
+    expect(input.schema_version).toBe(2);
+    expect(input.layout).toEqual([
+      { type: 'heading', text: 'Thông tin' },
+      { type: 'row', children: [{ type: 'el', id: 'el-1' }, { type: 'el', id: 'el-2' }] },
+    ]);
+  });
+
+  it('WP29: mockups passthrough khi truyền, giữ nguyên đường dẫn tương đối', () => {
+    const input = compileScreenBuildInput({
+      screenDoc: { key: 'SCR-001', name: 'Đăng nhập', platform: 'mobile', elements: [] },
+      wireframeHtml: null,
+      catalog: catalogWithVariants(),
+      previewFileKey: 'PREVIEW',
+      appFeature: 'Ví điện tử',
+      mockups: ['docs-feature/attachments/image-1.png'],
+    });
+    expect(input.mockups).toEqual(['docs-feature/attachments/image-1.png']);
+  });
+
+  it('WP29: KHÔNG truyền wireframe → "layout" vắng mặt, elements[] vẫn nguyên (tương thích ngược schema 1 cũ)', () => {
+    const input = compileScreenBuildInput({
+      screenDoc: {
+        key: 'SCR-001',
+        name: 'Đăng nhập',
+        platform: 'mobile',
+        elements: [
+          { id: 'el-1', label: 'A', role: 'a', ds: null },
+          { id: 'el-2', label: 'B', role: 'b', ds: null },
+        ],
+      },
+      wireframeHtml: null,
+      catalog: catalogWithVariants(),
+      previewFileKey: 'PREVIEW',
+      appFeature: 'Ví điện tử',
+    });
+    expect(input.layout).toBeUndefined();
+    expect(input.mockups).toBeUndefined();
+    expect(input.elements.map((e) => e.id)).toEqual(['el-1', 'el-2']);
+  });
+});
+
+describe('buildWireframeLayoutTree', () => {
+  it('(a) 2 element trong div.wf-row → node row 2 con', () => {
+    const html = `<!doctype html><html><body>
+      <div class="wf-row">
+        <div data-el="a"></div>
+        <div data-el="b"></div>
+      </div>
+    </body></html>`;
+    expect(buildWireframeLayoutTree(html, ['a', 'b'])).toEqual([
+      { type: 'row', children: [{ type: 'el', id: 'a' }, { type: 'el', id: 'b' }] },
+    ]);
+  });
+
+  it('(b) div.wf-section có text → heading', () => {
+    const html = `<!doctype html><html><body><div class="wf-section">Tiêu đề</div></body></html>`;
+    expect(buildWireframeLayoutTree(html, [])).toEqual([{ type: 'heading', text: 'Tiêu đề' }]);
+  });
+
+  it('(c) data-el bọc data-el con → group đúng id + children', () => {
+    const html = `<!doctype html><html><body>
+      <div data-el="card1"><div data-el="child1"></div></div>
+    </body></html>`;
+    expect(buildWireframeLayoutTree(html, ['card1', 'child1'])).toEqual([
+      { type: 'group', id: 'card1', children: [{ type: 'el', id: 'child1' }] },
+    ]);
+  });
+
+  it('(d) wrapper vô danh xuyên qua, row 1 con bị nâng lên thay row', () => {
+    const html = `<!doctype html><html><body>
+      <div>
+        <div class="wf-row"><div data-el="x"></div></div>
+      </div>
+    </body></html>`;
+    expect(buildWireframeLayoutTree(html, ['x'])).toEqual([{ type: 'el', id: 'x' }]);
+  });
+
+  it('(e) data-el ngoài knownIds bị bỏ nhưng con vẫn vào cây', () => {
+    const html = `<!doctype html><html><body>
+      <div data-el="unknown"><div data-el="known1"></div></div>
+    </body></html>`;
+    expect(buildWireframeLayoutTree(html, ['known1'])).toEqual([{ type: 'el', id: 'known1' }]);
+  });
+
+  it('(f) html không có gì khớp → null', () => {
+    const html = `<!doctype html><html><body><div>không có data-el hay wf-section/wf-row nào</div></body></html>`;
+    expect(buildWireframeLayoutTree(html, ['whatever'])).toBeNull();
+  });
+});
+
+describe('pickDefaultVariant', () => {
+  it('(a) State=Pressed đứng đầu, State=Default đứng sau → chọn Default (ca Button thật của DS)', () => {
+    const variants = [
+      { nodeId: '1', name: 'State=Pressed' },
+      { nodeId: '2', name: 'State=Default' },
+    ];
+    expect(pickDefaultVariant(variants)).toBe(variants[1]);
+  });
+
+  it('(b) không có state=default nhưng có variant sạch marker vs variant chứa "hover" → chọn variant sạch', () => {
+    const variants = [
+      { nodeId: '1', name: 'Type=Ghost, State=Hover' },
+      { nodeId: '2', name: 'Type=Ghost, Size=Large' },
+    ];
+    expect(pickDefaultVariant(variants)).toBe(variants[1]);
+  });
+
+  it('(c) tất cả đều chứa marker → variants[0]', () => {
+    const variants = [
+      { nodeId: '1', name: 'State=Pressed' },
+      { nodeId: '2', name: 'State=Hover' },
+    ];
+    expect(pickDefaultVariant(variants)).toBe(variants[0]);
+  });
+
+  it('(d) set 1 variant → chính nó', () => {
+    const variants = [{ nodeId: '1', name: 'State=Pressed' }];
+    expect(pickDefaultVariant(variants)).toBe(variants[0]);
+  });
 });
 
 describe('pickFigmaMcpServer', () => {
@@ -333,7 +524,14 @@ function response() {
   return { output, res };
 }
 
-function register(dataDir: string, agents?: { getAgentDef?: () => unknown; resolveAgent?: () => unknown }) {
+function register(
+  dataDir: string,
+  agents?: { getAgentDef?: () => unknown; resolveAgent?: () => unknown },
+  // WP29: cho phép một test override `design.runs.wait` (vd để tự ghi
+  // result.json giữa lúc "agent" chạy) mà không đụng tới mọi test khác vẫn
+  // đang dùng mock mặc định "succeeded ngay".
+  designOverrides?: { runs?: { create?: () => unknown; start?: () => unknown; wait?: () => Promise<unknown> } },
+) {
   const handlers = new Map<string, Handler>();
   const app = {
     get(route: string, handler: Handler) { handlers.set(`GET ${route}`, handler); },
@@ -344,11 +542,30 @@ function register(dataDir: string, agents?: { getAgentDef?: () => unknown; resol
     db: { prepare: () => ({ run: () => undefined }) },
     http: { isLocalSameOrigin: () => true, resolvedPortRef: { current: 7456 } },
     paths: { RUNTIME_DATA_DIR: dataDir, PROJECTS_DIR: path.join(dataDir, 'projects') },
-    design: { runs: { create: () => ({ id: 'run-1' }), start: () => undefined, wait: async () => ({ status: 'succeeded' }) } },
+    design: {
+      runs: {
+        create: designOverrides?.runs?.create ?? (() => ({ id: 'run-1' })),
+        start: designOverrides?.runs?.start ?? (() => undefined),
+        wait: designOverrides?.runs?.wait ?? (async () => ({ status: 'succeeded' })),
+      },
+    },
     chat: { startChatRun: () => undefined },
     agents,
   } as never);
   return handlers;
+}
+
+/** Job chạy trong `void (async () => {...})()` không được await bởi POST —
+ *  poll GET job cho tới khi kết thúc (thay vì sleep cố định, tránh flaky). */
+async function waitForBuildJobDone(handlers: Map<string, Handler>, projectId: string, jobId: string): Promise<any> {
+  for (let i = 0; i < 200; i++) {
+    const r = response();
+    await handlers.get('GET /api/projects/:projectId/docs-review/figma-build/:jobId')!({ params: { projectId, jobId } }, r.res);
+    const job = (r.output.body as any)?.job;
+    if (job?.status === 'succeeded' || job?.status === 'failed') return job;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('figma-build job did not finish in time');
 }
 
 describe('figma-build job routes: precheck error codes', () => {
@@ -588,5 +805,117 @@ describe('figma-build figma-preview GET/PUT routes', () => {
     expect((put.output.body as any).error.code).toBe('INVALID_INPUT');
     const readBack = await readFigmaPreviewConfig(path.join(root, 'projects', 'proj-1', 'docs-review'));
     expect(readBack).toBeNull();
+  });
+});
+
+describe('figma-build job: WP29 mockups từ comp/_inputs.json → input.json', () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  async function setupPassingPrecheck(root: string, cwd: string): Promise<void> {
+    await mkdir(cwd, { recursive: true });
+    await writeFile(path.join(cwd, '.figma-preview.json'), JSON.stringify({ fileKey: 'PREVIEW', url: 'https://www.figma.com/design/PREVIEW' }), 'utf8');
+    await writeFile(path.join(root, 'mcp-config.json'), JSON.stringify({ servers: [{ id: 'figma', enabled: true, transport: 'http', templateId: 'figma', url: 'https://mcp.figma.com/mcp' }] }), 'utf8');
+    await writeFile(path.join(root, 'mcp-tokens.json'), JSON.stringify({ servers: { figma: { accessToken: 'tok', tokenType: 'Bearer', savedAt: Date.now() } } }), 'utf8');
+    await mkdir(path.join(cwd, '.figma-catalog'), { recursive: true });
+    await writeFile(path.join(cwd, '.figma-catalog', 'components.json'), JSON.stringify(catalogWithVariants()), 'utf8');
+    await mkdir(path.join(cwd, 'comp'), { recursive: true });
+    await writeFile(path.join(cwd, 'comp', 'SCR-001.screen.json'), JSON.stringify({ key: 'SCR-001', name: 'Đăng nhập', platform: 'mobile', elements: [] }), 'utf8');
+  }
+
+  function registerWithSucceedingAgent(root: string, resultPath: string) {
+    return register(root, { resolveAgent: async () => ({ agentId: 'claude', modelPrefs: { model: null, reasoning: null } }) }, {
+      runs: {
+        wait: async () => {
+          await mkdir(path.dirname(resultPath), { recursive: true });
+          await writeFile(resultPath, JSON.stringify({ frameNodeId: '1:1' }), 'utf8');
+          return { status: 'succeeded' };
+        },
+      },
+    });
+  }
+
+  it('_inputs.json có mockups → input.json ghi ra chứa mockups đã lọc còn tồn tại thật, tối đa 3, chặn traversal', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-mockups-'));
+    roots.push(root);
+    const cwd = path.join(root, 'projects', 'proj-1', 'docs-review');
+    await setupPassingPrecheck(root, cwd);
+    await mkdir(path.join(cwd, 'docs-feature', 'attachments'), { recursive: true });
+    await writeFile(path.join(cwd, 'docs-feature', 'attachments', 'image-1.png'), 'fake', 'utf8');
+    await writeFile(path.join(cwd, 'docs-feature', 'attachments', 'image-2.png'), 'fake', 'utf8');
+    await writeFile(path.join(cwd, 'docs-feature', 'attachments', 'image-3.png'), 'fake', 'utf8');
+    await writeFile(path.join(cwd, 'docs-feature', 'attachments', 'image-4.png'), 'fake', 'utf8');
+    await writeFile(path.join(cwd, SCREEN_INPUTS_FILE), JSON.stringify({
+      screens: [
+        {
+          key: 'SCR-001',
+          mockups: [
+            'docs-feature/attachments/image-1.png',
+            'docs-feature/attachments/image-2.png',
+            'docs-feature/attachments/missing.png', // không tồn tại → loại
+            '../outside.png', // thoát ra ngoài cwd → loại
+            'docs-feature/attachments/image-3.png',
+            'docs-feature/attachments/image-4.png', // vượt quá 3 ảnh đã lọc → loại
+          ],
+        },
+      ],
+    }), 'utf8');
+
+    const resultPath = path.join(cwd, 'comp', 'figma-build', 'SCR-001.result.json');
+    const handlers = registerWithSucceedingAgent(root, resultPath);
+    const start = response();
+    await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, start.res);
+    expect(start.output.status).toBe(202);
+    const jobId = (start.output.body as any).jobId;
+    const job = await waitForBuildJobDone(handlers, 'proj-1', jobId);
+    expect(job.status).toBe('succeeded');
+
+    const input = JSON.parse(await readFile(path.join(cwd, 'comp', 'figma-build', 'SCR-001.input.json'), 'utf8'));
+    expect(input.schema_version).toBe(2);
+    expect(input.mockups).toEqual([
+      'docs-feature/attachments/image-1.png',
+      'docs-feature/attachments/image-2.png',
+      'docs-feature/attachments/image-3.png',
+    ]);
+  });
+
+  it('_inputs.json hỏng (JSON lỗi) → compile vẫn chạy, input.json không có mockups (không fail, không warning)', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-mockups-'));
+    roots.push(root);
+    const cwd = path.join(root, 'projects', 'proj-1', 'docs-review');
+    await setupPassingPrecheck(root, cwd);
+    await writeFile(path.join(cwd, SCREEN_INPUTS_FILE), '{not json', 'utf8');
+
+    const resultPath = path.join(cwd, 'comp', 'figma-build', 'SCR-001.result.json');
+    const handlers = registerWithSucceedingAgent(root, resultPath);
+    const start = response();
+    await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, start.res);
+    const jobId = (start.output.body as any).jobId;
+    const job = await waitForBuildJobDone(handlers, 'proj-1', jobId);
+    expect(job.status).toBe('succeeded');
+
+    const input = JSON.parse(await readFile(path.join(cwd, 'comp', 'figma-build', 'SCR-001.input.json'), 'utf8'));
+    expect(input.mockups).toBeUndefined();
+  });
+
+  it('_inputs.json thiếu hẳn (không tồn tại) → compile vẫn chạy, input.json không có mockups', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-figma-build-mockups-'));
+    roots.push(root);
+    const cwd = path.join(root, 'projects', 'proj-1', 'docs-review');
+    await setupPassingPrecheck(root, cwd);
+    // Không ghi comp/_inputs.json nào cả.
+
+    const resultPath = path.join(cwd, 'comp', 'figma-build', 'SCR-001.result.json');
+    const handlers = registerWithSucceedingAgent(root, resultPath);
+    const start = response();
+    await handlers.get('POST /api/projects/:projectId/docs-review/figma-build/start')!({ params: { projectId: 'proj-1' }, body: { screenKeys: ['SCR-001'] } }, start.res);
+    const jobId = (start.output.body as any).jobId;
+    const job = await waitForBuildJobDone(handlers, 'proj-1', jobId);
+    expect(job.status).toBe('succeeded');
+
+    const input = JSON.parse(await readFile(path.join(cwd, 'comp', 'figma-build', 'SCR-001.input.json'), 'utf8'));
+    expect(input.mockups).toBeUndefined();
   });
 });

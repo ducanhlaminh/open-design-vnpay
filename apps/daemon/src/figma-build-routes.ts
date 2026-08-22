@@ -33,7 +33,7 @@ import { effectiveMcpAuthMode, readMcpConfig, type McpServerConfig } from './mcp
 import { getToken } from './mcp-tokens.js';
 import { workflowDirForPipeline } from './pipelines.js';
 import { ensureProject } from './projects.js';
-import { screenDocRel, wireframeRel } from './screen-components.js';
+import { screenDocRel, SCREEN_INPUTS_FILE, wireframeRel } from './screen-components.js';
 import type { RouteDeps } from './server-context.js';
 
 export interface RegisterFigmaBuildRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'design' | 'chat' | 'agents'> {}
@@ -45,6 +45,53 @@ const docsReviewCwd = async (projectsDir: string, projectId: string): Promise<st
 
 function figmaFrameUrl(fileKey: string, nodeId: string): string {
   return `https://www.figma.com/design/${fileKey}/?node-id=${nodeId.replace(':', '-')}`;
+}
+
+// ── WP29: ảnh mockup BA cho input.json (nguồn PHỤ, không fail cả job) ──────
+
+/** `comp/_inputs.json` (dr-comp v2, `screen-components.ts`) đã chứa
+ *  `screens[].mockups[]` cho MỘT mục đích khác (kickoff bước Màn hình →
+ *  Component) — đọc lại đúng field đó, một lần cho cả job, thành map
+ *  SCREEN-KEY → mockups[] thô (chưa lọc tồn tại). File thiếu/hỏng → map
+ *  rỗng, không throw (nguồn phụ, không được phép làm job fail). */
+async function readScreenInputMockups(cwd: string): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  const raw = await fs.promises.readFile(path.join(cwd, SCREEN_INPUTS_FILE), 'utf8').catch(() => null);
+  if (raw == null) return map;
+  try {
+    const parsed = JSON.parse(raw) as { screens?: unknown };
+    const screens = Array.isArray(parsed?.screens) ? parsed.screens : [];
+    for (const s of screens) {
+      const key = (s as { key?: unknown } | null)?.key;
+      const mockups = (s as { mockups?: unknown } | null)?.mockups;
+      if (typeof key === 'string' && Array.isArray(mockups)) {
+        map.set(key, mockups.filter((m): m is string => typeof m === 'string'));
+      }
+    }
+  } catch {
+    // JSON hỏng — coi như không có, không warning không fail (nguồn phụ).
+  }
+  return map;
+}
+
+const MAX_BUILD_MOCKUPS = 3;
+
+/** Lọc `rels` còn những đường dẫn: tương đối (không tuyệt đối), không thoát
+ *  ra ngoài `cwd` (chặn `..`), và TỒN TẠI THẬT trên đĩa — cắt tối đa
+ *  `MAX_BUILD_MOCKUPS`. Trả về nguyên `rel` gốc (không phải path đã resolve)
+ *  vì agent đọc theo đường dẫn tương đối từ cwd của chính nó. */
+async function resolveExistingMockups(cwd: string, rels: readonly string[]): Promise<string[]> {
+  const cwdWithSep = cwd.endsWith(path.sep) ? cwd : `${cwd}${path.sep}`;
+  const out: string[] = [];
+  for (const rel of rels) {
+    if (out.length >= MAX_BUILD_MOCKUPS) break;
+    if (typeof rel !== 'string' || !rel.trim() || path.isAbsolute(rel)) continue;
+    const resolved = path.resolve(cwd, rel);
+    if (resolved !== cwd && !resolved.startsWith(cwdWithSep)) continue; // chặn '..' thoát ra ngoài cwd
+    const exists = await fs.promises.access(resolved, fs.constants.F_OK).then(() => true, () => false);
+    if (exists) out.push(rel);
+  }
+  return out;
 }
 
 // ── job state ─────────────────────────────────────────────────────────────
@@ -201,6 +248,9 @@ export function registerFigmaBuildRoutes(app: Express, deps: RegisterFigmaBuildR
       try {
       const project = getProject(db, opts.projectId);
       const appFeature = (project?.name && String(project.name).trim()) || opts.projectId;
+      // WP29: nguồn PHỤ, đọc MỘT LẦN cho cả job — hỏng/thiếu → map rỗng,
+      // không warning không fail (readScreenInputMockups tự best-effort).
+      const screenMockupsMap = await readScreenInputMockups(opts.cwd);
       // Tuần tự — Figma MCP vốn phải tuần tự (một phiên/lượt), WP25a quyết
       // định #6. Một màn lỗi KHÔNG dừng job — item đó failed, job chạy tiếp.
       for (const screenKey of opts.screenKeys) {
@@ -212,11 +262,14 @@ export function registerFigmaBuildRoutes(app: Express, deps: RegisterFigmaBuildR
           if (screenDocRaw == null) throw new Error(`Không tìm thấy ${screenDocRel(screenKey)}.`);
           const screenDoc = JSON.parse(screenDocRaw) as ScreenBuildSourceDoc;
           const wireframeHtml = await fs.promises.readFile(path.join(opts.cwd, wireframeRel(screenKey)), 'utf8').catch(() => null);
+          const rawMockups = screenMockupsMap.get(screenKey) ?? [];
+          const mockups = rawMockups.length > 0 ? await resolveExistingMockups(opts.cwd, rawMockups) : [];
           const input = compileScreenBuildInput({
             screenDoc,
             wireframeHtml,
             catalog: opts.catalog,
             previewFileKey: opts.previewConfig.fileKey,
+            ...(mockups.length > 0 ? { mockups } : {}),
             appFeature,
           });
           const buildDir = path.join(opts.cwd, 'comp', 'figma-build');
