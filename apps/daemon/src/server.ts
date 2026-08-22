@@ -454,9 +454,11 @@ import {
 import {
   figmaDesignSystemGuidePath,
   readFigmaDesignSystemGuide,
+  readFigmaDesignSystemTokens,
   registerFigmaDesignSystemRoutes,
   writeFigmaDesignSystemGuide,
   writeFilteredComponentsGuideToCriteria,
+  writeTokensMarkdownToCriteria,
 } from './figma-design-system-routes.js';
 // WP25a: "Dựng trong Figma" per màn — job + input compiler. `computeEnabledMcp`
 // is the pure function behind `enabledExternalMcp` below (INTERNAL_MCP_SERVER_IDS
@@ -16705,6 +16707,12 @@ export async function startServer({
               if (sharedSnapshotForGuide) {
                 const sharedGuideMdForStage = await readFigmaDesignSystemGuide(RUNTIME_DATA_DIR, sharedSourceIdForGuide);
                 await writeFilteredComponentsGuideToCriteria(path.join(cwd, 'criteria'), sharedSnapshotForGuide, sharedGuideMdForStage);
+                // WP-ds-tokens: giao tokens.md (de-facto, sinh lúc refresh nguồn)
+                // vào criteria/ cùng nhịp staging với guide — tokens KHÔNG đổi
+                // trong vòng sinh bù mô tả nên chỉ cần giao ở đây, không cần
+                // lặp lại ở call site sinh bù bên dưới.
+                const sharedTokensForStage = await readFigmaDesignSystemTokens(RUNTIME_DATA_DIR, sharedSourceIdForGuide);
+                await writeTokensMarkdownToCriteria(path.join(cwd, 'criteria'), sharedTokensForStage?.markdown ?? null);
               }
             } catch (err: any) {
               // fail-soft — cùng bất biến với toàn khối docs-comp prep: lỗi ở

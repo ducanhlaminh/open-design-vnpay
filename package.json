@@ -1,6 +1,6 @@
 {
   "name": "open-design",
-  "version": "0.8.95",
+  "version": "0.8.96",
   "private": true,
   "packageManager": "pnpm@10.33.2",
   "type": "module",

@@ -57,6 +57,7 @@ import {
   isJunkComponentName,
 } from './figma-guide-generate.js';
 import { buildFigmaComponentCatalog, describeFigmaError, fetchNodeImages, fetchNodeSubtrees } from './figma-rest.js';
+import { mineDesignTokens, renderTokensDtcg, renderTokensMd, type MineTokensInput } from './figma-tokens.js';
 import type { RouteDeps } from './server-context.js';
 
 export interface RegisterFigmaDesignSystemRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'design' | 'chat' | 'agents'> {
@@ -250,6 +251,160 @@ export async function writeFigmaDesignSystemGuide(runtimeDataDir: string, source
 export async function readFigmaDesignSystemGuide(runtimeDataDir: string, sourceId: string): Promise<string | null> {
   const target = figmaDesignSystemGuidePath(runtimeDataDir, sourceId);
   return fs.promises.readFile(target, 'utf8').catch(() => null);
+}
+
+/* ── WP-ds-tokens: token de-facto đào từ node tree của component ───────────
+ * Sống CẠNH `components-guide.md` ở kho nguồn (source-level, dùng chung mọi
+ * App gắn cùng nguồn) — `tokens.md` (người/agent đọc) + `tokens.json` (W3C
+ * DTCG, cho máy). Đào TẤT ĐỊNH bằng {@link mineDesignTokens} (figma-
+ * tokens.ts, module thuần), KHÔNG gọi AI. Sinh tự động sau mỗi refresh commit
+ * thành công, best-effort — lỗi mining KHÔNG được làm hỏng refresh (xem
+ * `mineAndWriteFigmaDesignSystemTokens` + call site trong route POST
+ * /refresh), cùng khuôn "phụ phẩm chạy nền" với prefetch ảnh 0.8.86
+ * (prefetchComponentImages). */
+export function figmaDesignSystemTokensMdPath(runtimeDataDir: string, sourceId: string): string {
+  return path.join(path.dirname(figmaDesignSystemGuidePath(runtimeDataDir, sourceId)), 'tokens.md');
+}
+
+export function figmaDesignSystemTokensJsonPath(runtimeDataDir: string, sourceId: string): string {
+  return path.join(path.dirname(figmaDesignSystemGuidePath(runtimeDataDir, sourceId)), 'tokens.json');
+}
+
+// Serialize ghi tokens.md/tokens.json theo sourceId — cùng lý do
+// `serializeGuideWrite` tồn tại (tránh hai lượt ghi gần nhau cho CÙNG nguồn
+// giẫm lên nhau giữa các file tmp/rename).
+const tokenWrites = new Map<string, Promise<void>>();
+function serializeTokenWrite(sourceId: string, task: () => Promise<void>): Promise<void> {
+  const previous = tokenWrites.get(sourceId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(task);
+  tokenWrites.set(sourceId, current);
+  return current.finally(() => {
+    if (tokenWrites.get(sourceId) === current) tokenWrites.delete(sourceId);
+  });
+}
+
+async function writeFileAtomic(target: string, contents: string): Promise<void> {
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    await fs.promises.writeFile(temporary, contents, 'utf8');
+    await fs.promises.rename(temporary, target);
+  } finally {
+    await fs.promises.rm(temporary, { force: true });
+  }
+}
+
+export async function writeFigmaDesignSystemTokens(
+  runtimeDataDir: string,
+  sourceId: string,
+  markdown: string,
+  dtcg: unknown,
+): Promise<void> {
+  return serializeTokenWrite(sourceId, async () => {
+    await writeFileAtomic(figmaDesignSystemTokensMdPath(runtimeDataDir, sourceId), markdown);
+    await writeFileAtomic(figmaDesignSystemTokensJsonPath(runtimeDataDir, sourceId), JSON.stringify(dtcg, null, 2));
+  });
+}
+
+/** `null` khi nguồn chưa từng sinh token (chưa refresh lần nào từ khi WP-ds-
+ *  tokens ra mắt, hoặc mining lỗi liên tục) — cùng "vắng mặt" fallback shape
+ *  với `readFigmaDesignSystemGuide`. `generatedAt` lấy từ mtime file (không
+ *  cần một file meta riêng — tokens.md tự thay thế nguyên khối mỗi lần sinh
+ *  nên mtime luôn đúng thời điểm sinh gần nhất). */
+export async function readFigmaDesignSystemTokens(
+  runtimeDataDir: string,
+  sourceId: string,
+): Promise<{ markdown: string; generatedAt: string } | null> {
+  const target = figmaDesignSystemTokensMdPath(runtimeDataDir, sourceId);
+  const markdown = await fs.promises.readFile(target, 'utf8').catch(() => null);
+  if (markdown == null) return null;
+  const stat = await fs.promises.stat(target).catch(() => null);
+  return { markdown, generatedAt: stat ? stat.mtime.toISOString() : new Date(0).toISOString() };
+}
+
+/** WP-ds-tokens mục "Giao criteria": copy `tokens.md` (nguyên văn, source-
+ *  level) vào `<criteriaDir>/tokens.md` của một App — ĐÚNG khuôn
+ *  `writeFilteredComponentsGuideToCriteria` (components-guide.md): nguồn
+ *  CHƯA có tokens.md → không ghi, không lỗi (không phải "giữ bản cũ" — một
+ *  App trước đó có bản cũ nhưng nguồn nay không còn thì bản cũ cũng bị dọn,
+ *  tránh tokens ma). KHÔNG giao tokens.json vào criteria (JSON cho máy ở
+ *  source-level là đủ).
+ *
+ *  Call site thật: server.ts, ngay sau `writeFilteredComponentsGuideToCriteria`
+ *  ở bước staging vô điều kiện trước run (chỉ MỘT chỗ — tokens không đổi trong
+ *  vòng sinh bù mô tả nên không lặp lại ở call site sinh bù). */
+export async function writeTokensMarkdownToCriteria(
+  criteriaDir: string,
+  tokensMarkdown: string | null,
+): Promise<{ delivered: boolean }> {
+  const target = path.join(criteriaDir, 'tokens.md');
+  if (tokensMarkdown == null) {
+    await fs.promises.rm(target, { force: true });
+    return { delivered: false };
+  }
+  await fs.promises.mkdir(criteriaDir, { recursive: true });
+  await fs.promises.writeFile(target, tokensMarkdown, 'utf8');
+  return { delivered: true };
+}
+
+// Một task đào token tại một thời điểm CHO MỖI sourceId — cùng guard đơn
+// giản `prefetchTasks` dùng (trigger mới trong lúc một task đang chạy là
+// no-op, lần refresh sau tự trigger lại).
+const tokenMiningTasks = new Map<string, Promise<void>>();
+
+/** Đào token de-facto SAU KHI refresh commit thành công — fire-and-forget,
+ *  caller (route POST /refresh) KHÔNG await, cùng lý do prefetch ảnh không
+ *  được ảnh hưởng timeout 120s của route. Lỗi mining (REST lỗi, node thiếu…)
+ *  chỉ console.warn — KHÔNG throw ra ngoài task, KHÔNG retry loop; token chỉ
+ *  là phụ phẩm, một lần refresh lỗi mining không được làm mất tác dụng cả
+ *  luồng refresh catalog chính. */
+export function mineAndWriteFigmaDesignSystemTokens(
+  sourceId: string,
+  snapshot: FigmaComponentCatalogSnapshot,
+  token: string,
+  runtimeDataDir: string,
+  deps?: { fetchNodeSubtrees?: typeof fetchNodeSubtrees },
+): void {
+  if (tokenMiningTasks.has(sourceId)) return;
+  const fetchSubtrees = deps?.fetchNodeSubtrees ?? fetchNodeSubtrees;
+  const task = (async () => {
+    const inputs: MineTokensInput[] = [];
+    let componentCount = 0;
+    for (const file of snapshot.files) {
+      if (file.components.length === 0) continue;
+      const nodeIds = file.components.map((component) => component.nodeId);
+      const subtrees = await fetchSubtrees(token, file.fileKey, nodeIds);
+      for (const component of file.components) {
+        componentCount += 1;
+        const node = subtrees.get(component.nodeId);
+        if (node !== undefined) inputs.push({ name: component.name, node });
+      }
+    }
+    const profile = mineDesignTokens(inputs);
+    // Không tìm thấy GÌ ở cả 5 nhóm — hầu như luôn là dấu hiệu REST trả rỗng
+    // bất thường cho MỌI node (không phải "DS thật sự không có token nào"),
+    // ví dụ Figma trả 200 nhưng thiếu `document` cho từng id trong response
+    // `/v1/files/:key/nodes`. Bỏ qua ghi thay vì đè một bản `tokens.md` rỗng
+    // lên bản trước đó (nếu có) — giữ nguyên bản tốt nhất đã có cho tới lần
+    // refresh sau.
+    const isEmpty =
+      profile.colors.length === 0 &&
+      profile.gradients.length === 0 &&
+      profile.typography.length === 0 &&
+      profile.radii.length === 0 &&
+      profile.shadows.length === 0 &&
+      profile.spacing.length === 0;
+    if (isEmpty) return;
+    const markdown = renderTokensMd(profile, { generatedAt: new Date().toISOString(), componentCount });
+    const dtcg = renderTokensDtcg(profile);
+    await writeFigmaDesignSystemTokens(runtimeDataDir, sourceId, markdown, dtcg);
+  })();
+  tokenMiningTasks.set(sourceId, task);
+  void task.catch((err) => {
+    console.warn(`[figma-design-system-tokens] đào token de-facto cho nguồn "${sourceId}" thất bại (bỏ qua, không retry):`, err);
+  }).finally(() => {
+    if (tokenMiningTasks.get(sourceId) === task) tokenMiningTasks.delete(sourceId);
+  });
 }
 
 /** WP20b (fix review WP20 blocking): lọc `guideMarkdown` của nguồn Figma
@@ -595,6 +750,23 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
     res.json(body);
   });
 
+  // ── WP-ds-tokens: GET tokens.md de-facto — mirror khuôn "guide vắng mặt"
+  // (readFigmaDesignSystemGuide/GET /:id ở trên): 404 rõ lời khi nguồn chưa
+  // từng refresh THÀNH CÔNG với mining chạy xong (chưa bấm Làm mới, hoặc lần
+  // mining gần nhất lỗi hết) — không phải lỗi hệ thống, chỉ là "chưa có".
+  app.get('/api/figma-design-systems/:id/tokens', async (req, res) => {
+    if (!guard(req, res)) return;
+    const source = getFigmaDesignSystemSource(db, req.params.id);
+    if (!source) return notFound(res);
+    const tokens = await readFigmaDesignSystemTokens(deps.paths.RUNTIME_DATA_DIR, source.id);
+    if (!tokens) {
+      return res.status(404).json({
+        error: { code: 'TOKENS_NOT_GENERATED', message: 'Chưa có token de-facto cho nguồn này — làm mới nguồn để đào token.' },
+      });
+    }
+    res.json(tokens);
+  });
+
   app.patch('/api/figma-design-systems/:id', async (req, res) => {
     if (!guard(req, res)) return;
     const current = getFigmaDesignSystemSource(db, req.params.id);
@@ -666,6 +838,10 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
       // quá lâu"). KHÔNG await — không được ảnh hưởng timeout 120s của chính
       // route /refresh này.
       prefetchComponentImages(current.id, snapshot, config.token, deps.paths.RUNTIME_DATA_DIR);
+      // WP-ds-tokens: đào token de-facto — cùng lý do fire-and-forget của
+      // prefetchComponentImages ngay ở trên (phụ phẩm, không được ảnh hưởng
+      // timeout 120s của route này; lỗi mining chỉ console.warn bên trong).
+      mineAndWriteFigmaDesignSystemTokens(current.id, snapshot, config.token, deps.paths.RUNTIME_DATA_DIR);
       res.json({ source: figmaDesignSystemSourceToContract(source!), changes });
     } catch (error) {
       const message = controller.signal.aborted ? 'Hết thời gian chờ Figma phản hồi.' : describeFigmaError(error);
