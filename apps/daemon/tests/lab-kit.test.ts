@@ -208,6 +208,23 @@ describe('buildKitBrief', () => {
     expect(brief).toContain(KIT_RESULT_FILE_REL);
     expect(brief).toContain(KIT_REGISTRY_FILE_REL);
   });
+
+  // WP-lab-quality (.tmp/pipeline/wp-lab-quality.yaml): bằng chứng thật — kit
+  // comp rộng tự nhiên ~445pt đặt vào instance 358pt bị cắt cụt mép phải.
+  it('states the auto-layout + resize-test-358 rule with the 445pt evidence', () => {
+    const brief = buildKitBrief(baseOpts);
+    expect(brief).toContain('AUTO-LAYOUT');
+    expect(brief).toContain('resize');
+    expect(brief).toContain('358');
+    expect(brief).toContain('445');
+  });
+
+  it('ends with the "skill already in system prompt, do not search local catalog" note', () => {
+    const brief = buildKitBrief(baseOpts);
+    expect(brief).toContain('system prompt');
+    expect(brief).toContain('lab-kit-compose');
+    expect(brief).toContain('ĐỪNG đi tìm file skill');
+  });
 });
 
 // ── pickPinterestMcpServer ───────────────────────────────────────────────────

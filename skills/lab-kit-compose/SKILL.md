@@ -20,6 +20,9 @@ od:
   category: figma
 ---
 
+> Skill này được giao bằng cách nhúng vào system prompt — nếu bạn không thấy
+> nó trong catalog skill cục bộ thì đó là BÌNH THƯỜNG, đừng đi tìm.
+
 # lab-kit-compose — nâng bộ component phái sinh từ comp base DS
 
 Bạn chạy **không có người ngồi cạnh** (job nền, một phiên/lần chạy), chen giữa
@@ -105,10 +108,10 @@ promote vào DS thật.
 6. Ghi kết quả — xem "Kết thúc" bên dưới. BẮT BUỘC, không được bỏ qua dù một
    vài comp lỗi giữa chừng (ghi những comp đã xong, best-effort).
 
-## Hợp đồng cứng — 7 luật sống còn (vi phạm là lỗi nghiêm trọng)
+## Hợp đồng cứng — 8 luật sống còn (vi phạm là lỗi nghiêm trọng)
 
 Luật (1)–(5) KẾ THỪA nguyên tinh thần `lab-screen-compose` (đọc bản đầy đủ ở
-đó nếu cần chi tiết), cộng 2 luật RIÊNG cho kit — (6) và (7):
+đó nếu cần chi tiết), cộng 3 luật RIÊNG cho kit — (6), (7) và (8):
 
 1. **CHỈ file preview**: TUYỆT ĐỐI chỉ thao tác trên file Figma preview nêu
    trong kickoff — không mở, không sửa file Figma nào khác (kể cả file Design
@@ -147,6 +150,14 @@ Luật (1)–(5) KẾ THỪA nguyên tinh thần `lab-screen-compose` (đọc b�
    id NGAY trong cùng lần execute-code), CHỈ xoá children BÊN TRONG nó rồi
    dựng lại nội dung TRONG CHÍNH node đó. TUYỆT ĐỐI không gọi
    `component.remove()` rồi `figma.createComponent()` tạo cái mới cùng tên.
+8. **AUTO-LAYOUT + resize-test 358 (bằng chứng thật 445pt)**: MỌI comp phái
+   sinh PHẢI dựng bằng AUTO-LAYOUT (fill/hug đúng chiều), và trước khi chốt
+   PHẢI tự resize instance thử về bề rộng 358 (content width mobile) — comp
+   có bề rộng tự nhiên CỨNG (ví dụ 445, không co giãn theo container) sẽ bị
+   cắt cụt mép phải khi đặt vào màn 390. Bằng chứng thật đã gặp: một kit comp
+   rộng tự nhiên ~445pt đặt vào instance 358pt → ruột thò ra ngoài biên,
+   render bị cắt cụt mép phải, mất luôn nút "Chọn gói" trong card. Xem
+   `.tmp/pipeline/wp-lab-quality.yaml`.
 
 ## Recipe ảnh placeholder (Pinterest → Figma)
 

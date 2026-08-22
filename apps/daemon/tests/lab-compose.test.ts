@@ -289,6 +289,34 @@ describe('buildComposeBrief', () => {
     const withoutPinterest = buildComposeBrief({ ...baseOpts, scopeHint: null, hasPinterest: false });
     expect(withoutPinterest).not.toContain('pinterest');
   });
+
+  // WP-lab-quality (.tmp/pipeline/wp-lab-quality.yaml): bằng chứng thật —
+  // SCR-01 frame 398 (lệch chuẩn 390), cả 2 card cùng đeo badge "PHỔ BIẾN",
+  // CTA 116px ở màn checkout.
+  it('states the HARD frame width rule: mobile ĐÚNG 390 (not 398), web 1440', () => {
+    const brief = buildComposeBrief({ ...baseOpts, scopeHint: null });
+    expect(brief).toContain('ĐÚNG 390');
+    expect(brief).toContain('398');
+    expect(brief).toContain('1440');
+  });
+
+  it('states the ONE-highlight-per-screen + full-width CTA aesthetic rule', () => {
+    const brief = buildComposeBrief({ ...baseOpts, scopeHint: null });
+    expect(brief).toContain('MỘT điểm nhấn');
+    expect(brief).toContain('full-width');
+  });
+
+  it('slots.md note (hasSlots) tells the agent to grep instead of reading sequentially', () => {
+    const withSlots = buildComposeBrief({ ...baseOpts, hasSlots: true, scopeHint: null });
+    expect(withSlots).toContain('GREP');
+  });
+
+  it('ends with the "skill already in system prompt, do not search local catalog" note', () => {
+    const brief = buildComposeBrief({ ...baseOpts, scopeHint: null });
+    expect(brief).toContain('system prompt');
+    expect(brief).toContain('lab-screen-compose');
+    expect(brief).toContain('ĐỪNG đi tìm file skill');
+  });
 });
 
 // ── resolveLabPreviewConfig ──────────────────────────────────────────────────

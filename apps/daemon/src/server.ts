@@ -495,6 +495,13 @@ import {
   KIT_RESULT_FILE_REL,
   KIT_REGISTRY_FILE_REL,
 } from './lab-kit.js';
+// ds-lab quality (WP-lab-quality, 2026-08-22) — module THUẦN audit
+// placeholder-lộ + tràn-biên từ subtree REST (xem docblock lab-audit.ts).
+// server.ts (runLabCompose + runLabKit) là caller duy nhất: gọi
+// fetchNodeSubtrees (đã import ở figma-rest.ts bên dưới) → auditLabSubtrees
+// → renderLabAuditMd → ghi `_audit.md` vào thư mục output đã khai, fail-soft
+// (lỗi audit chỉ console.warn, không đổi status stage).
+import { auditLabSubtrees, renderLabAuditMd } from './lab-audit.js';
 import { registerFigmaConfigRoutes } from './figma-config-routes.js';
 import { registerXaiRoutes } from './xai-routes.js';
 import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
@@ -20236,6 +20243,42 @@ export async function startServer({
           return 'failed' as const;
         }
 
+        // (3b) WP-lab-quality (.tmp/pipeline/wp-lab-quality.yaml): audit tất
+        // định — placeholder còn lộ + tràn biên trái/phải — đọc THẲNG subtree
+        // REST của các frame vừa capture (kể cả khi một phần màn capture lỗi
+        // ở trên, ta chỉ audit những frame ĐÃ có subtree). Fail-soft TUYỆT
+        // ĐỐI: mọi lỗi ở khối này chỉ console.warn, KHÔNG BAO GIỜ đổi
+        // status/kết quả của stage (audit là cảnh báo, người quyết — xem
+        // non_goals trong yaml trên). Có vi phạm → ghi "screens/_audit.md"
+        // (nằm trong outputs đã khai của lab-compose nên tự hiện ở Result và
+        // tự bị dọn khi "Chạy lại"); không có vi phạm → xoá file cũ nếu sót
+        // (force, phòng khi lần trước có vi phạm mà lần này agent đã sửa).
+        try {
+          const auditPath = path.join(labCwd, 'screens', '_audit.md');
+          if (figmaCfg?.token) {
+            const subtrees = await fetchNodeSubtrees(
+              figmaCfg.token,
+              previewConfig.fileKey,
+              parsed.screens.map((s) => s.frameNodeId),
+            );
+            const auditInputs = parsed.screens
+              .map((s) => ({ key: s.key, name: s.name, node: subtrees.get(s.frameNodeId) }))
+              .filter((i) => i.node != null);
+            const violations = auditLabSubtrees(auditInputs);
+            const auditMd = renderLabAuditMd(violations, { generatedAt: new Date().toISOString(), subject: 'màn' });
+            if (auditMd) {
+              await fs.promises.writeFile(auditPath, auditMd, 'utf8');
+              console.warn(
+                `[ds-lab] lab-compose: audit tự động tìm thấy ${violations.length} vi phạm (xem "screens/_audit.md").`,
+              );
+            } else {
+              await fs.promises.rm(auditPath, { force: true }).catch(() => null);
+            }
+          }
+        } catch (error) {
+          console.warn('[ds-lab] lab-compose: audit tự động thất bại (continuing, không ảnh hưởng kết quả stage):', error);
+        }
+
         // (4) Outputs/attribution: screens/ + lab-result.json thuộc lab-compose
         // (khớp `outputs` đã khai trong pipelines.ts); patterns/ không thuộc
         // stage nào (agent tự ghi/đọc, không bị "Chạy lại" xoá).
@@ -20514,6 +20557,40 @@ export async function startServer({
           const message = 'Không chụp được PNG cho comp nào (kiểm tra token Figma trong Cài đặt, hoặc componentNodeId agent ghi ra).';
           setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
           return 'failed' as const;
+        }
+
+        // (3b) WP-lab-quality (.tmp/pipeline/wp-lab-quality.yaml): audit tất
+        // định — NGUYÊN khuôn khối audit của runLabCompose ở trên (đọc
+        // docblock ở đó) — placeholder còn lộ + tràn biên trái/phải, đọc
+        // THẲNG subtree REST của các comp vừa capture. Fail-soft TUYỆT ĐỐI:
+        // lỗi ở khối này chỉ console.warn, KHÔNG BAO GIỜ đổi status/kết quả
+        // của stage. Có vi phạm → ghi "kit-shots/_audit.md" (nằm trong
+        // outputs đã khai của lab-kit); không có vi phạm → xoá file cũ nếu
+        // sót (force).
+        try {
+          const auditPath = path.join(labCwd, 'kit-shots', '_audit.md');
+          if (figmaCfg?.token) {
+            const subtrees = await fetchNodeSubtrees(
+              figmaCfg.token,
+              previewConfig.fileKey,
+              parsed.components.map((c) => c.componentNodeId),
+            );
+            const auditInputs = parsed.components
+              .map((c) => ({ key: c.key, name: c.name, node: subtrees.get(c.componentNodeId) }))
+              .filter((i) => i.node != null);
+            const violations = auditLabSubtrees(auditInputs);
+            const auditMd = renderLabAuditMd(violations, { generatedAt: new Date().toISOString(), subject: 'component' });
+            if (auditMd) {
+              await fs.promises.writeFile(auditPath, auditMd, 'utf8');
+              console.warn(
+                `[ds-lab] lab-kit: audit tự động tìm thấy ${violations.length} vi phạm (xem "kit-shots/_audit.md").`,
+              );
+            } else {
+              await fs.promises.rm(auditPath, { force: true }).catch(() => null);
+            }
+          }
+        } catch (error) {
+          console.warn('[ds-lab] lab-kit: audit tự động thất bại (continuing, không ảnh hưởng kết quả stage):', error);
         }
 
         // (4) Outputs/attribution: kit-shots/ + kit-result.json thuộc lab-kit

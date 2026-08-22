@@ -178,7 +178,9 @@ export function buildKitBrief(opts: BuildKitBriefOptions): string {
     `Luật token nới MỘT NẤC: mọi màu vẫn PHẢI lấy từ "criteria/tokens.md", nhưng ĐƯỢC phối gradient/alpha từ chính các màu đó (GRADIENT_LINEAR đã probe chạy tốt trên sandbox Figma) — cấm mọi màu gốc mới ngoài danh mục.`,
     pinterestNote,
     `IDEMPOTENT KIỂU COMPONENT (khác hẳn frame màn): comp trùng tên đã có trong page kit → GIỮ NGUYÊN node component đó (id không đổi — instance ở ngoài màn đang trỏ mainComponent vào đúng node này), CHỈ xoá children BÊN TRONG rồi dựng lại nội dung trong CHÍNH node đó; TUYỆT ĐỐI không xoá-tạo-lại component (sẽ làm orphan mọi instance đang trỏ vào nó).`,
+    `MỌI comp phái sinh PHẢI dựng bằng AUTO-LAYOUT (fill/hug đúng chiều) và trước khi chốt PHẢI tự resize instance thử về bề rộng 358 (content width mobile) — comp có bề rộng tự nhiên cứng (ví dụ 445) sẽ bị cắt cụt mép phải khi đặt vào màn 390 (lỗi thật đã gặp: mất cả nút trong card).`,
     `Kết thúc: ghi ĐÚNG MỘT file "${KIT_RESULT_FILE_REL}" ở cwd của bạn — {"components":[{"key","name","componentNodeId","reason?","baseComponents?","notes?"}]} — và cập nhật "${KIT_REGISTRY_FILE_REL}" (merge theo "key", KHÔNG xoá entry cũ còn dùng).`,
+    `Lưu ý: toàn bộ nội dung skill "lab-kit-compose" ĐÃ nằm trong system prompt của bạn — ĐỪNG đi tìm file skill trong catalog cục bộ của CLI (không có ở đó, và không cần).`,
   ]
     .filter((s) => s.length > 0)
     .join(' ');

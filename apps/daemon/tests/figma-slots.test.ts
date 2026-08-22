@@ -158,6 +158,60 @@ describe('figma-slots: mineComponentSlots (thuần, tất định)', () => {
     expect(profiles[1].componentName).toBe('Card Default (biến thể khác)');
   });
 
+  // WP-lab-quality (.tmp/pipeline/wp-lab-quality.yaml): bằng chứng 637KB —
+  // chữ ký dedupe CŨ nhét cả `characters` vào JSON.stringify nên hai biến
+  // thể chỉ khác chữ mặc định (State=Hover vs State=Default) bị coi khác
+  // cấu trúc. Chữ ký MỚI bỏ hẳn characters khỏi so sánh → phải collapse.
+  it('2 biến thể cùng slots/textLayer-paths nhưng KHÁC characters → collapse còn 1', () => {
+    const variantA = cardDefaultFixture();
+    const variantB = cardDefaultFixture();
+    const variantBNode = variantB.node as { children: Array<Record<string, unknown>> };
+    const headingB = variantBNode.children[0] as { children: Array<{ children: Array<Record<string, unknown>> }> };
+    const contentSlotB = headingB.children[0];
+    // Đổi CHỮ mặc định (không đổi path/type/cấu trúc slot) — mô phỏng
+    // "State=Hover" có nút để chữ khác "State=Default".
+    (contentSlotB.children[0] as Record<string, unknown>).characters = 'Tiêu đề khác';
+    (contentSlotB.children[1] as Record<string, unknown>).characters = 'Nội dung khác hẳn';
+
+    const profiles = mineComponentSlots([variantA, variantB]);
+    expect(profiles).toHaveLength(1);
+    // Entry giữ lại mang textLayers của biến thể ĐẦU TIÊN (kèm characters gốc).
+    expect(profiles[0].textLayers).toEqual([
+      { path: 'Heading > Content > Title', characters: 'Title' },
+      { path: 'Heading > Content > Paragraph', characters: 'Body copy goes here' },
+    ]);
+  });
+
+  // Nhóm 5 biến thể khác cấu trúc THẬT (không chỉ khác chữ) → giữ tối đa 3,
+  // 2 biến thể cuối bị lược + đếm lại trên entry đầu nhóm.
+  it('nhóm 5 biến thể khác cấu trúc thật → giữ 3 + renderSlotsMd có dòng lược', () => {
+    function variantWithSlotCount(n: number): MineSlotsInput {
+      const base = cardDefaultFixture();
+      const node = base.node as { children: Array<Record<string, unknown>> };
+      // Thêm N slot top-level khác nhau để cấu trúc thật sự khác nhau.
+      const extraSlots = Array.from({ length: n }, (_, i) => ({
+        id: `9:${100 + i}`,
+        name: `.extra-slot-${i}`,
+        type: 'SLOT',
+        visible: true,
+        children: [],
+      }));
+      node.children = [...node.children, ...extraSlots];
+      return { name: 'Card Default', node };
+    }
+
+    const variants = [1, 2, 3, 4, 5].map((n) => variantWithSlotCount(n));
+    const profiles = mineComponentSlots(variants);
+    expect(profiles).toHaveLength(3);
+    expect(profiles[0].componentName).toBe('Card Default');
+    expect(profiles[0].skippedVariantCount).toBe(2);
+    expect(profiles[1].skippedVariantCount).toBeUndefined();
+    expect(profiles[2].skippedVariantCount).toBeUndefined();
+
+    const md = renderSlotsMd(profiles, { generatedAt: '2026-08-22T00:00:00.000Z', componentCount: 3 });
+    expect(md).toContain('và 2 biến thể khác cùng nhóm đã lược');
+  });
+
   it('dedupe biến thể theo tên dạng "Prop=Value, Prop2=Value2" (page-walk fallback)', () => {
     const variantA: MineSlotsInput = {
       name: 'State=Default, Size=Large',

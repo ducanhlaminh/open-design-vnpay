@@ -168,7 +168,7 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
     ? ', "criteria/tokens.md" (style CHỈ được lấy từ đây — cấm giá trị ngoài danh mục, dùng get_variable_defs đối chiếu thêm)'
     : ' — LƯU Ý: "criteria/tokens.md" CHƯA có cho dự án này, không có bảng token nào để đối chiếu';
   const slotsNote = opts.hasSlots
-    ? ', "criteria/slots.md" (hồ sơ SLOT từng component — cơ chế điền nội dung, ĐỌC TRƯỚC KHI DỰNG)'
+    ? ', "criteria/slots.md" (hồ sơ SLOT từng component — cơ chế điền nội dung, ĐỌC TRƯỚC KHI DỰNG; file này dài — GREP/tìm đúng mục component bạn dùng, đừng đọc tuần tự cả file)'
     : '';
   const patternsNote =
     opts.patternNames.length > 0
@@ -188,12 +188,14 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
     `Nhiệm vụ: đọc tài liệu ở ${docsLine} để biết TỪNG màn LÀM GÌ (chức năng + nội dung THẬT). Ảnh mockup trong tài liệu chỉ để hiểu tính năng — **CẤM chép bố cục từ mockup**: bố cục là việc bạn tự sáng tác từ comp base.`,
     `Nguyên liệu: "criteria/components.md" (danh mục comp base hợp lệ — import bằng key qua use_figma, hoặc tra bằng search_design_system/get_libraries)${guideNote}${tokensNote}${slotsNote}. "${LAB_PATTERNS_DIR_REL}/" chứa pattern đã chế trước.${kitNote}`,
     `Phạm vi lần này: ${scope} (tối đa 3 màn/lần chạy).`,
-    `Dựng trong trang Figma tên đúng "${pageName}" (file preview key "${opts.previewFileKey}") — tạo nếu chưa có, tái dùng nếu có.`,
+    `Dựng trong trang Figma tên đúng "${pageName}" (file preview key "${opts.previewFileKey}") — tạo nếu chưa có, tái dùng nếu có. Khổ màn CỨNG: mobile rộng ĐÚNG 390 (không 398, không tự chế khổ khác) / web 1440.`,
+    `MỖI MÀN ĐÚNG MỘT điểm nhấn: badge nổi bật (Phổ biến/Mới…) chỉ đeo cho MỘT item, không lặp trên mọi card; CTA chính của màn thao tác (thanh toán, tiếp tục…) đặt full-width (358).`,
     patternsNote,
     pinterestNote,
     `5 luật sống còn (Hợp đồng cứng — vi phạm là lỗi nghiêm trọng): (1) CHỈ thao tác trên file preview ("${opts.previewFileKey}") — TUYỆT ĐỐI không mở/sửa bất kỳ file Figma nào khác. (2) Page/frame đặt tên chuẩn ("${pageName}" / "<KEY> — <tên màn>") + idempotent replace-by-name: có frame trùng tên thì NHỚ vị trí {x,y}, XÓA rồi dựng lại đúng vị trí cũ — không bao giờ để hai frame cùng tên tồn tại song song. (3) NGUYÊN TỬ theo lần execute-code: TOÀN BỘ thao tác của một phần tử nằm trong CÙNG một lần gọi tool — TUYỆT ĐỐI cấm mang node id (đặc biệt id ruột instance dạng "I<a>;<b>") qua ranh giới call sau; cần dùng lại thì RE-QUERY bằng tên NGAY trong lần gọi đó. (4) Content THẬT lấy từ tài liệu (URD) — style (màu/chữ/radius/shadow/spacing) CHỈ được lấy từ "criteria/tokens.md", cấm giá trị ngoài danh mục. Luật token nới MỘT NẤC: mọi màu vẫn PHẢI lấy từ "criteria/tokens.md", nhưng ĐƯỢC phối gradient/alpha từ chính các màu đó (GRADIENT_LINEAR đã probe chạy tốt trên sandbox Figma) — cấm mọi màu gốc mới ngoài danh mục. (5) Nội dung phải nằm TRONG component: điền qua slot (append/replace children TRONG slot) hoặc override text layer con của instance — TUYỆT ĐỐI CẤM đặt text/node rời đè toạ độ lên instance; placeholder mặc định không dùng (Title/Body/Content/Label…) phải override hoặc hide, không được để lộ; children mặc định thừa trong slot (ví dụ dãy Tab-Cell) phải xoá bớt cho khớp nội dung thật.`,
     `Dùng get_screenshot để TỰ XEM LẠI frame vừa dựng (bố cục, phân cấp, spacing, on-brand) rồi tự sửa — tối đa vài vòng cho mỗi màn.`,
     `Kết thúc: ghi ĐÚNG MỘT file "${LAB_RESULT_FILE_REL}" ở cwd của bạn — {"screens":[{"key","name","frameNodeId","frameUrl?","notes?"}]}; "frameNodeId" LÀ id của chính FRAME màn (dạng node thường "12:34", KHÔNG PHẢI id ruột instance). Không ghi file nào khác ngoài "${LAB_RESULT_FILE_REL}" và "${LAB_PATTERNS_DIR_REL}/*.json".`,
+    `Lưu ý: toàn bộ nội dung skill "lab-screen-compose" đã nằm trong system prompt của bạn — ĐỪNG đi tìm file skill trong catalog cục bộ của CLI (không có ở đó, và không cần).`,
   ]
     .filter((s) => s.length > 0)
     .join(' ');

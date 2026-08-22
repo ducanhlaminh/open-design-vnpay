@@ -16,6 +16,9 @@ od:
   category: figma
 ---
 
+> Skill này được giao bằng cách nhúng vào system prompt — nếu bạn không thấy
+> nó trong catalog skill cục bộ thì đó là BÌNH THƯỜNG, đừng đi tìm.
+
 # lab-screen-compose — sáng tác màn hình mới từ comp base DS
 
 Bạn chạy **không có người ngồi cạnh** (job nền, một phiên/lần chạy). Khác hẳn
@@ -61,8 +64,10 @@ không phải tái tạo pixel của ảnh tham khảo.
   slot ghi `path` (đường tổ tiên tới slot), `hidden` (có đang ẩn không),
   `children mặc định` (placeholder hiện có trong slot); mỗi text layer ghi
   `path` + chữ mặc định. Đây là cơ chế THẬT để điền nội dung — **ĐỌC TRƯỚC KHI
-  DỰNG** (xem luật #5 bên dưới và "Recipe thao tác SLOT").
-- `kit/kit.json` + trang **"[OD Lab Kit] &lt;tên dự án&gt;"** (nếu stage "Nâng
+  DỰNG** (xem luật #5 bên dưới và "Recipe thao tác SLOT"). File này có thể
+  DÀI (nhiều component) — **GREP/tìm đúng mục component bạn đang dùng, đừng
+  đọc tuần tự cả file**.
+- `kit/kit.json` + trang **"[OD Lab Kit] <tên dự án>"** (nếu stage "Nâng
   bộ comp" — `lab-kit-compose` — đã chạy trước đó): registry các comp PHÁI
   SINH thẩm mỹ cao hơn comp base, sống trong CÙNG file preview. **ƯU TIÊN**
   import/dùng instance từ page Lab Kit cho những điểm neo thị giác của màn
@@ -80,8 +85,11 @@ không phải tái tạo pixel của ảnh tham khảo.
 2. Với TỪNG màn (tối đa 3 màn/lần chạy):
    a. Xác định trang Figma: tên đúng `[OD Lab] <tên dự án>` nêu trong kickoff
       — có sẵn thì dùng, chưa có thì tạo mới đúng tên đó.
-   b. Đặt tên frame `<KEY> — <tên màn>`. Kích thước: mobile → rộng 390; web →
-      rộng 1440 (chọn theo ngữ cảnh URD — ứng dụng di động hay web).
+   b. Đặt tên frame `<KEY> — <tên màn>`. Khổ màn CỨNG: mobile rộng ĐÚNG 390
+      (không 398, không tự chế khổ khác) / web rộng ĐÚNG 1440 (chọn theo ngữ
+      cảnh URD — ứng dụng di động hay web). Bằng chứng thật đã gặp: một màn
+      dựng lệch thành frame rộng 398 thay vì 390 — luôn kiểm tra lại số đo sau
+      khi tạo frame.
    c. Sáng tác bố cục từ comp base: ghép component theo Ý NGHĨA (không theo vị
       trí ảnh mockup), dùng pattern có sẵn khi khớp, override nội dung bằng dữ
       liệu thật từ tài liệu.
@@ -91,9 +99,16 @@ không phải tái tạo pixel của ảnh tham khảo.
       vi phạm luật #5 (text đè lên instance), phải chuyển vào TRONG component
       (qua slot/override, xem "Recipe thao tác SLOT"); (b) text placeholder
       mặc định còn `visible` ("Title", "Body", "Content", "Active tab",
-      "Label", "Lorem") → chưa được override/hide. Sửa HẾT vi phạm tìm được
-      rồi mới sang bước `get_screenshot` — ảnh chụp nhỏ không bắt được lỗi
-      chồng chữ, phải quét cấu trúc trước.
+      "Label", "Lorem") → chưa được override/hide; (c) node hiển thị có
+      bounds thò khỏi biên trái/phải của frame màn > 2px → **tràn biên**,
+      phải sửa (resize instance / bật auto-layout) — comp base/kit có bề rộng
+      tự nhiên cứng hơn khổ màn (ví dụ 445pt đặt vào 358pt nội dung) sẽ bị cắt
+      cụt mép, có thể mất cả nút bấm bên trong (bằng chứng thật đã gặp). Sửa
+      HẾT vi phạm tìm được rồi mới sang bước `get_screenshot` — ảnh chụp nhỏ
+      không bắt được lỗi chồng chữ/tràn biên, phải quét cấu trúc trước. Sau
+      khi stage chạy xong, daemon còn TỰ SOÁT lại placeholder/tràn biên từ
+      REST và ghi `screens/_audit.md` nếu còn sót — đây là lưới an toàn thứ
+      hai, không thay thế bước tự-kiểm này.
    e. Dùng `get_screenshot` để TỰ XEM LẠI frame vừa dựng — kiểm bố cục, phân
       cấp thông tin, khoảng cách, có đúng nhận diện thương hiệu (on-brand)
       không. Thấy chưa ổn → tự sửa. Lặp tối đa ~3 vòng cho MỖI màn (đừng lặp
@@ -103,7 +118,7 @@ không phải tái tạo pixel của ảnh tham khảo.
 4. Ghi kết quả — xem "Kết thúc" bên dưới. Đây là bước BẮT BUỘC, không được bỏ
    qua dù một vài màn lỗi giữa chừng (ghi những màn đã dựng được, best-effort).
 
-## Hợp đồng cứng — 5 luật sống còn (vi phạm là lỗi nghiêm trọng)
+## Hợp đồng cứng — 6 luật sống còn (vi phạm là lỗi nghiêm trọng)
 
 1. **CHỈ file preview**: TUYỆT ĐỐI chỉ thao tác trên file Figma preview nêu
    trong kickoff (fileKey cụ thể) — không mở, không sửa bất kỳ file Figma nào
@@ -151,6 +166,14 @@ không phải tái tạo pixel của ảnh tham khảo.
    Tabbar giữ nguyên 7 Tab-Cell mặc định rộng 806px tràn khỏi container
    342px; Text Field bị điền sai tầng — layer "Label" (tên trường) bị ghi giá
    trị, còn layer "Content" (giá trị/placeholder) vẫn giữ chữ "Content".
+6. **Khổ màn CỨNG + MỘT điểm nhấn + CTA full-width**: khổ màn CỨNG — mobile
+   rộng ĐÚNG 390 (không 398, không tự chế khổ khác) / web rộng ĐÚNG 1440.
+   MỖI MÀN ĐÚNG MỘT điểm nhấn: badge nổi bật (Phổ biến/Mới…) chỉ đeo cho MỘT
+   item, không lặp trên mọi card (nhiều điểm nhấn = loãng, người dùng không
+   biết nhìn vào đâu). CTA chính của màn thao tác (thanh toán, tiếp tục…) đặt
+   full-width (358) — không phải một nút nhỏ giữa màn. Bằng chứng thật đã
+   gặp: SCR-01 dựng thành frame 398 (lệch chuẩn 390); cả 2 card cùng đeo badge
+   "PHỔ BIẾN" (điểm nhấn loãng); CTA ở màn checkout chỉ rộng 116px.
 
 ## Recipe thao tác SLOT (Plugin API)
 
@@ -217,3 +240,7 @@ thêm token thật trong file. Không tìm thấy tool nào ghi được (server
 → đây là lỗi cấu hình, không phải lỗi của bạn — vẫn cố ghi `lab-result.json`
 với `screens: []`; stage sẽ báo lỗi và người dùng cần kiểm tra lại Figma MCP
 trong Cài đặt.
+
+Lưu ý: toàn bộ nội dung skill "lab-screen-compose" đã nằm trong system prompt
+của bạn — ĐỪNG đi tìm file skill trong catalog cục bộ của CLI (không có ở đó,
+và không cần).
