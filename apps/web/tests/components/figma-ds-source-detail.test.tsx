@@ -490,3 +490,62 @@ describe('FigmaDsSourceDetail · tab Tokens (WP-ds-tokens UI)', () => {
     expect(tokensSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('FigmaDsSourceDetail · tab Slots (WP-slots UI)', () => {
+  // Cùng lý do thứ tự với mockWithTokens: '/slots' (và '/tokens') phải khai
+  // TRƯỚC '/api/figma-design-systems/'.
+  function mockWithSlots(slots: (init?: RequestInit) => Response) {
+    mockFetchSequence({
+      '/slots': slots,
+      '/tokens': () => new Response(JSON.stringify({ code: 'TOKENS_NOT_GENERATED' }), { status: 404 }),
+      '/components': () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+      '/api/figma-design-systems/': () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+    });
+  }
+
+  it('(s1) chuyển tab Slots → fetch + render markdown, ẩn list component', async () => {
+    mockWithSlots(() => new Response(
+      JSON.stringify({ markdown: '### Card Default\n\n| Path | Hidden |\n| --- | --- |\n| `.card-action` | không |\n', generatedAt: '2026-08-22T05:00:00Z' }),
+      { status: 200 },
+    ));
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    fireEvent.click(screen.getByTestId('figma-ds-detail-tab-slots'));
+    const panel = await screen.findByTestId('figma-ds-detail-slots');
+    await within(panel).findByText('Card Default');
+    expect(within(panel).getByText('.card-action')).toBeTruthy();
+    expect(within(panel).getByText(/Sinh lúc/)).toBeTruthy();
+    expect(screen.queryByText('Button/Primary')).toBeNull();
+  });
+
+  it('(s2) 404 SLOTS_NOT_GENERATED → empty-state hướng dẫn, không phải lỗi', async () => {
+    mockWithSlots(() => new Response(JSON.stringify({ code: 'SLOTS_NOT_GENERATED' }), { status: 404 }));
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    fireEvent.click(screen.getByTestId('figma-ds-detail-tab-slots'));
+    const panel = await screen.findByTestId('figma-ds-detail-slots');
+    await within(panel).findByText(/chưa có hồ sơ slot/i);
+    expect(within(panel).queryByRole('alert')).toBeNull();
+    expect(within(panel).getByRole('button', { name: 'Tải lại' })).toBeTruthy();
+  });
+
+  it('(s3) chuyển tab qua lại → mỗi tab cache riêng, mỗi API chỉ fetch 1 lần', async () => {
+    const slotsSpy = vi.fn(() => new Response(
+      JSON.stringify({ markdown: '### Tabbar\n', generatedAt: '2026-08-22T05:00:00Z' }),
+      { status: 200 },
+    ));
+    mockWithSlots(slotsSpy);
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    fireEvent.click(screen.getByTestId('figma-ds-detail-tab-slots'));
+    await screen.findByText('Tabbar');
+    fireEvent.click(screen.getByTestId('figma-ds-detail-tab-components'));
+    await screen.findByText('Button/Primary');
+    fireEvent.click(screen.getByTestId('figma-ds-detail-tab-slots'));
+    await screen.findByText('Tabbar');
+    expect(slotsSpy).toHaveBeenCalledTimes(1);
+  });
+});

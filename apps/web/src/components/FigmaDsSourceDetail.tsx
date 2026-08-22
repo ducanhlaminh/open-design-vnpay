@@ -20,6 +20,7 @@ import { Icon } from './Icon';
 import {
   fetchFigmaDesignSystemComponents,
   fetchFigmaDesignSystemDetail,
+  fetchFigmaDesignSystemSlots,
   fetchFigmaDesignSystemTokens,
   generateFigmaDesignSystemGuide,
   refreshFigmaDesignSystem,
@@ -94,10 +95,15 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
   // WP-ds-tokens UI: tab "Tokens" render tokens.md de-facto (0.8.96). Lazy —
   // chỉ fetch lần đầu chuyển tab (undefined = chưa tải/đang tải, null = nguồn
   // chưa sinh tokens — 404, KHÔNG phải lỗi vì mining chạy NỀN sau Làm mới).
-  const [view, setView] = useState<'components' | 'tokens'>('components');
+  const [view, setView] = useState<'components' | 'tokens' | 'slots'>('components');
   const [tokens, setTokens] = useState<{ markdown: string; generatedAt: string } | null | undefined>(undefined);
   const [tokensError, setTokensError] = useState<string | null>(null);
   const [tokensLoading, setTokensLoading] = useState(false);
+  // WP-slots UI: tab "Slots" render slots.md (hồ sơ SLOT de-facto, 0.8.98) —
+  // cùng vòng đời lazy/cache/Tải lại với tab Tokens ngay trên.
+  const [slots, setSlots] = useState<{ markdown: string; generatedAt: string } | null | undefined>(undefined);
+  const [slotsError, setSlotsError] = useState<string | null>(null);
+  const [slotsLoading, setSlotsLoading] = useState(false);
 
   // WP23b — re-attach: hook khuôn useAppImportJob, tự hỏi
   // /api/figma-guide-jobs/active lúc mount để hiện panel tiến độ ngay cả khi
@@ -146,11 +152,28 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
     }
   }, [sourceId]);
 
-  // Lần đầu mở tab Tokens mới fetch; các lần sau giữ cache trong state, nút
-  // "Tải lại" cho trường hợp mining nền vừa chạy xong sau Làm mới.
+  const loadSlots = useCallback(async () => {
+    setSlotsLoading(true);
+    try {
+      setSlots(await fetchFigmaDesignSystemSlots(sourceId));
+      setSlotsError(null);
+    } catch (error) {
+      setSlots(undefined);
+      setSlotsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSlotsLoading(false);
+    }
+  }, [sourceId]);
+
+  // Lần đầu mở tab Tokens/Slots mới fetch; các lần sau giữ cache trong state,
+  // nút "Tải lại" cho trường hợp mining nền vừa chạy xong sau Làm mới.
   useEffect(() => {
     if (view === 'tokens' && tokens === undefined && !tokensLoading && !tokensError) void loadTokens();
   }, [view, tokens, tokensLoading, tokensError, loadTokens]);
+
+  useEffect(() => {
+    if (view === 'slots' && slots === undefined && !slotsLoading && !slotsError) void loadSlots();
+  }, [view, slots, slotsLoading, slotsError, loadSlots]);
 
   useEffect(() => {
     setDetail(undefined);
@@ -160,6 +183,8 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
     setView('components');
     setTokens(undefined);
     setTokensError(null);
+    setSlots(undefined);
+    setSlotsError(null);
     refetchedJobIdRef.current = null;
     void loadDetail();
     void loadComponents();
@@ -428,6 +453,16 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
             >
               Tokens
             </button>
+            <button
+              type="button"
+              role="tab"
+              data-testid="figma-ds-detail-tab-slots"
+              aria-selected={view === 'slots'}
+              className={`${styles.viewTab} ${view === 'slots' ? styles.viewTabActive : ''}`}
+              onClick={() => setView('slots')}
+            >
+              Slots
+            </button>
           </div>
 
           {view === 'tokens' ? (
@@ -467,7 +502,45 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
             </div>
           ) : null}
 
-          {view === 'tokens' ? null : (
+          {view === 'slots' ? (
+            // WP-slots UI: panel y hệt tab Tokens (tái dùng cùng bộ class) —
+            // slots.md cũng là markdown daemon tự sinh tất định.
+            <div className={styles.tokensPanel} data-testid="figma-ds-detail-slots">
+              <div className={styles.tokensToolbar}>
+                {slots ? (
+                  <span className={styles.meta}>{`Sinh lúc ${new Date(slots.generatedAt).toLocaleString('vi-VN')}`}</span>
+                ) : <span />}
+                <button
+                  type="button"
+                  className={styles.missingToggle}
+                  disabled={slotsLoading}
+                  onClick={() => { void loadSlots(); }}
+                >
+                  {slotsLoading ? 'Đang tải…' : 'Tải lại'}
+                </button>
+              </div>
+              {slotsError ? <p className={styles.errorText} role="alert">{slotsError}</p> : null}
+              {slotsLoading && slots === undefined ? <p className={styles.meta}>Đang tải hồ sơ slot…</p> : null}
+              {slots === null ? (
+                <div className={styles.empty}>
+                  <p>
+                    Nguồn này chưa có hồ sơ slot. Hồ sơ được đào tự động (chạy nền) sau mỗi lần <strong>Làm mới</strong>{' '}
+                    thành công — chỉ component CÓ slot mới vào hồ sơ; nếu vừa Làm mới xong, chờ chút rồi bấm{' '}
+                    <strong>Tải lại</strong>.
+                  </p>
+                </div>
+              ) : null}
+              {slots ? (
+                <div
+                  className={styles.tokensMarkdown}
+                  // eslint-disable-next-line react/no-danger
+                  dangerouslySetInnerHTML={{ __html: renderMarkdownToSafeHtml(slots.markdown) }}
+                />
+              ) : null}
+            </div>
+          ) : null}
+
+          {view !== 'components' ? null : (
           <>
           <div className={styles.toolbar}>
             <input

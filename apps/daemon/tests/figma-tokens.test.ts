@@ -269,7 +269,10 @@ describe('figma-tokens: route-level (refresh → mining best-effort, GET, criter
   }
 
   async function waitForFile(target: string): Promise<void> {
-    for (let i = 0; i < 100 && !fs.existsSync(target); i += 1) {
+    // Task mining là fire-and-forget nền — trên máy đang tải nặng 2s có khi
+    // chưa đủ (flake hiếm quan sát được khi chạy kèm battery khác), chờ hào
+    // phóng tới 10s; đường xanh bình thường vẫn thoát ngay khi file xuất hiện.
+    for (let i = 0; i < 500 && !fs.existsSync(target); i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   }
@@ -353,6 +356,13 @@ describe('figma-tokens: route-level (refresh → mining best-effort, GET, criter
     expect(slotsMarkdown).toContain('SLOT');
     expect(slotsMarkdown).toContain('Content');
     expect(slotsMarkdown).toContain('Primary Button');
+
+    // Tab Slots (DS detail): GET /slots trả đúng markdown vừa ghi.
+    const got = response();
+    await handlers.get('GET /api/figma-design-systems/:id/slots')!({ params: { id } }, got.res);
+    expect(got.output.status).toBe(200);
+    expect(got.output.body.markdown).toBe(slotsMarkdown);
+    expect(typeof got.output.body.generatedAt).toBe('string');
   });
 
   it('mining throw → refresh vẫn 200; GET tokens trả 404 TOKENS_NOT_GENERATED', async () => {
@@ -372,6 +382,11 @@ describe('figma-tokens: route-level (refresh → mining best-effort, GET, criter
     await handlers.get('GET /api/figma-design-systems/:id/tokens')!({ params: { id } }, got.res);
     expect(got.output.status).toBe(404);
     expect(got.output.body.error.code).toBe('TOKENS_NOT_GENERATED');
+
+    const gotSlots = response();
+    await handlers.get('GET /api/figma-design-systems/:id/slots')!({ params: { id } }, gotSlots.res);
+    expect(gotSlots.output.status).toBe(404);
+    expect(gotSlots.output.body.error.code).toBe('SLOTS_NOT_GENERATED');
   });
 
   it('GET tokens 404 khi nguồn không tồn tại', async () => {

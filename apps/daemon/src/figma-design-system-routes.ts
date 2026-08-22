@@ -835,6 +835,22 @@ export function registerFigmaDesignSystemRoutes(app: Express, deps: RegisterFigm
     res.json(tokens);
   });
 
+  // WP-slots (tab Slots trong DS detail): GET slots.md — mirror y hệt route
+  // tokens ở trên, cùng lý do 404 "chưa có" (nguồn chưa refresh từ khi
+  // WP-slots ra mắt, hoặc catalog không có component nào chứa slot).
+  app.get('/api/figma-design-systems/:id/slots', async (req, res) => {
+    if (!guard(req, res)) return;
+    const source = getFigmaDesignSystemSource(db, req.params.id);
+    if (!source) return notFound(res);
+    const slots = await readFigmaDesignSystemSlots(deps.paths.RUNTIME_DATA_DIR, source.id);
+    if (!slots) {
+      return res.status(404).json({
+        error: { code: 'SLOTS_NOT_GENERATED', message: 'Chưa có hồ sơ slot cho nguồn này — làm mới nguồn để đào (chỉ component có slot mới vào hồ sơ).' },
+      });
+    }
+    res.json(slots);
+  });
+
   app.patch('/api/figma-design-systems/:id', async (req, res) => {
     if (!guard(req, res)) return;
     const current = getFigmaDesignSystemSource(db, req.params.id);

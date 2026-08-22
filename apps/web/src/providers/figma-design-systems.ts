@@ -163,6 +163,20 @@ export async function fetchFigmaDesignSystemTokens(
   return await response.json() as { markdown: string; generatedAt: string };
 }
 
+/** WP-slots (0.8.98): slots.md — hồ sơ SLOT de-facto của nguồn, sinh NỀN cùng
+ *  nhịp mining tokens. 404 SLOTS_NOT_GENERATED = chưa từng sinh (nguồn chưa
+ *  refresh từ 0.8.98, mining còn chạy, hoặc không component nào có slot) →
+ *  trả null cho empty-state, KHÔNG phải lỗi — cùng khuôn fetch tokens ở trên. */
+export async function fetchFigmaDesignSystemSlots(
+  sourceId: string,
+  signal?: AbortSignal,
+): Promise<{ markdown: string; generatedAt: string } | null> {
+  const response = await fetch(`/api/figma-design-systems/${encodeURIComponent(sourceId)}/slots`, { signal });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(await errorMessage(response, 'Không tải được hồ sơ slot của nguồn này.'));
+  return await response.json() as { markdown: string; generatedAt: string };
+}
+
 export async function createFigmaDesignSystem(payload: SourcePayload): Promise<FigmaDesignSystemSource> {
   const response = await fetch('/api/figma-design-systems', {
     method: 'POST',
