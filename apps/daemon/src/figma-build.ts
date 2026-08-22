@@ -92,6 +92,21 @@ export interface McpServerLike {
   enabled: boolean;
   templateId?: string;
   url?: string;
+  /** Tên hiển thị user đặt trong form "custom server" của Settings → MCP —
+   *  form đó lưu `id: 'custom'` cố định, nên label thường là NƠI DUY NHẤT
+   *  danh tính server lộ ra (bài học thật 0.8.100: user thêm Pinterest, entry
+   *  ra `{id: 'custom', label: 'Pinterest'}` và picker dò theo id bỏ sót). */
+  label?: string;
+  /** Server stdio: command + args — danh tính cũng lộ ra ở đường dẫn script
+   *  (ví dụ ".../pinterest-mcp-server/dist/..."), dò thêm cho chắc. */
+  command?: string;
+  args?: readonly string[];
+}
+
+/** Ghép mọi field "mang danh tính" của một server thành một chuỗi để dò bằng
+ *  regex — id, templateId, url, label, command, args. */
+function mcpServerIdentityBlob(s: McpServerLike): string {
+  return [s.id, s.templateId ?? '', s.url ?? '', s.label ?? '', s.command ?? '', ...(s.args ?? [])].join(' ');
 }
 
 /** The Figma MCP server the user configured in Settings → External MCP — the
@@ -113,16 +128,14 @@ export function pickFigmaMcpServer<S extends McpServerLike>(servers: readonly S[
  *  the user configures BY HAND in Settings → MCP — od does not ship or
  *  auto-configure it (see `lab-kit-compose` SKILL.md's "Recipe ảnh
  *  placeholder"). Same deterministic shape as `pickFigmaMcpServer`: first
- *  ENABLED server whose `templateId` is exactly `'pinterest'`, or whose
- *  id/url matches `/pinterest/i`. `null` (no server configured) is NOT an
- *  error — `runLabKit`/`runLabCompose` (server.ts) run fail-soft without it:
- *  the kickoff brief simply omits any mention of Pinterest. */
+ *  ENABLED server whose identity (templateId/id/url/label/command/args — xem
+ *  `mcpServerIdentityBlob`; form custom của Settings lưu `id: 'custom'` nên
+ *  KHÔNG được dò mỗi id) matches `/pinterest/i`. `null` (no server
+ *  configured) is NOT an error — `runLabKit`/`runLabCompose` (server.ts) run
+ *  fail-soft without it: the kickoff brief simply omits any mention of
+ *  Pinterest. */
 export function pickPinterestMcpServer<S extends McpServerLike>(servers: readonly S[]): S | null {
-  return servers.find((s) => s.enabled && (
-    s.templateId === 'pinterest' ||
-    /pinterest/i.test(s.id) ||
-    (typeof s.url === 'string' && /pinterest/i.test(s.url))
-  )) ?? null;
+  return servers.find((s) => s.enabled && /pinterest/i.test(mcpServerIdentityBlob(s))) ?? null;
 }
 
 /** WP25a: pure computation behind `enabledExternalMcp` in server.ts's

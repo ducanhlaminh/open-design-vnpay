@@ -235,6 +235,27 @@ describe('pickPinterestMcpServer', () => {
     expect(pickPinterestMcpServer([{ id: 'unrelated', enabled: true }])).toBeNull();
     expect(pickPinterestMcpServer([])).toBeNull();
   });
+
+  // Hotfix 0.8.101 — bài học thật 0.8.100: form "custom server" của Settings
+  // lưu id CỐ ĐỊNH là 'custom' (danh tính chỉ lộ ở label/command/args), user
+  // thêm Pinterest ra entry {id: 'custom', label: 'Pinterest'} và picker dò
+  // theo id đã bỏ sót → moodboard không chạy.
+  it('matches identity in label, command, or args (custom-form entry: id is always "custom")', () => {
+    expect(
+      pickPinterestMcpServer([{ id: 'custom', enabled: true, label: 'Pinterest' }]),
+    ).toMatchObject({ id: 'custom' });
+    expect(
+      pickPinterestMcpServer([{ id: 'custom', enabled: true, command: '/usr/local/bin/pinterest-mcp' }]),
+    ).toMatchObject({ id: 'custom' });
+    expect(
+      pickPinterestMcpServer([
+        { id: 'custom', enabled: true, label: 'Ảnh tham khảo', args: ['/opt/pinterest-mcp-server/dist/index.js'] },
+      ]),
+    ).toMatchObject({ id: 'custom' });
+    expect(
+      pickPinterestMcpServer([{ id: 'custom', enabled: true, label: 'Confluence', command: '/usr/bin/node' }]),
+    ).toBeNull();
+  });
 });
 
 // Sanity: the exported path constants match what the docblocks/brief claim.
