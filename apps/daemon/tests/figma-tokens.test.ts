@@ -22,6 +22,7 @@ import { closeDatabase, openDatabase } from '../src/db.js';
 import { writeFigmaConfig } from '../src/figma-config.js';
 import { FIGMA_COMPONENT_CATALOG_SCHEMA_VERSION, type FigmaComponentCatalogSnapshot } from '../src/figma-component-catalog.js';
 import {
+  figmaDesignSystemSlotsMdPath,
   figmaDesignSystemTokensJsonPath,
   figmaDesignSystemTokensMdPath,
   registerFigmaDesignSystemRoutes,
@@ -308,6 +309,50 @@ describe('figma-tokens: route-level (refresh → mining best-effort, GET, criter
     expect(got.output.status).toBe(200);
     expect(got.output.body.markdown).toBe(markdown);
     expect(typeof got.output.body.generatedAt).toBe('string');
+
+    // WP-slots: fixture không có node SLOT nào → profiles rỗng → slots.md
+    // KHÔNG được ghi (cùng lý do empty-guard của tokens.md — xem
+    // `mineAndWriteFigmaDesignSystemTokens`).
+    expect(fs.existsSync(figmaDesignSystemSlotsMdPath(root, id))).toBe(false);
+  });
+
+  it('component có node SLOT → slots.md được ghi CẠNH tokens.md (best-effort, cùng task mining)', async () => {
+    vi.mocked(fetchNodeSubtrees).mockImplementation(async (_token: string, _fileKey: string, nodeIds: readonly string[]) => {
+      const map = new Map<string, unknown>();
+      for (const nodeId of nodeIds) {
+        map.set(nodeId, {
+          id: nodeId,
+          type: 'COMPONENT',
+          visible: true,
+          fills: [{ type: 'SOLID', visible: true, color: { r: 0, g: 82 / 255, b: 1, a: 1 } }],
+          children: [
+            {
+              id: `${nodeId}:slot`,
+              name: 'Content',
+              type: 'SLOT',
+              visible: true,
+              children: [{ id: `${nodeId}:slot:1`, name: 'Title', type: 'TEXT', characters: 'Title' }],
+            },
+          ],
+        });
+      }
+      return map;
+    });
+    const { root, id, handlers } = await setup();
+
+    const refreshed = response();
+    await handlers.get('POST /api/figma-design-systems/:id/refresh')!({ params: { id } }, refreshed.res);
+    expect(refreshed.output.status).toBe(200);
+
+    const tokensMdPath = figmaDesignSystemTokensMdPath(root, id);
+    const slotsMdPath = figmaDesignSystemSlotsMdPath(root, id);
+    await waitForFile(slotsMdPath);
+    expect(fs.existsSync(tokensMdPath)).toBe(true);
+    expect(fs.existsSync(slotsMdPath)).toBe(true);
+    const slotsMarkdown = await readFile(slotsMdPath, 'utf8');
+    expect(slotsMarkdown).toContain('SLOT');
+    expect(slotsMarkdown).toContain('Content');
+    expect(slotsMarkdown).toContain('Primary Button');
   });
 
   it('mining throw → refresh vẫn 200; GET tokens trả 404 TOKENS_NOT_GENERATED', async () => {

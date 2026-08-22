@@ -456,10 +456,12 @@ import {
 import {
   figmaDesignSystemGuidePath,
   readFigmaDesignSystemGuide,
+  readFigmaDesignSystemSlots,
   readFigmaDesignSystemTokens,
   registerFigmaDesignSystemRoutes,
   writeFigmaDesignSystemGuide,
   writeFilteredComponentsGuideToCriteria,
+  writeSlotsMarkdownToCriteria,
   writeTokensMarkdownToCriteria,
 } from './figma-design-system-routes.js';
 // WP25a: "Dựng trong Figma" per màn — job + input compiler. `computeEnabledMcp`
@@ -16727,6 +16729,10 @@ export async function startServer({
                 // lặp lại ở call site sinh bù bên dưới.
                 const sharedTokensForStage = await readFigmaDesignSystemTokens(RUNTIME_DATA_DIR, sharedSourceIdForGuide);
                 await writeTokensMarkdownToCriteria(path.join(cwd, 'criteria'), sharedTokensForStage?.markdown ?? null);
+                // WP-slots: cùng nhịp staging với guide/tokens — giao hồ sơ
+                // SLOT de-facto (nếu nguồn có) vào criteria/slots.md.
+                const sharedSlotsForStage = await readFigmaDesignSystemSlots(RUNTIME_DATA_DIR, sharedSourceIdForGuide);
+                await writeSlotsMarkdownToCriteria(path.join(cwd, 'criteria'), sharedSlotsForStage?.markdown ?? null);
               }
             } catch (err: any) {
               // fail-soft — cùng bất biến với toàn khối docs-comp prep: lỗi ở
@@ -20034,6 +20040,7 @@ export async function startServer({
         const criteriaDir = path.join(labCwd, 'criteria');
         let hasGuide = false;
         let hasTokens = false;
+        let hasSlots = false;
         try {
           const studioCfg = (project.metadata as Record<string, unknown> | undefined)?.studioConfig as
             | Record<string, unknown>
@@ -20056,6 +20063,12 @@ export async function startServer({
               const tokens = await readFigmaDesignSystemTokens(RUNTIME_DATA_DIR, figmaSourceId);
               const tokensResult = await writeTokensMarkdownToCriteria(criteriaDir, tokens?.markdown ?? null);
               hasTokens = tokensResult.delivered;
+              // WP-slots: cùng nhịp staging với guide/tokens — giao hồ sơ
+              // SLOT de-facto (nếu nguồn có) vào criteria/slots.md, và truyền
+              // `hasSlots` cho buildComposeBrief bên dưới.
+              const slots = await readFigmaDesignSystemSlots(RUNTIME_DATA_DIR, figmaSourceId);
+              const slotsResult = await writeSlotsMarkdownToCriteria(criteriaDir, slots?.markdown ?? null);
+              hasSlots = slotsResult.delivered;
             }
           }
         } catch (error) {
@@ -20085,6 +20098,7 @@ export async function startServer({
           appFeature,
           hasTokens,
           hasGuide,
+          hasSlots,
           patternNames,
         });
 

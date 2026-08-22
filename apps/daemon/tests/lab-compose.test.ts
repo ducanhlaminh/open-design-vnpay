@@ -199,20 +199,34 @@ describe('buildComposeBrief', () => {
     appFeature: 'Ví điện tử',
     hasTokens: true,
     hasGuide: true,
+    hasSlots: true,
     patternNames: ['card-list'],
   };
 
-  it('contains the 4 hard-contract rules, the page name, and an explicit scope hint', () => {
+  it('contains the 5 hard-contract rules, the page name, and an explicit scope hint', () => {
     const brief = buildComposeBrief({ ...baseOpts, scopeHint: 'Chỉ màn Đăng nhập' });
     expect(brief).toContain(labPageName('Ví điện tử'));
     expect(brief).toContain('Chỉ màn Đăng nhập');
-    // 4 luật sống còn.
+    // 5 luật sống còn.
+    expect(brief).toContain('5 luật sống còn');
     expect(brief).toContain('CHỈ thao tác trên file preview');
     expect(brief).toContain('idempotent replace-by-name');
     expect(brief).toContain('NGUYÊN TỬ theo lần execute-code');
     expect(brief).toContain('I<a>;<b>');
     expect(brief).toContain('tokens.md');
     expect(brief).toContain('CẤM chép bố cục');
+    // luật (5): nội dung TRONG comp, cấm vẽ đè lên instance.
+    expect(brief).toContain('TUYỆT ĐỐI CẤM đặt text/node rời đè toạ độ lên');
+    expect(brief).toContain('Tab-Cell');
+  });
+
+  it('mentions "criteria/slots.md" when hasSlots=true, and omits it when false', () => {
+    const withSlots = buildComposeBrief({ ...baseOpts, hasSlots: true, scopeHint: null });
+    expect(withSlots).toContain('criteria/slots.md');
+    expect(withSlots).toContain('hồ sơ SLOT');
+
+    const withoutSlots = buildComposeBrief({ ...baseOpts, hasSlots: false, scopeHint: null });
+    expect(withoutSlots).not.toContain('criteria/slots.md');
   });
 
   it('falls back the scope hint to "tự chọn tối đa 3 màn" when absent/blank', () => {

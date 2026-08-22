@@ -116,6 +116,13 @@ export interface BuildComposeBriefOptions {
   appFeature: string;
   hasTokens: boolean;
   hasGuide: boolean;
+  /** WP-slots: `criteria/slots.md` đã được giao cho App này chưa — hồ sơ SLOT
+   *  de-facto (path/hidden/children mặc định + text layer) đào từ node tree
+   *  của từng component. `false` (chưa có, hoặc component nào cũng không
+   *  slot) → KHÔNG nhắc gì trong brief (khác `tokensNote`: vắng mặt slot
+   *  không phải điều bất thường agent cần cảnh giác, chỉ đơn giản là chưa có
+   *  cơ chế slot nào để đọc). */
+  hasSlots: boolean;
   /** Tên (hoặc slug) các pattern đã có sẵn trong `patterns/` — rỗng = chưa có
    *  pattern nào được chế trước đó. */
   patternNames: readonly string[];
@@ -144,6 +151,9 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
   const tokensNote = opts.hasTokens
     ? ', "criteria/tokens.md" (style CHỈ được lấy từ đây — cấm giá trị ngoài danh mục, dùng get_variable_defs đối chiếu thêm)'
     : ' — LƯU Ý: "criteria/tokens.md" CHƯA có cho dự án này, không có bảng token nào để đối chiếu';
+  const slotsNote = opts.hasSlots
+    ? ', "criteria/slots.md" (hồ sơ SLOT từng component — cơ chế điền nội dung, ĐỌC TRƯỚC KHI DỰNG)'
+    : '';
   const patternsNote =
     opts.patternNames.length > 0
       ? `Pattern đã chế từ trước (ĐỌC trước khi chế mới, TÁI DÙNG khi khớp nhu cầu): ${opts.patternNames.join(', ')}.`
@@ -152,11 +162,11 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
   return [
     `Áp skill "lab-screen-compose". Bạn là designer SÁNG TÁC màn hình mới (KHÔNG phải thi công theo hợp đồng cứng như figma-screen-build) — dùng Figma MCP toàn quyền trên file preview để dựng, tự xem lại, tự sửa trong phiên.`,
     `Nhiệm vụ: đọc tài liệu ở ${docsLine} để biết TỪNG màn LÀM GÌ (chức năng + nội dung THẬT). Ảnh mockup trong tài liệu chỉ để hiểu tính năng — **CẤM chép bố cục từ mockup**: bố cục là việc bạn tự sáng tác từ comp base.`,
-    `Nguyên liệu: "criteria/components.md" (danh mục comp base hợp lệ — import bằng key qua use_figma, hoặc tra bằng search_design_system/get_libraries)${guideNote}${tokensNote}. "${LAB_PATTERNS_DIR_REL}/" chứa pattern đã chế trước.`,
+    `Nguyên liệu: "criteria/components.md" (danh mục comp base hợp lệ — import bằng key qua use_figma, hoặc tra bằng search_design_system/get_libraries)${guideNote}${tokensNote}${slotsNote}. "${LAB_PATTERNS_DIR_REL}/" chứa pattern đã chế trước.`,
     `Phạm vi lần này: ${scope} (tối đa 3 màn/lần chạy).`,
     `Dựng trong trang Figma tên đúng "${pageName}" (file preview key "${opts.previewFileKey}") — tạo nếu chưa có, tái dùng nếu có.`,
     patternsNote,
-    `4 luật sống còn (Hợp đồng cứng — vi phạm là lỗi nghiêm trọng): (1) CHỈ thao tác trên file preview ("${opts.previewFileKey}") — TUYỆT ĐỐI không mở/sửa bất kỳ file Figma nào khác. (2) Page/frame đặt tên chuẩn ("${pageName}" / "<KEY> — <tên màn>") + idempotent replace-by-name: có frame trùng tên thì NHỚ vị trí {x,y}, XÓA rồi dựng lại đúng vị trí cũ — không bao giờ để hai frame cùng tên tồn tại song song. (3) NGUYÊN TỬ theo lần execute-code: TOÀN BỘ thao tác của một phần tử nằm trong CÙNG một lần gọi tool — TUYỆT ĐỐI cấm mang node id (đặc biệt id ruột instance dạng "I<a>;<b>") qua ranh giới call sau; cần dùng lại thì RE-QUERY bằng tên NGAY trong lần gọi đó. (4) Content THẬT lấy từ tài liệu (URD) — style (màu/chữ/radius/shadow/spacing) CHỈ được lấy từ "criteria/tokens.md", cấm giá trị ngoài danh mục.`,
+    `5 luật sống còn (Hợp đồng cứng — vi phạm là lỗi nghiêm trọng): (1) CHỈ thao tác trên file preview ("${opts.previewFileKey}") — TUYỆT ĐỐI không mở/sửa bất kỳ file Figma nào khác. (2) Page/frame đặt tên chuẩn ("${pageName}" / "<KEY> — <tên màn>") + idempotent replace-by-name: có frame trùng tên thì NHỚ vị trí {x,y}, XÓA rồi dựng lại đúng vị trí cũ — không bao giờ để hai frame cùng tên tồn tại song song. (3) NGUYÊN TỬ theo lần execute-code: TOÀN BỘ thao tác của một phần tử nằm trong CÙNG một lần gọi tool — TUYỆT ĐỐI cấm mang node id (đặc biệt id ruột instance dạng "I<a>;<b>") qua ranh giới call sau; cần dùng lại thì RE-QUERY bằng tên NGAY trong lần gọi đó. (4) Content THẬT lấy từ tài liệu (URD) — style (màu/chữ/radius/shadow/spacing) CHỈ được lấy từ "criteria/tokens.md", cấm giá trị ngoài danh mục. (5) Nội dung phải nằm TRONG component: điền qua slot (append/replace children TRONG slot) hoặc override text layer con của instance — TUYỆT ĐỐI CẤM đặt text/node rời đè toạ độ lên instance; placeholder mặc định không dùng (Title/Body/Content/Label…) phải override hoặc hide, không được để lộ; children mặc định thừa trong slot (ví dụ dãy Tab-Cell) phải xoá bớt cho khớp nội dung thật.`,
     `Dùng get_screenshot để TỰ XEM LẠI frame vừa dựng (bố cục, phân cấp, spacing, on-brand) rồi tự sửa — tối đa vài vòng cho mỗi màn.`,
     `Kết thúc: ghi ĐÚNG MỘT file "${LAB_RESULT_FILE_REL}" ở cwd của bạn — {"screens":[{"key","name","frameNodeId","frameUrl?","notes?"}]}; "frameNodeId" LÀ id của chính FRAME màn (dạng node thường "12:34", KHÔNG PHẢI id ruột instance). Không ghi file nào khác ngoài "${LAB_RESULT_FILE_REL}" và "${LAB_PATTERNS_DIR_REL}/*.json".`,
   ].join(' ');

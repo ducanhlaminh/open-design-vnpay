@@ -58,6 +58,7 @@ import {
 } from './figma-guide-generate.js';
 import { buildFigmaComponentCatalog, describeFigmaError, fetchNodeImages, fetchNodeSubtrees } from './figma-rest.js';
 import { mineDesignTokens, renderTokensDtcg, renderTokensMd, type MineTokensInput } from './figma-tokens.js';
+import { mineComponentSlots, renderSlotsMd, type MineSlotsInput } from './figma-slots.js';
 import type { RouteDeps } from './server-context.js';
 
 export interface RegisterFigmaDesignSystemRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'design' | 'chat' | 'agents'> {
@@ -347,6 +348,60 @@ export async function writeTokensMarkdownToCriteria(
   return { delivered: true };
 }
 
+/* ── WP-slots: hồ sơ SLOT de-facto đào từ node tree của component ──────────
+ * Sống CẠNH `tokens.md` ở kho nguồn (source-level, dùng chung mọi App gắn
+ * cùng nguồn) — `slots.md` (người/agent đọc, KHÔNG có bản .json cho máy —
+ * xem `.tmp/pipeline/wp-slots.yaml`: chỉ markdown cho agent, không sinh DTCG
+ * gì cả). Đào TẤT ĐỊNH bằng {@link mineComponentSlots} (figma-slots.ts, module
+ * thuần) NGAY TRONG CÙNG task mining token (xem `mineAndWriteFigmaDesignSystemTokens`
+ * bên dưới) — tái dùng CHÍNH `inputs` đã fetch cho token, không thêm lượt
+ * REST nào. Đúng khuôn path/write/read/giao-criteria với tokens.md ở trên. */
+export function figmaDesignSystemSlotsMdPath(runtimeDataDir: string, sourceId: string): string {
+  return path.join(path.dirname(figmaDesignSystemGuidePath(runtimeDataDir, sourceId)), 'slots.md');
+}
+
+export async function writeFigmaDesignSystemSlots(
+  runtimeDataDir: string,
+  sourceId: string,
+  markdown: string,
+): Promise<void> {
+  return serializeTokenWrite(sourceId, async () => {
+    await writeFileAtomic(figmaDesignSystemSlotsMdPath(runtimeDataDir, sourceId), markdown);
+  });
+}
+
+/** `null` khi nguồn chưa từng sinh hồ sơ slot (chưa refresh lần nào từ khi
+ *  WP-slots ra mắt, catalog không có component nào có slot, hoặc mining lỗi
+ *  liên tục) — cùng "vắng mặt" fallback shape với `readFigmaDesignSystemTokens`. */
+export async function readFigmaDesignSystemSlots(
+  runtimeDataDir: string,
+  sourceId: string,
+): Promise<{ markdown: string; generatedAt: string } | null> {
+  const target = figmaDesignSystemSlotsMdPath(runtimeDataDir, sourceId);
+  const markdown = await fs.promises.readFile(target, 'utf8').catch(() => null);
+  if (markdown == null) return null;
+  const stat = await fs.promises.stat(target).catch(() => null);
+  return { markdown, generatedAt: stat ? stat.mtime.toISOString() : new Date(0).toISOString() };
+}
+
+/** WP-slots mục "Giao criteria": copy `slots.md` (nguyên văn, source-level)
+ *  vào `<criteriaDir>/slots.md` của một App — ĐÚNG khuôn
+ *  `writeTokensMarkdownToCriteria`: nguồn CHƯA có slots.md → không ghi
+ *  (không phải "giữ bản cũ" — dọn bản cũ nếu có, tránh slots ma). */
+export async function writeSlotsMarkdownToCriteria(
+  criteriaDir: string,
+  slotsMarkdown: string | null,
+): Promise<{ delivered: boolean }> {
+  const target = path.join(criteriaDir, 'slots.md');
+  if (slotsMarkdown == null) {
+    await fs.promises.rm(target, { force: true });
+    return { delivered: false };
+  }
+  await fs.promises.mkdir(criteriaDir, { recursive: true });
+  await fs.promises.writeFile(target, slotsMarkdown, 'utf8');
+  return { delivered: true };
+}
+
 // Một task đào token tại một thời điểm CHO MỖI sourceId — cùng guard đơn
 // giản `prefetchTasks` dùng (trigger mới trong lúc một task đang chạy là
 // no-op, lần refresh sau tự trigger lại).
@@ -394,10 +449,23 @@ export function mineAndWriteFigmaDesignSystemTokens(
       profile.radii.length === 0 &&
       profile.shadows.length === 0 &&
       profile.spacing.length === 0;
-    if (isEmpty) return;
-    const markdown = renderTokensMd(profile, { generatedAt: new Date().toISOString(), componentCount });
-    const dtcg = renderTokensDtcg(profile);
-    await writeFigmaDesignSystemTokens(runtimeDataDir, sourceId, markdown, dtcg);
+    if (!isEmpty) {
+      const markdown = renderTokensMd(profile, { generatedAt: new Date().toISOString(), componentCount });
+      const dtcg = renderTokensDtcg(profile);
+      await writeFigmaDesignSystemTokens(runtimeDataDir, sourceId, markdown, dtcg);
+    }
+    // WP-slots: đào hồ sơ SLOT de-facto NGAY SAU khi tokens đã ghi xong (hoặc
+    // bị bỏ qua vì rỗng) — tái dùng CHÍNH `inputs` vừa fetch cho token, không
+    // thêm lượt REST nào. Độc lập với nhánh tokens ở trên: một catalog có thể
+    // không có token nào (mọi màu/chữ/radius/shadow/spacing = 0) nhưng vẫn có
+    // component chứa slot, hoặc ngược lại — hai empty-guard tách biệt nhau.
+    // Lỗi ở nhánh này (nếu có) rơi vào đúng `task.catch` best-effort bên dưới,
+    // không cần try/catch riêng — không làm hỏng phần tokens đã ghi ở trên.
+    const slotProfiles = mineComponentSlots(inputs);
+    if (slotProfiles.length > 0) {
+      const slotsMarkdown = renderSlotsMd(slotProfiles, { generatedAt: new Date().toISOString(), componentCount });
+      await writeFigmaDesignSystemSlots(runtimeDataDir, sourceId, slotsMarkdown);
+    }
   })();
   tokenMiningTasks.set(sourceId, task);
   void task.catch((err) => {
