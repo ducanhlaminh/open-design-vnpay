@@ -382,6 +382,17 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // sẻ qua lại với ba workflow trên (cùng bất biến "mỗi pipeline id thuộc
   // đúng 1 workflow").
   { id: 'lab-docs',         name: 'Tài liệu (nạp)',            skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', acceptsUpload: true },
+  // `lab-kit` (WP-kit, 2026-08-22 — .tmp/pipeline/wp-kit.yaml): stage MỚI giữa
+  // lab-docs và lab-compose — agent PHÂN TÍCH CHỌN LỌC rồi TỰ TẠO bộ component
+  // phái sinh thẩm mỹ cao hơn (từ comp base + tokens.md) TRƯỚC khi dựng màn,
+  // để designer xem được kit trước, re-run độc lập, phiên ngắn hơn một lần
+  // dựng cả màn. Cùng bất biến DAEMON-ORCHESTRATED như `lab-compose` bên dưới
+  // (agent-pipeline thường bị `computeEnabledMcp` cắt MCP ngoài) — server.ts
+  // nhận diện skillId này và tự chạy runLabKit (nguyên khuôn runLabCompose).
+  // `kit/kit.json` (registry BỀN — agent tự ghi/cập nhật) và `patterns/` CỐ Ý
+  // không nằm trong `outputs`: cả hai không phải sản phẩm của MỘT lần chạy,
+  // phải sống sót "Chạy lại" (cùng lý do patterns/ của lab-compose bên dưới).
+  { id: 'lab-kit',          name: 'Nâng bộ comp',              skillId: 'lab-kit-compose',       dependsOn: ['lab-docs'],         outputs: ['kit-shots/', 'kit-result.json'], inputPlaceholder: 'Định hướng thẩm mỹ (tuỳ chọn)' },
   // `lab-compose` KHÔNG chạy qua đường agent-pipeline thường — run profile
   // 'pipeline' bị `computeEnabledMcp` (figma-build.ts) cắt sạch MCP ngoài
   // (0.8.52 quyết định, KHÔNG nới luật đó ở đây). Thay vào đó server.ts nhận
@@ -393,7 +404,10 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // `patterns/<slug>.json` (pattern agent tự chế, đọc lại ở lần chạy sau) CỐ
   // Ý không nằm trong `outputs` — không phải sản phẩm của MỘT lần chạy nên
   // phải sống sót "Chạy lại" (stagesForOutput không chấm nó cho stage nào →
-  // relClearedByRegen không bao giờ xoá nó).
+  // relClearedByRegen không bao giờ xoá nó). `dependsOn` CỐ Ý chỉ có
+  // `lab-docs`, KHÔNG có `lab-kit`: kit là ƯU TIÊN khi có (buildComposeBrief's
+  // `hasKit`), không phải điều kiện cứng — một dự án chưa chạy lab-kit vẫn
+  // sáng tác màn được thẳng từ comp base, đúng tinh thần "re-run độc lập".
   { id: 'lab-compose',      name: 'Sáng tác màn',              skillId: 'lab-screen-compose',    dependsOn: ['lab-docs'],         outputs: ['screens/', 'lab-result.json'], inputPlaceholder: 'Phạm vi màn (tuỳ chọn)' },
 ];
 
@@ -450,8 +464,8 @@ const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
     id: 'ds-lab',
     name: 'DS → Màn hình sáng tạo (Lab)',
     description:
-      'Độc lập hoàn toàn với Docs → UI-Spec, Docs → PRD Requirements Review và Docs → Rà soát tài liệu: nạp tài liệu riêng cho workflow này (lab-docs), rồi để agent Figma TOÀN QUYỀN sáng tác màn hình mới trong file Figma preview từ comp base + tokens của Design System. URD chỉ cho biết màn LÀM GÌ (chức năng + nội dung thật) — ảnh mockup nhúng trong tài liệu chỉ để hiểu tính năng, không phải hướng bố cục. Kết quả của mỗi lần chạy là ảnh chụp (PNG) của từng màn agent vừa dựng trong Figma.',
-    pipelineIds: ['lab-docs', 'lab-compose'],
+      'Độc lập hoàn toàn với Docs → UI-Spec, Docs → PRD Requirements Review và Docs → Rà soát tài liệu: nạp tài liệu riêng cho workflow này (lab-docs), rồi (tuỳ chọn) để agent nâng một bộ component phái sinh thẩm mỹ cao hơn từ comp base + tokens (lab-kit — CHỈ trong file preview), rồi để agent Figma TOÀN QUYỀN sáng tác màn hình mới trong file Figma preview từ comp base (hoặc kit, nếu có) + tokens của Design System. URD chỉ cho biết màn LÀM GÌ (chức năng + nội dung thật) — ảnh mockup nhúng trong tài liệu chỉ để hiểu tính năng, không phải hướng bố cục. Kết quả của mỗi lần chạy là ảnh chụp (PNG) của từng màn (hoặc từng comp kit) agent vừa dựng trong Figma.',
+    pipelineIds: ['lab-docs', 'lab-kit', 'lab-compose'],
   },
 ];
 

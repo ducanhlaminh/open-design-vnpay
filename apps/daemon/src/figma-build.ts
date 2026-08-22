@@ -108,6 +108,23 @@ export function pickFigmaMcpServer<S extends McpServerLike>(servers: readonly S[
   )) ?? null;
 }
 
+/** WP-kit (2026-08-22): the community `pinterest-mcp-server` (stdio, tools
+ *  `pinterest_search` / `pinterest_get_image_info` / `pinterest_search_and_download`)
+ *  the user configures BY HAND in Settings → MCP — od does not ship or
+ *  auto-configure it (see `lab-kit-compose` SKILL.md's "Recipe ảnh
+ *  placeholder"). Same deterministic shape as `pickFigmaMcpServer`: first
+ *  ENABLED server whose `templateId` is exactly `'pinterest'`, or whose
+ *  id/url matches `/pinterest/i`. `null` (no server configured) is NOT an
+ *  error — `runLabKit`/`runLabCompose` (server.ts) run fail-soft without it:
+ *  the kickoff brief simply omits any mention of Pinterest. */
+export function pickPinterestMcpServer<S extends McpServerLike>(servers: readonly S[]): S | null {
+  return servers.find((s) => s.enabled && (
+    s.templateId === 'pinterest' ||
+    /pinterest/i.test(s.id) ||
+    (typeof s.url === 'string' && /pinterest/i.test(s.url))
+  )) ?? null;
+}
+
 /** WP25a: pure computation behind `enabledExternalMcp` in server.ts's
  *  `startChatRun` — pipeline stage runs never see external MCP (unchanged
  *  behaviour); everything else keeps the user's Settings → External MCP,

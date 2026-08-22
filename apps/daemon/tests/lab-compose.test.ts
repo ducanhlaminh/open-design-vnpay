@@ -37,22 +37,26 @@ function def(id: string) {
 
 // ── Registry: ds-lab workflow ────────────────────────────────────────────────
 
-test('ds-lab: 2-stage workflow, independent of docs-to-ui/docs-to-prd/docs-review', () => {
+test('ds-lab: 3-stage workflow (WP-kit added lab-kit), independent of docs-to-ui/docs-to-prd/docs-review', () => {
   const wf = getWorkflow('ds-lab');
   assert.ok(wf, 'ds-lab workflow should exist');
-  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-compose']);
+  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-kit', 'lab-compose']);
   assert.equal(def('lab-docs').skillId, 'confluence-ingest');
+  assert.equal(def('lab-kit').skillId, 'lab-kit-compose');
   assert.equal(def('lab-compose').skillId, 'lab-screen-compose');
   assert.deepEqual(def('lab-docs').dependsOn, []);
+  assert.deepEqual(def('lab-kit').dependsOn, ['lab-docs']);
   assert.deepEqual(def('lab-compose').dependsOn, ['lab-docs']);
   assert.deepEqual(def('lab-docs').outputs, ['docs/', 'docs-feature/']);
+  assert.deepEqual(def('lab-kit').outputs, ['kit-shots/', 'kit-result.json']);
   assert.deepEqual(def('lab-compose').outputs, ['screens/', 'lab-result.json']);
   assert.equal(def('lab-docs').acceptsUpload, true);
-  // patterns/ is deliberately NOT a declared output of lab-compose (or any
-  // other stage) — see the attribution test below.
+  // patterns/ (lab-compose) and kit/ (lab-kit's registry) are deliberately NOT
+  // declared outputs of any stage — see the attribution test below.
   for (const d of PIPELINE_DEFS) {
     for (const pattern of d.outputs ?? []) {
       assert.notEqual(pattern, 'patterns/', `${d.id}.outputs must not declare patterns/`);
+      assert.notEqual(pattern, 'kit/', `${d.id}.outputs must not declare kit/`);
     }
   }
   // Docs-to-ui stays the default workflow — appending ds-lab must not disturb it.
@@ -61,6 +65,7 @@ test('ds-lab: 2-stage workflow, independent of docs-to-ui/docs-to-prd/docs-revie
 
 test('ds-lab: pipeline ids resolve to their OWN workflow folder, never another workflow\'s', () => {
   assert.equal(workflowDirForPipeline('lab-docs'), 'ds-lab');
+  assert.equal(workflowDirForPipeline('lab-kit'), 'ds-lab');
   assert.equal(workflowDirForPipeline('lab-compose'), 'ds-lab');
   // Other workflows' own ids stay untouched.
   assert.equal(workflowDirForPipeline('docs'), 'docs-to-ui');
@@ -201,6 +206,9 @@ describe('buildComposeBrief', () => {
     hasGuide: true,
     hasSlots: true,
     patternNames: ['card-list'],
+    hasKit: false,
+    kitNames: [] as string[],
+    hasPinterest: false,
   };
 
   it('contains the 5 hard-contract rules, the page name, and an explicit scope hint', () => {
@@ -218,6 +226,9 @@ describe('buildComposeBrief', () => {
     // luật (5): nội dung TRONG comp, cấm vẽ đè lên instance.
     expect(brief).toContain('TUYỆT ĐỐI CẤM đặt text/node rời đè toạ độ lên');
     expect(brief).toContain('Tab-Cell');
+    // WP-kit: luật (4) nới MỘT NẤC cho gradient/alpha (cùng câu chữ buildKitBrief).
+    expect(brief).toContain('Luật token nới MỘT NẤC');
+    expect(brief).toContain('GRADIENT_LINEAR');
   });
 
   it('mentions "criteria/slots.md" when hasSlots=true, and omits it when false', () => {
@@ -245,6 +256,38 @@ describe('buildComposeBrief', () => {
     const brief = buildComposeBrief({ ...baseOpts, scopeHint: null, patternNames: ['card-list', 'empty-state'] });
     expect(brief).toContain('card-list');
     expect(brief).toContain('empty-state');
+  });
+
+  // ── WP-kit: ưu tiên kit khi có ─────────────────────────────────────────────
+
+  it('hasKit=true → mentions the kit page name, kit.json path, kit names, and "ƯU TIÊN"', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      hasKit: true,
+      kitNames: ['Card - Chọn số', 'ProviderMini'],
+    });
+    expect(brief).toContain('kit/kit.json');
+    expect(brief).toContain('Card - Chọn số');
+    expect(brief).toContain('ProviderMini');
+    expect(brief).toContain('ƯU TIÊN');
+    expect(brief).toContain('[OD Lab Kit] Ví điện tử');
+  });
+
+  it('hasKit=false → says nothing about the kit page/registry', () => {
+    const brief = buildComposeBrief({ ...baseOpts, scopeHint: null, hasKit: false, kitNames: [] });
+    expect(brief).not.toContain('kit/kit.json');
+    expect(brief).not.toContain('[OD Lab Kit]');
+  });
+
+  // ── WP-kit: Pinterest fail-soft ──────────────────────────────────────────────
+
+  it('hasPinterest=true → mentions pinterest_* tools; false → silent', () => {
+    const withPinterest = buildComposeBrief({ ...baseOpts, scopeHint: null, hasPinterest: true });
+    expect(withPinterest).toContain('pinterest_');
+
+    const withoutPinterest = buildComposeBrief({ ...baseOpts, scopeHint: null, hasPinterest: false });
+    expect(withoutPinterest).not.toContain('pinterest');
   });
 });
 

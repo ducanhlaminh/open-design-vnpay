@@ -62,6 +62,14 @@ không phải tái tạo pixel của ảnh tham khảo.
   `children mặc định` (placeholder hiện có trong slot); mỗi text layer ghi
   `path` + chữ mặc định. Đây là cơ chế THẬT để điền nội dung — **ĐỌC TRƯỚC KHI
   DỰNG** (xem luật #5 bên dưới và "Recipe thao tác SLOT").
+- `kit/kit.json` + trang **"[OD Lab Kit] &lt;tên dự án&gt;"** (nếu stage "Nâng
+  bộ comp" — `lab-kit-compose` — đã chạy trước đó): registry các comp PHÁI
+  SINH thẩm mỹ cao hơn comp base, sống trong CÙNG file preview. **ƯU TIÊN**
+  import/dùng instance từ page Lab Kit cho những điểm neo thị giác của màn
+  (card, list-item, hero-header, dock, promo…); comp base ("criteria/components.md")
+  chỉ là FALLBACK khi kit không có bản tương ứng cho comp bạn cần. Chưa từng
+  chạy lab-kit (không có `kit/kit.json`, hoặc rỗng) → dùng thẳng comp base như
+  trước, không có gì thay đổi.
 
 ## Quy trình khuyến nghị
 
@@ -123,7 +131,11 @@ không phải tái tạo pixel của ảnh tham khảo.
    thị trên màn phải bắt nguồn từ tài liệu (URD) — không bịa placeholder kiểu
    "Lorem ipsum"/"Text here". Mọi lựa chọn style (màu, chữ, bo góc, đổ bóng,
    khoảng cách) CHỈ được lấy từ `criteria/tokens.md` — cấm giá trị ngoài danh
-   mục đó, dù trông "hợp mắt" thế nào.
+   mục đó, dù trông "hợp mắt" thế nào. Luật token nới MỘT NẤC: mọi màu vẫn
+   PHẢI lấy từ "criteria/tokens.md", nhưng ĐƯỢC phối gradient/alpha từ chính
+   các màu đó (GRADIENT_LINEAR đã probe chạy tốt trên sandbox Figma) — cấm
+   mọi màu gốc mới ngoài danh mục (đây cũng đúng cho instance nhập từ trang
+   Lab Kit — kit đã tuân luật này khi nó được dựng).
 5. **Nội dung TRONG comp — cấm vẽ đè**: mọi nội dung (text, ảnh, dữ liệu) PHẢI
    nằm TRONG component — điền qua **slot** (append/replace children TRONG
    slot, xem `criteria/slots.md` và "Recipe thao tác SLOT" bên dưới) hoặc

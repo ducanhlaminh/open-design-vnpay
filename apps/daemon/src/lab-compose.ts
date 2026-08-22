@@ -13,6 +13,10 @@
 // của `lab-compose`) sở hữu mọi fs/DB/agent-spawn thật.
 
 import { readFigmaPreviewConfig, type FigmaPreviewConfig } from './figma-build.js';
+// WP-kit (2026-08-22): chỉ cần TÊN + đường dẫn registry của kit để nêu trong
+// brief "ưu tiên dùng kit" bên dưới — lab-kit.ts là module thuần (không
+// fs/network), import ở đây không phá bất biến "lab-compose.ts thuần".
+import { labKitPageName, KIT_REGISTRY_FILE_REL } from './lab-kit.js';
 
 /** Thư mục chứa PNG capture của từng màn — output khai báo của `lab-compose`
  *  trong pipelines.ts (`outputs: ['screens/', 'lab-result.json']`). */
@@ -126,6 +130,18 @@ export interface BuildComposeBriefOptions {
   /** Tên (hoặc slug) các pattern đã có sẵn trong `patterns/` — rỗng = chưa có
    *  pattern nào được chế trước đó. */
   patternNames: readonly string[];
+  /** WP-kit (2026-08-22): `true` khi stage "Nâng bộ comp" (lab-kit) đã tạo
+   *  ít nhất một comp phái sinh trong `kit/kit.json` — `false` (chưa chạy
+   *  lab-kit, hoặc kit rỗng) → brief KHÔNG nhắc gì tới kit, agent dùng thẳng
+   *  comp base như trước (lab-kit KHÔNG phải điều kiện cứng, xem comment
+   *  `dependsOn` của `lab-compose` trong pipelines.ts). */
+  hasKit: boolean;
+  /** Tên các comp trong `kit/kit.json` — rỗng khi `hasKit` false. */
+  kitNames: readonly string[];
+  /** `true` khi user đã tự khai server MCP cộng đồng `pinterest-mcp-server`
+   *  trong Cài đặt → MCP (xem `pickPinterestMcpServer`, figma-build.ts) —
+   *  fail-soft: `false` → brief KHÔNG nhắc gì tới Pinterest. */
+  hasPinterest: boolean;
 }
 
 /** Tên trang Figma cho workflow "ds-lab" — TÁCH khỏi `[OD] …` của docs-review
@@ -158,18 +174,29 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
     opts.patternNames.length > 0
       ? `Pattern đã chế từ trước (ĐỌC trước khi chế mới, TÁI DÙNG khi khớp nhu cầu): ${opts.patternNames.join(', ')}.`
       : 'Chưa có pattern nào được chế trước đó — chế mới thì ghi lại vào "patterns/<slug>.json".';
+  // WP-kit: kit là ƯU TIÊN khi có, comp base là fallback — KHÔNG bắt buộc
+  // (lab-kit không nằm trong dependsOn của lab-compose, xem pipelines.ts).
+  const kitNote = opts.hasKit
+    ? ` Đã có kit nâng cấp từ stage "Nâng bộ comp" (đọc "${KIT_REGISTRY_FILE_REL}" — tên các comp: ${opts.kitNames.join(', ')}) trong trang "${labKitPageName(opts.appFeature)}" của CÙNG file preview này — ƯU TIÊN dùng instance từ page kit đó; comp base ("criteria/components.md") chỉ dùng khi kit KHÔNG có bản tương ứng.`
+    : '';
+  const pinterestNote = opts.hasPinterest
+    ? ` Có tool "pinterest_*" (server cộng đồng pinterest-mcp-server) khả dụng — dùng để tham khảo/tải ảnh PLACEHOLDER minh hoạ khi thật sự cần (không phải asset final).`
+    : '';
 
   return [
     `Áp skill "lab-screen-compose". Bạn là designer SÁNG TÁC màn hình mới (KHÔNG phải thi công theo hợp đồng cứng như figma-screen-build) — dùng Figma MCP toàn quyền trên file preview để dựng, tự xem lại, tự sửa trong phiên.`,
     `Nhiệm vụ: đọc tài liệu ở ${docsLine} để biết TỪNG màn LÀM GÌ (chức năng + nội dung THẬT). Ảnh mockup trong tài liệu chỉ để hiểu tính năng — **CẤM chép bố cục từ mockup**: bố cục là việc bạn tự sáng tác từ comp base.`,
-    `Nguyên liệu: "criteria/components.md" (danh mục comp base hợp lệ — import bằng key qua use_figma, hoặc tra bằng search_design_system/get_libraries)${guideNote}${tokensNote}${slotsNote}. "${LAB_PATTERNS_DIR_REL}/" chứa pattern đã chế trước.`,
+    `Nguyên liệu: "criteria/components.md" (danh mục comp base hợp lệ — import bằng key qua use_figma, hoặc tra bằng search_design_system/get_libraries)${guideNote}${tokensNote}${slotsNote}. "${LAB_PATTERNS_DIR_REL}/" chứa pattern đã chế trước.${kitNote}`,
     `Phạm vi lần này: ${scope} (tối đa 3 màn/lần chạy).`,
     `Dựng trong trang Figma tên đúng "${pageName}" (file preview key "${opts.previewFileKey}") — tạo nếu chưa có, tái dùng nếu có.`,
     patternsNote,
-    `5 luật sống còn (Hợp đồng cứng — vi phạm là lỗi nghiêm trọng): (1) CHỈ thao tác trên file preview ("${opts.previewFileKey}") — TUYỆT ĐỐI không mở/sửa bất kỳ file Figma nào khác. (2) Page/frame đặt tên chuẩn ("${pageName}" / "<KEY> — <tên màn>") + idempotent replace-by-name: có frame trùng tên thì NHỚ vị trí {x,y}, XÓA rồi dựng lại đúng vị trí cũ — không bao giờ để hai frame cùng tên tồn tại song song. (3) NGUYÊN TỬ theo lần execute-code: TOÀN BỘ thao tác của một phần tử nằm trong CÙNG một lần gọi tool — TUYỆT ĐỐI cấm mang node id (đặc biệt id ruột instance dạng "I<a>;<b>") qua ranh giới call sau; cần dùng lại thì RE-QUERY bằng tên NGAY trong lần gọi đó. (4) Content THẬT lấy từ tài liệu (URD) — style (màu/chữ/radius/shadow/spacing) CHỈ được lấy từ "criteria/tokens.md", cấm giá trị ngoài danh mục. (5) Nội dung phải nằm TRONG component: điền qua slot (append/replace children TRONG slot) hoặc override text layer con của instance — TUYỆT ĐỐI CẤM đặt text/node rời đè toạ độ lên instance; placeholder mặc định không dùng (Title/Body/Content/Label…) phải override hoặc hide, không được để lộ; children mặc định thừa trong slot (ví dụ dãy Tab-Cell) phải xoá bớt cho khớp nội dung thật.`,
+    pinterestNote,
+    `5 luật sống còn (Hợp đồng cứng — vi phạm là lỗi nghiêm trọng): (1) CHỈ thao tác trên file preview ("${opts.previewFileKey}") — TUYỆT ĐỐI không mở/sửa bất kỳ file Figma nào khác. (2) Page/frame đặt tên chuẩn ("${pageName}" / "<KEY> — <tên màn>") + idempotent replace-by-name: có frame trùng tên thì NHỚ vị trí {x,y}, XÓA rồi dựng lại đúng vị trí cũ — không bao giờ để hai frame cùng tên tồn tại song song. (3) NGUYÊN TỬ theo lần execute-code: TOÀN BỘ thao tác của một phần tử nằm trong CÙNG một lần gọi tool — TUYỆT ĐỐI cấm mang node id (đặc biệt id ruột instance dạng "I<a>;<b>") qua ranh giới call sau; cần dùng lại thì RE-QUERY bằng tên NGAY trong lần gọi đó. (4) Content THẬT lấy từ tài liệu (URD) — style (màu/chữ/radius/shadow/spacing) CHỈ được lấy từ "criteria/tokens.md", cấm giá trị ngoài danh mục. Luật token nới MỘT NẤC: mọi màu vẫn PHẢI lấy từ "criteria/tokens.md", nhưng ĐƯỢC phối gradient/alpha từ chính các màu đó (GRADIENT_LINEAR đã probe chạy tốt trên sandbox Figma) — cấm mọi màu gốc mới ngoài danh mục. (5) Nội dung phải nằm TRONG component: điền qua slot (append/replace children TRONG slot) hoặc override text layer con của instance — TUYỆT ĐỐI CẤM đặt text/node rời đè toạ độ lên instance; placeholder mặc định không dùng (Title/Body/Content/Label…) phải override hoặc hide, không được để lộ; children mặc định thừa trong slot (ví dụ dãy Tab-Cell) phải xoá bớt cho khớp nội dung thật.`,
     `Dùng get_screenshot để TỰ XEM LẠI frame vừa dựng (bố cục, phân cấp, spacing, on-brand) rồi tự sửa — tối đa vài vòng cho mỗi màn.`,
     `Kết thúc: ghi ĐÚNG MỘT file "${LAB_RESULT_FILE_REL}" ở cwd của bạn — {"screens":[{"key","name","frameNodeId","frameUrl?","notes?"}]}; "frameNodeId" LÀ id của chính FRAME màn (dạng node thường "12:34", KHÔNG PHẢI id ruột instance). Không ghi file nào khác ngoài "${LAB_RESULT_FILE_REL}" và "${LAB_PATTERNS_DIR_REL}/*.json".`,
-  ].join(' ');
+  ]
+    .filter((s) => s.length > 0)
+    .join(' ');
 }
 
 /** Đọc `.figma-preview.json` của CHÍNH workflow "ds-lab" trước; thiếu (chưa
