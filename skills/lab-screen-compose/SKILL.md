@@ -118,7 +118,7 @@ không phải tái tạo pixel của ảnh tham khảo.
 4. Ghi kết quả — xem "Kết thúc" bên dưới. Đây là bước BẮT BUỘC, không được bỏ
    qua dù một vài màn lỗi giữa chừng (ghi những màn đã dựng được, best-effort).
 
-## Hợp đồng cứng — 6 luật sống còn (vi phạm là lỗi nghiêm trọng)
+## Hợp đồng cứng — 7 luật sống còn (vi phạm là lỗi nghiêm trọng)
 
 1. **CHỈ file preview**: TUYỆT ĐỐI chỉ thao tác trên file Figma preview nêu
    trong kickoff (fileKey cụ thể) — không mở, không sửa bất kỳ file Figma nào
@@ -174,6 +174,15 @@ không phải tái tạo pixel của ảnh tham khảo.
    full-width (358) — không phải một nút nhỏ giữa màn. Bằng chứng thật đã
    gặp: SCR-01 dựng thành frame 398 (lệch chuẩn 390); cả 2 card cùng đeo badge
    "PHỔ BIẾN" (điểm nhấn loãng); CTA ở màn checkout chỉ rộng 116px.
+7. **KHUNG MÀN CHUẨN MOBILE — App Bar/Tabbar bắt buộc**: mọi màn CON phải có
+   App Bar (nút back + tiêu đề màn) đặt TRÊN CÙNG; màn GỐC (home/tab chính)
+   dùng Tabbar dưới đáy. Thứ tự ưu tiên nguồn App Bar: (a) comp "App Bar"
+   trong page kit `[OD Lab Kit]` (nếu stage Nâng bộ comp đã dựng); (b) comp
+   base trong `criteria/components.md`; (c) cả hai đều không có → tự dựng
+   nhóm App Bar tối giản bằng auto-layout + tokens và ghi rõ vào `notes` của
+   màn. TUYỆT ĐỐI không để màn trần không có thanh điều hướng — bằng chứng
+   thật đã gặp: DS "[SDK] Web Lib" (thư viện web, không có App Bar) làm cả 3
+   màn dựng ra không có thanh điều hướng nào.
 
 ## Recipe thao tác SLOT (Plugin API)
 

@@ -132,7 +132,6 @@ describe('buildKitBrief', () => {
     hasGuide: true,
     hasSlots: true,
     hasPinterest: false,
-    kitNames: [] as string[],
   };
 
   it('names the kit page, states the SYSTEM DESIGNER role, and cites the "lab-kit-compose" skill', () => {
@@ -156,29 +155,17 @@ describe('buildKitBrief', () => {
     expect(brief).toContain('PROMOTE');
   });
 
-  it('states the component-shaped idempotent rule (update in place, never delete-recreate — orphan instances)', () => {
+  it('states the regen-from-scratch rule (wipe the kit page unconditionally — no in-place update, orphan is intentional)', () => {
     const brief = buildKitBrief(baseOpts);
-    expect(brief).toContain('IDEMPOTENT KIỂU COMPONENT');
-    expect(brief).toContain('GIỮ NGUYÊN node component đó');
-    expect(brief).toContain('orphan');
+    expect(brief).toContain('GEN LẠI TỪ ĐẦU');
+    expect(brief).toContain('XÓA TOÀN BỘ children');
+    expect(brief).toContain('mainComponent');
   });
 
   it('states the one-notch gradient/alpha token rule — same wording as buildComposeBrief\'s rule (4)', () => {
     const brief = buildKitBrief(baseOpts);
     expect(brief).toContain('Luật token nới MỘT NẤC');
     expect(brief).toContain('GRADIENT_LINEAR');
-  });
-
-  it('kitNames non-empty → tells the agent to update the existing kit in place instead of duplicating', () => {
-    const brief = buildKitBrief({ ...baseOpts, kitNames: ['Card - Chọn số', 'ProviderMini'] });
-    expect(brief).toContain('Card - Chọn số');
-    expect(brief).toContain('ProviderMini');
-    expect(brief).toContain('CẬP NHẬT');
-  });
-
-  it('kitNames empty → says there is no prior kit yet', () => {
-    const brief = buildKitBrief({ ...baseOpts, kitNames: [] });
-    expect(brief).toContain('Chưa có kit nào từ lần trước');
   });
 
   it('hasPinterest=true → mentions pinterest_* moodboard/placeholder recipe; false → silent', () => {
@@ -203,10 +190,12 @@ describe('buildKitBrief', () => {
     expect(brief).toContain('CHƯA có cho dự án này');
   });
 
-  it('ends by requiring kit-result.json + kit/kit.json', () => {
+  it('ends by requiring kit-result.json + kit/kit.json written whole, not merged with the old one', () => {
     const brief = buildKitBrief(baseOpts);
     expect(brief).toContain(KIT_RESULT_FILE_REL);
     expect(brief).toContain(KIT_REGISTRY_FILE_REL);
+    expect(brief).toContain('MỚI TOÀN BỘ');
+    expect(brief).toContain('KHÔNG merge');
   });
 
   // WP-lab-quality (.tmp/pipeline/wp-lab-quality.yaml): bằng chứng thật — kit
@@ -224,6 +213,15 @@ describe('buildKitBrief', () => {
     expect(brief).toContain('system prompt');
     expect(brief).toContain('lab-kit-compose');
     expect(brief).toContain('ĐỪNG đi tìm file skill');
+  });
+
+  // Bằng chứng thật 2026-08-22: DS "[SDK] Web Lib" không có App Bar → màn
+  // dựng ra không có thanh điều hướng; App Bar là ngoại lệ BẮT BUỘC của phân
+  // tích chọn lọc khi base thiếu.
+  it('states the mandatory App Bar exception to selective analysis', () => {
+    const brief = buildKitBrief(baseOpts);
+    expect(brief).toContain('NGOẠI LỆ BẮT BUỘC');
+    expect(brief).toContain('App Bar');
   });
 });
 

@@ -59,6 +59,15 @@ tiên, phần quyết định "màn này trông đẹp hay không":
   không "nhìn ngắm"; nâng cấp chúng chỉ tốn ngân sách phiên mà không đổi cảm
   nhận thẩm mỹ tổng thể.
 
+**NGOẠI LỆ BẮT BUỘC — App Bar**: mọi màn mobile đều cần thanh điều hướng
+trên cùng (nút back + tiêu đề màn). Nếu `criteria/components.md` KHÔNG có
+App Bar (DS là thư viện web chẳng hạn — trường hợp thật đã gặp: DS "[SDK]
+Web Lib" 142 comp không có App Bar nên các màn dựng ra trần trụi không thanh
+điều hướng) thì kit PHẢI tự dựng một comp "App Bar" phái sinh từ tokens
+(auto-layout, tuân luật resize-test #8) để bước sáng tác màn có mà dùng —
+đây không phải "đáng hay không đáng", mà là bắt buộc. Base có sẵn App Bar
+thì App Bar quay về diện phân tích chọn lọc bình thường.
+
 Với MỖI comp bạn quyết định nâng cấp, ghi rõ **LÝ DO** (trường `reason` trong
 `kit-result.json`/`kit/kit.json`) — designer đọc lại lý do này khi cân nhắc
 promote vào DS thật.
@@ -75,30 +84,29 @@ promote vào DS thật.
 - `criteria/slots.md` (nếu có) — hồ sơ SLOT de-facto của comp base bạn đang
   nâng cấp (xem "Recipe thao tác SLOT" trong `lab-screen-compose` SKILL.md —
   cùng cơ chế, dùng lại nguyên).
-- `kit/kit.json` — registry BỀN của kit: mảng
-  `{key, name, componentNodeId, baseComponents, reason, notes?, updatedAt?}`
-  tích luỹ qua nhiều lần chạy. **ĐỌC TRƯỚC KHI LÀM** — comp trùng `key` đã có
-  → CẬP NHẬT TẠI CHỖ (xem luật idempotent kiểu component bên dưới) thay vì
-  tạo bản mới.
+- `kit/kit.json` — từ WP-kit-regen (`.tmp/pipeline/wp-kit-regen.yaml`),
+  KHÔNG còn là registry bền: Chạy lại lab-kit gen lại từ đầu nên registry cũ
+  đã bị dọn TRƯỚC KHI bạn bắt đầu phiên — bạn LUÔN dựng bộ kit mới toàn bộ,
+  không có gì để "đọc trước rồi cập nhật" (xem luật GEN LẠI TỪ ĐẦU bên
+  dưới).
 
 ## Quy trình khuyến nghị
 
-1. Đọc `docs/` (các màn sắp dựng) + `kit/kit.json` (kit đã có từ trước, nếu
-   có) để quyết định: lần này cần nâng cấp/cập nhật những comp nào (xem
-   "Phân tích chọn lọc" ở trên).
+1. Đọc `docs/` (các màn sắp dựng) để quyết định: lần này cần dựng những comp
+   nào (xem "Phân tích chọn lọc" ở trên). Trang kit có thể còn nội dung của
+   lần chạy trước — xem bước 3.a, XOÁ SẠCH trước khi dựng.
 2. (Tuỳ chọn, chỉ khi có tool `pinterest_*`) Dùng `pinterest_search` để xem
    nhanh vài moodboard tham khảo thẩm mỹ — CHỈ để lấy cảm hứng phối màu/bố
    cục, KHÔNG copy nguyên layout. Xem "Recipe ảnh placeholder" bên dưới nếu
    cần một ảnh minh hoạ thật sự không dựng được bằng hình học + token.
-3. Với TỪNG comp đã chọn:
+3. Với trang kit:
    a. Xác định trang Figma: tên đúng `[OD Lab Kit] <tên dự án>` nêu trong
-      kickoff — có sẵn thì dùng, chưa có thì tạo mới đúng tên đó.
-   b. Comp TRÙNG TÊN đã có trong page kit → áp dụng **luật idempotent kiểu
-      component** (xem bên dưới): KHÔNG xoá-tạo-lại, chỉ xoá children BÊN
-      TRONG rồi dựng lại nội dung TRONG CHÍNH node đó.
-   c. Comp CHƯA có → tạo mới bằng `figma.createComponent()`, ghép comp base +
-      slot theo Ý NGHĨA (không sao chép layout từ ảnh tham khảo).
-   d. Style CHỈ từ `criteria/tokens.md`, được phối gradient/alpha (luật nới
+      kickoff — có sẵn thì dùng, chưa có thì tạo mới đúng tên đó. Trang đã có
+      nội dung từ lần chạy trước → áp dụng **luật GEN LẠI TỪ ĐẦU** (xem bên
+      dưới): XOÁ TOÀN BỘ children của trang trước khi dựng bất kỳ comp nào.
+   b. Với TỪNG comp đã chọn: tạo mới bằng `figma.createComponent()`, ghép comp
+      base + slot theo Ý NGHĨA (không sao chép layout từ ảnh tham khảo).
+   c. Style CHỈ từ `criteria/tokens.md`, được phối gradient/alpha (luật nới
       MỘT NẤC — xem "Hợp đồng cứng" bên dưới).
 4. Dùng `get_screenshot` để TỰ XEM LẠI từng comp vừa dựng/cập nhật — kiểm bố
    cục, độ tương phản, on-brand. Lặp tối đa ~3 vòng cho MỖI comp.
@@ -137,19 +145,17 @@ Luật (1)–(5) KẾ THỪA nguyên tinh thần `lab-screen-compose` (đọc b�
    TUYỆT ĐỐI KHÔNG được mở, sửa, hay tạo bất kỳ node nào trong file Design
    System nguồn — dù chỉ để "thử". Kit là ứng viên; PROMOTE vào DS thật là
    quyết định và thao tác của NGƯỜI (designer), không phải của bạn.
-7. **Idempotent KIỂU COMPONENT — khác hẳn frame màn**: một FRAME màn
-   (lab-screen-compose) idempotent theo TÊN — trùng tên thì xoá-tạo-lại thoải
-   mái, vì không gì trỏ vào id của nó. Một COMPONENT trong kit thì KHÔNG —
-   mọi instance của nó ở CÁC MÀN KHÁC (đã dựng bởi lab-screen-compose ở lần
-   chạy trước, hoặc do designer đặt tay) đang trỏ `mainComponent` vào ĐÚNG
-   node id đó; xoá rồi tạo lại một component cùng tên sẽ sinh ra node id MỚI,
-   biến mọi instance đang trỏ vào node cũ thành **orphan instance** (mất liên
-   kết, không còn cập nhật theo component gốc nữa — một lỗi ngầm rất khó phát
-   hiện, chỉ lộ ra khi ai đó mở lại màn cũ). Vì vậy: comp trùng tên đã có
-   trong page kit → GIỮ NGUYÊN node component đó (đọc lại bằng tên, lấy node
-   id NGAY trong cùng lần execute-code), CHỈ xoá children BÊN TRONG nó rồi
-   dựng lại nội dung TRONG CHÍNH node đó. TUYỆT ĐỐI không gọi
-   `component.remove()` rồi `figma.createComponent()` tạo cái mới cùng tên.
+7. **GEN LẠI TỪ ĐẦU MỖI LẦN CHẠY**: nếu trang kit đã có nội dung từ lần chạy
+   trước thì XOÁ TOÀN BỘ children của trang đó trước khi dựng — không giữ
+   lại, không cập nhật tại chỗ, không để comp cũ và comp mới lẫn nhau. Đây là
+   thay đổi có chủ đích (WP-kit-regen, `.tmp/pipeline/wp-kit-regen.yaml`):
+   Chạy lại lab-kit nghĩa là bộ kit MỚI HOÀN TOÀN, không phải cập nhật registry
+   cũ. Hệ quả CHỦ ĐÍCH: instance ở các màn cũ (đã dựng bởi lab-screen-compose
+   ở lần chạy trước, hoặc do designer đặt tay) đang trỏ `mainComponent` vào
+   node component vừa bị xoá sẽ thành **orphan instance** (mất liên kết,
+   không còn cập nhật theo component gốc) — đây KHÔNG phải lỗi, mà là hệ quả
+   biết trước: quy trình chuẩn là người dùng Chạy lại bước "Sáng tác màn"
+   (lab-compose) ngay sau stage này để các màn trỏ lại vào bộ kit mới.
 8. **AUTO-LAYOUT + resize-test 358 (bằng chứng thật 445pt)**: MỌI comp phái
    sinh PHẢI dựng bằng AUTO-LAYOUT (fill/hug đúng chiều), và trước khi chốt
    PHẢI tự resize instance thử về bề rộng 358 (content width mobile) — comp
@@ -185,7 +191,7 @@ TIÊN tự dựng art bằng hình học/gradient TRƯỚC, ảnh chỉ là phư
    đây là ảnh THAM KHẢO/PLACEHOLDER, không phải asset final; designer cần
    biết để thay bằng asset thật khi promote vào DS.
 
-## Kết thúc: ghi `kit-result.json` + cập nhật `kit/kit.json`
+## Kết thúc: ghi `kit-result.json` + ghi mới toàn bộ `kit/kit.json`
 
 Ghi ĐÚNG MỘT file `kit-result.json` ở cwd của bạn:
 
@@ -204,9 +210,10 @@ Ghi ĐÚNG MỘT file `kit-result.json` ở cwd của bạn:
 }
 ```
 
-- `key`: mã ổn định cho comp (dùng lại đúng key này ở lần chạy sau nếu chỉ
-  cập nhật, KHÔNG đổi key giữa các lần — đó là cách `kit/kit.json` nhận ra
-  "đây là cùng một comp").
+- `key`: mã ổn định, dễ đọc cho comp (ví dụ `card-choose-number`) — dùng để
+  đối chiếu với `kit-shots/<key>.png` và trong `notes`/tài liệu, KHÔNG còn ý
+  nghĩa "nhận diện qua các lần chạy" (mỗi lần chạy ghi một `kit/kit.json`
+  hoàn toàn mới).
 - `componentNodeId`: id của CHÍNH node component — dạng node Figma thường
   (`"12:34"`), **KHÔNG BAO GIỜ** là id ruột instance (`"I<a>;<b>"`) — daemon
   dùng id này để chụp PNG qua Figma REST API; một id ruột instance sẽ khiến
@@ -217,13 +224,13 @@ Ghi ĐÚNG MỘT file `kit-result.json` ở cwd của bạn:
 - `notes` (tuỳ chọn): ghi chú — BẮT BUỘC nếu comp có ảnh placeholder
   (Pinterest), nêu rõ đó là placeholder + nguồn.
 
-Đồng thời **cập nhật `kit/kit.json`** (registry BỀN, sống sót qua mọi lần
-"Chạy lại" vì không nằm trong `outputs` của stage): merge theo `key` — comp
-đã tồn tại thì CẬP NHẬT entry đó (giữ `key` không đổi, cập nhật
-`componentNodeId`/`reason`/`notes`/`updatedAt`), comp mới thì thêm entry mới.
-**TUYỆT ĐỐI KHÔNG xoá entry cũ còn dùng** — dù comp đó không nằm trong phạm
-vi lần chạy này, một entry vắng mặt trong `kit-result.json` lần này không có
-nghĩa là nó đã lỗi thời.
+Đồng thời **ghi `kit/kit.json` MỚI TOÀN BỘ** (output khai báo bình thường của
+stage, từ WP-kit-regen): nội dung là ĐÚNG danh sách comp bạn vừa dựng trong
+lần chạy này — cùng shape với `kit-result.json`
+(`{"components":[{"key","name","componentNodeId","reason?","baseComponents?","notes?"}]}`).
+**KHÔNG merge với bản cũ, KHÔNG giữ lại entry nào từ lần chạy trước** — bản
+cũ đã bị dọn trước khi phiên của bạn bắt đầu, nên "giữ lại" ở đây là vô nghĩa
+và sẽ khiến registry trỏ vào node đã bị xoá.
 
 ## Tên tool MCP
 

@@ -48,15 +48,19 @@ test('ds-lab: 3-stage workflow (WP-kit added lab-kit), independent of docs-to-ui
   assert.deepEqual(def('lab-kit').dependsOn, ['lab-docs']);
   assert.deepEqual(def('lab-compose').dependsOn, ['lab-docs']);
   assert.deepEqual(def('lab-docs').outputs, ['docs/', 'docs-feature/']);
-  assert.deepEqual(def('lab-kit').outputs, ['kit-shots/', 'kit-result.json']);
+  // WP-kit-regen (.tmp/pipeline/wp-kit-regen.yaml, 2026-08-22): kit/kit.json is
+  // now a declared output of lab-kit (Chạy lại = gen lại từ đầu) — unlike
+  // lab-compose's patterns/ below, which stays agent-owned/survives re-run.
+  assert.deepEqual(def('lab-kit').outputs, ['kit-shots/', 'kit-result.json', 'kit/kit.json']);
   assert.deepEqual(def('lab-compose').outputs, ['screens/', 'lab-result.json']);
   assert.equal(def('lab-docs').acceptsUpload, true);
-  // patterns/ (lab-compose) and kit/ (lab-kit's registry) are deliberately NOT
-  // declared outputs of any stage — see the attribution test below.
+  // patterns/ (lab-compose) is deliberately NOT a declared output of any
+  // stage — see the attribution test below. kit/kit.json no longer gets the
+  // same treatment (see the lab-kit.test.ts / pipelines.test.ts red specs).
   for (const d of PIPELINE_DEFS) {
     for (const pattern of d.outputs ?? []) {
       assert.notEqual(pattern, 'patterns/', `${d.id}.outputs must not declare patterns/`);
-      assert.notEqual(pattern, 'kit/', `${d.id}.outputs must not declare kit/`);
+      assert.notEqual(pattern, 'kit/', `${d.id}.outputs must not declare kit/ as a whole-directory pattern`);
     }
   }
   // Docs-to-ui stays the default workflow — appending ds-lab must not disturb it.
@@ -304,6 +308,15 @@ describe('buildComposeBrief', () => {
     const brief = buildComposeBrief({ ...baseOpts, scopeHint: null });
     expect(brief).toContain('MỘT điểm nhấn');
     expect(brief).toContain('full-width');
+  });
+
+  // Bằng chứng thật 2026-08-22: DS "[SDK] Web Lib" (thư viện web) không có
+  // comp App Bar → cả 3 màn dựng ra trần trụi không thanh điều hướng.
+  it('states the mobile screen scaffold rule: App Bar on sub-screens, Tabbar on root, kit-first fallback chain', () => {
+    const brief = buildComposeBrief({ ...baseOpts, scopeHint: null });
+    expect(brief).toContain('KHUNG MÀN CHUẨN MOBILE');
+    expect(brief).toContain('App Bar');
+    expect(brief).toContain('Tabbar');
   });
 
   it('slots.md note (hasSlots) tells the agent to grep instead of reading sequentially', () => {

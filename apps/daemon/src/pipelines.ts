@@ -389,10 +389,13 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // dựng cả màn. Cùng bất biến DAEMON-ORCHESTRATED như `lab-compose` bên dưới
   // (agent-pipeline thường bị `computeEnabledMcp` cắt MCP ngoài) — server.ts
   // nhận diện skillId này và tự chạy runLabKit (nguyên khuôn runLabCompose).
-  // `kit/kit.json` (registry BỀN — agent tự ghi/cập nhật) và `patterns/` CỐ Ý
-  // không nằm trong `outputs`: cả hai không phải sản phẩm của MỘT lần chạy,
-  // phải sống sót "Chạy lại" (cùng lý do patterns/ của lab-compose bên dưới).
-  { id: 'lab-kit',          name: 'Nâng bộ comp',              skillId: 'lab-kit-compose',       dependsOn: ['lab-docs'],         outputs: ['kit-shots/', 'kit-result.json'], inputPlaceholder: 'Định hướng thẩm mỹ (tuỳ chọn)' },
+  // WP-kit-regen (2026-08-22 — .tmp/pipeline/wp-kit-regen.yaml): TỪ WP NÀY
+  // `kit/kit.json` là output BÌNH THƯỜNG của lab-kit, không còn "bền ngoài
+  // outputs" — Chạy lại lab-kit nghĩa là GEN LẠI TỪ ĐẦU (registry cũ bị dọn
+  // trước khi build brief, agent xoá sạch children trang kit rồi dựng bộ mới
+  // toàn bộ), theo yêu cầu user. `patterns/` của lab-compose bên dưới VẪN
+  // bền ngoài outputs — ngữ nghĩa đó không đổi.
+  { id: 'lab-kit',          name: 'Nâng bộ comp',              skillId: 'lab-kit-compose',       dependsOn: ['lab-docs'],         outputs: ['kit-shots/', 'kit-result.json', 'kit/kit.json'], inputPlaceholder: 'Định hướng thẩm mỹ (tuỳ chọn)' },
   // `lab-compose` KHÔNG chạy qua đường agent-pipeline thường — run profile
   // 'pipeline' bị `computeEnabledMcp` (figma-build.ts) cắt sạch MCP ngoài
   // (0.8.52 quyết định, KHÔNG nới luật đó ở đây). Thay vào đó server.ts nhận

@@ -6,29 +6,34 @@
 // là NGƯỜI SÁNG TÁC tự đọc tài liệu, tự phân tích chọn lọc, tự dùng Figma MCP
 // để dựng, tự chụp màn hình xem lại. Khác lab-compose ở ĐỐI TƯỢNG: lab-compose
 // sáng tác MÀN (frame), lab-kit nâng cấp COMPONENT (một node component đơn lẻ,
-// sống trong page kit — không phải frame màn) — vì vậy luật "idempotent" khác
-// hẳn: một component idempotent theo NODE ID BỀN (id không đổi qua các lần
-// chạy — mọi instance ở màn khác đang trỏ mainComponent vào đúng node đó),
-// trong khi một frame màn idempotent theo TÊN (xoá-tạo-lại thoải mái vì không
-// gì trỏ vào id của nó). Module này chỉ chứa phần THUẦN (không fs/network):
-// dựng brief kickoff, parse kit-result.json agent ghi ra, và đường dẫn output.
-// server.ts (nhánh daemon-orchestrated `runLabKit`) sở hữu mọi fs/DB/agent-
-// spawn thật — xem docblock `runLabKit` ở đó.
+// sống trong page kit — không phải frame màn).
+//
+// WP-kit-regen (2026-08-22 — .tmp/pipeline/wp-kit-regen.yaml): Chạy lại
+// KHÔNG còn "cập nhật tại chỗ giữ node id" — ngữ nghĩa mới là GEN LẠI TỪ ĐẦU:
+// mỗi lần chạy, agent xoá TOÀN BỘ children của trang kit rồi dựng bộ comp
+// mới, và daemon ghi lại `kit/kit.json` MỚI TOÀN BỘ (không merge với bản cũ).
+// Hệ quả CHỦ ĐÍCH: instance ở màn cũ trỏ vào comp bị xoá sẽ mất mainComponent
+// — quy trình chuẩn là Chạy lại bước sáng tác màn (lab-compose) ngay sau đó.
+// Module này chỉ chứa phần THUẦN (không fs/network): dựng brief kickoff,
+// parse kit-result.json agent ghi ra, và đường dẫn output. server.ts (nhánh
+// daemon-orchestrated `runLabKit`) sở hữu mọi fs/DB/agent-spawn thật — xem
+// docblock `runLabKit` ở đó.
 
-/** Thư mục chứa PNG capture của từng comp phái sinh — output khai báo của
- *  `lab-kit` trong pipelines.ts (`outputs: ['kit-shots/', 'kit-result.json']`). */
+/** Thư mục chứa PNG capture của từng comp phái sinh — một trong các output
+ *  khai báo của `lab-kit` trong pipelines.ts (`outputs: ['kit-shots/',
+ *  'kit-result.json', 'kit/kit.json']`). */
 export const KIT_SHOTS_DIR_REL = 'kit-shots';
 
 /** File kết quả agent PHẢI ghi trước khi kết thúc phiên (một dòng cho MỖI
  *  component agent vừa nâng cấp/cập nhật trong page kit). */
 export const KIT_RESULT_FILE_REL = 'kit-result.json';
 
-/** Registry BỀN của kit — agent tự đọc/ghi/cập nhật qua các lần chạy khác
- *  nhau (merge theo `key`, không xoá entry cũ còn dùng). CỐ Ý KHÔNG nằm trong
- *  `outputs` của `lab-kit` trong pipelines.ts — cùng lý do `patterns/` của
- *  lab-compose.ts sống sót "Chạy lại": đây không phải sản phẩm của MỘT lần
- *  chạy, mà là trạng thái tích luỹ qua nhiều lần. Nằm dưới thư mục con `kit/`
- *  (khác `kit-shots/`, thư mục PNG) để không lẫn với output khai báo. */
+/** Registry của kit — agent ghi MỚI TOÀN BỘ ở mỗi lần chạy (WP-kit-regen,
+ *  .tmp/pipeline/wp-kit-regen.yaml): KHÔNG còn merge với bản cũ. Từ WP này
+ *  là output khai báo BÌNH THƯỜNG của `lab-kit` trong pipelines.ts — cơ chế
+ *  re-run clear sẵn có dọn file này trước mỗi lần chạy, hết vòng đời "bền".
+ *  Nằm dưới thư mục con `kit/` (khác `kit-shots/`, thư mục PNG) để không lẫn
+ *  với các output khác. */
 export const KIT_REGISTRY_FILE_REL = 'kit/kit.json';
 
 /** Tên trang Figma cho kit — TÁCH khỏi cả `[OD Lab] …` (lab-compose, dựng
@@ -142,9 +147,6 @@ export interface BuildKitBriefOptions {
    *  fail-soft: `false` → brief KHÔNG nhắc gì tới Pinterest, agent chạy như
    *  không có nó. */
   hasPinterest: boolean;
-  /** Tên các comp đã có trong `kit/kit.json` từ lần chạy trước — rỗng = chưa
-   *  có kit nào, agent tạo mới toàn bộ. */
-  kitNames: readonly string[];
 }
 
 /** Message kickoff cho phiên agent duy nhất của stage `lab-kit`. Thuần —
@@ -162,10 +164,6 @@ export function buildKitBrief(opts: BuildKitBriefOptions): string {
   const slotsNote = opts.hasSlots
     ? ', "criteria/slots.md" (hồ sơ SLOT từng component — cơ chế điền nội dung của comp base bạn đang nâng cấp)'
     : '';
-  const kitNote =
-    opts.kitNames.length > 0
-      ? ` Kit đã có từ lần trước (đọc "${KIT_REGISTRY_FILE_REL}" TRƯỚC KHI làm): ${opts.kitNames.join(', ')} — CẬP NHẬT TẠI CHỖ (xem luật idempotent kiểu component bên dưới) thay vì tạo trùng.`
-      : ` Chưa có kit nào từ lần trước ("${KIT_REGISTRY_FILE_REL}" rỗng/chưa tồn tại) — tạo mới.`;
   const pinterestNote = opts.hasPinterest
     ? ` Có tool "pinterest_*" (server cộng đồng pinterest-mcp-server) khả dụng — dùng "pinterest_search" để tham khảo moodboard thẩm mỹ (chỉ xem, không tải), "pinterest_search_and_download" khi thật sự cần một ảnh minh hoạ (xem "Recipe ảnh placeholder" trong skill); MỌI ảnh tải về là PLACEHOLDER phải ghi chú nguồn vào "notes" — không phải asset final. Ưu tiên TỰ DỰNG art bằng hình học + gradient token trước, ảnh chỉ cho chất liệu minh hoạ không dựng được bằng hình học.`
     : '';
@@ -173,13 +171,14 @@ export function buildKitBrief(opts: BuildKitBriefOptions): string {
   return [
     `Áp skill "lab-kit-compose". Bạn là SYSTEM DESIGNER nâng cấp bộ component — khác hẳn "lab-screen-compose" (sáng tác MÀN): việc của bạn ở đây là TỰ TẠO bộ component phái sinh thẩm mỹ cao hơn từ comp base + tokens của Design System, KHÔNG dựng màn hoàn chỉnh.`,
     `Nhiệm vụ: đọc ${docsLine} để biết CÁC MÀN SẮP DỰNG cần điểm neo thị giác nào. PHÂN TÍCH CHỌN LỌC: CHỈ những comp là ĐIỂM NEO THỊ GIÁC của các màn đó (card, list-item, hero-header, dock, promo…) mới đáng có bản phái sinh — ghi rõ LÝ DO cho từng comp bạn chọn nâng cấp. Đồ "ống nước" (radio, divider, input, checkbox…) GIỮ NGUYÊN comp base, KHÔNG tạo bản mới.`,
-    `Nguyên liệu: "criteria/components.md" (danh mục comp base)${guideNote}${tokensNote}${slotsNote}.${kitNote}`,
+    `NGOẠI LỆ BẮT BUỘC của phân tích chọn lọc — App Bar: mọi màn mobile đều cần thanh điều hướng trên cùng (nút back + tiêu đề màn); nếu danh mục comp base KHÔNG có App Bar thì kit PHẢI tự dựng một comp "App Bar" phái sinh từ tokens (auto-layout, tuân luật resize-test bên dưới) để bước sáng tác màn có mà dùng; base có sẵn App Bar thì chỉ tạo bản phái sinh khi thật sự đáng nâng cấp như mọi comp khác.`,
+    `Nguyên liệu: "criteria/components.md" (danh mục comp base)${guideNote}${tokensNote}${slotsNote}.`,
     `Nơi tạo: trang Figma tên đúng "${pageName}" trong file preview (fileKey "${opts.previewFileKey}") — TUYỆT ĐỐI KHÔNG ghi bất kỳ thứ gì vào file Design System NGUỒN; kit CHỈ tồn tại trong file preview, là ứng viên để designer PROMOTE về DS thật (việc đó là của người, không phải của bạn).`,
     `Luật token nới MỘT NẤC: mọi màu vẫn PHẢI lấy từ "criteria/tokens.md", nhưng ĐƯỢC phối gradient/alpha từ chính các màu đó (GRADIENT_LINEAR đã probe chạy tốt trên sandbox Figma) — cấm mọi màu gốc mới ngoài danh mục.`,
     pinterestNote,
-    `IDEMPOTENT KIỂU COMPONENT (khác hẳn frame màn): comp trùng tên đã có trong page kit → GIỮ NGUYÊN node component đó (id không đổi — instance ở ngoài màn đang trỏ mainComponent vào đúng node này), CHỈ xoá children BÊN TRONG rồi dựng lại nội dung trong CHÍNH node đó; TUYỆT ĐỐI không xoá-tạo-lại component (sẽ làm orphan mọi instance đang trỏ vào nó).`,
+    `GEN LẠI TỪ ĐẦU MỖI LẦN CHẠY: nếu trang kit đã có nội dung từ lần chạy trước thì XÓA TOÀN BỘ children của trang đó trước khi dựng — không giữ lại, không cập nhật tại chỗ, không để comp cũ và mới lẫn nhau. Hệ quả CHỦ ĐÍCH: instance ở các màn cũ trỏ vào comp bị xóa sẽ mất mainComponent — người dùng sẽ Chạy lại bước sáng tác màn ngay sau stage này.`,
     `MỌI comp phái sinh PHẢI dựng bằng AUTO-LAYOUT (fill/hug đúng chiều) và trước khi chốt PHẢI tự resize instance thử về bề rộng 358 (content width mobile) — comp có bề rộng tự nhiên cứng (ví dụ 445) sẽ bị cắt cụt mép phải khi đặt vào màn 390 (lỗi thật đã gặp: mất cả nút trong card).`,
-    `Kết thúc: ghi ĐÚNG MỘT file "${KIT_RESULT_FILE_REL}" ở cwd của bạn — {"components":[{"key","name","componentNodeId","reason?","baseComponents?","notes?"}]} — và cập nhật "${KIT_REGISTRY_FILE_REL}" (merge theo "key", KHÔNG xoá entry cũ còn dùng).`,
+    `Kết thúc: ghi ĐÚNG MỘT file "${KIT_RESULT_FILE_REL}" ở cwd của bạn — {"components":[{"key","name","componentNodeId","reason?","baseComponents?","notes?"}]} — và ghi "${KIT_REGISTRY_FILE_REL}" MỚI TOÀN BỘ (danh sách ĐÚNG bộ comp vừa dựng lần này — KHÔNG merge với bản cũ).`,
     `Lưu ý: toàn bộ nội dung skill "lab-kit-compose" ĐÃ nằm trong system prompt của bạn — ĐỪNG đi tìm file skill trong catalog cục bộ của CLI (không có ở đó, và không cần).`,
   ]
     .filter((s) => s.length > 0)

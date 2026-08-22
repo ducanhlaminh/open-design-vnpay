@@ -1232,6 +1232,9 @@ test('output react/ CŨ vẫn attribution đúng stage + vẫn syncExcluded dù 
 });
 
 // ── ds-lab: WP-kit (2026-08-22) — 3-stage workflow, lab-kit chen giữa ──────────
+// WP-kit-regen (.tmp/pipeline/wp-kit-regen.yaml, 2026-08-22): kit/kit.json
+// đổi ngữ nghĩa từ "registry bền ngoài outputs" sang "output khai báo bình
+// thường" — Chạy lại lab-kit nay gen lại từ đầu, dọn cả kit/kit.json.
 
 test('ds-lab: 3-stage workflow in order (lab-docs → lab-kit → lab-compose)', () => {
   const wf = getWorkflow('ds-lab');
@@ -1244,19 +1247,19 @@ test('ds-lab: 3-stage workflow in order (lab-docs → lab-kit → lab-compose)',
   assert.equal(getPipelineDef('lab-kit')?.skillId, 'lab-kit-compose');
   assert.equal(getPipelineDef('lab-kit')?.name, 'Nâng bộ comp');
   assert.deepEqual(getPipelineDef('lab-kit')?.dependsOn, ['lab-docs']);
-  assert.deepEqual(getPipelineDef('lab-kit')?.outputs, ['kit-shots/', 'kit-result.json']);
+  assert.deepEqual(getPipelineDef('lab-kit')?.outputs, ['kit-shots/', 'kit-result.json', 'kit/kit.json']);
   assert.equal(getPipelineDef('lab-kit')?.inputPlaceholder, 'Định hướng thẩm mỹ (tuỳ chọn)');
 });
 
-test('ds-lab: lab-kit output attribution + kit/ (registry) survives every re-run like patterns/', () => {
+test('ds-lab: lab-kit output attribution — kit/kit.json is now a declared output, cleared on re-run', () => {
   assert.deepEqual(stagesForOutput('ds-lab/kit-shots/card-choose-number.png').map((d) => d.id), ['lab-kit']);
   assert.deepEqual(stagesForOutput('ds-lab/kit-result.json').map((d) => d.id), ['lab-kit']);
-  // kit/kit.json is deliberately NOT a declared output of any stage (agent-owned
-  // registry, like lab-compose's patterns/) — survives "Chạy lại".
-  assert.deepEqual(stagesForOutput('ds-lab/kit/kit.json'), []);
+  // kit/kit.json is now a DECLARED output of lab-kit — no longer survives
+  // "Chạy lại" the way lab-compose's patterns/ does.
+  assert.deepEqual(stagesForOutput('ds-lab/kit/kit.json').map((d) => d.id), ['lab-kit']);
   assert.equal(
     relClearedByRegen('ds-lab/kit/kit.json', new Set(['lab-kit', 'lab-docs', 'lab-compose']), 'ds-lab'),
-    false,
+    true,
   );
   // A re-run of lab-kit DOES clear its own declared outputs.
   assert.equal(

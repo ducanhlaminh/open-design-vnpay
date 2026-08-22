@@ -20322,10 +20322,12 @@ export async function startServer({
         const labCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
         const docsReviewCwd = path.join(projectRoot, workflowDirForPipeline('dr-docs') ?? 'docs-review');
 
-        // Re-run clear: only the DECLARED outputs (kit-shots/ + kit-result.json)
-        // — kit/kit.json (registry BỀN) is deliberately NOT in outputs (see
-        // the 'lab-kit' comment in pipelines.ts), so relClearedByRegen never
-        // sweeps it.
+        // Re-run clear: WP-kit-regen (.tmp/pipeline/wp-kit-regen.yaml) — Chạy
+        // lại lab-kit nay = GEN LẠI TỪ ĐẦU. `kit/kit.json` là output khai báo
+        // của 'lab-kit' trong pipelines.ts (không còn "bền ngoài outputs"), nên
+        // vòng lặp generic dưới đây (dựa trên `relClearedByRegen`/
+        // `stagesForOutput` đọc thẳng `outputs`) đã TỰ dọn nó cùng kit-shots/ +
+        // kit-result.json — không cần thêm nhánh riêng.
         const regenIds = new Set(stageRegenSet(pipelineId, resetScope === 'downstream'));
         await commitHistory(projectRoot, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
         try {
@@ -20427,21 +20429,14 @@ export async function startServer({
           console.warn('[ds-lab] lab-kit: staging criteria/ từ App/DS source thất bại (continuing):', error);
         }
 
-        // Brief nguyên liệu còn lại: docs (shallow readdir, chỉ để nêu ví
-        // dụ), kit hiện có (kit/kit.json — registry BỀN, đọc fail-soft: chưa
-        // từng chạy, hoặc file hỏng → []).
+        // Brief nguyên liệu còn lại: docs (shallow readdir, chỉ để nêu ví dụ).
+        // WP-kit-regen (.tmp/pipeline/wp-kit-regen.yaml): registry cũ
+        // (kit/kit.json) vừa bị re-run clear ở trên dọn sạch TRƯỚC khi tới
+        // đây, nên brief KHÔNG còn đọc/nêu tên comp cũ — agent luôn dựng bộ
+        // kit mới từ đầu.
         const docsIndex = await fs.promises
           .readdir(path.join(labCwd, 'docs'))
           .then((entries) => entries.filter((e) => e.toLowerCase().endsWith('.md')).sort().slice(0, 20))
-          .catch(() => [] as string[]);
-        const kitNames = await fs.promises
-          .readFile(path.join(labCwd, KIT_REGISTRY_FILE_REL), 'utf8')
-          .then((raw) => {
-            const parsedKit = JSON.parse(raw) as { components?: Array<{ name?: unknown }> };
-            return Array.isArray(parsedKit.components)
-              ? parsedKit.components.map((c) => (typeof c?.name === 'string' ? c.name.trim() : '')).filter((n) => n.length > 0)
-              : [];
-          })
           .catch(() => [] as string[]);
 
         const appFeature = (project.name && String(project.name).trim()) || projectId;
@@ -20454,7 +20449,6 @@ export async function startServer({
           hasGuide,
           hasSlots,
           hasPinterest: !!pinterest,
-          kitNames,
         });
 
         // (2) Spawn MỘT run thường — Symbol allow-list NGUYÊN KHUÔN
@@ -20593,9 +20587,9 @@ export async function startServer({
           console.warn('[ds-lab] lab-kit: audit tự động thất bại (continuing, không ảnh hưởng kết quả stage):', error);
         }
 
-        // (4) Outputs/attribution: kit-shots/ + kit-result.json thuộc lab-kit
-        // (khớp `outputs` đã khai trong pipelines.ts); kit/kit.json không
-        // thuộc stage nào (agent tự ghi/đọc, không bị "Chạy lại" xoá).
+        // (4) Outputs/attribution: kit-shots/ + kit-result.json + kit/kit.json
+        // đều thuộc lab-kit (khớp `outputs` đã khai trong pipelines.ts, WP-kit-
+        // regen) — cả ba đều bị "Chạy lại" dọn trước lần chạy kế tiếp.
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
         void commitHistory(projectRoot, { kind: 'run', pipelineId, status: 'succeeded', by: historyActor() }).catch(() => null);
         console.log(`[ds-lab] lab-kit ${projectId}: nâng cấp ${captured}/${parsed.components.length} comp thành công (page "${labKitPageName(appFeature)}")`);
