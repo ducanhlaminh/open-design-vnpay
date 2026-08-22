@@ -379,13 +379,13 @@ test('stagesForOutput: RETIRED workflow folders keep lighting the merged stages 
 test('stagesForOutput: unprefixed legacy paths still match (back-compat)', () => {
   // Files produced before per-workflow folders existed have no prefix; they
   // must still derive status so old projects don't break. An unprefixed path
-  // is ambiguous between docs-to-ui's `docs`, docs-to-prd's `prd-docs`, and
-  // docs-review's `dr-docs` (same relative output pattern, independent
-  // workflows) — but no legacy unprefixed file can actually be a
-  // docs-to-prd/docs-review one (both workflows were introduced after
-  // per-workflow folders already existed), and stageForOutput's first-match
-  // still resolves to `docs` (declared first).
-  assert.deepEqual(stagesForOutput('docs/confluence/x.md').map((d) => d.id), ['docs', 'prd-docs', 'dr-docs']);
+  // is ambiguous between docs-to-ui's `docs`, docs-to-prd's `prd-docs`,
+  // docs-review's `dr-docs`, and ds-lab's `lab-docs` (same relative output
+  // pattern, independent workflows) — but no legacy unprefixed file can
+  // actually be a docs-to-prd/docs-review/ds-lab one (all three workflows
+  // were introduced after per-workflow folders already existed), and
+  // stageForOutput's first-match still resolves to `docs` (declared first).
+  assert.deepEqual(stagesForOutput('docs/confluence/x.md').map((d) => d.id), ['docs', 'prd-docs', 'dr-docs', 'lab-docs']);
 });
 
 test('ui-html prototype output round-trips cross-device (not localOnly)', () => {

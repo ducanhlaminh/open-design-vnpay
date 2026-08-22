@@ -178,10 +178,10 @@ export function outputMatches(rel: string, pattern: string): boolean {
 // "No output files yet" for stages that plainly succeeded. Legacy unprefixed
 // paths pass through unchanged. MUST be kept in sync with daemon `WORKFLOWS`
 // (pipelines.ts) — every workflow id added there needs its id added here too.
-const WORKFLOW_DIR_RE = /^(docs-to-ui|docs-to-prd|docs-review|docs-to-html|docs-to-react)\//;
+const WORKFLOW_DIR_RE = /^(docs-to-ui|docs-to-prd|docs-review|ds-lab|docs-to-html|docs-to-react)\//;
 // Every folder head the daemon may prefix an output with. A file whose first
 // segment is NOT one of these has no workflow prefix (legacy flat output).
-const KNOWN_WORKFLOW_DIRS = new Set(['docs-to-ui', 'docs-to-prd', 'docs-review', 'docs-to-html', 'docs-to-react']);
+const KNOWN_WORKFLOW_DIRS = new Set(['docs-to-ui', 'docs-to-prd', 'docs-review', 'ds-lab', 'docs-to-html', 'docs-to-react']);
 // A workflow's outputs may live under its own id OR a retired twin's folder head
 // (LEGACY_WORKFLOW_DIRS in pipelines.ts): docs-to-html / docs-to-react were
 // merged into docs-to-ui and old projects keep those prefixes on disk.

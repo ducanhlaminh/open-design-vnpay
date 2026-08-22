@@ -41,5 +41,5 @@ it('explains the shared URD/PRD input before a workflow is opened', () => {
   const callout = screen.getByLabelText('Tài liệu đầu vào dùng chung');
   expect(callout.textContent).toContain('URD');
   expect(callout.textContent).toContain('PRD');
-  expect(callout.textContent).toContain('Tài liệu đầu vào dùng chung cho 3 workflow');
+  expect(callout.textContent).toContain('Tài liệu đầu vào dùng chung cho 4 workflow');
 });

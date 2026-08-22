@@ -278,11 +278,13 @@ import {
   buildCodexMcpBearerEnv,
   buildCodexMcpToml,
   buildOpenCodeMcpConfigContent,
+  effectiveMcpAuthMode,
   isManagedProjectCwd,
   readMcpConfig,
   seedDefaultMcpConfig,
   removeLegacyBaAgentSeed,
   writeMcpConfig,
+  type McpServerConfig,
 } from './mcp-config.js';
 import { ensureUvForMcp } from './ensure-uv.js';
 import {
@@ -466,7 +468,19 @@ import {
 // create an import cycle) — see the `withMcpServerIds` wrapper at the
 // registerFigmaBuildRoutes call site.
 import { registerFigmaBuildRoutes } from './figma-build-routes.js';
-import { computeEnabledMcp } from './figma-build.js';
+import { computeEnabledMcp, pickFigmaMcpServer } from './figma-build.js';
+// ds-lab (WP-lab) — stage 2 "Sáng tác màn" glue: pure brief builder + lab-
+// result parser + output paths + preview-file fallback. server.ts owns the
+// daemon-orchestrated branch (fs/DB/agent spawn) — see runLabCompose below.
+import {
+  buildComposeBrief,
+  labPageName,
+  parseLabResult,
+  resolveLabPreviewConfig,
+  screenPngRel,
+  LAB_PATTERNS_DIR_REL,
+  LAB_RESULT_FILE_REL,
+} from './lab-compose.js';
 import { registerFigmaConfigRoutes } from './figma-config-routes.js';
 import { registerXaiRoutes } from './xai-routes.js';
 import { registerLiveArtifactRoutes } from './live-artifact-routes.js';
@@ -19924,6 +19938,274 @@ export async function startServer({
     return parts.join(', ');
   };
 
+  // ── ds-lab: "Sáng tác màn" (lab-compose) — DAEMON-ORCHESTRATED stage ───────
+  // Tiền lệ `runDocsDeterministic` ở trên: KHÔNG đi qua đường agent-pipeline
+  // thường — run profile 'pipeline' bị `computeEnabledMcp` (figma-build.ts)
+  // cắt sạch MCP ngoài (0.8.52, KHÔNG nới luật đó). Thay vào đó daemon tự:
+  // preflight (file preview + MCP Figma + App/DS source) → staging criteria/
+  // → spawn MỘT run THƯỜNG mang Figma MCP qua Symbol allow-list
+  // (INTERNAL_MCP_SERVER_IDS — nguyên khuôn figma-build-routes.ts) → chờ run
+  // xong → đọc lab-result.json → capture PNG từng màn (fetchNodeImages) →
+  // screens/. Mọi logic THUẦN (brief/parse/paths/preview-fallback) sống ở
+  // lab-compose.ts — hàm này chỉ orchestration (fs/DB/agent spawn).
+  const runLabCompose = (
+    pipelineId: string,
+    projectId: string,
+    wfDir: string | null,
+    resetScope: 'stage' | 'downstream' | undefined,
+    scopeHint: string | undefined,
+    project: NonNullable<ReturnType<typeof getProject>>,
+  ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
+    const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
+      setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+      try {
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        const labCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+        const docsReviewCwd = path.join(projectRoot, workflowDirForPipeline('dr-docs') ?? 'docs-review');
+
+        // Re-run clear: only the DECLARED outputs (screens/ + lab-result.json)
+        // — patterns/ is deliberately NOT in outputs (see the 'lab-compose'
+        // comment in pipelines.ts), so relClearedByRegen never sweeps it.
+        const regenIds = new Set(stageRegenSet(pipelineId, resetScope === 'downstream'));
+        await commitHistory(projectRoot, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
+        try {
+          const snap = await snapshotPipelineCwd(projectRoot);
+          for (const rel of snap.keys()) {
+            if (relClearedByRegen(rel, regenIds, wfDir)) {
+              await fs.promises.rm(path.join(projectRoot, rel), { force: true }).catch(() => null);
+            }
+          }
+        } catch (error) {
+          console.warn('[ds-lab] re-run clear failed (continuing):', error);
+        }
+        for (const id of regenIds) {
+          if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
+        }
+
+        // (a) Preflight — file Figma preview (lab's own, fallback docs-review's).
+        const previewConfig = await resolveLabPreviewConfig(labCwd, docsReviewCwd);
+        if (!previewConfig) {
+          const message =
+            'Chưa cấu hình file Figma preview — dán link ở bước Màn hình → Component của docs-review (dùng chung), hoặc tạo ds-lab/.figma-preview.json.';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+
+        // (b) Preflight — Figma MCP server đang bật + đã đăng nhập (cùng hai
+        // message với job figma-build, xem figma-build-routes.ts).
+        const mcpConfig = await readMcpConfig(RUNTIME_DATA_DIR).catch(() => ({ servers: [] }));
+        const mcpServer = pickFigmaMcpServer(mcpConfig.servers);
+        if (!mcpServer) {
+          const message = 'Chưa có Figma MCP server đang bật trong Cài đặt → MCP — thêm rồi đăng nhập.';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+        const pinnedAuth = Object.entries((mcpServer as McpServerConfig).headers ?? {}).some(
+          ([k, v]) => k.toLowerCase() === 'authorization' && typeof v === 'string' && v.trim() !== '',
+        );
+        if (effectiveMcpAuthMode(mcpServer as McpServerConfig) === 'oauth' && !pinnedAuth) {
+          const token = await getToken(RUNTIME_DATA_DIR, mcpServer.id).catch(() => null);
+          if (!token) {
+            const message = 'Server Figma MCP đã có nhưng chưa đăng nhập — vào Cài đặt → MCP bấm Connect.';
+            setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+            return 'failed' as const;
+          }
+        }
+
+        // (c) Preflight — agent có đường gắn Figma MCP (nguyên hàm figma-build).
+        let execution: { agentId: string; modelPrefs: { model?: string | null; reasoning?: string | null } };
+        try {
+          execution = await resolveFigmaBuildAgent();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+
+        // (d) App binding → DS source: staging criteria/{components.md,
+        // components-guide.md, tokens.md} vào labCwd. Không gọi được helper
+        // staging App-context nặng (stageBoundAppContextForRun — gắn với
+        // context-lock/feature-binding của docs-review, không có ý nghĩa cho
+        // lab) — COPY THẲNG từ figma_design_system_sources qua các helper sẵn
+        // có (renderFigmaComponentsMarkdown + writeFilteredComponentsGuideToCriteria
+        // + writeTokensMarkdownToCriteria), quyết định đã ghi trong report.
+        // Thiếu App/DS source, hoặc thiếu guide/tokens → bỏ qua PHẦN ĐÓ, KHÔNG
+        // fail — brief nêu rõ phần nào vắng mặt cho agent tự biết.
+        const criteriaDir = path.join(labCwd, 'criteria');
+        let hasGuide = false;
+        let hasTokens = false;
+        try {
+          const studioCfg = (project.metadata as Record<string, unknown> | undefined)?.studioConfig as
+            | Record<string, unknown>
+            | undefined;
+          const appId = typeof studioCfg?.appId === 'string' ? studioCfg.appId.trim() : '';
+          const figmaSourceId = appId ? getPipelineApp(db, appId)?.figmaDesignSystemSourceId ?? null : null;
+          if (figmaSourceId) {
+            const source = getFigmaDesignSystemSource(db, figmaSourceId);
+            const catalog = source?.catalog as FigmaComponentCatalogSnapshot | null | undefined;
+            if (catalog) {
+              await fs.promises.mkdir(criteriaDir, { recursive: true });
+              await fs.promises.writeFile(
+                path.join(criteriaDir, 'components.md'),
+                renderFigmaComponentsMarkdown(catalog),
+                'utf8',
+              );
+              const guideMd = await readFigmaDesignSystemGuide(RUNTIME_DATA_DIR, figmaSourceId);
+              const guideResult = await writeFilteredComponentsGuideToCriteria(criteriaDir, catalog, guideMd);
+              hasGuide = guideResult.entryCount > 0;
+              const tokens = await readFigmaDesignSystemTokens(RUNTIME_DATA_DIR, figmaSourceId);
+              const tokensResult = await writeTokensMarkdownToCriteria(criteriaDir, tokens?.markdown ?? null);
+              hasTokens = tokensResult.delivered;
+            }
+          }
+        } catch (error) {
+          // fail-soft — cùng bất biến "criteria staging lỗi không được chặn
+          // stage" như khối docs-comp prep (dr-comp): agent vẫn chạy được,
+          // chỉ thiếu vật liệu.
+          console.warn('[ds-lab] staging criteria/ từ App/DS source thất bại (continuing):', error);
+        }
+
+        // Brief nguyên liệu còn lại: docs (shallow readdir, chỉ để nêu ví dụ —
+        // agent tự duyệt cả thư mục), pattern có sẵn.
+        const docsIndex = await fs.promises
+          .readdir(path.join(labCwd, 'docs'))
+          .then((entries) => entries.filter((e) => e.toLowerCase().endsWith('.md')).sort().slice(0, 20))
+          .catch(() => [] as string[]);
+        const patternsDir = path.join(labCwd, LAB_PATTERNS_DIR_REL);
+        const patternNames = await fs.promises
+          .readdir(patternsDir)
+          .then((entries) => entries.filter((e) => e.toLowerCase().endsWith('.json')).map((e) => e.replace(/\.json$/i, '')))
+          .catch(() => [] as string[]);
+
+        const appFeature = (project.name && String(project.name).trim()) || projectId;
+        const brief = buildComposeBrief({
+          docsIndex,
+          scopeHint: scopeHint ?? null,
+          previewFileKey: previewConfig.fileKey,
+          appFeature,
+          hasTokens,
+          hasGuide,
+          patternNames,
+        });
+
+        // (2) Spawn MỘT run thường — Symbol allow-list NGUYÊN KHUÔN
+        // figma-build (INTERNAL_MCP_SERVER_IDS), KHÔNG promptProfile:
+        // 'pipeline' (mới không bị computeEnabledMcp cắt MCP ngoài).
+        const conversationId = `lab-compose-conv-${randomUUID()}`;
+        const rowNow = Date.now();
+        insertConversation(db, {
+          id: conversationId,
+          projectId,
+          title: `Sáng tác màn · ${appFeature}`,
+          createdAt: rowNow,
+          updatedAt: rowNow,
+        });
+        const assistantMessageId = `lab-compose-assistant-${randomUUID()}`;
+        const run = design.runs.create({
+          projectId,
+          conversationId,
+          assistantMessageId,
+          clientRequestId: `lab-compose-${randomUUID()}`,
+          agentId: execution.agentId,
+        });
+        upsertMessage(db, conversationId, { id: `lab-compose-user-${run.id}`, role: 'user', content: brief });
+        upsertMessage(db, conversationId, {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: '',
+          agentId: execution.agentId,
+          agentName: getAgentDef(execution.agentId)?.name ?? execution.agentId,
+          runId: run.id,
+          runStatus: 'queued',
+          startedAt: Date.now(),
+        });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+        const chatBody: Record<string, unknown> = {
+          agentId: execution.agentId,
+          projectId,
+          conversationId,
+          assistantMessageId,
+          clientRequestId: run.clientRequestId,
+          skillId: 'lab-screen-compose',
+          ...(wfDir ? { cwdSubdir: wfDir } : {}),
+          model: execution.modelPrefs.model ?? null,
+          reasoning: execution.modelPrefs.reasoning ?? null,
+          message: brief,
+          systemPrompt:
+            'Bạn đang chạy một job không có người ngồi cạnh. Không hỏi lại, không chờ input — chọn mặc định hợp lý và hoàn thành.',
+        };
+        // Symbol key — không thể set qua JSON body của /api/chat, chỉ caller
+        // trong chính process này (đây) mới gắn được (xem docblock
+        // INTERNAL_MCP_SERVER_IDS đầu file).
+        chatBody[INTERNAL_MCP_SERVER_IDS] = [mcpServer.id];
+        design.runs.start(run, () => startChatRun(chatBody, run));
+        const final = await design.runs.wait(run);
+        db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+        if (final.status !== 'succeeded') {
+          const message = `Agent kết thúc với trạng thái "${final.status}".`;
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+
+        // (3) Đọc lab-result.json → parse → capture PNG.
+        const resultRaw = await fs.promises.readFile(path.join(labCwd, LAB_RESULT_FILE_REL), 'utf8').catch(() => null);
+        const parsed = resultRaw != null ? parseLabResult(resultRaw) : null;
+        if (!parsed || parsed.screens.length === 0) {
+          const message =
+            'Agent không ghi lab-result.json hợp lệ — thiếu file, JSON hỏng, hoặc không màn nào có frameNodeId hợp lệ.';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+        if (parsed.warnings.length > 0) {
+          console.warn(`[ds-lab] lab-result.json warnings: ${parsed.warnings.join(' | ')}`);
+        }
+
+        const figmaCfg = await readFigmaConfig(RUNTIME_DATA_DIR);
+        let captured = 0;
+        if (figmaCfg?.token) {
+          const images = await fetchNodeImages(
+            figmaCfg.token,
+            previewConfig.fileKey,
+            parsed.screens.map((s) => s.frameNodeId),
+          ).catch(() => new Map<string, string>());
+          await fs.promises.mkdir(path.join(labCwd, 'screens'), { recursive: true });
+          for (const screen of parsed.screens) {
+            const url = images.get(screen.frameNodeId);
+            if (!url) {
+              console.warn(`[ds-lab] màn "${screen.key}": không lấy được ảnh render từ Figma — bỏ qua.`);
+              continue;
+            }
+            const ok = await downloadFigmaImage(url, path.join(labCwd, screenPngRel(screen.key)));
+            if (ok) captured += 1;
+            else console.warn(`[ds-lab] màn "${screen.key}": tải PNG thất bại — bỏ qua.`);
+          }
+        } else {
+          console.warn('[ds-lab] chưa có token Figma (Cài đặt → Figma) — không chụp được PNG nào.');
+        }
+
+        if (captured === 0) {
+          const message = 'Không chụp được PNG cho màn nào (kiểm tra token Figma trong Cài đặt, hoặc frameNodeId agent ghi ra).';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+
+        // (4) Outputs/attribution: screens/ + lab-result.json thuộc lab-compose
+        // (khớp `outputs` đã khai trong pipelines.ts); patterns/ không thuộc
+        // stage nào (agent tự ghi/đọc, không bị "Chạy lại" xoá).
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
+        void commitHistory(projectRoot, { kind: 'run', pipelineId, status: 'succeeded', by: historyActor() }).catch(() => null);
+        console.log(`[ds-lab] ${projectId}: sáng tác ${captured}/${parsed.screens.length} màn thành công (page "${labPageName(appFeature)}")`);
+        return 'succeeded' as const;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+        console.warn('[ds-lab] lab-compose run failed:', error);
+        return 'failed' as const;
+      }
+    })();
+    return { projectId, completion };
+  };
+
   const runPipeline = async (
     projectId: string,
     pipelineId: string,
@@ -20193,6 +20475,15 @@ export async function startServer({
     // review/index.json. Not a normal single-agent stage.
     if (def.skillId === 'docs-spec-review') {
       return runDocsReviewFanout(pipelineId, projectId, wfDir, resetScope);
+    }
+
+    // ds-lab "Sáng tác màn" (lab-compose) → DAEMON-ORCHESTRATED (see
+    // runLabCompose's own docblock, above runPipeline): preflight → staging
+    // criteria/ → spawn ONE normal agent run with the Figma MCP Symbol
+    // allow-list → capture PNG. Fully independent of docs-review/docs-to-ui/
+    // docs-to-prd — never falls through to the normal single-agent path below.
+    if (def.skillId === 'lab-screen-compose') {
+      return runLabCompose(pipelineId, projectId, wfDir, resetScope, input, project);
     }
 
     // Customer Journey + UX Research → parallel PER-SECTION fan-out, but ONLY

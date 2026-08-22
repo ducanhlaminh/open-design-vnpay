@@ -370,6 +370,31 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   { id: 'dr-comp',          name: 'Màn hình → Component',      skillId: 'docs-screen-components',  dependsOn: ['dr-docs', 'dr-flow'], outputs: ['comp/', 'wireframes/'], usesDesignSystemCriteria: true },
   { id: 'dr-review',        name: 'Review tài liệu',           skillId: 'docs-spec-review',      dependsOn: ['dr-docs', 'dr-flow', 'dr-comp'], outputs: ['review/'], usesDesignSystemCriteria: true },
   { id: 'dr-confirm',       name: 'Xác nhận hoàn tất',         skillId: 'docs-review-confirm',   dependsOn: ['dr-review'], outputs: ['confirmation/'] },
+
+  // ── `ds-lab` workflow — fully INDEPENDENT of docs-to-ui/docs-to-prd/docs-review ─
+  // 2026-08-22 product decision (.tmp/pipeline/wp-lab.yaml): DS thực tế chỉ có
+  // comp base (chưa có screen mẫu) — thay vì "trung thành tài liệu" như
+  // docs-review, workflow này để agent TỰ SÁNG TÁC màn từ comp base + tokens;
+  // URD chỉ cho biết màn LÀM GÌ (chức năng + nội dung thật), KHÔNG phải TRÔNG
+  // THẾ NÀO — mockup nhúng trong docs chỉ là ngữ cảnh hiểu tính năng.
+  // `lab-docs` dùng đúng skill `confluence-ingest` (tiền lệ docs/prd-docs/
+  // dr-docs) nhưng id/folder RIÊNG — độc lập tuyệt đối, không gì được chia
+  // sẻ qua lại với ba workflow trên (cùng bất biến "mỗi pipeline id thuộc
+  // đúng 1 workflow").
+  { id: 'lab-docs',         name: 'Tài liệu (nạp)',            skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', acceptsUpload: true },
+  // `lab-compose` KHÔNG chạy qua đường agent-pipeline thường — run profile
+  // 'pipeline' bị `computeEnabledMcp` (figma-build.ts) cắt sạch MCP ngoài
+  // (0.8.52 quyết định, KHÔNG nới luật đó ở đây). Thay vào đó server.ts nhận
+  // diện đúng skillId này và tự chạy stage DAEMON-ORCHESTRATED (tiền lệ
+  // runDocsDeterministic): preflight (file preview + MCP Figma + App/DS
+  // source) → staging criteria/ → spawn MỘT run THƯỜNG mang Figma MCP qua
+  // Symbol allow-list (nguyên khuôn figma-build) → chờ run xong → đọc
+  // lab-result.json → capture PNG từng màn (fetchNodeImages) → screens/.
+  // `patterns/<slug>.json` (pattern agent tự chế, đọc lại ở lần chạy sau) CỐ
+  // Ý không nằm trong `outputs` — không phải sản phẩm của MỘT lần chạy nên
+  // phải sống sót "Chạy lại" (stagesForOutput không chấm nó cho stage nào →
+  // relClearedByRegen không bao giờ xoá nó).
+  { id: 'lab-compose',      name: 'Sáng tác màn',              skillId: 'lab-screen-compose',    dependsOn: ['lab-docs'],         outputs: ['screens/', 'lab-result.json'], inputPlaceholder: 'Phạm vi màn (tuỳ chọn)' },
 ];
 
 // The registry every consumer imports. Identical to `PIPELINE_DEFS_BASE`
@@ -420,6 +445,13 @@ const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
     // stage. The UI exposes it as a dedicated completion CTA after every real
     // stage succeeds, so it must not appear in the stepper or Run All.
     pipelineIds: ['dr-docs', 'dr-flow', 'dr-comp', 'dr-review'],
+  },
+  {
+    id: 'ds-lab',
+    name: 'DS → Màn hình sáng tạo (Lab)',
+    description:
+      'Độc lập hoàn toàn với Docs → UI-Spec, Docs → PRD Requirements Review và Docs → Rà soát tài liệu: nạp tài liệu riêng cho workflow này (lab-docs), rồi để agent Figma TOÀN QUYỀN sáng tác màn hình mới trong file Figma preview từ comp base + tokens của Design System. URD chỉ cho biết màn LÀM GÌ (chức năng + nội dung thật) — ảnh mockup nhúng trong tài liệu chỉ để hiểu tính năng, không phải hướng bố cục. Kết quả của mỗi lần chạy là ảnh chụp (PNG) của từng màn agent vừa dựng trong Figma.',
+    pipelineIds: ['lab-docs', 'lab-compose'],
   },
 ];
 

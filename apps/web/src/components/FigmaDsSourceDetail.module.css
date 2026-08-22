@@ -558,3 +558,74 @@
   line-height: 1.55;
   text-align: center;
 }
+
+/* ── WP-ds-tokens UI: tab Thành phần / Tokens ───────────────────────────── */
+
+.viewTabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
+}
+
+.viewTab {
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.viewTabActive {
+  color: var(--accent-strong);
+  border-bottom-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.tokensPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tokensToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tokensMarkdown {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+.tokensMarkdown table {
+  border-collapse: collapse;
+  margin: 8px 0 16px;
+  min-width: 420px;
+}
+
+.tokensMarkdown th,
+.tokensMarkdown td {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  text-align: left;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.tokensMarkdown code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+}

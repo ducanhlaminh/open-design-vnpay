@@ -19,11 +19,22 @@ describe('stripWorkflowDir', () => {
   it('keeps stripping the docs-to-prd prefix (pre-existing behavior, unchanged)', () => {
     expect(stripWorkflowDir('docs-to-prd/review/report.json')).toBe('review/report.json');
   });
+
+  // ds-lab (WP-lab, 2026-08-22): same mirroring requirement — a ds-lab output
+  // path must strip the same way or lab-compose's screens/ never resolves.
+  it('strips the ds-lab workflow prefix off a lab-compose output path', () => {
+    expect(stripWorkflowDir('ds-lab/screens/SCR-001.png')).toBe('screens/SCR-001.png');
+    expect(stripWorkflowDir('ds-lab/lab-result.json')).toBe('lab-result.json');
+  });
 });
 
 describe('outputMatches', () => {
   it('matches a stripped dr-review path against its "review/" outputs pattern', () => {
     expect(outputMatches(stripWorkflowDir('docs-review/review/docs/confluence/x.md'), 'review/')).toBe(true);
+  });
+
+  it('matches a stripped lab-compose path against its "screens/" outputs pattern', () => {
+    expect(outputMatches(stripWorkflowDir('ds-lab/screens/SCR-001.png'), 'screens/')).toBe(true);
   });
 });
 

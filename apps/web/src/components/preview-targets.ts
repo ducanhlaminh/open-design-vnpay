@@ -71,6 +71,12 @@ const WORKFLOW_HEAD_TO_ID: Record<string, string> = {
   'docs-to-react': 'docs-to-ui',
   'docs-to-prd': 'docs-to-prd',
   'docs-review': 'docs-review',
+  // ds-lab (WP-lab, 2026-08-22): no STAGE_SPECS entry (lab-compose emits N
+  // PNGs under screens/, no single hero file — same reason the ingest steps
+  // are absent from STAGE_SPECS), but still needs its head mapped here so its
+  // files don't fall through to the "unprefixed legacy" bucket and get
+  // conflated with a genuinely flat project's files.
+  'ds-lab': 'ds-lab',
 };
 
 // Mirrors UI_TARGET_SEG_RE in PipelineModals: a multi-target build nests

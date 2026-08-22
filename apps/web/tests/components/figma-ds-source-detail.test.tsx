@@ -429,3 +429,64 @@ describe('FigmaDsSourceDetail · component browser', () => {
     expect(screen.getByText(/đang tải…/)).toBeTruthy();
   });
 });
+
+describe('FigmaDsSourceDetail · tab Tokens (WP-ds-tokens UI)', () => {
+  // '/tokens' phải khai TRƯỚC '/api/figma-design-systems/' (tiền tố nguyên văn
+  // của URL tokens) — cùng lý do thứ tự đã ghi ở mockSourceFetchSequence.
+  function mockWithTokens(tokens: (init?: RequestInit) => Response) {
+    mockFetchSequence({
+      '/tokens': tokens,
+      '/components': () => new Response(JSON.stringify({ components: baseComponents }), { status: 200 }),
+      '/api/figma-design-systems/': () => new Response(JSON.stringify(baseDetail), { status: 200 }),
+    });
+  }
+
+  it('(t1) chuyển tab Tokens → fetch + render markdown, có ngày sinh', async () => {
+    mockWithTokens(() => new Response(
+      JSON.stringify({ markdown: '## Màu\n\n| Giá trị | Lượt dùng |\n| --- | --- |\n| `#0052ff` | 3 |\n', generatedAt: '2026-08-22T03:00:00Z' }),
+      { status: 200 },
+    ));
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    fireEvent.click(screen.getByTestId('figma-ds-detail-tab-tokens'));
+    const panel = await screen.findByTestId('figma-ds-detail-tokens');
+    await within(panel).findByText('Màu');
+    expect(within(panel).getByText('#0052ff')).toBeTruthy();
+    expect(within(panel).getByText(/Sinh lúc/)).toBeTruthy();
+    // Tab Tokens ẩn toolbar/list component (một view một lúc).
+    expect(screen.queryByText('Button/Primary')).toBeNull();
+  });
+
+  it('(t2) 404 TOKENS_NOT_GENERATED → empty-state hướng dẫn Làm mới + Tải lại, không phải lỗi', async () => {
+    mockWithTokens(() => new Response(JSON.stringify({ code: 'TOKENS_NOT_GENERATED' }), { status: 404 }));
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    fireEvent.click(screen.getByTestId('figma-ds-detail-tab-tokens'));
+    const panel = await screen.findByTestId('figma-ds-detail-tokens');
+    await within(panel).findByText(/chưa có tokens/i);
+    expect(within(panel).queryByRole('alert')).toBeNull();
+    // "Tải lại" gọi lại API — lần hai trả markdown thì render được.
+    expect(within(panel).getByRole('button', { name: 'Tải lại' })).toBeTruthy();
+  });
+
+  it('(t3) quay lại tab Thành phần → list render lại, không fetch tokens thừa', async () => {
+    const tokensSpy = vi.fn(() => new Response(
+      JSON.stringify({ markdown: '## Chữ\n', generatedAt: '2026-08-22T03:00:00Z' }),
+      { status: 200 },
+    ));
+    mockWithTokens(tokensSpy);
+    render(<FigmaDsSourceDetail sourceId="src-1" onBack={() => {}} />);
+    await screen.findByText('Button/Primary');
+
+    fireEvent.click(screen.getByTestId('figma-ds-detail-tab-tokens'));
+    await screen.findByText('Chữ');
+    fireEvent.click(screen.getByTestId('figma-ds-detail-tab-components'));
+    await screen.findByText('Button/Primary');
+    fireEvent.click(screen.getByTestId('figma-ds-detail-tab-tokens'));
+    await screen.findByText('Chữ');
+    // Lazy + cache trong state: chỉ 1 lần fetch dù chuyển tab qua lại.
+    expect(tokensSpy).toHaveBeenCalledTimes(1);
+  });
+});

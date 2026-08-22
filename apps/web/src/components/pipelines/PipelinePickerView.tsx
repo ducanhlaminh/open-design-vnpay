@@ -116,6 +116,11 @@ const WORKFLOW_CARD_COPY: Record<string, { label: string; description: string; i
     description: 'Kiểm tra nội dung, luồng màn hình và đề xuất chỉnh sửa rõ ràng.',
     icon: 'eye',
   },
+  'ds-lab': {
+    label: 'Sáng tác màn từ Design System (Lab)',
+    description: 'Agent tự sáng tác màn hình mới trong Figma từ comp base + tokens — thử nghiệm, độc lập với ba luồng trên.',
+    icon: 'sparkles',
+  },
 };
 
 export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Element {
@@ -326,7 +331,7 @@ export function PipelinePickerView({ nav, appId, featureId }: Props): JSX.Elemen
 
         <div className={styles.panelBody}>
       <aside className={styles.workflowInputCallout} aria-label="Tài liệu đầu vào dùng chung">
-        <span className={styles.workflowInputTitle}>Tài liệu đầu vào dùng chung cho 3 workflow</span>
+        <span className={styles.workflowInputTitle}>Tài liệu đầu vào dùng chung cho 4 workflow</span>
         <span className={styles.workflowInputText}>
           Chọn <strong>URD</strong> của tính năng/sản phẩm làm tài liệu chính (bắt buộc). Có thể chọn thêm
           <strong> PRD</strong> làm tài liệu bổ sung để agent nắm nhanh bối cảnh dự án. Bạn sẽ chọn các tài liệu này

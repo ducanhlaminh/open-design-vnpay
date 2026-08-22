@@ -15,10 +15,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
 import { Icon } from './Icon';
 import {
   fetchFigmaDesignSystemComponents,
   fetchFigmaDesignSystemDetail,
+  fetchFigmaDesignSystemTokens,
   generateFigmaDesignSystemGuide,
   refreshFigmaDesignSystem,
   useFigmaGuideJob,
@@ -89,6 +91,13 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
   const [page, setPage] = useState(1);
   const [expandedAnchor, setExpandedAnchor] = useState<string | null>(null);
   const [lastRunExpanded, setLastRunExpanded] = useState(false);
+  // WP-ds-tokens UI: tab "Tokens" render tokens.md de-facto (0.8.96). Lazy —
+  // chỉ fetch lần đầu chuyển tab (undefined = chưa tải/đang tải, null = nguồn
+  // chưa sinh tokens — 404, KHÔNG phải lỗi vì mining chạy NỀN sau Làm mới).
+  const [view, setView] = useState<'components' | 'tokens'>('components');
+  const [tokens, setTokens] = useState<{ markdown: string; generatedAt: string } | null | undefined>(undefined);
+  const [tokensError, setTokensError] = useState<string | null>(null);
+  const [tokensLoading, setTokensLoading] = useState(false);
 
   // WP23b — re-attach: hook khuôn useAppImportJob, tự hỏi
   // /api/figma-guide-jobs/active lúc mount để hiện panel tiến độ ngay cả khi
@@ -124,11 +133,33 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
     }
   }, [sourceId]);
 
+  const loadTokens = useCallback(async () => {
+    setTokensLoading(true);
+    try {
+      setTokens(await fetchFigmaDesignSystemTokens(sourceId));
+      setTokensError(null);
+    } catch (error) {
+      setTokens(undefined);
+      setTokensError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTokensLoading(false);
+    }
+  }, [sourceId]);
+
+  // Lần đầu mở tab Tokens mới fetch; các lần sau giữ cache trong state, nút
+  // "Tải lại" cho trường hợp mining nền vừa chạy xong sau Làm mới.
+  useEffect(() => {
+    if (view === 'tokens' && tokens === undefined && !tokensLoading && !tokensError) void loadTokens();
+  }, [view, tokens, tokensLoading, tokensError, loadTokens]);
+
   useEffect(() => {
     setDetail(undefined);
     setComponents(undefined);
     setJobError(null);
     setPage(1);
+    setView('components');
+    setTokens(undefined);
+    setTokensError(null);
     refetchedJobIdRef.current = null;
     void loadDetail();
     void loadComponents();
@@ -374,6 +405,70 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
             </div>
           ) : null}
 
+          {/* WP-ds-tokens UI: 2 tab — danh mục component (mặc định) và tokens
+              de-facto. Chữ thuần (trang này không dùng i18n dict). */}
+          <div className={styles.viewTabs} role="tablist" aria-label="Nội dung nguồn Figma">
+            <button
+              type="button"
+              role="tab"
+              data-testid="figma-ds-detail-tab-components"
+              aria-selected={view === 'components'}
+              className={`${styles.viewTab} ${view === 'components' ? styles.viewTabActive : ''}`}
+              onClick={() => setView('components')}
+            >
+              Thành phần
+            </button>
+            <button
+              type="button"
+              role="tab"
+              data-testid="figma-ds-detail-tab-tokens"
+              aria-selected={view === 'tokens'}
+              className={`${styles.viewTab} ${view === 'tokens' ? styles.viewTabActive : ''}`}
+              onClick={() => setView('tokens')}
+            >
+              Tokens
+            </button>
+          </div>
+
+          {view === 'tokens' ? (
+            <div className={styles.tokensPanel} data-testid="figma-ds-detail-tokens">
+              <div className={styles.tokensToolbar}>
+                {tokens ? (
+                  <span className={styles.meta}>{`Sinh lúc ${new Date(tokens.generatedAt).toLocaleString('vi-VN')}`}</span>
+                ) : <span />}
+                <button
+                  type="button"
+                  className={styles.missingToggle}
+                  disabled={tokensLoading}
+                  onClick={() => { void loadTokens(); }}
+                >
+                  {tokensLoading ? 'Đang tải…' : 'Tải lại'}
+                </button>
+              </div>
+              {tokensError ? <p className={styles.errorText} role="alert">{tokensError}</p> : null}
+              {tokensLoading && tokens === undefined ? <p className={styles.meta}>Đang tải tokens…</p> : null}
+              {tokens === null ? (
+                <div className={styles.empty}>
+                  <p>
+                    Nguồn này chưa có tokens. Tokens được đào tự động (chạy nền) sau mỗi lần <strong>Làm mới</strong> thành
+                    công — nếu vừa Làm mới xong, chờ chút rồi bấm <strong>Tải lại</strong>.
+                  </p>
+                </div>
+              ) : null}
+              {tokens ? (
+                // renderMarkdownToSafeHtml đã sanitize (cùng helper các preview
+                // markdown khác của web) — tokens.md do daemon tự sinh tất định.
+                <div
+                  className={styles.tokensMarkdown}
+                  // eslint-disable-next-line react/no-danger
+                  dangerouslySetInnerHTML={{ __html: renderMarkdownToSafeHtml(tokens.markdown) }}
+                />
+              ) : null}
+            </div>
+          ) : null}
+
+          {view === 'tokens' ? null : (
+          <>
           <div className={styles.toolbar}>
             <input
               type="search"
@@ -559,6 +654,8 @@ export function FigmaDsSourceDetail({ sourceId, onBack }: Props) {
                 </div>
               ) : null}
             </>
+          )}
+          </>
           )}
         </>
       ) : null}

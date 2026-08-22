@@ -149,6 +149,20 @@ export async function fetchFigmaDesignSystem(id: string): Promise<FigmaDesignSys
   return (await fetchFigmaDesignSystemDetail(id)).source;
 }
 
+/** WP-ds-tokens (0.8.96): tokens.md de-facto của nguồn — sinh NỀN sau mỗi lần
+ *  Làm mới thành công. 404 TOKENS_NOT_GENERATED = chưa từng sinh (nguồn chưa
+ *  refresh từ 0.8.96, hoặc mining còn đang chạy) → trả null để tab Tokens hiện
+ *  empty-state hướng dẫn, KHÔNG phải lỗi. */
+export async function fetchFigmaDesignSystemTokens(
+  sourceId: string,
+  signal?: AbortSignal,
+): Promise<{ markdown: string; generatedAt: string } | null> {
+  const response = await fetch(`/api/figma-design-systems/${encodeURIComponent(sourceId)}/tokens`, { signal });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(await errorMessage(response, 'Không tải được tokens của nguồn này.'));
+  return await response.json() as { markdown: string; generatedAt: string };
+}
+
 export async function createFigmaDesignSystem(payload: SourcePayload): Promise<FigmaDesignSystemSource> {
   const response = await fetch('/api/figma-design-systems', {
     method: 'POST',

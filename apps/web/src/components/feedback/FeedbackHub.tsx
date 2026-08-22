@@ -27,7 +27,7 @@ import styles from './FeedbackHub.module.css';
  *  outputs của stage là đường dẫn TƯƠNG ĐỐI theo workflow, còn tên file mang
  *  tiền tố `<workflow>/` (và `<target>/` với bước chạy theo target) — phải bóc
  *  trước khi so, nếu không không pattern nào khớp. */
-const WORKFLOW_PREFIX_RE = /^(docs-to-ui|docs-to-prd|docs-review|docs-to-html|docs-to-react)\//;
+const WORKFLOW_PREFIX_RE = /^(docs-to-ui|docs-to-prd|docs-review|ds-lab|docs-to-html|docs-to-react)\//;
 function stripPrefixes(name: string): string {
   let rel = name.replace(WORKFLOW_PREFIX_RE, '');
   const head = rel.split('/')[0] ?? '';

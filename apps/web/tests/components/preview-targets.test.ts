@@ -115,4 +115,27 @@ describe('resolvePreviewTargets', () => {
       'docs-review/review/index.json',
     );
   });
+
+  // ds-lab (WP-lab): its head IS a known workflow prefix (WORKFLOW_HEAD_TO_ID),
+  // but no STAGE_SPECS entry names it — lab-compose's screens/*.png have no
+  // single hero file, same reason the ingest steps are absent. Its files must
+  // not get treated as unprefixed-legacy (which would conflate them with a
+  // genuinely flat project) nor light up any row.
+  it('recognizes ds-lab as a known workflow prefix but lights up no row for it (no single hero file)', () => {
+    const rows = resolvePreviewTargets(files('ds-lab/screens/SCR-001.png', 'ds-lab/lab-result.json'));
+    expect(rows.every((row) => row.path === null)).toBe(true);
+  });
+
+  it('a ds-lab project does not steal another workflow’s dominant scope', () => {
+    // docs-to-ui still dominates (2 files vs 1) and resolves its own hero,
+    // while the lone ds-lab file stays out of scope (foreign workflow prefix).
+    const rows = resolvePreviewTargets(
+      files(
+        'docs-to-ui/prototype/index.html',
+        'docs-to-ui/checkout-ux-spec.json',
+        'ds-lab/screens/SCR-001.png',
+      ),
+    );
+    expect(rows.find((row) => row.stageId === 'ui-html')!.path).toBe('docs-to-ui/prototype/index.html');
+  });
 });
