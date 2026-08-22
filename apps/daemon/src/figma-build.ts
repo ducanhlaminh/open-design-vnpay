@@ -419,6 +419,24 @@ function elementOrder(wireframeHtml: string | null, knownIds: readonly string[])
   return ordered;
 }
 
+/** WP30: role gợi chữ hiển thị CHÍNH (nút, tiêu đề, app-bar, link, chip,
+ *  badge) — vắng `content.text` ở các role này ra Figma là "Button"/"Title"
+ *  trơ (label không có gì để đổ). Role khác (search-input, banner-image,
+ *  card, listing…) CỐ Ý không khớp: label ở đó là MÔ TẢ phần tử ("Ô tìm kiếm
+ *  điểm đến"), không phải chữ hiển thị — đổ nhầm vào content.text sẽ sai. */
+const LABEL_FALLBACK_ROLE_RE = /(button|cta|heading|title|app-bar|link|chip|badge)/i;
+
+/** WP30: content.text fallback = label, CHỈ khi element có component (khớp DS
+ *  thật — nhánh không-component đã tự dùng label lúc dựng text trần, xem
+ *  caller) VÀ role khớp `LABEL_FALLBACK_ROLE_RE` VÀ label non-empty VÀ chưa
+ *  có content.text sẵn. Giữ nguyên mọi field content khác (secondary/value/
+ *  badge/items) nếu có. Thuần — test qua `compileScreenBuildInput`. */
+export function resolveElementContent(role: string, label: string, content: ScreenBuildContent | undefined): ScreenBuildContent | undefined {
+  if (content?.text) return content;
+  if (!LABEL_FALLBACK_ROLE_RE.test(role) || !label.trim()) return content;
+  return { ...content, text: label };
+}
+
 function buildAnchorIndex(catalog: FigmaComponentCatalogSnapshot): Map<string, { fileKey: string; component: FigmaCatalogComponent }> {
   const index = new Map<string, { fileKey: string; component: FigmaCatalogComponent }>();
   for (const file of catalog.files) {
@@ -468,6 +486,16 @@ export function compileScreenBuildInput(opts: CompileScreenBuildInputOptions): S
     }
     if (!dsFileKey) dsFileKey = found.fileKey;
     const { component } = found;
+    // WP30: element CÓ component — label thay content.text còn thiếu ở role
+    // hiển thị chữ chính (xem `resolveElementContent`); ghi đè content của
+    // `base` chỉ cho hai nhánh này (nhánh !el.ds/!found ở trên giữ base gốc).
+    const resolvedContent = resolveElementContent(el.role, el.label, el.content);
+    const baseWithResolvedContent: ScreenBuildInputElement = {
+      id: el.id,
+      role: el.role,
+      label: el.label,
+      ...(resolvedContent ? { content: resolvedContent } : {}),
+    };
     if (component.variants && component.variants.length > 0) {
       const wanted = el.ds.variant ? parseVariantPairs(el.ds.variant) : null;
       let chosen = pickDefaultVariant(component.variants);
@@ -480,7 +508,7 @@ export function compileScreenBuildInput(opts: CompileScreenBuildInputOptions): S
         warning = `Element "${el.id}" không khai variant cho component "${component.name}" — dùng mặc định "${chosen.name}".`;
       }
       elements.push({
-        ...base,
+        ...baseWithResolvedContent,
         component: {
           name: component.name,
           ...(chosen.key ? { key: chosen.key } : {}),
@@ -492,7 +520,7 @@ export function compileScreenBuildInput(opts: CompileScreenBuildInputOptions): S
       });
     } else {
       elements.push({
-        ...base,
+        ...baseWithResolvedContent,
         component: { name: component.name, ...(component.key ? { key: component.key } : {}) },
       });
     }

@@ -306,6 +306,84 @@ describe('compileScreenBuildInput', () => {
     expect(input.mockups).toEqual(['docs-feature/attachments/image-1.png']);
   });
 
+  it('WP30: element CÓ component + role khớp regex (secondary-cta) + KHÔNG content → content.text = label', () => {
+    const input = compileScreenBuildInput({
+      screenDoc: {
+        key: 'SCR-001',
+        name: 'Đăng nhập',
+        platform: 'mobile',
+        elements: [
+          { id: 'el-1', label: 'Lịch sử giao dịch', role: 'secondary-cta', ds: { component: 'Button', anchor: buttonAnchor } },
+        ],
+      },
+      wireframeHtml: null,
+      catalog: catalogWithVariants(),
+      previewFileKey: 'PREVIEW',
+      appFeature: 'Ví điện tử',
+    });
+    expect(input.elements[0]!.content).toEqual({ text: 'Lịch sử giao dịch' });
+  });
+
+  it('WP30: element CÓ component nhưng role "card" (không khớp regex) → KHÔNG fallback, content vắng mặt', () => {
+    const input = compileScreenBuildInput({
+      screenDoc: {
+        key: 'SCR-001',
+        name: 'Đăng nhập',
+        platform: 'mobile',
+        elements: [
+          { id: 'el-1', label: 'Ưu đãi hôm nay', role: 'card', ds: { component: 'Avatar', anchor: avatarAnchor } },
+        ],
+      },
+      wireframeHtml: null,
+      catalog: catalogWithVariants(),
+      previewFileKey: 'PREVIEW',
+      appFeature: 'Ví điện tử',
+    });
+    expect(input.elements[0]!.content).toBeUndefined();
+  });
+
+  it('WP30: element CÓ component + role khớp regex NHƯNG content.text đã có → giữ nguyên, không đổi bằng label', () => {
+    const input = compileScreenBuildInput({
+      screenDoc: {
+        key: 'SCR-001',
+        name: 'Đăng nhập',
+        platform: 'mobile',
+        elements: [
+          {
+            id: 'el-1',
+            label: 'Lịch sử giao dịch',
+            role: 'secondary-cta',
+            ds: { component: 'Button', anchor: buttonAnchor },
+            content: { text: 'Xem tất cả', secondary: 'Ghi chú' },
+          },
+        ],
+      },
+      wireframeHtml: null,
+      catalog: catalogWithVariants(),
+      previewFileKey: 'PREVIEW',
+      appFeature: 'Ví điện tử',
+    });
+    expect(input.elements[0]!.content).toEqual({ text: 'Xem tất cả', secondary: 'Ghi chú' });
+  });
+
+  it('WP30: element KHÔNG có component (ds: null) dù role khớp regex → không tự thêm content (nhánh này giữ nguyên như v1)', () => {
+    const input = compileScreenBuildInput({
+      screenDoc: {
+        key: 'SCR-001',
+        name: 'Đăng nhập',
+        platform: 'mobile',
+        elements: [
+          { id: 'el-1', label: 'Đăng nhập ngay', role: 'primary-cta', ds: null },
+        ],
+      },
+      wireframeHtml: null,
+      catalog: catalogWithVariants(),
+      previewFileKey: 'PREVIEW',
+      appFeature: 'Ví điện tử',
+    });
+    expect(input.elements[0]!.content).toBeUndefined();
+  });
+
   it('WP29: KHÔNG truyền wireframe → "layout" vắng mặt, elements[] vẫn nguyên (tương thích ngược schema 1 cũ)', () => {
     const input = compileScreenBuildInput({
       screenDoc: {

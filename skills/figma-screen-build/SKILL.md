@@ -51,6 +51,13 @@ không chờ xác nhận — chọn mặc định hợp lý theo `input.json` v�
    bạn tự chèn bù). TEXT node trần chỉ được phép tạo cho phần tử KHÔNG có
    `component` (bước 3, mục "Không có `component`") — không có ngoại lệ
    nào khác.
+6. **Nguyên tử theo phần tử**: TOÀN BỘ thao tác của MỘT phần tử (import,
+   ghép frame, xác nhận variant, duyệt cây, override, `items[]`, ẩn hàng dư,
+   `layoutSizing…`) phải nằm trong CÙNG MỘT lần execute-code — xem mục
+   "Nguyên tắc NGUYÊN TỬ theo phần tử" ngay trước "Dựng MỘT phần tử". TUYỆT
+   ĐỐI không mang node id (đặc biệt id ruột instance `I<a>;<b>;<c>`) qua
+   ranh giới call sau — đây chính là nguyên nhân phần tử chết giữa chừng với
+   lỗi `Node with id I… not found`.
 
 ## input.json — shape
 
@@ -175,6 +182,35 @@ theo ảnh. Không xem được ảnh (công cụ không hỗ trợ, hoặc `moc
 → bỏ qua mục này, dựng theo `layout`/`elements[]` bình thường — KHÔNG coi là
 lỗi, KHÔNG ghi warning.
 
+### Nguyên tắc NGUYÊN TỬ theo phần tử — cấm mang node id qua call
+
+Lỗi thật đã gặp: 6 phần tử fail giữa chừng với thông báo
+`in findAll/get_name: Node with id 'I9:...;...' not found` — nguyên nhân là
+duyệt cây ở MỘT lần gọi tool rồi mang node id thu được sang LẦN GỌI SAU mới
+thao tác tiếp; id ruột instance (tiền tố `I<a>;<b>;<c>`) bị Figma SINH LẠI
+mỗi khi bạn set variant hoặc set `characters` trên component chứa nó, nên id
+đó STALE ngay khi call vừa kết thúc — lần gọi sau chắc chắn chết.
+
+- **Một lần execute-code = một phần tử, trọn vẹn**: import component, append
+  vào frame/container, xác nhận variant, DUYỆT CÂY (`findAll` TEXT), override
+  text/secondary/value/badge, đổ `items[]`, ẩn hàng dư, set
+  `layoutSizingHorizontal`/`layoutSizingVertical` — TẤT CẢ các thao tác này
+  của MỘT phần tử phải nằm TRONG CÙNG MỘT lần execute-code (một tool call).
+  Tham chiếu node bằng BIẾN ngay trong chính script đó
+  (`const inst = figma.createInstance(...)`, `const texts = inst.findAll(...)`)
+  — không đi qua node id.
+- **CẤM mang node id qua ranh giới call**: TUYỆT ĐỐI không lấy node id ở một
+  lần gọi tool rồi dùng lại nó ở lần gọi SAU để thao tác tiếp — ĐẶC BIỆT id
+  ruột instance dạng `I<a>;<b>;<c>` (stale ngay khi set variant/characters,
+  đúng lỗi "Node with id I… not found" ở trên). Nếu buộc phải tách nhiều lần
+  gọi (script quá dài…), lần gọi SAU phải RE-QUERY (truy vấn lại) TỪ ĐẦU
+  bằng duyệt TÊN — tìm frame màn theo `frameName` trong trang, rồi tìm
+  instance/phần tử theo tên/`id` bên trong nó — NGAY TRONG lần gọi đó, tuyệt
+  đối không dùng lại bất kỳ id nào lấy được ở lần gọi trước.
+- **Id được phép giữ qua call**: CHỈ `frameNodeId` của chính frame màn (node
+  thường, không phải id ruột instance) — để ghi vào `result.json` ở bước 4.
+  Không id nào khác được phép mang qua ranh giới call.
+
 ### Dựng MỘT phần tử
 
 Áp dụng cho mỗi phần tử tra được từ `elements[]` theo `id` — bất kể bạn đang
@@ -267,7 +303,10 @@ tự:
    (`figma.importComponentByKeyAsync`, `instance.setProperties`,
    `node.setRangeCharacters`/`characters =`, …) là cách chắc chắn nhất để
    thực hiện đúng hợp đồng chống rác ở trên (xóa-rồi-dựng-lại theo tên, tạo
-   trang theo tên).
+   trang theo tên). Đây cũng là điều kiện để tuân thủ "Nguyên tắc NGUYÊN TỬ
+   theo phần tử" (trên) — MỘT lần execute-code gói trọn toàn bộ thao tác của
+   một phần tử, biến trong script sống hết vòng đời phần tử đó, không phải
+   đi qua node id giữa nhiều lần gọi tool riêng lẻ.
 2. Nếu server KHÔNG có tool "execute code", dùng tổ hợp tool chuyên biệt
    tương đương (tạo file/mở file theo key, tạo frame, import component,
    set text) — vẫn phải đọc kỹ input.json và tự đảm bảo đúng thứ tự elements
