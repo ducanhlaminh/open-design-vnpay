@@ -2,15 +2,15 @@
 name: lab-kit-compose
 description: |
   Nâng cấp một BỘ COMPONENT phái sinh thẩm mỹ cao hơn từ comp base của Design
-  System — bạn là SYSTEM DESIGNER, KHÔNG phải dựng màn: chỉ những comp là
-  ĐIỂM NEO THỊ GIÁC của các màn sắp dựng (card, list-item, hero-header, dock,
-  promo…) mới đáng có bản phái sinh; đồ "ống nước" (radio, divider, input…)
-  giữ nguyên. Dùng Figma MCP toàn quyền trên file preview (use_figma,
+  System — bạn là SYSTEM DESIGNER, KHÔNG phải dựng màn: DỰNG ĐÚNG danh sách
+  đã duyệt ở bước "Đề xuất kit" (kit-plan.json, các mục `decision: "derive"`)
+  — không tự thêm/bớt so với plan trừ khi Định hướng người dùng trong kickoff
+  bảo khác. Dùng Figma MCP toàn quyền trên file preview (use_figma,
   get_screenshot, search_design_system, get_libraries, get_variable_defs, và
   tuỳ chọn pinterest_* nếu server MCP đó có) để dựng, tự chụp màn hình xem
   lại, tự sửa trong phiên. Dùng bởi stage "Nâng bộ comp" (lab-kit) của
-  workflow "DS → Màn hình sáng tạo (Lab)", chạy TRƯỚC "Sáng tác màn"
-  (lab-compose).
+  workflow "DS → Màn hình sáng tạo (Lab)", chạy SAU "Đề xuất kit"
+  (lab-kit-plan) và TRƯỚC "Sáng tác màn" (lab-compose).
 triggers:
   - "nâng bộ comp trong figma"
   - "lab kit compose"
@@ -36,41 +36,40 @@ màn hoàn thiện.
 
 ## Vai của bạn
 
-Bạn là SYSTEM DESIGNER: đọc tài liệu (`docs/`) để biết CÁC MÀN SẮP DỰNG cần
-điểm neo thị giác nào, rồi từ comp base + `criteria/tokens.md`, TỰ TẠO một bộ
-component phái sinh thẩm mỹ cao hơn — kiểu quy trình designer thật (ví dụ:
+Bạn là SYSTEM DESIGNER: DỰNG ĐÚNG danh sách comp phái sinh đã được NGƯỜI
+duyệt ở bước "Đề xuất kit" (`kit-plan.json`, các mục `decision: "derive"`) —
+mỗi mục đã có sẵn `gap` (base thiếu gì về CẤU TRÚC) nêu đích danh, bạn không
+cần tự quyết lại "có đáng sinh không". Từ comp base + `criteria/tokens.md`,
+TỰ TẠO bản phái sinh lấp đúng gap đó — kiểu quy trình designer thật (ví dụ:
 "Card - Chọn số" = ghép `datarow` + `ProviderMini` nhét vào slot + thêm
 `.price-tag`, tất cả style vẫn bắt nguồn từ tokens). Kit CHỈ tồn tại trong
 file Figma preview — nó là ỨNG VIÊN để designer cân nhắc promote vào Design
 System thật, **KHÔNG PHẢI** việc của bạn để ghi thẳng vào đó.
 
-## Phân tích chọn lọc (làm TRƯỚC KHI dựng bất kỳ comp nào)
+## Dựng theo đề xuất đã duyệt (làm TRƯỚC KHI dựng bất kỳ comp nào)
 
-Không phải mọi comp trong `criteria/components.md` đều đáng có bản phái sinh.
-Đọc `docs/` để hiểu các màn SẮP DỰNG, rồi tự hỏi với TỪNG comp ứng viên: "đây
-có phải ĐIỂM NEO THỊ GIÁC của màn không?" — nơi mắt người dùng dừng lại đầu
-tiên, phần quyết định "màn này trông đẹp hay không":
+Danh sách comp cần dựng KHÔNG còn do bạn tự phân tích ở đây — nó đến từ
+`kit-plan.json`, output của bước "Đề xuất kit" (lab-kit-plan) mà NGƯỜI đã đọc
+và bấm chạy bước này. Kickoff của bạn liệt kê ĐÚNG các mục `decision:
+"derive"` của plan, kèm `gap` (base thiếu gì về cấu trúc) từng mục:
 
-- **CÓ, đáng nâng cấp**: card (sản phẩm/gói/dịch vụ), list-item nổi bật,
-  hero-header, dock/tab-bar chính, banner/promo, empty-state minh hoạ — những
-  thứ xuất hiện lặp lại và ĐỊNH HÌNH cảm nhận thẩm mỹ của cả màn.
-- **KHÔNG, giữ nguyên comp base**: đồ "ống nước" — radio, checkbox, divider,
-  input, label, icon trần, spinner… những thứ người dùng thao tác qua nhưng
-  không "nhìn ngắm"; nâng cấp chúng chỉ tốn ngân sách phiên mà không đổi cảm
-  nhận thẩm mỹ tổng thể.
+- **Dựng ĐÚNG danh sách đó** — không tự thêm comp ngoài danh sách, không tự
+  bỏ mục nào trừ khi Định hướng người dùng trong kickoff bảo bỏ.
+- **Định hướng người dùng (nếu có) được phép thêm/bớt so với plan** — tôn
+  trọng nó, nó ghi đè lên plan cho phiên này.
+- **Phép thử hai tầng (tham chiếu, không phải việc bạn làm lại từ đầu)**:
+  nếu giữa chừng bạn nhận ra một mục thật ra ĐẠT ĐƯỢC chỉ bằng override trên
+  instance base (đổi text, màu token, ẩn/hiện phần tử, swap icon) — tức là
+  plan đã đánh giá sai — đừng lặng lẽ bỏ qua: vẫn dựng theo plan (NGƯỜI đã
+  duyệt), nhưng ghi vào `notes` một đề nghị "nên đổi mục này thành use-base ở
+  lần đề xuất sau" để designer cân nhắc.
+- **Ngoại lệ App Bar bắt buộc** đã được quyết ở bước "Đề xuất kit" — xem
+  skill `lab-kit-plan`. Nếu plan có mục App Bar với `mustHave: true`, mục đó
+  BẮT BUỘC phải dựng, không phải tuỳ chọn.
 
-**NGOẠI LỆ BẮT BUỘC — App Bar**: mọi màn mobile đều cần thanh điều hướng
-trên cùng (nút back + tiêu đề màn). Nếu `criteria/components.md` KHÔNG có
-App Bar (DS là thư viện web chẳng hạn — trường hợp thật đã gặp: DS "[SDK]
-Web Lib" 142 comp không có App Bar nên các màn dựng ra trần trụi không thanh
-điều hướng) thì kit PHẢI tự dựng một comp "App Bar" phái sinh từ tokens
-(auto-layout, tuân luật resize-test #8) để bước sáng tác màn có mà dùng —
-đây không phải "đáng hay không đáng", mà là bắt buộc. Base có sẵn App Bar
-thì App Bar quay về diện phân tích chọn lọc bình thường.
-
-Với MỖI comp bạn quyết định nâng cấp, ghi rõ **LÝ DO** (trường `reason` trong
-`kit-result.json`/`kit/kit.json`) — designer đọc lại lý do này khi cân nhắc
-promote vào DS thật.
+Với MỖI comp bạn dựng, mang theo `gap`/`reason` của plan vào trường `reason`
+trong `kit-result.json`/`kit/kit.json` — designer đọc lại lý do này khi cân
+nhắc promote vào DS thật.
 
 ## Nguyên liệu
 
@@ -84,6 +83,10 @@ promote vào DS thật.
 - `criteria/slots.md` (nếu có) — hồ sơ SLOT de-facto của comp base bạn đang
   nâng cấp (xem "Recipe thao tác SLOT" trong `lab-screen-compose` SKILL.md —
   cùng cơ chế, dùng lại nguyên).
+- `kit-plan.json` — đề xuất ĐÃ ĐƯỢC NGƯỜI DUYỆT từ bước "Đề xuất kit"
+  (lab-kit-plan): nguồn DUY NHẤT quyết định bạn dựng comp nào (xem "Dựng
+  theo đề xuất đã duyệt" ở trên) — kickoff đã liệt kê sẵn danh sách rút gọn
+  (tên + gap), đọc file này nếu cần đối chiếu `baseComponents` đầy đủ.
 - `kit/kit.json` — từ WP-kit-regen (`.tmp/pipeline/wp-kit-regen.yaml`),
   KHÔNG còn là registry bền: Chạy lại lab-kit gen lại từ đầu nên registry cũ
   đã bị dọn TRƯỚC KHI bạn bắt đầu phiên — bạn LUÔN dựng bộ kit mới toàn bộ,
@@ -92,8 +95,9 @@ promote vào DS thật.
 
 ## Quy trình khuyến nghị
 
-1. Đọc `docs/` (các màn sắp dựng) để quyết định: lần này cần dựng những comp
-   nào (xem "Phân tích chọn lọc" ở trên). Trang kit có thể còn nội dung của
+1. Đối chiếu danh sách đã duyệt trong kickoff (từ `kit-plan.json`, xem "Dựng
+   theo đề xuất đã duyệt" ở trên) + Định hướng người dùng (nếu có) để chốt
+   DANH SÁCH CUỐI comp cần dựng lần này. Trang kit có thể còn nội dung của
    lần chạy trước — xem bước 3.a, XOÁ SẠCH trước khi dựng.
 2. (Tuỳ chọn, chỉ khi có tool `pinterest_*`) Dùng `pinterest_search` để xem
    nhanh vài moodboard tham khảo thẩm mỹ — CHỈ để lấy cảm hứng phối màu/bố
@@ -218,7 +222,8 @@ Ghi ĐÚNG MỘT file `kit-result.json` ở cwd của bạn:
   (`"12:34"`), **KHÔNG BAO GIỜ** là id ruột instance (`"I<a>;<b>"`) — daemon
   dùng id này để chụp PNG qua Figma REST API; một id ruột instance sẽ khiến
   bước chụp ảnh thất bại cho comp đó.
-- `reason`: LÝ DO bạn chọn nâng cấp comp này (xem "Phân tích chọn lọc").
+- `reason`: LÝ DO nâng cấp comp này — mang theo `gap`/`reason` từ mục tương
+  ứng trong `kit-plan.json` (xem "Dựng theo đề xuất đã duyệt").
 - `baseComponents` (tuỳ chọn): tên/`key` các comp base đã ghép để tạo bản
   phái sinh này.
 - `notes` (tuỳ chọn): ghi chú — BẮT BUỘC nếu comp có ảnh placeholder

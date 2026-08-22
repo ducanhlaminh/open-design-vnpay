@@ -37,15 +37,20 @@ function def(id: string) {
 
 // ── Registry: ds-lab workflow ────────────────────────────────────────────────
 
-test('ds-lab: 3-stage workflow (WP-kit added lab-kit), independent of docs-to-ui/docs-to-prd/docs-review', () => {
+// WP-kit-plan (.tmp/pipeline/wp-kit-plan.yaml, 2026-08-22): ds-lab grew a 4th
+// stage, the approval gate "Đề xuất kit" (lab-kit-plan), between lab-docs and
+// lab-kit — see pipelines.test.ts's dedicated ds-lab tests for the full
+// lab-kit-plan assertions; this test only needs its own pipelineIds/dependsOn
+// expectations updated to not regress.
+test('ds-lab: 4-stage workflow (WP-kit-plan added lab-kit-plan before lab-kit), independent of docs-to-ui/docs-to-prd/docs-review', () => {
   const wf = getWorkflow('ds-lab');
   assert.ok(wf, 'ds-lab workflow should exist');
-  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-kit', 'lab-compose']);
+  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-kit-plan', 'lab-kit', 'lab-compose']);
   assert.equal(def('lab-docs').skillId, 'confluence-ingest');
   assert.equal(def('lab-kit').skillId, 'lab-kit-compose');
   assert.equal(def('lab-compose').skillId, 'lab-screen-compose');
   assert.deepEqual(def('lab-docs').dependsOn, []);
-  assert.deepEqual(def('lab-kit').dependsOn, ['lab-docs']);
+  assert.deepEqual(def('lab-kit').dependsOn, ['lab-docs', 'lab-kit-plan']);
   assert.deepEqual(def('lab-compose').dependsOn, ['lab-docs']);
   assert.deepEqual(def('lab-docs').outputs, ['docs/', 'docs-feature/']);
   // WP-kit-regen (.tmp/pipeline/wp-kit-regen.yaml, 2026-08-22): kit/kit.json is
@@ -69,6 +74,7 @@ test('ds-lab: 3-stage workflow (WP-kit added lab-kit), independent of docs-to-ui
 
 test('ds-lab: pipeline ids resolve to their OWN workflow folder, never another workflow\'s', () => {
   assert.equal(workflowDirForPipeline('lab-docs'), 'ds-lab');
+  assert.equal(workflowDirForPipeline('lab-kit-plan'), 'ds-lab');
   assert.equal(workflowDirForPipeline('lab-kit'), 'ds-lab');
   assert.equal(workflowDirForPipeline('lab-compose'), 'ds-lab');
   // Other workflows' own ids stay untouched.

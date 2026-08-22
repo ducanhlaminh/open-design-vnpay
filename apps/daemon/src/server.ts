@@ -487,11 +487,19 @@ import {
 // lab-docs và lab-compose. Cùng bất biến: pure builder/parser sống ở
 // lab-kit.ts, server.ts (runLabKit bên dưới, cạnh runLabCompose) sở hữu mọi
 // fs/DB/agent-spawn thật.
+// WP-kit-plan (2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml): + stage CỔNG
+// DUYỆT "Đề xuất kit" (lab-kit-plan) — buildKitPlanBrief/parseKitPlan/
+// KIT_PLAN_*/renderKitPlanMd, và buildKitBrief giờ nhận thêm `plan`.
 import {
   buildKitBrief,
+  buildKitPlanBrief,
   kitShotPngRel,
   labKitPageName,
+  parseKitPlan,
   parseKitResult,
+  renderKitPlanMd,
+  KIT_PLAN_FILE_REL,
+  KIT_PLAN_MD_REL,
   KIT_RESULT_FILE_REL,
   KIT_REGISTRY_FILE_REL,
 } from './lab-kit.js';
@@ -19963,6 +19971,61 @@ export async function startServer({
     return parts.join(', ');
   };
 
+  // ── ds-lab: staging criteria/ từ App → DS source — HELPER DÙNG CHUNG ───────
+  // WP-kit-plan (.tmp/pipeline/wp-kit-plan.yaml): TÁCH ra khỏi runLabCompose/
+  // runLabKit (trước đây mỗi hàm inline y hệt khối này) để `runLabKitPlan`
+  // (bên dưới) dùng lại thay vì copy-paste lần thứ ba — hành vi GIỮ NGUYÊN
+  // 100% so với khối inline cũ của runLabCompose (must_not: không đổi hành vi
+  // runLabCompose). Ghi criteria/{components.md,components-guide.md,
+  // tokens.md,slots.md} vào `<labCwd>/criteria` từ nguồn Figma DS đã bind cho
+  // App của project — fail-soft TUYỆT ĐỐI: lỗi ở đây chỉ console.warn, không
+  // bao giờ chặn stage (agent vẫn chạy được, chỉ thiếu vật liệu — brief nêu
+  // rõ phần nào vắng mặt qua hasGuide/hasTokens/hasSlots).
+  const stageLabCriteriaFromAppDsSource = async (
+    labCwd: string,
+    project: NonNullable<ReturnType<typeof getProject>>,
+    // Tiền tố log — TRUYỀN ĐÚNG chuỗi mỗi caller cũ từng dùng inline (rỗng
+    // cho runLabCompose, "lab-kit: " cho runLabKit) để KHÔNG đổi văn bản log
+    // hiện có; "lab-kit-plan: " là caller MỚI (runLabKitPlan).
+    logPrefix: string,
+  ): Promise<{ hasGuide: boolean; hasTokens: boolean; hasSlots: boolean }> => {
+    const criteriaDir = path.join(labCwd, 'criteria');
+    let hasGuide = false;
+    let hasTokens = false;
+    let hasSlots = false;
+    try {
+      const studioCfg = (project.metadata as Record<string, unknown> | undefined)?.studioConfig as
+        | Record<string, unknown>
+        | undefined;
+      const appId = typeof studioCfg?.appId === 'string' ? studioCfg.appId.trim() : '';
+      const figmaSourceId = appId ? getPipelineApp(db, appId)?.figmaDesignSystemSourceId ?? null : null;
+      if (figmaSourceId) {
+        const source = getFigmaDesignSystemSource(db, figmaSourceId);
+        const catalog = source?.catalog as FigmaComponentCatalogSnapshot | null | undefined;
+        if (catalog) {
+          await fs.promises.mkdir(criteriaDir, { recursive: true });
+          await fs.promises.writeFile(
+            path.join(criteriaDir, 'components.md'),
+            renderFigmaComponentsMarkdown(catalog),
+            'utf8',
+          );
+          const guideMd = await readFigmaDesignSystemGuide(RUNTIME_DATA_DIR, figmaSourceId);
+          const guideResult = await writeFilteredComponentsGuideToCriteria(criteriaDir, catalog, guideMd);
+          hasGuide = guideResult.entryCount > 0;
+          const tokens = await readFigmaDesignSystemTokens(RUNTIME_DATA_DIR, figmaSourceId);
+          const tokensResult = await writeTokensMarkdownToCriteria(criteriaDir, tokens?.markdown ?? null);
+          hasTokens = tokensResult.delivered;
+          const slots = await readFigmaDesignSystemSlots(RUNTIME_DATA_DIR, figmaSourceId);
+          const slotsResult = await writeSlotsMarkdownToCriteria(criteriaDir, slots?.markdown ?? null);
+          hasSlots = slotsResult.delivered;
+        }
+      }
+    } catch (error) {
+      console.warn(`[ds-lab] ${logPrefix}staging criteria/ từ App/DS source thất bại (continuing):`, error);
+    }
+    return { hasGuide, hasTokens, hasSlots };
+  };
+
   // ── ds-lab: "Sáng tác màn" (lab-compose) — DAEMON-ORCHESTRATED stage ───────
   // Tiền lệ `runDocsDeterministic` ở trên: KHÔNG đi qua đường agent-pipeline
   // thường — run profile 'pipeline' bị `computeEnabledMcp` (figma-build.ts)
@@ -20053,54 +20116,12 @@ export async function startServer({
         }
 
         // (d) App binding → DS source: staging criteria/{components.md,
-        // components-guide.md, tokens.md} vào labCwd. Không gọi được helper
-        // staging App-context nặng (stageBoundAppContextForRun — gắn với
-        // context-lock/feature-binding của docs-review, không có ý nghĩa cho
-        // lab) — COPY THẲNG từ figma_design_system_sources qua các helper sẵn
-        // có (renderFigmaComponentsMarkdown + writeFilteredComponentsGuideToCriteria
-        // + writeTokensMarkdownToCriteria), quyết định đã ghi trong report.
-        // Thiếu App/DS source, hoặc thiếu guide/tokens → bỏ qua PHẦN ĐÓ, KHÔNG
-        // fail — brief nêu rõ phần nào vắng mặt cho agent tự biết.
-        const criteriaDir = path.join(labCwd, 'criteria');
-        let hasGuide = false;
-        let hasTokens = false;
-        let hasSlots = false;
-        try {
-          const studioCfg = (project.metadata as Record<string, unknown> | undefined)?.studioConfig as
-            | Record<string, unknown>
-            | undefined;
-          const appId = typeof studioCfg?.appId === 'string' ? studioCfg.appId.trim() : '';
-          const figmaSourceId = appId ? getPipelineApp(db, appId)?.figmaDesignSystemSourceId ?? null : null;
-          if (figmaSourceId) {
-            const source = getFigmaDesignSystemSource(db, figmaSourceId);
-            const catalog = source?.catalog as FigmaComponentCatalogSnapshot | null | undefined;
-            if (catalog) {
-              await fs.promises.mkdir(criteriaDir, { recursive: true });
-              await fs.promises.writeFile(
-                path.join(criteriaDir, 'components.md'),
-                renderFigmaComponentsMarkdown(catalog),
-                'utf8',
-              );
-              const guideMd = await readFigmaDesignSystemGuide(RUNTIME_DATA_DIR, figmaSourceId);
-              const guideResult = await writeFilteredComponentsGuideToCriteria(criteriaDir, catalog, guideMd);
-              hasGuide = guideResult.entryCount > 0;
-              const tokens = await readFigmaDesignSystemTokens(RUNTIME_DATA_DIR, figmaSourceId);
-              const tokensResult = await writeTokensMarkdownToCriteria(criteriaDir, tokens?.markdown ?? null);
-              hasTokens = tokensResult.delivered;
-              // WP-slots: cùng nhịp staging với guide/tokens — giao hồ sơ
-              // SLOT de-facto (nếu nguồn có) vào criteria/slots.md, và truyền
-              // `hasSlots` cho buildComposeBrief bên dưới.
-              const slots = await readFigmaDesignSystemSlots(RUNTIME_DATA_DIR, figmaSourceId);
-              const slotsResult = await writeSlotsMarkdownToCriteria(criteriaDir, slots?.markdown ?? null);
-              hasSlots = slotsResult.delivered;
-            }
-          }
-        } catch (error) {
-          // fail-soft — cùng bất biến "criteria staging lỗi không được chặn
-          // stage" như khối docs-comp prep (dr-comp): agent vẫn chạy được,
-          // chỉ thiếu vật liệu.
-          console.warn('[ds-lab] staging criteria/ từ App/DS source thất bại (continuing):', error);
-        }
+        // components-guide.md, tokens.md, slots.md} vào labCwd — qua helper
+        // dùng chung `stageLabCriteriaFromAppDsSource` (WP-kit-plan, TÁCH khỏi
+        // khối inline cũ — hành vi giữ nguyên 100%, xem docblock helper ở
+        // trên). Thiếu App/DS source, hoặc thiếu guide/tokens → bỏ qua PHẦN
+        // ĐÓ, KHÔNG fail — brief nêu rõ phần nào vắng mặt cho agent tự biết.
+        const { hasGuide, hasTokens, hasSlots } = await stageLabCriteriaFromAppDsSource(labCwd, project, '');
 
         // Brief nguyên liệu còn lại: docs (shallow readdir, chỉ để nêu ví dụ —
         // agent tự duyệt cả thư mục), pattern có sẵn.
@@ -20299,14 +20320,15 @@ export async function startServer({
   // ── ds-lab: "Nâng bộ comp" (lab-kit) — DAEMON-ORCHESTRATED stage (WP-kit,
   // 2026-08-22, .tmp/pipeline/wp-kit.yaml) ───────────────────────────────────
   // NGUYÊN khuôn `runLabCompose` ngay TRÊN đây (đọc docblock của hàm đó
-  // trước) — chen giữa lab-docs và lab-compose trong pipelines.ts's
-  // WORKFLOW_DEFS.ds-lab: preflight (file preview + MCP Figma + App/DS
-  // source) → staging criteria/ → spawn MỘT run THƯỜNG mang Figma MCP (+
-  // Pinterest MCP nếu user đã tự khai, xem `pickPinterestMcpServer`) qua
-  // Symbol allow-list → chờ run xong → đọc kit-result.json → capture PNG
-  // từng comp phái sinh (fetchNodeImages) → kit-shots/. Mọi logic THUẦN
-  // (brief/parse/paths) sống ở lab-kit.ts — hàm này chỉ orchestration
-  // (fs/DB/agent spawn).
+  // trước) — chen giữa lab-kit-plan và lab-compose trong pipelines.ts's
+  // WORKFLOW_DEFS.ds-lab: đọc kit-plan.json (cổng duyệt, xem block ngay dưới
+  // re-run clear — WP-kit-plan, .tmp/pipeline/wp-kit-plan.yaml, fail-fast nếu
+  // thiếu/hỏng/rỗng) → preflight (file preview + MCP Figma + App/DS source) →
+  // staging criteria/ → spawn MỘT run THƯỜNG mang Figma MCP (+ Pinterest MCP
+  // nếu user đã tự khai, xem `pickPinterestMcpServer`) qua Symbol allow-list
+  // → chờ run xong → đọc kit-result.json → capture PNG từng comp phái sinh
+  // (fetchNodeImages) → kit-shots/. Mọi logic THUẦN (brief/parse/paths) sống
+  // ở lab-kit.ts — hàm này chỉ orchestration (fs/DB/agent spawn).
   const runLabKit = (
     pipelineId: string,
     projectId: string,
@@ -20342,6 +20364,36 @@ export async function startServer({
         }
         for (const id of regenIds) {
           if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
+        }
+
+        // WP-kit-plan (.tmp/pipeline/wp-kit-plan.yaml): kit-plan.json là cổng
+        // duyệt của NGƯỜI (bước "Đề xuất kit", lab-kit-plan) — lab-kit KHÔNG
+        // còn tự phân tích chọn lọc, nó DỰNG ĐÚNG danh sách 'derive' đã có
+        // trong plan. Thiếu/hỏng/rỗng → fail-fast NGAY (trước mọi preflight
+        // Figma tốn thời gian), KHÔNG âm thầm quay về hành vi phân tích cũ.
+        const planRaw = await fs.promises.readFile(path.join(labCwd, KIT_PLAN_FILE_REL), 'utf8').catch(() => null);
+        if (planRaw == null) {
+          const message =
+            'Chưa có đề xuất kit được duyệt — chạy bước "Đề xuất kit" trước (kit-plan.json chưa tồn tại).';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+        const parsedPlan = parseKitPlan(planRaw);
+        if (!parsedPlan) {
+          const message =
+            'Chưa có đề xuất kit được duyệt — chạy bước "Đề xuất kit" trước (kit-plan.json hỏng: JSON không đọc được hoặc thiếu "candidates").';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+        if (parsedPlan.warnings.length > 0) {
+          console.warn(`[ds-lab] lab-kit: kit-plan.json warnings: ${parsedPlan.warnings.join(' | ')}`);
+        }
+        const derivePlan = parsedPlan.candidates.filter((c) => c.decision === 'derive');
+        if (derivePlan.length === 0) {
+          const message =
+            'Chưa có đề xuất kit được duyệt — chạy bước "Đề xuất kit" trước (kit-plan.json không có comp nào cần sinh — mọi mục đều "use-base").';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
         }
 
         // (a) Preflight — file Figma preview (dùng CHUNG với lab-compose, xem
@@ -20391,43 +20443,10 @@ export async function startServer({
         }
 
         // (d) App binding → DS source: staging criteria/{components.md,
-        // components-guide.md, tokens.md, slots.md} vào labCwd — Y HỆT
-        // runLabCompose (fail-soft, xem comment ở đó: criteria staging lỗi
-        // không được chặn stage).
-        const criteriaDir = path.join(labCwd, 'criteria');
-        let hasGuide = false;
-        let hasTokens = false;
-        let hasSlots = false;
-        try {
-          const studioCfg = (project.metadata as Record<string, unknown> | undefined)?.studioConfig as
-            | Record<string, unknown>
-            | undefined;
-          const appId = typeof studioCfg?.appId === 'string' ? studioCfg.appId.trim() : '';
-          const figmaSourceId = appId ? getPipelineApp(db, appId)?.figmaDesignSystemSourceId ?? null : null;
-          if (figmaSourceId) {
-            const source = getFigmaDesignSystemSource(db, figmaSourceId);
-            const catalog = source?.catalog as FigmaComponentCatalogSnapshot | null | undefined;
-            if (catalog) {
-              await fs.promises.mkdir(criteriaDir, { recursive: true });
-              await fs.promises.writeFile(
-                path.join(criteriaDir, 'components.md'),
-                renderFigmaComponentsMarkdown(catalog),
-                'utf8',
-              );
-              const guideMd = await readFigmaDesignSystemGuide(RUNTIME_DATA_DIR, figmaSourceId);
-              const guideResult = await writeFilteredComponentsGuideToCriteria(criteriaDir, catalog, guideMd);
-              hasGuide = guideResult.entryCount > 0;
-              const tokens = await readFigmaDesignSystemTokens(RUNTIME_DATA_DIR, figmaSourceId);
-              const tokensResult = await writeTokensMarkdownToCriteria(criteriaDir, tokens?.markdown ?? null);
-              hasTokens = tokensResult.delivered;
-              const slots = await readFigmaDesignSystemSlots(RUNTIME_DATA_DIR, figmaSourceId);
-              const slotsResult = await writeSlotsMarkdownToCriteria(criteriaDir, slots?.markdown ?? null);
-              hasSlots = slotsResult.delivered;
-            }
-          }
-        } catch (error) {
-          console.warn('[ds-lab] lab-kit: staging criteria/ từ App/DS source thất bại (continuing):', error);
-        }
+        // components-guide.md, tokens.md, slots.md} vào labCwd — qua helper
+        // dùng chung `stageLabCriteriaFromAppDsSource` (Y HỆT runLabCompose,
+        // fail-soft: criteria staging lỗi không được chặn stage).
+        const { hasGuide, hasTokens, hasSlots } = await stageLabCriteriaFromAppDsSource(labCwd, project, 'lab-kit: ');
 
         // Brief nguyên liệu còn lại: docs (shallow readdir, chỉ để nêu ví dụ).
         // WP-kit-regen (.tmp/pipeline/wp-kit-regen.yaml): registry cũ
@@ -20449,6 +20468,10 @@ export async function startServer({
           hasGuide,
           hasSlots,
           hasPinterest: !!pinterest,
+          // WP-kit-plan: danh sách 'derive' đã duyệt ở kit-plan.json (đã
+          // fail-fast ở trên nếu rỗng/thiếu) — buildKitBrief KHÔNG còn tự
+          // phân tích chọn lọc, chỉ dựng ĐÚNG danh sách này.
+          plan: derivePlan,
         });
 
         // (2) Spawn MỘT run thường — Symbol allow-list NGUYÊN KHUÔN
@@ -20598,6 +20621,190 @@ export async function startServer({
         const message = error instanceof Error ? error.message : String(error);
         setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
         console.warn('[ds-lab] lab-kit run failed:', error);
+        return 'failed' as const;
+      }
+    })();
+    return { projectId, completion };
+  };
+
+  // ── ds-lab: "Đề xuất kit" (lab-kit-plan) — DAEMON-ORCHESTRATED stage
+  // (WP-kit-plan, 2026-08-22, .tmp/pipeline/wp-kit-plan.yaml) ────────────────
+  // RÚT GỌN từ `runLabKit` ngay TRÊN đây (bắt chước cùng khuôn spawn: một
+  // conversation, systemPrompt "job không người ngồi cạnh", chờ run xong, đọc
+  // file kết quả) nhưng phiên này KHÔNG chạm Figma: KHÔNG preflight file
+  // preview/MCP Figma, KHÔNG capture PNG, KHÔNG audit — Symbol
+  // INTERNAL_MCP_SERVER_IDS truyền mảng RỖNG (không MCP nào). Agent CHỈ ĐỌC
+  // (docs/ + criteria/*) rồi ghi kit-plan.json (máy đọc) + kit-plan.md (người
+  // duyệt) theo PHÉP THỬ HAI TẦNG — xem buildKitPlanBrief (lab-kit.ts). Vì
+  // không cần agent có đường gắn MCP ngoài, dùng `resolveCriteriaAgent` (agent
+  // mặc định của máy) thay vì `resolveFigmaBuildAgent` (đòi externalMcpInjection
+  // — không có ý nghĩa khi ta không gắn MCP nào).
+  const runLabKitPlan = (
+    pipelineId: string,
+    projectId: string,
+    wfDir: string | null,
+    resetScope: 'stage' | 'downstream' | undefined,
+    scopeHint: string | undefined,
+    project: NonNullable<ReturnType<typeof getProject>>,
+  ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
+    const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
+      setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+      try {
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        const labCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+
+        // Re-run clear: chỉ outputs khai báo của lab-kit-plan (kit-plan.json +
+        // kit-plan.md) — cùng vòng lặp generic dựa trên `relClearedByRegen`/
+        // `stagesForOutput` như runLabCompose/runLabKit.
+        const regenIds = new Set(stageRegenSet(pipelineId, resetScope === 'downstream'));
+        await commitHistory(projectRoot, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
+        try {
+          const snap = await snapshotPipelineCwd(projectRoot);
+          for (const rel of snap.keys()) {
+            if (relClearedByRegen(rel, regenIds, wfDir)) {
+              await fs.promises.rm(path.join(projectRoot, rel), { force: true }).catch(() => null);
+            }
+          }
+        } catch (error) {
+          console.warn('[ds-lab] lab-kit-plan re-run clear failed (continuing):', error);
+        }
+        for (const id of regenIds) {
+          if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
+        }
+
+        // Agent mặc định của máy — phiên này KHÔNG cần MCP (không tool
+        // Figma), nên bất kỳ agent khả dụng nào cũng chạy được (không đòi
+        // externalMcpInjection như resolveFigmaBuildAgent).
+        let execution: { agentId: string; modelPrefs: { model?: string | null; reasoning?: string | null } };
+        try {
+          execution = await resolveCriteriaAgent();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+
+        // Staging criteria/ — Y HỆT runLabCompose/runLabKit (helper dùng
+        // chung, xem docblock ở trên).
+        const { hasGuide, hasTokens, hasSlots } = await stageLabCriteriaFromAppDsSource(
+          labCwd,
+          project,
+          'lab-kit-plan: ',
+        );
+
+        const docsIndex = await fs.promises
+          .readdir(path.join(labCwd, 'docs'))
+          .then((entries) => entries.filter((e) => e.toLowerCase().endsWith('.md')).sort().slice(0, 20))
+          .catch(() => [] as string[]);
+
+        const appFeature = (project.name && String(project.name).trim()) || projectId;
+        const brief = buildKitPlanBrief({
+          docsIndex,
+          scopeHint: scopeHint ?? null,
+          appFeature,
+          hasTokens,
+          hasGuide,
+          hasSlots,
+        });
+
+        // Spawn MỘT run thường — Symbol allow-list RỖNG (KHÔNG MCP nào, phiên
+        // chỉ đọc/ghi file), KHÔNG promptProfile: 'pipeline'.
+        const conversationId = `lab-kit-plan-conv-${randomUUID()}`;
+        const rowNow = Date.now();
+        insertConversation(db, {
+          id: conversationId,
+          projectId,
+          title: `Đề xuất kit · ${appFeature}`,
+          createdAt: rowNow,
+          updatedAt: rowNow,
+        });
+        const assistantMessageId = `lab-kit-plan-assistant-${randomUUID()}`;
+        const run = design.runs.create({
+          projectId,
+          conversationId,
+          assistantMessageId,
+          clientRequestId: `lab-kit-plan-${randomUUID()}`,
+          agentId: execution.agentId,
+        });
+        upsertMessage(db, conversationId, { id: `lab-kit-plan-user-${run.id}`, role: 'user', content: brief });
+        upsertMessage(db, conversationId, {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: '',
+          agentId: execution.agentId,
+          agentName: getAgentDef(execution.agentId)?.name ?? execution.agentId,
+          runId: run.id,
+          runStatus: 'queued',
+          startedAt: Date.now(),
+        });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+        const chatBody: Record<string, unknown> = {
+          agentId: execution.agentId,
+          projectId,
+          conversationId,
+          assistantMessageId,
+          clientRequestId: run.clientRequestId,
+          skillId: 'lab-kit-plan',
+          ...(wfDir ? { cwdSubdir: wfDir } : {}),
+          model: execution.modelPrefs.model ?? null,
+          reasoning: execution.modelPrefs.reasoning ?? null,
+          message: brief,
+          systemPrompt:
+            'Bạn đang chạy một job không có người ngồi cạnh. Không hỏi lại, không chờ input — chọn mặc định hợp lý và hoàn thành.',
+        };
+        // Symbol key — KHÔNG MCP nào (phiên chỉ đọc/ghi file, xem docblock
+        // INTERNAL_MCP_SERVER_IDS đầu file) — khác runLabCompose/runLabKit,
+        // phiên này không có tool Figma dù có/không có Figma MCP server.
+        chatBody[INTERNAL_MCP_SERVER_IDS] = [];
+        design.runs.start(run, () => startChatRun(chatBody, run));
+        const final = await design.runs.wait(run);
+        db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+        if (final.status !== 'succeeded') {
+          const message = `Agent kết thúc với trạng thái "${final.status}".`;
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+
+        // Đọc kit-plan.json → parse. Thiếu/hỏng/rỗng → stage failed (không có
+        // gì cho lab-kit dùng sau này).
+        const planRaw = await fs.promises.readFile(path.join(labCwd, KIT_PLAN_FILE_REL), 'utf8').catch(() => null);
+        const parsedPlan = planRaw != null ? parseKitPlan(planRaw) : null;
+        if (!parsedPlan || parsedPlan.candidates.length === 0) {
+          const message =
+            'Agent không ghi kit-plan.json hợp lệ — thiếu file, JSON hỏng, hoặc không đề xuất nào hợp lệ (mọi mục "derive" phải có "gap" nêu đích danh).';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+        if (parsedPlan.warnings.length > 0) {
+          console.warn(`[ds-lab] lab-kit-plan: kit-plan.json warnings: ${parsedPlan.warnings.join(' | ')}`);
+        }
+
+        // kit-plan.md thiếu → tự render bản tối giản từ candidates — đừng để
+        // cả stage fail chỉ vì thiếu file trình bày (kit-plan.json là hợp
+        // đồng máy đọc, đã đủ để lab-kit dùng).
+        const mdPath = path.join(labCwd, KIT_PLAN_MD_REL);
+        const mdExists = await fs.promises
+          .access(mdPath)
+          .then(() => true)
+          .catch(() => false);
+        if (!mdExists) {
+          console.warn('[ds-lab] lab-kit-plan: agent không ghi kit-plan.md — daemon tự render bản tối giản.');
+          await fs.promises.writeFile(mdPath, renderKitPlanMd(parsedPlan.candidates), 'utf8').catch(() => null);
+        }
+
+        // Outputs/attribution: kit-plan.json + kit-plan.md thuộc lab-kit-plan
+        // (khớp `outputs` đã khai trong pipelines.ts).
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
+        void commitHistory(projectRoot, { kind: 'run', pipelineId, status: 'succeeded', by: historyActor() }).catch(() => null);
+        const deriveCount = parsedPlan.candidates.filter((c) => c.decision === 'derive').length;
+        console.log(
+          `[ds-lab] lab-kit-plan ${projectId}: đề xuất ${parsedPlan.candidates.length} mục (derive: ${deriveCount}, use-base: ${parsedPlan.candidates.length - deriveCount}).`,
+        );
+        return 'succeeded' as const;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+        console.warn('[ds-lab] lab-kit-plan run failed:', error);
         return 'failed' as const;
       }
     })();
@@ -20875,12 +21082,22 @@ export async function startServer({
       return runDocsReviewFanout(pipelineId, projectId, wfDir, resetScope);
     }
 
+    // ds-lab "Đề xuất kit" (lab-kit-plan, WP-kit-plan 2026-08-22 — .tmp/
+    // pipeline/wp-kit-plan.yaml) → DAEMON-ORCHESTRATED (see runLabKitPlan's
+    // own docblock, above runPipeline): RÚT GỌN từ lab-kit — read-only agent
+    // (KHÔNG Figma MCP nào), ghi kit-plan.json/kit-plan.md. Chen giữa lab-docs
+    // và lab-kit; never falls through to the normal single-agent path below.
+    if (def.skillId === 'lab-kit-plan') {
+      return runLabKitPlan(pipelineId, projectId, wfDir, resetScope, input, project);
+    }
+
     // ds-lab "Nâng bộ comp" (lab-kit, WP-kit 2026-08-22) → DAEMON-ORCHESTRATED
     // (see runLabKit's own docblock, above runPipeline): same shape as
-    // lab-screen-compose right below — preflight → staging criteria/ → spawn
-    // ONE normal agent run with the Figma (+ optional Pinterest) MCP Symbol
-    // allow-list → capture PNG. Chen giữa lab-docs và lab-compose; never falls
-    // through to the normal single-agent path below.
+    // lab-screen-compose right below — read kit-plan.json (fail-fast) →
+    // preflight → staging criteria/ → spawn ONE normal agent run with the
+    // Figma (+ optional Pinterest) MCP Symbol allow-list → capture PNG. Chen
+    // giữa lab-kit-plan và lab-compose; never falls through to the normal
+    // single-agent path below.
     if (def.skillId === 'lab-kit-compose') {
       return runLabKit(pipelineId, projectId, wfDir, resetScope, input, project);
     }

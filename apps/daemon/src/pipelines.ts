@@ -382,20 +382,42 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // sẻ qua lại với ba workflow trên (cùng bất biến "mỗi pipeline id thuộc
   // đúng 1 workflow").
   { id: 'lab-docs',         name: 'Tài liệu (nạp)',            skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', acceptsUpload: true },
-  // `lab-kit` (WP-kit, 2026-08-22 — .tmp/pipeline/wp-kit.yaml): stage MỚI giữa
-  // lab-docs và lab-compose — agent PHÂN TÍCH CHỌN LỌC rồi TỰ TẠO bộ component
-  // phái sinh thẩm mỹ cao hơn (từ comp base + tokens.md) TRƯỚC khi dựng màn,
-  // để designer xem được kit trước, re-run độc lập, phiên ngắn hơn một lần
-  // dựng cả màn. Cùng bất biến DAEMON-ORCHESTRATED như `lab-compose` bên dưới
-  // (agent-pipeline thường bị `computeEnabledMcp` cắt MCP ngoài) — server.ts
-  // nhận diện skillId này và tự chạy runLabKit (nguyên khuôn runLabCompose).
+  // `lab-kit-plan` (WP-kit-plan, 2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml):
+  // stage MỚI, CỔNG DUYỆT CỦA NGƯỜI trước "Nâng bộ comp" — agent CHỈ ĐỌC
+  // (docs + criteria), KHÔNG có tool Figma trong phiên, xuất kit-plan.json
+  // (máy đọc) + kit-plan.md (người đọc/duyệt) theo PHÉP THỬ HAI TẦNG (mặc
+  // định KHÔNG sinh — chỉ sinh khi override trên base không đạt, và gap phải
+  // nêu đích danh). Cổng duyệt = thao tác bấm-tay từng stage sẵn có (run-all
+  // KHÔNG dừng chờ — chấp nhận, không chế cơ chế approve mới). Cùng bất biến
+  // DAEMON-ORCHESTRATED như `lab-kit`/`lab-compose` bên dưới — server.ts
+  // nhận diện skillId này và tự chạy runLabKitPlan (rút gọn từ runLabKit,
+  // KHÔNG Figma MCP nào — Symbol INTERNAL_MCP_SERVER_IDS rỗng).
+  {
+    id: 'lab-kit-plan',
+    name: 'Đề xuất kit',
+    skillId: 'lab-kit-plan',
+    dependsOn: ['lab-docs'],
+    outputs: ['kit-plan.json', 'kit-plan.md'],
+    inputPlaceholder: 'Định hướng đề xuất (tuỳ chọn)',
+  },
+  // `lab-kit` (WP-kit, 2026-08-22 — .tmp/pipeline/wp-kit.yaml): stage giữa
+  // lab-kit-plan và lab-compose — agent TỰ TẠO bộ component phái sinh thẩm mỹ
+  // cao hơn (từ comp base + tokens.md) TRƯỚC khi dựng màn, để designer xem
+  // được kit trước, re-run độc lập, phiên ngắn hơn một lần dựng cả màn. Cùng
+  // bất biến DAEMON-ORCHESTRATED như `lab-compose` bên dưới (agent-pipeline
+  // thường bị `computeEnabledMcp` cắt MCP ngoài) — server.ts nhận diện
+  // skillId này và tự chạy runLabKit (nguyên khuôn runLabCompose).
   // WP-kit-regen (2026-08-22 — .tmp/pipeline/wp-kit-regen.yaml): TỪ WP NÀY
   // `kit/kit.json` là output BÌNH THƯỜNG của lab-kit, không còn "bền ngoài
   // outputs" — Chạy lại lab-kit nghĩa là GEN LẠI TỪ ĐẦU (registry cũ bị dọn
   // trước khi build brief, agent xoá sạch children trang kit rồi dựng bộ mới
   // toàn bộ), theo yêu cầu user. `patterns/` của lab-compose bên dưới VẪN
   // bền ngoài outputs — ngữ nghĩa đó không đổi.
-  { id: 'lab-kit',          name: 'Nâng bộ comp',              skillId: 'lab-kit-compose',       dependsOn: ['lab-docs'],         outputs: ['kit-shots/', 'kit-result.json', 'kit/kit.json'], inputPlaceholder: 'Định hướng thẩm mỹ (tuỳ chọn)' },
+  // WP-kit-plan (2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml): `dependsOn`
+  // THÊM `lab-kit-plan` — lab-kit KHÔNG còn tự phân tích chọn lọc, nó DỰNG
+  // ĐÚNG danh sách 'derive' đã được NGƯỜI duyệt ở kit-plan.json (fail-fast
+  // nếu thiếu, xem runLabKit trong server.ts).
+  { id: 'lab-kit',          name: 'Nâng bộ comp',              skillId: 'lab-kit-compose',       dependsOn: ['lab-docs', 'lab-kit-plan'], outputs: ['kit-shots/', 'kit-result.json', 'kit/kit.json'], inputPlaceholder: 'Định hướng thẩm mỹ (tuỳ chọn)' },
   // `lab-compose` KHÔNG chạy qua đường agent-pipeline thường — run profile
   // 'pipeline' bị `computeEnabledMcp` (figma-build.ts) cắt sạch MCP ngoài
   // (0.8.52 quyết định, KHÔNG nới luật đó ở đây). Thay vào đó server.ts nhận
@@ -467,8 +489,8 @@ const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
     id: 'ds-lab',
     name: 'DS → Màn hình sáng tạo (Lab)',
     description:
-      'Độc lập hoàn toàn với Docs → UI-Spec, Docs → PRD Requirements Review và Docs → Rà soát tài liệu: nạp tài liệu riêng cho workflow này (lab-docs), rồi (tuỳ chọn) để agent nâng một bộ component phái sinh thẩm mỹ cao hơn từ comp base + tokens (lab-kit — CHỈ trong file preview), rồi để agent Figma TOÀN QUYỀN sáng tác màn hình mới trong file Figma preview từ comp base (hoặc kit, nếu có) + tokens của Design System. URD chỉ cho biết màn LÀM GÌ (chức năng + nội dung thật) — ảnh mockup nhúng trong tài liệu chỉ để hiểu tính năng, không phải hướng bố cục. Kết quả của mỗi lần chạy là ảnh chụp (PNG) của từng màn (hoặc từng comp kit) agent vừa dựng trong Figma.',
-    pipelineIds: ['lab-docs', 'lab-kit', 'lab-compose'],
+      'Độc lập hoàn toàn với Docs → UI-Spec, Docs → PRD Requirements Review và Docs → Rà soát tài liệu: nạp tài liệu riêng cho workflow này (lab-docs), rồi (tuỳ chọn) để agent CHỈ ĐỌC đề xuất một bộ component phái sinh cho NGƯỜI duyệt (lab-kit-plan — kit-plan.json/kit-plan.md, không tool Figma), rồi để agent nâng ĐÚNG bộ component đã duyệt đó (lab-kit — CHỈ trong file preview), rồi để agent Figma TOÀN QUYỀN sáng tác màn hình mới trong file Figma preview từ comp base (hoặc kit, nếu có) + tokens của Design System. URD chỉ cho biết màn LÀM GÌ (chức năng + nội dung thật) — ảnh mockup nhúng trong tài liệu chỉ để hiểu tính năng, không phải hướng bố cục. Kết quả của mỗi lần chạy là ảnh chụp (PNG) của từng màn (hoặc từng comp kit) agent vừa dựng trong Figma.',
+    pipelineIds: ['lab-docs', 'lab-kit-plan', 'lab-kit', 'lab-compose'],
   },
 ];
 

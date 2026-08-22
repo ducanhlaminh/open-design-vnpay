@@ -1,14 +1,24 @@
 // ds-lab / lab-kit (WP-kit, 2026-08-22) red-spec: pure glue in lab-kit.ts
 // (parse/brief/paths) + pickPinterestMcpServer (figma-build.ts). See
 // `.tmp/pipeline/wp-kit.yaml`.
+//
+// WP-kit-plan (2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml): + parseKitPlan/
+// buildKitPlanBrief/renderKitPlanMd (stage "Đề xuất kit", cổng duyệt của
+// NGƯỜI trước lab-kit) và buildKitBrief đổi vai (DỰNG ĐÚNG danh sách plan,
+// không còn tự phân tích chọn lọc).
 
 import { describe, expect, it } from 'vitest';
 
 import {
   buildKitBrief,
+  buildKitPlanBrief,
   kitShotPngRel,
   labKitPageName,
+  parseKitPlan,
   parseKitResult,
+  renderKitPlanMd,
+  KIT_PLAN_FILE_REL,
+  KIT_PLAN_MD_REL,
   KIT_REGISTRY_FILE_REL,
   KIT_RESULT_FILE_REL,
   KIT_SHOTS_DIR_REL,
@@ -121,6 +131,10 @@ describe('kitShotPngRel', () => {
 });
 
 // ── buildKitBrief ────────────────────────────────────────────────────────────
+// WP-kit-plan (2026-08-22): buildKitBrief no longer analyzes anything itself
+// — it lists the ALREADY-APPROVED `plan` (decision==='derive' entries from
+// kit-plan.json, filtered by the caller) and tells the agent to build EXACTLY
+// that list.
 
 describe('buildKitBrief', () => {
   const baseOpts = {
@@ -132,6 +146,10 @@ describe('buildKitBrief', () => {
     hasGuide: true,
     hasSlots: true,
     hasPinterest: false,
+    plan: [
+      { key: 'card-choose-number', name: 'Card - Chọn số', decision: 'derive' as const, gap: 'base Card thiếu media + badge chồng góc + price-tag' },
+      { key: 'app-bar', name: 'App Bar', decision: 'derive' as const, gap: 'DS chưa có App Bar', mustHave: true },
+    ],
   };
 
   it('names the kit page, states the SYSTEM DESIGNER role, and cites the "lab-kit-compose" skill', () => {
@@ -142,11 +160,27 @@ describe('buildKitBrief', () => {
     expect(brief).toContain(baseOpts.previewFileKey);
   });
 
-  it('states the selective-analysis criterion (visual anchor comps only, plumbing stays base)', () => {
+  it('lists the approved plan entries by name + gap, and says "DỰNG ĐÚNG danh sách"', () => {
     const brief = buildKitBrief(baseOpts);
-    expect(brief).toContain('PHÂN TÍCH CHỌN LỌC');
-    expect(brief).toContain('ĐIỂM NEO THỊ GIÁC');
-    expect(brief).toContain('ống nước');
+    expect(brief).toContain('DỰNG ĐÚNG danh sách');
+    expect(brief).toContain('kit-plan.json');
+    expect(brief).toContain('Card - Chọn số');
+    expect(brief).toContain('base Card thiếu media + badge chồng góc + price-tag');
+    expect(brief).toContain('App Bar');
+  });
+
+  it('no longer contains the retired selective-analysis / mandatory-App-Bar-exception wording', () => {
+    const brief = buildKitBrief(baseOpts);
+    expect(brief).not.toContain('PHÂN TÍCH CHỌN LỌC');
+    expect(brief).not.toContain('NGOẠI LỆ BẮT BUỘC');
+  });
+
+  it('still states GEN LẠI TỪ ĐẦU, AUTO-LAYOUT/resize-358, and "KHÔNG merge" — unchanged rules', () => {
+    const brief = buildKitBrief(baseOpts);
+    expect(brief).toContain('GEN LẠI TỪ ĐẦU');
+    expect(brief).toContain('AUTO-LAYOUT');
+    expect(brief).toContain('358');
+    expect(brief).toContain('KHÔNG merge');
   });
 
   it('forbids writing to the source DS file — kit lives ONLY in the preview file', () => {
@@ -214,14 +248,167 @@ describe('buildKitBrief', () => {
     expect(brief).toContain('lab-kit-compose');
     expect(brief).toContain('ĐỪNG đi tìm file skill');
   });
+});
 
-  // Bằng chứng thật 2026-08-22: DS "[SDK] Web Lib" không có App Bar → màn
-  // dựng ra không có thanh điều hướng; App Bar là ngoại lệ BẮT BUỘC của phân
-  // tích chọn lọc khi base thiếu.
-  it('states the mandatory App Bar exception to selective analysis', () => {
-    const brief = buildKitBrief(baseOpts);
-    expect(brief).toContain('NGOẠI LỆ BẮT BUỘC');
+// ── parseKitPlan ─────────────────────────────────────────────────────────────
+
+describe('parseKitPlan', () => {
+  it('parses a valid plan (derive + use-base entries)', () => {
+    const parsed = parseKitPlan(
+      JSON.stringify({
+        candidates: [
+          {
+            key: 'card-choose-number',
+            name: 'Card - Chọn số',
+            decision: 'derive',
+            baseComponents: ['datarow', 'ProviderMini'],
+            gap: 'base Card không có chỗ cho media + badge chồng góc + price-tag',
+            reason: 'điểm neo thị giác chính của màn danh sách gói',
+          },
+          { key: 'radio', name: 'Radio', decision: 'use-base' },
+        ],
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.candidates).toEqual([
+      {
+        key: 'card-choose-number',
+        name: 'Card - Chọn số',
+        decision: 'derive',
+        baseComponents: ['datarow', 'ProviderMini'],
+        gap: 'base Card không có chỗ cho media + badge chồng góc + price-tag',
+        reason: 'điểm neo thị giác chính của màn danh sách gói',
+      },
+      { key: 'radio', name: 'Radio', decision: 'use-base' },
+    ]);
+    expect(parsed!.warnings).toEqual([]);
+  });
+
+  it('drops a "derive" entry missing "gap" (hard contract of the two-tier test), keeps the rest', () => {
+    const parsed = parseKitPlan(
+      JSON.stringify({
+        candidates: [
+          { key: 'a', name: 'A', decision: 'derive' },
+          { key: 'b', name: 'B', decision: 'derive', gap: '' },
+          { key: 'c', name: 'C', decision: 'use-base' },
+        ],
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.candidates.map((c) => c.key)).toEqual(['c']);
+    expect(parsed!.warnings.length).toBe(2);
+    expect(parsed!.warnings.join(' ')).toMatch(/"a"/);
+    expect(parsed!.warnings.join(' ')).toMatch(/gap/);
+  });
+
+  it('drops an entry with an invalid "decision" value', () => {
+    const parsed = parseKitPlan(JSON.stringify({ candidates: [{ key: 'a', name: 'A', decision: 'maybe' }] }));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.candidates).toEqual([]);
+    expect(parsed!.warnings.length).toBe(1);
+    expect(parsed!.warnings[0]).toMatch(/decision/);
+  });
+
+  it('drops an entry missing key or name, with a warning', () => {
+    const parsed = parseKitPlan(
+      JSON.stringify({
+        candidates: [{ name: 'A', decision: 'use-base' }, { key: 'b', decision: 'use-base' }],
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.candidates).toEqual([]);
+    expect(parsed!.warnings.length).toBe(2);
+  });
+
+  it('returns null on malformed JSON', () => {
+    expect(parseKitPlan('{not json')).toBeNull();
+  });
+
+  it('returns null when "candidates" is missing or not an array', () => {
+    expect(parseKitPlan(JSON.stringify({}))).toBeNull();
+    expect(parseKitPlan(JSON.stringify({ candidates: 'nope' }))).toBeNull();
+  });
+
+  it('an empty candidates array is NOT null — caller decides whether empty is a failure', () => {
+    expect(parseKitPlan(JSON.stringify({ candidates: [] }))).toEqual({ candidates: [], warnings: [] });
+  });
+
+  it('preserves mustHave: true (the mandatory App Bar exception)', () => {
+    const parsed = parseKitPlan(
+      JSON.stringify({
+        candidates: [{ key: 'app-bar', name: 'App Bar', decision: 'derive', gap: 'DS thiếu App Bar', mustHave: true }],
+      }),
+    );
+    expect(parsed!.candidates[0]?.mustHave).toBe(true);
+  });
+});
+
+// ── buildKitPlanBrief ────────────────────────────────────────────────────────
+
+describe('buildKitPlanBrief', () => {
+  const baseOpts = {
+    docsIndex: ['_index.md'],
+    scopeHint: null as string | null,
+    appFeature: 'Ví điện tử',
+    hasTokens: true,
+    hasGuide: true,
+    hasSlots: true,
+  };
+
+  it('states the SYSTEM DESIGNER analysis-only role and cites the "lab-kit-plan" skill', () => {
+    const brief = buildKitPlanBrief(baseOpts);
+    expect(brief).toContain('lab-kit-plan');
+    expect(brief).toContain('SYSTEM DESIGNER');
+  });
+
+  it('states there is NO Figma tool in this session', () => {
+    const brief = buildKitPlanBrief(baseOpts);
+    expect(brief).toContain('KHÔNG có tool Figma');
+  });
+
+  it('states the two-tier test with the "default is no generation" burden-of-proof rule', () => {
+    const brief = buildKitPlanBrief(baseOpts);
+    expect(brief).toContain('HAI TẦNG');
+    expect(brief).toContain('MẶC ĐỊNH LÀ KHÔNG SINH');
+  });
+
+  it('states the mandatory App Bar exception with mustHave: true', () => {
+    const brief = buildKitPlanBrief(baseOpts);
     expect(brief).toContain('App Bar');
+    expect(brief).toContain('mustHave');
+  });
+
+  it('ends with the kit-plan.json + kit-plan.md two-file contract', () => {
+    const brief = buildKitPlanBrief(baseOpts);
+    expect(brief).toContain(KIT_PLAN_FILE_REL);
+    expect(brief).toContain(KIT_PLAN_MD_REL);
+  });
+
+  it('ends with the "skill already in system prompt, do not search local catalog" note', () => {
+    const brief = buildKitPlanBrief(baseOpts);
+    expect(brief).toContain('system prompt');
+    expect(brief).toContain('lab-kit-plan');
+    expect(brief).toContain('ĐỪNG đi tìm file skill');
+  });
+
+  it('mentions the user-supplied scopeHint when present', () => {
+    const brief = buildKitPlanBrief({ ...baseOpts, scopeHint: 'Ưu tiên các màn thanh toán' });
+    expect(brief).toContain('Ưu tiên các màn thanh toán');
+  });
+});
+
+// ── renderKitPlanMd ──────────────────────────────────────────────────────────
+
+describe('renderKitPlanMd', () => {
+  it('renders a markdown table with comp | decision | gap | reason', () => {
+    const md = renderKitPlanMd([
+      { key: 'card', name: 'Card - Chọn số', decision: 'derive', gap: 'thiếu price-tag', reason: 'điểm neo' },
+      { key: 'radio', name: 'Radio', decision: 'use-base' },
+    ]);
+    expect(md).toContain('Card - Chọn số');
+    expect(md).toContain('thiếu price-tag');
+    expect(md).toContain('Radio');
+    expect(md).toContain('use-base');
   });
 });
 
@@ -279,5 +466,7 @@ describe('path constants', () => {
     expect(KIT_SHOTS_DIR_REL).toBe('kit-shots');
     expect(KIT_RESULT_FILE_REL).toBe('kit-result.json');
     expect(KIT_REGISTRY_FILE_REL).toBe('kit/kit.json');
+    expect(KIT_PLAN_FILE_REL).toBe('kit-plan.json');
+    expect(KIT_PLAN_MD_REL).toBe('kit-plan.md');
   });
 });

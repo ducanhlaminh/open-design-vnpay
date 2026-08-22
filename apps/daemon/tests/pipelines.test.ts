@@ -1231,24 +1231,43 @@ test('output react/ CŨ vẫn attribution đúng stage + vẫn syncExcluded dù 
   );
 });
 
-// ── ds-lab: WP-kit (2026-08-22) — 3-stage workflow, lab-kit chen giữa ──────────
+// ── ds-lab: WP-kit (2026-08-22) — 4-stage workflow, lab-kit-plan → lab-kit ────
 // WP-kit-regen (.tmp/pipeline/wp-kit-regen.yaml, 2026-08-22): kit/kit.json
 // đổi ngữ nghĩa từ "registry bền ngoài outputs" sang "output khai báo bình
 // thường" — Chạy lại lab-kit nay gen lại từ đầu, dọn cả kit/kit.json.
+// WP-kit-plan (.tmp/pipeline/wp-kit-plan.yaml, 2026-08-22): thêm stage cổng
+// duyệt "Đề xuất kit" (lab-kit-plan) đứng TRƯỚC lab-kit; lab-kit dependsOn
+// thêm lab-kit-plan.
 
-test('ds-lab: 3-stage workflow in order (lab-docs → lab-kit → lab-compose)', () => {
+test('ds-lab: 4-stage workflow in order (lab-docs → lab-kit-plan → lab-kit → lab-compose)', () => {
   const wf = getWorkflow('ds-lab');
   assert.ok(wf, 'ds-lab workflow should exist');
-  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-kit', 'lab-compose']);
+  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-kit-plan', 'lab-kit', 'lab-compose']);
   assert.deepEqual(
     wf!.stages.map((s) => s.id),
-    ['lab-docs', 'lab-kit', 'lab-compose'],
+    ['lab-docs', 'lab-kit-plan', 'lab-kit', 'lab-compose'],
   );
+  assert.equal(getPipelineDef('lab-kit-plan')?.skillId, 'lab-kit-plan');
+  assert.equal(getPipelineDef('lab-kit-plan')?.name, 'Đề xuất kit');
+  assert.deepEqual(getPipelineDef('lab-kit-plan')?.dependsOn, ['lab-docs']);
+  assert.deepEqual(getPipelineDef('lab-kit-plan')?.outputs, ['kit-plan.json', 'kit-plan.md']);
+  assert.equal(getPipelineDef('lab-kit-plan')?.inputPlaceholder, 'Định hướng đề xuất (tuỳ chọn)');
+
   assert.equal(getPipelineDef('lab-kit')?.skillId, 'lab-kit-compose');
   assert.equal(getPipelineDef('lab-kit')?.name, 'Nâng bộ comp');
-  assert.deepEqual(getPipelineDef('lab-kit')?.dependsOn, ['lab-docs']);
+  assert.deepEqual(getPipelineDef('lab-kit')?.dependsOn, ['lab-docs', 'lab-kit-plan']);
   assert.deepEqual(getPipelineDef('lab-kit')?.outputs, ['kit-shots/', 'kit-result.json', 'kit/kit.json']);
   assert.equal(getPipelineDef('lab-kit')?.inputPlaceholder, 'Định hướng thẩm mỹ (tuỳ chọn)');
+});
+
+test('ds-lab: kit-plan.json/kit-plan.md attribute to lab-kit-plan; re-run lab-kit alone does NOT clear them', () => {
+  assert.deepEqual(stagesForOutput('ds-lab/kit-plan.json').map((d) => d.id), ['lab-kit-plan']);
+  assert.deepEqual(stagesForOutput('ds-lab/kit-plan.md').map((d) => d.id), ['lab-kit-plan']);
+  // A re-run of lab-kit ALONE (regenSet = {'lab-kit'}) must NOT sweep the
+  // plan — the approval gate is a separate stage the user re-runs on its own.
+  assert.equal(relClearedByRegen('ds-lab/kit-plan.json', new Set(['lab-kit']), 'ds-lab'), false);
+  // Re-running lab-kit-plan itself DOES clear its own declared outputs.
+  assert.equal(relClearedByRegen('ds-lab/kit-plan.json', new Set(['lab-kit-plan']), 'ds-lab'), true);
 });
 
 test('ds-lab: lab-kit output attribution — kit/kit.json is now a declared output, cleared on re-run', () => {
@@ -1258,7 +1277,7 @@ test('ds-lab: lab-kit output attribution — kit/kit.json is now a declared outp
   // "Chạy lại" the way lab-compose's patterns/ does.
   assert.deepEqual(stagesForOutput('ds-lab/kit/kit.json').map((d) => d.id), ['lab-kit']);
   assert.equal(
-    relClearedByRegen('ds-lab/kit/kit.json', new Set(['lab-kit', 'lab-docs', 'lab-compose']), 'ds-lab'),
+    relClearedByRegen('ds-lab/kit/kit.json', new Set(['lab-kit', 'lab-docs', 'lab-kit-plan', 'lab-compose']), 'ds-lab'),
     true,
   );
   // A re-run of lab-kit DOES clear its own declared outputs.
@@ -1268,11 +1287,12 @@ test('ds-lab: lab-kit output attribution — kit/kit.json is now a declared outp
   );
 });
 
-test('invariant: every PIPELINE_DEFS id (including the new lab-kit) belongs to EXACTLY one workflow', () => {
+test('invariant: every PIPELINE_DEFS id (including lab-kit-plan and lab-kit) belongs to EXACTLY one workflow', () => {
   for (const d of PIPELINE_DEFS) {
     const owners = WORKFLOWS.filter((w) => w.pipelineIds.includes(d.id));
     if (d.id === 'dr-confirm') continue; // documented exception (see lab-compose.test.ts)
     assert.equal(owners.length, 1, `${d.id} should belong to exactly one workflow (found in: ${owners.map((w) => w.id).join(', ') || 'none'})`);
   }
+  assert.deepEqual(WORKFLOWS.filter((w) => w.pipelineIds.includes('lab-kit-plan')).map((w) => w.id), ['ds-lab']);
   assert.deepEqual(WORKFLOWS.filter((w) => w.pipelineIds.includes('lab-kit')).map((w) => w.id), ['ds-lab']);
 });
