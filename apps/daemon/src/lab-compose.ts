@@ -170,21 +170,32 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
   const kitLine = opts.hasKit
     ? `- Kit đã dựng: \`${KIT_REGISTRY_FILE_REL}\` trong trang "${labKitPageName(opts.appFeature)}" — ${opts.kitNames.join(', ')} (ưu tiên dùng trước base).`
     : '- Kit đã dựng: (chưa có — dùng thẳng comp base).';
+  // Style pattern (`patterns/style-*.json`) = ngôn ngữ thị giác đã được người
+  // duyệt ở lần chạy trước — tách khỏi pattern ghép comp để brief nói rõ "áp
+  // lại", không để agent quay về mặc định phẳng (luật #8 skill).
+  const stylePatterns = opts.patternNames.filter((n) => n.startsWith('style-'));
+  const layoutPatterns = opts.patternNames.filter((n) => !n.startsWith('style-'));
   const patternLine =
-    opts.patternNames.length > 0
-      ? `- Pattern sẵn có: ${opts.patternNames.join(', ')} (đọc trước khi chế mới).`
+    layoutPatterns.length > 0
+      ? `- Pattern sẵn có: ${layoutPatterns.join(', ')} (đọc trước khi chế mới).`
       : `- Pattern sẵn có: (chưa có — chế mới thì ghi lại \`${LAB_PATTERNS_DIR_REL}/<slug>.json\`).`;
+  const styleLine =
+    stylePatterns.length > 0
+      ? `- Style pattern đã duyệt: ${stylePatterns.join(', ')} — ÁP LẠI cho mọi màn trừ khi định hướng bên dưới nói khác.`
+      : `- Style pattern đã duyệt: (chưa có — xác lập theo luật #8 rồi ghi \`${LAB_PATTERNS_DIR_REL}/style-<slug>.json\`).`;
   const figmaLine = `- Figma: file preview \`${opts.previewFileKey}\`, trang "${pageName}"`;
   const toolLine = `- Tool thêm: Pinterest ${checkMark(opts.hasPinterest)}`;
+  // Một ô nhập duy nhất của stage (pipelines.ts inputPlaceholder) gánh CẢ phạm
+  // vi màn lẫn định hướng thị giác — agent tự tách; không thêm field mới.
   const scopeLine =
     opts.scopeHint && opts.scopeHint.trim()
-      ? `- Phạm vi: "${opts.scopeHint.trim()}" (≤3 màn/lần chạy).`
-      : '- Phạm vi: tự chọn tối đa 3 màn đầu của luồng chính (≤3 màn/lần chạy).';
+      ? `- Phạm vi / định hướng thị giác: "${opts.scopeHint.trim()}" (≤3 màn/lần chạy).`
+      : '- Phạm vi / định hướng thị giác: (không có) — tự chọn ≤3 màn đầu luồng chính; style theo style pattern, không có thì luật #8.';
 
   return renderLabBrief({
     title: `# Sáng tác màn · ${opts.appFeature}`,
     skillId: 'lab-screen-compose',
-    inputLines: [docsLine, materialsLine, kitLine, patternLine, figmaLine, toolLine, scopeLine],
+    inputLines: [docsLine, materialsLine, kitLine, patternLine, styleLine, figmaLine, toolLine, scopeLine],
     taskLines: [
       '- Đọc docs để biết từng màn cần làm gì (chức năng + nội dung thật).',
       '- Dựng tối đa 3 màn từ instance (kit ưu tiên, base fallback) — không chép bố cục từ mockup.',
@@ -194,7 +205,7 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
     reminderLines: [
       '- Chỉ file preview, nguyên tử theo lần execute-code — id ruột instance stale ngay khi call kết thúc (luật #1/#3).',
       '- Nội dung trong slot, không vẽ đè, placeholder phải override/hide (luật #5).',
-      '- Khung màn chuẩn: 390 cứng, App Bar/Tabbar, một điểm nhấn (luật #6/#7).',
+      '- Khung màn chuẩn 390, App Bar/Tabbar, một điểm nhấn; ba lớp nhìn thấy được, listing nổi khỏi sheet, nền không che chữ (luật #6/#7/#8).',
     ],
     endingLines: [
       `- \`${LAB_RESULT_FILE_REL}\` — \`{"screens":[{"key","name","frameNodeId","frameUrl?","notes?"}]}\` (frameNodeId = id của chính frame màn, không phải id ruột instance)`,

@@ -24,7 +24,7 @@ od:
 Bạn chạy **không có người ngồi cạnh** (job nền, một phiên/lần chạy). Khác hẳn
 `figma-screen-build` (workflow docs-review): đó là hợp đồng THI CÔNG — daemon
 compile sẵn từng phần tử, bạn chỉ ghép đúng theo input. Ở đây bạn là **NGƯỜI
-SÁNG TÁC**: 7 luật sống còn + toàn bộ recipe ở file này ĐÃ nhúng sẵn vào
+SÁNG TÁC**: 8 luật sống còn + toàn bộ recipe ở file này ĐÃ nhúng sẵn vào
 system prompt của bạn — brief kickoff mỗi lần chạy CHỈ đưa dữ liệu của lần
 chạy (docs có gì, tokens/slots/kit/pattern có hay không, phạm vi màn…) và
 nhắc TỐI ĐA 3 luật hay vi phạm nhất bằng SỐ (ví dụ "luật #5"), KHÔNG chép lại
@@ -64,6 +64,18 @@ không phải tái tạo pixel của ảnh tham khảo.
   cầu màn đang dựng thì TÁI DÙNG nguyên recipe đó thay vì nghĩ lại từ đầu.
   Chế ra một cách ghép mới đáng tái dùng (không chỉ dùng một lần) → ghi lại
   `patterns/<slug>.json` trước khi kết thúc phiên.
+  **Style pattern** `patterns/style-<slug>.json` là loại đặc biệt: ghi NGÔN
+  NGỮ THỊ GIÁC của một lần chạy đã được người duyệt (không phải cách ghép
+  comp) — `{name, description, recipe:{layers:[{role:'background'|'sheet'|
+  'foreground', surface, radius, shadow, border}], sheetStartRatio, heroHeightRatio,
+  backgroundSource:'brand-gradient'|'image'|'illustration', overlay, appBarOnColor,
+  listingGap, notes}}` (các khoá gợi ý, tự thêm nếu cần). Có style pattern →
+  ÁP LẠI cho mọi màn của lần chạy này trừ khi brief "Định hướng thị giác" nói
+  khác; KHÔNG quay về mặc định phẳng. Trong phiên, người dùng prompt thêm để
+  chỉnh style (thêm lớp, đổi nền, đổi bố cục sheet, làm listing nổi…) → sau
+  khi họ hài lòng PHẢI ghi/cập nhật style pattern tương ứng — bằng chứng thật:
+  3 vòng chỉnh "flat → 3 lớp + bottom-sheet + listing nổi" không được ghi
+  pattern nào, lần chạy sau lại bắt đầu từ phẳng và người dùng phải kéo lại.
 - `criteria/slots.md` (nếu có) — hồ sơ SLOT de-facto của từng component: mỗi
   slot ghi `path` (đường tổ tiên tới slot), `hidden` (có đang ẩn không),
   `children mặc định` (placeholder hiện có trong slot); mỗi text layer ghi
@@ -118,11 +130,13 @@ không phải tái tạo pixel của ảnh tham khảo.
       không. Thấy chưa ổn → tự sửa. Lặp tối đa ~3 vòng cho MỖI màn (đừng lặp
       vô hạn — một phiên agentic dài là rủi ro, dừng lại khi đã "đủ tốt").
 3. Trước khi kết thúc: nếu vừa chế ra một cách ghép component đáng tái dùng
-   cho những màn sau, ghi `patterns/<slug>.json`.
+   cho những màn sau, ghi `patterns/<slug>.json`; nếu lần chạy này xác lập
+   (hoặc người dùng chỉnh trong phiên) một ngôn ngữ thị giác — ghi/cập nhật
+   `patterns/style-<slug>.json` (xem "Nguyên liệu").
 4. Ghi kết quả — xem "Kết thúc" bên dưới. Đây là bước BẮT BUỘC, không được bỏ
    qua dù một vài màn lỗi giữa chừng (ghi những màn đã dựng được, best-effort).
 
-## Hợp đồng cứng — 7 luật sống còn (vi phạm là lỗi nghiêm trọng)
+## Hợp đồng cứng — 8 luật sống còn (vi phạm là lỗi nghiêm trọng)
 
 1. **CHỈ file preview**: TUYỆT ĐỐI chỉ thao tác trên file Figma preview nêu
    trong kickoff (fileKey cụ thể) — không mở, không sửa bất kỳ file Figma nào
@@ -187,6 +201,36 @@ không phải tái tạo pixel của ảnh tham khảo.
    màn. TUYỆT ĐỐI không để màn trần không có thanh điều hướng — bằng chứng
    thật đã gặp: DS "[SDK] Web Lib" (thư viện web, không có App Bar) làm cả 3
    màn dựng ra không có thanh điều hướng nào.
+   App Bar nằm trên nền tối/ảnh/gradient → dùng biến thể **on-color** (icon +
+   chữ sáng) và có scrim phía dưới; màn GỐC bỏ nút back, Tabbar nổi trên cùng
+   mọi lớp và không che nội dung/CTA.
+8. **CHIỀU SÂU 3 LỚP — không phẳng, nhưng biết điều** (áp cho MỌI style; bottom-
+   sheet hay full-canvas, nền ảnh hay gradient brand là lựa chọn của "Định
+   hướng thị giác"/style pattern, còn các điều dưới đây là bất biến):
+   a. Mỗi màn phải có **ba lớp nhìn thấy được**: nền (background) / mặt nội
+      dung (sheet-surface) / phần tử thao tác (foreground: card, list item,
+      chip, CTA). Hai lớp liền kề **KHÔNG được cùng màu surface** — trắng-trên-
+      trắng là lỗi dù đã có shadow; phân biệt bằng màu surface trước (vd sheet
+      xám-xanh rất nhạt từ token, item trắng), shadow/viền chỉ là phụ.
+   b. **Listing luôn là lớp trước cùng**: item tách khỏi sheet bằng surface
+      sáng hơn sheet, radius 16–18, gap 10–12, hairline rất nhẹ + shadow hai
+      tầng (tiếp xúc ngắn + môi trường mềm) — đủ nổi, không nặng. Vẫn giữ ĐÚNG
+      MỘT item nổi bật (luật #6).
+   c. **Nền có chất liệu nhưng biết điều**: gradient brand / ảnh / illustration
+      chỉ ở vùng header–hero (≤ ~35% chiều cao màn; màn gốc có hero-banner thì
+      sheet bắt đầu thấp hơn để CTA hero trọn vẹn), có **scrim/overlay nằm TRÊN
+      ảnh** (thứ tự paint đúng — bằng chứng thật: overlay đặt dưới ảnh làm chữ
+      hero mất tương phản), chữ trên nền đọc được (tương phản ≥ 4.5:1), nền
+      KHÔNG cạnh tranh với CTA/danh sách. Nguồn nền ưu tiên: asset/gradient
+      brand từ DS → illustration tự dựng bằng hình học + token → ảnh Pinterest
+      (placeholder, ghi nguồn vào `notes`).
+   d. **Decor không đè chữ**: hình trang trí (vòng tròn, pattern, blob) không
+      chồng lên text hay icon chức năng — bằng chứng thật: tiêu đề Promo Banner
+      đâm vào vòng tròn trang trí.
+   e. **Mật độ thật**: màn danh sách phải lấp tới fold (≥5 item hoặc tới sát
+      Tabbar/đáy sheet); docs chỉ có 1–2 bản ghi → suy ra các bản ghi hợp lý
+      cùng cấu trúc từ docs, KHÔNG để 40–50% sheet trống (bằng chứng thật:
+      SCR-03 một Plan Card + nửa màn trống).
 
 ## Recipe thao tác SLOT (Plugin API)
 
@@ -233,6 +277,11 @@ chưa đạt mục nào thì sửa trước khi coi là xong:
 4. Màu chủ đạo của Design System xuất hiện CÓ CHỦ ĐÍCH.
 5. Khung màn chuẩn: App Bar/Tabbar đúng vị trí (luật #7), không có placeholder
    nào còn lộ (luật #5).
+6. Ba câu chiều sâu (luật #8) — xem ảnh ở KÍCH THƯỚC THẬT, không phải thumbnail:
+   "Nhìn thấy mấy lớp?" (phải là 3), "Listing có nổi khỏi sheet không?" (surface
+   khác màu + shadow), "Nền/ảnh có cạnh tranh CTA hay che chữ không?" (không).
+   Đây đúng là 3 câu người dùng từng phải prompt thêm 3 vòng — chưa đạt thì
+   sửa trước, không báo xong.
 
 ## Kết thúc: ghi `lab-result.json`
 

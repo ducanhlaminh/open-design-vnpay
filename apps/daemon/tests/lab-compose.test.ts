@@ -291,11 +291,37 @@ describe('buildComposeBrief', () => {
     expect(withoutSlots).toContain('slots.md ✗');
   });
 
-  it('falls back the scope hint to "tự chọn tối đa 3 màn" when absent/blank', () => {
+  it('falls back the scope hint to "tự chọn ≤3 màn" when absent/blank', () => {
     const brief = buildComposeBrief({ ...baseOpts, scopeHint: undefined });
-    expect(brief).toContain('tự chọn tối đa 3 màn đầu của luồng chính');
+    expect(brief).toContain('tự chọn ≤3 màn đầu luồng chính');
     const briefBlank = buildComposeBrief({ ...baseOpts, scopeHint: '   ' });
-    expect(briefBlank).toContain('tự chọn tối đa 3 màn đầu của luồng chính');
+    expect(briefBlank).toContain('tự chọn ≤3 màn đầu luồng chính');
+  });
+
+  // Style pattern (`patterns/style-*.json`, luật #8 skill) tách khỏi pattern
+  // ghép comp: brief phải nói rõ "ÁP LẠI" để agent không quay về mặc định
+  // phẳng — bằng chứng: 3 vòng người dùng chỉnh "flat → 3 lớp + bottom-sheet +
+  // listing nổi" rồi lần chạy sau lại bắt đầu từ phẳng.
+  it('tách style pattern (style-*) khỏi pattern ghép comp và bảo ÁP LẠI', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      patternNames: ['card-list', 'style-bottom-sheet-3-layer'],
+    });
+    expect(brief).toMatch(/- Style pattern đã duyệt: style-bottom-sheet-3-layer — ÁP LẠI/);
+    expect(brief).toMatch(/- Pattern sẵn có: card-list \(/);
+    expect(brief).not.toMatch(/- Pattern sẵn có: .*style-bottom-sheet-3-layer/);
+  });
+
+  it('không có style pattern → bảo xác lập theo luật #8 rồi ghi patterns/style-<slug>.json', () => {
+    const brief = buildComposeBrief({ ...baseOpts, scopeHint: null, patternNames: [] });
+    expect(brief).toContain('Style pattern đã duyệt: (chưa có');
+    expect(brief).toContain('patterns/style-<slug>.json');
+  });
+
+  it('ô nhập của stage gánh cả phạm vi lẫn định hướng thị giác — nhãn nói rõ điều đó', () => {
+    const brief = buildComposeBrief({ ...baseOpts, scopeHint: 'Chỉ màn Đăng nhập · bottom-sheet, nền gradient brand' });
+    expect(brief).toContain('- Phạm vi / định hướng thị giác: "Chỉ màn Đăng nhập · bottom-sheet, nền gradient brand"');
   });
 
   it('hasGuide/hasTokens ✓/✗ đúng chỗ trong dòng "Nguyên liệu"', () => {

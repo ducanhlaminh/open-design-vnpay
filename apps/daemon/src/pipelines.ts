@@ -433,7 +433,7 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // `lab-docs`, KHÔNG có `lab-kit`: kit là ƯU TIÊN khi có (buildComposeBrief's
   // `hasKit`), không phải điều kiện cứng — một dự án chưa chạy lab-kit vẫn
   // sáng tác màn được thẳng từ comp base, đúng tinh thần "re-run độc lập".
-  { id: 'lab-compose',      name: 'Sáng tác màn',              skillId: 'lab-screen-compose',    dependsOn: ['lab-docs'],         outputs: ['screens/', 'lab-result.json'], inputPlaceholder: 'Phạm vi màn (tuỳ chọn)' },
+  { id: 'lab-compose',      name: 'Sáng tác màn',              skillId: 'lab-screen-compose',    dependsOn: ['lab-docs'],         outputs: ['screens/', 'lab-result.json'], inputPlaceholder: 'Phạm vi màn / định hướng thị giác (tuỳ chọn)' },
 ];
 
 // The registry every consumer imports. Identical to `PIPELINE_DEFS_BASE`
