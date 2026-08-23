@@ -36,6 +36,11 @@ phái sinh SAU KHI đã dựng xong, và tiêu chí phân loại theo LOẠI com
 comp base ĐÃ ĐỦ DÙNG bằng override. Skill này tách hẳn bước PHÂN TÍCH ra một
 stage riêng, CHỈ ĐỌC, để NGƯỜI xem và duyệt trước khi bước dựng chạy.
 
+Phép thử hai tầng ở file này ĐÃ nhúng sẵn vào system prompt của bạn — brief
+kickoff mỗi lần chạy CHỈ đưa dữ liệu của lần chạy (docs có gì, tokens/slots
+có hay không, định hướng người dùng…) và nhắc lại phép thử/ngoại lệ App Bar
+NGẮN GỌN, không chép lại toàn văn; chi tiết đầy đủ luôn ở đây.
+
 ## Vai của bạn
 
 Bạn là SYSTEM DESIGNER PHÂN TÍCH & ĐỀ XUẤT — **KHÔNG dựng bất kỳ thứ gì

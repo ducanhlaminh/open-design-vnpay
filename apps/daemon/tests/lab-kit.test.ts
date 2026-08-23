@@ -130,6 +130,47 @@ describe('kitShotPngRel', () => {
   });
 });
 
+// ── brief chung: khuôn đo được (WP-lab-clean, .tmp/pipeline/wp-lab-clean.yaml) ─
+// Khuôn mới: "skill = luật (đã ở system prompt), brief = dữ liệu lần chạy".
+// Ràng buộc đo được áp cho cả 3 builder (đây + describe buildComposeBrief
+// trong lab-compose.test.ts): ≥5 heading, ≥10 dòng, phần TĨNH (dữ liệu rỗng)
+// ≤ cap ký tự, ≤6 từ VIẾT HOA (không tính JSON/tên file/ID), vắng mặt giai
+// thoại bằng chứng cũ.
+
+const REQUIRED_HEADINGS = [
+  '## Đầu vào lần này',
+  '## Việc cần làm',
+  '## Nhắc luật hay vi phạm nhất (chi tiết trong skill)',
+  '## Kết thúc — ghi đúng file',
+];
+
+const BANNED_PHRASES = [
+  'lỗi thật đã gặp',
+  '445',
+  '398',
+  'GRADIENT_LINEAR đã probe',
+  'đừng đi tìm file skill',
+  '5 luật sống còn',
+];
+
+/** Đếm từ VIẾT HOA TOÀN BỘ (≥4 ký tự) — loại "JSON" (tên định dạng, không
+ *  phải câu shout) và mọi chuỗi dính liền số/gạch dưới (tên file/ID) theo
+ *  đúng miễn trừ nêu trong spec ("không tính tên file/JSON/ID"). */
+function allCapsWords(text: string): string[] {
+  const matches = text.match(/(?<![\p{L}0-9_`])[A-ZÀ-Ỹ]{4,}(?![\p{L}0-9_`])/gu) ?? [];
+  return matches.filter((w) => w !== 'JSON');
+}
+
+function assertBriefShape(brief: string, staticCharCap: number) {
+  const headingLines = brief.match(/^#{1,2} .+$/gm) ?? [];
+  expect(headingLines.length).toBeGreaterThanOrEqual(5);
+  for (const h of REQUIRED_HEADINGS) expect(brief).toContain(h);
+  expect(brief.split('\n').length).toBeGreaterThanOrEqual(10);
+  expect(brief.length).toBeLessThanOrEqual(staticCharCap);
+  expect(allCapsWords(brief).length).toBeLessThanOrEqual(6);
+  for (const banned of BANNED_PHRASES) expect(brief).not.toContain(banned);
+}
+
 // ── buildKitBrief ────────────────────────────────────────────────────────────
 // WP-kit-plan (2026-08-22): buildKitBrief no longer analyzes anything itself
 // — it lists the ALREADY-APPROVED `plan` (decision==='derive' entries from
@@ -137,6 +178,18 @@ describe('kitShotPngRel', () => {
 // that list.
 
 describe('buildKitBrief', () => {
+  const minOpts = {
+    docsIndex: [] as string[],
+    scopeHint: null as string | null,
+    previewFileKey: 'F',
+    appFeature: 'X',
+    hasTokens: false,
+    hasGuide: false,
+    hasSlots: false,
+    hasPinterest: false,
+    plan: [] as never[],
+  };
+
   const baseOpts = {
     docsIndex: ['_index.md'],
     scopeHint: null as string | null,
@@ -152,101 +205,82 @@ describe('buildKitBrief', () => {
     ],
   };
 
-  it('names the kit page, states the SYSTEM DESIGNER role, and cites the "lab-kit-compose" skill', () => {
+  it('phần TĨNH (dữ liệu rỗng/tối thiểu) đúng khuôn: ≥5 heading, ≥10 dòng, ≤1400 ký tự, ≤6 từ VIẾT HOA, vắng giai thoại cũ', () => {
+    const brief = buildKitBrief(minOpts);
+    assertBriefShape(brief, 1400);
+  });
+
+  it('names the kit page and cites the "lab-kit-compose" skill', () => {
     const brief = buildKitBrief(baseOpts);
     expect(brief).toContain('lab-kit-compose');
-    expect(brief).toContain('SYSTEM DESIGNER');
     expect(brief).toContain(labKitPageName('Ví điện tử'));
     expect(brief).toContain(baseOpts.previewFileKey);
   });
 
-  it('lists the approved plan entries by name + gap, and says "DỰNG ĐÚNG danh sách"', () => {
+  it('lists the approved plan entries by name + gap (dữ liệu động đúng chỗ)', () => {
     const brief = buildKitBrief(baseOpts);
-    expect(brief).toContain('DỰNG ĐÚNG danh sách');
     expect(brief).toContain('kit-plan.json');
     expect(brief).toContain('Card - Chọn số');
     expect(brief).toContain('base Card thiếu media + badge chồng góc + price-tag');
     expect(brief).toContain('App Bar');
   });
 
-  it('no longer contains the retired selective-analysis / mandatory-App-Bar-exception wording', () => {
+  it('still points to the auto-layout + resize-358 rule and the "gen lại từ đầu"/"không merge" rule — by number, not by re-stating the anecdote', () => {
     const brief = buildKitBrief(baseOpts);
-    expect(brief).not.toContain('PHÂN TÍCH CHỌN LỌC');
-    expect(brief).not.toContain('NGOẠI LỆ BẮT BUỘC');
-  });
-
-  it('still states GEN LẠI TỪ ĐẦU, AUTO-LAYOUT/resize-358, and "KHÔNG merge" — unchanged rules', () => {
-    const brief = buildKitBrief(baseOpts);
-    expect(brief).toContain('GEN LẠI TỪ ĐẦU');
-    expect(brief).toContain('AUTO-LAYOUT');
+    expect(brief).toContain('resize');
     expect(brief).toContain('358');
-    expect(brief).toContain('KHÔNG merge');
+    expect(brief).toContain('gen lại từ đầu');
+    expect(brief).toContain('không merge');
   });
 
-  it('forbids writing to the source DS file — kit lives ONLY in the preview file', () => {
+  it('points to rule #9 (instance thật) and rule #10 (bind biến DS) instead of re-stating skill prose', () => {
     const brief = buildKitBrief(baseOpts);
-    expect(brief).toContain('TUYỆT ĐỐI KHÔNG ghi bất kỳ thứ gì vào file Design System NGUỒN');
-    expect(brief).toContain('PROMOTE');
+    expect(brief).toContain('#9');
+    expect(brief).toContain('#10');
+    expect(brief).toContain('instance base');
+    expect(brief).toContain('bind biến DS');
   });
 
-  it('states the regen-from-scratch rule (wipe the kit page unconditionally — no in-place update, orphan is intentional)', () => {
-    const brief = buildKitBrief(baseOpts);
-    expect(brief).toContain('GEN LẠI TỪ ĐẦU');
-    expect(brief).toContain('XÓA TOÀN BỘ children');
-    expect(brief).toContain('mainComponent');
-  });
-
-  it('states the one-notch gradient/alpha token rule — same wording as buildComposeBrief\'s rule (4)', () => {
-    const brief = buildKitBrief(baseOpts);
-    expect(brief).toContain('Luật token nới MỘT NẤC');
-    expect(brief).toContain('GRADIENT_LINEAR');
-  });
-
-  it('hasPinterest=true → mentions pinterest_* moodboard/placeholder recipe; false → silent', () => {
+  it('hasPinterest ✓/✗ đúng chỗ trong dòng "Tool thêm"', () => {
     const withPinterest = buildKitBrief({ ...baseOpts, hasPinterest: true });
-    expect(withPinterest).toContain('pinterest_');
-    expect(withPinterest).toContain('PLACEHOLDER');
+    expect(withPinterest).toContain('Pinterest ✓');
 
     const withoutPinterest = buildKitBrief({ ...baseOpts, hasPinterest: false });
-    expect(withoutPinterest).not.toContain('pinterest');
+    expect(withoutPinterest).toContain('Pinterest ✗');
   });
 
-  it('mentions "criteria/slots.md" when hasSlots=true, and omits it when false', () => {
-    const withSlots = buildKitBrief({ ...baseOpts, hasSlots: true });
-    expect(withSlots).toContain('criteria/slots.md');
+  it('hasGuide/hasTokens/hasSlots ✓/✗ đúng chỗ trong dòng "Nguyên liệu"', () => {
+    const allTrue = buildKitBrief({ ...baseOpts, hasGuide: true, hasTokens: true, hasSlots: true });
+    expect(allTrue).toContain('components-guide ✓');
+    expect(allTrue).toContain('tokens.md ✓');
+    expect(allTrue).toContain('slots.md ✓');
 
-    const withoutSlots = buildKitBrief({ ...baseOpts, hasSlots: false });
-    expect(withoutSlots).not.toContain('criteria/slots.md');
+    const allFalse = buildKitBrief({ ...baseOpts, hasGuide: false, hasTokens: false, hasSlots: false });
+    expect(allFalse).toContain('components-guide ✗');
+    expect(allFalse).toContain('tokens.md ✗');
+    expect(allFalse).toContain('slots.md ✗');
   });
 
-  it('notes the absence of tokens.md/components-guide.md instead of pretending they exist', () => {
-    const brief = buildKitBrief({ ...baseOpts, hasTokens: false, hasGuide: false });
-    expect(brief).toContain('CHƯA có cho dự án này');
+  it('scopeHint rỗng → dòng định hướng thẩm mỹ "(chưa có" (rút từ Pinterest/DS); có giá trị → chép đúng', () => {
+    const empty = buildKitBrief({ ...baseOpts, scopeHint: null });
+    expect(empty).toContain('(chưa có');
+
+    const withHint = buildKitBrief({ ...baseOpts, scopeHint: 'Tông màu ấm' });
+    expect(withHint).toContain('Tông màu ấm');
   });
 
   it('ends by requiring kit-result.json + kit/kit.json written whole, not merged with the old one', () => {
     const brief = buildKitBrief(baseOpts);
     expect(brief).toContain(KIT_RESULT_FILE_REL);
     expect(brief).toContain(KIT_REGISTRY_FILE_REL);
-    expect(brief).toContain('MỚI TOÀN BỘ');
-    expect(brief).toContain('KHÔNG merge');
+    expect(brief).toContain('ghi mới toàn bộ');
   });
 
-  // WP-lab-quality (.tmp/pipeline/wp-lab-quality.yaml): bằng chứng thật — kit
-  // comp rộng tự nhiên ~445pt đặt vào instance 358pt bị cắt cụt mép phải.
-  it('states the auto-layout + resize-test-358 rule with the 445pt evidence', () => {
+  it('phần dữ liệu đầy đủ vẫn giữ đúng khuôn heading/không-giai-thoại (dù không bắt buộc cap ký tự)', () => {
     const brief = buildKitBrief(baseOpts);
-    expect(brief).toContain('AUTO-LAYOUT');
-    expect(brief).toContain('resize');
-    expect(brief).toContain('358');
-    expect(brief).toContain('445');
-  });
-
-  it('ends with the "skill already in system prompt, do not search local catalog" note', () => {
-    const brief = buildKitBrief(baseOpts);
-    expect(brief).toContain('system prompt');
-    expect(brief).toContain('lab-kit-compose');
-    expect(brief).toContain('ĐỪNG đi tìm file skill');
+    const headingLines = brief.match(/^#{1,2} .+$/gm) ?? [];
+    expect(headingLines.length).toBeGreaterThanOrEqual(5);
+    for (const banned of BANNED_PHRASES) expect(brief).not.toContain(banned);
   });
 });
 
@@ -346,6 +380,15 @@ describe('parseKitPlan', () => {
 // ── buildKitPlanBrief ────────────────────────────────────────────────────────
 
 describe('buildKitPlanBrief', () => {
+  const minOpts = {
+    docsIndex: [] as string[],
+    scopeHint: null as string | null,
+    appFeature: 'X',
+    hasTokens: false,
+    hasGuide: false,
+    hasSlots: false,
+  };
+
   const baseOpts = {
     docsIndex: ['_index.md'],
     scopeHint: null as string | null,
@@ -355,25 +398,21 @@ describe('buildKitPlanBrief', () => {
     hasSlots: true,
   };
 
-  it('states the SYSTEM DESIGNER analysis-only role and cites the "lab-kit-plan" skill', () => {
+  it('phần TĨNH (dữ liệu rỗng/tối thiểu) đúng khuôn: ≥5 heading, ≥10 dòng, ≤1400 ký tự, ≤6 từ VIẾT HOA, vắng giai thoại cũ', () => {
+    const brief = buildKitPlanBrief(minOpts);
+    assertBriefShape(brief, 1400);
+  });
+
+  it('cites the "lab-kit-plan" skill, and states there is no Figma tool this session', () => {
     const brief = buildKitPlanBrief(baseOpts);
     expect(brief).toContain('lab-kit-plan');
-    expect(brief).toContain('SYSTEM DESIGNER');
+    expect(brief).toContain('không có tool Figma');
   });
 
-  it('states there is NO Figma tool in this session', () => {
+  it('points to the two-tier test by name (not by re-stating its full steps) and the mandatory App Bar exception', () => {
     const brief = buildKitPlanBrief(baseOpts);
-    expect(brief).toContain('KHÔNG có tool Figma');
-  });
-
-  it('states the two-tier test with the "default is no generation" burden-of-proof rule', () => {
-    const brief = buildKitPlanBrief(baseOpts);
-    expect(brief).toContain('HAI TẦNG');
-    expect(brief).toContain('MẶC ĐỊNH LÀ KHÔNG SINH');
-  });
-
-  it('states the mandatory App Bar exception with mustHave: true', () => {
-    const brief = buildKitPlanBrief(baseOpts);
+    expect(brief).toContain('phép thử hai tầng');
+    expect(brief).toContain('không sinh');
     expect(brief).toContain('App Bar');
     expect(brief).toContain('mustHave');
   });
@@ -384,16 +423,24 @@ describe('buildKitPlanBrief', () => {
     expect(brief).toContain(KIT_PLAN_MD_REL);
   });
 
-  it('ends with the "skill already in system prompt, do not search local catalog" note', () => {
-    const brief = buildKitPlanBrief(baseOpts);
-    expect(brief).toContain('system prompt');
-    expect(brief).toContain('lab-kit-plan');
-    expect(brief).toContain('ĐỪNG đi tìm file skill');
+  it('mentions the user-supplied scopeHint when present, "(không có)" when absent', () => {
+    const withHint = buildKitPlanBrief({ ...baseOpts, scopeHint: 'Ưu tiên các màn thanh toán' });
+    expect(withHint).toContain('Ưu tiên các màn thanh toán');
+
+    const withoutHint = buildKitPlanBrief({ ...baseOpts, scopeHint: null });
+    expect(withoutHint).toContain('(không có)');
   });
 
-  it('mentions the user-supplied scopeHint when present', () => {
-    const brief = buildKitPlanBrief({ ...baseOpts, scopeHint: 'Ưu tiên các màn thanh toán' });
-    expect(brief).toContain('Ưu tiên các màn thanh toán');
+  it('hasGuide/hasTokens/hasSlots ✓/✗ đúng chỗ trong dòng "Nguyên liệu"', () => {
+    const allTrue = buildKitPlanBrief({ ...baseOpts, hasGuide: true, hasTokens: true, hasSlots: true });
+    expect(allTrue).toContain('components-guide ✓');
+    expect(allTrue).toContain('tokens.md ✓');
+    expect(allTrue).toContain('slots.md ✓');
+
+    const allFalse = buildKitPlanBrief({ ...baseOpts, hasGuide: false, hasTokens: false, hasSlots: false });
+    expect(allFalse).toContain('components-guide ✗');
+    expect(allFalse).toContain('tokens.md ✗');
+    expect(allFalse).toContain('slots.md ✗');
   });
 });
 

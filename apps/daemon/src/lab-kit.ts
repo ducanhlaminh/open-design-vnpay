@@ -30,6 +30,12 @@
 // parse kit-result.json/kit-plan.json agent ghi ra, và đường dẫn output.
 // server.ts (nhánh daemon-orchestrated `runLabKit`/`runLabKitPlan`) sở hữu
 // mọi fs/DB/agent-spawn thật — xem docblock các hàm đó ở đó.
+//
+// WP-lab-clean (2026-08-23 — .tmp/pipeline/wp-lab-clean.yaml): brief kickoff
+// viết lại theo khuôn "skill = luật, brief = dữ liệu lần chạy" — dùng chung
+// `renderLabBrief`/`checkMark` (lab-brief.ts, cũng THUẦN) với buildComposeBrief.
+
+import { checkMark, renderLabBrief } from './lab-brief.js';
 
 /** Thư mục chứa PNG capture của từng comp phái sinh — một trong các output
  *  khai báo của `lab-kit` trong pipelines.ts (`outputs: ['kit-shots/',
@@ -310,73 +316,92 @@ export interface BuildKitPlanBriefOptions {
  *  `decision:'derive'` đã duyệt ở `kit-plan.json`) trước khi gọi. WP-kit-plan
  *  (.tmp/pipeline/wp-kit-plan.yaml): brief KHÔNG còn tự phân tích chọn lọc
  *  (quyết định đó đã chốt ở stage `lab-kit-plan`) — nhiệm vụ ở đây là DỰNG
- *  ĐÚNG danh sách plan. */
+ *  ĐÚNG danh sách plan. WP-lab-clean (.tmp/pipeline/wp-lab-clean.yaml): brief
+ *  chỉ đưa DỮ LIỆU của lần chạy này (skill đã có sẵn luật/recipe trong system
+ *  prompt) — dùng khuôn chung `renderLabBrief` (lab-brief.ts). */
 export function buildKitBrief(opts: BuildKitBriefOptions): string {
   const pageName = labKitPageName(opts.appFeature);
   const docsLine =
     opts.docsIndex.length > 0
-      ? `"docs/" (đáng chú ý: ${opts.docsIndex.map((p) => `"${p}"`).join(', ')} — nhưng đọc cả thư mục, không chỉ các file này)`
-      : '"docs/" (đọc mọi trang trong thư mục này)';
-  const guideNote = opts.hasGuide ? ', "criteria/components-guide.md" (mô tả thêm cho từng component)' : '';
-  const tokensNote = opts.hasTokens
-    ? ', "criteria/tokens.md" (TOÀN BỘ màu bạn được phép dùng — kể cả khi phối gradient/alpha, xem luật token bên dưới)'
-    : ' — LƯU Ý: "criteria/tokens.md" CHƯA có cho dự án này, không có bảng token nào để đối chiếu';
-  const slotsNote = opts.hasSlots
-    ? ', "criteria/slots.md" (hồ sơ SLOT từng component — cơ chế điền nội dung của comp base bạn đang nâng cấp)'
-    : '';
-  const pinterestNote = opts.hasPinterest
-    ? ` Có tool "pinterest_*" (server cộng đồng pinterest-mcp-server) khả dụng — dùng "pinterest_search" để tham khảo moodboard thẩm mỹ (chỉ xem, không tải), "pinterest_search_and_download" khi thật sự cần một ảnh minh hoạ (xem "Recipe ảnh placeholder" trong skill); MỌI ảnh tải về là PLACEHOLDER phải ghi chú nguồn vào "notes" — không phải asset final. Ưu tiên TỰ DỰNG art bằng hình học + gradient token trước, ảnh chỉ cho chất liệu minh hoạ không dựng được bằng hình học.`
-    : '';
-  const planLines = opts.plan
-    .map((c) => `"${c.name}" — base thiếu gì: ${c.gap ?? '(không nêu)'}${c.mustHave ? ' [BẮT BUỘC]' : ''}`)
-    .join('; ');
+      ? `- Tài liệu: \`docs/\` (đáng chú ý: ${opts.docsIndex.map((p) => `"${p}"`).join(', ')}; đọc cả thư mục)`
+      : '- Tài liệu: `docs/` (đọc cả thư mục)';
+  const materialsLine = `- Nguyên liệu: \`criteria/components.md\` (có dòng Key để import) · components-guide ${checkMark(opts.hasGuide)} · tokens.md ${checkMark(opts.hasTokens)} · slots.md ${checkMark(opts.hasSlots)} (grep đúng mục)`;
+  const planLines: string[] =
+    opts.plan.length > 0
+      ? [
+          '- Danh sách đã duyệt (`kit-plan.json`):',
+          ...opts.plan.map((c) => `  - "${c.name}" — ${c.gap ?? '(không nêu)'}${c.mustHave ? ' [bắt buộc]' : ''}`),
+        ]
+      : ['- Danh sách đã duyệt (`kit-plan.json`): (rỗng — không có mục nào để dựng)'];
+  const figmaLine = `- Figma: file preview \`${opts.previewFileKey}\`, trang "${pageName}"`;
+  const toolLine = `- Tool thêm: Pinterest ${checkMark(opts.hasPinterest)}`;
+  const aestheticLine =
+    opts.scopeHint && opts.scopeHint.trim()
+      ? `- Định hướng thẩm mỹ: "${opts.scopeHint.trim()}"`
+      : '- Định hướng thẩm mỹ: (chưa có — tự rút 3 nguyên tắc từ moodboard Pinterest nếu có, hoặc từ DS màu chủ đạo/radius/elevation, ghi vào notes).';
 
-  return [
-    `Áp skill "lab-kit-compose". Bạn là SYSTEM DESIGNER nâng cấp bộ component — khác hẳn "lab-screen-compose" (sáng tác MÀN): việc của bạn ở đây là TỰ TẠO bộ component phái sinh thẩm mỹ cao hơn từ comp base + tokens của Design System, KHÔNG dựng màn hoàn chỉnh.`,
-    `Nhiệm vụ: DỰNG ĐÚNG danh sách đã duyệt ở bước "Đề xuất kit" (kit-plan.json): ${planLines}. KHÔNG tự thêm comp ngoài danh sách này, KHÔNG bỏ entry nào trừ khi Định hướng người dùng bên dưới bảo bỏ; Định hướng người dùng (nếu có) được phép thêm/bớt so với plan — tôn trọng nó.`,
-    `Ngữ cảnh (đã dùng để lập plan ở bước trước, đọc lại nếu cần chi tiết nội dung màn): ${docsLine}.`,
-    `Nguyên liệu: "criteria/components.md" (danh mục comp base)${guideNote}${tokensNote}${slotsNote}.`,
-    `Nơi tạo: trang Figma tên đúng "${pageName}" trong file preview (fileKey "${opts.previewFileKey}") — TUYỆT ĐỐI KHÔNG ghi bất kỳ thứ gì vào file Design System NGUỒN; kit CHỈ tồn tại trong file preview, là ứng viên để designer PROMOTE về DS thật (việc đó là của người, không phải của bạn).`,
-    `Luật token nới MỘT NẤC: mọi màu vẫn PHẢI lấy từ "criteria/tokens.md", nhưng ĐƯỢC phối gradient/alpha từ chính các màu đó (GRADIENT_LINEAR đã probe chạy tốt trên sandbox Figma) — cấm mọi màu gốc mới ngoài danh mục.`,
-    pinterestNote,
-    `GEN LẠI TỪ ĐẦU MỖI LẦN CHẠY: nếu trang kit đã có nội dung từ lần chạy trước thì XÓA TOÀN BỘ children của trang đó trước khi dựng — không giữ lại, không cập nhật tại chỗ, không để comp cũ và mới lẫn nhau. Hệ quả CHỦ ĐÍCH: instance ở các màn cũ trỏ vào comp bị xóa sẽ mất mainComponent — người dùng sẽ Chạy lại bước sáng tác màn ngay sau stage này.`,
-    `MỌI comp phái sinh PHẢI dựng bằng AUTO-LAYOUT (fill/hug đúng chiều) và trước khi chốt PHẢI tự resize instance thử về bề rộng 358 (content width mobile) — comp có bề rộng tự nhiên cứng (ví dụ 445) sẽ bị cắt cụt mép phải khi đặt vào màn 390 (lỗi thật đã gặp: mất cả nút trong card).`,
-    `Kết thúc: ghi ĐÚNG MỘT file "${KIT_RESULT_FILE_REL}" ở cwd của bạn — {"components":[{"key","name","componentNodeId","reason?","baseComponents?","notes?"}]} — và ghi "${KIT_REGISTRY_FILE_REL}" MỚI TOÀN BỘ (danh sách ĐÚNG bộ comp vừa dựng lần này — KHÔNG merge với bản cũ).`,
-    `Lưu ý: toàn bộ nội dung skill "lab-kit-compose" ĐÃ nằm trong system prompt của bạn — ĐỪNG đi tìm file skill trong catalog cục bộ của CLI (không có ở đó, và không cần).`,
-  ]
-    .filter((s) => s.length > 0)
-    .join(' ');
+  return renderLabBrief({
+    title: `# Nâng bộ comp · ${opts.appFeature}`,
+    skillId: 'lab-kit-compose',
+    inputLines: [docsLine, materialsLine, ...planLines, figmaLine, toolLine, aestheticLine],
+    taskLines: [
+      '- Import từng base bằng Key qua use_figma.',
+      '- Ghép thành comp phái sinh lấp đúng gap đã duyệt trong kit-plan.json.',
+      '- Bind biến DS cho màu/chữ, resize-test 358.',
+      '- Tự chấm checklist thẩm mỹ qua get_screenshot rồi ghi kết quả.',
+    ],
+    reminderLines: [
+      '- Mỗi comp phải chứa ≥1 instance base import bằng key — cấm vẽ lại bằng frame/text (luật #9).',
+      '- Màu/chữ bind biến DS qua figma.variables, cấm hex trần (luật #10).',
+      '- Chỉ file preview, gen lại từ đầu, kit/kit.json ghi mới toàn bộ, không merge (luật #1/#7).',
+    ],
+    endingLines: [
+      `- \`${KIT_RESULT_FILE_REL}\` — \`{"components":[{"key","name","componentNodeId","reason?","baseComponents?","notes?"}]}\``,
+      `- \`${KIT_REGISTRY_FILE_REL}\` — ghi mới toàn bộ, không merge với bản cũ`,
+    ],
+  });
 }
 
 /** Message kickoff cho phiên agent duy nhất của stage `lab-kit-plan`. Thuần —
  *  không đọc đĩa/DB; server.ts (runLabKitPlan) đã gom mọi input trước khi
  *  gọi. Phiên này KHÔNG có tool Figma (KHÔNG MCP nào được gắn — Symbol
  *  INTERNAL_MCP_SERVER_IDS rỗng) — brief PHẢI nói rõ điều đó để agent không
- *  đi tìm/đợi tool Figma. */
+ *  đi tìm/đợi tool Figma. WP-lab-clean (.tmp/pipeline/wp-lab-clean.yaml):
+ *  brief chỉ đưa DỮ LIỆU của lần chạy này (phép thử hai tầng đã ở skill) —
+ *  dùng khuôn chung `renderLabBrief` (lab-brief.ts). */
 export function buildKitPlanBrief(opts: BuildKitPlanBriefOptions): string {
   const docsLine =
     opts.docsIndex.length > 0
-      ? `"docs/" (đáng chú ý: ${opts.docsIndex.map((p) => `"${p}"`).join(', ')} — nhưng đọc cả thư mục, không chỉ các file này)`
-      : '"docs/" (đọc mọi trang trong thư mục này)';
-  const guideNote = opts.hasGuide ? ', "criteria/components-guide.md" (mô tả thêm cho từng component)' : '';
-  const tokensNote = opts.hasTokens
-    ? ', "criteria/tokens.md" (bảng màu/chữ/radius/shadow/spacing hợp lệ)'
-    : ' — LƯU Ý: "criteria/tokens.md" CHƯA có cho dự án này';
-  const slotsNote = opts.hasSlots ? ', "criteria/slots.md" (hồ sơ SLOT từng component base)' : '';
-  const scopeNote =
+      ? `- Tài liệu: \`docs/\` (đáng chú ý: ${opts.docsIndex.map((p) => `"${p}"`).join(', ')}; đọc cả thư mục)`
+      : '- Tài liệu: `docs/` (đọc cả thư mục)';
+  const materialsLine = `- Nguyên liệu: \`criteria/components.md\` (có dòng Key để import) · components-guide ${checkMark(opts.hasGuide)} · tokens.md ${checkMark(opts.hasTokens)} · slots.md ${checkMark(opts.hasSlots)} (grep đúng mục)`;
+  const scopeLine =
     opts.scopeHint && opts.scopeHint.trim()
-      ? ` Định hướng đề xuất người dùng đã ghi: "${opts.scopeHint.trim()}" — tôn trọng định hướng này khi cân nhắc từng mục.`
-      : '';
+      ? `- Định hướng người dùng: "${opts.scopeHint.trim()}"`
+      : '- Định hướng người dùng: (không có)';
 
-  return [
-    `Áp skill "lab-kit-plan". Bạn là SYSTEM DESIGNER PHÂN TÍCH & ĐỀ XUẤT — TUYỆT ĐỐI KHÔNG dựng bất kỳ thứ gì trong Figma ở phiên này: phiên này KHÔNG có tool Figma (đừng tìm, đừng đợi tool đó xuất hiện) — việc của bạn là đọc và viết ra một ĐỀ XUẤT để NGƯỜI duyệt trước khi bước "Nâng bộ comp" (lab-kit) chạy.`,
-    `Nhiệm vụ: đọc ${docsLine} để biết các màn SẮP DỰNG cần gì, đối chiếu "criteria/components.md" (danh mục comp base)${guideNote}${tokensNote}${slotsNote} để quyết định TỪNG comp ứng viên nên DÙNG THẲNG base ("use-base") hay cần một bản PHÁI SINH ("derive").`,
-    `PHÉP THỬ HAI TẦNG — MẶC ĐỊNH LÀ KHÔNG SINH, nghĩa vụ chứng minh thuộc về phía sinh: (1) Có phải điểm neo thị giác không? Không → dùng base, dừng lại. (2) Hiệu quả màn cần có ĐẠT ĐƯỢC chỉ bằng override trên instance base (đổi text, đổi màu token, ẩn/hiện phần tử, swap icon) không? ĐẠT → DÙNG THẲNG base ("use-base"), CẤM sinh. CHỈ khi cần thay đổi CẤU TRÚC mà override không làm nổi (ghép nhiều base thành khối mới, thêm lớp trang trí gradient/art/price-tag, bố cục khác hẳn mọi biến thể sẵn có) mới được chọn "derive" — và trường "gap" PHẢI nêu ĐÍCH DANH base thiếu gì, CẤM lý do chung chung kiểu "cho đẹp hơn".`,
-    `Ngoại lệ App Bar BẮT BUỘC: mọi màn mobile đều cần thanh điều hướng trên cùng (nút back + tiêu đề màn) — nếu "criteria/components.md" KHÔNG có App Bar thì đề xuất PHẢI có một mục "App Bar" với decision "derive" và "mustHave": true (bắt buộc, không phải tuỳ chọn như các comp khác).`,
-    scopeNote,
-    `Kết thúc: ghi ĐÚNG hai file ở cwd của bạn — "${KIT_PLAN_FILE_REL}" ({"candidates":[{"key","name","decision","baseComponents?","gap?","reason?","mustHave?"}]}) và "${KIT_PLAN_MD_REL}" (một bảng tiếng Việt: comp | quyết định | base thiếu gì | lý do — để NGƯỜI đọc và duyệt trước khi bấm bước "Nâng bộ comp").`,
-    `Lưu ý: toàn bộ nội dung skill "lab-kit-plan" ĐÃ nằm trong system prompt của bạn — ĐỪNG đi tìm file skill trong catalog cục bộ của CLI (không có ở đó, và không cần).`,
-  ]
-    .filter((s) => s.length > 0)
-    .join(' ');
+  return renderLabBrief({
+    title: `# Đề xuất kit · ${opts.appFeature}`,
+    skillId: 'lab-kit-plan',
+    inputLines: [
+      docsLine,
+      materialsLine,
+      '- Figma: không có trong phiên này — chủ đích, đây là cổng duyệt chỉ đọc.',
+      scopeLine,
+    ],
+    taskLines: [
+      '- Đọc docs + criteria để biết từng màn sắp dựng cần gì.',
+      '- Áp phép thử hai tầng cho từng comp ứng viên, quyết định use-base hay derive.',
+      '- Ghi kit-plan.json + kit-plan.md cho người duyệt.',
+    ],
+    reminderLines: [
+      '- Mặc định không sinh — derive phải nêu gap đích danh (phép thử hai tầng, skill).',
+      '- App Bar bắt buộc khi criteria/components.md chưa có — đánh dấu mustHave: true.',
+      '- Phiên này không có tool Figma nào — đừng chờ nó xuất hiện.',
+    ],
+    endingLines: [
+      `- \`${KIT_PLAN_FILE_REL}\` — \`{"candidates":[{"key","name","decision","baseComponents?","gap?","reason?","mustHave?"}]}\``,
+      `- \`${KIT_PLAN_MD_REL}\` — bảng cho người duyệt`,
+    ],
+  });
 }

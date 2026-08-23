@@ -1,12 +1,20 @@
 // ds-lab quality — lab-audit: daemon TỰ AUDIT tất định sau khi agent kết
 // thúc phiên lab-kit/lab-compose, đọc THẲNG subtree REST (fetchNodeSubtrees)
-// của node kết quả (frame màn hoặc component kit) để bắt 2 loại vi phạm MÁY
+// của node kết quả (frame màn hoặc component kit) để bắt 4 loại vi phạm MÁY
 // BẮT ĐƯỢC tất định — không cần AI: (a) placeholder mặc định còn lộ (agent
 // quên override/hide Title/Body/Content/...), (b) tràn biên trái/phải (kit
 // comp có bề rộng tự nhiên cứng, đặt vào frame hẹp hơn bị cắt cụt mép — bằng
 // chứng thật: kit comp rộng tự nhiên ~445pt đặt vào instance 358pt, render bị
 // cắt cụt mép phải, SCR-02 mất luôn nút "Chọn gói", xem
-// `.tmp/pipeline/wp-lab-quality.yaml`).
+// `.tmp/pipeline/wp-lab-quality.yaml`); (c) 'no-instance' — subtree KHÔNG
+// chứa node INSTANCE nào (bằng chứng thật WP-lab-clean, node kit 114:14: comp
+// "Order Summary Card" = 0 INSTANCE, datarow/Badge/Currency chỉ là frame+text
+// đặt tên giống base, không import base thật bằng key); (d) 'no-bound-
+// variable' — subtree KHÔNG node nào có `boundVariables` (REST trả field
+// này khi màu/chữ được bind vào biến DS thay vì giá trị trần). (c)/(d) là
+// tín hiệu CHẤT LƯỢNG (thiếu instance/bind thật), không phải lỗi cấu trúc
+// như (a)/(b) — cùng nguyên tắc cảnh báo, không chặn stage (xem
+// `.tmp/pipeline/wp-lab-clean.yaml`).
 //
 // Module THUẦN: không import fs/network/server. server.ts (runLabKit +
 // runLabCompose) là caller duy nhất — gọi `fetchNodeSubtrees` (figma-rest.ts)
@@ -27,7 +35,7 @@ export interface AuditSubtreeInput {
 
 export interface LabAuditViolation {
   key: string;
-  kind: 'placeholder' | 'overflow';
+  kind: 'placeholder' | 'overflow' | 'no-instance' | 'no-bound-variable';
   detail: string;
 }
 
@@ -90,17 +98,49 @@ const PLACEHOLDER_TEXTS = new Set([
 // phạm thật.
 const OVERFLOW_TOLERANCE_PX = 2;
 
-/** Audit TẤT ĐỊNH mảng node kết quả — placeholder còn lộ + tràn biên
- *  trái/phải quá {@link OVERFLOW_TOLERANCE_PX}px so với khung của CHÍNH node
- *  gốc (frame màn / component kit) của mỗi input. Chỉ duyệt nhánh đang HIỂN
+// Duyệt TOÀN BỘ subtree (kể cả nhánh ẩn, khác walk() ở dưới — placeholder/
+// tràn biên chỉ tính nhánh hiển thị) để tìm node type 'INSTANCE' — bằng
+// chứng thật (WP-lab-clean, node kit 114:14): 0 INSTANCE nghĩa là agent vẽ
+// lại base bằng frame/text đặt tên giống thay vì import base thật.
+function subtreeHasInstance(node: FigmaAuditNode): boolean {
+  if (node.type === 'INSTANCE') return true;
+  for (const child of asArray(node.children)) {
+    if (isRecord(child) && subtreeHasInstance(child as FigmaAuditNode)) return true;
+  }
+  return false;
+}
+
+// Cùng kiểu duyệt TOÀN BỘ subtree (kể cả nhánh ẩn) — REST Figma đính field
+// `boundVariables` (object khoá theo thuộc tính: fills/strokes/characters…)
+// lên MỖI node có ít nhất một giá trị đang bind vào biến DS; object rỗng/
+// vắng mặt nghĩa là node đó toàn giá trị trần (hex/px cứng).
+function subtreeHasBoundVariable(node: unknown): boolean {
+  if (!isRecord(node)) return false;
+  const bv = (node as Record<string, unknown>).boundVariables;
+  if (isRecord(bv) && Object.keys(bv).length > 0) return true;
+  for (const child of asArray((node as FigmaAuditNode).children)) {
+    if (subtreeHasBoundVariable(child)) return true;
+  }
+  return false;
+}
+
+/** Audit TẤT ĐỊNH mảng node kết quả — placeholder còn lộ, tràn biên trái/
+ *  phải quá {@link OVERFLOW_TOLERANCE_PX}px so với khung của CHÍNH node gốc
+ *  (frame màn / component kit) của mỗi input, KHÔNG chứa instance base thật
+ *  nào ('no-instance'), và KHÔNG có màu/chữ nào bind biến DS
+ *  ('no-bound-variable'). Placeholder/tràn biên chỉ duyệt nhánh đang HIỂN
  *  THỊ (node hiện tại VÀ mọi tổ tiên đều có `visible !== false`) — nhánh ẩn
  *  không phải lỗi (agent có thể đang giữ placeholder cho biến thể dùng sau).
- *  Node thiếu `absoluteBoundingBox` → bỏ qua kiểm tra tràn biên CHO NODE ĐÓ,
- *  không throw; node GỐC thiếu bbox → bỏ luôn kiểm tra tràn biên cho CẢ
- *  subtree đó (không có khung R để so, nhưng vẫn audit placeholder bình
- *  thường). Chỉ so lệch TRÁI/PHẢI — tràn ĐÁY là bình thường (màn cuộn dọc),
- *  không phải lỗi. Tất định: không gọi mạng/AI, cùng input luôn ra cùng kết
- *  quả theo đúng thứ tự duyệt cây. */
+ *  'no-instance'/'no-bound-variable' duyệt CẢ nhánh ẩn (một instance/bind
+ *  đang tạm ẩn vẫn chứng minh agent đã dùng cơ chế đúng). Node thiếu
+ *  `absoluteBoundingBox` → bỏ qua kiểm tra tràn biên CHO NODE ĐÓ, không
+ *  throw; node GỐC thiếu bbox → bỏ luôn kiểm tra tràn biên cho CẢ subtree đó
+ *  (không có khung R để so, nhưng vẫn audit các loại khác bình thường). Chỉ
+ *  so lệch TRÁI/PHẢI — tràn ĐÁY là bình thường (màn cuộn dọc), không phải
+ *  lỗi. Mỗi input chỉ báo TỐI ĐA MỘT violation cho MỖI kind 'no-instance'/
+ *  'no-bound-variable' (khác 'placeholder'/'overflow' — báo mọi lần gặp).
+ *  Tất định: không gọi mạng/AI, cùng input luôn ra cùng kết quả theo đúng
+ *  thứ tự duyệt cây. */
 export function auditLabSubtrees(inputs: readonly AuditSubtreeInput[]): LabAuditViolation[] {
   const violations: LabAuditViolation[] = [];
 
@@ -108,6 +148,21 @@ export function auditLabSubtrees(inputs: readonly AuditSubtreeInput[]): LabAudit
     if (!isRecord(input.node)) continue;
     const root = input.node as FigmaAuditNode;
     const rootBox = readBBox(root.absoluteBoundingBox);
+
+    if (!subtreeHasInstance(root)) {
+      violations.push({
+        key: input.key,
+        kind: 'no-instance',
+        detail: `"${input.name || input.key}" không chứa instance base nào — dựng lại từ đầu bằng frame/text?`,
+      });
+    }
+    if (!subtreeHasBoundVariable(root)) {
+      violations.push({
+        key: input.key,
+        kind: 'no-bound-variable',
+        detail: `"${input.name || input.key}" mọi màu/chữ là giá trị trần, không bind biến DS.`,
+      });
+    }
 
     const walk = (raw: unknown, parentVisible: boolean): void => {
       if (!isRecord(raw)) return;
@@ -198,7 +253,14 @@ export function renderLabAuditMd(violations: readonly LabAuditViolation[], opts:
     lines.push(`## ${key}`);
     lines.push('');
     for (const v of list) {
-      const label = v.kind === 'placeholder' ? 'Placeholder' : 'Tràn biên';
+      const label =
+        v.kind === 'placeholder'
+          ? 'Placeholder'
+          : v.kind === 'overflow'
+            ? 'Tràn biên'
+            : v.kind === 'no-instance'
+              ? 'Không instance'
+              : 'Không bind biến';
       lines.push(`- **[${label}]** ${v.detail}`);
     }
     lines.push('');

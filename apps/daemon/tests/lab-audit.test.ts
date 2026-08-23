@@ -1,10 +1,31 @@
 // ds-lab quality (WP-lab-quality, 2026-08-22) red-spec: lab-audit.ts, module
 // THUẦN audit placeholder-lộ + tràn-biên từ subtree REST. See
 // `.tmp/pipeline/wp-lab-quality.yaml`.
+//
+// WP-lab-clean (2026-08-23 — .tmp/pipeline/wp-lab-clean.yaml): + 'no-instance'
+// / 'no-bound-variable' — xem describe riêng ở cuối file. `frameWithBox` (dùng
+// bởi các test placeholder/overflow có TỪ TRƯỚC) nay tự chèn thêm một decoy
+// INSTANCE có `boundVariables` KHÔNG hiển thị — để những test đó tiếp tục chỉ
+// đo đúng đối tượng chúng khai báo (placeholder/overflow), không bị 2 kind
+// mới làm lệch số violation đếm được.
 
 import { describe, expect, it } from 'vitest';
 
 import { auditLabSubtrees, renderLabAuditMd, type AuditSubtreeInput } from '../src/lab-audit.js';
+
+// Decoy KHÔNG hiển thị (không tham gia audit placeholder/overflow, vốn chỉ
+// duyệt nhánh hiển thị) nhưng VẪN được 'no-instance'/'no-bound-variable' đếm
+// (2 kind đó cố ý duyệt CẢ nhánh ẩn) — giữ các test placeholder/overflow có
+// từ trước không bị 2 kind mới này làm lệch số violation.
+function decoySatisfiesInstanceAndBind(): unknown {
+  return {
+    id: '9:99',
+    type: 'INSTANCE',
+    name: '__decoy_instance_with_bind',
+    visible: false,
+    boundVariables: { fills: [{ type: 'VARIABLE_ALIAS', id: 'VariableID:1:1' }] },
+  };
+}
 
 function frameWithBox(x: number, y: number, width: number, height: number, children: unknown[]): unknown {
   return {
@@ -13,7 +34,7 @@ function frameWithBox(x: number, y: number, width: number, height: number, child
     name: 'SCR-01 — Danh sách gói',
     visible: true,
     absoluteBoundingBox: { x, y, width, height },
-    children,
+    children: [...children, decoySatisfiesInstanceAndBind()],
   };
 }
 
@@ -152,6 +173,7 @@ describe('auditLabSubtrees: overflow', () => {
           name: 'Tràn nếu có R',
           visible: true,
           absoluteBoundingBox: { x: 9999, y: 0, width: 10, height: 10 },
+          boundVariables: { fills: [{ type: 'VARIABLE_ALIAS', id: 'VariableID:1:1' }] },
         },
         { id: '1:3', type: 'TEXT', name: 'Title', visible: true, characters: 'Title' },
       ],
@@ -165,6 +187,129 @@ describe('auditLabSubtrees: overflow', () => {
     const inputs: AuditSubtreeInput[] = [{ key: 'SCR-99', name: 'x', node: null }];
     expect(() => auditLabSubtrees(inputs)).not.toThrow();
     expect(auditLabSubtrees(inputs)).toEqual([]);
+  });
+});
+
+// ── auditLabSubtrees: no-instance / no-bound-variable (WP-lab-clean) ────────
+// Bằng chứng thật: comp kit "Order Summary Card" = 0 INSTANCE (datarow/Badge/
+// Currency là frame+text đặt tên giống base), get_variable_defs trả {} (hex
+// trần). Cả hai kind duyệt TOÀN BỘ subtree (kể cả nhánh ẩn) — khác placeholder/
+// overflow ở trên.
+
+describe('auditLabSubtrees: no-instance', () => {
+  it('subtree KHÔNG có node INSTANCE nào → báo "no-instance"', () => {
+    const node = {
+      id: '114:14',
+      type: 'COMPONENT',
+      name: 'Order Summary Card',
+      visible: true,
+      children: [
+        { id: '1:2', type: 'FRAME', name: 'datarow', visible: true, children: [] },
+        { id: '1:3', type: 'TEXT', name: 'Badge', visible: true, characters: 'Giảm 10%' },
+      ],
+    };
+    const violations = auditLabSubtrees([{ key: 'card-order-summary', name: 'Order Summary Card', node }]);
+    const kinds = violations.map((v) => v.kind);
+    expect(kinds).toContain('no-instance');
+    expect(violations.filter((v) => v.kind === 'no-instance')).toHaveLength(1);
+  });
+
+  it('có INSTANCE dù nằm trong nhánh ẨN → KHÔNG báo "no-instance"', () => {
+    const node = {
+      id: '1:1',
+      type: 'COMPONENT',
+      name: 'x',
+      visible: true,
+      children: [
+        {
+          id: '1:2',
+          type: 'GROUP',
+          name: 'Hidden group',
+          visible: false,
+          children: [{ id: '1:3', type: 'INSTANCE', name: 'Base ẩn', visible: true }],
+        },
+      ],
+    };
+    const violations = auditLabSubtrees([{ key: 'card-x', name: 'x', node }]);
+    expect(violations.map((v) => v.kind)).not.toContain('no-instance');
+  });
+});
+
+describe('auditLabSubtrees: no-bound-variable', () => {
+  it('subtree KHÔNG node nào có `boundVariables` không rỗng → báo "no-bound-variable"', () => {
+    const node = {
+      id: '1:1',
+      type: 'COMPONENT',
+      name: 'Order Summary Card',
+      visible: true,
+      children: [{ id: '1:2', type: 'INSTANCE', name: 'ProviderMini', visible: true }],
+    };
+    const violations = auditLabSubtrees([{ key: 'card-order-summary', name: 'x', node }]);
+    const kinds = violations.map((v) => v.kind);
+    expect(kinds).toContain('no-bound-variable');
+    expect(violations.filter((v) => v.kind === 'no-bound-variable')).toHaveLength(1);
+  });
+
+  it('`boundVariables` rỗng ({}) vẫn tính là KHÔNG bind — vẫn báo', () => {
+    const node = {
+      id: '1:1',
+      type: 'COMPONENT',
+      name: 'x',
+      visible: true,
+      children: [{ id: '1:2', type: 'INSTANCE', name: 'y', visible: true, boundVariables: {} }],
+    };
+    const violations = auditLabSubtrees([{ key: 'card-x', name: 'x', node }]);
+    expect(violations.map((v) => v.kind)).toContain('no-bound-variable');
+  });
+
+  it('có `boundVariables` không rỗng ở BẤT KỲ node nào (kể cả nhánh ẩn) → KHÔNG báo', () => {
+    const node = {
+      id: '1:1',
+      type: 'COMPONENT',
+      name: 'x',
+      visible: true,
+      children: [
+        {
+          id: '1:2',
+          type: 'GROUP',
+          name: 'Hidden',
+          visible: false,
+          children: [
+            {
+              id: '1:3',
+              type: 'INSTANCE',
+              name: 'z',
+              visible: true,
+              boundVariables: { fills: [{ type: 'VARIABLE_ALIAS', id: 'VariableID:1:1' }] },
+            },
+          ],
+        },
+      ],
+    };
+    const violations = auditLabSubtrees([{ key: 'card-x', name: 'x', node }]);
+    expect(violations.map((v) => v.kind)).not.toContain('no-bound-variable');
+  });
+});
+
+describe('auditLabSubtrees: no-instance + no-bound-variable cùng thoả → không báo cả hai', () => {
+  it('có INSTANCE + có boundVariables → không báo no-instance lẫn no-bound-variable', () => {
+    const node = {
+      id: '1:1',
+      type: 'COMPONENT',
+      name: 'Order Summary Card',
+      visible: true,
+      children: [
+        {
+          id: '1:2',
+          type: 'INSTANCE',
+          name: 'ProviderMini',
+          visible: true,
+          boundVariables: { fills: [{ type: 'VARIABLE_ALIAS', id: 'VariableID:1:1' }] },
+        },
+      ],
+    };
+    const violations = auditLabSubtrees([{ key: 'card-order-summary', name: 'x', node }]);
+    expect(violations).toEqual([]);
   });
 });
 
@@ -200,5 +345,17 @@ describe('renderLabAuditMd', () => {
       { generatedAt: '2026-08-22T00:00:00.000Z', subject: 'component' },
     );
     expect(md).toContain('component');
+  });
+
+  it('nhãn "[Không instance]" / "[Không bind biến]" cho 2 kind mới (WP-lab-clean)', () => {
+    const md = renderLabAuditMd(
+      [
+        { key: 'card-order-summary', kind: 'no-instance', detail: 'không chứa instance base nào.' },
+        { key: 'card-order-summary', kind: 'no-bound-variable', detail: 'mọi màu/chữ là giá trị trần.' },
+      ],
+      { generatedAt: '2026-08-22T00:00:00.000Z', subject: 'component' },
+    );
+    expect(md).toContain('[Không instance]');
+    expect(md).toContain('[Không bind biến]');
   });
 });

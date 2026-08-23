@@ -17,6 +17,10 @@ import { readFigmaPreviewConfig, type FigmaPreviewConfig } from './figma-build.j
 // brief "ưu tiên dùng kit" bên dưới — lab-kit.ts là module thuần (không
 // fs/network), import ở đây không phá bất biến "lab-compose.ts thuần".
 import { labKitPageName, KIT_REGISTRY_FILE_REL } from './lab-kit.js';
+// WP-lab-clean (2026-08-23 — .tmp/pipeline/wp-lab-clean.yaml): brief kickoff
+// viết lại theo khuôn "skill = luật, brief = dữ liệu lần chạy" — dùng chung
+// `renderLabBrief`/`checkMark` (lab-brief.ts, cũng THUẦN) với lab-kit.ts.
+import { checkMark, renderLabBrief } from './lab-brief.js';
 
 /** Thư mục chứa PNG capture của từng màn — output khai báo của `lab-compose`
  *  trong pipelines.ts (`outputs: ['screens/', 'lab-result.json']`). */
@@ -152,54 +156,51 @@ export function labPageName(appFeature: string): string {
 }
 
 /** Message kickoff cho phiên agent duy nhất của stage `lab-compose`. Thuần —
- *  không đọc đĩa/DB; server.ts đã gom mọi input trước khi gọi. */
+ *  không đọc đĩa/DB; server.ts đã gom mọi input trước khi gọi. WP-lab-clean
+ *  (.tmp/pipeline/wp-lab-clean.yaml): brief chỉ đưa DỮ LIỆU của lần chạy này
+ *  (7 luật sống còn của skill "lab-screen-compose" đã ở system prompt) — dùng
+ *  khuôn chung `renderLabBrief` (lab-brief.ts). */
 export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
   const pageName = labPageName(opts.appFeature);
-  const scope =
-    opts.scopeHint && opts.scopeHint.trim()
-      ? opts.scopeHint.trim()
-      : 'tự chọn tối đa 3 màn đầu của luồng chính';
   const docsLine =
     opts.docsIndex.length > 0
-      ? `"docs/" (đáng chú ý: ${opts.docsIndex.map((p) => `"${p}"`).join(', ')} — nhưng đọc cả thư mục, không chỉ các file này)`
-      : '"docs/" (đọc mọi trang trong thư mục này)';
-  const guideNote = opts.hasGuide ? ', "criteria/components-guide.md" (mô tả thêm cho từng component)' : '';
-  const tokensNote = opts.hasTokens
-    ? ', "criteria/tokens.md" (style CHỈ được lấy từ đây — cấm giá trị ngoài danh mục, dùng get_variable_defs đối chiếu thêm)'
-    : ' — LƯU Ý: "criteria/tokens.md" CHƯA có cho dự án này, không có bảng token nào để đối chiếu';
-  const slotsNote = opts.hasSlots
-    ? ', "criteria/slots.md" (hồ sơ SLOT từng component — cơ chế điền nội dung, ĐỌC TRƯỚC KHI DỰNG; file này dài — GREP/tìm đúng mục component bạn dùng, đừng đọc tuần tự cả file)'
-    : '';
-  const patternsNote =
+      ? `- Tài liệu: \`docs/\` (đáng chú ý: ${opts.docsIndex.map((p) => `"${p}"`).join(', ')}; đọc cả thư mục)`
+      : '- Tài liệu: `docs/` (đọc cả thư mục)';
+  const materialsLine = `- Nguyên liệu: \`criteria/components.md\` (có dòng Key để import) · components-guide ${checkMark(opts.hasGuide)} · tokens.md ${checkMark(opts.hasTokens)} · slots.md ${checkMark(opts.hasSlots)} (grep đúng mục)`;
+  const kitLine = opts.hasKit
+    ? `- Kit đã dựng: \`${KIT_REGISTRY_FILE_REL}\` trong trang "${labKitPageName(opts.appFeature)}" — ${opts.kitNames.join(', ')} (ưu tiên dùng trước base).`
+    : '- Kit đã dựng: (chưa có — dùng thẳng comp base).';
+  const patternLine =
     opts.patternNames.length > 0
-      ? `Pattern đã chế từ trước (ĐỌC trước khi chế mới, TÁI DÙNG khi khớp nhu cầu): ${opts.patternNames.join(', ')}.`
-      : 'Chưa có pattern nào được chế trước đó — chế mới thì ghi lại vào "patterns/<slug>.json".';
-  // WP-kit: kit là ƯU TIÊN khi có, comp base là fallback — KHÔNG bắt buộc
-  // (lab-kit không nằm trong dependsOn của lab-compose, xem pipelines.ts).
-  const kitNote = opts.hasKit
-    ? ` Đã có kit nâng cấp từ stage "Nâng bộ comp" (đọc "${KIT_REGISTRY_FILE_REL}" — tên các comp: ${opts.kitNames.join(', ')}) trong trang "${labKitPageName(opts.appFeature)}" của CÙNG file preview này — ƯU TIÊN dùng instance từ page kit đó; comp base ("criteria/components.md") chỉ dùng khi kit KHÔNG có bản tương ứng.`
-    : '';
-  const pinterestNote = opts.hasPinterest
-    ? ` Có tool "pinterest_*" (server cộng đồng pinterest-mcp-server) khả dụng — dùng để tham khảo/tải ảnh PLACEHOLDER minh hoạ khi thật sự cần (không phải asset final).`
-    : '';
+      ? `- Pattern sẵn có: ${opts.patternNames.join(', ')} (đọc trước khi chế mới).`
+      : `- Pattern sẵn có: (chưa có — chế mới thì ghi lại \`${LAB_PATTERNS_DIR_REL}/<slug>.json\`).`;
+  const figmaLine = `- Figma: file preview \`${opts.previewFileKey}\`, trang "${pageName}"`;
+  const toolLine = `- Tool thêm: Pinterest ${checkMark(opts.hasPinterest)}`;
+  const scopeLine =
+    opts.scopeHint && opts.scopeHint.trim()
+      ? `- Phạm vi: "${opts.scopeHint.trim()}" (≤3 màn/lần chạy).`
+      : '- Phạm vi: tự chọn tối đa 3 màn đầu của luồng chính (≤3 màn/lần chạy).';
 
-  return [
-    `Áp skill "lab-screen-compose". Bạn là designer SÁNG TÁC màn hình mới (KHÔNG phải thi công theo hợp đồng cứng như figma-screen-build) — dùng Figma MCP toàn quyền trên file preview để dựng, tự xem lại, tự sửa trong phiên.`,
-    `Nhiệm vụ: đọc tài liệu ở ${docsLine} để biết TỪNG màn LÀM GÌ (chức năng + nội dung THẬT). Ảnh mockup trong tài liệu chỉ để hiểu tính năng — **CẤM chép bố cục từ mockup**: bố cục là việc bạn tự sáng tác từ comp base.`,
-    `Nguyên liệu: "criteria/components.md" (danh mục comp base hợp lệ — import bằng key qua use_figma, hoặc tra bằng search_design_system/get_libraries)${guideNote}${tokensNote}${slotsNote}. "${LAB_PATTERNS_DIR_REL}/" chứa pattern đã chế trước.${kitNote}`,
-    `Phạm vi lần này: ${scope} (tối đa 3 màn/lần chạy).`,
-    `Dựng trong trang Figma tên đúng "${pageName}" (file preview key "${opts.previewFileKey}") — tạo nếu chưa có, tái dùng nếu có. Khổ màn CỨNG: mobile rộng ĐÚNG 390 (không 398, không tự chế khổ khác) / web 1440.`,
-    `MỖI MÀN ĐÚNG MỘT điểm nhấn: badge nổi bật (Phổ biến/Mới…) chỉ đeo cho MỘT item, không lặp trên mọi card; CTA chính của màn thao tác (thanh toán, tiếp tục…) đặt full-width (358).`,
-    `KHUNG MÀN CHUẨN MOBILE: mọi màn con PHẢI có App Bar (nút back + tiêu đề màn) đặt TRÊN CÙNG; màn gốc (home/tab chính) dùng Tabbar dưới đáy. App Bar ưu tiên lấy từ kit (comp "App Bar" trong page kit, nếu có) rồi mới tới comp base; cả kit lẫn base đều không có thì tự dựng nhóm App Bar tối giản bằng auto-layout + tokens và ghi vào "notes" — TUYỆT ĐỐI không để màn trần không có thanh điều hướng.`,
-    patternsNote,
-    pinterestNote,
-    `5 luật sống còn (Hợp đồng cứng — vi phạm là lỗi nghiêm trọng): (1) CHỈ thao tác trên file preview ("${opts.previewFileKey}") — TUYỆT ĐỐI không mở/sửa bất kỳ file Figma nào khác. (2) Page/frame đặt tên chuẩn ("${pageName}" / "<KEY> — <tên màn>") + idempotent replace-by-name: có frame trùng tên thì NHỚ vị trí {x,y}, XÓA rồi dựng lại đúng vị trí cũ — không bao giờ để hai frame cùng tên tồn tại song song. (3) NGUYÊN TỬ theo lần execute-code: TOÀN BỘ thao tác của một phần tử nằm trong CÙNG một lần gọi tool — TUYỆT ĐỐI cấm mang node id (đặc biệt id ruột instance dạng "I<a>;<b>") qua ranh giới call sau; cần dùng lại thì RE-QUERY bằng tên NGAY trong lần gọi đó. (4) Content THẬT lấy từ tài liệu (URD) — style (màu/chữ/radius/shadow/spacing) CHỈ được lấy từ "criteria/tokens.md", cấm giá trị ngoài danh mục. Luật token nới MỘT NẤC: mọi màu vẫn PHẢI lấy từ "criteria/tokens.md", nhưng ĐƯỢC phối gradient/alpha từ chính các màu đó (GRADIENT_LINEAR đã probe chạy tốt trên sandbox Figma) — cấm mọi màu gốc mới ngoài danh mục. (5) Nội dung phải nằm TRONG component: điền qua slot (append/replace children TRONG slot) hoặc override text layer con của instance — TUYỆT ĐỐI CẤM đặt text/node rời đè toạ độ lên instance; placeholder mặc định không dùng (Title/Body/Content/Label…) phải override hoặc hide, không được để lộ; children mặc định thừa trong slot (ví dụ dãy Tab-Cell) phải xoá bớt cho khớp nội dung thật.`,
-    `Dùng get_screenshot để TỰ XEM LẠI frame vừa dựng (bố cục, phân cấp, spacing, on-brand) rồi tự sửa — tối đa vài vòng cho mỗi màn.`,
-    `Kết thúc: ghi ĐÚNG MỘT file "${LAB_RESULT_FILE_REL}" ở cwd của bạn — {"screens":[{"key","name","frameNodeId","frameUrl?","notes?"}]}; "frameNodeId" LÀ id của chính FRAME màn (dạng node thường "12:34", KHÔNG PHẢI id ruột instance). Không ghi file nào khác ngoài "${LAB_RESULT_FILE_REL}" và "${LAB_PATTERNS_DIR_REL}/*.json".`,
-    `Lưu ý: toàn bộ nội dung skill "lab-screen-compose" đã nằm trong system prompt của bạn — ĐỪNG đi tìm file skill trong catalog cục bộ của CLI (không có ở đó, và không cần).`,
-  ]
-    .filter((s) => s.length > 0)
-    .join(' ');
+  return renderLabBrief({
+    title: `# Sáng tác màn · ${opts.appFeature}`,
+    skillId: 'lab-screen-compose',
+    inputLines: [docsLine, materialsLine, kitLine, patternLine, figmaLine, toolLine, scopeLine],
+    taskLines: [
+      '- Đọc docs để biết từng màn cần làm gì (chức năng + nội dung thật).',
+      '- Dựng tối đa 3 màn từ instance (kit ưu tiên, base fallback) — không chép bố cục từ mockup.',
+      '- Điền nội dung thật đúng vào slot của component.',
+      '- Tự-kiểm cấu trúc + get_screenshot rồi ghi kết quả.',
+    ],
+    reminderLines: [
+      '- Chỉ file preview, nguyên tử theo lần execute-code — id ruột instance stale ngay khi call kết thúc (luật #1/#3).',
+      '- Nội dung trong slot, không vẽ đè, placeholder phải override/hide (luật #5).',
+      '- Khung màn chuẩn: 390 cứng, App Bar/Tabbar, một điểm nhấn (luật #6/#7).',
+    ],
+    endingLines: [
+      `- \`${LAB_RESULT_FILE_REL}\` — \`{"screens":[{"key","name","frameNodeId","frameUrl?","notes?"}]}\` (frameNodeId = id của chính frame màn, không phải id ruột instance)`,
+      `- \`${LAB_PATTERNS_DIR_REL}/*.json\` — nếu chế pattern mới`,
+    ],
+  });
 }
 
 /** Đọc `.figma-preview.json` của CHÍNH workflow "ds-lab" trước; thiếu (chưa

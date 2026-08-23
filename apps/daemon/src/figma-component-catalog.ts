@@ -81,6 +81,12 @@ export function renderFigmaComponentsMarkdown(snapshot: FigmaComponentCatalogSna
     '',
     `> Đã đọc ${snapshot.files.length} file Figma lúc ${snapshot.generatedAt}. Danh mục này được đóng băng trước khi rà soát tài liệu.`,
     '',
+    // WP-lab-clean (.tmp/pipeline/wp-lab-clean.yaml): agent nâng bộ comp
+    // (lab-kit-compose) cần biết dòng "Key"/"Biến thể (key)" bên dưới dùng để
+    // làm gì — nếu không, transcript cho thấy agent không hề gọi
+    // importComponentByKeyAsync (0 lần) dù catalog đã có sẵn key.
+    'Import cross-file bằng `figma.importComponentByKeyAsync(key)` với dòng Key của từng component (COMPONENT_SET không import được — dùng key biến thể).',
+    '',
   ];
   for (const file of snapshot.files) {
     lines.push(`## ${file.name}`, '', `Nguồn: ${file.url}`, '');
@@ -92,6 +98,18 @@ export function renderFigmaComponentsMarkdown(snapshot: FigmaComponentCatalogSna
         : duplicate ? `${component.name} — ${file.name}` : component.name;
       lines.push(`### \`#${anchorFor(file.fileKey, component.nodeId)}\` ${displayName}`, '');
       lines.push(`- Figma node: \`${component.nodeId}\``);
+      // WP-lab-clean: `key` là điều kiện DUY NHẤT để import component này ở
+      // file khác qua importComponentByKeyAsync — thiếu dòng này thì agent
+      // không có cách nào import base thật, chỉ còn vẽ lại bằng frame/text.
+      if (component.key) lines.push(`- Key: \`${component.key}\``);
+      const variantsWithKey = (component.variants ?? []).filter((v) => v.key);
+      if (variantsWithKey.length > 0) {
+        const CAP = 12;
+        const shown = variantsWithKey.slice(0, CAP);
+        const rest = variantsWithKey.length - shown.length;
+        const shownText = shown.map((v) => `${v.name} → \`${v.key}\``).join('; ');
+        lines.push(`- Biến thể (key): ${shownText}${rest > 0 ? `; … +${rest}` : ''}`);
+      }
       if (component.page) lines.push(`- Trang: ${component.page}`);
       if (component.description) lines.push(`- Mô tả: ${component.description.replace(/\s+/g, ' ')}`);
       if (component.properties.length > 0) {

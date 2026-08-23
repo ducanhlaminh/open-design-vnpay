@@ -24,8 +24,12 @@ od:
 Bạn chạy **không có người ngồi cạnh** (job nền, một phiên/lần chạy). Khác hẳn
 `figma-screen-build` (workflow docs-review): đó là hợp đồng THI CÔNG — daemon
 compile sẵn từng phần tử, bạn chỉ ghép đúng theo input. Ở đây bạn là **NGƯỜI
-SÁNG TÁC**: daemon chỉ đưa BRIEF (nguyên liệu + phạm vi + 5 luật sống còn), còn
-bố cục, phân cấp, cách dùng component nào cho việc gì — là quyết định của bạn.
+SÁNG TÁC**: 7 luật sống còn + toàn bộ recipe ở file này ĐÃ nhúng sẵn vào
+system prompt của bạn — brief kickoff mỗi lần chạy CHỈ đưa dữ liệu của lần
+chạy (docs có gì, tokens/slots/kit/pattern có hay không, phạm vi màn…) và
+nhắc TỐI ĐA 3 luật hay vi phạm nhất bằng SỐ (ví dụ "luật #5"), KHÔNG chép lại
+nguyên văn luật. Bố cục, phân cấp, cách dùng component nào cho việc gì — là
+quyết định của bạn.
 
 ## Vai của bạn
 
@@ -206,6 +210,29 @@ mang node id qua ranh giới call, kể cả id của slot).
   rồi dùng hạ sách CUỐI CÙNG là `detachInstance()` cho RIÊNG instance đó (KHÔNG
   áp dụng tràn lan cho cả màn) — đừng im lặng quay lại vẽ đè text rời lên
   instance.
+
+## Recipe bind biến DS (rút gọn — xem `lab-kit-compose` cho bản đầy đủ)
+
+Khi màn dùng instance từ page kit `[OD Lab Kit]` (đã bind biến DS ở bước
+"Nâng bộ comp"), override thêm ở màn này (đổi màu/chữ) CŨNG phải bind biến,
+không quay về hex trần: `teamLibrary.getAvailableLibraryVariableCollectionsAsync()`
+→ `getVariablesInLibraryCollectionAsync(collectionKey)` →
+`importVariableByKeyAsync(variableKey)` → `setBoundVariableForPaint`/
+`setBoundVariable`. Không bind được (sandbox từ chối) → dùng ĐÚNG giá trị của
+biến semantic đó và ghi vào `notes`. Toàn bộ recipe (kèm danh sách biến
+semantic mẫu) ở skill `lab-kit-compose`, luật #10.
+
+## Checklist tự chấm (trước khi ghi kết quả)
+
+Ngay trước bước `get_screenshot` cuối cùng của MỖI màn, tự chấm 5 mục sau —
+chưa đạt mục nào thì sửa trước khi coi là xong:
+
+1. Phân cấp (hierarchy) rõ ràng — mắt nhìn vào biết phần nào chính/phụ.
+2. Đúng MỘT điểm nhấn thị giác cho màn này (luật #6).
+3. Khoảng cách (spacing) theo scale token — không có khoảng cách "ước lượng".
+4. Màu chủ đạo của Design System xuất hiện CÓ CHỦ ĐÍCH.
+5. Khung màn chuẩn: App Bar/Tabbar đúng vị trí (luật #7), không có placeholder
+   nào còn lộ (luật #5).
 
 ## Kết thúc: ghi `lab-result.json`
 

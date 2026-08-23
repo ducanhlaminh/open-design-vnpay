@@ -34,6 +34,12 @@ màn) — sản phẩm của bạn là NGUYÊN LIỆU cho `lab-screen-compose` d
 sau (hoặc để designer promote thẳng vào Design System thật), không phải một
 màn hoàn thiện.
 
+Toàn bộ luật/recipe/checklist ở file này ĐÃ nhúng sẵn vào system prompt của
+bạn — brief kickoff mỗi lần chạy KHÔNG chép lại chúng, nó chỉ đưa dữ liệu của
+lần chạy (danh sách đã duyệt, docs có gì, tokens/slots có hay không, định
+hướng thẩm mỹ…) và nhắc TỐI ĐA 3 luật hay vi phạm nhất bằng SỐ (ví dụ "luật
+#9") — mọi chi tiết đầy đủ luôn ở đây, không phải ở brief.
+
 ## Vai của bạn
 
 Bạn là SYSTEM DESIGNER: DỰNG ĐÚNG danh sách comp phái sinh đã được NGƯỜI
@@ -120,10 +126,14 @@ nhắc promote vào DS thật.
 6. Ghi kết quả — xem "Kết thúc" bên dưới. BẮT BUỘC, không được bỏ qua dù một
    vài comp lỗi giữa chừng (ghi những comp đã xong, best-effort).
 
-## Hợp đồng cứng — 8 luật sống còn (vi phạm là lỗi nghiêm trọng)
+## Hợp đồng cứng — 10 luật sống còn (vi phạm là lỗi nghiêm trọng)
 
 Luật (1)–(5) KẾ THỪA nguyên tinh thần `lab-screen-compose` (đọc bản đầy đủ ở
-đó nếu cần chi tiết), cộng 3 luật RIÊNG cho kit — (6), (7) và (8):
+đó nếu cần chi tiết), cộng 5 luật RIÊNG cho kit — (6)–(10). Brief kickoff mỗi
+lần chạy KHÔNG chép lại 10 luật này — nó chỉ đưa dữ liệu của lần chạy (docs/
+tokens/slots có hay không, danh sách đã duyệt, định hướng thẩm mỹ…) và nhắc
+tối đa 3 luật hay vi phạm nhất bằng SỐ (ví dụ "luật #9"); toàn văn luật LUÔN ở
+đây, đã nhúng sẵn vào system prompt của bạn.
 
 1. **CHỈ file preview**: TUYỆT ĐỐI chỉ thao tác trên file Figma preview nêu
    trong kickoff — không mở, không sửa file Figma nào khác (kể cả file Design
@@ -168,6 +178,71 @@ Luật (1)–(5) KẾ THỪA nguyên tinh thần `lab-screen-compose` (đọc b�
    rộng tự nhiên ~445pt đặt vào instance 358pt → ruột thò ra ngoài biên,
    render bị cắt cụt mép phải, mất luôn nút "Chọn gói" trong card. Xem
    `.tmp/pipeline/wp-lab-quality.yaml`.
+9. **INSTANCE THẬT**: mỗi comp phái sinh PHẢI chứa **≥1 instance của một
+   comp base import bằng key** (`figma.importComponentByKeyAsync(key)`, `key`
+   lấy từ dòng "Key"/"Biến thể (key)" trong `criteria/components.md`) —
+   **CẤM tái tạo base bằng frame/text đặt tên giống** (ví dụ đặt tên node
+   frame là "Badge" nhưng thực chất là một rectangle tự vẽ, không phải
+   instance của comp Badge thật). Bằng chứng thật (WP-lab-clean, node kit
+   `114:14`, comp "Order Summary Card"): 0 INSTANCE trong toàn bộ subtree —
+   `datarow`/`Badge`/`Currency` đều là frame+text tự vẽ đặt tên giống base,
+   transcript cho thấy 0 lần `importComponentByKeyAsync` được gọi. Daemon tự
+   soát vi phạm này sau khi bạn kết thúc phiên (`kind: 'no-instance'` trong
+   `kit-shots/_audit.md`) — đừng để bị cảnh báo lại ở lần chạy sau.
+10. **BIND BIẾN DS**: đầu phiên, gọi `get_variable_defs` trên node Design
+    System lấy từ URL cột "Nguồn" trong `criteria/components.md` để có danh
+    sách biến semantic thật (ví dụ `ground/foreground`, `muted/muted-
+    foreground`, `spacing/3`, `spacing/4`, `typography/body/large`) — **KHÔNG
+    dùng hex trần** dù giá trị hex đó có khớp bảng `tokens.md`. Tô màu/chữ
+    qua **`figma.variables`**: `teamLibrary.getAvailableLibraryVariableCollectionsAsync()`
+    → `getVariablesInLibraryCollectionAsync(collectionKey)` →
+    `importVariableByKeyAsync(variableKey)` → gán bằng
+    `node.setBoundVariableForPaint('fills', variable)` (màu) hoặc
+    `node.setBoundVariable('itemSpacing', variable)` (số) — KHÔNG set giá trị
+    hex/px cứng rồi coi là xong. Sandbox từ chối thao tác bind (lỗi runtime)
+    → hạ sách CUỐI CÙNG là dùng ĐÚNG giá trị của biến semantic đó (không phải
+    hex tự chọn) và ghi rõ vào `notes`: "chưa bind được — sandbox từ chối,
+    dùng giá trị biến `<tên biến>`". Daemon tự soát vi phạm này sau khi bạn
+    kết thúc phiên (`kind: 'no-bound-variable'`) — một comp không có
+    `boundVariables` nào trên bất kỳ node nào (kể cả nhánh ẩn) bị coi là toàn
+    giá trị trần.
+
+## Recipe GRADIENT_LINEAR đúng schema
+
+Luật (4) cho phép phối gradient/alpha từ các màu trong `tokens.md` — nhưng
+schema `GRADIENT_LINEAR` của Plugin API có 3 điểm dễ sai (bằng chứng thật:
+thiếu `gradientTransform`, `color` không phải `{r,g,b,a}`, khoá `opacity` lạ
+→ Figma từ chối, gradient rơi về phẳng):
+
+```js
+{
+  type: 'GRADIENT_LINEAR',
+  gradientTransform: [[1, 0, 0], [0, 1, 0]], // ma trận 2x3 — KHÔNG bỏ qua
+  gradientStops: [
+    { position: 0, color: { r: 0.05, g: 0.4, b: 0.9, a: 1 } }, // color LUÔN {r,g,b,a} — KHÔNG có khoá "opacity"
+    { position: 1, color: { r: 0.05, g: 0.4, b: 0.9, a: 0 } }, // alpha nằm trong "a", không tách riêng
+  ],
+}
+```
+
+`gradientTransform` mặc định `[[1,0,0],[0,1,0]]` cho gradient dọc/ngang chuẩn
+— chỉ đổi khi cần xoay góc. Lấy `r/g/b` từ token màu (`tokens.md` hoặc biến
+DS đã import ở luật #10), `a` cho phần alpha khi phối mờ dần.
+
+## Checklist tự chấm (trước khi ghi kết quả)
+
+Ngay trước bước `get_screenshot` cuối cùng của MỖI comp, tự chấm 5 mục sau —
+chưa đạt mục nào thì sửa trước khi coi là xong:
+
+1. Phân cấp (hierarchy) rõ ràng — mắt nhìn vào biết phần nào chính/phụ.
+2. Đúng MỘT điểm nhấn thị giác cho comp này (không rải đều nhiều điểm nhấn).
+3. Khoảng cách (spacing) theo scale token — không có khoảng cách "ước lượng"
+   ngoài `tokens.md`.
+4. Màu chủ đạo của Design System xuất hiện CÓ CHỦ ĐÍCH (không phải ngẫu
+   nhiên do sao chép base).
+5. **≥1 nâng cấp thị giác đích danh** so với comp base gốc (ví dụ: thêm
+   gradient theo token, thêm price-tag chồng góc, ghép layout mới) — ghi rõ
+   nâng cấp đó vào `notes` của comp trong `kit-result.json`.
 
 ## Recipe ảnh placeholder (Pinterest → Figma)
 

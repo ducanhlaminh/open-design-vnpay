@@ -206,8 +206,48 @@ describe('screenPngRel', () => {
 });
 
 // ── buildComposeBrief ────────────────────────────────────────────────────────
+// WP-lab-clean (.tmp/pipeline/wp-lab-clean.yaml): khuôn mới "skill = luật (đã
+// ở system prompt), brief = dữ liệu lần chạy" — cùng ràng buộc đo được với
+// buildKitBrief/buildKitPlanBrief (xem describe tương ứng trong
+// lab-kit.test.ts): ≥5 heading, ≥10 dòng, phần TĨNH ≤1700 ký tự (compose dài
+// hơn plan/kit vì có thêm dòng kit/pattern/phạm vi), ≤6 từ VIẾT HOA (không
+// tính JSON/tên file/ID), vắng mặt giai thoại bằng chứng cũ.
+
+const REQUIRED_COMPOSE_HEADINGS = [
+  '## Đầu vào lần này',
+  '## Việc cần làm',
+  '## Nhắc luật hay vi phạm nhất (chi tiết trong skill)',
+  '## Kết thúc — ghi đúng file',
+];
+
+const BANNED_COMPOSE_PHRASES = [
+  'lỗi thật đã gặp',
+  '445',
+  '398',
+  'GRADIENT_LINEAR đã probe',
+  'đừng đi tìm file skill',
+  '5 luật sống còn',
+];
+
+function allCapsWordsCompose(text: string): string[] {
+  const matches = text.match(/(?<![\p{L}0-9_`])[A-ZÀ-Ỹ]{4,}(?![\p{L}0-9_`])/gu) ?? [];
+  return matches.filter((w) => w !== 'JSON');
+}
 
 describe('buildComposeBrief', () => {
+  const minOpts = {
+    docsIndex: [] as string[],
+    previewFileKey: 'F',
+    appFeature: 'X',
+    hasTokens: false,
+    hasGuide: false,
+    hasSlots: false,
+    patternNames: [] as string[],
+    hasKit: false,
+    kitNames: [] as string[],
+    hasPinterest: false,
+  };
+
   const baseOpts = {
     docsIndex: ['_index.md'],
     previewFileKey: 'FILE123',
@@ -221,33 +261,34 @@ describe('buildComposeBrief', () => {
     hasPinterest: false,
   };
 
-  it('contains the 5 hard-contract rules, the page name, and an explicit scope hint', () => {
+  it('phần TĨNH (dữ liệu rỗng/tối thiểu) đúng khuôn: ≥5 heading, ≥10 dòng, ≤1700 ký tự, ≤6 từ VIẾT HOA, vắng giai thoại cũ', () => {
+    const brief = buildComposeBrief({ ...minOpts, scopeHint: null });
+    const headingLines = brief.match(/^#{1,2} .+$/gm) ?? [];
+    expect(headingLines.length).toBeGreaterThanOrEqual(5);
+    for (const h of REQUIRED_COMPOSE_HEADINGS) expect(brief).toContain(h);
+    expect(brief.split('\n').length).toBeGreaterThanOrEqual(10);
+    expect(brief.length).toBeLessThanOrEqual(1700);
+    expect(allCapsWordsCompose(brief).length).toBeLessThanOrEqual(6);
+    for (const banned of BANNED_COMPOSE_PHRASES) expect(brief).not.toContain(banned);
+  });
+
+  it('states the page name and an explicit scope, and points to the hard-contract rules by number', () => {
     const brief = buildComposeBrief({ ...baseOpts, scopeHint: 'Chỉ màn Đăng nhập' });
     expect(brief).toContain(labPageName('Ví điện tử'));
     expect(brief).toContain('Chỉ màn Đăng nhập');
-    // 5 luật sống còn.
-    expect(brief).toContain('5 luật sống còn');
-    expect(brief).toContain('CHỈ thao tác trên file preview');
-    expect(brief).toContain('idempotent replace-by-name');
-    expect(brief).toContain('NGUYÊN TỬ theo lần execute-code');
-    expect(brief).toContain('I<a>;<b>');
-    expect(brief).toContain('tokens.md');
-    expect(brief).toContain('CẤM chép bố cục');
-    // luật (5): nội dung TRONG comp, cấm vẽ đè lên instance.
-    expect(brief).toContain('TUYỆT ĐỐI CẤM đặt text/node rời đè toạ độ lên');
-    expect(brief).toContain('Tab-Cell');
-    // WP-kit: luật (4) nới MỘT NẤC cho gradient/alpha (cùng câu chữ buildKitBrief).
-    expect(brief).toContain('Luật token nới MỘT NẤC');
-    expect(brief).toContain('GRADIENT_LINEAR');
+    expect(brief).toContain('luật #1/#3');
+    expect(brief).toContain('luật #5');
+    expect(brief).toContain('luật #6/#7');
+    expect(brief).toContain('nguyên tử theo lần execute-code');
+    expect(brief).toContain('không vẽ đè');
   });
 
-  it('mentions "criteria/slots.md" when hasSlots=true, and omits it when false', () => {
+  it('mentions "criteria/slots.md" ✓/✗ đúng chỗ trong dòng "Nguyên liệu"', () => {
     const withSlots = buildComposeBrief({ ...baseOpts, hasSlots: true, scopeHint: null });
-    expect(withSlots).toContain('criteria/slots.md');
-    expect(withSlots).toContain('hồ sơ SLOT');
+    expect(withSlots).toContain('slots.md ✓');
 
     const withoutSlots = buildComposeBrief({ ...baseOpts, hasSlots: false, scopeHint: null });
-    expect(withoutSlots).not.toContain('criteria/slots.md');
+    expect(withoutSlots).toContain('slots.md ✗');
   });
 
   it('falls back the scope hint to "tự chọn tối đa 3 màn" when absent/blank', () => {
@@ -257,9 +298,10 @@ describe('buildComposeBrief', () => {
     expect(briefBlank).toContain('tự chọn tối đa 3 màn đầu của luồng chính');
   });
 
-  it('notes the absence of tokens.md/components-guide.md instead of pretending they exist', () => {
+  it('hasGuide/hasTokens ✓/✗ đúng chỗ trong dòng "Nguyên liệu"', () => {
     const brief = buildComposeBrief({ ...baseOpts, hasTokens: false, hasGuide: false, scopeHint: null });
-    expect(brief).toContain('CHƯA có cho dự án này');
+    expect(brief).toContain('components-guide ✗');
+    expect(brief).toContain('tokens.md ✗');
   });
 
   it('lists existing pattern names so the agent reads them before inventing new ones', () => {
@@ -270,7 +312,7 @@ describe('buildComposeBrief', () => {
 
   // ── WP-kit: ưu tiên kit khi có ─────────────────────────────────────────────
 
-  it('hasKit=true → mentions the kit page name, kit.json path, kit names, and "ƯU TIÊN"', () => {
+  it('hasKit=true → mentions the kit page name, kit.json path, kit names, and "ưu tiên"', () => {
     const brief = buildComposeBrief({
       ...baseOpts,
       scopeHint: null,
@@ -280,7 +322,7 @@ describe('buildComposeBrief', () => {
     expect(brief).toContain('kit/kit.json');
     expect(brief).toContain('Card - Chọn số');
     expect(brief).toContain('ProviderMini');
-    expect(brief).toContain('ƯU TIÊN');
+    expect(brief).toContain('ưu tiên');
     expect(brief).toContain('[OD Lab Kit] Ví điện tử');
   });
 
@@ -292,49 +334,23 @@ describe('buildComposeBrief', () => {
 
   // ── WP-kit: Pinterest fail-soft ──────────────────────────────────────────────
 
-  it('hasPinterest=true → mentions pinterest_* tools; false → silent', () => {
+  it('hasPinterest ✓/✗ đúng chỗ trong dòng "Tool thêm"', () => {
     const withPinterest = buildComposeBrief({ ...baseOpts, scopeHint: null, hasPinterest: true });
-    expect(withPinterest).toContain('pinterest_');
+    expect(withPinterest).toContain('Pinterest ✓');
 
     const withoutPinterest = buildComposeBrief({ ...baseOpts, scopeHint: null, hasPinterest: false });
-    expect(withoutPinterest).not.toContain('pinterest');
+    expect(withoutPinterest).toContain('Pinterest ✗');
   });
 
-  // WP-lab-quality (.tmp/pipeline/wp-lab-quality.yaml): bằng chứng thật —
-  // SCR-01 frame 398 (lệch chuẩn 390), cả 2 card cùng đeo badge "PHỔ BIẾN",
-  // CTA 116px ở màn checkout.
-  it('states the HARD frame width rule: mobile ĐÚNG 390 (not 398), web 1440', () => {
+  it('ends with the lab-result.json + patterns/*.json two-file contract', () => {
     const brief = buildComposeBrief({ ...baseOpts, scopeHint: null });
-    expect(brief).toContain('ĐÚNG 390');
-    expect(brief).toContain('398');
-    expect(brief).toContain('1440');
+    expect(brief).toContain(LAB_RESULT_FILE_REL);
+    expect(brief).toContain(`${LAB_PATTERNS_DIR_REL}/*.json`);
   });
 
-  it('states the ONE-highlight-per-screen + full-width CTA aesthetic rule', () => {
+  it('cites the "lab-screen-compose" skill', () => {
     const brief = buildComposeBrief({ ...baseOpts, scopeHint: null });
-    expect(brief).toContain('MỘT điểm nhấn');
-    expect(brief).toContain('full-width');
-  });
-
-  // Bằng chứng thật 2026-08-22: DS "[SDK] Web Lib" (thư viện web) không có
-  // comp App Bar → cả 3 màn dựng ra trần trụi không thanh điều hướng.
-  it('states the mobile screen scaffold rule: App Bar on sub-screens, Tabbar on root, kit-first fallback chain', () => {
-    const brief = buildComposeBrief({ ...baseOpts, scopeHint: null });
-    expect(brief).toContain('KHUNG MÀN CHUẨN MOBILE');
-    expect(brief).toContain('App Bar');
-    expect(brief).toContain('Tabbar');
-  });
-
-  it('slots.md note (hasSlots) tells the agent to grep instead of reading sequentially', () => {
-    const withSlots = buildComposeBrief({ ...baseOpts, hasSlots: true, scopeHint: null });
-    expect(withSlots).toContain('GREP');
-  });
-
-  it('ends with the "skill already in system prompt, do not search local catalog" note', () => {
-    const brief = buildComposeBrief({ ...baseOpts, scopeHint: null });
-    expect(brief).toContain('system prompt');
     expect(brief).toContain('lab-screen-compose');
-    expect(brief).toContain('ĐỪNG đi tìm file skill');
   });
 });
 
