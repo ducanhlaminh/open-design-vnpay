@@ -226,31 +226,49 @@ test('codex args keep plugins enabled when OD_CODEX_DISABLE_PLUGINS is not 1', (
   });
 });
 
-// Product decision 19/08/2026 (revised 21/08/2026): Codex CLI stays pinned to
-// Luna on the MODEL axis (no live probing), but reasoning effort is now a user
-// choice — the picker exposes the full ladder, default `high`.
-test('codex model picker is fixed to Luna; reasoning exposes the full ladder (user choice)', () => {
+// Product decision 19/08/2026 (revised 21/08 + 23/08/2026): Codex CLI model
+// is a CLOSED list of the three GPT-5.6 siblings (Luna default, Sol, Terra —
+// no live probing, no custom ids); reasoning effort is a user choice over the
+// union ladder, default `high`; `ultra` only exists on Sol/Terra and is
+// clamped to `max` on Luna.
+test('codex model picker = Luna (default) / Sol / Terra; reasoning exposes the full ladder (user choice)', () => {
   assert.deepEqual(codex.fallbackModels, [
     { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
+    { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol' },
+    { id: 'gpt-5.6-terra', label: 'GPT-5.6-Terra' },
   ]);
   assert.ok(codex.reasoningOptions, 'codex must define reasoningOptions');
   // Option đầu là sentinel 'default' (convention pi) — SettingsDialog hiển
   // thị option [0] khi user chưa chọn nên nó phải là hành vi mặc định thật.
   assert.deepEqual(
     codex.reasoningOptions.map((o: { id: string }) => o.id),
-    ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+    ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   );
   assert.equal(codex.listModels, undefined, 'codex must not probe `debug models` anymore');
 
-  // Unset reasoning → default high; chosen reasoning → passed through.
+  // Unset model/reasoning → Luna + high; chosen values → passed through.
   const argsDefault = codex.buildArgs('', [], [], {}, { cwd: '/tmp/od-project' });
   assert.ok(argsDefault.includes('--model'));
   assert.equal(argsDefault[argsDefault.indexOf('--model') + 1], 'gpt-5.6-luna');
   assert.ok(argsDefault.includes('model_reasoning_effort="high"'));
 
-  const argsChosen = codex.buildArgs('', [], [], { reasoning: 'max' }, { cwd: '/tmp/od-project' });
-  assert.equal(argsChosen[argsChosen.indexOf('--model') + 1], 'gpt-5.6-luna');
+  const argsChosen = codex.buildArgs('', [], [], { model: 'gpt-5.6-sol', reasoning: 'max' }, { cwd: '/tmp/od-project' });
+  assert.equal(argsChosen[argsChosen.indexOf('--model') + 1], 'gpt-5.6-sol');
   assert.ok(argsChosen.includes('model_reasoning_effort="max"'));
+
+  const argsTerra = codex.buildArgs('', [], [], { model: 'gpt-5.6-terra', reasoning: 'ultra' }, { cwd: '/tmp/od-project' });
+  assert.equal(argsTerra[argsTerra.indexOf('--model') + 1], 'gpt-5.6-terra');
+  assert.ok(argsTerra.includes('model_reasoning_effort="ultra"'));
+
+  // Luna has no `ultra` notch → clamp to max, not an unknown effort the CLI rejects.
+  const argsLunaUltra = codex.buildArgs('', [], [], { model: 'gpt-5.6-luna', reasoning: 'ultra' }, { cwd: '/tmp/od-project' });
+  assert.ok(argsLunaUltra.includes('model_reasoning_effort="max"'));
+
+  // Unknown / stale / sentinel model ids never reach the CLI — fall back to Luna.
+  for (const model of ['default', 'gpt-5', 'gpt-5.5', '  ']) {
+    const args = codex.buildArgs('', [], [], { model }, { cwd: '/tmp/od-project' });
+    assert.equal(args[args.indexOf('--model') + 1], 'gpt-5.6-luna', `model ${JSON.stringify(model)}`);
+  }
 });
 
 // `codex.listModels` was removed from the def (fixed-model product
@@ -317,6 +335,8 @@ exit 2
       assert.equal(detected.modelsSource, 'fallback');
       assert.deepEqual(detected.models.map((m: { id: string }) => m.id), [
         'gpt-5.6-luna',
+        'gpt-5.6-sol',
+        'gpt-5.6-terra',
       ]);
     });
   } finally {
@@ -324,11 +344,10 @@ exit 2
   }
 });
 
-test('codex picker is fixed to the Luna model only (no user-selectable family)', () => {
-  const pickerModels = new Set(codex.fallbackModels.map((model) => model.id));
+test('codex picker is the closed GPT-5.6 family (Luna first = default, Sol, Terra) — no other ids', () => {
+  const pickerModels = codex.fallbackModels.map((model) => model.id);
 
-  assert.equal(pickerModels.size, 1);
-  assert.equal(pickerModels.has('gpt-5.6-luna'), true);
+  assert.deepEqual(pickerModels, ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra']);
 });
 
 test('cursor-agent parses live model ids separately from display labels', () => {

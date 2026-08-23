@@ -2393,9 +2393,9 @@ console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_messag
           });
 
           const args = JSON.parse(await fsp.readFile(argvFile, 'utf8')) as string[];
-          // Codex is pinned to Luna + max reasoning (defs/codex.ts
-          // CODEX_FIXED_MODEL / CODEX_FIXED_REASONING) — the requested model
-          // and the invalid effort never reach the CLI.
+          // Codex model is a closed list (defs/codex.ts CODEX_MODEL_OPTIONS,
+          // Luna default) + default reasoning `high` — the unknown requested
+          // model and the invalid effort never reach the CLI.
           expect(args).toEqual(expect.arrayContaining(['--model', 'gpt-5.6-luna']));
           expect(args).toEqual(expect.arrayContaining(['-c', 'model_reasoning_effort="high"']));
           expect(args.some((arg) => arg.includes('gpt-5"') || arg === 'gpt-5')).toBe(false);
