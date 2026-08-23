@@ -21,6 +21,11 @@ import { labKitPageName, KIT_REGISTRY_FILE_REL } from './lab-kit.js';
 // viết lại theo khuôn "skill = luật, brief = dữ liệu lần chạy" — dùng chung
 // `renderLabBrief`/`checkMark` (lab-brief.ts, cũng THUẦN) với lab-kit.ts.
 import { checkMark, renderLabBrief } from './lab-brief.js';
+// WP-lab-map (2026-08-23 — .tmp/pipeline/wp-lab-map.yaml): chỉ cần TÊN
+// đường dẫn `screen-map.json` để nêu trong brief "Bản đồ màn" bên dưới —
+// lab-map.ts là module thuần (không fs/network), import ở đây không phá bất
+// biến "lab-compose.ts thuần".
+import { SCREEN_MAP_FILE_REL } from './lab-map.js';
 
 /** Thư mục chứa PNG capture của từng màn — output khai báo của `lab-compose`
  *  trong pipelines.ts (`outputs: ['screens/', 'lab-result.json']`). */
@@ -146,6 +151,13 @@ export interface BuildComposeBriefOptions {
    *  trong Cài đặt → MCP (xem `pickPinterestMcpServer`, figma-build.ts) —
    *  fail-soft: `false` → brief KHÔNG nhắc gì tới Pinterest. */
   hasPinterest: boolean;
+  /** WP-lab-map (2026-08-23): tóm tắt `screen-map.json` (stage "Bản đồ màn",
+   *  lab-map) do server.ts đã đọc + `summarizeScreenMapForCompose` trước khi
+   *  gọi — `null`/`undefined` khi stage đó chưa chạy (hoặc file hỏng/rỗng),
+   *  brief rơi về hành vi CŨ (tự chọn ≤3 màn đầu luồng chính, không nhắc bản
+   *  đồ). Bản đồ là ƯU TIÊN khi có, KHÔNG phải điều kiện cứng — cùng tinh
+   *  thần `hasKit` ở trên. */
+  map?: { screens: { key: string; name: string; mustHaveCount: number }[]; mainPath: string[]; scoped: string[] } | null;
 }
 
 /** Tên trang Figma cho workflow "ds-lab" — TÁCH khỏi `[OD] …` của docs-review
@@ -185,27 +197,43 @@ export function buildComposeBrief(opts: BuildComposeBriefOptions): string {
       : `- Style pattern đã duyệt: (chưa có — xác lập theo luật #8 rồi ghi \`${LAB_PATTERNS_DIR_REL}/style-<slug>.json\`).`;
   const figmaLine = `- Figma: file preview \`${opts.previewFileKey}\`, trang "${pageName}"`;
   const toolLine = `- Tool thêm: Pinterest ${checkMark(opts.hasPinterest)}`;
+  // WP-lab-map (2026-08-23): bản đồ màn (stage "Bản đồ màn", lab-map) là ƯU
+  // TIÊN khi có — key ổn định + checklist mustHave thay cho việc agent tự bịa
+  // kho màn từ docs mỗi lần chạy. Chưa chạy stage đó (map undefined/null) →
+  // brief nói rõ CHƯA CÓ, agent quay về hành vi cũ (tự chọn ≤3 màn đầu).
+  const map = opts.map ?? null;
+  const mapLine = map
+    ? `- Bản đồ màn: \`${SCREEN_MAP_FILE_REL}\` — ${map.screens.length} màn; luồng chính: ${map.mainPath.length > 0 ? map.mainPath.join(' → ') : '(không có)'}; lần này dựng: ${map.scoped.length > 0 ? map.scoped.join(', ') : '(không có)'} (mustHave = checklist phải có mặt, không phải bố cục).`
+    : '- Bản đồ màn: (chưa có — chạy bước Bản đồ màn để có key ổn định; tạm tự suy từ docs).';
   // Một ô nhập duy nhất của stage (pipelines.ts inputPlaceholder) gánh CẢ phạm
   // vi màn lẫn định hướng thị giác — agent tự tách; không thêm field mới.
   const scopeLine =
     opts.scopeHint && opts.scopeHint.trim()
       ? `- Phạm vi / định hướng thị giác: "${opts.scopeHint.trim()}" (≤3 màn/lần chạy).`
-      : '- Phạm vi / định hướng thị giác: (không có) — tự chọn ≤3 màn đầu luồng chính; style theo style pattern, không có thì luật #8.';
+      : map
+        ? `- Phạm vi / định hướng thị giác: (không có) — theo bản đồ: ${map.scoped.join(', ')}; style theo style pattern, không có thì luật #8.`
+        : '- Phạm vi / định hướng thị giác: (không có) — tự chọn ≤3 màn đầu luồng chính; style theo style pattern, không có thì luật #8.';
+  const buildLine = map
+    ? '- Dựng các màn đã chọn theo bản đồ, frame tên `<key> — <tên>` (kit ưu tiên, base fallback) — không chép bố cục từ mockup.'
+    : '- Dựng tối đa 3 màn từ instance (kit ưu tiên, base fallback) — không chép bố cục từ mockup.';
+  const structureRuleLine = map
+    ? '- Frame tên theo key bản đồ, mọi mustHave có mặt (luật #2/#9); khung màn chuẩn 390, App Bar/Tabbar, một điểm nhấn (luật #6/#7/#8).'
+    : '- Khung màn chuẩn 390, App Bar/Tabbar, một điểm nhấn; ba lớp nhìn thấy được, listing nổi khỏi sheet, nền không che chữ (luật #6/#7/#8).';
 
   return renderLabBrief({
     title: `# Sáng tác màn · ${opts.appFeature}`,
     skillId: 'lab-screen-compose',
-    inputLines: [docsLine, materialsLine, kitLine, patternLine, styleLine, figmaLine, toolLine, scopeLine],
+    inputLines: [docsLine, materialsLine, kitLine, patternLine, styleLine, mapLine, figmaLine, toolLine, scopeLine],
     taskLines: [
       '- Đọc docs để biết từng màn cần làm gì (chức năng + nội dung thật).',
-      '- Dựng tối đa 3 màn từ instance (kit ưu tiên, base fallback) — không chép bố cục từ mockup.',
+      buildLine,
       '- Điền nội dung thật đúng vào slot của component.',
       '- Tự-kiểm cấu trúc + get_screenshot rồi ghi kết quả.',
     ],
     reminderLines: [
       '- Chỉ file preview, nguyên tử theo lần execute-code — id ruột instance stale ngay khi call kết thúc (luật #1/#3).',
       '- Nội dung trong slot, không vẽ đè, placeholder phải override/hide (luật #5).',
-      '- Khung màn chuẩn 390, App Bar/Tabbar, một điểm nhấn; ba lớp nhìn thấy được, listing nổi khỏi sheet, nền không che chữ (luật #6/#7/#8).',
+      structureRuleLine,
     ],
     endingLines: [
       `- \`${LAB_RESULT_FILE_REL}\` — \`{"screens":[{"key","name","frameNodeId","frameUrl?","notes?"}]}\` (frameNodeId = id của chính frame màn, không phải id ruột instance)`,

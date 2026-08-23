@@ -92,6 +92,37 @@ không phải tái tạo pixel của ảnh tham khảo.
   chạy lab-kit (không có `kit/kit.json`, hoặc rỗng) → dùng thẳng comp base như
   trước, không có gì thay đổi.
 
+## Bản đồ màn (`screen-map.json`)
+
+Nếu stage "Bản đồ màn" (`lab-map`, đứng TRƯỚC trong cùng workflow) đã chạy,
+kickoff sẽ trỏ tới `screen-map.json` (bản đồ ỔN ĐỊNH: màn nào, mục đích,
+checklist `mustHave`, luồng chính) — đây là NGUỒN ưu tiên để CHỌN và ĐẶT TÊN
+màn, thay cho việc tự bịa kho màn từ `docs/` mỗi lần chạy:
+
+1. **Phạm vi**: dựng đúng `scoped` mà brief đã tóm tắt từ bản đồ (hoặc, nếu
+   kickoff không có `scoped` cụ thể, 3 key đầu của `mainPath`) — KHÔNG tự
+   chọn màn khác ngoài danh sách đó.
+2. **Tên frame ĐÚNG key bản đồ**: `<key> — <tên>` — dùng NGUYÊN VĂN `key`
+   trong bản đồ (xem luật #2 bên dưới), KHÔNG tự đặt key khác (ví dụ
+   "SCR-01") khi bản đồ đã có key ổn định.
+3. **`mustHave` = checklist COVERAGE**: mọi `role`/`content` liệt kê cho màn
+   đó PHẢI có mặt trong màn bạn dựng — đây KHÔNG phải chỉ định thứ tự/bố cục
+   (bố cục vẫn là quyết định của bạn). Thiếu một mục vì lý do chính đáng (ví
+   dụ Design System chưa có component phù hợp) → ghi rõ lý do vào `notes`
+   của màn trong `lab-result.json`, đừng lặng lẽ bỏ qua.
+4. **`nav` → điều hướng đúng đích**: mọi CTA/thao tác điều hướng trên màn
+   phải trỏ ĐÚNG màn đích theo `nav` của bản đồ. Màn đích chưa được dựng
+   trong lần chạy này (nằm ngoài `scoped`) → vẫn đặt đúng ý định điều hướng
+   (tên/label) và ghi vào `notes` rằng màn đích chưa tồn tại.
+5. **`source` để tra chi tiết**: mỗi màn trong bản đồ có thể có `source:
+   {doc, line}` trỏ tới đúng đoạn tài liệu gốc — dùng nó để mở nhanh phần
+   cần thiết khi bạn cần nội dung/ngữ cảnh chi tiết hơn, thay vì đọc lại tuần
+   tự cả thư mục `docs/`.
+
+Không có `screen-map.json` (chưa chạy "Bản đồ màn", hoặc file hỏng/rỗng) →
+hành vi CŨ không đổi: tự chọn ≤3 màn đầu luồng chính từ `docs/`, tự đặt key
+ngắn gọn.
+
 ## Quy trình khuyến nghị
 
 1. Đọc `docs/` (kèm phạm vi màn nêu trong kickoff — nếu kickoff không giới
@@ -143,10 +174,13 @@ không phải tái tạo pixel của ảnh tham khảo.
    khác (kể cả file Design System nguồn — việc DUY NHẤT bạn được làm với nó
    là import component theo `key`/tra bằng `search_design_system`).
 2. **Page/frame đặt tên chuẩn + idempotent replace-by-name**: trang tên đúng
-   `[OD Lab] <tên dự án>`, frame tên đúng `<KEY> — <tên màn>`. Có frame trùng
-   tên trong trang đó → NHỚ vị trí `{x, y}` của nó, **XÓA** frame cũ, dựng
-   frame MỚI cùng tên tại ĐÚNG vị trí cũ (regen = THAY, không phải THÊM —
-   không bao giờ để hai frame cùng tên tồn tại song song trong cùng một trang).
+   `[OD Lab] <tên dự án>`, frame tên đúng `<KEY> — <tên màn>`. Có
+   `screen-map.json` (bước "Bản đồ màn") → `<KEY>` PHẢI đúng key trong bản đồ
+   đó (`<key> — <tên>`, xem "Bản đồ màn" ở "Nguyên liệu"), KHÔNG tự đặt key
+   khác. Có frame trùng tên trong trang đó → NHỚ vị trí `{x, y}` của nó,
+   **XÓA** frame cũ, dựng frame MỚI cùng tên tại ĐÚNG vị trí cũ (regen = THAY,
+   không phải THÊM — không bao giờ để hai frame cùng tên tồn tại song song
+   trong cùng một trang).
 3. **NGUYÊN TỬ theo lần execute-code — cấm mang node id qua ranh giới call**:
    TOÀN BỘ thao tác của MỘT phần tử (import component, ghép frame, xác nhận
    variant, duyệt cây, override text, set thuộc tính…) phải nằm trong CÙNG
@@ -282,6 +316,9 @@ chưa đạt mục nào thì sửa trước khi coi là xong:
    khác màu + shadow), "Nền/ảnh có cạnh tranh CTA hay che chữ không?" (không).
    Đây đúng là 3 câu người dùng từng phải prompt thêm 3 vòng — chưa đạt thì
    sửa trước, không báo xong.
+7. Có `screen-map.json` → coverage `mustHave` (mọi role/content của bản đồ đã
+   có mặt hoặc đã ghi lý do vào `notes`) + tên frame đúng `<key> — <tên>` của
+   bản đồ (luật #2).
 
 ## Kết thúc: ghi `lab-result.json`
 

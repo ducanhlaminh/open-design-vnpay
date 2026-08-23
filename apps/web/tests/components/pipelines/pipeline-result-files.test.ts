@@ -84,4 +84,12 @@ describe('isUiPreviewFile', () => {
     expect(isUiPreviewFile('ds-lab/lab-result.json')).toBe(false);
     expect(isUiPreviewFile('ds-lab/kit/kit.json')).toBe(false);
   });
+
+  // ds-lab "Bản đồ màn" (lab-map, WP-lab-map 2026-08-23): screen-map.md is the
+  // human table for the approval gate — same "readable sibling wins" pairing
+  // as kit-plan.md/kit-plan.json above.
+  it('ds-lab: screen-map.md is previewable, screen-map.json is not', () => {
+    expect(isUiPreviewFile('ds-lab/screen-map.md')).toBe(true);
+    expect(isUiPreviewFile('ds-lab/screen-map.json')).toBe(false);
+  });
 });

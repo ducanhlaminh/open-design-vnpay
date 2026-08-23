@@ -3060,6 +3060,11 @@ export function isUiPreviewFile(name: string): boolean {
   if (/(^|\/)kit-plan\.md$/.test(lower)) return true;
   if (/(^|\/)(kit-shots|screens)\/[^/]+\.png$/.test(lower)) return true;
   if (/(^|\/)(kit-shots|screens)\/_audit\.md$/.test(lower)) return true;
+  // ds-lab "Bản đồ màn" (lab-map, WP-lab-map 2026-08-23): screen-map.md is
+  // the human-readable table for the approval gate — screen-map.json (the
+  // machine-read sibling `lab-compose`/`lab-kit-plan` consume) stays hidden,
+  // same "readable file wins Quick result" reasoning as kit-plan.md above.
+  if (/(^|\/)screen-map\.md$/.test(lower)) return true;
   // UI-Spec previews: React per-screen pages + HTML prototype (not the
   // dist/index.html bundle, dev entry, or build assets).
   if (/\.html?$/.test(base)) {

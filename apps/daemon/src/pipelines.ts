@@ -382,6 +382,27 @@ const PIPELINE_DEFS_BASE: readonly PipelineDef[] = [
   // sẻ qua lại với ba workflow trên (cùng bất biến "mỗi pipeline id thuộc
   // đúng 1 workflow").
   { id: 'lab-docs',         name: 'Tài liệu (nạp)',            skillId: 'confluence-ingest',     dependsOn: [],                   outputs: ['docs/', 'docs-feature/'], inputPlaceholder: 'Confluence page URL/id', acceptsUpload: true },
+  // `lab-map` (WP-lab-map, 2026-08-23 — .tmp/pipeline/wp-lab-map.yaml): stage
+  // MỚI, CHỈ ĐỌC, đứng NGAY SAU lab-docs và TRƯỚC lab-kit-plan — agent đọc
+  // artifact docs-review của cùng dự án (nếu có, staging fail-soft vào
+  // `map-src/`, xem runLabMap trong server.ts) ưu tiên hơn tự đọc docs, biên
+  // ra `screen-map.json`/`screen-map.md`: CÁI GÌ (màn nào, mục đích, mustHave
+  // role+content, trạng thái, nav, luồng chính) — KHÔNG nói LÀM THẾ NÀO (không
+  // toạ độ/thứ tự/bố cục). Mục đích: key màn ỔN ĐỊNH giữa các lần chạy (dùng
+  // NGUYÊN VĂN key docs-review khi có) để lab-compose bám đúng thay vì tự đặt
+  // key mới mỗi lần (SCR-01 ≠ 6.1.1). Cùng bất biến DAEMON-ORCHESTRATED như
+  // lab-kit-plan/lab-kit/lab-compose — server.ts nhận diện skillId này và tự
+  // chạy runLabMap (rút gọn từ runLabKitPlan, KHÔNG Figma MCP nào — Symbol
+  // INTERNAL_MCP_SERVER_IDS rỗng). Không có docs-review cho dự án này → agent
+  // tự phân tích từ docs (fallback, ghi `generatedFrom: "docs"`), KHÔNG fail.
+  {
+    id: 'lab-map',
+    name: 'Bản đồ màn',
+    skillId: 'lab-map',
+    dependsOn: ['lab-docs'],
+    outputs: ['screen-map.json', 'screen-map.md'],
+    inputPlaceholder: 'Luồng/màn cần ưu tiên (tuỳ chọn)',
+  },
   // `lab-kit-plan` (WP-kit-plan, 2026-08-22 — .tmp/pipeline/wp-kit-plan.yaml):
   // stage MỚI, CỔNG DUYỆT CỦA NGƯỜI trước "Nâng bộ comp" — agent CHỈ ĐỌC
   // (docs + criteria), KHÔNG có tool Figma trong phiên, xuất kit-plan.json
@@ -489,8 +510,8 @@ const WORKFLOW_DEFS: ReadonlyArray<Omit<Workflow, 'stages'>> = [
     id: 'ds-lab',
     name: 'DS → Màn hình sáng tạo (Lab)',
     description:
-      'Độc lập hoàn toàn với Docs → UI-Spec, Docs → PRD Requirements Review và Docs → Rà soát tài liệu: nạp tài liệu riêng cho workflow này (lab-docs), rồi (tuỳ chọn) để agent CHỈ ĐỌC đề xuất một bộ component phái sinh cho NGƯỜI duyệt (lab-kit-plan — kit-plan.json/kit-plan.md, không tool Figma), rồi để agent nâng ĐÚNG bộ component đã duyệt đó (lab-kit — CHỈ trong file preview), rồi để agent Figma TOÀN QUYỀN sáng tác màn hình mới trong file Figma preview từ comp base (hoặc kit, nếu có) + tokens của Design System. URD chỉ cho biết màn LÀM GÌ (chức năng + nội dung thật) — ảnh mockup nhúng trong tài liệu chỉ để hiểu tính năng, không phải hướng bố cục. Kết quả của mỗi lần chạy là ảnh chụp (PNG) của từng màn (hoặc từng comp kit) agent vừa dựng trong Figma.',
-    pipelineIds: ['lab-docs', 'lab-kit-plan', 'lab-kit', 'lab-compose'],
+      'Độc lập hoàn toàn với Docs → UI-Spec, Docs → PRD Requirements Review và Docs → Rà soát tài liệu: nạp tài liệu riêng cho workflow này (lab-docs), rồi để agent CHỈ ĐỌC biên một bản đồ màn ổn định (lab-map — screen-map.json/screen-map.md, ưu tiên artifact docs-review của cùng dự án nếu có), rồi (tuỳ chọn) để agent CHỈ ĐỌC đề xuất một bộ component phái sinh cho NGƯỜI duyệt (lab-kit-plan — kit-plan.json/kit-plan.md, không tool Figma), rồi để agent nâng ĐÚNG bộ component đã duyệt đó (lab-kit — CHỈ trong file preview), rồi để agent Figma TOÀN QUYỀN sáng tác màn hình mới trong file Figma preview từ comp base (hoặc kit, nếu có) + tokens của Design System theo đúng bản đồ. URD chỉ cho biết màn LÀM GÌ (chức năng + nội dung thật) — ảnh mockup nhúng trong tài liệu chỉ để hiểu tính năng, không phải hướng bố cục. Kết quả của mỗi lần chạy là ảnh chụp (PNG) của từng màn (hoặc từng comp kit) agent vừa dựng trong Figma.',
+    pipelineIds: ['lab-docs', 'lab-map', 'lab-kit-plan', 'lab-kit', 'lab-compose'],
   },
 ];
 

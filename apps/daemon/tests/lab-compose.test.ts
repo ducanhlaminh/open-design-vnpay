@@ -42,30 +42,38 @@ function def(id: string) {
 // lab-kit — see pipelines.test.ts's dedicated ds-lab tests for the full
 // lab-kit-plan assertions; this test only needs its own pipelineIds/dependsOn
 // expectations updated to not regress.
-test('ds-lab: 4-stage workflow (WP-kit-plan added lab-kit-plan before lab-kit), independent of docs-to-ui/docs-to-prd/docs-review', () => {
+// WP-lab-map (.tmp/pipeline/wp-lab-map.yaml, 2026-08-23): ds-lab grew a 5th
+// stage, the read-only "Bản đồ màn" (lab-map), between lab-docs and
+// lab-kit-plan — see pipelines.test.ts's dedicated lab-map assertions.
+test('ds-lab: 5-stage workflow (WP-lab-map added lab-map before lab-kit-plan), independent of docs-to-ui/docs-to-prd/docs-review', () => {
   const wf = getWorkflow('ds-lab');
   assert.ok(wf, 'ds-lab workflow should exist');
-  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-kit-plan', 'lab-kit', 'lab-compose']);
+  assert.deepEqual(wf!.pipelineIds, ['lab-docs', 'lab-map', 'lab-kit-plan', 'lab-kit', 'lab-compose']);
   assert.equal(def('lab-docs').skillId, 'confluence-ingest');
+  assert.equal(def('lab-map').skillId, 'lab-map');
   assert.equal(def('lab-kit').skillId, 'lab-kit-compose');
   assert.equal(def('lab-compose').skillId, 'lab-screen-compose');
   assert.deepEqual(def('lab-docs').dependsOn, []);
+  assert.deepEqual(def('lab-map').dependsOn, ['lab-docs']);
   assert.deepEqual(def('lab-kit').dependsOn, ['lab-docs', 'lab-kit-plan']);
   assert.deepEqual(def('lab-compose').dependsOn, ['lab-docs']);
   assert.deepEqual(def('lab-docs').outputs, ['docs/', 'docs-feature/']);
+  assert.deepEqual(def('lab-map').outputs, ['screen-map.json', 'screen-map.md']);
   // WP-kit-regen (.tmp/pipeline/wp-kit-regen.yaml, 2026-08-22): kit/kit.json is
   // now a declared output of lab-kit (Chạy lại = gen lại từ đầu) — unlike
   // lab-compose's patterns/ below, which stays agent-owned/survives re-run.
   assert.deepEqual(def('lab-kit').outputs, ['kit-shots/', 'kit-result.json', 'kit/kit.json']);
   assert.deepEqual(def('lab-compose').outputs, ['screens/', 'lab-result.json']);
   assert.equal(def('lab-docs').acceptsUpload, true);
-  // patterns/ (lab-compose) is deliberately NOT a declared output of any
-  // stage — see the attribution test below. kit/kit.json no longer gets the
-  // same treatment (see the lab-kit.test.ts / pipelines.test.ts red specs).
+  // patterns/ (lab-compose) and map-src/ (lab-map) are deliberately NOT a
+  // declared output of any stage — see the attribution test below.
+  // kit/kit.json no longer gets the same treatment (see the lab-kit.test.ts /
+  // pipelines.test.ts red specs).
   for (const d of PIPELINE_DEFS) {
     for (const pattern of d.outputs ?? []) {
       assert.notEqual(pattern, 'patterns/', `${d.id}.outputs must not declare patterns/`);
       assert.notEqual(pattern, 'kit/', `${d.id}.outputs must not declare kit/ as a whole-directory pattern`);
+      assert.notEqual(pattern, 'map-src/', `${d.id}.outputs must not declare map-src/`);
     }
   }
   // Docs-to-ui stays the default workflow — appending ds-lab must not disturb it.
@@ -74,6 +82,7 @@ test('ds-lab: 4-stage workflow (WP-kit-plan added lab-kit-plan before lab-kit), 
 
 test('ds-lab: pipeline ids resolve to their OWN workflow folder, never another workflow\'s', () => {
   assert.equal(workflowDirForPipeline('lab-docs'), 'ds-lab');
+  assert.equal(workflowDirForPipeline('lab-map'), 'ds-lab');
   assert.equal(workflowDirForPipeline('lab-kit-plan'), 'ds-lab');
   assert.equal(workflowDirForPipeline('lab-kit'), 'ds-lab');
   assert.equal(workflowDirForPipeline('lab-compose'), 'ds-lab');
@@ -261,13 +270,15 @@ describe('buildComposeBrief', () => {
     hasPinterest: false,
   };
 
-  it('phần TĨNH (dữ liệu rỗng/tối thiểu) đúng khuôn: ≥5 heading, ≥10 dòng, ≤1700 ký tự, ≤6 từ VIẾT HOA, vắng giai thoại cũ', () => {
+  // WP-lab-map (.tmp/pipeline/wp-lab-map.yaml, 2026-08-23): cap tĩnh nâng
+  // 1700 → 1800 — brief compose thêm dòng "Bản đồ màn" ở "Đầu vào lần này".
+  it('phần TĨNH (dữ liệu rỗng/tối thiểu) đúng khuôn: ≥5 heading, ≥10 dòng, ≤1800 ký tự, ≤6 từ VIẾT HOA, vắng giai thoại cũ', () => {
     const brief = buildComposeBrief({ ...minOpts, scopeHint: null });
     const headingLines = brief.match(/^#{1,2} .+$/gm) ?? [];
     expect(headingLines.length).toBeGreaterThanOrEqual(5);
     for (const h of REQUIRED_COMPOSE_HEADINGS) expect(brief).toContain(h);
     expect(brief.split('\n').length).toBeGreaterThanOrEqual(10);
-    expect(brief.length).toBeLessThanOrEqual(1700);
+    expect(brief.length).toBeLessThanOrEqual(1800);
     expect(allCapsWordsCompose(brief).length).toBeLessThanOrEqual(6);
     for (const banned of BANNED_COMPOSE_PHRASES) expect(brief).not.toContain(banned);
   });
@@ -377,6 +388,66 @@ describe('buildComposeBrief', () => {
   it('cites the "lab-screen-compose" skill', () => {
     const brief = buildComposeBrief({ ...baseOpts, scopeHint: null });
     expect(brief).toContain('lab-screen-compose');
+  });
+
+  // ── WP-lab-map: bản đồ màn là ưu tiên khi có ──────────────────────────────
+
+  it('map present → mentions screen-map.json, screen count, luồng chính, and the scoped keys to build this run', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      map: {
+        screens: [
+          { key: 'doc__6.1.1', name: 'Trang chủ', mustHaveCount: 2 },
+          { key: 'doc__6.2.1', name: 'Chọn QG', mustHaveCount: 3 },
+        ],
+        mainPath: ['doc__6.1.1', 'doc__6.2.1'],
+        scoped: ['doc__6.1.1', 'doc__6.2.1'],
+      },
+    });
+    expect(brief).toContain('screen-map.json');
+    expect(brief).toContain('doc__6.1.1 → doc__6.2.1');
+    expect(brief).toContain('doc__6.1.1, doc__6.2.1');
+    expect(brief).toContain('mustHave = checklist phải có mặt, không phải bố cục');
+    expect(brief).toContain('frame tên `<key> — <tên>`');
+    expect(brief).toContain('luật #2/#9');
+  });
+
+  it('map absent (undefined/null) → says the map is not ready yet, keeps the old scope fallback text', () => {
+    const withUndefined = buildComposeBrief({ ...baseOpts, scopeHint: null });
+    expect(withUndefined).toContain('Bản đồ màn: (chưa có');
+    expect(withUndefined).toContain('tự chọn ≤3 màn đầu luồng chính');
+
+    const withNull = buildComposeBrief({ ...baseOpts, scopeHint: null, map: null });
+    expect(withNull).toContain('Bản đồ màn: (chưa có');
+  });
+
+  it('map present + scopeHint rỗng → scope line points to the map-scoped keys instead of "tự chọn"', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: null,
+      map: { screens: [], mainPath: [], scoped: ['doc__6.1.1', 'doc__6.2.1'] },
+    });
+    expect(brief).toContain('theo bản đồ: doc__6.1.1, doc__6.2.1');
+    expect(brief).not.toContain('tự chọn ≤3 màn đầu luồng chính');
+  });
+
+  it('map present + scopeHint có giá trị → scopeHint vẫn thắng (không bị map ghi đè)', () => {
+    const brief = buildComposeBrief({
+      ...baseOpts,
+      scopeHint: 'Chỉ màn Đăng nhập',
+      map: { screens: [], mainPath: [], scoped: ['doc__6.1.1'] },
+    });
+    expect(brief).toContain('Phạm vi / định hướng thị giác: "Chỉ màn Đăng nhập"');
+  });
+
+  it('cap tĩnh vẫn ≤1800 khi có map (dữ liệu tối thiểu)', () => {
+    const brief = buildComposeBrief({
+      ...minOpts,
+      scopeHint: null,
+      map: { screens: [{ key: 'A', name: 'A', mustHaveCount: 0 }], mainPath: ['A'], scoped: ['A'] },
+    });
+    expect(brief.length).toBeLessThanOrEqual(1800);
   });
 });
 

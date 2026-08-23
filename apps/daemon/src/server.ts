@@ -503,6 +503,20 @@ import {
   KIT_RESULT_FILE_REL,
   KIT_REGISTRY_FILE_REL,
 } from './lab-kit.js';
+// ds-lab (WP-lab-map, 2026-08-23 — .tmp/pipeline/wp-lab-map.yaml) — stage
+// MỚI "Bản đồ màn" glue, chen giữa lab-docs và lab-kit-plan. Cùng bất biến:
+// pure builder/parser/pick/summarize sống ở lab-map.ts, server.ts (runLabMap
+// bên dưới) sở hữu mọi fs/DB/agent-spawn thật + staging map-src/.
+import {
+  buildMapBrief,
+  parseScreenMap,
+  pickDocsReviewMapSources,
+  renderScreenMapMd,
+  summarizeScreenMapForCompose,
+  MAP_SRC_DIR_REL,
+  SCREEN_MAP_FILE_REL,
+  SCREEN_MAP_MD_REL,
+} from './lab-map.js';
 // ds-lab quality (WP-lab-quality, 2026-08-22) — module THUẦN audit
 // placeholder-lộ + tràn-biên từ subtree REST (xem docblock lab-audit.ts).
 // server.ts (runLabCompose + runLabKit) là caller duy nhất: gọi
@@ -20147,6 +20161,20 @@ export async function startServer({
           })
           .catch(() => [] as string[]);
 
+        // WP-lab-map (2026-08-23): `screen-map.json` — bản đồ màn của stage
+        // "Bản đồ màn" (lab-map, ĐỨNG TRƯỚC lab-kit-plan) — đọc fail-soft
+        // (chưa chạy lab-map, hoặc file hỏng/rỗng → `map: null`, brief rơi về
+        // hành vi CŨ). Ưu tiên khi có, KHÔNG phải điều kiện cứng (dependsOn
+        // của lab-compose CHỈ có lab-docs, cùng tinh thần `hasKit` ở trên).
+        const mapSummary = await fs.promises
+          .readFile(path.join(labCwd, SCREEN_MAP_FILE_REL), 'utf8')
+          .then((raw) => {
+            const parsedMap = parseScreenMap(raw);
+            if (!parsedMap || parsedMap.map.screens.length === 0) return null;
+            return summarizeScreenMapForCompose(parsedMap.map, scopeHint ?? null);
+          })
+          .catch(() => null);
+
         const appFeature = (project.name && String(project.name).trim()) || projectId;
         const brief = buildComposeBrief({
           docsIndex,
@@ -20160,6 +20188,7 @@ export async function startServer({
           hasKit: kitNames.length > 0,
           kitNames,
           hasPinterest: !!pinterest,
+          map: mapSummary,
         });
 
         // (2) Spawn MỘT run thường — Symbol allow-list NGUYÊN KHUÔN
@@ -20627,6 +20656,216 @@ export async function startServer({
     return { projectId, completion };
   };
 
+  // ── ds-lab: "Bản đồ màn" (lab-map) — DAEMON-ORCHESTRATED stage (WP-lab-map,
+  // 2026-08-23, .tmp/pipeline/wp-lab-map.yaml) ────────────────────────────────
+  // RÚT GỌN từ `runLabKitPlan` ngay DƯỚI đây (cùng khuôn spawn: một
+  // conversation, systemPrompt "job không người ngồi cạnh", chờ run xong, đọc
+  // file kết quả) nhưng KHÔNG staging criteria/ (không cần vật liệu DS — bản
+  // đồ chỉ nói CÁI GÌ, không nói style/DS) và KHÔNG chạm Figma — Symbol
+  // INTERNAL_MCP_SERVER_IDS truyền mảng RỖNG, dùng `resolveCriteriaAgent`
+  // (không đòi externalMcpInjection). Đứng NGAY SAU lab-docs, TRƯỚC
+  // lab-kit-plan trong ds-lab's WORKFLOW_DEFS. Việc RIÊNG của stage này: mỗi
+  // lần chạy, staging LẠI (ghi đè, không phải re-run-clear generic) một bản
+  // sao các file docs-review liên quan (`flows/` + `comp/`, lọc qua
+  // `pickDocsReviewMapSources`) vào `<labCwd>/map-src/` — thư mục này CỐ Ý
+  // KHÔNG nằm trong `outputs` của lab-map (không phải sản phẩm của lần chạy)
+  // nên vòng lặp re-run-clear generic không đụng tới nó; ta tự rm -rf + copy
+  // lại TRƯỚC MỖI lần chạy để agent luôn thấy bản mới nhất. Không có
+  // docs-review cho dự án này (thư mục không tồn tại, hoặc không file nào
+  // khớp) → map-src/ rỗng, brief nói rõ "tự phân tích từ docs" — KHÔNG fail.
+  const runLabMap = (
+    pipelineId: string,
+    projectId: string,
+    wfDir: string | null,
+    resetScope: 'stage' | 'downstream' | undefined,
+    scopeHint: string | undefined,
+    project: NonNullable<ReturnType<typeof getProject>>,
+  ): { projectId: string; completion: Promise<'succeeded' | 'failed' | 'idle'> } => {
+    const completion: Promise<'succeeded' | 'failed' | 'idle'> = (async () => {
+      setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running' });
+      try {
+        const projectRoot = await ensureProject(PROJECTS_DIR, projectId);
+        const labCwd = wfDir ? path.join(projectRoot, wfDir) : projectRoot;
+        const docsReviewCwd = path.join(projectRoot, workflowDirForPipeline('dr-docs') ?? 'docs-review');
+
+        // Re-run clear: chỉ outputs khai báo của lab-map (screen-map.json +
+        // screen-map.md) — cùng vòng lặp generic dựa trên `relClearedByRegen`/
+        // `stagesForOutput` như runLabKitPlan/runLabKit/runLabCompose.
+        const regenIds = new Set(stageRegenSet(pipelineId, resetScope === 'downstream'));
+        await commitHistory(projectRoot, { kind: 'manual-edits', by: historyActor() }).catch(() => null);
+        try {
+          const snap = await snapshotPipelineCwd(projectRoot);
+          for (const rel of snap.keys()) {
+            if (relClearedByRegen(rel, regenIds, wfDir)) {
+              await fs.promises.rm(path.join(projectRoot, rel), { force: true }).catch(() => null);
+            }
+          }
+        } catch (error) {
+          console.warn('[ds-lab] lab-map re-run clear failed (continuing):', error);
+        }
+        for (const id of regenIds) {
+          if (id !== pipelineId) setProjectPipelineStatus(db, projectId, id, { status: 'idle' });
+        }
+
+        // Agent mặc định của máy — phiên này KHÔNG cần MCP (không tool
+        // Figma), giống lab-kit-plan.
+        let execution: { agentId: string; modelPrefs: { model?: string | null; reasoning?: string | null } };
+        try {
+          execution = await resolveCriteriaAgent();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+
+        // Staging map-src/: ghi đè MỖI lần chạy (KHÔNG phải re-run-clear
+        // generic — map-src/ không nằm trong `outputs`). Liệt kê đệ quy toàn
+        // bộ docs-review/ (snapshotPipelineCwd đã fail-soft: thư mục thiếu →
+        // Map rỗng), giữ lại đúng những rel path dưới `flows/`/`comp/`, lọc
+        // qua `pickDocsReviewMapSources`, rồi copy từng file.
+        await fs.promises.rm(path.join(labCwd, MAP_SRC_DIR_REL), { recursive: true, force: true }).catch(() => null);
+        const docsReviewSnap = await snapshotPipelineCwd(docsReviewCwd).catch(
+          () => new Map<string, { mtimeMs: number; size: number }>(),
+        );
+        const candidateRelPaths = Array.from(docsReviewSnap.keys()).filter(
+          (rel) => rel.startsWith('flows/') || rel.startsWith('comp/'),
+        );
+        const pickedRelPaths = pickDocsReviewMapSources(candidateRelPaths);
+        for (const rel of pickedRelPaths) {
+          const src = path.join(docsReviewCwd, rel);
+          const dest = path.join(labCwd, MAP_SRC_DIR_REL, rel);
+          try {
+            await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+            await fs.promises.copyFile(src, dest);
+          } catch (error) {
+            console.warn(`[ds-lab] lab-map: staging map-src/${rel} thất bại (continuing):`, error);
+          }
+        }
+        const mapSrc = {
+          flowcharts: pickedRelPaths
+            .filter((rel) => /^flows\/[^/]+\.flowchart\.json$/.test(rel))
+            .map((rel) => rel.replace(/^flows\//, '').replace(/\.flowchart\.json$/, '')),
+          uxReviews: pickedRelPaths.filter((rel) => /^flows\/[^/]+\/ux-review\.json$/.test(rel)),
+          screensIndex: pickedRelPaths.includes('comp/_screens.json'),
+          screenJsonCount: pickedRelPaths.filter((rel) => /^comp\/[^/]+\.screen\.json$/.test(rel)).length,
+        };
+
+        const docsIndex = await fs.promises
+          .readdir(path.join(labCwd, 'docs'))
+          .then((entries) => entries.filter((e) => e.toLowerCase().endsWith('.md')).sort().slice(0, 20))
+          .catch(() => [] as string[]);
+
+        const appFeature = (project.name && String(project.name).trim()) || projectId;
+        const brief = buildMapBrief({
+          docsIndex,
+          scopeHint: scopeHint ?? null,
+          appFeature,
+          mapSrc,
+        });
+
+        // Spawn MỘT run thường — Symbol allow-list RỖNG (KHÔNG MCP nào,
+        // phiên chỉ đọc/ghi file), KHÔNG promptProfile: 'pipeline'.
+        const conversationId = `lab-map-conv-${randomUUID()}`;
+        const rowNow = Date.now();
+        insertConversation(db, {
+          id: conversationId,
+          projectId,
+          title: `Bản đồ màn · ${appFeature}`,
+          createdAt: rowNow,
+          updatedAt: rowNow,
+        });
+        const assistantMessageId = `lab-map-assistant-${randomUUID()}`;
+        const run = design.runs.create({
+          projectId,
+          conversationId,
+          assistantMessageId,
+          clientRequestId: `lab-map-${randomUUID()}`,
+          agentId: execution.agentId,
+        });
+        upsertMessage(db, conversationId, { id: `lab-map-user-${run.id}`, role: 'user', content: brief });
+        upsertMessage(db, conversationId, {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: '',
+          agentId: execution.agentId,
+          agentName: getAgentDef(execution.agentId)?.name ?? execution.agentId,
+          runId: run.id,
+          runStatus: 'queued',
+          startedAt: Date.now(),
+        });
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'running', lastConversationId: conversationId });
+        const chatBody: Record<string, unknown> = {
+          agentId: execution.agentId,
+          projectId,
+          conversationId,
+          assistantMessageId,
+          clientRequestId: run.clientRequestId,
+          skillId: 'lab-map',
+          ...(wfDir ? { cwdSubdir: wfDir } : {}),
+          model: execution.modelPrefs.model ?? null,
+          reasoning: execution.modelPrefs.reasoning ?? null,
+          message: brief,
+          systemPrompt:
+            'Bạn đang chạy một job không có người ngồi cạnh. Không hỏi lại, không chờ input — chọn mặc định hợp lý và hoàn thành.',
+        };
+        // Symbol key — KHÔNG MCP nào (phiên chỉ đọc/ghi file, xem docblock
+        // INTERNAL_MCP_SERVER_IDS đầu file).
+        chatBody[INTERNAL_MCP_SERVER_IDS] = [];
+        design.runs.start(run, () => startChatRun(chatBody, run));
+        const final = await design.runs.wait(run);
+        db.prepare(`UPDATE messages SET run_status = ?, ended_at = ? WHERE id = ?`).run(final.status, Date.now(), assistantMessageId);
+        if (final.status !== 'succeeded') {
+          const message = `Agent kết thúc với trạng thái "${final.status}".`;
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+
+        // Đọc screen-map.json → parse. Thiếu/hỏng/rỗng → stage failed (không
+        // có gì cho lab-kit-plan/lab-compose dùng sau này).
+        const mapRaw = await fs.promises.readFile(path.join(labCwd, SCREEN_MAP_FILE_REL), 'utf8').catch(() => null);
+        const parsedMap = mapRaw != null ? parseScreenMap(mapRaw) : null;
+        if (!parsedMap || parsedMap.map.screens.length === 0) {
+          const message =
+            'Agent không ghi screen-map.json hợp lệ — thiếu file, JSON hỏng, hoặc không màn nào có "key"/"name" hợp lệ.';
+          setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+          return 'failed' as const;
+        }
+        if (parsedMap.warnings.length > 0) {
+          console.warn(`[ds-lab] lab-map: screen-map.json warnings: ${parsedMap.warnings.join(' | ')}`);
+        }
+
+        // screen-map.md thiếu → tự render bản tối giản từ map — đừng để cả
+        // stage fail chỉ vì thiếu file trình bày (screen-map.json là hợp đồng
+        // máy đọc, đã đủ để lab-kit-plan/lab-compose dùng).
+        const mdPath = path.join(labCwd, SCREEN_MAP_MD_REL);
+        const mdExists = await fs.promises
+          .access(mdPath)
+          .then(() => true)
+          .catch(() => false);
+        if (!mdExists) {
+          console.warn('[ds-lab] lab-map: agent không ghi screen-map.md — daemon tự render bản tối giản.');
+          await fs.promises.writeFile(mdPath, renderScreenMapMd(parsedMap.map), 'utf8').catch(() => null);
+        }
+
+        // Outputs/attribution: screen-map.json + screen-map.md thuộc lab-map
+        // (khớp `outputs` đã khai trong pipelines.ts); map-src/ không thuộc
+        // stage nào (staging nội bộ, agent chỉ đọc).
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'succeeded' });
+        void commitHistory(projectRoot, { kind: 'run', pipelineId, status: 'succeeded', by: historyActor() }).catch(() => null);
+        console.log(
+          `[ds-lab] lab-map ${projectId}: ${parsedMap.map.screens.length} màn, ${parsedMap.map.flows.length} luồng, generatedFrom "${parsedMap.map.generatedFrom}".`,
+        );
+        return 'succeeded' as const;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setProjectPipelineStatus(db, projectId, pipelineId, { status: 'failed', error: message });
+        console.warn('[ds-lab] lab-map run failed:', error);
+        return 'failed' as const;
+      }
+    })();
+    return { projectId, completion };
+  };
+
   // ── ds-lab: "Đề xuất kit" (lab-kit-plan) — DAEMON-ORCHESTRATED stage
   // (WP-kit-plan, 2026-08-22, .tmp/pipeline/wp-kit-plan.yaml) ────────────────
   // RÚT GỌN từ `runLabKit` ngay TRÊN đây (bắt chước cùng khuôn spawn: một
@@ -21080,6 +21319,16 @@ export async function startServer({
     // review/index.json. Not a normal single-agent stage.
     if (def.skillId === 'docs-spec-review') {
       return runDocsReviewFanout(pipelineId, projectId, wfDir, resetScope);
+    }
+
+    // ds-lab "Bản đồ màn" (lab-map, WP-lab-map 2026-08-23 — .tmp/pipeline/
+    // wp-lab-map.yaml) → DAEMON-ORCHESTRATED (see runLabMap's own docblock,
+    // above runPipeline): read-only agent (KHÔNG Figma MCP nào, KHÔNG
+    // criteria/ staging), staging map-src/ from docs-review's flows/+comp/,
+    // ghi screen-map.json/screen-map.md. Chen giữa lab-docs và lab-kit-plan;
+    // never falls through to the normal single-agent path below.
+    if (def.skillId === 'lab-map') {
+      return runLabMap(pipelineId, projectId, wfDir, resetScope, input, project);
     }
 
     // ds-lab "Đề xuất kit" (lab-kit-plan, WP-kit-plan 2026-08-22 — .tmp/
